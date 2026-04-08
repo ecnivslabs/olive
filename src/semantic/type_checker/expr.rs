@@ -339,6 +339,23 @@ impl TypeChecker {
                     }
                 }
 
+                let mut current_obj = resolved_obj.clone();
+                while let Type::Ref(inner) | Type::MutRef(inner) = current_obj {
+                    current_obj = *inner;
+                }
+
+                if let Type::Dict(ref k, ref v) = current_obj {
+                    if attr == "keys" {
+                        return Type::Fn(vec![], Box::new(Type::List(k.clone())), Vec::new());
+                    }
+                    if attr == "values" {
+                        return Type::Fn(vec![], Box::new(Type::List(v.clone())), Vec::new());
+                    }
+                    if attr == "remove" {
+                        return Type::Fn(vec![*k.clone()], Box::new(Type::Null), Vec::new());
+                    }
+                }
+
                 if attr == "copy" {
                     return Type::Fn(vec![], Box::new(resolved_obj), Vec::new());
                 }

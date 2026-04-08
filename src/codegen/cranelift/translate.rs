@@ -504,7 +504,9 @@ impl<M: Module> CraneliftCodegen<M> {
                     builder.ins().iconst(types::I64, val)
                 }
                 Constant::Str(s) => {
-                    let id = *string_ids.get(s).expect("string constant not found");
+                    let id = *string_ids.get(s).unwrap_or_else(|| {
+                        panic!("string constant not found: {:?}", s);
+                    });
                     let local_id = module.declare_data_in_func(id, builder.func);
                     let ptr = builder.ins().symbol_value(types::I64, local_id);
                     builder.ins().bor_imm(ptr, 1)
