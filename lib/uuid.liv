@@ -1,0 +1,14 @@
+fn v4() -> str:
+    return __olive_uuid_v4()
+
+fn nil() -> str:
+    return __olive_uuid_nil()
+
+fn is_valid(s: str) -> bool:
+    return __olive_uuid_is_valid(s) == 1
+
+fn to_hex(s: str) -> str:
+    let result = __olive_uuid_to_hex(s)
+    if result == 0:
+        return ""
+    return result

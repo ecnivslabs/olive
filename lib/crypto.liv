@@ -1,0 +1,41 @@
+fn sha256(s: str) -> str:
+    return __olive_crypto_sha256(s)
+
+fn md5(s: str) -> str:
+    return __olive_crypto_md5(s)
+
+fn aes_encrypt(key: str, plaintext: str) -> str:
+    let result = __olive_crypto_aes_encrypt(key, plaintext)
+    if result == 0:
+        return ""
+    return result
+
+fn aes_decrypt(key: str, ciphertext: str) -> str:
+    let result = __olive_crypto_aes_decrypt(key, ciphertext)
+    if result == 0:
+        return ""
+    return result
+
+fn argon2_hash(password: str) -> str:
+    let result = __olive_crypto_argon2_hash(password)
+    if result == 0:
+        return ""
+    return result
+
+fn argon2_verify(password: str, hash: str) -> bool:
+    return __olive_crypto_argon2_verify(password, hash) == 1
+
+fn rsa_keygen():
+    return __olive_crypto_rsa_keygen()
+
+fn rsa_encrypt(pub_key: str, data: str) -> str:
+    let result = __olive_crypto_rsa_encrypt(pub_key, data)
+    if result == 0:
+        return ""
+    return result
+
+fn rsa_decrypt(priv_key: str, data: str) -> str:
+    let result = __olive_crypto_rsa_decrypt(priv_key, data)
+    if result == 0:
+        return ""
+    return result

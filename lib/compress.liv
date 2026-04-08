@@ -1,0 +1,23 @@
+fn gzip_compress(data: str) -> str:
+    let result = __olive_gzip_compress(data)
+    if result == 0:
+        return ""
+    return result
+
+fn gzip_decompress(data: str) -> str:
+    let result = __olive_gzip_decompress(data)
+    if result == 0:
+        return ""
+    return result
+
+fn zstd_compress(data: str) -> str:
+    let result = __olive_zstd_compress(data)
+    if result == 0:
+        return ""
+    return result
+
+fn zstd_decompress(data: str) -> str:
+    let result = __olive_zstd_decompress(data)
+    if result == 0:
+        return ""
+    return result

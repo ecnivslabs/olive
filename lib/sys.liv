@@ -1,0 +1,35 @@
+fn hostname() -> str:
+    return __olive_sys_hostname()
+
+fn pid() -> int:
+    return __olive_sys_pid()
+
+fn cpu_count() -> int:
+    return __olive_sys_cpu_count()
+
+fn platform() -> str:
+    return __olive_sys_platform()
+
+fn arch() -> str:
+    return __olive_sys_arch()
+
+fn memory_total() -> int:
+    return __olive_sys_memory_total()
+
+fn memory_free() -> int:
+    return __olive_sys_memory_free()
+
+fn uptime() -> float:
+    return __olive_sys_uptime()
+
+fn username() -> str:
+    return __olive_sys_username()
+
+fn home_dir() -> str:
+    return __olive_sys_home_dir()
+
+fn cwd() -> str:
+    return __olive_sys_cwd()
+
+fn chdir(path: str) -> bool:
+    return __olive_sys_chdir(path) == 1

@@ -1,0 +1,213 @@
+fn sin(x: float) -> float: return __olive_math_sin(x)
+fn cos(x: float) -> float: return __olive_math_cos(x)
+fn tan(x: float) -> float: return __olive_math_tan(x)
+fn asin(x: float) -> float: return __olive_math_asin(x)
+fn acos(x: float) -> float: return __olive_math_acos(x)
+fn atan(x: float) -> float: return __olive_math_atan(x)
+fn atan2(y: float, x: float) -> float: return __olive_math_atan2(y, x)
+fn log(x: float) -> float: return __olive_math_log(x)
+fn log10(x: float) -> float: return __olive_math_log10(x)
+fn exp(x: float) -> float: return __olive_math_exp(x)
+
+// math algorithms in pure olive
+
+const PI = 3.141592653589793
+const E  = 2.718281828459045
+const TAU = 6.283185307179586
+const INF = 1.0e308
+const _SQRT2 = 1.4142135623730951
+
+
+fn abs(x: float) -> float:
+    if x < 0.0:
+        return -x
+    return x
+
+fn _iabs(x: int) -> int:
+    if x < 0:
+        return -x
+    return x
+
+fn floor(x: float) -> int:
+    let i = int(x)
+    if x < 0.0 and float(i) != x:
+        return i - 1
+    return i
+
+fn ceil(x: float) -> int:
+    let i = int(x)
+    if x > 0.0 and float(i) < x:
+        return i + 1
+    return i
+
+fn fmod(x: float, y: float) -> float:
+    return x - float(int(x / y)) * y
+
+fn copysign(x: float, y: float) -> float:
+    let a = abs(x)
+    if y < 0.0:
+        return -a
+    return a
+
+fn isclose(a: float, b: float) -> bool:
+    return abs(a - b) < 1.0e-9
+
+
+fn sqrt(x: float) -> float:
+    // newton-raphson
+    if x < 0.0:
+        return 0.0 / 0.0
+    if x == 0.0:
+        return 0.0
+    let mut g = x
+    if g > 1.0:
+        g = g / 2.0
+    let mut i = 0
+    while i < 60:
+        g = 0.5 * (g + x / g)
+        i = i + 1
+    return g
+
+fn cbrt(x: float) -> float:
+    if x == 0.0:
+        return 0.0
+    let sign = 1.0
+    let mut v = x
+    if v < 0.0:
+        v = -v
+    let mut g = v / 3.0
+    if g < 1.0:
+        g = 1.0
+    let mut i = 0
+    while i < 80:
+        g = (2.0 * g + v / (g * g)) / 3.0
+        i = i + 1
+    if x < 0.0:
+        return -g
+    return g
+
+fn hypot(x: float, y: float) -> float:
+    return sqrt(x * x + y * y)
+
+fn pow(base: float, exponent: float) -> float:
+    return base ** exponent
+
+fn ipow(base: int, exponent: int) -> int:
+    return base ** exponent
+
+fn sinh(x: float) -> float:
+    let e = exp(x)
+    return (e - 1.0 / e) / 2.0
+
+fn cosh(x: float) -> float:
+    let e = exp(x)
+    return (e + 1.0 / e) / 2.0
+
+fn tanh(x: float) -> float:
+    if x > 20.0:
+        return 1.0
+    if x < -20.0:
+        return -1.0
+    let e2 = exp(2.0 * x)
+    return (e2 - 1.0) / (e2 + 1.0)
+
+fn asinh(x: float) -> float:
+    return log(x + sqrt(x * x + 1.0))
+
+fn acosh(x: float) -> float:
+    if x < 1.0:
+        return 0.0 / 0.0
+    return log(x + sqrt(x * x - 1.0))
+
+fn atanh(x: float) -> float:
+    if abs(x) >= 1.0:
+        return 0.0 / 0.0
+    return 0.5 * log((1.0 + x) / (1.0 - x))
+
+
+fn round(x: float) -> int:
+    if x >= 0.0:
+        return floor(x + 0.5)
+    return ceil(x - 0.5)
+
+fn clamp(x: float, lo: float, hi: float) -> float:
+    if x < lo:
+        return lo
+    if x > hi:
+        return hi
+    return x
+
+fn min(a: float, b: float) -> float:
+    if a < b:
+        return a
+    return b
+
+fn max(a: float, b: float) -> float:
+    if a > b:
+        return a
+    return b
+
+
+fn factorial(n: int) -> int:
+    if n <= 1:
+        return 1
+    let mut result = 1
+    let mut i = 2
+    while i <= n:
+        result = result * i
+        i = i + 1
+    return result
+
+fn gcd(a: int, b: int) -> int:
+    let mut x = _iabs(a)
+    let mut y = _iabs(b)
+    while y != 0:
+        let t = y
+        y = x % y
+        x = t
+    return x
+
+fn lcm(a: int, b: int) -> int:
+    if a == 0 or b == 0:
+        return 0
+    return _iabs(a * b) / gcd(a, b)
+
+fn comb(n: int, k: int) -> int:
+    if k < 0 or k > n:
+        return 0
+    let mut kk = k
+    if kk > n - kk:
+        kk = n - kk
+    let mut result = 1
+    let mut i = 0
+    while i < kk:
+        result = result * (n - i) / (i + 1)
+        i = i + 1
+    return result
+
+fn perm(n: int, k: int) -> int:
+    if k < 0 or k > n:
+        return 0
+    let mut result = 1
+    let mut i = 0
+    while i < k:
+        result = result * (n - i)
+        i = i + 1
+    return result
+
+
+fn degrees(x: float) -> float:
+    return x * 180.0 / PI
+
+fn radians(x: float) -> float:
+    return x * PI / 180.0
+
+
+fn erf(x: float) -> float:
+    // horner-form
+    let t = 1.0 / (1.0 + 0.3275911 * abs(x))
+    let poly = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))))
+    let result = 1.0 - poly * exp(-x * x)
+    if x < 0.0:
+        return -result
+    return result

@@ -1,0 +1,23 @@
+fn seed(n: int):
+    __olive_random_seed(n)
+
+fn random() -> float:
+    return __olive_random_get()
+
+fn randint(min: int, max: int) -> int:
+    return __olive_random_int(min, max)
+
+fn choice(lst):
+    let idx = randint(0, len(lst) - 1)
+    return lst[idx]
+
+fn shuffle(lst):
+    let n = len(lst)
+    let mut i = n - 1
+    while i > 0:
+        let j = randint(0, i)
+        let tmp = lst[i]
+        lst[i] = lst[j]
+        lst[j] = tmp
+        i = i - 1
+    return lst

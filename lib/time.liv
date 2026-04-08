@@ -1,0 +1,14 @@
+fn now() -> float:
+    return __olive_time_now()
+
+fn monotonic() -> float:
+    return __olive_time_monotonic()
+
+fn sleep(secs: float):
+    __olive_time_sleep(secs)
+
+fn format(ts: float, fmt: str) -> str:
+    return __olive_time_format(ts, fmt)
+
+fn format_iso(ts: float) -> str:
+    return __olive_time_format(ts, 0)

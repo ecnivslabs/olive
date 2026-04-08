@@ -1,0 +1,35 @@
+fn get(url: str) -> str:
+    let res = __olive_http_get(url)
+    if res == 0:
+        return ""
+    return res
+
+fn post(url: str, body: str) -> str:
+    let res = __olive_http_post(url, body)
+    if res == 0:
+        return ""
+    return res
+
+fn post_json(url: str, body: str) -> str:
+    let res = __olive_http_post_json(url, body)
+    if res == 0:
+        return ""
+    return res
+
+fn put(url: str, body: str) -> str:
+    let res = __olive_http_put(url, body)
+    if res == 0:
+        return ""
+    return res
+
+fn delete(url: str) -> int:
+    return __olive_http_delete(url)
+
+fn status(url: str) -> int:
+    return __olive_http_get_status(url)
+
+fn get_with_headers(url: str, headers) -> str:
+    let res = __olive_http_get_with_headers(url, headers)
+    if res == 0:
+        return ""
+    return res

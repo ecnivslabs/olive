@@ -1,0 +1,23 @@
+fn getenv(name: str) -> str:
+    let val = __olive_env_get(name)
+    if val == 0:
+        return ""
+    return val
+
+fn setenv(name: str, val: str):
+    __olive_env_set(name, val)
+
+fn args() -> list:
+    return __olive_os_args()
+
+fn exit(code: int):
+    __olive_os_exit(code)
+
+fn exec(cmd: str) -> str:
+    let out = __olive_os_exec(cmd)
+    if out == 0:
+        return ""
+    return out
+
+fn exec_status(cmd: str) -> int:
+    return __olive_os_exec_status(cmd)

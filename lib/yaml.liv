@@ -1,0 +1,17 @@
+fn parse(s: str):
+    return __olive_yaml_parse(s)
+
+fn stringify(obj) -> str:
+    let result = __olive_yaml_stringify(obj)
+    if result == 0:
+        return ""
+    return result
+
+fn toml_parse(s: str):
+    return __olive_toml_parse(s)
+
+fn toml_stringify(obj) -> str:
+    let result = __olive_toml_stringify(obj)
+    if result == 0:
+        return ""
+    return result

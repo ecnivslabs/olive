@@ -1,0 +1,778 @@
+mod expr;
+mod patterns;
+mod stmt;
+mod unify;
+
+use super::error::SemanticError;
+use super::types::Type;
+use crate::parser::{Program, Stmt};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+
+pub struct TypeChecker {
+    pub(super) substitutions: HashMap<usize, Type>,
+    pub expr_types: HashMap<usize, Type>,
+    pub type_env: Vec<HashMap<String, Type>>,
+    pub(super) current_return_type: Option<Type>,
+    pub errors: Vec<SemanticError>,
+    pub(super) mut_env: Vec<HashMap<String, bool>>,
+    pub field_types: HashMap<(String, String), Type>,
+    pub enum_variants: HashMap<String, Vec<String>>,
+    pub(super) current_struct: Option<String>,
+    pub(super) async_depth: usize,
+    pub(super) vararg_fns: HashSet<String>,
+    pub struct_fields: HashMap<String, Vec<String>>,
+    pub(super) traits: HashMap<String, Vec<String>>,
+    pub(super) type_traits: HashSet<(String, String)>,
+    pub(super) c_ffi_structs: HashSet<String>,
+    pub(super) unsafe_depth: usize,
+    pub(super) ffi_fns: HashSet<String>,
+    pub(super) var_counter: usize,
+}
+
+impl TypeChecker {
+    pub fn new() -> Self {
+        let mut global_env = HashMap::default();
+
+        let builtins = [
+            (
+                "print",
+                Type::Fn(vec![Type::Any], Box::new(Type::Int), Vec::new()),
+            ),
+            (
+                "str",
+                Type::Fn(vec![Type::Any], Box::new(Type::Str), Vec::new()),
+            ),
+            (
+                "int",
+                Type::Fn(vec![Type::Any], Box::new(Type::Int), Vec::new()),
+            ),
+            (
+                "i64",
+                Type::Fn(vec![Type::Any], Box::new(Type::Int), Vec::new()),
+            ),
+            (
+                "i32",
+                Type::Fn(vec![Type::Any], Box::new(Type::I32), Vec::new()),
+            ),
+            (
+                "i16",
+                Type::Fn(vec![Type::Any], Box::new(Type::I16), Vec::new()),
+            ),
+            (
+                "i8",
+                Type::Fn(vec![Type::Any], Box::new(Type::I8), Vec::new()),
+            ),
+            (
+                "u64",
+                Type::Fn(vec![Type::Any], Box::new(Type::U64), Vec::new()),
+            ),
+            (
+                "u32",
+                Type::Fn(vec![Type::Any], Box::new(Type::U32), Vec::new()),
+            ),
+            (
+                "u16",
+                Type::Fn(vec![Type::Any], Box::new(Type::U16), Vec::new()),
+            ),
+            (
+                "u8",
+                Type::Fn(vec![Type::Any], Box::new(Type::U8), Vec::new()),
+            ),
+            (
+                "float",
+                Type::Fn(vec![Type::Any], Box::new(Type::Float), Vec::new()),
+            ),
+            (
+                "f64",
+                Type::Fn(vec![Type::Any], Box::new(Type::Float), Vec::new()),
+            ),
+            (
+                "f32",
+                Type::Fn(vec![Type::Any], Box::new(Type::F32), Vec::new()),
+            ),
+            (
+                "bool",
+                Type::Fn(vec![Type::Any], Box::new(Type::Bool), Vec::new()),
+            ),
+            (
+                "type",
+                Type::Fn(vec![Type::Any], Box::new(Type::Str), Vec::new()),
+            ),
+            (
+                "len",
+                Type::Fn(vec![Type::Any], Box::new(Type::Int), Vec::new()),
+            ),
+            (
+                "slice",
+                Type::Fn(
+                    vec![Type::Any, Type::Int, Type::Int],
+                    Box::new(Type::Any),
+                    Vec::new(),
+                ),
+            ),
+            (
+                "list_new",
+                Type::Fn(
+                    vec![Type::Int],
+                    Box::new(Type::List(Box::new(Type::Any))),
+                    Vec::new(),
+                ),
+            ),
+            (
+                "list",
+                Type::Fn(
+                    vec![Type::Any],
+                    Box::new(Type::List(Box::new(Type::Any))),
+                    Vec::new(),
+                ),
+            ),
+            (
+                "dict",
+                Type::Fn(
+                    vec![Type::Any],
+                    Box::new(Type::Dict(Box::new(Type::Str), Box::new(Type::Any))),
+                    Vec::new(),
+                ),
+            ),
+            (
+                "__olive_async_file_read",
+                Type::Fn(
+                    vec![Type::Str],
+                    Box::new(Type::Future(Box::new(Type::Str))),
+                    Vec::new(),
+                ),
+            ),
+            (
+                "__olive_async_file_write",
+                Type::Fn(
+                    vec![Type::Str, Type::Str],
+                    Box::new(Type::Future(Box::new(Type::Int))),
+                    Vec::new(),
+                ),
+            ),
+            (
+                "__olive_gather",
+                Type::Fn(
+                    vec![Type::Any],
+                    Box::new(Type::Future(Box::new(Type::List(Box::new(Type::Any))))),
+                    Vec::new(),
+                ),
+            ),
+            (
+                "__olive_select",
+                Type::Fn(
+                    vec![Type::Any],
+                    Box::new(Type::Future(Box::new(Type::List(Box::new(Type::Any))))),
+                    Vec::new(),
+                ),
+            ),
+            (
+                "__olive_free_future",
+                Type::Fn(vec![Type::Any], Box::new(Type::Int), Vec::new()),
+            ),
+            (
+                "__olive_math_sin",
+                Type::Fn(vec![Type::Float], Box::new(Type::Float), Vec::new()),
+            ),
+            (
+                "__olive_math_cos",
+                Type::Fn(vec![Type::Float], Box::new(Type::Float), Vec::new()),
+            ),
+            (
+                "__olive_math_tan",
+                Type::Fn(vec![Type::Float], Box::new(Type::Float), Vec::new()),
+            ),
+            (
+                "__olive_math_asin",
+                Type::Fn(vec![Type::Float], Box::new(Type::Float), Vec::new()),
+            ),
+            (
+                "__olive_math_acos",
+                Type::Fn(vec![Type::Float], Box::new(Type::Float), Vec::new()),
+            ),
+            (
+                "__olive_math_atan",
+                Type::Fn(vec![Type::Float], Box::new(Type::Float), Vec::new()),
+            ),
+            (
+                "__olive_math_atan2",
+                Type::Fn(
+                    vec![Type::Float, Type::Float],
+                    Box::new(Type::Float),
+                    Vec::new(),
+                ),
+            ),
+            (
+                "__olive_math_log",
+                Type::Fn(vec![Type::Float], Box::new(Type::Float), Vec::new()),
+            ),
+            (
+                "__olive_math_log10",
+                Type::Fn(vec![Type::Float], Box::new(Type::Float), Vec::new()),
+            ),
+            (
+                "__olive_math_exp",
+                Type::Fn(vec![Type::Float], Box::new(Type::Float), Vec::new()),
+            ),
+            (
+                "__olive_random_seed",
+                Type::Fn(vec![Type::Int], Box::new(Type::Null), Vec::new()),
+            ),
+            (
+                "__olive_random_get",
+                Type::Fn(vec![], Box::new(Type::Float), Vec::new()),
+            ),
+            (
+                "__olive_random_int",
+                Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int), Vec::new()),
+            ),
+            (
+                "__olive_net_tcp_connect",
+                Type::Fn(vec![Type::Str], Box::new(Type::Int), Vec::new()),
+            ),
+            (
+                "__olive_net_tcp_send",
+                Type::Fn(vec![Type::Int, Type::Str], Box::new(Type::Int), Vec::new()),
+            ),
+            (
+                "__olive_net_tcp_recv",
+                Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Str), Vec::new()),
+            ),
+            (
+                "__olive_net_tcp_close",
+                Type::Fn(vec![Type::Int], Box::new(Type::Null), Vec::new()),
+            ),
+            (
+                "__olive_http_get",
+                Type::Fn(vec![Type::Str], Box::new(Type::Str), Vec::new()),
+            ),
+            (
+                "__olive_http_post",
+                Type::Fn(vec![Type::Str, Type::Str], Box::new(Type::Str), Vec::new()),
+            ),
+            (
+                "__olive_spawn_task",
+                Type::Fn(
+                    vec![Type::Any],
+                    Box::new(Type::Future(Box::new(Type::Any))),
+                    Vec::new(),
+                ),
+            ),
+            (
+                "ffi_errno",
+                Type::Fn(vec![], Box::new(Type::Int), Vec::new()),
+            ),
+        ];
+
+        for (name, ty) in builtins {
+            global_env.insert(name.to_string(), ty);
+        }
+
+        Self {
+            substitutions: HashMap::default(),
+            expr_types: HashMap::default(),
+            type_env: vec![global_env],
+            current_return_type: None,
+            errors: Vec::new(),
+            mut_env: vec![HashMap::default()],
+            field_types: HashMap::default(),
+            enum_variants: HashMap::default(),
+            current_struct: None,
+            async_depth: 0,
+            vararg_fns: HashSet::default(),
+            struct_fields: HashMap::default(),
+            traits: HashMap::default(),
+            type_traits: HashSet::default(),
+            c_ffi_structs: HashSet::default(),
+            unsafe_depth: 0,
+            ffi_fns: HashSet::default(),
+            var_counter: 0,
+        }
+    }
+
+    pub(super) fn fresh_var(&mut self) -> Type {
+        let id = self.var_counter;
+        self.var_counter += 1;
+        Type::Var(id)
+    }
+
+    pub(super) fn enter_scope(&mut self) {
+        self.type_env.push(HashMap::default());
+        self.mut_env.push(HashMap::default());
+    }
+
+    pub(super) fn leave_scope(&mut self) {
+        self.type_env.pop();
+        self.mut_env.pop();
+    }
+
+    pub(super) fn define_type(&mut self, name: &str, ty: Type, is_mut: bool) {
+        if let Some(scope) = self.type_env.last_mut() {
+            scope.insert(name.to_string(), ty);
+        }
+        if let Some(scope) = self.mut_env.last_mut() {
+            scope.insert(name.to_string(), is_mut);
+        }
+    }
+
+    pub(super) fn lookup_type(&self, name: &str) -> Option<Type> {
+        for scope in self.type_env.iter().rev() {
+            if let Some(ty) = scope.get(name) {
+                return Some(ty.clone());
+            }
+        }
+        None
+    }
+
+    pub(super) fn is_mutable(&self, name: &str) -> bool {
+        for scope in self.mut_env.iter().rev() {
+            if let Some(is_mut) = scope.get(name) {
+                return *is_mut;
+            }
+        }
+        false
+    }
+
+    pub fn check_program(&mut self, program: &Program) {
+        for stmt in &program.stmts {
+            self.check_stmt(stmt);
+        }
+
+        let ids: Vec<usize> = self.expr_types.keys().cloned().collect();
+        for id in ids {
+            let ty = self.expr_types.get(&id).unwrap().clone();
+            let final_ty = self.apply_subst(ty);
+            self.expr_types.insert(id, final_ty);
+        }
+
+        for i in 0..self.type_env.len() {
+            let names: Vec<String> = self.type_env[i].keys().cloned().collect();
+            for name in names {
+                let ty = self.type_env[i].get(&name).unwrap().clone();
+                let final_ty = self.apply_subst(ty);
+                self.type_env[i].insert(name, final_ty);
+            }
+        }
+    }
+
+    pub(super) fn check_block(&mut self, stmts: &[Stmt]) {
+        self.enter_scope();
+        for s in stmts {
+            self.check_stmt(s);
+        }
+        self.leave_scope();
+    }
+
+    pub(super) fn instantiate(&mut self, ty: Type) -> Type {
+        match ty {
+            Type::Fn(params, ret, args) => {
+                if args.is_empty() {
+                    return Type::Fn(params, ret, args);
+                }
+                let mut subst = HashMap::default();
+                let mut fresh_args = Vec::new();
+                for arg in &args {
+                    if let Type::Param(name) = arg {
+                        let var = self.fresh_var();
+                        subst.insert(name.clone(), var.clone());
+                        fresh_args.push(var);
+                    } else {
+                        fresh_args.push(arg.clone());
+                    }
+                }
+
+                let instantiated_params = params
+                    .into_iter()
+                    .map(|p| self.replace_params_with_vars(p, &subst))
+                    .collect();
+                let instantiated_ret = self.replace_params_with_vars(*ret, &subst);
+
+                Type::Fn(instantiated_params, Box::new(instantiated_ret), fresh_args)
+            }
+            Type::Struct(name, args) => {
+                let mut fresh_args = Vec::new();
+                for arg in args {
+                    if let Type::Param(_) = arg {
+                        fresh_args.push(self.fresh_var());
+                    } else {
+                        fresh_args.push(arg);
+                    }
+                }
+                Type::Struct(name, fresh_args)
+            }
+            Type::Enum(name, args) => {
+                let mut fresh_args = Vec::new();
+                for arg in args {
+                    if let Type::Param(_) = arg {
+                        fresh_args.push(self.fresh_var());
+                    } else {
+                        fresh_args.push(arg);
+                    }
+                }
+                Type::Enum(name, fresh_args)
+            }
+            _ => ty,
+        }
+    }
+
+    fn replace_params_with_vars(&self, ty: Type, subst: &HashMap<String, Type>) -> Type {
+        match ty {
+            Type::Param(name) => subst.get(&name).cloned().unwrap_or(Type::Param(name)),
+            Type::List(inner) => Type::List(Box::new(self.replace_params_with_vars(*inner, subst))),
+            Type::Set(inner) => Type::Set(Box::new(self.replace_params_with_vars(*inner, subst))),
+            Type::Dict(k, v) => Type::Dict(
+                Box::new(self.replace_params_with_vars(*k, subst)),
+                Box::new(self.replace_params_with_vars(*v, subst)),
+            ),
+            Type::Tuple(elems) => Type::Tuple(
+                elems
+                    .into_iter()
+                    .map(|e| self.replace_params_with_vars(e, subst))
+                    .collect(),
+            ),
+            Type::Fn(params, ret, args) => Type::Fn(
+                params
+                    .into_iter()
+                    .map(|p| self.replace_params_with_vars(p, subst))
+                    .collect(),
+                Box::new(self.replace_params_with_vars(*ret, subst)),
+                args.into_iter()
+                    .map(|a| self.replace_params_with_vars(a, subst))
+                    .collect(),
+            ),
+            Type::Ref(inner) => Type::Ref(Box::new(self.replace_params_with_vars(*inner, subst))),
+            Type::MutRef(inner) => {
+                Type::MutRef(Box::new(self.replace_params_with_vars(*inner, subst)))
+            }
+            Type::Ptr(inner) => Type::Ptr(Box::new(self.replace_params_with_vars(*inner, subst))),
+            Type::Future(inner) => {
+                Type::Future(Box::new(self.replace_params_with_vars(*inner, subst)))
+            }
+            Type::Struct(name, args) => Type::Struct(
+                name,
+                args.into_iter()
+                    .map(|a| self.replace_params_with_vars(a, subst))
+                    .collect(),
+            ),
+            Type::Enum(name, args) => Type::Enum(
+                name,
+                args.into_iter()
+                    .map(|a| self.replace_params_with_vars(a, subst))
+                    .collect(),
+            ),
+            _ => ty,
+        }
+    }
+
+    pub(super) fn get_struct_subst(
+        &self,
+        struct_name: &str,
+        type_args: &[Type],
+    ) -> HashMap<String, Type> {
+        let mut subst = HashMap::default();
+        if let Some(Type::Struct(_, params)) = self.lookup_type(struct_name) {
+            for (p, a) in params.iter().zip(type_args) {
+                if let Type::Param(name) = p {
+                    subst.insert(name.clone(), a.clone());
+                }
+            }
+        }
+        subst
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+    use crate::semantic::Resolver;
+
+    fn pipeline(src: &str) -> TypeChecker {
+        let tokens = Lexer::new(src, 0).tokenise().unwrap();
+        let prog = Parser::new(tokens).parse_program().unwrap();
+        let mut r = Resolver::new();
+        r.resolve_program(&prog);
+        let mut tc = TypeChecker::new();
+        tc.check_program(&prog);
+        tc
+    }
+
+    #[test]
+    fn no_errors_on_valid_let() {
+        let tc = pipeline("let x = 42\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn no_errors_on_str_literal() {
+        let tc = pipeline("let s = \"hello\"\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn no_errors_on_arithmetic() {
+        let tc = pipeline("let x = 1 + 2 * 3\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn function_return_type_mismatch_reported() {
+        let tc = pipeline("fn foo() -> i64:\n    return \"wrong type\"\n");
+        assert!(!tc.errors.is_empty());
+    }
+
+    #[test]
+    fn valid_function_return_no_error() {
+        let tc = pipeline("fn foo() -> i64:\n    return 42\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn bool_result_from_comparison() {
+        let tc = pipeline("let b = 1 < 2\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn struct_instantiation_ok() {
+        let tc = pipeline("struct Point:\n    x: i64\n    y: i64\n\nlet p = Point(1, 2)\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn struct_field_access_ok() {
+        let tc =
+            pipeline("struct Point:\n    x: i64\n    y: i64\n\nlet p = Point(3, 4)\nlet v = p.x\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn generic_function_monomorphizes() {
+        let tc = pipeline("fn identity[T](x: T) -> T:\n    return x\n\nlet y = identity(10)\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn ffi_call_outside_unsafe_reported() {
+        let tc = pipeline(
+            "import \"/usr/lib/libc.so.6\" as libc:\n    fn getpid() -> i64\n\nlibc::getpid()\n",
+        );
+        assert!(tc.errors.iter().any(|e| {
+            matches!(e, super::super::error::SemanticError::Custom { msg, .. } if msg.contains("unsafe"))
+        }));
+    }
+
+    #[test]
+    fn ffi_call_inside_unsafe_ok() {
+        let tc = pipeline(
+            "import \"/usr/lib/libc.so.6\" as libc:\n    fn getpid() -> i64\n\nunsafe:\n    libc::getpid()\n",
+        );
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn ffi_safe_decorator_no_unsafe_required() {
+        let tc = pipeline(
+            "import \"/usr/lib/libc.so.6\" as libc:\n    @safe\n    fn getpid() -> i64\n\nlibc::getpid()\n",
+        );
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn nested_function_calls_ok() {
+        let tc = pipeline(
+            "fn add(a: i64, b: i64) -> i64:\n    return a + b\n\nlet r = add(add(1, 2), 3)\n",
+        );
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn if_else_expression_ok() {
+        let tc = pipeline("let x = 5\nif x > 3:\n    let y = 1\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn wrong_arg_count_reported() {
+        let tc = pipeline("fn f(a: i64, b: i64) -> i64:\n    return a + b\n\nf(1)\n");
+        assert!(!tc.errors.is_empty());
+    }
+
+    #[test]
+    fn recursive_function_ok() {
+        let tc = pipeline(
+            "fn fact(n: i64) -> i64:\n    if n <= 1:\n        return 1\n    return n * fact(n - 1)\n",
+        );
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn enum_variant_construction_ok() {
+        let tc =
+            pipeline("enum Shape:\n    Circle(i64)\n    Rect(i64, i64)\n\nlet c = Circle(5)\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn union_type_ok() {
+        let tc = pipeline("fn f(x: i64 | str) -> i64:\n    return 0\n\nf(42)\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn list_homogeneity_inferred() {
+        let tc = pipeline("let xs = [1, 2, 3]\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn dict_type_inferred() {
+        let tc = pipeline("let d = {\"a\": 1, \"b\": 2}\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn tuple_type_inferred() {
+        let tc = pipeline("let t = (1, \"hello\", True)\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn while_loop_ok() {
+        let tc = pipeline("let mut i = 0\nwhile i < 10:\n    i = i + 1\n");
+        assert!(tc.errors.is_empty(), "errors: {:?}", tc.errors);
+    }
+
+    #[test]
+    fn for_loop_ok() {
+        let tc = pipeline("for x in [1, 2, 3]:\n    let y = x + 1\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn method_call_on_struct_ok() {
+        let tc = pipeline(
+            "struct Counter:\n    val: i64\n\nimpl Counter:\n    fn inc(self) -> i64:\n        return self.val + 1\n\nlet c = Counter(0)\nlet v = c.inc()\n",
+        );
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn generic_struct_ok() {
+        let tc = pipeline(
+            "struct Pair[A, B]:\n    first: A\n    second: B\n\nlet p = Pair(1, \"two\")\n",
+        );
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn return_type_mismatch_in_branch_reported() {
+        let tc = pipeline(
+            "fn f(x: i64) -> i64:\n    if x > 0:\n        return \"wrong\"\n    return 0\n",
+        );
+        assert!(!tc.errors.is_empty());
+    }
+
+    #[test]
+    fn mutable_let_reassignment_ok() {
+        let tc = pipeline("let mut x = 0\nx = 42\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn immutable_reassignment_reported() {
+        let tc = pipeline("let x = 0\nx = 42\n");
+        assert!(!tc.errors.is_empty());
+    }
+
+    #[test]
+    fn const_declaration_ok() {
+        let tc = pipeline("const PI = 3\nlet r = PI * 2\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn ptr_type_annotation_ok() {
+        let tc = pipeline("fn deref(p: *i64) -> i64:\n    return 0\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn ptr_ptr_type_ok() {
+        let tc = pipeline("fn f(p: *(*i64)) -> i64:\n    return 0\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn match_exhaustive_ok() {
+        let tc = pipeline(
+            "enum Color:\n    Red(i64)\n    Green(i64)\n    Blue(i64)\n\nlet c = Red(0)\nmatch c:\n    case Red(v):\n        let x = v\n    case _:\n        let x = 0\n",
+        );
+        assert!(tc.errors.is_empty(), "errors: {:?}", tc.errors);
+    }
+
+    #[test]
+    fn trait_method_defined_ok() {
+        let tc = pipeline(
+            "trait Printable:\n    fn display(self) -> str:\n        return \"\"\n\nstruct Pt:\n    x: i64\n\nimpl Printable for Pt:\n    fn display(self) -> str:\n        return str(self.x)\n",
+        );
+        assert!(tc.errors.is_empty(), "errors: {:?}", tc.errors);
+    }
+
+    #[test]
+    fn nested_generics_ok() {
+        let tc = pipeline("fn wrap[T](x: T) -> [T]:\n    return [x]\n\nlet r = wrap(42)\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn float_arithmetic_ok() {
+        let tc = pipeline("let x = 1.5 + 2.5\nlet y = x * 2.0\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn bool_operations_ok() {
+        let tc = pipeline("let a = True\nlet b = False\nlet c = a and b\nlet d = a or b\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn string_concat_ok() {
+        let tc = pipeline("let s = \"hello\" + \" world\"\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn list_indexing_ok() {
+        let tc = pipeline("let xs = [10, 20, 30]\nlet v = xs[1]\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn nested_struct_field_access_ok() {
+        let tc = pipeline(
+            "struct Inner:\n    v: i64\nstruct Outer:\n    inner: Inner\nlet o = Outer(Inner(5))\nlet v = o.inner.v\n",
+        );
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn higher_order_function_ok() {
+        let tc = pipeline("fn apply(f: fn(i64) -> i64, x: i64) -> i64:\n    return f(x)\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn var_counter_isolated_between_instances() {
+        let tc1 = pipeline("let x = [1]\n");
+        let tc2 = pipeline("let y = [2]\n");
+        assert!(tc1.errors.is_empty());
+        assert!(tc2.errors.is_empty());
+        assert_eq!(
+            tc1.var_counter, tc2.var_counter,
+            "each TypeChecker instance must use its own counter"
+        );
+    }
+}

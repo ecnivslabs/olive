@@ -1,0 +1,36 @@
+let DEBUG = 0
+let INFO = 1
+let WARN = 2
+let ERROR = 3
+
+let PLAIN = 0
+let JSON = 1
+let COLOR = 2
+
+fn set_level(level: int):
+    __olive_log_set_level(level)
+
+fn set_level_str(level: str):
+    let lvl = __olive_log_level_from_str(level)
+    __olive_log_set_level(lvl)
+
+fn set_format(fmt: int):
+    __olive_log_set_format(fmt)
+
+fn debug(msg: str):
+    __olive_log_debug(msg)
+
+fn info(msg: str):
+    __olive_log_info(msg)
+
+fn warn(msg: str):
+    __olive_log_warn(msg)
+
+fn error(msg: str):
+    __olive_log_error(msg)
+
+fn with_field(key: str, val: str):
+    __olive_log_with_field(key, val)
+
+fn clear_fields():
+    __olive_log_clear_fields()
