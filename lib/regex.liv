@@ -1,4 +1,4 @@
-fn match(pattern: str, text: str) -> bool:
+fn regex_match(pattern: str, text: str) -> bool:
     return __olive_regex_match(pattern, text) == 1
 
 fn find(pattern: str, text: str) -> str:

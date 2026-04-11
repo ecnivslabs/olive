@@ -7,6 +7,10 @@ use crate::span::Span;
 
 impl<'a> MirBuilder<'a> {
     pub(super) fn lower_stmt(&mut self, stmt: &Stmt) {
+        self.lower_stmt_with_tail(stmt, false);
+    }
+
+    pub(super) fn lower_stmt_with_tail(&mut self, stmt: &Stmt, is_tail: bool) {
         if self.is_terminated() {
             return;
         }
@@ -36,9 +40,21 @@ impl<'a> MirBuilder<'a> {
             }
 
             StmtKind::ExprStmt(expr) => {
-                let rval = self.lower_expr(expr);
-                let tmp = self.new_local(Type::Any, None, true);
-                self.push_statement(StatementKind::Assign(tmp, Rvalue::Use(rval)), expr.span);
+                if is_tail {
+                    let rval = self.lower_expr(expr);
+                    self.push_statement(
+                        StatementKind::Assign(Local(0), Rvalue::Use(rval)),
+                        expr.span,
+                    );
+                    if let Some(bb) = self.current_block {
+                        self.terminate_block(bb, TerminatorKind::Return, expr.span);
+                    }
+                    self.current_block = Some(self.new_block());
+                } else {
+                    let rval = self.lower_expr(expr);
+                    let tmp = self.new_local(Type::Any, None, true);
+                    self.push_statement(StatementKind::Assign(tmp, Rvalue::Use(rval)), expr.span);
+                }
             }
 
             StmtKind::Assign { target, value } => {
@@ -115,7 +131,7 @@ impl<'a> MirBuilder<'a> {
                 elif_clauses,
                 else_body,
             } => {
-                self.lower_if(condition, then_body, elif_clauses, else_body);
+                self.lower_if(condition, then_body, elif_clauses, else_body, is_tail);
             }
 
             StmtKind::While {
@@ -232,6 +248,12 @@ impl<'a> MirBuilder<'a> {
                             *n = mangled_name;
                         }
                         self.lower_fn_def(&impl_stmt);
+                    } else if let StmtKind::Const { name: const_name, value, .. } = &s.kind {
+                        let mangled = format!("{}::{}", type_name, const_name);
+                        let rval = self.lower_expr(value);
+                        if let Operand::Constant(_) = &rval {
+                            self.globals.insert(mangled, rval);
+                        }
                     }
                 }
             }
@@ -679,21 +701,7 @@ impl<'a> MirBuilder<'a> {
                 self.memo_context = None;
             } else {
                 for (i, s) in body.iter().enumerate() {
-                    if i == body.len() - 1
-                        && let StmtKind::ExprStmt(e) = &s.kind
-                    {
-                        let rval = self.lower_expr(e);
-                        self.push_statement(
-                            StatementKind::Assign(Local(0), Rvalue::Use(rval)),
-                            e.span,
-                        );
-                        if let Some(bb) = self.current_block {
-                            self.terminate_block(bb, TerminatorKind::Return, e.span);
-                        }
-                        self.current_block = Some(self.new_block());
-                        continue;
-                    }
-                    self.lower_stmt(s);
+                    self.lower_stmt_with_tail(s, i == body.len() - 1);
                 }
 
                 if let Some(bb) = self.current_block {
@@ -733,6 +741,12 @@ impl<'a> MirBuilder<'a> {
                             *n = mangled;
                         }
                         self.lower_fn_def(&impl_stmt);
+                    } else if let StmtKind::Const { name: const_name, value, .. } = &s.kind {
+                        let mangled = format!("{}::{}", type_name, const_name);
+                        let rval = self.lower_expr(value);
+                        if let Operand::Constant(_) = &rval {
+                            self.globals.insert(mangled, rval);
+                        }
                     }
                 }
             }

@@ -12,6 +12,7 @@ impl<'a> MirBuilder<'a> {
         then_body: &[Stmt],
         elif_clauses: &[(Expr, Vec<Stmt>)],
         else_body: &Option<Vec<Stmt>>,
+        is_tail: bool,
     ) {
         let cond_op = self.lower_expr(condition);
         let then_bb = self.new_block();
@@ -37,8 +38,8 @@ impl<'a> MirBuilder<'a> {
 
         self.current_block = Some(then_bb);
         self.enter_scope();
-        for s in then_body {
-            self.lower_stmt(s);
+        for (i, s) in then_body.iter().enumerate() {
+            self.lower_stmt_with_tail(s, is_tail && i == then_body.len() - 1);
         }
         self.leave_scope();
         if let Some(bb) = self.current_block {
@@ -68,8 +69,8 @@ impl<'a> MirBuilder<'a> {
 
             self.current_block = Some(elif_then);
             self.enter_scope();
-            for s in elif_body {
-                self.lower_stmt(s);
+            for (i, s) in elif_body.iter().enumerate() {
+                self.lower_stmt_with_tail(s, is_tail && i == elif_body.len() - 1);
             }
             self.leave_scope();
             if let Some(bb) = self.current_block {
@@ -85,8 +86,8 @@ impl<'a> MirBuilder<'a> {
         if let Some(body) = else_body {
             self.current_block = Some(current_next);
             self.enter_scope();
-            for s in body {
-                self.lower_stmt(s);
+            for (i, s) in body.iter().enumerate() {
+                self.lower_stmt_with_tail(s, is_tail && i == body.len() - 1);
             }
             self.leave_scope();
             if let Some(bb) = self.current_block {

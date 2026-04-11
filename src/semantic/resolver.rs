@@ -19,6 +19,8 @@ impl Resolver {
             "int",
             "type",
             "len",
+            "max",
+            "min",
             "list_new",
             "list",
             "dict",

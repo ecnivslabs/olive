@@ -58,6 +58,63 @@ impl<'a> MirBuilder<'a> {
             ExprKind::Bool(b) => Operand::Constant(Constant::Bool(*b)),
 
             ExprKind::Try(inner) => {
+                if self.is_py_call(inner) {
+                    let result_op = self.lower_py_call_safe(inner);
+
+                    let is_ok_tmp = self.new_local(Type::Int, None, false);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            is_ok_tmp,
+                            Rvalue::Call {
+                                func: Operand::Constant(Constant::Function(
+                                    "__olive_result_is_ok".to_string(),
+                                )),
+                                args: vec![result_op.clone()],
+                            },
+                        ),
+                        expr.span,
+                    );
+
+                    let success_bb = self.new_block();
+                    let error_bb = self.new_block();
+
+                    if let Some(bb) = self.current_block {
+                        self.terminate_block(
+                            bb,
+                            TerminatorKind::SwitchInt {
+                                discr: Operand::Copy(is_ok_tmp),
+                                targets: vec![(1, success_bb)],
+                                otherwise: error_bb,
+                            },
+                            expr.span,
+                        );
+                    }
+
+                    self.current_block = Some(error_bb);
+                    self.push_statement(
+                        StatementKind::Assign(Local(0), Rvalue::Use(result_op.clone())),
+                        expr.span,
+                    );
+                    self.terminate_block(error_bb, TerminatorKind::Return, expr.span);
+
+                    self.current_block = Some(success_bb);
+                    let payload_tmp = self.new_local(Type::PyObject, None, false);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            payload_tmp,
+                            Rvalue::Call {
+                                func: Operand::Constant(Constant::Function(
+                                    "__olive_result_unwrap".to_string(),
+                                )),
+                                args: vec![result_op],
+                            },
+                        ),
+                        expr.span,
+                    );
+
+                    return Operand::Copy(payload_tmp);
+                }
+
                 let inner_op = self.lower_expr(inner);
                 let tag_tmp = self.new_local(Type::Int, None, false);
                 self.push_statement(
@@ -210,6 +267,36 @@ impl<'a> MirBuilder<'a> {
             }
 
             ExprKind::BinOp { left, op, right } => {
+                let r_ty = self.get_type(right.id).clone();
+                
+                if r_ty == Type::Str && matches!(op, crate::parser::BinOp::In | crate::parser::BinOp::NotIn) {
+                    let haystack = self.lower_expr_as_copy(right);
+                    let needle = self.lower_expr_as_copy(left);
+                    
+                    let call_tmp = self.new_local(Type::Bool, None, false);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            call_tmp,
+                            Rvalue::Call {
+                                func: Operand::Constant(Constant::Function("__olive_str_contains".to_string())),
+                                args: vec![haystack, needle],
+                            },
+                        ),
+                        expr.span,
+                    );
+                    
+                    if matches!(op, crate::parser::BinOp::In) {
+                        return self.operand_for_local(call_tmp);
+                    } else {
+                        let not_tmp = self.new_tmp_for_expr(expr);
+                        self.push_statement(
+                            StatementKind::Assign(not_tmp, Rvalue::UnaryOp(crate::parser::UnaryOp::Not, Operand::Copy(call_tmp))),
+                            expr.span,
+                        );
+                        return self.operand_for_local(not_tmp);
+                    }
+                }
+
                 let l = if matches!(
                     op,
                     crate::parser::BinOp::Eq
@@ -482,9 +569,107 @@ impl<'a> MirBuilder<'a> {
                             expr.span,
                         );
                         return self.operand_for_local(tmp);
+                    } else if current_arg_ty == Type::PyObject {
+                        let arg_op = self.lower_expr_as_copy(arg_expr);
+                        let tmp = self.new_local(Type::Int, None, false);
+                        self.push_statement(
+                            StatementKind::Assign(
+                                tmp,
+                                Rvalue::Call {
+                                    func: Operand::Constant(Constant::Function(
+                                        "__olive_py_len".to_string(),
+                                    )),
+                                    args: vec![arg_op],
+                                },
+                            ),
+                            expr.span,
+                        );
+                        return self.operand_for_local(tmp);
                     }
                 }
+                if let ExprKind::Identifier(name) = &callee.kind
+                    && (name == "max" || name == "min")
+                    && args.len() == 2
+                {
+                    let a_expr = match &args[0] {
+                        CallArg::Positional(e)
+                        | CallArg::Keyword(_, e)
+                        | CallArg::Splat(e)
+                        | CallArg::KwSplat(e) => e,
+                    };
+                    let b_expr = match &args[1] {
+                        CallArg::Positional(e)
+                        | CallArg::Keyword(_, e)
+                        | CallArg::Splat(e)
+                        | CallArg::KwSplat(e) => e,
+                    };
+
+                    let a_op = self.lower_expr_as_copy(a_expr);
+                    let b_op = self.lower_expr_as_copy(b_expr);
+                    let result_ty = self.get_type(a_expr.id);
+
+                    // cond = (a > b) for max, (a < b) for min
+                    let cmp_op = if name == "max" {
+                        crate::parser::BinOp::Gt
+                    } else {
+                        crate::parser::BinOp::Lt
+                    };
+                    let cond_local = self.new_local(Type::Bool, None, false);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            cond_local,
+                            Rvalue::BinaryOp(cmp_op, a_op.clone(), b_op.clone()),
+                        ),
+                        expr.span,
+                    );
+
+                    let result_local = self.new_local(result_ty, None, false);
+                    let true_bb = self.new_block();
+                    let false_bb = self.new_block();
+                    let exit_bb = self.new_block();
+
+                    if let Some(cur) = self.current_block {
+                        self.terminate_block(
+                            cur,
+                            TerminatorKind::SwitchInt {
+                                discr: Operand::Copy(cond_local),
+                                targets: vec![(1, true_bb)],
+                                otherwise: false_bb,
+                            },
+                            expr.span,
+                        );
+                    }
+
+                    // true: result = a
+                    self.current_block = Some(true_bb);
+                    self.push_statement(
+                        StatementKind::Assign(result_local, Rvalue::Use(a_op)),
+                        expr.span,
+                    );
+                    self.terminate_block(
+                        true_bb,
+                        TerminatorKind::Goto { target: exit_bb },
+                        expr.span,
+                    );
+
+                    // false: result = b
+                    self.current_block = Some(false_bb);
+                    self.push_statement(
+                        StatementKind::Assign(result_local, Rvalue::Use(b_op)),
+                        expr.span,
+                    );
+                    self.terminate_block(
+                        false_bb,
+                        TerminatorKind::Goto { target: exit_bb },
+                        expr.span,
+                    );
+
+                    self.current_block = Some(exit_bb);
+                    return self.operand_for_local(result_local);
+                }
+
                 if let ExprKind::Identifier(name) = &callee.kind {
+
                     if let Some((enum_name, tag)) = self.enum_variants.get(name).cloned() {
                         let type_id = Self::enum_type_id(&enum_name);
                         let tmp = self.new_tmp_for_expr(expr);
@@ -1089,5 +1274,136 @@ impl<'a> MirBuilder<'a> {
             span,
         );
         self.operand_for_local(tmp)
+    }
+
+    fn is_py_call(&self, expr: &Expr) -> bool {
+        if let ExprKind::Call { callee, .. } = &expr.kind {
+            let callee_ty = self.get_type(callee.id);
+            if callee_ty == Type::PyObject {
+                return true;
+            }
+            if let ExprKind::Attr { obj, .. } = &callee.kind {
+                return self.get_type(obj.id) == Type::PyObject;
+            }
+        }
+        false
+    }
+
+    fn lower_py_call_safe(&mut self, expr: &Expr) -> Operand {
+        let ExprKind::Call { callee, args } = &expr.kind else {
+            return self.lower_expr(expr);
+        };
+
+        let mut arg_ops: Vec<Operand> = Vec::new();
+        let mut arg_kw_names: Vec<Option<String>> = Vec::new();
+        for arg in args {
+            match arg {
+                CallArg::Positional(e) | CallArg::Splat(e) | CallArg::KwSplat(e) => {
+                    arg_ops.push(self.lower_expr(e));
+                    arg_kw_names.push(None);
+                }
+                CallArg::Keyword(name, e) => {
+                    arg_ops.push(self.lower_expr(e));
+                    arg_kw_names.push(Some(name.clone()));
+                }
+            }
+        }
+
+        // Emit py-arg coercions
+        let zipped: Vec<(Operand, Option<String>, usize)> = arg_ops
+            .into_iter()
+            .zip(arg_kw_names.into_iter())
+            .enumerate()
+            .map(|(i, (op, kw))| (op, kw, i))
+            .collect();
+
+        let mut pos_ops: Vec<Operand> = Vec::new();
+        let mut kw_ops: Vec<Operand> = Vec::new();
+        for (op, kw_name, i) in zipped {
+            let arg_ty = args
+                .get(i)
+                .map(|a| match a {
+                    CallArg::Positional(e)
+                    | CallArg::Splat(e)
+                    | CallArg::KwSplat(e)
+                    | CallArg::Keyword(_, e) => self.get_type(e.id),
+                })
+                .unwrap_or(Type::Any);
+            if let Some(name) = kw_name {
+                let py_op = self.emit_to_py_arg(op, &arg_ty, expr.span);
+                kw_ops.push(Operand::Constant(Constant::Str(name)));
+                kw_ops.push(py_op);
+            } else {
+                pos_ops.push(self.emit_to_py_arg(op, &arg_ty, expr.span));
+            }
+        }
+
+        let args_list = self.new_local(Type::List(Box::new(Type::Any)), None, true);
+        self.push_statement(
+            StatementKind::Assign(
+                args_list,
+                Rvalue::Aggregate(AggregateKind::List, pos_ops),
+            ),
+            expr.span,
+        );
+
+        let func_op = if let ExprKind::Attr { obj, attr } = &callee.kind {
+            let obj_op = self.lower_expr_as_copy(obj);
+            let attr_local = self.new_local(Type::PyObject, None, true);
+            self.push_statement(
+                StatementKind::Assign(
+                    attr_local,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function(
+                            "__olive_py_getattr".to_string(),
+                        )),
+                        args: vec![obj_op, Operand::Constant(Constant::Str(attr.clone()))],
+                    },
+                ),
+                expr.span,
+            );
+            self.operand_for_local(attr_local)
+        } else {
+            self.lower_expr_as_copy(callee)
+        };
+
+        let result = self.new_local(Type::Any, None, true);
+        if kw_ops.is_empty() {
+            self.push_statement(
+                StatementKind::Assign(
+                    result,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function(
+                            "__olive_py_call_safe".to_string(),
+                        )),
+                        args: vec![func_op, Operand::Copy(args_list)],
+                    },
+                ),
+                expr.span,
+            );
+        } else {
+            let kwargs_list = self.new_local(Type::List(Box::new(Type::Any)), None, true);
+            self.push_statement(
+                StatementKind::Assign(
+                    kwargs_list,
+                    Rvalue::Aggregate(AggregateKind::List, kw_ops),
+                ),
+                expr.span,
+            );
+            self.push_statement(
+                StatementKind::Assign(
+                    result,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function(
+                            "__olive_py_call_kw_safe".to_string(),
+                        )),
+                        args: vec![func_op, Operand::Copy(args_list), Operand::Copy(kwargs_list)],
+                    },
+                ),
+                expr.span,
+            );
+        }
+
+        self.operand_for_local(result)
     }
 }

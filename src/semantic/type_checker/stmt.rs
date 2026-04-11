@@ -5,8 +5,6 @@ use crate::parser::{ParamKind, Stmt, StmtKind};
 
 fn ffi_type(t: Type) -> Type {
     match t {
-        // ABI-promote small integers to Int (C convention)
-        // U64 is 64-bit; preserve for unsigned semantics
         Type::I8 | Type::I16 | Type::I32 | Type::U8 | Type::U16 | Type::U32 => Type::Int,
         Type::Ref(inner) => Type::Ref(Box::new(ffi_type(*inner))),
         Type::MutRef(inner) => Type::MutRef(Box::new(ffi_type(*inner))),
@@ -200,11 +198,27 @@ impl TypeChecker {
                 for (i, s) in body.iter().enumerate() {
                     self.check_stmt(s);
                     if i == body.len() - 1
-                        && let StmtKind::ExprStmt(e) = &s.kind
-                        && let Some(last_ty) = self.expr_types.get(&e.id).cloned()
                         && let Some(expected) = self.current_return_type.clone()
                     {
-                        self.unify(&expected, &last_ty, s.span);
+                        self.check_tail_return(s, &expected);
+                    }
+                }
+
+                if let Some(expected) = self.current_return_type.clone() {
+                    let mut has_return = false;
+                    for s in body {
+                        if self.stmt_returns(s) {
+                            has_return = true;
+                            break;
+                        }
+                    }
+                    if !has_return && expected != Type::Null && expected != Type::Any {
+                        self.errors.push(super::error::SemanticError::TypeMismatch {
+                            expected: expected.to_string(),
+                            found: "no return statement".to_string(),
+                            line: stmt.span.line,
+                            col: stmt.span.col,
+                        });
                     }
                 }
 
@@ -482,7 +496,6 @@ impl TypeChecker {
                     .collect::<Vec<_>>();
                 self.define_type(name, Type::Enum(name.clone(), abstract_args.clone()), false);
 
-                // We need a temporary scope to resolve variant types
                 self.enter_scope();
                 for tp in type_params {
                     self.define_type(tp, Type::Param(tp.clone()), false);
@@ -498,7 +511,6 @@ impl TypeChecker {
                 }
                 self.leave_scope();
 
-                // Now define variants in the OUTER scope
                 let mut variant_names = Vec::new();
                 for (v_name, p_types) in variant_data {
                     variant_names.push(v_name.clone());

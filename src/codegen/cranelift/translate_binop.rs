@@ -175,23 +175,38 @@ impl<M: Module> CraneliftCodegen<M> {
                 builder.inst_results(inst)[0]
             }
             In | NotIn => {
-                let is_obj = if let Operand::Copy(loc) | Operand::Move(loc) = rhs {
+                let mut is_obj = false;
+                let mut is_str = false;
+                if let Operand::Copy(loc) | Operand::Move(loc) = rhs {
                     let mut ty = &func_mir.locals[loc.0].ty;
                     while let OliveType::Ref(inner) | OliveType::MutRef(inner) = ty {
                         ty = inner;
                     }
-                    matches!(ty, OliveType::Dict(_, _) | OliveType::Struct(_, _))
-                } else {
-                    false
-                };
-                let func_name = if is_obj {
+                    if matches!(ty, OliveType::Dict(_, _) | OliveType::Struct(_, _)) {
+                        is_obj = true;
+                    } else if matches!(ty, OliveType::Str) {
+                        is_str = true;
+                    }
+                } else if let Operand::Constant(Constant::Str(_)) = rhs {
+                    is_str = true;
+                }
+
+                let func_name = if is_str {
+                    "__olive_str_contains"
+                } else if is_obj {
                     "__olive_in_obj"
                 } else {
                     "__olive_in_list"
                 };
                 let in_id = func_ids.get(func_name).unwrap();
                 let local_func = module.declare_func_in_func(*in_id, builder.func);
-                let inst = builder.ins().call(local_func, &[l, r]);
+
+                let inst = if is_str {
+                    builder.ins().call(local_func, &[r, l])
+                } else {
+                    builder.ins().call(local_func, &[l, r])
+                };
+
                 let res = builder.inst_results(inst)[0];
                 if matches!(op, NotIn) {
                     let is_zero = builder.ins().icmp_imm(IntCC::Equal, res, 0);
