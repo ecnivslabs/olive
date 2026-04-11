@@ -248,7 +248,12 @@ impl<'a> MirBuilder<'a> {
                             *n = mangled_name;
                         }
                         self.lower_fn_def(&impl_stmt);
-                    } else if let StmtKind::Const { name: const_name, value, .. } = &s.kind {
+                    } else if let StmtKind::Const {
+                        name: const_name,
+                        value,
+                        ..
+                    } = &s.kind
+                    {
                         let mangled = format!("{}::{}", type_name, const_name);
                         let rval = self.lower_expr(value);
                         if let Operand::Constant(_) = &rval {
@@ -741,7 +746,12 @@ impl<'a> MirBuilder<'a> {
                             *n = mangled;
                         }
                         self.lower_fn_def(&impl_stmt);
-                    } else if let StmtKind::Const { name: const_name, value, .. } = &s.kind {
+                    } else if let StmtKind::Const {
+                        name: const_name,
+                        value,
+                        ..
+                    } = &s.kind
+                    {
                         let mangled = format!("{}::{}", type_name, const_name);
                         let rval = self.lower_expr(value);
                         if let Operand::Constant(_) = &rval {

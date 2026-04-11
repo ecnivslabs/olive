@@ -81,7 +81,10 @@ impl Resolver {
                             let mangled = format!("{}::{}", type_name, fn_name);
                             self.define_sym(&mangled, SymbolKind::Function, s.span);
                         }
-                        if let StmtKind::Const { name: const_name, .. } = &s.kind {
+                        if let StmtKind::Const {
+                            name: const_name, ..
+                        } = &s.kind
+                        {
                             let mangled = format!("{}::{}", type_name, const_name);
                             self.define_sym(&mangled, SymbolKind::Variable, s.span);
                         }

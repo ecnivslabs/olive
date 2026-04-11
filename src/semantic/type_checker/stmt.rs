@@ -213,11 +213,12 @@ impl TypeChecker {
                         }
                     }
                     if !has_return && expected != Type::Null && expected != Type::Any {
-                        self.errors.push(super::error::SemanticError::TypeMismatch {
-                            expected: expected.to_string(),
-                            found: "no return statement".to_string(),
-                            line: stmt.span.line,
-                            col: stmt.span.col,
+                        self.errors.push(SemanticError::Custom {
+                            msg: format!(
+                                "type mismatch: expected `{}`, found `no return statement`",
+                                expected
+                            ),
+                            span: stmt.span,
                         });
                     }
                 }
@@ -525,6 +526,68 @@ impl TypeChecker {
                 }
                 self.enum_variants.insert(name.clone(), variant_names);
             }
+        }
+    }
+}
+
+impl TypeChecker {
+    pub(super) fn check_tail_return(&mut self, stmt: &Stmt, expected: &Type) {
+        match &stmt.kind {
+            StmtKind::ExprStmt(expr) => {
+                if let Some(last_ty) = self.expr_types.get(&expr.id).cloned() {
+                    self.unify(expected, &last_ty, stmt.span);
+                }
+            }
+            StmtKind::If {
+                then_body,
+                elif_clauses,
+                else_body,
+                ..
+            } => {
+                if let Some(last) = then_body.last() {
+                    self.check_tail_return(last, expected);
+                }
+                for (_, body) in elif_clauses {
+                    if let Some(last) = body.last() {
+                        self.check_tail_return(last, expected);
+                    }
+                }
+                if let Some(body) = else_body
+                    && let Some(last) = body.last()
+                {
+                    self.check_tail_return(last, expected);
+                }
+            }
+            StmtKind::UnsafeBlock(body) => {
+                if let Some(last) = body.last() {
+                    self.check_tail_return(last, expected);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn stmt_returns(&self, stmt: &Stmt) -> bool {
+        match &stmt.kind {
+            StmtKind::Return(_) => true,
+            StmtKind::If {
+                then_body,
+                elif_clauses,
+                else_body,
+                ..
+            } => {
+                let then_ret = then_body.iter().any(|s| self.stmt_returns(s));
+                let elifs_ret = elif_clauses
+                    .iter()
+                    .all(|(_, body)| body.iter().any(|s| self.stmt_returns(s)));
+                let else_ret = else_body
+                    .as_ref()
+                    .is_some_and(|body| body.iter().any(|s| self.stmt_returns(s)));
+                then_ret && elifs_ret && else_ret
+            }
+            StmtKind::UnsafeBlock(body) => body.iter().any(|s| self.stmt_returns(s)),
+            StmtKind::ExprStmt(_) => true,
+            _ => false,
         }
     }
 }

@@ -105,7 +105,10 @@ fn load_config() -> Config {
         let config_path = current_dir.join("pit.toml");
         if config_path.exists() {
             if std::env::set_current_dir(&current_dir).is_err() {
-                eprintln!("error: could not set working directory to {}", current_dir.display());
+                eprintln!(
+                    "error: could not set working directory to {}",
+                    current_dir.display()
+                );
                 process::exit(1);
             }
             let content = fs::read_to_string("pit.toml").unwrap();

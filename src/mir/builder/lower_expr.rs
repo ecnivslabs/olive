@@ -268,29 +268,39 @@ impl<'a> MirBuilder<'a> {
 
             ExprKind::BinOp { left, op, right } => {
                 let r_ty = self.get_type(right.id).clone();
-                
-                if r_ty == Type::Str && matches!(op, crate::parser::BinOp::In | crate::parser::BinOp::NotIn) {
+
+                if r_ty == Type::Str
+                    && matches!(op, crate::parser::BinOp::In | crate::parser::BinOp::NotIn)
+                {
                     let haystack = self.lower_expr_as_copy(right);
                     let needle = self.lower_expr_as_copy(left);
-                    
+
                     let call_tmp = self.new_local(Type::Bool, None, false);
                     self.push_statement(
                         StatementKind::Assign(
                             call_tmp,
                             Rvalue::Call {
-                                func: Operand::Constant(Constant::Function("__olive_str_contains".to_string())),
+                                func: Operand::Constant(Constant::Function(
+                                    "__olive_str_contains".to_string(),
+                                )),
                                 args: vec![haystack, needle],
                             },
                         ),
                         expr.span,
                     );
-                    
+
                     if matches!(op, crate::parser::BinOp::In) {
                         return self.operand_for_local(call_tmp);
                     } else {
                         let not_tmp = self.new_tmp_for_expr(expr);
                         self.push_statement(
-                            StatementKind::Assign(not_tmp, Rvalue::UnaryOp(crate::parser::UnaryOp::Not, Operand::Copy(call_tmp))),
+                            StatementKind::Assign(
+                                not_tmp,
+                                Rvalue::UnaryOp(
+                                    crate::parser::UnaryOp::Not,
+                                    Operand::Copy(call_tmp),
+                                ),
+                            ),
                             expr.span,
                         );
                         return self.operand_for_local(not_tmp);
@@ -669,7 +679,6 @@ impl<'a> MirBuilder<'a> {
                 }
 
                 if let ExprKind::Identifier(name) = &callee.kind {
-
                     if let Some((enum_name, tag)) = self.enum_variants.get(name).cloned() {
                         let type_id = Self::enum_type_id(&enum_name);
                         let tmp = self.new_tmp_for_expr(expr);
@@ -1340,10 +1349,7 @@ impl<'a> MirBuilder<'a> {
 
         let args_list = self.new_local(Type::List(Box::new(Type::Any)), None, true);
         self.push_statement(
-            StatementKind::Assign(
-                args_list,
-                Rvalue::Aggregate(AggregateKind::List, pos_ops),
-            ),
+            StatementKind::Assign(args_list, Rvalue::Aggregate(AggregateKind::List, pos_ops)),
             expr.span,
         );
 
@@ -1384,10 +1390,7 @@ impl<'a> MirBuilder<'a> {
         } else {
             let kwargs_list = self.new_local(Type::List(Box::new(Type::Any)), None, true);
             self.push_statement(
-                StatementKind::Assign(
-                    kwargs_list,
-                    Rvalue::Aggregate(AggregateKind::List, kw_ops),
-                ),
+                StatementKind::Assign(kwargs_list, Rvalue::Aggregate(AggregateKind::List, kw_ops)),
                 expr.span,
             );
             self.push_statement(
@@ -1397,7 +1400,11 @@ impl<'a> MirBuilder<'a> {
                         func: Operand::Constant(Constant::Function(
                             "__olive_py_call_kw_safe".to_string(),
                         )),
-                        args: vec![func_op, Operand::Copy(args_list), Operand::Copy(kwargs_list)],
+                        args: vec![
+                            func_op,
+                            Operand::Copy(args_list),
+                            Operand::Copy(kwargs_list),
+                        ],
                     },
                 ),
                 expr.span,
