@@ -10,10 +10,19 @@ impl<'a> MirBuilder<'a> {
         self.lower_stmt_with_tail(stmt, false);
     }
 
+    pub(super) fn emit_defers(&mut self) {
+        let defers = std::mem::take(&mut self.defer_stack);
+        for expr in defers.iter().rev() {
+            self.lower_expr(expr);
+        }
+        self.defer_stack = defers;
+    }
+
     pub(super) fn lower_stmt_with_tail(&mut self, stmt: &Stmt, is_tail: bool) {
         if self.is_terminated() {
             return;
         }
+
 
         match &stmt.kind {
             StmtKind::Let {
@@ -47,6 +56,7 @@ impl<'a> MirBuilder<'a> {
                         expr.span,
                     );
                     if let Some(bb) = self.current_block {
+                        self.emit_defers();
                         self.terminate_block(bb, TerminatorKind::Return, expr.span);
                     }
                     self.current_block = Some(self.new_block());
@@ -104,6 +114,7 @@ impl<'a> MirBuilder<'a> {
                             stmt.span,
                         );
                     } else {
+                        self.emit_defers();
                         self.terminate_block(bb, TerminatorKind::Return, stmt.span);
                     }
                 }
@@ -119,11 +130,17 @@ impl<'a> MirBuilder<'a> {
                             stmt.span,
                         );
                     } else {
+                        self.emit_defers();
                         self.terminate_block(bb, TerminatorKind::Return, stmt.span);
                     }
                 }
                 self.current_block = Some(self.new_block());
             }
+
+            StmtKind::Defer(expr) => {
+                self.defer_stack.push(expr.clone());
+            }
+
 
             StmtKind::If {
                 condition,
@@ -710,11 +727,13 @@ impl<'a> MirBuilder<'a> {
                 }
 
                 if let Some(bb) = self.current_block {
+                    self.emit_defers();
                     self.terminate_block(bb, TerminatorKind::Return, Span::default());
                 }
             }
 
             self.finish_function();
+
 
             self.current_name = saved_name;
             self.current_locals = saved_locals;

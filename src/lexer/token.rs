@@ -39,7 +39,9 @@ pub enum TokenKind {
     Await,
     Case,
     Unsafe,
+    Defer,
     Null,
+
 
     Plus,
     Minus,

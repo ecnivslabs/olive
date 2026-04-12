@@ -91,10 +91,42 @@ impl<'a> MirBuilder<'a> {
                     }
 
                     self.current_block = Some(error_bb);
+                    
+                    let err_msg_tmp = self.new_local(Type::Str, None, false);
                     self.push_statement(
-                        StatementKind::Assign(Local(0), Rvalue::Use(result_op.clone())),
+                        StatementKind::Assign(
+                            err_msg_tmp,
+                            Rvalue::Call {
+                                func: Operand::Constant(Constant::Function("__olive_result_err_msg".to_string())),
+                                args: vec![result_op.clone()],
+                            },
+                        ),
                         expr.span,
                     );
+
+                    let err_struct_tmp = self.new_local(Type::Struct("Error".to_string(), vec![]), None, false);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            err_struct_tmp,
+                            Rvalue::Aggregate(crate::mir::AggregateKind::Dict, vec![]),
+                        ),
+                        expr.span,
+                    );
+
+                    self.push_statement(
+                        StatementKind::SetAttr(
+                            Operand::Copy(err_struct_tmp),
+                            "msg".to_string(),
+                            Operand::Copy(err_msg_tmp),
+                        ),
+                        expr.span,
+                    );
+
+                    self.push_statement(
+                        StatementKind::Assign(Local(0), Rvalue::Use(Operand::Copy(err_struct_tmp))),
+                        expr.span,
+                    );
+                    self.emit_defers();
                     self.terminate_block(error_bb, TerminatorKind::Return, expr.span);
 
                     self.current_block = Some(success_bb);
@@ -115,23 +147,72 @@ impl<'a> MirBuilder<'a> {
                     return Operand::Copy(payload_tmp);
                 }
 
-                let inner_op = self.lower_expr(inner);
-                let tag_tmp = self.new_local(Type::Int, None, false);
+                let inner_op = self.lower_expr_as_copy(inner);
+                let inner_ty = self.get_type(inner.id);
+
+                let is_error = |ty: &Type| -> bool {
+                    match ty {
+                        Type::Struct(name, _) | Type::Enum(name, _) => {
+                            name == "Error" || name.ends_with("Error")
+                        }
+                        _ => false,
+                    }
+                };
+
+                let mut error_type_id = -1;
+                if let Type::Union(variants) = &inner_ty {
+                    for v in variants {
+                        if is_error(v) {
+                            match v {
+                                Type::Struct(name, _) => { error_type_id = Self::struct_type_id(name) as i64; break; }
+                                Type::Enum(name, _) => { error_type_id = Self::enum_type_id(name) as i64; break; }
+                                _ => {}
+                            }
+                        }
+                    }
+                } else if is_error(&inner_ty) {
+                    match &inner_ty {
+                        Type::Struct(name, _) => { error_type_id = Self::struct_type_id(name) as i64; }
+                        Type::Enum(name, _) => { error_type_id = Self::enum_type_id(name) as i64; }
+                        _ => {}
+                    }
+                } else if inner_ty == Type::PyObject {
+                    error_type_id = Self::struct_type_id(&"Error".to_string()) as i64;
+                }
+
+                if error_type_id == -1 {
+                    return inner_op;
+                }
+
+                let type_id_tmp = self.new_local(Type::Int, None, false);
                 self.push_statement(
-                    StatementKind::Assign(tag_tmp, Rvalue::GetTag(inner_op.clone())),
+                    StatementKind::Assign(type_id_tmp, Rvalue::GetTypeId(inner_op.clone())),
                     expr.span,
                 );
 
                 let success_bb = self.new_block();
                 let error_bb = self.new_block();
 
+                let is_err_tmp = self.new_local(Type::Bool, None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        is_err_tmp,
+                        Rvalue::BinaryOp(
+                            crate::parser::BinOp::Eq,
+                            Operand::Copy(type_id_tmp),
+                            Operand::Constant(Constant::Int(error_type_id)),
+                        ),
+                    ),
+                    expr.span,
+                );
+
                 if let Some(bb) = self.current_block {
                     self.terminate_block(
                         bb,
                         TerminatorKind::SwitchInt {
-                            discr: Operand::Copy(tag_tmp),
-                            targets: vec![(0, success_bb)],
-                            otherwise: error_bb,
+                            discr: Operand::Copy(is_err_tmp),
+                            targets: vec![(1, error_bb)],
+                            otherwise: success_bb,
                         },
                         expr.span,
                     );
@@ -142,24 +223,13 @@ impl<'a> MirBuilder<'a> {
                     StatementKind::Assign(Local(0), Rvalue::Use(inner_op.clone())),
                     expr.span,
                 );
+                self.emit_defers();
                 self.terminate_block(error_bb, TerminatorKind::Return, expr.span);
 
                 self.current_block = Some(success_bb);
-                let payload_tmp = self.new_local(Type::Any, None, false);
-                self.push_statement(
-                    StatementKind::Assign(
-                        payload_tmp,
-                        Rvalue::Call {
-                            func: Operand::Constant(Constant::Function(
-                                "__olive_enum_get".to_string(),
-                            )),
-                            args: vec![inner_op, Operand::Constant(Constant::Int(0))],
-                        },
-                    ),
-                    expr.span,
-                );
 
-                Operand::Copy(payload_tmp)
+                
+                inner_op
             }
 
             ExprKind::Await(inner) => {
@@ -650,7 +720,6 @@ impl<'a> MirBuilder<'a> {
                         );
                     }
 
-                    // true: result = a
                     self.current_block = Some(true_bb);
                     self.push_statement(
                         StatementKind::Assign(result_local, Rvalue::Use(a_op)),
@@ -662,7 +731,6 @@ impl<'a> MirBuilder<'a> {
                         expr.span,
                     );
 
-                    // false: result = b
                     self.current_block = Some(false_bb);
                     self.push_statement(
                         StatementKind::Assign(result_local, Rvalue::Use(b_op)),
@@ -848,7 +916,121 @@ impl<'a> MirBuilder<'a> {
                                 return self.operand_for_local(tmp);
                             }
 
-                            let callee_op = Operand::Constant(Constant::Function(mangled));
+                            let mangled_str = mangled.clone();
+                            let callee_op = Operand::Constant(Constant::Function(mangled_str.clone()));
+                            let call_ret_ty = self.get_type(expr.id);
+
+                            if self.c_ffi_fns.contains(&mangled_str) {
+                                if let Type::Struct(ref sname, ref targs) = call_ret_ty.clone() {
+                                    if sname == "Result" && !targs.is_empty() {
+                                        let inner_ok_ty = targs[0].clone();
+
+                                        let raw_local = self.new_local(inner_ok_ty.clone(), None, false);
+                                        self.push_statement(
+                                            StatementKind::Assign(
+                                                raw_local,
+                                                Rvalue::Call { func: callee_op, args: arg_ops },
+                                            ),
+                                            expr.span,
+                                        );
+
+                                        let is_err_local = self.new_local(Type::Bool, None, false);
+                                        match &inner_ok_ty {
+                                            Type::Int => {
+                                                self.push_statement(
+                                                    StatementKind::Assign(
+                                                        is_err_local,
+                                                        Rvalue::BinaryOp(
+                                                            crate::parser::BinOp::Eq,
+                                                            Operand::Copy(raw_local),
+                                                            Operand::Constant(Constant::Int(-1)),
+                                                        ),
+                                                    ),
+                                                    expr.span,
+                                                );
+                                            }
+                                            Type::Ref(_) | Type::MutRef(_) | Type::Ptr(_) => {
+                                                self.push_statement(
+                                                    StatementKind::Assign(
+                                                        is_err_local,
+                                                        Rvalue::BinaryOp(
+                                                            crate::parser::BinOp::Eq,
+                                                            Operand::Copy(raw_local),
+                                                            Operand::Constant(Constant::Int(0)),
+                                                        ),
+                                                    ),
+                                                    expr.span,
+                                                );
+                                            }
+                                            _ => {
+                                                self.push_statement(
+                                                    StatementKind::Assign(
+                                                        is_err_local,
+                                                        Rvalue::Use(Operand::Constant(Constant::Bool(false))),
+                                                    ),
+                                                    expr.span,
+                                                );
+                                            }
+                                        }
+
+                                        let ok_bb  = self.new_block();
+                                        let err_bb = self.new_block();
+                                        let exit_bb = self.new_block();
+
+                                        if let Some(bb) = self.current_block {
+                                            self.terminate_block(
+                                                bb,
+                                                TerminatorKind::SwitchInt {
+                                                    discr: Operand::Copy(is_err_local),
+                                                    targets: vec![(1, err_bb)],
+                                                    otherwise: ok_bb,
+                                                },
+                                                expr.span,
+                                            );
+                                        }
+
+                                        let result_local = self.new_tmp_for_expr(expr);
+
+                                        self.current_block = Some(ok_bb);
+                                        self.push_statement(
+                                            StatementKind::Assign(
+                                                result_local,
+                                                Rvalue::Call {
+                                                    func: Operand::Constant(Constant::Function("__olive_result_ok".to_string())),
+                                                    args: vec![Operand::Copy(raw_local)],
+                                                },
+                                            ),
+                                            expr.span,
+                                        );
+                                        self.terminate_block(ok_bb, TerminatorKind::Goto { target: exit_bb }, expr.span);
+
+                                        self.current_block = Some(err_bb);
+                                        let err_str_local = self.new_local(Type::Str, None, false);
+                                        self.push_statement(
+                                            StatementKind::Assign(
+                                                err_str_local,
+                                                Rvalue::Use(Operand::Constant(Constant::Str("FFI call failed".to_string()))),
+                                            ),
+                                            expr.span,
+                                        );
+                                        self.push_statement(
+                                            StatementKind::Assign(
+                                                result_local,
+                                                Rvalue::Call {
+                                                    func: Operand::Constant(Constant::Function("__olive_result_err".to_string())),
+                                                    args: vec![Operand::Copy(err_str_local)],
+                                                },
+                                            ),
+                                            expr.span,
+                                        );
+                                        self.terminate_block(err_bb, TerminatorKind::Goto { target: exit_bb }, expr.span);
+
+                                        self.current_block = Some(exit_bb);
+                                        return self.operand_for_local(result_local);
+                                    }
+                                }
+                            }
+
                             let tmp = self.new_tmp_for_expr(expr);
                             self.push_statement(
                                 StatementKind::Assign(
@@ -959,9 +1141,21 @@ impl<'a> MirBuilder<'a> {
                 let mut func = self.lower_expr(callee);
                 let mut call_fn_name = if let ExprKind::Identifier(name) = &callee.kind {
                     Some(name.clone())
+                } else if let ExprKind::Attr { obj, attr } = &callee.kind {
+                    if let ExprKind::Identifier(obj_name) = &obj.kind {
+                        Some(format!("{}::{}", obj_name, attr))
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 };
+
+                if call_fn_name.is_none() {
+                    if let Operand::Constant(Constant::Function(name)) = &func {
+                        call_fn_name = Some(name.clone());
+                    }
+                }
 
                 if let Some(fn_name) = &call_fn_name {
                     let callee_ty = self.get_type(callee.id);
@@ -975,15 +1169,39 @@ impl<'a> MirBuilder<'a> {
                     }
                 }
 
-                let tmp = self.new_tmp_for_expr(expr);
+                let ret_ty = self.get_type(expr.id);
+                let mut is_ffi_result = false;
+                let mut inner_ok_ty = Type::Any;
+
+                if let Some(fn_name) = &call_fn_name {
+                    if self.c_ffi_fns.contains(fn_name) {
+                        if let Type::Struct(struct_name, type_args) = &ret_ty {
+                            if struct_name == "Result" && type_args.len() >= 1 {
+                                is_ffi_result = true;
+                                inner_ok_ty = type_args[0].clone();
+                            }
+                        }
+                    }
+                }
+
+
+
+
+                let call_result_local = if is_ffi_result {
+                    self.new_local(inner_ok_ty.clone(), None, false)
+                } else {
+                    self.new_tmp_for_expr(expr)
+                };
+
                 let final_args = if let Some(name) = &call_fn_name {
                     self.pack_fn_call_args(name, &arg_ops, &arg_kw_names, expr.span)
                 } else {
                     arg_ops
                 };
+
                 self.push_statement(
                     StatementKind::Assign(
-                        tmp,
+                        call_result_local,
                         Rvalue::Call {
                             func,
                             args: final_args,
@@ -991,7 +1209,105 @@ impl<'a> MirBuilder<'a> {
                     ),
                     expr.span,
                 );
-                self.operand_for_local(tmp)
+
+                if is_ffi_result {
+                    let is_err_tmp = self.new_local(Type::Bool, None, false);
+                    match &inner_ok_ty {
+                        Type::Int => {
+                            self.push_statement(
+                                StatementKind::Assign(
+                                    is_err_tmp,
+                                    Rvalue::BinaryOp(
+                                        crate::parser::BinOp::Eq,
+                                        Operand::Copy(call_result_local),
+                                        Operand::Constant(Constant::Int(-1)),
+                                    ),
+                                ),
+                                expr.span,
+                            );
+                        }
+                        Type::Ref(_) | Type::MutRef(_) | Type::Ptr(_) => {
+                            self.push_statement(
+                                StatementKind::Assign(
+                                    is_err_tmp,
+                                    Rvalue::BinaryOp(
+                                        crate::parser::BinOp::Eq,
+                                        Operand::Copy(call_result_local),
+                                        Operand::Constant(Constant::Int(0)),
+                                    ),
+                                ),
+                                expr.span,
+                            );
+                        }
+                        _ => {
+                            self.push_statement(
+                                StatementKind::Assign(
+                                    is_err_tmp,
+                                    Rvalue::Use(Operand::Constant(Constant::Bool(false))),
+                                ),
+                                expr.span,
+                            );
+                        }
+                    }
+
+                    let ok_bb = self.new_block();
+                    let err_bb = self.new_block();
+                    let exit_bb = self.new_block();
+
+                    if let Some(bb) = self.current_block {
+                        self.terminate_block(
+                            bb,
+                            TerminatorKind::SwitchInt {
+                                discr: Operand::Copy(is_err_tmp),
+                                targets: vec![(1, err_bb)],
+                                otherwise: ok_bb,
+                            },
+                            expr.span,
+                        );
+                    }
+
+                    let result_tmp = self.new_tmp_for_expr(expr);
+
+                    self.current_block = Some(ok_bb);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            result_tmp,
+                            Rvalue::Call {
+                                func: Operand::Constant(Constant::Function("__olive_result_ok".to_string())),
+                                args: vec![Operand::Copy(call_result_local)],
+                            },
+                        ),
+                        expr.span,
+                    );
+                    self.terminate_block(ok_bb, TerminatorKind::Goto { target: exit_bb }, expr.span);
+
+                    self.current_block = Some(err_bb);
+                    let err_str_tmp = self.new_local(Type::Str, None, false);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            err_str_tmp,
+                            Rvalue::Use(Operand::Constant(Constant::Str("FFI call failed".to_string()))),
+                        ),
+                        expr.span,
+                    );
+                    self.push_statement(
+                        StatementKind::Assign(
+                            result_tmp,
+                            Rvalue::Call {
+                                func: Operand::Constant(Constant::Function("__olive_result_err".to_string())),
+                                args: vec![Operand::Copy(err_str_tmp)],
+                            },
+                        ),
+                        expr.span,
+                    );
+                    self.terminate_block(err_bb, TerminatorKind::Goto { target: exit_bb }, expr.span);
+
+                    self.current_block = Some(exit_bb);
+                    return self.operand_for_local(result_tmp);
+                }
+
+                self.operand_for_local(call_result_local)
+
             }
 
             ExprKind::List(elems) => {
@@ -1060,7 +1376,6 @@ impl<'a> MirBuilder<'a> {
                     }
                 }
 
-                // PyObject attribute read: emit __olive_py_getattr
                 let obj_ty = self.get_type(obj.id);
                 if obj_ty == Type::PyObject {
                     let obj_op = self.lower_expr_as_copy(obj);
@@ -1248,6 +1563,13 @@ impl<'a> MirBuilder<'a> {
         use std::hash::{Hash, Hasher};
         let mut h = rustc_hash::FxHasher::default();
         enum_name.hash(&mut h);
+        (h.finish() & 0x7FFF_FFFF_FFFF_FFFF) as i64
+    }
+
+    pub(super) fn struct_type_id(struct_name: &str) -> i64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = rustc_hash::FxHasher::default();
+        struct_name.hash(&mut h);
         (h.finish() & 0x7FFF_FFFF_FFFF_FFFF) as i64
     }
 

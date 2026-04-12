@@ -449,8 +449,12 @@ mod tests {
         r.resolve_program(&prog);
         let mut tc = TypeChecker::new();
         tc.check_program(&prog);
-        let mut builder =
-            MirBuilder::new(&tc.expr_types, &tc.type_env[0], tc.struct_fields.clone());
+        let mut builder = MirBuilder::new(
+            &tc.expr_types,
+            &tc.type_env[0],
+            tc.struct_fields.clone(),
+            HashSet::default(),
+        );
         builder.build_program(&prog);
         let mut all_errors = Vec::new();
         for func in &builder.functions {

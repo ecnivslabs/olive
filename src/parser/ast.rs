@@ -382,7 +382,9 @@ pub enum StmtKind {
     Continue,
     ExprStmt(Expr),
     UnsafeBlock(Vec<Stmt>),
+    Defer(Expr),
 }
+
 
 #[derive(Debug, Clone)]
 pub struct Program {

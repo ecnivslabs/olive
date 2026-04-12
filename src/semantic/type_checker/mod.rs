@@ -25,9 +25,11 @@ pub struct TypeChecker {
     pub(super) type_traits: HashSet<(String, String)>,
     pub(super) c_ffi_structs: HashSet<String>,
     pub(super) unsafe_depth: usize,
-    pub(super) ffi_fns: HashSet<String>,
+    pub ffi_fns: HashSet<String>,
+    pub c_ffi_fns: HashSet<String>,
     pub(super) var_counter: usize,
 }
+
 
 impl TypeChecker {
     pub fn new() -> Self {
@@ -264,9 +266,23 @@ impl TypeChecker {
             ),
         ];
 
+        let mut traits = HashMap::default();
+        traits.insert("Error".to_string(), vec![]);
+        let mut type_traits = HashSet::default();
+        type_traits.insert(("Error".to_string(), "Error".to_string()));
+
         for (name, ty) in builtins {
             global_env.insert(name.to_string(), ty);
         }
+
+        global_env.insert("Error".to_string(), Type::Struct("Error".to_string(), vec![]));
+        
+        let mut struct_fields = HashMap::default();
+        struct_fields.insert("Error".to_string(), vec!["msg".to_string(), "code".to_string()]);
+        
+        let mut field_types = HashMap::default();
+        field_types.insert(("Error".to_string(), "msg".to_string()), Type::Str);
+        field_types.insert(("Error".to_string(), "code".to_string()), Type::Int);
 
         Self {
             substitutions: HashMap::default(),
@@ -281,13 +297,15 @@ impl TypeChecker {
             async_depth: 0,
             vararg_fns: HashSet::default(),
             struct_fields: HashMap::default(),
-            traits: HashMap::default(),
+            traits,
             type_traits: HashSet::default(),
             c_ffi_structs: HashSet::default(),
             unsafe_depth: 0,
             ffi_fns: HashSet::default(),
+            c_ffi_fns: HashSet::default(),
             var_counter: 0,
         }
+
     }
 
     pub(super) fn fresh_var(&mut self) -> Type {

@@ -25,7 +25,9 @@ impl Parser {
             TokenKind::Const => self.parse_const(),
             TokenKind::At | TokenKind::Hash => self.parse_decorated(),
             TokenKind::Unsafe => self.parse_unsafe_stmt(),
+            TokenKind::Defer => self.parse_defer(),
             TokenKind::Pass => {
+
                 let s = self.peek().clone();
                 self.advance();
                 self.eat_stmt_end()?;
@@ -179,6 +181,15 @@ impl Parser {
         } else {
             Err(self.err_at(&self.tokens[self.pos], "expected ':' after 'unsafe'"))
         }
+    }
+
+    pub(crate) fn parse_defer(&mut self) -> ParseResult<Stmt> {
+        let start = self.peek().clone();
+        self.advance();
+        let expr = self.parse_expr()?;
+        self.eat_stmt_end()?;
+        let span = self.span_from(&start);
+        Ok(Stmt::new(StmtKind::Defer(expr), span))
     }
 
     pub(crate) fn parse_if(&mut self) -> ParseResult<Stmt> {

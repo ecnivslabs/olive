@@ -298,8 +298,12 @@ impl Resolver {
 
             StmtKind::Pass | StmtKind::Break | StmtKind::Continue => {}
             StmtKind::Enum { .. } => {}
+            StmtKind::Defer(expr) => {
+                self.resolve_expr(expr);
+            }
         }
     }
+
 
     fn resolve_block(&mut self, stmts: &[Stmt]) {
         self.table.push(ScopeKind::Block);

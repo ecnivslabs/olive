@@ -440,6 +440,23 @@ fn format_list_elem(val: i64) -> String {
                 }
                 return "<PyObject>".to_string();
             }
+            KIND_ENUM => {
+                let e = unsafe { &*(val as *const OliveEnum) };
+                let mut parts = Vec::with_capacity(e.payload_len);
+                for i in 0..e.payload_len {
+                    let pval = unsafe { *e.payload_ptr.add(i) };
+                    parts.push(format_list_elem(pval));
+                }
+                return format!("Enum(tag={}, payload=[{}])", e.tag, parts.join(", "));
+            }
+            crate::result::KIND_RESULT => {
+                let res = unsafe { &*(val as *const crate::result::OliveResult) };
+                if res.tag == 1 {
+                    return format!("Ok({})", format_list_elem(res.payload));
+                } else {
+                    return format!("Err({})", format_list_elem(res.payload));
+                }
+            }
             _ => {}
         }
     }
@@ -451,9 +468,25 @@ fn format_list_elem(val: i64) -> String {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn olive_print_any(val: i64) -> i64 {
+    println!("{}", format_list_elem(val));
+    0
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn olive_print_obj(ptr: i64) -> i64 {
     if ptr == 0 {
         println!("{{}}");
+        return 0;
+    }
+    let kind = unsafe { *(ptr as *const i64) };
+    if kind == crate::result::KIND_RESULT {
+        let res = unsafe { &*(ptr as *const crate::result::OliveResult) };
+        if res.tag == 1 {
+            println!("Ok({})", format_list_elem(res.payload));
+        } else {
+            println!("Err({})", format_list_elem(res.payload));
+        }
         return 0;
     }
     let m = unsafe { &*(ptr as *const OliveObj) };
@@ -463,7 +496,7 @@ pub extern "C" fn olive_print_obj(ptr: i64) -> i64 {
             print!(", ");
         }
         let k_str = olive_str_as_str(k.0).unwrap_or("");
-        print!("'{}': {}", k_str, v);
+        print!("'{}': {}", k_str, format_list_elem(v));
     }
     println!("}}");
     0

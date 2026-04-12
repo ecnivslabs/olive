@@ -9,9 +9,10 @@ use crate::mir::AggregateKind;
 use crate::parser::{Expr, Param, ParamKind, Program, StmtKind};
 use crate::semantic::types::Type;
 use crate::span::Span;
-use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 #[derive(Debug, Clone)]
+
 pub(super) struct FnMeta {
     pub(super) param_names: Vec<String>,
     pub(super) vararg_idx: Option<usize>,
@@ -43,6 +44,8 @@ pub struct MirBuilder<'a> {
     pub(super) current_is_async: bool,
     pub(super) fn_meta: HashMap<String, FnMeta>,
     pub(super) generic_fns: HashMap<String, crate::parser::Stmt>,
+    pub(super) defer_stack: Vec<crate::parser::Expr>,
+    pub c_ffi_fns: HashSet<String>,
 }
 
 impl<'a> MirBuilder<'a> {
@@ -50,6 +53,7 @@ impl<'a> MirBuilder<'a> {
         expr_types: &'a HashMap<usize, Type>,
         global_types: &'a HashMap<String, Type>,
         struct_fields: HashMap<String, Vec<String>>,
+        c_ffi_fns: HashSet<String>,
     ) -> Self {
         Self {
             functions: Vec::new(),
@@ -70,8 +74,13 @@ impl<'a> MirBuilder<'a> {
             current_is_async: false,
             fn_meta: HashMap::default(),
             generic_fns: HashMap::default(),
+            defer_stack: Vec::new(),
+            c_ffi_fns,
         }
     }
+
+
+
 
     pub fn build_program(&mut self, program: &Program) {
         for stmt in &program.stmts {
@@ -159,11 +168,13 @@ impl<'a> MirBuilder<'a> {
         self.current_blocks.clear();
         self.var_map.clear();
         self.loop_stack.clear();
+        self.defer_stack.clear();
         self.current_arg_count = arg_count;
         self.enter_scope();
 
         let start_bb = self.new_block();
         self.current_block = Some(start_bb);
+
 
         let default_val = match ret_ty {
             Type::Float => Operand::Constant(Constant::Float(0.0f64.to_bits())),
@@ -465,8 +476,12 @@ mod tests {
         r.resolve_program(&prog);
         let mut tc = TypeChecker::new();
         tc.check_program(&prog);
-        let mut builder =
-            MirBuilder::new(&tc.expr_types, &tc.type_env[0], tc.struct_fields.clone());
+        let mut builder = MirBuilder::new(
+            &tc.expr_types,
+            &tc.type_env[0],
+            tc.struct_fields.clone(),
+            HashSet::default(),
+        );
         builder.build_program(&prog);
         (builder.functions, builder.struct_fields)
     }

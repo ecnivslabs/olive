@@ -42,6 +42,9 @@ pub(super) fn collect_needed_imports(
                                 OliveType::PyObject => {
                                     needed.insert("__olive_py_decref");
                                 }
+                                OliveType::Union(_) | OliveType::Any => {
+                                    needed.insert("__olive_free_any");
+                                }
                                 _ => {
                                     needed.insert("__olive_free");
                                 }
@@ -166,6 +169,8 @@ pub(super) fn resolve_builtin_import(
             "__olive_print_list" => Some("__olive_print_list"),
             "__olive_print_list_float" => Some("__olive_print_list_float"),
             "__olive_print_obj" => Some("__olive_print_obj"),
+            "__olive_print_enum" => Some("__olive_print_enum"),
+            "__olive_print_any" => Some("__olive_print_any"),
             "__olive_str" => Some("__olive_str"),
             "__olive_int" => Some("__olive_int"),
             "__olive_bool" => Some("__olive_bool"),
@@ -565,6 +570,8 @@ pub(super) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
             OliveType::List(_) | OliveType::Tuple(_) | OliveType::Set(_) => {
                 Some("__olive_print_list")
             }
+            OliveType::Enum(_, _) => Some("__olive_print_enum"),
+            OliveType::Union(_) | OliveType::Any => Some("__olive_print_any"),
             OliveType::Dict(_, _) | OliveType::Struct(_, _) => Some("__olive_print_obj"),
             _ => Some("__olive_print_int"),
         },

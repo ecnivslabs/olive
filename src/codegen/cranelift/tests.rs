@@ -15,8 +15,12 @@ mod codegen_tests {
         let mut tc = TypeChecker::new();
         tc.check_program(&prog);
         assert!(tc.errors.is_empty(), "type errors: {:?}", tc.errors);
-        let mut builder =
-            MirBuilder::new(&tc.expr_types, &tc.type_env[0], tc.struct_fields.clone());
+        let mut builder = MirBuilder::new(
+            &tc.expr_types,
+            &tc.type_env[0],
+            tc.struct_fields.clone(),
+            rustc_hash::FxHashSet::default(),
+        );
         builder.build_program(&prog);
         let opt = Optimizer::new();
         opt.run(&mut builder.functions);

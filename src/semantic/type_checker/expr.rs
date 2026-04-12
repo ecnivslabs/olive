@@ -501,13 +501,58 @@ impl TypeChecker {
 
             ExprKind::Try(inner) => {
                 let inner_ty = self.check_expr(inner);
-                if let Type::Union(variants) = &inner_ty
-                    && !variants.is_empty()
-                    && let Type::Enum(_, _) = &variants[0]
-                {
-                    return variants[0].clone();
+                let inner_ty = self.apply_subst(inner_ty);
+
+                let is_error = |ty: &Type| -> bool {
+                    match ty {
+                        Type::Struct(name, _) | Type::Enum(name, _) => {
+                            name == "Error" || name.ends_with("Error") || self.type_traits.contains(&(name.clone(), "Error".to_string()))
+                        }
+                        _ => false,
+                    }
+                };
+
+                let (success_types, error_types): (Vec<Type>, Vec<Type>) = match &inner_ty {
+                    Type::Union(variants) => {
+                        variants.iter().cloned().partition(|ty| !is_error(ty))
+                    }
+                    other => {
+                        if is_error(other) {
+                            (vec![], vec![other.clone()])
+                        } else {
+                            (vec![other.clone()], vec![])
+                        }
+                    }
+                };
+
+                if let Some(expected) = self.current_return_type.clone() {
+                    let expected_resolved = self.apply_subst(expected);
+                    let mut expected_variants = Vec::new();
+                    match &expected_resolved {
+                        Type::Union(v) => expected_variants.extend(v.clone()),
+                        Type::Any => {}, 
+                        other => expected_variants.push(other.clone()),
+                    }
+                    
+                    if expected_resolved != Type::Any {
+                        for err_ty in &error_types {
+                            if !expected_variants.contains(err_ty) {
+                                self.errors.push(super::super::error::SemanticError::Custom {
+                                    msg: format!("cannot propagate error `{}`, function returns `{}`", err_ty, expected_resolved),
+                                    span: expr.span,
+                                });
+                            }
+                        }
+                    }
                 }
-                inner_ty
+
+                if success_types.is_empty() {
+                    Type::Never
+                } else if success_types.len() == 1 {
+                    success_types[0].clone()
+                } else {
+                    Type::Union(success_types)
+                }
             }
 
             ExprKind::Await(inner) => {

@@ -79,7 +79,10 @@ pub fn run_pipeline(filename: &str) -> Result<PipelineOutput, ()> {
         &type_checker.expr_types,
         &type_checker.type_env[0],
         type_checker.struct_fields.clone(),
+        type_checker.c_ffi_fns.clone(),
     );
+
+
     mir_builder.build_program(&program);
     let mir_duration = mir_start.elapsed();
 

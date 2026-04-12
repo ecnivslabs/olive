@@ -433,6 +433,7 @@ impl TypeChecker {
                     let fn_type = Type::Fn(param_types, Box::new(ret_type), vec![]);
                     let mangled = format!("{}::{}", alias, sig.name);
                     self.define_type(&mangled, fn_type, false);
+                    self.c_ffi_fns.insert(mangled.clone());
                     let is_safe = *block_safe || sig.decorators.iter().any(|d| d.name == "safe");
                     if !is_safe {
                         self.ffi_fns.insert(mangled.clone());
@@ -440,6 +441,7 @@ impl TypeChecker {
                     if sig.is_vararg {
                         self.vararg_fns.insert(mangled);
                     }
+
                 }
                 for s in structs {
                     let type_name = format!("{}::{}", alias, s.name);
@@ -480,6 +482,12 @@ impl TypeChecker {
             | StmtKind::Continue
             | StmtKind::Import { .. }
             | StmtKind::FromImport { .. } => {}
+
+            StmtKind::Defer(expr) => {
+                self.check_expr(expr);
+            }
+
+
 
             StmtKind::PyImport { alias, .. } => {
                 self.define_type(alias, Type::PyObject, false);

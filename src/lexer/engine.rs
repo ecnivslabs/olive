@@ -449,7 +449,9 @@ impl Lexer {
             "await" => TokenKind::Await,
             "case" => TokenKind::Case,
             "unsafe" => TokenKind::Unsafe,
+            "defer" => TokenKind::Defer,
             "null" => TokenKind::Null,
+
             "_" => TokenKind::Underscore,
             _ => TokenKind::Identifier,
         };
