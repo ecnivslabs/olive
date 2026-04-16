@@ -364,8 +364,19 @@ pub enum StmtKind {
         value: Expr,
         is_mut: bool,
     },
+    MultiLet {
+        names: Vec<String>,
+        type_ann: Option<TypeExpr>,
+        value: Expr,
+        is_mut: bool,
+    },
     Const {
         name: String,
+        type_ann: Option<TypeExpr>,
+        value: Expr,
+    },
+    MultiConst {
+        names: Vec<String>,
         type_ann: Option<TypeExpr>,
         value: Expr,
     },
@@ -385,7 +396,6 @@ pub enum StmtKind {
     UnsafeBlock(Vec<Stmt>),
     Defer(Expr),
 }
-
 
 #[derive(Debug, Clone)]
 pub struct Program {

@@ -27,7 +27,6 @@ impl Parser {
             TokenKind::Unsafe => self.parse_unsafe_stmt(),
             TokenKind::Defer => self.parse_defer(),
             TokenKind::Pass => {
-
                 let s = self.peek().clone();
                 self.advance();
                 self.eat_stmt_end()?;
@@ -510,7 +509,13 @@ impl Parser {
             self.advance();
             is_mut = true;
         }
-        let name = self.expect(TokenKind::Identifier)?.value;
+
+        let mut names = vec![self.expect(TokenKind::Identifier)?.value];
+        while self.peek().kind == TokenKind::Comma {
+            self.advance();
+            names.push(self.expect(TokenKind::Identifier)?.value);
+        }
+
         let type_ann = if self.peek().kind == TokenKind::Colon {
             self.advance();
             Some(self.parse_type_expr()?)
@@ -518,24 +523,47 @@ impl Parser {
             None
         };
         self.expect(TokenKind::Equal)?;
-        let value = self.parse_expr()?;
+        let value = if names.len() > 1 {
+            self.parse_expr_list()?
+        } else {
+            self.parse_expr()?
+        };
         self.eat_stmt_end()?;
         let span = self.span_from(&start);
-        Ok(Stmt::new(
-            StmtKind::Let {
-                name,
-                type_ann,
-                value,
-                is_mut,
-            },
-            span,
-        ))
+
+        if names.len() == 1 {
+            Ok(Stmt::new(
+                StmtKind::Let {
+                    name: names.into_iter().next().unwrap(),
+                    type_ann,
+                    value,
+                    is_mut,
+                },
+                span,
+            ))
+        } else {
+            Ok(Stmt::new(
+                StmtKind::MultiLet {
+                    names,
+                    type_ann,
+                    value,
+                    is_mut,
+                },
+                span,
+            ))
+        }
     }
 
     pub(crate) fn parse_const(&mut self) -> ParseResult<Stmt> {
         let start = self.peek().clone();
         self.expect(TokenKind::Const)?;
-        let name = self.expect(TokenKind::Identifier)?.value;
+
+        let mut names = vec![self.expect(TokenKind::Identifier)?.value];
+        while self.peek().kind == TokenKind::Comma {
+            self.advance();
+            names.push(self.expect(TokenKind::Identifier)?.value);
+        }
+
         let type_ann = if self.peek().kind == TokenKind::Colon {
             self.advance();
             Some(self.parse_type_expr()?)
@@ -543,17 +571,33 @@ impl Parser {
             None
         };
         self.expect(TokenKind::Equal)?;
-        let value = self.parse_expr()?;
+        let value = if names.len() > 1 {
+            self.parse_expr_list()?
+        } else {
+            self.parse_expr()?
+        };
         self.eat_stmt_end()?;
         let span = self.span_from(&start);
-        Ok(Stmt::new(
-            StmtKind::Const {
-                name,
-                type_ann,
-                value,
-            },
-            span,
-        ))
+
+        if names.len() == 1 {
+            Ok(Stmt::new(
+                StmtKind::Const {
+                    name: names.into_iter().next().unwrap(),
+                    type_ann,
+                    value,
+                },
+                span,
+            ))
+        } else {
+            Ok(Stmt::new(
+                StmtKind::MultiConst {
+                    names,
+                    type_ann,
+                    value,
+                },
+                span,
+            ))
+        }
     }
 
     pub(crate) fn parse_expr_or_assign(&mut self) -> ParseResult<Stmt> {

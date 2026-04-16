@@ -122,9 +122,23 @@ impl Resolver {
                 self.define_sym(name, SymbolKind::Variable, stmt.span);
             }
 
+            StmtKind::MultiLet { names, value, .. } => {
+                self.resolve_expr(value);
+                for name in names {
+                    self.define_sym(name, SymbolKind::Variable, stmt.span);
+                }
+            }
+
             StmtKind::Const { name, value, .. } => {
                 self.resolve_expr(value);
                 self.define_sym(name, SymbolKind::Variable, stmt.span);
+            }
+
+            StmtKind::MultiConst { names, value, .. } => {
+                self.resolve_expr(value);
+                for name in names {
+                    self.define_sym(name, SymbolKind::Variable, stmt.span);
+                }
             }
 
             StmtKind::Assign { target, value } => {
@@ -303,7 +317,6 @@ impl Resolver {
             }
         }
     }
-
 
     fn resolve_block(&mut self, stmts: &[Stmt]) {
         self.table.push(ScopeKind::Block);

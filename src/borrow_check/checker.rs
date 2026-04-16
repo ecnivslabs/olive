@@ -286,7 +286,9 @@ impl<'a> BorrowChecker<'a> {
                 self.check_operand(obj, state, span);
                 self.check_operand(idx, state, span);
             }
-            Rvalue::GetTag(op) | Rvalue::GetTypeId(op) | Rvalue::Cast(op, _) => self.check_operand(op, state, span),
+            Rvalue::GetTag(op) | Rvalue::GetTypeId(op) | Rvalue::Cast(op, _) => {
+                self.check_operand(op, state, span)
+            }
             Rvalue::Ref(local) => {
                 let s = state.get(*local);
                 if s != LocalState::Initialized {

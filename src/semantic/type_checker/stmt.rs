@@ -32,6 +32,47 @@ impl TypeChecker {
                 self.define_type(name, var_ty, *is_mut);
             }
 
+            StmtKind::MultiLet {
+                names,
+                type_ann,
+                value,
+                is_mut,
+                ..
+            } => {
+                let val_ty = self.check_expr(value);
+                if let Type::Tuple(elem_tys) = val_ty {
+                    if elem_tys.len() == names.len() {
+                        for (name, ty) in names.iter().zip(elem_tys.into_iter()) {
+                            if let Some(ann) = type_ann {
+                                let expected_ty = self.resolve_type_expr(ann);
+                                self.unify(&expected_ty, &ty, value.span);
+                                self.define_type(name, expected_ty, *is_mut);
+                            } else {
+                                self.define_type(name, ty, *is_mut);
+                            }
+                        }
+                    } else {
+                        self.errors
+                            .push(crate::semantic::error::SemanticError::Custom {
+                                msg: "Tuple unpacking length mismatch".to_string(),
+                                span: stmt.span,
+                            });
+                        for name in names {
+                            self.define_type(name, Type::Any, *is_mut);
+                        }
+                    }
+                } else {
+                    self.errors
+                        .push(crate::semantic::error::SemanticError::Custom {
+                            msg: "Expected tuple for multiple variable declaration".to_string(),
+                            span: stmt.span,
+                        });
+                    for name in names {
+                        self.define_type(name, Type::Any, *is_mut);
+                    }
+                }
+            }
+
             StmtKind::Const {
                 name,
                 type_ann,
@@ -46,6 +87,46 @@ impl TypeChecker {
                     val_ty
                 };
                 self.define_type(name, var_ty, false);
+            }
+
+            StmtKind::MultiConst {
+                names,
+                type_ann,
+                value,
+                ..
+            } => {
+                let val_ty = self.check_expr(value);
+                if let Type::Tuple(elem_tys) = val_ty {
+                    if elem_tys.len() == names.len() {
+                        for (name, ty) in names.iter().zip(elem_tys.into_iter()) {
+                            if let Some(ann) = type_ann {
+                                let expected_ty = self.resolve_type_expr(ann);
+                                self.unify(&expected_ty, &ty, value.span);
+                                self.define_type(name, expected_ty, false);
+                            } else {
+                                self.define_type(name, ty, false);
+                            }
+                        }
+                    } else {
+                        self.errors
+                            .push(crate::semantic::error::SemanticError::Custom {
+                                msg: "Tuple unpacking length mismatch".to_string(),
+                                span: stmt.span,
+                            });
+                        for name in names {
+                            self.define_type(name, Type::Any, false);
+                        }
+                    }
+                } else {
+                    self.errors
+                        .push(crate::semantic::error::SemanticError::Custom {
+                            msg: "Expected tuple for multiple constant declaration".to_string(),
+                            span: stmt.span,
+                        });
+                    for name in names {
+                        self.define_type(name, Type::Any, false);
+                    }
+                }
             }
 
             StmtKind::ExprStmt(expr) => {
@@ -441,7 +522,6 @@ impl TypeChecker {
                     if sig.is_vararg {
                         self.vararg_fns.insert(mangled);
                     }
-
                 }
                 for s in structs {
                     let type_name = format!("{}::{}", alias, s.name);
@@ -486,8 +566,6 @@ impl TypeChecker {
             StmtKind::Defer(expr) => {
                 self.check_expr(expr);
             }
-
-
 
             StmtKind::PyImport { alias, .. } => {
                 self.define_type(alias, Type::PyObject, false);

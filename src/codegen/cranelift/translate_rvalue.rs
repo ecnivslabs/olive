@@ -256,7 +256,7 @@ impl<M: Module> CraneliftCodegen<M> {
                     OliveType::Float => types::F64,
                     _ => types::I64,
                 };
-                
+
                 if current_ty == target_cl_ty {
                     val
                 } else if current_ty == types::I64 && target_cl_ty == types::F64 {

@@ -23,7 +23,6 @@ impl<'a> MirBuilder<'a> {
             return;
         }
 
-
         match &stmt.kind {
             StmtKind::Let {
                 name,
@@ -37,6 +36,36 @@ impl<'a> MirBuilder<'a> {
                 self.push_statement(StatementKind::Assign(local, Rvalue::Use(rval)), stmt.span);
             }
 
+            StmtKind::MultiLet {
+                names,
+                value,
+                is_mut,
+                ..
+            } => {
+                let rval = self.lower_expr(value);
+                let rhs_local = self.new_tmp_for_expr(value);
+                self.push_statement(
+                    StatementKind::Assign(rhs_local, Rvalue::Use(rval)),
+                    value.span,
+                );
+                for (i, name) in names.iter().enumerate() {
+                    let idx_op = Operand::Constant(Constant::Int(i as i64));
+                    let elem_tmp = self.new_local(Type::Any, None, false);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            elem_tmp,
+                            Rvalue::GetIndex(Operand::Copy(rhs_local), idx_op),
+                        ),
+                        value.span,
+                    );
+                    let local = self.declare_var(name.clone(), Type::Any, *is_mut);
+                    self.push_statement(
+                        StatementKind::Assign(local, Rvalue::Use(Operand::Copy(elem_tmp))),
+                        stmt.span,
+                    );
+                }
+            }
+
             StmtKind::Const { name, value, .. } => {
                 let rval = self.lower_expr(value);
                 if let Operand::Constant(_) = &rval {
@@ -45,6 +74,31 @@ impl<'a> MirBuilder<'a> {
                     let ty = self.get_type(value.id);
                     let local = self.declare_var(name.clone(), ty, false);
                     self.push_statement(StatementKind::Assign(local, Rvalue::Use(rval)), stmt.span);
+                }
+            }
+
+            StmtKind::MultiConst { names, value, .. } => {
+                let rval = self.lower_expr(value);
+                let rhs_local = self.new_tmp_for_expr(value);
+                self.push_statement(
+                    StatementKind::Assign(rhs_local, Rvalue::Use(rval)),
+                    value.span,
+                );
+                for (i, name) in names.iter().enumerate() {
+                    let idx_op = Operand::Constant(Constant::Int(i as i64));
+                    let elem_tmp = self.new_local(Type::Any, None, false);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            elem_tmp,
+                            Rvalue::GetIndex(Operand::Copy(rhs_local), idx_op),
+                        ),
+                        value.span,
+                    );
+                    let local = self.declare_var(name.clone(), Type::Any, false);
+                    self.push_statement(
+                        StatementKind::Assign(local, Rvalue::Use(Operand::Copy(elem_tmp))),
+                        stmt.span,
+                    );
                 }
             }
 
@@ -140,7 +194,6 @@ impl<'a> MirBuilder<'a> {
             StmtKind::Defer(expr) => {
                 self.defer_stack.push(expr.clone());
             }
-
 
             StmtKind::If {
                 condition,
@@ -733,7 +786,6 @@ impl<'a> MirBuilder<'a> {
             }
 
             self.finish_function();
-
 
             self.current_name = saved_name;
             self.current_locals = saved_locals;

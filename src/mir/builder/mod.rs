@@ -79,9 +79,6 @@ impl<'a> MirBuilder<'a> {
         }
     }
 
-
-
-
     pub fn build_program(&mut self, program: &Program) {
         for stmt in &program.stmts {
             match &stmt.kind {
@@ -174,7 +171,6 @@ impl<'a> MirBuilder<'a> {
 
         let start_bb = self.new_block();
         self.current_block = Some(start_bb);
-
 
         let default_val = match ret_ty {
             Type::Float => Operand::Constant(Constant::Float(0.0f64.to_bits())),

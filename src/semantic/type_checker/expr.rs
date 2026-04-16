@@ -56,7 +56,7 @@ impl TypeChecker {
                 Some(t) => t,
                 None => self.fresh_var(),
             },
-            
+
             ExprKind::Cast(operand, type_expr) => {
                 self.check_expr(operand);
                 self.resolve_type_expr(type_expr)
@@ -511,16 +511,18 @@ impl TypeChecker {
                 let is_error = |ty: &Type| -> bool {
                     match ty {
                         Type::Struct(name, _) | Type::Enum(name, _) => {
-                            name == "Error" || name.ends_with("Error") || self.type_traits.contains(&(name.clone(), "Error".to_string()))
+                            name == "Error"
+                                || name.ends_with("Error")
+                                || self
+                                    .type_traits
+                                    .contains(&(name.clone(), "Error".to_string()))
                         }
                         _ => false,
                     }
                 };
 
                 let (success_types, error_types): (Vec<Type>, Vec<Type>) = match &inner_ty {
-                    Type::Union(variants) => {
-                        variants.iter().cloned().partition(|ty| !is_error(ty))
-                    }
+                    Type::Union(variants) => variants.iter().cloned().partition(|ty| !is_error(ty)),
                     other => {
                         if is_error(other) {
                             (vec![], vec![other.clone()])
@@ -535,17 +537,21 @@ impl TypeChecker {
                     let mut expected_variants = Vec::new();
                     match &expected_resolved {
                         Type::Union(v) => expected_variants.extend(v.clone()),
-                        Type::Any => {}, 
+                        Type::Any => {}
                         other => expected_variants.push(other.clone()),
                     }
-                    
+
                     if expected_resolved != Type::Any {
                         for err_ty in &error_types {
                             if !expected_variants.contains(err_ty) {
-                                self.errors.push(super::super::error::SemanticError::Custom {
-                                    msg: format!("cannot propagate error `{}`, function returns `{}`", err_ty, expected_resolved),
-                                    span: expr.span,
-                                });
+                                self.errors
+                                    .push(super::super::error::SemanticError::Custom {
+                                        msg: format!(
+                                            "cannot propagate error `{}`, function returns `{}`",
+                                            err_ty, expected_resolved
+                                        ),
+                                        span: expr.span,
+                                    });
                             }
                         }
                     }

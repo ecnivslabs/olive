@@ -82,7 +82,6 @@ pub fn run_pipeline(filename: &str) -> Result<PipelineOutput, ()> {
         type_checker.c_ffi_fns.clone(),
     );
 
-
     mir_builder.build_program(&program);
     let mir_duration = mir_start.elapsed();
 

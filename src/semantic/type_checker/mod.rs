@@ -30,7 +30,6 @@ pub struct TypeChecker {
     pub(super) var_counter: usize,
 }
 
-
 impl TypeChecker {
     pub fn new() -> Self {
         let mut global_env = HashMap::default();
@@ -279,11 +278,17 @@ impl TypeChecker {
             global_env.insert(name.to_string(), ty);
         }
 
-        global_env.insert("Error".to_string(), Type::Struct("Error".to_string(), vec![]));
-        
+        global_env.insert(
+            "Error".to_string(),
+            Type::Struct("Error".to_string(), vec![]),
+        );
+
         let mut struct_fields = HashMap::default();
-        struct_fields.insert("Error".to_string(), vec!["msg".to_string(), "code".to_string()]);
-        
+        struct_fields.insert(
+            "Error".to_string(),
+            vec!["msg".to_string(), "code".to_string()],
+        );
+
         let mut field_types = HashMap::default();
         field_types.insert(("Error".to_string(), "msg".to_string()), Type::Str);
         field_types.insert(("Error".to_string(), "code".to_string()), Type::Int);
@@ -309,7 +314,6 @@ impl TypeChecker {
             c_ffi_fns: HashSet::default(),
             var_counter: 0,
         }
-
     }
 
     pub(super) fn fresh_var(&mut self) -> Type {
