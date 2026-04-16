@@ -6,7 +6,7 @@ Olive features native, bidirectional, and highly performant Python integration. 
 
 To import a Python module, use the `import py` syntax:
 
-```python
+```rust
 import py "math" as py_math
 import py "numpy" as np
 ```
@@ -17,14 +17,14 @@ The imported modules are bound as variables of type `PyObject`. All attribute lo
 
 You can invoke functions and methods on Python objects directly, passing Olive primitives or collections as arguments:
 
-```python
+```rust
 import py "math" as py_math
 
 fn calculate_hypotenuse(a: float, b: float) -> float:
-    # Arguments are automatically converted to Python objects
+    // Arguments are automatically converted to Python objects
     let result_py = py_math.hypot(a, b)
 
-    # Cast the dynamic PyObject back to an Olive float
+    // Cast the dynamic PyObject back to an Olive float
     return float(result_py)
 ```
 
@@ -35,13 +35,13 @@ When you pass native Olive collections (lists or dictionaries) to Python, Olive 
 * **Zero Memory Overhead**: Python reads and writes directly to the underlying Olive collection structure in memory.
 * **Mutations Propagate**: Any changes made by the Python code are immediately visible in Olive (and vice-versa).
 
-```python
+```rust
 import py "json" as json
 
 fn format_config():
     let mut config = {"host": "localhost", "port": 8080}
     
-    # config is passed as a zero-copy proxy
+    // config is passed as a zero-copy proxy
     let formatted = json.dumps(config, indent=4)
     print(str(formatted))
 ```
@@ -63,12 +63,12 @@ Primitive types and built-in structures are seamlessly converted between Olive a
 
 To extract typed data from a dynamic `PyObject` back into Olive, use the built-in type constructors:
 
-```python
-let val_int = int(py_val)       # Coerces PyObject to Olive int
-let val_float = float(py_val)   # Coerces PyObject to Olive float
-let val_str = str(py_val)       # Coerces PyObject to Olive string
-let val_list = list(py_val)     # Coerces PyObject to Olive list
-let val_dict = dict(py_val)     # Coerces PyObject to Olive dict
+```rust
+let val_int = int(py_val)       // Coerces PyObject to Olive int
+let val_float = float(py_val)   // Coerces PyObject to Olive float
+let val_str = str(py_val)       // Coerces PyObject to Olive string
+let val_list = list(py_val)     // Coerces PyObject to Olive list
+let val_dict = dict(py_val)     // Coerces PyObject to Olive dict
 ```
 
 ## Runtime Environment and Library Discovery

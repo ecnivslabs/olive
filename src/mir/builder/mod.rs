@@ -27,8 +27,10 @@ pub(super) struct LoopContext {
 pub struct MirBuilder<'a> {
     pub functions: Vec<MirFunction>,
     pub expr_types: &'a HashMap<usize, Type>,
+    pub expr_kwarg_maps: &'a HashMap<usize, Vec<usize>>,
     pub global_types: &'a HashMap<String, Type>,
     pub struct_fields: HashMap<String, Vec<String>>,
+    pub traits: &'a HashMap<String, crate::semantic::type_checker::TraitDef>,
 
     pub(super) current_name: String,
     pub(super) current_locals: Vec<LocalDecl>,
@@ -46,20 +48,25 @@ pub struct MirBuilder<'a> {
     pub(super) generic_fns: HashMap<String, crate::parser::Stmt>,
     pub(super) defer_stack: Vec<crate::parser::Expr>,
     pub c_ffi_fns: HashSet<String>,
+    pub vtables: HashMap<String, Vec<String>>,
 }
 
 impl<'a> MirBuilder<'a> {
     pub fn new(
         expr_types: &'a HashMap<usize, Type>,
+        expr_kwarg_maps: &'a HashMap<usize, Vec<usize>>,
         global_types: &'a HashMap<String, Type>,
         struct_fields: HashMap<String, Vec<String>>,
+        traits: &'a HashMap<String, crate::semantic::type_checker::TraitDef>,
         c_ffi_fns: HashSet<String>,
     ) -> Self {
         Self {
             functions: Vec::new(),
             expr_types,
+            expr_kwarg_maps,
             global_types,
             struct_fields,
+            traits,
             current_name: String::new(),
             current_locals: Vec::new(),
             current_blocks: Vec::new(),
@@ -76,6 +83,7 @@ impl<'a> MirBuilder<'a> {
             generic_fns: HashMap::default(),
             defer_stack: Vec::new(),
             c_ffi_fns,
+            vtables: HashMap::default(),
         }
     }
 
@@ -230,12 +238,21 @@ impl<'a> MirBuilder<'a> {
         &mut self,
         fn_name: &str,
         arg_ops: &[Operand],
+        arg_tys: &[Type],
+        param_tys: &[Type],
         arg_kw_names: &[Option<String>],
         span: Span,
     ) -> Vec<Operand> {
         let meta = match self.fn_meta.get(fn_name).cloned() {
             Some(m) => m,
-            None => return arg_ops.to_vec(),
+            None => {
+                let mut res = Vec::new();
+                for i in 0..arg_ops.len() {
+                    let p_ty = param_tys.get(i).unwrap_or(&Type::Any);
+                    res.push(self.coerce(arg_ops[i].clone(), &arg_tys[i], p_ty, span));
+                }
+                return res;
+            }
         };
 
         let param_names = &meta.param_names;
@@ -243,17 +260,23 @@ impl<'a> MirBuilder<'a> {
         let kwarg_idx = meta.kwarg_idx;
 
         if vararg_idx.is_none() && kwarg_idx.is_none() && arg_kw_names.iter().all(|k| k.is_none()) {
-            return arg_ops.to_vec();
+            let mut res = Vec::new();
+            for i in 0..arg_ops.len() {
+                let p_ty = param_tys.get(i).unwrap_or(&Type::Any);
+                res.push(self.coerce(arg_ops[i].clone(), &arg_tys[i], p_ty, span));
+            }
+            return res;
         }
 
         let regular_end = vararg_idx.or(kwarg_idx).unwrap_or(param_names.len());
 
-        let mut positional: Vec<Operand> = Vec::new();
-        let mut keyword: Vec<(String, Operand)> = Vec::new();
-        for (op, kw) in arg_ops.iter().zip(arg_kw_names.iter()) {
+        let mut positional: Vec<(Operand, Type)> = Vec::new();
+        let mut keyword: Vec<(String, Operand, Type)> = Vec::new();
+        for (i, (op, kw)) in arg_ops.iter().zip(arg_kw_names.iter()).enumerate() {
+            let ty = arg_tys[i].clone();
             match kw {
-                Some(name) => keyword.push((name.clone(), op.clone())),
-                None => positional.push(op.clone()),
+                Some(name) => keyword.push((name.clone(), op.clone(), ty)),
+                None => positional.push((op.clone(), ty)),
             }
         }
 
@@ -265,23 +288,33 @@ impl<'a> MirBuilder<'a> {
                 continue;
             }
             if pos_consumed < positional.len() {
-                *slot = Some(positional[pos_consumed].clone());
+                let p_ty = param_tys.get(i).unwrap_or(&Type::Any);
+                *slot = Some(self.coerce(
+                    positional[pos_consumed].0.clone(),
+                    &positional[pos_consumed].1,
+                    p_ty,
+                    span,
+                ));
                 pos_consumed += 1;
             }
         }
 
-        for (kw_name, kw_op) in &keyword {
+        for (kw_name, kw_op, kw_ty) in &keyword {
             if let Some(pos) = param_names.iter().position(|n| n == kw_name)
                 && Some(pos) != vararg_idx
                 && Some(pos) != kwarg_idx
                 && pos < regular_end
             {
-                result[pos] = Some(kw_op.clone());
+                let p_ty = param_tys.get(pos).unwrap_or(&Type::Any);
+                result[pos] = Some(self.coerce(kw_op.clone(), kw_ty, p_ty, span));
             }
         }
 
         if let Some(vi) = vararg_idx {
-            let extra: Vec<Operand> = positional[pos_consumed..].to_vec();
+            let extra: Vec<Operand> = positional[pos_consumed..]
+                .iter()
+                .map(|(op, _)| op.clone())
+                .collect();
             let list_tmp = self.new_local(Type::List(Box::new(Type::Any)), None, false);
             self.push_statement(
                 StatementKind::Assign(list_tmp, Rvalue::Aggregate(AggregateKind::List, extra)),
@@ -293,14 +326,14 @@ impl<'a> MirBuilder<'a> {
         if let Some(ki) = kwarg_idx {
             let extra_kw: Vec<Operand> = keyword
                 .iter()
-                .filter(|(kw_name, _)| {
+                .filter(|(kw_name, _, _)| {
                     param_names
                         .iter()
                         .position(|n| n == kw_name)
                         .map(|p| p == ki || p >= regular_end)
                         .unwrap_or(true)
                 })
-                .flat_map(|(kw_name, kw_op)| {
+                .flat_map(|(kw_name, kw_op, _)| {
                     [
                         Operand::Constant(Constant::Str(kw_name.clone())),
                         kw_op.clone(),
@@ -474,8 +507,10 @@ mod tests {
         tc.check_program(&prog);
         let mut builder = MirBuilder::new(
             &tc.expr_types,
+            &tc.expr_kwarg_maps,
             &tc.type_env[0],
             tc.struct_fields.clone(),
+            &tc.traits,
             HashSet::default(),
         );
         builder.build_program(&prog);

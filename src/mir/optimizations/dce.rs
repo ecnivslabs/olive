@@ -70,6 +70,7 @@ impl DeadCodeElimination {
             | Rvalue::GetAttr(op, _)
             | Rvalue::GetTag(op)
             | Rvalue::GetTypeId(op)
+            | Rvalue::FatPtrData(op)
             | Rvalue::Cast(op, _) => self.record_operand_usage(op, used),
             Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) => {
                 self.record_operand_usage(l, used);
@@ -90,6 +91,7 @@ impl DeadCodeElimination {
                 used.insert(*l);
             }
             Rvalue::PtrLoad(op) => self.record_operand_usage(op, used),
+            Rvalue::VTableLoad { vtable, .. } => self.record_operand_usage(vtable, used),
             Rvalue::VectorSplat(op, _) => self.record_operand_usage(op, used),
             Rvalue::VectorLoad(obj, idx, _) => {
                 self.record_operand_usage(obj, used);

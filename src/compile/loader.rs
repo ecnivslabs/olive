@@ -159,7 +159,7 @@ pub fn load_and_parse(
                                 defined_names.insert(name.clone());
                             }
                             parser::StmtKind::Impl { type_name, .. } => {
-                                defined_names.insert(type_name.clone());
+                                defined_names.insert(type_name.to_string());
                             }
                             _ => {}
                         }
@@ -226,7 +226,7 @@ pub fn load_and_parse(
                             names.iter().any(|(n, _)| n == name)
                         }
                         parser::StmtKind::Impl { type_name, .. } => {
-                            names.iter().any(|(n, _)| n == type_name)
+                            names.iter().any(|(n, _)| n == &type_name.to_string())
                         }
                         _ => false,
                     });

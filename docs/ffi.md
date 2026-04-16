@@ -6,7 +6,7 @@ Olive interfaces directly with external libraries written in C, C++, or Rust, pr
 
 Use the `import` statement to load shared libraries (`.so`, `.dll`, or `.dylib`) and declare their signatures:
 
-```python
+```rust
 import "libc.so.6" as libc:
     fn printf(fmt: cstr, *args) -> int
     fn malloc(size: int) -> *void
@@ -23,7 +23,7 @@ Olive strings are UTF-8 sequences. To interface with null-terminated C strings, 
 
 Define the layout of native structs and unions inside the import block to match the C memory layouts:
 
-```python
+```rust
 import "libgit2.so" as git:
     struct git_repository:
         path: cstr
@@ -39,7 +39,7 @@ import "libgit2.so" as git:
 
 Specify low-level C struct bitfield widths using the `@` symbol:
 
-```python
+```rust
 struct Flags:
     is_ready: int @ 1
     error_code: int @ 3
@@ -50,7 +50,7 @@ struct Flags:
 
 The standard C calling convention is the default. If you need to specify a different calling convention (common on Windows), apply convention directives:
 
-```python
+```rust
 import "user32.dll" as win:
     @stdcall
     fn MessageBoxA(hWnd: *void, text: cstr, caption: cstr, type: int) -> int
@@ -62,7 +62,7 @@ Supported annotations include `@cdecl`, `@stdcall`, and `@fastcall`.
 
 Because the borrow checker cannot analyze memory safety across FFI boundaries or raw pointer access, FFI calls and pointer dereferences must occur inside an `unsafe:` block.
 
-```python
+```rust
 import "libc.so.6" as libc:
     fn malloc(size: int) -> *void
     fn free(ptr: *void)
@@ -70,7 +70,7 @@ import "libc.so.6" as libc:
 fn allocate_example():
     unsafe:
         let ptr = libc.malloc(1024)
-        # Raw pointer operations
+        // Raw pointer operations
         libc.free(ptr)
 ```
 

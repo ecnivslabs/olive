@@ -17,7 +17,7 @@ fn debug_borrow_check() {
     resolver.resolve_program(&mut prog);
     let mut type_checker = TypeChecker::new();
     type_checker.check_program(&prog);
-    let mut builder = MirBuilder::new();
+    let mut builder = MirBuilder::new(&type_checker.expr_types, &type_checker.expr_kwarg_maps, &type_checker.type_env[0], type_checker.struct_fields.clone(), &type_checker.traits, std::collections::HashSet::default());
     builder.build_program(&prog);
     
     for func in &builder.functions {
@@ -26,7 +26,7 @@ fn debug_borrow_check() {
             for (i, local) in func.locals.iter().enumerate() {
                 println!("  Local {}: name={:?}, ty={:?}", i, local.name, local.ty);
             }
-            let mut bc = BorrowChecker::new(func);
+            let mut bc = BorrowChecker::new(func, &type_checker.struct_fields);
             bc.check();
             for err in bc.errors {
                 println!("  Error: {:?}", err);

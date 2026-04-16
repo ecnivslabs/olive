@@ -3,8 +3,50 @@ use crate::mir::AggregateKind;
 use crate::mir::ir::*;
 use crate::parser::{CallArg, Expr, ExprKind, StmtKind};
 use crate::semantic::types::Type;
+use crate::span::Span;
 
 impl<'a> MirBuilder<'a> {
+    pub(super) fn coerce(
+        &mut self,
+        op: Operand,
+        from_ty: &Type,
+        to_ty: &Type,
+        span: Span,
+    ) -> Operand {
+        if let Type::TraitObject(trait_name, _) = to_ty {
+            if let Type::Struct(struct_name, _) = from_ty {
+                let vtable_name = format!("__vtable_{}_{}", trait_name, struct_name);
+                if !self.vtables.contains_key(&vtable_name) {
+                    if let Some(trait_def) = self.traits.get(trait_name) {
+                        let mut method_names = Vec::new();
+                        for (method_name, _) in &trait_def.methods {
+                            let mangled = format!("{}::{}", struct_name, method_name);
+                            if let Type::Struct(_, type_args) = from_ty {
+                                if !type_args.is_empty() {
+                                    method_names.push(self.monomorphize(&mangled, type_args));
+                                    continue;
+                                }
+                            }
+                            method_names.push(mangled);
+                        }
+                        self.vtables.insert(vtable_name.clone(), method_names);
+                    }
+                }
+                let vtable_op = Operand::Constant(Constant::GlobalData(vtable_name.clone()));
+                let fat_ptr_tmp = self.new_local(to_ty.clone(), None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        fat_ptr_tmp,
+                        Rvalue::Aggregate(AggregateKind::FatPtr, vec![op, vtable_op]),
+                    ),
+                    span,
+                );
+                return Operand::Copy(fat_ptr_tmp);
+            }
+        }
+        op
+    }
+
     pub(super) fn lower_expr(&mut self, expr: &Expr) -> Operand {
         match &expr.kind {
             ExprKind::Integer(i) => Operand::Constant(Constant::Int(*i)),
@@ -452,6 +494,7 @@ impl<'a> MirBuilder<'a> {
             ExprKind::Call { callee, args } => {
                 let mut arg_ops = Vec::new();
                 let mut arg_kw_names: Vec<Option<String>> = Vec::new();
+                let mut arg_tys: Vec<Type> = Vec::new();
                 for arg in args {
                     match arg {
                         CallArg::Splat(e)
@@ -466,6 +509,7 @@ impl<'a> MirBuilder<'a> {
                             );
                             arg_ops.push(Operand::Copy(tmp));
                             arg_kw_names.push(None);
+                            arg_tys.push(crate::semantic::types::Type::Int);
                         }
                         CallArg::Positional(e) | CallArg::Splat(e) | CallArg::KwSplat(e) => {
                             let is_readonly_builtin =
@@ -491,6 +535,7 @@ impl<'a> MirBuilder<'a> {
                                 arg_ops.push(self.lower_expr(e));
                             }
                             arg_kw_names.push(None);
+                            arg_tys.push(self.get_type(e.id).clone());
                         }
                         CallArg::Keyword(name, e) => {
                             let is_readonly_builtin = if let ExprKind::Identifier(n) = &callee.kind
@@ -516,8 +561,21 @@ impl<'a> MirBuilder<'a> {
                                 arg_ops.push(self.lower_expr(e));
                             }
                             arg_kw_names.push(Some(name.clone()));
+                            arg_tys.push(self.get_type(e.id).clone());
                         }
                     }
+                }
+
+                if let Some(kwarg_map) = self.expr_kwarg_maps.get(&expr.id) {
+                    let mut new_arg_ops =
+                        vec![Operand::Constant(Constant::Int(0)); kwarg_map.len()];
+                    for (i, op) in arg_ops.iter().enumerate() {
+                        if let Some(target_idx) = kwarg_map.iter().position(|&x| x == i) {
+                            new_arg_ops[target_idx] = op.clone();
+                        }
+                    }
+                    arg_ops = new_arg_ops;
+                    arg_kw_names = vec![None; kwarg_map.len()];
                 }
 
                 let callee_ty = self.get_type(callee.id);
@@ -918,8 +976,10 @@ impl<'a> MirBuilder<'a> {
 
                     if let ExprKind::Identifier(name) = &obj.kind {
                         let obj_ty = self.get_type(obj.id);
-                        let is_struct_var = matches!(obj_ty, Type::Struct(_, _) | Type::Any)
-                            && self.lookup_var(name).is_some();
+                        let is_struct_var = matches!(
+                            obj_ty,
+                            Type::Struct(_, _) | Type::TraitObject(_, _) | Type::Any
+                        ) && self.lookup_var(name).is_some();
                         if !is_struct_var {
                             let mangled = format!("{}::{}", name, attr);
 
@@ -1114,28 +1174,85 @@ impl<'a> MirBuilder<'a> {
                     }
 
                     let obj_ty = self.get_type(obj.id);
-                    let mut method_name = attr.clone();
+                    let method_name;
 
-                    if let Type::Struct(struct_name, type_args) = obj_ty {
+                    if let Type::Struct(struct_name, type_args) = &obj_ty {
                         let base_method_name = format!("{}::{}", struct_name, attr);
                         if !type_args.is_empty() {
                             method_name = self.monomorphize(&base_method_name, &type_args);
                         } else {
                             method_name = base_method_name;
                         }
-                    }
+                        self.push_statement(
+                            StatementKind::Assign(
+                                tmp,
+                                Rvalue::Call {
+                                    func: Operand::Constant(Constant::Function(method_name)),
+                                    args: method_args,
+                                },
+                            ),
+                            expr.span,
+                        );
+                        return self.operand_for_local(tmp);
+                    } else if let Type::TraitObject(trait_name, _) = &obj_ty {
+                        let method_idx = if let Some(t_def) = self.traits.get(trait_name) {
+                            t_def
+                                .methods
+                                .iter()
+                                .position(|(n, _)| n == attr)
+                                .unwrap_or(0)
+                        } else {
+                            0
+                        };
 
-                    self.push_statement(
-                        StatementKind::Assign(
-                            tmp,
-                            Rvalue::Call {
-                                func: Operand::Constant(Constant::Function(method_name)),
-                                args: method_args,
-                            },
-                        ),
-                        expr.span,
-                    );
-                    return self.operand_for_local(tmp);
+                        let method_ptr_tmp = self.new_local(Type::Any, None, false);
+                        self.push_statement(
+                            StatementKind::Assign(
+                                method_ptr_tmp,
+                                Rvalue::VTableLoad {
+                                    vtable: method_args[0].clone(),
+                                    method_idx,
+                                },
+                            ),
+                            expr.span,
+                        );
+
+                        let data_ptr_tmp = self.new_local(Type::Any, None, false);
+                        self.push_statement(
+                            StatementKind::Assign(
+                                data_ptr_tmp,
+                                Rvalue::FatPtrData(method_args[0].clone()),
+                            ),
+                            expr.span,
+                        );
+
+                        method_args[0] = Operand::Copy(data_ptr_tmp);
+
+                        self.push_statement(
+                            StatementKind::Assign(
+                                tmp,
+                                Rvalue::Call {
+                                    func: Operand::Copy(method_ptr_tmp),
+                                    args: method_args,
+                                },
+                            ),
+                            expr.span,
+                        );
+                        return self.operand_for_local(tmp);
+                    } else {
+                        let method_name = format!("{:?}::{}", obj_ty, attr);
+                        self.push_statement(
+                            StatementKind::Assign(
+                                tmp,
+                                Rvalue::Call {
+                                    func: Operand::Constant(Constant::Function(method_name)),
+                                    args: method_args,
+                                },
+                            ),
+                            expr.span,
+                        );
+                        return self.operand_for_local(tmp);
+                    }
                 }
 
                 let callee_ty = self.get_type(callee.id);
@@ -1235,10 +1352,29 @@ impl<'a> MirBuilder<'a> {
                     self.new_tmp_for_expr(expr)
                 };
 
-                let final_args = if let Some(name) = &call_fn_name {
-                    self.pack_fn_call_args(name, &arg_ops, &arg_kw_names, expr.span)
+                let callee_ty = self.get_type(callee.id).clone();
+                let param_tys = if let Type::Fn(ptys, _, _) = callee_ty {
+                    ptys
                 } else {
-                    arg_ops
+                    Vec::new()
+                };
+
+                let final_args = if let Some(name) = &call_fn_name {
+                    self.pack_fn_call_args(
+                        name,
+                        &arg_ops,
+                        &arg_tys,
+                        &param_tys,
+                        &arg_kw_names,
+                        expr.span,
+                    )
+                } else {
+                    let mut res = Vec::new();
+                    for i in 0..arg_ops.len() {
+                        let p_ty = param_tys.get(i).unwrap_or(&Type::Any);
+                        res.push(self.coerce(arg_ops[i].clone(), &arg_tys[i], p_ty, expr.span));
+                    }
+                    res
                 };
 
                 self.push_statement(

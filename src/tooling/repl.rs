@@ -68,8 +68,10 @@ pub fn repl_compile_run(
 
     let mut mir_builder = MirBuilder::new(
         &type_checker.expr_types,
+        &type_checker.expr_kwarg_maps,
         &type_checker.type_env[0],
         type_checker.struct_fields.clone(),
+        &type_checker.traits,
         type_checker.c_ffi_fns.clone(),
     );
     mir_builder.build_program(&program);
@@ -79,7 +81,9 @@ pub fn repl_compile_run(
 
     let mut had_borrow_error = false;
     for func in &mir_builder.functions {
-        let needs_check = func.locals.iter().any(|l| l.ty.is_move_type())
+        let is_init = func.name.ends_with("::__init__");
+        let needs_check = is_init
+            || func.locals.iter().any(|l| l.ty.is_move_type())
             || func.basic_blocks.iter().any(|bb| {
                 bb.statements.iter().any(|s| {
                     matches!(
@@ -91,7 +95,7 @@ pub fn repl_compile_run(
         if !needs_check {
             continue;
         }
-        let mut checker = BorrowChecker::new(func);
+        let mut checker = BorrowChecker::new(func, &type_checker.struct_fields);
         checker.check();
         if !checker.errors.is_empty() {
             for e in &checker.errors {
@@ -112,7 +116,8 @@ pub fn repl_compile_run(
 
     let mut codegen = CraneliftCodegen::new_jit(
         mir_builder.functions,
-        mir_builder.struct_fields.clone(),
+        mir_builder.struct_fields,
+        mir_builder.vtables.clone(),
         &[],
     );
     codegen.generate();

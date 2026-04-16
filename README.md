@@ -31,7 +31,7 @@ Olive was built for when you want the speed of a low-level language without the 
 
 ## A Taste of Olive
 
-```python
+```rust
 // A generic function to calculate average
 fn average[T: Numeric](numbers: [T]) -> float:
     let mut total = 0.0
@@ -75,6 +75,7 @@ pit run
 - [Basics](docs/basics.md): Variables, types, and control flow.
 - [Ownership](docs/ownership.md): How memory safety works.
 - [Generics](docs/generics.md): Writing reusable code.
+- [Traits](docs/traits.md): Defining shared behavior between types.
 - [C / Rust Interop (FFI)](docs/ffi.md): Calling C or Rust code and using `unsafe`.
 - [Python Interop](docs/python.md): High-performance zero-copy Python integration.
 - [Standard Library](docs/modules.md): What's in the box.

@@ -4,7 +4,7 @@ Enums (enumerations) represent data that can be one of several distinct variants
 
 ## Defining Enums
 
-```python
+```rust
 enum WebResponse:
     Success
     NotFound
@@ -13,19 +13,19 @@ enum WebResponse:
 
 Enum variants can carry data. Each variant specifies the types of its associated values:
 
-```python
+```rust
 enum Message:
     Quit
-    Move(int, int)          # x and y coordinates
-    Write(str)              # text to write
-    ChangeColor(int, int, int)  # r, g, b
+    Move(int, int)          // x and y coordinates
+    Write(str)              // text to write
+    ChangeColor(int, int, int)  // r, g, b
 ```
 
 ## Pattern Matching with `match`
 
 `match` lets you branch on enum variants and extract their associated data in one step:
 
-```python
+```rust
 fn process_message(msg: Message) -> None:
     match msg:
         Quit:
@@ -42,7 +42,7 @@ fn process_message(msg: Message) -> None:
 
 Use `_` as a catch-all when you only care about specific variants:
 
-```python
+```rust
 fn handle_response(res: WebResponse) -> None:
     match res:
         Success:
@@ -55,7 +55,7 @@ fn handle_response(res: WebResponse) -> None:
 
 You can bind a matched value to a name and use it inside the branch:
 
-```python
+```rust
 fn log_status(status: int):
     match status:
         200:
@@ -72,7 +72,7 @@ The compiler enforces exhaustive pattern matching. Failing to match a variant tr
 
 A union type like `Shape | Color` holds a value that could be any of the listed enum types. `match` handles all of them in one place:
 
-```python
+```rust
 enum Shape:
     Circle(float)
     Square(float)
@@ -99,7 +99,7 @@ The compiler checks that every variant from every enum in the union is handled. 
 
 Enums can also be generic, which is particularly useful for representing optional values or results of computations.
 
-```python
+```rust
 enum Option[T]:
     Some(T)
     None

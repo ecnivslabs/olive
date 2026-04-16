@@ -5,6 +5,7 @@ mod codegen_tests {
     use crate::mir::{MirBuilder, Optimizer};
     use crate::parser::Parser;
     use crate::semantic::{Resolver, TypeChecker};
+    use rustc_hash::FxHashSet as HashSet;
 
     fn compile(src: &str) -> CraneliftCodegen<cranelift_jit::JITModule> {
         let tokens = Lexer::new(src, 0).tokenise().unwrap();
@@ -17,14 +18,21 @@ mod codegen_tests {
         assert!(tc.errors.is_empty(), "type errors: {:?}", tc.errors);
         let mut builder = MirBuilder::new(
             &tc.expr_types,
+            &tc.expr_kwarg_maps,
             &tc.type_env[0],
             tc.struct_fields.clone(),
-            rustc_hash::FxHashSet::default(),
+            &tc.traits,
+            HashSet::default(),
         );
         builder.build_program(&prog);
         let opt = Optimizer::new();
         opt.run(&mut builder.functions);
-        let mut cg = CraneliftCodegen::new_jit(builder.functions, builder.struct_fields, &[]);
+        let mut cg = CraneliftCodegen::new_jit(
+            builder.functions,
+            builder.struct_fields,
+            builder.vtables.clone(),
+            &[],
+        );
         cg.generate();
         cg.finalize();
         cg
@@ -391,5 +399,31 @@ mod codegen_tests {
             "fn collatz(n: i64) -> i64:\n    let mut x = n\n    let mut steps = 0\n    while x != 1:\n        if x % 2 == 0:\n            x = x / 2\n        else:\n            x = 3 * x + 1\n        steps = steps + 1\n    return steps\n",
         );
         assert_eq!(call_i64_1(&mut cg, "collatz", 27), 111);
+    }
+    #[test]
+    fn trait_object_dynamic_dispatch() {
+        let code = r#"
+trait Animal:
+    fn speak(self) -> i64:
+        return 0
+
+struct Dog:
+    sound: i64
+
+impl Animal for Dog:
+    fn speak(self) -> i64:
+        return self.sound
+
+fn make_sound(a: Animal) -> i64:
+    return a.speak()
+
+fn main() -> i64:
+    let d = Dog(42)
+    return make_sound(d)
+"#;
+        let mut cg = compile(code);
+        let ptr = cg.get_function("main").unwrap();
+        let f: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
+        assert_eq!(f(), 42);
     }
 }

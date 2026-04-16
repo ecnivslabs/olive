@@ -463,7 +463,7 @@ mod parser_tests {
             StmtKind::Impl {
                 type_name, body, ..
             } => {
-                assert_eq!(type_name, "MyStruct");
+                assert!(matches!(&type_name.kind, TypeExprKind::Name(n) if n == "MyStruct"));
                 assert!(matches!(body[0].kind, StmtKind::Fn { .. }));
             }
             _ => panic!(),

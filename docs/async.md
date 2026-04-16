@@ -6,7 +6,7 @@ Olive uses a lightweight, cooperative concurrency model instead of OS-level thre
 
 Declare asynchronous functions with the `async` keyword. Use the `await` keyword within these functions to yield execution during I/O operations (such as network or file access):
 
-```python
+```rust
 async fn fetch_user(id: int) -> User:
     // Yields control back to the executor while the request is in flight
     let raw = await http.get(f"https://api.example.com/users/{id}")
@@ -19,7 +19,7 @@ Calling an `async` function returns a **Future** (an un-evaluated task definitio
 
 To execute a block of code asynchronously without defining a separate function, use `async:`:
 
-```python
+```rust
 fn main():
     let data = [1, 2, 3]
 
@@ -36,7 +36,7 @@ fn main():
 
 To execute multiple futures concurrently and block until all have completed, use `gather`:
 
-```python
+```rust
 let [site1, site2] = await gather([
     fetch_data("https://site1.com"),
     fetch_data("https://site2.com")
@@ -47,7 +47,7 @@ let [site1, site2] = await gather([
 
 To execute multiple tasks concurrently and resolve as soon as the first one completes (canceling the remaining tasks), use `select`:
 
-```python
+```rust
 let winner = await select([task_a(), task_b()])
 ```
 

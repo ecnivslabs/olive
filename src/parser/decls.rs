@@ -88,11 +88,7 @@ impl Parser {
         self.expect(TokenKind::Struct)?;
         let name = self.expect(TokenKind::Identifier)?.value;
         let type_params = self.parse_type_params()?;
-        if let Some(first_char) = name.chars().next()
-            && !first_char.is_uppercase()
-        {
-            return Err(self.err_at(&start, "struct names must be capitalized"));
-        }
+        // Removed uppercase enforcement for struct names
         self.expect(TokenKind::Colon)?;
         let mut fields: Vec<Param> = Vec::new();
         let mut body: Vec<Stmt> = Vec::new();
@@ -151,13 +147,13 @@ impl Parser {
         let start = self.peek().clone();
         self.expect(TokenKind::Impl)?;
         let type_params = self.parse_type_params()?;
-        let first_name = self.expect(TokenKind::Identifier)?.value;
+        let first_ty = self.parse_type_expr()?;
         let (trait_name, type_name) = if self.peek().kind == TokenKind::For {
             self.advance();
-            let ty = self.expect(TokenKind::Identifier)?.value;
-            (Some(first_name), ty)
+            let ty = self.parse_type_expr()?;
+            (Some(first_ty), ty)
         } else {
-            (None, first_name)
+            (None, first_ty)
         };
         let body = self.parse_block()?;
         let span = self.span_from(&start);
@@ -204,48 +200,68 @@ impl Parser {
         self.expect(TokenKind::Enum)?;
         let name = self.expect(TokenKind::Identifier)?.value;
         let type_params = self.parse_type_params()?;
-        if let Some(first_char) = name.chars().next()
-            && !first_char.is_uppercase()
-        {
-            return Err(self.err_at(&start, "enum names must be capitalized"));
-        }
+        // Removed uppercase enforcement for enum names
+
         self.expect(TokenKind::Colon)?;
 
         let mut variants = Vec::new();
+        let mut body = Vec::new();
 
         if self.peek().kind == TokenKind::Newline {
             self.advance();
             self.expect(TokenKind::Indent)?;
             self.skip_newlines();
             while self.peek().kind != TokenKind::Dedent && self.peek().kind != TokenKind::Eof {
-                let v_name = self.expect(TokenKind::Identifier)?.value;
-                let mut types = Vec::new();
-                if self.peek().kind == TokenKind::LParen {
-                    self.advance();
-                    while self.peek().kind != TokenKind::RParen
+                if self.peek().kind == TokenKind::Fn {
+                    body.push(self.parse_stmt()?);
+                } else {
+                    let v_name = self.expect(TokenKind::Identifier)?.value;
+                    let mut types = Vec::new();
+                    if self.peek().kind == TokenKind::LParen {
+                        self.advance();
+                        while self.peek().kind != TokenKind::RParen
+                            && self.peek().kind != TokenKind::Eof
+                        {
+                            types.push(self.parse_type_expr()?);
+                            if self.peek().kind == TokenKind::Comma {
+                                self.advance();
+                            } else {
+                                break;
+                            }
+                        }
+                        self.expect(TokenKind::RParen)?;
+                    }
+
+                    let value = if self.peek().kind == TokenKind::Equal {
+                        self.advance();
+                        Some(self.parse_expr()?)
+                    } else {
+                        None
+                    };
+
+                    variants.push(EnumVariant {
+                        name: v_name,
+                        types,
+                        value,
+                    });
+
+                    if self.peek().kind == TokenKind::Comma {
+                        self.advance();
+                    } else if self.peek().kind != TokenKind::Newline
+                        && self.peek().kind != TokenKind::Dedent
                         && self.peek().kind != TokenKind::Eof
                     {
-                        types.push(self.parse_type_expr()?);
-                        if self.peek().kind == TokenKind::Comma {
-                            self.advance();
-                        } else {
-                            break;
-                        }
+                        return Err(self.err_at(
+                            &self.tokens[self.pos],
+                            "expected newline or comma after enum variant",
+                        ));
                     }
-                    self.expect(TokenKind::RParen)?;
                 }
-                variants.push(EnumVariant {
-                    name: v_name,
-                    types,
-                });
                 self.skip_newlines();
             }
             self.expect(TokenKind::Dedent)?;
         } else {
-            return Err(self.err_at(
-                &self.tokens[self.pos],
-                "expected newline and indented block for enum",
-            ));
+            self.eat_stmt_end()?;
         }
 
         let span = self.span_from(&start);
@@ -254,6 +270,7 @@ impl Parser {
                 name,
                 type_params,
                 variants,
+                body,
                 decorators: Vec::new(),
             },
             span,

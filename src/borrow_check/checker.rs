@@ -16,6 +16,7 @@ enum LocalState {
 struct FlowState {
     locals: Vec<LocalState>,
     borrows: Vec<(usize, bool)>,
+    self_fields: HashSet<String>,
 }
 
 impl FlowState {
@@ -23,6 +24,7 @@ impl FlowState {
         Self {
             locals: vec![LocalState::Dead; num_locals],
             borrows: vec![(0, false); num_locals],
+            self_fields: HashSet::default(),
         }
     }
 
@@ -73,6 +75,18 @@ impl FlowState {
                 changed = true;
             }
         }
+
+        let mut new_self_fields = HashSet::default();
+        for f in &self.self_fields {
+            if other.self_fields.contains(f) {
+                new_self_fields.insert(f.clone());
+            }
+        }
+        if self.self_fields != new_self_fields {
+            self.self_fields = new_self_fields;
+            changed = true;
+        }
+
         changed
     }
 }
@@ -90,16 +104,18 @@ pub struct BorrowChecker<'a> {
     pub errors: Vec<SemanticError>,
     pub liveness: Liveness,
     pub provenance: HashMap<Local, Local>,
+    pub struct_fields: &'a HashMap<String, Vec<String>>,
 }
 
 impl<'a> BorrowChecker<'a> {
-    pub fn new(func: &'a MirFunction) -> Self {
+    pub fn new(func: &'a MirFunction, struct_fields: &'a HashMap<String, Vec<String>>) -> Self {
         let liveness = Liveness::compute(func);
         Self {
             func,
             liveness,
             errors: Vec::new(),
             provenance: HashMap::default(),
+            struct_fields,
         }
     }
 
@@ -195,10 +211,18 @@ impl<'a> BorrowChecker<'a> {
                     });
                 }
             }
-            StatementKind::SetAttr(obj, _, val) => {
+            StatementKind::SetAttr(obj, field, val) => {
                 self.check_mutation(obj, state, stmt.span);
                 self.check_operand(obj, state, stmt.span);
                 self.check_operand(val, state, stmt.span);
+
+                if self.func.name.ends_with("::__init__") {
+                    if let Operand::Copy(local) | Operand::Move(local) = obj {
+                        if local.0 == 1 {
+                            state.self_fields.insert(field.clone());
+                        }
+                    }
+                }
             }
             StatementKind::SetIndex(obj, idx, val) => {
                 self.check_mutation(obj, state, stmt.span);
@@ -241,7 +265,22 @@ impl<'a> BorrowChecker<'a> {
             TerminatorKind::SwitchInt { discr, .. } => {
                 self.check_operand(discr, state, term.span);
             }
-            TerminatorKind::Return | TerminatorKind::Goto { .. } | TerminatorKind::Unreachable => {}
+            TerminatorKind::Return => {
+                if self.func.name.ends_with("::__init__") {
+                    let struct_name = self.func.name.trim_end_matches("::__init__");
+                    if let Some(fields) = self.struct_fields.get(struct_name) {
+                        for field in fields {
+                            if !state.self_fields.contains(field) {
+                                self.errors.push(SemanticError::Custom {
+                                    msg: format!("field `{}` of `{}` is not initialized by all exit paths of __init__", field, struct_name),
+                                    span: term.span,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            TerminatorKind::Goto { .. } | TerminatorKind::Unreachable => {}
         }
     }
 
@@ -264,7 +303,7 @@ impl<'a> BorrowChecker<'a> {
 
     fn check_rvalue(&mut self, rvalue: &Rvalue, state: &mut FlowState, span: Span) {
         match rvalue {
-            Rvalue::Use(op) => self.check_operand(op, state, span),
+            Rvalue::Use(op) | Rvalue::FatPtrData(op) => self.check_operand(op, state, span),
             Rvalue::BinaryOp(_, lhs, rhs) => {
                 self.check_operand(lhs, state, span);
                 self.check_operand(rhs, state, span);
@@ -342,6 +381,7 @@ impl<'a> BorrowChecker<'a> {
                 borrow.1 = true;
             }
             Rvalue::PtrLoad(op) => self.check_operand(op, state, span),
+            Rvalue::VTableLoad { vtable, .. } => self.check_operand(vtable, state, span),
             Rvalue::VectorSplat(op, _) => self.check_operand(op, state, span),
             Rvalue::VectorLoad(obj, idx, _) => {
                 self.check_operand(obj, state, span);
@@ -453,14 +493,16 @@ mod tests {
         tc.check_program(&prog);
         let mut builder = MirBuilder::new(
             &tc.expr_types,
+            &tc.expr_kwarg_maps,
             &tc.type_env[0],
             tc.struct_fields.clone(),
+            &tc.traits,
             HashSet::default(),
         );
         builder.build_program(&prog);
         let mut all_errors = Vec::new();
         for func in &builder.functions {
-            let mut bc = BorrowChecker::new(func);
+            let mut bc = BorrowChecker::new(func, &tc.struct_fields);
             bc.check();
             all_errors.extend(bc.errors);
         }

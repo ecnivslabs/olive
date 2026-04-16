@@ -14,11 +14,11 @@ The compiler strictly enforces three rules:
 
 Assigning a variable to another or passing it to a function transfers ownership (a **move**). Once ownership is transferred, the original variable becomes invalid.
 
-```python
+```rust
 let list1 = [1, 2, 3]
-let list2 = list1  # list2 now owns the data. list1 is invalid.
+let list2 = list1  // list2 now owns the data. list1 is invalid.
 
-# print(list1)     # Compile-time error
+// print(list1)     // Compile-time error
 ```
 
 Moves prevent double-free errors. Simple types like `int` and `bool` implement copy semantics rather than move semantics because they are cheap to duplicate in registers.
@@ -31,24 +31,24 @@ To access data without taking ownership, you can **borrow** it using references 
 
 Multiple parts of a program can borrow a resource concurrently for read access.
 
-```python
+```rust
 let list = [1, 2, 3]
 let r1 = &list
 let r2 = &list
 
-print(r1[0])  # OK
+print(r1[0])  // OK
 ```
 
 ### Mutable References (`&mut`)
 
 To modify borrowed data, use `&mut`. To prevent data races and use-after-free bugs, a mutable reference enforces exclusive access. While a mutable reference is active, no other references (immutable or mutable) can exist.
 
-```python
+```rust
 let mut list = [1, 2, 3]
 let r = &mut list
-r[0] = 10     # OK
+r[0] = 10     // OK
 
-# let r2 = &list # Compile-time error: cannot borrow as immutable while mutably borrowed.
+// let r2 = &list // Compile-time error: cannot borrow as immutable while mutably borrowed.
 ```
 
 ### Aliasing Rules

@@ -106,6 +106,32 @@ impl TypeChecker {
                 }
             }
 
+            (Type::TraitObject(a_name, a_args), Type::TraitObject(b_name, b_args)) => {
+                if a_name != b_name || a_args.len() != b_args.len() {
+                    self.errors.push(SemanticError::Custom {
+                        msg: format!("type mismatch: expected `{}`, found `{}`", t1, t2),
+                        span,
+                    });
+                } else {
+                    for (x, y) in a_args.iter().zip(b_args.iter()) {
+                        self.unify(x, y, span);
+                    }
+                }
+            }
+
+            (Type::TraitObject(trait_name, _), Type::Struct(struct_name, _))
+            | (Type::Struct(struct_name, _), Type::TraitObject(trait_name, _)) => {
+                if !self
+                    .type_traits
+                    .contains(&(struct_name.clone(), trait_name.clone()))
+                {
+                    self.errors.push(SemanticError::Custom {
+                        msg: format!("type mismatch: expected `{}`, found `{}`", t1, t2),
+                        span,
+                    });
+                }
+            }
+
             (Type::Param(a), Type::Param(b)) => {
                 if a != b {
                     self.errors.push(SemanticError::Custom {
@@ -155,7 +181,7 @@ impl TypeChecker {
             Type::Ref(inner) | Type::MutRef(inner) | Type::Future(inner) => {
                 self.occurs_check(id, inner.as_ref())
             }
-            Type::Struct(_, args) | Type::Enum(_, args) => {
+            Type::Struct(_, args) | Type::Enum(_, args) | Type::TraitObject(_, args) => {
                 args.iter().any(|arg| self.occurs_check(id, arg))
             }
             Type::Union(members) => members.iter().any(|m| self.occurs_check(id, m)),
@@ -197,6 +223,10 @@ impl TypeChecker {
                 args.into_iter().map(|a| self.apply_subst(a)).collect(),
             ),
             Type::Enum(name, args) => Type::Enum(
+                name,
+                args.into_iter().map(|a| self.apply_subst(a)).collect(),
+            ),
+            Type::TraitObject(name, args) => Type::TraitObject(
                 name,
                 args.into_iter().map(|a| self.apply_subst(a)).collect(),
             ),
@@ -247,6 +277,10 @@ impl TypeChecker {
                     _ => {
                         if let Some(Type::Enum(enum_name, _)) = self.lookup_type(name) {
                             Type::Enum(enum_name, resolved_args)
+                        } else if let Some(Type::TraitObject(trait_name, _)) =
+                            self.lookup_type(name)
+                        {
+                            Type::TraitObject(trait_name, resolved_args)
                         } else {
                             Type::Struct(name.clone(), resolved_args)
                         }

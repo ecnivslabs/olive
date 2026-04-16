@@ -60,6 +60,7 @@ pub struct Decorator {
 pub struct EnumVariant {
     pub name: String,
     pub types: Vec<TypeExpr>,
+    pub value: Option<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +91,57 @@ pub enum TypeExprKind {
     MutRef(Box<TypeExpr>),
     Ptr(Box<TypeExpr>),
     FixedArray(Box<TypeExpr>, usize),
+}
+
+impl std::fmt::Display for TypeExpr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.kind)
+    }
+}
+
+impl std::fmt::Display for TypeExprKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TypeExprKind::Name(n) => write!(f, "{}", n),
+            TypeExprKind::Generic(n, args) => {
+                write!(f, "{}[", n)?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", arg)?;
+                }
+                write!(f, "]")
+            }
+            TypeExprKind::Tuple(args) => {
+                write!(f, "(")?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", arg)?;
+                }
+                write!(f, ")")
+            }
+            TypeExprKind::List(t) => write!(f, "[{}]", t),
+            TypeExprKind::Dict(k, v) => write!(f, "{{{}: {}}}", k, v),
+            TypeExprKind::Union(a, b) => write!(f, "{} | {}", a, b),
+            TypeExprKind::Fn { params, ret } => {
+                write!(f, "fn(")?;
+                for (i, p) in params.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", p)?;
+                }
+                write!(f, ") -> {}", ret)
+            }
+            TypeExprKind::Ref(t) => write!(f, "&{}", t),
+            TypeExprKind::MutRef(t) => write!(f, "&mut {}", t),
+            TypeExprKind::Ptr(t) => write!(f, "*{}", t),
+            TypeExprKind::FixedArray(t, n) => write!(f, "[{}; {}]", t, n),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -300,8 +352,8 @@ pub enum StmtKind {
     },
     Impl {
         type_params: Vec<String>,
-        trait_name: Option<String>,
-        type_name: String,
+        trait_name: Option<TypeExpr>,
+        type_name: TypeExpr,
         body: Vec<Stmt>,
     },
     Trait {
@@ -313,6 +365,7 @@ pub enum StmtKind {
         name: String,
         type_params: Vec<String>,
         variants: Vec<EnumVariant>,
+        body: Vec<Stmt>,
         decorators: Vec<Decorator>,
     },
     If {

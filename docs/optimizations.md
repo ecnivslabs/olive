@@ -8,9 +8,9 @@ These passes run in a tight loop until the MIR reaches a "fixed point" (meaning 
 
 ### 1. Constant Propagation & Folding
 The compiler tracks values that are known at compile-time and evaluates operations on them immediately.
-```python
+```rust
 let x = 10
-let y = x + 5  # Becomes 15 at compile-time
+let y = x + 5  // Becomes 15 at compile-time
 ```
 
 ### 2. Algebraic Simplification
@@ -38,9 +38,9 @@ Replaces a function call with the actual body of the function. This removes the 
 
 ### Loop-Invariant Code Motion (LICM)
 Computations that produce the same result on every iteration of a loop are moved (hoisted) outside the loop.
-```python
+```rust
 for i in range(1000):
-    let val = x * y  # This is moved before the 'for' starts
+    let val = x * y  // This is moved before the 'for' starts
     print(i + val)
 ```
 

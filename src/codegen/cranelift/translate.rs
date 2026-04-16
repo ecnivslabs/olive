@@ -519,6 +519,13 @@ impl<M: Module> CraneliftCodegen<M> {
                         builder.ins().iconst(types::I64, 0)
                     }
                 }
+                Constant::GlobalData(name) => {
+                    let id = module
+                        .declare_data(name, cranelift_module::Linkage::Export, true, false)
+                        .unwrap();
+                    let local_id = module.declare_data_in_func(id, builder.func);
+                    builder.ins().symbol_value(types::I64, local_id)
+                }
                 _ => builder.ins().iconst(types::I64, 0),
             },
         }

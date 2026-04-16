@@ -427,9 +427,10 @@ impl<M: Module> CraneliftCodegen<M> {
         let has_c_structs = !self.c_struct_sizes.is_empty();
         for &(name, sig) in import_table {
             let always_needed = super::ASYNC_RUNTIME_SYMS.contains(&name);
-            let needed_for_c =
-                (name == "__olive_alloc" || name == "__olive_free_c_struct") && has_c_structs;
-            if !(needed.contains(name) || always_needed && has_async || needed_for_c) {
+            let needed_for_c_or_traits = (name == "__olive_alloc")
+                && (has_c_structs || !self.vtables.is_empty())
+                || (name == "__olive_free_c_struct" && has_c_structs);
+            if !(needed.contains(name) || always_needed && has_async || needed_for_c_or_traits) {
                 continue;
             }
             let decl_name = if self.aot {
@@ -731,6 +732,8 @@ impl<M: Module> CraneliftCodegen<M> {
             self.collect_strings(func);
         }
 
+        self.generate_vtables();
+
         let func_count = self.functions.len();
         for i in 0..func_count {
             let func = self.functions[i].clone();
@@ -980,6 +983,28 @@ impl<M: Module> CraneliftCodegen<M> {
                 .unwrap();
             self.module.define_data(id, &data_ctx).unwrap();
             self.string_ids.insert(s.clone(), id);
+        }
+    }
+
+    fn generate_vtables(&mut self) {
+        let vtables = self.vtables.clone();
+        for (vtable_name, methods) in vtables {
+            let mut data_ctx = DataDescription::new();
+            let bytes = vec![0u8; methods.len() * 8];
+            data_ctx.define(bytes.into_boxed_slice());
+
+            for (i, method) in methods.iter().enumerate() {
+                if let Some(&func_id) = self.func_ids.get(method) {
+                    let local_func = self.module.declare_func_in_data(func_id, &mut data_ctx);
+                    data_ctx.write_function_addr((i * 8) as u32, local_func);
+                }
+            }
+
+            let id = self
+                .module
+                .declare_data(&vtable_name, Linkage::Export, true, false)
+                .unwrap();
+            self.module.define_data(id, &data_ctx).unwrap();
         }
     }
 }

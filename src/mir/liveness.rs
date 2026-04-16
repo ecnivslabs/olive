@@ -103,7 +103,9 @@ impl Liveness {
 
     fn use_rvalue(live: &mut HashSet<Local>, rv: &Rvalue) {
         match rv {
-            Rvalue::Use(op) | Rvalue::UnaryOp(_, op) => Self::use_op(live, op),
+            Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::FatPtrData(op) => {
+                Self::use_op(live, op)
+            }
             Rvalue::BinaryOp(_, l, r) => {
                 Self::use_op(live, l);
                 Self::use_op(live, r);
@@ -125,10 +127,12 @@ impl Liveness {
                 Self::use_op(live, i);
             }
             Rvalue::GetTag(o) | Rvalue::GetTypeId(o) | Rvalue::Cast(o, _) => Self::use_op(live, o),
-            Rvalue::Ref(l) | Rvalue::MutRef(l) => {
+            Rvalue::Ref(l) => {
                 live.insert(*l);
             }
+            Rvalue::MutRef(_) => {}
             Rvalue::PtrLoad(op) => Self::use_op(live, op),
+            Rvalue::VTableLoad { vtable, .. } => Self::use_op(live, vtable),
             Rvalue::VectorSplat(op, _) => Self::use_op(live, op),
             Rvalue::VectorLoad(obj, idx, _) => {
                 Self::use_op(live, obj);

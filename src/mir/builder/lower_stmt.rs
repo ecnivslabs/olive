@@ -28,10 +28,16 @@ impl<'a> MirBuilder<'a> {
                 name,
                 value,
                 is_mut,
-                ..
+                type_ann,
             } => {
-                let rval = self.lower_expr(value);
-                let ty = self.get_type(value.id);
+                let mut rval = self.lower_expr(value);
+                let val_ty = self.get_type(value.id).clone();
+                let ty = if let Some(ann) = type_ann {
+                    self.resolve_type_expr(ann)
+                } else {
+                    val_ty.clone()
+                };
+                rval = self.coerce(rval, &val_ty, &ty, value.span);
                 let local = self.declare_var(name.clone(), ty, *is_mut);
                 self.push_statement(StatementKind::Assign(local, Rvalue::Use(rval)), stmt.span);
             }
@@ -155,7 +161,10 @@ impl<'a> MirBuilder<'a> {
             }
 
             StmtKind::Return(Some(expr)) => {
-                let rval = self.lower_expr(expr);
+                let mut rval = self.lower_expr(expr);
+                let expr_ty = self.get_type(expr.id).clone();
+                let ret_ty = self.current_locals[0].ty.clone();
+                rval = self.coerce(rval, &expr_ty, &ret_ty, stmt.span);
                 self.push_statement(
                     StatementKind::Assign(Local(0), Rvalue::Use(rval)),
                     stmt.span,
@@ -359,6 +368,7 @@ impl<'a> MirBuilder<'a> {
                 name,
                 fields,
                 type_params,
+                body,
                 ..
             } => {
                 if !type_params.is_empty() {
@@ -385,7 +395,16 @@ impl<'a> MirBuilder<'a> {
                     self.generic_fns.insert(init_name, stmt.clone());
                     return;
                 }
-                if !fields.is_empty() {
+
+                let has_user_init = body.iter().any(|s| {
+                    if let StmtKind::Fn { name: fn_name, .. } = &s.kind {
+                        fn_name == "__init__"
+                    } else {
+                        false
+                    }
+                });
+
+                if !fields.is_empty() && !has_user_init {
                     let init_name = format!("{}::__init__", name);
                     let n_params = fields.len() + 1;
 
@@ -440,6 +459,31 @@ impl<'a> MirBuilder<'a> {
                     self.loop_stack = saved_loop_stack;
                     self.current_arg_count = saved_arg_count;
                 }
+
+                for s in body {
+                    if let StmtKind::Fn { name: fn_name, .. } = &s.kind {
+                        let mangled = format!("{}::{}", name, fn_name);
+                        let mut impl_stmt = s.clone();
+                        if let StmtKind::Fn {
+                            name: ref mut n, ..
+                        } = impl_stmt.kind
+                        {
+                            *n = mangled;
+                        }
+                        self.lower_fn_def(&impl_stmt);
+                    } else if let StmtKind::Const {
+                        name: const_name,
+                        value,
+                        ..
+                    } = &s.kind
+                    {
+                        let mangled = format!("{}::{}", name, const_name);
+                        let rval = self.lower_expr(value);
+                        if let Operand::Constant(_) = &rval {
+                            self.globals.insert(mangled, rval);
+                        }
+                    }
+                }
             }
 
             StmtKind::Pass
@@ -488,7 +532,10 @@ impl<'a> MirBuilder<'a> {
         target: &crate::parser::Expr,
         value: &crate::parser::Expr,
     ) {
-        let rval = self.lower_expr(value);
+        let mut rval = self.lower_expr(value);
+        let target_ty = self.get_type(target.id).clone();
+        let value_ty = self.get_type(value.id).clone();
+        rval = self.coerce(rval, &value_ty, &target_ty, value.span);
         match &target.kind {
             ExprKind::Identifier(name) => {
                 if let Some(local) = self.lookup_var(name) {

@@ -28,8 +28,10 @@ pub fn mangle_stmt(stmt: &mut Stmt, prefix: &str, names: &HashSet<String>) {
         StmtKind::Impl {
             type_name, body, ..
         } => {
-            if names.contains(type_name) {
-                *type_name = format!("{}::{}", prefix, type_name);
+            if let crate::parser::TypeExprKind::Name(n) = &mut type_name.kind {
+                if names.contains(n) {
+                    *n = format!("{}::{}", prefix, n);
+                }
             }
             for s in body {
                 mangle_stmt(s, prefix, names);

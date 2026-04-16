@@ -405,7 +405,29 @@ impl<M: Module> CraneliftCodegen<M> {
                 }
                 return ret_val;
             }
+            return builder.ins().iconst(types::I64, 0);
+        } else {
+            let fn_ptr_val =
+                Self::translate_operand(builder, func, vars, string_ids, module, func_ids);
+
+            let mut sig = module.make_signature();
+            sig.call_conv = module.isa().default_call_conv();
+
+            for &a in &call_args {
+                sig.params
+                    .push(AbiParam::new(builder.func.dfg.value_type(a)));
+            }
+            sig.returns.push(AbiParam::new(types::I64));
+
+            let sig_ref = builder.import_signature(sig);
+            let inst = builder.ins().call_indirect(sig_ref, fn_ptr_val, &call_args);
+            let results = builder.inst_results(inst);
+
+            if results.is_empty() {
+                return builder.ins().iconst(types::I64, 0);
+            } else {
+                return results[0];
+            }
         }
-        builder.ins().iconst(types::I64, 0)
     }
 }

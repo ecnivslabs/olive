@@ -6,14 +6,14 @@ Olive is statically typed with a clean, indentation-based syntax. Type annotatio
 
 Declare variables using the `let` keyword. Variables are immutable by default:
 
-```python
+```rust
 let name = "Olive"
-# name = "New Name"  # Compile-time error
+// name = "New Name"  // Compile-time error
 ```
 
 To define a mutable variable, use `let mut`:
 
-```python
+```rust
 let mut count = 0
 count = 1
 ```
@@ -22,7 +22,7 @@ count = 1
 
 Use `const` for values that must be evaluated at compile-time:
 
-```python
+```rust
 const MAX_RETRIES = 5
 ```
 
@@ -31,7 +31,10 @@ const MAX_RETRIES = 5
 ### Primitive Types
 
 * `int`: 64-bit signed integer.
+* `i8`, `i16`, `i32`, `i64`: Specific-width signed integers.
+* `u8`, `u16`, `u32`, `u64`, `usize`: Unsigned integers.
 * `float`: 64-bit floating-point number.
+* `f32`, `f64`: Specific-width floating-point numbers.
 * `str`: UTF-8 encoded string.
 * `bool`: Boolean (`True` or `False`).
 * `None`: Represents the absence of a value.
@@ -40,7 +43,7 @@ const MAX_RETRIES = 5
 
 You can allow a variable or parameter to accept one of multiple specified types using a union (`|`):
 
-```python
+```rust
 let mut result: int | str = 10
 result = "Error"
 ```
@@ -51,7 +54,7 @@ Union types are commonly resolved using pattern matching.
 
 Format strings by prefixing them with `f` and enclosing expressions in curly braces:
 
-```python
+```rust
 let name = "Olive"
 let version = 1.0
 print(f"Welcome to {name} v{version:.2f}")
@@ -63,28 +66,44 @@ print(f"Welcome to {name} v{version:.2f}")
 
 Ordered, growable sequences of a single type:
 
-```python
+```rust
 let mut numbers = [1, 2, 3]
 numbers.push(4)
 let first = numbers[0]
+```
+
+### Fixed Arrays
+
+Fixed-size arrays with a known length at compile time:
+
+```rust
+let mut matrix: [int; 16]
 ```
 
 ### Dictionaries
 
 Hash-map key-value collections:
 
-```python
+```rust
 let scores = {"Alice": 95, "Bob": 88}
 print(scores["Alice"])
+```
+
+### Sets
+
+Unordered collections of unique elements:
+
+```rust
+let valid_ids = {101, 102, 103}
 ```
 
 ### Tuples
 
 Fixed-size, heterogeneous collections:
 
-```python
+```rust
 let pair: (int, str) = (1, "Active")
-let (id, status) = pair  # Destructuring assignment
+let (id, status) = pair  // Destructuring assignment
 ```
 
 ## Control Flow
@@ -93,7 +112,7 @@ let (id, status) = pair  # Destructuring assignment
 
 Conditional branches use `if`, `elif`, and `else`:
 
-```python
+```rust
 if score >= 90:
     print("A")
 elif score >= 80:
@@ -108,7 +127,7 @@ else:
 
 Iterate over collections, iterators, or ranges:
 
-```python
+```rust
 for item in ["apple", "banana", "cherry"]:
     print(item)
 
@@ -118,7 +137,7 @@ for i in range(5):
 
 #### While Loops
 
-```python
+```rust
 let mut i = 0
 while i < 5:
     print(i)
@@ -127,11 +146,12 @@ while i < 5:
 
 ## Comprehensions
 
-Generate lists or dictionaries from iterables:
+Generate lists, sets, or dictionaries from iterables:
 
-```python
+```rust
 let numbers = [1, 2, 3, 4]
-let squares = [x * x for x in numbers if x % 2 == 0]  # Evaluates to [4, 16]
+let squares = [x * x for x in numbers if x % 2 == 0]  // Evaluates to [4, 16]
+let unique_squares = {x * x for x in numbers}         // Evaluates to {1, 4, 9, 16}
 ```
 
 ## Built-in Functions

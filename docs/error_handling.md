@@ -8,7 +8,7 @@ The standard library provides the `Result[T, E]` enum to represent operations th
 * `Ok(T)`: Indicates success and wraps the returned value.
 * `Err(E)`: Indicates failure and wraps the error details.
 
-```python
+```rust
 fn find_user(id: int) -> Result[User, str]:
     let user = db.query(id)
     if user == None:
@@ -20,7 +20,7 @@ fn find_user(id: int) -> Result[User, str]:
 
 Because `Result` is an enum, use `match` blocks to handle success and failure paths:
 
-```python
+```rust
 match find_user(123):
     Ok(user):
         print(f"Found {user.name}")
@@ -34,7 +34,7 @@ The compiler requires pattern matches to be exhaustive, ensuring you do not igno
 
 To propagate an error to the caller, use the `try` keyword (or `?` shorthand). If the evaluated expression returns an `Err`, the current function returns early with that `Err`.
 
-```python
+```rust
 fn process_user(id: int) -> Result[None, str]:
     let user = try find_user(id)
     user.send_welcome_email()
@@ -45,9 +45,9 @@ fn process_user(id: int) -> Result[None, str]:
 
 For simple cases where a specific error payload is not required, use union types or optional variants:
 
-```python
+```rust
 fn get_config() -> dict | None:
-    # Returns the configuration dictionary, or None if it is missing
+    // Returns the configuration dictionary, or None if it is missing
     pass
 ```
 
@@ -55,7 +55,7 @@ fn get_config() -> dict | None:
 
 Use assertions (`assert`) to catch invariant violations that represent logic bugs. Assertions are for unrecoverable errors.
 
-```python
+```rust
 assert len(items) > 0, "Cannot process an empty list"
 ```
 

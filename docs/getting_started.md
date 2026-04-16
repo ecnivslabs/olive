@@ -53,7 +53,7 @@ The compiler builds your source code, caching the intermediate build artifacts. 
 
 Open `src/main.liv`. It contains a basic entry point:
 
-```python
+```rust
 fn main():
     print("Hello from Olive!")
 ```

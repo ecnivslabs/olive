@@ -237,6 +237,7 @@ impl Inliner {
             | Rvalue::GetAttr(op, _)
             | Rvalue::GetTag(op)
             | Rvalue::GetTypeId(op)
+            | Rvalue::FatPtrData(op)
             | Rvalue::Cast(op, _) => {
                 self.remap_operand(op, offset);
             }
@@ -259,6 +260,12 @@ impl Inliner {
                 l.0 += offset;
             }
             Rvalue::PtrLoad(op) => self.remap_operand(op, offset),
+            Rvalue::VTableLoad {
+                vtable,
+                method_idx: _,
+            } => {
+                self.remap_operand(vtable, offset);
+            }
             Rvalue::VectorSplat(op, _) => self.remap_operand(op, offset),
             Rvalue::VectorLoad(obj, idx, _) => {
                 self.remap_operand(obj, offset);

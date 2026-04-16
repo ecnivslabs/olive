@@ -8,6 +8,13 @@ use super::types::Type;
 use crate::parser::{Program, Stmt};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub struct TraitDef {
+    pub type_params: Vec<String>,
+    pub methods: Vec<(String, Type)>,
+}
+
 pub struct TypeChecker {
     pub(super) substitutions: HashMap<usize, Type>,
     pub expr_types: HashMap<usize, Type>,
@@ -21,13 +28,15 @@ pub struct TypeChecker {
     pub(super) async_depth: usize,
     pub(super) vararg_fns: HashSet<String>,
     pub struct_fields: HashMap<String, Vec<String>>,
-    pub(super) traits: HashMap<String, Vec<String>>,
+    pub traits: HashMap<String, TraitDef>,
     pub(super) type_traits: HashSet<(String, String)>,
     pub(super) c_ffi_structs: HashSet<String>,
     pub(super) unsafe_depth: usize,
     pub ffi_fns: HashSet<String>,
     pub c_ffi_fns: HashSet<String>,
     pub(super) var_counter: usize,
+    pub init_params: HashMap<String, Vec<String>>,
+    pub expr_kwarg_maps: HashMap<usize, Vec<usize>>,
 }
 
 impl TypeChecker {
@@ -270,7 +279,13 @@ impl TypeChecker {
         ];
 
         let mut traits = HashMap::default();
-        traits.insert("Error".to_string(), vec![]);
+        traits.insert(
+            "Error".to_string(),
+            TraitDef {
+                type_params: vec![],
+                methods: Vec::new(),
+            },
+        );
         let mut type_traits = HashSet::default();
         type_traits.insert(("Error".to_string(), "Error".to_string()));
 
@@ -313,6 +328,8 @@ impl TypeChecker {
             ffi_fns: HashSet::default(),
             c_ffi_fns: HashSet::default(),
             var_counter: 0,
+            init_params: HashMap::default(),
+            expr_kwarg_maps: HashMap::default(),
         }
     }
 
@@ -744,6 +761,17 @@ mod tests {
             "trait Printable:\n    fn display(self) -> str:\n        return \"\"\n\nstruct Pt:\n    x: i64\n\nimpl Printable for Pt:\n    fn display(self) -> str:\n        return str(self.x)\n",
         );
         assert!(tc.errors.is_empty(), "errors: {:?}", tc.errors);
+    }
+
+    #[test]
+    fn trait_signature_mismatch_reported() {
+        let tc = pipeline(
+            "trait Drawable:\n    fn draw(self) -> i64:\n        return 0\n\nstruct Circle:\n    radius: i64\n\nimpl Drawable for Circle:\n    fn draw(self) -> str:\n        return \"wrong\"\n",
+        );
+        assert!(
+            !tc.errors.is_empty(),
+            "Expected error for trait signature mismatch"
+        );
     }
 
     #[test]

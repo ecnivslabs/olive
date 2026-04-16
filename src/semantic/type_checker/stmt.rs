@@ -246,6 +246,16 @@ impl TypeChecker {
                 let outer_idx = 0;
                 self.type_env[outer_idx].insert(final_name.clone(), fn_ty.clone());
 
+                if final_name.ends_with("::__init__") {
+                    let mut p_names = Vec::new();
+                    for p in params.iter() {
+                        if p.name != "self" {
+                            p_names.push(p.name.clone());
+                        }
+                    }
+                    self.init_params.insert(final_name.clone(), p_names);
+                }
+
                 if params
                     .iter()
                     .any(|p| matches!(p.kind, ParamKind::VarArg | ParamKind::KwArg))
@@ -396,30 +406,41 @@ impl TypeChecker {
                 for tp in type_params {
                     self.define_type(tp, Type::Param(tp.clone()), false);
                 }
+
+                let prev_struct = self.current_struct.take();
+                self.current_struct = Some(type_name.to_string());
+                self.enter_scope();
+                for s in body {
+                    self.check_stmt(s);
+                }
+
                 if let Some(tr) = trait_name {
-                    if let Some(required) = self.traits.get(tr).cloned() {
-                        let provided: rustc_hash::FxHashSet<String> = body
-                            .iter()
-                            .filter_map(|s| {
-                                if let StmtKind::Fn { name, .. } = &s.kind {
-                                    Some(name.clone())
-                                } else {
-                                    None
+                    if let Some(trait_def) = self.traits.get(&tr.to_string()).cloned() {
+                        let mut provided = rustc_hash::FxHashMap::default();
+                        for s in body {
+                            if let StmtKind::Fn { name: fn_name, .. } = &s.kind {
+                                let mangled = format!("{}::{}", type_name, fn_name);
+                                if let Some(ty) = self.lookup_type(&mangled) {
+                                    provided.insert(fn_name.clone(), ty);
                                 }
-                            })
-                            .collect();
-                        for method in &required {
-                            if !provided.contains(method) {
+                            }
+                        }
+
+                        for (method_name, required_ty) in &trait_def.methods {
+                            if let Some(provided_ty) = provided.get(method_name) {
+                                self.unify(required_ty, provided_ty, stmt.span);
+                            } else {
                                 self.errors.push(SemanticError::Custom {
                                     msg: format!(
                                         "`{}` does not implement `{}::{}` required by trait `{}`",
-                                        type_name, type_name, method, tr
+                                        type_name, type_name, method_name, tr
                                     ),
                                     span: stmt.span,
                                 });
                             }
                         }
-                        self.type_traits.insert((type_name.clone(), tr.clone()));
+                        self.type_traits
+                            .insert((type_name.to_string(), tr.to_string()));
                     } else {
                         self.errors.push(SemanticError::Custom {
                             msg: format!("undefined trait `{}`", tr),
@@ -427,12 +448,7 @@ impl TypeChecker {
                         });
                     }
                 }
-                let prev_struct = self.current_struct.take();
-                self.current_struct = Some(type_name.clone());
-                self.enter_scope();
-                for s in body {
-                    self.check_stmt(s);
-                }
+
                 self.leave_scope();
                 self.current_struct = prev_struct;
                 self.leave_scope();
@@ -451,21 +467,32 @@ impl TypeChecker {
                     self.define_type(tp, Type::Param(tp.clone()), false);
                 }
 
-                let method_names: Vec<String> = methods
-                    .iter()
-                    .filter_map(|s| {
-                        self.check_stmt(s);
-                        if let StmtKind::Fn { name, .. } = &s.kind {
-                            Some(name.clone())
-                        } else {
-                            None
+                let mut trait_methods = Vec::new();
+                for s in methods {
+                    self.check_stmt(s);
+                    if let StmtKind::Fn { name: fn_name, .. } = &s.kind {
+                        let mangled = format!("{}::{}", name, fn_name);
+                        if let Some(ty) = self.lookup_type(&mangled) {
+                            trait_methods.push((fn_name.clone(), ty));
                         }
-                    })
-                    .collect();
+                    }
+                }
 
                 self.leave_scope();
                 self.current_struct = prev_struct;
-                self.traits.insert(name.clone(), method_names);
+                self.traits.insert(
+                    name.clone(),
+                    super::TraitDef {
+                        type_params: type_params.clone(),
+                        methods: trait_methods,
+                    },
+                );
+
+                let abstract_args = type_params
+                    .iter()
+                    .map(|p| Type::Param(p.clone()))
+                    .collect::<Vec<_>>();
+                self.define_type(name, Type::TraitObject(name.clone(), abstract_args), false);
             }
 
             StmtKind::Return(Some(expr)) => {
@@ -575,6 +602,7 @@ impl TypeChecker {
                 name,
                 type_params,
                 variants,
+                body,
                 ..
             } => {
                 let abstract_args = type_params
@@ -583,6 +611,9 @@ impl TypeChecker {
                     .collect::<Vec<_>>();
                 self.define_type(name, Type::Enum(name.clone(), abstract_args.clone()), false);
 
+                let prev_struct = self.current_struct.take();
+                self.current_struct = Some(name.clone());
+
                 self.enter_scope();
                 for tp in type_params {
                     self.define_type(tp, Type::Param(tp.clone()), false);
@@ -590,13 +621,23 @@ impl TypeChecker {
 
                 let mut variant_data = Vec::new();
                 for variant in variants {
+                    if let Some(val) = &variant.value {
+                        let val_ty = self.check_expr(val);
+                        self.unify(&Type::Int, &val_ty, stmt.span);
+                    }
                     let mut param_types = Vec::new();
                     for ty_expr in &variant.types {
                         param_types.push(self.resolve_type_expr(ty_expr));
                     }
                     variant_data.push((variant.name.clone(), param_types));
                 }
+
+                for s in body {
+                    self.check_stmt(s);
+                }
+
                 self.leave_scope();
+                self.current_struct = prev_struct;
 
                 let mut variant_names = Vec::new();
                 for (v_name, p_types) in variant_data {

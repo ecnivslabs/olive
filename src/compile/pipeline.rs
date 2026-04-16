@@ -28,6 +28,7 @@ pub struct PipelineTimings {
 pub struct PipelineOutput {
     pub functions: Vec<MirFunction>,
     pub struct_fields: HashMap<String, Vec<String>>,
+    pub vtables: HashMap<String, Vec<String>>,
     pub native_libs: Vec<NativeLib>,
     pub program: parser::Program,
     pub timings: PipelineTimings,
@@ -77,8 +78,10 @@ pub fn run_pipeline(filename: &str) -> Result<PipelineOutput, ()> {
     let mir_start = std::time::Instant::now();
     let mut mir_builder = MirBuilder::new(
         &type_checker.expr_types,
+        &type_checker.expr_kwarg_maps,
         &type_checker.type_env[0],
         type_checker.struct_fields.clone(),
+        &type_checker.traits,
         type_checker.c_ffi_fns.clone(),
     );
 
@@ -93,7 +96,9 @@ pub fn run_pipeline(filename: &str) -> Result<PipelineOutput, ()> {
     let borrow_start = std::time::Instant::now();
     let mut borrow_failed = false;
     for func in &mir_builder.functions {
-        let needs_check = func.locals.iter().any(|l| l.ty.is_move_type())
+        let is_init = func.name.ends_with("::__init__");
+        let needs_check = is_init
+            || func.locals.iter().any(|l| l.ty.is_move_type())
             || func.basic_blocks.iter().any(|bb| {
                 bb.statements.iter().any(|s| {
                     matches!(
@@ -105,7 +110,7 @@ pub fn run_pipeline(filename: &str) -> Result<PipelineOutput, ()> {
         if !needs_check {
             continue;
         }
-        let mut checker = BorrowChecker::new(func);
+        let mut checker = BorrowChecker::new(func, &type_checker.struct_fields);
         checker.check();
         if !checker.errors.is_empty() {
             borrow_failed = true;
@@ -137,6 +142,7 @@ pub fn run_pipeline(filename: &str) -> Result<PipelineOutput, ()> {
     Ok(PipelineOutput {
         functions: mir_builder.functions,
         struct_fields: mir_builder.struct_fields,
+        vtables: mir_builder.vtables,
         native_libs,
         program,
         timings: PipelineTimings {

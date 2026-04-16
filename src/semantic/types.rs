@@ -18,6 +18,7 @@ pub enum Type {
     Null,
     Struct(String, Vec<Type>),
     Enum(String, Vec<Type>),
+    TraitObject(String, Vec<Type>),
     Param(String),
     Union(Vec<Type>),
     Fn(Vec<Type>, Box<Type>, Vec<Type>),
@@ -92,7 +93,7 @@ impl fmt::Display for Type {
                 }
                 Ok(())
             }
-            Type::Struct(name, args) | Type::Enum(name, args) => {
+            Type::Struct(name, args) | Type::Enum(name, args) | Type::TraitObject(name, args) => {
                 write!(f, "{}", name)?;
                 if !args.is_empty() {
                     write!(f, "[")?;

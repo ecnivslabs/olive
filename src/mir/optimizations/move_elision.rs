@@ -86,6 +86,7 @@ impl MoveElision {
             | Rvalue::GetAttr(op, _)
             | Rvalue::GetTag(op)
             | Rvalue::GetTypeId(op)
+            | Rvalue::FatPtrData(op)
             | Rvalue::Cast(op, _) => self.optimize_operand(op, live_after, locals),
             Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) => {
                 let mut changed = self.optimize_operand(l, live_after, locals);
@@ -108,6 +109,7 @@ impl MoveElision {
             }
             Rvalue::Ref(_) | Rvalue::MutRef(_) => false,
             Rvalue::PtrLoad(op) => self.optimize_operand(op, live_after, locals),
+            Rvalue::VTableLoad { vtable, .. } => self.optimize_operand(vtable, live_after, locals),
             Rvalue::VectorSplat(op, _) => self.optimize_operand(op, live_after, locals),
             Rvalue::VectorLoad(obj, idx, _) => {
                 let mut changed = self.optimize_operand(obj, live_after, locals);

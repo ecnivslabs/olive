@@ -22,6 +22,7 @@ pub enum Constant {
     Str(String),
     Bool(bool),
     Function(String),
+    GlobalData(String),
     None,
 }
 
@@ -32,6 +33,7 @@ pub enum AggregateKind {
     Set,
     Dict,
     EnumVariant(i64, usize),
+    FatPtr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -52,6 +54,8 @@ pub enum Rvalue {
     VectorLoad(Operand, Operand, usize),
     VectorFMA(Operand, Operand, Operand),
     PtrLoad(Operand),
+    FatPtrData(Operand),
+    VTableLoad { vtable: Operand, method_idx: usize },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

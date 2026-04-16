@@ -4,7 +4,7 @@
 
 Use the `import` statement to bring in other Olive files. Dots in the module name map to directory separators:
 
-```python
+```rust
 import math
 import utilities.network
 import physics.gravity as gravity
@@ -27,7 +27,7 @@ Olive separates imported modules from executable main scripts by placing strict 
 
 If you only need specific names from a module, use `from ... import`:
 
-```python
+```rust
 from math import sqrt, pi
 from data.processing import clean_string as clean, parse_json as parse
 
@@ -39,7 +39,7 @@ let data = parse(clean(raw_input))
 
 If a library is written in another language (like C or Rust), it can be used in Olive by defining its interface through a native import.
 
-```python
+```rust
 import "physics.so" as physics
 
 let result = physics.compute_gravity(10.0, 5.0)
@@ -54,14 +54,14 @@ Olive uses a naming convention for visibility:
 - **Public**: Any name that doesn't start with an underscore. Accessible from other modules.
 - **Private**: Names starting with `_` are private to the module where they're defined. The compiler enforces this.
 
-```python
-# In utils.liv
+```rust
+// In utils.liv
 fn _secret():
     pass
 
-# In main.liv
+// In main.liv
 import utils
-# utils._secret()  # Error: cannot access private member `_secret`
+// utils._secret()  // Error: cannot access private member `_secret`
 ```
 
 ## Project Organization
@@ -79,7 +79,7 @@ my_project/
 
 In `main.liv`:
 
-```python
+```rust
 import models
 import utils.network
 ```
@@ -90,49 +90,49 @@ The standard library is resolved dynamically at runtime and exposed via built-in
 
 ### `math`
 
-```python
+```rust
 import math
 ```
 
 **Constants**
 
-```python
-math.PI    # 3.141592653589793
-math.E     # 2.718281828459045
-math.TAU   # 6.283185307179586
-math.INF   # 1.0e308
+```rust
+math.PI    // 3.141592653589793
+math.E     // 2.718281828459045
+math.TAU   // 6.283185307179586
+math.INF   // 1.0e308
 ```
 
 **Trigonometry** (all angles in radians)
 
-```python
+```rust
 math.sin(x)         math.asin(x)
 math.cos(x)         math.acos(x)
 math.tan(x)         math.atan(x)
                     math.atan2(y, x)
-math.degrees(x)     # radians -> degrees
-math.radians(x)     # degrees -> radians
+math.degrees(x)     // radians -> degrees
+math.radians(x)     // degrees -> radians
 ```
 
 **Exponential and logarithm**
 
-```python
-math.exp(x)         # e^x
-math.log(x)         # natural log
-math.log10(x)       # log base 10
-math.pow(b, e)      # b^e (floats)
-math.ipow(b, e)     # b^e (integers)
+```rust
+math.exp(x)         // e^x
+math.log(x)         // natural log
+math.log10(x)       // log base 10
+math.pow(b, e)      // b^e (floats)
+math.ipow(b, e)     // b^e (integers)
 ```
 
 **Roots and rounding**
 
-```python
+```rust
 math.sqrt(x)
 math.cbrt(x)
-math.hypot(x, y)    # sqrt(x² + y²)
-math.floor(x)       # -> int
-math.ceil(x)        # -> int
-math.round(x)       # -> int
+math.hypot(x, y)    // sqrt(x² + y²)
+math.floor(x)       // -> int
+math.ceil(x)        // -> int
+math.round(x)       // -> int
 math.abs(x)
 math.clamp(x, lo, hi)
 math.fmod(x, y)
@@ -141,7 +141,7 @@ math.copysign(x, y)
 
 **Hyperbolic**
 
-```python
+```rust
 math.sinh(x)    math.asinh(x)
 math.cosh(x)    math.acosh(x)
 math.tanh(x)    math.atanh(x)
@@ -149,20 +149,20 @@ math.tanh(x)    math.atanh(x)
 
 **Number theory**
 
-```python
+```rust
 math.gcd(a, b)
 math.lcm(a, b)
 math.factorial(n)
-math.comb(n, k)     # n choose k
-math.perm(n, k)     # n permute k
+math.comb(n, k)     // n choose k
+math.perm(n, k)     // n permute k
 ```
 
 **Utilities**
 
-```python
+```rust
 math.min(a, b)
 math.max(a, b)
-math.isclose(a, b)  # abs(a - b) < 1e-9
+math.isclose(a, b)  // abs(a - b) < 1e-9
 math.erf(x)
 ```
 
@@ -170,7 +170,7 @@ math.erf(x)
 
 Synchronous file operations:
 
-```python
+```rust
 import io
 
 let contents = io.file_read("data.txt")
@@ -181,7 +181,7 @@ io.file_write("output.txt", "hello")
 
 Asynchronous file operations that return futures. Must be used with `await`:
 
-```python
+```rust
 import aio
 
 async fn read_file():
@@ -193,7 +193,7 @@ async fn read_file():
 
 Low-level TCP networking:
 
-```python
+```rust
 import net
 
 let stream = net.tcp_connect("127.0.0.1:8080")
@@ -206,7 +206,7 @@ net.tcp_close(stream)
 
 Simple HTTP client:
 
-```python
+```rust
 import http
 
 let body = http.http_get("https://example.com/api/data")
@@ -217,10 +217,10 @@ let resp = http.http_post("https://example.com/api/submit", "{\"key\": \"value\"
 
 Random number generation:
 
-```python
+```rust
 import random
 
 random.random_seed(42)
-let f = random.random_get()          # float in [0.0, 1.0)
-let n = random.random_int(1, 100)    # int in [1, 100]
+let f = random.random_get()          // float in [0.0, 1.0)
+let n = random.random_int(1, 100)    // int in [1, 100]
 ```

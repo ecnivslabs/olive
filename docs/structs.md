@@ -6,18 +6,18 @@ Structs define custom, compound data structures in Olive. They group related fie
 
 A struct defines the layout of your data. Fields must have explicit types.
 
-```python
+```rust
 struct User:
     username: str
     email: str
-    is_active: bool = True  # Default value
+    is_active: bool = True  // Default value
 ```
 
 ## Adding Behavior with `impl`
 
 Methods are defined in an `impl` block for the struct. Methods that operate on an instance must take `self` as their first parameter.
 
-```python
+```rust
 impl User:
     fn deactivate(self):
         self.is_active = False
@@ -27,7 +27,7 @@ impl User:
 
 When an instance of a struct is created, Olive calls the `__init__` method if it's defined. This is where setup logic or validation is performed.
 
-```python
+```rust
 struct Rectangle:
     width: float
     height: float
@@ -49,7 +49,7 @@ If no `__init__` is defined, Olive generates a default constructor that takes al
 
 Structs can be generic, allowing any type of data to be stored.
 
-```python
+```rust
 struct Box[T]:
     content: T
 
@@ -57,15 +57,15 @@ impl Box[T]:
     fn get(self) -> T:
         return self.content
 
-let int_box = Box(42)      # T is int
-let str_box = Box("item")  # T is str
+let int_box = Box(42)      // T is int
+let str_box = Box("item")  // T is str
 ```
 
 ## Composition
 
 Olive uses composition rather than object-oriented inheritance. Structs can nest other structs to reuse fields or behavior.
 
-```python
+```rust
 struct Admin:
     user: User
     permissions: [str]
@@ -79,20 +79,20 @@ impl Admin:
 
 Fields and methods starting with an underscore are **private**. They can only be accessed within the module where the struct is defined.
 
-```python
+```rust
 struct Account:
     _balance: float
 
 impl Account:
     fn get_balance(self) -> float:
-        return self._balance  # OK: internal access
+        return self._balance  // OK: internal access
 ```
 
 ## Implementing Traits
 
 You can implement traits for your structs to provide standardized behavior.
 
-```python
+```rust
 trait Describable:
     fn describe(self) -> str
 

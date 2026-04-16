@@ -515,6 +515,7 @@ pub struct CraneliftCodegen<M: Module> {
     pub(super) c_struct_destructors: HashMap<String, String>,
     pub(super) aot: bool,
     pub(super) extern_var_ptrs: HashMap<String, (i64, String, String)>,
+    pub(super) vtables: HashMap<String, Vec<String>>,
 }
 
 fn c_prim_layout(ty: &str) -> (i32, i32) {
@@ -650,6 +651,7 @@ impl CraneliftCodegen<JITModule> {
     pub fn new_jit(
         functions: Vec<MirFunction>,
         struct_fields: HashMap<String, Vec<String>>,
+        vtables: HashMap<String, Vec<String>>,
         native_lib_paths: &[FfiLibInfo],
     ) -> Self {
         let mut flag_builder = settings::builder();
@@ -688,9 +690,13 @@ impl CraneliftCodegen<JITModule> {
             .any(|(_, _, _, structs, _)| !structs.is_empty());
         let mut extern_var_ptrs: HashMap<String, (i64, String, String)> = HashMap::default();
 
-        if let Some(lib) =
-            jit_loader::register_runtime_symbols(&mut builder, &needed, has_async, has_c_structs)
-        {
+        let has_traits = !vtables.is_empty();
+        if let Some(lib) = jit_loader::register_runtime_symbols(
+            &mut builder,
+            &needed,
+            has_async,
+            has_c_structs || has_traits,
+        ) {
             libs.push(lib);
         }
 
@@ -808,6 +814,7 @@ impl CraneliftCodegen<JITModule> {
             c_struct_destructors,
             aot: false,
             extern_var_ptrs,
+            vtables,
         }
     }
 
@@ -828,6 +835,7 @@ impl CraneliftCodegen<ObjectModule> {
     pub fn new_aot(
         functions: Vec<MirFunction>,
         struct_fields: HashMap<String, Vec<String>>,
+        vtables: HashMap<String, Vec<String>>,
         native_lib_paths: &[FfiLibInfo],
     ) -> Self {
         let mut flag_builder = settings::builder();
@@ -926,6 +934,7 @@ impl CraneliftCodegen<ObjectModule> {
             c_struct_destructors,
             aot: true,
             extern_var_ptrs,
+            vtables,
         }
     }
 

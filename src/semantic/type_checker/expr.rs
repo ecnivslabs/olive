@@ -135,59 +135,127 @@ impl TypeChecker {
                 self.expr_types.insert(callee.id, resolved_callee.clone());
 
                 if let Type::Struct(name, type_args) = resolved_callee {
-                    let mut arg_types = Vec::new();
-                    for arg in args {
-                        arg_types.push(self.check_expr(match arg {
-                            CallArg::Positional(e)
-                            | CallArg::Keyword(_, e)
-                            | CallArg::Splat(e)
-                            | CallArg::KwSplat(e) => e,
-                        }));
+                    let init_name = format!("{}::__init__", name);
+                    let has_init = self.lookup_type(&init_name).is_some();
+                    let expected_fields = if has_init {
+                        self.init_params
+                            .get(&init_name)
+                            .cloned()
+                            .unwrap_or_default()
+                    } else {
+                        self.struct_fields.get(&name).cloned().unwrap_or_default()
+                    };
+
+                    let mut has_kwargs = false;
+                    let mut pos_idx = 0;
+                    let mut kwarg_map = vec![0; expected_fields.len()];
+                    let mut final_args: Vec<Option<Type>> = vec![None; expected_fields.len()];
+                    let mut raw_count = 0;
+
+                    for (i, arg) in args.iter().enumerate() {
+                        raw_count += 1;
+                        match arg {
+                            CallArg::Positional(e) | CallArg::Splat(e) | CallArg::KwSplat(e) => {
+                                let t = self.check_expr(e);
+                                if pos_idx < expected_fields.len() {
+                                    final_args[pos_idx] = Some(t);
+                                    kwarg_map[pos_idx] = i;
+                                    pos_idx += 1;
+                                }
+                            }
+                            CallArg::Keyword(kw_name, e) => {
+                                has_kwargs = true;
+                                let t = self.check_expr(e);
+                                if let Some(idx) = expected_fields.iter().position(|f| f == kw_name)
+                                {
+                                    if final_args[idx].is_some() {
+                                        self.errors.push(
+                                            super::super::error::SemanticError::Custom {
+                                                msg: format!("duplicate argument `{}`", kw_name),
+                                                span: expr.span,
+                                            },
+                                        );
+                                    }
+                                    final_args[idx] = Some(t);
+                                    kwarg_map[idx] = i;
+                                } else {
+                                    self.errors
+                                        .push(super::super::error::SemanticError::Custom {
+                                            msg: format!("no field `{}` on `{}`", kw_name, name),
+                                            span: expr.span,
+                                        });
+                                }
+                            }
+                        }
                     }
 
-                    let init_name = format!("{}::__init__", name);
-                    if let Some(init_ty) = self.lookup_type(&init_name) {
-                        let instantiated_init = self.instantiate(init_ty);
-                        if let Type::Fn(params, _, _) = instantiated_init {
-                            if !params.is_empty() {
-                                self.unify(
-                                    &params[0],
-                                    &Type::Struct(name.clone(), type_args.clone()),
-                                    expr.span,
-                                );
-                            }
+                    if has_kwargs {
+                        self.expr_kwarg_maps.insert(expr.id, kwarg_map);
+                    }
 
-                            if params.len() != arg_types.len() + 1 {
-                                self.errors
-                                    .push(super::super::error::SemanticError::Custom {
-                                        msg: format!(
-                                            "constructor arity mismatch: expected {}, found {}",
-                                            params.len() - 1,
-                                            arg_types.len()
-                                        ),
-                                        span: expr.span,
-                                    });
-                            } else {
-                                for (p, a) in params.iter().skip(1).zip(arg_types) {
-                                    self.unify(p, &a, expr.span);
+                    let mut packed_args = Vec::new();
+                    for t in final_args {
+                        if let Some(t) = t {
+                            packed_args.push(t);
+                        } else {
+                            packed_args.push(Type::Any);
+                        }
+                    }
+
+                    if has_init {
+                        if let Some(init_ty) = self.lookup_type(&init_name) {
+                            let instantiated_init = self.instantiate(init_ty);
+                            if let Type::Fn(params, _, _) = instantiated_init {
+                                if !params.is_empty() {
+                                    self.unify(
+                                        &params[0],
+                                        &Type::Struct(name.clone(), type_args.clone()),
+                                        expr.span,
+                                    );
+                                }
+                                if params.len() != packed_args.len() + 1
+                                    || raw_count != packed_args.len()
+                                {
+                                    self.errors
+                                        .push(super::super::error::SemanticError::Custom {
+                                            msg: format!(
+                                                "constructor arity mismatch: expected {}, found {}",
+                                                params.len() - 1,
+                                                raw_count
+                                            ),
+                                            span: expr.span,
+                                        });
+                                } else {
+                                    for (p, a) in params.iter().skip(1).zip(packed_args) {
+                                        self.unify(p, &a, expr.span);
+                                    }
                                 }
                             }
                         }
                     } else {
-                        if let Some(fields) = self.struct_fields.get(&name).cloned() {
-                            for (i, arg_ty) in arg_types.iter().enumerate() {
-                                if i < fields.len() {
-                                    let field_name = &fields[i];
-                                    if let Some(field_ty) = self
-                                        .field_types
-                                        .get(&(name.clone(), field_name.clone()))
-                                        .cloned()
-                                    {
-                                        let subst = self.get_struct_subst(&name, &type_args);
-                                        let instantiated_field =
-                                            self.replace_params_with_vars(field_ty, &subst);
-                                        self.unify(&instantiated_field, arg_ty, expr.span);
-                                    }
+                        if raw_count != expected_fields.len() {
+                            self.errors
+                                .push(super::super::error::SemanticError::Custom {
+                                    msg: format!(
+                                        "constructor arity mismatch: expected {}, found {}",
+                                        expected_fields.len(),
+                                        raw_count
+                                    ),
+                                    span: expr.span,
+                                });
+                        }
+                        for (i, arg_ty) in packed_args.iter().enumerate() {
+                            if i < expected_fields.len() {
+                                let field_name = &expected_fields[i];
+                                if let Some(field_ty) = self
+                                    .field_types
+                                    .get(&(name.clone(), field_name.clone()))
+                                    .cloned()
+                                {
+                                    let subst = self.get_struct_subst(&name, &type_args);
+                                    let instantiated_field =
+                                        self.replace_params_with_vars(field_ty, &subst);
+                                    self.unify(&instantiated_field, arg_ty, expr.span);
                                 }
                             }
                         }

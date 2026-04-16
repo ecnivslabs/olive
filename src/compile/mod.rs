@@ -27,8 +27,12 @@ pub fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: boo
     }
 
     let cg_start = std::time::Instant::now();
-    let mut codegen =
-        CraneliftCodegen::new_jit(out.functions, out.struct_fields.clone(), &out.native_libs);
+    let mut codegen = CraneliftCodegen::new_jit(
+        out.functions,
+        out.struct_fields.clone(),
+        out.vtables.clone(),
+        &out.native_libs,
+    );
     codegen.generate();
     codegen.finalize();
     let cg_duration = cg_start.elapsed();
@@ -63,8 +67,12 @@ pub fn compile_and_emit(filename: &str, output: &str, show_time: bool) {
     };
 
     let cg_start = std::time::Instant::now();
-    let mut codegen =
-        CraneliftCodegen::new_aot(out.functions, out.struct_fields.clone(), &out.native_libs);
+    let mut codegen = CraneliftCodegen::new_aot(
+        out.functions,
+        out.struct_fields.clone(),
+        out.vtables.clone(),
+        &out.native_libs,
+    );
     codegen.generate();
     let obj_bytes = codegen.emit_object();
     let cg_duration = cg_start.elapsed();
@@ -153,8 +161,12 @@ pub fn compile_and_test(filename: &str, _show_time: bool) {
         Err(_) => std::process::exit(1),
     };
 
-    let mut codegen =
-        CraneliftCodegen::new_jit(out.functions, out.struct_fields.clone(), &out.native_libs);
+    let mut codegen = CraneliftCodegen::new_jit(
+        out.functions,
+        out.struct_fields.clone(),
+        out.vtables.clone(),
+        &out.native_libs,
+    );
     codegen.generate();
     codegen.finalize();
 
