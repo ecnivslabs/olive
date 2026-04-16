@@ -248,6 +248,34 @@ impl<M: Module> CraneliftCodegen<M> {
                     }
                 }
             }
+            Rvalue::Cast(op, ty) => {
+                let val = Self::translate_operand(builder, op, vars, string_ids, module, func_ids);
+                let current_ty = builder.func.dfg.value_type(val);
+                let target_cl_ty = match ty {
+                    OliveType::F32 => types::F32,
+                    OliveType::Float => types::F64,
+                    _ => types::I64,
+                };
+                
+                if current_ty == target_cl_ty {
+                    val
+                } else if current_ty == types::I64 && target_cl_ty == types::F64 {
+                    builder.ins().fcvt_from_sint(types::F64, val)
+                } else if current_ty == types::F64 && target_cl_ty == types::I64 {
+                    // Check if it's unsigned target for float -> int cast, simplified to signed
+                    builder.ins().fcvt_to_sint(types::I64, val)
+                } else if current_ty == types::F64 && target_cl_ty == types::F32 {
+                    builder.ins().fdemote(types::F32, val)
+                } else if current_ty == types::F32 && target_cl_ty == types::F64 {
+                    builder.ins().fpromote(types::F64, val)
+                } else if current_ty == types::F32 && target_cl_ty == types::I64 {
+                    builder.ins().fcvt_to_sint(types::I64, val)
+                } else if current_ty == types::I64 && target_cl_ty == types::F32 {
+                    builder.ins().fcvt_from_sint(types::F32, val)
+                } else {
+                    val
+                }
+            }
             Rvalue::Aggregate(kind, ops) => {
                 Self::translate_aggregate(builder, vars, string_ids, module, func_ids, kind, ops)
             }

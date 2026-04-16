@@ -509,6 +509,9 @@ impl Resolver {
             ExprKind::Await(inner) => {
                 self.resolve_expr(inner);
             }
+            ExprKind::Cast(operand, _) => {
+                self.resolve_expr(operand);
+            }
             ExprKind::AsyncBlock(body) => {
                 self.table.push(ScopeKind::Block);
                 for s in body {

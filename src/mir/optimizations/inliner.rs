@@ -236,7 +236,8 @@ impl Inliner {
             | Rvalue::UnaryOp(_, op)
             | Rvalue::GetAttr(op, _)
             | Rvalue::GetTag(op)
-            | Rvalue::GetTypeId(op) => {
+            | Rvalue::GetTypeId(op)
+            | Rvalue::Cast(op, _) => {
                 self.remap_operand(op, offset);
             }
             Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) => {

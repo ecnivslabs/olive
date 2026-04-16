@@ -56,6 +56,11 @@ impl TypeChecker {
                 Some(t) => t,
                 None => self.fresh_var(),
             },
+            
+            ExprKind::Cast(operand, type_expr) => {
+                self.check_expr(operand);
+                self.resolve_type_expr(type_expr)
+            }
 
             ExprKind::BinOp { left, op, right } => {
                 let l_ty = self.check_expr(left);

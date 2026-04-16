@@ -85,7 +85,8 @@ impl MoveElision {
             | Rvalue::UnaryOp(_, op)
             | Rvalue::GetAttr(op, _)
             | Rvalue::GetTag(op)
-            | Rvalue::GetTypeId(op) => self.optimize_operand(op, live_after, locals),
+            | Rvalue::GetTypeId(op)
+            | Rvalue::Cast(op, _) => self.optimize_operand(op, live_after, locals),
             Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) => {
                 let mut changed = self.optimize_operand(l, live_after, locals);
                 changed |= self.optimize_operand(r, live_after, locals);

@@ -69,7 +69,8 @@ impl DeadCodeElimination {
             | Rvalue::UnaryOp(_, op)
             | Rvalue::GetAttr(op, _)
             | Rvalue::GetTag(op)
-            | Rvalue::GetTypeId(op) => self.record_operand_usage(op, used),
+            | Rvalue::GetTypeId(op)
+            | Rvalue::Cast(op, _) => self.record_operand_usage(op, used),
             Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) => {
                 self.record_operand_usage(l, used);
                 self.record_operand_usage(r, used);

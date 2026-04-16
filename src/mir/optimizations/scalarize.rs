@@ -456,6 +456,7 @@ fn rval_references(rval: &Rvalue, local: Local) -> bool {
         | Rvalue::GetAttr(op, _)
         | Rvalue::GetTag(op)
         | Rvalue::GetTypeId(op)
+        | Rvalue::Cast(op, _)
         | Rvalue::PtrLoad(op)
         | Rvalue::VectorSplat(op, _) => operand_is(op, local),
         Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) => {

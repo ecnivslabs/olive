@@ -124,7 +124,7 @@ impl Liveness {
                 Self::use_op(live, o);
                 Self::use_op(live, i);
             }
-            Rvalue::GetTag(o) | Rvalue::GetTypeId(o) => Self::use_op(live, o),
+            Rvalue::GetTag(o) | Rvalue::GetTypeId(o) | Rvalue::Cast(o, _) => Self::use_op(live, o),
             Rvalue::Ref(l) | Rvalue::MutRef(l) => {
                 live.insert(*l);
             }

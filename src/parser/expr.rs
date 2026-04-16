@@ -408,6 +408,12 @@ impl Parser {
                     let span = expr.span.merge(self.span_from(&op));
                     expr = Expr::new(ExprKind::Try(Box::new(expr)), span);
                 }
+                TokenKind::As => {
+                    self.advance();
+                    let ty = self.parse_type_expr()?;
+                    let span = expr.span.merge(ty.span);
+                    expr = Expr::new(ExprKind::Cast(Box::new(expr), ty), span);
+                }
                 _ => break,
             }
         }

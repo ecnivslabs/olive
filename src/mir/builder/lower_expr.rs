@@ -424,6 +424,18 @@ impl<'a> MirBuilder<'a> {
                 );
                 self.operand_for_local(tmp)
             }
+            
+            ExprKind::Cast(operand, _ty) => {
+                let op = self.lower_expr(operand);
+                let tmp = self.new_tmp_for_expr(expr);
+                
+                let target_ty = self.get_type(expr.id);
+                self.push_statement(
+                    StatementKind::Assign(tmp, Rvalue::Cast(op, target_ty)),
+                    expr.span,
+                );
+                self.operand_for_local(tmp)
+            }
 
             ExprKind::Call { callee, args } => {
                 let mut arg_ops = Vec::new();

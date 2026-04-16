@@ -10,6 +10,7 @@ pub enum Type {
     U16,
     U32,
     U64,
+    Usize,
     Float,
     F32,
     Str,
@@ -47,6 +48,7 @@ impl Type {
                 | Type::U16
                 | Type::U32
                 | Type::U64
+                | Type::Usize
                 | Type::Float
                 | Type::F32
                 | Type::Bool
@@ -75,6 +77,7 @@ impl fmt::Display for Type {
             Type::U16 => write!(f, "u16"),
             Type::U32 => write!(f, "u32"),
             Type::U64 => write!(f, "u64"),
+            Type::Usize => write!(f, "usize"),
             Type::Float => write!(f, "float"),
             Type::F32 => write!(f, "f32"),
             Type::Str => write!(f, "str"),

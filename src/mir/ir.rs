@@ -41,6 +41,7 @@ pub enum Rvalue {
     UnaryOp(UnaryOp, Operand),
     Call { func: Operand, args: Vec<Operand> },
     Aggregate(AggregateKind, Vec<Operand>),
+    Cast(Operand, Type),
     GetAttr(Operand, String),
     GetIndex(Operand, Operand),
     GetTag(Operand),

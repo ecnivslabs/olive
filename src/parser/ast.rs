@@ -198,6 +198,7 @@ pub enum ExprKind {
         op: UnaryOp,
         operand: Box<Expr>,
     },
+    Cast(Box<Expr>, TypeExpr),
 
     Call {
         callee: Box<Expr>,

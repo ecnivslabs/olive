@@ -69,6 +69,10 @@ impl TypeChecker {
                 Type::Fn(vec![Type::Any], Box::new(Type::U64), Vec::new()),
             ),
             (
+                "usize",
+                Type::Fn(vec![Type::Any], Box::new(Type::Usize), Vec::new()),
+            ),
+            (
                 "u32",
                 Type::Fn(vec![Type::Any], Box::new(Type::U32), Vec::new()),
             ),
