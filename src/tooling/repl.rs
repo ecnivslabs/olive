@@ -119,6 +119,7 @@ pub fn repl_compile_run(
         mir_builder.struct_fields,
         mir_builder.vtables.clone(),
         &[],
+        false,
     );
     codegen.generate();
     codegen.finalize();

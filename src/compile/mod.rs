@@ -10,7 +10,14 @@ use loader::collect_source_files;
 use pipeline::run_pipeline;
 use std::{collections::HashSet, fs, path::Path, process};
 
-pub fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: bool, emit_mir: bool) {
+pub fn compile_and_run(
+    filename: &str,
+    run: bool,
+    show_time: bool,
+    emit_ast: bool,
+    emit_mir: bool,
+    release: bool,
+) {
     let out = match run_pipeline(filename) {
         Ok(o) => o,
         Err(_) => std::process::exit(1),
@@ -32,6 +39,7 @@ pub fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: boo
         out.struct_fields.clone(),
         out.vtables.clone(),
         &out.native_libs,
+        release,
     );
     codegen.generate();
     codegen.finalize();
@@ -60,7 +68,7 @@ pub fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: boo
     }
 }
 
-pub fn compile_and_emit(filename: &str, output: &str, show_time: bool) {
+pub fn compile_and_emit(filename: &str, output: &str, show_time: bool, release: bool) {
     let out = match run_pipeline(filename) {
         Ok(o) => o,
         Err(_) => std::process::exit(1),
@@ -72,6 +80,7 @@ pub fn compile_and_emit(filename: &str, output: &str, show_time: bool) {
         out.struct_fields.clone(),
         out.vtables.clone(),
         &out.native_libs,
+        release,
     );
     codegen.generate();
     let obj_bytes = codegen.emit_object();
@@ -106,7 +115,7 @@ pub fn compile_and_emit(filename: &str, output: &str, show_time: bool) {
     }
 }
 
-pub fn compile_hybrid(filename: &str, show_time: bool) {
+pub fn compile_hybrid(filename: &str, show_time: bool, release: bool) {
     let mut collected = Vec::new();
     let mut visited = HashSet::new();
     collect_source_files(filename, &mut collected, &mut visited);
@@ -133,7 +142,7 @@ pub fn compile_hybrid(filename: &str, show_time: bool) {
         process::exit(code);
     }
 
-    compile_and_emit(filename, binary_path, show_time);
+    compile_and_emit(filename, binary_path, show_time, release);
 
     let manifest = serde_json::json!({ "hash": hash });
     fs::write(manifest_path, manifest.to_string()).ok();
@@ -142,20 +151,20 @@ pub fn compile_hybrid(filename: &str, show_time: bool) {
     process::exit(code);
 }
 
-pub fn compile_and_run_aot(filename: &str, show_time: bool) {
+pub fn compile_and_run_aot(filename: &str, show_time: bool, release: bool) {
     let binary_path = if cfg!(target_os = "windows") {
         "grove/.cache/aot_run.exe"
     } else {
         "grove/.cache/aot_run"
     };
     ensure_dir("grove/.cache");
-    compile_and_emit(filename, binary_path, show_time);
+    compile_and_emit(filename, binary_path, show_time, release);
     let code = exec_binary(binary_path);
     fs::remove_file(binary_path).ok();
     process::exit(code);
 }
 
-pub fn compile_and_test(filename: &str, _show_time: bool) {
+pub fn compile_and_test(filename: &str, _show_time: bool, release: bool) {
     let out = match run_pipeline(filename) {
         Ok(o) => o,
         Err(_) => std::process::exit(1),
@@ -166,6 +175,7 @@ pub fn compile_and_test(filename: &str, _show_time: bool) {
         out.struct_fields.clone(),
         out.vtables.clone(),
         &out.native_libs,
+        release,
     );
     codegen.generate();
     codegen.finalize();

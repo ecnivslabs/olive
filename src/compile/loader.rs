@@ -74,7 +74,9 @@ pub fn load_and_parse(
                 | parser::StmtKind::Trait { .. }
                 | parser::StmtKind::Enum { .. }
                 | parser::StmtKind::Let { .. }
+                | parser::StmtKind::MultiLet { .. }
                 | parser::StmtKind::Const { .. }
+                | parser::StmtKind::MultiConst { .. }
                 | parser::StmtKind::Import { .. }
                 | parser::StmtKind::NativeImport { .. }
                 | parser::StmtKind::FromImport { .. }
@@ -158,6 +160,12 @@ pub fn load_and_parse(
                             | parser::StmtKind::Const { name, .. } => {
                                 defined_names.insert(name.clone());
                             }
+                            parser::StmtKind::MultiLet { names, .. }
+                            | parser::StmtKind::MultiConst { names, .. } => {
+                                for name in names {
+                                    defined_names.insert(name.clone());
+                                }
+                            }
                             parser::StmtKind::Impl { type_name, .. } => {
                                 defined_names.insert(type_name.to_string());
                             }
@@ -175,7 +183,9 @@ pub fn load_and_parse(
                                 | parser::StmtKind::Impl { .. }
                                 | parser::StmtKind::Trait { .. }
                                 | parser::StmtKind::Let { .. }
+                                | parser::StmtKind::MultiLet { .. }
                                 | parser::StmtKind::Const { .. }
+                                | parser::StmtKind::MultiConst { .. }
                         )
                     });
 

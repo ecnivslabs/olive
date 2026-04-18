@@ -27,8 +27,10 @@ pub fn compute_source_hash(files: &[String]) -> u64 {
     let mut hasher = FxHasher::default();
     for path in &sorted {
         path.hash(&mut hasher);
-        if let Ok(content) = fs::read(path) {
-            content.hash(&mut hasher);
+        if let Ok(meta) = fs::metadata(path) {
+            if let Ok(mtime) = meta.modified() {
+                mtime.hash(&mut hasher);
+            }
         }
     }
     hasher.finish()
