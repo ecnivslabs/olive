@@ -23,6 +23,7 @@ This is the technical reference and user guide for the Olive systems programming
 - [**Modules**](modules.md): Organizing your code and using the standard library.
 - [**C / Rust Interop (FFI)**](ffi.md): Calling C/C++ or Rust code and using `unsafe` blocks.
 - [**Python Interoperability**](python.md): High-performance zero-copy Python integration.
+- [**CLI Reference**](cli.md): The full list of commands for the `pit` toolchain.
 - [**Optimizations**](optimizations.md): How code is optimized for performance.
 - [**Compiler Internals**](internals.md): A look under the hood at how Olive works.
 

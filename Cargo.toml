@@ -43,6 +43,8 @@ dirs = "5"
 base64 = "0.22"
 smol_str = "0.3.6"
 semver = "1.0"
+flate2 = "1.0"
+pubgrub = "0.4.0"
 
 [dev-dependencies]
 olive_std = { path = "std_lib" }

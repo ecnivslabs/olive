@@ -2,9 +2,31 @@ use super::utils::{load_config, maybe_install_deps, run_build_script};
 use crate::compile::{compile_and_emit, compile_and_test};
 use std::path::Path;
 
-pub fn execute_build(time: bool, release: bool) {
+pub fn execute_build(path: Option<&String>, output: Option<&String>, time: bool, release: bool) {
     let original_dir = std::env::current_dir().unwrap();
+    if let Some(p) = path {
+        let path_obj = Path::new(p);
+        if path_obj.is_file() || p.ends_with(".liv") {
+            let out = output.map(|s| s.clone()).unwrap_or_else(|| {
+                path_obj
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string()
+            });
+            compile_and_emit(p, &out, time, release);
+            return;
+        }
+
+        if std::env::set_current_dir(p).is_err() {
+            eprintln!("error: could not switch to directory {}", p);
+            std::process::exit(1);
+        }
+    }
     let config = load_config();
+    let all_deps = super::utils::aggregate_deps(&config);
+    maybe_install_deps(&all_deps);
+
     if let Some(workspace) = config.workspace {
         println!("\x1b[1;32m   Compiling\x1b[0m workspace...");
         for member in workspace.members {
@@ -14,7 +36,6 @@ pub fn execute_build(time: bool, release: bool) {
             }
             let member_config = load_config();
             if let Some(pod) = member_config.pod {
-                maybe_install_deps(&member_config.dependencies);
                 run_build_script(time, release);
                 let out = format!("grove/{}", pod.name);
                 println!("\x1b[1;32m   Compiling\x1b[0m {}", pod.name);
@@ -22,7 +43,6 @@ pub fn execute_build(time: bool, release: bool) {
             }
         }
     } else if let Some(pod) = config.pod {
-        maybe_install_deps(&config.dependencies);
         run_build_script(time, release);
         let out = format!("grove/{}", pod.name);
         compile_and_emit(&pod.entry, &out, time, release);
@@ -33,20 +53,12 @@ pub fn execute_build(time: bool, release: bool) {
     let _ = std::env::set_current_dir(original_dir);
 }
 
-pub fn execute_compile(file: &str, output: Option<&String>, time: bool, release: bool) {
-    let out = output.map(|s| s.clone()).unwrap_or_else(|| {
-        Path::new(file)
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string()
-    });
-    compile_and_emit(file, &out, time, release);
-}
-
 pub fn execute_test(time: bool, release: bool) {
     let original_dir = std::env::current_dir().unwrap();
     let config = load_config();
+    let all_deps = super::utils::aggregate_deps(&config);
+    maybe_install_deps(&all_deps);
+
     if let Some(workspace) = config.workspace {
         println!("\x1b[1;34mRunning tests for workspace...\x1b[0m");
         for member in workspace.members {
@@ -55,14 +67,12 @@ pub fn execute_test(time: bool, release: bool) {
             }
             let member_config = load_config();
             if let Some(pod) = member_config.pod {
-                maybe_install_deps(&member_config.dependencies);
                 run_build_script(time, release);
                 println!("\x1b[1;34mTesting\x1b[0m {}", pod.name);
                 compile_and_test(&pod.entry, time, release);
             }
         }
     } else if let Some(pod) = config.pod {
-        maybe_install_deps(&config.dependencies);
         run_build_script(time, release);
         compile_and_test(&pod.entry, time, release);
     } else {

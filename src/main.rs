@@ -26,6 +26,9 @@ enum Commands {
         name: String,
     },
     Build {
+        path: Option<String>,
+        #[arg(short, long)]
+        output: Option<String>,
         #[arg(short, long)]
         time: bool,
         #[arg(long)]
@@ -69,15 +72,6 @@ enum Commands {
         pod: Option<String>,
     },
     Publish,
-    Compile {
-        file: String,
-        #[arg(short, long)]
-        output: Option<String>,
-        #[arg(short, long)]
-        time: bool,
-        #[arg(long)]
-        release: bool,
-    },
     Upgrade,
 }
 
@@ -86,7 +80,12 @@ fn main() {
 
     match cli.command {
         Commands::New { name } => commands::project::execute_new(&name),
-        Commands::Build { time, release } => commands::build::execute_build(time, release),
+        Commands::Build {
+            path,
+            output,
+            time,
+            release,
+        } => commands::build::execute_build(path.as_ref(), output.as_ref(), time, release),
         Commands::Run {
             file,
             time,
@@ -114,12 +113,6 @@ fn main() {
         Commands::Install => commands::deps::execute_install(),
         Commands::Update { pod } => commands::deps::execute_update(pod.as_ref()),
         Commands::Publish => commands::project::execute_publish(),
-        Commands::Compile {
-            file,
-            output,
-            time,
-            release,
-        } => commands::build::execute_compile(&file, output.as_ref(), time, release),
         Commands::Upgrade => commands::project::execute_upgrade(),
     }
 }

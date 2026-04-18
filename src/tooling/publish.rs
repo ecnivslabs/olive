@@ -74,6 +74,7 @@ pub fn publish(name: &str, version: &str) -> Result<(), String> {
         cksum,
         dl: dl_url,
         yanked: false,
+        olive_req: Some(env!("CARGO_PKG_VERSION").to_string()),
     };
 
     let pr_url = create_registry_pr(&gh, &pod)?;

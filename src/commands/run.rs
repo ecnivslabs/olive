@@ -15,8 +15,9 @@ pub fn execute_run(
         (f.clone(), false)
     } else {
         let config = load_config();
+        let all_deps = super::utils::aggregate_deps(&config);
+        maybe_install_deps(&all_deps);
         if let Some(pod) = config.pod {
-            maybe_install_deps(&config.dependencies);
             run_build_script(time, release);
             (pod.entry.clone(), true)
         } else {

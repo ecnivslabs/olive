@@ -2,7 +2,33 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
-const REGISTRY_BASE: &str = "https://raw.githubusercontent.com/olive-language/pit-registry/main";
+#[derive(Deserialize)]
+struct PitConfig {
+    registry: Option<RegistryConfig>,
+}
+
+#[derive(Deserialize)]
+struct RegistryConfig {
+    url: Option<String>,
+}
+
+fn get_registry_base() -> String {
+    let config_path = dirs::home_dir()
+        .expect("no home dir")
+        .join(".pit")
+        .join("config.toml");
+
+    if let Ok(content) = fs::read_to_string(config_path) {
+        if let Ok(config) = toml::from_str::<PitConfig>(&content) {
+            if let Some(reg) = config.registry {
+                if let Some(url) = reg.url {
+                    return url;
+                }
+            }
+        }
+    }
+    "https://raw.githubusercontent.com/olive-language/pit-registry/main".to_string()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PodVersion {
@@ -14,6 +40,8 @@ pub struct PodVersion {
     pub dl: String,
     #[serde(default)]
     pub yanked: bool,
+    #[serde(default)]
+    pub olive_req: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,7 +52,8 @@ pub struct Dep {
 
 fn registry_url(name: &str) -> String {
     let prefix = &name[..name.len().min(2)];
-    format!("{}/{}/{}", REGISTRY_BASE, prefix, name)
+    let base = get_registry_base();
+    format!("{}/{}/{}", base, prefix, name)
 }
 
 fn cache_path(name: &str) -> PathBuf {
@@ -36,7 +65,19 @@ fn cache_path(name: &str) -> PathBuf {
         .join(name)
 }
 
-pub async fn fetch_versions(name: &str) -> Result<Vec<PodVersion>, String> {
+pub async fn fetch_versions(name: &str, offline: bool) -> Result<Vec<PodVersion>, String> {
+    let cache = cache_path(name);
+
+    if offline {
+        if cache.exists() {
+            let body =
+                fs::read_to_string(&cache).map_err(|e| format!("cache read failed: {}", e))?;
+            return parse_versions(&body);
+        } else {
+            return Err(format!("offline mode: pod '{}' not found in cache", name));
+        }
+    }
+
     let url = registry_url(name);
     let client = reqwest::Client::new();
     let body = match client
@@ -51,7 +92,13 @@ pub async fn fetch_versions(name: &str) -> Result<Vec<PodVersion>, String> {
             }
             resp.text().await.map_err(|e| e.to_string())?
         }
-        Err(e) => return Err(format!("registry fetch failed: {}", e)),
+        Err(e) => {
+            if cache.exists() {
+                let cached_body = fs::read_to_string(&cache).map_err(|ce| ce.to_string())?;
+                return parse_versions(&cached_body);
+            }
+            return Err(format!("registry fetch failed: {}", e));
+        }
     };
 
     let cache = cache_path(name);
@@ -71,9 +118,34 @@ fn parse_versions(body: &str) -> Result<Vec<PodVersion>, String> {
 }
 
 pub fn resolve_version<'a>(versions: &'a [PodVersion], req: &str) -> Option<&'a PodVersion> {
-    if req == "*" || req == "latest" {
-        versions.iter().rfind(|v| !v.yanked)
+    let current_olive_vers = semver::Version::parse(env!("CARGO_PKG_VERSION"))
+        .unwrap_or_else(|_| semver::Version::new(0, 1, 0));
+
+    let req_parsed = if req == "*" || req == "latest" {
+        semver::VersionReq::STAR
     } else {
-        versions.iter().find(|v| v.vers == req && !v.yanked)
-    }
+        semver::VersionReq::parse(req)
+            .unwrap_or_else(|_| semver::VersionReq::parse("0.0.0").unwrap())
+    };
+
+    versions.iter().rev().find(|v| {
+        if v.yanked {
+            return false;
+        }
+
+        let mut matches_olive = true;
+        if let Some(ref oreq) = v.olive_req {
+            if let Ok(olive_req_parsed) = semver::VersionReq::parse(oreq) {
+                matches_olive = olive_req_parsed.matches(&current_olive_vers);
+            } else {
+                matches_olive = false;
+            }
+        }
+
+        if let Ok(v_parsed) = semver::Version::parse(&v.vers) {
+            matches_olive && (req == "*" || req == "latest" || req_parsed.matches(&v_parsed))
+        } else {
+            matches_olive && (req == "*" || req == "latest" || v.vers == req)
+        }
+    })
 }
