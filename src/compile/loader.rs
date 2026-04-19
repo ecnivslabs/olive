@@ -156,6 +156,7 @@ pub fn load_and_parse(
                         match &s.kind {
                             parser::StmtKind::Fn { name, .. }
                             | parser::StmtKind::Struct { name, .. }
+                            | parser::StmtKind::Enum { name, .. }
                             | parser::StmtKind::Let { name, .. }
                             | parser::StmtKind::Const { name, .. } => {
                                 defined_names.insert(name.clone());
@@ -168,6 +169,24 @@ pub fn load_and_parse(
                             }
                             parser::StmtKind::Impl { type_name, .. } => {
                                 defined_names.insert(type_name.to_string());
+                            }
+                            parser::StmtKind::Import { module, alias } => {
+                                let name = alias
+                                    .as_deref()
+                                    .unwrap_or_else(|| module.last().unwrap().as_str());
+                                defined_names.insert(name.to_string());
+                            }
+                            parser::StmtKind::PyImport { alias, .. } => {
+                                defined_names.insert(alias.clone());
+                            }
+                            parser::StmtKind::NativeImport { alias, .. } => {
+                                defined_names.insert(alias.clone());
+                            }
+                            parser::StmtKind::FromImport { names, .. } => {
+                                for (name, alias) in names {
+                                    let bound = alias.as_deref().unwrap_or(name.as_str());
+                                    defined_names.insert(bound.to_string());
+                                }
                             }
                             _ => {}
                         }
@@ -182,10 +201,15 @@ pub fn load_and_parse(
                                 | parser::StmtKind::Struct { .. }
                                 | parser::StmtKind::Impl { .. }
                                 | parser::StmtKind::Trait { .. }
+                                | parser::StmtKind::Enum { .. }
                                 | parser::StmtKind::Let { .. }
                                 | parser::StmtKind::MultiLet { .. }
                                 | parser::StmtKind::Const { .. }
                                 | parser::StmtKind::MultiConst { .. }
+                                | parser::StmtKind::Import { .. }
+                                | parser::StmtKind::PyImport { .. }
+                                | parser::StmtKind::NativeImport { .. }
+                                | parser::StmtKind::FromImport { .. }
                         )
                     });
 
@@ -232,9 +256,20 @@ pub fn load_and_parse(
 
                     imported_stmts.retain(|s| match &s.kind {
                         parser::StmtKind::Fn { name, .. }
-                        | parser::StmtKind::Struct { name, .. } => {
+                        | parser::StmtKind::Struct { name, .. }
+                        | parser::StmtKind::Enum { name, .. }
+                        | parser::StmtKind::Let { name, .. }
+                        | parser::StmtKind::Const { name, .. } => {
                             names.iter().any(|(n, _)| n == name)
                         }
+                        parser::StmtKind::MultiLet {
+                            names: var_names, ..
+                        }
+                        | parser::StmtKind::MultiConst {
+                            names: var_names, ..
+                        } => var_names
+                            .iter()
+                            .any(|var_name| names.iter().any(|(n, _)| n == var_name)),
                         parser::StmtKind::Impl { type_name, .. } => {
                             names.iter().any(|(n, _)| n == &type_name.to_string())
                         }
@@ -344,7 +379,6 @@ mod tests {
         let mut file_id_counter = 0;
         let mut sources = HashMap::default();
 
-        // This should run without process::exit because it is valid
         let stmts = load_and_parse(
             &mod_path.to_string_lossy(),
             false,
