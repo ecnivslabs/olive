@@ -640,7 +640,10 @@ pub(super) fn is_str_op(func_mir: &MirFunction, op: &Operand) -> bool {
 pub(super) fn is_float_op(func_mir: &MirFunction, op: &Operand) -> bool {
     match op {
         Operand::Constant(Constant::Float(_)) => true,
-        Operand::Copy(loc) | Operand::Move(loc) => func_mir.locals[loc.0].ty == OliveType::Float,
+        Operand::Copy(loc) | Operand::Move(loc) => {
+            let ty = &func_mir.locals[loc.0].ty;
+            matches!(ty, OliveType::Float | OliveType::F32)
+        }
         _ => false,
     }
 }
@@ -660,11 +663,27 @@ pub(super) fn is_list_op(func_mir: &MirFunction, op: &Operand) -> bool {
 
 pub(super) fn cl_type(ty: &OliveType) -> cranelift::prelude::Type {
     match ty {
-        OliveType::Int | OliveType::Bool | OliveType::Ptr(_) => types::I64,
+        OliveType::Int | OliveType::U64 | OliveType::Usize | OliveType::Ptr(_) => types::I64,
+        OliveType::I32 | OliveType::U32 => types::I32,
+        OliveType::I16 | OliveType::U16 => types::I16,
+        OliveType::I8 | OliveType::U8 | OliveType::Bool => types::I8,
         OliveType::Float => types::F64,
+        OliveType::F32 => types::F32,
         OliveType::Vector(inner, width) => match &**inner {
-            OliveType::Int => types::I64.by(*width as u32).expect("invalid vector width"),
+            OliveType::Int | OliveType::U64 | OliveType::Usize => {
+                types::I64.by(*width as u32).expect("invalid vector width")
+            }
+            OliveType::I32 | OliveType::U32 => {
+                types::I32.by(*width as u32).expect("invalid vector width")
+            }
+            OliveType::I16 | OliveType::U16 => {
+                types::I16.by(*width as u32).expect("invalid vector width")
+            }
+            OliveType::I8 | OliveType::U8 | OliveType::Bool => {
+                types::I8.by(*width as u32).expect("invalid vector width")
+            }
             OliveType::Float => types::F64.by(*width as u32).expect("invalid vector width"),
+            OliveType::F32 => types::F32.by(*width as u32).expect("invalid vector width"),
             _ => types::I64,
         },
         _ => types::I64,

@@ -286,10 +286,18 @@ impl TypeChecker {
     }
 
     pub(super) fn apply_subst(&mut self, ty: Type) -> Type {
+        self.apply_subst_impl(ty, false)
+    }
+
+    pub(super) fn apply_subst_final(&mut self, ty: Type) -> Type {
+        self.apply_subst_impl(ty, true)
+    }
+
+    pub(super) fn apply_subst_impl(&mut self, ty: Type, finalize: bool) -> Type {
         match ty {
             Type::Var(id) => {
                 if let Some(t) = self.substitutions.get(&id).cloned() {
-                    let resolved = self.apply_subst(t);
+                    let resolved = self.apply_subst_impl(t, finalize);
                     self.substitutions.insert(id, resolved.clone());
                     resolved
                 } else {
@@ -298,55 +306,80 @@ impl TypeChecker {
             }
             Type::IntegerLiteral(id) => {
                 if let Some(t) = self.substitutions.get(&id).cloned() {
-                    let resolved = self.apply_subst(t);
+                    let resolved = self.apply_subst_impl(t, finalize);
                     self.substitutions.insert(id, resolved.clone());
                     resolved
                 } else {
-                    Type::Int
+                    if finalize {
+                        Type::Int
+                    } else {
+                        Type::IntegerLiteral(id)
+                    }
                 }
             }
             Type::FloatLiteral(id) => {
                 if let Some(t) = self.substitutions.get(&id).cloned() {
-                    let resolved = self.apply_subst(t);
+                    let resolved = self.apply_subst_impl(t, finalize);
                     self.substitutions.insert(id, resolved.clone());
                     resolved
                 } else {
-                    Type::Float
+                    if finalize {
+                        Type::Float
+                    } else {
+                        Type::FloatLiteral(id)
+                    }
                 }
             }
-            Type::List(inner) => Type::List(Box::new(self.apply_subst(*inner))),
-            Type::Set(inner) => Type::Set(Box::new(self.apply_subst(*inner))),
-            Type::Ptr(inner) => Type::Ptr(Box::new(self.apply_subst(*inner))),
+            Type::List(inner) => Type::List(Box::new(self.apply_subst_impl(*inner, finalize))),
+            Type::Set(inner) => Type::Set(Box::new(self.apply_subst_impl(*inner, finalize))),
+            Type::Ptr(inner) => Type::Ptr(Box::new(self.apply_subst_impl(*inner, finalize))),
             Type::Dict(k, v) => Type::Dict(
-                Box::new(self.apply_subst(*k)),
-                Box::new(self.apply_subst(*v)),
+                Box::new(self.apply_subst_impl(*k, finalize)),
+                Box::new(self.apply_subst_impl(*v, finalize)),
             ),
-            Type::Tuple(elems) => {
-                Type::Tuple(elems.into_iter().map(|e| self.apply_subst(e)).collect())
-            }
+            Type::Tuple(elems) => Type::Tuple(
+                elems
+                    .into_iter()
+                    .map(|e| self.apply_subst_impl(e, finalize))
+                    .collect(),
+            ),
             Type::Fn(params, ret, args) => Type::Fn(
-                params.into_iter().map(|p| self.apply_subst(p)).collect(),
-                Box::new(self.apply_subst(*ret)),
-                args.into_iter().map(|a| self.apply_subst(a)).collect(),
+                params
+                    .into_iter()
+                    .map(|p| self.apply_subst_impl(p, finalize))
+                    .collect(),
+                Box::new(self.apply_subst_impl(*ret, finalize)),
+                args.into_iter()
+                    .map(|a| self.apply_subst_impl(a, finalize))
+                    .collect(),
             ),
-            Type::Ref(inner) => Type::Ref(Box::new(self.apply_subst(*inner))),
-            Type::MutRef(inner) => Type::MutRef(Box::new(self.apply_subst(*inner))),
-            Type::Future(inner) => Type::Future(Box::new(self.apply_subst(*inner))),
+            Type::Ref(inner) => Type::Ref(Box::new(self.apply_subst_impl(*inner, finalize))),
+            Type::MutRef(inner) => Type::MutRef(Box::new(self.apply_subst_impl(*inner, finalize))),
+            Type::Future(inner) => Type::Future(Box::new(self.apply_subst_impl(*inner, finalize))),
             Type::Struct(name, args) => Type::Struct(
                 name,
-                args.into_iter().map(|a| self.apply_subst(a)).collect(),
+                args.into_iter()
+                    .map(|a| self.apply_subst_impl(a, finalize))
+                    .collect(),
             ),
             Type::Enum(name, args) => Type::Enum(
                 name,
-                args.into_iter().map(|a| self.apply_subst(a)).collect(),
+                args.into_iter()
+                    .map(|a| self.apply_subst_impl(a, finalize))
+                    .collect(),
             ),
             Type::TraitObject(name, args) => Type::TraitObject(
                 name,
-                args.into_iter().map(|a| self.apply_subst(a)).collect(),
+                args.into_iter()
+                    .map(|a| self.apply_subst_impl(a, finalize))
+                    .collect(),
             ),
-            Type::Union(members) => {
-                Type::Union(members.into_iter().map(|m| self.apply_subst(m)).collect())
-            }
+            Type::Union(members) => Type::Union(
+                members
+                    .into_iter()
+                    .map(|m| self.apply_subst_impl(m, finalize))
+                    .collect(),
+            ),
             _ => ty,
         }
     }

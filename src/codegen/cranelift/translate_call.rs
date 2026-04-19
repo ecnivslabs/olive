@@ -90,7 +90,18 @@ impl<M: Module> CraneliftCodegen<M> {
                     || resolved_name == "__olive_float_to_int"
                     || resolved_name == "__olive_bool_from_float"
                     || resolved_name == "__olive_pow_float"
-                    || resolved_name == "__olive_copy_float";
+                    || resolved_name == "__olive_copy_float"
+                    || resolved_name == "__olive_math_sin"
+                    || resolved_name == "__olive_math_cos"
+                    || resolved_name == "__olive_math_tan"
+                    || resolved_name == "__olive_math_asin"
+                    || resolved_name == "__olive_math_acos"
+                    || resolved_name == "__olive_math_atan"
+                    || resolved_name == "__olive_math_atan2"
+                    || resolved_name == "__olive_math_exp"
+                    || resolved_name == "__olive_math_log"
+                    || resolved_name == "__olive_math_log10"
+                    || resolved_name == "__olive_py_from_float";
                 let ffi_entry = ffi_entries.iter().find(|e| e.jit_name == resolved_name);
 
                 if let Some(entry) = ffi_entry
@@ -260,11 +271,47 @@ impl<M: Module> CraneliftCodegen<M> {
 
                     if (is_ffi || is_aot_vararg) && is_str_arg {
                         final_args.push(builder.ins().band_imm(arg, -2));
-                    } else if is_builtin
-                        && !accepts_float
-                        && builder.func.dfg.value_type(arg) == types::F64
-                    {
-                        final_args.push(builder.ins().bitcast(types::I64, MemFlags::new(), arg));
+                    } else if is_builtin && builder.func.dfg.value_type(arg) == types::F64 {
+                        let expects_float = if let Some(entry) = ffi_entry {
+                            if i < entry.params.len() {
+                                entry.params[i] == "float"
+                                    || entry.params[i] == "f64"
+                                    || entry.params[i] == "f32"
+                            } else {
+                                false
+                            }
+                        } else {
+                            accepts_float
+                        };
+                        if !expects_float {
+                            final_args.push(builder.ins().bitcast(
+                                types::I64,
+                                MemFlags::new(),
+                                arg,
+                            ));
+                        } else {
+                            final_args.push(arg);
+                        }
+                    } else if is_builtin && builder.func.dfg.value_type(arg) == types::F32 {
+                        let expects_float = if let Some(entry) = ffi_entry {
+                            if i < entry.params.len() {
+                                entry.params[i] == "float"
+                                    || entry.params[i] == "f64"
+                                    || entry.params[i] == "f32"
+                            } else {
+                                false
+                            }
+                        } else {
+                            accepts_float
+                        };
+
+                        if !expects_float {
+                            let bitcast_val =
+                                builder.ins().bitcast(types::I32, MemFlags::new(), arg);
+                            final_args.push(builder.ins().uextend(types::I64, bitcast_val));
+                        } else {
+                            final_args.push(arg);
+                        }
                     } else {
                         final_args.push(arg);
                     }

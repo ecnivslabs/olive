@@ -176,10 +176,6 @@ fn can_scalarize(func: &MirFunction, aliases: &HashSet<Local>, origin: Local) ->
                     if aliases.contains(l) => {}
 
                 _ => {
-                    println!(
-                        "Cannot scalarize alias {:?} because of stmt: {:?}",
-                        origin, stmt
-                    );
                     return false;
                 }
             }

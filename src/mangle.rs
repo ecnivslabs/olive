@@ -131,6 +131,20 @@ pub fn mangle_stmt(stmt: &mut Stmt, prefix: &str, names: &HashSet<String>) {
         StmtKind::Return(Some(e)) | StmtKind::ExprStmt(e) => {
             mangle_expr(e, prefix, names);
         }
+        StmtKind::Assert { test, msg } => {
+            mangle_expr(test, prefix, names);
+            if let Some(e) = msg {
+                mangle_expr(e, prefix, names);
+            }
+        }
+        StmtKind::UnsafeBlock(body) => {
+            for s in body {
+                mangle_stmt(s, prefix, names);
+            }
+        }
+        StmtKind::Defer(expr) => {
+            mangle_expr(expr, prefix, names);
+        }
         StmtKind::Import { module, alias } => {
             let name = alias
                 .as_deref()
@@ -171,6 +185,7 @@ pub fn mangle_expr(expr: &mut Expr, prefix: &str, names: &HashSet<String>) {
             mangle_expr(right, prefix, names);
         }
         ExprKind::UnaryOp { operand, .. } => mangle_expr(operand, prefix, names),
+        ExprKind::Cast(operand, _) => mangle_expr(operand, prefix, names),
         ExprKind::Call { callee, args } => {
             mangle_expr(callee, prefix, names);
             for arg in args {
@@ -198,6 +213,56 @@ pub fn mangle_expr(expr: &mut Expr, prefix: &str, names: &HashSet<String>) {
             for (k, v) in pairs {
                 mangle_expr(k, prefix, names);
                 mangle_expr(v, prefix, names);
+            }
+        }
+        ExprKind::FStr(exprs) => {
+            for e in exprs {
+                mangle_expr(e, prefix, names);
+            }
+        }
+        ExprKind::Borrow(inner) | ExprKind::MutBorrow(inner) | ExprKind::Deref(inner) => {
+            mangle_expr(inner, prefix, names);
+        }
+        ExprKind::Try(inner) | ExprKind::Await(inner) => {
+            mangle_expr(inner, prefix, names);
+        }
+        ExprKind::Match {
+            expr: match_expr,
+            cases,
+        } => {
+            mangle_expr(match_expr, prefix, names);
+            for case in cases {
+                for stmt in &mut case.body {
+                    mangle_stmt(stmt, prefix, names);
+                }
+            }
+        }
+        ExprKind::ListComp { elt, clauses } | ExprKind::SetComp { elt, clauses } => {
+            mangle_expr(elt, prefix, names);
+            for clause in clauses {
+                mangle_expr(&mut clause.iter, prefix, names);
+                if let Some(cond) = &mut clause.condition {
+                    mangle_expr(cond, prefix, names);
+                }
+            }
+        }
+        ExprKind::DictComp {
+            key,
+            value,
+            clauses,
+        } => {
+            mangle_expr(key, prefix, names);
+            mangle_expr(value, prefix, names);
+            for clause in clauses {
+                mangle_expr(&mut clause.iter, prefix, names);
+                if let Some(cond) = &mut clause.condition {
+                    mangle_expr(cond, prefix, names);
+                }
+            }
+        }
+        ExprKind::AsyncBlock(body) => {
+            for stmt in body {
+                mangle_stmt(stmt, prefix, names);
             }
         }
         _ => {}

@@ -388,7 +388,7 @@ impl TypeChecker {
         let ids: Vec<usize> = self.expr_types.keys().cloned().collect();
         for id in ids {
             let ty = self.expr_types.get(&id).unwrap().clone();
-            let final_ty = self.apply_subst(ty);
+            let final_ty = self.apply_subst_final(ty);
             self.expr_types.insert(id, final_ty);
         }
 
@@ -396,7 +396,7 @@ impl TypeChecker {
             let names: Vec<String> = self.type_env[i].keys().cloned().collect();
             for name in names {
                 let ty = self.type_env[i].get(&name).unwrap().clone();
-                let final_ty = self.apply_subst(ty);
+                let final_ty = self.apply_subst_final(ty);
                 self.type_env[i].insert(name, final_ty);
             }
         }

@@ -254,8 +254,34 @@ impl<M: Module> CraneliftCodegen<M> {
 
                 let val_ty = builder.func.dfg.value_type(val);
                 let decl_ty = cl_type(&func_mir.locals[local.0].ty);
-                let val = if val_ty != decl_ty && val_ty.bits() == decl_ty.bits() {
-                    builder.ins().bitcast(decl_ty, MemFlags::new(), val)
+                let val = if val_ty != decl_ty {
+                    if val_ty == types::F64 && decl_ty == types::F32 {
+                        builder.ins().fdemote(types::F32, val)
+                    } else if val_ty == types::F32 && decl_ty == types::F64 {
+                        builder.ins().fpromote(types::F64, val)
+                    } else if val_ty.bits() == decl_ty.bits() {
+                        builder.ins().bitcast(decl_ty, MemFlags::new(), val)
+                    } else if val_ty.is_int() && decl_ty.is_int() {
+                        if val_ty.bits() < decl_ty.bits() {
+                            let ty = &func_mir.locals[local.0].ty;
+                            let is_signed = matches!(
+                                ty,
+                                crate::semantic::types::Type::Int
+                                    | crate::semantic::types::Type::I32
+                                    | crate::semantic::types::Type::I16
+                                    | crate::semantic::types::Type::I8
+                            );
+                            if is_signed {
+                                builder.ins().sextend(decl_ty, val)
+                            } else {
+                                builder.ins().uextend(decl_ty, val)
+                            }
+                        } else {
+                            builder.ins().ireduce(decl_ty, val)
+                        }
+                    } else {
+                        val
+                    }
                 } else {
                     val
                 };
