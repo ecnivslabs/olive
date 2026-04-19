@@ -150,6 +150,14 @@ jobs:
           chmod +x dist/pit-linux-* dist/pit-macos-*
           ls -lh dist/
 
+      - name: Generate release assets
+        run: |
+          git archive -o dist/olive-src.tar.gz --prefix=olive-src/ HEAD
+          cargo install b3sum
+          cd dist
+          b3sum * > checksums.txt
+
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
