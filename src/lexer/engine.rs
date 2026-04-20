@@ -750,9 +750,32 @@ impl Lexer {
                 ',' => self.make_tok(TokenKind::Comma, ",", line, col, start),
                 '.' => self.make_tok(TokenKind::Dot, ".", line, col, start),
                 ';' => self.make_tok(TokenKind::Semicolon, ";", line, col, start),
-                '&' => self.make_tok(TokenKind::Ampersand, "&", line, col, start),
+                '&' => {
+                    if self.peek() == Some('=') {
+                        self.advance();
+                        self.make_tok(TokenKind::AmpersandEqual, "&=", line, col, start)
+                    } else {
+                        self.make_tok(TokenKind::Ampersand, "&", line, col, start)
+                    }
+                }
                 '@' => self.make_tok(TokenKind::At, "@", line, col, start),
-                '|' => self.make_tok(TokenKind::Pipe, "|", line, col, start),
+                '|' => {
+                    if self.peek() == Some('=') {
+                        self.advance();
+                        self.make_tok(TokenKind::PipeEqual, "|=", line, col, start)
+                    } else {
+                        self.make_tok(TokenKind::Pipe, "|", line, col, start)
+                    }
+                }
+                '^' => {
+                    if self.peek() == Some('=') {
+                        self.advance();
+                        self.make_tok(TokenKind::CaretEqual, "^=", line, col, start)
+                    } else {
+                        self.make_tok(TokenKind::Caret, "^", line, col, start)
+                    }
+                }
+                '~' => self.make_tok(TokenKind::Tilde, "~", line, col, start),
                 '?' => self.make_tok(TokenKind::Question, "?", line, col, start),
                 '#' => self.make_tok(TokenKind::Hash, "#", line, col, start),
 

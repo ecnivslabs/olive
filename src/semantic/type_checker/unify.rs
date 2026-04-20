@@ -124,6 +124,7 @@ impl TypeChecker {
             },
 
             (Type::Any, _) | (_, Type::Any) => {}
+            (Type::PyObject, _) | (_, Type::PyObject) => {}
             (Type::Never, _) | (_, Type::Never) => {}
 
             (Type::Ptr(a), Type::Ptr(b)) => self.unify(a, b, span),
@@ -402,6 +403,7 @@ impl TypeChecker {
                 "None" => Type::Null,
                 "Never" => Type::Never,
                 "Any" => Type::Any,
+                "PyObject" => Type::PyObject,
                 _ => {
                     if let Some(t) = self.lookup_type(name) {
                         t

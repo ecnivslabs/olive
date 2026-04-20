@@ -342,6 +342,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_py_call_safe", b"olive_py_call_safe\0"),
     ("__olive_py_conv_to_py", b"olive_py_conv_to_py\0"),
     ("__olive_py_decref", b"olive_py_decref\0"),
+    ("__olive_py_eq", b"olive_py_eq\0"),
     ("__olive_py_finalize", b"olive_py_finalize\0"),
     ("__olive_py_from_float", b"olive_py_from_float\0"),
     ("__olive_py_from_float_bits", b"olive_py_from_float_bits\0"),
@@ -516,6 +517,7 @@ pub struct CraneliftCodegen<M: Module> {
     pub(super) aot: bool,
     pub(super) extern_var_ptrs: HashMap<String, (i64, String, String)>,
     pub(super) vtables: HashMap<String, Vec<String>>,
+    pub(super) global_vars: Vec<String>,
 }
 
 fn c_prim_layout(ty: &str) -> (i32, i32) {
@@ -652,6 +654,7 @@ impl CraneliftCodegen<JITModule> {
         functions: Vec<MirFunction>,
         struct_fields: HashMap<String, Vec<String>>,
         vtables: HashMap<String, Vec<String>>,
+        global_vars: Vec<String>,
         native_lib_paths: &[FfiLibInfo],
         release: bool,
     ) -> Self {
@@ -820,6 +823,7 @@ impl CraneliftCodegen<JITModule> {
             aot: false,
             extern_var_ptrs,
             vtables,
+            global_vars,
         }
     }
 
@@ -841,6 +845,7 @@ impl CraneliftCodegen<ObjectModule> {
         functions: Vec<MirFunction>,
         struct_fields: HashMap<String, Vec<String>>,
         vtables: HashMap<String, Vec<String>>,
+        global_vars: Vec<String>,
         native_lib_paths: &[FfiLibInfo],
         release: bool,
     ) -> Self {
@@ -945,6 +950,7 @@ impl CraneliftCodegen<ObjectModule> {
             aot: true,
             extern_var_ptrs,
             vtables,
+            global_vars,
         }
     }
 

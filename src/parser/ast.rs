@@ -164,6 +164,9 @@ pub enum BinOp {
     NotIn,
     Shl,
     Shr,
+    BitOr,
+    BitAnd,
+    BitXor,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -171,6 +174,7 @@ pub enum UnaryOp {
     Neg,
     Pos,
     Not,
+    BitNot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -183,6 +187,9 @@ pub enum AugOp {
     Pow,
     Shl,
     Shr,
+    BitOr,
+    BitAnd,
+    BitXor,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -406,6 +413,7 @@ pub enum StmtKind {
     FromImport {
         module: Vec<String>,
         names: Vec<(String, Option<String>)>,
+        is_star: bool,
     },
     PyImport {
         module: String,

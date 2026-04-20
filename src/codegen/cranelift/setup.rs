@@ -300,6 +300,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_py_conv_to_olive", &sig_i64_i64),
             ("__olive_py_conv_to_py", &sig_i64_i64),
             ("__olive_py_decref", &sig_i64_void),
+            ("__olive_py_eq", &sig_i64_i64_i64),
             ("__olive_py_finalize", &sig_void_void),
             ("__olive_py_from_float", &sig_f64_i64),
             ("__olive_py_from_float_bits", &sig_i64_i64),
@@ -732,6 +733,7 @@ impl<M: Module> CraneliftCodegen<M> {
             self.collect_strings(func);
         }
 
+        self.generate_global_vars();
         self.generate_vtables();
 
         let func_count = self.functions.len();
@@ -985,7 +987,18 @@ impl<M: Module> CraneliftCodegen<M> {
             self.string_ids.insert(s.clone(), id);
         }
     }
-
+    fn generate_global_vars(&mut self) {
+        let vars = self.global_vars.clone();
+        for var_name in vars {
+            let mut data_ctx = DataDescription::new();
+            data_ctx.define_zeroinit(8);
+            let id = self
+                .module
+                .declare_data(&var_name, Linkage::Export, true, false)
+                .unwrap();
+            self.module.define_data(id, &data_ctx).unwrap();
+        }
+    }
     fn generate_vtables(&mut self) {
         let vtables = self.vtables.clone();
         for (vtable_name, methods) in vtables {

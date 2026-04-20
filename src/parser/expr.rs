@@ -111,7 +111,7 @@ impl Parser {
     }
 
     pub(crate) fn parse_comparison(&mut self) -> ParseResult<Expr> {
-        let mut left = self.parse_shift()?;
+        let mut left = self.parse_bitor()?;
         loop {
             let op = match self.peek().kind {
                 TokenKind::DoubleEqual => {
@@ -153,7 +153,7 @@ impl Parser {
                 }
                 _ => break,
             };
-            let right = self.parse_shift()?;
+            let right = self.parse_bitor()?;
             let span = left.span.merge(right.span);
             left = Expr::new(
                 ExprKind::BinOp {
@@ -166,7 +166,59 @@ impl Parser {
         }
         Ok(left)
     }
+    pub(crate) fn parse_bitor(&mut self) -> ParseResult<Expr> {
+        let mut left = self.parse_bitxor()?;
+        while self.peek().kind == TokenKind::Pipe {
+            self.advance();
+            let right = self.parse_bitxor()?;
+            let span = left.span.merge(right.span);
+            left = Expr::new(
+                ExprKind::BinOp {
+                    left: Box::new(left),
+                    op: BinOp::BitOr,
+                    right: Box::new(right),
+                },
+                span,
+            );
+        }
+        Ok(left)
+    }
 
+    pub(crate) fn parse_bitxor(&mut self) -> ParseResult<Expr> {
+        let mut left = self.parse_bitand()?;
+        while self.peek().kind == TokenKind::Caret {
+            self.advance();
+            let right = self.parse_bitand()?;
+            let span = left.span.merge(right.span);
+            left = Expr::new(
+                ExprKind::BinOp {
+                    left: Box::new(left),
+                    op: BinOp::BitXor,
+                    right: Box::new(right),
+                },
+                span,
+            );
+        }
+        Ok(left)
+    }
+
+    pub(crate) fn parse_bitand(&mut self) -> ParseResult<Expr> {
+        let mut left = self.parse_shift()?;
+        while self.peek().kind == TokenKind::Ampersand {
+            self.advance();
+            let right = self.parse_shift()?;
+            let span = left.span.merge(right.span);
+            left = Expr::new(
+                ExprKind::BinOp {
+                    left: Box::new(left),
+                    op: BinOp::BitAnd,
+                    right: Box::new(right),
+                },
+                span,
+            );
+        }
+        Ok(left)
+    }
     pub(crate) fn parse_shift(&mut self) -> ParseResult<Expr> {
         let mut left = self.parse_add()?;
         loop {
@@ -266,6 +318,19 @@ impl Parser {
                     let span = self.span_from(&start);
                     Ok(Expr::new(ExprKind::Borrow(Box::new(operand)), span))
                 }
+            }
+            TokenKind::Tilde => {
+                let start = self.peek().clone();
+                self.advance();
+                let operand = self.parse_unary()?;
+                let span = self.span_from(&start);
+                Ok(Expr::new(
+                    ExprKind::UnaryOp {
+                        op: UnaryOp::BitNot,
+                        operand: Box::new(operand),
+                    },
+                    span,
+                ))
             }
             TokenKind::Star => {
                 let start = self.peek().clone();

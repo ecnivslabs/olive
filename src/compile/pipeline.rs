@@ -29,6 +29,7 @@ pub struct PipelineOutput {
     pub functions: Vec<MirFunction>,
     pub struct_fields: HashMap<String, Vec<String>>,
     pub vtables: HashMap<String, Vec<String>>,
+    pub global_vars: Vec<String>,
     pub native_libs: Vec<NativeLib>,
     pub program: parser::Program,
     pub timings: PipelineTimings,
@@ -143,6 +144,7 @@ pub fn run_pipeline(filename: &str) -> Result<PipelineOutput, ()> {
         functions: mir_builder.functions,
         struct_fields: mir_builder.struct_fields,
         vtables: mir_builder.vtables,
+        global_vars: mir_builder.global_vars,
         native_libs,
         program,
         timings: PipelineTimings {

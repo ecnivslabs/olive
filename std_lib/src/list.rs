@@ -225,14 +225,38 @@ pub struct OliveIter {
     pub kind: i64,
     pub list_ptr: i64,
     pub index: usize,
+    pub is_py: bool,
+    pub py_peeked: i64,
+    pub has_peeked: bool,
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_iter(list_ptr: i64) -> i64 {
+    let mut is_py = false;
+    let mut actual_list_ptr = list_ptr;
+
+    if list_ptr != 0 {
+        unsafe {
+            let raw_ptr = list_ptr as *const libc::c_void;
+            if python::is_readable_ptr(raw_ptr) {
+                let kind = *(list_ptr as *const i64);
+                if kind == KIND_PYOBJECT {
+                    is_py = true;
+                    actual_list_ptr =
+                        crate::python::python_iter::olive_py_iter(list_ptr as *mut libc::c_void)
+                            as i64;
+                }
+            }
+        }
+    }
+
     let res = Box::into_raw(Box::new(OliveIter {
         kind: KIND_ITER,
-        list_ptr,
+        list_ptr: actual_list_ptr,
         index: 0,
+        is_py,
+        py_peeked: 0,
+        has_peeked: false,
     })) as i64;
     register_object(res);
     res
@@ -243,7 +267,11 @@ pub extern "C" fn olive_free_iter(ptr: i64) {
     if ptr != 0 {
         unregister_object(ptr);
         unsafe {
-            let _ = Box::from_raw(ptr as *mut OliveIter);
+            let it = Box::from_raw(ptr as *mut OliveIter);
+            if it.is_py && it.list_ptr != 0 {
+                crate::python::olive_py_decref(it.list_ptr as *mut libc::c_void);
+            }
+            if it.is_py && it.has_peeked && it.py_peeked != 0 && is_active_object(it.py_peeked) {}
         }
     }
 }
@@ -253,9 +281,18 @@ pub extern "C" fn olive_has_next(iter_ptr: i64) -> i64 {
     if iter_ptr == 0 {
         return 0;
     }
-    let it = unsafe { &*(iter_ptr as *const OliveIter) };
+    let it = unsafe { &mut *(iter_ptr as *mut OliveIter) };
     if it.list_ptr == 0 {
         return 0;
+    }
+    if it.is_py {
+        if it.has_peeked {
+            return if it.py_peeked != 0 { 1 } else { 0 };
+        }
+        it.py_peeked =
+            crate::python::python_iter::olive_py_iter_next(it.list_ptr as *mut libc::c_void);
+        it.has_peeked = true;
+        return if it.py_peeked != 0 { 1 } else { 0 };
     }
     let s = unsafe { &*(it.list_ptr as *const StableVec) };
     if it.index < s.len { 1 } else { 0 }
@@ -269,6 +306,15 @@ pub extern "C" fn olive_next(iter_ptr: i64) -> i64 {
     let it = unsafe { &mut *(iter_ptr as *mut OliveIter) };
     if it.list_ptr == 0 {
         return 0;
+    }
+    if it.is_py {
+        if it.has_peeked {
+            it.has_peeked = false;
+            let val = it.py_peeked;
+            it.py_peeked = 0;
+            return val;
+        }
+        return crate::python::python_iter::olive_py_iter_next(it.list_ptr as *mut libc::c_void);
     }
     let s = unsafe { &*(it.list_ptr as *const StableVec) };
     if it.index < s.len {

@@ -77,7 +77,9 @@ impl<M: Module> CraneliftCodegen<M> {
             Eq => {
                 let mut is_str = false;
                 let mut is_float = false;
-                match lhs {
+                let mut is_pyobj = false;
+
+                let mut check_op = |op: &Operand| match op {
                     Operand::Constant(Constant::Str(_)) => is_str = true,
                     Operand::Constant(Constant::Float(_)) => is_float = true,
                     Operand::Copy(loc) | Operand::Move(loc) => {
@@ -88,15 +90,28 @@ impl<M: Module> CraneliftCodegen<M> {
                         if *ty == OliveType::Float {
                             is_float = true;
                         }
+                        if *ty == OliveType::PyObject {
+                            is_pyobj = true;
+                        }
                     }
                     _ => {}
-                }
+                };
+
+                check_op(lhs);
+                check_op(rhs);
 
                 if is_str {
                     let eq_func_id = func_ids.get("__olive_str_eq").unwrap();
                     let local_func = module.declare_func_in_func(*eq_func_id, builder.func);
-                    let inst = builder.ins().call(local_func, &[l, r]);
-                    builder.inst_results(inst)[0]
+                    let call = builder.ins().call(local_func, &[l, r]);
+                    let results = builder.inst_results(call);
+                    results[0]
+                } else if is_pyobj {
+                    let eq_func_id = func_ids.get("__olive_py_eq").unwrap();
+                    let local_func = module.declare_func_in_func(*eq_func_id, builder.func);
+                    let call = builder.ins().call(local_func, &[l, r]);
+                    let results = builder.inst_results(call);
+                    results[0]
                 } else if is_float {
                     let res = builder.ins().fcmp(FloatCC::Equal, l, r);
                     builder.ins().uextend(types::I64, res)
@@ -162,6 +177,9 @@ impl<M: Module> CraneliftCodegen<M> {
             }
             And => builder.ins().band(l, r),
             Or => builder.ins().bor(l, r),
+            BitAnd => builder.ins().band(l, r),
+            BitOr => builder.ins().bor(l, r),
+            BitXor => builder.ins().bxor(l, r),
             Pow => {
                 let is_float = is_float_op(func_mir, lhs);
                 let func_name = if is_float {
@@ -242,6 +260,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 let res = builder.ins().icmp_imm(IntCC::Equal, o, 0);
                 builder.ins().uextend(types::I64, res)
             }
+            BitNot => builder.ins().bnot(o),
             Pos => o,
         }
     }

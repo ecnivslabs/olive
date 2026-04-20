@@ -165,6 +165,7 @@ pub extern "C" fn olive_py_initialize() {
         PY_TUPLE_TYPE = compat_dlsym(handle, "PyTuple_Type");
         PY_OBJECT_GET_ITER = compat_dlsym(handle, "PyObject_GetIter");
         PY_ITER_NEXT = compat_dlsym(handle, "PyIter_Next");
+        PY_OBJECT_RICHCOMPAREBOOL = compat_dlsym(handle, "PyObject_RichCompareBool");
         PY_CORO_CHECK_EXACT = compat_dlsym(handle, "PyCoro_CheckExact");
         PY_ITER_CHECK = compat_dlsym(handle, "PyIter_Check");
 
@@ -243,6 +244,7 @@ pub extern "C" fn olive_py_initialize() {
             PY_SYS_GET_OBJECT = noop_import;
             PY_OBJECT_GET_ITER = noop_get_iter;
             PY_ITER_NEXT = noop_iter_next;
+            PY_OBJECT_RICHCOMPAREBOOL = crate::python::python_noop::noop_richcomparebool;
             PY_CORO_CHECK_EXACT = noop_check_int;
             PY_ITER_CHECK = noop_check_int;
             PY_DICT_NEXT = noop_dict_next;

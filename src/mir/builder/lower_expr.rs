@@ -383,8 +383,18 @@ impl<'a> MirBuilder<'a> {
             ExprKind::Identifier(name) => {
                 if let Some(local) = self.lookup_var(name) {
                     self.operand_for_local(local)
-                } else if let Some(global_op) = self.globals.get(name) {
-                    global_op.clone()
+                } else if let Some(global_op) = self.globals.get(name).cloned() {
+                    if let Operand::Constant(Constant::GlobalData(_)) = &global_op {
+                        let ty = self.get_type(expr.id);
+                        let tmp = self.new_local(ty, None, false);
+                        self.push_statement(
+                            StatementKind::Assign(tmp, Rvalue::PtrLoad(global_op.clone())),
+                            expr.span,
+                        );
+                        Operand::Copy(tmp)
+                    } else {
+                        global_op
+                    }
                 } else {
                     Operand::Constant(Constant::Function(name.clone()))
                 }
@@ -429,6 +439,56 @@ impl<'a> MirBuilder<'a> {
                         );
                         return self.operand_for_local(not_tmp);
                     }
+                }
+
+                if matches!(op, crate::parser::BinOp::And | crate::parser::BinOp::Or) {
+                    let tmp = self.new_tmp_for_expr(expr);
+                    let l = self.lower_expr(left);
+                    self.push_statement(
+                        StatementKind::Assign(tmp, Rvalue::Use(l.clone())),
+                        expr.span,
+                    );
+
+                    let rhs_bb = self.new_block();
+                    let merge_bb = self.new_block();
+
+                    if let Some(bb) = self.current_block {
+                        if matches!(op, crate::parser::BinOp::And) {
+                            self.terminate_block(
+                                bb,
+                                TerminatorKind::SwitchInt {
+                                    discr: l,
+                                    targets: vec![(1, rhs_bb)],
+                                    otherwise: merge_bb,
+                                },
+                                expr.span,
+                            );
+                        } else {
+                            self.terminate_block(
+                                bb,
+                                TerminatorKind::SwitchInt {
+                                    discr: l,
+                                    targets: vec![(0, rhs_bb)],
+                                    otherwise: merge_bb,
+                                },
+                                expr.span,
+                            );
+                        }
+                    }
+
+                    self.current_block = Some(rhs_bb);
+                    let r = self.lower_expr(right);
+                    self.push_statement(StatementKind::Assign(tmp, Rvalue::Use(r)), expr.span);
+                    if let Some(bb) = self.current_block {
+                        self.terminate_block(
+                            bb,
+                            TerminatorKind::Goto { target: merge_bb },
+                            expr.span,
+                        );
+                    }
+
+                    self.current_block = Some(merge_bb);
+                    return self.operand_for_local(tmp);
                 }
 
                 let l = if matches!(
@@ -1548,8 +1608,9 @@ impl<'a> MirBuilder<'a> {
             ExprKind::Attr { obj, attr } => {
                 if let ExprKind::Identifier(name) = &obj.kind {
                     let obj_ty = self.get_type(obj.id);
-                    let is_struct_or_self = matches!(obj_ty, Type::Struct(_, _) | Type::Any)
-                        && self.lookup_var(name).is_some();
+                    let is_struct_or_self =
+                        matches!(obj_ty, Type::Struct(_, _) | Type::Any | Type::Var(_))
+                            && self.lookup_var(name).is_some();
                     if !is_struct_or_self && obj_ty != Type::PyObject {
                         let mangled = format!("{}::{}", name, attr);
                         if let Some(local) = self.lookup_var(&mangled) {

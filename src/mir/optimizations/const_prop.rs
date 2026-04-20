@@ -9,12 +9,38 @@ impl Transform for ConstantPropagation {
         let mut assign_counts: HashMap<Local, usize> = HashMap::default();
         let mut constant_assignments: HashMap<Local, Constant> = HashMap::default();
 
-        for bb in &func.basic_blocks {
+        let loops = crate::mir::loop_utils::find_loops(func);
+        let mut loop_blocks = rustc_hash::FxHashSet::default();
+        for lp in &loops {
+            loop_blocks.insert(lp.header);
+            for &bb in &lp.body {
+                loop_blocks.insert(bb);
+            }
+        }
+
+        for (bb_idx, bb) in func.basic_blocks.iter().enumerate() {
+            let in_loop = loop_blocks.contains(&BasicBlockId(bb_idx));
             for stmt in &bb.statements {
                 if let StatementKind::Assign(dest, rval) = &stmt.kind {
-                    *assign_counts.entry(*dest).or_insert(0) += 1;
+                    *assign_counts.entry(*dest).or_insert(0) += if in_loop { 2 } else { 1 };
                     if let Rvalue::Use(Operand::Constant(c)) = rval {
                         constant_assignments.insert(*dest, c.clone());
+                    }
+                } else if let StatementKind::SetAttr(obj, _, _) = &stmt.kind {
+                    if let Operand::Copy(l) | Operand::Move(l) = obj {
+                        *assign_counts.entry(*l).or_insert(0) += if in_loop { 2 } else { 1 };
+                    }
+                } else if let StatementKind::SetIndex(obj, _, _) = &stmt.kind {
+                    if let Operand::Copy(l) | Operand::Move(l) = obj {
+                        *assign_counts.entry(*l).or_insert(0) += if in_loop { 2 } else { 1 };
+                    }
+                } else if let StatementKind::VectorStore(obj, _, _) = &stmt.kind {
+                    if let Operand::Copy(l) | Operand::Move(l) = obj {
+                        *assign_counts.entry(*l).or_insert(0) += if in_loop { 2 } else { 1 };
+                    }
+                } else if let StatementKind::PtrStore(ptr, _) = &stmt.kind {
+                    if let Operand::Copy(l) | Operand::Move(l) = ptr {
+                        *assign_counts.entry(*l).or_insert(0) += if in_loop { 2 } else { 1 };
                     }
                 }
             }

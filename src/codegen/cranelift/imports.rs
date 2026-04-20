@@ -74,7 +74,7 @@ pub(super) fn scan_rvalue_imports(
             }
         }
         Rvalue::Call { .. } => {}
-        Rvalue::BinaryOp(op, lhs, _) => {
+        Rvalue::BinaryOp(op, lhs, rhs) => {
             use crate::parser::BinOp::*;
             match op {
                 Add => {
@@ -85,8 +85,28 @@ pub(super) fn scan_rvalue_imports(
                     }
                 }
                 Eq => {
-                    if is_str_op(func_mir, lhs) {
+                    let mut is_str = false;
+                    let mut is_pyobj = false;
+                    let mut check_op = |op: &Operand| match op {
+                        Operand::Constant(Constant::Str(_)) => is_str = true,
+                        Operand::Copy(loc) | Operand::Move(loc) => {
+                            let ty = &func_mir.locals[loc.0].ty;
+                            if *ty == OliveType::Str {
+                                is_str = true;
+                            }
+                            if *ty == OliveType::PyObject {
+                                is_pyobj = true;
+                            }
+                        }
+                        _ => {}
+                    };
+                    check_op(lhs);
+                    check_op(rhs);
+
+                    if is_str {
                         needed.insert("__olive_str_eq");
+                    } else if is_pyobj {
+                        needed.insert("__olive_py_eq");
                     }
                 }
                 Pow => {
@@ -520,6 +540,7 @@ pub(super) fn resolve_builtin_import(
             "__olive_py_to_dict" => Some("__olive_py_to_dict"),
             "__olive_py_setattr" => Some("__olive_py_setattr"),
             "__olive_py_setattr_safe" => Some("__olive_py_setattr_safe"),
+            "__olive_py_eq" => Some("__olive_py_eq"),
             _ => None,
         };
     }
