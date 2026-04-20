@@ -340,6 +340,12 @@ impl Stmt {
 }
 
 #[derive(Debug, Clone)]
+pub struct WithItem {
+    pub context_expr: Expr,
+    pub alias: Option<Expr>,
+}
+
+#[derive(Debug, Clone)]
 pub enum StmtKind {
     Fn {
         name: String,
@@ -396,6 +402,10 @@ pub enum StmtKind {
     Assert {
         test: Expr,
         msg: Option<Expr>,
+    },
+    With {
+        items: Vec<WithItem>,
+        body: Vec<Stmt>,
     },
     Import {
         module: Vec<String>,

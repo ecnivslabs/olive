@@ -247,6 +247,23 @@ impl Resolver {
                 }
             }
 
+            StmtKind::With { items, body } => {
+                self.table.push(ScopeKind::Block);
+                for item in items {
+                    self.resolve_expr(&item.context_expr);
+                    if let Some(alias_expr) = &item.alias {
+                        if let ExprKind::Identifier(name) = &alias_expr.kind {
+                            self.define_sym(name, SymbolKind::Variable, stmt.span);
+                        }
+                    }
+                }
+                self.hoist_fns_and_structs(body);
+                for s in body {
+                    self.resolve_stmt(s);
+                }
+                self.table.pop();
+            }
+
             StmtKind::Return(expr) => {
                 if let Some(e) = expr {
                     self.resolve_expr(e);

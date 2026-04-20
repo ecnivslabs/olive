@@ -359,6 +359,74 @@ impl TypeChecker {
                 }
             }
 
+            StmtKind::With { items, body } => {
+                self.enter_scope();
+                for item in items {
+                    let ctx_ty = self.check_expr(&item.context_expr);
+                    let resolved_ctx = self.apply_subst(ctx_ty.clone());
+
+                    if let Type::Struct(name, _) = &resolved_ctx {
+                        let enter_mangled = format!("{}::__enter__", name);
+                        let exit_mangled = format!("{}::__exit__", name);
+
+                        let enter_ret_ty = if let Some(enter_fn) = self.lookup_type(&enter_mangled)
+                        {
+                            if let Type::Fn(_, ret, _) = enter_fn {
+                                *ret
+                            } else {
+                                Type::Any
+                            }
+                        } else {
+                            self.errors
+                                .push(crate::semantic::error::SemanticError::Custom {
+                                    msg: format!("{} does not implement `__enter__`", name),
+                                    span: item.context_expr.span,
+                                });
+                            Type::Any
+                        };
+
+                        if self.lookup_type(&exit_mangled).is_none() {
+                            self.errors
+                                .push(crate::semantic::error::SemanticError::Custom {
+                                    msg: format!("{} does not implement `__exit__`", name),
+                                    span: item.context_expr.span,
+                                });
+                        }
+
+                        if let Some(alias_expr) = &item.alias {
+                            if let crate::parser::ExprKind::Identifier(alias_name) =
+                                &alias_expr.kind
+                            {
+                                self.define_type(alias_name, enter_ret_ty.clone(), false);
+                                self.expr_types.insert(alias_expr.id, enter_ret_ty);
+                            }
+                        }
+                    } else if resolved_ctx != Type::Any && resolved_ctx != Type::Null {
+                        self.errors
+                            .push(crate::semantic::error::SemanticError::Custom {
+                                msg: format!(
+                                    "type `{}` cannot be used as a context manager",
+                                    resolved_ctx
+                                ),
+                                span: item.context_expr.span,
+                            });
+                        if let Some(alias_expr) = &item.alias {
+                            if let crate::parser::ExprKind::Identifier(alias_name) =
+                                &alias_expr.kind
+                            {
+                                self.define_type(alias_name, Type::Any, false);
+                                self.expr_types.insert(alias_expr.id, Type::Any);
+                            }
+                        }
+                    }
+                }
+
+                for s in body {
+                    self.check_stmt(s);
+                }
+                self.leave_scope();
+            }
+
             StmtKind::Struct {
                 name,
                 type_params,

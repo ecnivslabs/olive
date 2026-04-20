@@ -41,6 +41,7 @@ pub enum TokenKind {
     Unsafe,
     Defer,
     Null,
+    With,
 
     Plus,
     Minus,

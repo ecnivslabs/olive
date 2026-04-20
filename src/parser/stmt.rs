@@ -26,6 +26,7 @@ impl Parser {
             TokenKind::At | TokenKind::Hash => self.parse_decorated(),
             TokenKind::Unsafe => self.parse_unsafe_stmt(),
             TokenKind::Defer => self.parse_defer(),
+            TokenKind::With => self.parse_with(),
             TokenKind::Pass => {
                 let s = self.peek().clone();
                 self.advance();
@@ -348,6 +349,46 @@ impl Parser {
         } else {
             Ok(ForTarget::Name(name, name_span))
         }
+    }
+
+    pub(crate) fn parse_with(&mut self) -> ParseResult<Stmt> {
+        let start = self.peek().clone();
+        self.expect(TokenKind::With)?;
+
+        let mut items = Vec::new();
+        loop {
+            let mut context_expr = self.parse_expr()?;
+            let mut alias = None;
+
+            if let ExprKind::Cast(inner, ty) = &context_expr.kind {
+                if let crate::parser::ast::TypeExprKind::Name(name) = &ty.kind {
+                    let alias_span = ty.span;
+                    alias = Some(Expr::new(ExprKind::Identifier(name.clone()), alias_span));
+                    context_expr = *inner.clone();
+                }
+            } else if self.peek().kind == TokenKind::As {
+                self.advance();
+                let ident = self.expect(TokenKind::Identifier)?;
+                let span = self.span_from(&ident);
+                alias = Some(Expr::new(ExprKind::Identifier(ident.value), span));
+            }
+
+            items.push(WithItem {
+                context_expr,
+                alias,
+            });
+
+            if self.peek().kind == TokenKind::Comma {
+                self.advance();
+                self.skip_newlines();
+            } else {
+                break;
+            }
+        }
+
+        let body = self.parse_block()?;
+        let span = self.span_from(&start);
+        Ok(Stmt::new(StmtKind::With { items, body }, span))
     }
 
     pub(crate) fn parse_return(&mut self) -> ParseResult<Stmt> {

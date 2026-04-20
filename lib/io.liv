@@ -64,8 +64,36 @@ fn read_stdin() -> str:
 fn read_line() -> str:
     return __olive_stdin_read_line()
 
-fn open(path: str, mode: str) -> int:
-    return __olive_file_open(path, mode)
+struct File:
+    handle: int
+
+    fn __init__(self, handle: int):
+        self.handle = handle
+
+    fn __enter__(self) -> File:
+        return self
+        
+    fn __exit__(self):
+        __olive_file_close(self.handle)
+
+    fn read(self) -> str:
+        # seek to end, get size, seek to start, read_n
+        let size = __olive_file_seek(self.handle, 0, 2)
+        __olive_file_seek(self.handle, 0, 0)
+        return __olive_file_read_n(self.handle, size)
+
+    fn write(self, data: str) -> bool:
+        return __olive_file_write_str(self.handle, data) == 1
+        
+    fn append(self, data: str) -> bool:
+        __olive_file_seek(self.handle, 0, 2)
+        return __olive_file_write_str(self.handle, data) == 1
+        
+    fn close(self):
+        __olive_file_close(self.handle)
+
+fn open(path: str, mode: str = "r") -> File:
+    return File(__olive_file_open(path, mode))
 
 fn close(handle: int):
     __olive_file_close(handle)

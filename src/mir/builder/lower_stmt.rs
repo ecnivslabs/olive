@@ -246,6 +246,94 @@ impl<'a> MirBuilder<'a> {
                 self.lower_for(target, iter, body, else_body);
             }
 
+            StmtKind::With { items, body } => {
+                let mut exit_calls = Vec::new();
+
+                for item in items {
+                    let ctx_op = self.lower_expr(&item.context_expr);
+                    let ctx_ty = self.get_type(item.context_expr.id).clone();
+
+                    if let Type::Struct(name, _) = ctx_ty {
+                        let enter_mangled = format!("{}::__enter__", name);
+                        let exit_mangled = format!("{}::__exit__", name);
+
+                        let ctx_tmp = self.new_tmp_for_expr(&item.context_expr);
+                        self.push_statement(
+                            StatementKind::Assign(ctx_tmp, Rvalue::Use(ctx_op.clone())),
+                            item.context_expr.span,
+                        );
+
+                        let enter_func = Operand::Constant(Constant::Function(enter_mangled));
+                        let enter_rval = Rvalue::Call {
+                            func: enter_func,
+                            args: vec![Operand::Copy(ctx_tmp)],
+                        };
+
+                        if let Some(alias_expr) = &item.alias {
+                            if let crate::parser::ExprKind::Identifier(alias_name) =
+                                &alias_expr.kind
+                            {
+                                let alias_ty = self.get_type(alias_expr.id).clone();
+                                let local = self.declare_var(alias_name.clone(), alias_ty, false);
+                                self.push_statement(
+                                    StatementKind::Assign(local, enter_rval),
+                                    item.context_expr.span,
+                                );
+                            }
+                        } else {
+                            let tmp = self.new_local(Type::Any, None, false);
+                            self.push_statement(
+                                StatementKind::Assign(tmp, enter_rval),
+                                item.context_expr.span,
+                            );
+                        }
+
+                        let dummy_ident = crate::parser::Expr {
+                            id: 0,
+                            kind: crate::parser::ExprKind::Identifier(exit_mangled),
+                            span: item.context_expr.span,
+                        };
+
+                        let call_expr = crate::parser::Expr {
+                            id: 0,
+                            kind: crate::parser::ExprKind::Call {
+                                callee: Box::new(dummy_ident),
+                                args: vec![crate::parser::CallArg::Positional(
+                                    crate::parser::Expr {
+                                        id: item.context_expr.id,
+                                        kind: crate::parser::ExprKind::Identifier(
+                                            "$$ctx".to_string(),
+                                        ),
+                                        span: item.context_expr.span,
+                                    },
+                                )],
+                            },
+                            span: item.context_expr.span,
+                        };
+
+                        exit_calls.push((ctx_tmp, call_expr));
+                    }
+                }
+
+                for (ctx_tmp, call_expr) in &exit_calls {
+                    self.var_map
+                        .last_mut()
+                        .unwrap()
+                        .insert("$$ctx".to_string(), *ctx_tmp);
+                    self.defer_stack.push(call_expr.clone());
+                }
+
+                for s in body {
+                    self.lower_stmt(s);
+                }
+
+                for _ in 0..exit_calls.len() {
+                    if let Some(expr) = self.defer_stack.pop() {
+                        self.lower_expr(&expr);
+                    }
+                }
+            }
+
             StmtKind::Break => {
                 if let Some(ctx) = self.loop_stack.last() {
                     let exit = ctx.exit;

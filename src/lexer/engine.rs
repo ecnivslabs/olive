@@ -451,6 +451,7 @@ impl Lexer {
             "unsafe" => TokenKind::Unsafe,
             "defer" => TokenKind::Defer,
             "null" => TokenKind::Null,
+            "with" => TokenKind::With,
 
             "_" => TokenKind::Underscore,
             _ => TokenKind::Identifier,
