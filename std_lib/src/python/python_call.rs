@@ -17,7 +17,10 @@ pub extern "C" fn olive_py_call(func: PyObject, args_list: i64) -> PyObject {
             py_args = PY_TUPLE_NEW(sv.len as isize);
             for i in 0..sv.len {
                 let v = *sv.ptr.add(i);
-                let py_v = olive_to_py(v);
+                let mut py_v = crate::python::olive_py_to_sequence(v);
+                if py_v.is_null() {
+                    py_v = olive_to_py(v);
+                }
                 PY_TUPLE_SET_ITEM(py_args, i as isize, py_v);
             }
         }
@@ -51,7 +54,10 @@ pub extern "C" fn olive_py_call_kw(func: PyObject, args_list: i64, kwargs_dict: 
             let args = PY_TUPLE_NEW(sv.len as isize);
             for i in 0..sv.len {
                 let v = *sv.ptr.add(i);
-                let py_v = olive_to_py(v);
+                let mut py_v = crate::python::olive_py_to_sequence(v);
+                if py_v.is_null() {
+                    py_v = olive_to_py(v);
+                }
                 PY_TUPLE_SET_ITEM(args, i as isize, py_v);
             }
             args
@@ -69,7 +75,10 @@ pub extern "C" fn olive_py_call_kw(func: PyObject, args_list: i64, kwargs_dict: 
 
                 let k_str = crate::olive_str_from_ptr(k_ptr);
                 let k_cstr = CString::new(k_str).unwrap();
-                let py_v = olive_to_py(v);
+                let mut py_v = crate::python::olive_py_to_sequence(v);
+                if py_v.is_null() {
+                    py_v = olive_to_py(v);
+                }
 
                 PY_DICT_SET_ITEM_STRING(py_kwargs, k_cstr.as_ptr(), py_v);
             }

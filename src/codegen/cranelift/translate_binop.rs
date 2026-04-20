@@ -178,7 +178,28 @@ impl<M: Module> CraneliftCodegen<M> {
             And => builder.ins().band(l, r),
             Or => builder.ins().bor(l, r),
             BitAnd => builder.ins().band(l, r),
-            BitOr => builder.ins().bor(l, r),
+            BitOr => {
+                let mut is_pyobj = false;
+                let mut check_op = |op: &Operand| match op {
+                    Operand::Copy(loc) | Operand::Move(loc) => {
+                        let ty = &func_mir.locals[loc.0].ty;
+                        if *ty == OliveType::PyObject {
+                            is_pyobj = true;
+                        }
+                    }
+                    _ => {}
+                };
+                check_op(lhs);
+                check_op(rhs);
+                if is_pyobj {
+                    let bitor_id = func_ids.get("__olive_py_bitor").unwrap();
+                    let local_func = module.declare_func_in_func(*bitor_id, builder.func);
+                    let inst = builder.ins().call(local_func, &[l, r]);
+                    builder.inst_results(inst)[0]
+                } else {
+                    builder.ins().bor(l, r)
+                }
+            }
             BitXor => builder.ins().bxor(l, r),
             Pow => {
                 let is_float = is_float_op(func_mir, lhs);

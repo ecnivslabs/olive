@@ -356,6 +356,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_py_import", b"olive_py_import\0"),
     ("__olive_py_import_safe", b"olive_py_import_safe\0"),
     ("__olive_py_initialize", b"olive_py_initialize\0"),
+    ("__olive_py_bitor", b"olive_py_bitor\0"),
     ("__olive_py_is_none", b"olive_py_is_none\0"),
     ("__olive_py_is_valid_proxy", b"olive_py_is_valid_proxy\0"),
     ("__olive_py_len", b"olive_py_len\0"),

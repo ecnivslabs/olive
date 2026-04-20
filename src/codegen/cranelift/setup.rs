@@ -300,6 +300,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_py_conv_to_olive", &sig_i64_i64),
             ("__olive_py_conv_to_py", &sig_i64_i64),
             ("__olive_py_decref", &sig_i64_void),
+            ("__olive_py_bitor", &sig_i64_i64_i64),
             ("__olive_py_eq", &sig_i64_i64_i64),
             ("__olive_py_finalize", &sig_void_void),
             ("__olive_py_from_float", &sig_f64_i64),
@@ -714,15 +715,25 @@ impl<M: Module> CraneliftCodegen<M> {
                         .unwrap();
                     self.func_ids.insert(body_name, body_id);
                 }
+                let decl_name = if func.name == "main" {
+                    "__olive_user_main"
+                } else {
+                    &func.name
+                };
                 let wrapper_id = self
                     .module
-                    .declare_function(&func.name, Linkage::Export, &sig)
+                    .declare_function(decl_name, Linkage::Export, &sig)
                     .unwrap();
                 self.func_ids.insert(func.name.clone(), wrapper_id);
             } else {
+                let decl_name = if func.name == "main" {
+                    "__olive_user_main"
+                } else {
+                    &func.name
+                };
                 let func_id = self
                     .module
-                    .declare_function(&func.name, Linkage::Export, &sig)
+                    .declare_function(decl_name, Linkage::Export, &sig)
                     .unwrap();
                 self.func_ids.insert(func.name.clone(), func_id);
             }

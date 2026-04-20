@@ -109,6 +109,22 @@ pub(super) fn scan_rvalue_imports(
                         needed.insert("__olive_py_eq");
                     }
                 }
+                BitOr => {
+                    let mut is_pyobj = false;
+                    let mut check_op = |op: &Operand| match op {
+                        Operand::Copy(loc) | Operand::Move(loc) => {
+                            if func_mir.locals[loc.0].ty == OliveType::PyObject {
+                                is_pyobj = true;
+                            }
+                        }
+                        _ => {}
+                    };
+                    check_op(lhs);
+                    check_op(rhs);
+                    if is_pyobj {
+                        needed.insert("__olive_py_bitor");
+                    }
+                }
                 Pow => {
                     if is_float_op(func_mir, lhs) {
                         needed.insert("__olive_pow_float");
@@ -540,6 +556,7 @@ pub(super) fn resolve_builtin_import(
             "__olive_py_to_dict" => Some("__olive_py_to_dict"),
             "__olive_py_setattr" => Some("__olive_py_setattr"),
             "__olive_py_setattr_safe" => Some("__olive_py_setattr_safe"),
+            "__olive_py_bitor" => Some("__olive_py_bitor"),
             "__olive_py_eq" => Some("__olive_py_eq"),
             _ => None,
         };

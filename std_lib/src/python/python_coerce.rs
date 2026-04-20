@@ -779,3 +779,46 @@ pub extern "C" fn olive_py_setattr(obj: PyObject, attr: i64, val: i64) -> PyObje
         obj
     })
 }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_bitor(l: PyObject, r: PyObject) -> i64 {
+    check_python_loaded();
+    let un_l = unsafe { olive_py_unwrap(l) };
+    let un_r = unsafe { olive_py_unwrap(r) };
+    if un_l.is_null() || un_r.is_null() {
+        return 0;
+    }
+    with_gil(|| unsafe {
+        let res = crate::python::PY_NUMBER_OR(un_l, un_r);
+        if res.is_null() {
+            crate::python::python_error::handle_py_error();
+        }
+        olive_py_wrap_owned(res) as i64
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_to_sequence(val: i64) -> PyObject {
+    check_python_loaded();
+    if val == 0 {
+        return std::ptr::null_mut();
+    }
+    if !crate::is_active_object(val) {
+        return std::ptr::null_mut();
+    }
+    unsafe {
+        let kind = *(val as *const i64);
+        if kind == crate::KIND_LIST {
+            let sv = &*(val as *const crate::StableVec);
+            let pyl = crate::python::PY_TUPLE_NEW(sv.len as isize);
+            for i in 0..sv.len {
+                let v = *sv.ptr.add(i);
+                let py_v = olive_to_py(v);
+                crate::python::PY_TUPLE_SET_ITEM(pyl, i as isize, py_v);
+            }
+            pyl
+        } else {
+            std::ptr::null_mut()
+        }
+    }
+}

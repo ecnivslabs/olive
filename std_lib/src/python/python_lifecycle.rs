@@ -103,6 +103,10 @@ pub extern "C" fn olive_py_initialize() {
         LIBPYTHON = handle;
 
         PY_INITIALIZE = compat_dlsym(handle, "Py_Initialize");
+        PY_NUMBER_OR = std::mem::transmute(libc::dlsym(
+            handle,
+            b"PyNumber_Or\0".as_ptr() as *const _,
+        ));
         PY_FINALIZE = compat_dlsym(handle, "Py_Finalize");
         PY_IMPORT_IMPORT_MODULE = compat_dlsym(handle, "PyImport_ImportModule");
         PY_OBJECT_GET_ATTR_STRING = compat_dlsym(handle, "PyObject_GetAttrString");
@@ -173,6 +177,7 @@ pub extern "C" fn olive_py_initialize() {
 
         let crucial_missing =
             std::mem::transmute::<_, *const ()>(PY_INITIALIZE).is_null() ||
+            std::mem::transmute::<_, *const ()>(PY_NUMBER_OR).is_null() ||
             std::mem::transmute::<_, *const ()>(PY_FINALIZE).is_null() ||
             std::mem::transmute::<_, *const ()>(PY_IMPORT_IMPORT_MODULE).is_null() ||
             std::mem::transmute::<_, *const ()>(PY_OBJECT_GET_ATTR_STRING).is_null() ||
@@ -198,6 +203,7 @@ pub extern "C" fn olive_py_initialize() {
             eprintln!("Warning: crucial Python API symbols are missing in the loaded library. Disabling Python interop.");
             LIBPYTHON = std::ptr::null_mut();
             PY_INITIALIZE = noop_initialize;
+            PY_NUMBER_OR = noop_pynumber;
             PY_FINALIZE = noop_finalize;
             PY_IMPORT_IMPORT_MODULE = noop_import;
             PY_OBJECT_GET_ATTR_STRING = noop_getattr;
