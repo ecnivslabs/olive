@@ -281,6 +281,8 @@ impl Resolver {
                 let name = alias
                     .as_deref()
                     .unwrap_or_else(|| module.last().unwrap().as_str());
+                println!("Resolver defining Import: {}", name);
+                println!("DEBUG Resolver: defining Import {}", name);
                 self.define_sym(name, SymbolKind::Import, stmt.span);
             }
 

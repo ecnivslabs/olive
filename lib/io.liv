@@ -72,23 +72,23 @@ struct File:
 
     fn __enter__(self) -> File:
         return self
-        
+
     fn __exit__(self):
         __olive_file_close(self.handle)
 
     fn read(self) -> str:
-        # seek to end, get size, seek to start, read_n
+        // seek to end, get size, seek to start, read_n
         let size = __olive_file_seek(self.handle, 0, 2)
         __olive_file_seek(self.handle, 0, 0)
         return __olive_file_read_n(self.handle, size)
 
     fn write(self, data: str) -> bool:
         return __olive_file_write_str(self.handle, data) == 1
-        
+
     fn append(self, data: str) -> bool:
         __olive_file_seek(self.handle, 0, 2)
         return __olive_file_write_str(self.handle, data) == 1
-        
+
     fn close(self):
         __olive_file_close(self.handle)
 

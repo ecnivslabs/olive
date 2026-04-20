@@ -78,7 +78,9 @@ impl<'a> MirBuilder<'a> {
                     self.globals.insert(name.clone(), rval);
                 } else {
                     let global_name = name.clone();
-                    self.global_vars.push(global_name.clone());
+                    if !self.global_vars.contains(&global_name) {
+                        self.global_vars.push(global_name.clone());
+                    }
                     let global_op = Operand::Constant(Constant::GlobalData(global_name));
                     self.globals.insert(name.clone(), global_op.clone());
 
@@ -110,7 +112,9 @@ impl<'a> MirBuilder<'a> {
                     );
 
                     let global_name = name.clone();
-                    self.global_vars.push(global_name.clone());
+                    if !self.global_vars.contains(&global_name) {
+                        self.global_vars.push(global_name.clone());
+                    }
                     let global_op = Operand::Constant(Constant::GlobalData(global_name));
                     self.globals.insert(name.clone(), global_op.clone());
 
@@ -249,7 +253,7 @@ impl<'a> MirBuilder<'a> {
             StmtKind::With { items, body } => {
                 let mut exit_calls = Vec::new();
 
-                for item in items {
+                for (i, item) in items.iter().enumerate() {
                     let ctx_op = self.lower_expr(&item.context_expr);
                     let ctx_ty = self.get_type(item.context_expr.id).clone();
 
@@ -294,6 +298,8 @@ impl<'a> MirBuilder<'a> {
                             span: item.context_expr.span,
                         };
 
+                        let ctx_name = format!("$$ctx_{}", i);
+
                         let call_expr = crate::parser::Expr {
                             id: 0,
                             kind: crate::parser::ExprKind::Call {
@@ -301,9 +307,7 @@ impl<'a> MirBuilder<'a> {
                                 args: vec![crate::parser::CallArg::Positional(
                                     crate::parser::Expr {
                                         id: item.context_expr.id,
-                                        kind: crate::parser::ExprKind::Identifier(
-                                            "$$ctx".to_string(),
-                                        ),
+                                        kind: crate::parser::ExprKind::Identifier(ctx_name.clone()),
                                         span: item.context_expr.span,
                                     },
                                 )],
@@ -311,15 +315,15 @@ impl<'a> MirBuilder<'a> {
                             span: item.context_expr.span,
                         };
 
-                        exit_calls.push((ctx_tmp, call_expr));
+                        exit_calls.push((ctx_tmp, call_expr, ctx_name));
                     }
                 }
 
-                for (ctx_tmp, call_expr) in &exit_calls {
+                for (ctx_tmp, call_expr, ctx_name) in &exit_calls {
                     self.var_map
                         .last_mut()
                         .unwrap()
-                        .insert("$$ctx".to_string(), *ctx_tmp);
+                        .insert(ctx_name.clone(), *ctx_tmp);
                     self.defer_stack.push(call_expr.clone());
                 }
 
@@ -600,7 +604,9 @@ impl<'a> MirBuilder<'a> {
             StmtKind::PyImport { module, alias } => {
                 let module_op = Operand::Constant(Constant::Str(module.clone()));
                 if self.current_name == "__main__" {
-                    self.global_vars.push(alias.clone());
+                    if !self.global_vars.contains(alias) {
+                        self.global_vars.push(alias.clone());
+                    }
                     let global_name = alias.clone();
                     self.globals.insert(
                         alias.clone(),

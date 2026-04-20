@@ -88,7 +88,7 @@ impl Parser {
         self.expect(TokenKind::Struct)?;
         let name = self.expect(TokenKind::Identifier)?.value;
         let type_params = self.parse_type_params()?;
-        // Removed uppercase enforcement for struct names
+
         self.expect(TokenKind::Colon)?;
         let mut fields: Vec<Param> = Vec::new();
         let mut body: Vec<Stmt> = Vec::new();

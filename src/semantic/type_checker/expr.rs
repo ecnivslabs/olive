@@ -388,7 +388,17 @@ impl TypeChecker {
                         if let Type::Fn(params, _, _) = &instantiated
                             && !params.is_empty()
                         {
-                            self.unify(&params[0], &resolved_obj, expr.span);
+                            let mut auto_ref_obj = resolved_obj.clone();
+                            if let Type::MutRef(inner) = &params[0] {
+                                if auto_ref_obj == **inner {
+                                    auto_ref_obj = Type::MutRef(Box::new(auto_ref_obj));
+                                }
+                            } else if let Type::Ref(inner) = &params[0] {
+                                if auto_ref_obj == **inner {
+                                    auto_ref_obj = Type::Ref(Box::new(auto_ref_obj));
+                                }
+                            }
+                            self.unify(&params[0], &auto_ref_obj, expr.span);
                         }
                         return instantiated;
                     }
@@ -401,7 +411,17 @@ impl TypeChecker {
                         if let Type::Fn(params, _, _) = &instantiated
                             && !params.is_empty()
                         {
-                            self.unify(&params[0], &resolved_obj, expr.span);
+                            let mut auto_ref_obj = resolved_obj.clone();
+                            if let Type::MutRef(inner) = &params[0] {
+                                if auto_ref_obj == **inner {
+                                    auto_ref_obj = Type::MutRef(Box::new(auto_ref_obj));
+                                }
+                            } else if let Type::Ref(inner) = &params[0] {
+                                if auto_ref_obj == **inner {
+                                    auto_ref_obj = Type::Ref(Box::new(auto_ref_obj));
+                                }
+                            }
+                            self.unify(&params[0], &auto_ref_obj, expr.span);
                         }
                         return instantiated;
                     }
