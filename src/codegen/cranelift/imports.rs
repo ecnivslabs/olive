@@ -78,10 +78,57 @@ pub(super) fn scan_rvalue_imports(
             use crate::parser::BinOp::*;
             match op {
                 Add => {
-                    if is_str_op(func_mir, lhs) {
+                    let mut is_pyobj = false;
+                    let mut check_op = |op: &Operand| match op {
+                        Operand::Copy(loc) | Operand::Move(loc) => {
+                            if func_mir.locals[loc.0].ty == OliveType::PyObject {
+                                is_pyobj = true;
+                            }
+                        }
+                        _ => {}
+                    };
+                    check_op(lhs);
+                    check_op(rhs);
+                    if is_pyobj {
+                        needed.insert("__olive_py_add");
+                        needed.insert("__olive_py_from_float");
+                        needed.insert("__olive_py_from_int");
+                    } else if is_str_op(func_mir, lhs) {
                         needed.insert("__olive_str_concat");
                     } else if is_list_op(func_mir, lhs) {
                         needed.insert("__olive_list_concat");
+                    }
+                }
+                Sub | Mul | Div | Mod => {
+                    let mut is_pyobj = false;
+                    let mut check_op = |op: &Operand| match op {
+                        Operand::Copy(loc) | Operand::Move(loc) => {
+                            if func_mir.locals[loc.0].ty == OliveType::PyObject {
+                                is_pyobj = true;
+                            }
+                        }
+                        _ => {}
+                    };
+                    check_op(lhs);
+                    check_op(rhs);
+                    if is_pyobj {
+                        needed.insert("__olive_py_from_float");
+                        needed.insert("__olive_py_from_int");
+                        match op {
+                            crate::parser::BinOp::Sub => {
+                                needed.insert("__olive_py_sub");
+                            }
+                            crate::parser::BinOp::Mul => {
+                                needed.insert("__olive_py_mul");
+                            }
+                            crate::parser::BinOp::Div => {
+                                needed.insert("__olive_py_div");
+                            }
+                            crate::parser::BinOp::Mod => {
+                                needed.insert("__olive_py_mod");
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 Eq => {
@@ -126,7 +173,22 @@ pub(super) fn scan_rvalue_imports(
                     }
                 }
                 Pow => {
-                    if is_float_op(func_mir, lhs) {
+                    let mut is_pyobj = false;
+                    let mut check_op = |op: &Operand| match op {
+                        Operand::Copy(loc) | Operand::Move(loc) => {
+                            if func_mir.locals[loc.0].ty == OliveType::PyObject {
+                                is_pyobj = true;
+                            }
+                        }
+                        _ => {}
+                    };
+                    check_op(lhs);
+                    check_op(rhs);
+                    if is_pyobj {
+                        needed.insert("__olive_py_pow");
+                        needed.insert("__olive_py_from_float");
+                        needed.insert("__olive_py_from_int");
+                    } else if is_float_op(func_mir, lhs) {
                         needed.insert("__olive_pow_float");
                     } else {
                         needed.insert("__olive_pow");
@@ -558,6 +620,12 @@ pub(super) fn resolve_builtin_import(
             "__olive_py_setattr_safe" => Some("__olive_py_setattr_safe"),
             "__olive_py_bitor" => Some("__olive_py_bitor"),
             "__olive_py_eq" => Some("__olive_py_eq"),
+            "__olive_py_add" => Some("__olive_py_add"),
+            "__olive_py_sub" => Some("__olive_py_sub"),
+            "__olive_py_mul" => Some("__olive_py_mul"),
+            "__olive_py_div" => Some("__olive_py_div"),
+            "__olive_py_mod" => Some("__olive_py_mod"),
+            "__olive_py_pow" => Some("__olive_py_pow"),
             _ => None,
         };
     }
@@ -682,6 +750,13 @@ pub(super) fn is_float_op(func_mir: &MirFunction, op: &Operand) -> bool {
             let ty = &func_mir.locals[loc.0].ty;
             matches!(ty, OliveType::Float | OliveType::F32)
         }
+        _ => false,
+    }
+}
+
+pub(super) fn is_pyobj_op(func_mir: &MirFunction, op: &Operand) -> bool {
+    match op {
+        Operand::Copy(loc) | Operand::Move(loc) => func_mir.locals[loc.0].ty == OliveType::PyObject,
         _ => false,
     }
 }

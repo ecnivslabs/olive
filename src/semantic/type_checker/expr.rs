@@ -689,6 +689,10 @@ impl TypeChecker {
     }
 
     pub(super) fn check_binop(&mut self, op: &BinOp, l: &Type, r: &Type, span: Span) -> Type {
+        let l_resolved = self.apply_subst(l.clone());
+        let r_resolved = self.apply_subst(r.clone());
+        let is_py = matches!(l_resolved, Type::PyObject) || matches!(r_resolved, Type::PyObject);
+
         match op {
             BinOp::Add
             | BinOp::Sub
@@ -701,6 +705,9 @@ impl TypeChecker {
             | BinOp::BitOr
             | BinOp::BitAnd
             | BinOp::BitXor => {
+                if is_py {
+                    return Type::PyObject;
+                }
                 self.unify(l, r, span);
                 self.apply_subst(l.clone())
             }
@@ -713,6 +720,9 @@ impl TypeChecker {
             | BinOp::In
             | BinOp::NotIn => Type::Bool,
             BinOp::And | BinOp::Or => {
+                if is_py {
+                    return Type::PyObject;
+                }
                 self.unify(l, r, span);
                 self.apply_subst(l.clone())
             }
@@ -726,6 +736,11 @@ impl TypeChecker {
         val: &Type,
         span: Span,
     ) -> Type {
+        let target_resolved = self.apply_subst(target.clone());
+        let val_resolved = self.apply_subst(val.clone());
+        if matches!(target_resolved, Type::PyObject) || matches!(val_resolved, Type::PyObject) {
+            return Type::PyObject;
+        }
         self.unify(target, val, span);
         self.apply_subst(target.clone())
     }
