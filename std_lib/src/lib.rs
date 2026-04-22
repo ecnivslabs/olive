@@ -768,6 +768,7 @@ pub extern "C" fn olive_panic(msg: i64) -> i64 {
         }
     }
     eprintln!("panic: {text}");
+    eprintln!("{}", std::backtrace::Backtrace::force_capture());
     std::process::exit(1);
 }
 

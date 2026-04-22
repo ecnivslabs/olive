@@ -44,7 +44,7 @@ pub extern "C" fn olive_obj_new() -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_set(obj_ptr: i64, attr: i64, val: i64) -> i64 {
     if obj_ptr == 0 || attr == 0 {
-        return obj_ptr;
+        panic!("Null pointer dereference: attempted to set attribute on a null object");
     }
     let kind = unsafe { *(obj_ptr as *const i64) };
     if kind == KIND_PYOBJECT {
@@ -58,7 +58,9 @@ pub extern "C" fn olive_obj_set(obj_ptr: i64, attr: i64, val: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_get(obj_ptr: i64, attr: i64) -> i64 {
     if obj_ptr == 0 || attr == 0 {
-        return 0;
+        panic!(
+            "Null pointer dereference: attempted to get attribute from a null object or invalid attribute string"
+        );
     }
     let kind = unsafe { *(obj_ptr as *const i64) };
     if kind == KIND_PYOBJECT {
@@ -71,7 +73,7 @@ pub extern "C" fn olive_obj_get(obj_ptr: i64, attr: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_remove(obj_ptr: i64, attr: i64) -> i64 {
     if obj_ptr == 0 || attr == 0 {
-        return 0;
+        panic!("Null pointer dereference: attempted to remove attribute from a null object");
     }
     let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
     m.fields.remove(&OliveStringKey(attr)).unwrap_or(0)
@@ -80,7 +82,7 @@ pub extern "C" fn olive_obj_remove(obj_ptr: i64, attr: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_in_obj(key: i64, obj_ptr: i64) -> i64 {
     if obj_ptr == 0 || key == 0 {
-        return 0;
+        panic!("Null pointer dereference: attempted to check 'in' on a null object");
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
     if m.fields.contains_key(&OliveStringKey(key)) {
@@ -93,7 +95,7 @@ pub extern "C" fn olive_in_obj(key: i64, obj_ptr: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_len(obj_ptr: i64) -> i64 {
     if obj_ptr == 0 {
-        return 0;
+        panic!("Null pointer dereference: attempted to get length of a null object");
     }
     unsafe { (*(obj_ptr as *const OliveObj)).fields.len() as i64 }
 }
