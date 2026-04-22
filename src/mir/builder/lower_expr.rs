@@ -1036,8 +1036,12 @@ impl<'a> MirBuilder<'a> {
 
                     if let ExprKind::Identifier(name) = &obj.kind {
                         let obj_ty = self.get_type(obj.id);
+                        let mut current_obj_ty = obj_ty.clone();
+                        while let Type::Ref(inner) | Type::MutRef(inner) = current_obj_ty {
+                            current_obj_ty = *inner;
+                        }
                         let is_struct_var = matches!(
-                            obj_ty,
+                            current_obj_ty,
                             Type::Struct(_, _) | Type::TraitObject(_, _) | Type::Any
                         ) && self.lookup_var(name).is_some();
                         if !is_struct_var {
@@ -1196,13 +1200,29 @@ impl<'a> MirBuilder<'a> {
                                 }
                             }
 
+                            let callee_ty = self.get_type(callee.id).clone();
+                            let param_tys = if let Type::Fn(ptys, _, _) = callee_ty {
+                                ptys
+                            } else {
+                                Vec::new()
+                            };
+
+                            let final_args = self.pack_fn_call_args(
+                                &mangled_str,
+                                &arg_ops,
+                                &arg_tys,
+                                &param_tys,
+                                &arg_kw_names,
+                                expr.span,
+                            );
+
                             let tmp = self.new_tmp_for_expr(expr);
                             self.push_statement(
                                 StatementKind::Assign(
                                     tmp,
                                     Rvalue::Call {
                                         func: callee_op,
-                                        args: arg_ops,
+                                        args: final_args,
                                     },
                                 ),
                                 expr.span,
@@ -1608,10 +1628,18 @@ impl<'a> MirBuilder<'a> {
             ExprKind::Attr { obj, attr } => {
                 if let ExprKind::Identifier(name) = &obj.kind {
                     let obj_ty = self.get_type(obj.id);
-                    let is_struct_or_self =
-                        matches!(obj_ty, Type::Struct(_, _) | Type::Any | Type::Var(_))
-                            && self.lookup_var(name).is_some();
-                    if !is_struct_or_self && obj_ty != Type::PyObject {
+                    let mut current_obj_ty = obj_ty.clone();
+                    while let Type::Ref(inner) | Type::MutRef(inner) = current_obj_ty {
+                        current_obj_ty = *inner;
+                    }
+                    let is_struct_or_self = matches!(
+                        current_obj_ty,
+                        Type::Struct(_, _) | Type::Any | Type::Var(_)
+                    ) && self.lookup_var(name).is_some();
+                    if !is_struct_or_self
+                        && obj_ty != Type::PyObject
+                        && current_obj_ty != Type::PyObject
+                    {
                         let mangled = format!("{}::{}", name, attr);
                         if let Some(local) = self.lookup_var(&mangled) {
                             let ty = self.current_locals[local.0].ty.clone();

@@ -224,6 +224,11 @@ impl TypeChecker {
                         }
                     }
 
+                    if let Some(default_expr) = &param.default {
+                        let default_ty = self.check_expr(default_expr);
+                        self.unify(&p_ty, &default_ty, param.span);
+                    }
+
                     param_types.push(p_ty);
                 }
 

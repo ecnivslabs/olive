@@ -640,6 +640,7 @@ pub(super) fn resolve_builtin_import(
             let arg_type = match &args[0] {
                 Operand::Constant(Constant::Str(_)) => OliveType::Str,
                 Operand::Constant(Constant::Float(_)) => OliveType::Float,
+                Operand::Constant(Constant::Bool(_)) => OliveType::Bool,
                 Operand::Copy(l) | Operand::Move(l) => func_mir.locals[l.0].ty.clone(),
                 _ => OliveType::Int,
             };
@@ -677,6 +678,7 @@ pub(super) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
                 Some("__olive_print_list")
             }
             OliveType::Enum(_, _) => Some("__olive_print_enum"),
+            OliveType::Bool => Some("__olive_print_bool"),
             OliveType::Union(_) | OliveType::Any => Some("__olive_print_any"),
             OliveType::Dict(_, _) | OliveType::Struct(_, _) => Some("__olive_print_obj"),
             _ => Some("__olive_print_int"),

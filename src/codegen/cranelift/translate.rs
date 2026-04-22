@@ -133,6 +133,11 @@ impl<M: Module> CraneliftCodegen<M> {
 
                 for (j, val) in params.iter().enumerate() {
                     let var = vars.get(&Local(j + 1)).unwrap();
+                    let var_ty = builder.func.dfg.value_type(*val);
+                    let decl_ty = cl_type(&func.locals[j + 1].ty);
+                    if var_ty != decl_ty {
+                        panic!("param def_var type mismatch");
+                    }
                     builder.def_var(*var, *val);
                 }
             }
@@ -279,6 +284,10 @@ impl<M: Module> CraneliftCodegen<M> {
                         } else {
                             builder.ins().ireduce(decl_ty, val)
                         }
+                    } else if val_ty.is_int() && decl_ty.is_float() {
+                        builder.ins().fcvt_from_sint(decl_ty, val)
+                    } else if val_ty.is_float() && decl_ty.is_int() {
+                        builder.ins().fcvt_to_sint(decl_ty, val)
                     } else {
                         val
                     }
@@ -521,6 +530,20 @@ impl<M: Module> CraneliftCodegen<M> {
                     let var_ty = builder.func.dfg.value_type(val);
                     let zero = if var_ty == types::F64 {
                         builder.ins().f64const(0.0)
+                    } else if var_ty == types::F32 {
+                        builder.ins().f32const(0.0)
+                    } else if var_ty.is_int() {
+                        builder.ins().iconst(var_ty, 0)
+                    } else if var_ty.is_vector() {
+                        let lane = var_ty.lane_type();
+                        let scalar = if lane == types::F64 {
+                            builder.ins().f64const(0.0)
+                        } else if lane == types::F32 {
+                            builder.ins().f32const(0.0)
+                        } else {
+                            builder.ins().iconst(lane, 0)
+                        };
+                        builder.ins().splat(var_ty, scalar)
                     } else {
                         builder.ins().iconst(types::I64, 0)
                     };

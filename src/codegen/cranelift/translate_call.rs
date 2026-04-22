@@ -60,6 +60,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 let arg_type = match &args[0] {
                     Operand::Constant(Constant::Str(_)) => OliveType::Str,
                     Operand::Constant(Constant::Float(_)) => OliveType::Float,
+                    Operand::Constant(Constant::Bool(_)) => OliveType::Bool,
                     Operand::Copy(l) | Operand::Move(l) => func_mir.locals[l.0].ty.clone(),
                     _ => OliveType::Int,
                 };
@@ -316,6 +317,7 @@ impl<M: Module> CraneliftCodegen<M> {
                         final_args.push(arg);
                     }
                 }
+
                 let inst = if is_aot_vararg {
                     let mut sig = module.make_signature();
                     sig.call_conv = module.isa().default_call_conv();

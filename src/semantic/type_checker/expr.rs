@@ -404,7 +404,12 @@ impl TypeChecker {
                     }
                 }
 
-                if let Type::Struct(ref struct_name, ref type_args) = resolved_obj {
+                let mut inner_obj = resolved_obj.clone();
+                while let Type::Ref(inner) | Type::MutRef(inner) = &inner_obj {
+                    inner_obj = *inner.clone();
+                }
+
+                if let Type::Struct(ref struct_name, ref type_args) = inner_obj {
                     let mangled = format!("{}::{}", struct_name, attr);
                     if let Some(ty) = self.lookup_type(&mangled) {
                         let instantiated = self.instantiate(ty);

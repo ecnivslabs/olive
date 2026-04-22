@@ -345,6 +345,16 @@ pub extern "C" fn olive_vararg_call(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn olive_print_bool(val: i64) -> i64 {
+    if val == 0 {
+        println!("False");
+    } else {
+        println!("True");
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn olive_print(val: i64) -> i64 {
     println!("{}", val);
     0

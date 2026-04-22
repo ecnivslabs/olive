@@ -17,6 +17,7 @@ pub(super) struct FnMeta {
     pub(super) param_names: Vec<String>,
     pub(super) vararg_idx: Option<usize>,
     pub(super) kwarg_idx: Option<usize>,
+    pub(super) default_exprs: Vec<Option<crate::parser::Expr>>,
 }
 
 pub(super) struct LoopContext {
@@ -226,12 +227,14 @@ impl<'a> MirBuilder<'a> {
                 p.name.clone()
             })
             .collect();
+        let default_exprs = params.iter().map(|p| p.default.clone()).collect();
         self.fn_meta.insert(
             name.to_string(),
             FnMeta {
                 param_names,
                 vararg_idx,
                 kwarg_idx,
+                default_exprs,
             },
         );
     }
@@ -261,7 +264,11 @@ impl<'a> MirBuilder<'a> {
         let vararg_idx = meta.vararg_idx;
         let kwarg_idx = meta.kwarg_idx;
 
-        if vararg_idx.is_none() && kwarg_idx.is_none() && arg_kw_names.iter().all(|k| k.is_none()) {
+        if vararg_idx.is_none()
+            && kwarg_idx.is_none()
+            && arg_kw_names.iter().all(|k| k.is_none())
+            && arg_ops.len() == param_names.len()
+        {
             let mut res = Vec::new();
             for i in 0..arg_ops.len() {
                 let p_ty = param_tys.get(i).unwrap_or(&Type::Any);
@@ -354,10 +361,21 @@ impl<'a> MirBuilder<'a> {
             result[ki] = Some(self.operand_for_local(dict_tmp));
         }
 
-        result
-            .into_iter()
-            .map(|op| op.unwrap_or(Operand::Constant(Constant::Int(0))))
-            .collect()
+        let mut final_result = Vec::new();
+        for (i, op_opt) in result.into_iter().enumerate() {
+            if let Some(op) = op_opt {
+                final_result.push(op);
+            } else if i < meta.default_exprs.len() && meta.default_exprs[i].is_some() {
+                let default_expr = meta.default_exprs[i].as_ref().unwrap();
+                let op = self.lower_expr_as_copy(default_expr);
+                let default_ty = self.get_type(default_expr.id);
+                let p_ty = param_tys.get(i).unwrap_or(&Type::Any);
+                final_result.push(self.coerce(op, &default_ty, p_ty, span));
+            } else {
+                final_result.push(Operand::Constant(Constant::Int(0)));
+            }
+        }
+        final_result
     }
 
     pub(super) fn enter_scope(&mut self) {

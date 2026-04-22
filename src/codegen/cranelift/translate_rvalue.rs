@@ -265,18 +265,16 @@ impl<M: Module> CraneliftCodegen<M> {
 
                 if current_ty == target_cl_ty {
                     val
-                } else if current_ty == types::I64 && target_cl_ty == types::F64 {
-                    builder.ins().fcvt_from_sint(types::F64, val)
-                } else if current_ty == types::F64 && target_cl_ty == types::I64 {
-                    builder.ins().fcvt_to_sint(types::I64, val)
-                } else if current_ty == types::F64 && target_cl_ty == types::F32 {
-                    builder.ins().fdemote(types::F32, val)
-                } else if current_ty == types::F32 && target_cl_ty == types::F64 {
-                    builder.ins().fpromote(types::F64, val)
-                } else if current_ty == types::F32 && target_cl_ty == types::I64 {
-                    builder.ins().fcvt_to_sint(types::I64, val)
-                } else if current_ty == types::I64 && target_cl_ty == types::F32 {
-                    builder.ins().fcvt_from_sint(types::F32, val)
+                } else if current_ty.is_float() && target_cl_ty.is_float() {
+                    if current_ty == types::F64 {
+                        builder.ins().fdemote(target_cl_ty, val)
+                    } else {
+                        builder.ins().fpromote(target_cl_ty, val)
+                    }
+                } else if current_ty.is_int() && target_cl_ty.is_float() {
+                    builder.ins().fcvt_from_sint(target_cl_ty, val)
+                } else if current_ty.is_float() && target_cl_ty.is_int() {
+                    builder.ins().fcvt_to_sint(target_cl_ty, val)
                 } else {
                     val
                 }

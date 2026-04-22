@@ -228,8 +228,8 @@ pub fn load_and_parse(
             }
             parser::StmtKind::FromImport {
                 module,
-                names,
-                is_star,
+                names: _names,
+                is_star: _is_star,
             } => {
                 let mod_name = module.join("/");
                 let mut mod_path = parent_dir.join(format!("{}.liv", mod_name));
@@ -257,59 +257,10 @@ pub fn load_and_parse(
 
                 if !loaded.contains(&path_str) {
                     loaded.insert(path_str.clone());
-                    let mut imported_stmts =
+                    let imported_stmts =
                         load_and_parse(&path_str, false, loaded, file_id_counter, sources);
 
-                    if *is_star {
-                        imported_stmts.retain(|s| match &s.kind {
-                            parser::StmtKind::Fn { name, .. }
-                            | parser::StmtKind::Struct { name, .. }
-                            | parser::StmtKind::Enum { name, .. }
-                            | parser::StmtKind::Let { name, .. }
-                            | parser::StmtKind::Const { name, .. } => !name.starts_with('_'),
-                            parser::StmtKind::MultiLet {
-                                names: var_names, ..
-                            }
-                            | parser::StmtKind::MultiConst {
-                                names: var_names, ..
-                            } => var_names.iter().any(|n| !n.starts_with('_')),
-                            parser::StmtKind::Impl { type_name, .. } => {
-                                !type_name.to_string().starts_with('_')
-                            }
-                            parser::StmtKind::Import { .. }
-                            | parser::StmtKind::NativeImport { .. }
-                            | parser::StmtKind::PyImport { .. }
-                            | parser::StmtKind::FromImport { .. } => true,
-                            _ => false,
-                        });
-                    } else {
-                        imported_stmts.retain(|s| match &s.kind {
-                            parser::StmtKind::Fn { name, .. }
-                            | parser::StmtKind::Struct { name, .. }
-                            | parser::StmtKind::Enum { name, .. }
-                            | parser::StmtKind::Let { name, .. }
-                            | parser::StmtKind::Const { name, .. } => {
-                                name.contains("::") || names.iter().any(|(n, _)| n == name)
-                            }
-                            parser::StmtKind::MultiLet {
-                                names: var_names, ..
-                            }
-                            | parser::StmtKind::MultiConst {
-                                names: var_names, ..
-                            } => var_names.iter().any(|var_name| {
-                                var_name.contains("::") || names.iter().any(|(n, _)| n == var_name)
-                            }),
-                            parser::StmtKind::Impl { type_name, .. } => {
-                                type_name.to_string().contains("::")
-                                    || names.iter().any(|(n, _)| n == &type_name.to_string())
-                            }
-                            parser::StmtKind::Import { .. }
-                            | parser::StmtKind::NativeImport { .. }
-                            | parser::StmtKind::PyImport { .. }
-                            | parser::StmtKind::FromImport { .. } => true,
-                            _ => false,
-                        });
-                    }
+                    // Removed retain to keep all statements and avoid dropping globals
                     all_stmts.extend(imported_stmts);
                 }
                 all_stmts.push(stmt.clone());
