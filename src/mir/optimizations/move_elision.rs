@@ -33,7 +33,13 @@ impl MoveElision {
         locals: &[LocalDecl],
     ) -> bool {
         match &mut stmt.kind {
-            StatementKind::Assign(_, rval) => self.optimize_rvalue(rval, live_after, locals),
+            StatementKind::Assign(dst, rval) => {
+                // dst aliases src; src's value persists through dst, so moving is unsound.
+                if matches!(rval, Rvalue::Use(Operand::Copy(_))) && live_after.contains(dst) {
+                    return false;
+                }
+                self.optimize_rvalue(rval, live_after, locals)
+            }
             StatementKind::SetAttr(obj, _, val) => {
                 let mut changed = self.optimize_operand(obj, live_after, locals);
                 changed |= self.optimize_operand(val, live_after, locals);
