@@ -173,6 +173,9 @@ impl Inliner {
                     }
                     TerminatorKind::Return => {
                         if let Some(dest) = ret_local {
+                            new_bb.statements.retain(|s| {
+                                !matches!(&s.kind, StatementKind::StorageDead(l) if l.0 == local_offset)
+                            });
                             new_bb.statements.push(Statement {
                                 kind: StatementKind::Assign(
                                     dest,

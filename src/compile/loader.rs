@@ -12,6 +12,10 @@ use std::{
     process,
 };
 
+std::thread_local! {
+    static PROJECT_ROOT: std::cell::RefCell<PathBuf> = const { std::cell::RefCell::new(PathBuf::new()) };
+}
+
 pub fn load_and_parse(
     filename: &str,
     is_main: bool,
@@ -19,6 +23,21 @@ pub fn load_and_parse(
     file_id_counter: &mut usize,
     sources: &mut HashMap<usize, (String, String)>,
 ) -> Vec<parser::Stmt> {
+    struct ResetRoot;
+    impl Drop for ResetRoot {
+        fn drop(&mut self) {
+            PROJECT_ROOT.with(|r| r.borrow_mut().clear());
+        }
+    }
+    let _reset = if is_main { Some(ResetRoot) } else { None };
+
+    if is_main {
+        let root = Path::new(filename)
+            .parent()
+            .unwrap_or(Path::new("."))
+            .to_path_buf();
+        PROJECT_ROOT.with(|r| *r.borrow_mut() = root);
+    }
     let current_file_id = *file_id_counter;
     *file_id_counter += 1;
 
@@ -124,6 +143,13 @@ pub fn load_and_parse(
 
                 if !mod_path.exists() {
                     mod_path = find_std_lib_src_dir().join(format!("{}.liv", mod_name));
+                }
+
+                if !mod_path.exists() {
+                    let root_path = PROJECT_ROOT.with(|r| r.borrow().clone());
+                    if root_path.as_os_str().len() > 0 {
+                        mod_path = root_path.join(format!("{}.liv", mod_name));
+                    }
                 }
 
                 if !mod_path.exists()
@@ -238,6 +264,13 @@ pub fn load_and_parse(
                     mod_path = find_std_lib_src_dir().join(format!("{}.liv", mod_name));
                 }
 
+                if !mod_path.exists() {
+                    let root_path = PROJECT_ROOT.with(|r| r.borrow().clone());
+                    if root_path.as_os_str().len() > 0 {
+                        mod_path = root_path.join(format!("{}.liv", mod_name));
+                    }
+                }
+
                 if !mod_path.exists()
                     && let Some(pkg_path) = find_pod_path(&mod_name)
                 {
@@ -260,7 +293,6 @@ pub fn load_and_parse(
                     let imported_stmts =
                         load_and_parse(&path_str, false, loaded, file_id_counter, sources);
 
-                    // Removed retain to keep all statements and avoid dropping globals
                     all_stmts.extend(imported_stmts);
                 }
                 all_stmts.push(stmt.clone());
@@ -275,6 +307,7 @@ pub fn load_and_parse(
 pub fn collect_source_files(
     filename: &str,
     collected: &mut Vec<String>,
+    py_files: &mut Vec<String>,
     visited: &mut HashSet<String>,
 ) {
     let canonical = fs::canonicalize(filename)
@@ -301,22 +334,44 @@ pub fn collect_source_files(
         .unwrap_or(Path::new("."))
         .to_path_buf();
     for stmt in &program.stmts {
-        if let parser::StmtKind::Import { module, .. }
-        | parser::StmtKind::FromImport { module, .. } = &stmt.kind
-        {
-            let mod_name = module.join("/");
-            let mut mod_path = parent_dir.join(format!("{}.liv", mod_name));
-            if !mod_path.exists() {
-                mod_path = find_std_lib_src_dir().join(format!("{}.liv", mod_name));
+        match &stmt.kind {
+            parser::StmtKind::Import { module, .. }
+            | parser::StmtKind::FromImport { module, .. } => {
+                let mod_name = module.join("/");
+                let mut mod_path = parent_dir.join(format!("{}.liv", mod_name));
+                if !mod_path.exists() {
+                    mod_path = find_std_lib_src_dir().join(format!("{}.liv", mod_name));
+                }
+                if !mod_path.exists() {
+                    let root_path = PROJECT_ROOT.with(|r| r.borrow().clone());
+                    if root_path.as_os_str().len() > 0 {
+                        mod_path = root_path.join(format!("{}.liv", mod_name));
+                    }
+                }
+                if !mod_path.exists()
+                    && let Some(pkg_path) = find_pod_path(&mod_name)
+                {
+                    mod_path = pkg_path;
+                }
+                if mod_path.exists() {
+                    collect_source_files(
+                        mod_path.to_string_lossy().as_ref(),
+                        collected,
+                        py_files,
+                        visited,
+                    );
+                }
             }
-            if !mod_path.exists()
-                && let Some(pkg_path) = find_pod_path(&mod_name)
-            {
-                mod_path = pkg_path;
+            parser::StmtKind::PyImport { module, .. } => {
+                let py_name = format!("{}.py", module);
+                if !visited.contains(&py_name) {
+                    visited.insert(py_name.clone());
+                    if let Ok(canonical) = fs::canonicalize(&py_name) {
+                        py_files.push(canonical.to_string_lossy().to_string());
+                    }
+                }
             }
-            if mod_path.exists() {
-                collect_source_files(mod_path.to_string_lossy().as_ref(), collected, visited);
-            }
+            _ => {}
         }
     }
 }

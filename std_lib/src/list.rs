@@ -170,6 +170,7 @@ pub extern "C" fn olive_list_concat(l: i64, r: i64) -> i64 {
     let mut v = Vec::with_capacity(sl.len + sr.len);
     unsafe {
         v.extend_from_slice(std::slice::from_raw_parts(sl.ptr, sl.len));
+        v.extend_from_slice(std::slice::from_raw_parts(sr.ptr, sr.len));
     }
     let ptr = v.as_mut_ptr();
     let cap = v.capacity();
@@ -183,6 +184,18 @@ pub extern "C" fn olive_list_concat(l: i64, r: i64) -> i64 {
     })) as i64;
     register_object(res);
     res
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_extend(target: i64, source: i64) {
+    if target == 0 || source == 0 {
+        return;
+    }
+    let src_len = olive_list_len(source);
+    for i in 0..src_len {
+        let val = olive_list_get(source, i);
+        olive_list_append(target, val);
+    }
 }
 
 #[unsafe(no_mangle)]

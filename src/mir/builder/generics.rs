@@ -24,6 +24,7 @@ impl<'a> MirBuilder<'a> {
                 "None" => Type::Null,
                 "Never" => Type::Never,
                 "Any" => Type::Any,
+                "PyObject" => Type::PyObject,
                 _ => {
                     if let Some(Type::Enum(e, args)) = self.global_types.get(name) {
                         Type::Enum(e.clone(), args.clone())

@@ -430,16 +430,28 @@ impl Parser {
                 }
                 TokenKind::LBracket => {
                     self.advance();
-                    let index = self.parse_expr()?;
-                    self.expect(TokenKind::RBracket)?;
-                    let span = self.span_from(&Token {
+                    let span_tok = Token {
                         kind: TokenKind::Identifier,
                         value: String::new(),
                         line: expr.span.line,
                         col: expr.span.col,
                         span: (expr.span.start, expr.span.end),
                         file_id: expr.span.file_id,
-                    });
+                    };
+                    let index = if self.peek().kind == TokenKind::Colon {
+                        self.advance();
+                        self.parse_slice_remainder(None, &span_tok)?
+                    } else {
+                        let first = self.parse_expr()?;
+                        if self.peek().kind == TokenKind::Colon {
+                            self.advance();
+                            self.parse_slice_remainder(Some(Box::new(first)), &span_tok)?
+                        } else {
+                            first
+                        }
+                    };
+                    self.expect(TokenKind::RBracket)?;
+                    let span = self.span_from(&span_tok);
                     expr = Expr::new(
                         ExprKind::Index {
                             obj: Box::new(expr),
@@ -511,6 +523,31 @@ impl Parser {
             }
         }
         Ok(args)
+    }
+
+    fn parse_slice_remainder(
+        &mut self,
+        start: Option<Box<Expr>>,
+        span_tok: &Token,
+    ) -> ParseResult<Expr> {
+        let stop =
+            if self.peek().kind == TokenKind::RBracket || self.peek().kind == TokenKind::Colon {
+                None
+            } else {
+                Some(Box::new(self.parse_expr()?))
+            };
+        let step = if self.peek().kind == TokenKind::Colon {
+            self.advance();
+            if self.peek().kind == TokenKind::RBracket {
+                None
+            } else {
+                Some(Box::new(self.parse_expr()?))
+            }
+        } else {
+            None
+        };
+        let slice_span = self.span_from(span_tok);
+        Ok(Expr::new(ExprKind::Slice { start, stop, step }, slice_span))
     }
 
     pub(crate) fn parse_match(&mut self, start_tok: Token) -> ParseResult<Expr> {

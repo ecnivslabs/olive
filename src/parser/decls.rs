@@ -200,7 +200,6 @@ impl Parser {
         self.expect(TokenKind::Enum)?;
         let name = self.expect(TokenKind::Identifier)?.value;
         let type_params = self.parse_type_params()?;
-        // Removed uppercase enforcement for enum names
 
         self.expect(TokenKind::Colon)?;
 

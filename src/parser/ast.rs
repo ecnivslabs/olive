@@ -294,6 +294,11 @@ pub enum ExprKind {
     Borrow(Box<Expr>),
     MutBorrow(Box<Expr>),
     Deref(Box<Expr>),
+    Slice {
+        start: Option<Box<Expr>>,
+        stop: Option<Box<Expr>>,
+        step: Option<Box<Expr>>,
+    },
 
     Try(Box<Expr>),
     Await(Box<Expr>),

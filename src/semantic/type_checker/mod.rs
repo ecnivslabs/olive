@@ -415,8 +415,36 @@ impl TypeChecker {
         }
     }
 
+    fn hoist_struct_fields(&mut self, stmts: &[Stmt]) {
+        for stmt in stmts {
+            if let crate::parser::StmtKind::Struct {
+                name,
+                type_params,
+                fields,
+                ..
+            } = &stmt.kind
+            {
+                self.enter_scope();
+                for tp in type_params {
+                    self.define_type(tp, Type::Param(tp.clone()), false);
+                }
+                for field in fields {
+                    let field_ty = field
+                        .type_ann
+                        .as_ref()
+                        .map(|ann| self.resolve_type_expr(ann))
+                        .unwrap_or(Type::Any);
+                    self.field_types
+                        .insert((name.clone(), field.name.clone()), field_ty);
+                }
+                self.leave_scope();
+            }
+        }
+    }
+
     pub fn check_program(&mut self, program: &Program) {
         self.hoist_types(&program.stmts);
+        self.hoist_struct_fields(&program.stmts);
 
         for stmt in &program.stmts {
             self.check_stmt(stmt);

@@ -86,9 +86,16 @@ impl<'a> MirBuilder<'a> {
                     StatementKind::Assign(rhs_local, Rvalue::Use(rval)),
                     value.span,
                 );
+                let rhs_ty = self.current_locals[rhs_local.0].ty.clone();
                 for (i, name) in names.iter().enumerate() {
                     let idx_op = Operand::Constant(Constant::Int(i as i64));
-                    let elem_tmp = self.new_local(Type::Any, None, false);
+                    let elem_ty = match &rhs_ty {
+                        Type::PyObject => Type::PyObject,
+                        Type::List(inner) => *inner.clone(),
+                        Type::Tuple(elems) => elems.get(i).cloned().unwrap_or(Type::Any),
+                        _ => Type::Any,
+                    };
+                    let elem_tmp = self.new_local(elem_ty.clone(), None, false);
                     self.push_statement(
                         StatementKind::Assign(
                             elem_tmp,
@@ -96,7 +103,7 @@ impl<'a> MirBuilder<'a> {
                         ),
                         value.span,
                     );
-                    let local = self.declare_var(name.clone(), Type::Any, *is_mut);
+                    let local = self.declare_var(name.clone(), elem_ty, *is_mut);
                     self.push_statement(
                         StatementKind::Assign(local, Rvalue::Use(Operand::Copy(elem_tmp))),
                         stmt.span,
@@ -132,9 +139,16 @@ impl<'a> MirBuilder<'a> {
                     StatementKind::Assign(rhs_local, Rvalue::Use(rval)),
                     value.span,
                 );
+                let rhs_ty = self.current_locals[rhs_local.0].ty.clone();
                 for (i, name) in names.iter().enumerate() {
                     let idx_op = Operand::Constant(Constant::Int(i as i64));
-                    let elem_tmp = self.new_local(Type::Any, None, false);
+                    let elem_ty = match &rhs_ty {
+                        Type::PyObject => Type::PyObject,
+                        Type::List(inner) => *inner.clone(),
+                        Type::Tuple(elems) => elems.get(i).cloned().unwrap_or(Type::Any),
+                        _ => Type::Any,
+                    };
+                    let elem_tmp = self.new_local(elem_ty, None, false);
                     self.push_statement(
                         StatementKind::Assign(
                             elem_tmp,
@@ -724,6 +738,7 @@ impl<'a> MirBuilder<'a> {
                     let saved_block = self.current_block.take();
                     let saved_var_map = std::mem::take(&mut self.var_map);
                     let saved_loop_stack = std::mem::take(&mut self.loop_stack);
+                    let saved_scope_locals_init = std::mem::take(&mut self.scope_locals);
                     let saved_arg_count = self.current_arg_count;
 
                     self.start_function(init_name, n_params, Type::Null);
@@ -769,6 +784,7 @@ impl<'a> MirBuilder<'a> {
                     self.current_block = saved_block;
                     self.var_map = saved_var_map;
                     self.loop_stack = saved_loop_stack;
+                    self.scope_locals = saved_scope_locals_init;
                     self.current_arg_count = saved_arg_count;
                 }
 
@@ -921,16 +937,20 @@ impl<'a> MirBuilder<'a> {
                 let obj_op = self.lower_expr_as_copy(obj);
                 let idx_op = self.lower_expr(index);
                 if obj_ty == Type::PyObject {
+                    let idx_ty = self.get_type(index.id).clone();
                     let rval_ty = self.get_type(value.id).clone();
                     let py_rval = self.emit_to_py_arg(rval, &rval_ty, target.span);
+                    let func_name = if Self::is_int_ty(&idx_ty) {
+                        "__olive_py_setitem_int"
+                    } else {
+                        "__olive_py_setitem"
+                    };
                     let dummy = self.new_local(Type::Any, None, false);
                     self.push_statement(
                         StatementKind::Assign(
                             dummy,
                             Rvalue::Call {
-                                func: Operand::Constant(Constant::Function(
-                                    "__olive_py_setitem".to_string(),
-                                )),
+                                func: Operand::Constant(Constant::Function(func_name.to_string())),
                                 args: vec![obj_op, idx_op, py_rval],
                             },
                         ),
@@ -1007,6 +1027,7 @@ impl<'a> MirBuilder<'a> {
             let saved_block = self.current_block.take();
             let saved_var_map = std::mem::take(&mut self.var_map);
             let saved_loop_stack = std::mem::take(&mut self.loop_stack);
+            let saved_scope_locals = std::mem::take(&mut self.scope_locals);
             let saved_arg_count = self.current_arg_count;
             let saved_is_async = self.current_is_async;
             self.current_is_async = *is_async;
@@ -1183,6 +1204,7 @@ impl<'a> MirBuilder<'a> {
             self.current_block = saved_block;
             self.var_map = saved_var_map;
             self.loop_stack = saved_loop_stack;
+            self.scope_locals = saved_scope_locals;
             self.current_arg_count = saved_arg_count;
             self.current_is_async = saved_is_async;
         }

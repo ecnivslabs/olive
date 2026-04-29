@@ -498,7 +498,8 @@ impl<'a> MirBuilder<'a> {
     }
 
     pub(super) fn operand_for_local(&self, local: Local) -> Operand {
-        if self.current_locals[local.0].ty.is_move_type() {
+        let decl = &self.current_locals[local.0];
+        if decl.ty.is_move_type() && decl.is_owning {
             Operand::Move(local)
         } else {
             Operand::Copy(local)

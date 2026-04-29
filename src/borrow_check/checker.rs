@@ -94,7 +94,7 @@ impl FlowState {
 fn merge_states(a: LocalState, b: LocalState) -> LocalState {
     match (a, b) {
         (LocalState::Moved, _) | (_, LocalState::Moved) => LocalState::Moved,
-        (LocalState::Initialized, LocalState::Initialized) => LocalState::Initialized,
+        (LocalState::Initialized, _) | (_, LocalState::Initialized) => LocalState::Initialized,
         _ => LocalState::Dead,
     }
 }
@@ -130,6 +130,8 @@ impl<'a> BorrowChecker<'a> {
         let mut entry_states: Vec<Option<FlowState>> = vec![None; num_blocks];
 
         let mut init_state = FlowState::new(num_locals);
+        // Local(0) is _return, always initialized to a default in start_function
+        let _ = init_state.set(Local(0), LocalState::Initialized);
         for i in 1..=self.func.arg_count {
             if i < num_locals {
                 let _ = init_state.set(Local(i), LocalState::Initialized);
@@ -412,6 +414,14 @@ impl<'a> BorrowChecker<'a> {
         match op {
             Operand::Copy(local) | Operand::Move(local) => match state.get(*local) {
                 LocalState::Dead => {
+                    let is_unnamed = self
+                        .func
+                        .locals
+                        .get(local.0)
+                        .map_or(true, |d| d.name.is_none());
+                    if is_unnamed && span.start == 0 && span.end == 0 {
+                        return;
+                    }
                     let name = self.local_name(*local);
                     self.errors.push(SemanticError::Custom {
                         msg: format!("use of possibly uninitialized variable `{}`", name),
@@ -639,5 +649,29 @@ mod tests {
             "fn consume(xs: [i64]) -> i64:\n    return 0\n\nfn read(r: &[i64]) -> i64:\n    return 0\n\nfn caller() -> i64:\n    let mut xs = [1, 2]\n    let r = &xs\n    read(r)\n    consume(xs)\n    return 0\n",
         );
         assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    }
+
+    #[test]
+    fn void_fn_if_elif_no_else_no_errors() {
+        let errors = borrow_check(
+            "fn side(x: i64) -> i64:\n    return x\n\nfn run(x: i64):\n    if x == 0:\n        side(x)\n    elif x > 0:\n        side(x)\n",
+        );
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    }
+
+    #[test]
+    fn void_fn_if_no_else_no_errors() {
+        let errors = borrow_check(
+            "fn side(x: i64) -> i64:\n    return x\n\nfn run(x: i64):\n    if x == 0:\n        side(x)\n",
+        );
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    }
+
+    #[test]
+    fn borrow_prevents_move_still_works() {
+        let errors = borrow_check(
+            "fn consume(xs: [i64]) -> i64:\n    return 0\n\nfn read(r: &[i64]) -> i64:\n    return 0\n\nfn caller() -> i64:\n    let mut xs = [1, 2]\n    let r = &xs\n    consume(xs)\n    read(r)\n    return 0\n",
+        );
+        assert!(!errors.is_empty(), "should report move-while-borrowed");
     }
 }

@@ -39,8 +39,9 @@ impl TypeChecker {
                 is_mut,
                 ..
             } => {
-                let val_ty = self.check_expr(value);
-                if let Type::Tuple(elem_tys) = val_ty {
+                let val_ty_raw = self.check_expr(value);
+                let val_ty = self.apply_subst(val_ty_raw);
+                if let Type::Tuple(elem_tys) = val_ty.clone() {
                     if elem_tys.len() == names.len() {
                         for (name, ty) in names.iter().zip(elem_tys.into_iter()) {
                             if let Some(ann) = type_ann {
@@ -62,11 +63,13 @@ impl TypeChecker {
                         }
                     }
                 } else {
-                    self.errors
-                        .push(crate::semantic::error::SemanticError::Custom {
-                            msg: "Expected tuple for multiple variable declaration".to_string(),
-                            span: stmt.span,
-                        });
+                    if !matches!(val_ty, Type::PyObject | Type::Any) {
+                        self.errors
+                            .push(crate::semantic::error::SemanticError::Custom {
+                                msg: "Expected tuple for multiple variable declaration".to_string(),
+                                span: stmt.span,
+                            });
+                    }
                     for name in names {
                         self.define_type(name, Type::Any, *is_mut);
                     }
@@ -322,6 +325,8 @@ impl TypeChecker {
                     if !has_return {
                         let resolved_expected = self.apply_subst(expected.clone());
                         if let Type::Var(_) = resolved_expected {
+                            self.unify(&expected, &Type::Null, stmt.span);
+                        } else if return_type.is_none() {
                             self.unify(&expected, &Type::Null, stmt.span);
                         } else if resolved_expected != Type::Null && resolved_expected != Type::Any
                         {

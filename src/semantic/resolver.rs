@@ -510,6 +510,18 @@ impl Resolver {
                 self.resolve_expr(inner);
             }
 
+            ExprKind::Slice { start, stop, step } => {
+                if let Some(e) = start {
+                    self.resolve_expr(e);
+                }
+                if let Some(e) = stop {
+                    self.resolve_expr(e);
+                }
+                if let Some(e) = step {
+                    self.resolve_expr(e);
+                }
+            }
+
             ExprKind::Integer(_)
             | ExprKind::Float(_)
             | ExprKind::Str(_)

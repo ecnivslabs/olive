@@ -519,6 +519,18 @@ pub extern "C" fn olive_str(val: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_int(val: i64) -> i64 {
+    if val & 1 == 1 {
+        let untagged = val & !1;
+        if untagged != 0 {
+            return olive_str_to_int(val);
+        }
+    }
+    if is_active_object(val) {
+        let kind = unsafe { *(val as *const i64) };
+        if kind == KIND_PYOBJECT {
+            return python::olive_py_to_int(val as python::PyObject);
+        }
+    }
     val
 }
 
@@ -747,6 +759,9 @@ pub extern "C" fn olive_free_any(ptr: i64) {
     }
     if ptr & 1 != 0 {
         olive_free_str(ptr);
+        return;
+    }
+    if ptr < 0x1000 {
         return;
     }
     let kind = unsafe { *(ptr as *const i64) };
