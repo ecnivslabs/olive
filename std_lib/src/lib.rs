@@ -424,7 +424,7 @@ fn looks_like_float(val: i64) -> bool {
 fn format_list_elem(val: i64) -> String {
     if val & 1 == 1 {
         let untagged = val & !1;
-        if untagged != 0 {
+        if untagged > 0x10000 {
             return format!("\"{}\"", olive_str_from_ptr(val));
         }
     }
@@ -521,7 +521,7 @@ pub extern "C" fn olive_str(val: i64) -> i64 {
 pub extern "C" fn olive_int(val: i64) -> i64 {
     if val & 1 == 1 {
         let untagged = val & !1;
-        if untagged != 0 {
+        if untagged > 0x10000 {
             return olive_str_to_int(val);
         }
     }
@@ -697,7 +697,7 @@ pub extern "C" fn olive_get_index_any(obj: i64, index: i64) -> i64 {
         KIND_OBJ => olive_obj_get(obj, index),
         KIND_ENUM => olive_enum_get(obj, index),
         KIND_PYOBJECT => {
-            let key_obj = if index & 1 != 0 {
+            let key_obj = if index > 0x10000 && index & 1 != 0 {
                 python::olive_py_from_str(index)
             } else {
                 python::olive_py_from_int(index)
@@ -724,7 +724,7 @@ pub extern "C" fn olive_set_index_any(obj: i64, index: i64, val: i64) {
             olive_obj_set(obj, index, val);
         }
         KIND_PYOBJECT => {
-            let key_obj = if index & 1 != 0 {
+            let key_obj = if index > 0x10000 && index & 1 != 0 {
                 python::olive_py_from_str(index)
             } else {
                 python::olive_py_from_int(index)
@@ -827,7 +827,11 @@ pub extern "C" fn olive_is_null(val: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_is_str(val: i64) -> i64 {
-    if val != 0 && (val & 1) != 0 { 1 } else { 0 }
+    if val > 0x10000 && (val & 1) != 0 {
+        1
+    } else {
+        0
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -844,7 +848,7 @@ pub extern "C" fn olive_typeof_str(val: i64) -> i64 {
     if val == 0 {
         return olive_str_internal("null");
     }
-    if (val & 1) != 0 {
+    if val > 0x10000 && (val & 1) != 0 {
         return olive_str_internal("str");
     }
     let kind = unsafe { *(val as *const i64) };

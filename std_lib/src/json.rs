@@ -58,7 +58,7 @@ pub(crate) fn olive_to_json(val: i64) -> serde_json::Value {
     if val < 0 {
         return serde_json::Value::Number(val.into());
     }
-    if val & 1 != 0 {
+    if val > 0x10000 && val & 1 != 0 {
         return serde_json::Value::String(olive_str_from_ptr(val));
     }
     let kind = unsafe { *(val as *const i64) };

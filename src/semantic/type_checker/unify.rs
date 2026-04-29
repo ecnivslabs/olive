@@ -26,7 +26,7 @@ impl TypeChecker {
             }
 
             (Type::IntegerLiteral(id), other) | (other, Type::IntegerLiteral(id)) => match other {
-                Type::Any => {}
+                Type::Any | Type::PyObject => {}
                 Type::Int
                 | Type::I8
                 | Type::I16
@@ -86,7 +86,7 @@ impl TypeChecker {
             },
 
             (Type::FloatLiteral(id), other) | (other, Type::FloatLiteral(id)) => match other {
-                Type::Any => {}
+                Type::Any | Type::PyObject => {}
                 Type::Float | Type::F32 | Type::FloatLiteral(_) => {
                     self.substitutions.insert(*id, other.clone());
                 }
