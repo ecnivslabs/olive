@@ -192,7 +192,16 @@ pub fn olive_to_py(val: i64) -> PyObject {
             unsafe {
                 let kind = *(ptr as *const i64);
                 match kind {
-                    crate::KIND_LIST => olive_py_create_list_proxy(val),
+                    crate::KIND_LIST => {
+                        let sv = &*(ptr as *const crate::StableVec);
+                        let pyl = PY_LIST_NEW(sv.len as isize);
+                        for i in 0..sv.len {
+                            let v = *sv.ptr.add(i);
+                            let py_v = olive_to_py(v);
+                            PY_LIST_SET_ITEM(pyl, i as isize, py_v);
+                        }
+                        pyl
+                    }
                     crate::KIND_OBJ => olive_py_create_dict_proxy(val),
                     crate::KIND_SET => {
                         let hs = &*(ptr as *const crate::OliveHashSet);

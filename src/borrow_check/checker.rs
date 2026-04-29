@@ -419,7 +419,7 @@ impl<'a> BorrowChecker<'a> {
                         .locals
                         .get(local.0)
                         .map_or(true, |d| d.name.is_none());
-                    if is_unnamed && span.start == 0 && span.end == 0 {
+                    if is_unnamed {
                         return;
                     }
                     let name = self.local_name(*local);

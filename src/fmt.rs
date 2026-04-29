@@ -22,8 +22,10 @@ pub fn format_file(filename: &str) {
     let mut indent_level = 0;
     let mut at_start_of_line = true;
     let mut last_kind = TokenKind::Eof;
+    let mut needs_blank_check = true;
+    let mut prev_line_first_kind: Option<TokenKind> = None;
 
-    for tok in tokens {
+    for (i, tok) in tokens.iter().enumerate() {
         match tok.kind {
             TokenKind::Indent => {
                 indent_level += 1;
@@ -37,24 +39,62 @@ pub fn format_file(filename: &str) {
                 formatted.push('\n');
                 at_start_of_line = true;
                 last_kind = TokenKind::Newline;
+                needs_blank_check = true;
                 continue;
             }
             TokenKind::Eof => break,
             _ => {
                 if at_start_of_line {
+                    if needs_blank_check && i > 0 {
+                        match tok.kind {
+                            TokenKind::Struct
+                            | TokenKind::Impl
+                            | TokenKind::Fn
+                            | TokenKind::Const
+                            | TokenKind::Enum
+                            | TokenKind::Trait => {
+                                if indent_level <= 1 {
+                                    let skip = matches!(
+                                        (&prev_line_first_kind, &tok.kind),
+                                        (Some(TokenKind::Const), TokenKind::Const)
+                                    );
+                                    if !skip {
+                                        formatted.push('\n');
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    needs_blank_check = false;
+
                     formatted.push_str(&"    ".repeat(indent_level));
                     at_start_of_line = false;
+                    prev_line_first_kind = Some(tok.kind.clone());
                 } else {
                     match tok.kind {
-                        TokenKind::LParen
-                        | TokenKind::LBracket
-                        | TokenKind::LBrace
-                        | TokenKind::Colon
-                        | TokenKind::Comma
-                        | TokenKind::RParen
+                        TokenKind::RParen
                         | TokenKind::RBracket
                         | TokenKind::RBrace
+                        | TokenKind::Colon
+                        | TokenKind::Comma
                         | TokenKind::Dot => {}
+                        TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => {
+                            if !matches!(
+                                last_kind,
+                                TokenKind::LParen
+                                    | TokenKind::LBracket
+                                    | TokenKind::LBrace
+                                    | TokenKind::Dot
+                                    | TokenKind::At
+                                    | TokenKind::Identifier
+                                    | TokenKind::RParen
+                                    | TokenKind::RBracket
+                                    | TokenKind::RBrace
+                            ) {
+                                formatted.push(' ');
+                            }
+                        }
                         _ => {
                             if !matches!(
                                 last_kind,
@@ -63,6 +103,7 @@ pub fn format_file(filename: &str) {
                                     | TokenKind::LBrace
                                     | TokenKind::Dot
                                     | TokenKind::At
+                                    | TokenKind::Ampersand
                             ) {
                                 formatted.push(' ');
                             }
@@ -85,7 +126,7 @@ pub fn format_file(filename: &str) {
                     _ => formatted.push_str(&tok.value),
                 }
 
-                last_kind = tok.kind;
+                last_kind = tok.kind.clone();
             }
         }
     }
