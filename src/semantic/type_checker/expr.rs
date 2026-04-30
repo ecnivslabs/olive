@@ -384,6 +384,10 @@ impl TypeChecker {
                         self.unify(&Type::Int, &idx_ty, expr.span);
                         Type::Str
                     }
+                    Type::Bytes => {
+                        self.unify(&Type::Int, &idx_ty, expr.span);
+                        Type::Int
+                    }
                     Type::PyObject => Type::PyObject,
                     _ => self.fresh_var(),
                 }

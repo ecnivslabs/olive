@@ -289,6 +289,17 @@ impl<M: Module> CraneliftCodegen<M> {
                         let addr = builder.ins().iadd(data_ptr, offset);
                         builder.ins().load(types::I64, MemFlags::trusted(), addr, 0)
                     }
+                    OliveType::Bytes => {
+                        let data_ptr = builder.ins().load(
+                            types::I64,
+                            MemFlags::trusted().with_readonly(),
+                            o,
+                            8,
+                        );
+                        let addr = builder.ins().iadd(data_ptr, i);
+                        let byte = builder.ins().load(types::I8, MemFlags::trusted(), addr, 0);
+                        builder.ins().uextend(types::I64, byte)
+                    }
                     _ => {
                         let get_id = func_ids
                             .get("__olive_get_index_any")

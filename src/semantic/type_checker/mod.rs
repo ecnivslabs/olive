@@ -133,6 +133,22 @@ impl TypeChecker {
                 ),
             ),
             (
+                "bytes_new",
+                Type::Fn(vec![Type::Int], Box::new(Type::Bytes), Vec::new()),
+            ),
+            (
+                "bytes_push",
+                Type::Fn(vec![Type::Any, Type::Int], Box::new(Type::Null), Vec::new()),
+            ),
+            (
+                "bytes_push_u16_le",
+                Type::Fn(vec![Type::Any, Type::Int], Box::new(Type::Null), Vec::new()),
+            ),
+            (
+                "bytes_push_u32_le",
+                Type::Fn(vec![Type::Any, Type::Int], Box::new(Type::Null), Vec::new()),
+            ),
+            (
                 "list",
                 Type::Fn(
                     vec![Type::Any],

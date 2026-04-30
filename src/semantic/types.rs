@@ -14,6 +14,7 @@ pub enum Type {
     Float,
     F32,
     Str,
+    Bytes,
     Bool,
     Null,
     Struct(String, Vec<Type>),
@@ -87,6 +88,7 @@ impl fmt::Display for Type {
             Type::Float => write!(f, "float"),
             Type::F32 => write!(f, "f32"),
             Type::Str => write!(f, "str"),
+            Type::Bytes => write!(f, "bytes"),
             Type::Bool => write!(f, "bool"),
             Type::Null => write!(f, "None"),
             Type::Union(variants) => {

@@ -802,6 +802,22 @@ impl<'a> MirBuilder<'a> {
                             expr.span,
                         );
                         return self.operand_for_local(tmp);
+                    } else if current_arg_ty == Type::Bytes {
+                        let arg_op = self.lower_expr_as_copy(arg_expr);
+                        let tmp = self.new_local(Type::Int, None, false);
+                        self.push_statement(
+                            StatementKind::Assign(
+                                tmp,
+                                Rvalue::Call {
+                                    func: Operand::Constant(Constant::Function(
+                                        "__olive_buf_len".to_string(),
+                                    )),
+                                    args: vec![arg_op],
+                                },
+                            ),
+                            expr.span,
+                        );
+                        return self.operand_for_local(tmp);
                     } else if current_arg_ty == Type::PyObject {
                         let arg_op = self.lower_expr_as_copy(arg_expr);
                         let tmp = self.new_local(Type::Int, None, false);
@@ -938,6 +954,39 @@ impl<'a> MirBuilder<'a> {
                                         "__olive_list_new".to_string(),
                                     )),
                                     args: vec![arg_op],
+                                },
+                            ),
+                            expr.span,
+                        );
+                        return self.operand_for_local(tmp);
+                    }
+
+                    let bytes_builtin = match name.as_str() {
+                        "bytes_new" => Some(("__olive_buf_new_zeroed", Type::Bytes)),
+                        "bytes_push" => Some(("__olive_buf_push", Type::Null)),
+                        "bytes_push_u16_le" => Some(("__olive_buf_push_u16_le", Type::Null)),
+                        "bytes_push_u32_le" => Some(("__olive_buf_push_u32_le", Type::Null)),
+                        _ => None,
+                    };
+                    if let Some((runtime_name, ret_ty)) = bytes_builtin {
+                        let arg_ops: Vec<Operand> = args
+                            .iter()
+                            .map(|a| match a {
+                                CallArg::Positional(e)
+                                | CallArg::Keyword(_, e)
+                                | CallArg::Splat(e)
+                                | CallArg::KwSplat(e) => self.lower_expr_as_copy(e),
+                            })
+                            .collect();
+                        let tmp = self.new_local(ret_ty, None, false);
+                        self.push_statement(
+                            StatementKind::Assign(
+                                tmp,
+                                Rvalue::Call {
+                                    func: Operand::Constant(Constant::Function(
+                                        runtime_name.to_string(),
+                                    )),
+                                    args: arg_ops,
                                 },
                             ),
                             expr.span,

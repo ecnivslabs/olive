@@ -478,6 +478,17 @@ impl<M: Module> CraneliftCodegen<M> {
                         let local_func = module.declare_func_in_func(*set_id, builder.func);
                         builder.ins().call(local_func, &[o, i, v]);
                     }
+                    OliveType::Bytes => {
+                        let data_ptr = builder.ins().load(
+                            types::I64,
+                            MemFlags::trusted().with_readonly(),
+                            o,
+                            8,
+                        );
+                        let addr = builder.ins().iadd(data_ptr, i);
+                        let byte = builder.ins().ireduce(types::I8, v);
+                        builder.ins().store(MemFlags::trusted(), byte, addr, 0);
+                    }
                     _ => {
                         let data_ptr = builder.ins().load(
                             types::I64,
@@ -527,6 +538,7 @@ impl<M: Module> CraneliftCodegen<M> {
 
                 let free_func_name = match ty {
                     OliveType::Str => "__olive_free_str",
+                    OliveType::Bytes => "__olive_buf_free",
                     OliveType::List(_) | OliveType::Tuple(_) | OliveType::Set(_) => {
                         "__olive_free_list"
                     }

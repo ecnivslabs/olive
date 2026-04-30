@@ -37,7 +37,7 @@ pub extern "C" fn olive_websocket_send_binary(handle: i64, buf: i64) -> i64 {
     }
     let ws = unsafe { &mut *(handle as *mut WsConn) };
     let bytes_obj = unsafe { &*(buf as *const crate::bytes::OliveBytes) };
-    if ws.send(Message::Binary(bytes_obj.data.clone())).is_ok() {
+    if ws.send(Message::Binary(bytes_obj.as_slice().to_vec())).is_ok() {
         1
     } else {
         0
@@ -72,18 +72,10 @@ pub extern "C" fn olive_websocket_recv_binary(handle: i64) -> i64 {
     loop {
         match ws.read() {
             Ok(Message::Binary(data)) => {
-                let buf = Box::new(crate::bytes::OliveBytes {
-                    kind: crate::KIND_BYTES,
-                    data,
-                });
-                return Box::into_raw(buf) as i64;
+                return crate::bytes::new_buf(data);
             }
             Ok(Message::Text(text)) => {
-                let buf = Box::new(crate::bytes::OliveBytes {
-                    kind: crate::KIND_BYTES,
-                    data: text.into_bytes(),
-                });
-                return Box::into_raw(buf) as i64;
+                return crate::bytes::new_buf(text.into_bytes());
             }
             Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => continue,
             Ok(Message::Close(_)) | Err(_) => return 0,

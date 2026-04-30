@@ -399,6 +399,7 @@ impl TypeChecker {
                 "float" | "f64" => Type::Float,
                 "f32" => Type::F32,
                 "str" => Type::Str,
+                "bytes" => Type::Bytes,
                 "bool" => Type::Bool,
                 "None" => Type::Null,
                 "Never" => Type::Never,

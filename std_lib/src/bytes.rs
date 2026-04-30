@@ -3,14 +3,80 @@ use crate::{KIND_BYTES, olive_str_from_ptr, olive_str_internal};
 #[repr(C)]
 pub struct OliveBytes {
     pub kind: i64,
-    pub data: Vec<u8>,
+    pub ptr: *mut u8,
+    pub len: i64,
+    pub cap: i64,
 }
 
-fn new_buf(data: Vec<u8>) -> i64 {
-    let res = Box::into_raw(Box::new(OliveBytes {
+impl OliveBytes {
+    pub fn set_vec(&mut self, mut v: Vec<u8>) {
+        self.ptr = v.as_mut_ptr();
+        self.len = v.len() as i64;
+        self.cap = v.capacity() as i64;
+        std::mem::forget(v);
+    }
+
+    /// # Safety
+    /// Caller must own the buffer; the fields are cleared so a later
+    /// `set_vec` or drop sees a consistent state.
+    pub unsafe fn take_vec(&mut self) -> Vec<u8> {
+        let v = unsafe { Vec::from_raw_parts(self.ptr, self.len as usize, self.cap as usize) };
+        self.ptr = std::ptr::null_mut();
+        self.len = 0;
+        self.cap = 0;
+        v
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        if self.ptr.is_null() {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(self.ptr, self.len as usize) }
+        }
+    }
+
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        if self.ptr.is_null() {
+            &mut []
+        } else {
+            unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len as usize) }
+        }
+    }
+
+    pub fn with_vec<R>(&mut self, f: impl FnOnce(&mut Vec<u8>) -> R) -> R {
+        let mut v = unsafe { self.take_vec() };
+        let r = f(&mut v);
+        self.set_vec(v);
+        r
+    }
+
+    #[inline]
+    pub fn append(&mut self, data: &[u8]) {
+        let n = data.len() as i64;
+        if self.len + n <= self.cap {
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    data.as_ptr(),
+                    self.ptr.add(self.len as usize),
+                    data.len(),
+                );
+            }
+            self.len += n;
+        } else {
+            self.with_vec(|v| v.extend_from_slice(data));
+        }
+    }
+}
+
+pub fn new_buf(data: Vec<u8>) -> i64 {
+    let mut b = OliveBytes {
         kind: KIND_BYTES,
-        data,
-    })) as i64;
+        ptr: std::ptr::null_mut(),
+        len: 0,
+        cap: 0,
+    };
+    b.set_vec(data);
+    let res = Box::into_raw(Box::new(b)) as i64;
     crate::register_object(res);
     res
 }
@@ -18,6 +84,11 @@ fn new_buf(data: Vec<u8>) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_buf_new(cap: i64) -> i64 {
     new_buf(Vec::with_capacity(cap.max(0) as usize))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_buf_new_zeroed(len: i64) -> i64 {
+    new_buf(vec![0u8; len.max(0) as usize])
 }
 
 #[unsafe(no_mangle)]
@@ -35,7 +106,7 @@ pub extern "C" fn olive_buf_len(buf: i64) -> i64 {
     if buf == 0 {
         return 0;
     }
-    unsafe { &*(buf as *const OliveBytes) }.data.len() as i64
+    unsafe { &*(buf as *const OliveBytes) }.len
 }
 
 #[unsafe(no_mangle)]
@@ -44,7 +115,25 @@ pub extern "C" fn olive_buf_push(buf: i64, byte: i64) {
         return;
     }
     let b = unsafe { &mut *(buf as *mut OliveBytes) };
-    b.data.push((byte & 0xFF) as u8);
+    b.append(&[(byte & 0xFF) as u8]);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_buf_push_u16_le(buf: i64, val: i64) {
+    if buf == 0 {
+        return;
+    }
+    let b = unsafe { &mut *(buf as *mut OliveBytes) };
+    b.append(&(val as u16).to_le_bytes());
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_buf_push_u32_le(buf: i64, val: i64) {
+    if buf == 0 {
+        return;
+    }
+    let b = unsafe { &mut *(buf as *mut OliveBytes) };
+    b.append(&(val as u32).to_le_bytes());
 }
 
 #[unsafe(no_mangle)]
@@ -53,7 +142,7 @@ pub extern "C" fn olive_buf_get(buf: i64, idx: i64) -> i64 {
         return -1;
     }
     let b = unsafe { &*(buf as *const OliveBytes) };
-    match b.data.get(idx as usize) {
+    match b.as_slice().get(idx as usize) {
         Some(&v) => v as i64,
         None => -1,
     }
@@ -65,8 +154,8 @@ pub extern "C" fn olive_buf_set(buf: i64, idx: i64, val: i64) {
         return;
     }
     let b = unsafe { &mut *(buf as *mut OliveBytes) };
-    if (idx as usize) < b.data.len() {
-        b.data[idx as usize] = (val & 0xFF) as u8;
+    if idx >= 0 && idx < b.len {
+        b.as_mut_slice()[idx as usize] = (val & 0xFF) as u8;
     }
 }
 
@@ -76,7 +165,7 @@ pub extern "C" fn olive_buf_to_str(buf: i64) -> i64 {
         return olive_str_internal("");
     }
     let b = unsafe { &*(buf as *const OliveBytes) };
-    olive_str_internal(&String::from_utf8_lossy(&b.data))
+    olive_str_internal(&String::from_utf8_lossy(b.as_slice()))
 }
 
 #[unsafe(no_mangle)]
@@ -85,23 +174,24 @@ pub extern "C" fn olive_buf_to_hex(buf: i64) -> i64 {
         return olive_str_internal("");
     }
     let b = unsafe { &*(buf as *const OliveBytes) };
-    olive_str_internal(&hex::encode(&b.data))
+    olive_str_internal(&hex::encode(b.as_slice()))
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_buf_concat(a: i64, b: i64) -> i64 {
-    let da = if a == 0 {
-        vec![]
+    let da: &[u8] = if a == 0 {
+        &[]
     } else {
-        unsafe { &*(a as *const OliveBytes) }.data.clone()
+        unsafe { &*(a as *const OliveBytes) }.as_slice()
     };
-    let db = if b == 0 {
-        vec![]
+    let db: &[u8] = if b == 0 {
+        &[]
     } else {
-        unsafe { &*(b as *const OliveBytes) }.data.clone()
+        unsafe { &*(b as *const OliveBytes) }.as_slice()
     };
-    let mut combined = da;
-    combined.extend_from_slice(&db);
+    let mut combined = Vec::with_capacity(da.len() + db.len());
+    combined.extend_from_slice(da);
+    combined.extend_from_slice(db);
     new_buf(combined)
 }
 
@@ -111,170 +201,112 @@ pub extern "C" fn olive_buf_slice(buf: i64, start: i64, end: i64) -> i64 {
         return new_buf(vec![]);
     }
     let b = unsafe { &*(buf as *const OliveBytes) };
-    let s = (start as usize).min(b.data.len());
-    let e = (end as usize).min(b.data.len());
+    let data = b.as_slice();
+    let s = (start.max(0) as usize).min(data.len());
+    let e = (end.max(0) as usize).min(data.len());
     if s > e {
         return new_buf(vec![]);
     }
-    new_buf(b.data[s..e].to_vec())
+    new_buf(data[s..e].to_vec())
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_buf_free(buf: i64) {
     if buf != 0 {
         crate::unregister_object(buf);
-        unsafe { drop(Box::from_raw(buf as *mut OliveBytes)) };
+        unsafe {
+            let mut b = Box::from_raw(buf as *mut OliveBytes);
+            drop(b.take_vec());
+        }
     }
+}
+
+fn read_bytes<const N: usize>(buf: i64, offset: i64) -> Option<[u8; N]> {
+    if buf == 0 || offset < 0 {
+        return None;
+    }
+    let b = unsafe { &*(buf as *const OliveBytes) };
+    let off = offset as usize;
+    b.as_slice()
+        .get(off..off + N)
+        .map(|s| s.try_into().unwrap())
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_buf_read_u16_le(buf: i64, offset: i64) -> i64 {
-    if buf == 0 {
-        return -1;
-    }
-    let b = unsafe { &*(buf as *const OliveBytes) };
-    let off = offset as usize;
-    if off + 2 > b.data.len() {
-        return -1;
-    }
-    i64::from(u16::from_le_bytes(b.data[off..off + 2].try_into().unwrap()))
+    read_bytes::<2>(buf, offset).map_or(-1, |b| i64::from(u16::from_le_bytes(b)))
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_buf_read_u16_be(buf: i64, offset: i64) -> i64 {
-    if buf == 0 {
-        return -1;
-    }
-    let b = unsafe { &*(buf as *const OliveBytes) };
-    let off = offset as usize;
-    if off + 2 > b.data.len() {
-        return -1;
-    }
-    i64::from(u16::from_be_bytes(b.data[off..off + 2].try_into().unwrap()))
+    read_bytes::<2>(buf, offset).map_or(-1, |b| i64::from(u16::from_be_bytes(b)))
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_buf_read_u32_le(buf: i64, offset: i64) -> i64 {
-    if buf == 0 {
-        return -1;
-    }
-    let b = unsafe { &*(buf as *const OliveBytes) };
-    let off = offset as usize;
-    if off + 4 > b.data.len() {
-        return -1;
-    }
-    i64::from(u32::from_le_bytes(b.data[off..off + 4].try_into().unwrap()))
+    read_bytes::<4>(buf, offset).map_or(-1, |b| i64::from(u32::from_le_bytes(b)))
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_buf_read_u32_be(buf: i64, offset: i64) -> i64 {
-    if buf == 0 {
-        return -1;
-    }
-    let b = unsafe { &*(buf as *const OliveBytes) };
-    let off = offset as usize;
-    if off + 4 > b.data.len() {
-        return -1;
-    }
-    i64::from(u32::from_be_bytes(b.data[off..off + 4].try_into().unwrap()))
+    read_bytes::<4>(buf, offset).map_or(-1, |b| i64::from(u32::from_be_bytes(b)))
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_buf_read_u64_le(buf: i64, offset: i64) -> i64 {
-    if buf == 0 {
-        return -1;
-    }
-    let b = unsafe { &*(buf as *const OliveBytes) };
-    let off = offset as usize;
-    if off + 8 > b.data.len() {
-        return -1;
-    }
-    u64::from_le_bytes(b.data[off..off + 8].try_into().unwrap()) as i64
+    read_bytes::<8>(buf, offset).map_or(-1, |b| u64::from_le_bytes(b) as i64)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_buf_read_u64_be(buf: i64, offset: i64) -> i64 {
-    if buf == 0 {
-        return -1;
-    }
-    let b = unsafe { &*(buf as *const OliveBytes) };
-    let off = offset as usize;
-    if off + 8 > b.data.len() {
-        return -1;
-    }
-    u64::from_be_bytes(b.data[off..off + 8].try_into().unwrap()) as i64
+    read_bytes::<8>(buf, offset).map_or(-1, |b| u64::from_be_bytes(b) as i64)
 }
 
-fn ensure_len(b: &mut OliveBytes, needed: usize) {
-    if b.data.len() < needed {
-        b.data.resize(needed, 0);
+fn write_bytes(buf: i64, offset: i64, data: &[u8]) {
+    if buf == 0 || offset < 0 {
+        return;
+    }
+    let b = unsafe { &mut *(buf as *mut OliveBytes) };
+    let off = offset as usize;
+    let end = off + data.len();
+    if end as i64 <= b.len {
+        b.as_mut_slice()[off..end].copy_from_slice(data);
+    } else {
+        b.with_vec(|v| {
+            v.resize(end, 0);
+            v[off..end].copy_from_slice(data);
+        });
     }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_buf_write_u16_le(buf: i64, offset: i64, val: i64) {
-    if buf == 0 {
-        return;
-    }
-    let b = unsafe { &mut *(buf as *mut OliveBytes) };
-    let off = offset as usize;
-    ensure_len(b, off + 2);
-    b.data[off..off + 2].copy_from_slice(&(val as u16).to_le_bytes());
+    write_bytes(buf, offset, &(val as u16).to_le_bytes());
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_buf_write_u16_be(buf: i64, offset: i64, val: i64) {
-    if buf == 0 {
-        return;
-    }
-    let b = unsafe { &mut *(buf as *mut OliveBytes) };
-    let off = offset as usize;
-    ensure_len(b, off + 2);
-    b.data[off..off + 2].copy_from_slice(&(val as u16).to_be_bytes());
+    write_bytes(buf, offset, &(val as u16).to_be_bytes());
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_buf_write_u32_le(buf: i64, offset: i64, val: i64) {
-    if buf == 0 {
-        return;
-    }
-    let b = unsafe { &mut *(buf as *mut OliveBytes) };
-    let off = offset as usize;
-    ensure_len(b, off + 4);
-    b.data[off..off + 4].copy_from_slice(&(val as u32).to_le_bytes());
+    write_bytes(buf, offset, &(val as u32).to_le_bytes());
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_buf_write_u32_be(buf: i64, offset: i64, val: i64) {
-    if buf == 0 {
-        return;
-    }
-    let b = unsafe { &mut *(buf as *mut OliveBytes) };
-    let off = offset as usize;
-    ensure_len(b, off + 4);
-    b.data[off..off + 4].copy_from_slice(&(val as u32).to_be_bytes());
+    write_bytes(buf, offset, &(val as u32).to_be_bytes());
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_buf_write_u64_le(buf: i64, offset: i64, val: i64) {
-    if buf == 0 {
-        return;
-    }
-    let b = unsafe { &mut *(buf as *mut OliveBytes) };
-    let off = offset as usize;
-    ensure_len(b, off + 8);
-    b.data[off..off + 8].copy_from_slice(&(val as u64).to_le_bytes());
+    write_bytes(buf, offset, &(val as u64).to_le_bytes());
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_buf_write_u64_be(buf: i64, offset: i64, val: i64) {
-    if buf == 0 {
-        return;
-    }
-    let b = unsafe { &mut *(buf as *mut OliveBytes) };
-    let off = offset as usize;
-    ensure_len(b, off + 8);
-    b.data[off..off + 8].copy_from_slice(&(val as u64).to_be_bytes());
+    write_bytes(buf, offset, &(val as u64).to_be_bytes());
 }
 
 #[cfg(test)]
@@ -295,6 +327,30 @@ mod tests {
         assert_eq!(olive_buf_get(b, 0), 0x41);
         assert_eq!(olive_buf_get(b, 1), 0x42);
         assert_eq!(olive_buf_get(b, 99), -1);
+        olive_buf_free(b);
+    }
+
+    #[test]
+    fn buf_new_zeroed() {
+        let b = olive_buf_new_zeroed(8);
+        assert_eq!(olive_buf_len(b), 8);
+        for i in 0..8 {
+            assert_eq!(olive_buf_get(b, i), 0);
+        }
+        olive_buf_set(b, 3, 7);
+        assert_eq!(olive_buf_get(b, 3), 7);
+        olive_buf_free(b);
+    }
+
+    #[test]
+    fn buf_push_u32_u16_le() {
+        let b = olive_buf_new(0);
+        olive_buf_push_u32_le(b, 0xDEADBEEF_u32 as i64);
+        olive_buf_push_u16_le(b, 0x0102);
+        assert_eq!(olive_buf_len(b), 6);
+        assert_eq!(olive_buf_read_u32_le(b, 0), 0xDEADBEEF_u32 as i64);
+        assert_eq!(olive_buf_get(b, 4), 0x02);
+        assert_eq!(olive_buf_get(b, 5), 0x01);
         olive_buf_free(b);
     }
 
