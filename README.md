@@ -1,16 +1,16 @@
 <img width="1452" height="352" alt="olive_logo" src="https://github.com/user-attachments/assets/4e8923b3-0943-4a8f-b288-8abf497b900d" />
 
 <p align="center">
-  <a href="https://github.com/olive-language/olive/stargazers">
-    <img src="https://img.shields.io/github/stars/olive-language/olive?style=flat-square">
+  <a href="https://github.com/ecnivs-labs/olive-lang/stargazers">
+    <img src="https://img.shields.io/github/stars/ecnivs-labs/olive-lang?style=flat-square">
   </a>
-  <a href="https://github.com/olive-language/olive/issues">
-    <img src="https://img.shields.io/github/issues/olive-language/olive?style=flat-square">
+  <a href="https://github.com/ecnivs-labs/olive-lang/issues">
+    <img src="https://img.shields.io/github/issues/ecnivs-labs/olive-lang?style=flat-square">
   </a>
-  <a href="https://github.com/olive-language/olive/blob/master/LICENSE">
-    <img src="https://img.shields.io/github/license/olive-language/olive?style=flat-square">
+  <a href="https://github.com/ecnivs-labs/olive-lang/blob/master/LICENSE">
+    <img src="https://img.shields.io/github/license/ecnivs-labs/olive-lang?style=flat-square">
   </a>
-  <img src="https://img.shields.io/github/languages/top/olive-language/olive?style=flat-square">
+  <img src="https://img.shields.io/github/languages/top/ecnivs-labs/olive-lang?style=flat-square">
 </p>
 
 ## Overview
@@ -56,10 +56,10 @@ fn main():
 **Linux and macOS:**
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/olive-language/olive/master/install.sh | sh
+curl -sSL https://raw.githubusercontent.com/ecnivs-labs/olive-lang/master/install.sh | sh
 ```
 
-**Windows:** download from the [releases page](https://github.com/olive-language/olive/releases/latest).
+**Windows:** download from the [releases page](https://github.com/ecnivs-labs/olive-lang/releases/latest).
 
 Then:
 
