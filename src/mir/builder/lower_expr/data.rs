@@ -1,0 +1,417 @@
+use super::super::MirBuilder;
+use crate::mir::AggregateKind;
+use crate::mir::ir::*;
+use crate::parser::{Expr, ExprKind};
+use crate::semantic::types::Type;
+use crate::span::Span;
+
+impl<'a> MirBuilder<'a> {
+    pub(super) fn lower_deref_expr(&mut self, inner: &Expr, expr_id: usize) -> Operand {
+        let ptr_op = self.lower_expr(inner);
+        let tmp = self.new_local(self.get_type(expr_id), None, false);
+        self.push_statement(
+            StatementKind::Assign(tmp, Rvalue::PtrLoad(ptr_op)),
+            inner.span,
+        );
+        self.operand_for_local(tmp)
+    }
+
+    pub(super) fn lower_borrow_expr(
+        &mut self,
+        inner: &Expr,
+        expr_id: usize,
+        span: Span,
+    ) -> Operand {
+        let tmp = self.new_local(self.get_type(expr_id), None, false);
+        let rval = if let ExprKind::Identifier(name) = &inner.kind {
+            if let Some(local) = self.lookup_var(name) {
+                Rvalue::Ref(local)
+            } else {
+                let op = self.lower_expr(inner);
+                Rvalue::Use(op)
+            }
+        } else {
+            let op = self.lower_expr(inner);
+            Rvalue::Use(op)
+        };
+        self.push_statement(StatementKind::Assign(tmp, rval), span);
+        self.operand_for_local(tmp)
+    }
+
+    pub(super) fn lower_mut_borrow_expr(
+        &mut self,
+        inner: &Expr,
+        expr_id: usize,
+        span: Span,
+    ) -> Operand {
+        let tmp = self.new_local(self.get_type(expr_id), None, false);
+        let rval = if let ExprKind::Identifier(name) = &inner.kind {
+            if let Some(local) = self.lookup_var(name) {
+                Rvalue::MutRef(local)
+            } else {
+                let op = self.lower_expr(inner);
+                Rvalue::Use(op)
+            }
+        } else {
+            let op = self.lower_expr(inner);
+            Rvalue::Use(op)
+        };
+        self.push_statement(StatementKind::Assign(tmp, rval), span);
+        self.operand_for_local(tmp)
+    }
+
+    pub(super) fn lower_identifier_expr(&mut self, name: &str, expr_id: usize) -> Operand {
+        if let Some(local) = self.lookup_var(name) {
+            let ty = self.current_locals[local.0].ty.clone();
+            if matches!(ty, Type::PyObject) {
+                Operand::Copy(local)
+            } else {
+                self.operand_for_local(local)
+            }
+        } else if let Some(global_op) = self.globals.get(name).cloned() {
+            if let Operand::Constant(Constant::GlobalData(_)) = &global_op {
+                let ty = self.get_type(expr_id);
+                let tmp = self.new_local(ty, None, false);
+                self.push_statement(
+                    StatementKind::Assign(tmp, Rvalue::PtrLoad(global_op.clone())),
+                    Span::default(),
+                );
+                Operand::Copy(tmp)
+            } else {
+                global_op
+            }
+        } else {
+            Operand::Constant(Constant::Function(name.to_string()))
+        }
+    }
+
+    pub(super) fn lower_list_or_tuple_expr(
+        &mut self,
+        elems: &[Expr],
+        is_tuple: bool,
+        span: Span,
+        expr_id: usize,
+    ) -> Operand {
+        let has_splat = elems.iter().any(|e| {
+            if let ExprKind::Deref(inner) = &e.kind {
+                !matches!(self.get_type(inner.id), Type::Ptr(_) | Type::Int)
+            } else {
+                false
+            }
+        });
+        if has_splat {
+            let zero = Operand::Constant(Constant::Int(0));
+            let tmp = self.new_local(self.get_type(expr_id), None, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    tmp,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function("__olive_list_new".to_string())),
+                        args: vec![zero],
+                    },
+                ),
+                span,
+            );
+            let void_dummy = self.new_local(Type::Null, None, false);
+            for elem in elems {
+                if let ExprKind::Deref(inner) = &elem.kind {
+                    let inner_ty = self.get_type(inner.id);
+                    if !matches!(inner_ty, Type::Ptr(_) | Type::Int) {
+                        let source = self.lower_expr(inner);
+                        self.push_statement(
+                            StatementKind::Assign(
+                                void_dummy,
+                                Rvalue::Call {
+                                    func: Operand::Constant(Constant::Function(
+                                        "__olive_list_extend".to_string(),
+                                    )),
+                                    args: vec![Operand::Copy(tmp), source],
+                                },
+                            ),
+                            span,
+                        );
+                        continue;
+                    }
+                }
+                let val = self.lower_expr(elem);
+                self.push_statement(
+                    StatementKind::Assign(
+                        void_dummy,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(
+                                "__olive_list_append".to_string(),
+                            )),
+                            args: vec![Operand::Copy(tmp), val],
+                        },
+                    ),
+                    span,
+                );
+            }
+            self.operand_for_local(tmp)
+        } else {
+            let ops: Vec<Operand> = elems.iter().map(|e| self.lower_expr(e)).collect();
+            let tmp = self.new_local(self.get_type(expr_id), None, false);
+            let kind = if is_tuple {
+                AggregateKind::Tuple
+            } else {
+                AggregateKind::List
+            };
+            self.push_statement(
+                StatementKind::Assign(tmp, Rvalue::Aggregate(kind, ops)),
+                span,
+            );
+            self.operand_for_local(tmp)
+        }
+    }
+
+    pub(super) fn lower_set_expr(&mut self, elems: &[Expr], span: Span, expr_id: usize) -> Operand {
+        let ops: Vec<Operand> = elems.iter().map(|e| self.lower_expr(e)).collect();
+        let tmp = self.new_local(self.get_type(expr_id), None, false);
+        self.push_statement(
+            StatementKind::Assign(tmp, Rvalue::Aggregate(AggregateKind::Set, ops)),
+            span,
+        );
+        self.operand_for_local(tmp)
+    }
+
+    pub(super) fn lower_dict_expr(
+        &mut self,
+        pairs: &[(Expr, Expr)],
+        span: Span,
+        expr_id: usize,
+    ) -> Operand {
+        let mut ops = Vec::new();
+        for (k, v) in pairs {
+            ops.push(self.lower_expr(k));
+            ops.push(self.lower_expr(v));
+        }
+        let tmp = self.new_local(self.get_type(expr_id), None, false);
+        self.push_statement(
+            StatementKind::Assign(tmp, Rvalue::Aggregate(AggregateKind::Dict, ops)),
+            span,
+        );
+        self.operand_for_local(tmp)
+    }
+
+    pub(super) fn lower_attr_expr(
+        &mut self,
+        obj: &Expr,
+        attr: &str,
+        span: Span,
+        expr_id: usize,
+    ) -> Operand {
+        if let ExprKind::Identifier(name) = &obj.kind {
+            let obj_ty = self.get_type(obj.id);
+            let mut current_obj_ty = obj_ty.clone();
+            while let Type::Ref(inner) | Type::MutRef(inner) = current_obj_ty {
+                current_obj_ty = *inner;
+            }
+            let is_struct_or_self = matches!(
+                current_obj_ty,
+                Type::Struct(_, _) | Type::Any | Type::Var(_)
+            ) && self.lookup_var(name).is_some();
+            if !is_struct_or_self && obj_ty != Type::PyObject && current_obj_ty != Type::PyObject {
+                let mangled = format!("{}::{}", name, attr);
+                if let Some(local) = self.lookup_var(&mangled) {
+                    let ty = self.current_locals[local.0].ty.clone();
+                    return if ty.is_move_type() {
+                        Operand::Move(local)
+                    } else {
+                        Operand::Copy(local)
+                    };
+                }
+                if let Some(global_op) = self.globals.get(&mangled) {
+                    return global_op.clone();
+                }
+                return Operand::Constant(Constant::Function(mangled));
+            }
+        }
+
+        let obj_ty = self.get_type(obj.id);
+        if obj_ty == Type::PyObject {
+            let obj_op = self.lower_expr_as_copy(obj);
+            let tmp = self.new_local(Type::PyObject, None, true);
+            self.push_statement(
+                StatementKind::Assign(
+                    tmp,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function(
+                            "__olive_py_getattr".to_string(),
+                        )),
+                        args: vec![obj_op, Operand::Constant(Constant::Str(attr.to_string()))],
+                    },
+                ),
+                span,
+            );
+            return self.operand_for_local(tmp);
+        }
+
+        let o = self.lower_expr_as_copy(obj);
+        let ty = self.get_type(expr_id);
+        let tmp = self.new_local_with_owning(ty, None, true, false);
+        self.push_statement(
+            StatementKind::Assign(tmp, Rvalue::GetAttr(o, attr.to_string())),
+            span,
+        );
+        self.operand_for_local(tmp)
+    }
+
+    pub(super) fn lower_index_expr(
+        &mut self,
+        obj: &Expr,
+        index: &Expr,
+        span: Span,
+        expr_id: usize,
+    ) -> Operand {
+        let obj_ty = self.get_type(obj.id);
+        let mut current_obj_ty = obj_ty;
+        while let Type::Ref(inner) | Type::MutRef(inner) = current_obj_ty {
+            current_obj_ty = *inner;
+        }
+
+        if let ExprKind::Slice { start, stop, step } = &index.kind
+            && (current_obj_ty == Type::PyObject || current_obj_ty == Type::Any)
+        {
+            return self.lower_py_slice(
+                obj,
+                start.as_deref(),
+                stop.as_deref(),
+                step.as_deref(),
+                span,
+                expr_id,
+            );
+        }
+
+        if current_obj_ty == Type::Str {
+            let o = self.lower_expr_as_copy(obj);
+            let i = self.lower_expr(index);
+            let tmp = self.new_local(Type::Str, None, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    tmp,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function("__olive_str_get".to_string())),
+                        args: vec![o, i],
+                    },
+                ),
+                span,
+            );
+            return self.operand_for_local(tmp);
+        }
+        let o = self.lower_expr_as_copy(obj);
+        let i_raw = self.lower_expr(index);
+        let ty = self.get_type(expr_id);
+        let tmp = self.new_local_with_owning(ty, None, true, false);
+        if current_obj_ty == Type::PyObject {
+            let idx_ty = self.get_type(index.id).clone();
+            let func_name = if Self::is_int_ty(&idx_ty) {
+                "__olive_py_getitem_int"
+            } else {
+                "__olive_py_getitem"
+            };
+            self.push_statement(
+                StatementKind::Assign(
+                    tmp,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function(func_name.to_string())),
+                        args: vec![o, i_raw],
+                    },
+                ),
+                span,
+            );
+        } else {
+            self.push_statement(StatementKind::Assign(tmp, Rvalue::GetIndex(o, i_raw)), span);
+        }
+        self.operand_for_local(tmp)
+    }
+
+    pub(super) fn lower_py_slice(
+        &mut self,
+        obj: &Expr,
+        start: Option<&Expr>,
+        stop: Option<&Expr>,
+        step: Option<&Expr>,
+        span: Span,
+        expr_id: usize,
+    ) -> Operand {
+        const SLICE_HAS_START: i64 = 1;
+        const SLICE_HAS_STOP: i64 = 2;
+        const SLICE_HAS_STEP: i64 = 4;
+
+        let o = self.lower_expr_as_copy(obj);
+        let mut flags: i64 = 0;
+        let start_op = if let Some(e) = start {
+            flags |= SLICE_HAS_START;
+            self.lower_expr(e)
+        } else {
+            Operand::Constant(Constant::Int(0))
+        };
+        let stop_op = if let Some(e) = stop {
+            flags |= SLICE_HAS_STOP;
+            self.lower_expr(e)
+        } else {
+            Operand::Constant(Constant::Int(0))
+        };
+        let step_op = if let Some(e) = step {
+            flags |= SLICE_HAS_STEP;
+            self.lower_expr(e)
+        } else {
+            Operand::Constant(Constant::Int(0))
+        };
+        let flags_op = Operand::Constant(Constant::Int(flags));
+        let ty = self.get_type(expr_id);
+        let tmp = self.new_local_with_owning(ty, None, true, true);
+        self.push_statement(
+            StatementKind::Assign(
+                tmp,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("__olive_py_getslice".to_string())),
+                    args: vec![o, start_op, stop_op, step_op, flags_op],
+                },
+            ),
+            span,
+        );
+        self.operand_for_local(tmp)
+    }
+
+    pub(super) fn lower_list_comp_expr(
+        &mut self,
+        elt: &Expr,
+        clauses: &[crate::parser::CompClause],
+        span: Span,
+        expr_id: usize,
+    ) -> Operand {
+        let ty = self.get_type(expr_id);
+        self.lower_comprehension(None, Some(elt), clauses, AggregateKind::List, span, ty)
+    }
+
+    pub(super) fn lower_set_comp_expr(
+        &mut self,
+        elt: &Expr,
+        clauses: &[crate::parser::CompClause],
+        span: Span,
+        expr_id: usize,
+    ) -> Operand {
+        let ty = self.get_type(expr_id);
+        self.lower_comprehension(None, Some(elt), clauses, AggregateKind::Set, span, ty)
+    }
+
+    pub(super) fn lower_dict_comp_expr(
+        &mut self,
+        key: &Expr,
+        value: &Expr,
+        clauses: &[crate::parser::CompClause],
+        span: Span,
+        expr_id: usize,
+    ) -> Operand {
+        let ty = self.get_type(expr_id);
+        self.lower_comprehension(
+            Some((key, value)),
+            None,
+            clauses,
+            AggregateKind::Dict,
+            span,
+            ty,
+        )
+    }
+}

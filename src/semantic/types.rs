@@ -165,3 +165,183 @@ impl fmt::Display for Type {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn int_type() {
+        assert_eq!(Type::Int, Type::Int);
+        assert_ne!(Type::Int, Type::Bool);
+    }
+
+    #[test]
+    fn type_var_eq() {
+        assert_eq!(Type::Var(0), Type::Var(0));
+        assert_ne!(Type::Var(0), Type::Var(1));
+    }
+
+    #[test]
+    fn fn_type_3_args() {
+        let t = Type::Fn(vec![Type::Int], Box::new(Type::Bool), vec![]);
+        let (params, ret, _) = match &t {
+            Type::Fn(p, r, c) => (p, r, c),
+            _ => panic!(),
+        };
+        assert_eq!(params.len(), 1);
+        assert_eq!(**ret, Type::Bool);
+    }
+
+    #[test]
+    fn list_type() {
+        let t = Type::List(Box::new(Type::Int));
+        let inner = match &t {
+            Type::List(i) => i,
+            _ => panic!(),
+        };
+        assert_eq!(**inner, Type::Int);
+    }
+
+    #[test]
+    fn dict_type() {
+        let t = Type::Dict(Box::new(Type::Str), Box::new(Type::Int));
+        let (k, v) = match &t {
+            Type::Dict(k, v) => (k, v),
+            _ => panic!(),
+        };
+        assert_eq!(**k, Type::Str);
+        assert_eq!(**v, Type::Int);
+    }
+
+    #[test]
+    fn ref_types() {
+        let t = Type::Ref(Box::new(Type::Int));
+        let inner = match &t {
+            Type::Ref(i) => i,
+            _ => panic!(),
+        };
+        assert_eq!(**inner, Type::Int);
+        let t2 = Type::MutRef(Box::new(Type::Int));
+        assert!(matches!(t2, Type::MutRef(_)));
+    }
+
+    #[test]
+    fn ptr_type() {
+        let t = Type::Ptr(Box::new(Type::Int));
+        assert!(matches!(t, Type::Ptr(_)));
+    }
+
+    #[test]
+    fn tuple_type_multi() {
+        let t = Type::Tuple(vec![Type::Int, Type::Bool, Type::Str]);
+        let elems = match &t {
+            Type::Tuple(e) => e,
+            _ => panic!(),
+        };
+        assert_eq!(elems.len(), 3);
+    }
+
+    #[test]
+    fn struct_type() {
+        let t = Type::Struct("Point".into(), vec![Type::Int, Type::Int]);
+        let (name, _fields) = match &t {
+            Type::Struct(n, f) => (n, f),
+            _ => panic!(),
+        };
+        assert_eq!(name, "Point");
+    }
+
+    #[test]
+    fn enum_type() {
+        let t = Type::Enum("Opt".into(), vec![Type::Int]);
+        let (name, variants) = match &t {
+            Type::Enum(n, v) => (n, v),
+            _ => panic!(),
+        };
+        assert_eq!(name, "Opt");
+        assert_eq!(variants.len(), 1);
+    }
+
+    #[test]
+    fn param_type() {
+        let t = Type::Param("T".into());
+        let n = match &t {
+            Type::Param(n) => n,
+            _ => panic!(),
+        };
+        assert_eq!(n, "T");
+    }
+
+    #[test]
+    fn union_type() {
+        let t = Type::Union(vec![Type::Int, Type::Str]);
+        let variants = match &t {
+            Type::Union(v) => v,
+            _ => panic!(),
+        };
+        assert_eq!(variants.len(), 2);
+    }
+
+    #[test]
+    fn set_type() {
+        let t = Type::Set(Box::new(Type::Int));
+        assert!(matches!(t, Type::Set(_)));
+    }
+
+    #[test]
+    fn vector_type() {
+        let t = Type::Vector(Box::new(Type::Int), 4);
+        let (inner, n) = match &t {
+            Type::Vector(i, n) => (i, n),
+            _ => panic!(),
+        };
+        assert_eq!(**inner, Type::Int);
+        assert_eq!(*n, 4);
+    }
+
+    #[test]
+    fn future_type() {
+        let t = Type::Future(Box::new(Type::Int));
+        let inner = match &t {
+            Type::Future(i) => i,
+            _ => panic!(),
+        };
+        assert_eq!(**inner, Type::Int);
+    }
+
+    #[test]
+    fn never_type() {
+        assert_eq!(Type::Never, Type::Never);
+    }
+
+    #[test]
+    fn is_move_type_ints() {
+        assert!(!Type::Int.is_move_type());
+        assert!(!Type::Bool.is_move_type());
+    }
+
+    #[test]
+    fn is_move_type_complex() {
+        assert!(Type::Tuple(vec![Type::Int, Type::Bool]).is_move_type());
+        assert!(Type::List(Box::new(Type::Int)).is_move_type());
+    }
+
+    #[test]
+    fn special_types() {
+        assert_eq!(Type::Any, Type::Any);
+        assert_eq!(Type::Null, Type::Null);
+        assert_eq!(Type::Bytes, Type::Bytes);
+    }
+
+    #[test]
+    fn trait_obj() {
+        let t = Type::TraitObject("Display".into(), vec![Type::Int]);
+        let (name, params) = match &t {
+            Type::TraitObject(n, p) => (n, p),
+            _ => panic!(),
+        };
+        assert_eq!(name, "Display");
+        assert_eq!(params.len(), 1);
+    }
+}

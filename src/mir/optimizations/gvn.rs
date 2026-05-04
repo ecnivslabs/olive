@@ -37,10 +37,10 @@ impl Transform for GlobalValueNumbering {
                     if let Operand::Copy(l) | Operand::Move(l) = obj {
                         *assign_counts.entry(*l).or_insert(0) += if in_loop { 2 } else { 1 };
                     }
-                } else if let StatementKind::PtrStore(ptr, _) = &stmt.kind {
-                    if let Operand::Copy(l) | Operand::Move(l) = ptr {
-                        *assign_counts.entry(*l).or_insert(0) += if in_loop { 2 } else { 1 };
-                    }
+                } else if let StatementKind::PtrStore(ptr, _) = &stmt.kind
+                    && let Operand::Copy(l) | Operand::Move(l) = ptr
+                {
+                    *assign_counts.entry(*l).or_insert(0) += if in_loop { 2 } else { 1 };
                 }
             }
         }
@@ -134,5 +134,151 @@ impl GlobalValueNumbering {
 
     fn is_local(&self, op: &Operand, local: Local) -> bool {
         matches!(op, Operand::Copy(l) | Operand::Move(l) if *l == local)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sp() -> crate::span::Span {
+        crate::span::Span {
+            file_id: 0,
+            line: 0,
+            col: 0,
+            start: 0,
+            end: 0,
+        }
+    }
+
+    fn assign(l: usize, rv: Rvalue) -> Statement {
+        Statement {
+            kind: StatementKind::Assign(Local(l), rv),
+            span: sp(),
+        }
+    }
+
+    fn func(name: &str, locals: Vec<LocalDecl>, stmts: Vec<Statement>, args: usize) -> MirFunction {
+        MirFunction {
+            name: name.into(),
+            locals,
+            basic_blocks: vec![BasicBlock {
+                statements: stmts,
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Return,
+                    span: sp(),
+                }),
+            }],
+            arg_count: args,
+            vararg_idx: None,
+            kwarg_idx: None,
+            param_names: vec![],
+            is_async: false,
+        }
+    }
+
+    fn local_decl() -> LocalDecl {
+        LocalDecl {
+            ty: crate::semantic::types::Type::Int,
+            name: None,
+            span: sp(),
+            is_mut: false,
+            is_owning: false,
+        }
+    }
+
+    #[test]
+    fn replaces_duplicate_binop() {
+        let mut f = func(
+            "f",
+            vec![local_decl(), local_decl(), local_decl()],
+            vec![
+                assign(
+                    2,
+                    Rvalue::BinaryOp(
+                        crate::parser::BinOp::Add,
+                        Operand::Copy(Local(0)),
+                        Operand::Copy(Local(1)),
+                    ),
+                ),
+                assign(
+                    3,
+                    Rvalue::BinaryOp(
+                        crate::parser::BinOp::Add,
+                        Operand::Copy(Local(0)),
+                        Operand::Copy(Local(1)),
+                    ),
+                ),
+            ],
+            2,
+        );
+        assert!(GlobalValueNumbering.run(&mut f));
+        match &f.basic_blocks[0].statements[1].kind {
+            StatementKind::Assign(_, Rvalue::Use(Operand::Copy(Local(2)))) => {}
+            _ => panic!("expected Use(Copy(Local(2)))"),
+        }
+    }
+
+    #[test]
+    fn no_change_unique_binops() {
+        let mut f = func(
+            "f",
+            vec![local_decl(), local_decl(), local_decl()],
+            vec![
+                assign(
+                    2,
+                    Rvalue::BinaryOp(
+                        crate::parser::BinOp::Add,
+                        Operand::Copy(Local(0)),
+                        Operand::Copy(Local(1)),
+                    ),
+                ),
+                assign(
+                    3,
+                    Rvalue::BinaryOp(
+                        crate::parser::BinOp::Sub,
+                        Operand::Copy(Local(0)),
+                        Operand::Copy(Local(1)),
+                    ),
+                ),
+            ],
+            2,
+        );
+        assert!(!GlobalValueNumbering.run(&mut f));
+    }
+
+    #[test]
+    fn no_change_call_clears_map() {
+        let mut f = func(
+            "f",
+            vec![local_decl(), local_decl(), local_decl()],
+            vec![
+                assign(
+                    2,
+                    Rvalue::BinaryOp(
+                        crate::parser::BinOp::Add,
+                        Operand::Copy(Local(0)),
+                        Operand::Copy(Local(1)),
+                    ),
+                ),
+                assign(
+                    3,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function("g".into())),
+                        args: vec![],
+                    },
+                ),
+                assign(
+                    4,
+                    Rvalue::BinaryOp(
+                        crate::parser::BinOp::Add,
+                        Operand::Copy(Local(0)),
+                        Operand::Copy(Local(1)),
+                    ),
+                ),
+            ],
+            2,
+        );
+        assert!(!GlobalValueNumbering.run(&mut f));
     }
 }

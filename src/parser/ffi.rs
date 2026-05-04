@@ -145,3 +145,101 @@ impl Parser {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_parser(src: &str) -> Parser {
+        let tokens = crate::lexer::Lexer::new(src, 0)
+            .tokenise()
+            .expect("lex error");
+        Parser::new(tokens)
+    }
+
+    #[test]
+    fn parse_ffi_fn_sig_basic() {
+        let mut p = make_parser("fn foo(x: i32, y: f64) -> i32\n");
+        let sig = p.parse_ffi_fn_sig().expect("parse failed");
+        assert_eq!(sig.name, "foo");
+        assert_eq!(sig.params.len(), 2);
+        assert!(sig.ret.is_some());
+        assert!(!sig.is_vararg);
+    }
+
+    #[test]
+    fn parse_ffi_fn_sig_no_return() {
+        let mut p = make_parser("fn foo(x: i32)\n");
+        let sig = p.parse_ffi_fn_sig().expect("parse failed");
+        assert!(sig.ret.is_none());
+    }
+
+    #[test]
+    fn parse_ffi_fn_sig_vararg() {
+        let mut p = make_parser("fn foo(x: i32, ...)\n");
+        let sig = p.parse_ffi_fn_sig().expect("parse failed");
+        assert!(sig.is_vararg);
+    }
+
+    #[test]
+    fn parse_ffi_fn_sig_with_decorators() {
+        let mut p = make_parser("@cdecl\nfn foo()\n");
+        let sig = p.parse_ffi_fn_sig().expect("parse failed");
+        assert_eq!(sig.decorators.len(), 1);
+        assert_eq!(sig.decorators[0].name, "cdecl");
+        assert_eq!(sig.call_conv, Some("cdecl".into()));
+    }
+
+    #[test]
+    fn parse_ffi_struct_def_basic() {
+        let mut p = make_parser("struct Point:\n    x: i32\n    y: i32\n");
+        let def = p.parse_ffi_struct_def(false).expect("parse failed");
+        assert_eq!(def.name, "Point");
+        assert!(!def.is_union);
+        assert_eq!(def.fields.len(), 2);
+        assert!(def.destructor.is_none());
+    }
+
+    #[test]
+    fn parse_ffi_struct_def_union() {
+        let mut p = make_parser("struct Data:\n    a: i32\n    b: f64\n");
+        let def = p.parse_ffi_struct_def(true).expect("parse failed");
+        assert!(def.is_union);
+    }
+
+    #[test]
+    fn parse_ffi_struct_def_with_destructor() {
+        let mut p = make_parser("struct File free_with(free_file):\n    fd: i32\n");
+        let def = p.parse_ffi_struct_def(false).expect("parse failed");
+        assert_eq!(def.destructor, Some("free_file".into()));
+    }
+
+    #[test]
+    fn parse_ffi_struct_def_with_bitfield() {
+        let mut p = make_parser("struct Flags:\n    flag: i32 @1\n");
+        let def = p.parse_ffi_struct_def(false).expect("parse failed");
+        assert_eq!(def.fields[0].bits, Some(1));
+    }
+
+    #[test]
+    fn parse_ffi_var_def() {
+        let mut p = make_parser("var errno: i32\n");
+        let def = p.parse_ffi_var_def().expect("parse failed");
+        assert_eq!(def.name, "errno");
+    }
+
+    #[test]
+    fn parse_ffi_const_def_positive() {
+        let mut p = make_parser("const MAX = 100\n");
+        let def = p.parse_ffi_const_def().expect("parse failed");
+        assert_eq!(def.name, "MAX");
+        assert_eq!(def.value, 100);
+    }
+
+    #[test]
+    fn parse_ffi_const_def_negative() {
+        let mut p = make_parser("const MIN = -50\n");
+        let def = p.parse_ffi_const_def().expect("parse failed");
+        assert_eq!(def.value, -50);
+    }
+}

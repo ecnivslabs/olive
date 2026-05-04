@@ -21,3 +21,6 @@ pub mod vectorize;
 pub trait Transform {
     fn run(&self, func: &mut MirFunction) -> bool;
 }
+
+#[cfg(test)]
+mod tests;

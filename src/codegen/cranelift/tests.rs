@@ -1,73 +1,6 @@
 #[cfg(test)]
 mod codegen_tests {
-    use crate::codegen::cranelift::CraneliftCodegen;
-    use crate::lexer::Lexer;
-    use crate::mir::{MirBuilder, Optimizer};
-    use crate::parser::Parser;
-    use crate::semantic::{Resolver, TypeChecker};
-    use rustc_hash::FxHashSet as HashSet;
-
-    fn compile(src: &str) -> CraneliftCodegen<cranelift_jit::JITModule> {
-        let tokens = Lexer::new(src, 0).tokenise().unwrap();
-        let prog = Parser::new(tokens).parse_program().unwrap();
-        let mut r = Resolver::new();
-        r.resolve_program(&prog);
-        assert!(r.errors.is_empty(), "resolver errors: {:?}", r.errors);
-        let mut tc = TypeChecker::new();
-        tc.check_program(&prog);
-        assert!(tc.errors.is_empty(), "type errors: {:?}", tc.errors);
-        let mut builder = MirBuilder::new(
-            &tc.expr_types,
-            &tc.expr_kwarg_maps,
-            &tc.type_env[0],
-            tc.struct_fields.clone(),
-            &tc.traits,
-            HashSet::default(),
-        );
-        builder.build_program(&prog);
-        let opt = Optimizer::new();
-        opt.run(&mut builder.functions);
-        let mut cg = CraneliftCodegen::new_jit(
-            builder.functions,
-            builder.struct_fields,
-            builder.vtables.clone(),
-            builder.global_vars,
-            &[],
-            false,
-        );
-        cg.generate();
-        cg.finalize();
-        cg
-    }
-
-    fn call_i64(cg: &mut CraneliftCodegen<cranelift_jit::JITModule>, name: &str) -> i64 {
-        let ptr = cg
-            .get_function(name)
-            .unwrap_or_else(|| panic!("function '{}' not found", name));
-        let f: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
-        f()
-    }
-
-    fn call_i64_1(cg: &mut CraneliftCodegen<cranelift_jit::JITModule>, name: &str, a: i64) -> i64 {
-        let ptr = cg
-            .get_function(name)
-            .unwrap_or_else(|| panic!("function '{}' not found", name));
-        let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(ptr) };
-        f(a)
-    }
-
-    fn call_i64_2(
-        cg: &mut CraneliftCodegen<cranelift_jit::JITModule>,
-        name: &str,
-        a: i64,
-        b: i64,
-    ) -> i64 {
-        let ptr = cg
-            .get_function(name)
-            .unwrap_or_else(|| panic!("function '{}' not found", name));
-        let f: extern "C" fn(i64, i64) -> i64 = unsafe { std::mem::transmute(ptr) };
-        f(a, b)
-    }
+    use crate::test_utils::{call_i64, call_i64_1, call_i64_2, compile};
 
     #[test]
     fn integer_constant_return() {
@@ -402,6 +335,7 @@ mod codegen_tests {
         );
         assert_eq!(call_i64_1(&mut cg, "collatz", 27), 111);
     }
+
     #[test]
     fn trait_object_dynamic_dispatch() {
         let code = r#"
@@ -424,8 +358,6 @@ fn main() -> i64:
     return make_sound(d)
 "#;
         let mut cg = compile(code);
-        let ptr = cg.get_function("main").unwrap();
-        let f: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
-        assert_eq!(f(), 42);
+        assert_eq!(call_i64(&mut cg, "main"), 42);
     }
 }

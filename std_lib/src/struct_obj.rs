@@ -18,7 +18,7 @@ impl FreeList {
 }
 
 thread_local! {
-    static STRUCT_FREE_LIST: UnsafeCell<FreeList> = UnsafeCell::new(FreeList::new());
+    static STRUCT_FREE_LIST: UnsafeCell<FreeList> = const { UnsafeCell::new(FreeList::new()) };
 }
 
 #[unsafe(no_mangle)]
@@ -77,5 +77,58 @@ pub extern "C" fn olive_free_struct(ptr: i64) {
         let total = ((n_fields + 1) * 8) as usize;
         let layout = std::alloc::Layout::from_size_align_unchecked(total, 8);
         std::alloc::dealloc(ptr as *mut u8, layout);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn alloc_small_struct() {
+        let ptr = olive_struct_alloc(1);
+        assert_ne!(ptr, 0);
+        let n = unsafe { *(ptr as *const i64) };
+        assert_eq!(n, 1);
+        olive_free_struct(ptr);
+    }
+
+    #[test]
+    fn alloc_large_struct() {
+        let ptr = olive_struct_alloc(100);
+        assert_ne!(ptr, 0);
+        let n = unsafe { *(ptr as *const i64) };
+        assert_eq!(n, 100);
+        olive_free_struct(ptr);
+    }
+
+    #[test]
+    fn alloc_and_write_fields() {
+        let ptr = olive_struct_alloc(3);
+        assert_ne!(ptr, 0);
+        unsafe {
+            let fields = (ptr + 8) as *mut i64;
+            *fields = 10;
+            *fields.add(1) = 20;
+            *fields.add(2) = 30;
+            assert_eq!(*fields, 10);
+            assert_eq!(*fields.add(1), 20);
+            assert_eq!(*fields.add(2), 30);
+        }
+        olive_free_struct(ptr);
+    }
+
+    #[test]
+    fn free_null_no_panic() {
+        olive_free_struct(0);
+    }
+
+    #[test]
+    fn repeated_alloc_free() {
+        for _ in 0..10 {
+            let ptr = olive_struct_alloc(2);
+            assert_ne!(ptr, 0);
+            olive_free_struct(ptr);
+        }
     }
 }

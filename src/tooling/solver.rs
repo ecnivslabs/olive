@@ -127,3 +127,64 @@ fn parse_range(req: &str) -> Range<semver::Version> {
     }
     Range::full()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_range_wildcard_is_full() {
+        let r = parse_range("*");
+        assert_eq!(r, Range::full());
+    }
+
+    #[test]
+    fn parse_range_latest_is_full() {
+        let r = parse_range("latest");
+        assert_eq!(r, Range::full());
+    }
+
+    #[test]
+    fn parse_range_exact_version_is_singleton() {
+        let r = parse_range("1.2.3");
+        let expected = Range::singleton(semver::Version::new(1, 2, 3));
+        assert_eq!(r, expected);
+    }
+
+    #[test]
+    fn parse_range_invalid_is_full() {
+        let r = parse_range("not-a-version");
+        assert_eq!(r, Range::full());
+    }
+
+    #[test]
+    fn parse_range_partial_version_falls_back_to_full() {
+        let r = parse_range("1.2");
+        assert_eq!(r, Range::full());
+    }
+
+    #[test]
+    fn solver_error_unresolvable_display() {
+        let e = SolverError::Unresolvable("conflict between A >=1.0 and B <0.5".into());
+        let msg = format!("{e}");
+        assert!(msg.contains("dependency resolution failed"));
+        assert!(msg.contains("conflict between"));
+    }
+
+    #[test]
+    fn solver_error_registry_display() {
+        let e = SolverError::Registry("connection refused".into());
+        let msg = format!("{e}");
+        assert!(msg.contains("registry error"));
+        assert!(msg.contains("connection refused"));
+    }
+
+    #[test]
+    fn solver_error_from_string() {
+        let e: SolverError = "timeout".to_string().into();
+        match e {
+            SolverError::Registry(msg) => assert_eq!(msg, "timeout"),
+            _ => panic!("expected Registry variant"),
+        }
+    }
+}

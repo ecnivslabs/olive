@@ -318,3 +318,43 @@ pub fn run_shell() {
 
     println!("\nBye!");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    fn compile(input: &str) -> bool {
+        let tokens = Lexer::new(input, 0).tokenise().unwrap();
+        let program = Parser::new(tokens).parse_program().unwrap();
+        let mut sources = HashMap::default();
+        sources.insert(0, ("<repl>".to_string(), input.to_string()));
+        repl_compile_run(&[], &[], program.stmts, &sources)
+    }
+
+    #[test]
+    fn empty_program_succeeds() {
+        assert!(repl_compile_run(&[], &[], vec![], &HashMap::default()));
+    }
+
+    #[test]
+    fn integer_expr_succeeds() {
+        assert!(compile("42"));
+    }
+
+    #[test]
+    fn let_binding_succeeds() {
+        assert!(compile("let x = 42"));
+    }
+
+    #[test]
+    fn type_error_returns_false() {
+        assert!(!compile("\"hello\" + 42"));
+    }
+
+    #[test]
+    fn undefined_variable_returns_false() {
+        assert!(!compile("x + 1"));
+    }
+}

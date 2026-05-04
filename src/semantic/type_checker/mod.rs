@@ -9,9 +9,7 @@ use crate::parser::{Program, Stmt};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct TraitDef {
-    pub type_params: Vec<String>,
     pub methods: Vec<(String, Type)>,
 }
 
@@ -37,6 +35,12 @@ pub struct TypeChecker {
     pub(super) var_counter: usize,
     pub init_params: HashMap<String, Vec<String>>,
     pub expr_kwarg_maps: HashMap<usize, Vec<usize>>,
+}
+
+impl Default for TypeChecker {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TypeChecker {
@@ -298,7 +302,6 @@ impl TypeChecker {
         traits.insert(
             "Error".to_string(),
             TraitDef {
-                type_params: vec![],
                 methods: Vec::new(),
             },
         );

@@ -1,7 +1,9 @@
 mod errors;
 mod linker;
 mod loader;
-mod pipeline;
+pub(crate) mod pipeline;
+#[cfg(test)]
+mod tests;
 
 use crate::codegen::cranelift::CraneliftCodegen;
 use crate::parser;

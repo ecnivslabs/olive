@@ -68,11 +68,11 @@ pub(super) fn register_runtime_symbols(
 
     let mut loaded_lib = None;
     for path in &unique_paths {
-        if path.exists() {
-            if let Ok(l) = unsafe { libloading::Library::new(path) } {
-                loaded_lib = Some(l);
-                break;
-            }
+        if path.exists()
+            && let Ok(l) = unsafe { libloading::Library::new(path) }
+        {
+            loaded_lib = Some(l);
+            break;
         }
     }
 
@@ -119,4 +119,52 @@ pub(super) fn register_runtime_symbols(
     }
 
     loaded_lib
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_symbol_map_contains_essential_symbols() {
+        let names: std::collections::HashSet<&str> = SYMBOL_MAP.iter().map(|(n, _)| *n).collect();
+        assert!(names.contains("__olive_alloc"));
+        assert!(names.contains("__olive_panic"));
+        assert!(names.contains("__olive_free"));
+    }
+
+    #[test]
+    fn test_symbol_map_names_are_null_terminated() {
+        for (_, bytes) in SYMBOL_MAP {
+            assert!(
+                bytes.ends_with(b"\0"),
+                "symbol {:?} not null-terminated",
+                bytes
+            );
+        }
+    }
+
+    #[test]
+    fn test_async_runtime_syms_contain_core_symbols() {
+        assert!(ASYNC_RUNTIME_SYMS.contains(&"__olive_make_future"));
+        assert!(ASYNC_RUNTIME_SYMS.contains(&"__olive_await"));
+        assert!(ASYNC_RUNTIME_SYMS.contains(&"__olive_spawn_task"));
+        assert!(ASYNC_RUNTIME_SYMS.contains(&"__olive_sm_poll"));
+    }
+
+    #[test]
+    fn test_register_runtime_symbols_does_not_panic() {
+        use cranelift::prelude::settings::Configurable;
+        let mut flag_builder = cranelift::prelude::settings::builder();
+        flag_builder.set("use_colocated_libcalls", "false").unwrap();
+        flag_builder.set("is_pic", "false").unwrap();
+        let isa_builder = cranelift_native::builder().unwrap();
+        let isa = isa_builder
+            .finish(cranelift::prelude::settings::Flags::new(flag_builder))
+            .unwrap();
+        let mut builder =
+            cranelift_jit::JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        let needed = std::collections::HashSet::new();
+        let _ = register_runtime_symbols(&mut builder, &needed, false, false);
+    }
 }

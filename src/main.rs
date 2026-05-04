@@ -7,8 +7,12 @@ mod lexer;
 mod mangle;
 mod mir;
 mod parser;
+#[cfg(test)]
+mod regression_tests;
 mod semantic;
 mod span;
+#[cfg(test)]
+mod test_utils;
 mod tooling;
 
 use clap::{Parser as ClapParser, Subcommand};

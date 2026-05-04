@@ -18,7 +18,7 @@ impl ObjPool {
 }
 
 thread_local! {
-    static OBJ_POOL: UnsafeCell<ObjPool> = UnsafeCell::new(ObjPool::new());
+    static OBJ_POOL: UnsafeCell<ObjPool> = const { UnsafeCell::new(ObjPool::new()) };
 }
 
 #[unsafe(no_mangle)]
@@ -194,4 +194,125 @@ pub extern "C" fn olive_obj_values(obj_ptr: i64) -> i64 {
     })) as i64;
     register_object(res);
     res
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::olive_str_internal;
+
+    fn s(text: &str) -> i64 {
+        olive_str_internal(text)
+    }
+
+    fn make_obj(pairs: &[(&str, i64)]) -> i64 {
+        let obj = olive_obj_new();
+        for (k, v) in pairs {
+            olive_obj_set(obj, s(k), *v);
+        }
+        obj
+    }
+
+    #[test]
+    fn new_obj_creates_empty() {
+        let obj = olive_obj_new();
+        assert_ne!(obj, 0);
+        assert_eq!(olive_obj_len(obj), 0);
+    }
+
+    #[test]
+    fn set_and_get() {
+        let obj = olive_obj_new();
+        olive_obj_set(obj, s("key"), 42);
+        assert_eq!(olive_obj_get(obj, s("key")), 42);
+    }
+
+    #[test]
+    fn get_missing_key() {
+        let obj = olive_obj_new();
+        assert_eq!(olive_obj_get(obj, s("nonexistent")), 0);
+    }
+
+    #[test]
+    fn overwrite_value() {
+        let obj = make_obj(&[("x", 1)]);
+        olive_obj_set(obj, s("x"), 99);
+        assert_eq!(olive_obj_get(obj, s("x")), 99);
+    }
+
+    #[test]
+    fn remove_key() {
+        let obj = make_obj(&[("a", 1), ("b", 2)]);
+        let removed = olive_obj_remove(obj, s("a"));
+        assert_eq!(removed, 1);
+        assert_eq!(olive_obj_get(obj, s("a")), 0);
+        assert_eq!(olive_obj_len(obj), 1);
+    }
+
+    #[test]
+    fn remove_nonexistent() {
+        let obj = make_obj(&[("x", 1)]);
+        assert_eq!(olive_obj_remove(obj, s("y")), 0);
+    }
+
+    #[test]
+    fn in_obj_true() {
+        let obj = make_obj(&[("key", 42)]);
+        assert_eq!(olive_in_obj(s("key"), obj), 1);
+    }
+
+    #[test]
+    fn in_obj_false() {
+        let obj = make_obj(&[("key", 42)]);
+        assert_eq!(olive_in_obj(s("nope"), obj), 0);
+    }
+
+    #[test]
+    fn len_multiple_fields() {
+        let obj = make_obj(&[("a", 1), ("b", 2), ("c", 3)]);
+        assert_eq!(olive_obj_len(obj), 3);
+    }
+
+    #[test]
+    fn keys_list() {
+        let obj = make_obj(&[("x", 1), ("y", 2)]);
+        let keys_ptr = olive_obj_keys(obj);
+        assert_ne!(keys_ptr, 0);
+        let s = unsafe { &*(keys_ptr as *const StableVec) };
+        assert_eq!(s.len, 2);
+    }
+
+    #[test]
+    fn values_list() {
+        let obj = make_obj(&[("a", 10), ("b", 20)]);
+        let vals_ptr = olive_obj_values(obj);
+        assert_ne!(vals_ptr, 0);
+        let s = unsafe { &*(vals_ptr as *const StableVec) };
+        assert_eq!(s.len, 2);
+        let v0 = unsafe { *s.ptr };
+        let v1 = unsafe { *s.ptr.add(1) };
+        assert!((v0 == 10 && v1 == 20) || (v0 == 20 && v1 == 10));
+    }
+
+    #[test]
+    fn is_obj_true() {
+        let obj = olive_obj_new();
+        assert_eq!(olive_is_obj(obj), 1);
+    }
+
+    #[test]
+    fn is_obj_false() {
+        assert_eq!(olive_is_obj(0), 0);
+        assert_eq!(olive_is_obj(1), 0);
+        assert_eq!(olive_is_obj(1 | 1), 0);
+    }
+
+    #[test]
+    fn free_obj_no_panic() {
+        let obj = make_obj(&[("x", 1)]);
+        olive_free_obj(obj);
+
+        let obj2 = olive_obj_new();
+        assert_ne!(obj2, 0);
+    }
 }

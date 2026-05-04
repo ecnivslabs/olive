@@ -126,10 +126,10 @@ pub fn find_pod_path(pod_name: &str) -> Option<PathBuf> {
 
     let mut resolved_version = None;
     let workspace = workspace_root();
-    if let Some(lockfile) = load_lockfile(&workspace.join("pit.lock")) {
-        if let Some(pod) = lockfile.pods.iter().find(|p| p.name == pod_name) {
-            resolved_version = Some(pod.version.clone());
-        }
+    if let Some(lockfile) = load_lockfile(&workspace.join("pit.lock"))
+        && let Some(pod) = lockfile.pods.iter().find(|p| p.name == pod_name)
+    {
+        resolved_version = Some(pod.version.clone());
     }
 
     let pod_dir = if let Some(vers) = resolved_version {
@@ -165,20 +165,17 @@ pub fn find_pod_path(pod_name: &str) -> Option<PathBuf> {
     };
 
     let pod_toml = pod_dir.join("pit.toml");
-    if pod_toml.exists() {
-        if let Ok(content) = fs::read_to_string(&pod_toml) {
-            if let Ok(val) = toml::from_str::<toml::Value>(&content) {
-                if let Some(entry) = val
-                    .get("pod")
-                    .and_then(|p| p.get("entry"))
-                    .and_then(|e| e.as_str())
-                {
-                    let entry_path = pod_dir.join(entry);
-                    if entry_path.exists() {
-                        return Some(entry_path);
-                    }
-                }
-            }
+    if pod_toml.exists()
+        && let Ok(content) = fs::read_to_string(&pod_toml)
+        && let Ok(val) = toml::from_str::<toml::Value>(&content)
+        && let Some(entry) = val
+            .get("pod")
+            .and_then(|p| p.get("entry"))
+            .and_then(|e| e.as_str())
+    {
+        let entry_path = pod_dir.join(entry);
+        if entry_path.exists() {
+            return Some(entry_path);
         }
     }
 
@@ -189,4 +186,63 @@ pub fn find_pod_path(pod_name: &str) -> Option<PathBuf> {
         pod_dir.join("src").join("lib.liv"),
     ];
     candidates.into_iter().find(|p| p.exists())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pods_dir_contains_pit_and_pods() {
+        let dir = pods_dir();
+        let s = dir.to_string_lossy();
+        assert!(s.contains(".pit"));
+        assert!(s.contains("pods"));
+    }
+
+    #[test]
+    fn pods_dir_contains_olive_version_prefix() {
+        let dir = pods_dir();
+        let s = dir.to_string_lossy();
+        assert!(s.contains("olive-v"));
+    }
+
+    #[test]
+    fn installed_path_joins_name_and_version() {
+        let path = installed_path("my_pkg", "1.2.3");
+        let s = path.to_string_lossy();
+        assert!(s.contains("my_pkg"));
+        assert!(s.contains("1.2.3"));
+    }
+
+    #[test]
+    fn pod_error_solver_display() {
+        let e = PodError::Solver(solver::SolverError::Unresolvable("bad deps".into()));
+        let msg = format!("{e}");
+        assert!(msg.contains("dependency resolution failed"));
+    }
+
+    #[test]
+    fn pod_error_install_display() {
+        let e = PodError::Install(installer::InstallError::Download("timeout".into()));
+        let msg = format!("{e}");
+        assert!(msg.contains("download failed"));
+    }
+
+    #[test]
+    fn pod_error_io_display() {
+        let e = PodError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "file missing",
+        ));
+        let msg = format!("{e}");
+        assert!(msg.contains("I/O error"));
+    }
+
+    #[test]
+    fn pod_error_lockfile_display() {
+        let e = PodError::Lockfile("corrupt lock".into());
+        let msg = format!("{e}");
+        assert!(msg.contains("Lockfile error"));
+    }
 }

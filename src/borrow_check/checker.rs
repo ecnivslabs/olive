@@ -218,12 +218,11 @@ impl<'a> BorrowChecker<'a> {
                 self.check_operand(obj, state, stmt.span);
                 self.check_operand(val, state, stmt.span);
 
-                if self.func.name.ends_with("::__init__") {
-                    if let Operand::Copy(local) | Operand::Move(local) = obj {
-                        if local.0 == 1 {
-                            state.self_fields.insert(field.clone());
-                        }
-                    }
+                if self.func.name.ends_with("::__init__")
+                    && let Operand::Copy(local) | Operand::Move(local) = obj
+                    && local.0 == 1
+                {
+                    state.self_fields.insert(field.clone());
                 }
             }
             StatementKind::SetIndex(obj, idx, val) => {
@@ -418,7 +417,7 @@ impl<'a> BorrowChecker<'a> {
                         .func
                         .locals
                         .get(local.0)
-                        .map_or(true, |d| d.name.is_none());
+                        .is_none_or(|d| d.name.is_none());
                     if is_unnamed {
                         return;
                     }

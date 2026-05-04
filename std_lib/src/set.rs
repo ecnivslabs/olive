@@ -1,4 +1,5 @@
 use crate::*;
+
 use rustc_hash::FxHashSet;
 
 #[unsafe(no_mangle)]
@@ -36,5 +37,58 @@ pub extern "C" fn olive_set_add(set_ptr: i64, val: i64) {
             s.len = v.len();
             std::mem::forget(v);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn new_set() -> i64 {
+        olive_set_new(8)
+    }
+
+    #[test]
+    fn new_set_creates_empty() {
+        let ptr = new_set();
+        assert_ne!(ptr, 0);
+        let s = unsafe { &*(ptr as *const OliveHashSet) };
+        assert_eq!(s.len, 0);
+    }
+
+    #[test]
+    fn add_single_element() {
+        let ptr = new_set();
+        olive_set_add(ptr, 42);
+        let s = unsafe { &*(ptr as *const OliveHashSet) };
+        assert_eq!(s.len, 1);
+        assert!(unsafe { (*s.inner).contains(&42) });
+    }
+
+    #[test]
+    fn add_duplicate_no_change() {
+        let ptr = new_set();
+        olive_set_add(ptr, 1);
+        olive_set_add(ptr, 1);
+        let s = unsafe { &*(ptr as *const OliveHashSet) };
+        assert_eq!(s.len, 1);
+    }
+
+    #[test]
+    fn add_multiple_elements() {
+        let ptr = new_set();
+        for i in 0..10 {
+            olive_set_add(ptr, i);
+        }
+        let s = unsafe { &*(ptr as *const OliveHashSet) };
+        assert_eq!(s.len, 10);
+        for i in 0..10 {
+            assert!(unsafe { (*s.inner).contains(&i) });
+        }
+    }
+
+    #[test]
+    fn set_add_null_no_panic() {
+        olive_set_add(0, 42);
     }
 }

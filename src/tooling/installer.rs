@@ -125,3 +125,69 @@ pub async fn install_pod_atomic(pod: &PodVersion, final_dir: PathBuf) -> Result<
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tooling::registry::PodVersion;
+
+    #[test]
+    fn install_error_download_display() {
+        let e = InstallError::Download("timeout".to_string());
+        assert_eq!(format!("{e}"), "download failed: timeout");
+    }
+
+    #[test]
+    fn install_error_checksum_display() {
+        let e = InstallError::Checksum("expected abc, got def".to_string());
+        assert_eq!(format!("{e}"), "checksum mismatch: expected abc, got def");
+    }
+
+    #[test]
+    fn install_error_extraction_display() {
+        let e = InstallError::Extraction("corrupt archive".to_string());
+        assert_eq!(format!("{e}"), "extraction failed: corrupt archive");
+    }
+
+    #[test]
+    fn install_error_io_display() {
+        let inner = std::io::Error::new(std::io::ErrorKind::NotFound, "no such file");
+        let e = InstallError::Io(inner);
+        assert!(format!("{e}").contains("I/O error"));
+    }
+
+    #[test]
+    fn install_error_from_io() {
+        let inner = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        let e: InstallError = inner.into();
+        assert!(matches!(e, InstallError::Io(_)));
+    }
+
+    #[test]
+    fn install_error_impl_std_error() {
+        fn assert_error<E: std::error::Error>() {}
+        assert_error::<InstallError>();
+    }
+
+    #[test]
+    fn install_pod_atomic_returns_ok_when_dir_exists() {
+        let dir = std::env::temp_dir().join("olive_install_test_exists");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let pod = PodVersion {
+            name: "test".to_string(),
+            vers: "1.0.0".to_string(),
+            deps: vec![],
+            cksum: String::new(),
+            dl: String::new(),
+            yanked: false,
+            olive_req: None,
+        };
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(install_pod_atomic(&pod, dir.clone()));
+        assert!(result.is_ok());
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

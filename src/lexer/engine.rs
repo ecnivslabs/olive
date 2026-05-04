@@ -800,3 +800,194 @@ impl Lexer {
         Ok(tokens)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peek_and_advance() {
+        let mut lex = Lexer::new("ab", 0);
+        assert_eq!(lex.peek(), Some('a'));
+        assert_eq!(lex.advance(), Some('a'));
+        assert_eq!(lex.peek(), Some('b'));
+        assert_eq!(lex.pos, 1);
+        assert_eq!(lex.col, 2);
+    }
+
+    #[test]
+    fn peek_returns_none_at_end() {
+        let mut lex = Lexer::new("a", 0);
+        lex.advance();
+        assert_eq!(lex.peek(), None);
+    }
+
+    #[test]
+    fn advance_tracks_newlines() {
+        let mut lex = Lexer::new("a\nb", 0);
+        assert_eq!(lex.advance(), Some('a'));
+        assert_eq!(lex.advance(), Some('\n'));
+        assert_eq!(lex.line, 2);
+        assert_eq!(lex.col, 1);
+        assert_eq!(lex.advance(), Some('b'));
+        assert_eq!(lex.col, 2);
+    }
+
+    #[test]
+    fn err_uses_current_position() {
+        let mut lex = Lexer::new("abc\ndef", 0);
+        lex.advance(); // 'a', col=2
+        let e = lex.err("error msg");
+        assert_eq!(e.line, 1);
+        assert_eq!(e.col, 2);
+        assert_eq!(e.message, "error msg");
+    }
+
+    #[test]
+    fn make_tok_creates_token() {
+        let lex = Lexer::new("hello", 0);
+        let tok = lex.make_tok(TokenKind::Identifier, "hello", 1, 1, 0);
+        assert_eq!(tok.kind, TokenKind::Identifier);
+        assert_eq!(tok.value, "hello");
+        assert_eq!(tok.file_id, 0);
+    }
+
+    #[test]
+    fn skip_inline_whitespace_skips_spaces() {
+        let mut lex = Lexer::new("   x", 0);
+        lex.skip_inline_whitespace();
+        assert_eq!(lex.peek(), Some('x'));
+    }
+
+    #[test]
+    fn skip_inline_whitespace_skips_line_comment() {
+        let mut lex = Lexer::new("// comment\n", 0);
+        lex.skip_inline_whitespace();
+        assert_eq!(lex.peek(), Some('\n'));
+    }
+
+    #[test]
+    fn skip_inline_whitespace_skips_block_comment() {
+        let mut lex = Lexer::new("/* a */\n", 0);
+        lex.skip_inline_whitespace();
+        assert_eq!(lex.peek(), Some('\n'));
+    }
+
+    #[test]
+    fn read_number_handles_hex() {
+        let mut lex = Lexer::new("0xFF", 0);
+        let ch = lex.advance().unwrap();
+        let tok = lex.read_number(ch, 1, 1, 0).unwrap();
+        assert_eq!(tok.kind, TokenKind::Integer);
+        assert_eq!(tok.value, "0xFF");
+    }
+
+    #[test]
+    fn read_number_handles_octal() {
+        let mut lex = Lexer::new("0o77", 0);
+        let ch = lex.advance().unwrap();
+        let tok = lex.read_number(ch, 1, 1, 0).unwrap();
+        assert_eq!(tok.kind, TokenKind::Integer);
+        assert_eq!(tok.value, "0o77");
+    }
+
+    #[test]
+    fn read_number_handles_binary() {
+        let mut lex = Lexer::new("0b1010", 0);
+        let ch = lex.advance().unwrap();
+        let tok = lex.read_number(ch, 1, 1, 0).unwrap();
+        assert_eq!(tok.kind, TokenKind::Integer);
+        assert_eq!(tok.value, "0b1010");
+    }
+
+    #[test]
+    fn read_number_handles_float() {
+        let mut lex = Lexer::new("3.14", 0);
+        let ch = lex.advance().unwrap();
+        let tok = lex.read_number(ch, 1, 1, 0).unwrap();
+        assert_eq!(tok.kind, TokenKind::Float);
+        assert_eq!(tok.value, "3.14");
+    }
+
+    #[test]
+    fn read_number_handles_scientific() {
+        let mut lex = Lexer::new("1.5e10", 0);
+        let ch = lex.advance().unwrap();
+        let tok = lex.read_number(ch, 1, 1, 0).unwrap();
+        assert_eq!(tok.kind, TokenKind::Float);
+        assert_eq!(tok.value, "1.5e10");
+    }
+
+    #[test]
+    fn read_number_handles_integer() {
+        let mut lex = Lexer::new("42", 0);
+        let ch = lex.advance().unwrap();
+        let tok = lex.read_number(ch, 1, 1, 0).unwrap();
+        assert_eq!(tok.kind, TokenKind::Integer);
+        assert_eq!(tok.value, "42");
+    }
+
+    #[test]
+    fn read_string_basic() {
+        let mut lex = Lexer::new("\"hello\"", 0);
+        lex.advance(); // skip opening quote
+        let tok = lex.read_string('"', 1, 1, 0).unwrap();
+        assert_eq!(tok.kind, TokenKind::String);
+        assert_eq!(tok.value, "hello");
+    }
+
+    #[test]
+    fn read_string_with_escapes() {
+        let mut lex = Lexer::new("\"hello\\nworld\"", 0);
+        lex.advance(); // skip opening quote
+        let tok = lex.read_string('"', 1, 1, 0).unwrap();
+        assert_eq!(tok.value, "hello\nworld");
+    }
+
+    #[test]
+    fn read_string_triple_quoted() {
+        let mut lex = Lexer::new("\"\"\"hello\"\"\"", 0);
+        lex.advance(); // skip first opening quote
+        let tok = lex.read_string('"', 1, 1, 0).unwrap();
+        assert_eq!(tok.value, "hello");
+    }
+
+    #[test]
+    fn read_ident_distinguishes_keyword() {
+        let mut lex = Lexer::new("fn", 0);
+        let ch = lex.advance().unwrap();
+        let tok = lex.read_ident(ch, 1, 1, 0).unwrap();
+        assert_eq!(tok.kind, TokenKind::Fn);
+    }
+
+    #[test]
+    fn read_ident_plain_identifier() {
+        let mut lex = Lexer::new("myVar", 0);
+        let ch = lex.advance().unwrap();
+        let tok = lex.read_ident(ch, 1, 1, 0).unwrap();
+        assert_eq!(tok.kind, TokenKind::Identifier);
+        assert_eq!(tok.value, "myVar");
+    }
+
+    #[test]
+    fn read_ident_underscore() {
+        let mut lex = Lexer::new("_", 0);
+        let ch = lex.advance().unwrap();
+        let tok = lex.read_ident(ch, 1, 1, 0).unwrap();
+        assert_eq!(tok.kind, TokenKind::Underscore);
+        assert_eq!(tok.value, "_");
+    }
+
+    #[test]
+    fn handle_indent_creates_indent_token() {
+        let mut lex = Lexer::new("\n    pass", 0);
+        lex.advance(); // consume \n, now at first space
+        let result = lex.handle_indent(1, 0).unwrap();
+        assert_eq!(
+            result.as_ref().map(|t| t.kind.clone()),
+            Some(TokenKind::Newline)
+        );
+        assert_eq!(lex.pending.len(), 1);
+        assert_eq!(lex.pending[0].kind, TokenKind::Indent);
+    }
+}

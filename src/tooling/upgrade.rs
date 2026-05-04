@@ -221,28 +221,28 @@ pub fn upgrade() -> Result<(), String> {
         .entries()
         .map_err(|e| format!("failed to read tar entries: {}", e))?
     {
-        if let Ok(mut file) = file {
-            if let Ok(path) = file.path() {
-                let mut components = path.components();
-                components.next();
-                if let Some(std::path::Component::Normal(comp)) = components.next() {
-                    if comp == "lib" {
-                        let relative_path = components.as_path();
-                        if relative_path.as_os_str().is_empty() {
-                            continue;
-                        }
+        if let Ok(mut file) = file
+            && let Ok(path) = file.path()
+        {
+            let mut components = path.components();
+            components.next();
+            if let Some(std::path::Component::Normal(comp)) = components.next()
+                && comp == "lib"
+            {
+                let relative_path = components.as_path();
+                if relative_path.as_os_str().is_empty() {
+                    continue;
+                }
 
-                        let target_path = stdlib_tmp_dir.join(relative_path);
+                let target_path = stdlib_tmp_dir.join(relative_path);
 
-                        if file.header().entry_type().is_dir() {
-                            let _ = fs::create_dir_all(&target_path);
-                        } else {
-                            if let Some(parent) = target_path.parent() {
-                                let _ = fs::create_dir_all(parent);
-                            }
-                            let _ = file.unpack(&target_path);
-                        }
+                if file.header().entry_type().is_dir() {
+                    let _ = fs::create_dir_all(&target_path);
+                } else {
+                    if let Some(parent) = target_path.parent() {
+                        let _ = fs::create_dir_all(parent);
                     }
+                    let _ = file.unpack(&target_path);
                 }
             }
         }
@@ -290,4 +290,92 @@ pub fn upgrade() -> Result<(), String> {
 
     println!("Updated to {}.", latest_ver);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn target_triple_returns_some() {
+        assert!(target_triple().is_some());
+    }
+
+    #[test]
+    fn target_triple_format() {
+        let triple = target_triple().unwrap();
+        assert!(triple.starts_with("pit-"));
+    }
+
+    #[test]
+    fn target_lib_triple_returns_some() {
+        assert!(target_lib_triple().is_some());
+    }
+
+    #[test]
+    fn target_lib_triple_format() {
+        let triple = target_lib_triple().unwrap();
+        assert!(triple.starts_with("libolive_std-"));
+    }
+
+    #[test]
+    fn target_lib_file_returns_some() {
+        assert!(target_lib_file().is_some());
+    }
+
+    #[test]
+    fn target_lib_file_format() {
+        let file = target_lib_file().unwrap();
+        assert!(file.starts_with("libolive_std"));
+    }
+
+    #[test]
+    fn verify_blake3_matching() {
+        let data = b"hello world";
+        let mut h = blake3::Hasher::new();
+        h.update(data);
+        let hash = h.finalize().to_hex().to_string();
+        let checksums = format!("{hash}  file.txt");
+        assert!(verify_blake3(data, "file.txt", &checksums).is_ok());
+    }
+
+    #[test]
+    fn verify_blake3_mismatch() {
+        let data = b"hello world";
+        let checksums =
+            "0000000000000000000000000000000000000000000000000000000000000000  file.txt";
+        let result = verify_blake3(data, "file.txt", checksums);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("checksum mismatch"));
+    }
+
+    #[test]
+    fn verify_blake3_missing_filename() {
+        let data = b"hello world";
+        let checksums =
+            "0000000000000000000000000000000000000000000000000000000000000000  other.txt";
+        let result = verify_blake3(data, "file.txt", checksums);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("no checksum found"));
+    }
+
+    #[test]
+    fn verify_blake3_multiple_entries() {
+        let data = b"data";
+        let mut h = blake3::Hasher::new();
+        h.update(data);
+        let hash = h.finalize().to_hex().to_string();
+        let checksums = format!("aaa  a.bin\n{hash}  file.txt\nbbb  b.bin");
+        assert!(verify_blake3(data, "file.txt", &checksums).is_ok());
+    }
+
+    #[test]
+    fn verify_blake3_skips_empty_lines() {
+        let data = b"data";
+        let mut h = blake3::Hasher::new();
+        h.update(data);
+        let hash = h.finalize().to_hex().to_string();
+        let checksums = format!("\n\n{hash}  file.txt\n\n");
+        assert!(verify_blake3(data, "file.txt", &checksums).is_ok());
+    }
 }

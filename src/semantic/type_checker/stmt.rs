@@ -43,7 +43,7 @@ impl TypeChecker {
                 let val_ty = self.apply_subst(val_ty_raw);
                 if let Type::Tuple(elem_tys) = val_ty.clone() {
                     if elem_tys.len() == names.len() {
-                        for (name, ty) in names.iter().zip(elem_tys.into_iter()) {
+                        for (name, ty) in names.iter().zip(elem_tys) {
                             if let Some(ann) = type_ann {
                                 let expected_ty = self.resolve_type_expr(ann);
                                 self.unify(&expected_ty, &ty, value.span);
@@ -101,7 +101,7 @@ impl TypeChecker {
                 let val_ty = self.check_expr(value);
                 if let Type::Tuple(elem_tys) = val_ty {
                     if elem_tys.len() == names.len() {
-                        for (name, ty) in names.iter().zip(elem_tys.into_iter()) {
+                        for (name, ty) in names.iter().zip(elem_tys) {
                             if let Some(ann) = type_ann {
                                 let expected_ty = self.resolve_type_expr(ann);
                                 self.unify(&expected_ty, &ty, value.span);
@@ -219,12 +219,12 @@ impl TypeChecker {
                         .map(|ann| self.resolve_type_expr(ann))
                         .unwrap_or_else(|| self.fresh_var());
 
-                    if param.name == "self" && param.type_ann.is_none() {
-                        if let Some(struct_name) = &self.current_struct {
-                            if let Some(s_ty) = self.lookup_type(struct_name) {
-                                p_ty = s_ty;
-                            }
-                        }
+                    if param.name == "self"
+                        && param.type_ann.is_none()
+                        && let Some(struct_name) = &self.current_struct
+                        && let Some(s_ty) = self.lookup_type(struct_name)
+                    {
+                        p_ty = s_ty;
                     }
 
                     if let Some(default_expr) = &param.default {
@@ -288,18 +288,20 @@ impl TypeChecker {
                 }
 
                 for (i, (param, mut p_ty)) in params.iter().zip(param_types).enumerate() {
-                    if i == 0 && self.current_struct.is_some() && param.name == "self" {
-                        if param.type_ann.is_none() {
-                            let struct_name = self.current_struct.clone().unwrap();
-                            if let Some(struct_ty) = self.lookup_type(&struct_name) {
-                                if let Type::Struct(_, args) = struct_ty {
-                                    p_ty = Type::Struct(struct_name, args);
-                                } else {
-                                    p_ty = Type::Struct(struct_name, Vec::new());
-                                }
+                    if i == 0
+                        && self.current_struct.is_some()
+                        && param.name == "self"
+                        && param.type_ann.is_none()
+                    {
+                        let struct_name = self.current_struct.clone().unwrap();
+                        if let Some(struct_ty) = self.lookup_type(&struct_name) {
+                            if let Type::Struct(_, args) = struct_ty {
+                                p_ty = Type::Struct(struct_name, args);
                             } else {
-                                p_ty = Type::Any;
+                                p_ty = Type::Struct(struct_name, Vec::new());
                             }
+                        } else {
+                            p_ty = Type::Any;
                         }
                     }
                     self.define_type(&param.name, p_ty, param.is_mut);
@@ -414,13 +416,12 @@ impl TypeChecker {
                                 });
                         }
 
-                        if let Some(alias_expr) = &item.alias {
-                            if let crate::parser::ExprKind::Identifier(alias_name) =
+                        if let Some(alias_expr) = &item.alias
+                            && let crate::parser::ExprKind::Identifier(alias_name) =
                                 &alias_expr.kind
-                            {
-                                self.define_type(alias_name, enter_ret_ty.clone(), false);
-                                self.expr_types.insert(alias_expr.id, enter_ret_ty);
-                            }
+                        {
+                            self.define_type(alias_name, enter_ret_ty.clone(), false);
+                            self.expr_types.insert(alias_expr.id, enter_ret_ty);
                         }
                     } else if resolved_ctx != Type::Any
                         && resolved_ctx != Type::Null
@@ -434,23 +435,19 @@ impl TypeChecker {
                                 ),
                                 span: item.context_expr.span,
                             });
-                        if let Some(alias_expr) = &item.alias {
-                            if let crate::parser::ExprKind::Identifier(alias_name) =
+                        if let Some(alias_expr) = &item.alias
+                            && let crate::parser::ExprKind::Identifier(alias_name) =
                                 &alias_expr.kind
-                            {
-                                self.define_type(alias_name, Type::Any, false);
-                                self.expr_types.insert(alias_expr.id, Type::Any);
-                            }
+                        {
+                            self.define_type(alias_name, Type::Any, false);
+                            self.expr_types.insert(alias_expr.id, Type::Any);
                         }
-                    } else if resolved_ctx == Type::PyObject {
-                        if let Some(alias_expr) = &item.alias {
-                            if let crate::parser::ExprKind::Identifier(alias_name) =
-                                &alias_expr.kind
-                            {
-                                self.define_type(alias_name, Type::PyObject, false);
-                                self.expr_types.insert(alias_expr.id, Type::PyObject);
-                            }
-                        }
+                    } else if resolved_ctx == Type::PyObject
+                        && let Some(alias_expr) = &item.alias
+                        && let crate::parser::ExprKind::Identifier(alias_name) = &alias_expr.kind
+                    {
+                        self.define_type(alias_name, Type::PyObject, false);
+                        self.expr_types.insert(alias_expr.id, Type::PyObject);
                     }
                 }
 
@@ -544,12 +541,11 @@ impl TypeChecker {
                                             Type::Struct(n, _) => Some(n.clone()),
                                             _ => None,
                                         };
-                                        if first_name == Some(tr.to_string()) {
-                                            if let Some(impl_ty) =
+                                        if first_name == Some(tr.to_string())
+                                            && let Some(impl_ty) =
                                                 self.lookup_type(&type_name.to_string())
-                                            {
-                                                new_params[0] = impl_ty;
-                                            }
+                                        {
+                                            new_params[0] = impl_ty;
                                         }
                                     }
                                     expected_ty = Type::Fn(new_params, ret, args);
@@ -609,7 +605,6 @@ impl TypeChecker {
                 self.traits.insert(
                     name.clone(),
                     super::TraitDef {
-                        type_params: type_params.clone(),
                         methods: trait_methods,
                     },
                 );
@@ -842,5 +837,110 @@ impl TypeChecker {
             StmtKind::ExprStmt(_) => true,
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::super::TypeChecker;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+    use crate::semantic::Resolver;
+
+    fn typeck(src: &str) -> TypeChecker {
+        let tokens = Lexer::new(src, 0).tokenise().unwrap();
+        let prog = Parser::new(tokens).parse_program().unwrap();
+        let mut r = Resolver::new();
+        r.resolve_program(&prog);
+        let mut tc = TypeChecker::new();
+        tc.check_program(&prog);
+        tc
+    }
+
+    #[test]
+    fn const_declaration() {
+        let tc = typeck("const PI = 3\nlet r = PI * 2\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn multi_let_tuple_destructuring() {
+        let tc = typeck("let a, b = 1, 2\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn multi_let_length_mismatch_reported() {
+        let tc = typeck("let a, b = 1\n");
+        assert!(!tc.errors.is_empty());
+    }
+
+    #[test]
+    fn multi_const_ok() {
+        let tc = typeck("const X, Y = 1, 2\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn assert_with_truthy_expr() {
+        let tc = typeck("assert True\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn assert_with_msg() {
+        let tc = typeck("assert True, \"should pass\"\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn for_loop_with_tuple_target() {
+        let tc = typeck("for (k, v) in [(1, 2)]:\n    pass\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn defer_expr() {
+        let tc = typeck("defer print(42)\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn unsafe_block_ok() {
+        let tc = typeck("unsafe:\n    let x = 42\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn pass_stmt() {
+        let tc = typeck("pass\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn enum_with_explicit_values() {
+        let tc = typeck("enum Color:\n    Red = 0\n    Green = 1\n    Blue = 2\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn while_loop_ok() {
+        let tc = typeck("let mut i = 0\nwhile i < 10:\n    i = i + 1\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn break_continue_in_loop() {
+        let tc =
+            typeck("let mut i = 0\nwhile i < 10:\n    if i == 5:\n        break\n    i = i + 1\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn nested_if_else_ok() {
+        let tc = typeck(
+            "let x = 1\nif x > 0:\n    if x > 5:\n        let y = 1\n    else:\n        let y = 2\n",
+        );
+        assert!(tc.errors.is_empty());
     }
 }

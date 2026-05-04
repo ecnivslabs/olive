@@ -47,3 +47,86 @@ pub extern "C" fn olive_math_log10(x: f64) -> f64 {
 pub extern "C" fn olive_math_exp(x: f64) -> f64 {
     x.exp()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn approx_eq(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-10
+    }
+
+    #[test]
+    fn sin_pi() {
+        assert!(approx_eq(olive_math_sin(0.0), 0.0));
+    }
+
+    #[test]
+    fn sin_half_pi() {
+        assert!(approx_eq(olive_math_sin(std::f64::consts::FRAC_PI_2), 1.0));
+    }
+
+    #[test]
+    fn cos_zero() {
+        assert!(approx_eq(olive_math_cos(0.0), 1.0));
+    }
+
+    #[test]
+    fn tan_zero() {
+        assert!(approx_eq(olive_math_tan(0.0), 0.0));
+    }
+
+    #[test]
+    fn asin_one() {
+        assert!(approx_eq(olive_math_asin(1.0), std::f64::consts::FRAC_PI_2));
+    }
+
+    #[test]
+    fn acos_one() {
+        assert!(approx_eq(olive_math_acos(1.0), 0.0));
+    }
+
+    #[test]
+    fn atan_zero() {
+        assert!(approx_eq(olive_math_atan(0.0), 0.0));
+    }
+
+    #[test]
+    fn atan2_positive() {
+        assert!(approx_eq(
+            olive_math_atan2(1.0, 1.0),
+            std::f64::consts::FRAC_PI_4
+        ));
+    }
+
+    #[test]
+    fn log_e() {
+        assert!(approx_eq(olive_math_log(std::f64::consts::E), 1.0));
+    }
+
+    #[test]
+    fn log10_ten() {
+        assert!(approx_eq(olive_math_log10(10.0), 1.0));
+    }
+
+    #[test]
+    fn exp_zero() {
+        assert!(approx_eq(olive_math_exp(0.0), 1.0));
+    }
+
+    #[test]
+    fn exp_one() {
+        assert!(approx_eq(olive_math_exp(1.0), std::f64::consts::E));
+    }
+
+    #[test]
+    fn sin_negative() {
+        assert!(approx_eq(olive_math_sin(-0.5), (-0.5f64).sin()));
+    }
+
+    #[test]
+    fn cos_large_value() {
+        let x = 1000.0;
+        assert!(approx_eq(olive_math_cos(x), x.cos()));
+    }
+}

@@ -118,3 +118,67 @@ impl TypeChecker {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::super::TypeChecker;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+    use crate::semantic::Resolver;
+
+    fn typeck(src: &str) -> TypeChecker {
+        let tokens = Lexer::new(src, 0).tokenise().unwrap();
+        let prog = Parser::new(tokens).parse_program().unwrap();
+        let mut r = Resolver::new();
+        r.resolve_program(&prog);
+        let mut tc = TypeChecker::new();
+        tc.check_program(&prog);
+        tc
+    }
+
+    #[test]
+    fn wildcard_pattern_ok() {
+        let tc = typeck(
+            "enum E:\n    A\n    B\n\nfn f(x: E):\n    match x:\n        case A:\n            pass\n        case _:\n            pass\n",
+        );
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn identifier_pattern_binds() {
+        let tc =
+            typeck("enum E:\n    A\nlet x = A\nmatch x:\n    case other:\n        let y = other\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn variant_pattern_with_data() {
+        let tc = typeck(
+            "enum Opt:\n    Some(i64)\n    None\nlet x = Some(42)\nmatch x:\n    case Some(v):\n        let y = v\n    case None:\n        pass\n",
+        );
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn nested_variant_pattern() {
+        let tc = typeck(
+            "enum A:\n    B(i64, str)\nlet x = B(1, \"a\")\nmatch x:\n    case B(a, b):\n        let y = a + 1\n",
+        );
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn literal_pattern() {
+        let tc =
+            typeck("let x = 42\nmatch x:\n    case 0:\n        pass\n    case _:\n        pass\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn non_exhaustive_match_reported() {
+        let tc = typeck(
+            "enum C:\n    Red\n    Green\n    Blue\nlet x = Red\nmatch x:\n    case Red:\n        pass\n    case Green:\n        pass\n",
+        );
+        assert!(!tc.errors.is_empty());
+    }
+}

@@ -111,3 +111,98 @@ impl DeadCodeElimination {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sp() -> crate::span::Span {
+        crate::span::Span {
+            file_id: 0,
+            line: 0,
+            col: 0,
+            start: 0,
+            end: 0,
+        }
+    }
+
+    fn assign(l: usize, rv: Rvalue) -> Statement {
+        Statement {
+            kind: StatementKind::Assign(Local(l), rv),
+            span: sp(),
+        }
+    }
+
+    fn block(stmts: Vec<Statement>, term: TerminatorKind) -> BasicBlock {
+        BasicBlock {
+            statements: stmts,
+            terminator: Some(Terminator {
+                kind: term,
+                span: sp(),
+            }),
+        }
+    }
+
+    fn func(blocks: Vec<BasicBlock>) -> MirFunction {
+        MirFunction {
+            name: "f".into(),
+            locals: vec![],
+            basic_blocks: blocks,
+            arg_count: 0,
+            vararg_idx: None,
+            kwarg_idx: None,
+            param_names: vec![],
+            is_async: false,
+        }
+    }
+
+    #[test]
+    fn keep_used_assign() {
+        let mut f = func(vec![block(
+            vec![assign(0, Rvalue::Use(Operand::Constant(Constant::Int(1))))],
+            TerminatorKind::Return,
+        )]);
+        assert!(!DeadCodeElimination.run(&mut f));
+        assert_eq!(f.basic_blocks[0].statements.len(), 1);
+    }
+
+    #[test]
+    fn remove_unused_assign() {
+        let mut f = func(vec![block(
+            vec![
+                assign(0, Rvalue::Use(Operand::Constant(Constant::Int(1)))),
+                assign(1, Rvalue::Use(Operand::Constant(Constant::Int(2)))),
+            ],
+            TerminatorKind::Return,
+        )]);
+        let changed = DeadCodeElimination.run(&mut f);
+        assert!(changed);
+        assert_eq!(f.basic_blocks[0].statements.len(), 1);
+    }
+
+    #[test]
+    fn keep_unused_with_storage_live() {
+        let mut f = func(vec![block(
+            vec![
+                Statement {
+                    kind: StatementKind::StorageLive(Local(0)),
+                    span: sp(),
+                },
+                assign(0, Rvalue::Use(Operand::Constant(Constant::Int(1)))),
+                Statement {
+                    kind: StatementKind::StorageDead(Local(0)),
+                    span: sp(),
+                },
+            ],
+            TerminatorKind::Return,
+        )]);
+        DeadCodeElimination.run(&mut f);
+        assert_eq!(f.basic_blocks[0].statements.len(), 3);
+    }
+
+    #[test]
+    fn no_dead_code_empty() {
+        let mut f = func(vec![]);
+        assert!(!DeadCodeElimination.run(&mut f));
+    }
+}

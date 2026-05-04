@@ -3,6 +3,12 @@ use rustc_hash::FxHashMap as HashMap;
 
 pub struct Inliner;
 
+impl Default for Inliner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Inliner {
     pub fn new() -> Self {
         Self
@@ -289,5 +295,149 @@ impl Inliner {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(test, allow(dead_code))]
+mod tests {
+    use super::*;
+
+    fn sp() -> crate::span::Span {
+        crate::span::Span {
+            file_id: 0,
+            line: 0,
+            col: 0,
+            start: 0,
+            end: 0,
+        }
+    }
+
+    fn assign(l: usize, rv: Rvalue) -> Statement {
+        Statement {
+            kind: StatementKind::Assign(Local(l), rv),
+            span: sp(),
+        }
+    }
+
+    fn stmt(k: StatementKind) -> Statement {
+        Statement {
+            kind: k,
+            span: sp(),
+        }
+    }
+
+    fn func(name: &str, locals: Vec<LocalDecl>, stmts: Vec<Statement>, args: usize) -> MirFunction {
+        MirFunction {
+            name: name.into(),
+            locals,
+            basic_blocks: vec![BasicBlock {
+                statements: stmts,
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Return,
+                    span: sp(),
+                }),
+            }],
+            arg_count: args,
+            vararg_idx: None,
+            kwarg_idx: None,
+            param_names: vec![],
+            is_async: false,
+        }
+    }
+
+    fn local_decl() -> LocalDecl {
+        LocalDecl {
+            ty: crate::semantic::types::Type::Int,
+            name: None,
+            span: sp(),
+            is_mut: false,
+            is_owning: false,
+        }
+    }
+
+    fn callee_fn(name: &str, body: Vec<Statement>) -> MirFunction {
+        MirFunction {
+            name: name.into(),
+            locals: vec![local_decl()],
+            basic_blocks: vec![BasicBlock {
+                statements: body,
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Return,
+                    span: sp(),
+                }),
+            }],
+            arg_count: 0,
+            vararg_idx: None,
+            kwarg_idx: None,
+            param_names: vec![],
+            is_async: false,
+        }
+    }
+
+    #[test]
+    fn simple_inline_replaces_call() {
+        let mut caller = func(
+            "main",
+            vec![local_decl()],
+            vec![assign(
+                0,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("callee".into())),
+                    args: vec![],
+                },
+            )],
+            0,
+        );
+        let callee = callee_fn(
+            "callee",
+            vec![assign(0, Rvalue::Use(Operand::Constant(Constant::Int(42))))],
+        );
+        let mut fn_map: HashMap<String, MirFunction> = HashMap::default();
+        fn_map.insert("callee".into(), callee);
+        let inliner = Inliner::new();
+        inliner.inline_function(&mut caller, &fn_map, 3);
+        assert!(caller.basic_blocks.len() > 1, "expected inlined blocks");
+    }
+
+    #[test]
+    fn no_inline_unknown_function() {
+        let mut caller = func(
+            "main",
+            vec![local_decl()],
+            vec![assign(
+                0,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("unknown".into())),
+                    args: vec![],
+                },
+            )],
+            0,
+        );
+        let fn_map: HashMap<String, MirFunction> = HashMap::default();
+        let inliner = Inliner::new();
+        inliner.inline_function(&mut caller, &fn_map, 3);
+        assert_eq!(caller.basic_blocks.len(), 1);
+    }
+
+    #[test]
+    fn no_inline_if_not_in_map() {
+        let mut caller = func(
+            "f",
+            vec![local_decl()],
+            vec![assign(
+                0,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("other".into())),
+                    args: vec![],
+                },
+            )],
+            0,
+        );
+        // empty fn_map, no inlining happens
+        let fn_map: HashMap<String, MirFunction> = HashMap::default();
+        let inliner = Inliner::new();
+        inliner.inline_function(&mut caller, &fn_map, 3);
+        assert_eq!(caller.basic_blocks.len(), 1);
     }
 }

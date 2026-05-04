@@ -147,7 +147,7 @@ impl<M: Module> CraneliftCodegen<M> {
                         if *ty == OliveType::Str {
                             is_str = true;
                         }
-                        if *ty == OliveType::Float {
+                        if matches!(*ty, OliveType::Float | OliveType::F32) {
                             is_float = true;
                         }
                         if *ty == OliveType::PyObject {
@@ -246,14 +246,7 @@ impl<M: Module> CraneliftCodegen<M> {
                     return builder.inst_results(inst)[0];
                 }
 
-                let mut is_float = false;
-                if let Operand::Copy(loc) | Operand::Move(loc) = lhs {
-                    if func_mir.locals[loc.0].ty == OliveType::Float {
-                        is_float = true;
-                    }
-                } else if let Operand::Constant(Constant::Float(_)) = lhs {
-                    is_float = true;
-                }
+                let is_float = is_float_op(func_mir, lhs) || is_float_op(func_mir, rhs);
                 let is_u64 = is_u64_op(func_mir, lhs) || is_u64_op(func_mir, rhs);
 
                 if is_float {
@@ -387,6 +380,7 @@ impl<M: Module> CraneliftCodegen<M> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn translate_unaryop(
         builder: &mut FunctionBuilder,
         vars: &HashMap<Local, Variable>,
@@ -440,5 +434,100 @@ impl<M: Module> CraneliftCodegen<M> {
             BitNot => builder.ins().bnot(o),
             Pos => o,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::test_utils::{call_i64_1, call_i64_2, compile};
+
+    #[test]
+    fn test_translate_binop_add() {
+        let mut cg = compile("fn f(a: i64, b: i64) -> i64:\n    return a + b\n");
+        assert_eq!(call_i64_2(&mut cg, "f", 30, 12), 42);
+    }
+
+    #[test]
+    fn test_translate_binop_sub() {
+        let mut cg = compile("fn f(a: i64, b: i64) -> i64:\n    return a - b\n");
+        assert_eq!(call_i64_2(&mut cg, "f", 50, 8), 42);
+    }
+
+    #[test]
+    fn test_translate_binop_mul() {
+        let mut cg = compile("fn f(a: i64, b: i64) -> i64:\n    return a * b\n");
+        assert_eq!(call_i64_2(&mut cg, "f", 6, 7), 42);
+    }
+
+    #[test]
+    fn test_translate_binop_div() {
+        let mut cg = compile("fn f(a: i64, b: i64) -> i64:\n    return a / b\n");
+        assert_eq!(call_i64_2(&mut cg, "f", 84, 2), 42);
+    }
+
+    #[test]
+    fn test_translate_binop_mod() {
+        let mut cg = compile("fn f(a: i64, b: i64) -> i64:\n    return a % b\n");
+        assert_eq!(call_i64_2(&mut cg, "f", 100, 58), 42);
+    }
+
+    #[test]
+    fn test_translate_binop_bitwise() {
+        let mut cg = compile("fn f(a: i64, b: i64) -> i64:\n    return a & b\n");
+        assert_eq!(call_i64_2(&mut cg, "f", 0xFF, 0x0F), 0x0F);
+    }
+
+    #[test]
+    fn test_translate_binop_shift() {
+        let mut cg = compile("fn f(a: i64) -> i64:\n    return a << 1\n");
+        assert_eq!(call_i64_1(&mut cg, "f", 21), 42);
+    }
+
+    #[test]
+    fn test_translate_unaryop_neg() {
+        let mut cg = compile("fn f(x: i64) -> i64:\n    return 0 - x\n");
+        assert_eq!(call_i64_1(&mut cg, "f", 42), -42);
+    }
+
+    #[test]
+    fn test_translate_unaryop_bitnot() {
+        let mut cg = compile("fn f(x: i64) -> i64:\n    return ~x\n");
+        assert_eq!(call_i64_1(&mut cg, "f", 0), -1);
+    }
+
+    #[test]
+    fn test_translate_binop_cmp_eq() {
+        let mut cg = compile(
+            "fn f(a: i64, b: i64) -> i64:\n    if a == b:\n        return 1\n    return 0\n",
+        );
+        assert_eq!(call_i64_2(&mut cg, "f", 42, 42), 1);
+        assert_eq!(call_i64_2(&mut cg, "f", 42, 43), 0);
+    }
+
+    #[test]
+    fn test_translate_binop_cmp_chain() {
+        let mut cg = compile(
+            "fn f(a: i64, b: i64) -> i64:\n    if a < b:\n        return 1\n    return 0\n",
+        );
+        assert_eq!(call_i64_2(&mut cg, "f", 10, 20), 1);
+        assert_eq!(call_i64_2(&mut cg, "f", 20, 10), 0);
+    }
+
+    #[test]
+    fn test_translate_binop_logical_and() {
+        let mut cg = compile(
+            "fn f(a: i64, b: i64) -> i64:\n    if a != 0 and b != 0:\n        return 1\n    return 0\n",
+        );
+        assert_eq!(call_i64_2(&mut cg, "f", 1, 1), 1);
+        assert_eq!(call_i64_2(&mut cg, "f", 1, 0), 0);
+    }
+
+    #[test]
+    fn test_translate_binop_logical_or() {
+        let mut cg = compile(
+            "fn f(a: i64, b: i64) -> i64:\n    if a != 0 or b != 0:\n        return 1\n    return 0\n",
+        );
+        assert_eq!(call_i64_2(&mut cg, "f", 1, 0), 1);
+        assert_eq!(call_i64_2(&mut cg, "f", 0, 0), 0);
     }
 }

@@ -327,3 +327,99 @@ impl<'a> MirBuilder<'a> {
         self.current_block = Some(exit_bb);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::MirBuilder;
+    use crate::lexer::Lexer;
+    use crate::mir::ir::{StatementKind, TerminatorKind};
+    use crate::parser::Parser;
+    use crate::semantic::{Resolver, TypeChecker};
+    use rustc_hash::FxHashSet;
+
+    fn build(src: &str) -> Vec<super::super::super::ir::MirFunction> {
+        let tokens = Lexer::new(src, 0).tokenise().unwrap();
+        let prog = Parser::new(tokens).parse_program().unwrap();
+        let mut r = Resolver::new();
+        r.resolve_program(&prog);
+        let mut tc = TypeChecker::new();
+        tc.check_program(&prog);
+        let mut builder = MirBuilder::new(
+            &tc.expr_types,
+            &tc.expr_kwarg_maps,
+            &tc.type_env[0],
+            tc.struct_fields.clone(),
+            &tc.traits,
+            FxHashSet::default(),
+        );
+        builder.build_program(&prog);
+        builder.functions
+    }
+
+    #[test]
+    fn if_statement_creates_switch() {
+        let fns = build("fn f(x: i64) -> i64:\n    if x > 0:\n        return 1\n    return 0\n");
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        let has_switch = f.basic_blocks.iter().any(|bb| {
+            bb.terminator
+                .as_ref()
+                .is_some_and(|t| matches!(t.kind, TerminatorKind::SwitchInt { .. }))
+        });
+        assert!(has_switch);
+    }
+
+    #[test]
+    fn if_else_creates_multiple_blocks() {
+        let fns = build(
+            "fn f(x: i64) -> i64:\n    if x > 0:\n        return 1\n    else:\n        return -1\n",
+        );
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        assert!(
+            f.basic_blocks.len() >= 3,
+            "expected at least 3 blocks for if-else"
+        );
+    }
+
+    #[test]
+    fn while_loop_creates_backedge() {
+        let fns = build(
+            "fn f(n: i64) -> i64:\n    let i = 0\n    while i < n:\n        i = i + 1\n    return i\n",
+        );
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        let has_goto = f.basic_blocks.iter().any(|bb| {
+            bb.terminator
+                .as_ref()
+                .is_some_and(|t| matches!(t.kind, TerminatorKind::Goto { .. }))
+        });
+        assert!(has_goto);
+    }
+
+    #[test]
+    fn for_loop_emits_iter_call() {
+        let fns = build(
+            "fn f(xs: [i64]) -> i64:\n    let s = 0\n    for x in xs:\n        s = s + x\n    return s\n",
+        );
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        let has_call = f.basic_blocks.iter().any(|bb| {
+            bb.statements.iter().any(|s| {
+                matches!(
+                    s.kind,
+                    StatementKind::Assign(_, crate::mir::ir::Rvalue::Call { .. })
+                )
+            })
+        });
+        assert!(has_call);
+    }
+
+    #[test]
+    fn nested_if_elif_else_works() {
+        let fns = build(
+            "fn sign(x: i64) -> i64:\n    if x > 0:\n        return 1\n    elif x < 0:\n        return -1\n    else:\n        return 0\n",
+        );
+        let f = fns.iter().find(|f| f.name == "sign").unwrap();
+        assert!(
+            f.basic_blocks.len() >= 4,
+            "nested if-elif-else should produce multiple blocks"
+        );
+    }
+}

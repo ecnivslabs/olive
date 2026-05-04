@@ -393,3 +393,47 @@ fn create_registry_pr(gh: &GhClient, pod: &PodVersion) -> Result<String, String>
         .map(|s| s.to_string())
         .ok_or_else(|| format!("PR created but no URL in response: {}", pr_resp))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_github_repo_https() {
+        assert_eq!(
+            parse_github_repo("https://github.com/user/repo.git"),
+            Some("user/repo".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_github_repo_ssh() {
+        assert_eq!(
+            parse_github_repo("git@github.com:user/repo.git"),
+            Some("user/repo".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_github_repo_no_git_suffix() {
+        assert_eq!(
+            parse_github_repo("https://github.com/user/repo"),
+            Some("user/repo".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_github_repo_non_github() {
+        assert_eq!(parse_github_repo("https://gitlab.com/user/repo"), None);
+    }
+
+    #[test]
+    fn parse_github_repo_invalid() {
+        assert_eq!(parse_github_repo("not-a-url"), None);
+    }
+
+    #[test]
+    fn parse_github_repo_empty() {
+        assert_eq!(parse_github_repo(""), None);
+    }
+}

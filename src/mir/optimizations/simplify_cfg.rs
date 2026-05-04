@@ -71,10 +71,8 @@ impl SimplifyCfg {
         for bb in &func.basic_blocks {
             if let Some(term) = &bb.terminator {
                 match &term.kind {
-                    TerminatorKind::Goto { target } => {
-                        if target.0 < n {
-                            pred_count[target.0] += 1;
-                        }
+                    TerminatorKind::Goto { target } if target.0 < n => {
+                        pred_count[target.0] += 1;
                     }
                     TerminatorKind::SwitchInt {
                         targets, otherwise, ..
@@ -192,5 +190,131 @@ impl SimplifyCfg {
         });
 
         true
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(test, allow(dead_code))]
+mod tests {
+    use super::*;
+
+    fn sp() -> crate::span::Span {
+        crate::span::Span {
+            file_id: 0,
+            line: 0,
+            col: 0,
+            start: 0,
+            end: 0,
+        }
+    }
+
+    fn assign(l: usize, rv: Rvalue) -> Statement {
+        Statement {
+            kind: StatementKind::Assign(Local(l), rv),
+            span: sp(),
+        }
+    }
+
+    fn func(blocks: Vec<BasicBlock>) -> MirFunction {
+        MirFunction {
+            name: "f".into(),
+            locals: vec![],
+            basic_blocks: blocks,
+            arg_count: 0,
+            vararg_idx: None,
+            kwarg_idx: None,
+            param_names: vec![],
+            is_async: false,
+        }
+    }
+
+    fn bb(stmts: Vec<Statement>, kind: TerminatorKind) -> BasicBlock {
+        BasicBlock {
+            statements: stmts,
+            terminator: Some(Terminator { kind, span: sp() }),
+        }
+    }
+
+    #[test]
+    fn const_bool_branch_resolved() {
+        let mut f = func(vec![bb(
+            vec![],
+            TerminatorKind::SwitchInt {
+                discr: Operand::Constant(Constant::Bool(true)),
+                targets: vec![(1, BasicBlockId(1))],
+                otherwise: BasicBlockId(2),
+            },
+        )]);
+        assert!(SimplifyCfg.run(&mut f));
+        assert!(matches!(
+            f.basic_blocks[0].terminator.as_ref().unwrap().kind,
+            TerminatorKind::Goto {
+                target: BasicBlockId(1)
+            }
+        ));
+    }
+
+    #[test]
+    fn const_int_branch_resolved() {
+        let mut f = func(vec![bb(
+            vec![],
+            TerminatorKind::SwitchInt {
+                discr: Operand::Constant(Constant::Int(42)),
+                targets: vec![(42, BasicBlockId(3)), (99, BasicBlockId(4))],
+                otherwise: BasicBlockId(5),
+            },
+        )]);
+        assert!(SimplifyCfg.run(&mut f));
+        assert!(matches!(
+            f.basic_blocks[0].terminator.as_ref().unwrap().kind,
+            TerminatorKind::Goto {
+                target: BasicBlockId(3)
+            }
+        ));
+    }
+
+    #[test]
+    fn non_const_branch_unchanged() {
+        let mut f = func(vec![bb(
+            vec![],
+            TerminatorKind::SwitchInt {
+                discr: Operand::Copy(Local(0)),
+                targets: vec![(1, BasicBlockId(1))],
+                otherwise: BasicBlockId(2),
+            },
+        )]);
+        assert!(!SimplifyCfg.run(&mut f));
+    }
+
+    #[test]
+    fn merge_linear_blocks() {
+        let mut f = func(vec![
+            bb(
+                vec![],
+                TerminatorKind::Goto {
+                    target: BasicBlockId(1),
+                },
+            ),
+            bb(vec![], TerminatorKind::Return),
+        ]);
+        SimplifyCfg.run(&mut f);
+        // block 0 should absorb block 1
+        assert!(f.basic_blocks[0].terminator.as_ref().is_some());
+    }
+
+    #[test]
+    fn remove_unreachable_block() {
+        let mut f = func(vec![
+            bb(vec![], TerminatorKind::Return),
+            bb(vec![], TerminatorKind::Return),
+        ]);
+        assert!(SimplifyCfg.run(&mut f));
+        assert_eq!(f.basic_blocks.len(), 1);
+    }
+
+    #[test]
+    fn empty_func_no_change() {
+        let mut f = func(vec![]);
+        assert!(!SimplifyCfg.run(&mut f));
     }
 }

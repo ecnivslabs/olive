@@ -44,6 +44,15 @@ pub extern "C" fn olive_str_slice(s: i64, start: i64, end: i64) -> i64 {
     }
 }
 
+/// Creates a heap-allocated Olive string from a `&str`, returning an `i64` pointer.
+///
+/// # Examples
+///
+/// ```
+/// use olive_std::olive_str_internal;
+/// let ptr = olive_str_internal("hello");
+/// assert!(ptr != 0);
+/// ```
 pub fn olive_str_internal(s: &str) -> i64 {
     let c_str = std::ffi::CString::new(s).unwrap_or_else(|_| {
         let safe: String = s.chars().filter(|&c| c != '\0').collect();
@@ -52,6 +61,15 @@ pub fn olive_str_internal(s: &str) -> i64 {
     c_str.into_raw() as i64 | 1
 }
 
+/// Converts an Olive string pointer back into an owned `String`.
+///
+/// # Examples
+///
+/// ```
+/// use olive_std::{olive_str_internal, olive_str_from_ptr};
+/// let ptr = olive_str_internal("hello");
+/// assert_eq!(olive_str_from_ptr(ptr), "hello");
+/// ```
 pub fn olive_str_from_ptr(ptr: i64) -> String {
     if ptr == 0 {
         return String::new();
@@ -64,6 +82,15 @@ pub fn olive_str_from_ptr(ptr: i64) -> String {
     }
 }
 
+/// Returns an optional `&str` referencing the string pointed to by `ptr`.
+///
+/// # Examples
+///
+/// ```
+/// use olive_std::{olive_str_internal, olive_str_as_str};
+/// let ptr = olive_str_internal("hello");
+/// assert_eq!(olive_str_as_str(ptr), Some("hello"));
+/// ```
 pub fn olive_str_as_str<'a>(ptr: i64) -> Option<&'a str> {
     if ptr == 0 {
         return None;
@@ -315,4 +342,251 @@ pub extern "C" fn olive_str_graphemes(s: i64) -> i64 {
     })) as i64;
     register_object(res);
     res
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::olive_str_internal;
+
+    fn s(text: &str) -> i64 {
+        olive_str_internal(text)
+    }
+
+    fn from_ptr(ptr: i64) -> String {
+        crate::olive_str_from_ptr(ptr)
+    }
+
+    #[test]
+    fn len_basic() {
+        assert_eq!(olive_str_len(s("hello")), 5);
+    }
+
+    #[test]
+    fn len_empty() {
+        assert_eq!(olive_str_len(s("")), 0);
+    }
+
+    #[test]
+    fn len_null() {
+        assert_eq!(olive_str_len(0), 0);
+    }
+
+    #[test]
+    fn slice_full() {
+        let result = from_ptr(olive_str_slice(s("hello"), 0, 5));
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn slice_partial() {
+        let result = from_ptr(olive_str_slice(s("hello"), 1, 4));
+        assert_eq!(result, "ell");
+    }
+
+    #[test]
+    fn slice_empty_range() {
+        let result = from_ptr(olive_str_slice(s("hello"), 2, 2));
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn slice_invalid_range() {
+        assert_eq!(olive_str_slice(s("hello"), 3, 1), 0);
+        assert_eq!(olive_str_slice(s("hello"), 10, 15), 0);
+    }
+
+    #[test]
+    fn trim_whitespace() {
+        assert_eq!(from_ptr(olive_str_trim(s("  hello  "))), "hello");
+    }
+
+    #[test]
+    fn trim_no_change() {
+        assert_eq!(from_ptr(olive_str_trim(s("hello"))), "hello");
+    }
+
+    #[test]
+    fn trim_empty() {
+        assert_eq!(from_ptr(olive_str_trim(s(""))), "");
+    }
+
+    #[test]
+    fn trim_start_only() {
+        assert_eq!(from_ptr(olive_str_trim_start(s("  hello  "))), "hello  ");
+    }
+
+    #[test]
+    fn trim_end_only() {
+        assert_eq!(from_ptr(olive_str_trim_end(s("  hello  "))), "  hello");
+    }
+
+    #[test]
+    fn upper_case() {
+        assert_eq!(from_ptr(olive_str_upper(s("hello"))), "HELLO");
+    }
+
+    #[test]
+    fn lower_case() {
+        assert_eq!(from_ptr(olive_str_lower(s("HELLO"))), "hello");
+    }
+
+    #[test]
+    fn replace_substring() {
+        let result = from_ptr(olive_str_replace(s("hello world"), s("world"), s("there")));
+        assert_eq!(result, "hello there");
+    }
+
+    #[test]
+    fn replace_no_match() {
+        let result = from_ptr(olive_str_replace(s("hello"), s("x"), s("y")));
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn find_substring() {
+        assert_eq!(olive_str_find(s("hello world"), s("world")), 6);
+    }
+
+    #[test]
+    fn find_not_found() {
+        assert_eq!(olive_str_find(s("hello"), s("x")), -1);
+    }
+
+    #[test]
+    fn find_null_inputs() {
+        assert_eq!(olive_str_find(0, s("x")), -1);
+        assert_eq!(olive_str_find(s("x"), 0), -1);
+    }
+
+    #[test]
+    fn contains_true() {
+        assert_eq!(olive_str_contains(s("hello world"), s("world")), 1);
+    }
+
+    #[test]
+    fn contains_false() {
+        assert_eq!(olive_str_contains(s("hello"), s("x")), 0);
+    }
+
+    #[test]
+    fn starts_with_true() {
+        assert_eq!(olive_str_starts_with(s("hello"), s("he")), 1);
+    }
+
+    #[test]
+    fn starts_with_false() {
+        assert_eq!(olive_str_starts_with(s("hello"), s("el")), 0);
+    }
+
+    #[test]
+    fn ends_with_true() {
+        assert_eq!(olive_str_ends_with(s("hello"), s("lo")), 1);
+    }
+
+    #[test]
+    fn ends_with_false() {
+        assert_eq!(olive_str_ends_with(s("hello"), s("el")), 0);
+    }
+
+    #[test]
+    fn repeat_basic() {
+        assert_eq!(from_ptr(olive_str_repeat(s("ab"), 3)), "ababab");
+    }
+
+    #[test]
+    fn repeat_zero() {
+        assert_eq!(from_ptr(olive_str_repeat(s("ab"), 0)), "");
+    }
+
+    #[test]
+    fn repeat_negative() {
+        assert_eq!(from_ptr(olive_str_repeat(s("ab"), -1)), "");
+    }
+
+    #[test]
+    fn split_by_space() {
+        let list_ptr = olive_str_split(s("a b c"), 0);
+        assert_ne!(list_ptr, 0);
+        let s = unsafe { &*(list_ptr as *const StableVec) };
+        assert_eq!(s.len, 3);
+        assert_eq!(crate::olive_str_from_ptr(unsafe { *s.ptr }), "a");
+        assert_eq!(crate::olive_str_from_ptr(unsafe { *s.ptr.add(1) }), "b");
+        assert_eq!(crate::olive_str_from_ptr(unsafe { *s.ptr.add(2) }), "c");
+    }
+
+    #[test]
+    fn split_by_comma() {
+        let sep = olive_str_internal(",");
+        let list_ptr = olive_str_split(s("x,y,z"), sep);
+        assert_ne!(list_ptr, 0);
+        let s = unsafe { &*(list_ptr as *const StableVec) };
+        assert_eq!(s.len, 3);
+    }
+
+    #[test]
+    fn join_basic() {
+        let list_ptr = crate::olive_list_new(3);
+        crate::olive_list_set(list_ptr, 0, s("a"));
+        crate::olive_list_set(list_ptr, 1, s("b"));
+        crate::olive_list_set(list_ptr, 2, s("c"));
+        let result = from_ptr(olive_str_join(list_ptr, s(",")));
+        assert_eq!(result, "a,b,c");
+    }
+
+    #[test]
+    fn join_empty_list() {
+        assert_eq!(from_ptr(olive_str_join(0, s(","))), "");
+    }
+
+    #[test]
+    fn char_count_ascii() {
+        assert_eq!(olive_str_char_count(s("hello")), 5);
+    }
+
+    #[test]
+    fn char_count_unicode() {
+        assert_eq!(olive_str_char_count(s("héllo")), 5);
+    }
+
+    #[test]
+    fn char_count_empty() {
+        assert_eq!(olive_str_char_count(s("")), 0);
+    }
+
+    #[test]
+    fn is_ascii_true() {
+        assert_eq!(olive_str_is_ascii(s("hello")), 1);
+    }
+
+    #[test]
+    fn is_ascii_false() {
+        assert_eq!(olive_str_is_ascii(s("héllo")), 0);
+    }
+
+    #[test]
+    fn fmt_basic() {
+        let template = s("Hello, {}!");
+        let args_list = crate::olive_list_new(1);
+        crate::olive_list_set(args_list, 0, s("world"));
+        assert_eq!(
+            from_ptr(olive_str_fmt(template, args_list)),
+            "Hello, world!"
+        );
+    }
+
+    #[test]
+    fn fmt_multiple_args() {
+        let template = s("{} + {} = {}");
+        let args_list = crate::olive_list_new(3);
+        crate::olive_list_set(args_list, 0, s("1"));
+        crate::olive_list_set(args_list, 1, s("2"));
+        crate::olive_list_set(args_list, 2, s("3"));
+        assert_eq!(from_ptr(olive_str_fmt(template, args_list)), "1 + 2 = 3");
+    }
+
+    #[test]
+    fn fmt_no_placeholders() {
+        assert_eq!(from_ptr(olive_str_fmt(s("hello"), 0)), "hello");
+    }
 }

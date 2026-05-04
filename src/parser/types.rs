@@ -133,3 +133,123 @@ impl Parser {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_parser(src: &str) -> Parser {
+        let tokens = crate::lexer::Lexer::new(src, 0)
+            .tokenise()
+            .expect("lex error");
+        Parser::new(tokens)
+    }
+
+    #[test]
+    fn parse_type_name() {
+        let mut p = make_parser("i64\n");
+        let ty = p.parse_type_expr().expect("parse failed");
+        assert!(matches!(ty.kind, TypeExprKind::Name(n) if n == "i64"));
+    }
+
+    #[test]
+    fn parse_type_generic() {
+        let mut p = make_parser("Option[i64]\n");
+        let ty = p.parse_type_expr().expect("parse failed");
+        match &ty.kind {
+            TypeExprKind::Generic(name, args) => {
+                assert_eq!(name, "Option");
+                assert_eq!(args.len(), 1);
+            }
+            _ => panic!("expected Generic"),
+        }
+    }
+
+    #[test]
+    fn parse_type_tuple() {
+        let mut p = make_parser("(i64, f64)\n");
+        let ty = p.parse_type_expr().expect("parse failed");
+        match &ty.kind {
+            TypeExprKind::Tuple(types) => assert_eq!(types.len(), 2),
+            _ => panic!("expected Tuple"),
+        }
+    }
+
+    #[test]
+    fn parse_type_list() {
+        let mut p = make_parser("[i64]\n");
+        let ty = p.parse_type_expr().expect("parse failed");
+        assert!(matches!(ty.kind, TypeExprKind::List(_)));
+    }
+
+    #[test]
+    fn parse_type_fixed_array() {
+        let mut p = make_parser("[i64; 8]\n");
+        let ty = p.parse_type_expr().expect("parse failed");
+        match &ty.kind {
+            TypeExprKind::FixedArray(inner, n) => {
+                assert_eq!(*n, 8);
+                assert!(matches!(&inner.kind, TypeExprKind::Name(t) if t == "i64"));
+            }
+            _ => panic!("expected FixedArray"),
+        }
+    }
+
+    #[test]
+    fn parse_type_dict() {
+        let mut p = make_parser("{i64: f64}\n");
+        let ty = p.parse_type_expr().expect("parse failed");
+        assert!(matches!(ty.kind, TypeExprKind::Dict(_, _)));
+    }
+
+    #[test]
+    fn parse_type_ref() {
+        let mut p = make_parser("&i64\n");
+        let ty = p.parse_type_expr().expect("parse failed");
+        assert!(matches!(ty.kind, TypeExprKind::Ref(_)));
+    }
+
+    #[test]
+    fn parse_type_mut_ref() {
+        let mut p = make_parser("&mut i64\n");
+        let ty = p.parse_type_expr().expect("parse failed");
+        assert!(matches!(ty.kind, TypeExprKind::MutRef(_)));
+    }
+
+    #[test]
+    fn parse_type_ptr() {
+        let mut p = make_parser("*i64\n");
+        let ty = p.parse_type_expr().expect("parse failed");
+        assert!(matches!(ty.kind, TypeExprKind::Ptr(_)));
+    }
+
+    #[test]
+    fn parse_type_fn() {
+        let mut p = make_parser("fn(i64) -> bool\n");
+        let ty = p.parse_type_expr().expect("parse failed");
+        match &ty.kind {
+            TypeExprKind::Fn { params, ret } => {
+                assert_eq!(params.len(), 1);
+                assert!(matches!(&ret.kind, TypeExprKind::Name(t) if t == "bool"));
+            }
+            _ => panic!("expected Fn"),
+        }
+    }
+
+    #[test]
+    fn parse_type_union() {
+        let mut p = make_parser("i64 | f64\n");
+        let ty = p.parse_type_expr().expect("parse failed");
+        assert!(matches!(ty.kind, TypeExprKind::Union(_, _)));
+    }
+
+    #[test]
+    fn parse_type_generic_with_multiple_args() {
+        let mut p = make_parser("Dict[i64, f64]\n");
+        let ty = p.parse_type_expr().expect("parse failed");
+        match &ty.kind {
+            TypeExprKind::Generic(_, args) => assert_eq!(args.len(), 2),
+            _ => panic!("expected Generic"),
+        }
+    }
+}

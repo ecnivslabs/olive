@@ -119,3 +119,78 @@ impl CopyPropagation {
         false
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::BinOp;
+
+    fn sp() -> crate::span::Span {
+        crate::span::Span {
+            file_id: 0,
+            line: 0,
+            col: 0,
+            start: 0,
+            end: 0,
+        }
+    }
+
+    fn assign(l: usize, rv: Rvalue) -> Statement {
+        Statement {
+            kind: StatementKind::Assign(Local(l), rv),
+            span: sp(),
+        }
+    }
+
+    fn block(stmts: Vec<Statement>, term: TerminatorKind) -> BasicBlock {
+        BasicBlock {
+            statements: stmts,
+            terminator: Some(Terminator {
+                kind: term,
+                span: sp(),
+            }),
+        }
+    }
+
+    fn func(blocks: Vec<BasicBlock>) -> MirFunction {
+        MirFunction {
+            name: "f".into(),
+            locals: vec![],
+            basic_blocks: blocks,
+            arg_count: 0,
+            vararg_idx: None,
+            kwarg_idx: None,
+            param_names: vec![],
+            is_async: false,
+        }
+    }
+
+    #[test]
+    fn copy_prop_eliminates_copy() {
+        let mut f = func(vec![block(
+            vec![
+                assign(1, Rvalue::Use(Operand::Copy(Local(0)))),
+                assign(2, Rvalue::Use(Operand::Copy(Local(1)))),
+            ],
+            TerminatorKind::Return,
+        )]);
+        CopyPropagation.run(&mut f);
+        if let StatementKind::Assign(_, Rvalue::Use(Operand::Copy(l))) =
+            &f.basic_blocks[0].statements[1].kind
+        {
+            assert_eq!(*l, Local(0), "should propagate through copy chain");
+        }
+    }
+
+    #[test]
+    fn copy_prop_no_change() {
+        let mut f = func(vec![block(
+            vec![assign(
+                0,
+                Rvalue::BinaryOp(BinOp::Add, Operand::Copy(Local(1)), Operand::Copy(Local(2))),
+            )],
+            TerminatorKind::Return,
+        )]);
+        assert!(!CopyPropagation.run(&mut f));
+    }
+}

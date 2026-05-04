@@ -18,7 +18,7 @@ impl ListPool {
 }
 
 thread_local! {
-    static LIST_POOL: UnsafeCell<ListPool> = UnsafeCell::new(ListPool::new());
+    static LIST_POOL: UnsafeCell<ListPool> = const { UnsafeCell::new(ListPool::new()) };
 }
 
 #[unsafe(no_mangle)]
@@ -52,13 +52,7 @@ pub extern "C" fn olive_list_new(len: i64) -> i64 {
         }
     }
 
-    let mut v = Vec::with_capacity(n);
-    unsafe {
-        v.set_len(n);
-    }
-    for i in 0..n {
-        v[i] = 0;
-    }
+    let mut v = vec![0; n];
     let ptr = v.as_mut_ptr();
     let cap = v.capacity();
     let len = v.len();
@@ -346,4 +340,204 @@ pub extern "C" fn olive_is_list(val: i64) -> i64 {
     }
     let kind = unsafe { *(val as *const i64) };
     if kind == KIND_LIST { 1 } else { 0 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_list(elems: &[i64]) -> i64 {
+        let ptr = olive_list_new(elems.len() as i64);
+        for (i, &v) in elems.iter().enumerate() {
+            olive_list_set(ptr, i as i64, v);
+        }
+        ptr
+    }
+
+    #[test]
+    fn new_empty() {
+        let ptr = olive_list_new(0);
+        assert_ne!(ptr, 0);
+        let s = unsafe { &*(ptr as *const StableVec) };
+        assert_eq!(s.len, 0);
+    }
+
+    #[test]
+    fn new_with_size() {
+        let ptr = olive_list_new(5);
+        assert_ne!(ptr, 0);
+        let s = unsafe { &*(ptr as *const StableVec) };
+        assert_eq!(s.len, 5);
+        for i in 0..5 {
+            assert_eq!(unsafe { *s.ptr.add(i) }, 0);
+        }
+    }
+
+    #[test]
+    fn get_and_set() {
+        let ptr = olive_list_new(3);
+        olive_list_set(ptr, 0, 42);
+        olive_list_set(ptr, 1, 99);
+        olive_list_set(ptr, 2, -7);
+        assert_eq!(olive_list_get(ptr, 0), 42);
+        assert_eq!(olive_list_get(ptr, 1), 99);
+        assert_eq!(olive_list_get(ptr, 2), -7);
+    }
+
+    #[test]
+    fn get_out_of_bounds() {
+        let ptr = olive_list_new(1);
+        assert_eq!(olive_list_get(ptr, 10), 0);
+        assert_eq!(olive_list_get(ptr, !0), 0);
+    }
+
+    #[test]
+    fn set_out_of_bounds_no_panic() {
+        let ptr = olive_list_new(1);
+        olive_list_set(ptr, 100, 42);
+        assert_eq!(olive_list_get(ptr, 0), 0);
+    }
+
+    #[test]
+    fn get_null_returns_zero() {
+        assert_eq!(olive_list_get(0, 0), 0);
+    }
+
+    #[test]
+    fn len_basic() {
+        let ptr = olive_list_new(10);
+        assert_eq!(olive_list_len(ptr), 10);
+    }
+
+    #[test]
+    fn len_null() {
+        assert_eq!(olive_list_len(0), 0);
+    }
+
+    #[test]
+    fn insert_middle() {
+        let ptr = make_list(&[1, 3, 4]);
+        olive_list_insert(ptr, 1, 2);
+        assert_eq!(olive_list_len(ptr), 4);
+        assert_eq!(olive_list_get(ptr, 0), 1);
+        assert_eq!(olive_list_get(ptr, 1), 2);
+        assert_eq!(olive_list_get(ptr, 2), 3);
+        assert_eq!(olive_list_get(ptr, 3), 4);
+    }
+
+    #[test]
+    fn insert_beginning() {
+        let ptr = make_list(&[2, 3]);
+        olive_list_insert(ptr, 0, 1);
+        assert_eq!(olive_list_len(ptr), 3);
+        assert_eq!(olive_list_get(ptr, 0), 1);
+    }
+
+    #[test]
+    fn insert_end() {
+        let ptr = make_list(&[1, 2]);
+        olive_list_insert(ptr, 2, 3);
+        assert_eq!(olive_list_len(ptr), 3);
+        assert_eq!(olive_list_get(ptr, 2), 3);
+    }
+
+    #[test]
+    fn remove_middle() {
+        let ptr = make_list(&[1, 99, 3]);
+        let removed = olive_list_remove(ptr, 1);
+        assert_eq!(removed, 99);
+        assert_eq!(olive_list_len(ptr), 2);
+        assert_eq!(olive_list_get(ptr, 0), 1);
+        assert_eq!(olive_list_get(ptr, 1), 3);
+    }
+
+    #[test]
+    fn remove_beginning() {
+        let ptr = make_list(&[1, 2, 3]);
+        let removed = olive_list_remove(ptr, 0);
+        assert_eq!(removed, 1);
+        assert_eq!(olive_list_len(ptr), 2);
+    }
+
+    #[test]
+    fn remove_out_of_bounds() {
+        let ptr = make_list(&[1]);
+        let removed = olive_list_remove(ptr, 5);
+        assert_eq!(removed, 0);
+        assert_eq!(olive_list_len(ptr), 1);
+    }
+
+    #[test]
+    fn concat_two_lists() {
+        let a = make_list(&[1, 2]);
+        let b = make_list(&[3, 4]);
+        let c = olive_list_concat(a, b);
+        assert_eq!(olive_list_len(c), 4);
+        assert_eq!(olive_list_get(c, 0), 1);
+        assert_eq!(olive_list_get(c, 3), 4);
+    }
+
+    #[test]
+    fn concat_with_null() {
+        let a = make_list(&[1, 2]);
+        let c = olive_list_concat(a, 0);
+        assert_eq!(c, a);
+    }
+
+    #[test]
+    fn extend_list() {
+        let target = make_list(&[1, 2]);
+        let source = make_list(&[3, 4]);
+        olive_list_extend(target, source);
+        assert_eq!(olive_list_len(target), 4);
+        assert_eq!(olive_list_get(target, 2), 3);
+    }
+
+    #[test]
+    fn is_list_true() {
+        let ptr = make_list(&[]);
+        assert_eq!(olive_is_list(ptr), 1);
+    }
+
+    #[test]
+    fn is_list_false() {
+        assert_eq!(olive_is_list(0), 0);
+        assert_eq!(olive_is_list(1), 0);
+        assert_eq!(olive_is_list(1 | 1), 0);
+    }
+
+    #[test]
+    fn free_list_no_panic() {
+        let ptr = make_list(&[1, 2, 3]);
+        olive_free_list(ptr);
+
+        let ptr2 = make_list(&[4, 5]);
+        assert_ne!(ptr2, 0);
+        assert_eq!(olive_list_len(ptr2), 2);
+    }
+
+    #[test]
+    fn iter_basic() {
+        let ptr = make_list(&[10, 20, 30]);
+        let it = olive_iter(ptr);
+        assert_ne!(it, 0);
+        assert_eq!(olive_has_next(it), 1);
+        assert_eq!(olive_next(it), 10);
+        assert_eq!(olive_has_next(it), 1);
+        assert_eq!(olive_next(it), 20);
+        assert_eq!(olive_has_next(it), 1);
+        assert_eq!(olive_next(it), 30);
+        assert_eq!(olive_has_next(it), 0);
+        assert_eq!(olive_next(it), 0);
+        olive_free_iter(it);
+    }
+
+    #[test]
+    fn iter_empty_list() {
+        let ptr = make_list(&[]);
+        let it = olive_iter(ptr);
+        assert_eq!(olive_has_next(it), 0);
+        assert_eq!(olive_next(it), 0);
+        olive_free_iter(it);
+    }
 }

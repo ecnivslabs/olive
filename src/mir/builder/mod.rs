@@ -101,6 +101,7 @@ impl<'a> MirBuilder<'a> {
                 StmtKind::Impl {
                     type_name, body, ..
                 } => {
+                    let type_base = Self::type_expr_base_name(type_name);
                     for s in body {
                         if let StmtKind::Fn {
                             name: fn_name,
@@ -108,7 +109,7 @@ impl<'a> MirBuilder<'a> {
                             ..
                         } = &s.kind
                         {
-                            let mangled = format!("{}::{}", type_name, fn_name);
+                            let mangled = format!("{}::{}", type_base, fn_name);
                             self.register_fn_meta(&mangled, params);
                         }
                     }
@@ -139,12 +140,11 @@ impl<'a> MirBuilder<'a> {
             .any(|s| matches!(&s.kind, StmtKind::Fn { name, .. } if name == "main"));
 
         let already_calls_main = program.stmts.iter().any(|s| {
-            if let StmtKind::ExprStmt(expr) = &s.kind {
-                if let crate::parser::ExprKind::Call { callee, .. } = &expr.kind {
-                    if let crate::parser::ExprKind::Identifier(name) = &callee.kind {
-                        return name == "main";
-                    }
-                }
+            if let StmtKind::ExprStmt(expr) = &s.kind
+                && let crate::parser::ExprKind::Call { callee, .. } = &expr.kind
+                && let crate::parser::ExprKind::Identifier(name) = &callee.kind
+            {
+                return name == "main";
             }
             false
         });

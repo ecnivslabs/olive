@@ -144,8 +144,8 @@ unsafe extern "C" fn list_proxy_len(self_ptr: PyObject) -> isize {
     if !check_alive(proxy.ptr) {
         return -1;
     }
-    let len = crate::olive_list_len(proxy.ptr) as isize;
-    len
+
+    crate::olive_list_len(proxy.ptr) as isize
 }
 
 unsafe extern "C" fn list_proxy_getitem(self_ptr: PyObject, index: isize) -> PyObject {
@@ -164,8 +164,8 @@ unsafe extern "C" fn list_proxy_getitem(self_ptr: PyObject, index: isize) -> PyO
         return std::ptr::null_mut();
     }
     let val = crate::olive_list_get(proxy.ptr, idx);
-    let py_val = olive_py_conv_to_py(val);
-    py_val
+
+    olive_py_conv_to_py(val)
 }
 
 unsafe extern "C" fn list_proxy_setitem(
@@ -228,8 +228,8 @@ unsafe extern "C" fn dict_proxy_getitem(self_ptr: PyObject, key: PyObject) -> Py
         PY_ERR_SET_STRING(PY_EXC_KEYERROR, msg.as_ptr());
         return std::ptr::null_mut();
     }
-    let py_val = olive_py_conv_to_py(val);
-    py_val
+
+    olive_py_conv_to_py(val)
 }
 
 unsafe extern "C" fn dict_proxy_setitem(

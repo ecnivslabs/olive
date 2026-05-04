@@ -38,10 +38,10 @@ impl Transform for ConstantPropagation {
                     if let Operand::Copy(l) | Operand::Move(l) = obj {
                         *assign_counts.entry(*l).or_insert(0) += if in_loop { 2 } else { 1 };
                     }
-                } else if let StatementKind::PtrStore(ptr, _) = &stmt.kind {
-                    if let Operand::Copy(l) | Operand::Move(l) = ptr {
-                        *assign_counts.entry(*l).or_insert(0) += if in_loop { 2 } else { 1 };
-                    }
+                } else if let StatementKind::PtrStore(ptr, _) = &stmt.kind
+                    && let Operand::Copy(l) | Operand::Move(l) = ptr
+                {
+                    *assign_counts.entry(*l).or_insert(0) += if in_loop { 2 } else { 1 };
                 }
             }
         }
@@ -160,5 +160,164 @@ impl ConstantPropagation {
             return true;
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sp() -> crate::span::Span {
+        crate::span::Span {
+            file_id: 0,
+            line: 0,
+            col: 0,
+            start: 0,
+            end: 0,
+        }
+    }
+
+    fn assign(l: usize, rv: Rvalue) -> Statement {
+        Statement {
+            kind: StatementKind::Assign(Local(l), rv),
+            span: sp(),
+        }
+    }
+
+    fn func(name: &str, locals: Vec<LocalDecl>, stmts: Vec<Statement>, args: usize) -> MirFunction {
+        MirFunction {
+            name: name.into(),
+            locals,
+            basic_blocks: vec![BasicBlock {
+                statements: stmts,
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Return,
+                    span: sp(),
+                }),
+            }],
+            arg_count: args,
+            vararg_idx: None,
+            kwarg_idx: None,
+            param_names: vec![],
+            is_async: false,
+        }
+    }
+
+    fn local_decl() -> LocalDecl {
+        LocalDecl {
+            ty: crate::semantic::types::Type::Int,
+            name: None,
+            span: sp(),
+            is_mut: false,
+            is_owning: false,
+        }
+    }
+
+    #[test]
+    fn propagate_single_use_copy() {
+        let mut f = func(
+            "f",
+            vec![local_decl(), local_decl()],
+            vec![
+                assign(1, Rvalue::Use(Operand::Constant(Constant::Int(42)))),
+                assign(
+                    0,
+                    Rvalue::BinaryOp(
+                        crate::parser::BinOp::Add,
+                        Operand::Copy(Local(1)),
+                        Operand::Constant(Constant::Int(1)),
+                    ),
+                ),
+            ],
+            0,
+        );
+        assert!(ConstantPropagation.run(&mut f));
+        match &f.basic_blocks[0].statements[1].kind {
+            StatementKind::Assign(
+                _,
+                Rvalue::BinaryOp(_, Operand::Constant(Constant::Int(42)), _),
+            ) => {}
+            _ => panic!("local(1) should be replaced by constant 42"),
+        }
+    }
+
+    #[test]
+    fn no_prop_when_unknown_source() {
+        let mut f = func(
+            "f",
+            vec![local_decl(), local_decl()],
+            vec![assign(
+                0,
+                Rvalue::BinaryOp(
+                    crate::parser::BinOp::Add,
+                    Operand::Copy(Local(1)),
+                    Operand::Constant(Constant::Int(1)),
+                ),
+            )],
+            1,
+        );
+        assert!(!ConstantPropagation.run(&mut f));
+    }
+
+    #[test]
+    fn propagate_into_switch_discr() {
+        let mut f = MirFunction {
+            name: "f".into(),
+            locals: vec![local_decl(), local_decl()],
+            basic_blocks: vec![
+                BasicBlock {
+                    statements: vec![assign(
+                        1,
+                        Rvalue::Use(Operand::Constant(Constant::Bool(true))),
+                    )],
+                    terminator: Some(Terminator {
+                        kind: TerminatorKind::SwitchInt {
+                            discr: Operand::Copy(Local(1)),
+                            targets: vec![(1, BasicBlockId(1))],
+                            otherwise: BasicBlockId(2),
+                        },
+                        span: sp(),
+                    }),
+                },
+                BasicBlock {
+                    statements: vec![],
+                    terminator: Some(Terminator {
+                        kind: TerminatorKind::Return,
+                        span: sp(),
+                    }),
+                },
+            ],
+            arg_count: 0,
+            vararg_idx: None,
+            kwarg_idx: None,
+            param_names: vec![],
+            is_async: false,
+        };
+        assert!(ConstantPropagation.run(&mut f));
+        match &f.basic_blocks[0].terminator.as_ref().unwrap().kind {
+            TerminatorKind::SwitchInt {
+                discr: Operand::Constant(Constant::Bool(true)),
+                ..
+            } => {}
+            _ => panic!("discr should be constant true"),
+        }
+    }
+
+    #[test]
+    fn propagate_nothing_no_constants() {
+        let mut f = func(
+            "f",
+            vec![local_decl(), local_decl()],
+            vec![assign(
+                0,
+                Rvalue::BinaryOp(
+                    crate::parser::BinOp::Add,
+                    Operand::Copy(Local(1)),
+                    Operand::Constant(Constant::Int(1)),
+                ),
+            )],
+            1,
+        );
+        assert!(!ConstantPropagation.run(&mut f));
     }
 }

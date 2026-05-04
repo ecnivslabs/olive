@@ -388,3 +388,96 @@ impl<'a> MirBuilder<'a> {
         self.current_block = Some(exit_bb);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::MirBuilder;
+    use crate::lexer::Lexer;
+    use crate::mir::ir::{StatementKind, TerminatorKind};
+    use crate::parser::Parser;
+    use crate::semantic::{Resolver, TypeChecker};
+    use rustc_hash::FxHashSet;
+
+    fn build(src: &str) -> Vec<super::super::super::ir::MirFunction> {
+        let tokens = Lexer::new(src, 0).tokenise().unwrap();
+        let prog = Parser::new(tokens).parse_program().unwrap();
+        let mut r = Resolver::new();
+        r.resolve_program(&prog);
+        let mut tc = TypeChecker::new();
+        tc.check_program(&prog);
+        let mut builder = MirBuilder::new(
+            &tc.expr_types,
+            &tc.expr_kwarg_maps,
+            &tc.type_env[0],
+            tc.struct_fields.clone(),
+            &tc.traits,
+            FxHashSet::default(),
+        );
+        builder.build_program(&prog);
+        builder.functions
+    }
+
+    #[test]
+    fn match_wildcard_produces_goto() {
+        let fns =
+            build("fn f(x: i64) -> i64:\n    match x:\n        case _:\n            return 1\n");
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        let has_goto = f.basic_blocks.iter().any(|bb| {
+            bb.terminator
+                .as_ref()
+                .is_some_and(|t| matches!(t.kind, TerminatorKind::Goto { .. }))
+        });
+        assert!(has_goto);
+    }
+
+    #[test]
+    fn match_identifier_binds_variable() {
+        let fns =
+            build("fn f(x: i64) -> i64:\n    match x:\n        case y:\n            return y\n");
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        let has_assign = f.basic_blocks.iter().any(|bb| {
+            bb.statements
+                .iter()
+                .any(|s| matches!(s.kind, StatementKind::Assign(_, _)))
+        });
+        assert!(has_assign);
+    }
+
+    #[test]
+    fn match_literal_uses_eq() {
+        let fns = build(
+            "fn f(x: i64) -> i64:\n    match x:\n        case 42:\n            return 1\n        case _:\n            return 0\n",
+        );
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        let has_switch = f.basic_blocks.iter().any(|bb| {
+            bb.terminator
+                .as_ref()
+                .is_some_and(|t| matches!(t.kind, TerminatorKind::SwitchInt { .. }))
+        });
+        assert!(has_switch);
+    }
+
+    #[test]
+    fn enum_match_produces_switch() {
+        let fns = build(
+            "enum Color:\n    Red\n    Green\n    Blue\n\nfn f(c: Color) -> i64:\n    match c:\n        case Red:\n            return 0\n        case _:\n            return 1\n",
+        );
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        let has_switch = f.basic_blocks.iter().any(|bb| {
+            bb.terminator
+                .as_ref()
+                .is_some_and(|t| matches!(t.kind, TerminatorKind::SwitchInt { .. }))
+        });
+        assert!(has_switch);
+    }
+
+    #[test]
+    fn list_comprehension_produces_loop_structure() {
+        let fns = build("fn f() -> [i64]:\n    return [x for x in [1, 2, 3]]\n");
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        assert!(
+            f.basic_blocks.len() >= 2,
+            "comprehension should create multiple blocks"
+        );
+    }
+}

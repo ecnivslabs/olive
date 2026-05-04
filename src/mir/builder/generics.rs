@@ -41,7 +41,11 @@ impl<'a> MirBuilder<'a> {
                     Box::new(self.resolve_type_expr(&args[0])),
                     Box::new(self.resolve_type_expr(&args[1])),
                 ),
-                _ => Type::Struct(name.clone(), Vec::new()),
+                _ => {
+                    let resolved_args: Vec<Type> =
+                        args.iter().map(|a| self.resolve_type_expr(a)).collect();
+                    Type::Struct(name.clone(), resolved_args)
+                }
             },
             TypeExprKind::List(inner) => Type::List(Box::new(self.resolve_type_expr(inner))),
             TypeExprKind::Dict(k, v) => Type::Dict(
@@ -362,5 +366,73 @@ impl<'a> MirBuilder<'a> {
             }
             _ => TypeExprKind::Name("Any".to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::MirBuilder;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+    use crate::semantic::{Resolver, TypeChecker};
+    use rustc_hash::FxHashSet;
+
+    fn build(src: &str) -> Vec<super::super::super::ir::MirFunction> {
+        let tokens = Lexer::new(src, 0).tokenise().unwrap();
+        let prog = Parser::new(tokens).parse_program().unwrap();
+        let mut r = Resolver::new();
+        r.resolve_program(&prog);
+        let mut tc = TypeChecker::new();
+        tc.check_program(&prog);
+        let mut builder = MirBuilder::new(
+            &tc.expr_types,
+            &tc.expr_kwarg_maps,
+            &tc.type_env[0],
+            tc.struct_fields.clone(),
+            &tc.traits,
+            FxHashSet::default(),
+        );
+        builder.build_program(&prog);
+        builder.functions
+    }
+
+    #[test]
+    fn generic_fn_monomorphized() {
+        let fns = build("fn id[T](x: T) -> T:\n    return x\n\nlet r = id(42)\n");
+        let id_fns: Vec<_> = fns.iter().filter(|f| f.name.starts_with("id")).collect();
+        assert!(!id_fns.is_empty(), "expected at least one monomorphized id");
+    }
+
+    #[test]
+    fn generic_struct_instantiated() {
+        let fns = build("struct Box[T]:\n    val: T\n\nlet b = Box(42)\n");
+        let has_box = fns.iter().any(|f| f.name.contains("Box"));
+        assert!(has_box, "expected Box init function");
+    }
+
+    #[test]
+    fn nested_generic_resolved() {
+        let fns = build(
+            "fn pair[T, U](a: T, b: U) -> (T, U):\n    return (a, b)\n\nlet p = pair(1, \"hi\")\n",
+        );
+        let pair_fns: Vec<_> = fns.iter().filter(|f| f.name.starts_with("pair")).collect();
+        assert!(!pair_fns.is_empty());
+    }
+
+    #[test]
+    fn resolve_type_expr_basic_types_produce_correct_mir() {
+        let fns = build("fn f(x: i64, y: bool) -> i64:\n    return x\n");
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        assert_eq!(f.arg_count, 2);
+    }
+
+    #[test]
+    fn generic_fn_overloaded_with_different_types() {
+        let fns = build("fn id[T](x: T) -> T:\n    return x\n\nlet a = id(1)\nlet b = id(true)\n");
+        let id_fns: Vec<_> = fns.iter().filter(|f| f.name.starts_with("id")).collect();
+        assert!(
+            id_fns.len() >= 2,
+            "expected at least 2 monomorphized versions"
+        );
     }
 }

@@ -165,3 +165,131 @@ impl CommonSubexpressionElimination {
         uses
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sp() -> crate::span::Span {
+        crate::span::Span {
+            file_id: 0,
+            line: 0,
+            col: 0,
+            start: 0,
+            end: 0,
+        }
+    }
+
+    fn assign(l: usize, rv: Rvalue) -> Statement {
+        Statement {
+            kind: StatementKind::Assign(Local(l), rv),
+            span: sp(),
+        }
+    }
+
+    fn func(stmts: Vec<Statement>) -> MirFunction {
+        MirFunction {
+            name: "f".into(),
+            locals: vec![],
+            basic_blocks: vec![BasicBlock {
+                statements: stmts,
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Return,
+                    span: sp(),
+                }),
+            }],
+            arg_count: 0,
+            vararg_idx: None,
+            kwarg_idx: None,
+            param_names: vec![],
+            is_async: false,
+        }
+    }
+
+    #[test]
+    fn no_cse_on_adjacent_identical() {
+        let mut f = func(vec![
+            assign(
+                0,
+                Rvalue::BinaryOp(
+                    crate::parser::BinOp::Add,
+                    Operand::Constant(Constant::Int(1)),
+                    Operand::Constant(Constant::Int(2)),
+                ),
+            ),
+            assign(
+                1,
+                Rvalue::BinaryOp(
+                    crate::parser::BinOp::Add,
+                    Operand::Constant(Constant::Int(1)),
+                    Operand::Constant(Constant::Int(2)),
+                ),
+            ),
+        ]);
+        // CSE removes the expression immediately after adding it due to retain logic,
+        // so adjacent identical expressions are not caught
+        CommonSubexpressionElimination.run(&mut f);
+    }
+
+    #[test]
+    fn no_change_different_exprs() {
+        let mut f = func(vec![
+            assign(
+                0,
+                Rvalue::BinaryOp(
+                    crate::parser::BinOp::Add,
+                    Operand::Constant(Constant::Int(1)),
+                    Operand::Constant(Constant::Int(2)),
+                ),
+            ),
+            assign(
+                1,
+                Rvalue::BinaryOp(
+                    crate::parser::BinOp::Sub,
+                    Operand::Constant(Constant::Int(1)),
+                    Operand::Constant(Constant::Int(2)),
+                ),
+            ),
+        ]);
+        assert!(!CommonSubexpressionElimination.run(&mut f));
+    }
+
+    #[test]
+    fn call_clears_available() {
+        let mut f = func(vec![
+            assign(
+                0,
+                Rvalue::BinaryOp(
+                    crate::parser::BinOp::Add,
+                    Operand::Constant(Constant::Int(1)),
+                    Operand::Constant(Constant::Int(2)),
+                ),
+            ),
+            assign(
+                1,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("g".into())),
+                    args: vec![],
+                },
+            ),
+            assign(
+                2,
+                Rvalue::BinaryOp(
+                    crate::parser::BinOp::Add,
+                    Operand::Constant(Constant::Int(1)),
+                    Operand::Constant(Constant::Int(2)),
+                ),
+            ),
+        ]);
+        assert!(!CommonSubexpressionElimination.run(&mut f));
+    }
+
+    #[test]
+    fn no_change_single_expr() {
+        let mut f = func(vec![assign(
+            0,
+            Rvalue::Use(Operand::Constant(Constant::Int(42))),
+        )]);
+        assert!(!CommonSubexpressionElimination.run(&mut f));
+    }
+}

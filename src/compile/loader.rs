@@ -9,7 +9,6 @@ use std::{
     collections::HashSet,
     fs,
     path::{Path, PathBuf},
-    process,
 };
 
 std::thread_local! {
@@ -22,7 +21,7 @@ pub fn load_and_parse(
     loaded: &mut HashSet<String>,
     file_id_counter: &mut usize,
     sources: &mut HashMap<usize, (String, String)>,
-) -> Vec<parser::Stmt> {
+) -> Result<Vec<parser::Stmt>, ()> {
     struct ResetRoot;
     impl Drop for ResetRoot {
         fn drop(&mut self) {
@@ -41,10 +40,9 @@ pub fn load_and_parse(
     let current_file_id = *file_id_counter;
     *file_id_counter += 1;
 
-    let source = fs::read_to_string(filename).unwrap_or_else(|e| {
+    let source = fs::read_to_string(filename).map_err(|e| {
         eprintln!("error reading {}: {e}", filename);
-        process::exit(1);
-    });
+    })?;
 
     sources.insert(current_file_id, (filename.to_string(), source.clone()));
 
@@ -62,7 +60,7 @@ pub fn load_and_parse(
                     end: e.end,
                 },
             );
-            process::exit(1);
+            return Err(());
         }
     };
 
@@ -80,7 +78,7 @@ pub fn load_and_parse(
                     end: e.end,
                 },
             );
-            process::exit(1);
+            return Err(());
         }
     };
 
@@ -107,7 +105,7 @@ pub fn load_and_parse(
                         "top-level execution statements are not allowed in imported modules",
                         stmt.span,
                     );
-                    process::exit(1);
+                    return Err(());
                 }
             }
         }
@@ -147,7 +145,7 @@ pub fn load_and_parse(
 
                 if !mod_path.exists() {
                     let root_path = PROJECT_ROOT.with(|r| r.borrow().clone());
-                    if root_path.as_os_str().len() > 0 {
+                    if !root_path.as_os_str().is_empty() {
                         mod_path = root_path.join(format!("{}.liv", mod_name));
                     }
                 }
@@ -164,7 +162,7 @@ pub fn load_and_parse(
                         &format!("module '{}' not found", mod_name),
                         stmt.span,
                     );
-                    process::exit(1);
+                    return Err(());
                 }
 
                 let path_str = mod_path.to_string_lossy().to_string();
@@ -172,7 +170,7 @@ pub fn load_and_parse(
                 if !loaded.contains(&path_str) {
                     loaded.insert(path_str.clone());
                     let mut imported_stmts =
-                        load_and_parse(&path_str, false, loaded, file_id_counter, sources);
+                        load_and_parse(&path_str, false, loaded, file_id_counter, sources)?;
 
                     let mod_prefix = alias
                         .as_deref()
@@ -266,7 +264,7 @@ pub fn load_and_parse(
 
                 if !mod_path.exists() {
                     let root_path = PROJECT_ROOT.with(|r| r.borrow().clone());
-                    if root_path.as_os_str().len() > 0 {
+                    if !root_path.as_os_str().is_empty() {
                         mod_path = root_path.join(format!("{}.liv", mod_name));
                     }
                 }
@@ -283,7 +281,7 @@ pub fn load_and_parse(
                         &format!("module '{}' not found", mod_name),
                         stmt.span,
                     );
-                    process::exit(1);
+                    return Err(());
                 }
 
                 let path_str = mod_path.to_string_lossy().to_string();
@@ -291,7 +289,7 @@ pub fn load_and_parse(
                 if !loaded.contains(&path_str) {
                     loaded.insert(path_str.clone());
                     let imported_stmts =
-                        load_and_parse(&path_str, false, loaded, file_id_counter, sources);
+                        load_and_parse(&path_str, false, loaded, file_id_counter, sources)?;
 
                     all_stmts.extend(imported_stmts);
                 }
@@ -301,7 +299,7 @@ pub fn load_and_parse(
         }
     }
 
-    all_stmts
+    Ok(all_stmts)
 }
 
 pub fn collect_source_files(
@@ -344,7 +342,7 @@ pub fn collect_source_files(
                 }
                 if !mod_path.exists() {
                     let root_path = PROJECT_ROOT.with(|r| r.borrow().clone());
-                    if root_path.as_os_str().len() > 0 {
+                    if !root_path.as_os_str().is_empty() {
                         mod_path = root_path.join(format!("{}.liv", mod_name));
                     }
                 }
@@ -432,7 +430,8 @@ mod tests {
             &mut loaded,
             &mut file_id_counter,
             &mut sources,
-        );
+        )
+        .unwrap();
         assert!(!stmts.is_empty());
 
         fs::remove_dir_all(&temp_dir).ok();

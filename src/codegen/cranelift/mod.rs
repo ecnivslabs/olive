@@ -4,6 +4,8 @@ mod jit_loader;
 mod setup;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_extended;
 mod translate;
 mod translate_aggregate;
 mod translate_binop;

@@ -9,6 +9,16 @@ pub struct OliveBytes {
 }
 
 impl OliveBytes {
+    /// Replaces the internal buffer with the given `Vec<u8>`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use olive_std::bytes::OliveBytes;
+    /// let mut b = OliveBytes { kind: 6, ptr: std::ptr::null_mut(), len: 0, cap: 0 };
+    /// b.set_vec(vec![10, 20, 30]);
+    /// assert_eq!(b.len, 3);
+    /// ```
     pub fn set_vec(&mut self, mut v: Vec<u8>) {
         self.ptr = v.as_mut_ptr();
         self.len = v.len() as i64;
@@ -19,6 +29,19 @@ impl OliveBytes {
     /// # Safety
     /// Caller must own the buffer; the fields are cleared so a later
     /// `set_vec` or drop sees a consistent state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use olive_std::bytes::OliveBytes;
+    /// let mut b = OliveBytes { kind: 6, ptr: std::ptr::null_mut(), len: 0, cap: 0 };
+    /// b.set_vec(vec![1, 2, 3]);
+    /// unsafe {
+    ///     let v = b.take_vec();
+    ///     assert_eq!(v, vec![1, 2, 3]);
+    ///     assert_eq!(b.len, 0);
+    /// }
+    /// ```
     pub unsafe fn take_vec(&mut self) -> Vec<u8> {
         let v = unsafe { Vec::from_raw_parts(self.ptr, self.len as usize, self.cap as usize) };
         self.ptr = std::ptr::null_mut();
@@ -27,6 +50,16 @@ impl OliveBytes {
         v
     }
 
+    /// Returns a shared reference to the byte contents.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use olive_std::bytes::OliveBytes;
+    /// let mut b = OliveBytes { kind: 6, ptr: std::ptr::null_mut(), len: 0, cap: 0 };
+    /// b.set_vec(vec![10, 20, 30]);
+    /// assert_eq!(b.as_slice(), &[10, 20, 30]);
+    /// ```
     pub fn as_slice(&self) -> &[u8] {
         if self.ptr.is_null() {
             &[]
@@ -35,6 +68,17 @@ impl OliveBytes {
         }
     }
 
+    /// Returns a mutable reference to the byte contents.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use olive_std::bytes::OliveBytes;
+    /// let mut b = OliveBytes { kind: 6, ptr: std::ptr::null_mut(), len: 0, cap: 0 };
+    /// b.set_vec(vec![1, 2, 3]);
+    /// b.as_mut_slice()[1] = 42;
+    /// assert_eq!(b.as_slice(), &[1, 42, 3]);
+    /// ```
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         if self.ptr.is_null() {
             &mut []
@@ -43,6 +87,17 @@ impl OliveBytes {
         }
     }
 
+    /// Provides mutable access to the internal `Vec<u8>` via a closure.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use olive_std::bytes::OliveBytes;
+    /// let mut b = OliveBytes { kind: 6, ptr: std::ptr::null_mut(), len: 0, cap: 0 };
+    /// b.set_vec(vec![1, 2, 3]);
+    /// let len = b.with_vec(|v| v.len());
+    /// assert_eq!(len, 3);
+    /// ```
     pub fn with_vec<R>(&mut self, f: impl FnOnce(&mut Vec<u8>) -> R) -> R {
         let mut v = unsafe { self.take_vec() };
         let r = f(&mut v);
@@ -51,6 +106,17 @@ impl OliveBytes {
     }
 
     #[inline]
+    /// Appends bytes to the internal buffer.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use olive_std::bytes::OliveBytes;
+    /// let mut b = OliveBytes { kind: 6, ptr: std::ptr::null_mut(), len: 0, cap: 0 };
+    /// b.set_vec(vec![1, 2]);
+    /// b.append(&[3, 4]);
+    /// assert_eq!(b.as_slice(), &[1, 2, 3, 4]);
+    /// ```
     pub fn append(&mut self, data: &[u8]) {
         let n = data.len() as i64;
         if self.len + n <= self.cap {
@@ -68,6 +134,15 @@ impl OliveBytes {
     }
 }
 
+/// Creates a new heap-allocated `OliveBytes` wrapping the given `Vec<u8>`.
+///
+/// # Examples
+///
+/// ```
+/// use olive_std::bytes::new_buf;
+/// let ptr = new_buf(vec![10, 20, 30]);
+/// assert!(ptr != 0);
+/// ```
 pub fn new_buf(data: Vec<u8>) -> i64 {
     let mut b = OliveBytes {
         kind: KIND_BYTES,

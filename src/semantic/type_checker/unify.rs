@@ -477,3 +477,113 @@ impl TypeChecker {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::super::TypeChecker;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+    use crate::semantic::Resolver;
+
+    fn pipeline(src: &str) -> TypeChecker {
+        let tokens = Lexer::new(src, 0).tokenise().unwrap();
+        let prog = Parser::new(tokens).parse_program().unwrap();
+        let mut r = Resolver::new();
+        r.resolve_program(&prog);
+        let mut tc = TypeChecker::new();
+        tc.check_program(&prog);
+        tc
+    }
+
+    #[test]
+    fn integer_literal_unifies_with_int() {
+        let tc = pipeline("let x: i64 = 42\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn integer_literal_unifies_with_i8() {
+        let tc = pipeline("let x: i8 = 42\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn float_literal_unifies_with_float() {
+        let tc = pipeline("let x: float = 3.14\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn float_literal_unifies_with_f32() {
+        let tc = pipeline("let x: f32 = 1.5\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn tuple_length_mismatch_in_return() {
+        let tc = pipeline("fn f() -> (i64, i64):\n    return (1, 2, 3)\n");
+        assert!(!tc.errors.is_empty());
+    }
+
+    #[test]
+    fn tuple_length_match_ok() {
+        let tc = pipeline("fn f() -> (i64, str):\n    return (1, \"a\")\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn struct_type_mismatch_reported() {
+        let tc = pipeline(
+            "struct A:\n    x: i64\nstruct B:\n    x: i64\nfn f(a: A):\n    pass\nlet b = B(1)\nf(b)\n",
+        );
+        assert!(!tc.errors.is_empty());
+    }
+
+    #[test]
+    fn struct_type_match_ok() {
+        let tc = pipeline("struct A:\n    x: i64\nfn f(a: A):\n    pass\nf(A(1))\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn function_signature_mismatch() {
+        let tc = pipeline("fn f() -> i64:\n    return \"wrong\"\n");
+        assert!(!tc.errors.is_empty());
+    }
+
+    #[test]
+    fn union_member_ok() {
+        let tc = pipeline("fn f(x: i64 | str):\n    pass\nf(42)\nf(\"hello\")\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn union_member_mismatch() {
+        let tc = pipeline("let x: i64 | str = True\n");
+        assert!(!tc.errors.is_empty());
+    }
+
+    #[test]
+    fn unify_any_with_anything() {
+        let tc = pipeline("let x: Any = 42\nlet y: Any = \"hello\"\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn unify_pyobject_with_anything() {
+        let tc = pipeline("let x: PyObject = 42\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn generic_param_passed_int() {
+        let tc = pipeline("fn id[T](x: T) -> T:\n    return x\nlet y = id(42)\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn generic_param_passed_str() {
+        let tc = pipeline("fn id[T](x: T) -> T:\n    return x\nlet y = id(\"hi\")\n");
+        assert!(tc.errors.is_empty());
+    }
+}

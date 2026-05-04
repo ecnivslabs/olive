@@ -95,3 +95,125 @@ impl Transform for TailCallOpt {
         changed
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(test, allow(dead_code))]
+mod tests {
+    use super::*;
+
+    fn sp() -> crate::span::Span {
+        crate::span::Span {
+            file_id: 0,
+            line: 0,
+            col: 0,
+            start: 0,
+            end: 0,
+        }
+    }
+
+    fn assign(l: usize, rv: Rvalue) -> Statement {
+        Statement {
+            kind: StatementKind::Assign(Local(l), rv),
+            span: sp(),
+        }
+    }
+
+    fn stmt(k: StatementKind) -> Statement {
+        Statement {
+            kind: k,
+            span: sp(),
+        }
+    }
+
+    fn func(name: &str, stmts: Vec<Statement>, args: usize) -> MirFunction {
+        MirFunction {
+            name: name.into(),
+            locals: vec![],
+            basic_blocks: vec![BasicBlock {
+                statements: stmts,
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Return,
+                    span: sp(),
+                }),
+            }],
+            arg_count: args,
+            vararg_idx: None,
+            kwarg_idx: None,
+            param_names: vec![],
+            is_async: false,
+        }
+    }
+
+    fn bb(stmts: Vec<Statement>, kind: TerminatorKind) -> BasicBlock {
+        BasicBlock {
+            statements: stmts,
+            terminator: Some(Terminator { kind, span: sp() }),
+        }
+    }
+
+    #[test]
+    fn no_tail_call_no_change() {
+        let mut f = func("f", vec![], 0);
+        assert!(!TailCallOpt.run(&mut f));
+    }
+
+    #[test]
+    fn tail_call_self_optimized() {
+        let mut f = MirFunction {
+            name: "f".into(),
+            locals: vec![],
+            basic_blocks: vec![bb(
+                vec![
+                    assign(
+                        1,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function("f".into())),
+                            args: vec![],
+                        },
+                    ),
+                    assign(0, Rvalue::Use(Operand::Copy(Local(1)))),
+                ],
+                TerminatorKind::Return,
+            )],
+            arg_count: 0,
+            vararg_idx: None,
+            kwarg_idx: None,
+            param_names: vec![],
+            is_async: false,
+        };
+        assert!(TailCallOpt.run(&mut f));
+    }
+
+    #[test]
+    fn non_tail_call_not_optimized() {
+        let mut f = MirFunction {
+            name: "f".into(),
+            locals: vec![],
+            basic_blocks: vec![bb(
+                vec![
+                    assign(
+                        1,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function("g".into())),
+                            args: vec![],
+                        },
+                    ),
+                    assign(0, Rvalue::Use(Operand::Copy(Local(1)))),
+                ],
+                TerminatorKind::Return,
+            )],
+            arg_count: 0,
+            vararg_idx: None,
+            kwarg_idx: None,
+            param_names: vec![],
+            is_async: false,
+        };
+        assert!(!TailCallOpt.run(&mut f));
+    }
+
+    #[test]
+    fn insufficient_statements_no_change() {
+        let mut f = func("f", vec![], 0);
+        assert!(!TailCallOpt.run(&mut f));
+    }
+}

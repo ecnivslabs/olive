@@ -147,3 +147,33 @@ impl<M: Module> CraneliftCodegen<M> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::test_utils::{call_i64, call_i64_2, compile};
+
+    #[test]
+    fn test_translate_aggregate_tuple() {
+        let mut cg =
+            compile("fn f(a: i64, b: i64) -> i64:\n    let t = (a, b)\n    return t[0] + t[1]\n");
+        assert_eq!(call_i64_2(&mut cg, "f", 10, 32), 42);
+    }
+
+    #[test]
+    fn test_translate_aggregate_list() {
+        let _cg = compile("fn f() -> i64:\n    let xs = [1, 2, 3]\n    return len(xs)\n");
+    }
+
+    #[test]
+    fn test_translate_aggregate_empty_list() {
+        let _cg = compile("fn f() -> i64:\n    let xs = []\n    return len(xs)\n");
+    }
+
+    #[test]
+    fn test_translate_aggregate_struct_construction() {
+        let mut cg = compile(
+            "struct Point:\n    x: i64\n    y: i64\n\nfn f() -> i64:\n    let p = Point(10, 32)\n    return p.x + p.y\n",
+        );
+        assert_eq!(call_i64(&mut cg, "f"), 42);
+    }
+}

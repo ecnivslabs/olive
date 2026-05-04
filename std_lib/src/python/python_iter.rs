@@ -49,11 +49,11 @@ pub extern "C" fn olive_py_iter_safe(obj: PyObject) -> i64 {
     }
     with_gil(|| unsafe {
         let it = PY_OBJECT_GET_ITER(unwrapped);
-        if it.is_null() {
-            if let Some(msg) = catch_py_exception_msg() {
-                let err = crate::olive_str_internal(&msg);
-                return crate::result::olive_result_err(err);
-            }
+        if it.is_null()
+            && let Some(msg) = catch_py_exception_msg()
+        {
+            let err = crate::olive_str_internal(&msg);
+            return crate::result::olive_result_err(err);
         }
         let wrapped = olive_py_wrap_owned(it);
         crate::result::olive_result_ok(wrapped as i64)

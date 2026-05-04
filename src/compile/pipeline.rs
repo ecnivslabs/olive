@@ -48,7 +48,7 @@ pub fn run_pipeline(filename: &str) -> Result<PipelineOutput, ()> {
         &mut loaded,
         &mut file_id_counter,
         &mut sources,
-    );
+    )?;
     let program = parser::Program {
         stmts: combined_stmts,
     };
@@ -156,4 +156,121 @@ pub fn run_pipeline(filename: &str) -> Result<PipelineOutput, ()> {
             borrow_check: borrow_duration,
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser;
+    use rustc_hash::FxHashMap as HashMap;
+    use std::time::Duration;
+
+    #[test]
+    fn pipeline_timings_construction() {
+        let t = PipelineTimings {
+            parse: Duration::from_secs(1),
+            resolve: Duration::from_secs(2),
+            typecheck: Duration::from_secs(3),
+            mir: Duration::from_secs(4),
+            optimize: Duration::from_secs(5),
+            borrow_check: Duration::from_secs(6),
+        };
+        assert_eq!(t.parse.as_secs(), 1);
+        assert_eq!(t.resolve.as_secs(), 2);
+        assert_eq!(t.typecheck.as_secs(), 3);
+        assert_eq!(t.mir.as_secs(), 4);
+        assert_eq!(t.optimize.as_secs(), 5);
+        assert_eq!(t.borrow_check.as_secs(), 6);
+    }
+
+    #[test]
+    fn native_lib_type_alias() {
+        let lib: NativeLib = (
+            "mylib".to_string(),
+            "/path/to/lib".to_string(),
+            vec![],
+            vec![],
+            vec![],
+        );
+        assert_eq!(lib.0, "mylib");
+        assert_eq!(lib.1, "/path/to/lib");
+        assert!(lib.2.is_empty());
+        assert!(lib.3.is_empty());
+        assert!(lib.4.is_empty());
+    }
+
+    #[test]
+    fn pipeline_output_empty() {
+        let output = PipelineOutput {
+            functions: vec![],
+            struct_fields: HashMap::default(),
+            vtables: HashMap::default(),
+            global_vars: vec![],
+            native_libs: vec![],
+            program: parser::Program { stmts: vec![] },
+            timings: PipelineTimings {
+                parse: Duration::ZERO,
+                resolve: Duration::ZERO,
+                typecheck: Duration::ZERO,
+                mir: Duration::ZERO,
+                optimize: Duration::ZERO,
+                borrow_check: Duration::ZERO,
+            },
+        };
+        assert!(output.functions.is_empty());
+        assert!(output.struct_fields.is_empty());
+        assert!(output.vtables.is_empty());
+        assert!(output.global_vars.is_empty());
+        assert!(output.native_libs.is_empty());
+        assert!(output.program.stmts.is_empty());
+        assert_eq!(output.timings.parse.as_nanos(), 0);
+    }
+
+    #[test]
+    fn pipeline_output_with_data() {
+        let mut struct_fields = HashMap::default();
+        struct_fields.insert("Point".to_string(), vec!["x".to_string(), "y".to_string()]);
+        let mut vtables = HashMap::default();
+        vtables.insert("Draw".to_string(), vec!["render".to_string()]);
+        let output = PipelineOutput {
+            functions: vec![],
+            struct_fields,
+            vtables,
+            global_vars: vec!["GLOBAL".to_string()],
+            native_libs: vec![(
+                "sdl".to_string(),
+                "libSDL2.so".to_string(),
+                vec![],
+                vec![],
+                vec![],
+            )],
+            program: parser::Program {
+                stmts: vec![parser::Stmt {
+                    kind: parser::StmtKind::Pass,
+                    span: crate::span::Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                }],
+            },
+            timings: PipelineTimings {
+                parse: Duration::from_millis(10),
+                resolve: Duration::from_millis(20),
+                typecheck: Duration::from_millis(30),
+                mir: Duration::from_millis(40),
+                optimize: Duration::from_millis(50),
+                borrow_check: Duration::from_millis(60),
+            },
+        };
+        assert_eq!(output.struct_fields.get("Point").unwrap().len(), 2);
+        assert_eq!(output.vtables.get("Draw").unwrap()[0], "render");
+        assert_eq!(output.global_vars[0], "GLOBAL");
+        assert_eq!(output.native_libs.len(), 1);
+        assert_eq!(output.native_libs[0].0, "sdl");
+        assert_eq!(output.program.stmts.len(), 1);
+        assert_eq!(output.timings.resolve.as_millis(), 20);
+    }
 }

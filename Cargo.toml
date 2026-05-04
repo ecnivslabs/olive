@@ -1,5 +1,6 @@
 [workspace]
 members = ["std_lib"]
+default-members = [".", "std_lib"]
 
 [package]
 name = "pit"
@@ -12,6 +13,10 @@ repository = "https://github.com/olive-language/olive"
 keywords = ["compiler", "language", "olive"]
 categories = ["compilers"]
 autoexamples = false
+
+[lib]
+name = "pit"
+path = "src/lib.rs"
 
 
 
@@ -47,9 +52,9 @@ flate2 = "1.0"
 pubgrub = "0.4.0"
 ctrlc = "3.4"
 
-[dev-dependencies]
-olive_std = { path = "std_lib" }
 
+[dev-dependencies]
+proptest = "1.4"
 
 [profile.release]
 debug = 1

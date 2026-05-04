@@ -154,3 +154,243 @@ impl Liveness {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::BinOp;
+    use crate::semantic::types::Type;
+
+    fn sp() -> crate::span::Span {
+        crate::span::Span {
+            file_id: 0,
+            line: 0,
+            col: 0,
+            start: 0,
+            end: 0,
+        }
+    }
+
+    fn func(
+        name: &str,
+        locals: Vec<LocalDecl>,
+        blocks: Vec<BasicBlock>,
+        args: usize,
+    ) -> MirFunction {
+        MirFunction {
+            name: name.into(),
+            locals,
+            basic_blocks: blocks,
+            arg_count: args,
+            vararg_idx: None,
+            kwarg_idx: None,
+            param_names: vec![],
+            is_async: false,
+        }
+    }
+
+    fn bb(stmts: Vec<Statement>, kind: TerminatorKind) -> BasicBlock {
+        BasicBlock {
+            statements: stmts,
+            terminator: Some(Terminator { kind, span: sp() }),
+        }
+    }
+
+    fn assign(l: usize, rv: Rvalue) -> Statement {
+        Statement {
+            kind: StatementKind::Assign(Local(l), rv),
+            span: sp(),
+        }
+    }
+
+    fn stmt(k: StatementKind) -> Statement {
+        Statement {
+            kind: k,
+            span: sp(),
+        }
+    }
+
+    fn local_decl() -> LocalDecl {
+        LocalDecl {
+            ty: Type::Int,
+            name: None,
+            span: sp(),
+            is_mut: false,
+            is_owning: false,
+        }
+    }
+
+    #[test]
+    fn empty_no_blocks() {
+        let l = Liveness::compute(&func("f", vec![], vec![], 0));
+        assert!(l.live_after.is_empty());
+    }
+
+    #[test]
+    fn assign_use_makes_live() {
+        let f = func(
+            "f",
+            vec![local_decl(), local_decl()],
+            vec![bb(
+                vec![
+                    assign(0, Rvalue::Use(Operand::Copy(Local(1)))),
+                    assign(1, Rvalue::Use(Operand::Constant(Constant::Int(0)))),
+                ],
+                TerminatorKind::Return,
+            )],
+            1,
+        );
+        let l = Liveness::compute(&f);
+        // Local(1) should be live before it's used, but not after it's assigned to
+        assert!(l.live_after[0][0].contains(&Local(1)));
+        assert!(
+            !l.live_after[0][1].contains(&Local(1)) || !l.live_after[0][0].contains(&Local(1)),
+            "local1 not live after its assign"
+        );
+    }
+
+    #[test]
+    fn binop_makes_both_live() {
+        let f = func(
+            "f",
+            vec![local_decl(), local_decl(), local_decl()],
+            vec![bb(
+                vec![assign(
+                    2,
+                    Rvalue::BinaryOp(BinOp::Add, Operand::Copy(Local(0)), Operand::Copy(Local(1))),
+                )],
+                TerminatorKind::Return,
+            )],
+            2,
+        );
+        let l = Liveness::compute(&f);
+        assert!(l.live_after[0][0].contains(&Local(0)));
+        assert!(l.live_after[0][0].contains(&Local(1)));
+    }
+
+    #[test]
+    fn call_makes_args_live() {
+        let f = func(
+            "f",
+            vec![local_decl(), local_decl()],
+            vec![bb(
+                vec![assign(
+                    0,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function("g".into())),
+                        args: vec![Operand::Copy(Local(1))],
+                    },
+                )],
+                TerminatorKind::Return,
+            )],
+            1,
+        );
+        let l = Liveness::compute(&f);
+        assert!(l.live_after[0][0].contains(&Local(1)));
+    }
+
+    #[test]
+    fn switch_int_discr_live() {
+        let f = func(
+            "f",
+            vec![local_decl()],
+            vec![bb(
+                vec![],
+                TerminatorKind::SwitchInt {
+                    discr: Operand::Copy(Local(0)),
+                    targets: vec![],
+                    otherwise: BasicBlockId(0),
+                },
+            )],
+            1,
+        );
+        let l = Liveness::compute(&f);
+        assert!(l.live_after[0][0].contains(&Local(0)));
+    }
+
+    #[test]
+    fn goto_two_blocks() {
+        let f = func(
+            "f",
+            vec![],
+            vec![
+                bb(
+                    vec![],
+                    TerminatorKind::Goto {
+                        target: BasicBlockId(1),
+                    },
+                ),
+                bb(vec![], TerminatorKind::Return),
+            ],
+            0,
+        );
+        let l = Liveness::compute(&f);
+        assert_eq!(l.live_after.len(), 2);
+    }
+
+    #[test]
+    fn drop_removes_from_live() {
+        let f = func(
+            "f",
+            vec![local_decl()],
+            vec![bb(
+                vec![stmt(StatementKind::Drop(Local(0)))],
+                TerminatorKind::Return,
+            )],
+            0,
+        );
+        let l = Liveness::compute(&f);
+        assert!(!l.live_after[0][1].contains(&Local(0)));
+    }
+
+    #[test]
+    fn storage_dead_removes() {
+        let f = func(
+            "f",
+            vec![local_decl()],
+            vec![bb(
+                vec![
+                    stmt(StatementKind::StorageLive(Local(0))),
+                    stmt(StatementKind::StorageDead(Local(0))),
+                ],
+                TerminatorKind::Return,
+            )],
+            0,
+        );
+        let l = Liveness::compute(&f);
+        assert!(!l.live_after[0][2].contains(&Local(0)));
+    }
+
+    #[test]
+    fn get_attr_uses_obj() {
+        let f = func(
+            "f",
+            vec![local_decl()],
+            vec![bb(
+                vec![assign(
+                    0,
+                    Rvalue::GetAttr(Operand::Copy(Local(0)), "x".into()),
+                )],
+                TerminatorKind::Return,
+            )],
+            1,
+        );
+        let l = Liveness::compute(&f);
+        assert!(l.live_after[0][0].contains(&Local(0)));
+    }
+
+    #[test]
+    fn ref_makes_local_live() {
+        let f = func(
+            "f",
+            vec![local_decl()],
+            vec![bb(
+                vec![assign(0, Rvalue::Ref(Local(0)))],
+                TerminatorKind::Return,
+            )],
+            1,
+        );
+        let l = Liveness::compute(&f);
+        assert!(l.live_after[0][0].contains(&Local(0)));
+    }
+}

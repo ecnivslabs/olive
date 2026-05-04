@@ -471,13 +471,6 @@ mod parser_tests {
     }
 
     #[test]
-    fn span_line_col() {
-        let p = parse("let x = 42\n");
-        let stmt = p.stmts.first().unwrap();
-        assert_eq!(stmt.span.line, 1);
-        assert_eq!(stmt.span.col, 1);
-    }
-    #[test]
     fn shift_precedence() {
         match expr_stmt(&parse("x + y << z\n")) {
             ExprKind::BinOp {

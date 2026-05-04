@@ -102,3 +102,53 @@ pub extern "C" fn olive_print_enum(ptr: i64) -> i64 {
     println!(")");
     0
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_enum_basic() {
+        let e = olive_enum_new(1, 0, 0);
+        assert_ne!(e, 0);
+        assert_eq!(olive_enum_type_id(e), 1);
+        assert_eq!(olive_enum_tag(e), 0);
+    }
+
+    #[test]
+    fn enum_with_payload() {
+        let e = olive_enum_new(1, 2, 3);
+        olive_enum_set(e, 0, 10);
+        olive_enum_set(e, 1, 20);
+        olive_enum_set(e, 2, 30);
+        assert_eq!(olive_enum_get(e, 0), 10);
+        assert_eq!(olive_enum_get(e, 1), 20);
+        assert_eq!(olive_enum_get(e, 2), 30);
+    }
+
+    #[test]
+    fn enum_get_out_of_bounds() {
+        let e = olive_enum_new(0, 0, 1);
+        assert_eq!(olive_enum_get(e, 10), 0);
+    }
+
+    #[test]
+    fn enum_set_out_of_bounds_no_panic() {
+        let e = olive_enum_new(0, 0, 1);
+        olive_enum_set(e, 100, 42);
+    }
+
+    #[test]
+    fn enum_type_id_multiple() {
+        let e1 = olive_enum_new(42, 0, 0);
+        let e2 = olive_enum_new(99, 0, 0);
+        assert_eq!(olive_enum_type_id(e1), 42);
+        assert_eq!(olive_enum_type_id(e2), 99);
+    }
+
+    #[test]
+    fn free_enum_no_panic() {
+        let e = olive_enum_new(0, 0, 3);
+        olive_free_enum(e);
+    }
+}

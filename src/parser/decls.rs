@@ -276,3 +276,241 @@ impl Parser {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_parser(src: &str) -> Parser {
+        let tokens = crate::lexer::Lexer::new(src, 0)
+            .tokenise()
+            .expect("lex error");
+        Parser::new(tokens)
+    }
+
+    #[test]
+    fn parse_fn_no_args_no_return() {
+        let mut p = make_parser("fn foo(): pass\n");
+        let stmt = p.parse_fn(false).expect("parse failed");
+        match &stmt.kind {
+            StmtKind::Fn {
+                name,
+                params,
+                return_type,
+                body,
+                is_async,
+                ..
+            } => {
+                assert_eq!(name, "foo");
+                assert!(params.is_empty());
+                assert!(return_type.is_none());
+                assert_eq!(body.len(), 1);
+                assert!(!is_async);
+            }
+            _ => panic!("expected Fn"),
+        }
+    }
+
+    #[test]
+    fn parse_fn_with_return_type() {
+        let mut p = make_parser("fn foo() -> i64: pass\n");
+        let stmt = p.parse_fn(false).expect("parse failed");
+        match &stmt.kind {
+            StmtKind::Fn { return_type, .. } => {
+                assert!(
+                    matches!(return_type, Some(TypeExpr { kind: TypeExprKind::Name(t), .. }) if t == "i64")
+                );
+            }
+            _ => panic!("expected Fn"),
+        }
+    }
+
+    #[test]
+    fn parse_fn_async() {
+        let mut p = make_parser("fn foo(): pass\n");
+        let stmt = p.parse_fn(true).expect("parse failed");
+        match &stmt.kind {
+            StmtKind::Fn { name, is_async, .. } => {
+                assert_eq!(name, "foo");
+                assert!(*is_async);
+            }
+            _ => panic!("expected Fn"),
+        }
+    }
+
+    #[test]
+    fn parse_params_with_vararg_and_kwarg() {
+        let mut p = make_parser("fn f(a: i64, *args, **kwargs): pass\n");
+        let stmt = p.parse_fn(false).expect("parse failed");
+        match &stmt.kind {
+            StmtKind::Fn { params, .. } => {
+                assert_eq!(params.len(), 3);
+                assert_eq!(params[0].kind, ParamKind::Regular);
+                assert_eq!(params[1].kind, ParamKind::VarArg);
+                assert_eq!(params[2].kind, ParamKind::KwArg);
+            }
+            _ => panic!("expected Fn"),
+        }
+    }
+
+    #[test]
+    fn parse_params_with_defaults() {
+        let mut p = make_parser("fn f(x: i64 = 42): pass\n");
+        let stmt = p.parse_fn(false).expect("parse failed");
+        match &stmt.kind {
+            StmtKind::Fn { params, .. } => {
+                assert_eq!(params.len(), 1);
+                assert!(params[0].default.is_some());
+                assert_eq!(params[0].name, "x");
+            }
+            _ => panic!("expected Fn"),
+        }
+    }
+
+    #[test]
+    fn parse_fn_body() {
+        let mut p = make_parser("fn foo():\n    pass\n    pass\n");
+        let stmt = p.parse_fn(false).expect("parse failed");
+        match &stmt.kind {
+            StmtKind::Fn { body, .. } => {
+                assert_eq!(body.len(), 2);
+            }
+            _ => panic!("expected Fn"),
+        }
+    }
+
+    #[test]
+    fn parse_struct_with_fields() {
+        let mut p = make_parser("struct Point:\n    x: i64\n    y: i64\n");
+        let stmt = p.parse_struct().expect("parse failed");
+        match &stmt.kind {
+            StmtKind::Struct {
+                name, fields, body, ..
+            } => {
+                assert_eq!(name, "Point");
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0].name, "x");
+                assert!(body.is_empty());
+            }
+            _ => panic!("expected Struct"),
+        }
+    }
+
+    #[test]
+    fn parse_struct_with_default() {
+        let mut p = make_parser("struct Point:\n    x: i64 = 0\n    y: i64 = 0\n");
+        let stmt = p.parse_struct().expect("parse failed");
+        match &stmt.kind {
+            StmtKind::Struct { fields, .. } => {
+                assert!(fields[0].default.is_some());
+                assert!(fields[1].default.is_some());
+            }
+            _ => panic!("expected Struct"),
+        }
+    }
+
+    #[test]
+    fn parse_struct_with_methods() {
+        let mut p = make_parser("struct Counter:\n    val: i64\n    fn inc(self): pass\n");
+        let stmt = p.parse_struct().expect("parse failed");
+        match &stmt.kind {
+            StmtKind::Struct { fields, body, .. } => {
+                assert_eq!(fields.len(), 1);
+                assert_eq!(body.len(), 1);
+                assert!(matches!(body[0].kind, StmtKind::Fn { .. }));
+            }
+            _ => panic!("expected Struct"),
+        }
+    }
+
+    #[test]
+    fn parse_impl_block() {
+        let mut p = make_parser("impl MyStruct:\n    fn f(): pass\n");
+        let stmt = p.parse_impl().expect("parse failed");
+        match &stmt.kind {
+            StmtKind::Impl {
+                type_name,
+                body,
+                trait_name,
+                ..
+            } => {
+                assert!(matches!(&type_name.kind, TypeExprKind::Name(n) if n == "MyStruct"));
+                assert!(trait_name.is_none());
+                assert_eq!(body.len(), 1);
+            }
+            _ => panic!("expected Impl"),
+        }
+    }
+
+    #[test]
+    fn parse_impl_with_trait() {
+        let mut p = make_parser("impl Display for MyStruct:\n    fn f(): pass\n");
+        let stmt = p.parse_impl().expect("parse failed");
+        match &stmt.kind {
+            StmtKind::Impl {
+                type_name,
+                trait_name,
+                ..
+            } => {
+                assert!(trait_name.is_some());
+                assert!(matches!(&type_name.kind, TypeExprKind::Name(n) if n == "MyStruct"));
+            }
+            _ => panic!("expected Impl"),
+        }
+    }
+
+    #[test]
+    fn parse_trait_block() {
+        let mut p = make_parser("trait Foo:\n    fn f(self): pass\n");
+        let stmt = p.parse_trait().expect("parse failed");
+        match &stmt.kind {
+            StmtKind::Trait { name, methods, .. } => {
+                assert_eq!(name, "Foo");
+                assert_eq!(methods.len(), 1);
+            }
+            _ => panic!("expected Trait"),
+        }
+    }
+
+    #[test]
+    fn parse_enum_simple() {
+        let mut p = make_parser("enum Color:\n    Red\n    Green\n    Blue\n");
+        let stmt = p.parse_enum().expect("parse failed");
+        match &stmt.kind {
+            StmtKind::Enum { name, variants, .. } => {
+                assert_eq!(name, "Color");
+                assert_eq!(variants.len(), 3);
+                assert_eq!(variants[0].name, "Red");
+            }
+            _ => panic!("expected Enum"),
+        }
+    }
+
+    #[test]
+    fn parse_enum_with_values() {
+        let mut p = make_parser("enum Http:\n    OK = 200\n    NotFound = 404\n");
+        let stmt = p.parse_enum().expect("parse failed");
+        match &stmt.kind {
+            StmtKind::Enum { variants, .. } => {
+                assert_eq!(variants.len(), 2);
+                assert!(variants[0].value.is_some());
+                assert!(variants[1].value.is_some());
+            }
+            _ => panic!("expected Enum"),
+        }
+    }
+
+    #[test]
+    fn parse_enum_with_tuple_variants() {
+        let mut p = make_parser("enum Opt:\n    Some(i64)\n    None\n");
+        let stmt = p.parse_enum().expect("parse failed");
+        match &stmt.kind {
+            StmtKind::Enum { variants, .. } => {
+                assert_eq!(variants.len(), 2);
+                assert_eq!(variants[0].types.len(), 1);
+                assert!(variants[1].types.is_empty());
+            }
+            _ => panic!("expected Enum"),
+        }
+    }
+}

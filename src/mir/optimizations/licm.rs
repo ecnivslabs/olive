@@ -47,10 +47,10 @@ impl Licm {
                     if let Operand::Copy(l) | Operand::Move(l) = obj {
                         *assign_counts.entry(*l).or_insert(0) += 1;
                     }
-                } else if let StatementKind::PtrStore(ptr, _) = &stmt.kind {
-                    if let Operand::Copy(l) | Operand::Move(l) = ptr {
-                        *assign_counts.entry(*l).or_insert(0) += 1;
-                    }
+                } else if let StatementKind::PtrStore(ptr, _) = &stmt.kind
+                    && let Operand::Copy(l) | Operand::Move(l) = ptr
+                {
+                    *assign_counts.entry(*l).or_insert(0) += 1;
                 }
             }
         }
@@ -73,10 +73,10 @@ impl Licm {
                     if let Operand::Copy(l) | Operand::Move(l) = obj {
                         defined_in_loop.insert(*l);
                     }
-                } else if let StatementKind::PtrStore(ptr, _) = &stmt.kind {
-                    if let Operand::Copy(l) | Operand::Move(l) = ptr {
-                        defined_in_loop.insert(*l);
-                    }
+                } else if let StatementKind::PtrStore(ptr, _) = &stmt.kind
+                    && let Operand::Copy(l) | Operand::Move(l) = ptr
+                {
+                    defined_in_loop.insert(*l);
                 }
             }
         }
@@ -238,5 +238,86 @@ impl Licm {
         }
 
         true
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(test, allow(dead_code))]
+mod tests {
+    use super::*;
+
+    fn sp() -> crate::span::Span {
+        crate::span::Span {
+            file_id: 0,
+            line: 0,
+            col: 0,
+            start: 0,
+            end: 0,
+        }
+    }
+
+    fn assign(l: usize, rv: Rvalue) -> Statement {
+        Statement {
+            kind: StatementKind::Assign(Local(l), rv),
+            span: sp(),
+        }
+    }
+
+    fn stmt(k: StatementKind) -> Statement {
+        Statement {
+            kind: k,
+            span: sp(),
+        }
+    }
+
+    fn func(blocks: Vec<BasicBlock>) -> MirFunction {
+        MirFunction {
+            name: "f".into(),
+            locals: vec![],
+            basic_blocks: blocks,
+            arg_count: 0,
+            vararg_idx: None,
+            kwarg_idx: None,
+            param_names: vec![],
+            is_async: false,
+        }
+    }
+
+    fn bb(stmts: Vec<Statement>, kind: TerminatorKind) -> BasicBlock {
+        BasicBlock {
+            statements: stmts,
+            terminator: Some(Terminator { kind, span: sp() }),
+        }
+    }
+
+    fn local_decl() -> LocalDecl {
+        LocalDecl {
+            ty: crate::semantic::types::Type::Int,
+            name: None,
+            span: sp(),
+            is_mut: false,
+            is_owning: false,
+        }
+    }
+
+    #[test]
+    fn no_loops_no_change() {
+        let f = func(vec![bb(vec![], TerminatorKind::Return)]);
+        let mut f2 = f.clone();
+        assert!(!Licm.run(&mut f2));
+    }
+
+    #[test]
+    fn preheader_not_inserted_when_no_loop() {
+        let mut f = func(vec![
+            bb(
+                vec![],
+                TerminatorKind::Goto {
+                    target: BasicBlockId(1),
+                },
+            ),
+            bb(vec![], TerminatorKind::Return),
+        ]);
+        assert!(!Licm.run(&mut f));
     }
 }

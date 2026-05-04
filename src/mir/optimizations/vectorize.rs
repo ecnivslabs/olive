@@ -424,3 +424,157 @@ impl LoopVectorizer {
         id
     }
 }
+
+#[cfg(test)]
+#[allow(dead_code)]
+mod tests {
+    use super::*;
+
+    fn sp() -> crate::span::Span {
+        crate::span::Span {
+            file_id: 0,
+            line: 0,
+            col: 0,
+            start: 0,
+            end: 0,
+        }
+    }
+
+    fn assign(l: usize, rv: Rvalue) -> Statement {
+        Statement {
+            kind: StatementKind::Assign(Local(l), rv),
+            span: sp(),
+        }
+    }
+
+    fn bb(stmts: Vec<Statement>, kind: TerminatorKind) -> BasicBlock {
+        BasicBlock {
+            statements: stmts,
+            terminator: Some(Terminator { kind, span: sp() }),
+        }
+    }
+
+    fn func(name: &str, locals: Vec<LocalDecl>) -> MirFunction {
+        MirFunction {
+            name: name.into(),
+            locals,
+            basic_blocks: vec![],
+            arg_count: 0,
+            vararg_idx: None,
+            kwarg_idx: None,
+            param_names: vec![],
+            is_async: false,
+        }
+    }
+
+    fn local_decl(ty: crate::semantic::types::Type) -> LocalDecl {
+        LocalDecl {
+            ty,
+            name: None,
+            span: sp(),
+            is_mut: true,
+            is_owning: true,
+        }
+    }
+
+    #[test]
+    fn no_loops_no_vectorize() {
+        let mut f = func("f", vec![]);
+        assert!(!LoopVectorizer.run(&mut f));
+    }
+
+    #[test]
+    fn empty_func_no_vectorize() {
+        let mut f = func("f", vec![]);
+        assert!(!LoopVectorizer.run(&mut f));
+    }
+
+    #[test]
+    fn alloc_vector_local_creates_vector_type() {
+        let mut f = func("test", vec![local_decl(OliveType::Float)]);
+        let v = LoopVectorizer.alloc_vector_local(&mut f, Local(0), 4);
+        assert_eq!(v.0, 1);
+        assert_eq!(f.locals.len(), 2);
+        match &f.locals[v.0].ty {
+            OliveType::Vector(inner, width) => {
+                assert_eq!(**inner, OliveType::Float);
+                assert_eq!(*width, 4);
+            }
+            _ => panic!("expected Vector type"),
+        }
+    }
+
+    #[test]
+    fn fuse_fma_combines_mul_add() {
+        let mut stmts = vec![
+            assign(
+                0,
+                Rvalue::BinaryOp(
+                    crate::parser::BinOp::Mul,
+                    Operand::Copy(Local(1)),
+                    Operand::Copy(Local(2)),
+                ),
+            ),
+            assign(
+                0,
+                Rvalue::BinaryOp(
+                    crate::parser::BinOp::Add,
+                    Operand::Copy(Local(0)),
+                    Operand::Copy(Local(3)),
+                ),
+            ),
+        ];
+        LoopVectorizer::fuse_fma(&mut stmts);
+        assert_eq!(stmts.len(), 1);
+        assert!(matches!(
+            &stmts[0].kind,
+            StatementKind::Assign(_, Rvalue::VectorFMA(..))
+        ));
+    }
+
+    #[test]
+    fn fuse_fma_no_mul_keeps_stmts() {
+        let mut stmts = vec![
+            assign(0, Rvalue::Use(Operand::Constant(Constant::Int(1)))),
+            assign(
+                0,
+                Rvalue::BinaryOp(
+                    crate::parser::BinOp::Add,
+                    Operand::Copy(Local(1)),
+                    Operand::Copy(Local(2)),
+                ),
+            ),
+        ];
+        let len = stmts.len();
+        LoopVectorizer::fuse_fma(&mut stmts);
+        assert_eq!(stmts.len(), len);
+    }
+
+    #[test]
+    fn fuse_fma_reordered() {
+        let mut stmts = vec![
+            assign(
+                0,
+                Rvalue::BinaryOp(
+                    crate::parser::BinOp::Mul,
+                    Operand::Copy(Local(1)),
+                    Operand::Copy(Local(2)),
+                ),
+            ),
+            assign(
+                0,
+                Rvalue::BinaryOp(
+                    crate::parser::BinOp::Add,
+                    Operand::Copy(Local(3)),
+                    Operand::Copy(Local(0)),
+                ),
+            ),
+        ];
+        LoopVectorizer::fuse_fma(&mut stmts);
+        assert_eq!(stmts.len(), 1);
+        assert!(matches!(
+            &stmts[0].kind,
+            StatementKind::Assign(_, Rvalue::VectorFMA(..))
+        ));
+    }
+}

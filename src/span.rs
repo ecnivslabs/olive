@@ -18,3 +18,75 @@ impl Span {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn span_default() {
+        let s = Span::default();
+        assert_eq!(s.file_id, 0);
+        assert_eq!(s.start, 0);
+        assert_eq!(s.end, 0);
+    }
+
+    #[test]
+    fn span_merge() {
+        let a = Span {
+            file_id: 0,
+            line: 1,
+            col: 1,
+            start: 5,
+            end: 10,
+        };
+        let b = Span {
+            file_id: 0,
+            line: 1,
+            col: 1,
+            start: 10,
+            end: 20,
+        };
+        let m = a.merge(b);
+        assert_eq!(m.start, 5);
+        assert_eq!(m.end, 20);
+    }
+
+    #[test]
+    fn span_equality() {
+        let a = Span {
+            file_id: 0,
+            line: 1,
+            col: 2,
+            start: 3,
+            end: 4,
+        };
+        let b = Span {
+            file_id: 0,
+            line: 1,
+            col: 2,
+            start: 3,
+            end: 4,
+        };
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn span_inequality() {
+        let a = Span {
+            file_id: 0,
+            line: 1,
+            col: 2,
+            start: 3,
+            end: 4,
+        };
+        let b = Span {
+            file_id: 1,
+            line: 1,
+            col: 2,
+            start: 3,
+            end: 4,
+        };
+        assert_ne!(a, b);
+    }
+}

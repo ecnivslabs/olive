@@ -48,3 +48,117 @@ impl std::fmt::Display for SemanticError {
 }
 
 impl std::error::Error for SemanticError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::span::Span;
+
+    fn span() -> Span {
+        Span {
+            file_id: 0,
+            line: 2,
+            col: 8,
+            start: 12,
+            end: 20,
+        }
+    }
+
+    #[test]
+    fn display_undefined_name() {
+        let e = SemanticError::UndefinedName {
+            name: "x".into(),
+            span: span(),
+        };
+        assert_eq!(e.to_string(), "2:8: undefined name `x`");
+    }
+
+    #[test]
+    fn display_duplicate_param() {
+        let e = SemanticError::DuplicateParam {
+            name: "a".into(),
+            span: span(),
+        };
+        assert_eq!(e.to_string(), "2:8: duplicate parameter `a`");
+    }
+
+    #[test]
+    fn display_assign_to_undefined() {
+        let e = SemanticError::AssignToUndefined {
+            name: "y".into(),
+            span: span(),
+        };
+        assert_eq!(
+            e.to_string(),
+            "2:8: assignment to undefined variable `y` (use `let`)"
+        );
+    }
+
+    #[test]
+    fn display_private_access() {
+        let e = SemanticError::PrivateAccess {
+            name: "secret".into(),
+            span: span(),
+        };
+        assert_eq!(
+            e.to_string(),
+            "2:8: cannot access private name `secret` from outside its module"
+        );
+    }
+
+    #[test]
+    fn display_custom() {
+        let e = SemanticError::Custom {
+            msg: "type mismatch".into(),
+            span: span(),
+        };
+        assert_eq!(e.to_string(), "2:8: type mismatch");
+    }
+
+    #[test]
+    fn span_undefined_name() {
+        let e = SemanticError::UndefinedName {
+            name: "x".into(),
+            span: span(),
+        };
+        assert_eq!(e.span().line, 2);
+        assert_eq!(e.span().col, 8);
+    }
+
+    #[test]
+    fn span_duplicate_param() {
+        let e = SemanticError::DuplicateParam {
+            name: "a".into(),
+            span: span(),
+        };
+        assert_eq!(e.span().start, 12);
+    }
+
+    #[test]
+    fn span_assign_to_undefined() {
+        let e = SemanticError::AssignToUndefined {
+            name: "y".into(),
+            span: span(),
+        };
+        assert_eq!(e.span().end, 20);
+    }
+
+    #[test]
+    fn span_private_access() {
+        let e = SemanticError::PrivateAccess {
+            name: "secret".into(),
+            span: span(),
+        };
+        assert_eq!(e.span().file_id, 0);
+    }
+
+    #[test]
+    fn span_custom() {
+        let e = SemanticError::Custom {
+            msg: "err".into(),
+            span: span(),
+        };
+        assert_eq!(e.span().line, 2);
+        assert_eq!(e.span().col, 8);
+    }
+}

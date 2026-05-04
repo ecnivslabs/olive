@@ -446,3 +446,58 @@ impl<M: Module> CraneliftCodegen<M> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::test_utils::{call_i64, call_i64_1, call_i64_2, compile};
+
+    #[test]
+    fn test_translate_rvalue_use() {
+        let mut cg = compile("fn f(x: i64) -> i64:\n    return x\n");
+        assert_eq!(call_i64_1(&mut cg, "f", 42), 42);
+    }
+
+    #[test]
+    fn test_translate_rvalue_ref() {
+        let mut cg = compile("fn f(x: i64) -> i64:\n    return x\n");
+        assert_eq!(call_i64_1(&mut cg, "f", 99), 99);
+    }
+
+    #[test]
+    fn test_translate_rvalue_cast_int_to_int() {
+        let mut cg = compile("fn f(x: i64) -> i64:\n    return x\n");
+        assert_eq!(call_i64_1(&mut cg, "f", 7), 7);
+    }
+
+    #[test]
+    fn test_translate_rvalue_get_index_list() {
+        let code = "fn f() -> i64:\n    let xs = [10, 20, 30]\n    return xs[1]\n";
+        let _cg = compile(code);
+    }
+
+    #[test]
+    fn test_translate_rvalue_get_attr_struct() {
+        let code = "struct P:\n    x: i64\n    y: i64\n\nfn f() -> i64:\n    let p = P(10, 32)\n    return p.x + p.y\n";
+        let mut cg = compile(code);
+        assert_eq!(call_i64(&mut cg, "f"), 42);
+    }
+
+    #[test]
+    fn test_translate_rvalue_aggregate_tuple() {
+        let mut cg =
+            compile("fn f(a: i64, b: i64) -> i64:\n    let t = (a, b)\n    return t[0] + t[1]\n");
+        assert_eq!(call_i64_2(&mut cg, "f", 10, 32), 42);
+    }
+
+    #[test]
+    fn test_translate_rvalue_constant_int() {
+        let mut cg = compile("fn f() -> i64:\n    return 42\n");
+        assert_eq!(call_i64(&mut cg, "f"), 42);
+    }
+
+    #[test]
+    fn test_translate_rvalue_move() {
+        let mut cg = compile("fn f(x: i64) -> i64:\n    return x\n");
+        assert_eq!(call_i64_1(&mut cg, "f", 42), 42);
+    }
+}

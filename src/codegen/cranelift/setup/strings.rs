@@ -1,0 +1,100 @@
+use super::super::CraneliftCodegen;
+use crate::mir::MirFunction;
+use crate::mir::StatementKind;
+use cranelift_module::{DataDescription, Linkage, Module};
+
+impl<M: Module> CraneliftCodegen<M> {
+    pub(super) fn intern_attr_string(&mut self, attr: &str) {
+        if self.string_ids.contains_key(attr) {
+            return;
+        }
+        let mut data_ctx = DataDescription::new();
+        let mut bytes = attr.as_bytes().to_vec();
+        bytes.push(0);
+        if !bytes.len().is_multiple_of(2) {
+            bytes.push(0);
+        }
+        data_ctx.define(bytes.into_boxed_slice());
+        let name = format!("str_{}", self.string_ids.len());
+        let id = self
+            .module
+            .declare_data(&name, Linkage::Export, false, false)
+            .unwrap();
+        self.module.define_data(id, &data_ctx).unwrap();
+        self.string_ids.insert(attr.to_string(), id);
+    }
+
+    pub(super) fn collect_strings(&mut self, func: &MirFunction) {
+        for bb in &func.basic_blocks {
+            for stmt in &bb.statements {
+                match &stmt.kind {
+                    StatementKind::Assign(_, rval) => {
+                        self.collect_strings_in_rvalue(rval);
+                    }
+                    StatementKind::SetAttr(_, attr, val_op) => {
+                        self.intern_attr_string(attr);
+                        self.collect_strings_in_operand(val_op);
+                    }
+                    StatementKind::SetIndex(obj_op, idx_op, val_op) => {
+                        self.collect_strings_in_operand(obj_op);
+                        self.collect_strings_in_operand(idx_op);
+                        self.collect_strings_in_operand(val_op);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn collect_strings_in_rvalue(&mut self, rval: &crate::mir::Rvalue) {
+        use crate::mir::Rvalue;
+        match rval {
+            Rvalue::Use(op) | Rvalue::UnaryOp(_, op) => {
+                self.collect_strings_in_operand(op);
+            }
+            Rvalue::GetAttr(op, attr) => {
+                self.collect_strings_in_operand(op);
+                self.intern_attr_string(attr);
+            }
+            Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) => {
+                self.collect_strings_in_operand(l);
+                self.collect_strings_in_operand(r);
+            }
+            Rvalue::Call { func, args } => {
+                self.collect_strings_in_operand(func);
+                for arg in args {
+                    self.collect_strings_in_operand(arg);
+                }
+            }
+            Rvalue::Aggregate(_, ops) => {
+                for op in ops {
+                    self.collect_strings_in_operand(op);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn collect_strings_in_operand(&mut self, op: &crate::mir::Operand) {
+        use crate::mir::{Constant, Operand};
+        if let Operand::Constant(Constant::Str(s)) = op
+            && !self.string_ids.contains_key(s)
+        {
+            let mut data_ctx = DataDescription::new();
+            let mut bytes = s.as_bytes().to_vec();
+            bytes.push(0);
+            if bytes.len() % 2 != 0 {
+                bytes.push(0);
+            }
+            data_ctx.define(bytes.into_boxed_slice());
+
+            let name = format!("str_{}", self.string_ids.len());
+            let id = self
+                .module
+                .declare_data(&name, Linkage::Export, false, false)
+                .unwrap();
+            self.module.define_data(id, &data_ctx).unwrap();
+            self.string_ids.insert(s.clone(), id);
+        }
+    }
+}

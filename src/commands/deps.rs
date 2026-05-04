@@ -2,13 +2,17 @@ use super::utils::{load_config, save_config};
 use crate::tooling;
 use std::process;
 
-pub fn execute_add(pod: &str) {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let (name, version_req) = if let Some((n, v)) = pod.split_once('@') {
+fn parse_versioned_pod(pod: &str) -> (String, String) {
+    if let Some((n, v)) = pod.split_once('@') {
         (n.to_string(), v.to_string())
     } else {
         (pod.to_string(), "latest".to_string())
-    };
+    }
+}
+
+pub fn execute_add(pod: &str) {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (name, version_req) = parse_versioned_pod(pod);
 
     let versions = rt
         .block_on(tooling::registry::fetch_versions(&name, false))
@@ -94,4 +98,84 @@ pub fn execute_update(pod: Option<&String>) {
     }
 
     println!("\x1b[1;32m   Updated\x1b[0m lockfile and dependencies");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::utils::Config;
+
+    #[test]
+    fn parse_versioned_pod_with_version() {
+        let (name, version) = parse_versioned_pod("foo@1.2.3");
+        assert_eq!(name, "foo");
+        assert_eq!(version, "1.2.3");
+    }
+
+    #[test]
+    fn parse_versioned_pod_without_version() {
+        let (name, version) = parse_versioned_pod("foo");
+        assert_eq!(name, "foo");
+        assert_eq!(version, "latest");
+    }
+
+    #[test]
+    fn parse_versioned_pod_multiple_at_signs() {
+        let (name, version) = parse_versioned_pod("foo@1.0@beta");
+        assert_eq!(name, "foo");
+        assert_eq!(version, "1.0@beta");
+    }
+
+    #[test]
+    fn config_save_and_load_with_deps() {
+        let _lock = crate::commands::utils::CWD_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("olive_deps_test_config");
+        let _ = std::fs::create_dir_all(&dir);
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+
+        let mut deps = std::collections::HashMap::new();
+        deps.insert("serde".into(), "1.0".into());
+        let config = Config {
+            dependencies: deps,
+            ..Config::default()
+        };
+        save_config(&config);
+
+        let loaded = load_config();
+        assert_eq!(loaded.dependencies.len(), 1);
+        assert_eq!(loaded.dependencies.get("serde").unwrap(), "1.0");
+
+        std::env::set_current_dir(&cwd).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn config_remove_dep_roundtrip() {
+        let _lock = crate::commands::utils::CWD_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("olive_deps_test_remove");
+        let _ = std::fs::create_dir_all(&dir);
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+
+        let mut deps = std::collections::HashMap::new();
+        deps.insert("tokio".into(), "1.0".into());
+        deps.insert("serde".into(), "2.0".into());
+        let config = Config {
+            dependencies: deps,
+            ..Config::default()
+        };
+        save_config(&config);
+
+        let mut loaded = load_config();
+        loaded.dependencies.remove("serde");
+        save_config(&loaded);
+
+        let reloaded = load_config();
+        assert_eq!(reloaded.dependencies.len(), 1);
+        assert!(reloaded.dependencies.contains_key("tokio"));
+
+        std::env::set_current_dir(&cwd).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

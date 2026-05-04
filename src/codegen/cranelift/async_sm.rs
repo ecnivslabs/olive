@@ -435,3 +435,183 @@ impl<M: Module> CraneliftCodegen<M> {
         self.module.define_function(wrapper_id, &mut ctx).unwrap();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mir::{
+        BasicBlock, BasicBlockId, Constant, Local, LocalDecl, MirFunction, Operand, Statement,
+        StatementKind, Terminator, TerminatorKind,
+    };
+    use crate::semantic::types::Type;
+
+    fn make_sync_func() -> MirFunction {
+        MirFunction {
+            name: "sync_fn".into(),
+            locals: vec![],
+            basic_blocks: vec![BasicBlock {
+                statements: vec![],
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Return,
+                    span: Default::default(),
+                }),
+            }],
+            arg_count: 0,
+            vararg_idx: None,
+            kwarg_idx: None,
+            param_names: vec![],
+            is_async: false,
+        }
+    }
+
+    fn make_async_func_no_await() -> MirFunction {
+        MirFunction {
+            name: "async_no_await".into(),
+            locals: vec![],
+            basic_blocks: vec![BasicBlock {
+                statements: vec![],
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Return,
+                    span: Default::default(),
+                }),
+            }],
+            arg_count: 0,
+            vararg_idx: None,
+            kwarg_idx: None,
+            param_names: vec![],
+            is_async: true,
+        }
+    }
+
+    fn make_async_func_with_await() -> MirFunction {
+        MirFunction {
+            name: "async_with_await".into(),
+            locals: vec![
+                LocalDecl {
+                    ty: Type::Int,
+                    name: None,
+                    span: Default::default(),
+                    is_mut: false,
+                    is_owning: false,
+                },
+                LocalDecl {
+                    ty: Type::Int,
+                    name: None,
+                    span: Default::default(),
+                    is_mut: false,
+                    is_owning: false,
+                },
+            ],
+            basic_blocks: vec![BasicBlock {
+                statements: vec![Statement {
+                    kind: StatementKind::Assign(
+                        Local(1),
+                        crate::mir::Rvalue::Call {
+                            func: Operand::Constant(Constant::Function("__olive_await".into())),
+                            args: vec![Operand::Copy(Local(0))],
+                        },
+                    ),
+                    span: Default::default(),
+                }],
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Return,
+                    span: Default::default(),
+                }),
+            }],
+            arg_count: 0,
+            vararg_idx: None,
+            kwarg_idx: None,
+            param_names: vec![],
+            is_async: true,
+        }
+    }
+
+    fn make_async_func_goto_structure() -> MirFunction {
+        MirFunction {
+            name: "async_goto".into(),
+            locals: vec![
+                LocalDecl {
+                    ty: Type::Int,
+                    name: None,
+                    span: Default::default(),
+                    is_mut: false,
+                    is_owning: false,
+                },
+                LocalDecl {
+                    ty: Type::Int,
+                    name: None,
+                    span: Default::default(),
+                    is_mut: false,
+                    is_owning: false,
+                },
+            ],
+            basic_blocks: vec![
+                BasicBlock {
+                    statements: vec![],
+                    terminator: Some(Terminator {
+                        kind: TerminatorKind::Goto {
+                            target: BasicBlockId(1),
+                        },
+                        span: Default::default(),
+                    }),
+                },
+                BasicBlock {
+                    statements: vec![Statement {
+                        kind: StatementKind::Assign(
+                            Local(1),
+                            crate::mir::Rvalue::Call {
+                                func: Operand::Constant(Constant::Function("__olive_await".into())),
+                                args: vec![Operand::Copy(Local(0))],
+                            },
+                        ),
+                        span: Default::default(),
+                    }],
+                    terminator: Some(Terminator {
+                        kind: TerminatorKind::Return,
+                        span: Default::default(),
+                    }),
+                },
+            ],
+            arg_count: 0,
+            vararg_idx: None,
+            kwarg_idx: None,
+            param_names: vec![],
+            is_async: true,
+        }
+    }
+
+    #[test]
+    fn test_analyze_sync_fn_returns_none() {
+        let f = make_sync_func();
+        assert!(CraneliftCodegen::<cranelift_jit::JITModule>::analyze_async_sm(&f).is_none());
+    }
+
+    #[test]
+    fn test_analyze_async_no_await_returns_none() {
+        let f = make_async_func_no_await();
+        assert!(CraneliftCodegen::<cranelift_jit::JITModule>::analyze_async_sm(&f).is_none());
+    }
+
+    #[test]
+    fn test_analyze_async_with_await_detects_point() {
+        let f = make_async_func_with_await();
+        let points = CraneliftCodegen::<cranelift_jit::JITModule>::analyze_async_sm(&f);
+        assert!(points.is_some());
+        let points = points.unwrap();
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].bb_idx, 0);
+        assert_eq!(points[0].stmt_idx, 0);
+        assert_eq!(points[0].result_local, Local(1));
+        assert_eq!(points[0].sub_future_local, Local(0));
+    }
+
+    #[test]
+    fn test_analyze_async_with_goto_and_await() {
+        let f = make_async_func_goto_structure();
+        let points = CraneliftCodegen::<cranelift_jit::JITModule>::analyze_async_sm(&f);
+        assert!(points.is_some());
+        let points = points.unwrap();
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].bb_idx, 1);
+    }
+}

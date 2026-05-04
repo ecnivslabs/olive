@@ -742,3 +742,46 @@ impl<M: Module> CraneliftCodegen<M> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::test_utils::{call_i64, call_i64_1, call_i64_2, compile};
+
+    #[test]
+    fn test_translate_simple_return() {
+        let mut cg = compile("fn f() -> i64:\n    return 99\n");
+        assert_eq!(call_i64(&mut cg, "f"), 99);
+    }
+
+    #[test]
+    fn test_translate_multi_block() {
+        let mut cg =
+            compile("fn f(x: i64) -> i64:\n    if x > 0:\n        return x\n    return 0 - x\n");
+        assert_eq!(call_i64_1(&mut cg, "f", 5), 5);
+        assert_eq!(call_i64_1(&mut cg, "f", -3), 3);
+    }
+
+    #[test]
+    fn test_translate_switch_int() {
+        let mut cg = compile(
+            "fn f(x: i64) -> i64:\n    if x == 0:\n        return 10\n    elif x == 1:\n        return 20\n    return 30\n",
+        );
+        assert_eq!(call_i64_1(&mut cg, "f", 0), 10);
+        assert_eq!(call_i64_1(&mut cg, "f", 1), 20);
+        assert_eq!(call_i64_1(&mut cg, "f", 2), 30);
+    }
+
+    #[test]
+    fn test_translate_local_vars() {
+        let mut cg = compile("fn f(a: i64, b: i64) -> i64:\n    let c = a + b\n    return c\n");
+        assert_eq!(call_i64_2(&mut cg, "f", 10, 32), 42);
+    }
+
+    #[test]
+    fn test_translate_nested_blocks() {
+        let mut cg = compile(
+            "fn f(x: i64) -> i64:\n    let mut r = 0\n    let mut i = 0\n    while i < x:\n        r = r + i\n        i = i + 1\n    return r\n",
+        );
+        assert_eq!(call_i64_1(&mut cg, "f", 5), 10);
+    }
+}

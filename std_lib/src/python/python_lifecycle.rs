@@ -16,14 +16,12 @@ fn find_active_python_library() -> Option<String> {
                  print(path if os.path.exists(path) else (ldlibrary or ''))",
             ])
             .output()
-        {
-            if output.status.success() {
+            && output.status.success() {
                 let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if !path_str.is_empty() {
                     return Some(path_str);
                 }
             }
-        }
     }
     None
 }
@@ -40,11 +38,10 @@ pub extern "C" fn olive_py_initialize() {
             handle = compat_dlopen(&env_path);
         }
 
-        if handle.is_null() {
-            if let Some(detected_path) = find_active_python_library() {
+        if handle.is_null()
+            && let Some(detected_path) = find_active_python_library() {
                 handle = compat_dlopen(&detected_path);
             }
-        }
 
         if handle.is_null() {
             #[cfg(target_os = "windows")]
@@ -280,7 +277,7 @@ pub extern "C" fn olive_py_initialize() {
         // does not add '' automatically unlike interactive/script mode.
         PY_RUN_SIMPLE_STRING(b"import sys; sys.path.insert(0, '')\0".as_ptr() as *const c_char);
 
-        let init_ptr: *const () = std::mem::transmute(PY_EVAL_INIT_THREADS);
+        let init_ptr: *const () = PY_EVAL_INIT_THREADS as *const ();
         if !init_ptr.is_null() && init_ptr != (noop_initialize as *const ()) {
             PY_EVAL_INIT_THREADS();
         }
@@ -291,7 +288,7 @@ pub extern "C" fn olive_py_initialize() {
                 let major_key = CString::new("major").unwrap();
                 let major_attr = PY_OBJECT_GET_ATTR_STRING(ver_obj, major_key.as_ptr());
                 if !major_attr.is_null() {
-                    let major = PY_LONG_AS_LONG(major_attr) as i64;
+                    let major = PY_LONG_AS_LONG(major_attr);
                     PY_DEC_REF(major_attr);
                     if major < 3 {
                         eprintln!(
@@ -315,7 +312,7 @@ pub extern "C" fn olive_py_initialize() {
             PY_DEC_REF(tb_mod);
         }
 
-        let save_ptr: *const () = std::mem::transmute(PY_EVAL_SAVE_THREAD);
+        let save_ptr: *const () = PY_EVAL_SAVE_THREAD as *const ();
         if !save_ptr.is_null() && save_ptr != (noop_save_thread as *const ()) {
             MAIN_THREAD_STATE = PY_EVAL_SAVE_THREAD();
         }
@@ -327,7 +324,7 @@ pub extern "C" fn olive_py_initialize() {
 pub extern "C" fn olive_py_finalize() {
     unsafe {
         if INITIALIZED.load(Ordering::SeqCst) {
-            let restore_ptr: *const () = std::mem::transmute(PY_EVAL_RESTORE_THREAD);
+            let restore_ptr: *const () = PY_EVAL_RESTORE_THREAD as *const ();
             if !restore_ptr.is_null()
                 && restore_ptr != (noop_restore_thread as *const ())
                 && !MAIN_THREAD_STATE.is_null()

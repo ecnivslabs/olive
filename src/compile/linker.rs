@@ -27,10 +27,10 @@ pub fn compute_source_hash(files: &[String]) -> u64 {
     let mut hasher = FxHasher::default();
     for path in &sorted {
         path.hash(&mut hasher);
-        if let Ok(meta) = fs::metadata(path) {
-            if let Ok(mtime) = meta.modified() {
-                mtime.hash(&mut hasher);
-            }
+        if let Ok(meta) = fs::metadata(path)
+            && let Ok(mtime) = meta.modified()
+        {
+            mtime.hash(&mut hasher);
         }
     }
     hasher.finish()
@@ -150,4 +150,188 @@ pub fn collect_native_libs(program: &crate::parser::Program) -> Vec<FfiLibInfo> 
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser;
+    use crate::span::Span;
+
+    #[test]
+    fn compute_source_hash_deterministic() {
+        let files = vec!["a.liv".to_string(), "b.liv".to_string()];
+        let h1 = compute_source_hash(&files);
+        let h2 = compute_source_hash(&files);
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn compute_source_hash_differs_for_different_inputs() {
+        let a = vec!["x.liv".to_string()];
+        let b = vec!["y.liv".to_string()];
+        assert_ne!(compute_source_hash(&a), compute_source_hash(&b));
+    }
+
+    #[test]
+    fn compute_source_hash_sorted() {
+        let a = vec!["b.liv".to_string(), "a.liv".to_string()];
+        let b = vec!["a.liv".to_string(), "b.liv".to_string()];
+        assert_eq!(compute_source_hash(&a), compute_source_hash(&b));
+    }
+
+    #[test]
+    fn ensure_dir_creates_directory() {
+        let dir = std::env::temp_dir().join("olive_test_ensure_dir");
+        let path = dir.to_str().unwrap().to_string();
+        ensure_dir(&path);
+        assert!(dir.exists());
+        assert!(dir.is_dir());
+        std::fs::remove_dir(&dir).unwrap();
+    }
+
+    #[test]
+    fn ensure_dir_creates_nested() {
+        let dir = std::env::temp_dir().join("olive_test_ensure_nested/a/b/c");
+        let path = dir.to_str().unwrap().to_string();
+        ensure_dir(&path);
+        assert!(dir.exists());
+        std::fs::remove_dir_all(dir.parent().unwrap().parent().unwrap().parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn exec_binary_true() {
+        assert_eq!(exec_binary("true"), 0);
+    }
+
+    #[test]
+    fn exec_binary_false() {
+        assert_eq!(exec_binary("false"), 1);
+    }
+
+    #[test]
+    fn exec_binary_nonexistent() {
+        assert_eq!(exec_binary("nonexistent_command_xyz_123"), 1);
+    }
+
+    #[test]
+    fn collect_native_libs_empty() {
+        let program = parser::Program { stmts: vec![] };
+        assert!(collect_native_libs(&program).is_empty());
+    }
+
+    #[test]
+    fn collect_native_libs_single() {
+        let program = parser::Program {
+            stmts: vec![parser::Stmt {
+                kind: parser::StmtKind::NativeImport {
+                    path: "/usr/lib/libfoo.so".to_string(),
+                    alias: "foo".to_string(),
+                    functions: vec![],
+                    structs: vec![],
+                    vars: vec![],
+                    consts: vec![],
+                    block_safe: false,
+                },
+                span: Span {
+                    file_id: 0,
+                    line: 0,
+                    col: 0,
+                    start: 0,
+                    end: 0,
+                },
+            }],
+        };
+        let libs = collect_native_libs(&program);
+        assert_eq!(libs.len(), 1);
+        assert_eq!(libs[0].0, "foo");
+        assert_eq!(libs[0].1, "/usr/lib/libfoo.so");
+    }
+
+    #[test]
+    fn collect_native_libs_multiple() {
+        let program = parser::Program {
+            stmts: vec![
+                parser::Stmt {
+                    kind: parser::StmtKind::NativeImport {
+                        path: "libz".to_string(),
+                        alias: "z".to_string(),
+                        functions: vec![],
+                        structs: vec![],
+                        vars: vec![],
+                        consts: vec![],
+                        block_safe: false,
+                    },
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                parser::Stmt {
+                    kind: parser::StmtKind::NativeImport {
+                        path: "libpng".to_string(),
+                        alias: "png".to_string(),
+                        functions: vec![],
+                        structs: vec![],
+                        vars: vec![],
+                        consts: vec![],
+                        block_safe: true,
+                    },
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+            ],
+        };
+        let libs = collect_native_libs(&program);
+        assert_eq!(libs.len(), 2);
+        assert_eq!(libs[0].0, "z");
+        assert_eq!(libs[1].0, "png");
+    }
+
+    #[test]
+    fn collect_native_libs_skips_non_native() {
+        let program = parser::Program {
+            stmts: vec![
+                parser::Stmt {
+                    kind: parser::StmtKind::Pass,
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                parser::Stmt {
+                    kind: parser::StmtKind::NativeImport {
+                        path: "libfoo".to_string(),
+                        alias: "foo".to_string(),
+                        functions: vec![],
+                        structs: vec![],
+                        vars: vec![],
+                        consts: vec![],
+                        block_safe: false,
+                    },
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+            ],
+        };
+        let libs = collect_native_libs(&program);
+        assert_eq!(libs.len(), 1);
+        assert_eq!(libs[0].0, "foo");
+    }
 }

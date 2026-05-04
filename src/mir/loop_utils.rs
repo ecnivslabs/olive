@@ -166,3 +166,159 @@ fn successors(bb: &BasicBlock) -> Vec<BasicBlockId> {
         None => vec![],
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sp() -> crate::span::Span {
+        crate::span::Span {
+            file_id: 0,
+            line: 0,
+            col: 0,
+            start: 0,
+            end: 0,
+        }
+    }
+
+    fn func(name: &str, blocks: Vec<BasicBlock>) -> MirFunction {
+        MirFunction {
+            name: name.into(),
+            locals: vec![],
+            basic_blocks: blocks,
+            arg_count: 0,
+            vararg_idx: None,
+            kwarg_idx: None,
+            param_names: vec![],
+            is_async: false,
+        }
+    }
+
+    fn bb(term: TerminatorKind) -> BasicBlock {
+        BasicBlock {
+            statements: vec![],
+            terminator: Some(Terminator {
+                kind: term,
+                span: sp(),
+            }),
+        }
+    }
+
+    fn goto(target: usize) -> TerminatorKind {
+        TerminatorKind::Goto {
+            target: BasicBlockId(target),
+        }
+    }
+
+    #[test]
+    fn dominators_single_block() {
+        let f = func("f", vec![bb(TerminatorKind::Return)]);
+        let doms = compute_dominators(&f);
+        assert_eq!(doms.len(), 1);
+        assert!(doms[0].contains(&BasicBlockId(0)));
+    }
+
+    #[test]
+    fn dominators_linear() {
+        let f = func("f", vec![bb(goto(1)), bb(TerminatorKind::Return)]);
+        let doms = compute_dominators(&f);
+        assert_eq!(doms.len(), 2);
+        assert!(doms[0].contains(&BasicBlockId(0)));
+        assert!(doms[1].contains(&BasicBlockId(0)));
+        assert!(doms[1].contains(&BasicBlockId(1)));
+    }
+
+    #[test]
+    fn dominators_branch() {
+        let f = func("f", vec![bb(goto(1)), bb(goto(2)), bb(goto(0))]);
+        let doms = compute_dominators(&f);
+        assert_eq!(doms.len(), 3);
+        // block 0 dominates all
+        assert!(doms[1].contains(&BasicBlockId(0)));
+        assert!(doms[2].contains(&BasicBlockId(0)));
+    }
+
+    #[test]
+    fn find_loops_none() {
+        let f = func("f", vec![bb(goto(1)), bb(TerminatorKind::Return)]);
+        let loops = find_loops(&f);
+        assert!(loops.is_empty());
+    }
+
+    #[test]
+    fn find_loops_simple_backedge() {
+        // block0 -> block1 -> block0 = loop
+        let f = func("f", vec![bb(goto(1)), bb(goto(0))]);
+        let loops = find_loops(&f);
+        assert_eq!(loops.len(), 1);
+        assert_eq!(loops[0].header, BasicBlockId(0));
+    }
+
+    #[test]
+    fn find_loops_empty() {
+        let f = func("f", vec![]);
+        let loops = find_loops(&f);
+        assert!(loops.is_empty());
+    }
+
+    #[test]
+    fn clone_blocks_duplicates() {
+        let f = func("f", vec![bb(goto(1)), bb(TerminatorKind::Return)]);
+        let mut f2 = f;
+        let mut body = HashSet::default();
+        body.insert(BasicBlockId(1));
+        let map = clone_blocks(&mut f2, &body);
+        assert_eq!(f2.basic_blocks.len(), 3); // original 2 + 1 cloned
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key(&BasicBlockId(1)));
+    }
+
+    #[test]
+    fn clone_blocks_remaps_goto() {
+        let mut f = func("f", vec![bb(goto(1)), bb(TerminatorKind::Return)]);
+        let mut body = HashSet::default();
+        body.insert(BasicBlockId(0));
+        body.insert(BasicBlockId(1));
+        let _map = clone_blocks(&mut f, &body);
+        // blocks 0 and 1 cloned, so we have 4 blocks
+        assert_eq!(f.basic_blocks.len(), 4);
+    }
+
+    #[test]
+    fn loop_exits_detected() {
+        // block0 -> block1, block1 -> block2 (exit), block1 -> block0 (backedge)
+        let f = func(
+            "f",
+            vec![
+                bb(goto(1)),
+                bb(TerminatorKind::SwitchInt {
+                    discr: Operand::Copy(Local(0)),
+                    targets: vec![(0, BasicBlockId(0))],
+                    otherwise: BasicBlockId(2),
+                }),
+                bb(TerminatorKind::Return),
+            ],
+        );
+        let loops = find_loops(&f);
+        assert_eq!(loops.len(), 1);
+        // the exit should be block 2
+        assert!(
+            loops[0].exits.contains(&BasicBlockId(2)),
+            "loop exit should be block 2"
+        );
+    }
+
+    #[test]
+    fn predecessor_linear() {
+        let f = func("f", vec![bb(goto(1)), bb(TerminatorKind::Return)]);
+        let preds_1 = predecessors(&f, BasicBlockId(1));
+        assert_eq!(preds_1, vec![BasicBlockId(0)]);
+    }
+
+    #[test]
+    fn predecessor_switch() {
+        let f = func("f", vec![bb(goto(1)), bb(TerminatorKind::Return)]);
+        let preds_0 = predecessors(&f, BasicBlockId(0));
+        assert!(preds_0.is_empty());
+    }
+}

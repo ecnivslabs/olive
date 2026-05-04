@@ -107,3 +107,56 @@ pub struct Token {
     pub span: (usize, usize),
     pub file_id: usize,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_kind_equality() {
+        assert_eq!(TokenKind::Fn, TokenKind::Fn);
+        assert_ne!(TokenKind::Fn, TokenKind::Let);
+    }
+
+    #[test]
+    fn token_kinds_are_distinct() {
+        assert_ne!(TokenKind::Fn, TokenKind::Let);
+        assert_ne!(TokenKind::If, TokenKind::Elif);
+        assert_ne!(TokenKind::Plus, TokenKind::Minus);
+        assert_ne!(TokenKind::LParen, TokenKind::RParen);
+        assert_ne!(TokenKind::Newline, TokenKind::Eof);
+        assert_ne!(TokenKind::Integer, TokenKind::Float);
+    }
+
+    #[test]
+    fn token_construction() {
+        let tok = Token {
+            kind: TokenKind::Integer,
+            value: "42".into(),
+            line: 1,
+            col: 5,
+            span: (4, 6),
+            file_id: 0,
+        };
+        assert_eq!(tok.kind, TokenKind::Integer);
+        assert_eq!(tok.value, "42");
+        assert_eq!(tok.line, 1);
+        assert_eq!(tok.col, 5);
+    }
+
+    #[test]
+    fn token_debug_and_clone() {
+        let tok = Token {
+            kind: TokenKind::Fn,
+            value: "fn".into(),
+            line: 1,
+            col: 1,
+            span: (0, 2),
+            file_id: 0,
+        };
+        let cloned = tok.clone();
+        assert_eq!(tok.kind, cloned.kind);
+        let debug = format!("{:?}", tok);
+        assert!(debug.contains("Fn"));
+    }
+}

@@ -10,6 +10,12 @@ pub struct Resolver {
     pub errors: Vec<SemanticError>,
 }
 
+impl Default for Resolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Resolver {
     pub fn new() -> Self {
         let mut table = SymbolTable::new();
@@ -255,10 +261,10 @@ impl Resolver {
                 self.table.push(ScopeKind::Block);
                 for item in items {
                     self.resolve_expr(&item.context_expr);
-                    if let Some(alias_expr) = &item.alias {
-                        if let ExprKind::Identifier(name) = &alias_expr.kind {
-                            self.define_sym(name, SymbolKind::Variable, stmt.span);
-                        }
+                    if let Some(alias_expr) = &item.alias
+                        && let ExprKind::Identifier(name) = &alias_expr.kind
+                    {
+                        self.define_sym(name, SymbolKind::Variable, stmt.span);
                     }
                 }
                 self.hoist_fns_and_structs(body);

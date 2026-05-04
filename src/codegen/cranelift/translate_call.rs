@@ -320,7 +320,30 @@ impl<M: Module> CraneliftCodegen<M> {
                             final_args.push(arg);
                         }
                     } else {
-                        final_args.push(arg);
+                        let arg_ty = builder.func.dfg.value_type(arg);
+                        if arg_ty == types::F64 || arg_ty == types::F32 {
+                            let local_sig = builder.func.dfg.ext_funcs[local_func].signature;
+                            let params = &builder.func.dfg.signatures[local_sig].params;
+                            let param_idx = final_args.len();
+                            let expected = params.get(param_idx).map(|p| p.value_type);
+                            if expected == Some(types::I64) {
+                                if arg_ty == types::F64 {
+                                    final_args.push(builder.ins().bitcast(
+                                        types::I64,
+                                        MemFlags::new(),
+                                        arg,
+                                    ));
+                                } else {
+                                    let i32_val =
+                                        builder.ins().bitcast(types::I32, MemFlags::new(), arg);
+                                    final_args.push(builder.ins().uextend(types::I64, i32_val));
+                                }
+                            } else {
+                                final_args.push(arg);
+                            }
+                        } else {
+                            final_args.push(arg);
+                        }
                     }
                 }
 
@@ -460,7 +483,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 }
                 return ret_val;
             }
-            return builder.ins().iconst(types::I64, 0);
+            builder.ins().iconst(types::I64, 0)
         } else {
             let fn_ptr_val =
                 Self::translate_operand(builder, func, vars, string_ids, module, func_ids);
@@ -479,10 +502,57 @@ impl<M: Module> CraneliftCodegen<M> {
             let results = builder.inst_results(inst);
 
             if results.is_empty() {
-                return builder.ins().iconst(types::I64, 0);
+                builder.ins().iconst(types::I64, 0)
             } else {
-                return results[0];
+                results[0]
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::test_utils::{call_i64, call_i64_1, call_i64_2, compile};
+
+    #[test]
+    fn test_translate_call_zero_arg() {
+        let mut cg = compile("fn f() -> i64:\n    return 42\n");
+        assert_eq!(call_i64(&mut cg, "f"), 42);
+    }
+
+    #[test]
+    fn test_translate_call_one_arg() {
+        let mut cg = compile("fn double(x: i64) -> i64:\n    return x * 2\n");
+        assert_eq!(call_i64_1(&mut cg, "double", 21), 42);
+    }
+
+    #[test]
+    fn test_translate_call_multi_arg() {
+        let mut cg = compile("fn add(a: i64, b: i64) -> i64:\n    return a + b\n");
+        assert_eq!(call_i64_2(&mut cg, "add", 10, 32), 42);
+    }
+
+    #[test]
+    fn test_translate_call_nested() {
+        let mut cg = compile(
+            "fn add(a: i64, b: i64) -> i64:\n    return a + b\n\nfn f(x: i64) -> i64:\n    return add(x, add(x, x))\n",
+        );
+        assert_eq!(call_i64_1(&mut cg, "f", 14), 42);
+    }
+
+    #[test]
+    fn test_translate_call_multiple_functions() {
+        let mut cg = compile(
+            "fn inc(x: i64) -> i64:\n    return x + 1\n\nfn dec(x: i64) -> i64:\n    return x - 1\n\nfn f(x: i64) -> i64:\n    return inc(dec(x))\n",
+        );
+        assert_eq!(call_i64_1(&mut cg, "f", 42), 42);
+    }
+
+    #[test]
+    fn test_translate_call_recursive() {
+        let mut cg = compile(
+            "fn fact(n: i64) -> i64:\n    if n <= 1:\n        return 1\n    return n * fact(n - 1)\n",
+        );
+        assert_eq!(call_i64_1(&mut cg, "fact", 5), 120);
     }
 }

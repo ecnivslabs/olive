@@ -413,10 +413,10 @@ impl TypeChecker {
                                 if auto_ref_obj == **inner {
                                     auto_ref_obj = Type::MutRef(Box::new(auto_ref_obj));
                                 }
-                            } else if let Type::Ref(inner) = &params[0] {
-                                if auto_ref_obj == **inner {
-                                    auto_ref_obj = Type::Ref(Box::new(auto_ref_obj));
-                                }
+                            } else if let Type::Ref(inner) = &params[0]
+                                && auto_ref_obj == **inner
+                            {
+                                auto_ref_obj = Type::Ref(Box::new(auto_ref_obj));
                             }
                             self.unify(&params[0], &auto_ref_obj, expr.span);
                         }
@@ -441,10 +441,10 @@ impl TypeChecker {
                                 if auto_ref_obj == **inner {
                                     auto_ref_obj = Type::MutRef(Box::new(auto_ref_obj));
                                 }
-                            } else if let Type::Ref(inner) = &params[0] {
-                                if auto_ref_obj == **inner {
-                                    auto_ref_obj = Type::Ref(Box::new(auto_ref_obj));
-                                }
+                            } else if let Type::Ref(inner) = &params[0]
+                                && auto_ref_obj == **inner
+                            {
+                                auto_ref_obj = Type::Ref(Box::new(auto_ref_obj));
                             }
                             self.unify(&params[0], &auto_ref_obj, expr.span);
                         }
@@ -554,10 +554,10 @@ impl TypeChecker {
                     let mut case_ty = Type::Null;
                     for (i, stmt) in case.body.iter().enumerate() {
                         self.check_stmt(stmt);
-                        if i == case.body.len() - 1 {
-                            if let crate::parser::StmtKind::ExprStmt(e) = &stmt.kind {
-                                case_ty = self.check_expr(e);
-                            }
+                        if i == case.body.len() - 1
+                            && let crate::parser::StmtKind::ExprStmt(e) = &stmt.kind
+                        {
+                            case_ty = self.check_expr(e);
                         }
                     }
 
@@ -810,5 +810,125 @@ impl TypeChecker {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::super::TypeChecker;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+    use crate::semantic::Resolver;
+
+    fn typeck(src: &str) -> TypeChecker {
+        let tokens = Lexer::new(src, 0).tokenise().unwrap();
+        let prog = Parser::new(tokens).parse_program().unwrap();
+        let mut r = Resolver::new();
+        r.resolve_program(&prog);
+        let mut tc = TypeChecker::new();
+        tc.check_program(&prog);
+        tc
+    }
+
+    #[test]
+    fn list_literal_homogeneous() {
+        let tc = typeck("let xs = [1, 2, 3]\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn set_literal() {
+        let tc = typeck("let s = {1, 2, 3}\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn dict_literal() {
+        let tc = typeck("let d = {\"a\": 1, \"b\": 2}\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn unary_neg() {
+        let tc = typeck("let x = -42\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn unary_not_on_bool() {
+        let tc = typeck("let b = not True\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn cast_to_float() {
+        let tc = typeck("let x = 1 as float\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn immutable_borrow() {
+        let tc = typeck("let x = 42\nlet r = &x\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn mutable_borrow_of_immutable() {
+        let tc = typeck("let x = 42\nlet r = &mut x\n");
+        assert!(!tc.errors.is_empty());
+    }
+
+    #[test]
+    fn index_list() {
+        let tc = typeck("let xs = [1, 2, 3]\nlet v = xs[1]\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn index_dict() {
+        let tc = typeck("let d = {\"a\": 1}\nlet v = d[\"a\"]\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn list_comprehension() {
+        let tc = typeck("let xs = [x for x in [1, 2, 3]]\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn set_comprehension() {
+        let tc = typeck("let s = {x for x in [1, 2, 3]}\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn dict_comprehension() {
+        let tc = typeck("let d = {x: x * 2 for x in [1, 2, 3]}\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn slice_expr() {
+        let tc = typeck("let xs = [1, 2, 3]\nlet s = xs[1:3]\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn async_block() {
+        let tc = typeck("let f = async:\n    42\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn binop_comparison_returns_bool() {
+        let tc = typeck("let b = (1 < 2)\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn fstring_typechecks() {
+        let tc = typeck("let s = f\"hello {42}\"\n");
+        assert!(tc.errors.is_empty());
     }
 }
