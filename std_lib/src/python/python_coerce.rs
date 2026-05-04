@@ -308,7 +308,12 @@ pub unsafe fn py_to_olive_internal(py_val: PyObject) -> i64 {
             }
             is_int_like
         } {
-            PY_LONG_AS_LONG(py_val) as i64
+            {
+                let v = PY_LONG_AS_LONG(py_val);
+                #[cfg(windows)]
+                let v = v as i64;
+                v
+            }
         } else if is_subtype(PY_FLOAT_TYPE) || {
             let ty_name_attr =
                 PY_OBJECT_GET_ATTR_STRING(ty, b"__name__\0".as_ptr() as *const c_char);
