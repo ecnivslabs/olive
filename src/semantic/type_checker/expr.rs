@@ -39,7 +39,8 @@ impl TypeChecker {
                         Type::Int
                     }
                     Type::List(elem_ty) => *elem_ty,
-                    Type::PyObject | Type::Any | Type::Tuple(_) => Type::Any,
+                    ref t if t.is_py_value() => Type::Any,
+                    Type::Any | Type::Tuple(_) => Type::Any,
                     _ => {
                         if self.unsafe_depth == 0 {
                             self.errors
@@ -135,7 +136,7 @@ impl TypeChecker {
                 let callee_ty = self.check_expr(callee);
                 let applied = self.apply_subst(callee_ty.clone());
 
-                if applied == Type::PyObject {
+                if applied.is_py_value() {
                     let arg_tys: Vec<Type> = args
                         .iter()
                         .map(|a| {
@@ -400,7 +401,7 @@ impl TypeChecker {
                         self.unify(&Type::Int, &idx_ty, expr.span);
                         Type::Int
                     }
-                    Type::PyObject => Type::PyObject,
+                    ref t if t.is_py_value() => Type::PyObject,
                     _ => self.fresh_var(),
                 }
             }
@@ -409,7 +410,7 @@ impl TypeChecker {
                 let obj_ty = self.check_expr(obj);
                 let resolved_obj = self.apply_subst(obj_ty);
 
-                if resolved_obj == Type::PyObject {
+                if resolved_obj.is_py_value() {
                     return Type::PyObject;
                 }
 
@@ -741,7 +742,7 @@ impl TypeChecker {
     pub(super) fn check_binop(&mut self, op: &BinOp, l: &Type, r: &Type, span: Span) -> Type {
         let l_resolved = self.apply_subst(l.clone());
         let r_resolved = self.apply_subst(r.clone());
-        let is_py = matches!(l_resolved, Type::PyObject) || matches!(r_resolved, Type::PyObject);
+        let is_py = l_resolved.is_py_value() || r_resolved.is_py_value();
 
         match op {
             BinOp::Add
@@ -788,7 +789,7 @@ impl TypeChecker {
     ) -> Type {
         let target_resolved = self.apply_subst(target.clone());
         let val_resolved = self.apply_subst(val.clone());
-        if matches!(target_resolved, Type::PyObject) || matches!(val_resolved, Type::PyObject) {
+        if target_resolved.is_py_value() || val_resolved.is_py_value() {
             return Type::PyObject;
         }
         self.unify(target, val, span);

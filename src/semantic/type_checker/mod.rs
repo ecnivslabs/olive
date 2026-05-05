@@ -4,6 +4,7 @@ mod stmt;
 mod unify;
 
 use super::error::SemanticError;
+use super::pyi::PyiInfo;
 use super::types::Type;
 use crate::parser::{Program, Stmt};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
@@ -39,6 +40,8 @@ pub struct TypeChecker {
     pub(super) py_module_types: HashMap<String, HashMap<String, Type>>,
     // module alias → fn_name → list of (param_types, return_type) overloads
     pub(super) py_module_fns: HashMap<String, HashMap<String, Vec<(Vec<Type>, Type)>>>,
+    // set of names bound via `import py "..." as <alias>`
+    pub(super) py_aliases: HashSet<String>,
 }
 
 impl Default for TypeChecker {
@@ -355,6 +358,7 @@ impl TypeChecker {
             expr_kwarg_maps: HashMap::default(),
             py_module_types: HashMap::default(),
             py_module_fns: HashMap::default(),
+            py_aliases: HashSet::default(),
         }
     }
 
@@ -411,7 +415,77 @@ impl TypeChecker {
         fn_overloads
             .iter()
             .find(|(params, _)| params.is_empty() || params.len() == arity)
-            .map(|_| Type::PyObject)
+            .map(|(_, ret)| ret.clone())
+    }
+
+    pub(super) fn register_pyi(&mut self, alias: &str, info: PyiInfo) {
+        // Pass 1: build type map (preferred names + aliases).
+        for type_name in &info.types {
+            let named = Type::PyNamed(alias.to_string(), type_name.clone());
+            self.py_module_types
+                .entry(alias.to_string())
+                .or_default()
+                .insert(type_name.clone(), named.clone());
+            self.define_type(type_name, named, false);
+        }
+        for (raw_name, preferred) in &info.aliases {
+            let named = Type::PyNamed(alias.to_string(), preferred.clone());
+            self.py_module_types
+                .entry(alias.to_string())
+                .or_default()
+                .insert(raw_name.clone(), named);
+        }
+
+        // Pass 2: register function overloads using the now-complete type map.
+        let snapshot = self.py_module_types.clone();
+        for (fn_name, overloads) in info.fns {
+            for (params, ret_str) in overloads {
+                let ret_ty = Self::pyi_str_to_type(alias, &ret_str, &info.aliases, &snapshot);
+                let param_tys: Vec<Type> = params
+                    .iter()
+                    .map(|p| Self::pyi_str_to_type(alias, p, &info.aliases, &snapshot))
+                    .collect();
+                self.py_module_fns
+                    .entry(alias.to_string())
+                    .or_default()
+                    .entry(fn_name.clone())
+                    .or_default()
+                    .push((param_tys.clone(), ret_ty.clone()));
+                let mangled = format!("{}::{}", alias, fn_name);
+                if self.lookup_type(&mangled).is_none() {
+                    self.define_type(
+                        &mangled,
+                        Type::Fn(param_tys, Box::new(ret_ty), vec![]),
+                        false,
+                    );
+                }
+            }
+        }
+    }
+
+    fn pyi_str_to_type(
+        alias: &str,
+        name: &str,
+        aliases: &HashMap<String, String>,
+        type_map: &HashMap<String, HashMap<String, Type>>,
+    ) -> Type {
+        match name {
+            "float" => Type::Float,
+            "int" => Type::Int,
+            "bool" => Type::Bool,
+            "str" => Type::Str,
+            "None" => Type::Null,
+            "PyObject" => Type::PyObject,
+            other => {
+                let preferred = aliases.get(other).map(|s| s.as_str()).unwrap_or(other);
+                if let Some(m) = type_map.get(alias) {
+                    if let Some(ty) = m.get(preferred) {
+                        return ty.clone();
+                    }
+                }
+                Type::PyNamed(alias.to_string(), preferred.to_string())
+            }
+        }
     }
 
     pub(super) fn is_mutable(&self, name: &str) -> bool {
