@@ -6,7 +6,7 @@ use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
-const REGISTRY_REPO: &str = "olive-language/pit-registry";
+const REGISTRY_REPO: &str = "ecnivs-labs/pit-registry";
 
 struct GhClient {
     token: String,

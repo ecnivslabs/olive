@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -e
 
-REPO="olive-language/olive"
+REPO="ecnivs-labs/olive"
 BIN="pit"
 INSTALL_DIR="${OLIVE_INSTALL_DIR:-$HOME/.local/bin}"
 
