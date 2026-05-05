@@ -25,7 +25,7 @@ fn get_registry_base() -> String {
     {
         return url;
     }
-    "https://raw.githubusercontent.com/ecnivs-labs/pit-registry/main".to_string()
+    "https://raw.githubusercontent.com/ecnivslabs/pit-registry/main".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
