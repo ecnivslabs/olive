@@ -51,6 +51,13 @@ pub struct FfiConstDef {
 }
 
 #[derive(Debug, Clone)]
+pub struct PyFnSig {
+    pub name: String,
+    pub params: Vec<TypeExpr>,
+    pub ret: Option<TypeExpr>,
+}
+
+#[derive(Debug, Clone)]
 pub struct Decorator {
     pub name: String,
     pub is_directive: bool,
@@ -78,6 +85,7 @@ impl TypeExpr {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeExprKind {
     Name(String),
+    Qualified(Vec<String>),
     Generic(String, Vec<TypeExpr>),
     Tuple(Vec<TypeExpr>),
     List(Box<TypeExpr>),
@@ -103,6 +111,7 @@ impl std::fmt::Display for TypeExprKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TypeExprKind::Name(n) => write!(f, "{}", n),
+            TypeExprKind::Qualified(parts) => write!(f, "{}", parts.join(".")),
             TypeExprKind::Generic(n, args) => {
                 write!(f, "{}[", n)?;
                 for (i, arg) in args.iter().enumerate() {
@@ -433,6 +442,8 @@ pub enum StmtKind {
     PyImport {
         module: String,
         alias: String,
+        typed_types: Vec<String>,
+        typed_fns: Vec<PyFnSig>,
     },
     Let {
         name: String,

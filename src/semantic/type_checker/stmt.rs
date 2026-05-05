@@ -145,7 +145,13 @@ impl TypeChecker {
                     let obj_ty = self.check_expr(obj);
                     let resolved_obj = self.apply_subst(obj_ty);
                     if let Type::Struct(struct_name, _) = resolved_obj {
-                        self.field_types.insert((struct_name, attr.clone()), val_ty);
+                        let existing = self
+                            .field_types
+                            .get(&(struct_name.clone(), attr.clone()))
+                            .cloned();
+                        if existing.is_none() || existing == Some(Type::Any) {
+                            self.field_types.insert((struct_name, attr.clone()), val_ty);
+                        }
                     }
                 }
 
@@ -715,8 +721,50 @@ impl TypeChecker {
                 self.check_expr(expr);
             }
 
-            StmtKind::PyImport { alias, .. } => {
+            StmtKind::PyImport {
+                alias,
+                typed_types,
+                typed_fns,
+                ..
+            } => {
                 self.define_type(alias, Type::PyObject, false);
+                if !typed_types.is_empty() || !typed_fns.is_empty() {
+                    for type_name in typed_types {
+                        self.py_module_types
+                            .entry(alias.clone())
+                            .or_default()
+                            .insert(type_name.clone(), Type::PyObject);
+                        // Register unqualified name so fn sig return types like `-> vec3` resolve.
+                        self.define_type(type_name, Type::PyObject, false);
+                    }
+                    for sig in typed_fns {
+                        let param_tys: Vec<Type> = sig
+                            .params
+                            .iter()
+                            .map(|p| self.resolve_type_expr(p))
+                            .collect();
+                        let ret_ty = sig
+                            .ret
+                            .as_ref()
+                            .map(|r| self.resolve_type_expr(r))
+                            .unwrap_or(Type::PyObject);
+                        self.py_module_fns
+                            .entry(alias.clone())
+                            .or_default()
+                            .entry(sig.name.clone())
+                            .or_default()
+                            .push((param_tys.clone(), ret_ty.clone()));
+                        // Register first overload in type env for direct attr lookup.
+                        let mangled = format!("{}::{}", alias, sig.name);
+                        if self.lookup_type(&mangled).is_none() {
+                            self.define_type(
+                                &mangled,
+                                Type::Fn(param_tys, Box::new(ret_ty), vec![]),
+                                false,
+                            );
+                        }
+                    }
+                }
             }
 
             StmtKind::Enum {

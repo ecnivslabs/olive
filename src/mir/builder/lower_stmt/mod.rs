@@ -825,7 +825,7 @@ impl<'a> MirBuilder<'a> {
             | StmtKind::FromImport { .. }
             | StmtKind::NativeImport { .. } => {}
 
-            StmtKind::PyImport { module, alias } => {
+            StmtKind::PyImport { module, alias, .. } => {
                 let module_op = Operand::Constant(Constant::Str(module.clone()));
                 if self.current_name == "__main__" {
                     if !self.global_vars.contains(alias) {

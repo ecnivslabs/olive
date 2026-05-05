@@ -8,6 +8,7 @@ impl<'a> MirBuilder<'a> {
     pub(super) fn resolve_type_expr(&self, expr: &TypeExpr) -> Type {
         use crate::parser::TypeExprKind;
         match &expr.kind {
+            TypeExprKind::Qualified(_) => Type::PyObject,
             TypeExprKind::Name(name) => match name.as_str() {
                 "int" | "i64" => Type::Int,
                 "i32" => Type::I32,

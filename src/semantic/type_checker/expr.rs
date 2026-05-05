@@ -136,13 +136,25 @@ impl TypeChecker {
                 let applied = self.apply_subst(callee_ty.clone());
 
                 if applied == Type::PyObject {
-                    for arg in args {
-                        self.check_expr(match arg {
-                            CallArg::Positional(e)
-                            | CallArg::Keyword(_, e)
-                            | CallArg::Splat(e)
-                            | CallArg::KwSplat(e) => e,
-                        });
+                    let arg_tys: Vec<Type> = args
+                        .iter()
+                        .map(|a| {
+                            self.check_expr(match a {
+                                CallArg::Positional(e)
+                                | CallArg::Keyword(_, e)
+                                | CallArg::Splat(e)
+                                | CallArg::KwSplat(e) => e,
+                            })
+                        })
+                        .collect();
+                    if let ExprKind::Attr { obj, attr } = &callee.kind {
+                        if let ExprKind::Identifier(module_name) = &obj.kind {
+                            if let Some(ret_ty) =
+                                self.resolve_py_fn_overload(module_name, attr, &arg_tys)
+                            {
+                                return ret_ty;
+                            }
+                        }
                     }
                     return Type::PyObject;
                 }

@@ -51,6 +51,30 @@ impl<'a> MirBuilder<'a> {
             );
             return Operand::Copy(fat_ptr_tmp);
         }
+
+        if *from_ty == Type::PyObject {
+            let native_ty = match to_ty {
+                Type::Float
+                | Type::F32
+                | Type::Int
+                | Type::I8
+                | Type::I16
+                | Type::I32
+                | Type::U8
+                | Type::U16
+                | Type::U32
+                | Type::U64
+                | Type::Usize
+                | Type::Bool => Some(to_ty.clone()),
+                _ => None,
+            };
+            if let Some(cast_ty) = native_ty {
+                let tmp = self.new_local(cast_ty.clone(), None, false);
+                self.push_statement(StatementKind::Assign(tmp, Rvalue::Cast(op, cast_ty)), span);
+                return Operand::Copy(tmp);
+            }
+        }
+
         op
     }
 

@@ -35,6 +35,10 @@ pub struct TypeChecker {
     pub(super) var_counter: usize,
     pub init_params: HashMap<String, Vec<String>>,
     pub expr_kwarg_maps: HashMap<usize, Vec<usize>>,
+    // module alias → type_name → resolved type
+    pub(super) py_module_types: HashMap<String, HashMap<String, Type>>,
+    // module alias → fn_name → list of (param_types, return_type) overloads
+    pub(super) py_module_fns: HashMap<String, HashMap<String, Vec<(Vec<Type>, Type)>>>,
 }
 
 impl Default for TypeChecker {
@@ -349,6 +353,8 @@ impl TypeChecker {
             var_counter: 0,
             init_params: HashMap::default(),
             expr_kwarg_maps: HashMap::default(),
+            py_module_types: HashMap::default(),
+            py_module_fns: HashMap::default(),
         }
     }
 
@@ -388,6 +394,24 @@ impl TypeChecker {
             }
         }
         None
+    }
+
+    pub(super) fn resolve_py_fn_overload(
+        &self,
+        module: &str,
+        fn_name: &str,
+        arg_tys: &[Type],
+    ) -> Option<Type> {
+        let fn_overloads = self
+            .py_module_fns
+            .get(module)
+            .and_then(|m| m.get(fn_name))?;
+        let arity = arg_tys.len();
+        // Pick first overload matching by arity; zero-param entry = vararg (matches any).
+        fn_overloads
+            .iter()
+            .find(|(params, _)| params.is_empty() || params.len() == arity)
+            .map(|_| Type::PyObject)
     }
 
     pub(super) fn is_mutable(&self, name: &str) -> bool {

@@ -387,6 +387,18 @@ impl TypeChecker {
 
     pub(super) fn resolve_type_expr(&self, expr: &TypeExpr) -> Type {
         match &expr.kind {
+            TypeExprKind::Qualified(parts) => {
+                if parts.len() >= 2 {
+                    let module = &parts[0];
+                    let type_name = &parts[1];
+                    if let Some(type_map) = self.py_module_types.get(module) {
+                        if let Some(ty) = type_map.get(type_name) {
+                            return ty.clone();
+                        }
+                    }
+                }
+                Type::PyObject
+            }
             TypeExprKind::Name(name) => match name.as_str() {
                 "int" | "i64" => Type::Int,
                 "i32" => Type::I32,

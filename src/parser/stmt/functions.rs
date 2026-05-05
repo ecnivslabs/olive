@@ -40,9 +40,52 @@ impl Parser {
             let module = self.advance().value.clone();
             self.expect(TokenKind::As)?;
             let alias = self.expect(TokenKind::Identifier)?.value;
+            if self.peek().kind == TokenKind::Colon && self.peek_at(1).kind == TokenKind::Newline {
+                self.advance(); // colon
+                self.advance(); // newline
+                self.expect(TokenKind::Indent)?;
+                self.skip_newlines();
+                let mut typed_types = Vec::new();
+                let mut typed_fns = Vec::new();
+                while self.peek().kind != TokenKind::Dedent && self.peek().kind != TokenKind::Eof {
+                    if self.peek().kind == TokenKind::Identifier && self.peek().value == "type" {
+                        self.advance();
+                        let type_name = self.expect(TokenKind::Identifier)?.value;
+                        typed_types.push(type_name);
+                        self.eat_stmt_end()?;
+                    } else if self.peek().kind == TokenKind::Fn {
+                        typed_fns.push(self.parse_py_fn_sig()?);
+                    } else {
+                        let tok = self.peek().clone();
+                        return Err(
+                            self.err_at(&tok, "expected 'type' or 'fn' in Python import block")
+                        );
+                    }
+                    self.skip_newlines();
+                }
+                self.expect(TokenKind::Dedent)?;
+                let span = self.span_from(&start);
+                return Ok(Stmt::new(
+                    StmtKind::PyImport {
+                        module,
+                        alias,
+                        typed_types,
+                        typed_fns,
+                    },
+                    span,
+                ));
+            }
             self.eat_stmt_end()?;
             let span = self.span_from(&start);
-            return Ok(Stmt::new(StmtKind::PyImport { module, alias }, span));
+            return Ok(Stmt::new(
+                StmtKind::PyImport {
+                    module,
+                    alias,
+                    typed_types: Vec::new(),
+                    typed_fns: Vec::new(),
+                },
+                span,
+            ));
         }
         if self.peek().kind == TokenKind::String {
             let path = self.advance().value.clone();
@@ -164,6 +207,40 @@ impl Parser {
             },
             span,
         ))
+    }
+
+    fn parse_py_fn_sig(&mut self) -> ParseResult<PyFnSig> {
+        self.expect(TokenKind::Fn)?;
+        let name = self.expect(TokenKind::Identifier)?.value;
+        self.expect(TokenKind::LParen)?;
+        let mut params = Vec::new();
+        while self.peek().kind != TokenKind::RParen && self.peek().kind != TokenKind::Eof {
+            // param names are optional: `x: float` or just `float`
+            let ty = if self.peek().kind == TokenKind::Identifier
+                && self.peek_at(1).kind == TokenKind::Colon
+            {
+                self.advance(); // name
+                self.advance(); // colon
+                self.parse_type_expr()?
+            } else {
+                self.parse_type_expr()?
+            };
+            params.push(ty);
+            if self.peek().kind == TokenKind::Comma {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        self.expect(TokenKind::RParen)?;
+        let ret = if self.peek().kind == TokenKind::Arrow {
+            self.advance();
+            Some(self.parse_type_expr()?)
+        } else {
+            None
+        };
+        self.eat_stmt_end()?;
+        Ok(PyFnSig { name, params, ret })
     }
 
     pub(crate) fn parse_let(&mut self) -> ParseResult<Stmt> {

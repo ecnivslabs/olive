@@ -346,3 +346,80 @@ fn parse_from_import_with_alias() {
         _ => panic!("expected FromImport"),
     }
 }
+
+#[test]
+fn parse_py_import_simple() {
+    let mut p = make_parser("import py \"glm\" as glm\n");
+    let stmt = p.parse_stmt().expect("parse failed");
+    match &stmt.kind {
+        StmtKind::PyImport {
+            module,
+            alias,
+            typed_types,
+            typed_fns,
+        } => {
+            assert_eq!(module, "glm");
+            assert_eq!(alias, "glm");
+            assert!(typed_types.is_empty());
+            assert!(typed_fns.is_empty());
+        }
+        _ => panic!("expected PyImport"),
+    }
+}
+
+#[test]
+fn parse_py_import_typed_block() {
+    let src = "import py \"glm\" as glm:\n    type vec3\n    type mat4\n    fn vec3(x: float, y: float, z: float) -> vec3\n";
+    let mut p = make_parser(src);
+    let stmt = p.parse_stmt().expect("parse failed");
+    match &stmt.kind {
+        StmtKind::PyImport {
+            module,
+            alias,
+            typed_types,
+            typed_fns,
+        } => {
+            assert_eq!(module, "glm");
+            assert_eq!(alias, "glm");
+            assert_eq!(typed_types.len(), 2);
+            assert!(typed_types.contains(&"vec3".to_string()));
+            assert!(typed_types.contains(&"mat4".to_string()));
+            assert_eq!(typed_fns.len(), 1);
+            assert_eq!(typed_fns[0].name, "vec3");
+            assert_eq!(typed_fns[0].params.len(), 3);
+        }
+        _ => panic!("expected PyImport"),
+    }
+}
+
+#[test]
+fn parse_struct_with_dotted_field_type() {
+    let src = "struct Camera:\n    position: glm.vec3\n    aspect: f64\n";
+    let mut p = make_parser(src);
+    let stmt = p.parse_struct().expect("parse failed");
+    match &stmt.kind {
+        StmtKind::Struct { fields, .. } => {
+            assert_eq!(fields.len(), 2);
+            let pos_ty = fields[0].type_ann.as_ref().unwrap();
+            assert!(
+                matches!(&pos_ty.kind, TypeExprKind::Qualified(parts) if parts == &["glm", "vec3"])
+            );
+        }
+        _ => panic!("expected Struct"),
+    }
+}
+
+#[test]
+fn parse_py_import_overloaded_fn() {
+    let src = "import py \"glm\" as glm:\n    type vec3\n    fn vec3(x: float, y: float, z: float) -> vec3\n    fn vec3(x: float) -> vec3\n";
+    let mut p = make_parser(src);
+    let stmt = p.parse_stmt().expect("parse failed");
+    match &stmt.kind {
+        StmtKind::PyImport { typed_fns, .. } => {
+            assert_eq!(typed_fns.len(), 2);
+            assert_eq!(typed_fns[0].params.len(), 3);
+            assert_eq!(typed_fns[1].params.len(), 1);
+        }
+        _ => panic!("expected PyImport"),
+    }
+}

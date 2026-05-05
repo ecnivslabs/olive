@@ -312,6 +312,7 @@ pub fn mangle_expr(expr: &mut Expr, prefix: &str, names: &HashSet<String>) {
 
 pub fn mangle_type_expr(ty: &mut TypeExpr, prefix: &str, names: &HashSet<String>) {
     match &mut ty.kind {
+        TypeExprKind::Qualified(_) => {}
         TypeExprKind::Name(name) => {
             if names.contains(name) {
                 *name = format!("{}::{}", prefix, name);

@@ -18,6 +18,15 @@ impl Parser {
         match self.peek().kind {
             TokenKind::Identifier => {
                 let name = self.advance().value;
+                if self.peek().kind == TokenKind::Dot {
+                    let mut parts = vec![name];
+                    while self.peek().kind == TokenKind::Dot {
+                        self.advance();
+                        parts.push(self.expect(TokenKind::Identifier)?.value);
+                    }
+                    let span = self.span_from(&start);
+                    return Ok(TypeExpr::new(TypeExprKind::Qualified(parts), span));
+                }
                 if self.peek().kind == TokenKind::LBracket {
                     self.advance();
                     let mut args = Vec::new();
@@ -250,6 +259,30 @@ mod tests {
         match &ty.kind {
             TypeExprKind::Generic(_, args) => assert_eq!(args.len(), 2),
             _ => panic!("expected Generic"),
+        }
+    }
+
+    #[test]
+    fn parse_type_qualified() {
+        let mut p = make_parser("glm.vec3\n");
+        let ty = p.parse_type_expr().expect("parse failed");
+        match &ty.kind {
+            TypeExprKind::Qualified(parts) => {
+                assert_eq!(parts, &["glm", "vec3"]);
+            }
+            _ => panic!("expected Qualified"),
+        }
+    }
+
+    #[test]
+    fn parse_type_qualified_three_parts() {
+        let mut p = make_parser("a.b.c\n");
+        let ty = p.parse_type_expr().expect("parse failed");
+        match &ty.kind {
+            TypeExprKind::Qualified(parts) => {
+                assert_eq!(parts, &["a", "b", "c"]);
+            }
+            _ => panic!("expected Qualified"),
         }
     }
 }
