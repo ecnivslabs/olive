@@ -39,7 +39,60 @@ def node_name(node):
             return node_name(node.slice)
     return None
 
+def load_companion_types(pyi_path):
+    """
+    Scan companion *_typing.py modules in the same package and extract
+    the primary glm class from Union aliases like
+      F32Vector3 = Union[glm.vec3, glm.mvec3, Tuple[...]]
+    Returns a dict: attr_name -> primary_class_name.
+    """
+    companion = {}
+    pkg_dir = os.path.dirname(pyi_path)
+    parent_dir = os.path.dirname(pkg_dir)
+    pkg_name = os.path.basename(pkg_dir)
+    candidates = [
+        os.path.join(pkg_dir, pkg_name + "_typing.py"),
+        os.path.join(parent_dir, pkg_name + "_typing.py"),
+    ]
+    # Also look in site-packages for installed pyglm/glm_typing.py etc.
+    for p in sys.path:
+        for sub in (pkg_name, "py" + pkg_name):
+            candidates.append(os.path.join(p, sub, pkg_name + "_typing.py"))
+    for cp in candidates:
+        if not os.path.isfile(cp):
+            continue
+        try:
+            with open(cp, encoding="utf-8", errors="ignore") as f:
+                csrc = f.read()
+            ctree = ast.parse(csrc)
+        except Exception:
+            continue
+        for node in ctree.body:
+            if not isinstance(node, ast.Assign):
+                continue
+            val = node.value
+            # Extract the first `module.ClassName` member from a Union
+            members = []
+            if isinstance(val, ast.Subscript) and isinstance(val.value, ast.Name) and val.value.id == "Union":
+                slc = val.slice
+                elts = slc.elts if isinstance(slc, ast.Tuple) else [slc]
+                for elt in elts:
+                    if isinstance(elt, ast.Attribute) and isinstance(elt.value, ast.Name):
+                        members.append(elt.attr)
+            elif isinstance(val, ast.Attribute) and isinstance(val.value, ast.Name):
+                members.append(val.attr)
+            if members:
+                # Prefer the shortest name (e.g. vec3 over mvec3) as canonical
+                primary = min(members, key=len)
+                for t in node.targets:
+                    if isinstance(t, ast.Name):
+                        companion[t.id] = primary
+        break  # use first found companion file
+    return companion
+
 def extract(path):
+    companion = load_companion_types(path)
+
     with open(path, encoding="utf-8", errors="ignore") as f:
         src = f.read()
     try:
@@ -94,6 +147,10 @@ def extract(path):
         if name in typevars:
             cs = typevars[name]
             return preferred(cs[0]) if cs else None
+        if name in companion:
+            primary = companion[name]
+            if primary in classes or primary in alias_to_canonical:
+                return preferred(primary)
         return PRIMITIVES.get(name)
 
     def raw_anns(node):
