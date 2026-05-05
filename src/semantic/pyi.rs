@@ -8,6 +8,10 @@ struct RawInfo {
     types: Vec<String>,
     aliases: HashMap<String, String>,
     fns: HashMap<String, Vec<RawSig>>,
+    #[serde(default)]
+    fields: HashMap<String, HashMap<String, String>>,
+    #[serde(default)]
+    methods: HashMap<String, HashMap<String, Vec<RawSig>>>,
 }
 
 #[derive(Deserialize)]
@@ -16,10 +20,14 @@ struct RawSig {
     ret: String,
 }
 
+pub type SigList = Vec<(Vec<String>, String)>;
+
 pub struct PyiInfo {
     pub types: Vec<String>,
     pub aliases: HashMap<String, String>,
-    pub fns: HashMap<String, Vec<(Vec<String>, String)>>,
+    pub fns: HashMap<String, SigList>,
+    pub fields: HashMap<String, HashMap<String, String>>,
+    pub methods: HashMap<String, HashMap<String, SigList>>,
 }
 
 const INSPECTOR: &str = include_str!("pyi_inspector.py");
@@ -49,12 +57,25 @@ pub fn query(module: &str) -> Option<PyiInfo> {
         return None;
     }
 
+    let convert_sigs = |sigs: Vec<RawSig>| -> SigList {
+        sigs.into_iter().map(|s| (s.params, s.ret)).collect()
+    };
+
     let fns = raw
         .fns
         .into_iter()
-        .map(|(name, sigs)| {
-            let converted = sigs.into_iter().map(|s| (s.params, s.ret)).collect();
-            (name, converted)
+        .map(|(name, sigs)| (name, convert_sigs(sigs)))
+        .collect();
+
+    let methods = raw
+        .methods
+        .into_iter()
+        .map(|(cls, mmap)| {
+            let converted = mmap
+                .into_iter()
+                .map(|(m, sigs)| (m, convert_sigs(sigs)))
+                .collect();
+            (cls, converted)
         })
         .collect();
 
@@ -62,5 +83,7 @@ pub fn query(module: &str) -> Option<PyiInfo> {
         types: raw.types,
         aliases: raw.aliases,
         fns,
+        fields: raw.fields,
+        methods,
     })
 }

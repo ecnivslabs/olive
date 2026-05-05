@@ -42,6 +42,10 @@ pub struct TypeChecker {
     pub(super) py_module_fns: HashMap<String, HashMap<String, Vec<(Vec<Type>, Type)>>>,
     // set of names bound via `import py "..." as <alias>`
     pub(super) py_aliases: HashSet<String>,
+    // (module alias, class name) → field_name → type
+    pub(super) py_class_fields: HashMap<(String, String), HashMap<String, Type>>,
+    // (module alias, class name) → method_name → overloads
+    pub(super) py_class_methods: HashMap<(String, String), HashMap<String, Vec<(Vec<Type>, Type)>>>,
 }
 
 impl Default for TypeChecker {
@@ -359,6 +363,8 @@ impl TypeChecker {
             py_module_types: HashMap::default(),
             py_module_fns: HashMap::default(),
             py_aliases: HashSet::default(),
+            py_class_fields: HashMap::default(),
+            py_class_methods: HashMap::default(),
         }
     }
 
@@ -418,6 +424,31 @@ impl TypeChecker {
             .map(|(_, ret)| ret.clone())
     }
 
+    pub(super) fn resolve_py_field(&self, module: &str, class: &str, field: &str) -> Option<Type> {
+        self.py_class_fields
+            .get(&(module.to_string(), class.to_string()))
+            .and_then(|m| m.get(field))
+            .cloned()
+    }
+
+    pub(super) fn resolve_py_method_overload(
+        &self,
+        module: &str,
+        class: &str,
+        method: &str,
+        arg_tys: &[Type],
+    ) -> Option<Type> {
+        let overloads = self
+            .py_class_methods
+            .get(&(module.to_string(), class.to_string()))
+            .and_then(|m| m.get(method))?;
+        let arity = arg_tys.len();
+        overloads
+            .iter()
+            .find(|(params, _)| params.is_empty() || params.len() == arity)
+            .map(|(_, ret)| ret.clone())
+    }
+
     pub(super) fn register_pyi(&mut self, alias: &str, info: PyiInfo) {
         // Pass 1: build type map (preferred names + aliases).
         for type_name in &info.types {
@@ -436,7 +467,7 @@ impl TypeChecker {
                 .insert(raw_name.clone(), named);
         }
 
-        // Pass 2: register function overloads using the now-complete type map.
+        // Pass 2: register fn overloads + class fields/methods using the now-complete type map.
         let snapshot = self.py_module_types.clone();
         for (fn_name, overloads) in info.fns {
             for (params, ret_str) in overloads {
@@ -460,6 +491,45 @@ impl TypeChecker {
                     );
                 }
             }
+        }
+
+        // Class fields.
+        for (cls_name, field_map) in info.fields {
+            let key = (alias.to_string(), cls_name.clone());
+            let typed_fields: HashMap<String, Type> = field_map
+                .into_iter()
+                .map(|(field_name, type_str)| {
+                    let ty = Self::pyi_str_to_type(alias, &type_str, &info.aliases, &snapshot);
+                    (field_name, ty)
+                })
+                .collect();
+            self.py_class_fields.insert(key, typed_fields);
+        }
+
+        // Class methods.
+        for (cls_name, method_map) in info.methods {
+            let key = (alias.to_string(), cls_name.clone());
+            let typed_methods: HashMap<String, Vec<(Vec<Type>, Type)>> = method_map
+                .into_iter()
+                .map(|(method_name, sigs)| {
+                    let typed_sigs = sigs
+                        .into_iter()
+                        .map(|(params, ret_str)| {
+                            let ret_ty =
+                                Self::pyi_str_to_type(alias, &ret_str, &info.aliases, &snapshot);
+                            let param_tys: Vec<Type> = params
+                                .iter()
+                                .map(|p| {
+                                    Self::pyi_str_to_type(alias, p, &info.aliases, &snapshot)
+                                })
+                                .collect();
+                            (param_tys, ret_ty)
+                        })
+                        .collect();
+                    (method_name, typed_sigs)
+                })
+                .collect();
+            self.py_class_methods.insert(key, typed_methods);
         }
     }
 

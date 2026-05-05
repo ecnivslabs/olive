@@ -156,6 +156,19 @@ impl TypeChecker {
                                 return ret_ty;
                             }
                         }
+                        let obj_ty = self
+                            .expr_types
+                            .get(&obj.id)
+                            .cloned()
+                            .map(|t| self.apply_subst(t))
+                            .unwrap_or(Type::PyObject);
+                        if let Type::PyNamed(m, n) = &obj_ty {
+                            if let Some(ret_ty) =
+                                self.resolve_py_method_overload(m, n, attr, &arg_tys)
+                            {
+                                return ret_ty;
+                            }
+                        }
                     }
                     return Type::PyObject;
                 }
@@ -409,6 +422,13 @@ impl TypeChecker {
             ExprKind::Attr { obj, attr } => {
                 let obj_ty = self.check_expr(obj);
                 let resolved_obj = self.apply_subst(obj_ty);
+
+                if let Type::PyNamed(ref m, ref n) = resolved_obj {
+                    if let Some(field_ty) = self.resolve_py_field(m, n, attr) {
+                        return field_ty;
+                    }
+                    return Type::PyObject;
+                }
 
                 if resolved_obj.is_py_value() {
                     return Type::PyObject;

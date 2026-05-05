@@ -106,59 +106,73 @@ def extract(path):
             params.append(pn if pn else "PyObject")
         return params
 
+    def disambiguate(raw):
+        by_arity = defaultdict(set)
+        for o in raw:
+            by_arity[len(o["params"])].add(o["ret"])
+        resolved = []
+        seen = set()
+        for o in raw:
+            arity = len(o["params"])
+            if arity in seen:
+                continue
+            seen.add(arity)
+            resolved.append(o if len(by_arity[arity]) == 1
+                            else {"params": o["params"], "ret": "PyObject"})
+        return resolved
+
     # Module-level functions
-    raw_fns = defaultdict(list)  # name -> [{params, ret}]
+    raw_fns = defaultdict(list)
     for node in tree.body:
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         ret = resolve_type(node_name(node.returns)) if node.returns else None
-        if ret is None:
-            ret = "PyObject"
-        raw_fns[node.name].append({"params": fn_params(node), "ret": ret})
+        raw_fns[node.name].append({"params": fn_params(node), "ret": ret or "PyObject"})
 
-    # Class constructors: glm.vec3(...) calls vec3.__init__
+    # Class constructors + per-class fields and methods
+    raw_methods = defaultdict(lambda: defaultdict(list))  # cls -> method -> [{params,ret}]
+    fields = {}  # cls -> {field_name -> type_str}
+
     for node in tree.body:
         if not isinstance(node, ast.ClassDef):
             continue
         cls_name = preferred(node.name)
+        cls_fields = {}
         for item in node.body:
-            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == "__init__":
+            if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+                ft = resolve_type(node_name(item.annotation))
+                if ft:
+                    cls_fields[item.target.id] = ft
+            elif isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 params = fn_params(item)
-                raw_fns[cls_name].append({"params": params, "ret": cls_name})
+                ret = resolve_type(node_name(item.returns)) if item.returns else None
+                if item.name == "__init__":
+                    raw_fns[cls_name].append({"params": params, "ret": cls_name})
+                else:
+                    raw_methods[cls_name][item.name].append(
+                        {"params": params, "ret": ret or "PyObject"}
+                    )
+        if cls_fields:
+            fields[cls_name] = cls_fields
 
-    # Disambiguate: if multiple arity-N overloads return different types, use PyObject
-    fns = {}
-    for name, overloads in raw_fns.items():
-        by_arity = defaultdict(set)
-        for o in overloads:
-            by_arity[len(o["params"])].add(o["ret"])
-        resolved = []
-        seen_arities = set()
-        for o in overloads:
-            arity = len(o["params"])
-            if arity in seen_arities:
-                continue  # deduplicate same-arity same-return
-            seen_arities.add(arity)
-            if len(by_arity[arity]) == 1:
-                resolved.append(o)
-            else:
-                resolved.append({"params": o["params"], "ret": "PyObject"})
-        fns[name] = resolved
+    fns = {name: disambiguate(overloads) for name, overloads in raw_fns.items()}
+    methods = {
+        cls: {m: disambiguate(sigs) for m, sigs in mmap.items()}
+        for cls, mmap in raw_methods.items()
+    }
 
-    # All preferred type names to expose
     all_types = sorted({preferred(c) for c in classes})
 
-    # aliases map: every non-preferred name -> preferred name
     aliases = {}
     for c in classes:
         p = preferred(c)
         if c != p:
             aliases[c] = p
     for alias, canonical in alias_to_canonical.items():
-        p = preferred(canonical)
-        aliases[alias] = p
+        aliases[alias] = preferred(canonical)
 
-    return {"types": all_types, "aliases": aliases, "fns": fns}
+    return {"types": all_types, "aliases": aliases, "fns": fns,
+            "fields": fields, "methods": methods}
 
 module = os.environ.get("OLIVE_PYI_MODULE", "")
 path = find_pyi(module)
