@@ -416,12 +416,7 @@ impl TypeChecker {
             .py_module_fns
             .get(module)
             .and_then(|m| m.get(fn_name))?;
-        let arity = arg_tys.len();
-        // Pick first overload matching by arity; zero-param entry = vararg (matches any).
-        fn_overloads
-            .iter()
-            .find(|(params, _)| params.is_empty() || params.len() == arity)
-            .map(|(_, ret)| ret.clone())
+        Some(Self::best_overload(fn_overloads, arg_tys)?.clone())
     }
 
     pub(super) fn resolve_py_field(&self, module: &str, class: &str, field: &str) -> Option<Type> {
@@ -442,11 +437,55 @@ impl TypeChecker {
             .py_class_methods
             .get(&(module.to_string(), class.to_string()))
             .and_then(|m| m.get(method))?;
+        Some(Self::best_overload(overloads, arg_tys)?.clone())
+    }
+
+    fn best_overload<'a>(
+        overloads: &'a [(Vec<Type>, Type)],
+        arg_tys: &[Type],
+    ) -> Option<&'a Type> {
         let arity = arg_tys.len();
-        overloads
+        let candidates: Vec<_> = overloads
             .iter()
-            .find(|(params, _)| params.is_empty() || params.len() == arity)
-            .map(|(_, ret)| ret.clone())
+            .filter(|(params, _)| params.is_empty() || params.len() == arity)
+            .collect();
+        if candidates.is_empty() {
+            return None;
+        }
+        // Prefer exact (non-PyObject) param matches — avoids PyObject fallback overloads
+        // swamping TypeVar-expanded concrete overloads.
+        if candidates.len() > 1 {
+            let exact = candidates.iter().find(|(params, _)| {
+                !params.is_empty()
+                    && params
+                        .iter()
+                        .zip(arg_tys)
+                        .all(|(p, a)| !matches!(p, Type::PyObject) && Self::py_types_compat(p, a))
+            });
+            if let Some((_, ret)) = exact {
+                return Some(ret);
+            }
+            // Fallback: any compatible (including PyObject-param)
+            let any = candidates.iter().find(|(params, _)| {
+                !params.is_empty()
+                    && params
+                        .iter()
+                        .zip(arg_tys)
+                        .all(|(p, a)| Self::py_types_compat(p, a))
+            });
+            if let Some((_, ret)) = any {
+                return Some(ret);
+            }
+        }
+        candidates.first().map(|(_, ret)| ret)
+    }
+
+    fn py_types_compat(param: &Type, arg: &Type) -> bool {
+        match (param, arg) {
+            (Type::PyObject, _) | (_, Type::PyObject) => true,
+            (Type::PyNamed(pm, pn), Type::PyNamed(am, an)) => pm == am && pn == an,
+            (a, b) => a == b,
+        }
     }
 
     pub(super) fn register_pyi(&mut self, alias: &str, info: PyiInfo) {

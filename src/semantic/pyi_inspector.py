@@ -1,5 +1,5 @@
 import ast, sys, os, json, importlib.util
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 def find_pyi(module_name):
     parts = module_name.split(".")
@@ -45,17 +45,17 @@ def extract(path):
     try:
         tree = ast.parse(src)
     except SyntaxError:
-        return {"types": [], "aliases": {}, "fns": {}}
+        return {"types": [], "aliases": {}, "fns": {}, "fields": {}, "methods": {}}
 
     classes = set()
-    typevars = {}         # name -> [constraint class names]
-    alias_to_canonical = {}   # fvec3 -> vec3
+    typevars = {}           # name -> [constraint class names]
+    alias_to_canonical = {} # fvec3 -> vec3
     canonical_to_preferred = {}  # vec3 -> vec3, mat4x4 -> mat4
 
     for node in tree.body:
         if isinstance(node, ast.ClassDef):
             classes.add(node.name)
-            canonical_to_preferred[node.name] = node.name  # default: itself
+            canonical_to_preferred[node.name] = node.name
 
     for node in tree.body:
         if isinstance(node, ast.Assign):
@@ -96,42 +96,101 @@ def extract(path):
             return preferred(cs[0]) if cs else None
         return PRIMITIVES.get(name)
 
-    def fn_params(node):
+    def raw_anns(node):
+        """Return raw annotation name strings (unresolved) for non-self/cls args."""
         all_args = list(getattr(node.args, "posonlyargs", [])) + list(node.args.args)
-        params = []
+        result = []
         for arg in all_args:
             if arg.arg in ("self", "cls"):
                 continue
-            pn = resolve_type(node_name(arg.annotation)) if arg.annotation else None
-            params.append(pn if pn else "PyObject")
-        return params
+            result.append(node_name(arg.annotation) if arg.annotation else None)
+        return result
+
+    def make_overloads(param_anns, ret_ann):
+        """
+        Expand TypeVar-constrained signatures into one overload per constraint.
+        Returns a list of {"params": [...], "ret": str} dicts.
+        """
+        tv_in_sig = set()
+        for ann in param_anns:
+            if ann and ann in typevars and typevars[ann]:
+                tv_in_sig.add(ann)
+        if ret_ann and ret_ann in typevars and typevars[ret_ann]:
+            tv_in_sig.add(ret_ann)
+
+        if not tv_in_sig:
+            params = [resolve_type(a) or "PyObject" for a in param_anns]
+            ret = resolve_type(ret_ann) or "PyObject"
+            return [{"params": params, "ret": ret}]
+
+        # Collect constraints from the first TypeVar with constraints
+        constraints = []
+        for tv in tv_in_sig:
+            cs = typevars.get(tv, [])
+            if cs:
+                constraints = cs
+                break
+
+        if not constraints:
+            params = [resolve_type(a) or "PyObject" for a in param_anns]
+            ret = resolve_type(ret_ann) or "PyObject"
+            return [{"params": params, "ret": ret}]
+
+        result = []
+        for c in constraints:
+            pref_c = preferred(c)
+
+            def sub(ann, pref_c=pref_c):
+                if ann and ann in typevars:
+                    return pref_c
+                return resolve_type(ann) or "PyObject"
+
+            result.append({
+                "params": [sub(a) for a in param_anns],
+                "ret": sub(ret_ann) if ret_ann is not None else "PyObject",
+            })
+        return result
 
     def disambiguate(raw):
-        by_arity = defaultdict(set)
+        """
+        Deduplicate overloads by (params_tuple) key.
+        Distinct param signatures coexist; when a single param sig has multiple returns,
+        use the most common return (mode) as the resolved type.
+        """
+        sig_rets = {}   # params_tuple -> list of ret strings
+        order = []
         for o in raw:
-            by_arity[len(o["params"])].add(o["ret"])
+            key = tuple(o["params"])
+            if key not in sig_rets:
+                sig_rets[key] = []
+                order.append(key)
+            sig_rets[key].append(o["ret"])
+
         resolved = []
-        seen = set()
-        for o in raw:
-            arity = len(o["params"])
-            if arity in seen:
-                continue
-            seen.add(arity)
-            resolved.append(o if len(by_arity[arity]) == 1
-                            else {"params": o["params"], "ret": "PyObject"})
+        for key in order:
+            params_list = list(key)
+            rets = sig_rets[key]
+            unique_rets = set(rets)
+            if len(unique_rets) == 1:
+                ret = rets[0]
+            else:
+                ret = Counter(rets).most_common(1)[0][0]
+            resolved.append({"params": params_list, "ret": ret})
         return resolved
 
-    # Module-level functions
+    # Module-level functions (with TypeVar expansion)
     raw_fns = defaultdict(list)
     for node in tree.body:
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        ret = resolve_type(node_name(node.returns)) if node.returns else None
-        raw_fns[node.name].append({"params": fn_params(node), "ret": ret or "PyObject"})
+        param_anns = raw_anns(node)
+        ret_ann = node_name(node.returns) if node.returns else None
+        for overload in make_overloads(param_anns, ret_ann):
+            raw_fns[node.name].append(overload)
 
-    # Class constructors + per-class fields and methods
-    raw_methods = defaultdict(lambda: defaultdict(list))  # cls -> method -> [{params,ret}]
-    fields = {}  # cls -> {field_name -> type_str}
+    # Class constructors + per-class fields and methods (with TypeVar expansion)
+    raw_methods = defaultdict(lambda: defaultdict(list))
+    fields = {}
 
     for node in tree.body:
         if not isinstance(node, ast.ClassDef):
@@ -144,14 +203,14 @@ def extract(path):
                 if ft:
                     cls_fields[item.target.id] = ft
             elif isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                params = fn_params(item)
-                ret = resolve_type(node_name(item.returns)) if item.returns else None
+                param_anns = raw_anns(item)
+                ret_ann = node_name(item.returns) if item.returns else None
                 if item.name == "__init__":
-                    raw_fns[cls_name].append({"params": params, "ret": cls_name})
+                    for overload in make_overloads(param_anns, None):
+                        raw_fns[cls_name].append({"params": overload["params"], "ret": cls_name})
                 else:
-                    raw_methods[cls_name][item.name].append(
-                        {"params": params, "ret": ret or "PyObject"}
-                    )
+                    for overload in make_overloads(param_anns, ret_ann):
+                        raw_methods[cls_name][item.name].append(overload)
         if cls_fields:
             fields[cls_name] = cls_fields
 
@@ -179,4 +238,4 @@ path = find_pyi(module)
 if path:
     print(json.dumps(extract(path)))
 else:
-    print(json.dumps({"types": [], "aliases": {}, "fns": {}}))
+    print(json.dumps({"types": [], "aliases": {}, "fns": {}, "fields": {}, "methods": {}}))
