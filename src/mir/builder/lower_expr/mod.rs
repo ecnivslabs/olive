@@ -163,7 +163,9 @@ impl<'a> MirBuilder<'a> {
 
         if callee_ty == Type::PyObject {
             let callee_op = self.lower_expr_as_copy(callee);
-            return self.lower_pyobject_call(callee_op, args, arg_ops, arg_kw_names, expr.span);
+            let py_result =
+                self.lower_pyobject_call(callee_op, args, arg_ops, arg_kw_names, expr.span);
+            return self.coerce_pyobj_if_needed(py_result, expr.id, expr.span);
         }
 
         if let Some(name) = callee_name {
@@ -246,6 +248,37 @@ impl<'a> MirBuilder<'a> {
         let op = self.lower_expr(expr);
         match op {
             Operand::Move(l) => Operand::Copy(l),
+            _ => op,
+        }
+    }
+
+    pub(super) fn coerce_pyobj_if_needed(
+        &mut self,
+        op: Operand,
+        expr_id: usize,
+        span: crate::span::Span,
+    ) -> Operand {
+        let declared_ty = self.get_type(expr_id);
+        match &declared_ty {
+            Type::Float
+            | Type::F32
+            | Type::Int
+            | Type::I8
+            | Type::I16
+            | Type::I32
+            | Type::U8
+            | Type::U16
+            | Type::U32
+            | Type::U64
+            | Type::Usize
+            | Type::Bool => {
+                let coerced = self.new_local(declared_ty.clone(), None, false);
+                self.push_statement(
+                    StatementKind::Assign(coerced, Rvalue::Cast(op, declared_ty)),
+                    span,
+                );
+                self.operand_for_local(coerced)
+            }
             _ => op,
         }
     }

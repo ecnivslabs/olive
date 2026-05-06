@@ -570,10 +570,9 @@ impl TypeChecker {
         type_map: &HashMap<String, HashMap<String, Type>>,
     ) -> Type {
         match name {
-            "float" => Type::Float,
-            "int" => Type::Int,
-            "bool" => Type::Bool,
-            "str" => Type::Str,
+            // Introspected scalars are CPython objects at runtime, not native values,
+            // so keep them dynamic; explicit stub blocks still bind native via resolve_type_expr.
+            "float" | "int" | "bool" | "str" => Type::PyObject,
             "None" => Type::Null,
             "PyObject" => Type::PyObject,
             other => {
