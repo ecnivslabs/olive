@@ -69,6 +69,11 @@ impl<'a> MirBuilder<'a> {
         traits: &'a HashMap<String, crate::semantic::type_checker::TraitDef>,
         c_ffi_fns: HashSet<String>,
     ) -> Self {
+        // Built-in single-variant `Error` enum, mirrored from the type checker so
+        // construction and `match` lower the same way user enums do.
+        let mut enum_variants: HashMap<String, (String, usize)> = HashMap::default();
+        enum_variants.insert("Error::Error".to_string(), ("Error".to_string(), 0));
+        enum_variants.insert("Error".to_string(), ("Error".to_string(), 0));
         Self {
             functions: Vec::new(),
             expr_types,
@@ -86,7 +91,7 @@ impl<'a> MirBuilder<'a> {
             scope_locals: Vec::new(),
             memo_context: None,
             globals: HashMap::default(),
-            enum_variants: HashMap::default(),
+            enum_variants,
             current_is_async: false,
             fn_meta: HashMap::default(),
             generic_fns: HashMap::default(),

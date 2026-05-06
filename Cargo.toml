@@ -4,7 +4,7 @@ default-members = [".", "std_lib"]
 
 [package]
 name = "pit"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 authors = ["vinceswu"]
 description = "The Olive programming language compiler"
@@ -17,8 +17,6 @@ autoexamples = false
 [lib]
 name = "pit"
 path = "src/lib.rs"
-
-
 
 [dependencies]
 ariadne = "0.6.0"
@@ -51,7 +49,6 @@ semver = "1.0"
 flate2 = "1.0"
 pubgrub = "0.4.0"
 ctrlc = "3.4"
-
 
 [dev-dependencies]
 proptest = "1.4"
