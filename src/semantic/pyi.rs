@@ -57,9 +57,8 @@ pub fn query(module: &str) -> Option<PyiInfo> {
         return None;
     }
 
-    let convert_sigs = |sigs: Vec<RawSig>| -> SigList {
-        sigs.into_iter().map(|s| (s.params, s.ret)).collect()
-    };
+    let convert_sigs =
+        |sigs: Vec<RawSig>| -> SigList { sigs.into_iter().map(|s| (s.params, s.ret)).collect() };
 
     let fns = raw
         .fns

@@ -26,7 +26,7 @@ Olive was built for when you want the speed of a low-level language without the 
 - **Blazing Fast**: Optimized to native code via the Cranelift backend. It's designed to run close to the metal with zero-cost abstractions.
 - **Modern Concurrency**: True async/await that's easy to use and extremely efficient.
 - **C / Rust Interop**: Interface with C or Rust libraries through a C-compatible ABI with built-in FFI support.
-- **Python Interop**: Import any Python module directly and pass native collections with zero-copy bidirectional proxies.
+- **Python Interop**: Import any Python module directly. Types are inferred automatically from `.pyi` stubs, so `glm.vec3` stays `glm.vec3` through the type checker. Native collections pass with zero-copy bidirectional proxies.
 - **Friendly Errors**: When things go wrong, the compiler tells you exactly where and why, with suggestions on how to fix it.
 
 ## A Taste of Olive
@@ -77,7 +77,7 @@ pit run
 - [Generics](docs/generics.md): Writing reusable code.
 - [Traits](docs/traits.md): Defining shared behavior between types.
 - [C / Rust Interop (FFI)](docs/ffi.md): Calling C or Rust code and using `unsafe`.
-- [Python Interop](docs/python.md): High-performance zero-copy Python integration.
+- [Python Interop](docs/python.md): Typed Python integration with automatic `.pyi` stub introspection.
 - [Standard Library](docs/modules.md): What's in the box.
 - [Full Index](docs/index.md): Everything in one place.
 

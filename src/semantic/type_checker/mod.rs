@@ -440,10 +440,7 @@ impl TypeChecker {
         Some(Self::best_overload(overloads, arg_tys)?.clone())
     }
 
-    fn best_overload<'a>(
-        overloads: &'a [(Vec<Type>, Type)],
-        arg_tys: &[Type],
-    ) -> Option<&'a Type> {
+    fn best_overload<'a>(overloads: &'a [(Vec<Type>, Type)], arg_tys: &[Type]) -> Option<&'a Type> {
         let arity = arg_tys.len();
         let candidates: Vec<_> = overloads
             .iter()
@@ -489,7 +486,6 @@ impl TypeChecker {
     }
 
     pub(super) fn register_pyi(&mut self, alias: &str, info: PyiInfo) {
-        // Pass 1: build type map (preferred names + aliases).
         for type_name in &info.types {
             let named = Type::PyNamed(alias.to_string(), type_name.clone());
             self.py_module_types
@@ -506,7 +502,6 @@ impl TypeChecker {
                 .insert(raw_name.clone(), named);
         }
 
-        // Pass 2: register fn overloads + class fields/methods using the now-complete type map.
         let snapshot = self.py_module_types.clone();
         for (fn_name, overloads) in info.fns {
             for (params, ret_str) in overloads {
@@ -532,7 +527,6 @@ impl TypeChecker {
             }
         }
 
-        // Class fields.
         for (cls_name, field_map) in info.fields {
             let key = (alias.to_string(), cls_name.clone());
             let typed_fields: HashMap<String, Type> = field_map
@@ -545,7 +539,6 @@ impl TypeChecker {
             self.py_class_fields.insert(key, typed_fields);
         }
 
-        // Class methods.
         for (cls_name, method_map) in info.methods {
             let key = (alias.to_string(), cls_name.clone());
             let typed_methods: HashMap<String, Vec<(Vec<Type>, Type)>> = method_map
@@ -558,9 +551,7 @@ impl TypeChecker {
                                 Self::pyi_str_to_type(alias, &ret_str, &info.aliases, &snapshot);
                             let param_tys: Vec<Type> = params
                                 .iter()
-                                .map(|p| {
-                                    Self::pyi_str_to_type(alias, p, &info.aliases, &snapshot)
-                                })
+                                .map(|p| Self::pyi_str_to_type(alias, p, &info.aliases, &snapshot))
                                 .collect();
                             (param_tys, ret_ty)
                         })

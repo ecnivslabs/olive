@@ -797,12 +797,9 @@ impl TypeChecker {
                     let dunder = Self::binop_dunder(op);
                     if !dunder.is_empty() {
                         if let Type::PyNamed(ref m, ref n) = l_resolved {
-                            if let Some(ret) = self.resolve_py_method_overload(
-                                m,
-                                n,
-                                dunder,
-                                &[r_resolved.clone()],
-                            ) {
+                            if let Some(ret) =
+                                self.resolve_py_method_overload(m, n, dunder, &[r_resolved.clone()])
+                            {
                                 return ret;
                             }
                         }
