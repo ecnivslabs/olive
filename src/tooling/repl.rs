@@ -185,16 +185,42 @@ pub fn run_shell() {
                 continue;
             }
             "copyright" => {
-                println!("Copyright (c) 2024 vinceswu. MIT License.");
+                println!(
+                    "Copyright (c) 2024 {}. Apache License 2.0.",
+                    env!("CARGO_PKG_AUTHORS")
+                );
+                continue;
+            }
+            "about" => {
+                println!("Olive {}", env!("CARGO_PKG_VERSION"));
+                println!("Author: {}", env!("CARGO_PKG_AUTHORS"));
+                println!("Powered by Cranelift JIT");
+                println!("Licensed under the Apache License 2.0");
                 continue;
             }
             "credits" => {
-                println!("Built with Cranelift JIT. Thanks to the Rust ecosystem.");
+                println!("Olive programming language");
+                println!("Author: {}", env!("CARGO_PKG_AUTHORS"));
+                println!("Built with Cranelift JIT");
+                println!("Thanks to the Rust ecosystem");
                 continue;
             }
             "license" => {
+                println!("Apache License 2.0");
+                println!();
+                println!("Type \"license full\" to view the complete license text.");
+                continue;
+            }
+            "license full" => {
+                println!("{}", include_str!("../../LICENSE"));
+                continue;
+            }
+            "version" => {
                 println!(
-                    "MIT License: see https://github.com/ecnivslabs/olive/blob/master/LICENSE"
+                    "Olive {} ({}, {})",
+                    env!("CARGO_PKG_VERSION"),
+                    env!("GIT_BRANCH"),
+                    env!("BUILD_DATE"),
                 );
                 continue;
             }
