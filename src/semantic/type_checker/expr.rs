@@ -149,12 +149,11 @@ impl TypeChecker {
                         })
                         .collect();
                     if let ExprKind::Attr { obj, attr } = &callee.kind {
-                        if let ExprKind::Identifier(module_name) = &obj.kind {
-                            if let Some(ret_ty) =
+                        if let ExprKind::Identifier(module_name) = &obj.kind
+                            && let Some(ret_ty) =
                                 self.resolve_py_fn_overload(module_name, attr, &arg_tys)
-                            {
-                                return ret_ty;
-                            }
+                        {
+                            return ret_ty;
                         }
                         let obj_ty = self
                             .expr_types
@@ -162,12 +161,11 @@ impl TypeChecker {
                             .cloned()
                             .map(|t| self.apply_subst(t))
                             .unwrap_or(Type::PyObject);
-                        if let Type::PyNamed(m, n) = &obj_ty {
-                            if let Some(ret_ty) =
+                        if let Type::PyNamed(m, n) = &obj_ty
+                            && let Some(ret_ty) =
                                 self.resolve_py_method_overload(m, n, attr, &arg_tys)
-                            {
-                                return ret_ty;
-                            }
+                        {
+                            return ret_ty;
                         }
                     }
                     return Type::PyObject;
@@ -324,7 +322,7 @@ impl TypeChecker {
                         self.errors
                             .push(super::super::error::SemanticError::Custom {
                                 msg: format!(
-                                    "call to unsafe FFI function `{}` requires unsafe block",
+                                    "call to unsafe FFI function `{}` requires an `unsafe:` block, or mark the declaration `@safe`",
                                     name
                                 ),
                                 span: expr.span,
@@ -338,7 +336,7 @@ impl TypeChecker {
                         self.errors
                             .push(super::super::error::SemanticError::Custom {
                                 msg: format!(
-                                    "call to unsafe FFI function `{}` requires unsafe block",
+                                    "call to unsafe FFI function `{}` requires an `unsafe:` block, or mark the declaration `@safe`",
                                     mangled
                                 ),
                                 span: expr.span,
@@ -796,12 +794,15 @@ impl TypeChecker {
                 if is_py {
                     let dunder = Self::binop_dunder(op);
                     if !dunder.is_empty() {
-                        if let Type::PyNamed(ref m, ref n) = l_resolved {
-                            if let Some(ret) =
-                                self.resolve_py_method_overload(m, n, dunder, &[r_resolved.clone()])
-                            {
-                                return ret;
-                            }
+                        if let Type::PyNamed(ref m, ref n) = l_resolved
+                            && let Some(ret) = self.resolve_py_method_overload(
+                                m,
+                                n,
+                                dunder,
+                                std::slice::from_ref(&r_resolved),
+                            )
+                        {
+                            return ret;
                         }
                         if let Type::PyNamed(ref m, ref n) = r_resolved {
                             let rdunder = format!("__r{}", &dunder[2..]);
@@ -809,7 +810,7 @@ impl TypeChecker {
                                 m,
                                 n,
                                 &rdunder,
-                                &[l_resolved.clone()],
+                                std::slice::from_ref(&l_resolved),
                             ) {
                                 return ret;
                             }

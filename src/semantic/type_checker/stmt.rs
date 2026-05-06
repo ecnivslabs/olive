@@ -768,8 +768,35 @@ impl TypeChecker {
                             );
                         }
                     }
-                } else if let Some(info) = pyi::query(module) {
-                    self.register_pyi(alias, info);
+                } else {
+                    match pyi::query(module) {
+                        pyi::PyiOutcome::Found(info) => self.register_pyi(alias, info),
+                        pyi::PyiOutcome::NoStub => {}
+                        pyi::PyiOutcome::ModuleNotFound => {
+                            self.errors.push(SemanticError::Custom {
+                                msg: format!(
+                                    "Python module `{module}` cannot be imported; install it or add an explicit `type`/`fn` stub block"
+                                ),
+                                span: stmt.span,
+                            });
+                        }
+                        pyi::PyiOutcome::Python3Missing => {
+                            self.warnings.push(SemanticError::Custom {
+                                msg: format!(
+                                    "`python3` not found, so `{module}` could not be introspected; calls fall back to dynamic typing. Add an explicit `type`/`fn` stub block for static checks"
+                                ),
+                                span: stmt.span,
+                            });
+                        }
+                        pyi::PyiOutcome::InspectorError(detail) => {
+                            self.warnings.push(SemanticError::Custom {
+                                msg: format!(
+                                    "could not introspect Python module `{module}` ({detail}); calls fall back to dynamic typing"
+                                ),
+                                span: stmt.span,
+                            });
+                        }
+                    }
                 }
             }
 

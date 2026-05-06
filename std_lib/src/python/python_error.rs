@@ -2,6 +2,24 @@ use crate::python::*;
 use std::ffi::CStr;
 use std::os::raw::c_long;
 
+thread_local! {
+    /// `file:line:col` of the Olive call site currently invoking Python, so an
+    /// uncaught Python exception can be traced back to the exact Olive source line.
+    static PY_CALL_LOC: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// Records the Olive call site about to invoke a Python callable. Emitted by the
+/// MIR builder immediately before every Python call.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_set_loc(ptr: i64) {
+    let loc = crate::olive_str_from_ptr(ptr);
+    PY_CALL_LOC.with(|l| *l.borrow_mut() = loc);
+}
+
+fn py_call_loc() -> String {
+    PY_CALL_LOC.with(|l| l.borrow().clone())
+}
+
 pub unsafe fn fetch_py_traceback() -> String {
     unsafe {
         if PY_ERR_OCCURRED().is_null() {
@@ -128,13 +146,19 @@ pub unsafe fn fetch_py_traceback() -> String {
 pub unsafe fn handle_py_error() {
     unsafe {
         let tb_msg = fetch_py_traceback();
-        if tb_msg.is_empty() {
-            let ptr = crate::olive_str_internal("Python Exception: <unknown>");
-            crate::olive_panic(ptr);
+        let body = if tb_msg.is_empty() {
+            "Python Exception: <unknown>".to_string()
         } else {
-            let ptr = crate::olive_str_internal(&tb_msg);
-            crate::olive_panic(ptr);
-        }
+            tb_msg
+        };
+        let loc = py_call_loc();
+        let full = if loc.is_empty() {
+            body
+        } else {
+            format!("{loc}: uncaught Python exception\n{body}")
+        };
+        let ptr = crate::olive_str_internal(&full);
+        crate::olive_panic(ptr);
     }
 }
 
@@ -142,5 +166,23 @@ pub unsafe fn catch_py_exception_msg() -> Option<String> {
     unsafe {
         let msg = fetch_py_traceback();
         if msg.is_empty() { None } else { Some(msg) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_loc_roundtrips() {
+        olive_py_set_loc(crate::olive_str_internal("/tmp/x.liv:3:15"));
+        assert_eq!(py_call_loc(), "/tmp/x.liv:3:15");
+    }
+
+    #[test]
+    fn loc_overwrites() {
+        olive_py_set_loc(crate::olive_str_internal("a:1:1"));
+        olive_py_set_loc(crate::olive_str_internal("b:2:2"));
+        assert_eq!(py_call_loc(), "b:2:2");
     }
 }

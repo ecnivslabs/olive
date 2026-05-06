@@ -14,12 +14,18 @@ pub struct TraitDef {
     pub methods: Vec<(String, Type)>,
 }
 
+/// One function/method's overloads: each entry is (param types, return type).
+type OverloadSet = Vec<(Vec<Type>, Type)>;
+/// Function name → its overloads, within a single Python module or class.
+type FnOverloads = HashMap<String, OverloadSet>;
+
 pub struct TypeChecker {
     pub(super) substitutions: HashMap<usize, Type>,
     pub expr_types: HashMap<usize, Type>,
     pub type_env: Vec<HashMap<String, Type>>,
     pub(super) current_return_type: Option<Type>,
     pub errors: Vec<SemanticError>,
+    pub warnings: Vec<SemanticError>,
     pub(super) mut_env: Vec<HashMap<String, bool>>,
     pub field_types: HashMap<(String, String), Type>,
     pub enum_variants: HashMap<String, Vec<String>>,
@@ -39,13 +45,13 @@ pub struct TypeChecker {
     // module alias → type_name → resolved type
     pub(super) py_module_types: HashMap<String, HashMap<String, Type>>,
     // module alias → fn_name → list of (param_types, return_type) overloads
-    pub(super) py_module_fns: HashMap<String, HashMap<String, Vec<(Vec<Type>, Type)>>>,
+    pub(super) py_module_fns: HashMap<String, FnOverloads>,
     // set of names bound via `import py "..." as <alias>`
     pub(super) py_aliases: HashSet<String>,
     // (module alias, class name) → field_name → type
     pub(super) py_class_fields: HashMap<(String, String), HashMap<String, Type>>,
     // (module alias, class name) → method_name → overloads
-    pub(super) py_class_methods: HashMap<(String, String), HashMap<String, Vec<(Vec<Type>, Type)>>>,
+    pub(super) py_class_methods: HashMap<(String, String), FnOverloads>,
 }
 
 impl Default for TypeChecker {
@@ -344,6 +350,7 @@ impl TypeChecker {
             type_env: vec![global_env],
             current_return_type: None,
             errors: Vec::new(),
+            warnings: Vec::new(),
             mut_env: vec![HashMap::default()],
             field_types: HashMap::default(),
             enum_variants: HashMap::default(),
@@ -577,10 +584,10 @@ impl TypeChecker {
             "PyObject" => Type::PyObject,
             other => {
                 let preferred = aliases.get(other).map(|s| s.as_str()).unwrap_or(other);
-                if let Some(m) = type_map.get(alias) {
-                    if let Some(ty) = m.get(preferred) {
-                        return ty.clone();
-                    }
+                if let Some(m) = type_map.get(alias)
+                    && let Some(ty) = m.get(preferred)
+                {
+                    return ty.clone();
                 }
                 Type::PyNamed(alias.to_string(), preferred.to_string())
             }
@@ -824,6 +831,44 @@ mod tests {
         let mut tc = TypeChecker::new();
         tc.check_program(&prog);
         tc
+    }
+
+    fn python3_available() -> bool {
+        std::process::Command::new("python3")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn py_import_missing_module_errors() {
+        if !python3_available() {
+            return;
+        }
+        let tc = pipeline("import py \"olive_definitely_missing_xyz\" as m\n");
+        assert!(
+            tc.errors
+                .iter()
+                .any(|e| format!("{e}").contains("cannot be imported")),
+            "expected a module-not-found error, got: {:?}",
+            tc.errors
+        );
+    }
+
+    #[test]
+    fn py_import_real_module_no_error() {
+        if !python3_available() {
+            return;
+        }
+        let tc = pipeline("import py \"json\" as j\n");
+        assert!(
+            tc.errors.is_empty(),
+            "importable module without a stub must not error: {:?}",
+            tc.errors
+        );
     }
 
     #[test]

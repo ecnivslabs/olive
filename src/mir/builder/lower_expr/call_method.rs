@@ -151,6 +151,7 @@ impl<'a> MirBuilder<'a> {
                         targs[0].clone(),
                         span,
                         expr_id,
+                        &mangled_str,
                     );
                 }
 
@@ -385,6 +386,9 @@ impl<'a> MirBuilder<'a> {
             res
         };
 
+        if is_ffi_result {
+            self.clear_ffi_errno(span);
+        }
         self.push_statement(
             StatementKind::Assign(
                 call_result_local,
@@ -397,10 +401,82 @@ impl<'a> MirBuilder<'a> {
         );
 
         if is_ffi_result {
-            return self.lower_ffi_result_post(call_result_local, inner_ok_ty, span, expr_id);
+            let fn_name = call_fn_name.as_deref().unwrap_or("FFI call");
+            return self.lower_ffi_result_post(
+                call_result_local,
+                inner_ok_ty,
+                span,
+                expr_id,
+                fn_name,
+            );
         }
 
         self.operand_for_local(call_result_local)
+    }
+
+    /// Resets `errno` to 0 before an FFI call so a value read afterwards is known
+    /// to belong to that call rather than a stale value from an earlier one.
+    fn clear_ffi_errno(&mut self, span: Span) {
+        let sink = self.new_local(Type::Null, None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                sink,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(
+                        "__olive_ffi_clear_errno".to_string(),
+                    )),
+                    args: vec![],
+                },
+            ),
+            span,
+        );
+    }
+
+    /// Reads `errno` immediately after an FFI call, before any other runtime call
+    /// (such as a string allocation) can overwrite it.
+    fn capture_ffi_errno(&mut self, span: Span) -> Local {
+        let errno_local = self.new_local(Type::Int, None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                errno_local,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("__olive_ffi_errno".to_string())),
+                    args: vec![],
+                },
+            ),
+            span,
+        );
+        errno_local
+    }
+
+    /// Builds the `<line>:<col>: <fn>: <strerror(errno)>` message string for a
+    /// failed FFI call from a previously captured errno value. The call-site
+    /// location lets a runtime error be traced back to the exact source line.
+    fn ffi_error_message(&mut self, fn_name: &str, errno_local: Local, span: Span) -> Local {
+        let located = match self.file_names.get(&span.file_id) {
+            Some(file) => format!("{}:{}:{}: {}", file, span.line, span.col, fn_name),
+            None => format!("{}:{}: {}", span.line, span.col, fn_name),
+        };
+        let name_local = self.new_local(Type::Str, None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                name_local,
+                Rvalue::Use(Operand::Constant(Constant::Str(located))),
+            ),
+            span,
+        );
+        let msg_local = self.new_local(Type::Str, None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                msg_local,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("__olive_ffi_errmsg".to_string())),
+                    args: vec![Operand::Copy(name_local), Operand::Copy(errno_local)],
+                },
+            ),
+            span,
+        );
+        msg_local
     }
 
     pub(super) fn lower_ffi_result_wrapper(
@@ -410,8 +486,10 @@ impl<'a> MirBuilder<'a> {
         inner_ok_ty: Type,
         span: Span,
         expr_id: usize,
+        fn_name: &str,
     ) -> Operand {
         let raw_local = self.new_local(inner_ok_ty.clone(), None, false);
+        self.clear_ffi_errno(span);
         self.push_statement(
             StatementKind::Assign(
                 raw_local,
@@ -422,6 +500,7 @@ impl<'a> MirBuilder<'a> {
             ),
             span,
         );
+        let errno_local = self.capture_ffi_errno(span);
 
         let is_err_local = self.new_local(Type::Bool, None, false);
         match &inner_ok_ty {
@@ -494,16 +573,7 @@ impl<'a> MirBuilder<'a> {
         self.terminate_block(ok_bb, TerminatorKind::Goto { target: exit_bb }, span);
 
         self.current_block = Some(err_bb);
-        let err_str_local = self.new_local(Type::Str, None, false);
-        self.push_statement(
-            StatementKind::Assign(
-                err_str_local,
-                Rvalue::Use(Operand::Constant(Constant::Str(
-                    "FFI call failed".to_string(),
-                ))),
-            ),
-            span,
-        );
+        let err_str_local = self.ffi_error_message(fn_name, errno_local, span);
         self.push_statement(
             StatementKind::Assign(
                 result_local,
@@ -526,7 +596,9 @@ impl<'a> MirBuilder<'a> {
         inner_ok_ty: Type,
         span: Span,
         expr_id: usize,
+        fn_name: &str,
     ) -> Operand {
+        let errno_local = self.capture_ffi_errno(span);
         let is_err_tmp = self.new_local(Type::Bool, None, false);
         match &inner_ok_ty {
             Type::Int => {
@@ -598,16 +670,7 @@ impl<'a> MirBuilder<'a> {
         self.terminate_block(ok_bb, TerminatorKind::Goto { target: exit_bb }, span);
 
         self.current_block = Some(err_bb);
-        let err_str_tmp = self.new_local(Type::Str, None, false);
-        self.push_statement(
-            StatementKind::Assign(
-                err_str_tmp,
-                Rvalue::Use(Operand::Constant(Constant::Str(
-                    "FFI call failed".to_string(),
-                ))),
-            ),
-            span,
-        );
+        let err_str_tmp = self.ffi_error_message(fn_name, errno_local, span);
         self.push_statement(
             StatementKind::Assign(
                 result_tmp,

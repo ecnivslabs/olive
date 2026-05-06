@@ -115,11 +115,11 @@ pub extern "C" fn olive_alloc(size: i64) -> *mut u8 {
     unsafe { std::alloc::alloc(layout) }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_ffi_errno() -> i64 {
+/// Address of the thread-local `errno`, or null on platforms without one.
+fn errno_location() -> *mut i32 {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     unsafe {
-        *libc::__errno_location() as i64
+        libc::__errno_location()
     }
     #[cfg(any(
         target_os = "macos",
@@ -130,7 +130,7 @@ pub extern "C" fn olive_ffi_errno() -> i64 {
         target_os = "netbsd"
     ))]
     unsafe {
-        *libc::__error() as i64
+        libc::__error()
     }
     #[cfg(not(any(
         target_os = "linux",
@@ -142,7 +142,39 @@ pub extern "C" fn olive_ffi_errno() -> i64 {
         target_os = "openbsd",
         target_os = "netbsd"
     )))]
-    0
+    std::ptr::null_mut()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_ffi_errno() -> i64 {
+    let loc = errno_location();
+    if loc.is_null() {
+        0
+    } else {
+        unsafe { *loc as i64 }
+    }
+}
+
+/// Resets `errno` to 0 so the value read after a failing FFI call is known to
+/// belong to that call and not a stale value from earlier.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_ffi_clear_errno() {
+    let loc = errno_location();
+    if !loc.is_null() {
+        unsafe { *loc = 0 };
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_ffi_errmsg(fn_name: i64, errno: i64) -> i64 {
+    let name = crate::olive_str_from_ptr(fn_name);
+    let msg = if errno == 0 {
+        format!("{name}: call failed")
+    } else {
+        let desc = std::io::Error::from_raw_os_error(errno as i32).to_string();
+        format!("{name}: {desc}")
+    };
+    crate::olive_str_internal(&msg)
 }
 
 #[unsafe(no_mangle)]

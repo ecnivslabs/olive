@@ -26,7 +26,13 @@ impl Parser {
             let ty = self.parse_type_expr()?;
             let bits = if self.peek().kind == TokenKind::At {
                 self.advance();
-                let w: u8 = self.expect(TokenKind::Integer)?.value.parse().unwrap_or(0);
+                let tok = self.expect(TokenKind::Integer)?;
+                let w: u8 = tok.value.parse().map_err(|_| {
+                    self.err_at(
+                        &tok,
+                        format!("invalid bitfield width `{}`: expected 0-255", tok.value),
+                    )
+                })?;
                 Some(w)
             } else {
                 None
@@ -71,7 +77,13 @@ impl Parser {
         } else {
             false
         };
-        let raw: i64 = self.expect(TokenKind::Integer)?.value.parse().unwrap_or(0);
+        let int_tok = self.expect(TokenKind::Integer)?;
+        let raw: i64 = int_tok.value.parse().map_err(|_| {
+            self.err_at(
+                &int_tok,
+                format!("invalid integer constant `{}`", int_tok.value),
+            )
+        })?;
         let value = if negative { -raw } else { raw };
         self.eat_stmt_end()?;
         Ok(FfiConstDef { name, value })
@@ -241,5 +253,21 @@ mod tests {
         let mut p = make_parser("const MIN = -50\n");
         let def = p.parse_ffi_const_def().expect("parse failed");
         assert_eq!(def.value, -50);
+    }
+
+    #[test]
+    fn parse_ffi_bitfield_width_overflow_errors() {
+        let mut p = make_parser("struct Flags:\n    flag: i32 @999\n");
+        let err = p
+            .parse_ffi_struct_def(false)
+            .expect_err("expected width error");
+        assert!(err.message.contains("invalid bitfield width"));
+    }
+
+    #[test]
+    fn parse_ffi_const_overflow_errors() {
+        let mut p = make_parser("const BIG = 99999999999999999999999\n");
+        let err = p.parse_ffi_const_def().expect_err("expected const error");
+        assert!(err.message.contains("invalid integer constant"));
     }
 }

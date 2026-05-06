@@ -86,8 +86,17 @@ impl Parser {
     }
 
     pub(crate) fn span_from(&self, start: &Token) -> Span {
-        let end = if self.pos > 0 {
-            self.tokens[self.pos - 1].span.1
+        let mut idx = self.pos;
+        while idx > 0
+            && matches!(
+                self.tokens[idx - 1].kind,
+                TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent
+            )
+        {
+            idx -= 1;
+        }
+        let end = if idx > 0 {
+            self.tokens[idx - 1].span.1.max(start.span.1)
         } else {
             start.span.1
         };

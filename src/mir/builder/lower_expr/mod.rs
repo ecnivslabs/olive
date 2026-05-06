@@ -338,6 +338,34 @@ impl<'a> MirBuilder<'a> {
         (h.finish() & 0x7FFF_FFFF_FFFF_FFFF) as i64
     }
 
+    /// Records the Olive call site just before a Python call so an uncaught
+    /// Python exception can be reported against the exact source line.
+    pub(super) fn emit_py_set_loc(&mut self, span: Span) {
+        let loc = match self.file_names.get(&span.file_id) {
+            Some(file) => format!("{}:{}:{}", file, span.line, span.col),
+            None => format!("{}:{}", span.line, span.col),
+        };
+        let loc_local = self.new_local(Type::Str, None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                loc_local,
+                Rvalue::Use(Operand::Constant(Constant::Str(loc))),
+            ),
+            span,
+        );
+        let sink = self.new_local(Type::Null, None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                sink,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("__olive_py_set_loc".to_string())),
+                    args: vec![Operand::Copy(loc_local)],
+                },
+            ),
+            span,
+        );
+    }
+
     fn is_py_call(&self, expr: &Expr) -> bool {
         if let ExprKind::Call { callee, .. } = &expr.kind {
             let callee_ty = self.get_type(callee.id);
