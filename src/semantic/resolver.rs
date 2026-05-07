@@ -133,7 +133,7 @@ impl Resolver {
 
     /// Pops the innermost scope and turns any binding that was never read into
     /// an unused-variable warning. The structured fix prefixes the name with an
-    /// underscore — the conventional way to keep a binding on purpose — but is
+    /// underscore, the conventional way to keep a binding on purpose, but it is
     /// advisory: silently renaming a forgotten variable could hide a real bug,
     /// so the autofixer never applies it on its own.
     fn pop_scope(&mut self) {
@@ -450,20 +450,22 @@ impl Resolver {
         }
     }
 
-    /// Closest visible name to an unresolved identifier, for `did you mean`.
-    fn suggest(&self, name: &str) -> Option<String> {
-        super::suggest::closest(name, self.table.visible_names())
+    /// Nearest visible names to an unresolved identifier, ordered nearest first,
+    /// plus whether the best one is an unambiguous autofix winner.
+    fn suggest(&self, name: &str) -> (Vec<String>, bool) {
+        super::suggest::ranked(name, self.table.visible_names(), 3)
     }
 
     fn resolve_assign_target(&mut self, target: &Expr) {
         match &target.kind {
             ExprKind::Identifier(name) => {
                 if self.table.lookup(name).is_none() {
-                    let suggestion = self.suggest(name);
+                    let (suggestions, can_autofix) = self.suggest(name);
                     self.errors.push(SemanticError::AssignToUndefined {
                         name: name.clone(),
                         span: target.span,
-                        suggestion,
+                        suggestions,
+                        can_autofix,
                     });
                 } else {
                     self.table.mark_used(name);
@@ -500,11 +502,12 @@ impl Resolver {
                     }
                     self.table.mark_used(name);
                 } else {
-                    let suggestion = self.suggest(name);
+                    let (suggestions, can_autofix) = self.suggest(name);
                     self.errors.push(SemanticError::UndefinedName {
                         name: name.clone(),
                         span: expr.span,
-                        suggestion,
+                        suggestions,
+                        can_autofix,
                     });
                 }
             }
@@ -546,11 +549,12 @@ impl Resolver {
                     if sym.kind == SymbolKind::Import {
                         let mangled = format!("{}::{}", name, attr);
                         if self.table.lookup(&mangled).is_none() {
-                            let suggestion = self.suggest(&mangled);
+                            let (suggestions, can_autofix) = self.suggest(&mangled);
                             self.errors.push(SemanticError::UndefinedName {
                                 name: mangled,
                                 span: expr.span,
-                                suggestion,
+                                suggestions,
+                                can_autofix,
                             });
                         }
                         return;
@@ -770,25 +774,25 @@ mod tests {
     #[test]
     fn undefined_name_suggests_nearest_binding() {
         let r = resolve("let total = 1\nprint(totl)\n");
-        let suggestion = r.errors.iter().find_map(|e| match e {
+        let suggestions = r.errors.iter().find_map(|e| match e {
             SemanticError::UndefinedName {
-                name, suggestion, ..
-            } if name == "totl" => Some(suggestion.clone()),
+                name, suggestions, ..
+            } if name == "totl" => Some(suggestions.clone()),
             _ => None,
         });
-        assert_eq!(suggestion, Some(Some("total".to_string())));
+        assert_eq!(suggestions, Some(vec!["total".to_string()]));
     }
 
     #[test]
     fn unrelated_undefined_name_has_no_suggestion() {
         let r = resolve("let total = 1\nprint(xyzzy)\n");
-        let suggestion = r.errors.iter().find_map(|e| match e {
+        let suggestions = r.errors.iter().find_map(|e| match e {
             SemanticError::UndefinedName {
-                name, suggestion, ..
-            } if name == "xyzzy" => Some(suggestion.clone()),
+                name, suggestions, ..
+            } if name == "xyzzy" => Some(suggestions.clone()),
             _ => None,
         });
-        assert_eq!(suggestion, Some(None));
+        assert_eq!(suggestions, Some(vec![]));
     }
 
     #[test]

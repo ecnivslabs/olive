@@ -15,20 +15,18 @@ fn main():
             "https://jsonplaceholder.typicode.com/todos/1"
         ]
         print("Dispatching parallel HTTP fetches...")
-        // Gather executes all futures concurrently and resolves when all are complete
         let payloads = await aio.gather([
             fetch_target(targets[0]),
             fetch_target(targets[1]),
             fetch_target(targets[2])
         ])
-        
+
         print("All asynchronous fetches resolved successfully.")
-        
+
         let mut i = 0
         for payload in payloads:
             let content_str = str(payload)
             print(f"Target {i} payload signature: {len(content_str)} bytes received.")
             i += 1
-            
-    aio.run(fut)
 
+    aio.run(fut)

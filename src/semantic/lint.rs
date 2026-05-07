@@ -1,7 +1,7 @@
 //! Source-level lints that run after name resolution succeeds. These are
 //! warnings, not errors: they never block compilation, but they catch the
-//! quiet mistakes a type checker is happy to accept — an import nothing uses,
-//! code that can never run. Each lint is a pure pass over the AST and reports
+//! quiet mistakes a type checker is happy to accept, like an import nothing uses
+//! or code that can never run. Each lint is a pure pass over the AST and reports
 //! through the same rich diagnostic channel as every other message.
 
 use crate::compile::errors::Diagnostic;

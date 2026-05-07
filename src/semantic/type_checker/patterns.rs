@@ -106,20 +106,25 @@ impl TypeChecker {
                             ));
                         }
                     } else {
-                        let suggestion = self
+                        let suggestions = self
                             .enum_variants
                             .get(&enum_name)
-                            .and_then(|variants| {
-                                super::super::suggest::closest(
+                            .map(|variants| {
+                                super::super::suggest::closest_n(
                                     v_name,
                                     variants.iter().map(String::as_str),
+                                    3,
                                 )
+                                .into_iter()
+                                .map(|v| format!("{enum_name}::{v}"))
+                                .collect::<Vec<_>>()
                             })
-                            .map(|v| format!("{enum_name}::{v}"));
+                            .unwrap_or_default();
                         self.errors.push(SemanticError::UndefinedName {
                             name: variant_mangled,
                             span,
-                            suggestion,
+                            suggestions,
+                            can_autofix: false,
                         });
                     }
                 } else {
@@ -179,13 +184,13 @@ mod tests {
         let tc = typeck(
             "enum Color:\n    Red\n    Green\n    Blue\n\nfn f(c: Color):\n    match c:\n        case Gren:\n            pass\n        case _:\n            pass\n",
         );
-        let suggestion = tc.errors.iter().find_map(|e| match e {
+        let suggestions = tc.errors.iter().find_map(|e| match e {
             crate::semantic::SemanticError::UndefinedName {
-                name, suggestion, ..
-            } if name == "Color::Gren" => Some(suggestion.clone()),
+                name, suggestions, ..
+            } if name == "Color::Gren" => Some(suggestions.clone()),
             _ => None,
         });
-        assert_eq!(suggestion, Some(Some("Color::Green".to_string())));
+        assert_eq!(suggestions, Some(vec!["Color::Green".to_string()]));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Compiler-native autofix. `pit fix` runs the front end exactly as a normal
 //! build would, gathers the machine-applicable suggestions every diagnostic
-//! carries, and rewrites the source in place — no external tool, no second
+//! carries, and rewrites the source in place: no external tool, no second
 //! parser, the same spans the error renderer points at. Only fixes the compiler
 //! is certain about are applied; anything advisory is left to the programmer.
 
@@ -22,8 +22,8 @@ pub struct FixReport {
 
 /// Collects every diagnostic the front end produces for `filename`, in the same
 /// order a build would surface them. Resolution errors short-circuit the later
-/// passes — a program with unresolved names is not yet meaningful to type-check
-/// — but their suggestions are still returned so a typo can be fixed first.
+/// passes, since a program with unresolved names is not yet meaningful to
+/// type-check, but their suggestions are still returned so a typo can be fixed first.
 fn collect_diagnostics(filename: &str) -> Result<(Vec<Diagnostic>, Sources), ()> {
     let mut loaded = HashSet::new();
     loaded.insert(filename.to_string());
@@ -104,7 +104,7 @@ pub fn run_fix(filename: &str, dry_run: bool) -> Result<FixReport, ()> {
             continue;
         };
         // Apply from the end backwards so earlier offsets stay valid as text is
-        // spliced. Overlapping edits are dropped — only the rightmost of an
+        // spliced. Overlapping edits are dropped; only the rightmost of an
         // overlapping pair survives, never a partial mangle.
         edits.sort_by(|a, b| b.start.cmp(&a.start).then(b.end.cmp(&a.end)));
         let mut text = original.clone();

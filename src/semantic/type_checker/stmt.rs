@@ -631,9 +631,10 @@ impl TypeChecker {
                             .insert((type_name.to_string(), tr.to_string()));
                     } else {
                         let tr_name = tr.to_string();
-                        let suggestion = super::super::suggest::closest(
+                        let suggestions = super::super::suggest::closest_n(
                             &tr_name,
                             self.traits.keys().map(String::as_str),
+                            3,
                         );
                         self.errors.push(SemanticError::rich(
                             crate::compile::errors::Diagnostic::error(
@@ -642,7 +643,7 @@ impl TypeChecker {
                                 stmt.span,
                             )
                             .label("not a trait")
-                            .suggest(&suggestion),
+                            .suggest_names(&suggestions),
                         ));
                     }
                 }

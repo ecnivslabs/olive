@@ -451,13 +451,13 @@ impl TypeChecker {
         None
     }
 
-    /// Checks `module.attr(...)` against an explicit `import py` stub — a closed
-    /// surface the programmer wrote — reporting an unknown attribute and a
+    /// Checks `module.attr(...)` against an explicit `import py` stub, a closed
+    /// surface the programmer wrote, reporting an unknown attribute and a
     /// positional argument count no overload accepts. `.pyi`-introspected modules
     /// are skipped: a stub can't enumerate a module's full surface (C extensions,
     /// `__getattr__`, re-exports), so flagging an absent name there false-positives
-    /// on packages like `pygame`. Argument types are not enforced — Python coerces
-    /// at runtime, leaving existence and arity as the only sound checks.
+    /// on packages like `pygame`. Argument types are not enforced, since Python
+    /// coerces at runtime, leaving existence and arity as the only sound checks.
     pub(super) fn check_py_call(
         &mut self,
         module: &str,
@@ -491,7 +491,7 @@ impl TypeChecker {
             if let Some(m) = self.py_module_types.get(module) {
                 names.extend(m.keys().cloned());
             }
-            let suggestion = super::suggest::closest(attr, names.iter().map(String::as_str));
+            let suggestions = super::suggest::closest_n(attr, names.iter().map(String::as_str), 3);
             self.errors
                 .push(crate::semantic::error::SemanticError::rich(
                     crate::compile::errors::Diagnostic::error(
@@ -502,7 +502,7 @@ impl TypeChecker {
                     .label("not declared in this module's `import py` stub")
                     .note("the stub block lists the only names checked for this module")
                     .help("declare it in the stub block if the module really provides it")
-                    .suggest(&suggestion),
+                    .suggest_names(&suggestions),
                 ));
             return;
         }
@@ -578,8 +578,8 @@ impl TypeChecker {
         if candidates.is_empty() {
             return None;
         }
-        // Prefer exact (non-PyObject) param matches — avoids PyObject fallback overloads
-        // swamping TypeVar-expanded concrete overloads.
+        // Prefer exact (non-PyObject) param matches, which avoids PyObject fallback
+        // overloads swamping TypeVar-expanded concrete overloads.
         if candidates.len() > 1 {
             let exact = candidates.iter().find(|(params, _)| {
                 !params.is_empty()

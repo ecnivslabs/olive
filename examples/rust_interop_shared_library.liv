@@ -13,10 +13,9 @@ import "./librust_math.so" as rust:
 
 fn process_data(data: [int]):
     print(f"Processing {len(data)} items through Rust backend...")
-    
+
     for item in data:
         unsafe:
-            // Calling the Rust C-ABI function directly with zero overhead
             let hashed = rust.compute_fast_hash(item)
             print(f"Input: {item} -> Hash: {hashed}")
 

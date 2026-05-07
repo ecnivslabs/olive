@@ -1,0 +1,60 @@
+use super::Explanation;
+
+pub(super) const ENTRIES: &[Explanation] = &[
+    Explanation {
+        code: "E0700",
+        title: "panic",
+        summary: "An `assert` failed at runtime and the program aborted. This is the \
+                  generic runtime fault for an explicitly signalled unrecoverable state.",
+        wrong: "fn main():\n    let x = 1\n    assert x == 2",
+        fixed: "fn main():\n    let x = 2\n    assert x == 2",
+        notes: &["Assert only what must always hold; return a result for expected failures."],
+    },
+    Explanation {
+        code: "E0701",
+        title: "index out of bounds",
+        summary: "A list or string was indexed outside `0..len` at runtime. The fault \
+                  reports both the length and the offending index.",
+        wrong: "fn third(xs: [i64]) -> i64:\n    return xs[2]",
+        fixed: "fn third(xs: [i64]) -> i64:\n    if len(xs) > 2:\n        return xs[2]\n    return 0",
+        notes: &["Guard the access with a length check; negative indices are not supported."],
+    },
+    Explanation {
+        code: "E0702",
+        title: "indexing a null value",
+        summary: "Indexing was attempted on a value that is null, an uninitialised \
+                  container rather than an actual list.",
+        wrong: "fn main():\n    let xs = null\n    print(xs[0])",
+        fixed: "fn main():\n    let xs = [1, 2, 3]\n    print(xs[0])",
+        notes: &["Assign a real container, or check the value against `null` before indexing."],
+    },
+    Explanation {
+        code: "E0703",
+        title: "divide by zero",
+        summary: "The right-hand side of an integer `/` or `%` was zero at runtime. \
+                  Hardware would trap with no context; Olive reports the operation \
+                  and points at the source instead.",
+        wrong: "fn ratio(a: i64, b: i64) -> i64:\n    return a / b",
+        fixed: "fn ratio(a: i64, b: i64) -> i64:\n    if b == 0:\n        return 0\n    return a / b",
+        notes: &["Guard the divisor so it is non-zero before dividing or taking a remainder."],
+    },
+    Explanation {
+        code: "E0704",
+        title: "unwrap on the wrong variant",
+        summary: "`unwrap` was called on an error result. The value did not hold the \
+                  success the unwrap assumed.",
+        wrong: "import result\n\nfn main():\n    let r = result.err(\"boom\")\n    let n = result.unwrap(r)",
+        fixed: "import result\n\nfn main():\n    let r = result.err(\"boom\")\n    let n = result.unwrap_or(r, 0)",
+        notes: &["Handle the error case with `?` or `unwrap_or` instead of unwrapping blindly."],
+    },
+    Explanation {
+        code: "E0705",
+        title: "uncaught Python exception",
+        summary: "A call into Python raised an exception that propagated back across \
+                  the FFI boundary without being caught. The fault carries the Python \
+                  traceback and the Olive call site.",
+        wrong: "import py \"json\" as json\n\nfn main():\n    json.loads(\"not json\")",
+        fixed: "import py \"json\" as json\n\nfn main():\n    json.loads(\"{}\")",
+        notes: &["Validate the inputs so the exception cannot arise, or propagate it with `?`."],
+    },
+];

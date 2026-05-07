@@ -2,6 +2,7 @@ mod borrow_check;
 mod codegen;
 mod commands;
 mod compile;
+mod diagnostics;
 mod fmt;
 mod lexer;
 mod mangle;
@@ -63,6 +64,9 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+    Explain {
+        code: String,
+    },
     Test {
         #[arg(short, long)]
         time: bool,
@@ -123,6 +127,7 @@ fn main() {
         ),
         Commands::Fmt { file } => commands::project::execute_fmt(file.as_ref()),
         Commands::Fix { file, dry_run } => commands::fix::execute_fix(file.as_ref(), dry_run),
+        Commands::Explain { code } => commands::explain::execute_explain(&code),
         Commands::Test { time, release } => commands::build::execute_test(time, release),
         Commands::Shell => commands::project::execute_shell(),
         Commands::Add { pod } => commands::deps::execute_add(&pod),

@@ -1,8 +1,8 @@
 //! Whether a type can cross the C FFI boundary. A foreign function declared in
 //! a native import must take and return things C can actually represent: scalar
 //! integers and floats, booleans, pointers, strings (as `char*`), byte buffers,
-//! and C structs. Olive's managed types — lists, dicts, sets, tuples, enums,
-//! closures, Python values — carry runtime headers and ownership that no C ABI
+//! and C structs. Olive's managed types (lists, dicts, sets, tuples, enums,
+//! closures, Python values) carry runtime headers and ownership that no C ABI
 //! understands, so declaring one at the boundary is always a mistake.
 //!
 //! The check is a deliberate blocklist: only the types that are unambiguously

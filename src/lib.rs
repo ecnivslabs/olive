@@ -2,6 +2,7 @@ pub mod borrow_check;
 pub mod codegen;
 pub mod commands;
 pub mod compile;
+pub mod diagnostics;
 pub mod fmt;
 pub mod lexer;
 pub mod mangle;

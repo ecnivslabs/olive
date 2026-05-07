@@ -301,9 +301,10 @@ impl TypeChecker {
                                     final_args[idx] = Some(t);
                                     kwarg_map[idx] = i;
                                 } else {
-                                    let suggestion = super::super::suggest::closest(
+                                    let suggestions = super::super::suggest::closest_n(
                                         kw_name,
                                         expected_fields.iter().map(String::as_str),
+                                        3,
                                     );
                                     self.errors.push(super::super::error::SemanticError::rich(
                                         crate::compile::errors::Diagnostic::error(
@@ -312,7 +313,7 @@ impl TypeChecker {
                                             expr.span,
                                         )
                                         .label("unknown field")
-                                        .suggest(&suggestion),
+                                        .suggest_names(&suggestions),
                                     ));
                                 }
                             }

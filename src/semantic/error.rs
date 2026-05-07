@@ -6,7 +6,8 @@ pub enum SemanticError {
     UndefinedName {
         name: String,
         span: Span,
-        suggestion: Option<String>,
+        suggestions: Vec<String>,
+        can_autofix: bool,
     },
     DuplicateParam {
         name: String,
@@ -16,7 +17,8 @@ pub enum SemanticError {
     AssignToUndefined {
         name: String,
         span: Span,
-        suggestion: Option<String>,
+        suggestions: Vec<String>,
+        can_autofix: bool,
     },
     PrivateAccess {
         name: String,
@@ -84,7 +86,8 @@ impl SemanticError {
             SemanticError::UndefinedName {
                 name,
                 span,
-                suggestion,
+                suggestions,
+                can_autofix,
             } => {
                 let d = Diagnostic::error(
                     "E0001",
@@ -92,7 +95,7 @@ impl SemanticError {
                     *span,
                 )
                 .label("not found in this scope");
-                attach_name_fix(d, name, *span, suggestion)
+                attach_name_fix(d, name, *span, suggestions, *can_autofix)
             }
             SemanticError::DuplicateParam { name, span, first } => Diagnostic::error(
                 "E0002",
@@ -105,7 +108,8 @@ impl SemanticError {
             SemanticError::AssignToUndefined {
                 name,
                 span,
-                suggestion,
+                suggestions,
+                can_autofix,
             } => {
                 let d = Diagnostic::error(
                     "E0003",
@@ -115,7 +119,7 @@ impl SemanticError {
                 .label("not defined in this scope")
                 .note("Olive bindings must be introduced with `let` before assignment")
                 .help(format!("introduce it with `let {name} = ...`"));
-                attach_name_fix(d, name, *span, suggestion)
+                attach_name_fix(d, name, *span, suggestions, *can_autofix)
             }
             SemanticError::PrivateAccess { name, span } => {
                 Diagnostic::error("E0004", format!("`{name}` is private to its module"), *span)
@@ -130,21 +134,23 @@ impl SemanticError {
     }
 }
 
-/// Attaches the `did you mean` help for a misspelled name. When the nearest
-/// match is a plain identifier (not a `module::member` path, whose source form
-/// uses `.` rather than `::`), the suggestion is promoted to a machine-applicable
-/// fix that rewrites the exact identifier span, so `pit fix` can apply it.
+/// Attaches the `did you mean` help for a misspelled name. The nearest match is
+/// promoted to a machine-applicable fix that rewrites the exact identifier span,
+/// so `pit fix` can apply it, only when it is unambiguous and a plain identifier
+/// (not a `module::member` path, whose source form uses `.` rather than `::`).
+/// Ambiguous matches are listed for the programmer but never rewritten.
 fn attach_name_fix(
     d: Diagnostic,
     name: &str,
     span: Span,
-    suggestion: &Option<String>,
+    suggestions: &[String],
+    can_autofix: bool,
 ) -> Diagnostic {
-    match suggestion {
-        Some(s) if !name.contains("::") && !s.contains("::") => {
-            d.fix(span, s.clone(), "did you mean")
+    match suggestions.first() {
+        Some(best) if can_autofix && !name.contains("::") && !best.contains("::") => {
+            d.fix(span, best.clone(), "did you mean")
         }
-        _ => d.suggest(suggestion),
+        _ => d.suggest_names(suggestions),
     }
 }
 
@@ -199,7 +205,8 @@ mod tests {
         let e = SemanticError::UndefinedName {
             name: "x".into(),
             span: span(),
-            suggestion: None,
+            suggestions: vec![],
+            can_autofix: false,
         };
         assert_eq!(e.to_string(), "2:8: undefined name `x`");
     }
@@ -219,7 +226,8 @@ mod tests {
         let e = SemanticError::AssignToUndefined {
             name: "y".into(),
             span: span(),
-            suggestion: None,
+            suggestions: vec![],
+            can_autofix: false,
         };
         assert_eq!(
             e.to_string(),
@@ -232,7 +240,8 @@ mod tests {
         let e = SemanticError::UndefinedName {
             name: "totl".into(),
             span: span(),
-            suggestion: Some("total".into()),
+            suggestions: vec!["total".into()],
+            can_autofix: true,
         };
         let mut sources = crate::compile::errors::Sources::default();
         sources.insert(0, ("m.liv".into(), "print(totl)\n".into()));
@@ -277,7 +286,8 @@ mod tests {
         let e = SemanticError::UndefinedName {
             name: "x".into(),
             span: span(),
-            suggestion: None,
+            suggestions: vec![],
+            can_autofix: false,
         };
         assert_eq!(e.span().line, 2);
         assert_eq!(e.span().col, 8);
@@ -298,7 +308,8 @@ mod tests {
         let e = SemanticError::AssignToUndefined {
             name: "y".into(),
             span: span(),
-            suggestion: None,
+            suggestions: vec![],
+            can_autofix: false,
         };
         assert_eq!(e.span().end, 20);
     }

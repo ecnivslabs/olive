@@ -122,11 +122,14 @@ impl Diagnostic {
         self
     }
 
-    /// `did you mean` suggestion derived from the nearest in-scope name.
-    pub fn suggest(self, suggestion: &Option<String>) -> Self {
-        match suggestion {
-            Some(name) => self.help(format!("did you mean `{name}`?")),
-            None => self,
+    /// `did you mean` help listing the nearest in-scope names, ordered nearest
+    /// first. One name renders inline; several are joined Oxford-style. An empty
+    /// list leaves the diagnostic unchanged.
+    pub fn suggest_names(self, names: &[String]) -> Self {
+        if names.is_empty() {
+            self
+        } else {
+            self.help(format!("did you mean {}?", oxford_join(names)))
         }
     }
 
@@ -197,6 +200,11 @@ impl Diagnostic {
         for sug in &self.suggestions {
             builder = builder.with_help(render_suggestion(sug));
         }
+        if let Some(code) = &self.code {
+            builder = builder.with_help(format!(
+                "run `pit explain {code}` for a detailed explanation"
+            ));
+        }
 
         let cache = sources(
             src.values()
@@ -204,6 +212,17 @@ impl Diagnostic {
                 .collect::<Vec<_>>(),
         );
         let _ = builder.finish().eprint(cache);
+    }
+}
+
+/// Joins backticked names into an English list: `a`, `a` or `b`, `a`, `b`, or `c`.
+fn oxford_join(names: &[String]) -> String {
+    let quoted: Vec<String> = names.iter().map(|n| format!("`{n}`")).collect();
+    match quoted.as_slice() {
+        [] => String::new(),
+        [a] => a.clone(),
+        [a, b] => format!("{a} or {b}"),
+        [rest @ .., last] => format!("{}, or {last}", rest.join(", ")),
     }
 }
 
@@ -286,8 +305,17 @@ mod tests {
             .label("not found in this scope")
             .secondary(span(0, 4, 9), "a similar name is defined here")
             .note("names must be bound with `let` before use")
-            .suggest(&Some("total".to_string()))
+            .suggest_names(&["total".to_string()])
             .emit(&sources);
+    }
+
+    #[test]
+    fn oxford_join_forms() {
+        let s = |v: &[&str]| oxford_join(&v.iter().map(|x| x.to_string()).collect::<Vec<_>>());
+        assert_eq!(s(&[]), "");
+        assert_eq!(s(&["a"]), "`a`");
+        assert_eq!(s(&["a", "b"]), "`a` or `b`");
+        assert_eq!(s(&["a", "b", "c"]), "`a`, `b`, or `c`");
     }
 
     #[test]

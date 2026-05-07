@@ -40,7 +40,7 @@ pub fn find_library_dir() -> Option<PathBuf> {
     let lib_name = libloading::library_filename("olive_std");
     // Prefer the std lib sitting next to the running compiler: in a dev build
     // that is target/<profile>/, which always matches the compiler that just
-    // built it — so adding a runtime symbol can never link against a stale copy.
+    // built it, so adding a runtime symbol can never link against a stale copy.
     if let Ok(exe_path) = std::env::current_exe()
         && let Some(exe_dir) = exe_path.parent()
     {
