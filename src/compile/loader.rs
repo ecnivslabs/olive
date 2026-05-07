@@ -157,6 +157,10 @@ pub fn load_and_parse(
                 }
 
                 if !mod_path.exists() {
+                    if is_main && super::laws::is_laws_import(module, alias) {
+                        all_stmts.push(super::laws::make_laws_stmt(stmt.span));
+                        continue;
+                    }
                     report_error(
                         sources,
                         &format!("module '{}' not found", mod_name),

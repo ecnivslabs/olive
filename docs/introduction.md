@@ -5,13 +5,15 @@ Olive is a general-purpose systems language. It combines the speed of low-level 
 ## Philosophy
 
 **Zero-overhead performance.**
-Prototype code should be production-ready. Olive produces optimized machine code from the start. There is no heavy runtime, no garbage collector, and no hidden CPU costs.
+Prototype code should be production-ready. Olive produces optimized machine code from the start. There is no heavy runtime, no garbage collector, and no hidden CPU costs in the core language.
 
 **Compile-time safety.**
-Memory leaks and data races are caught at compile time. If the compiler accepts the code, it is memory-safe.
+Memory leaks and data races are caught at compile time. Outside explicit `unsafe` blocks, if the compiler accepts the code, it is memory-safe.
 
 **Readability first.**
 Code is read more often than it is written. Olive strips syntactic noise: no semicolons, no braces, no boilerplate. Program structure is defined entirely by indentation.
+
+These principles, and the rest of Olive's creed, are its laws. Run `import olive` to read them.
 
 ## Core Concepts
 
@@ -29,5 +31,3 @@ Running an Olive program executes the following compiler stages:
 2. **Borrow Checking**: The compiler validates that memory references follow strict access rules, preventing data races and invalid pointer access.
 3. **Optimization**: Redundant operations are eliminated, loops are hoisted, and blocks are simplified on the Middle Intermediate Representation (MIR).
 4. **JIT Codegen**: The Cranelift backend generates machine code optimized for your local CPU architecture, executing it immediately.
-
-

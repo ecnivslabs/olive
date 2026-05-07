@@ -353,6 +353,11 @@ pub fn run_shell() {
                     };
                     exec_stmts.push(wrapped);
                 }
+                parser::StmtKind::Import { module, alias }
+                    if crate::compile::laws::is_laws_import(module, alias) =>
+                {
+                    exec_stmts.push(crate::compile::laws::make_laws_stmt(stmt.span));
+                }
                 _ => {
                     exec_stmts.push(stmt);
                 }
