@@ -84,7 +84,3 @@ pit run
 ## Contributing
 
 Contributions are welcome! Fork the repo, make a branch, and open a PR. Keep it simple, keep it clean.
-
-## Philosophy
-
-Olive has a creed. Run `import olive` to read it.
