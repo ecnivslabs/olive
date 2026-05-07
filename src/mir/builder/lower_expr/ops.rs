@@ -15,6 +15,45 @@ impl<'a> MirBuilder<'a> {
     ) -> Operand {
         let r_ty = self.get_type(right.id).clone();
 
+        // `null` in an `Any` is a boxed sentinel, not a bare 0, so test it via
+        // the runtime null check (negated for `!=`).
+        if matches!(op, crate::parser::BinOp::Eq | crate::parser::BinOp::NotEq) {
+            let l_ty = self.get_type(left.id);
+            let any_operand = match (&l_ty, &r_ty) {
+                (Type::Any, Type::Null) => Some(left),
+                (Type::Null, Type::Any) => Some(right),
+                _ => None,
+            };
+            if let Some(operand) = any_operand {
+                let v = self.lower_expr_as_copy(operand);
+                let is_null = self.new_local(Type::Bool, None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        is_null,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(
+                                "__olive_any_is_null".to_string(),
+                            )),
+                            args: vec![v],
+                        },
+                    ),
+                    span,
+                );
+                if matches!(op, crate::parser::BinOp::Eq) {
+                    return self.operand_for_local(is_null);
+                }
+                let neg = self.new_local(Type::Bool, None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        neg,
+                        Rvalue::UnaryOp(crate::parser::UnaryOp::Not, Operand::Copy(is_null)),
+                    ),
+                    span,
+                );
+                return self.operand_for_local(neg);
+            }
+        }
+
         if r_ty == Type::Str && matches!(op, crate::parser::BinOp::In | crate::parser::BinOp::NotIn)
         {
             let haystack = self.lower_expr_as_copy(right);
@@ -52,7 +91,11 @@ impl<'a> MirBuilder<'a> {
         if matches!(op, crate::parser::BinOp::And | crate::parser::BinOp::Or) {
             let tmp = self.new_local(self.get_type(expr_id), None, false);
             let l = self.lower_expr(left);
+            // Result is the original left value, but branch on its truthiness so
+            // a boxed `Any` is tested by value, not by its pointer word.
+            let l_ty = self.get_type(left.id);
             self.push_statement(StatementKind::Assign(tmp, Rvalue::Use(l.clone())), span);
+            let l_disc = self.truthify(l, &l_ty, span);
 
             let rhs_bb = self.new_block();
             let merge_bb = self.new_block();
@@ -62,7 +105,7 @@ impl<'a> MirBuilder<'a> {
                     self.terminate_block(
                         bb,
                         TerminatorKind::SwitchInt {
-                            discr: l,
+                            discr: l_disc,
                             targets: vec![(1, rhs_bb)],
                             otherwise: merge_bb,
                         },
@@ -72,7 +115,7 @@ impl<'a> MirBuilder<'a> {
                     self.terminate_block(
                         bb,
                         TerminatorKind::SwitchInt {
-                            discr: l,
+                            discr: l_disc,
                             targets: vec![(0, rhs_bb)],
                             otherwise: merge_bb,
                         },

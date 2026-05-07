@@ -218,6 +218,17 @@ impl<M: Module> CraneliftCodegen<M> {
             }
 
             Lt | LtEq | Gt | GtEq | NotEq => {
+                if matches!(op, NotEq) && (is_str_op(func_mir, lhs) || is_str_op(func_mir, rhs)) {
+                    let eq_func_id = func_ids
+                        .get("__olive_str_eq")
+                        .expect("missing __olive_str_eq");
+                    let local_func = module.declare_func_in_func(*eq_func_id, builder.func);
+                    let call = builder.ins().call(local_func, &[l, r]);
+                    let eq = builder.inst_results(call)[0];
+                    let ne = builder.ins().icmp_imm(IntCC::Equal, eq, 0);
+                    return builder.ins().uextend(types::I64, ne);
+                }
+
                 let is_py = is_pyobj_op(func_mir, lhs) || is_pyobj_op(func_mir, rhs);
                 if is_py {
                     let mut to_pyobj = |val: Value, op: &Operand| -> Value {

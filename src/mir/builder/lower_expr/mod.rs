@@ -13,6 +13,42 @@ use crate::semantic::types::Type;
 use crate::span::Span;
 
 impl<'a> MirBuilder<'a> {
+    /// Boxes a scalar into an `Any` container slot. Only container elements box
+    /// (a raw slot can't tell float-bits/null from an int); scalar `Any`
+    /// variables/args/returns stay raw, so this is the sole boxing site.
+    pub(super) fn coerce_to_elem(&mut self, op: Operand, elem: &Expr, elem_ty: &Type) -> Operand {
+        if *elem_ty != Type::Any {
+            return op;
+        }
+        let from_ty = self.get_type(elem.id);
+        self.box_into_any(op, &from_ty, elem.span)
+    }
+
+    /// Boxes a float, bool, or null into its `Any` heap form; passes anything
+    /// else through.
+    pub(super) fn box_into_any(&mut self, op: Operand, from_ty: &Type, span: Span) -> Operand {
+        let boxer = match from_ty {
+            Type::Float | Type::F32 => Some(("__olive_box_float", true)),
+            Type::Bool => Some(("__olive_box_bool", true)),
+            Type::Null => Some(("__olive_box_null", false)),
+            _ => return op,
+        };
+        let (boxer, takes_arg) = boxer.unwrap();
+        let tmp = self.new_local(Type::Any, None, false);
+        let args = if takes_arg { vec![op] } else { vec![] };
+        self.push_statement(
+            StatementKind::Assign(
+                tmp,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(boxer.to_string())),
+                    args,
+                },
+            ),
+            span,
+        );
+        Operand::Copy(tmp)
+    }
+
     pub(super) fn coerce(
         &mut self,
         op: Operand,
@@ -81,6 +117,7 @@ impl<'a> MirBuilder<'a> {
     pub(super) fn lower_expr(&mut self, expr: &Expr) -> Operand {
         match &expr.kind {
             ExprKind::Integer(i) => Operand::Constant(Constant::Int(*i)),
+            ExprKind::Null => Operand::Constant(Constant::Int(0)),
             ExprKind::Float(f) => Operand::Constant(Constant::Float((*f).to_bits())),
             ExprKind::Str(s) => Operand::Constant(Constant::Str(s.clone())),
             ExprKind::FStr(exprs) => self.lower_fstr_expr(exprs, expr.span),

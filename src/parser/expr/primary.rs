@@ -297,7 +297,7 @@ impl Parser {
             }
             TokenKind::Null => {
                 self.advance();
-                Ok(Expr::new(ExprKind::Integer(0), start))
+                Ok(Expr::new(ExprKind::Null, start))
             }
             TokenKind::Match => {
                 self.advance();

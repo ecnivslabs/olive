@@ -3,6 +3,12 @@ use super::TypeChecker;
 use crate::parser::{AugOp, BinOp, CallArg, Expr, ExprKind, UnaryOp};
 use crate::span::Span;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Collection {
+    List,
+    Set,
+}
+
 impl TypeChecker {
     pub(super) fn check_expr(&mut self, expr: &Expr) -> Type {
         let ty = self.infer_expr(expr);
@@ -11,7 +17,34 @@ impl TypeChecker {
         final_ty
     }
 
+    /// Checks `expr` against an expected type, so a collection literal can adopt
+    /// it (e.g. a `[Any]` annotation accepts a mixed list). Applies to `expr`
+    /// only.
+    pub(super) fn check_expr_expecting(&mut self, expr: &Expr, expected: &Type) -> Type {
+        let resolved = self.apply_subst(expected.clone());
+        self.expected = Some(resolved);
+        let ty = self.check_expr(expr);
+        self.expected = None;
+        ty
+    }
+
+    /// Tries to unify, rolling back both errors and substitutions on failure so
+    /// the probe leaves no trace. Returns whether the types are compatible.
+    pub(super) fn unify_silently(&mut self, a: &Type, b: &Type, span: Span) -> bool {
+        let errs_before = self.errors.len();
+        let subst_before = self.substitutions.clone();
+        self.unify(a, b, span);
+        if self.errors.len() > errs_before {
+            self.errors.truncate(errs_before);
+            self.substitutions = subst_before;
+            false
+        } else {
+            true
+        }
+    }
+
     pub(super) fn infer_expr(&mut self, expr: &Expr) -> Type {
+        let expected = self.expected.take();
         match &expr.kind {
             ExprKind::Integer(_) => Type::IntegerLiteral(self.fresh_var_id()),
             ExprKind::Float(_) => Type::FloatLiteral(self.fresh_var_id()),
@@ -23,6 +56,7 @@ impl TypeChecker {
                 Type::Str
             }
             ExprKind::Bool(_) => Type::Bool,
+            ExprKind::Null => Type::Null,
 
             ExprKind::Deref(inner) => {
                 let inner_ty = self.check_expr(inner);
@@ -106,42 +140,65 @@ impl TypeChecker {
                 }
             }
 
-            ExprKind::List(elems) => {
-                let elem_ty = self.fresh_var();
-                for e in elems {
-                    let e_ty = self.check_expr(e);
-                    self.unify(&elem_ty, &e_ty, expr.span);
-                }
-                Type::List(Box::new(self.apply_subst(elem_ty)))
-            }
+            ExprKind::List(elems) => self.infer_collection(elems, &expected, Collection::List),
 
             ExprKind::Tuple(elems) => {
-                let types: Vec<Type> = elems.iter().map(|e| self.check_expr(e)).collect();
+                let elem_expected = match &expected {
+                    Some(Type::Tuple(tys)) if tys.len() == elems.len() => Some(tys.clone()),
+                    _ => None,
+                };
+                let types: Vec<Type> = elems
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| match &elem_expected {
+                        Some(tys) => self.check_expr_expecting(e, &tys[i]),
+                        None => self.check_expr(e),
+                    })
+                    .collect();
                 Type::Tuple(types)
             }
 
-            ExprKind::Set(elems) => {
-                let elem_ty = self.fresh_var();
-                for e in elems {
-                    let e_ty = self.check_expr(e);
-                    self.unify(&elem_ty, &e_ty, expr.span);
-                }
-                Type::Set(Box::new(self.apply_subst(elem_ty)))
-            }
+            ExprKind::Set(elems) => self.infer_collection(elems, &expected, Collection::Set),
 
             ExprKind::Dict(pairs) => {
+                let (exp_k, exp_v) = match &expected {
+                    Some(Type::Dict(k, v)) => (Some((**k).clone()), Some((**v).clone())),
+                    Some(Type::Any) => (Some(Type::Any), Some(Type::Any)),
+                    _ => (None, None),
+                };
                 let k_ty = self.fresh_var();
                 let v_ty = self.fresh_var();
+                let mut hetero_k = false;
+                let mut hetero_v = false;
                 for (k, v) in pairs {
-                    let kt = self.check_expr(k);
-                    let vt = self.check_expr(v);
-                    self.unify(&k_ty, &kt, expr.span);
-                    self.unify(&v_ty, &vt, expr.span);
+                    let kt = match &exp_k {
+                        Some(e) => self.check_expr_expecting(k, e),
+                        None => self.check_expr(k),
+                    };
+                    let vt = match &exp_v {
+                        Some(e) => self.check_expr_expecting(v, e),
+                        None => self.check_expr(v),
+                    };
+                    match &exp_k {
+                        Some(e) => self.unify(e, &kt, k.span),
+                        None => hetero_k |= !self.unify_silently(&k_ty, &kt, k.span),
+                    }
+                    match &exp_v {
+                        Some(e) => self.unify(e, &vt, v.span),
+                        None => hetero_v |= !self.unify_silently(&v_ty, &vt, v.span),
+                    }
                 }
-                Type::Dict(
-                    Box::new(self.apply_subst(k_ty)),
-                    Box::new(self.apply_subst(v_ty)),
-                )
+                let key_ty = match exp_k {
+                    Some(e) => e,
+                    None if hetero_k => Type::Any,
+                    None => self.apply_subst(k_ty),
+                };
+                let val_ty = match exp_v {
+                    Some(e) => e,
+                    None if hetero_v => Type::Any,
+                    None => self.apply_subst(v_ty),
+                };
+                Type::Dict(Box::new(key_ty), Box::new(val_ty))
             }
 
             ExprKind::Call { callee, args } => {
@@ -554,6 +611,24 @@ impl TypeChecker {
                     }
                 }
 
+                // A dict erased to `Any` (e.g. from JSON) still answers the
+                // dict methods at runtime.
+                if current_obj == Type::Any {
+                    match attr.as_str() {
+                        "keys" | "values" => {
+                            return Type::Fn(
+                                vec![],
+                                Box::new(Type::List(Box::new(Type::Any))),
+                                Vec::new(),
+                            );
+                        }
+                        "remove" => {
+                            return Type::Fn(vec![Type::Any], Box::new(Type::Null), Vec::new());
+                        }
+                        _ => {}
+                    }
+                }
+
                 if attr == "copy" {
                     return Type::Fn(vec![], Box::new(resolved_obj), Vec::new());
                 }
@@ -845,6 +920,46 @@ impl TypeChecker {
             BinOp::Shl => "__lshift__",
             BinOp::Shr => "__rshift__",
             _ => "",
+        }
+    }
+
+    /// Infers a list or set literal's type. With an annotated element type, each
+    /// element must match it (so `[str] = ["a", 5]` errors). Otherwise a uniform
+    /// literal keeps its element type and a mixed one widens to `[Any]`.
+    fn infer_collection(
+        &mut self,
+        elems: &[Expr],
+        expected: &Option<Type>,
+        kind: Collection,
+    ) -> Type {
+        let exp_elem = match expected {
+            Some(Type::List(e)) if kind == Collection::List => Some((**e).clone()),
+            Some(Type::Set(e)) if kind == Collection::Set => Some((**e).clone()),
+            Some(Type::Any) => Some(Type::Any),
+            _ => None,
+        };
+        let elem_ty = if let Some(exp) = exp_elem {
+            for e in elems {
+                let e_ty = self.check_expr_expecting(e, &exp);
+                self.unify(&exp, &e_ty, e.span);
+            }
+            exp
+        } else {
+            let var = self.fresh_var();
+            let mut heterogeneous = false;
+            for e in elems {
+                let e_ty = self.check_expr(e);
+                heterogeneous |= !self.unify_silently(&var, &e_ty, e.span);
+            }
+            if heterogeneous {
+                Type::Any
+            } else {
+                self.apply_subst(var)
+            }
+        };
+        match kind {
+            Collection::List => Type::List(Box::new(elem_ty)),
+            Collection::Set => Type::Set(Box::new(elem_ty)),
         }
     }
 

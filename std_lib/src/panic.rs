@@ -10,7 +10,47 @@ use std::io::{IsTerminal, Write};
 const RED: &str = "\x1b[31m";
 const BOLD: &str = "\x1b[1m";
 const DIM: &str = "\x1b[38;5;246m";
+const HELP: &str = "\x1b[38;5;115m";
 const RESET: &str = "\x1b[0m";
+
+/// A runtime fault: a stable code plus optional `help` and `note`, so a crash
+/// reads like an `[E07xx]` diagnostic.
+pub struct Fault {
+    pub code: &'static str,
+    pub help: Option<&'static str>,
+    pub note: Option<&'static str>,
+}
+
+const PANIC: Fault = Fault {
+    code: "E0700",
+    help: None,
+    note: None,
+};
+const BOUNDS: Fault = Fault {
+    code: "E0701",
+    help: Some("use a valid index, or guard the access with a length check"),
+    note: None,
+};
+const NIL_INDEX: Fault = Fault {
+    code: "E0702",
+    help: Some("initialise the value, or check it against `None` before indexing"),
+    note: None,
+};
+const DIV_ZERO: Fault = Fault {
+    code: "E0703",
+    help: Some("guard the divisor so it is non-zero before dividing"),
+    note: None,
+};
+const UNWRAP: Fault = Fault {
+    code: "E0704",
+    help: Some("handle the error case with `?`, `try`, or a match instead of unwrapping"),
+    note: None,
+};
+const PY_UNCAUGHT: Fault = Fault {
+    code: "E0705",
+    help: Some("wrap the call in `try` or guard the inputs so the exception cannot arise"),
+    note: Some("the exception propagated out of Python without being caught"),
+};
 
 /// A parsed `file:line:col` (or `line:col`) source location.
 struct Location {
@@ -105,32 +145,66 @@ fn underline_width(chars: &[char], start: usize) -> usize {
         .max(1)
 }
 
-/// Prints the diagnostic, runs exit hooks, and terminates the process. Never
-/// returns; the `!` type lets callers that must yield a value defer to it.
+/// The generic uncoded abort (a bare `panic`). Never returns.
 pub fn abort(msg: &str, loc: Option<&str>) -> ! {
-    run_exit_hooks();
+    abort_with(&PANIC, msg, loc)
+}
 
-    let color = use_color();
-    let mut out = std::io::stderr().lock();
-    let (red, bold, dim, reset) = if color {
-        (RED, BOLD, DIM, RESET)
+/// Renders a fault into `out`: coded headline, source line with caret, help and
+/// note. Split from [`abort_with`] so it can be tested without exiting.
+fn render_fault(out: &mut impl Write, fault: &Fault, msg: &str, loc: Option<&str>, color: bool) {
+    let (red, bold, dim, help_c, reset) = if color {
+        (RED, BOLD, DIM, HELP, RESET)
     } else {
-        ("", "", "", "")
+        ("", "", "", "", "")
     };
 
-    let fb_ptr = FAULT_LOC.with(|c| c.get());
-    let fallback = (fb_ptr != 0).then(|| olive_str_from_ptr(fb_ptr));
-    let parsed = loc.or(fallback.as_deref()).and_then(parse_loc);
-    let _ = writeln!(out, "{red}{bold}panic{reset}{bold}: {msg}{reset}");
+    let parsed = loc.and_then(parse_loc);
+    let _ = writeln!(
+        out,
+        "{red}{bold}[{}] panic{reset}{bold}: {msg}{reset}",
+        fault.code
+    );
     if let Some(parsed) = &parsed {
         let where_ = match &parsed.file {
             Some(f) => format!("{f}:{}:{}", parsed.line, parsed.col),
             None => format!("{}:{}", parsed.line, parsed.col),
         };
         let _ = writeln!(out, "{dim}  ╭─[{reset} {where_} {dim}]{reset}");
-        render_source(&mut out, parsed, color);
+        render_source(out, parsed, color);
+        if let Some(help) = fault.help {
+            let _ = writeln!(out, "{dim}  │{reset}");
+            let _ = writeln!(out, "{dim}  │{reset} {help_c}help{reset}: {help}");
+        }
+        if let Some(note) = fault.note {
+            let _ = writeln!(out, "{dim}  │{reset}");
+            let _ = writeln!(out, "{dim}  │{reset} {help_c}note{reset}: {note}");
+        }
+        let _ = writeln!(out, "{dim}──╯{reset}");
+    } else {
+        if let Some(help) = fault.help {
+            let _ = writeln!(out, "{help_c}help{reset}: {help}");
+        }
+        if let Some(note) = fault.note {
+            let _ = writeln!(out, "{help_c}note{reset}: {note}");
+        }
     }
+}
 
+/// Renders `fault` and terminates the process. Never returns.
+pub fn abort_with(fault: &Fault, msg: &str, loc: Option<&str>) -> ! {
+    run_exit_hooks();
+
+    let color = use_color();
+    let mut out = std::io::stderr().lock();
+
+    let fb_ptr = FAULT_LOC.with(|c| c.get());
+    let fallback = (fb_ptr != 0).then(|| olive_str_from_ptr(fb_ptr));
+    let where_ = loc.or(fallback.as_deref());
+    render_fault(&mut out, fault, msg, where_, color);
+
+    let dim = if color { DIM } else { "" };
+    let reset = if color { RESET } else { "" };
     if std::env::var_os("OLIVE_BACKTRACE").is_some() {
         let _ = writeln!(out, "{dim}backtrace:{reset}");
         let _ = writeln!(out, "{}", std::backtrace::Backtrace::force_capture());
@@ -138,6 +212,16 @@ pub fn abort(msg: &str, loc: Option<&str>) -> ! {
     let _ = out.flush();
 
     std::process::exit(1);
+}
+
+/// Aborts an `unwrap`/`unwrap_err` on the wrong variant.
+pub fn abort_unwrap(msg: &str) -> ! {
+    abort_with(&UNWRAP, msg, None)
+}
+
+/// Aborts on a Python exception that crossed the FFI boundary uncaught.
+pub fn abort_python(msg: &str, loc: Option<&str>) -> ! {
+    abort_with(&PY_UNCAUGHT, msg, loc)
 }
 
 /// Raised when an index is outside `0..len`. Reports the length and the
@@ -152,7 +236,7 @@ pub extern "C" fn olive_bounds_fail(index: i64, len: i64, loc: i64) -> i64 {
     } else {
         format!("index out of bounds: the length is {len} but the index is {index}")
     };
-    abort(&msg, loc.as_deref())
+    abort_with(&BOUNDS, &msg, loc.as_deref())
 }
 
 /// Raised when indexing a value that is null (an uninitialised or `None`
@@ -160,7 +244,7 @@ pub extern "C" fn olive_bounds_fail(index: i64, len: i64, loc: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_nil_index_fail(loc: i64) -> i64 {
     let loc = (loc != 0).then(|| olive_str_from_ptr(loc));
-    abort("cannot index into a null value", loc.as_deref())
+    abort_with(&NIL_INDEX, "cannot index into a null value", loc.as_deref())
 }
 
 /// Raised when the divisor of an integer `/` or `%` is zero. Hardware would
@@ -174,7 +258,7 @@ pub extern "C" fn olive_div_zero_fail(is_mod: i64, loc: i64) -> i64 {
     } else {
         "divide by zero: the right-hand side of `/` is 0"
     };
-    abort(msg, loc.as_deref())
+    abort_with(&DIV_ZERO, msg, loc.as_deref())
 }
 
 #[cfg(test)]
@@ -275,5 +359,45 @@ mod tests {
         let mut buf = Vec::new();
         render_source(&mut buf, &loc, false);
         assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn render_fault_includes_code_help_and_note() {
+        let dir = std::env::temp_dir().join(format!("olive_fault_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("snippet.liv");
+        std::fs::write(&path, "let x = a / b\n").unwrap();
+        let loc = format!("{}:1:9", path.to_string_lossy());
+        let fault = Fault {
+            code: "E0703",
+            help: Some("guard the divisor"),
+            note: Some("the divisor was zero"),
+        };
+        let mut buf = Vec::new();
+        render_fault(&mut buf, &fault, "divide by zero", Some(&loc), false);
+        let rendered = String::from_utf8(buf).unwrap();
+        assert!(rendered.contains("[E0703] panic: divide by zero"));
+        assert!(rendered.contains("let x = a / b"));
+        assert!(rendered.contains('^'));
+        assert!(rendered.contains("help: guard the divisor"));
+        assert!(rendered.contains("note: the divisor was zero"));
+        assert!(rendered.contains("──╯"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn render_fault_without_location_is_inline() {
+        let fault = Fault {
+            code: "E0704",
+            help: Some("handle the error case"),
+            note: None,
+        };
+        let mut buf = Vec::new();
+        render_fault(&mut buf, &fault, "unwrap on Err", None, false);
+        let rendered = String::from_utf8(buf).unwrap();
+        assert!(rendered.contains("[E0704] panic: unwrap on Err"));
+        assert!(rendered.contains("help: handle the error case"));
+        assert!(!rendered.contains("╭─["));
+        assert!(!rendered.contains("──╯"));
     }
 }

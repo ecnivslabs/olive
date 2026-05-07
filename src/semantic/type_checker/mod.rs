@@ -80,6 +80,11 @@ pub struct TypeChecker {
     // aliases whose surface comes from an explicit `import py` stub block (a
     // closed contract), as opposed to best-effort `.pyi` introspection
     pub(super) py_explicit_modules: HashSet<String>,
+    // module alias → real Python module name, for diagnostics
+    pub(super) py_alias_module: HashMap<String, String>,
+    // expected type for the next checked expression; consumed once in
+    // `infer_expr`. Lets an annotation drive a collection literal.
+    pub(super) expected: Option<Type>,
 }
 
 impl Default for TypeChecker {
@@ -403,6 +408,8 @@ impl TypeChecker {
             py_class_methods: HashMap::default(),
             py_fn_arity: HashMap::default(),
             py_explicit_modules: HashSet::default(),
+            py_alias_module: HashMap::default(),
+            expected: None,
         }
     }
 
@@ -462,6 +469,11 @@ impl TypeChecker {
         if !self.py_explicit_modules.contains(module) {
             return;
         }
+        let display = self
+            .py_alias_module
+            .get(module)
+            .map(String::as_str)
+            .unwrap_or(module);
         let known_fn = self
             .py_module_fns
             .get(module)
@@ -484,7 +496,7 @@ impl TypeChecker {
                 .push(crate::semantic::error::SemanticError::rich(
                     crate::compile::errors::Diagnostic::error(
                         "E0601",
-                        format!("Python module `{module}` has no attribute `{attr}`"),
+                        format!("Python module `{display}` has no attribute `{attr}`"),
                         span,
                     )
                     .label("not declared in this module's `import py` stub")
@@ -515,7 +527,7 @@ impl TypeChecker {
             .push(crate::semantic::error::SemanticError::rich(
                 crate::compile::errors::Diagnostic::error(
                     "E0602",
-                    format!("`{module}.{attr}` takes {expected}, but {arg_count} were given"),
+                    format!("`{display}.{attr}` takes {expected}, but {arg_count} were given"),
                     span,
                 )
                 .label(format!("called with {arg_count} argument(s) here"))
@@ -1308,6 +1320,30 @@ mod tests {
                 .iter()
                 .any(|e| e.to_diagnostic().code() == Some("E0601"))
         );
+    }
+
+    #[test]
+    fn unknown_attr_names_real_module_not_alias() {
+        let mut tc = TypeChecker::new();
+        tc.py_module_fns
+            .entry("m".into())
+            .or_default()
+            .insert("sqrt".into(), vec![(vec![Type::Float], Type::Float)]);
+        tc.py_explicit_modules.insert("m".into());
+        tc.py_alias_module.insert("m".into(), "math".into());
+        tc.check_py_call("m", "cbrt", 1, true, crate::span::Span::default());
+        let diag = tc
+            .errors
+            .iter()
+            .map(|e| e.to_diagnostic())
+            .find(|d| d.code() == Some("E0601"))
+            .expect("E0601 expected");
+        assert!(
+            diag.headline().contains("`math`"),
+            "diagnostic should name the real module, got: {}",
+            diag.headline()
+        );
+        assert!(!diag.headline().contains("`m`"));
     }
 
     #[test]

@@ -109,6 +109,10 @@ impl<'a> MirBuilder<'a> {
             }
         }
 
+        if let Some(op) = self.lower_dict_method(obj, attr, &arg_ops, span, expr_id) {
+            return op;
+        }
+
         if let ExprKind::Identifier(name) = &obj.kind {
             let obj_ty = self.get_type(obj.id);
             let mut current_obj_ty = obj_ty.clone();
@@ -305,6 +309,46 @@ impl<'a> MirBuilder<'a> {
             }
             self.operand_for_local(tmp)
         }
+    }
+
+    /// Routes the dict methods `keys`/`values`/`remove` to their runtime fns,
+    /// for a `Dict` or `Any` receiver. `None` for anything else.
+    fn lower_dict_method(
+        &mut self,
+        obj: &Expr,
+        attr: &str,
+        arg_ops: &[Operand],
+        span: Span,
+        expr_id: usize,
+    ) -> Option<Operand> {
+        let runtime = match attr {
+            "keys" => "__olive_obj_keys",
+            "values" => "__olive_obj_values",
+            "remove" => "__olive_obj_remove",
+            _ => return None,
+        };
+        let mut recv_ty = self.get_type(obj.id);
+        while let Type::Ref(inner) | Type::MutRef(inner) = recv_ty {
+            recv_ty = *inner;
+        }
+        if !matches!(recv_ty, Type::Dict(_, _) | Type::Any) {
+            return None;
+        }
+        let obj_op = self.lower_expr_as_copy(obj);
+        let mut call_args = vec![obj_op];
+        call_args.extend_from_slice(arg_ops);
+        let tmp = self.new_local(self.get_type(expr_id), None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                tmp,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(runtime.to_string())),
+                    args: call_args,
+                },
+            ),
+            span,
+        );
+        Some(self.operand_for_local(tmp))
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -407,7 +407,11 @@ fn collect_refs_expr(expr: &Expr, out: &mut FxHashSet<String>) {
         ExprKind::Identifier(name) => {
             out.insert(name.clone());
         }
-        ExprKind::Integer(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) => {}
+        ExprKind::Integer(_)
+        | ExprKind::Float(_)
+        | ExprKind::Str(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Null => {}
         ExprKind::FStr(parts) => {
             for e in parts {
                 collect_refs_expr(e, out);

@@ -108,7 +108,8 @@ impl<M: Module> CraneliftCodegen<M> {
                     || resolved_name == "__olive_math_exp"
                     || resolved_name == "__olive_math_log"
                     || resolved_name == "__olive_math_log10"
-                    || resolved_name == "__olive_py_from_float";
+                    || resolved_name == "__olive_py_from_float"
+                    || resolved_name == "__olive_box_float";
                 let ffi_entry = ffi_entries.iter().find(|e| e.jit_name == resolved_name);
 
                 if let Some(entry) = ffi_entry

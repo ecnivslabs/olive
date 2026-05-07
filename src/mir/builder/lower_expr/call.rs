@@ -163,20 +163,63 @@ impl<'a> MirBuilder<'a> {
         }
     }
 
-    pub(super) fn lower_type_builtin(&self, args: &[CallArg], _span: Span) -> Option<Operand> {
-        if !args.is_empty() {
-            let arg_expr = match &args[0] {
-                CallArg::Positional(e)
-                | CallArg::Keyword(_, e)
-                | CallArg::Splat(e)
-                | CallArg::KwSplat(e) => e,
-            };
-            let arg_ty = self.get_type(arg_expr.id);
-            let type_str = format!("<struct '{}'>", arg_ty);
-            Some(Operand::Constant(Constant::Str(type_str)))
-        } else {
-            None
+    pub(super) fn lower_type_builtin(&mut self, args: &[CallArg], span: Span) -> Option<Operand> {
+        if args.is_empty() {
+            return None;
         }
+        let arg_expr = match &args[0] {
+            CallArg::Positional(e)
+            | CallArg::Keyword(_, e)
+            | CallArg::Splat(e)
+            | CallArg::KwSplat(e) => e,
+        };
+        let mut arg_ty = self.get_type(arg_expr.id);
+        while let Type::Ref(inner) | Type::MutRef(inner) = arg_ty {
+            arg_ty = *inner;
+        }
+
+        // A concrete static type gives a constant name; `Any`/Python is read at
+        // runtime.
+        let name = match arg_ty {
+            Type::Int
+            | Type::I8
+            | Type::I16
+            | Type::I32
+            | Type::U8
+            | Type::U16
+            | Type::U32
+            | Type::U64
+            | Type::Usize
+            | Type::IntegerLiteral(_) => "int",
+            Type::Float | Type::F32 | Type::FloatLiteral(_) => "float",
+            Type::Bool => "bool",
+            Type::Str => "str",
+            Type::Bytes => "bytes",
+            Type::List(_) | Type::Tuple(_) => "list",
+            Type::Dict(_, _) => "dict",
+            Type::Set(_) => "set",
+            Type::Null => "null",
+            Type::Enum(_, _) => "enum",
+            Type::Any | Type::PyObject | Type::PyNamed(_, _) | Type::Var(_) => {
+                let arg = self.lower_expr(arg_expr);
+                let result = self.new_local(Type::Str, None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        result,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(
+                                "__olive_typeof_str".to_string(),
+                            )),
+                            args: vec![arg],
+                        },
+                    ),
+                    span,
+                );
+                return Some(self.operand_for_local(result));
+            }
+            other => return Some(Operand::Constant(Constant::Str(format!("{other}")))),
+        };
+        Some(Operand::Constant(Constant::Str(name.to_string())))
     }
 
     pub(super) fn lower_len_builtin(&mut self, args: &[CallArg], span: Span) -> Option<Operand> {

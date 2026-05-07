@@ -23,6 +23,7 @@ extern crate libc;
 use std::sync::{Mutex, OnceLock};
 
 pub mod aio;
+pub mod boxed;
 pub mod bytes;
 pub mod compress;
 pub mod crypto;
@@ -53,6 +54,9 @@ pub(crate) const KIND_SET: i64 = 4;
 pub(crate) const KIND_BYTES: i64 = 6;
 pub(crate) const KIND_PYOBJECT: i64 = 7;
 pub(crate) const KIND_ITER: i64 = 8;
+pub(crate) const KIND_FLOAT: i64 = 11;
+pub(crate) const KIND_BOOL: i64 = 12;
+pub(crate) const KIND_NULL: i64 = 13;
 
 pub use tracking::{active_objects_count, is_active_object, register_object, unregister_object};
 
@@ -261,6 +265,22 @@ pub extern "C" fn olive_print_str(val: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn olive_print_py(val: i64) -> i64 {
+    if val == 0 {
+        println!("None");
+        return 0;
+    }
+    let str_ptr = python::olive_py_to_str(val as python::PyObject);
+    if str_ptr != 0 {
+        println!("{}", olive_str_from_ptr(str_ptr));
+        olive_free_str(str_ptr);
+    } else {
+        println!("<PyObject>");
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn olive_print_list(ptr: i64) -> i64 {
     println!("{}", format_list(ptr));
     0
@@ -315,6 +335,15 @@ fn format_list_elem(val: i64) -> String {
     if is_active_object(val) {
         let kind = unsafe { *(val as *const i64) };
         match kind {
+            KIND_FLOAT => {
+                let b = unsafe { &*(val as *const boxed::OliveBoxed) };
+                return format!("{}", f64::from_bits(b.bits as u64));
+            }
+            KIND_BOOL => {
+                let b = unsafe { &*(val as *const boxed::OliveBoxed) };
+                return if b.bits != 0 { "True" } else { "False" }.to_string();
+            }
+            KIND_NULL => return "None".to_string(),
             KIND_LIST => return format_list(val),
             KIND_OBJ => {
                 let m = unsafe { &*(val as *const OliveObj) };
@@ -398,6 +427,42 @@ pub extern "C" fn olive_print_obj(ptr: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str(val: i64) -> i64 {
+    olive_str_internal(&val.to_string())
+}
+
+/// `str()` of an `Any`: renders the value's content (boxed float/bool, string,
+/// container), strings unquoted.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_any_to_str(val: i64) -> i64 {
+    if val & 1 == 1 && (val & !1) > 0x10000 {
+        return olive_str_internal(&olive_str_from_ptr(val));
+    }
+    if is_active_object(val) {
+        let kind = unsafe { *(val as *const i64) };
+        match kind {
+            KIND_FLOAT => {
+                let b = unsafe { &*(val as *const boxed::OliveBoxed) };
+                return olive_str_internal(&format!("{}", f64::from_bits(b.bits as u64)));
+            }
+            KIND_BOOL => {
+                let b = unsafe { &*(val as *const boxed::OliveBoxed) };
+                return olive_str_internal(if b.bits != 0 { "True" } else { "False" });
+            }
+            KIND_NULL => return olive_str_internal("None"),
+            KIND_PYOBJECT => {
+                let p = python::olive_py_to_str(val as python::PyObject);
+                return if p != 0 {
+                    p
+                } else {
+                    olive_str_internal("<PyObject>")
+                };
+            }
+            KIND_LIST | KIND_OBJ | KIND_ENUM | KIND_SET => {
+                return olive_str_internal(&format_list_elem(val));
+            }
+            _ => {}
+        }
+    }
     olive_str_internal(&val.to_string())
 }
 
@@ -684,6 +749,7 @@ pub extern "C" fn olive_free_any(ptr: i64) {
         KIND_OBJ => olive_free_obj(ptr),
         KIND_ENUM => olive_free_enum(ptr),
         KIND_BYTES => bytes::olive_buf_free(ptr),
+        KIND_FLOAT | KIND_BOOL | KIND_NULL => boxed::olive_free_boxed(ptr),
         crate::result::KIND_RESULT => crate::result::olive_free_result(ptr),
         KIND_PYOBJECT => python::olive_py_decref(ptr as *mut std::os::raw::c_void),
         KIND_ITER => olive_free_iter(ptr),
@@ -763,19 +829,24 @@ pub extern "C" fn olive_is_bytes(val: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_typeof_str(val: i64) -> i64 {
-    if val == 0 {
-        return olive_str_internal("null");
-    }
+    // A bare `0` is int; boxed `null` (`KIND_NULL`) is handled below.
     if val > 0x10000 && (val & 1) != 0 {
         return olive_str_internal("str");
+    }
+    if !is_active_object(val) {
+        return olive_str_internal("int");
     }
     let kind = unsafe { *(val as *const i64) };
     let name = match kind {
         KIND_LIST => "list",
-        KIND_OBJ => "obj",
+        KIND_OBJ => "dict",
         KIND_ENUM => "enum",
         KIND_SET => "set",
         KIND_BYTES => "bytes",
+        KIND_FLOAT => "float",
+        KIND_BOOL => "bool",
+        KIND_NULL => "null",
+        KIND_PYOBJECT => "PyObject",
         _ => "int",
     };
     olive_str_internal(name)

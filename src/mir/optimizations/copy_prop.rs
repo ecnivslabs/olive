@@ -20,11 +20,21 @@ impl Transform for CopyPropagation {
             }
         }
 
+        // Definition count. A parameter has an implicit entry binding on top of
+        // its assigns, so a reassigned `mut` param has 2+ defs and is not a
+        // stable copy source for this flow-insensitive pass.
+        let def_count = |l: Local| -> usize {
+            let base = *assign_counts.get(&l).unwrap_or(&0);
+            if l.0 >= 1 && l.0 <= func.arg_count {
+                base + 1
+            } else {
+                base
+            }
+        };
+
         let mut safe_copies: HashMap<Local, Local> = HashMap::default();
         for (dest, src) in copy_assignments {
-            if assign_counts.get(&dest) == Some(&1)
-                && (*assign_counts.get(&src).unwrap_or(&0) <= 1 || src.0 <= func.arg_count)
-            {
+            if def_count(dest) == 1 && def_count(src) <= 1 {
                 safe_copies.insert(dest, src);
             }
         }
@@ -192,5 +202,36 @@ mod tests {
             TerminatorKind::Return,
         )]);
         assert!(!CopyPropagation.run(&mut f));
+    }
+
+    #[test]
+    fn copy_prop_skips_reassigned_param_source() {
+        // `tmp = Copy(param)` then a param reassignment: param isn't stable, so
+        // tmp must not be propagated to it.
+        let mut f = func(vec![block(
+            vec![
+                assign(2, Rvalue::Use(Operand::Copy(Local(1)))),
+                assign(
+                    1,
+                    Rvalue::BinaryOp(
+                        BinOp::Add,
+                        Operand::Copy(Local(1)),
+                        Operand::Constant(Constant::Int(0)),
+                    ),
+                ),
+                assign(0, Rvalue::Use(Operand::Copy(Local(2)))),
+            ],
+            TerminatorKind::Return,
+        )]);
+        f.arg_count = 1;
+        CopyPropagation.run(&mut f);
+        // The read of Local(2) must stay Local(2), not the reassigned Local(1).
+        if let StatementKind::Assign(_, Rvalue::Use(Operand::Copy(l))) =
+            &f.basic_blocks[0].statements[2].kind
+        {
+            assert_eq!(*l, Local(2), "reassigned param must not be propagated");
+        } else {
+            panic!("expected copy assignment");
+        }
     }
 }

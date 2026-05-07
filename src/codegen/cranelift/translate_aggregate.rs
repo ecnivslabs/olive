@@ -176,4 +176,40 @@ mod tests {
         );
         assert_eq!(call_i64(&mut cg, "f"), 42);
     }
+
+    #[test]
+    fn test_heterogeneous_any_list_ints() {
+        let mut cg = compile(
+            "fn f() -> i64:\n    let xs: [Any] = [10, 2.5, 32]\n    return int(xs[0]) + int(xs[2])\n",
+        );
+        assert_eq!(call_i64(&mut cg, "f"), 42);
+    }
+
+    #[test]
+    fn test_heterogeneous_any_list_float_roundtrip() {
+        // A float boxed into `[Any]` unboxes back to its value.
+        let mut cg = compile(
+            "fn f() -> i64:\n    let xs: [Any] = [1.5, 7]\n    return int(float(xs[0]) + 40.5)\n",
+        );
+        assert_eq!(call_i64(&mut cg, "f"), 42);
+    }
+
+    #[test]
+    fn test_any_null_distinct_from_zero() {
+        // A boxed `null` in an `Any` slot is not equal to the integer zero.
+        let mut cg = compile(
+            "fn f() -> i64:\n    let xs: [Any] = [null, 0]\n    let mut r = 0\n    if xs[0] == null:\n        r = r + 1\n    if xs[1] == null:\n        r = r + 10\n    return r\n",
+        );
+        assert_eq!(call_i64(&mut cg, "f"), 1);
+    }
+
+    #[test]
+    fn test_any_boxed_bool_truthiness_in_and() {
+        // `and`/`or` branch on the truthiness of a boxed `Any` bool, not its
+        // raw pointer word.
+        let mut cg = compile(
+            "fn f() -> i64:\n    let xs: [Any] = [True, False]\n    if xs[0]:\n        return 42\n    return 0\n",
+        );
+        assert_eq!(call_i64(&mut cg, "f"), 42);
+    }
 }

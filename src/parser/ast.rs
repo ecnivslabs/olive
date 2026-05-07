@@ -256,6 +256,9 @@ pub enum ExprKind {
     Str(String),
     FStr(Vec<Expr>),
     Bool(bool),
+    /// The `null` literal. Runtime value is `0`, but a distinct node so it gets
+    /// `Type::Null` and boxes to a sentinel inside an `Any`.
+    Null,
     Identifier(String),
 
     BinOp {

@@ -109,6 +109,10 @@ impl<'a> MirBuilder<'a> {
                 false
             }
         });
+        let elem_box_ty = match self.get_type(expr_id) {
+            Type::List(elem) => *elem,
+            _ => Type::Any,
+        };
         if has_splat {
             let zero = Operand::Constant(Constant::Int(0));
             let tmp = self.new_local(self.get_type(expr_id), None, false);
@@ -144,6 +148,7 @@ impl<'a> MirBuilder<'a> {
                     }
                 }
                 let val = self.lower_expr(elem);
+                let val = self.coerce_to_elem(val, elem, &elem_box_ty);
                 self.push_statement(
                     StatementKind::Assign(
                         void_dummy,
@@ -159,7 +164,17 @@ impl<'a> MirBuilder<'a> {
             }
             self.operand_for_local(tmp)
         } else {
-            let ops: Vec<Operand> = elems.iter().map(|e| self.lower_expr(e)).collect();
+            let ops: Vec<Operand> = elems
+                .iter()
+                .map(|e| {
+                    let op = self.lower_expr(e);
+                    if is_tuple {
+                        op
+                    } else {
+                        self.coerce_to_elem(op, e, &elem_box_ty)
+                    }
+                })
+                .collect();
             let tmp = self.new_local(self.get_type(expr_id), None, false);
             let kind = if is_tuple {
                 AggregateKind::Tuple
@@ -175,7 +190,17 @@ impl<'a> MirBuilder<'a> {
     }
 
     pub(super) fn lower_set_expr(&mut self, elems: &[Expr], span: Span, expr_id: usize) -> Operand {
-        let ops: Vec<Operand> = elems.iter().map(|e| self.lower_expr(e)).collect();
+        let elem_box_ty = match self.get_type(expr_id) {
+            Type::Set(elem) => *elem,
+            _ => Type::Any,
+        };
+        let ops: Vec<Operand> = elems
+            .iter()
+            .map(|e| {
+                let op = self.lower_expr(e);
+                self.coerce_to_elem(op, e, &elem_box_ty)
+            })
+            .collect();
         let tmp = self.new_local(self.get_type(expr_id), None, false);
         self.push_statement(
             StatementKind::Assign(tmp, Rvalue::Aggregate(AggregateKind::Set, ops)),
@@ -190,10 +215,16 @@ impl<'a> MirBuilder<'a> {
         span: Span,
         expr_id: usize,
     ) -> Operand {
+        let (key_box_ty, val_box_ty) = match self.get_type(expr_id) {
+            Type::Dict(k, v) => (*k, *v),
+            _ => (Type::Any, Type::Any),
+        };
         let mut ops = Vec::new();
         for (k, v) in pairs {
-            ops.push(self.lower_expr(k));
-            ops.push(self.lower_expr(v));
+            let kop = self.lower_expr(k);
+            ops.push(self.coerce_to_elem(kop, k, &key_box_ty));
+            let vop = self.lower_expr(v);
+            ops.push(self.coerce_to_elem(vop, v, &val_box_ty));
         }
         let tmp = self.new_local(self.get_type(expr_id), None, false);
         self.push_statement(

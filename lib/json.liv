@@ -7,7 +7,7 @@ fn _skip_whitespace(s: str, mut i: int) -> int:
         i = i + 1
     return i
 
-fn _parse_string(s: str, mut i: int):
+fn _parse_string(s: str, mut i: int) -> [Any]:
     i = i + 1
     let n = len(s)
     let mut result = ""
@@ -41,14 +41,14 @@ fn _parse_string(s: str, mut i: int):
         i = i + 1
     return [result, i + 1]
 
-fn _parse_number(s: str, mut i: int):
+fn _parse_number(s: str, mut i: int) -> [Any]:
     let start = i
     let n = len(s)
-    let mut is_float = false
+    let mut is_float = False
     while i < n:
         let c = __olive_str_char(s, i)
         if c == ".":
-            is_float = true
+            is_float = True
         elif c != "-" and c != "0" and c != "1" and c != "2" and c != "3" and c != "4" and c != "5" and c != "6" and c != "7" and c != "8" and c != "9":
             break
         i = i + 1
@@ -57,7 +57,7 @@ fn _parse_number(s: str, mut i: int):
         return [float(val_str), i]
     return [int(val_str), i]
 
-fn _parse_array(s: str, mut i: int):
+fn _parse_array(s: str, mut i: int) -> [Any]:
     i = i + 1
     let mut arr = []
     let n = len(s)
@@ -77,7 +77,7 @@ fn _parse_array(s: str, mut i: int):
             break
     return [arr, i]
 
-fn _parse_object(s: str, mut i: int):
+fn _parse_object(s: str, mut i: int) -> [Any]:
     i = i + 1
     let mut obj = {}
     let n = len(s)
@@ -102,7 +102,7 @@ fn _parse_object(s: str, mut i: int):
             break
     return [obj, i]
 
-fn _parse_value(s: str, mut i: int):
+fn _parse_value(s: str, mut i: int) -> [Any]:
     i = _skip_whitespace(s, i)
     let c = __olive_str_char(s, i)
     if c == "\"":
@@ -112,9 +112,9 @@ fn _parse_value(s: str, mut i: int):
     if c == "{":
         return _parse_object(s, i)
     if c == "t":
-        return [true, i + 4]
+        return [True, i + 4]
     if c == "f":
-        return [false, i + 5]
+        return [False, i + 5]
     if c == "n":
         return [null, i + 4]
     return _parse_number(s, i)
