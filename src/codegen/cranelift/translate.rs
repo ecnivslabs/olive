@@ -1,9 +1,11 @@
 use super::CraneliftCodegen;
 use super::imports::cl_type;
+use super::translate_rvalue::{emit_bounds_check, emit_nil_check, loc_value};
 use crate::mir::{
     Constant, Local, MirFunction, Operand, Statement, StatementKind, Terminator, TerminatorKind,
 };
 use crate::semantic::types::Type as OliveType;
+use crate::span::Span;
 use cranelift::prelude::*;
 use cranelift_module::{DataId, FuncId, Module};
 use rustc_hash::FxHashMap as HashMap;
@@ -159,6 +161,7 @@ impl<M: Module> CraneliftCodegen<M> {
                     &mut builder,
                     stmt,
                     &vars,
+                    &self.loc_ids,
                 );
             }
 
@@ -241,7 +244,9 @@ impl<M: Module> CraneliftCodegen<M> {
         builder: &mut FunctionBuilder,
         stmt: &Statement,
         vars: &HashMap<Local, Variable>,
+        loc_ids: &HashMap<Span, DataId>,
     ) {
+        let loc_id = loc_ids.get(&stmt.span).copied();
         match &stmt.kind {
             StatementKind::Assign(local, rval) => {
                 let val = Self::translate_rvalue(
@@ -258,6 +263,7 @@ impl<M: Module> CraneliftCodegen<M> {
                     builder,
                     rval,
                     vars,
+                    loc_id,
                 );
                 let var = vars.get(local).unwrap();
 
@@ -460,6 +466,8 @@ impl<M: Module> CraneliftCodegen<M> {
                     v
                 };
 
+                let loc = loc_value(builder, module, loc_id);
+
                 match ty {
                     OliveType::Dict(_, _) | OliveType::Struct(_, _) | OliveType::PyObject => {
                         let set_id = func_ids
@@ -473,7 +481,7 @@ impl<M: Module> CraneliftCodegen<M> {
                             .get("__olive_set_index_any")
                             .expect("missing __olive_set_index_any");
                         let local_func = module.declare_func_in_func(*set_id, builder.func);
-                        builder.ins().call(local_func, &[o, i, v]);
+                        builder.ins().call(local_func, &[o, i, v, loc]);
                     }
                     OliveType::Enum(_, _) => {
                         let set_id = func_ids
@@ -483,6 +491,14 @@ impl<M: Module> CraneliftCodegen<M> {
                         builder.ins().call(local_func, &[o, i, v]);
                     }
                     OliveType::Bytes => {
+                        emit_nil_check(builder, module, func_ids, o, loc);
+                        let len = builder.ins().load(
+                            types::I64,
+                            MemFlags::trusted().with_readonly(),
+                            o,
+                            16,
+                        );
+                        emit_bounds_check(builder, module, func_ids, i, len, loc);
                         let data_ptr = builder.ins().load(
                             types::I64,
                             MemFlags::trusted().with_readonly(),
@@ -494,6 +510,14 @@ impl<M: Module> CraneliftCodegen<M> {
                         builder.ins().store(MemFlags::trusted(), byte, addr, 0);
                     }
                     _ => {
+                        emit_nil_check(builder, module, func_ids, o, loc);
+                        let len = builder.ins().load(
+                            types::I64,
+                            MemFlags::trusted().with_readonly(),
+                            o,
+                            24,
+                        );
+                        emit_bounds_check(builder, module, func_ids, i, len, loc);
                         let data_ptr = builder.ins().load(
                             types::I64,
                             MemFlags::trusted().with_readonly(),
@@ -647,6 +671,11 @@ impl<M: Module> CraneliftCodegen<M> {
                     if let Some(&func_id) = func_ids.get(name) {
                         let local_ref = module.declare_func_in_func(func_id, builder.func);
                         builder.ins().func_addr(types::I64, local_ref)
+                    } else if name.starts_with("__olive_") {
+                        panic!(
+                            "internal error: address taken of unregistered runtime function \
+                             `{name}`. This is a compiler bug."
+                        );
                     } else {
                         builder.ins().iconst(types::I64, 0)
                     }

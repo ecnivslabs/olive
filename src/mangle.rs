@@ -508,6 +508,7 @@ mod tests {
     fn mangle_let() {
         let mut s = stmt(StmtKind::Let {
             name: "x".into(),
+            name_span: crate::span::Span::default(),
             value: val("1"),
             type_ann: None,
             is_mut: false,
@@ -689,6 +690,7 @@ mod tests {
     fn mangle_const() {
         let mut s = stmt(StmtKind::Const {
             name: "C".into(),
+            name_span: crate::span::Span::default(),
             value: val("1"),
             type_ann: None,
         });
@@ -717,6 +719,7 @@ mod tests {
     fn mangle_multi_let() {
         let mut s = stmt(StmtKind::MultiLet {
             names: vec!["a".into(), "b".into()],
+            name_spans: vec![crate::span::Span::default(), crate::span::Span::default()],
             value: val("1"),
             type_ann: None,
             is_mut: false,

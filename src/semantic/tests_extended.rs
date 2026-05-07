@@ -22,10 +22,64 @@ mod semantic_tests_extended {
         r
     }
 
+    fn err_codes(tc: &TypeChecker) -> Vec<String> {
+        tc.errors
+            .iter()
+            .filter_map(|e| e.to_diagnostic().code().map(str::to_string))
+            .collect()
+    }
+
     #[test]
     fn unresolved_name_reported() {
         let r = resolve("let x = undefined_var\n");
         assert!(!r.errors.is_empty(), "should report undefined name");
+    }
+
+    #[test]
+    fn ffi_list_param_is_not_abi_safe() {
+        let tc =
+            typeck("import \"/usr/lib/libc.so.6\" as libc:\n    fn bad(x: list[i64]) -> i64\n");
+        assert!(err_codes(&tc).contains(&"E0421".to_string()));
+    }
+
+    #[test]
+    fn ffi_scalar_param_is_abi_safe() {
+        let tc = typeck("import \"/usr/lib/libc.so.6\" as libc:\n    fn ok(x: i64) -> i64\n");
+        assert!(!err_codes(&tc).contains(&"E0421".to_string()));
+    }
+
+    #[test]
+    fn ffi_struct_field_managed_type_flagged() {
+        let tc = typeck(
+            "import \"/usr/lib/libc.so.6\" as libc:\n    struct Bad:\n        items: list[i64]\n",
+        );
+        assert!(err_codes(&tc).contains(&"E0421".to_string()));
+    }
+
+    #[test]
+    fn py_unknown_attribute_reported() {
+        let tc = typeck(
+            "import py \"math\" as m:\n    fn sqrt(x: float) -> float\n\nfn main():\n    let r = m.cbrt(8.0)\n",
+        );
+        assert!(err_codes(&tc).contains(&"E0601".to_string()));
+    }
+
+    #[test]
+    fn py_wrong_arity_reported() {
+        let tc = typeck(
+            "import py \"math\" as m:\n    fn sqrt(x: float) -> float\n\nfn main():\n    let r = m.sqrt(1.0, 2.0)\n",
+        );
+        assert!(err_codes(&tc).contains(&"E0602".to_string()));
+    }
+
+    #[test]
+    fn py_correct_call_no_error() {
+        let tc = typeck(
+            "import py \"math\" as m:\n    fn sqrt(x: float) -> float\n\nfn main():\n    let r = m.sqrt(4.0)\n",
+        );
+        let codes = err_codes(&tc);
+        assert!(!codes.contains(&"E0601".to_string()));
+        assert!(!codes.contains(&"E0602".to_string()));
     }
 
     #[test]

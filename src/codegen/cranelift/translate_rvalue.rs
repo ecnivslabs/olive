@@ -6,6 +6,109 @@ use cranelift::prelude::*;
 use cranelift_module::{DataId, FuncId, Module};
 use rustc_hash::FxHashMap as HashMap;
 
+/// Materialises a tagged Olive string pointer for an interned source location,
+/// or a null pointer when no location was recorded for the site.
+pub(super) fn loc_value<M: Module>(
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    loc_id: Option<DataId>,
+) -> Value {
+    match loc_id {
+        Some(id) => {
+            let local = module.declare_data_in_func(id, builder.func);
+            let ptr = builder.ins().symbol_value(types::I64, local);
+            builder.ins().bor_imm(ptr, 1)
+        }
+        None => builder.ins().iconst(types::I64, 0),
+    }
+}
+
+/// Panics with a null-index diagnostic unless `obj` is non-null, then continues
+/// in a fresh block. The fault path never returns.
+pub(super) fn emit_nil_check<M: Module>(
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    func_ids: &HashMap<String, FuncId>,
+    obj: Value,
+    loc: Value,
+) {
+    let ok = builder.create_block();
+    let fail = builder.create_block();
+    let nonnull = builder.ins().icmp_imm(IntCC::NotEqual, obj, 0);
+    builder.ins().brif(nonnull, ok, &[], fail, &[]);
+
+    builder.seal_block(fail);
+    builder.switch_to_block(fail);
+    let id = *func_ids
+        .get("__olive_nil_index_fail")
+        .expect("missing __olive_nil_index_fail");
+    let f = module.declare_func_in_func(id, builder.func);
+    builder.ins().call(f, &[loc]);
+    builder.ins().trap(TrapCode::unwrap_user(1));
+
+    builder.seal_block(ok);
+    builder.switch_to_block(ok);
+}
+
+/// Panics with an out-of-bounds diagnostic unless `idx` lies in `0..len`, then
+/// continues in a fresh block. An unsigned comparison folds the negative-index
+/// case into the same check. The fault path never returns.
+pub(super) fn emit_bounds_check<M: Module>(
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    func_ids: &HashMap<String, FuncId>,
+    idx: Value,
+    len: Value,
+    loc: Value,
+) {
+    let ok = builder.create_block();
+    let fail = builder.create_block();
+    let in_bounds = builder.ins().icmp(IntCC::UnsignedLessThan, idx, len);
+    builder.ins().brif(in_bounds, ok, &[], fail, &[]);
+
+    builder.seal_block(fail);
+    builder.switch_to_block(fail);
+    let id = *func_ids
+        .get("__olive_bounds_fail")
+        .expect("missing __olive_bounds_fail");
+    let f = module.declare_func_in_func(id, builder.func);
+    builder.ins().call(f, &[idx, len, loc]);
+    builder.ins().trap(TrapCode::unwrap_user(1));
+
+    builder.seal_block(ok);
+    builder.switch_to_block(ok);
+}
+
+/// Panics with a divide-by-zero diagnostic when an integer `/` or `%` has a
+/// zero divisor, then continues in a fresh block. `is_mod` selects the message.
+/// The fault path never returns.
+pub(super) fn emit_div_zero_check<M: Module>(
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    func_ids: &HashMap<String, FuncId>,
+    divisor: Value,
+    is_mod: bool,
+    loc: Value,
+) {
+    let ok = builder.create_block();
+    let fail = builder.create_block();
+    let nonzero = builder.ins().icmp_imm(IntCC::NotEqual, divisor, 0);
+    builder.ins().brif(nonzero, ok, &[], fail, &[]);
+
+    builder.seal_block(fail);
+    builder.switch_to_block(fail);
+    let id = *func_ids
+        .get("__olive_div_zero_fail")
+        .expect("missing __olive_div_zero_fail");
+    let f = module.declare_func_in_func(id, builder.func);
+    let flag = builder.ins().iconst(types::I64, is_mod as i64);
+    builder.ins().call(f, &[flag, loc]);
+    builder.ins().trap(TrapCode::unwrap_user(1));
+
+    builder.seal_block(ok);
+    builder.switch_to_block(ok);
+}
+
 fn load_and_extend(
     builder: &mut FunctionBuilder,
     ptr: Value,
@@ -73,6 +176,7 @@ impl<M: Module> CraneliftCodegen<M> {
         builder: &mut FunctionBuilder,
         rval: &Rvalue,
         vars: &HashMap<Local, Variable>,
+        loc_id: Option<DataId>,
     ) -> Value {
         match rval {
             Rvalue::Use(op) => {
@@ -94,7 +198,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 args,
             ),
             Rvalue::BinaryOp(op, lhs, rhs) => Self::translate_binop(
-                func_mir, module, func_ids, string_ids, builder, vars, op, lhs, rhs,
+                func_mir, module, func_ids, string_ids, builder, vars, op, lhs, rhs, loc_id,
             ),
             Rvalue::UnaryOp(op, operand) => {
                 let operand_ty = match operand {
@@ -198,6 +302,7 @@ impl<M: Module> CraneliftCodegen<M> {
 
                 let o = Self::translate_operand(builder, obj, vars, string_ids, module, func_ids);
                 let i = Self::translate_operand(builder, idx, vars, string_ids, module, func_ids);
+                let loc = loc_value(builder, module, loc_id);
 
                 match ty {
                     OliveType::PyObject => {
@@ -225,6 +330,7 @@ impl<M: Module> CraneliftCodegen<M> {
                         builder.inst_results(inst)[0]
                     }
                     OliveType::Any => {
+                        emit_nil_check(builder, module, func_ids, o, loc);
                         let result_var = builder.declare_var(types::I64);
                         let fast_block = builder.create_block();
                         let slow_block = builder.create_block();
@@ -249,6 +355,13 @@ impl<M: Module> CraneliftCodegen<M> {
 
                         builder.seal_block(fast_block);
                         builder.switch_to_block(fast_block);
+                        let len = builder.ins().load(
+                            types::I64,
+                            MemFlags::trusted().with_readonly(),
+                            o,
+                            24,
+                        );
+                        emit_bounds_check(builder, module, func_ids, i, len, loc);
                         let offset = builder.ins().imul_imm(i, 8);
                         let addr = builder.ins().iadd(data_ptr, offset);
                         let fast_val = builder.ins().load(types::I64, MemFlags::trusted(), addr, 0);
@@ -261,7 +374,7 @@ impl<M: Module> CraneliftCodegen<M> {
                             .get("__olive_get_index_any")
                             .expect("missing __olive_get_index_any");
                         let local_func = module.declare_func_in_func(*get_id, builder.func);
-                        let inst = builder.ins().call(local_func, &[o, i]);
+                        let inst = builder.ins().call(local_func, &[o, i, loc]);
                         let slow_val = builder.inst_results(inst)[0];
                         builder.def_var(result_var, slow_val);
                         builder.ins().jump(merge_block, &[]);
@@ -272,13 +385,21 @@ impl<M: Module> CraneliftCodegen<M> {
                     }
                     OliveType::Str => {
                         let get_id = func_ids
-                            .get("__olive_str_get")
-                            .expect("missing __olive_str_get");
+                            .get("__olive_str_get_checked")
+                            .expect("missing __olive_str_get_checked");
                         let local_func = module.declare_func_in_func(*get_id, builder.func);
-                        let inst = builder.ins().call(local_func, &[o, i]);
+                        let inst = builder.ins().call(local_func, &[o, i, loc]);
                         builder.inst_results(inst)[0]
                     }
                     OliveType::List(_) | OliveType::Tuple(_) | OliveType::Set(_) => {
+                        emit_nil_check(builder, module, func_ids, o, loc);
+                        let len = builder.ins().load(
+                            types::I64,
+                            MemFlags::trusted().with_readonly(),
+                            o,
+                            24,
+                        );
+                        emit_bounds_check(builder, module, func_ids, i, len, loc);
                         let data_ptr = builder.ins().load(
                             types::I64,
                             MemFlags::trusted().with_readonly(),
@@ -290,6 +411,14 @@ impl<M: Module> CraneliftCodegen<M> {
                         builder.ins().load(types::I64, MemFlags::trusted(), addr, 0)
                     }
                     OliveType::Bytes => {
+                        emit_nil_check(builder, module, func_ids, o, loc);
+                        let len = builder.ins().load(
+                            types::I64,
+                            MemFlags::trusted().with_readonly(),
+                            o,
+                            16,
+                        );
+                        emit_bounds_check(builder, module, func_ids, i, len, loc);
                         let data_ptr = builder.ins().load(
                             types::I64,
                             MemFlags::trusted().with_readonly(),
@@ -305,7 +434,7 @@ impl<M: Module> CraneliftCodegen<M> {
                             .get("__olive_get_index_any")
                             .expect("missing __olive_get_index_any");
                         let local_func = module.declare_func_in_func(*get_id, builder.func);
-                        let inst = builder.ins().call(local_func, &[o, i]);
+                        let inst = builder.ins().call(local_func, &[o, i, loc]);
                         builder.inst_results(inst)[0]
                     }
                 }

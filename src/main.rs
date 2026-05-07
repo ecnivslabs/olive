@@ -58,6 +58,11 @@ enum Commands {
     Fmt {
         file: Option<String>,
     },
+    Fix {
+        file: Option<String>,
+        #[arg(long)]
+        dry_run: bool,
+    },
     Test {
         #[arg(short, long)]
         time: bool,
@@ -117,6 +122,7 @@ fn main() {
             release,
         ),
         Commands::Fmt { file } => commands::project::execute_fmt(file.as_ref()),
+        Commands::Fix { file, dry_run } => commands::fix::execute_fix(file.as_ref(), dry_run),
         Commands::Test { time, release } => commands::build::execute_test(time, release),
         Commands::Shell => commands::project::execute_shell(),
         Commands::Add { pod } => commands::deps::execute_add(&pod),

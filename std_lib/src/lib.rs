@@ -34,6 +34,7 @@ pub mod logging;
 pub mod math;
 pub mod net;
 pub mod os;
+pub mod panic;
 pub mod python;
 pub mod random;
 pub mod regex;
@@ -145,24 +146,40 @@ fn errno_location() -> *mut i32 {
     std::ptr::null_mut()
 }
 
+thread_local! {
+    /// `errno` captured the instant the most recent FFI call returned. Reading
+    /// `errno` directly is unsafe in Olive because the runtime may allocate
+    /// (boxing a result, building a string) between the FFI call and the user's
+    /// `ffi_errno()` read, and `malloc` clobbers `errno`. The compiler emits a
+    /// snapshot immediately after every FFI call so the value is preserved.
+    static FFI_ERRNO_SNAPSHOT: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
+}
+
+/// Captures `errno` into the snapshot. Emitted by codegen right after a foreign
+/// call, before any runtime allocation can overwrite `errno`.
 #[unsafe(no_mangle)]
-pub extern "C" fn olive_ffi_errno() -> i64 {
+pub extern "C" fn olive_ffi_snapshot_errno() {
     let loc = errno_location();
-    if loc.is_null() {
-        0
-    } else {
-        unsafe { *loc as i64 }
+    if !loc.is_null() {
+        let v = unsafe { *loc };
+        FFI_ERRNO_SNAPSHOT.with(|c| c.set(v));
     }
 }
 
-/// Resets `errno` to 0 so the value read after a failing FFI call is known to
-/// belong to that call and not a stale value from earlier.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_ffi_errno() -> i64 {
+    FFI_ERRNO_SNAPSHOT.with(|c| c.get()) as i64
+}
+
+/// Resets both the live `errno` and the snapshot to 0 so the value read after a
+/// failing FFI call is known to belong to that call and not a stale value.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_ffi_clear_errno() {
     let loc = errno_location();
     if !loc.is_null() {
         unsafe { *loc = 0 };
     }
+    FFI_ERRNO_SNAPSHOT.with(|c| c.set(0));
 }
 
 #[unsafe(no_mangle)]
@@ -551,19 +568,31 @@ pub extern "C" fn olive_pow_float(base: f64, exp: f64) -> f64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn olive_get_index_any(obj: i64, index: i64) -> i64 {
+pub extern "C" fn olive_get_index_any(obj: i64, index: i64, loc: i64) -> i64 {
     if obj == 0 {
-        return 0;
+        panic::olive_nil_index_fail(loc);
     }
     if obj & 1 != 0 {
-        return olive_str_get(obj, index);
+        return string::olive_str_get_checked(obj, index, loc);
     }
     let kind = unsafe { *(obj as *const i64) };
     match kind {
-        KIND_LIST => olive_list_get(obj, index),
+        KIND_LIST => {
+            let len = olive_list_len(obj);
+            if index < 0 || index >= len {
+                panic::olive_bounds_fail(index, len, loc);
+            }
+            olive_list_get(obj, index)
+        }
         KIND_OBJ => olive_obj_get(obj, index),
         KIND_ENUM => olive_enum_get(obj, index),
-        KIND_BYTES => bytes::olive_buf_get(obj, index),
+        KIND_BYTES => {
+            let len = bytes::olive_buf_len(obj);
+            if index < 0 || index >= len {
+                panic::olive_bounds_fail(index, len, loc);
+            }
+            bytes::olive_buf_get(obj, index)
+        }
         KIND_PYOBJECT => {
             let key_obj = if index > 0x10000 && index & 1 != 0 {
                 python::olive_py_from_str(index)
@@ -581,14 +610,29 @@ pub extern "C" fn olive_get_index_any(obj: i64, index: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn olive_set_index_any(obj: i64, index: i64, val: i64) {
-    if obj == 0 || (obj & 1 != 0) {
+pub extern "C" fn olive_set_index_any(obj: i64, index: i64, val: i64, loc: i64) {
+    if obj == 0 {
+        panic::olive_nil_index_fail(loc);
+    }
+    if obj & 1 != 0 {
         return;
     }
     let kind = unsafe { *(obj as *const i64) };
     match kind {
-        KIND_LIST => olive_list_set(obj, index, val),
-        KIND_BYTES => bytes::olive_buf_set(obj, index, val),
+        KIND_LIST => {
+            let len = olive_list_len(obj);
+            if index < 0 || index >= len {
+                panic::olive_bounds_fail(index, len, loc);
+            }
+            olive_list_set(obj, index, val)
+        }
+        KIND_BYTES => {
+            let len = bytes::olive_buf_len(obj);
+            if index < 0 || index >= len {
+                panic::olive_bounds_fail(index, len, loc);
+            }
+            bytes::olive_buf_set(obj, index, val)
+        }
         KIND_OBJ => {
             olive_obj_set(obj, index, val);
         }
@@ -654,6 +698,13 @@ pub extern "C" fn olive_panic(msg: i64) -> i64 {
     } else {
         olive_str_from_ptr(msg)
     };
+    panic::abort(&text, None)
+}
+
+/// Runs every registered `atexit` hook once, in registration order. Shared by
+/// the normal exit path and every panic path so resources are released before
+/// the process tears down.
+pub(crate) fn run_exit_hooks() {
     if let Some(hooks) = EXIT_HOOKS.get()
         && let Ok(list) = hooks.lock()
     {
@@ -662,9 +713,6 @@ pub extern "C" fn olive_panic(msg: i64) -> i64 {
             f();
         }
     }
-    eprintln!("panic: {text}");
-    eprintln!("{}", std::backtrace::Backtrace::force_capture());
-    std::process::exit(1);
 }
 
 static EXIT_HOOKS: OnceLock<Mutex<Vec<i64>>> = OnceLock::new();

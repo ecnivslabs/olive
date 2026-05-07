@@ -32,6 +32,35 @@ pub extern "C" fn olive_str_char(s: i64, i: i64) -> i64 {
     olive_str_get(s, i)
 }
 
+/// Bounds-checked single-character index. Scans at most to `i`, stopping at the
+/// terminator so it never reads past the allocation, and panics with the source
+/// location on a null receiver or an out-of-range index. One pass, no separate
+/// `strlen`.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_str_get_checked(s: i64, i: i64, loc: i64) -> i64 {
+    if s == 0 {
+        crate::panic::olive_nil_index_fail(loc);
+    }
+    if i < 0 {
+        crate::panic::olive_bounds_fail(i, olive_str_len(s), loc);
+    }
+    let ptr = (s & !1) as *const u8;
+    let target = i as usize;
+    let mut j = 0usize;
+    loop {
+        let byte = unsafe { *ptr.add(j) };
+        if byte == 0 {
+            crate::panic::olive_bounds_fail(i, j as i64, loc);
+        }
+        if j == target {
+            let buf = [byte, 0u8];
+            let c_str = unsafe { std::ffi::CString::from_vec_unchecked(buf.to_vec()) };
+            return c_str.into_raw() as i64 | 1;
+        }
+        j += 1;
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_slice(s: i64, start: i64, end: i64) -> i64 {
     let text = olive_str_from_ptr(s);
@@ -91,6 +120,25 @@ pub fn olive_str_from_ptr(ptr: i64) -> String {
 /// let ptr = olive_str_internal("hello");
 /// assert_eq!(olive_str_as_str(ptr), Some("hello"));
 /// ```
+#[cfg(test)]
+mod get_checked_tests {
+    use super::*;
+
+    #[test]
+    fn in_bounds_returns_char() {
+        let s = olive_str_internal("abc");
+        let got = olive_str_get_checked(s, 1, 0);
+        assert_eq!(olive_str_from_ptr(got), "b");
+    }
+
+    #[test]
+    fn first_and_last_chars() {
+        let s = olive_str_internal("xyz");
+        assert_eq!(olive_str_from_ptr(olive_str_get_checked(s, 0, 0)), "x");
+        assert_eq!(olive_str_from_ptr(olive_str_get_checked(s, 2, 0)), "z");
+    }
+}
+
 pub fn olive_str_as_str<'a>(ptr: i64) -> Option<&'a str> {
     if ptr == 0 {
         return None;

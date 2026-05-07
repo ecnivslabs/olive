@@ -90,9 +90,25 @@ fn find_candidates(func: &MirFunction) -> Vec<Local> {
         .collect()
 }
 
+/// A constant index is out of range when it is negative or, for a list whose
+/// length is known, at or beyond that length. Such accesses are left for
+/// codegen so the runtime bounds check reports them against the source.
+fn index_out_of_range(i: i64, agg_len: Option<usize>) -> bool {
+    i < 0 || agg_len.is_some_and(|len| i as usize >= len)
+}
+
 fn can_scalarize(func: &MirFunction, aliases: &HashSet<Local>, origin: Local) -> bool {
+    let mut agg_len: Option<usize> = None;
     for bb in &func.basic_blocks {
         for stmt in &bb.statements {
+            if let StatementKind::Assign(
+                l,
+                Rvalue::Aggregate(crate::mir::ir::AggregateKind::List, ops),
+            ) = &stmt.kind
+                && *l == origin
+            {
+                agg_len = Some(ops.len());
+            }
             let mut references_alias = false;
             for &alias in aliases {
                 if stmt_references(stmt, alias) {
@@ -144,8 +160,12 @@ fn can_scalarize(func: &MirFunction, aliases: &HashSet<Local>, origin: Local) ->
                     if operand_local(op).is_some_and(|l| aliases.contains(&l)) =>
                 {
                     match idx_op {
-                        Operand::Constant(Constant::Int(_))
-                        | Operand::Constant(Constant::Str(_)) => {}
+                        Operand::Constant(Constant::Int(i)) => {
+                            if index_out_of_range(*i, agg_len) {
+                                return false;
+                            }
+                        }
+                        Operand::Constant(Constant::Str(_)) => {}
                         _ => return false,
                     }
                     if operand_local(val).is_some_and(|l| aliases.contains(&l)) {
@@ -157,8 +177,12 @@ fn can_scalarize(func: &MirFunction, aliases: &HashSet<Local>, origin: Local) ->
                     if operand_local(op).is_some_and(|l| aliases.contains(&l)) =>
                 {
                     match idx_op {
-                        Operand::Constant(Constant::Int(_))
-                        | Operand::Constant(Constant::Str(_)) => {}
+                        Operand::Constant(Constant::Int(i)) => {
+                            if index_out_of_range(*i, agg_len) {
+                                return false;
+                            }
+                        }
+                        Operand::Constant(Constant::Str(_)) => {}
                         _ => return false,
                     }
                     if aliases.contains(dst) {

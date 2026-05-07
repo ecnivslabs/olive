@@ -26,13 +26,25 @@ impl Parser {
             self.skip_newlines();
             self.skip_newlines();
             while self.peek().kind != TokenKind::Dedent && self.peek().kind != TokenKind::Eof {
+                let case_tok = self.peek().clone();
                 if self.peek().kind == TokenKind::Case {
                     self.advance();
                 }
+                let case_span = Span {
+                    file_id: case_tok.file_id,
+                    line: case_tok.line,
+                    col: case_tok.col,
+                    start: case_tok.span.0,
+                    end: case_tok.span.1,
+                };
                 let pattern = self.parse_pattern()?;
 
                 let body = self.parse_block()?;
-                cases.push(MatchCase { pattern, body });
+                cases.push(MatchCase {
+                    pattern,
+                    body,
+                    span: case_span,
+                });
                 self.skip_newlines();
             }
             let end_span = self.peek().span.1;
@@ -86,6 +98,7 @@ impl Parser {
             TokenKind::Identifier => {
                 let tok = self.advance();
                 let name = tok.value.clone();
+                let name_span = Self::tok_span(&tok);
                 if self.peek().kind == TokenKind::LParen {
                     self.advance();
                     let mut patterns = Vec::new();
@@ -105,7 +118,7 @@ impl Parser {
                     if name.chars().next().is_some_and(char::is_uppercase) {
                         Ok(MatchPattern::Variant(name, vec![]))
                     } else {
-                        Ok(MatchPattern::Identifier(name))
+                        Ok(MatchPattern::Identifier(name, name_span))
                     }
                 }
             }

@@ -189,6 +189,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_env_get", b"olive_env_get\0"),
     ("__olive_env_set", b"olive_env_set\0"),
     ("__olive_ffi_errno", b"olive_ffi_errno\0"),
+    ("__olive_ffi_snapshot_errno", b"olive_ffi_snapshot_errno\0"),
     ("__olive_ffi_clear_errno", b"olive_ffi_clear_errno\0"),
     ("__olive_ffi_errmsg", b"olive_ffi_errmsg\0"),
     ("__olive_file_append", b"olive_file_append\0"),
@@ -324,6 +325,10 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_os_exec_status", b"olive_os_exec_status\0"),
     ("__olive_os_exit", b"olive_os_exit\0"),
     ("__olive_panic", b"olive_panic\0"),
+    ("__olive_bounds_fail", b"olive_bounds_fail\0"),
+    ("__olive_nil_index_fail", b"olive_nil_index_fail\0"),
+    ("__olive_div_zero_fail", b"olive_div_zero_fail\0"),
+    ("__olive_str_get_checked", b"olive_str_get_checked\0"),
     ("__olive_path_basename", b"olive_path_basename\0"),
     ("__olive_path_dirname", b"olive_path_dirname\0"),
     ("__olive_path_ext", b"olive_path_ext\0"),
@@ -384,6 +389,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_py_len", b"olive_py_len\0"),
     ("__olive_py_none", b"olive_py_none\0"),
     ("__olive_py_set_loc", b"olive_py_set_loc\0"),
+    ("__olive_set_fault_loc", b"olive_set_fault_loc\0"),
     ("__olive_py_setattr", b"olive_py_setattr\0"),
     ("__olive_py_setattr_safe", b"olive_py_setattr_safe\0"),
     ("__olive_py_setitem", b"olive_py_setitem\0"),
@@ -544,6 +550,8 @@ pub struct CraneliftCodegen<M: Module> {
     pub(super) extern_var_ptrs: HashMap<String, (i64, String, String)>,
     pub(super) vtables: HashMap<String, Vec<String>>,
     pub(super) global_vars: Vec<String>,
+    pub(super) file_names: HashMap<usize, String>,
+    pub(super) loc_ids: HashMap<crate::span::Span, DataId>,
 }
 
 fn c_prim_layout(ty: &str) -> (i32, i32) {
@@ -681,6 +689,7 @@ impl CraneliftCodegen<JITModule> {
         struct_fields: HashMap<String, Vec<String>>,
         vtables: HashMap<String, Vec<String>>,
         global_vars: Vec<String>,
+        file_names: HashMap<usize, String>,
         native_lib_paths: &[FfiLibInfo],
         release: bool,
     ) -> Self {
@@ -850,6 +859,8 @@ impl CraneliftCodegen<JITModule> {
             extern_var_ptrs,
             vtables,
             global_vars,
+            file_names,
+            loc_ids: HashMap::default(),
         }
     }
 
@@ -872,6 +883,7 @@ impl CraneliftCodegen<ObjectModule> {
         struct_fields: HashMap<String, Vec<String>>,
         vtables: HashMap<String, Vec<String>>,
         global_vars: Vec<String>,
+        file_names: HashMap<usize, String>,
         native_lib_paths: &[FfiLibInfo],
         release: bool,
     ) -> Self {
@@ -977,6 +989,8 @@ impl CraneliftCodegen<ObjectModule> {
             extern_var_ptrs,
             vtables,
             global_vars,
+            file_names,
+            loc_ids: HashMap::default(),
         }
     }
 

@@ -236,6 +236,7 @@ impl<M: Module> CraneliftCodegen<M> {
                         &mut builder,
                         stmt,
                         &vars,
+                        &self.loc_ids,
                     );
                 }
 

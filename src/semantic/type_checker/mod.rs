@@ -18,6 +18,29 @@ pub struct TraitDef {
 type OverloadSet = Vec<(Vec<Type>, Type)>;
 /// Function name → its overloads, within a single Python module or class.
 type FnOverloads = HashMap<String, OverloadSet>;
+/// Positional arity bounds `(min, max)` per overload of one function; `max` is
+/// `None` for a variadic (`*args`) signature.
+type ArityBounds = Vec<(usize, Option<usize>)>;
+/// Module alias → function name → arity bounds of each overload.
+type PyArityMap = HashMap<String, HashMap<String, ArityBounds>>;
+
+/// Renders the set of accepted positional argument counts for an arity-mismatch
+/// message, e.g. "exactly 2 argument(s)", "1 to 3 argument(s)", or "at least 1
+/// argument(s)". Collapses every overload's bounds into one overall range.
+fn describe_arity(arities: &[(usize, Option<usize>)]) -> String {
+    let min = arities.iter().map(|(m, _)| *m).min().unwrap_or(0);
+    let unbounded = arities.iter().any(|(_, mx)| mx.is_none());
+    let max = if unbounded {
+        None
+    } else {
+        arities.iter().filter_map(|(_, mx)| *mx).max()
+    };
+    match max {
+        None => format!("at least {min} argument(s)"),
+        Some(mx) if mx == min => format!("exactly {min} argument(s)"),
+        Some(mx) => format!("{min} to {mx} argument(s)"),
+    }
+}
 
 pub struct TypeChecker {
     pub(super) substitutions: HashMap<usize, Type>,
@@ -52,6 +75,11 @@ pub struct TypeChecker {
     pub(super) py_class_fields: HashMap<(String, String), HashMap<String, Type>>,
     // (module alias, class name) → method_name → overloads
     pub(super) py_class_methods: HashMap<(String, String), FnOverloads>,
+    // module alias → fn_name → positional arity bounds (min, max) per overload
+    pub(super) py_fn_arity: PyArityMap,
+    // aliases whose surface comes from an explicit `import py` stub block (a
+    // closed contract), as opposed to best-effort `.pyi` introspection
+    pub(super) py_explicit_modules: HashSet<String>,
 }
 
 impl Default for TypeChecker {
@@ -373,6 +401,8 @@ impl TypeChecker {
             py_aliases: HashSet::default(),
             py_class_fields: HashMap::default(),
             py_class_methods: HashMap::default(),
+            py_fn_arity: HashMap::default(),
+            py_explicit_modules: HashSet::default(),
         }
     }
 
@@ -412,6 +442,85 @@ impl TypeChecker {
             }
         }
         None
+    }
+
+    /// Checks `module.attr(...)` against an explicit `import py` stub — a closed
+    /// surface the programmer wrote — reporting an unknown attribute and a
+    /// positional argument count no overload accepts. `.pyi`-introspected modules
+    /// are skipped: a stub can't enumerate a module's full surface (C extensions,
+    /// `__getattr__`, re-exports), so flagging an absent name there false-positives
+    /// on packages like `pygame`. Argument types are not enforced — Python coerces
+    /// at runtime, leaving existence and arity as the only sound checks.
+    pub(super) fn check_py_call(
+        &mut self,
+        module: &str,
+        attr: &str,
+        arg_count: usize,
+        all_positional: bool,
+        span: crate::span::Span,
+    ) {
+        if !self.py_explicit_modules.contains(module) {
+            return;
+        }
+        let known_fn = self
+            .py_module_fns
+            .get(module)
+            .is_some_and(|m| m.contains_key(attr));
+        let known_type = self
+            .py_module_types
+            .get(module)
+            .is_some_and(|m| m.contains_key(attr));
+
+        if !known_fn && !known_type {
+            let mut names: Vec<String> = Vec::new();
+            if let Some(m) = self.py_module_fns.get(module) {
+                names.extend(m.keys().cloned());
+            }
+            if let Some(m) = self.py_module_types.get(module) {
+                names.extend(m.keys().cloned());
+            }
+            let suggestion = super::suggest::closest(attr, names.iter().map(String::as_str));
+            self.errors
+                .push(crate::semantic::error::SemanticError::rich(
+                    crate::compile::errors::Diagnostic::error(
+                        "E0601",
+                        format!("Python module `{module}` has no attribute `{attr}`"),
+                        span,
+                    )
+                    .label("not declared in this module's `import py` stub")
+                    .note("the stub block lists the only names checked for this module")
+                    .help("declare it in the stub block if the module really provides it")
+                    .suggest(&suggestion),
+                ));
+            return;
+        }
+
+        if !known_fn || !all_positional {
+            return;
+        }
+        let Some(arities) = self.py_fn_arity.get(module).and_then(|m| m.get(attr)) else {
+            return;
+        };
+        if arities.is_empty() {
+            return;
+        }
+        let accepts = arities
+            .iter()
+            .any(|(min, max)| arg_count >= *min && max.is_none_or(|m| arg_count <= m));
+        if accepts {
+            return;
+        }
+        let expected = describe_arity(arities);
+        self.errors
+            .push(crate::semantic::error::SemanticError::rich(
+                crate::compile::errors::Diagnostic::error(
+                    "E0602",
+                    format!("`{module}.{attr}` takes {expected}, but {arg_count} were given"),
+                    span,
+                )
+                .label(format!("called with {arg_count} argument(s) here"))
+                .help("adjust the call to match the function's signature"),
+            ));
     }
 
     pub(super) fn resolve_py_fn_overload(
@@ -512,9 +621,10 @@ impl TypeChecker {
 
         let snapshot = self.py_module_types.clone();
         for (fn_name, overloads) in info.fns {
-            for (params, ret_str) in overloads {
-                let ret_ty = Self::pyi_str_to_type(alias, &ret_str, &info.aliases, &snapshot);
-                let param_tys: Vec<Type> = params
+            for sig in overloads {
+                let ret_ty = Self::pyi_str_to_type(alias, &sig.ret, &info.aliases, &snapshot);
+                let param_tys: Vec<Type> = sig
+                    .params
                     .iter()
                     .map(|p| Self::pyi_str_to_type(alias, p, &info.aliases, &snapshot))
                     .collect();
@@ -524,6 +634,12 @@ impl TypeChecker {
                     .entry(fn_name.clone())
                     .or_default()
                     .push((param_tys.clone(), ret_ty.clone()));
+                self.py_fn_arity
+                    .entry(alias.to_string())
+                    .or_default()
+                    .entry(fn_name.clone())
+                    .or_default()
+                    .push((sig.min, sig.max));
                 let mangled = format!("{}::{}", alias, fn_name);
                 if self.lookup_type(&mangled).is_none() {
                     self.define_type(
@@ -554,10 +670,11 @@ impl TypeChecker {
                 .map(|(method_name, sigs)| {
                     let typed_sigs = sigs
                         .into_iter()
-                        .map(|(params, ret_str)| {
+                        .map(|sig| {
                             let ret_ty =
-                                Self::pyi_str_to_type(alias, &ret_str, &info.aliases, &snapshot);
-                            let param_tys: Vec<Type> = params
+                                Self::pyi_str_to_type(alias, &sig.ret, &info.aliases, &snapshot);
+                            let param_tys: Vec<Type> = sig
+                                .params
                                 .iter()
                                 .map(|p| Self::pyi_str_to_type(alias, p, &info.aliases, &snapshot))
                                 .collect();
@@ -946,9 +1063,11 @@ mod tests {
         let tc = pipeline(
             "import \"/usr/lib/libc.so.6\" as libc:\n    fn getpid() -> i64\n\nlibc::getpid()\n",
         );
-        assert!(tc.errors.iter().any(|e| {
-            matches!(e, super::super::error::SemanticError::Custom { msg, .. } if msg.contains("unsafe"))
-        }));
+        assert!(
+            tc.errors
+                .iter()
+                .any(|e| { e.to_diagnostic().headline().contains("unsafe") })
+        );
     }
 
     #[test]
@@ -1161,6 +1280,34 @@ mod tests {
     fn higher_order_function_ok() {
         let tc = pipeline("fn apply(f: fn(i64) -> i64, x: i64) -> i64:\n    return f(x)\n");
         assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn introspected_module_unknown_attr_not_flagged() {
+        // A `.pyi` surface is incomplete, so an absent name must not error.
+        let mut tc = TypeChecker::new();
+        tc.py_module_fns
+            .entry("pg".into())
+            .or_default()
+            .insert("init".into(), vec![(vec![], Type::Null)]);
+        tc.check_py_call("pg", "Surface", 2, true, crate::span::Span::default());
+        assert!(tc.errors.is_empty(), "introspected module must not error");
+    }
+
+    #[test]
+    fn explicit_stub_unknown_attr_flagged() {
+        let mut tc = TypeChecker::new();
+        tc.py_module_fns
+            .entry("m".into())
+            .or_default()
+            .insert("sqrt".into(), vec![(vec![Type::Float], Type::Float)]);
+        tc.py_explicit_modules.insert("m".into());
+        tc.check_py_call("m", "cbrt", 1, true, crate::span::Span::default());
+        assert!(
+            tc.errors
+                .iter()
+                .any(|e| e.to_diagnostic().code() == Some("E0601"))
+        );
     }
 
     #[test]

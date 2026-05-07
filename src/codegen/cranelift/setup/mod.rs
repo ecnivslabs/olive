@@ -44,6 +44,7 @@ impl<M: Module> CraneliftCodegen<M> {
         let sig_i64_i64 = mk_sig(&[types::I64], &[types::I64]);
         let sig_i64_i64_i64 = mk_sig(&[types::I64, types::I64], &[types::I64]);
         let sig_i64_i64_i64_void = mk_sig(&[types::I64, types::I64, types::I64], &[]);
+        let sig_4i64_void = mk_sig(&[types::I64, types::I64, types::I64, types::I64], &[]);
         let sig_i64_i64_void = mk_sig(&[types::I64, types::I64], &[]);
         let sig_i64_void = mk_sig(&[types::I64], &[]);
         let sig_void_f64 = mk_sig(&[], &[types::F64]);
@@ -161,6 +162,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_env_get", &sig_i64_i64),
             ("__olive_env_set", &sig_i64_i64_i64),
             ("__olive_ffi_errno", &sig_void_i64),
+            ("__olive_ffi_snapshot_errno", &sig_void_void),
             ("__olive_ffi_clear_errno", &sig_void_void),
             ("__olive_ffi_errmsg", &sig_i64_i64_i64),
             ("__olive_file_append", &sig_i64_i64_i64),
@@ -193,7 +195,11 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_free_struct", &sig_i64_void),
             ("__olive_gather", &sig_i64_i64),
             ("__olive_gather_poll", &sig_i64_i64),
-            ("__olive_get_index_any", &sig_i64_i64_i64),
+            ("__olive_get_index_any", &sig_3i64_i64),
+            ("__olive_bounds_fail", &sig_3i64_i64),
+            ("__olive_nil_index_fail", &sig_i64_i64),
+            ("__olive_div_zero_fail", &sig_i64_i64_i64),
+            ("__olive_str_get_checked", &sig_3i64_i64),
             ("__olive_gzip_compress", &sig_i64_i64),
             ("__olive_gzip_decompress", &sig_i64_i64),
             ("__olive_has_next", &sig_i64_i64),
@@ -346,6 +352,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_py_len", &sig_i64_i64),
             ("__olive_py_none", &sig_void_i64),
             ("__olive_py_set_loc", &sig_i64_void),
+            ("__olive_set_fault_loc", &sig_i64_void),
             ("__olive_py_setattr", &sig_3i64_i64),
             ("__olive_py_setattr_safe", &sig_3i64_i64),
             ("__olive_py_setitem", &sig_i64_i64_i64_void),
@@ -380,7 +387,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_select", &sig_i64_i64),
             ("__olive_select_poll", &sig_i64_i64),
             ("__olive_set_add", &sig_i64_i64_void),
-            ("__olive_set_index_any", &sig_i64_i64_i64_void),
+            ("__olive_set_index_any", &sig_4i64_void),
             ("__olive_set_new", &sig_i64_i64),
             ("__olive_sm_poll", &sig_i64_i64),
             ("__olive_spawn_task", &sig_i64_i64),
@@ -489,17 +496,12 @@ impl<M: Module> CraneliftCodegen<M> {
             }
             let mut sig = self.module.make_signature();
             sig.call_conv = match entry.call_conv.as_deref() {
+                // On non-Windows targets `stdcall`/`fastcall` carry no meaning and
+                // fall through to the platform ABI; `pit` reports the dead
+                // annotation at compile time (W0630) instead of at codegen.
                 #[cfg(target_os = "windows")]
                 Some("stdcall") | Some("fastcall") => {
                     cranelift::prelude::isa::CallConv::WindowsFastcall
-                }
-                #[cfg(not(target_os = "windows"))]
-                Some("stdcall") | Some("fastcall") => {
-                    eprintln!(
-                        "Warning: calling convention '{}' ignored on non-Windows target",
-                        entry.call_conv.as_deref().unwrap()
-                    );
-                    self.module.isa().default_call_conv()
                 }
                 _ => self.module.isa().default_call_conv(),
             };
@@ -771,6 +773,7 @@ impl<M: Module> CraneliftCodegen<M> {
         let funcs_for_strings = self.functions.clone();
         for func in &funcs_for_strings {
             self.collect_strings(func);
+            self.collect_locs(func);
         }
 
         self.generate_global_vars();

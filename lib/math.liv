@@ -9,8 +9,6 @@ fn log(x: float) -> float: return __olive_math_log(x)
 fn log10(x: float) -> float: return __olive_math_log10(x)
 fn exp(x: float) -> float: return __olive_math_exp(x)
 
-// math algorithms in pure olive
-
 const PI = 3.141592653589793
 const E  = 2.718281828459045
 const TAU = 6.283185307179586
@@ -71,7 +69,6 @@ fn sqrt(x: float) -> float:
 fn cbrt(x: float) -> float:
     if x == 0.0:
         return 0.0
-    let sign = 1.0
     let mut v = x
     if v < 0.0:
         v = -v

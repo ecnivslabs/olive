@@ -23,7 +23,7 @@ impl<'a> MirBuilder<'a> {
                     expr_span,
                 );
             }
-            MatchPattern::Identifier(name) => {
+            MatchPattern::Identifier(name, _) => {
                 let binding_local = self.declare_var(name.clone(), match_ty.clone(), true);
                 self.push_statement(
                     StatementKind::Assign(binding_local, Rvalue::Use(Operand::Copy(discr))),

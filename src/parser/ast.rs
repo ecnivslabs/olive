@@ -27,6 +27,7 @@ pub struct FfiFnSig {
     pub is_vararg: bool,
     pub decorators: Vec<Decorator>,
     pub call_conv: Option<String>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -323,12 +324,13 @@ pub enum ExprKind {
 pub struct MatchCase {
     pub pattern: MatchPattern,
     pub body: Vec<Stmt>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
 pub enum MatchPattern {
     Variant(String, Vec<MatchPattern>),
-    Identifier(String),
+    Identifier(String, Span),
     Literal(Expr),
     Wildcard,
 }
@@ -447,23 +449,27 @@ pub enum StmtKind {
     },
     Let {
         name: String,
+        name_span: Span,
         type_ann: Option<TypeExpr>,
         value: Expr,
         is_mut: bool,
     },
     MultiLet {
         names: Vec<String>,
+        name_spans: Vec<Span>,
         type_ann: Option<TypeExpr>,
         value: Expr,
         is_mut: bool,
     },
     Const {
         name: String,
+        name_span: Span,
         type_ann: Option<TypeExpr>,
         value: Expr,
     },
     MultiConst {
         names: Vec<String>,
+        name_spans: Vec<Span>,
         type_ann: Option<TypeExpr>,
         value: Expr,
     },

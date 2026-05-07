@@ -16,10 +16,12 @@ impl TypeChecker {
         match (&t1, &t2) {
             (Type::Var(id), other) | (other, Type::Var(id)) => {
                 if self.occurs_check(*id, other) {
-                    self.errors.push(SemanticError::Custom {
-                        msg: "recursive type detected during unification".into(),
-                        span,
-                    });
+                    self.errors.push(SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error("E0420", "infinite type", span)
+                            .label(format!("this type would contain itself: `{other}`"))
+                            .note("Olive types must have a finite size known at compile time")
+                            .help("introduce an indirection such as `ptr[T]` to break the cycle"),
+                    ));
                 } else {
                     self.substitutions.insert(*id, other.clone());
                 }
@@ -68,20 +70,19 @@ impl TypeChecker {
                         }
                     }
                     if !matched {
-                        self.errors.push(SemanticError::Custom {
-                            msg: format!(
-                                "type mismatch: expected `{}`, found integer literal",
-                                other
-                            ),
+                        self.errors.push(SemanticError::literal_mismatch(
                             span,
-                        });
+                            other.to_string(),
+                            "integer literal",
+                        ));
                     }
                 }
                 _ => {
-                    self.errors.push(SemanticError::Custom {
-                        msg: format!("type mismatch: expected `{}`, found integer literal", other),
+                    self.errors.push(SemanticError::literal_mismatch(
                         span,
-                    });
+                        other.to_string(),
+                        "integer literal",
+                    ));
                 }
             },
 
@@ -106,20 +107,19 @@ impl TypeChecker {
                         }
                     }
                     if !matched {
-                        self.errors.push(SemanticError::Custom {
-                            msg: format!(
-                                "type mismatch: expected `{}`, found float literal",
-                                other
-                            ),
+                        self.errors.push(SemanticError::literal_mismatch(
                             span,
-                        });
+                            other.to_string(),
+                            "float literal",
+                        ));
                     }
                 }
                 _ => {
-                    self.errors.push(SemanticError::Custom {
-                        msg: format!("type mismatch: expected `{}`, found float literal", other),
+                    self.errors.push(SemanticError::literal_mismatch(
                         span,
-                    });
+                        other.to_string(),
+                        "float literal",
+                    ));
                 }
             },
 
@@ -127,13 +127,11 @@ impl TypeChecker {
             (Type::PyObject, _) | (_, Type::PyObject) => {}
             (Type::PyNamed(m1, n1), Type::PyNamed(m2, n2)) => {
                 if m1 != m2 || n1 != n2 {
-                    self.errors.push(SemanticError::Custom {
-                        msg: format!(
-                            "type mismatch: expected `{}.{}`, found `{}.{}`",
-                            m1, n1, m2, n2
-                        ),
+                    self.errors.push(SemanticError::type_mismatch(
                         span,
-                    });
+                        format!("{m1}.{n1}"),
+                        format!("{m2}.{n2}"),
+                    ));
                 }
             }
             (Type::Never, _) | (_, Type::Never) => {}
@@ -151,14 +149,20 @@ impl TypeChecker {
 
             (Type::Tuple(a), Type::Tuple(b)) => {
                 if a.len() != b.len() {
-                    self.errors.push(SemanticError::Custom {
-                        msg: format!(
-                            "tuple length mismatch: expected {}, found {}",
+                    self.errors.push(SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0401",
+                            "tuple length mismatch",
+                            span,
+                        )
+                        .label(format!(
+                            "expected a {}-tuple, found a {}-tuple",
                             a.len(),
                             b.len()
-                        ),
-                        span,
-                    });
+                        ))
+                        .note(format!("expected `{t1}`"))
+                        .note(format!("   found `{t2}`")),
+                    ));
                 } else {
                     for (x, y) in a.iter().zip(b.iter()) {
                         self.unify(x, y, span);
@@ -168,10 +172,20 @@ impl TypeChecker {
 
             (Type::Fn(p1, r1, a1), Type::Fn(p2, r2, a2)) => {
                 if p1.len() != p2.len() || a1.len() != a2.len() {
-                    self.errors.push(SemanticError::Custom {
-                        msg: format!("function signature mismatch: expected {}, found {}", t1, t2),
-                        span,
-                    });
+                    self.errors.push(SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0402",
+                            "function signature mismatch",
+                            span,
+                        )
+                        .label(format!(
+                            "expected {} parameter(s), found {}",
+                            p1.len(),
+                            p2.len()
+                        ))
+                        .note(format!("expected `{t1}`"))
+                        .note(format!("   found `{t2}`")),
+                    ));
                 } else {
                     for (a, b) in p1.iter().zip(p2.iter()) {
                         self.unify(a, b, span);
@@ -190,10 +204,11 @@ impl TypeChecker {
 
             (Type::Struct(a_name, a_args), Type::Struct(b_name, b_args)) => {
                 if a_name != b_name || a_args.len() != b_args.len() {
-                    self.errors.push(SemanticError::Custom {
-                        msg: format!("type mismatch: expected `{}`, found `{}`", t1, t2),
+                    self.errors.push(SemanticError::type_mismatch(
                         span,
-                    });
+                        t1.to_string(),
+                        t2.to_string(),
+                    ));
                 } else {
                     for (x, y) in a_args.iter().zip(b_args.iter()) {
                         self.unify(x, y, span);
@@ -203,10 +218,11 @@ impl TypeChecker {
 
             (Type::Enum(a_name, a_args), Type::Enum(b_name, b_args)) => {
                 if a_name != b_name || a_args.len() != b_args.len() {
-                    self.errors.push(SemanticError::Custom {
-                        msg: format!("type mismatch: expected `{}`, found `{}`", t1, t2),
+                    self.errors.push(SemanticError::type_mismatch(
                         span,
-                    });
+                        t1.to_string(),
+                        t2.to_string(),
+                    ));
                 } else {
                     for (x, y) in a_args.iter().zip(b_args.iter()) {
                         self.unify(x, y, span);
@@ -216,10 +232,11 @@ impl TypeChecker {
 
             (Type::TraitObject(a_name, a_args), Type::TraitObject(b_name, b_args)) => {
                 if a_name != b_name || a_args.len() != b_args.len() {
-                    self.errors.push(SemanticError::Custom {
-                        msg: format!("type mismatch: expected `{}`, found `{}`", t1, t2),
+                    self.errors.push(SemanticError::type_mismatch(
                         span,
-                    });
+                        t1.to_string(),
+                        t2.to_string(),
+                    ));
                 } else {
                     for (x, y) in a_args.iter().zip(b_args.iter()) {
                         self.unify(x, y, span);
@@ -233,36 +250,53 @@ impl TypeChecker {
                     .type_traits
                     .contains(&(struct_name.clone(), trait_name.clone()))
                 {
-                    self.errors.push(SemanticError::Custom {
-                        msg: format!("type mismatch: expected `{}`, found `{}`", t1, t2),
-                        span,
-                    });
+                    self.errors.push(SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0415",
+                            format!("`{struct_name}` does not implement trait `{trait_name}`"),
+                            span,
+                        )
+                        .label(format!(
+                            "the trait `{trait_name}` is not implemented for `{struct_name}`"
+                        ))
+                        .help(format!(
+                            "add `impl {trait_name} for {struct_name}:` with the required methods"
+                        )),
+                    ));
                 }
             }
 
             (Type::Param(a), Type::Param(b)) => {
                 if a != b {
-                    self.errors.push(SemanticError::Custom {
-                        msg: format!("type mismatch: expected `{}`, found `{}`", t1, t2),
+                    self.errors.push(SemanticError::type_mismatch(
                         span,
-                    });
+                        t1.to_string(),
+                        t2.to_string(),
+                    ));
                 }
             }
 
             (other, Type::Union(members)) | (Type::Union(members), other) => {
                 if !members.contains(other) {
-                    self.errors.push(SemanticError::Custom {
-                        msg: format!("type mismatch: expected `{}`, found `{}`", t2, t1),
-                        span,
-                    });
+                    self.errors.push(SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0400",
+                            "mismatched types",
+                            span,
+                        )
+                        .label(format!("`{t1}` is not a member of `{t2}`"))
+                        .note(format!("expected one of the members of `{t2}`"))
+                        .note(format!("   found `{t1}`")),
+                    ));
                 }
             }
 
             (_t1_match, _t2_match) => {
-                self.errors.push(SemanticError::Custom {
-                    msg: format!("type mismatch: expected `{}`, found `{}`", t1, t2),
+                self.errors.push(SemanticError::type_mismatch(
                     span,
-                });
+                    t1.to_string(),
+                    t2.to_string(),
+                ));
             }
         }
     }

@@ -252,10 +252,14 @@ impl Parser {
             is_mut = true;
         }
 
-        let mut names = vec![self.expect(TokenKind::Identifier)?.value];
+        let first = self.expect(TokenKind::Identifier)?;
+        let mut name_spans = vec![Self::tok_span(&first)];
+        let mut names = vec![first.value];
         while self.peek().kind == TokenKind::Comma {
             self.advance();
-            names.push(self.expect(TokenKind::Identifier)?.value);
+            let tok = self.expect(TokenKind::Identifier)?;
+            name_spans.push(Self::tok_span(&tok));
+            names.push(tok.value);
         }
 
         let type_ann = if self.peek().kind == TokenKind::Colon {
@@ -277,6 +281,7 @@ impl Parser {
             Ok(Stmt::new(
                 StmtKind::Let {
                     name: names.into_iter().next().unwrap(),
+                    name_span: name_spans[0],
                     type_ann,
                     value,
                     is_mut,
@@ -287,6 +292,7 @@ impl Parser {
             Ok(Stmt::new(
                 StmtKind::MultiLet {
                     names,
+                    name_spans,
                     type_ann,
                     value,
                     is_mut,
@@ -300,10 +306,14 @@ impl Parser {
         let start = self.peek().clone();
         self.expect(TokenKind::Const)?;
 
-        let mut names = vec![self.expect(TokenKind::Identifier)?.value];
+        let first = self.expect(TokenKind::Identifier)?;
+        let mut name_spans = vec![Self::tok_span(&first)];
+        let mut names = vec![first.value];
         while self.peek().kind == TokenKind::Comma {
             self.advance();
-            names.push(self.expect(TokenKind::Identifier)?.value);
+            let tok = self.expect(TokenKind::Identifier)?;
+            name_spans.push(Self::tok_span(&tok));
+            names.push(tok.value);
         }
 
         let type_ann = if self.peek().kind == TokenKind::Colon {
@@ -325,6 +335,7 @@ impl Parser {
             Ok(Stmt::new(
                 StmtKind::Const {
                     name: names.into_iter().next().unwrap(),
+                    name_span: name_spans[0],
                     type_ann,
                     value,
                 },
@@ -334,6 +345,7 @@ impl Parser {
             Ok(Stmt::new(
                 StmtKind::MultiConst {
                     names,
+                    name_spans,
                     type_ann,
                     value,
                 },

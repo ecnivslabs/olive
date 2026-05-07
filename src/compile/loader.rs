@@ -1,4 +1,4 @@
-use super::errors::report_error;
+use super::errors::Diagnostic;
 use crate::lexer::Lexer;
 use crate::mangle::mangle_statements;
 use crate::parser::{self, Parser};
@@ -13,6 +13,16 @@ use std::{
 
 std::thread_local! {
     static PROJECT_ROOT: std::cell::RefCell<PathBuf> = const { std::cell::RefCell::new(PathBuf::new()) };
+}
+
+fn lex_span(file_id: usize, line: usize, col: usize, start: usize, end: usize) -> span::Span {
+    span::Span {
+        file_id,
+        line,
+        col,
+        start,
+        end,
+    }
 }
 
 pub fn load_and_parse(
@@ -49,17 +59,13 @@ pub fn load_and_parse(
     let tokens = match Lexer::new(&source, current_file_id).tokenise() {
         Ok(t) => t,
         Err(e) => {
-            report_error(
-                sources,
-                &e.message,
-                span::Span {
-                    file_id: current_file_id,
-                    line: e.line,
-                    col: e.col,
-                    start: e.start,
-                    end: e.end,
-                },
-            );
+            Diagnostic::error(
+                "E0100",
+                "invalid token",
+                lex_span(current_file_id, e.line, e.col, e.start, e.end),
+            )
+            .label(e.message)
+            .emit(sources);
             return Err(());
         }
     };
@@ -67,17 +73,13 @@ pub fn load_and_parse(
     let program = match Parser::new(tokens).parse_program() {
         Ok(p) => p,
         Err(e) => {
-            report_error(
-                sources,
-                &e.message,
-                span::Span {
-                    file_id: current_file_id,
-                    line: e.line,
-                    col: e.col,
-                    start: e.start,
-                    end: e.end,
-                },
-            );
+            Diagnostic::error(
+                "E0200",
+                "syntax error",
+                lex_span(current_file_id, e.line, e.col, e.start, e.end),
+            )
+            .label(e.message)
+            .emit(sources);
             return Err(());
         }
     };
@@ -100,11 +102,15 @@ pub fn load_and_parse(
                 | parser::StmtKind::PyImport { .. }
                 | parser::StmtKind::Pass => {}
                 _ => {
-                    report_error(
-                        sources,
-                        "top-level execution statements are not allowed in imported modules",
+                    Diagnostic::error(
+                        "E0301",
+                        "executable statement at module top level",
                         stmt.span,
-                    );
+                    )
+                    .label("not allowed in an imported module")
+                    .note("imported modules may only declare items (fn, struct, impl, trait, enum, let, const, import)")
+                    .help("move this statement into a function, or run the file directly instead of importing it")
+                    .emit(sources);
                     return Err(());
                 }
             }
@@ -125,6 +131,7 @@ pub fn load_and_parse(
     all_stmts.push(parser::Stmt::new(
         parser::StmtKind::Const {
             name: "__name__".to_string(),
+            name_span: span::Span::default(),
             type_ann: None,
             value: parser::Expr::new(parser::ExprKind::Str(mod_name), span::Span::default()),
         },
@@ -161,11 +168,11 @@ pub fn load_and_parse(
                         all_stmts.push(super::laws::make_laws_stmt(stmt.span));
                         continue;
                     }
-                    report_error(
-                        sources,
-                        &format!("module '{}' not found", mod_name),
-                        stmt.span,
-                    );
+                    Diagnostic::error("E0300", format!("module `{mod_name}` not found"), stmt.span)
+                        .label("imported here")
+                        .note("searched the project directory, the standard library, and installed pods")
+                        .help(format!("create `{mod_name}.liv` next to this file, or install the pod that provides it"))
+                        .emit(sources);
                     return Err(());
                 }
 
@@ -280,11 +287,11 @@ pub fn load_and_parse(
                 }
 
                 if !mod_path.exists() {
-                    report_error(
-                        sources,
-                        &format!("module '{}' not found", mod_name),
-                        stmt.span,
-                    );
+                    Diagnostic::error("E0300", format!("module `{mod_name}` not found"), stmt.span)
+                        .label("imported here")
+                        .note("searched the project directory, the standard library, and installed pods")
+                        .help(format!("create `{mod_name}.liv` next to this file, or install the pod that provides it"))
+                        .emit(sources);
                     return Err(());
                 }
 

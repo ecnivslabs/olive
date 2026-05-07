@@ -31,6 +31,7 @@ pub fn compile(src: &str) -> CraneliftCodegen<JITModule> {
         builder.struct_fields,
         builder.vtables.clone(),
         builder.global_vars,
+        builder.file_names.clone(),
         &[],
         false,
     );

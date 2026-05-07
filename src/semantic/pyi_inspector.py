@@ -169,6 +169,17 @@ def extract(path):
             result.append(node_name(arg.annotation) if arg.annotation else None)
         return result
 
+    def arity(node):
+        """Positional arity bounds for a call, excluding self/cls. Returns
+        (min_required, max) where max is -1 when the function accepts *args."""
+        all_args = list(getattr(node.args, "posonlyargs", [])) + list(node.args.args)
+        positional = [a for a in all_args if a.arg not in ("self", "cls")]
+        ndefault = len(node.args.defaults)
+        min_args = max(0, len(positional) - ndefault)
+        has_vararg = node.args.vararg is not None
+        max_args = -1 if has_vararg else len(positional)
+        return min_args, max_args
+
     def make_overloads(param_anns, ret_ann):
         """
         Expand TypeVar-constrained signatures into one overload per constraint.
@@ -221,11 +232,13 @@ def extract(path):
         use the most common return (mode) as the resolved type.
         """
         sig_rets = {}   # params_tuple -> list of ret strings
+        sig_arity = {}  # params_tuple -> (min, max) from first occurrence
         order = []
         for o in raw:
             key = tuple(o["params"])
             if key not in sig_rets:
                 sig_rets[key] = []
+                sig_arity[key] = (o.get("min", len(o["params"])), o.get("max", len(o["params"])))
                 order.append(key)
             sig_rets[key].append(o["ret"])
 
@@ -238,7 +251,8 @@ def extract(path):
                 ret = rets[0]
             else:
                 ret = Counter(rets).most_common(1)[0][0]
-            resolved.append({"params": params_list, "ret": ret})
+            mn, mx = sig_arity[key]
+            resolved.append({"params": params_list, "ret": ret, "min": mn, "max": mx})
         return resolved
 
     # Module-level functions (with TypeVar expansion)
@@ -248,7 +262,9 @@ def extract(path):
             continue
         param_anns = raw_anns(node)
         ret_ann = node_name(node.returns) if node.returns else None
+        mn, mx = arity(node)
         for overload in make_overloads(param_anns, ret_ann):
+            overload["min"], overload["max"] = mn, mx
             raw_fns[node.name].append(overload)
 
     # Class constructors + per-class fields and methods (with TypeVar expansion)
@@ -268,11 +284,15 @@ def extract(path):
             elif isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 param_anns = raw_anns(item)
                 ret_ann = node_name(item.returns) if item.returns else None
+                mn, mx = arity(item)
                 if item.name == "__init__":
                     for overload in make_overloads(param_anns, None):
-                        raw_fns[cls_name].append({"params": overload["params"], "ret": cls_name})
+                        raw_fns[cls_name].append(
+                            {"params": overload["params"], "ret": cls_name, "min": mn, "max": mx}
+                        )
                 else:
                     for overload in make_overloads(param_anns, ret_ann):
+                        overload["min"], overload["max"] = mn, mx
                         raw_methods[cls_name][item.name].append(overload)
         if cls_fields:
             fields[cls_name] = cls_fields

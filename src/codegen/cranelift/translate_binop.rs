@@ -18,6 +18,7 @@ impl<M: Module> CraneliftCodegen<M> {
         op: &crate::parser::BinOp,
         lhs: &Operand,
         rhs: &Operand,
+        loc_id: Option<DataId>,
     ) -> Value {
         let l = Self::translate_operand(builder, lhs, vars, string_ids, module, func_ids);
         let r = Self::translate_operand(builder, rhs, vars, string_ids, module, func_ids);
@@ -121,13 +122,23 @@ impl<M: Module> CraneliftCodegen<M> {
             Div => {
                 if is_float_op(func_mir, lhs) {
                     builder.ins().fdiv(l, r)
-                } else if is_u64_op(func_mir, lhs) || is_u64_op(func_mir, rhs) {
-                    builder.ins().udiv(l, r)
                 } else {
-                    builder.ins().sdiv(l, r)
+                    let loc = super::translate_rvalue::loc_value(builder, module, loc_id);
+                    super::translate_rvalue::emit_div_zero_check(
+                        builder, module, func_ids, r, false, loc,
+                    );
+                    if is_u64_op(func_mir, lhs) || is_u64_op(func_mir, rhs) {
+                        builder.ins().udiv(l, r)
+                    } else {
+                        builder.ins().sdiv(l, r)
+                    }
                 }
             }
             Mod => {
+                let loc = super::translate_rvalue::loc_value(builder, module, loc_id);
+                super::translate_rvalue::emit_div_zero_check(
+                    builder, module, func_ids, r, true, loc,
+                );
                 if is_u64_op(func_mir, lhs) || is_u64_op(func_mir, rhs) {
                     builder.ins().urem(l, r)
                 } else {

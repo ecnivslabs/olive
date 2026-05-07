@@ -76,6 +76,7 @@ pub extern "C" fn olive_result_unwrap(r: i64) -> i64 {
         };
         olive_panic(msg);
     }
+    crate::panic::olive_set_fault_loc(0);
     obj.payload
 }
 
@@ -88,6 +89,7 @@ pub extern "C" fn olive_result_unwrap_err(r: i64) -> i64 {
     if obj.tag == 1 {
         olive_panic(olive_str_internal("unwrap_err called on Ok result"));
     }
+    crate::panic::olive_set_fault_loc(0);
     obj.payload
 }
 

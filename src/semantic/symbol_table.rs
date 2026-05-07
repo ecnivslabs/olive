@@ -20,6 +20,10 @@ pub struct Symbol {
     pub kind: SymbolKind,
     pub span: Span,
     pub is_private: bool,
+    /// Set once the name is referenced, so a binding that is never read can be
+    /// reported when its scope closes. Defaults to false; bindings the unused
+    /// lint should ignore (type parameters, say) are marked used on definition.
+    pub used: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -69,12 +73,6 @@ impl SymbolTable {
         self.scopes.push(Scope::new(kind));
     }
 
-    pub fn pop(&mut self) {
-        if self.scopes.len() > 1 {
-            self.scopes.pop();
-        }
-    }
-
     pub fn define(&mut self, sym: Symbol) -> Option<Symbol> {
         self.scopes.last_mut().unwrap().define(sym)
     }
@@ -86,6 +84,64 @@ impl SymbolTable {
             }
         }
         None
+    }
+
+    /// Marks the innermost binding of `name` as referenced, so it is not later
+    /// reported as unused. Shadowed outer bindings are left untouched, exactly
+    /// as a read resolves to the innermost one.
+    pub fn mark_used(&mut self, name: &str) {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(sym) = scope.symbols.get_mut(name) {
+                sym.used = true;
+                return;
+            }
+        }
+    }
+
+    /// Marks every name in `names` used. Used for bindings whose absence of a
+    /// read is not a mistake worth reporting (type parameters).
+    pub fn mark_used_in_current(&mut self, name: &str) {
+        if let Some(scope) = self.scopes.last_mut()
+            && let Some(sym) = scope.symbols.get_mut(name)
+        {
+            sym.used = true;
+        }
+    }
+
+    /// Pops the innermost scope and returns the bindings within it that were
+    /// never referenced, so the caller can warn about them. The global scope is
+    /// never popped, so module-level bindings are not reported here.
+    pub fn pop_unused(&mut self) -> Vec<Symbol> {
+        if self.scopes.len() <= 1 {
+            return Vec::new();
+        }
+        let scope = self.scopes.pop().unwrap();
+        let reportable = matches!(scope.kind, ScopeKind::Function | ScopeKind::Block);
+        if !reportable {
+            return Vec::new();
+        }
+        scope
+            .symbols
+            .into_values()
+            .filter(|s| {
+                !s.used
+                    && matches!(
+                        s.kind,
+                        SymbolKind::Variable | SymbolKind::Parameter | SymbolKind::LoopVar
+                    )
+                    && !s.name.starts_with('_')
+                    && s.name != "self"
+            })
+            .collect()
+    }
+
+    /// Every name currently visible, innermost scope first. Used to surface
+    /// `did you mean` suggestions for unresolved identifiers.
+    pub fn visible_names(&self) -> impl Iterator<Item = &str> {
+        self.scopes
+            .iter()
+            .rev()
+            .flat_map(|scope| scope.symbols.keys().map(String::as_str))
     }
 }
 
@@ -106,6 +162,7 @@ mod tests {
                 end: 1,
             },
             is_private: false,
+            used: false,
         }
     }
 
@@ -153,14 +210,14 @@ mod tests {
     fn pop_removes_scope() {
         let mut st = SymbolTable::new();
         st.push(ScopeKind::Block);
-        st.pop();
+        st.pop_unused();
         assert_eq!(st.scopes.len(), 1);
     }
 
     #[test]
     fn pop_does_not_remove_global() {
         let mut st = SymbolTable::new();
-        st.pop();
+        st.pop_unused();
         assert_eq!(st.scopes.len(), 1);
     }
 
@@ -186,7 +243,7 @@ mod tests {
         let mut st = SymbolTable::new();
         st.push(ScopeKind::Function);
         st.define(sym("inner", SymbolKind::Variable));
-        st.pop();
+        st.pop_unused();
         assert!(st.lookup("inner").is_none());
     }
 
@@ -225,6 +282,7 @@ mod tests {
                 end: 1,
             },
             is_private: true,
+            used: false,
         };
         assert!(s.is_private);
     }

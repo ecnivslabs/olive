@@ -362,6 +362,13 @@ impl<M: Module> CraneliftCodegen<M> {
                     builder.ins().call(local_func, &final_args)
                 };
 
+                // Capture errno before any runtime allocation below can clobber
+                // it, but only when the program actually reads ffi_errno.
+                if is_ffi && let Some(&snap_id) = func_ids.get("__olive_ffi_snapshot_errno") {
+                    let snap = module.declare_func_in_func(snap_id, builder.func);
+                    builder.ins().call(snap, &[]);
+                }
+
                 let mut ret_val = if let Some(ptr) = sret_ptr {
                     ptr
                 } else {
@@ -483,7 +490,18 @@ impl<M: Module> CraneliftCodegen<M> {
                 }
                 return ret_val;
             }
-            builder.ins().iconst(types::I64, 0)
+
+            if is_ffi {
+                panic!(
+                    "FFI symbol `{resolved_name}` could not be resolved: the native function was \
+                     declared but its library exported no such symbol. Check the `native import` \
+                     library path and the exact symbol name."
+                );
+            }
+            panic!(
+                "internal error: call to unregistered runtime function `{resolved_name}` \
+                 (no matching builtin, FFI entry, or compiled function). This is a compiler bug."
+            );
         } else {
             let fn_ptr_val =
                 Self::translate_operand(builder, func, vars, string_ids, module, func_ids);

@@ -85,6 +85,19 @@ impl Parser {
         }
     }
 
+    /// The span covering exactly one token. Used to anchor a diagnostic on a
+    /// bound name rather than its whole statement, so a fix can rewrite just the
+    /// identifier.
+    pub(crate) fn tok_span(tok: &Token) -> Span {
+        Span {
+            file_id: tok.file_id,
+            line: tok.line,
+            col: tok.col,
+            start: tok.span.0,
+            end: tok.span.1,
+        }
+    }
+
     pub(crate) fn span_from(&self, start: &Token) -> Span {
         let mut idx = self.pos;
         while idx > 0

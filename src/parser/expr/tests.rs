@@ -417,7 +417,7 @@ fn parse_pattern_literal() {
 fn parse_pattern_identifier() {
     let mut p = make_parser("x\n");
     let pat = p.parse_pattern().expect("parse failed");
-    assert!(matches!(pat, MatchPattern::Identifier(n) if n == "x"));
+    assert!(matches!(pat, MatchPattern::Identifier(n, _) if n == "x"));
 }
 
 #[test]

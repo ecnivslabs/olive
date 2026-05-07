@@ -1,6 +1,8 @@
-mod errors;
+pub(crate) mod errors;
+pub(crate) mod fix;
 pub(crate) mod laws;
 mod linker;
+pub(crate) mod lints;
 mod loader;
 pub(crate) mod pipeline;
 #[cfg(test)]
@@ -42,6 +44,7 @@ pub fn compile_and_run(
         out.struct_fields.clone(),
         out.vtables.clone(),
         out.global_vars.clone(),
+        out.file_names.clone(),
         &out.native_libs,
         release,
     );
@@ -84,6 +87,7 @@ pub fn compile_and_emit(filename: &str, output: &str, show_time: bool, release: 
         out.struct_fields.clone(),
         out.vtables.clone(),
         out.global_vars.clone(),
+        out.file_names.clone(),
         &out.native_libs,
         release,
     );
@@ -214,6 +218,7 @@ pub fn compile_and_test(filename: &str, _show_time: bool, release: bool) {
         out.struct_fields.clone(),
         out.vtables.clone(),
         out.global_vars.clone(),
+        out.file_names.clone(),
         &out.native_libs,
         release,
     );

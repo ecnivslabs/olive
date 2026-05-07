@@ -1,10 +1,9 @@
-use super::errors::{report_error, report_warning};
 use super::linker::collect_native_libs;
 use super::loader::load_and_parse;
 use crate::borrow_check::BorrowChecker;
 use crate::mir::{self, MirBuilder, MirFunction, Rvalue, StatementKind};
 use crate::parser::{self, ast::FfiFnSig, ast::FfiStructDef, ast::FfiVarDef};
-use crate::semantic::{self, Resolver, TypeChecker};
+use crate::semantic::{Resolver, TypeChecker};
 use rustc_hash::FxHashMap as HashMap;
 use std::{collections::HashSet, time::Duration};
 
@@ -32,7 +31,33 @@ pub struct PipelineOutput {
     pub global_vars: Vec<String>,
     pub native_libs: Vec<NativeLib>,
     pub program: parser::Program,
+    pub file_names: HashMap<usize, String>,
     pub timings: PipelineTimings,
+}
+
+/// The set of loaded file ids that belong to the project being compiled, as
+/// opposed to the standard library or installed pods. Lints (warnings) fire only
+/// for these, the way Rust lints the local crate but not its dependencies; type
+/// errors are still reported everywhere. A file is first-party when it lives
+/// under the entry file's directory. If the root cannot be resolved, every file
+/// is treated as first-party so nothing the programmer wrote is silently skipped.
+pub(super) fn first_party_files(entry: &str, sources: &super::errors::Sources) -> HashSet<usize> {
+    let root = std::path::Path::new(entry)
+        .parent()
+        .and_then(|p| p.canonicalize().ok());
+    let Some(root) = root else {
+        return sources.keys().copied().collect();
+    };
+    sources
+        .iter()
+        .filter(|(_, (path, _))| {
+            std::path::Path::new(path)
+                .canonicalize()
+                .map(|p| p.starts_with(&root))
+                .unwrap_or(false)
+        })
+        .map(|(id, _)| *id)
+        .collect()
 }
 
 pub fn run_pipeline(filename: &str) -> Result<PipelineOutput, ()> {
@@ -54,14 +79,21 @@ pub fn run_pipeline(filename: &str) -> Result<PipelineOutput, ()> {
     };
     let parse_duration = t0.elapsed();
 
+    let first_party = first_party_files(filename, &sources);
+
     let resolve_start = std::time::Instant::now();
     let mut resolver = Resolver::new();
     resolver.resolve_program(&program);
     if !resolver.errors.is_empty() {
         for e in &resolver.errors {
-            report_error(&sources, &format!("{}", e), e.span());
+            e.to_diagnostic().emit(&sources);
         }
         return Err(());
+    }
+    for w in &resolver.warnings {
+        if first_party.contains(&w.span().file_id) {
+            w.to_diagnostic().emit(&sources);
+        }
     }
     let resolve_duration = resolve_start.elapsed();
 
@@ -69,13 +101,18 @@ pub fn run_pipeline(filename: &str) -> Result<PipelineOutput, ()> {
     let mut type_checker = TypeChecker::new();
     type_checker.check_program(&program);
     for w in &type_checker.warnings {
-        report_warning(&sources, &format!("{}", w), w.span());
+        w.to_diagnostic().into_warning().emit(&sources);
     }
     if !type_checker.errors.is_empty() {
         for e in &type_checker.errors {
-            report_error(&sources, &format!("{}", e), e.span());
+            e.to_diagnostic().emit(&sources);
         }
         return Err(());
+    }
+    for lint in crate::semantic::lint::lint_program(&program) {
+        if first_party.contains(&lint.primary_span().file_id) {
+            lint.emit(&sources);
+        }
     }
     let typecheck_duration = typecheck_start.elapsed();
 
@@ -95,6 +132,10 @@ pub fn run_pipeline(filename: &str) -> Result<PipelineOutput, ()> {
 
     mir_builder.build_program(&program);
     let mir_duration = mir_start.elapsed();
+
+    if super::lints::check_const_index_bounds(&mir_builder.functions, &sources) {
+        return Err(());
+    }
 
     let opt_start = std::time::Instant::now();
     let optimizer = mir::Optimizer::new();
@@ -123,20 +164,9 @@ pub fn run_pipeline(filename: &str) -> Result<PipelineOutput, ()> {
         if !checker.errors.is_empty() {
             borrow_failed = true;
             for e in &checker.errors {
-                match e {
-                    semantic::SemanticError::Custom { msg, span } => {
-                        report_error(
-                            &sources,
-                            &format!("borrow error in {}: {}", func.name, msg),
-                            *span,
-                        );
-                    }
-                    _ => report_error(
-                        &sources,
-                        &format!("borrow error in {}: {}", func.name, e),
-                        e.span(),
-                    ),
-                }
+                e.to_diagnostic()
+                    .note(format!("in function `{}`", func.name))
+                    .emit(&sources);
             }
         }
     }
@@ -154,6 +184,7 @@ pub fn run_pipeline(filename: &str) -> Result<PipelineOutput, ()> {
         global_vars: mir_builder.global_vars,
         native_libs,
         program,
+        file_names: mir_builder.file_names,
         timings: PipelineTimings {
             parse: parse_duration,
             resolve: resolve_duration,
@@ -171,6 +202,36 @@ mod tests {
     use crate::parser;
     use rustc_hash::FxHashMap as HashMap;
     use std::time::Duration;
+
+    #[test]
+    fn first_party_excludes_files_outside_project_root() {
+        let base = std::env::temp_dir().join(format!("olive_fp_{}", std::process::id()));
+        let proj = base.join("proj");
+        let ext = base.join("ext");
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::create_dir_all(&ext).unwrap();
+        let main = proj.join("main.liv");
+        let module = proj.join("mod.liv");
+        let stdlib = ext.join("math.liv");
+        for p in [&main, &module, &stdlib] {
+            std::fs::write(p, "pass\n").unwrap();
+        }
+
+        let mut sources = HashMap::default();
+        sources.insert(0, (main.to_string_lossy().into_owned(), String::new()));
+        sources.insert(1, (module.to_string_lossy().into_owned(), String::new()));
+        sources.insert(2, (stdlib.to_string_lossy().into_owned(), String::new()));
+
+        let fp = first_party_files(main.to_str().unwrap(), &sources);
+        assert!(fp.contains(&0), "entry file is first-party");
+        assert!(fp.contains(&1), "in-project module is first-party");
+        assert!(
+            !fp.contains(&2),
+            "file outside the project root is excluded"
+        );
+
+        std::fs::remove_dir_all(&base).ok();
+    }
 
     #[test]
     fn pipeline_timings_construction() {
@@ -215,6 +276,7 @@ mod tests {
             global_vars: vec![],
             native_libs: vec![],
             program: parser::Program { stmts: vec![] },
+            file_names: HashMap::default(),
             timings: PipelineTimings {
                 parse: Duration::ZERO,
                 resolve: Duration::ZERO,
@@ -263,6 +325,7 @@ mod tests {
                     },
                 }],
             },
+            file_names: HashMap::default(),
             timings: PipelineTimings {
                 parse: Duration::from_millis(10),
                 resolve: Duration::from_millis(20),

@@ -1,6 +1,9 @@
+pub mod abi;
 mod error;
+pub mod lint;
 pub(crate) mod pyi;
 mod resolver;
+pub(crate) mod suggest;
 mod symbol_table;
 pub mod type_checker;
 pub mod types;

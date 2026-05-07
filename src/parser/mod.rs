@@ -78,7 +78,7 @@ mod mod_tests {
             ExprKind::Integer(1),
             crate::span::Span::default(),
         ));
-        let _id = MatchPattern::Identifier("x".into());
+        let _id = MatchPattern::Identifier("x".into(), crate::span::Span::default());
         let _var = MatchPattern::Variant("Some".into(), vec![]);
     }
 

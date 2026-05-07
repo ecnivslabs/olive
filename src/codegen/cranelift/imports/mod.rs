@@ -31,6 +31,8 @@ pub(super) fn collect_needed_imports(
                         needed.insert("__olive_list_set");
                         needed.insert("__olive_obj_set");
                         needed.insert("__olive_set_index_any");
+                        needed.insert("__olive_bounds_fail");
+                        needed.insert("__olive_nil_index_fail");
                     }
                     StatementKind::Drop(local) => {
                         let ty = &func.locals[local.0].ty;
@@ -87,6 +89,10 @@ pub(super) fn scan_rvalue_imports(
         } => {
             if let Some(r) = resolve_builtin_import(func_mir, name, args) {
                 needed.insert(r);
+                // Reading errno requires the post-call snapshot helper.
+                if r == "__olive_ffi_errno" {
+                    needed.insert("__olive_ffi_snapshot_errno");
+                }
             }
         }
         Rvalue::Call { .. } => {}
@@ -145,6 +151,8 @@ pub(super) fn scan_rvalue_imports(
                             }
                             _ => {}
                         }
+                    } else if matches!(op, Div | Mod) && !is_float_op(func_mir, lhs) {
+                        needed.insert("__olive_div_zero_fail");
                     }
                 }
                 Eq => {
@@ -260,6 +268,9 @@ pub(super) fn scan_rvalue_imports(
             needed.insert("__olive_list_get");
             needed.insert("__olive_obj_get");
             needed.insert("__olive_get_index_any");
+            needed.insert("__olive_bounds_fail");
+            needed.insert("__olive_nil_index_fail");
+            needed.insert("__olive_str_get_checked");
             if let Operand::Copy(loc) | Operand::Move(loc) = obj {
                 let ty = &func_mir.locals[loc.0].ty;
                 if matches!(ty, OliveType::Str) {

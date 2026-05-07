@@ -8,6 +8,7 @@ use crate::span::Span;
 pub struct Resolver {
     pub table: SymbolTable,
     pub errors: Vec<SemanticError>,
+    pub warnings: Vec<SemanticError>,
 }
 
 impl Default for Resolver {
@@ -43,6 +44,7 @@ impl Resolver {
                 kind: SymbolKind::Function,
                 span: Span::default(),
                 is_private: false,
+                used: true,
             });
         }
         for ty_name in [
@@ -53,6 +55,7 @@ impl Resolver {
                 kind: SymbolKind::Function,
                 span: Span::default(),
                 is_private: false,
+                used: true,
             });
         }
         table.define(Symbol {
@@ -60,10 +63,12 @@ impl Resolver {
             kind: SymbolKind::Variable,
             span: Span::default(),
             is_private: false,
+            used: true,
         });
         Self {
             table,
             errors: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 
@@ -121,33 +126,84 @@ impl Resolver {
             kind,
             span,
             is_private,
+            used: false,
         };
         self.table.define(sym);
     }
 
+    /// Pops the innermost scope and turns any binding that was never read into
+    /// an unused-variable warning. The structured fix prefixes the name with an
+    /// underscore — the conventional way to keep a binding on purpose — but is
+    /// advisory: silently renaming a forgotten variable could hide a real bug,
+    /// so the autofixer never applies it on its own.
+    fn pop_scope(&mut self) {
+        for sym in self.table.pop_unused() {
+            let kind = match sym.kind {
+                SymbolKind::Parameter => "parameter",
+                SymbolKind::LoopVar => "loop variable",
+                _ => "variable",
+            };
+            self.warnings.push(SemanticError::rich(
+                crate::compile::errors::Diagnostic::error(
+                    "W0640",
+                    format!("unused {kind} `{}`", sym.name),
+                    sym.span,
+                )
+                .into_warning()
+                .label("bound here but never used")
+                .suggestion(
+                    sym.span,
+                    format!("_{}", sym.name),
+                    "remove it, or prefix with `_` to keep it deliberately",
+                    crate::compile::errors::Applicability::MaybeIncorrect,
+                ),
+            ));
+        }
+    }
+
     fn resolve_stmt(&mut self, stmt: &Stmt) {
         match &stmt.kind {
-            StmtKind::Let { name, value, .. } => {
+            StmtKind::Let {
+                name,
+                name_span,
+                value,
+                ..
+            } => {
                 self.resolve_expr(value);
-                self.define_sym(name, SymbolKind::Variable, stmt.span);
+                self.define_sym(name, SymbolKind::Variable, *name_span);
             }
 
-            StmtKind::MultiLet { names, value, .. } => {
+            StmtKind::MultiLet {
+                names,
+                name_spans,
+                value,
+                ..
+            } => {
                 self.resolve_expr(value);
-                for name in names {
-                    self.define_sym(name, SymbolKind::Variable, stmt.span);
+                for (name, span) in names.iter().zip(name_spans) {
+                    self.define_sym(name, SymbolKind::Variable, *span);
                 }
             }
 
-            StmtKind::Const { name, value, .. } => {
+            StmtKind::Const {
+                name,
+                name_span,
+                value,
+                ..
+            } => {
                 self.resolve_expr(value);
-                self.define_sym(name, SymbolKind::Variable, stmt.span);
+                self.define_sym(name, SymbolKind::Variable, *name_span);
             }
 
-            StmtKind::MultiConst { names, value, .. } => {
+            StmtKind::MultiConst {
+                names,
+                name_spans,
+                value,
+                ..
+            } => {
                 self.resolve_expr(value);
-                for name in names {
-                    self.define_sym(name, SymbolKind::Variable, stmt.span);
+                for (name, span) in names.iter().zip(name_spans) {
+                    self.define_sym(name, SymbolKind::Variable, *span);
                 }
             }
 
@@ -171,26 +227,27 @@ impl Resolver {
                 self.table.push(ScopeKind::Function);
                 for tp in type_params {
                     self.define_sym(tp, SymbolKind::Variable, stmt.span);
+                    self.table.mark_used_in_current(tp);
                 }
                 self.resolve_params(params);
                 self.hoist_fns_and_structs(body);
                 for s in body {
                     self.resolve_stmt(s);
                 }
-                self.table.pop();
+                self.pop_scope();
             }
 
             StmtKind::Struct {
                 type_params, body, ..
             } => {
-                self.table.push(ScopeKind::Block);
+                self.table.push(ScopeKind::Struct);
                 for tp in type_params {
                     self.define_sym(tp, SymbolKind::Variable, stmt.span);
                 }
                 for s in body {
                     self.resolve_stmt(s);
                 }
-                self.table.pop();
+                self.pop_scope();
             }
 
             StmtKind::Impl {
@@ -204,7 +261,7 @@ impl Resolver {
                 for s in body {
                     self.resolve_stmt(s);
                 }
-                self.table.pop();
+                self.pop_scope();
             }
 
             StmtKind::Trait { .. } => {}
@@ -251,7 +308,7 @@ impl Resolver {
                 for s in body {
                     self.resolve_stmt(s);
                 }
-                self.table.pop();
+                self.pop_scope();
                 if let Some(body) = else_body {
                     self.resolve_block(body);
                 }
@@ -264,14 +321,14 @@ impl Resolver {
                     if let Some(alias_expr) = &item.alias
                         && let ExprKind::Identifier(name) = &alias_expr.kind
                     {
-                        self.define_sym(name, SymbolKind::Variable, stmt.span);
+                        self.define_sym(name, SymbolKind::Variable, alias_expr.span);
                     }
                 }
                 self.hoist_fns_and_structs(body);
                 for s in body {
                     self.resolve_stmt(s);
                 }
-                self.table.pop();
+                self.pop_scope();
             }
 
             StmtKind::Return(expr) => {
@@ -351,24 +408,26 @@ impl Resolver {
         for s in stmts {
             self.resolve_stmt(s);
         }
-        self.table.pop();
+        self.pop_scope();
     }
 
     fn resolve_params(&mut self, params: &[Param]) {
-        let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut seen: std::collections::HashMap<String, Span> = std::collections::HashMap::new();
         for param in params {
-            if let Some(&_prev_line) = seen.get(&param.name) {
+            if let Some(&first) = seen.get(&param.name) {
                 self.errors.push(SemanticError::DuplicateParam {
                     name: param.name.clone(),
                     span: param.span,
+                    first,
                 });
             } else {
-                seen.insert(param.name.clone(), param.span.line);
+                seen.insert(param.name.clone(), param.span);
                 let sym = Symbol {
                     name: param.name.clone(),
                     kind: SymbolKind::Parameter,
                     span: param.span,
                     is_private: param.name.starts_with('_'),
+                    used: false,
                 };
                 self.table.define(sym);
             }
@@ -391,14 +450,23 @@ impl Resolver {
         }
     }
 
+    /// Closest visible name to an unresolved identifier, for `did you mean`.
+    fn suggest(&self, name: &str) -> Option<String> {
+        super::suggest::closest(name, self.table.visible_names())
+    }
+
     fn resolve_assign_target(&mut self, target: &Expr) {
         match &target.kind {
             ExprKind::Identifier(name) => {
                 if self.table.lookup(name).is_none() {
+                    let suggestion = self.suggest(name);
                     self.errors.push(SemanticError::AssignToUndefined {
                         name: name.clone(),
                         span: target.span,
+                        suggestion,
                     });
+                } else {
+                    self.table.mark_used(name);
                 }
             }
             ExprKind::Index { obj, index } => {
@@ -430,10 +498,13 @@ impl Resolver {
                             span: expr.span,
                         });
                     }
+                    self.table.mark_used(name);
                 } else {
+                    let suggestion = self.suggest(name);
                     self.errors.push(SemanticError::UndefinedName {
                         name: name.clone(),
                         span: expr.span,
+                        suggestion,
                     });
                 }
             }
@@ -475,9 +546,11 @@ impl Resolver {
                     if sym.kind == SymbolKind::Import {
                         let mangled = format!("{}::{}", name, attr);
                         if self.table.lookup(&mangled).is_none() {
+                            let suggestion = self.suggest(&mangled);
                             self.errors.push(SemanticError::UndefinedName {
                                 name: mangled,
                                 span: expr.span,
+                                suggestion,
                             });
                         }
                         return;
@@ -502,7 +575,7 @@ impl Resolver {
             ExprKind::ListComp { elt, clauses } | ExprKind::SetComp { elt, clauses } => {
                 self.resolve_comp_clauses(clauses);
                 self.resolve_expr(elt);
-                self.table.pop();
+                self.pop_scope();
             }
 
             ExprKind::DictComp {
@@ -513,7 +586,7 @@ impl Resolver {
                 self.resolve_comp_clauses(clauses);
                 self.resolve_expr(key);
                 self.resolve_expr(value);
-                self.table.pop();
+                self.pop_scope();
             }
 
             ExprKind::Borrow(inner) | ExprKind::MutBorrow(inner) | ExprKind::Deref(inner) => {
@@ -547,11 +620,11 @@ impl Resolver {
                 self.resolve_expr(expr);
                 for case in cases {
                     self.table.push(ScopeKind::Block);
-                    self.resolve_pattern(&case.pattern, expr.span);
+                    self.resolve_pattern(&case.pattern);
                     for stmt in &case.body {
                         self.resolve_stmt(stmt);
                     }
-                    self.table.pop();
+                    self.pop_scope();
                 }
             }
 
@@ -569,20 +642,20 @@ impl Resolver {
                 for s in body {
                     self.resolve_stmt(s);
                 }
-                self.table.pop();
+                self.pop_scope();
             }
         }
     }
 
-    fn resolve_pattern(&mut self, pattern: &MatchPattern, span: Span) {
+    fn resolve_pattern(&mut self, pattern: &MatchPattern) {
         match pattern {
             MatchPattern::Wildcard => {}
-            MatchPattern::Identifier(name) => {
-                self.define_sym(name, SymbolKind::Variable, span);
+            MatchPattern::Identifier(name, name_span) => {
+                self.define_sym(name, SymbolKind::Variable, *name_span);
             }
             MatchPattern::Variant(_, inner_patterns) => {
                 for p in inner_patterns {
-                    self.resolve_pattern(p, span);
+                    self.resolve_pattern(p);
                 }
             }
             MatchPattern::Literal(expr) => {
@@ -617,6 +690,67 @@ mod tests {
         r
     }
 
+    fn has_unused(r: &Resolver, name: &str) -> bool {
+        r.warnings.iter().any(|w| {
+            let d = w.to_diagnostic();
+            d.code() == Some("W0640") && d.headline().contains(&format!("`{name}`"))
+        })
+    }
+
+    #[test]
+    fn unused_let_reported() {
+        let r = resolve("fn f():\n    let x = 1\n    pass\n");
+        assert!(has_unused(&r, "x"));
+    }
+
+    #[test]
+    fn used_let_not_reported() {
+        let r = resolve("fn f():\n    let x = 1\n    print(x)\n");
+        assert!(!has_unused(&r, "x"));
+    }
+
+    #[test]
+    fn underscore_binding_not_reported() {
+        let r = resolve("fn f():\n    let _x = 1\n    pass\n");
+        assert!(!has_unused(&r, "_x"));
+    }
+
+    #[test]
+    fn unused_param_reported() {
+        let r = resolve("fn f(unusedp: i64):\n    pass\n");
+        assert!(has_unused(&r, "unusedp"));
+    }
+
+    #[test]
+    fn self_param_not_reported() {
+        let r = resolve("impl Foo:\n    fn m(self):\n        pass\n");
+        assert!(!has_unused(&r, "self"));
+    }
+
+    #[test]
+    fn assignment_counts_as_use() {
+        let r = resolve("fn f():\n    let mut x = 1\n    x = 2\n");
+        assert!(!has_unused(&r, "x"));
+    }
+
+    #[test]
+    fn capture_in_nested_fn_counts_as_use() {
+        let r = resolve("fn outer():\n    let v = 1\n    fn inner() -> i64:\n        return v\n");
+        assert!(!has_unused(&r, "v"));
+    }
+
+    #[test]
+    fn top_level_let_not_reported() {
+        let r = resolve("let g = 1\n");
+        assert!(!has_unused(&r, "g"));
+    }
+
+    #[test]
+    fn unused_loop_var_reported() {
+        let r = resolve("fn f():\n    for item in [1, 2]:\n        pass\n");
+        assert!(has_unused(&r, "item"));
+    }
+
     #[test]
     fn builtin_print_resolves() {
         let r = resolve("print(1)\n");
@@ -630,6 +764,30 @@ mod tests {
             e,
             SemanticError::UndefinedName { name, .. } if name == "no_such_name"
         )));
+    }
+
+    #[test]
+    fn undefined_name_suggests_nearest_binding() {
+        let r = resolve("let total = 1\nprint(totl)\n");
+        let suggestion = r.errors.iter().find_map(|e| match e {
+            SemanticError::UndefinedName {
+                name, suggestion, ..
+            } if name == "totl" => Some(suggestion.clone()),
+            _ => None,
+        });
+        assert_eq!(suggestion, Some(Some("total".to_string())));
+    }
+
+    #[test]
+    fn unrelated_undefined_name_has_no_suggestion() {
+        let r = resolve("let total = 1\nprint(xyzzy)\n");
+        let suggestion = r.errors.iter().find_map(|e| match e {
+            SemanticError::UndefinedName {
+                name, suggestion, ..
+            } if name == "xyzzy" => Some(suggestion.clone()),
+            _ => None,
+        });
+        assert_eq!(suggestion, Some(None));
     }
 
     #[test]

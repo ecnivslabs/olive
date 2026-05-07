@@ -14,6 +14,16 @@ fn ffi_type(t: Type) -> Type {
 }
 
 impl TypeChecker {
+    /// Records an E0421: a type used at the C FFI boundary has no C layout.
+    fn push_ffi_unsafe(&mut self, message: String, span: crate::span::Span, reason: &str) {
+        self.errors.push(SemanticError::rich(
+            crate::compile::errors::Diagnostic::error("E0421", message, span)
+                .label("not representable in C")
+                .note(reason)
+                .help("use a scalar, a `str`, a C struct, or a raw `ptr`"),
+        ));
+    }
+
     pub(super) fn check_stmt(&mut self, stmt: &Stmt) {
         match &stmt.kind {
             StmtKind::Let {
@@ -21,11 +31,12 @@ impl TypeChecker {
                 type_ann,
                 value,
                 is_mut,
+                ..
             } => {
                 let val_ty = self.check_expr(value);
                 let declared_ty = type_ann.as_ref().map(|ann| self.resolve_type_expr(ann));
                 let var_ty = if let Some(decl) = declared_ty {
-                    self.unify(&decl, &val_ty, stmt.span);
+                    self.unify(&decl, &val_ty, value.span);
                     decl
                 } else {
                     val_ty
@@ -55,10 +66,15 @@ impl TypeChecker {
                         }
                     } else {
                         self.errors
-                            .push(crate::semantic::error::SemanticError::Custom {
-                                msg: "Tuple unpacking length mismatch".to_string(),
-                                span: stmt.span,
-                            });
+                            .push(crate::semantic::error::SemanticError::rich(
+                                crate::compile::errors::Diagnostic::error(
+                                    "E0417",
+                                    "tuple unpacking length mismatch",
+                                    stmt.span,
+                                )
+                                .label(format!("{} name(s) bound here", names.len()))
+                                .help("bind exactly as many names as the tuple has elements"),
+                            ));
                         for name in names {
                             self.define_type(name, Type::Any, *is_mut);
                         }
@@ -66,10 +82,17 @@ impl TypeChecker {
                 } else {
                     if !matches!(val_ty, Type::PyObject | Type::Any) {
                         self.errors
-                            .push(crate::semantic::error::SemanticError::Custom {
-                                msg: "Expected tuple for multiple variable declaration".to_string(),
-                                span: stmt.span,
-                            });
+                            .push(crate::semantic::error::SemanticError::rich(
+                            crate::compile::errors::Diagnostic::error(
+                                "E0417",
+                                "cannot destructure a non-tuple value",
+                                stmt.span,
+                            )
+                            .label(format!("this value is `{val_ty}`, not a tuple"))
+                            .help(
+                                "multiple-variable bindings require a tuple on the right-hand side",
+                            ),
+                        ));
                     }
                     for name in names {
                         self.define_type(name, Type::Any, *is_mut);
@@ -81,11 +104,12 @@ impl TypeChecker {
                 name,
                 type_ann,
                 value,
+                ..
             } => {
                 let val_ty = self.check_expr(value);
                 let declared_ty = type_ann.as_ref().map(|ann| self.resolve_type_expr(ann));
                 let var_ty = if let Some(decl) = declared_ty {
-                    self.unify(&decl, &val_ty, stmt.span);
+                    self.unify(&decl, &val_ty, value.span);
                     decl
                 } else {
                     val_ty
@@ -113,20 +137,32 @@ impl TypeChecker {
                         }
                     } else {
                         self.errors
-                            .push(crate::semantic::error::SemanticError::Custom {
-                                msg: "Tuple unpacking length mismatch".to_string(),
-                                span: stmt.span,
-                            });
+                            .push(crate::semantic::error::SemanticError::rich(
+                                crate::compile::errors::Diagnostic::error(
+                                    "E0417",
+                                    "tuple unpacking length mismatch",
+                                    stmt.span,
+                                )
+                                .label(format!("{} name(s) bound here", names.len()))
+                                .help("bind exactly as many names as the tuple has elements"),
+                            ));
                         for name in names {
                             self.define_type(name, Type::Any, false);
                         }
                     }
                 } else {
                     self.errors
-                        .push(crate::semantic::error::SemanticError::Custom {
-                            msg: "Expected tuple for multiple constant declaration".to_string(),
-                            span: stmt.span,
-                        });
+                        .push(crate::semantic::error::SemanticError::rich(
+                            crate::compile::errors::Diagnostic::error(
+                                "E0417",
+                                "cannot destructure a non-tuple value",
+                                stmt.span,
+                            )
+                            .label("this value is not a tuple")
+                            .help(
+                                "multiple-constant bindings require a tuple on the right-hand side",
+                            ),
+                        ));
                     for name in names {
                         self.define_type(name, Type::Any, false);
                     }
@@ -159,13 +195,17 @@ impl TypeChecker {
                 if let crate::parser::ExprKind::Identifier(name) = &target.kind
                     && !self.is_mutable(name)
                 {
-                    self.errors.push(SemanticError::Custom {
-                        msg: format!(
-                            "cannot reassign immutable variable `{}` (did you mean `let mut {}`?)",
-                            name, name
-                        ),
-                        span: stmt.span,
-                    });
+                    self.errors.push(SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0410",
+                            format!("cannot assign twice to immutable variable `{name}`"),
+                            stmt.span,
+                        )
+                        .label("cannot reassign")
+                        .help(format!(
+                            "make it mutable at its declaration: `let mut {name} = ...`"
+                        )),
+                    ));
                 }
             }
 
@@ -339,13 +379,16 @@ impl TypeChecker {
                             self.unify(&expected, &Type::Null, stmt.span);
                         } else if resolved_expected != Type::Null && resolved_expected != Type::Any
                         {
-                            self.errors.push(SemanticError::Custom {
-                                msg: format!(
-                                    "type mismatch: expected `{}`, found `no return statement`",
-                                    resolved_expected
-                                ),
-                                span: stmt.span,
-                            });
+                            self.errors.push(SemanticError::rich(
+                                crate::compile::errors::Diagnostic::error(
+                                    "E0407",
+                                    "missing return value",
+                                    stmt.span,
+                                )
+                                .label(format!("this function must return `{resolved_expected}`"))
+                                .note("control reaches the end of the function without a `return`")
+                                .help(format!("add `return <{resolved_expected}>` on every path")),
+                            ));
                         }
                     }
                 }
@@ -407,20 +450,28 @@ impl TypeChecker {
                                 Type::Any
                             }
                         } else {
-                            self.errors
-                                .push(crate::semantic::error::SemanticError::Custom {
-                                    msg: format!("{} does not implement `__enter__`", name),
-                                    span: item.context_expr.span,
-                                });
+                            self.errors.push(crate::semantic::error::SemanticError::rich(
+                                crate::compile::errors::Diagnostic::error(
+                                    "E0407",
+                                    format!("`{name}` is not a context manager"),
+                                    item.context_expr.span,
+                                )
+                                .label("missing `__enter__` method")
+                                .help(format!("implement `fn __enter__(self)` on `{name}` to use it in a `with`")),
+                            ));
                             Type::Any
                         };
 
                         if self.lookup_type(&exit_mangled).is_none() {
-                            self.errors
-                                .push(crate::semantic::error::SemanticError::Custom {
-                                    msg: format!("{} does not implement `__exit__`", name),
-                                    span: item.context_expr.span,
-                                });
+                            self.errors.push(crate::semantic::error::SemanticError::rich(
+                                crate::compile::errors::Diagnostic::error(
+                                    "E0407",
+                                    format!("`{name}` is not a context manager"),
+                                    item.context_expr.span,
+                                )
+                                .label("missing `__exit__` method")
+                                .help(format!("implement `fn __exit__(self)` on `{name}` to use it in a `with`")),
+                            ));
                         }
 
                         if let Some(alias_expr) = &item.alias
@@ -435,13 +486,17 @@ impl TypeChecker {
                         && resolved_ctx != Type::PyObject
                     {
                         self.errors
-                            .push(crate::semantic::error::SemanticError::Custom {
-                                msg: format!(
-                                    "type `{}` cannot be used as a context manager",
-                                    resolved_ctx
+                            .push(crate::semantic::error::SemanticError::rich(
+                                crate::compile::errors::Diagnostic::error(
+                                    "E0407",
+                                    format!("`{resolved_ctx}` cannot be used as a context manager"),
+                                    item.context_expr.span,
+                                )
+                                .label("not usable in a `with` statement")
+                                .note(
+                                    "a context manager must define both `__enter__` and `__exit__`",
                                 ),
-                                span: item.context_expr.span,
-                            });
+                            ));
                         if let Some(alias_expr) = &item.alias
                             && let crate::parser::ExprKind::Identifier(alias_name) =
                                 &alias_expr.kind
@@ -559,22 +614,36 @@ impl TypeChecker {
                                 }
                                 self.unify(&expected_ty, provided_ty, stmt.span);
                             } else {
-                                self.errors.push(SemanticError::Custom {
-                                    msg: format!(
-                                        "`{}` does not implement `{}::{}` required by trait `{}`",
-                                        type_name, type_name, method_name, tr
-                                    ),
-                                    span: stmt.span,
-                                });
+                                self.errors.push(SemanticError::rich(
+                                    crate::compile::errors::Diagnostic::error(
+                                        "E0415",
+                                        format!("`{type_name}` does not satisfy trait `{tr}`"),
+                                        stmt.span,
+                                    )
+                                    .label(format!("missing method `{method_name}`"))
+                                    .help(format!(
+                                        "implement `fn {method_name}(...)` in `impl {tr} for {type_name}`"
+                                    )),
+                                ));
                             }
                         }
                         self.type_traits
                             .insert((type_name.to_string(), tr.to_string()));
                     } else {
-                        self.errors.push(SemanticError::Custom {
-                            msg: format!("undefined trait `{}`", tr),
-                            span: stmt.span,
-                        });
+                        let tr_name = tr.to_string();
+                        let suggestion = super::super::suggest::closest(
+                            &tr_name,
+                            self.traits.keys().map(String::as_str),
+                        );
+                        self.errors.push(SemanticError::rich(
+                            crate::compile::errors::Diagnostic::error(
+                                "E0416",
+                                format!("cannot find trait `{tr_name}` in this scope"),
+                                stmt.span,
+                            )
+                            .label("not a trait")
+                            .suggest(&suggestion),
+                        ));
                     }
                 }
 
@@ -655,17 +724,40 @@ impl TypeChecker {
             } => {
                 self.define_type(alias, super::super::types::Type::Any, false);
                 for sig in functions {
+                    for p in &sig.params {
+                        let resolved = self.resolve_type_expr(&p.ty);
+                        if let Some(reason) = super::super::abi::ffi_unsafe_reason(&resolved) {
+                            self.push_ffi_unsafe(
+                                format!(
+                                    "parameter of `{}` has type `{resolved}`, which cannot cross the FFI boundary",
+                                    sig.name
+                                ),
+                                sig.span,
+                                reason,
+                            );
+                        }
+                    }
                     let param_types: Vec<Type> = sig
                         .params
                         .iter()
                         .map(|p| ffi_type(self.resolve_type_expr(&p.ty)))
                         .collect();
-                    let ret_type = ffi_type(
-                        sig.ret
-                            .as_ref()
-                            .map(|t| self.resolve_type_expr(t))
-                            .unwrap_or(Type::Null),
-                    );
+                    let resolved_ret = sig
+                        .ret
+                        .as_ref()
+                        .map(|t| self.resolve_type_expr(t))
+                        .unwrap_or(Type::Null);
+                    if let Some(reason) = super::super::abi::ffi_unsafe_reason(&resolved_ret) {
+                        self.push_ffi_unsafe(
+                            format!(
+                                "`{}` returns `{resolved_ret}`, which cannot cross the FFI boundary",
+                                sig.name
+                            ),
+                            sig.span,
+                            reason,
+                        );
+                    }
+                    let ret_type = ffi_type(resolved_ret);
                     let fn_type = Type::Fn(param_types, Box::new(ret_type), vec![]);
                     let mangled = format!("{}::{}", alias, sig.name);
                     self.define_type(&mangled, fn_type, false);
@@ -683,7 +775,18 @@ impl TypeChecker {
                     self.define_type(&type_name, Type::Struct(type_name.clone(), vec![]), false);
                     self.c_ffi_structs.insert(type_name.clone());
                     for field in &s.fields {
-                        let field_ty = ffi_type(self.resolve_type_expr(&field.ty));
+                        let resolved = self.resolve_type_expr(&field.ty);
+                        if let Some(reason) = super::super::abi::ffi_unsafe_reason(&resolved) {
+                            self.push_ffi_unsafe(
+                                format!(
+                                    "field `{}` of C struct `{}` has type `{resolved}`, which has no C layout",
+                                    field.name, s.name
+                                ),
+                                stmt.span,
+                                reason,
+                            );
+                        }
+                        let field_ty = ffi_type(resolved);
                         self.field_types
                             .insert((type_name.clone(), field.name.clone()), field_ty);
                     }
@@ -734,6 +837,7 @@ impl TypeChecker {
 
                 // Prefer explicit stub block; fall back to .pyi introspection.
                 if !typed_types.is_empty() || !typed_fns.is_empty() {
+                    self.py_explicit_modules.insert(alias.clone());
                     for type_name in typed_types {
                         let named_ty = Type::PyNamed(alias.clone(), type_name.clone());
                         self.py_module_types
@@ -759,6 +863,13 @@ impl TypeChecker {
                             .entry(sig.name.clone())
                             .or_default()
                             .push((param_tys.clone(), ret_ty.clone()));
+                        let arity = param_tys.len();
+                        self.py_fn_arity
+                            .entry(alias.clone())
+                            .or_default()
+                            .entry(sig.name.clone())
+                            .or_default()
+                            .push((arity, Some(arity)));
                         let mangled = format!("{}::{}", alias, sig.name);
                         if self.lookup_type(&mangled).is_none() {
                             self.define_type(
@@ -773,28 +884,43 @@ impl TypeChecker {
                         pyi::PyiOutcome::Found(info) => self.register_pyi(alias, info),
                         pyi::PyiOutcome::NoStub => {}
                         pyi::PyiOutcome::ModuleNotFound => {
-                            self.errors.push(SemanticError::Custom {
-                                msg: format!(
-                                    "Python module `{module}` cannot be imported; install it or add an explicit `type`/`fn` stub block"
-                                ),
-                                span: stmt.span,
-                            });
+                            self.errors.push(SemanticError::rich(
+                                crate::compile::errors::Diagnostic::error(
+                                    "E0600",
+                                    format!("Python module `{module}` cannot be imported"),
+                                    stmt.span,
+                                )
+                                .label("module not found by the active interpreter")
+                                .note("Olive introspects Python modules at compile time to type-check their use")
+                                .help(format!(
+                                    "install it (e.g. `pip install {module}`), or add an explicit `type`/`fn` stub block"
+                                )),
+                            ));
                         }
                         pyi::PyiOutcome::Python3Missing => {
-                            self.warnings.push(SemanticError::Custom {
-                                msg: format!(
-                                    "`python3` not found, so `{module}` could not be introspected; calls fall back to dynamic typing. Add an explicit `type`/`fn` stub block for static checks"
-                                ),
-                                span: stmt.span,
-                            });
+                            self.warnings.push(SemanticError::rich(
+                                crate::compile::errors::Diagnostic::error(
+                                    "W0601",
+                                    format!("`{module}` could not be introspected"),
+                                    stmt.span,
+                                )
+                                .label("`python3` was not found on PATH")
+                                .note("calls into this module fall back to dynamic typing")
+                                .help("add an explicit `type`/`fn` stub block to recover static checks"),
+                            ));
                         }
                         pyi::PyiOutcome::InspectorError(detail) => {
-                            self.warnings.push(SemanticError::Custom {
-                                msg: format!(
-                                    "could not introspect Python module `{module}` ({detail}); calls fall back to dynamic typing"
-                                ),
-                                span: stmt.span,
-                            });
+                            self.warnings.push(SemanticError::rich(
+                                crate::compile::errors::Diagnostic::error(
+                                    "W0602",
+                                    format!("could not introspect Python module `{module}`"),
+                                    stmt.span,
+                                )
+                                .label("introspection failed")
+                                .note(detail.clone())
+                                .note("calls into this module fall back to dynamic typing")
+                                .help("add an explicit `type`/`fn` stub block to recover static checks"),
+                            ));
                         }
                     }
                 }

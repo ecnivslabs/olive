@@ -59,7 +59,7 @@ impl TypeChecker {
     pub(super) fn check_pattern(&mut self, pattern: &MatchPattern, match_ty: &Type, span: Span) {
         match pattern {
             MatchPattern::Wildcard => {}
-            MatchPattern::Identifier(name) => {
+            MatchPattern::Identifier(name, _) => {
                 self.define_type(name, match_ty.clone(), false);
             }
             MatchPattern::Variant(v_name, inner_patterns) => {
@@ -88,27 +88,50 @@ impl TypeChecker {
                                 self.check_pattern(p, &p_ty, span);
                             }
                         } else {
-                            self.errors.push(SemanticError::Custom {
-                                msg: format!(
-                                    "expected {} arguments for variant {}, found {}",
+                            self.errors.push(SemanticError::rich(
+                                crate::compile::errors::Diagnostic::error(
+                                    "E0418",
+                                    format!("wrong number of fields for variant `{v_name}`"),
+                                    span,
+                                )
+                                .label(format!(
+                                    "expected {} field(s), found {}",
                                     param_types.len(),
-                                    v_name,
                                     inner_patterns.len()
-                                ),
-                                span,
-                            });
+                                ))
+                                .help(format!(
+                                    "the pattern must bind exactly {} field(s)",
+                                    param_types.len()
+                                )),
+                            ));
                         }
                     } else {
+                        let suggestion = self
+                            .enum_variants
+                            .get(&enum_name)
+                            .and_then(|variants| {
+                                super::super::suggest::closest(
+                                    v_name,
+                                    variants.iter().map(String::as_str),
+                                )
+                            })
+                            .map(|v| format!("{enum_name}::{v}"));
                         self.errors.push(SemanticError::UndefinedName {
                             name: variant_mangled,
                             span,
+                            suggestion,
                         });
                     }
                 } else {
-                    self.errors.push(SemanticError::Custom {
-                        msg: format!("expected Enum or Union type, found {}", match_ty),
-                        span,
-                    });
+                    self.errors.push(SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0419",
+                            "this type cannot be destructured by a variant pattern",
+                            span,
+                        )
+                        .label(format!("`{match_ty}` is not an enum or union"))
+                        .note("variant patterns only apply to `enum` and union (`A | B`) values"),
+                    ));
                 }
             }
             MatchPattern::Literal(expr) => {
@@ -149,6 +172,36 @@ mod tests {
         let tc =
             typeck("enum E:\n    A\nlet x = A\nmatch x:\n    case other:\n        let y = other\n");
         assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn unknown_variant_suggests_nearest() {
+        let tc = typeck(
+            "enum Color:\n    Red\n    Green\n    Blue\n\nfn f(c: Color):\n    match c:\n        case Gren:\n            pass\n        case _:\n            pass\n",
+        );
+        let suggestion = tc.errors.iter().find_map(|e| match e {
+            crate::semantic::SemanticError::UndefinedName {
+                name, suggestion, ..
+            } if name == "Color::Gren" => Some(suggestion.clone()),
+            _ => None,
+        });
+        assert_eq!(suggestion, Some(Some("Color::Green".to_string())));
+    }
+
+    #[test]
+    fn unknown_variant_error_points_at_case_arm() {
+        let src = "enum Color:\n    Red\n    Green\n\nfn f(c: Color):\n    match c:\n        case Gren:\n            pass\n        case _:\n            pass\n";
+        let tc = typeck(src);
+        let span = tc.errors.iter().find_map(|e| match e {
+            crate::semantic::SemanticError::UndefinedName { name, span, .. }
+                if name == "Color::Gren" =>
+            {
+                Some(*span)
+            }
+            _ => None,
+        });
+        // The `case Gren:` arm is on line 7, not the `match c:` line (6).
+        assert_eq!(span.map(|s| s.line), Some(7));
     }
 
     #[test]

@@ -101,7 +101,15 @@ impl Parser {
             self.skip_newlines();
         }
         self.expect(TokenKind::Fn)?;
-        let name = self.expect(TokenKind::Identifier)?.value;
+        let name_tok = self.expect(TokenKind::Identifier)?;
+        let span = crate::span::Span {
+            file_id: name_tok.file_id,
+            line: name_tok.line,
+            col: name_tok.col,
+            start: name_tok.span.0,
+            end: name_tok.span.1,
+        };
+        let name = name_tok.value;
         self.expect(TokenKind::LParen)?;
         let mut params = Vec::new();
         let mut is_vararg = false;
@@ -154,6 +162,7 @@ impl Parser {
             is_vararg,
             decorators,
             call_conv,
+            span,
         })
     }
 }

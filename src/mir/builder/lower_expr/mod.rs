@@ -169,6 +169,11 @@ impl<'a> MirBuilder<'a> {
         }
 
         if let Some(name) = callee_name {
+            let base = name.rsplit("::").next().unwrap_or(name);
+            if matches!(base, "panic" | "unwrap" | "unwrap_err") {
+                self.emit_set_fault_loc(expr.span);
+            }
+
             if name == "type"
                 && !args.is_empty()
                 && let Some(op) = self.lower_type_builtin(args, expr.span)
@@ -359,6 +364,37 @@ impl<'a> MirBuilder<'a> {
                 sink,
                 Rvalue::Call {
                     func: Operand::Constant(Constant::Function("__olive_py_set_loc".to_string())),
+                    args: vec![Operand::Copy(loc_local)],
+                },
+            ),
+            span,
+        );
+    }
+
+    /// Records the user's call site just before a fault-prone prelude call
+    /// (`panic`, `unwrap`, `unwrap_err`) so the abort points at the caller, not
+    /// the one-line library wrapper. Mirrors Rust's `#[track_caller]`.
+    pub(super) fn emit_set_fault_loc(&mut self, span: Span) {
+        let loc = match self.file_names.get(&span.file_id) {
+            Some(file) => format!("{}:{}:{}", file, span.line, span.col),
+            None => format!("{}:{}", span.line, span.col),
+        };
+        let loc_local = self.new_local(Type::Str, None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                loc_local,
+                Rvalue::Use(Operand::Constant(Constant::Str(loc))),
+            ),
+            span,
+        );
+        let sink = self.new_local(Type::Null, None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                sink,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(
+                        "__olive_set_fault_loc".to_string(),
+                    )),
                     args: vec![Operand::Copy(loc_local)],
                 },
             ),

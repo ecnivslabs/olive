@@ -1,4 +1,5 @@
 use super::super::CraneliftCodegen;
+use super::super::imports::is_float_op;
 use crate::mir::MirFunction;
 use crate::mir::StatementKind;
 use cranelift_module::{DataDescription, Linkage, Module};
@@ -22,6 +23,60 @@ impl<M: Module> CraneliftCodegen<M> {
             .unwrap();
         self.module.define_data(id, &data_ctx).unwrap();
         self.string_ids.insert(attr.to_string(), id);
+    }
+
+    /// Interns a read-only `file:line:col` string and returns a tagged Olive
+    /// string pointer's backing data id. Reused for every fault site sharing
+    /// the same source location.
+    fn intern_loc(&mut self, span: crate::span::Span) -> cranelift_module::DataId {
+        let loc = match self.file_names.get(&span.file_id) {
+            Some(file) => format!("{}:{}:{}", file, span.line, span.col),
+            None => format!("{}:{}", span.line, span.col),
+        };
+        if let Some(&id) = self.loc_ids.get(&span) {
+            return id;
+        }
+        let mut data_ctx = DataDescription::new();
+        let mut bytes = loc.into_bytes();
+        bytes.push(0);
+        if !bytes.len().is_multiple_of(2) {
+            bytes.push(0);
+        }
+        data_ctx.define(bytes.into_boxed_slice());
+        let name = format!("loc_{}", self.loc_ids.len());
+        let id = self
+            .module
+            .declare_data(&name, Linkage::Export, false, false)
+            .unwrap();
+        self.module.define_data(id, &data_ctx).unwrap();
+        self.loc_ids.insert(span, id);
+        id
+    }
+
+    /// Records source locations for every fault-prone statement (index reads
+    /// and writes) so a runtime bounds or nil-index panic can point at the line.
+    pub(super) fn collect_locs(&mut self, func: &MirFunction) {
+        for bb in &func.basic_blocks {
+            for stmt in &bb.statements {
+                match &stmt.kind {
+                    StatementKind::Assign(_, crate::mir::Rvalue::GetIndex(..))
+                    | StatementKind::SetIndex(..) => {
+                        self.intern_loc(stmt.span);
+                    }
+                    StatementKind::Assign(
+                        _,
+                        crate::mir::Rvalue::BinaryOp(
+                            crate::parser::BinOp::Div | crate::parser::BinOp::Mod,
+                            lhs,
+                            _,
+                        ),
+                    ) if !is_float_op(func, lhs) => {
+                        self.intern_loc(stmt.span);
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
 
     pub(super) fn collect_strings(&mut self, func: &MirFunction) {

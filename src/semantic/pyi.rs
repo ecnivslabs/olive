@@ -20,9 +20,29 @@ struct RawInfo {
 struct RawSig {
     params: Vec<String>,
     ret: String,
+    #[serde(default)]
+    min: i64,
+    #[serde(default = "neg_one")]
+    max: i64,
 }
 
-pub type SigList = Vec<(Vec<String>, String)>;
+fn neg_one() -> i64 {
+    -1
+}
+
+/// One introspected Python signature: the parameter and return type strings
+/// plus the positional arity bounds (`max` is `None` when the function takes
+/// `*args`). Arity is what lets a wrong-argument-count call be caught while
+/// leaving genuinely variadic functions alone.
+#[derive(Clone)]
+pub struct PySig {
+    pub params: Vec<String>,
+    pub ret: String,
+    pub min: usize,
+    pub max: Option<usize>,
+}
+
+pub type SigList = Vec<PySig>;
 
 pub struct PyiInfo {
     pub types: Vec<String>,
@@ -103,8 +123,24 @@ fn query_with(module: &str, python: &str) -> PyiOutcome {
         return PyiOutcome::NoStub;
     }
 
-    let convert_sigs =
-        |sigs: Vec<RawSig>| -> SigList { sigs.into_iter().map(|s| (s.params, s.ret)).collect() };
+    let convert_sigs = |sigs: Vec<RawSig>| -> SigList {
+        sigs.into_iter()
+            .map(|s| {
+                let min = s.min.max(0) as usize;
+                let max = if s.max < 0 {
+                    None
+                } else {
+                    Some((s.max as usize).max(min))
+                };
+                PySig {
+                    params: s.params,
+                    ret: s.ret,
+                    min,
+                    max,
+                }
+            })
+            .collect()
+    };
 
     let fns = raw
         .fns

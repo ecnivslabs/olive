@@ -257,3 +257,18 @@ fn ffi_clear_errno_then_read_is_zero() {
     olive_ffi_clear_errno();
     assert_eq!(olive_ffi_errno(), 0);
 }
+
+#[test]
+fn ffi_errno_reads_snapshot_not_live_errno() {
+    olive_ffi_clear_errno();
+    // Set live errno, snapshot it, then clobber live errno the way an
+    // intervening allocation would. The snapshot must survive.
+    let loc = errno_location();
+    if loc.is_null() {
+        return;
+    }
+    unsafe { *loc = 13 };
+    olive_ffi_snapshot_errno();
+    unsafe { *loc = 0 };
+    assert_eq!(olive_ffi_errno(), 13);
+}

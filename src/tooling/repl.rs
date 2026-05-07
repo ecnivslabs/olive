@@ -3,7 +3,7 @@ use crate::codegen::cranelift::CraneliftCodegen;
 use crate::lexer::Lexer;
 use crate::mir::{self, MirBuilder, Rvalue, StatementKind};
 use crate::parser::{self, Parser};
-use crate::semantic::{self, Resolver, TypeChecker};
+use crate::semantic::{Resolver, TypeChecker};
 use ariadne::{Label, Report, ReportKind, Source};
 use rustc_hash::FxHashMap as HashMap;
 use rustyline::{DefaultEditor, error::ReadlineError};
@@ -117,13 +117,9 @@ pub fn repl_compile_run(
         checker.check();
         if !checker.errors.is_empty() {
             for e in &checker.errors {
-                match e {
-                    semantic::SemanticError::Custom { msg, span } => {
-                        eprintln!("\x1b[1;31mborrow error\x1b[0m in {}: {}", func.name, msg);
-                        let _ = sources.get(&span.file_id);
-                    }
-                    _ => eprintln!("\x1b[1;31mborrow error\x1b[0m in {}: {}", func.name, e),
-                }
+                e.to_diagnostic()
+                    .note(format!("in function `{}`", func.name))
+                    .emit(sources);
             }
             had_borrow_error = true;
         }
@@ -137,6 +133,7 @@ pub fn repl_compile_run(
         mir_builder.struct_fields,
         mir_builder.vtables.clone(),
         mir_builder.global_vars,
+        mir_builder.file_names.clone(),
         &[],
         false,
     );
@@ -166,6 +163,7 @@ pub fn run_shell() {
     let mut def_stmts: Vec<parser::Stmt> = vec![parser::Stmt::new(
         parser::StmtKind::Const {
             name: "__name__".to_string(),
+            name_span: crate::span::Span::default(),
             type_ann: None,
             value: parser::Expr::new(
                 parser::ExprKind::Str("__repl__".to_string()),
@@ -247,6 +245,7 @@ pub fn run_shell() {
                 def_stmts.push(parser::Stmt::new(
                     parser::StmtKind::Const {
                         name: "__name__".to_string(),
+                        name_span: crate::span::Span::default(),
                         type_ann: None,
                         value: parser::Expr::new(
                             parser::ExprKind::Str("__repl__".to_string()),

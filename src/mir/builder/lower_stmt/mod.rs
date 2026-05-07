@@ -66,6 +66,7 @@ impl<'a> MirBuilder<'a> {
                 value,
                 is_mut,
                 type_ann,
+                ..
             } => {
                 let mut rval = self.lower_expr(value);
                 let val_ty = self.get_type(value.id).clone();

@@ -44,8 +44,8 @@ mod borrow_check_tests_extended {
         );
         assert!(!errors.is_empty(), "use after move should produce an error");
         assert!(
-            has_error_matching(&errors, "use of moved variable"),
-            "expected 'use of moved variable', got: {:?}",
+            has_error_matching(&errors, "use of moved value"),
+            "expected 'use of moved value', got: {:?}",
             errors
         );
     }

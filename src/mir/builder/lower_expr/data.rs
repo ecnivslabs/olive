@@ -6,6 +6,16 @@ use crate::semantic::types::Type;
 use crate::span::Span;
 
 impl<'a> MirBuilder<'a> {
+    /// Builds a `file:line:col` string operand for a fault site so a runtime
+    /// bounds or nil-index panic can point back at the source line.
+    pub(super) fn index_loc_operand(&self, span: Span) -> Operand {
+        let loc = match self.file_names.get(&span.file_id) {
+            Some(file) => format!("{}:{}:{}", file, span.line, span.col),
+            None => format!("{}:{}", span.line, span.col),
+        };
+        Operand::Constant(Constant::Str(loc))
+    }
+
     pub(super) fn lower_deref_expr(&mut self, inner: &Expr, expr_id: usize) -> Operand {
         let ptr_op = self.lower_expr(inner);
         let tmp = self.new_local(self.get_type(expr_id), None, false);
@@ -285,13 +295,16 @@ impl<'a> MirBuilder<'a> {
         if current_obj_ty == Type::Str {
             let o = self.lower_expr_as_copy(obj);
             let i = self.lower_expr(index);
+            let loc = self.index_loc_operand(span);
             let tmp = self.new_local(Type::Str, None, false);
             self.push_statement(
                 StatementKind::Assign(
                     tmp,
                     Rvalue::Call {
-                        func: Operand::Constant(Constant::Function("__olive_str_get".to_string())),
-                        args: vec![o, i],
+                        func: Operand::Constant(Constant::Function(
+                            "__olive_str_get_checked".to_string(),
+                        )),
+                        args: vec![o, i, loc],
                     },
                 ),
                 span,

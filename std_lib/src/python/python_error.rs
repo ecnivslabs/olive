@@ -152,13 +152,12 @@ pub unsafe fn handle_py_error() {
             tb_msg
         };
         let loc = py_call_loc();
-        let full = if loc.is_empty() {
-            body
+        let msg = format!("uncaught Python exception\n{}", body.trim_end());
+        if loc.is_empty() {
+            crate::panic::abort(&msg, None)
         } else {
-            format!("{loc}: uncaught Python exception\n{body}")
-        };
-        let ptr = crate::olive_str_internal(&full);
-        crate::olive_panic(ptr);
+            crate::panic::abort(&msg, Some(&loc))
+        }
     }
 }
 

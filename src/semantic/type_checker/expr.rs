@@ -30,11 +30,15 @@ impl TypeChecker {
                 match resolved {
                     Type::Ptr(_) => {
                         if self.unsafe_depth == 0 {
-                            self.errors
-                                .push(super::super::error::SemanticError::Custom {
-                                    msg: "pointer dereference requires unsafe block".into(),
-                                    span: expr.span,
-                                });
+                            self.errors.push(super::super::error::SemanticError::rich(
+                                crate::compile::errors::Diagnostic::error(
+                                    "E0408",
+                                    "dereferencing a raw pointer is unsafe",
+                                    expr.span,
+                                )
+                                .label("this dereference may read invalid memory")
+                                .help("wrap it in an `unsafe:` block to acknowledge the risk"),
+                            ));
                         }
                         Type::Int
                     }
@@ -43,11 +47,15 @@ impl TypeChecker {
                     Type::Any | Type::Tuple(_) => Type::Any,
                     _ => {
                         if self.unsafe_depth == 0 {
-                            self.errors
-                                .push(super::super::error::SemanticError::Custom {
-                                    msg: "pointer dereference requires unsafe block".into(),
-                                    span: expr.span,
-                                });
+                            self.errors.push(super::super::error::SemanticError::rich(
+                                crate::compile::errors::Diagnostic::error(
+                                    "E0408",
+                                    "dereferencing a raw pointer is unsafe",
+                                    expr.span,
+                                )
+                                .label("this dereference may read invalid memory")
+                                .help("wrap it in an `unsafe:` block to acknowledge the risk"),
+                            ));
                         }
                         Type::Int
                     }
@@ -62,11 +70,15 @@ impl TypeChecker {
                 if let ExprKind::Identifier(name) = &inner.kind
                     && !self.is_mutable(name)
                 {
-                    self.errors
-                        .push(super::super::error::SemanticError::Custom {
-                            msg: format!("cannot mutably borrow immutable variable `{}`", name),
-                            span: expr.span,
-                        });
+                    self.errors.push(super::super::error::SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0411",
+                            format!("cannot mutably borrow immutable variable `{name}`"),
+                            expr.span,
+                        )
+                        .label("cannot borrow as mutable")
+                        .help(format!("declare it mutable: `let mut {name} = ...`")),
+                    ));
                 }
                 Type::MutRef(Box::new(inner_ty))
             }
@@ -149,11 +161,21 @@ impl TypeChecker {
                         })
                         .collect();
                     if let ExprKind::Attr { obj, attr } = &callee.kind {
-                        if let ExprKind::Identifier(module_name) = &obj.kind
-                            && let Some(ret_ty) =
+                        if let ExprKind::Identifier(module_name) = &obj.kind {
+                            let all_positional =
+                                args.iter().all(|a| matches!(a, CallArg::Positional(_)));
+                            self.check_py_call(
+                                module_name,
+                                attr,
+                                args.len(),
+                                all_positional,
+                                expr.span,
+                            );
+                            if let Some(ret_ty) =
                                 self.resolve_py_fn_overload(module_name, attr, &arg_tys)
-                        {
-                            return ret_ty;
+                            {
+                                return ret_ty;
+                            }
                         }
                         let obj_ty = self
                             .expr_types
@@ -209,21 +231,32 @@ impl TypeChecker {
                                 if let Some(idx) = expected_fields.iter().position(|f| f == kw_name)
                                 {
                                     if final_args[idx].is_some() {
-                                        self.errors.push(
-                                            super::super::error::SemanticError::Custom {
-                                                msg: format!("duplicate argument `{}`", kw_name),
-                                                span: expr.span,
-                                            },
-                                        );
+                                        self.errors.push(super::super::error::SemanticError::rich(
+                                            crate::compile::errors::Diagnostic::error(
+                                                "E0412",
+                                                format!("field `{kw_name}` is given twice"),
+                                                expr.span,
+                                            )
+                                            .label("duplicate field in this initializer")
+                                            .help("remove the redundant assignment"),
+                                        ));
                                     }
                                     final_args[idx] = Some(t);
                                     kwarg_map[idx] = i;
                                 } else {
-                                    self.errors
-                                        .push(super::super::error::SemanticError::Custom {
-                                            msg: format!("no field `{}` on `{}`", kw_name, name),
-                                            span: expr.span,
-                                        });
+                                    let suggestion = super::super::suggest::closest(
+                                        kw_name,
+                                        expected_fields.iter().map(String::as_str),
+                                    );
+                                    self.errors.push(super::super::error::SemanticError::rich(
+                                        crate::compile::errors::Diagnostic::error(
+                                            "E0413",
+                                            format!("struct `{name}` has no field `{kw_name}`"),
+                                            expr.span,
+                                        )
+                                        .label("unknown field")
+                                        .suggest(&suggestion),
+                                    ));
                                 }
                             }
                         }
@@ -256,15 +289,18 @@ impl TypeChecker {
                                 if params.len() != packed_args.len() + 1
                                     || raw_count != packed_args.len()
                                 {
-                                    self.errors
-                                        .push(super::super::error::SemanticError::Custom {
-                                            msg: format!(
-                                                "constructor arity mismatch: expected {}, found {}",
-                                                params.len() - 1,
-                                                raw_count
-                                            ),
-                                            span: expr.span,
-                                        });
+                                    self.errors.push(super::super::error::SemanticError::rich(
+                                        crate::compile::errors::Diagnostic::error(
+                                            "E0403",
+                                            format!("wrong number of arguments to `{name}`"),
+                                            expr.span,
+                                        )
+                                        .label(format!(
+                                            "expected {} argument(s), found {}",
+                                            params.len() - 1,
+                                            raw_count
+                                        )),
+                                    ));
                                 } else {
                                     for (p, a) in params.iter().skip(1).zip(packed_args) {
                                         self.unify(p, &a, expr.span);
@@ -274,15 +310,22 @@ impl TypeChecker {
                         }
                     } else {
                         if raw_count != expected_fields.len() {
-                            self.errors
-                                .push(super::super::error::SemanticError::Custom {
-                                    msg: format!(
-                                        "constructor arity mismatch: expected {}, found {}",
-                                        expected_fields.len(),
-                                        raw_count
-                                    ),
-                                    span: expr.span,
-                                });
+                            self.errors.push(super::super::error::SemanticError::rich(
+                                crate::compile::errors::Diagnostic::error(
+                                    "E0403",
+                                    format!("wrong number of fields for `{name}`"),
+                                    expr.span,
+                                )
+                                .label(format!(
+                                    "expected {} field(s), found {}",
+                                    expected_fields.len(),
+                                    raw_count
+                                ))
+                                .help(format!(
+                                    "`{name}` has fields: {}",
+                                    expected_fields.join(", ")
+                                )),
+                            ));
                         }
                         for (i, arg_ty) in packed_args.iter().enumerate() {
                             if i < expected_fields.len() {
@@ -320,13 +363,16 @@ impl TypeChecker {
                 if let ExprKind::Identifier(name) = &callee.kind {
                     if self.ffi_fns.contains(name) && self.unsafe_depth == 0 {
                         self.errors
-                            .push(super::super::error::SemanticError::Custom {
-                                msg: format!(
-                                    "call to unsafe FFI function `{}` requires an `unsafe:` block, or mark the declaration `@safe`",
-                                    name
-                                ),
-                                span: expr.span,
-                            });
+                            .push(super::super::error::SemanticError::rich(
+                                crate::compile::errors::Diagnostic::error(
+                                    "E0409",
+                                    format!("call to FFI function `{name}` is unsafe"),
+                                    expr.span,
+                                )
+                                .label("foreign calls may violate memory safety")
+                                .note("Olive cannot verify the safety of foreign code across the FFI boundary")
+                                .help("wrap the call in an `unsafe:` block, or mark the declaration `@safe`"),
+                            ));
                     }
                 } else if let ExprKind::Attr { obj, attr } = &callee.kind
                     && let ExprKind::Identifier(alias) = &obj.kind
@@ -334,13 +380,16 @@ impl TypeChecker {
                     let mangled = format!("{}::{}", alias, attr);
                     if self.ffi_fns.contains(&mangled) && self.unsafe_depth == 0 {
                         self.errors
-                            .push(super::super::error::SemanticError::Custom {
-                                msg: format!(
-                                    "call to unsafe FFI function `{}` requires an `unsafe:` block, or mark the declaration `@safe`",
-                                    mangled
-                                ),
-                                span: expr.span,
-                            });
+                            .push(super::super::error::SemanticError::rich(
+                                crate::compile::errors::Diagnostic::error(
+                                    "E0409",
+                                    format!("call to FFI function `{mangled}` is unsafe"),
+                                    expr.span,
+                                )
+                                .label("foreign calls may violate memory safety")
+                                .note("Olive cannot verify the safety of foreign code across the FFI boundary")
+                                .help("wrap the call in an `unsafe:` block, or mark the declaration `@safe`"),
+                            ));
                     }
                 }
 
@@ -580,7 +629,7 @@ impl TypeChecker {
                         has_wildcard = true;
                     }
 
-                    self.check_pattern(&case.pattern, &match_ty, expr.span);
+                    self.check_pattern(&case.pattern, &match_ty, case.span);
 
                     let mut case_ty = Type::Null;
                     for (i, stmt) in case.body.iter().enumerate() {
@@ -609,13 +658,22 @@ impl TypeChecker {
                             if let Some(all_variants) = self.enum_variants.get(enum_name) {
                                 for v in all_variants {
                                     if !matched_variants.contains(v) {
-                                        self.errors.push(super::super::error::SemanticError::Custom {
-                                            msg: format!(
-                                                "non-exhaustive patterns: variant {} not covered",
-                                                v
+                                        self.errors.push(super::super::error::SemanticError::rich(
+                                            crate::compile::errors::Diagnostic::error(
+                                                "E0414",
+                                                "non-exhaustive patterns",
+                                                expr.span,
+                                            )
+                                            .label(format!(
+                                                "variant `{enum_name}::{v}` is not covered"
+                                            ))
+                                            .note("a `match` must handle every possible value")
+                                            .help(
+                                                format!(
+                                                    "add `case {v}:` or a wildcard `case _:` arm"
+                                                ),
                                             ),
-                                            span: expr.span,
-                                        });
+                                        ));
                                     }
                                 }
                             }
@@ -627,13 +685,18 @@ impl TypeChecker {
                                 {
                                     for v in all_variants {
                                         if !matched_variants.contains(v) {
-                                            self.errors.push(super::super::error::SemanticError::Custom {
-                                                msg: format!(
-                                                    "non-exhaustive patterns: variant {} of {} not covered",
-                                                    v, en
-                                                ),
-                                                span: expr.span,
-                                            });
+                                            self.errors.push(super::super::error::SemanticError::rich(
+                                                crate::compile::errors::Diagnostic::error(
+                                                    "E0414",
+                                                    "non-exhaustive patterns",
+                                                    expr.span,
+                                                )
+                                                .label(format!("variant `{en}::{v}` is not covered"))
+                                                .note("a `match` over a union must handle every member's variants")
+                                                .help(format!(
+                                                    "add `case {v}:` or a wildcard `case _:` arm"
+                                                )),
+                                            ));
                                         }
                                     }
                                 }
@@ -686,14 +749,21 @@ impl TypeChecker {
                     if expected_resolved != Type::Any {
                         for err_ty in &error_types {
                             if !expected_variants.contains(err_ty) {
-                                self.errors
-                                    .push(super::super::error::SemanticError::Custom {
-                                        msg: format!(
-                                            "cannot propagate error `{}`, function returns `{}`",
-                                            err_ty, expected_resolved
-                                        ),
-                                        span: expr.span,
-                                    });
+                                self.errors.push(
+                                    super::super::error::SemanticError::rich(
+                                        crate::compile::errors::Diagnostic::error(
+                                            "E0406",
+                                            format!("`?` cannot propagate `{err_ty}` here"),
+                                            expr.span,
+                                        )
+                                        .label(format!(
+                                            "this error is `{err_ty}`, but the function returns `{expected_resolved}`"
+                                        ))
+                                        .help(format!(
+                                            "add `{err_ty}` to the function's return type, or convert the error before propagating"
+                                        )),
+                                    ),
+                                );
                             }
                         }
                     }
@@ -714,11 +784,15 @@ impl TypeChecker {
                     Type::Future(t) => *t,
                     Type::Any | Type::Var(_) => Type::Any,
                     other => {
-                        self.errors
-                            .push(super::super::error::SemanticError::Custom {
-                                msg: format!("'await' requires a Future[T], got {}", other),
-                                span: expr.span,
-                            });
+                        self.errors.push(super::super::error::SemanticError::rich(
+                            crate::compile::errors::Diagnostic::error(
+                                "E0405",
+                                "`await` requires a future",
+                                expr.span,
+                            )
+                            .label(format!("this is `{other}`, not a `Future[T]`"))
+                            .help("only the result of an `async` call can be awaited"),
+                        ));
                         Type::Any
                     }
                 }
@@ -859,26 +933,37 @@ impl TypeChecker {
         let resolved = self.apply_subst(ty.clone());
         match resolved {
             Type::Null | Type::Never => {
-                self.errors
-                    .push(super::super::error::SemanticError::Custom {
-                        msg: format!("type `{}` cannot be used as a condition", resolved),
+                self.errors.push(super::super::error::SemanticError::rich(
+                    crate::compile::errors::Diagnostic::error(
+                        "E0404",
+                        format!("`{resolved}` cannot be used as a condition"),
                         span,
-                    });
+                    )
+                    .label("expected a `bool` here")
+                    .help("compare the value explicitly, e.g. `value != None`"),
+                ));
             }
             Type::Fn(..) => {
-                self.errors
-                    .push(super::super::error::SemanticError::Custom {
-                        msg: "function value cannot be used as a condition".into(),
+                self.errors.push(super::super::error::SemanticError::rich(
+                    crate::compile::errors::Diagnostic::error(
+                        "E0404",
+                        "a function value cannot be used as a condition",
                         span,
-                    });
+                    )
+                    .label("this is a function, not a `bool`")
+                    .help("did you mean to call it? add `()`"),
+                ));
             }
             Type::Future(_) => {
-                self.errors
-                    .push(super::super::error::SemanticError::Custom {
-                        msg: "future cannot be used as a condition; did you mean to await it?"
-                            .into(),
+                self.errors.push(super::super::error::SemanticError::rich(
+                    crate::compile::errors::Diagnostic::error(
+                        "E0404",
+                        "a future cannot be used as a condition",
                         span,
-                    });
+                    )
+                    .label("this is a `Future[T]`, not a `bool`")
+                    .help("await it first: `await value`"),
+                ));
             }
             _ => {}
         }

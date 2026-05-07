@@ -207,10 +207,13 @@ impl<'a> BorrowChecker<'a> {
 
                 if let Err(msg) = state.set(*lhs, LocalState::Initialized) {
                     let name = self.local_name(*lhs);
-                    self.errors.push(SemanticError::Custom {
-                        msg: format!("{} `{}`", msg, name),
-                        span: stmt.span,
-                    });
+                    self.errors.push(self.borrow_error(
+                        "E0500",
+                        "conflicting assignment",
+                        stmt.span,
+                        format!("{msg} `{name}`"),
+                        "each value may only be used once after it is moved",
+                    ));
                 }
             }
             StatementKind::SetAttr(obj, field, val) => {
@@ -242,10 +245,13 @@ impl<'a> BorrowChecker<'a> {
                     && let Err(msg) = state.set(*local, LocalState::Moved)
                 {
                     let name = self.local_name(*local);
-                    self.errors.push(SemanticError::Custom {
-                        msg: format!("{} `{}` (lifetime error)", msg, name),
-                        span: stmt.span,
-                    });
+                    self.errors.push(self.borrow_error(
+                        "E0507",
+                        "value used after its lifetime ends",
+                        stmt.span,
+                        format!("{msg} `{name}`"),
+                        "restructure the code so the value is not used after it is dropped",
+                    ));
                 }
             }
             StatementKind::VectorStore(obj, idx, val) => {
@@ -272,10 +278,13 @@ impl<'a> BorrowChecker<'a> {
                     if let Some(fields) = self.struct_fields.get(struct_name) {
                         for field in fields {
                             if !state.self_fields.contains(field) {
-                                self.errors.push(SemanticError::Custom {
-                                    msg: format!("field `{}` of `{}` is not initialized by all exit paths of __init__", field, struct_name),
-                                    span: term.span,
-                                });
+                                self.errors.push(self.borrow_error(
+                                    "E0506",
+                                    format!("field `{field}` may be left uninitialized"),
+                                    term.span,
+                                    format!("`{struct_name}.{field}` is not set on every path through `__init__`"),
+                                    format!("assign `self.{field} = ...` before every `return`"),
+                                ));
                             }
                         }
                     }
@@ -333,18 +342,24 @@ impl<'a> BorrowChecker<'a> {
                 let s = state.get(*local);
                 if s != LocalState::Initialized {
                     let name = self.local_name(*local);
-                    self.errors.push(SemanticError::Custom {
-                        msg: format!("cannot borrow uninitialized or moved variable `{}`", name),
+                    self.errors.push(self.borrow_error(
+                        "E0502",
+                        format!("`{name}` is borrowed before it holds a value"),
                         span,
-                    });
+                        "borrow of possibly-uninitialized or moved value",
+                        format!("assign to `{name}` before borrowing it"),
+                    ));
                 }
                 let borrow = &mut state.borrows[local.0];
                 if borrow.1 {
                     let name = self.local_name(*local);
-                    self.errors.push(SemanticError::Custom {
-                        msg: format!("cannot borrow `{}` as immutable because it is also borrowed as mutable", name),
+                    self.errors.push(self.borrow_error(
+                        "E0503",
+                        format!("cannot borrow `{name}` as immutable"),
                         span,
-                    });
+                        "already borrowed as mutable here",
+                        "end the mutable borrow before taking a shared borrow",
+                    ));
                 }
                 borrow.0 += 1;
             }
@@ -352,32 +367,35 @@ impl<'a> BorrowChecker<'a> {
                 let s = state.get(*local);
                 if s != LocalState::Initialized {
                     let name = self.local_name(*local);
-                    self.errors.push(SemanticError::Custom {
-                        msg: format!(
-                            "cannot mutably borrow uninitialized or moved variable `{}`",
-                            name
-                        ),
+                    self.errors.push(self.borrow_error(
+                        "E0502",
+                        format!("`{name}` is mutably borrowed before it holds a value"),
                         span,
-                    });
+                        "mutable borrow of possibly-uninitialized or moved value",
+                        format!("assign to `{name}` before borrowing it"),
+                    ));
                 }
                 let decl = &self.func.locals[local.0];
                 if !decl.is_mut {
                     let name = self.local_name(*local);
-                    self.errors.push(SemanticError::Custom {
-                        msg: format!("cannot mutably borrow immutable variable `{}`", name),
+                    self.errors.push(self.borrow_error(
+                        "E0505",
+                        format!("cannot mutably borrow immutable variable `{name}`"),
                         span,
-                    });
+                        "this variable is not declared `mut`",
+                        format!("declare it mutable: `let mut {name} = ...`"),
+                    ));
                 }
                 let borrow = &mut state.borrows[local.0];
                 if borrow.0 > 0 || borrow.1 {
                     let name = self.local_name(*local);
-                    self.errors.push(SemanticError::Custom {
-                        msg: format!(
-                            "cannot borrow `{}` as mutable because it is already borrowed",
-                            name
-                        ),
+                    self.errors.push(self.borrow_error(
+                        "E0503",
+                        format!("cannot borrow `{name}` as mutable more than once"),
                         span,
-                    });
+                        "already borrowed here",
+                        "a value may have only one mutable borrow at a time",
+                    ));
                 }
                 borrow.1 = true;
             }
@@ -401,52 +419,66 @@ impl<'a> BorrowChecker<'a> {
             let borrow = state.borrows[local.0];
             if borrow.0 > 0 {
                 let name = self.local_name(*local);
-                self.errors.push(SemanticError::Custom {
-                    msg: format!("cannot mutate `{}` because it is borrowed", name),
+                self.errors.push(self.borrow_error(
+                    "E0504",
+                    format!("cannot mutate `{name}` while it is borrowed"),
                     span,
-                });
+                    "mutation occurs here",
+                    "let the outstanding borrow end before mutating the value",
+                ));
             }
         }
     }
 
     fn check_operand(&mut self, op: &Operand, state: &mut FlowState, span: Span) {
         match op {
-            Operand::Copy(local) | Operand::Move(local) => match state.get(*local) {
-                LocalState::Dead => {
-                    let is_unnamed = self
-                        .func
-                        .locals
-                        .get(local.0)
-                        .is_none_or(|d| d.name.is_none());
-                    if is_unnamed {
-                        return;
-                    }
-                    let name = self.local_name(*local);
-                    self.errors.push(SemanticError::Custom {
-                        msg: format!("use of possibly uninitialized variable `{}`", name),
-                        span,
-                    });
-                }
-                LocalState::Moved => {
-                    let name = self.local_name(*local);
-                    self.errors.push(SemanticError::Custom {
-                        msg: format!("use of moved variable `{}`", name),
-                        span,
-                    });
-                }
-                LocalState::Initialized => {
-                    if let Operand::Move(local) = op
-                        && self.is_move_type(&self.func.locals[local.0].ty)
-                        && let Err(msg) = state.set(*local, LocalState::Moved)
-                    {
+            Operand::Copy(local) | Operand::Move(local) => {
+                match state.get(*local) {
+                    LocalState::Dead => {
+                        let is_unnamed = self
+                            .func
+                            .locals
+                            .get(local.0)
+                            .is_none_or(|d| d.name.is_none());
+                        if is_unnamed {
+                            return;
+                        }
                         let name = self.local_name(*local);
-                        self.errors.push(SemanticError::Custom {
-                            msg: format!("{} `{}`", msg, name),
+                        self.errors.push(self.borrow_error(
+                            "E0502",
+                            format!("use of possibly-uninitialized variable `{name}`"),
                             span,
-                        });
+                            "used here before it is guaranteed to hold a value",
+                            format!("assign to `{name}` on every path that reaches this use"),
+                        ));
+                    }
+                    LocalState::Moved => {
+                        let name = self.local_name(*local);
+                        self.errors.push(self.borrow_error(
+                        "E0501",
+                        format!("use of moved value `{name}`"),
+                        span,
+                        "value used here after move",
+                        format!("clone `{name}` before the move, or restructure so it is not moved away"),
+                    ));
+                    }
+                    LocalState::Initialized => {
+                        if let Operand::Move(local) = op
+                            && self.is_move_type(&self.func.locals[local.0].ty)
+                            && let Err(msg) = state.set(*local, LocalState::Moved)
+                        {
+                            let name = self.local_name(*local);
+                            self.errors.push(self.borrow_error(
+                                "E0501",
+                                "conflicting move",
+                                span,
+                                format!("{msg} `{name}`"),
+                                "a value cannot be moved more than once",
+                            ));
+                        }
                     }
                 }
-            },
+            }
             Operand::Constant(_) => {}
         }
     }
@@ -482,6 +514,23 @@ impl<'a> BorrowChecker<'a> {
 
     fn is_move_type(&self, ty: &crate::semantic::types::Type) -> bool {
         ty.is_move_type()
+    }
+
+    /// Build a borrow-check diagnostic anchored at `span`. Centralizes the
+    /// `code`/`headline`/`label`/`help` shape so every violation reads the same.
+    fn borrow_error(
+        &self,
+        code: &str,
+        headline: impl Into<String>,
+        span: Span,
+        label: impl Into<String>,
+        help: impl Into<String>,
+    ) -> SemanticError {
+        SemanticError::rich(
+            crate::compile::errors::Diagnostic::error(code, headline, span)
+                .label(label)
+                .help(help),
+        )
     }
 }
 
