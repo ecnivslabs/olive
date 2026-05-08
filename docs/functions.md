@@ -7,7 +7,7 @@ Functions are first-class citizens in Olive. They are defined using the `fn` key
 A basic function definition looks like this:
 
 ```python
-fn greet(name: str) -> void:
+fn greet(name: str) -> None:
     print_str("Hello, " + name)
 ```
 

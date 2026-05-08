@@ -37,8 +37,7 @@ Olive is statically typed but features powerful type inference.
 - `float`: 64-bit floating-point numbers (`3.14`, `-0.5`).
 - `str`: UTF-8 encoded strings (`"Hello"`).
 - `bool`: Boolean values (`True`, `False`).
-- `void`: Represents the absence of a value.
-- `Null`: Represents a null reference.
+- `None`: Represents the absence of a value.
 
 ### Collection Types
 

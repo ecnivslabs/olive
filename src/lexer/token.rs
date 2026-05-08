@@ -11,6 +11,7 @@ pub enum TokenKind {
     Let,
     If,
     Else,
+    Elif,
     While,
     For,
     In,

@@ -33,8 +33,6 @@ pub enum Type {
     Any,
     // "Never" type for unreachable paths
     Never,
-    // Void return type (no value)
-    Void,
 }
 
 impl Type {
@@ -59,7 +57,7 @@ impl Type {
     /// Returns true if this type has move semantics (heap allocated or complex).
     pub fn is_move_type(&self) -> bool {
         match self {
-            Type::Int | Type::Float | Type::Bool | Type::Null | Type::Void | Type::Never => false,
+            Type::Int | Type::Float | Type::Bool | Type::Null | Type::Never => false,
             Type::Ref(_) | Type::MutRef(_) => false, // References are Copy
             _ => true,
         }
@@ -73,8 +71,7 @@ impl fmt::Display for Type {
             Type::Float => write!(f, "float"),
             Type::Str => write!(f, "str"),
             Type::Bool => write!(f, "bool"),
-            Type::Null => write!(f, "null"),
-            Type::Void => write!(f, "void"),
+            Type::Null => write!(f, "None"),
             Type::Class(name) => write!(f, "{}", name),
             Type::Fn(params, ret) => {
                 write!(f, "(")?;

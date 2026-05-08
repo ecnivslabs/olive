@@ -288,7 +288,7 @@ impl TypeChecker {
 
             StmtKind::Return(None) => {
                 if let Some(expected) = self.current_return_type.clone() {
-                    self.unify(&expected, &Type::Void, stmt.span);
+                    self.unify(&expected, &Type::Null, stmt.span);
                 }
             }
 
@@ -619,7 +619,6 @@ impl TypeChecker {
         match (t1, t2) {
             (Type::Any, _) | (_, Type::Any) => {}
             (Type::Never, _) | (_, Type::Never) => {}
-            (Type::Void, Type::Null) | (Type::Null, Type::Void) => {}
 
             (Type::Var(id), other) | (other, Type::Var(id)) => {
                 if self.occurs_check(id, &other) {
@@ -733,7 +732,7 @@ impl TypeChecker {
                 "float" => Type::Float,
                 "str" => Type::Str,
                 "bool" => Type::Bool,
-                "void" => Type::Void,
+                "None" => Type::Null,
                 "Any" => Type::Any,
                 "Never" => Type::Never,
                 _ => Type::Class(name.clone()),

@@ -239,18 +239,25 @@ impl Parser {
 
         loop {
             self.skip_newlines();
-            if self.peek().kind != TokenKind::Else {
-                break;
-            }
-            self.advance(); // else
-            self.skip_newlines();
-            if self.peek().kind == TokenKind::If {
-                self.advance(); // if
+            let kind = self.peek().kind.clone();
+            if kind == TokenKind::Elif {
+                self.advance();
                 let cond = self.parse_expr()?;
                 let body = self.parse_block()?;
                 elif_clauses.push((cond, body));
+            } else if kind == TokenKind::Else {
+                self.advance();
+                self.skip_newlines();
+                if self.peek().kind == TokenKind::If {
+                    self.advance();
+                    let cond = self.parse_expr()?;
+                    let body = self.parse_block()?;
+                    elif_clauses.push((cond, body));
+                } else {
+                    else_body = Some(self.parse_block()?);
+                    break;
+                }
             } else {
-                else_body = Some(self.parse_block()?);
                 break;
             }
         }
@@ -599,7 +606,7 @@ impl Parser {
                 self.advance();
                 Box::new(self.parse_type_expr()?)
             } else {
-                Box::new(TypeExpr::Named("void".to_string()))
+                Box::new(TypeExpr::Named("None".to_string()))
             };
             return Ok(TypeExpr::Fn { params, ret });
         }
