@@ -18,12 +18,12 @@ Currently, Olive is built from source. Ensure you have the [Rust toolchain](http
    ```
    For convenience, you can add the binary to your path:
    ```bash
-   cp target/release/olive /usr/local/bin/
+   cp target/release/pit /usr/local/bin/pit
    ```
 
 3. **Verify the installation**:
    ```bash
-   olive --help
+   pit --help
    ```
 
 ## Creating Your First Project
@@ -32,12 +32,12 @@ Olive features a built-in package manager that makes starting a new project effo
 
 1. **Initialize a new project**:
    ```bash
-   olive new my_app
+   pit new my_app
    cd my_app
    ```
 
 This creates a standard project structure:
-- `olive.toml`: Your project's configuration and metadata.
+- `pit.toml`: Your project's configuration and metadata.
 - `src/main.liv`: The entry point for your application.
 - `.gitignore`: Pre-configured for Olive development.
 
@@ -45,7 +45,7 @@ This creates a standard project structure:
 
 Inside your project directory, simply run:
 ```bash
-olive run
+pit run
 ```
 Olive will automatically find your entry point, perform optimizations, run the borrow checker, and execute the code via the JIT engine.
 
@@ -62,12 +62,12 @@ main()
 
 ### Advanced CLI Options
 
-The `olive` toolchain provides powerful flags for developers:
+The `pit` toolchain provides powerful flags for developers:
 
-- `olive build --time`: Build the project and show detailed timing reports for optimization, borrow checking, and codegen.
-- `olive test`: Automatically find and run all functions decorated with `@test`.
-- `olive format`: Format all files in your project to match the standard Olive style.
-- `olive run --emit-mir`: View the Middle Intermediate Representation of your code to see the optimizer in action.
+- `pit build --time`: Build the project and show detailed timing reports for optimization, borrow checking, and codegen.
+- `pit test`: Automatically find and run all functions decorated with `@test`.
+- `pit format`: Format all files in your project to match the standard Olive style.
+- `pit run --emit-mir`: View the Middle Intermediate Representation of your code to see the optimizer in action.
 
 ## Core Concepts
 

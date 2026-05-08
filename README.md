@@ -21,15 +21,15 @@ Olive is a modern, high-performance programming language designed for developers
 Whether you are building low-latency systems, complex backends, or high-performance tools, Olive provides a safe and efficient environment where your code runs as fast as it reads.
 
 
-## The `olive` Toolchain
+## The `pit` Toolchain
 
 Olive comes with a built-in package manager and build tool designed to streamline your workflow:
 
-- `olive new <name>`: Scaffolds a new project with a standard structure and configuration.
-- `olive run`: Builds and executes your project instantly.
-- `olive build`: Compiles your project and performs deep semantic checks.
-- `olive test`: Runs your test suite, discovering `@test` functions across your codebase.
-- `olive format`: Keeps your code clean and consistent with an automated formatter.
+- `pit new <name>`: Scaffolds a new project with a standard structure and configuration.
+- `pit run`: Builds and executes your project instantly.
+- `pit build`: Compiles your project and performs deep semantic checks.
+- `pit test`: Runs your test suite, discovering `@test` functions across your codebase.
+- `pit format`: Keeps your code clean and consistent with an automated formatter.
 
 ## High-Performance Optimizations
 

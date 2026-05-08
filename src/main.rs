@@ -36,7 +36,7 @@ fn default_entry() -> String {
 }
 
 #[derive(ClapParser, Debug)]
-#[command(name = "olive", version, about = "The Olive programming language toolchain", long_about = None)]
+#[command(name = "pit", version, about = "The Olive programming language toolchain", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -435,7 +435,7 @@ fn main() {
             };
             
             let toml = toml::to_string(&config).unwrap();
-            fs::write(path.join("olive.toml"), toml).unwrap();
+            fs::write(path.join("pit.toml"), toml).unwrap();
             
             let main_liv = "fn main():\n    print(\"Hello from Olive!\")\n\nmain()\n";
             fs::write(path.join("src/main.liv"), main_liv).unwrap();
@@ -446,9 +446,9 @@ fn main() {
             println!("\x1b[1;32mCreated\x1b[0m binary (application) `{}` package", name);
         }
         Commands::Build { time } => {
-            let config_path = Path::new("olive.toml");
+            let config_path = Path::new("pit.toml");
             if !config_path.exists() {
-                eprintln!("error: could not find `olive.toml` in current directory");
+                eprintln!("error: could not find `pit.toml` in current directory");
                 process::exit(1);
             }
             
@@ -461,9 +461,9 @@ fn main() {
             if let Some(f) = file {
                 compile_and_run(&f, true, time, emit_ast, emit_mir);
             } else {
-                let config_path = Path::new("olive.toml");
+                let config_path = Path::new("pit.toml");
                 if !config_path.exists() {
-                    eprintln!("error: no file specified and no `olive.toml` found");
+                    eprintln!("error: no file specified and no `pit.toml` found");
                     process::exit(1);
                 }
                 
@@ -482,19 +482,19 @@ fn main() {
                     format_file(&f);
                 }
             } else {
-                let config_path = Path::new("olive.toml");
+                let config_path = Path::new("pit.toml");
                 if config_path.exists() {
                      walk_and_format(Path::new("."));
                 } else {
-                    eprintln!("error: no file specified and no `olive.toml` found");
+                    eprintln!("error: no file specified and no `pit.toml` found");
                     process::exit(1);
                 }
             }
         }
         Commands::Test { time } => {
-            let config_path = Path::new("olive.toml");
+            let config_path = Path::new("pit.toml");
             if !config_path.exists() {
-                eprintln!("error: could not find `olive.toml` in current directory");
+                eprintln!("error: could not find `pit.toml` in current directory");
                 process::exit(1);
             }
             

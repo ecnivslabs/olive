@@ -1,8 +1,8 @@
 # Olive Documentation
 
-Welcome to the official documentation for the Olive programming language. 
+Welcome to the official documentation for the Olive programming language.
 
-Olive is a multi-paradigm language that combines the developer-friendly syntax of Python with the memory safety and performance of Rust. Whether you are a systems programmer looking for more productivity or a Python developer needing more speed and safety, Olive has something for you.
+Olive is a systems-oriented language designed for modern developers who value both expressive clarity and high-performance safety. It provides a unique environment where your code is as readable as it is efficient, powered by a state-of-the-art compilation pipeline.
 
 ## Documentation Sections
 
