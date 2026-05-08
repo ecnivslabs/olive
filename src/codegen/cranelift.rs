@@ -347,6 +347,22 @@ impl<'a> CraneliftCodegen<'a> {
                 let local_func = module.declare_func_in_func(*set_id, builder.func);
                 builder.ins().call(local_func, &[o, attr_val, v]);
             }
+            StatementKind::SetIndex(obj, idx, val_op) => {
+                let o = Self::translate_operand(builder, obj, vars, string_pool);
+                let i = Self::translate_operand(builder, idx, vars, string_pool);
+                let v = Self::translate_operand(builder, val_op, vars, string_pool);
+                
+                let len = builder.ins().load(types::I64, MemFlags::new().with_readonly(), o, 0);
+                let cmp_ge_len = builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, i, len);
+                builder.ins().trapnz(cmp_ge_len, TrapCode::unwrap_user(2));
+
+                let one = builder.ins().iconst(types::I64, 1);
+                let idx_plus_one = builder.ins().iadd(i, one);
+                let byte_offset = builder.ins().ishl_imm(idx_plus_one, 3);
+                let elem_ptr = builder.ins().iadd(o, byte_offset);
+                
+                builder.ins().store(MemFlags::new(), v, elem_ptr, 0);
+            }
             _ => {}
         }
     }
@@ -555,10 +571,17 @@ impl<'a> CraneliftCodegen<'a> {
             Rvalue::GetIndex(obj, idx) => {
                 let o = Self::translate_operand(builder, obj, vars, string_pool);
                 let i = Self::translate_operand(builder, idx, vars, string_pool);
-                let get_id = func_ids.get("__olive_list_get").unwrap();
-                let local_func = module.declare_func_in_func(*get_id, builder.func);
-                let inst = builder.ins().call(local_func, &[o, i]);
-                builder.inst_results(inst)[0]
+                
+                let len = builder.ins().load(types::I64, MemFlags::new().with_readonly(), o, 0);
+                let cmp_ge_len = builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, i, len);
+                builder.ins().trapnz(cmp_ge_len, TrapCode::unwrap_user(2));
+
+                let one = builder.ins().iconst(types::I64, 1);
+                let idx_plus_one = builder.ins().iadd(i, one);
+                let byte_offset = builder.ins().ishl_imm(idx_plus_one, 3);
+                let elem_ptr = builder.ins().iadd(o, byte_offset);
+                
+                builder.ins().load(types::I64, MemFlags::new(), elem_ptr, 0)
             }
             Rvalue::Aggregate(_, ops) => {
                 let count = builder.ins().iconst(types::I64, ops.len() as i64);
@@ -567,12 +590,11 @@ impl<'a> CraneliftCodegen<'a> {
                 let inst = builder.ins().call(new_func, &[count]);
                 let list_ptr = builder.inst_results(inst)[0];
 
-                let set_id = func_ids.get("__olive_list_set").unwrap();
-                let set_func = module.declare_func_in_func(*set_id, builder.func);
                 for (idx, op) in ops.iter().enumerate() {
                     let val = Self::translate_operand(builder, op, vars, string_pool);
-                    let idx_val = builder.ins().iconst(types::I64, idx as i64);
-                    builder.ins().call(set_func, &[list_ptr, idx_val, val]);
+                    let byte_offset = builder.ins().iconst(types::I64, ((idx + 1) * 8) as i64);
+                    let elem_ptr = builder.ins().iadd(list_ptr, byte_offset);
+                    builder.ins().store(MemFlags::new(), val, elem_ptr, 0);
                 }
                 list_ptr
             }
@@ -608,7 +630,6 @@ impl<'a> CraneliftCodegen<'a> {
                 }
                 _ => builder.ins().iconst(types::I64, 0),
             },
-            _ => builder.ins().iconst(types::I64, 0),
         }
     }
 
@@ -750,25 +771,34 @@ extern "C" fn olive_str_eq(l: i64, r: i64) -> i64 {
 }
 
 extern "C" fn olive_list_new(len: i64) -> i64 {
-    let v: Vec<i64> = vec![0; len as usize];
-    Box::into_raw(Box::new(v)) as i64
+    let mut v: Vec<i64> = vec![0; (len + 1) as usize];
+    v[0] = len;
+    let ptr = v.as_mut_ptr();
+    std::mem::forget(v);
+    ptr as i64
 }
 
 extern "C" fn olive_list_set(list: i64, index: i64, val: i64) {
     if list == 0 { return; }
-    let v = unsafe { &mut *(list as *mut Vec<i64>) };
-    if (index as usize) < v.len() {
-        v[index as usize] = val;
+    unsafe {
+        let ptr = list as *mut i64;
+        let len = *ptr;
+        if index >= 0 && index < len {
+            *ptr.add((index + 1) as usize) = val;
+        }
     }
 }
 
 extern "C" fn olive_list_get(list: i64, index: i64) -> i64 {
     if list == 0 { return 0; }
-    let v = unsafe { &*(list as *const Vec<i64>) };
-    if (index as usize) < v.len() {
-        v[index as usize]
-    } else {
-        0
+    unsafe {
+        let ptr = list as *const i64;
+        let len = *ptr;
+        if index >= 0 && index < len {
+            *ptr.add((index + 1) as usize)
+        } else {
+            0
+        }
     }
 }
 

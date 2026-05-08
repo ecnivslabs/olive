@@ -32,6 +32,7 @@ impl TypeChecker {
             ("bool", Type::Fn(vec![Type::Any], Box::new(Type::Bool))),
             ("type", Type::Fn(vec![Type::Any], Box::new(Type::Str))),
             ("len", Type::Fn(vec![Type::Any], Box::new(Type::Int))),
+            ("list_new", Type::Fn(vec![Type::Int], Box::new(Type::List(Box::new(Type::Any))))),
         ];
 
         for (name, ty) in builtins {

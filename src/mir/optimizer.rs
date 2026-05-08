@@ -19,12 +19,100 @@ impl Inliner {
             let mut changed = true;
             while changed {
                 changed = false;
+                changed |= self.global_constant_propagation(func);
                 changed |= self.constant_folding(func);
                 changed |= self.peephole_optimize(func);
                 changed |= self.common_subexpression_elimination(func);
                 changed |= self.dead_code_elimination(func);
             }
         }
+    }
+
+    fn global_constant_propagation(&self, func: &mut MirFunction) -> bool {
+        let mut assign_counts: HashMap<Local, usize> = HashMap::default();
+        let mut constant_assignments: HashMap<Local, Constant> = HashMap::default();
+        
+        for bb in &func.basic_blocks {
+            for stmt in &bb.statements {
+                if let StatementKind::Assign(dest, rval) = &stmt.kind {
+                    *assign_counts.entry(*dest).or_insert(0) += 1;
+                    if let Rvalue::Use(Operand::Constant(c)) = rval {
+                        constant_assignments.insert(*dest, c.clone());
+                    }
+                }
+            }
+        }
+        
+        let mut safe_constants: HashMap<Local, Constant> = HashMap::default();
+        for (local, count) in assign_counts {
+            if count == 1 {
+                if let Some(c) = constant_assignments.get(&local) {
+                    safe_constants.insert(local, c.clone());
+                }
+            }
+        }
+        
+        if safe_constants.is_empty() { return false; }
+        
+        let mut changed = false;
+        for bb in &mut func.basic_blocks {
+            for stmt in &mut bb.statements {
+                if let StatementKind::Assign(_, rval) = &mut stmt.kind {
+                    changed |= self.propagate_constants_in_rvalue(rval, &safe_constants);
+                } else if let StatementKind::SetIndex(obj, idx, val) = &mut stmt.kind {
+                    changed |= self.propagate_constants_in_operand(obj, &safe_constants);
+                    changed |= self.propagate_constants_in_operand(idx, &safe_constants);
+                    changed |= self.propagate_constants_in_operand(val, &safe_constants);
+                } else if let StatementKind::SetAttr(obj, _, val) = &mut stmt.kind {
+                    changed |= self.propagate_constants_in_operand(obj, &safe_constants);
+                    changed |= self.propagate_constants_in_operand(val, &safe_constants);
+                }
+            }
+            if let Some(term) = &mut bb.terminator {
+                if let TerminatorKind::SwitchInt { discr, .. } = &mut term.kind {
+                    changed |= self.propagate_constants_in_operand(discr, &safe_constants);
+                }
+            }
+        }
+        changed
+    }
+
+    fn propagate_constants_in_rvalue(&self, rval: &mut Rvalue, map: &HashMap<Local, Constant>) -> bool {
+        match rval {
+            Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::GetAttr(op, _) => {
+                self.propagate_constants_in_operand(op, map)
+            }
+            Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) => {
+                let mut changed = self.propagate_constants_in_operand(l, map);
+                changed |= self.propagate_constants_in_operand(r, map);
+                changed
+            }
+            Rvalue::Call { func, args } => {
+                let mut changed = self.propagate_constants_in_operand(func, map);
+                for arg in args {
+                    changed |= self.propagate_constants_in_operand(arg, map);
+                }
+                changed
+            }
+            Rvalue::Aggregate(_, ops) => {
+                let mut changed = false;
+                for op in ops {
+                    changed |= self.propagate_constants_in_operand(op, map);
+                }
+                changed
+            }
+            _ => false,
+        }
+    }
+
+    fn propagate_constants_in_operand(&self, op: &mut Operand, map: &HashMap<Local, Constant>) -> bool {
+        if let Operand::Copy(l) | Operand::Move(l) = op {
+            if let Some(c) = map.get(l) {
+                *op = Operand::Constant(c.clone());
+                return true;
+            }
+        }
+        false
     }
 
     fn constant_folding(&self, func: &mut MirFunction) -> bool {
@@ -35,20 +123,42 @@ impl Inliner {
                     if let Rvalue::BinaryOp(op, Operand::Constant(Constant::Int(a)), Operand::Constant(Constant::Int(b))) = rval {
                         use crate::parser::BinOp::*;
                         let res = match op {
-                            Add => Some((*a).wrapping_add(*b)),
-                            Sub => Some((*a).wrapping_sub(*b)),
-                            Mul => Some((*a).wrapping_mul(*b)),
-                            Div | FloorDiv => if *b != 0 { Some(*a / *b) } else { None },
-                            Mod => if *b != 0 { Some(*a % *b) } else { None },
-                            Eq => Some(if *a == *b { 1 } else { 0 }),
-                            Lt => Some(if *a < *b { 1 } else { 0 }),
-                            LtEq => Some(if *a <= *b { 1 } else { 0 }),
-                            Gt => Some(if *a > *b { 1 } else { 0 }),
-                            GtEq => Some(if *a >= *b { 1 } else { 0 }),
+                            Add => Some(Constant::Int((*a).wrapping_add(*b))),
+                            Sub => Some(Constant::Int((*a).wrapping_sub(*b))),
+                            Mul => Some(Constant::Int((*a).wrapping_mul(*b))),
+                            Div | FloorDiv => if *b != 0 { Some(Constant::Int(*a / *b)) } else { None },
+                            Mod => if *b != 0 { Some(Constant::Int(*a % *b)) } else { None },
+                            Eq => Some(Constant::Bool(*a == *b)),
+                            NotEq => Some(Constant::Bool(*a != *b)),
+                            Lt => Some(Constant::Bool(*a < *b)),
+                            LtEq => Some(Constant::Bool(*a <= *b)),
+                            Gt => Some(Constant::Bool(*a > *b)),
+                            GtEq => Some(Constant::Bool(*a >= *b)),
                             _ => None,
                         };
                         if let Some(val) = res {
-                            *rval = Rvalue::Use(Operand::Constant(Constant::Int(val)));
+                            *rval = Rvalue::Use(Operand::Constant(val));
+                            changed = true;
+                        }
+                    } else if let Rvalue::BinaryOp(op, Operand::Constant(Constant::Float(a_bits)), Operand::Constant(Constant::Float(b_bits))) = rval {
+                        let a = f64::from_bits(*a_bits);
+                        let b = f64::from_bits(*b_bits);
+                        use crate::parser::BinOp::*;
+                        let res = match op {
+                            Add => Some(Constant::Float((a + b).to_bits())),
+                            Sub => Some(Constant::Float((a - b).to_bits())),
+                            Mul => Some(Constant::Float((a * b).to_bits())),
+                            Div => Some(Constant::Float((a / b).to_bits())),
+                            Eq => Some(Constant::Bool(a == b)),
+                            NotEq => Some(Constant::Bool(a != b)),
+                            Lt => Some(Constant::Bool(a < b)),
+                            LtEq => Some(Constant::Bool(a <= b)),
+                            Gt => Some(Constant::Bool(a > b)),
+                            GtEq => Some(Constant::Bool(a >= b)),
+                            _ => None,
+                        };
+                        if let Some(val) = res {
+                            *rval = Rvalue::Use(Operand::Constant(val));
                             changed = true;
                         }
                     }
@@ -78,6 +188,40 @@ impl Inliner {
                         Rvalue::BinaryOp(Mul, _, op @ Operand::Constant(Constant::Int(0))) |
                         Rvalue::BinaryOp(Mul, op @ Operand::Constant(Constant::Int(0)), _) => {
                             *rval = Rvalue::Use(op.clone());
+                            changed = true;
+                        }
+                        Rvalue::BinaryOp(Div, l, r) | Rvalue::BinaryOp(FloorDiv, l, r) if l == r => {
+                            *rval = Rvalue::Use(Operand::Constant(Constant::Int(1)));
+                            changed = true;
+                        }
+                        Rvalue::BinaryOp(Mul, op, Operand::Constant(Constant::Int(2))) |
+                        Rvalue::BinaryOp(Mul, Operand::Constant(Constant::Int(2)), op) => {
+                            // x * 2 -> x + x (often faster or enables other optimizations)
+                            *rval = Rvalue::BinaryOp(Add, op.clone(), op.clone());
+                            changed = true;
+                        }
+                        Rvalue::BinaryOp(Eq, l, r) if l == r => {
+                            *rval = Rvalue::Use(Operand::Constant(Constant::Bool(true)));
+                            changed = true;
+                        }
+                        Rvalue::BinaryOp(NotEq, l, r) if l == r => {
+                            *rval = Rvalue::Use(Operand::Constant(Constant::Bool(false)));
+                            changed = true;
+                        }
+                        Rvalue::BinaryOp(Lt, l, r) if l == r => {
+                            *rval = Rvalue::Use(Operand::Constant(Constant::Bool(false)));
+                            changed = true;
+                        }
+                        Rvalue::BinaryOp(Gt, l, r) if l == r => {
+                            *rval = Rvalue::Use(Operand::Constant(Constant::Bool(false)));
+                            changed = true;
+                        }
+                        Rvalue::BinaryOp(LtEq, l, r) if l == r => {
+                            *rval = Rvalue::Use(Operand::Constant(Constant::Bool(true)));
+                            changed = true;
+                        }
+                        Rvalue::BinaryOp(GtEq, l, r) if l == r => {
+                            *rval = Rvalue::Use(Operand::Constant(Constant::Bool(true)));
                             changed = true;
                         }
                         _ => {}
@@ -120,6 +264,18 @@ impl Inliner {
                     available_expressions.retain(|(expr, _)| {
                         !self.uses_local(expr, *dest)
                     });
+
+                    // Any assignment might invalidate heap-based expressions if we don't track aliasing.
+                    // For now, let's be conservative: if we assign a local that is used in a GetIndex,
+                    // we already handle it via uses_local.
+                } else if matches!(stmt.kind, StatementKind::SetIndex(..) | StatementKind::SetAttr(..)) {
+                    // Invalidate all heap-based expressions.
+                    available_expressions.retain(|(expr, _)| {
+                        !matches!(expr, Rvalue::GetIndex(..) | Rvalue::GetAttr(..))
+                    });
+                } else if let StatementKind::Assign(_, Rvalue::Call { .. }) = &stmt.kind {
+                    // Calls can modify anything.
+                    available_expressions.clear();
                 }
             }
         }
@@ -213,104 +369,7 @@ impl Inliner {
         }
     }
 
-    fn copy_propagation(&self, func: &mut MirFunction) -> bool {
-        let mut copies: HashMap<Local, Local> = HashMap::default();
-        for bb in &func.basic_blocks {
-            for stmt in &bb.statements {
-                if let StatementKind::Assign(dest, Rvalue::Use(Operand::Copy(src) | Operand::Move(src))) = &stmt.kind {
-                    if dest != src {
-                        copies.insert(*dest, *src);
-                    }
-                }
-            }
-        }
 
-        if copies.is_empty() { return false; }
-
-        let mut changed = false;
-        for bb in &mut func.basic_blocks {
-            for stmt in &mut bb.statements {
-                changed |= self.remap_statement_locals(stmt, &copies);
-            }
-            if let Some(term) = &mut bb.terminator {
-                changed |= self.remap_terminator_locals(term, &copies);
-            }
-        }
-        changed
-    }
-
-    fn remap_statement_locals(&self, stmt: &mut Statement, map: &HashMap<Local, Local>) -> bool {
-        match &mut stmt.kind {
-            StatementKind::Assign(_l, rval) => {
-                // Remap the rvalue.
-                self.remap_rvalue_locals(rval, map)
-            }
-            StatementKind::SetAttr(obj, _, val) => {
-                let mut changed = self.remap_operand_locals(obj, map);
-                changed |= self.remap_operand_locals(val, map);
-                changed
-            }
-            StatementKind::SetIndex(obj, idx, val) => {
-                let mut changed = self.remap_operand_locals(obj, map);
-                changed |= self.remap_operand_locals(idx, map);
-                changed |= self.remap_operand_locals(val, map);
-                changed
-            }
-            _ => false,
-        }
-    }
-
-    fn remap_terminator_locals(&self, term: &mut Terminator, map: &HashMap<Local, Local>) -> bool {
-        match &mut term.kind {
-            TerminatorKind::SwitchInt { discr, .. } => {
-                self.remap_operand_locals(discr, map)
-            }
-            _ => false,
-        }
-    }
-
-    fn remap_rvalue_locals(&self, rval: &mut Rvalue, map: &HashMap<Local, Local>) -> bool {
-        match rval {
-            Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::GetAttr(op, _) => {
-                self.remap_operand_locals(op, map)
-            }
-            Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) => {
-                let mut changed = self.remap_operand_locals(l, map);
-                changed |= self.remap_operand_locals(r, map);
-                changed
-            }
-            Rvalue::Call { func, args } => {
-                let mut changed = self.remap_operand_locals(func, map);
-                for arg in args {
-                    changed |= self.remap_operand_locals(arg, map);
-                }
-                changed
-            }
-            Rvalue::Aggregate(_, ops) => {
-                let mut changed = false;
-                for op in ops {
-                    changed |= self.remap_operand_locals(op, map);
-                }
-                changed
-            }
-            _ => false,
-        }
-    }
-
-    fn remap_operand_locals(&self, op: &mut Operand, map: &HashMap<Local, Local>) -> bool {
-        match op {
-            Operand::Copy(l) | Operand::Move(l) => {
-                if let Some(new_l) = map.get(l) {
-                    if *l != *new_l {
-                        *l = *new_l;
-                        return true;
-                    }
-                }
-            }
-            _ => {}
-        }
-        false
-    }
 
     fn inline_function(&self, func: &mut MirFunction, fn_map: &HashMap<String, MirFunction>, max_depth: usize) {
         let mut changed = true;
@@ -325,7 +384,7 @@ impl Inliner {
                     let bb = &func.basic_blocks[i];
                     for (stmt_idx, stmt) in bb.statements.iter().enumerate() {
                         if let StatementKind::Assign(_, Rvalue::Call { func: Operand::Constant(Constant::Function(name)), args }) = &stmt.kind {
-                            if name == &func.name { continue; }
+                            if name == &func.name && current_depth >= 1 { continue; }
                             if let Some(target_fn) = fn_map.get(name) {
                                 // Inline small, non-recursive functions.
                                 if target_fn.basic_blocks.len() < 100 {

@@ -340,11 +340,11 @@ impl<'a> MirBuilder<'a> {
                 }
             }
             ExprKind::Attr { obj, attr } => {
-                let obj_op = self.lower_expr(obj);
+                let obj_op = self.lower_expr_as_copy(obj);
                 self.push_statement(StatementKind::SetAttr(obj_op, attr.clone(), rval), target.span);
             }
             ExprKind::Index { obj, index } => {
-                let obj_op = self.lower_expr(obj);
+                let obj_op = self.lower_expr_as_copy(obj);
                 let idx_op = self.lower_expr(index);
                 self.push_statement(StatementKind::SetIndex(obj_op, idx_op, rval), target.span);
             }
@@ -897,6 +897,23 @@ impl<'a> MirBuilder<'a> {
                             return Operand::Copy(tmp);
                         }
                 }
+                if let ExprKind::Identifier(name) = &callee.kind
+                    && name == "list_new" && !args.is_empty() {
+                        let arg_expr = match &args[0] {
+                            CallArg::Positional(e) | CallArg::Keyword(_, e)
+                            | CallArg::Splat(e) | CallArg::KwSplat(e) => e,
+                        };
+                        let arg_op = self.lower_expr(arg_expr);
+                        let tmp = self.new_local(Type::List(Box::new(Type::Any)), None, false);
+                        self.push_statement(StatementKind::Assign(
+                            tmp,
+                            Rvalue::Call {
+                                func: Operand::Constant(Constant::Function("__olive_list_new".to_string())),
+                                args: vec![arg_op],
+                            },
+                        ), expr.span);
+                        return Operand::Copy(tmp);
+                }
 
                 // If the callee is an attribute access, it's a method call.
                 if let ExprKind::Attr { obj, attr } = &callee.kind {
@@ -1030,7 +1047,7 @@ impl<'a> MirBuilder<'a> {
             }
 
             ExprKind::Attr { obj, attr } => {
-                let o = self.lower_expr(obj);
+                let o = self.lower_expr_as_copy(obj);
                 let tmp = self.new_tmp_for_expr(expr);
                 self.push_statement(StatementKind::Assign(
                     tmp,
@@ -1047,7 +1064,7 @@ impl<'a> MirBuilder<'a> {
                 }
 
                 if current_obj_ty == Type::Str {
-                    let o = self.lower_expr(obj);
+                    let o = self.lower_expr_as_copy(obj);
                     let i = self.lower_expr(index);
                     let tmp = self.new_local(Type::Any, None, false);
                     self.push_statement(StatementKind::Assign(
@@ -1059,7 +1076,7 @@ impl<'a> MirBuilder<'a> {
                     ), expr.span);
                     return Operand::Copy(tmp);
                 }
-                let o = self.lower_expr(obj);
+                let o = self.lower_expr_as_copy(obj);
                 let i = self.lower_expr(index);
                 let tmp = self.new_tmp_for_expr(expr);
                 self.push_statement(StatementKind::Assign(
@@ -1088,6 +1105,13 @@ impl<'a> MirBuilder<'a> {
                 self.lower_expr(key);
                 self.lower_expr(value)
             }
+        }
+    }
+    fn lower_expr_as_copy(&mut self, expr: &Expr) -> Operand {
+        let op = self.lower_expr(expr);
+        match op {
+            Operand::Move(l) => Operand::Copy(l),
+            _ => op,
         }
     }
 }
