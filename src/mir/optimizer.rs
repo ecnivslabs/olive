@@ -92,6 +92,7 @@ impl Inliner {
     fn common_subexpression_elimination(&self, func: &mut MirFunction) -> bool {
         let mut changed = false;
         for bb in &mut func.basic_blocks {
+            let mut available_expressions: Vec<(Rvalue, Local)> = Vec::new();
             // Mapping from Rvalue to the local that holds its result.
             for stmt in &mut bb.statements {
                 if let StatementKind::Assign(dest, rval) = &mut stmt.kind {
@@ -434,6 +435,7 @@ impl Inliner {
                         }
                         *otherwise = *callee_bb_map.get(otherwise).unwrap();
                     }
+                    TerminatorKind::Return => {
                         // Replace return with goto tail.
                         if let Some(dest) = ret_local {
                             // Assign callee's _0 (return value) to caller's destination.

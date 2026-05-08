@@ -29,11 +29,22 @@ impl<'a> CraneliftCodegen<'a> {
         
         // Runtime symbols.
         builder.symbol("__olive_print_int", olive_print as *const u8);
+        builder.symbol("__olive_print_float", olive_print_float as *const u8);
         builder.symbol("__olive_print_str", olive_print_str as *const u8);
         builder.symbol("__olive_str", olive_str as *const u8);
+        builder.symbol("__olive_int", olive_int as *const u8);
+        builder.symbol("__olive_float", olive_float as *const u8);
+        builder.symbol("__olive_bool", olive_bool as *const u8);
+        builder.symbol("__olive_bool_from_float", olive_bool_from_float as *const u8);
+        builder.symbol("__olive_float_to_str", olive_float_to_str as *const u8);
+        builder.symbol("__olive_float_to_int", olive_float_to_int as *const u8);
+        builder.symbol("__olive_int_to_float", olive_int_to_float as *const u8);
+        builder.symbol("__olive_str_to_int", olive_str_to_int as *const u8);
+        builder.symbol("__olive_str_to_float", olive_str_to_float as *const u8);
         builder.symbol("__olive_str_concat", olive_str_concat as *const u8);
         builder.symbol("__olive_free", olive_free as *const u8);
         builder.symbol("__olive_copy", olive_copy as *const u8);
+        builder.symbol("__olive_copy_float", olive_copy_float as *const u8);
         builder.symbol("__olive_str_eq", olive_str_eq as *const u8);
         builder.symbol("__olive_list_new", olive_list_new as *const u8);
         builder.symbol("__olive_list_set", olive_list_set as *const u8);
@@ -60,14 +71,54 @@ impl<'a> CraneliftCodegen<'a> {
     }
 
     pub fn generate(&mut self) {
-        let mut print_sig = self.module.make_signature();
-        print_sig.params.push(AbiParam::new(types::I64));
-        print_sig.returns.push(AbiParam::new(types::I64));
-        
-        for name in &["__olive_print_int", "__olive_print_str", "__olive_str", "__olive_copy", "__olive_list_new", "__olive_str_len"] {
-            let id = self.module
-                .declare_function(name, Linkage::Import, &print_sig)
-                .unwrap();
+        let mut int_sig = self.module.make_signature();
+        int_sig.params.push(AbiParam::new(types::I64));
+        int_sig.returns.push(AbiParam::new(types::I64));
+
+        let mut float_param_only_sig = self.module.make_signature();
+        float_param_only_sig.params.push(AbiParam::new(types::F64));
+        float_param_only_sig.returns.push(AbiParam::new(types::I64));
+
+        let mut float_ret_sig = self.module.make_signature();
+        float_ret_sig.params.push(AbiParam::new(types::I64));
+        float_ret_sig.returns.push(AbiParam::new(types::F64));
+
+        let mut float_param_sig = self.module.make_signature();
+        float_param_sig.params.push(AbiParam::new(types::F64));
+        float_param_sig.returns.push(AbiParam::new(types::I64));
+
+        let mut int_to_float_sig = self.module.make_signature();
+        int_to_float_sig.params.push(AbiParam::new(types::I64));
+        int_to_float_sig.returns.push(AbiParam::new(types::F64));
+
+        let mut float_to_float_sig = self.module.make_signature();
+        float_to_float_sig.params.push(AbiParam::new(types::F64));
+        float_to_float_sig.returns.push(AbiParam::new(types::F64));
+
+        let int_fns = ["__olive_print_int", "__olive_print_str", "__olive_str", "__olive_int", "__olive_bool", "__olive_str_to_int", "__olive_copy", "__olive_list_new", "__olive_str_len"];
+        let float_param_only_fns = ["__olive_print_float", "__olive_float_to_str", "__olive_float_to_int", "__olive_bool_from_float"];
+        let float_ret_fns = ["__olive_str_to_float"];
+        let int_to_float_fns = ["__olive_int_to_float", "__olive_float"];
+        let float_to_float_fns = ["__olive_copy_float"];
+
+        for name in &int_fns {
+            let id = self.module.declare_function(name, Linkage::Import, &int_sig).unwrap();
+            self.func_ids.insert(name.to_string(), id);
+        }
+        for name in &float_param_only_fns {
+            let id = self.module.declare_function(name, Linkage::Import, &float_param_only_sig).unwrap();
+            self.func_ids.insert(name.to_string(), id);
+        }
+        for name in &float_ret_fns {
+            let id = self.module.declare_function(name, Linkage::Import, &float_ret_sig).unwrap();
+            self.func_ids.insert(name.to_string(), id);
+        }
+        for name in &int_to_float_fns {
+            let id = self.module.declare_function(name, Linkage::Import, &int_to_float_sig).unwrap();
+            self.func_ids.insert(name.to_string(), id);
+        }
+        for name in float_to_float_fns {
+            let id = self.module.declare_function(name, Linkage::Import, &float_to_float_sig).unwrap();
             self.func_ids.insert(name.to_string(), id);
         }
 
@@ -309,6 +360,7 @@ impl<'a> CraneliftCodegen<'a> {
                         let mut arg_type = OliveType::Int;
                         match &args[0] {
                             Operand::Constant(Constant::Str(_)) => arg_type = OliveType::Str,
+                            Operand::Constant(Constant::Float(_)) => arg_type = OliveType::Float,
                             Operand::Copy(l) | Operand::Move(l) => {
                                 arg_type = func_mir.locals[l.0].ty.clone();
                             }
@@ -322,14 +374,17 @@ impl<'a> CraneliftCodegen<'a> {
 
                         let target = if *current_ty == OliveType::Str {
                             "__olive_print_str"
+                        } else if *current_ty == OliveType::Float {
+                            "__olive_print_float"
                         } else {
                             "__olive_print_int"
                         };
                         (target, call_args.clone())
-                    } else if name == "str" && !args.is_empty() {
+                    } else if (name == "str" || name == "int" || name == "float" || name == "bool") && !args.is_empty() {
                         let mut arg_type = OliveType::Int;
                         match &args[0] {
                             Operand::Constant(Constant::Str(_)) => arg_type = OliveType::Str,
+                            Operand::Constant(Constant::Float(_)) => arg_type = OliveType::Float,
                             Operand::Copy(l) | Operand::Move(l) => {
                                 arg_type = func_mir.locals[l.0].ty.clone();
                             }
@@ -339,11 +394,32 @@ impl<'a> CraneliftCodegen<'a> {
                         while let OliveType::Ref(inner) | OliveType::MutRef(inner) = current_ty {
                             current_ty = inner;
                         }
-                        if *current_ty == OliveType::Str {
-                            ("__olive_copy", call_args.clone())
-                        } else {
-                            ("__olive_str", call_args.clone())
-                        }
+                        
+                        let target = match name.as_str() {
+                            "str" => {
+                                if *current_ty == OliveType::Str { "__olive_copy" }
+                                else if *current_ty == OliveType::Float { "__olive_float_to_str" }
+                                else { "__olive_str" }
+                            },
+                            "int" => {
+                                if *current_ty == OliveType::Int { "__olive_int" }
+                                else if *current_ty == OliveType::Float { "__olive_float_to_int" }
+                                else if *current_ty == OliveType::Str { "__olive_str_to_int" }
+                                else { "__olive_int" }
+                            },
+                            "float" => {
+                                if *current_ty == OliveType::Float { "__olive_copy_float" }
+                                else if *current_ty == OliveType::Int { "__olive_int_to_float" }
+                                else if *current_ty == OliveType::Str { "__olive_str_to_float" }
+                                else { "__olive_float" }
+                            },
+                            "bool" => {
+                                if *current_ty == OliveType::Float { "__olive_bool_from_float" }
+                                else { "__olive_bool" }
+                            },
+                            _ => unreachable!(),
+                        };
+                        (target, call_args.clone())
                     } else {
                         (name.as_str(), call_args.clone())
                     };
@@ -351,7 +427,11 @@ impl<'a> CraneliftCodegen<'a> {
                     if let Some(&func_id) = func_ids.get(resolved_name) {
                         let local_func = module.declare_func_in_func(func_id, builder.func);
                         let inst = builder.ins().call(local_func, &final_call_args);
-                        return builder.inst_results(inst)[0];
+                        let results = builder.inst_results(inst);
+                        if results.is_empty() {
+                            return builder.ins().iconst(types::I64, 0);
+                        }
+                        return results[0];
                     }
                 }
                 builder.ins().iconst(types::I64, 0)
@@ -567,6 +647,11 @@ extern "C" fn olive_print(val: i64) -> i64 {
     0
 }
 
+extern "C" fn olive_print_float(val: f64) -> i64 {
+    println!("{}", val);
+    0
+}
+
 extern "C" fn olive_print_str(val: i64) -> i64 {
     if val == 0 {
         println!("None");
@@ -582,6 +667,49 @@ extern "C" fn olive_str(val: i64) -> i64 {
     let c_str = std::ffi::CString::new(s).unwrap();
     c_str.into_raw() as i64
 }
+
+extern "C" fn olive_int(val: i64) -> i64 {
+    val
+}
+
+extern "C" fn olive_float(val: i64) -> f64 {
+    val as f64
+}
+
+extern "C" fn olive_bool(val: i64) -> i64 {
+    if val != 0 { 1 } else { 0 }
+}
+
+extern "C" fn olive_bool_from_float(val: f64) -> i64 {
+    if val != 0.0 { 1 } else { 0 }
+}
+
+extern "C" fn olive_float_to_str(val: f64) -> i64 {
+    let s = format!("{}", val);
+    let c_str = std::ffi::CString::new(s).unwrap();
+    c_str.into_raw() as i64
+}
+
+extern "C" fn olive_float_to_int(val: f64) -> i64 {
+    val as i64
+}
+
+extern "C" fn olive_int_to_float(val: i64) -> f64 {
+    val as f64
+}
+
+extern "C" fn olive_str_to_int(ptr: i64) -> i64 {
+    if ptr == 0 { return 0; }
+    let s = unsafe { std::ffi::CStr::from_ptr(ptr as *const i8) }.to_string_lossy();
+    s.parse::<i64>().unwrap_or(0)
+}
+
+extern "C" fn olive_str_to_float(ptr: i64) -> f64 {
+    if ptr == 0 { return 0.0; }
+    let s = unsafe { std::ffi::CStr::from_ptr(ptr as *const i8) }.to_string_lossy();
+    s.parse::<f64>().unwrap_or(0.0)
+}
+
 
 extern "C" fn olive_str_concat(l: i64, r: i64) -> i64 {
     let sl = if l == 0 { "".into() } else { unsafe { std::ffi::CStr::from_ptr(l as *const i8) }.to_string_lossy() };
@@ -637,6 +765,10 @@ extern "C" fn olive_list_get(list: i64, index: i64) -> i64 {
 extern "C" fn olive_obj_new() -> i64 {
     let m: HashMap<String, i64> = HashMap::default();
     Box::into_raw(Box::new(m)) as i64
+}
+
+extern "C" fn olive_copy_float(val: f64) -> f64 {
+    val
 }
 
 extern "C" fn olive_obj_set(obj: i64, attr: i64, val: i64) -> i64 {

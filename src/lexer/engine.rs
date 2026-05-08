@@ -232,7 +232,7 @@ impl Lexer {
                     }
                     return Ok(self.make_tok(TokenKind::Integer, num, line, col, start));
                 }
-
+                _ => {}
             }
         }
 

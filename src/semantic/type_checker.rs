@@ -27,6 +27,9 @@ impl TypeChecker {
         let builtins = [
             ("print", Type::Fn(vec![Type::Any], Box::new(Type::Int))),
             ("str", Type::Fn(vec![Type::Any], Box::new(Type::Str))),
+            ("int", Type::Fn(vec![Type::Any], Box::new(Type::Int))),
+            ("float", Type::Fn(vec![Type::Any], Box::new(Type::Float))),
+            ("bool", Type::Fn(vec![Type::Any], Box::new(Type::Bool))),
             ("type", Type::Fn(vec![Type::Any], Box::new(Type::Str))),
             ("len", Type::Fn(vec![Type::Any], Box::new(Type::Int))),
         ];
@@ -501,7 +504,20 @@ impl TypeChecker {
                 }
 
                 if attr == "copy" {
-                    return Type::Fn(vec![resolved_obj.clone()], Box::new(resolved_obj));
+                    return Type::Fn(vec![], Box::new(resolved_obj));
+                }
+                
+                if attr == "str" {
+                    return Type::Fn(vec![], Box::new(Type::Str));
+                }
+                if attr == "int" {
+                    return Type::Fn(vec![], Box::new(Type::Int));
+                }
+                if attr == "float" {
+                    return Type::Fn(vec![], Box::new(Type::Float));
+                }
+                if attr == "bool" {
+                    return Type::Fn(vec![], Box::new(Type::Bool));
                 }
 
                 Type::new_var()
