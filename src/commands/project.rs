@@ -36,6 +36,15 @@ pub fn execute_new(name: &str) {
     .unwrap();
     fs::write(path.join(".gitignore"), ".env\n.env.*\n*.secret\ngrove/\n").unwrap();
 
+    match std::process::Command::new("git")
+        .arg("init")
+        .current_dir(path)
+        .output()
+    {
+        Ok(out) if out.status.success() => {}
+        _ => eprintln!("warning: could not initialize git repository"),
+    }
+
     println!(
         "\x1b[1;32mCreated\x1b[0m binary (application) `{}` pod",
         name
@@ -116,6 +125,7 @@ mod tests {
         assert!(proj_dir.join("src/main.liv").exists());
         assert!(proj_dir.join(".gitignore").exists());
         assert!(proj_dir.join("src").is_dir());
+        assert!(proj_dir.join(".git").is_dir());
 
         let config_content = std::fs::read_to_string(proj_dir.join("pit.toml")).unwrap();
         let config: Config = toml::from_str(&config_content).unwrap();
