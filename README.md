@@ -1,5 +1,5 @@
-<h1 algin="center">Olive</h1>
-<p algin="center"><em>The dream programming language.</em></p>
+<h1 align="center">Olive</h1>
+<p align="center"><em>The dream programming language.</em></p>
 
 <p align="center">
   <a href="https://github.com/ecnivs/olive/stargazers">
