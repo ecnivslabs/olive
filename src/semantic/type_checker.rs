@@ -8,23 +8,14 @@ use super::error::SemanticError;
 
 // Static type inference and validation.
 pub struct TypeChecker {
-    // Type assignments for variables.
     substitutions: HashMap<usize, Type>,
-    // Final types for every expression.
     pub expr_types: HashMap<usize, Type>,
-    // Scoped name-to-type mappings.
     type_env: Vec<HashMap<String, Type>>,
-    // Return type of the current function.
     current_return_type: Option<Type>,
-    // Semantic errors found.
     pub errors: Vec<SemanticError>,
-    // Class inheritance tracking.
     pub class_hierarchy: HashMap<String, Vec<String>>,
-    // Mutability tracking.
     mut_env: Vec<HashMap<String, bool>>,
-    // Field types: (class, field) -> Type
     pub field_types: HashMap<(String, String), Type>,
-    // Current class for 'self' resolution.
     current_class: Option<String>,
 }
 
@@ -32,8 +23,7 @@ impl TypeChecker {
     pub fn new() -> Self {
         let mut global_env = HashMap::default();
         
-        // Register built-in standard library functions.
-        // Optimization: Use static strings and pre-defined types.
+        // Standard library built-ins.
         let builtins = [
             ("print", Type::Fn(vec![Type::Any], Box::new(Type::Int))),
             ("str", Type::Fn(vec![Type::Any], Box::new(Type::Str))),
@@ -68,7 +58,7 @@ impl TypeChecker {
         self.mut_env.pop();
     }
 
-    // Bind a new variable to a type in the current scope.
+
     fn define_type(&mut self, name: &str, ty: Type, is_mut: bool) {
         if let Some(scope) = self.type_env.last_mut() {
             scope.insert(name.to_string(), ty);
@@ -101,7 +91,7 @@ impl TypeChecker {
             self.check_stmt(stmt);
         }
         
-        // Final pass to resolve all type variables after full program analysis.
+
         let ids: Vec<usize> = self.expr_types.keys().cloned().collect();
         for id in ids {
             let ty = self.expr_types.get(&id).unwrap().clone();
@@ -133,7 +123,7 @@ impl TypeChecker {
                 let target_ty = self.check_expr(target);
                 self.unify(&target_ty, &val_ty, stmt.span);
                 
-                // If this is a field assignment (self.attr = val), track the field type.
+
                 if let ExprKind::Attr { obj, attr } = &target.kind {
                     let obj_ty = self.check_expr(obj);
                     let resolved_obj = self.apply_subst(obj_ty);

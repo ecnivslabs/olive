@@ -10,8 +10,7 @@ pub struct Lexer {
     col: usize,
     indent_stack: Vec<usize>,
     pending: VecDeque<Token>,
-    // tracks open delimiters for mismatch detection and layout suppression
-    delimiter_stack: Vec<(char, usize, usize)>, // (open_char, line, col)
+    delimiter_stack: Vec<(char, usize, usize)>,
     file_id: usize,
 }
 
@@ -68,8 +67,7 @@ impl Lexer {
         }
     }
 
-    // Called after consuming '\n'. Returns Some(Newline) for real lines,
-    // None for blank/comment-only lines (caller should continue).
+
     fn handle_indent(&mut self, nl_line: usize, nl_pos: usize) -> LexResult<Option<Token>> {
         let mut depth = 0usize;
         let mut has_tab = false;
@@ -90,7 +88,7 @@ impl Lexer {
             });
         }
 
-        // blank line or comment-only — suppress
+
         if matches!(self.peek(), Some('\n') | Some('#') | None) {
             while matches!(self.peek(), Some(c) if c != '\n') {
                 self.advance();
@@ -183,7 +181,7 @@ impl Lexer {
                     Some('\\') => s.push('\\'),
                     Some('\'') => s.push('\''),
                     Some('"')  => s.push('"'),
-                    Some('\n') => {} // escaped newline = line continuation inside string
+                    Some('\n') => {} // escaped newline
                     Some(c)    => { s.push('\\'); s.push(c); }
                     None       => return Err(LexError {
                         message: "unterminated escape sequence".into(),
@@ -198,7 +196,7 @@ impl Lexer {
     }
 
     fn read_number(&mut self, first: char, line: usize, col: usize, start: usize) -> LexResult<Token> {
-        // Base-prefixed integer literals: 0x, 0o, 0b
+        // Base-prefixed literals: 0x, 0o, 0b
         if first == '0' {
             match self.peek() {
                 Some('x') | Some('X') => {
@@ -234,7 +232,7 @@ impl Lexer {
                     }
                     return Ok(self.make_tok(TokenKind::Integer, num, line, col, start));
                 }
-                _ => {} // fall through to decimal
+
             }
         }
 
@@ -245,7 +243,7 @@ impl Lexer {
             num.push(self.advance().unwrap());
         }
 
-        // fractional part — require digit after '.' to avoid consuming method-call dot
+        // Fractional part.
         if self.peek() == Some('.') && matches!(self.peek_next(), Some(c) if c.is_ascii_digit()) {
             is_float = true;
             num.push(self.advance().unwrap()); // '.'
@@ -254,7 +252,7 @@ impl Lexer {
             }
         }
 
-        // scientific notation: e/E then optional sign then digits
+        // Scientific notation.
         if matches!(self.peek(), Some('e') | Some('E')) {
             is_float = true;
             num.push(self.advance().unwrap());
@@ -342,7 +340,7 @@ impl Lexer {
 
             let ch = match self.advance() {
                 None => {
-                    // Unmatched open delimiter — report the innermost unclosed one.
+
                     if let Some(&(open, dl, dc)) = self.delimiter_stack.last() {
                         return Err(LexError {
                             message: format!(
@@ -353,7 +351,7 @@ impl Lexer {
                             start: self.pos, end: self.pos + 1,
                         });
                     }
-                    // Synthesize: Newline, Dedent×n, Eof at end of indented source.
+
                     if self.indent_stack.len() > 1 {
                         let n = self.indent_stack.len() - 1;
                         self.indent_stack.truncate(1);
@@ -391,23 +389,22 @@ impl Lexer {
             let tok = match ch {
                 '\n' => {
                     if !self.delimiter_stack.is_empty() {
-                        continue; // implicit continuation inside ( [ {
+                        continue; // implicit continuation
                     }
                     match self.handle_indent(line, start)? {
                         Some(tok) => tok,
-                        None      => continue, // blank/comment line
+                        None      => continue,
                     }
                 }
 
                 '\\' => {
                     if self.peek() == Some('\n') {
-                        self.advance(); // consume the newline
-                        continue;       // explicit line continuation
+                        self.advance();
+                        continue;
                     }
                     return Err(self.err("unexpected '\\'"));
                 }
 
-                // leading-dot float: .5, .1e3
                 '.' if matches!(self.peek(), Some(c) if c.is_ascii_digit()) => {
                     let mut num = String::from("0.");
                     while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {

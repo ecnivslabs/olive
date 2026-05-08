@@ -16,7 +16,6 @@ enum LocalState {
     Dead,
 }
 
-// Using a Vec for O(1) access to local states.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FlowState {
     locals: Vec<LocalState>,
@@ -118,7 +117,7 @@ impl<'a> BorrowChecker<'a> {
         let num_blocks = self.func.basic_blocks.len();
         let num_locals = self.func.locals.len();
 
-        // Initialize per-block entry states. Only bb0 starts with a real state.
+        // entry states. only bb0 starts initialized.
         let mut entry_states: Vec<Option<FlowState>> = vec![None; num_blocks];
 
         let mut init_state = FlowState::new(num_locals);
@@ -130,7 +129,7 @@ impl<'a> BorrowChecker<'a> {
         }
         entry_states[0] = Some(init_state);
 
-        // Worklist-based fixed-point iteration.
+        // Fixed-point iteration.
         let mut worklist: VecDeque<usize> = VecDeque::new();
         worklist.push_back(0);
         let mut in_worklist: Vec<bool> = vec![false; num_blocks];
@@ -150,7 +149,7 @@ impl<'a> BorrowChecker<'a> {
             for (stmt_idx, stmt) in bb.statements.iter().enumerate() {
                 self.transfer_stmt(stmt, &mut state);
 
-                // NLL: Release borrows for references that are no longer live AFTER the statement
+                // NLL: Release borrows for references that are no longer live.
                 let live_after = &self.liveness.live_after[bb_idx][stmt_idx];
                 self.release_dead_borrows(&mut state, live_after);
             }
@@ -180,7 +179,7 @@ impl<'a> BorrowChecker<'a> {
         }
     }
 
-    // Apply a statement to the flow state and record any errors.
+
     fn transfer_stmt(&mut self, stmt: &Statement, state: &mut FlowState) {
         match &stmt.kind {
             StatementKind::Assign(lhs, rvalue) => {
@@ -252,7 +251,7 @@ impl<'a> BorrowChecker<'a> {
         }
     }
 
-    // Get the basic block indices that follow this one.
+
     fn successors(&self, bb: &BasicBlock) -> Vec<usize> {
         match &bb.terminator {
             Some(t) => match &t.kind {
@@ -389,7 +388,7 @@ impl<'a> BorrowChecker<'a> {
         }
     }
 
-    // Release borrows when the reference variable is no longer live.
+
     fn release_dead_borrows(&self, state: &mut FlowState, live_locals: &HashSet<Local>) {
         // We only release the borrow if ALL locals that hold this reference are dead.
         let mut still_borrowed = HashSet::default();

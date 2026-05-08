@@ -93,12 +93,9 @@ impl Inliner {
         let mut changed = false;
         for bb in &mut func.basic_blocks {
             // Mapping from Rvalue to the local that holds its result.
-            // We only do this per basic block for simplicity (Local CSE).
-            let mut available_expressions: Vec<(Rvalue, Local)> = Vec::new();
-            
             for stmt in &mut bb.statements {
                 if let StatementKind::Assign(dest, rval) = &mut stmt.kind {
-                    // Only eliminate pure expressions (no calls or attributes which might change)
+                    // Eliminate pure expressions.
                     if matches!(rval, Rvalue::BinaryOp(..) | Rvalue::UnaryOp(..) | Rvalue::Use(..)) {
                         let mut found = None;
                         for (expr, local) in &available_expressions {
@@ -118,9 +115,7 @@ impl Inliner {
                         }
                     }
                     
-                    // If dest is overwritten, it might invalidate expressions that used it.
-                    // But in SSA-like MIR, destinations are usually unique or at least well-behaved.
-                    // However, we should be careful. We'll clear expressions that use 'dest'.
+
                     available_expressions.retain(|(expr, _)| {
                         !self.uses_local(expr, *dest)
                     });
@@ -147,7 +142,7 @@ impl Inliner {
 
     fn dead_code_elimination(&self, func: &mut MirFunction) -> bool {
         let mut used = std::collections::HashSet::new();
-        // Return value is always used.
+        // Local 0 is return value.
         used.insert(Local(0));
         
         for bb in &func.basic_blocks {
@@ -179,7 +174,7 @@ impl Inliner {
             let old_len = bb.statements.len();
             bb.statements.retain(|stmt| {
                 if let StatementKind::Assign(dest, rval) = &stmt.kind {
-                    // Don't eliminate calls as they might have side effects.
+                    // Don't eliminate calls (side effects).
                     if matches!(rval, Rvalue::Call { .. }) { return true; }
                     used.contains(dest)
                 } else {
@@ -246,8 +241,7 @@ impl Inliner {
     fn remap_statement_locals(&self, stmt: &mut Statement, map: &HashMap<Local, Local>) -> bool {
         match &mut stmt.kind {
             StatementKind::Assign(_l, rval) => {
-                // Don't remap the destination of the copy itself yet, 
-                // but remap the rvalue.
+                // Remap the rvalue.
                 self.remap_rvalue_locals(rval, map)
             }
             StatementKind::SetAttr(obj, _, val) => {
@@ -329,8 +323,7 @@ impl Inliner {
                     for (stmt_idx, stmt) in bb.statements.iter().enumerate() {
                         if let StatementKind::Assign(_, Rvalue::Call { func: Operand::Constant(Constant::Function(name)), args }) = &stmt.kind {
                             if let Some(target_fn) = fn_map.get(name) {
-                                // Inline if small or if it's the specific target we want to optimize.
-                                // Limit recursion for the same function.
+                                // Inline small functions.
                                 if target_fn.basic_blocks.len() < 100 {
                                     call_found = Some((stmt_idx, name.clone(), args.clone()));
                                     break;
@@ -370,7 +363,7 @@ impl Inliner {
             terminator: caller.basic_blocks[bb_idx].terminator.take(),
         };
         
-        // 3. Map callee blocks to new IDs in caller.
+        // 3. Map callee blocks to caller.
         let block_offset = caller.basic_blocks.len() + 1; // +1 because we'll add the tail later
         let mut callee_bb_map = HashMap::default();
         for (i, _) in callee.basic_blocks.iter().enumerate() {
@@ -383,8 +376,7 @@ impl Inliner {
             span: call_stmt.span,
         });
 
-        // 5. Initialize callee parameters with arguments.
-        // Callee locals 1..=arg_count are parameters.
+        // 5. Connect parameters.
         let mut init_stmts = Vec::new();
         for (j, arg) in args.iter().enumerate() {
             let param_local = Local(local_offset + j + 1);
@@ -399,7 +391,7 @@ impl Inliner {
             });
         }
         
-        // Also mark all other callee locals as StorageLive.
+        // Mark locals as live.
         for j in (callee.arg_count + 1)..callee.locals.len() {
             init_stmts.push(Statement {
                 kind: StatementKind::StorageLive(Local(local_offset + j)),
@@ -442,7 +434,6 @@ impl Inliner {
                         }
                         *otherwise = *callee_bb_map.get(otherwise).unwrap();
                     }
-                    TerminatorKind::Return => {
                         // Replace return with goto tail.
                         if let Some(dest) = ret_local {
                             // Assign callee's _0 (return value) to caller's destination.
@@ -456,7 +447,7 @@ impl Inliner {
                     _ => {}
                 }
             } else {
-                // If no terminator, it's an implicit return.
+                // Implicit return.
                 new_bb.terminator = Some(Terminator {
                     kind: TerminatorKind::Goto { target: tail_bb_id },
                     span: call_stmt.span,

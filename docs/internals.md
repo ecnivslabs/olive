@@ -1,6 +1,6 @@
 # Compiler Internals
 
-Olive's compiler is built as a series of lowering passes, moving from high-level Pythonic syntax to low-level machine code via a Middle Intermediate Representation (MIR).
+Olive's compiler is built as a series of lowering passes, moving from expressive, high-level syntax to low-level machine code via a Middle Intermediate Representation (MIR).
 
 ## The Compilation Pipeline
 

@@ -1,6 +1,6 @@
 # Ownership and Memory Safety
 
-Olive's most distinctive feature is its **Ownership-Based Resource Management (OBRM)**. Inspired by Rust, this system ensures memory safety and eliminates data races without the need for a garbage collector.
+Olive's most distinctive feature is its **Ownership-Based Resource Management (OBRM)**. This architectural pillar ensures total memory safety and eliminates data races at compile-time, providing the performance of manual memory management without the associated risks.
 
 ## The Three Rules of Ownership
 

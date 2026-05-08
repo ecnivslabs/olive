@@ -27,7 +27,7 @@ impl<'a> CraneliftCodegen<'a> {
             
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
         
-        // Register native runtime symbols.
+        // Runtime symbols.
         builder.symbol("__olive_print_int", olive_print as *const u8);
         builder.symbol("__olive_print_str", olive_print_str as *const u8);
         builder.symbol("__olive_str", olive_str as *const u8);
@@ -229,7 +229,7 @@ impl<'a> CraneliftCodegen<'a> {
         for (i, bb) in func.basic_blocks.iter().enumerate() {
             builder.switch_to_block(blocks[i]);
             
-            // Initialize all locals to 0 in the entry block.
+
             if i == 0 {
                 builder.append_block_params_for_function_params(blocks[i]);
                 let params: Vec<Value> = builder.block_params(blocks[i]).to_vec();
@@ -264,7 +264,7 @@ impl<'a> CraneliftCodegen<'a> {
             }
         }
         
-        // Seal all blocks at the end.
+
         for block in &blocks {
             builder.seal_block(*block);
         }
@@ -548,8 +548,7 @@ impl<'a> CraneliftCodegen<'a> {
                 builder.ins().return_(&[ret_val]);
             }
             TerminatorKind::Unreachable => {
-                let zero = builder.ins().iconst(types::I64, 0);
-                builder.ins().return_(&[zero]);
+                builder.ins().trap(TrapCode::unwrap_user(1));
             }
         }
     }
@@ -593,7 +592,7 @@ extern "C" fn olive_str_concat(l: i64, r: i64) -> i64 {
 }
 
 extern "C" fn olive_free(_ptr: i64) {
-    // We'll leak memory for now.
+    // Leak memory for now.
 }
 
 extern "C" fn olive_copy(ptr: i64) -> i64 {

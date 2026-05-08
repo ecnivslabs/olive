@@ -90,7 +90,7 @@ impl Parser {
         Span { file_id: start.file_id, line: start.line, col: start.col, start: start.span.0, end }
     }
 
-    // --- Public entry point ---
+
 
     pub fn parse_program(&mut self) -> ParseResult<Program> {
         let mut stmts = Vec::new();
@@ -102,7 +102,7 @@ impl Parser {
         Ok(Program { stmts })
     }
 
-    // --- Statements ---
+
 
     fn parse_stmt(&mut self) -> ParseResult<Stmt> {
         match self.peek().kind {
@@ -598,7 +598,7 @@ impl Parser {
         }
     }
 
-    // --- Type expressions ---
+
 
     fn parse_type_expr(&mut self) -> ParseResult<TypeExpr> {
         if self.peek().kind == TokenKind::LParen {
@@ -664,10 +664,7 @@ impl Parser {
         }
     }
 
-    // --- Expressions ---
-    //
-    // Precedence (lowest → highest):
-    //   walrus (:=) > or > and > not > comparison > add > mul > unary > power(**) > postfix > primary
+    // Precedence: walrus > or > and > not > comparison > add > mul > unary > power > postfix > primary
 
     fn parse_expr(&mut self) -> ParseResult<Expr> {
         if self.peek().kind == TokenKind::Identifier

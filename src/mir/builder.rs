@@ -14,7 +14,6 @@ pub struct MirBuilder<'a> {
     pub functions: Vec<MirFunction>,
     pub expr_types: &'a HashMap<usize, Type>,
 
-    // State for the function currently being built
     current_name: String,
     current_locals: Vec<LocalDecl>,
     current_blocks: Vec<BasicBlock>,
@@ -71,7 +70,7 @@ impl<'a> MirBuilder<'a> {
         let start_bb = self.new_block();
         self.current_block = Some(start_bb);
 
-        // _0 is always the return value local.
+        // _0 is return value.
         let ret = self.new_local(Type::Any, Some("_return".to_string()), true);
         self.push_statement(StatementKind::Assign(ret, Rvalue::Use(Operand::Constant(Constant::Int(0)))), Span::default());
     }
@@ -164,7 +163,7 @@ impl<'a> MirBuilder<'a> {
         None
     }
 
-    // Check if the current block has a terminator.
+
     fn is_terminated(&self) -> bool {
         self.current_block
             .and_then(|bb| self.current_blocks.get(bb.0))
@@ -209,7 +208,7 @@ impl<'a> MirBuilder<'a> {
                     tmp,
                     Rvalue::BinaryOp(bin_op, lhs_op, rhs_op),
                 ), stmt.span);
-                // Write result back to target.
+
                 if let ExprKind::Identifier(name) = &target.kind
                     && let Some(local) = self.lookup_var(name) {
                         self.push_statement(StatementKind::Assign(local, Rvalue::Use(Operand::Copy(tmp))), stmt.span);
@@ -289,7 +288,7 @@ impl<'a> MirBuilder<'a> {
                 if let Some(m) = msg {
                     self.lower_expr(m);
                 }
-                // Assert is lowered as: if not test, unreachable (will be panic in codegen).
+                // Assert is lowered as: if !test trap.
                 let pass_bb = self.new_block();
                 let fail_bb = self.new_block();
                 if let Some(bb) = self.current_block {
@@ -312,7 +311,7 @@ impl<'a> MirBuilder<'a> {
                 }
                 self.class_hierarchy.insert(name.clone(), base_names);
 
-                // Lower a class by lowering all its methods as top-level functions with mangled names.
+                // Lower class methods as mangled functions.
                 for stmt in body {
                     if let StmtKind::Fn { name: fn_name, .. } = &stmt.kind {
                         let mangled_name = format!("{}::{}", name, fn_name);
@@ -325,7 +324,7 @@ impl<'a> MirBuilder<'a> {
                 }
             }
 
-            // Pass, Import, FromImport, Try — no MIR effect for now.
+
             StmtKind::Pass | StmtKind::Raise(None)
             | StmtKind::Import(_) | StmtKind::FromImport { .. }
             | StmtKind::Try { .. } => {}
@@ -350,7 +349,7 @@ impl<'a> MirBuilder<'a> {
                 self.push_statement(StatementKind::SetIndex(obj_op, idx_op, rval), target.span);
             }
             ExprKind::Tuple(elems) => {
-                // Tuple unpacking assignment: store the RHS, then destructure.
+                // Tuple unpacking assignment.
                 let rhs_local = self.new_tmp_for_expr(value);
                 self.push_statement(StatementKind::Assign(rhs_local, Rvalue::Use(rval)), value.span);
                 for (i, elem) in elems.iter().enumerate() {
@@ -402,9 +401,8 @@ impl<'a> MirBuilder<'a> {
             }
 
             if is_memo {
-                // Memoization Logic:
-                // 1. Get/Create the global cache for this function name.
-                // For now, we use a global object.
+                // Memoization:
+                // 1. Get/Create global cache.
                 let cache_tmp = self.new_local(Type::Any, Some("cache".to_string()), false);
                 let fn_name_const = Operand::Constant(Constant::Str(name.clone()));
                 
@@ -669,8 +667,7 @@ impl<'a> MirBuilder<'a> {
         body: &[Stmt],
         else_body: &Option<Vec<Stmt>>,
     ) {
-        // For loops are lowered as a while loop over an iterator.
-        // For now, we represent the iter as a local and synthesize the control flow.
+        // For loops are lowered as while loops over an iterator.
         let iter_op = self.lower_expr(iter);
         let iter_local = self.new_local(Type::Any, Some("_iter".to_string()), true);
         self.push_statement(StatementKind::Assign(iter_local, Rvalue::Use(iter_op)), iter.span);

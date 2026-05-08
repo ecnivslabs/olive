@@ -1,6 +1,6 @@
 # Getting Started with Olive
 
-Follow these steps to set up the Olive compiler and run your first program.
+Follow these steps to set up the Olive toolchain and start building high-performance applications.
 
 ## Installation
 
@@ -12,48 +12,67 @@ Currently, Olive is built from source. Ensure you have the [Rust toolchain](http
    cd olive
    ```
 
-2. **Build the compiler**:
+2. **Build and Install**:
    ```bash
    cargo build --release
+   ```
+   For convenience, you can add the binary to your path:
+   ```bash
+   cp target/release/olive /usr/local/bin/
    ```
 
 3. **Verify the installation**:
    ```bash
-   ./target/release/olive --help
+   olive --help
    ```
 
-## Your First Program
+## Creating Your First Project
 
-Create a new file named `hello.liv` and add the following code:
+Olive features a built-in package manager that makes starting a new project effortless.
 
-```python
-fn __main__():
-    print_str("Hello, Olive!")
-    return 0
-```
+1. **Initialize a new project**:
+   ```bash
+   olive new my_app
+   cd my_app
+   ```
 
-> **Note**: Olive currently uses `__main__` as the entry point for execution.
+This creates a standard project structure:
+- `olive.toml`: Your project's configuration and metadata.
+- `src/main.liv`: The entry point for your application.
+- `.gitignore`: Pre-configured for Olive development.
 
 ## Running Your Code
 
-To run your program, simply pass the file path to the Olive compiler:
-
+Inside your project directory, simply run:
 ```bash
-./target/release/olive hello.liv
+olive run
+```
+Olive will automatically find your entry point, perform optimizations, run the borrow checker, and execute the code via the JIT engine.
+
+## Writing Your First Program
+
+Open `src/main.liv` and you'll see a basic function:
+
+```python
+fn main():
+    print("Hello from Olive!")
+
+main()
 ```
 
-### Compiler Options
+### Advanced CLI Options
 
-Olive provides several flags to help you understand what's happening under the hood:
+The `olive` toolchain provides powerful flags for developers:
 
-- `--check`: Perform semantic analysis and borrow checking without running the code.
-- `--emit-ast`: Print the Abstract Syntax Tree for debugging.
-- `--emit-mir`: Print the Middle Intermediate Representation blocks.
+- `olive build --time`: Build the project and show detailed timing reports for optimization, borrow checking, and codegen.
+- `olive test`: Automatically find and run all functions decorated with `@test`.
+- `olive format`: Format all files in your project to match the standard Olive style.
+- `olive run --emit-mir`: View the Middle Intermediate Representation of your code to see the optimizer in action.
 
-## Hello, World Explained
+## Core Concepts
 
-Let's break down our first program:
+As you start writing more Olive, keep these concepts in mind:
 
-- `fn __main__():`: Defines a function named `__main__`. In Olive, indentation is used to define blocks.
-- `print_str("Hello, Olive!")`: A built-in function to print a string to the console.
-- `return 0`: Olive functions usually return an integer status code.
+- **Indentation**: Blocks are defined by whitespace. Keep it clean!
+- **Ownership**: Olive uses Ownership-Based Resource Management (OBRM). If you move a value, it's gone from the original location.
+- **Strict Safety**: The compiler is your partner. If it identifies a potential memory issue, it will provide a detailed diagnostic to guide you.
