@@ -278,26 +278,36 @@ impl<'a> CraneliftCodegen<'a> {
             let var = builder.declare_var(cl_type(&decl.ty));
             vars.insert(Local(i), var);
         }
-        
+
+        // Compute predecessor counts for early block sealing.
+        let mut pred_count = vec![0u32; func.basic_blocks.len()];
+        for bb in &func.basic_blocks {
+            if let Some(term) = &bb.terminator {
+                match &term.kind {
+                    TerminatorKind::Goto { target } => { pred_count[target.0] += 1; }
+                    TerminatorKind::SwitchInt { targets, otherwise, .. } => {
+                        for (_, t) in targets { pred_count[t.0] += 1; }
+                        pred_count[otherwise.0] += 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut sealed = vec![false; func.basic_blocks.len()];
+        let mut filled_pred = vec![0u32; func.basic_blocks.len()];
+
         for (i, bb) in func.basic_blocks.iter().enumerate() {
             builder.switch_to_block(blocks[i]);
-            
+
+            // Seal entry block immediately (no predecessors from outside).
+            if i == 0 && !sealed[i] {
+                builder.seal_block(blocks[i]);
+                sealed[i] = true;
+            }
 
             if i == 0 {
                 builder.append_block_params_for_function_params(blocks[i]);
                 let params: Vec<Value> = builder.block_params(blocks[i]).to_vec();
-                
-                /*
-                for (local_idx, decl) in func.locals.iter().enumerate() {
-                    let var = vars.get(&Local(local_idx)).unwrap();
-                    let zero = if cl_type(&decl.ty) == types::F64 {
-                        builder.ins().f64const(0.0)
-                    } else {
-                        builder.ins().iconst(types::I64, 0)
-                    };
-                    builder.def_var(*var, zero);
-                }
-                */
 
                 for (j, val) in params.iter().enumerate() {
                     let var = vars.get(&Local(j + 1)).unwrap();
@@ -311,15 +321,42 @@ impl<'a> CraneliftCodegen<'a> {
             
             if let Some(term) = &bb.terminator {
                 Self::translate_terminator(&mut builder, term, &blocks, &vars, &mut self.string_pool);
+                // Seal successor blocks when all predecessors are filled.
+                match &term.kind {
+                    TerminatorKind::Goto { target } => {
+                        filled_pred[target.0] += 1;
+                        if filled_pred[target.0] == pred_count[target.0] && !sealed[target.0] {
+                            builder.seal_block(blocks[target.0]);
+                            sealed[target.0] = true;
+                        }
+                    }
+                    TerminatorKind::SwitchInt { targets, otherwise, .. } => {
+                        for (_, t) in targets {
+                            filled_pred[t.0] += 1;
+                            if filled_pred[t.0] == pred_count[t.0] && !sealed[t.0] {
+                                builder.seal_block(blocks[t.0]);
+                                sealed[t.0] = true;
+                            }
+                        }
+                        filled_pred[otherwise.0] += 1;
+                        if filled_pred[otherwise.0] == pred_count[otherwise.0] && !sealed[otherwise.0] {
+                            builder.seal_block(blocks[otherwise.0]);
+                            sealed[otherwise.0] = true;
+                        }
+                    }
+                    _ => {}
+                }
             } else {
                 let zero = builder.ins().iconst(types::I64, 0);
                 builder.ins().return_(&[zero]);
             }
         }
-        
 
-        for block in &blocks {
-            builder.seal_block(*block);
+        // Seal any remaining unsealed blocks.
+        for (i, block) in blocks.iter().enumerate() {
+            if !sealed[i] {
+                builder.seal_block(*block);
+            }
         }
         
         builder.finalize();
@@ -541,6 +578,12 @@ impl<'a> CraneliftCodegen<'a> {
                         let res = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, l, r);
                         builder.ins().uextend(types::I64, res)
                     }
+                    NotEq => {
+                        let res = builder.ins().icmp(IntCC::NotEqual, l, r);
+                        builder.ins().uextend(types::I64, res)
+                    }
+                    Shl => builder.ins().ishl(l, r),
+                    Shr => builder.ins().sshr(l, r),
                     _ => builder.ins().iconst(types::I64, 0),
                 }
             }

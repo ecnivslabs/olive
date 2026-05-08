@@ -560,7 +560,8 @@ impl TypeChecker {
     fn check_binop(&mut self, op: &BinOp, l: &Type, r: &Type, span: Span) -> Type {
         match op {
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div
-            | BinOp::FloorDiv | BinOp::Mod | BinOp::Pow => {
+            | BinOp::FloorDiv | BinOp::Mod | BinOp::Pow
+            | BinOp::Shl | BinOp::Shr => {
                 self.unify(l, r, span);
                 self.apply_subst(l.clone())
             }

@@ -25,6 +25,7 @@ pub enum BinOp {
     And, Or,
     In, NotIn,
     Is, IsNot,
+    Shl, Shr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -17,13 +17,22 @@ impl Inliner {
             self.inline_function(func, &fn_map, 10);
             
             let mut changed = true;
+            let mut iterations = 0;
             while changed {
+                iterations += 1;
+                if iterations > 100 {
+                    break;
+                }
                 changed = false;
+                //changed |= self.copy_propagation(func);
                 changed |= self.global_constant_propagation(func);
                 changed |= self.constant_folding(func);
+                changed |= self.strength_reduction(func);
                 changed |= self.peephole_optimize(func);
                 changed |= self.common_subexpression_elimination(func);
+                changed |= self.branch_simplification(func);
                 changed |= self.dead_code_elimination(func);
+                changed |= self.unreachable_block_elimination(func);
             }
         }
     }
@@ -134,6 +143,8 @@ impl Inliner {
                             LtEq => Some(Constant::Bool(*a <= *b)),
                             Gt => Some(Constant::Bool(*a > *b)),
                             GtEq => Some(Constant::Bool(*a >= *b)),
+                            Shl => Some(Constant::Int((*a).wrapping_shl(*b as u32))),
+                            Shr => Some(Constant::Int((*a).wrapping_shr(*b as u32))),
                             _ => None,
                         };
                         if let Some(val) = res {
@@ -370,6 +381,136 @@ impl Inliner {
     }
 
 
+    /// Strength reduction: convert multiply/divide by powers of 2 to shifts.
+    fn strength_reduction(&self, func: &mut MirFunction) -> bool {
+        let mut changed = false;
+        for bb in &mut func.basic_blocks {
+            for stmt in &mut bb.statements {
+                if let StatementKind::Assign(_, rval) = &mut stmt.kind {
+                    use crate::parser::BinOp::*;
+                    match rval {
+                        // x * 2^n -> x << n
+                        Rvalue::BinaryOp(Mul, op, Operand::Constant(Constant::Int(c))) |
+                        Rvalue::BinaryOp(Mul, Operand::Constant(Constant::Int(c)), op)
+                            if *c > 2 && (*c as u64).is_power_of_two() => {
+                            let shift = (*c as u64).trailing_zeros() as i64;
+                            let saved_op = op.clone();
+                            *rval = Rvalue::BinaryOp(Shl, saved_op, Operand::Constant(Constant::Int(shift)));
+                            changed = true;
+                        }
+                        // x / 2^n -> x >> n (for positive divisor)
+                        Rvalue::BinaryOp(Div, op, Operand::Constant(Constant::Int(c))) |
+                        Rvalue::BinaryOp(FloorDiv, op, Operand::Constant(Constant::Int(c)))
+                            if *c > 1 && (*c as u64).is_power_of_two() => {
+                            let shift = (*c as u64).trailing_zeros() as i64;
+                            let saved_op = op.clone();
+                            *rval = Rvalue::BinaryOp(Shr, saved_op, Operand::Constant(Constant::Int(shift)));
+                            changed = true;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        changed
+    }
+
+    /// Branch simplification: fold branches on constant discriminants to gotos.
+    fn branch_simplification(&self, func: &mut MirFunction) -> bool {
+        let mut changed = false;
+        for bb in &mut func.basic_blocks {
+            if let Some(term) = &mut bb.terminator {
+                if let TerminatorKind::SwitchInt { discr, targets, otherwise } = &term.kind {
+                    if let Operand::Constant(Constant::Bool(b)) = discr {
+                        let val = if *b { 1 } else { 0 };
+                        let goto_target = targets.iter()
+                            .find(|(v, _)| *v == val)
+                            .map(|(_, t)| *t)
+                            .unwrap_or(*otherwise);
+                        term.kind = TerminatorKind::Goto { target: goto_target };
+                        changed = true;
+                    } else if let Operand::Constant(Constant::Int(val)) = discr {
+                        let v = *val;
+                        let goto_target = targets.iter()
+                            .find(|(tv, _)| *tv == v)
+                            .map(|(_, t)| *t)
+                            .unwrap_or(*otherwise);
+                        term.kind = TerminatorKind::Goto { target: goto_target };
+                        changed = true;
+                    }
+                }
+            }
+        }
+        changed
+    }
+
+    /// Remove unreachable blocks (no predecessors except block 0).
+    fn unreachable_block_elimination(&self, func: &mut MirFunction) -> bool {
+        let n = func.basic_blocks.len();
+        if n <= 1 { return false; }
+
+        let mut reachable = vec![false; n];
+        reachable[0] = true;
+        let mut worklist = vec![0usize];
+
+        while let Some(idx) = worklist.pop() {
+            if let Some(term) = &func.basic_blocks[idx].terminator {
+                let succs: Vec<usize> = match &term.kind {
+                    TerminatorKind::Goto { target } => vec![target.0],
+                    TerminatorKind::SwitchInt { targets, otherwise, .. } => {
+                        let mut s: Vec<usize> = targets.iter().map(|(_, t)| t.0).collect();
+                        s.push(otherwise.0);
+                        s
+                    }
+                    _ => vec![],
+                };
+                for s in succs {
+                    if s < n && !reachable[s] {
+                        reachable[s] = true;
+                        worklist.push(s);
+                    }
+                }
+            }
+        }
+
+        let any_unreachable = reachable.iter().any(|r| !r);
+        if !any_unreachable { return false; }
+
+        // Build remapping for block indices.
+        let mut remap = vec![0usize; n];
+        let mut new_idx = 0;
+        for i in 0..n {
+            if reachable[i] {
+                remap[i] = new_idx;
+                new_idx += 1;
+            }
+        }
+
+        // Remap terminators.
+        for i in 0..n {
+            if !reachable[i] { continue; }
+            if let Some(term) = &mut func.basic_blocks[i].terminator {
+                match &mut term.kind {
+                    TerminatorKind::Goto { target } => { target.0 = remap[target.0]; }
+                    TerminatorKind::SwitchInt { targets, otherwise, .. } => {
+                        for (_, t) in targets.iter_mut() { t.0 = remap[t.0]; }
+                        otherwise.0 = remap[otherwise.0];
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Remove unreachable blocks.
+        let mut idx = 0;
+        func.basic_blocks.retain(|_| {
+            let keep = reachable[idx];
+            idx += 1;
+            keep
+        });
+
+        true
+    }
 
     fn inline_function(&self, func: &mut MirFunction, fn_map: &HashMap<String, MirFunction>, max_depth: usize) {
         let mut changed = true;
@@ -384,7 +525,7 @@ impl Inliner {
                     let bb = &func.basic_blocks[i];
                     for (stmt_idx, stmt) in bb.statements.iter().enumerate() {
                         if let StatementKind::Assign(_, Rvalue::Call { func: Operand::Constant(Constant::Function(name)), args }) = &stmt.kind {
-                            if name == &func.name && current_depth >= 1 { continue; }
+                            if name == &func.name && current_depth >= 8 { continue; }
                             if let Some(target_fn) = fn_map.get(name) {
                                 // Inline small, non-recursive functions.
                                 if target_fn.basic_blocks.len() < 100 {
