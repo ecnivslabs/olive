@@ -346,7 +346,13 @@ impl Resolver {
             }
 
             ExprKind::Integer(_) | ExprKind::Float(_) | ExprKind::Str(_)
-            | ExprKind::Bool(_) | ExprKind::Null => {}
+            | ExprKind::FStr(_) | ExprKind::Bool(_) | ExprKind::Null => {
+                if let ExprKind::FStr(exprs) = &expr.kind {
+                    for e in exprs {
+                        self.resolve_expr(e);
+                    }
+                }
+            }
         }
     }
 

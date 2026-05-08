@@ -87,6 +87,7 @@ pub enum ExprKind {
     Integer(i64),
     Float(f64),
     Str(String),
+    FStr(Vec<Expr>),
     Bool(bool),
     Null,
     Identifier(String),

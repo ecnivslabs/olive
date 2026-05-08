@@ -5,6 +5,7 @@ pub enum TokenKind {
     Integer,
     Float,
     String,
+    FString,
 
     // keywords
     Fn,

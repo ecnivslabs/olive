@@ -912,6 +912,87 @@ impl Parser {
         Ok(clauses)
     }
 
+    fn parse_fstring(&mut self, tok: Token) -> ParseResult<Expr> {
+        let value = &tok.value;
+        let mut exprs = Vec::new();
+        let mut last_pos = 0;
+        let mut i = 0;
+        let chars: Vec<char> = value.chars().collect();
+        let span = Span { file_id: tok.file_id, line: tok.line, col: tok.col, start: tok.span.0, end: tok.span.1 };
+        
+        while i < chars.len() {
+            if chars[i] == '{' {
+                // Check if it's double {{
+                if i + 1 < chars.len() && chars[i+1] == '{' {
+                    i += 2;
+                    continue;
+                }
+                
+                // Add literal part before {
+                if i > last_pos {
+                    let s: String = chars[last_pos..i].iter().collect();
+                    let s = s.replace("{{", "{").replace("}}", "}");
+                    if !s.is_empty() {
+                        exprs.push(Expr::new(ExprKind::Str(s), span));
+                    }
+                }
+                
+                // Find matching }
+                i += 1;
+                let start_expr = i;
+                let mut brace_count = 1;
+                while i < chars.len() && brace_count > 0 {
+                    if chars[i] == '{' { brace_count += 1; }
+                    else if chars[i] == '}' { brace_count -= 1; }
+                    i += 1;
+                }
+                
+                if brace_count > 0 {
+                    return Err(self.err_at(&tok, "unclosed '{' in f-string"));
+                }
+                
+                let expr_str: String = chars[start_expr..i-1].iter().collect();
+                if expr_str.trim().is_empty() {
+                    return Err(self.err_at(&tok, "empty expression in f-string"));
+                }
+
+                // Lex and parse expr_str
+                let mut lexer = crate::lexer::Lexer::new(&expr_str, tok.file_id);
+                let tokens = lexer.tokenise().map_err(|e| ParseError {
+                    message: format!("lexer error in f-string: {}", e.message),
+                    line: tok.line, col: tok.col, start: tok.span.0 + start_expr, end: tok.span.0 + i
+                })?;
+                
+                let mut parser = Parser::new(tokens);
+                let expr = parser.parse_expr().map_err(|e| ParseError {
+                    message: format!("parser error in f-string: {}", e.message),
+                    line: tok.line, col: tok.col, start: tok.span.0 + start_expr, end: tok.span.0 + i
+                })?;
+                exprs.push(expr);
+                
+                last_pos = i;
+            } else if chars[i] == '}' {
+                if i + 1 < chars.len() && chars[i+1] == '}' {
+                    i += 2;
+                    continue;
+                }
+                return Err(self.err_at(&tok, "single '}' not allowed in f-string"));
+            } else {
+                i += 1;
+            }
+        }
+        
+        if last_pos < chars.len() {
+            let s: String = chars[last_pos..].iter().collect();
+            let s = s.replace("{{", "{").replace("}}", "}");
+            if !s.is_empty() {
+                exprs.push(Expr::new(ExprKind::Str(s), span));
+            }
+        }
+        
+        Ok(Expr::new(ExprKind::FStr(exprs), span))
+    }
+
     fn parse_primary(&mut self) -> ParseResult<Expr> {
         let tok = self.peek().clone();
         let start = Span { file_id: tok.file_id, line: tok.line, col: tok.col, start: tok.span.0, end: tok.span.1 };
@@ -939,6 +1020,7 @@ impl Parser {
                     .map_err(|_| self.err_at(&tok, format!("invalid float literal '{}'", tok.value)))
             }
             TokenKind::String     => { self.advance(); Ok(Expr::new(ExprKind::Str(tok.value), start)) }
+            TokenKind::FString    => { self.advance(); self.parse_fstring(tok) }
             TokenKind::True       => { self.advance(); Ok(Expr::new(ExprKind::Bool(true), start)) }
             TokenKind::False      => { self.advance(); Ok(Expr::new(ExprKind::Bool(false), start)) }
             TokenKind::Null       => { self.advance(); Ok(Expr::new(ExprKind::Null, start)) }

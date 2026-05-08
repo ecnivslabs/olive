@@ -604,6 +604,45 @@ impl<'a> MirBuilder<'a> {
             ExprKind::Integer(i) => Operand::Constant(Constant::Int(*i)),
             ExprKind::Float(f) => Operand::Constant(Constant::Float(*f)),
             ExprKind::Str(s) => Operand::Constant(Constant::Str(s.clone())),
+            ExprKind::FStr(exprs) => {
+                if exprs.is_empty() {
+                    return Operand::Constant(Constant::Str("".to_string()));
+                }
+                
+                let mut current_res: Option<Operand> = None;
+                
+                for e in exprs {
+                    let op = self.lower_expr(e);
+                    let ty = self.get_type(e.id);
+                    
+                    let str_op = if ty == Type::Str {
+                        op
+                    } else {
+                        let tmp = self.new_local(Type::Str, None, true);
+                        self.push_statement(StatementKind::Assign(
+                            tmp,
+                            Rvalue::Call {
+                                func: Operand::Constant(Constant::Function("str".to_string())),
+                                args: vec![op],
+                            },
+                        ), e.span);
+                        Operand::Copy(tmp)
+                    };
+                    
+                    if let Some(res) = current_res {
+                        let tmp = self.new_local(Type::Str, None, true);
+                        self.push_statement(StatementKind::Assign(
+                            tmp,
+                            Rvalue::BinaryOp(crate::parser::BinOp::Add, res, str_op),
+                        ), expr.span);
+                        current_res = Some(Operand::Copy(tmp));
+                    } else {
+                        current_res = Some(str_op);
+                    }
+                }
+                
+                current_res.unwrap()
+            }
             ExprKind::Bool(b) => Operand::Constant(Constant::Bool(*b)),
             ExprKind::Null => Operand::Constant(Constant::Null),
 

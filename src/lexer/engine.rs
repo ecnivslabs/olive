@@ -279,8 +279,17 @@ impl Lexer {
         ))
     }
 
-    fn read_ident(&mut self, first: char, line: usize, col: usize, start: usize) -> Token {
+    fn read_ident(&mut self, first: char, line: usize, col: usize, start: usize) -> LexResult<Token> {
         let mut ident = String::from(first);
+        
+        // Detect f-string prefix: f"..." or f'...'
+        if first == 'f' && (self.peek() == Some('"') || self.peek() == Some('\'')) {
+            let quote = self.advance().unwrap();
+            let mut tok = self.read_string(quote, line, col, start)?;
+            tok.kind = TokenKind::FString;
+            return Ok(tok);
+        }
+
         while matches!(self.peek(), Some(c) if c.is_alphanumeric() || c == '_') {
             ident.push(self.advance().unwrap());
         }
@@ -316,7 +325,7 @@ impl Lexer {
             "mut"    => TokenKind::Mut,
             _        => TokenKind::Identifier,
         };
-        self.make_tok(kind, ident, line, col, start)
+        Ok(self.make_tok(kind, ident, line, col, start))
     }
 
     pub fn next_token(&mut self) -> LexResult<Token> {
@@ -423,7 +432,7 @@ impl Lexer {
 
                 '"' | '\'' => self.read_string(ch, line, col, start)?,
 
-                c if c.is_alphabetic() || c == '_' => self.read_ident(c, line, col, start),
+                c if c.is_alphabetic() || c == '_' => self.read_ident(c, line, col, start)?,
 
                 '=' => {
                     if self.peek() == Some('=') {

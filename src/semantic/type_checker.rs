@@ -329,6 +329,12 @@ impl TypeChecker {
             ExprKind::Integer(_) => Type::Int,
             ExprKind::Float(_) => Type::Float,
             ExprKind::Str(_) => Type::Str,
+            ExprKind::FStr(exprs) => {
+                for e in exprs {
+                    self.check_expr(e);
+                }
+                Type::Str
+            }
             ExprKind::Bool(_) => Type::Bool,
             ExprKind::Null => Type::Null,
 
