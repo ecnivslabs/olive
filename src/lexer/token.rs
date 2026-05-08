@@ -108,6 +108,22 @@ pub struct Token {
     pub file_id: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommentKind {
+    Line,
+    Block,
+}
+
+/// A comment recovered by the lexer. Comments never enter the token stream; they
+/// are collected on the side so the formatter can re-attach them. `span` holds the
+/// `(start, end)` char offsets of the comment, including its `//` or `/* */` markers.
+#[derive(Debug, Clone)]
+pub struct Comment {
+    pub kind: CommentKind,
+    pub text: String,
+    pub span: (usize, usize),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

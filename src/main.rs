@@ -58,6 +58,12 @@ enum Commands {
     },
     Fmt {
         file: Option<String>,
+        #[arg(long)]
+        check: bool,
+        #[arg(long)]
+        diff: bool,
+        #[arg(long)]
+        stdin: bool,
     },
     Fix {
         file: Option<String>,
@@ -125,7 +131,12 @@ fn main() {
             hybrid,
             release,
         ),
-        Commands::Fmt { file } => commands::project::execute_fmt(file.as_ref()),
+        Commands::Fmt {
+            file,
+            check,
+            diff,
+            stdin,
+        } => commands::project::execute_fmt(file.as_ref(), check, diff, stdin),
         Commands::Fix { file, dry_run } => commands::fix::execute_fix(file.as_ref(), dry_run),
         Commands::Explain { code } => commands::explain::execute_explain(&code),
         Commands::Test { time, release } => commands::build::execute_test(time, release),

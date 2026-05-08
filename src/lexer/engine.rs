@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 use super::error::{LexError, LexResult};
-use super::token::{Token, TokenKind};
+use super::token::{Comment, CommentKind, Token, TokenKind};
 
 pub struct Lexer {
     source: Vec<char>,
@@ -12,6 +12,7 @@ pub struct Lexer {
     pending: VecDeque<Token>,
     delimiter_stack: Vec<(char, usize, usize)>,
     file_id: usize,
+    comments: Vec<Comment>,
 }
 
 impl Lexer {
@@ -25,7 +26,23 @@ impl Lexer {
             pending: VecDeque::new(),
             delimiter_stack: Vec::new(),
             file_id,
+            comments: Vec::new(),
         }
+    }
+
+    /// Comments recovered while lexing, in source order. Populated as a side effect
+    /// of skipping; the token stream itself never contains them.
+    pub fn comments(&self) -> &[Comment] {
+        &self.comments
+    }
+
+    fn record_comment(&mut self, start: usize, kind: CommentKind) {
+        let text: String = self.source[start..self.pos].iter().collect();
+        self.comments.push(Comment {
+            kind,
+            text,
+            span: (start, self.pos),
+        });
     }
 
     fn peek(&self) -> Option<char> {
@@ -84,12 +101,15 @@ impl Lexer {
                 skipped = true;
             }
             if self.peek() == Some('/') && self.peek_next() == Some('/') {
+                let cstart = self.pos;
                 while matches!(self.peek(), Some(c) if c != '\n') {
                     self.advance();
                 }
+                self.record_comment(cstart, CommentKind::Line);
                 skipped = true;
             }
             if self.peek() == Some('/') && self.peek_next() == Some('*') {
+                let cstart = self.pos;
                 self.advance();
                 self.advance();
                 while let Some(c) = self.peek() {
@@ -100,6 +120,7 @@ impl Lexer {
                     }
                     self.advance();
                 }
+                self.record_comment(cstart, CommentKind::Block);
                 skipped = true;
             }
             if !skipped {
@@ -135,12 +156,15 @@ impl Lexer {
         }
 
         if self.peek() == Some('/') && self.peek_next() == Some('/') {
+            let cstart = self.pos;
             while matches!(self.peek(), Some(c) if c != '\n') {
                 self.advance();
             }
+            self.record_comment(cstart, CommentKind::Line);
             return Ok(None);
         }
         if self.peek() == Some('/') && self.peek_next() == Some('*') {
+            let cstart = self.pos;
             self.advance();
             self.advance();
             while let Some(c) = self.peek() {
@@ -151,6 +175,7 @@ impl Lexer {
                 }
                 self.advance();
             }
+            self.record_comment(cstart, CommentKind::Block);
             return Ok(None);
         }
         if matches!(self.peek(), Some('\n') | None) {

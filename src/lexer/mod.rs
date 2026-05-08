@@ -4,4 +4,4 @@ mod tests;
 mod token;
 
 pub use engine::Lexer;
-pub use token::{Token, TokenKind};
+pub use token::{Comment, CommentKind, Token, TokenKind};

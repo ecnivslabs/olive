@@ -1,6 +1,6 @@
 use super::utils::load_config;
 use super::utils::{Config, Pod};
-use crate::fmt::{format_file, walk_and_format};
+use crate::fmt::{self, DEFAULT_WIDTH};
 use crate::tooling;
 use crate::tooling::repl::run_shell;
 use std::collections::HashMap;
@@ -25,6 +25,7 @@ pub fn execute_new(name: &str) {
         dependencies: HashMap::new(),
         workspace: None,
         profile: HashMap::new(),
+        fmt: None,
     };
 
     fs::write(path.join("pit.toml"), toml::to_string(&config).unwrap()).unwrap();
@@ -60,17 +61,35 @@ pub fn execute_upgrade() {
     }
 }
 
-pub fn execute_fmt(file: Option<&String>) {
-    if let Some(f) = file {
-        let path = Path::new(f);
-        if path.is_dir() {
-            walk_and_format(path);
-        } else {
-            format_file(f);
-        }
+pub fn execute_fmt(file: Option<&String>, check: bool, diff: bool, stdin: bool) {
+    let max_width = configured_fmt_width().unwrap_or(DEFAULT_WIDTH);
+    let mode = if stdin {
+        fmt::Mode::Stdin
+    } else if check {
+        fmt::Mode::Check
+    } else if diff {
+        fmt::Mode::Diff
     } else {
-        let _config = load_config();
-        walk_and_format(Path::new("."));
+        fmt::Mode::Write
+    };
+    let code = fmt::execute(file, fmt::Options { max_width, mode });
+    if code != 0 {
+        process::exit(code);
+    }
+}
+
+/// Read `[fmt] max_width` from the nearest `pit.toml`, if any. Unlike `load_config`
+/// this never exits: `pit fmt` must work on a lone file outside a project.
+fn configured_fmt_width() -> Option<usize> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        let candidate = dir.join("pit.toml");
+        if candidate.exists() {
+            let content = fs::read_to_string(&candidate).ok()?;
+            let config: Config = toml::from_str(&content).ok()?;
+            return config.fmt.and_then(|f| f.max_width);
+        }
+        dir = dir.parent()?.to_path_buf();
     }
 }
 

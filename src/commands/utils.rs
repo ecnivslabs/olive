@@ -13,6 +13,14 @@ pub struct Config {
     pub workspace: Option<Workspace>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub profile: HashMap<String, Profile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fmt: Option<FmtConfig>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default)]
+pub struct FmtConfig {
+    #[serde(default)]
+    pub max_width: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
@@ -180,6 +188,7 @@ mod tests {
             dependencies: HashMap::new(),
             workspace: None,
             profile: HashMap::new(),
+            fmt: None,
         };
         let toml_str = toml::to_string(&cfg).unwrap();
         assert!(toml_str.contains("my_app"));
@@ -386,6 +395,7 @@ member_dep = "0.5"
                 members: vec!["sub_crate".into()],
             }),
             profile,
+            fmt: None,
         };
 
         let toml_str = toml::to_string(&cfg).unwrap();

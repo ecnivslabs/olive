@@ -12,14 +12,12 @@ fn main():
         let targets = [
             "https://example.com",
             "https://httpbin.org/get",
-            "https://jsonplaceholder.typicode.com/todos/1"
+            "https://jsonplaceholder.typicode.com/todos/1",
         ]
         print("Dispatching parallel HTTP fetches...")
-        let payloads = await aio.gather([
-            fetch_target(targets[0]),
-            fetch_target(targets[1]),
-            fetch_target(targets[2])
-        ])
+        let payloads = await aio.gather(
+            [fetch_target(targets[0]), fetch_target(targets[1]), fetch_target(targets[2])],
+        )
 
         print("All asynchronous fetches resolved successfully.")
 

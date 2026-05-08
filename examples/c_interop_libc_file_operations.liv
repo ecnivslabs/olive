@@ -16,18 +16,17 @@ fn main():
     unsafe:
         libc.printf("Allocating buffer via malloc...\n")
         let ptr = libc.malloc(1024)
-        
+
         if int(ptr) != 0:
             libc.printf("Buffer allocated successfully at address. Freeing...\n")
             libc.free(ptr)
-        
+
         libc.printf("Opening file descriptor directly via C ABI...\n")
         let fd = libc.open(filepath, flags, mode)
-        
+
         if fd >= 0:
             libc.write(fd, message, len(message))
             libc.close(fd)
             libc.printf("File written and closed safely.\n")
         else:
             libc.printf("Failed to open file descriptor.\n")
-
