@@ -22,7 +22,6 @@ impl Inliner {
                 changed |= self.constant_folding(func);
                 changed |= self.peephole_optimize(func);
                 changed |= self.common_subexpression_elimination(func);
-                changed |= self.copy_propagation(func);
                 changed |= self.dead_code_elimination(func);
             }
         }
@@ -107,8 +106,9 @@ impl Inliner {
                         }
                         
                         if let Some(existing_local) = found {
-                            if *dest != existing_local {
-                                *rval = Rvalue::Use(Operand::Copy(existing_local));
+                            let new_rval = Rvalue::Use(Operand::Copy(existing_local));
+                            if *rval != new_rval {
+                                *rval = new_rval;
                                 changed = true;
                             }
                         } else {
@@ -301,8 +301,10 @@ impl Inliner {
         match op {
             Operand::Copy(l) | Operand::Move(l) => {
                 if let Some(new_l) = map.get(l) {
-                    *l = *new_l;
-                    return true;
+                    if *l != *new_l {
+                        *l = *new_l;
+                        return true;
+                    }
                 }
             }
             _ => {}
@@ -323,8 +325,9 @@ impl Inliner {
                     let bb = &func.basic_blocks[i];
                     for (stmt_idx, stmt) in bb.statements.iter().enumerate() {
                         if let StatementKind::Assign(_, Rvalue::Call { func: Operand::Constant(Constant::Function(name)), args }) = &stmt.kind {
+                            if name == &func.name { continue; }
                             if let Some(target_fn) = fn_map.get(name) {
-                                // Inline small functions.
+                                // Inline small, non-recursive functions.
                                 if target_fn.basic_blocks.len() < 100 {
                                     call_found = Some((stmt_idx, name.clone(), args.clone()));
                                     break;

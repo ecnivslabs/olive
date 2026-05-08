@@ -9,6 +9,7 @@ pub struct CraneliftCodegen<'a> {
     functions: &'a [MirFunction],
     module: JITModule,
     func_ids: HashMap<String, FuncId>,
+    string_pool: HashMap<String, i64>,
 }
 
 impl<'a> CraneliftCodegen<'a> {
@@ -67,6 +68,7 @@ impl<'a> CraneliftCodegen<'a> {
             functions,
             module,
             func_ids: HashMap::default(),
+            string_pool: HashMap::default(),
         }
     }
 
@@ -304,11 +306,11 @@ impl<'a> CraneliftCodegen<'a> {
             }
             
             for stmt in &bb.statements {
-                Self::translate_statement(func, &mut self.module, &self.func_ids, &mut builder, stmt, &vars);
+                Self::translate_statement(func, &mut self.module, &self.func_ids, &mut builder, stmt, &vars, &mut self.string_pool);
             }
             
             if let Some(term) = &bb.terminator {
-                Self::translate_terminator(&mut builder, term, &blocks, &vars);
+                Self::translate_terminator(&mut builder, term, &blocks, &vars, &mut self.string_pool);
             } else {
                 let zero = builder.ins().iconst(types::I64, 0);
                 builder.ins().return_(&[zero]);
@@ -326,16 +328,16 @@ impl<'a> CraneliftCodegen<'a> {
         self.module.define_function(*func_id, &mut ctx).unwrap();
     }
 
-    fn translate_statement(func_mir: &MirFunction, module: &mut JITModule, func_ids: &HashMap<String, FuncId>, builder: &mut FunctionBuilder, stmt: &Statement, vars: &HashMap<Local, Variable>) {
+    fn translate_statement(func_mir: &MirFunction, module: &mut JITModule, func_ids: &HashMap<String, FuncId>, builder: &mut FunctionBuilder, stmt: &Statement, vars: &HashMap<Local, Variable>, string_pool: &mut HashMap<String, i64>) {
         match &stmt.kind {
             StatementKind::Assign(local, rval) => {
-                let val = Self::translate_rvalue(func_mir, module, func_ids, builder, rval, vars);
+                let val = Self::translate_rvalue(func_mir, module, func_ids, builder, rval, vars, string_pool);
                 let var = vars.get(local).unwrap();
                 builder.def_var(*var, val);
             }
             StatementKind::SetAttr(obj, attr, val_op) => {
-                let o = Self::translate_operand(builder, obj, vars);
-                let v = Self::translate_operand(builder, val_op, vars);
+                let o = Self::translate_operand(builder, obj, vars, string_pool);
+                let v = Self::translate_operand(builder, val_op, vars, string_pool);
                 
                 let c_str = std::ffi::CString::new(attr.clone()).unwrap();
                 let attr_ptr = c_str.into_raw() as i64;
@@ -349,11 +351,11 @@ impl<'a> CraneliftCodegen<'a> {
         }
     }
 
-    fn translate_rvalue(func_mir: &MirFunction, module: &mut JITModule, func_ids: &HashMap<String, FuncId>, builder: &mut FunctionBuilder, rval: &Rvalue, vars: &HashMap<Local, Variable>) -> Value {
+    fn translate_rvalue(func_mir: &MirFunction, module: &mut JITModule, func_ids: &HashMap<String, FuncId>, builder: &mut FunctionBuilder, rval: &Rvalue, vars: &HashMap<Local, Variable>, string_pool: &mut HashMap<String, i64>) -> Value {
         match rval {
-            Rvalue::Use(op) => Self::translate_operand(builder, op, vars),
+            Rvalue::Use(op) => Self::translate_operand(builder, op, vars, string_pool),
             Rvalue::Call { func, args } => {
-                let call_args: Vec<Value> = args.iter().map(|a| Self::translate_operand(builder, a, vars)).collect();
+                let call_args: Vec<Value> = args.iter().map(|a| Self::translate_operand(builder, a, vars, string_pool)).collect();
                 
                 if let Operand::Constant(Constant::Function(name)) = func {
                     let (resolved_name, final_call_args) = if name == "print" && !args.is_empty() {
@@ -437,8 +439,8 @@ impl<'a> CraneliftCodegen<'a> {
                 builder.ins().iconst(types::I64, 0)
             }
             Rvalue::BinaryOp(op, lhs, rhs) => {
-                let l = Self::translate_operand(builder, lhs, vars);
-                let r = Self::translate_operand(builder, rhs, vars);
+                let l = Self::translate_operand(builder, lhs, vars, string_pool);
+                let r = Self::translate_operand(builder, rhs, vars, string_pool);
                 use crate::parser::BinOp::*;
                 match op {
                     Add => {
@@ -527,7 +529,7 @@ impl<'a> CraneliftCodegen<'a> {
                 }
             }
             Rvalue::UnaryOp(op, operand) => {
-                let o = Self::translate_operand(builder, operand, vars);
+                let o = Self::translate_operand(builder, operand, vars, string_pool);
                 use crate::parser::UnaryOp::*;
                 match op {
                     Neg => builder.ins().ineg(o),
@@ -540,7 +542,7 @@ impl<'a> CraneliftCodegen<'a> {
                 builder.use_var(*var)
             }
             Rvalue::GetAttr(obj, attr) => {
-                let o = Self::translate_operand(builder, obj, vars);
+                let o = Self::translate_operand(builder, obj, vars, string_pool);
                 let c_str = std::ffi::CString::new(attr.clone()).unwrap();
                 let attr_ptr = c_str.into_raw() as i64;
                 let attr_val = builder.ins().iconst(types::I64, attr_ptr);
@@ -551,8 +553,8 @@ impl<'a> CraneliftCodegen<'a> {
                 builder.inst_results(inst)[0]
             }
             Rvalue::GetIndex(obj, idx) => {
-                let o = Self::translate_operand(builder, obj, vars);
-                let i = Self::translate_operand(builder, idx, vars);
+                let o = Self::translate_operand(builder, obj, vars, string_pool);
+                let i = Self::translate_operand(builder, idx, vars, string_pool);
                 let get_id = func_ids.get("__olive_list_get").unwrap();
                 let local_func = module.declare_func_in_func(*get_id, builder.func);
                 let inst = builder.ins().call(local_func, &[o, i]);
@@ -568,7 +570,7 @@ impl<'a> CraneliftCodegen<'a> {
                 let set_id = func_ids.get("__olive_list_set").unwrap();
                 let set_func = module.declare_func_in_func(*set_id, builder.func);
                 for (idx, op) in ops.iter().enumerate() {
-                    let val = Self::translate_operand(builder, op, vars);
+                    let val = Self::translate_operand(builder, op, vars, string_pool);
                     let idx_val = builder.ins().iconst(types::I64, idx as i64);
                     builder.ins().call(set_func, &[list_ptr, idx_val, val]);
                 }
@@ -577,7 +579,7 @@ impl<'a> CraneliftCodegen<'a> {
         }
     }
 
-    fn translate_operand(builder: &mut FunctionBuilder, op: &Operand, vars: &HashMap<Local, Variable>) -> Value {
+    fn translate_operand(builder: &mut FunctionBuilder, op: &Operand, vars: &HashMap<Local, Variable>, string_pool: &mut HashMap<String, i64>) -> Value {
         match op {
             Operand::Copy(local) => {
                 let var = vars.get(local).unwrap();
@@ -590,25 +592,33 @@ impl<'a> CraneliftCodegen<'a> {
                 builder.def_var(*var, zero);
                 val
             }
-            Operand::Constant(Constant::Int(i)) => builder.ins().iconst(types::I64, *i),
-            Operand::Constant(Constant::Float(f)) => builder.ins().f64const(f64::from_bits(*f)),
-            Operand::Constant(Constant::Str(s)) => {
-                let c_str = std::ffi::CString::new(s.clone()).unwrap();
-                let ptr = c_str.into_raw() as i64;
-                builder.ins().iconst(types::I64, ptr)
-            }
-            Operand::Constant(Constant::Bool(b)) => builder.ins().iconst(types::I64, if *b { 1 } else { 0 }),
+            Operand::Constant(c) => match c {
+                Constant::Int(i) => builder.ins().iconst(types::I64, *i),
+                Constant::Float(f) => builder.ins().f64const(f64::from_bits(*f)),
+                Constant::Bool(b) => builder.ins().iconst(types::I64, if *b { 1 } else { 0 }),
+                Constant::Str(s) => {
+                    if let Some(&ptr) = string_pool.get(s) {
+                        builder.ins().iconst(types::I64, ptr)
+                    } else {
+                        let c_str = std::ffi::CString::new(s.clone()).unwrap();
+                        let ptr = c_str.into_raw() as i64;
+                        string_pool.insert(s.clone(), ptr);
+                        builder.ins().iconst(types::I64, ptr)
+                    }
+                }
+                _ => builder.ins().iconst(types::I64, 0),
+            },
             _ => builder.ins().iconst(types::I64, 0),
         }
     }
 
-    fn translate_terminator(builder: &mut FunctionBuilder, term: &Terminator, blocks: &[Block], vars: &HashMap<Local, Variable>) {
+    fn translate_terminator(builder: &mut FunctionBuilder, term: &Terminator, blocks: &[Block], vars: &HashMap<Local, Variable>, string_pool: &mut HashMap<String, i64>) {
         match &term.kind {
             TerminatorKind::Goto { target } => {
                 builder.ins().jump(blocks[target.0], &[]);
             }
             TerminatorKind::SwitchInt { discr, targets, otherwise } => {
-                let val = Self::translate_operand(builder, discr, vars);
+                let val = Self::translate_operand(builder, discr, vars, string_pool);
                 if targets.len() == 1 && targets[0].0 == 1 {
                     let target_block = blocks[targets[0].1.0];
                     let else_block = blocks[otherwise.0];
@@ -804,29 +814,30 @@ extern "C" fn olive_obj_get(obj: i64, attr: i64) -> i64 {
 
 extern "C" fn olive_memo_get(name_ptr: i64, is_tuple: i64) -> i64 {
     use std::sync::{Mutex, OnceLock};
-    static GLOBAL_CACHES_INT: OnceLock<Mutex<HashMap<i64, i64>>> = OnceLock::new();
-    static GLOBAL_CACHES_TUPLE: OnceLock<Mutex<HashMap<i64, i64>>> = OnceLock::new();
-    
     if is_tuple == 0 {
+        static GLOBAL_CACHES_INT: OnceLock<Mutex<HashMap<String, i64>>> = OnceLock::new();
         let caches_mutex = GLOBAL_CACHES_INT.get_or_init(|| Mutex::new(HashMap::default()));
         let mut caches = caches_mutex.lock().unwrap();
-        if let Some(&cache) = caches.get(&name_ptr) {
+        let name = unsafe { std::ffi::CStr::from_ptr(name_ptr as *const i8) }.to_string_lossy().into_owned();
+        if let Some(&cache) = caches.get(&name) {
             cache
         } else {
             let m: HashMap<i64, i64> = HashMap::default();
             let new_cache = Box::into_raw(Box::new(m)) as i64;
-            caches.insert(name_ptr, new_cache);
+            caches.insert(name, new_cache);
             new_cache
         }
     } else {
+        static GLOBAL_CACHES_TUPLE: OnceLock<Mutex<HashMap<String, i64>>> = OnceLock::new();
         let caches_mutex = GLOBAL_CACHES_TUPLE.get_or_init(|| Mutex::new(HashMap::default()));
         let mut caches = caches_mutex.lock().unwrap();
-        if let Some(&cache) = caches.get(&name_ptr) {
+        let name = unsafe { std::ffi::CStr::from_ptr(name_ptr as *const i8) }.to_string_lossy().into_owned();
+        if let Some(&cache) = caches.get(&name) {
             cache
         } else {
             let m: HashMap<Vec<i64>, i64> = HashMap::default();
             let new_cache = Box::into_raw(Box::new(m)) as i64;
-            caches.insert(name_ptr, new_cache);
+            caches.insert(name, new_cache);
             new_cache
         }
     }
