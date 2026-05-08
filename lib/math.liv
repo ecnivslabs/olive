@@ -1,20 +1,38 @@
-fn sin(x: float) -> float: return __olive_math_sin(x)
-fn cos(x: float) -> float: return __olive_math_cos(x)
-fn tan(x: float) -> float: return __olive_math_tan(x)
-fn asin(x: float) -> float: return __olive_math_asin(x)
-fn acos(x: float) -> float: return __olive_math_acos(x)
-fn atan(x: float) -> float: return __olive_math_atan(x)
-fn atan2(y: float, x: float) -> float: return __olive_math_atan2(y, x)
-fn log(x: float) -> float: return __olive_math_log(x)
-fn log10(x: float) -> float: return __olive_math_log10(x)
-fn exp(x: float) -> float: return __olive_math_exp(x)
+fn sin(x: float) -> float:
+    return __olive_math_sin(x)
+
+fn cos(x: float) -> float:
+    return __olive_math_cos(x)
+
+fn tan(x: float) -> float:
+    return __olive_math_tan(x)
+
+fn asin(x: float) -> float:
+    return __olive_math_asin(x)
+
+fn acos(x: float) -> float:
+    return __olive_math_acos(x)
+
+fn atan(x: float) -> float:
+    return __olive_math_atan(x)
+
+fn atan2(y: float, x: float) -> float:
+    return __olive_math_atan2(y, x)
+
+fn log(x: float) -> float:
+    return __olive_math_log(x)
+
+fn log10(x: float) -> float:
+    return __olive_math_log10(x)
+
+fn exp(x: float) -> float:
+    return __olive_math_exp(x)
 
 const PI = 3.141592653589793
-const E  = 2.718281828459045
+const E = 2.718281828459045
 const TAU = 6.283185307179586
 const INF = 1.0e308
 const _SQRT2 = 1.4142135623730951
-
 
 fn abs(x: float) -> float:
     if x < 0.0:
@@ -49,7 +67,6 @@ fn copysign(x: float, y: float) -> float:
 
 fn isclose(a: float, b: float) -> bool:
     return abs(a - b) < 1.0e-9
-
 
 fn sqrt(x: float) -> float:
     // newton-raphson
@@ -121,7 +138,6 @@ fn atanh(x: float) -> float:
         return 0.0 / 0.0
     return 0.5 * log((1.0 + x) / (1.0 - x))
 
-
 fn round(x: float) -> int:
     if x >= 0.0:
         return floor(x + 0.5)
@@ -143,7 +159,6 @@ fn max(a: float, b: float) -> float:
     if a > b:
         return a
     return b
-
 
 fn factorial(n: int) -> int:
     if n <= 1:
@@ -192,13 +207,11 @@ fn perm(n: int, k: int) -> int:
         i = i + 1
     return result
 
-
 fn degrees(x: float) -> float:
     return x * 180.0 / PI
 
 fn radians(x: float) -> float:
     return x * PI / 180.0
-
 
 fn erf(x: float) -> float:
     // horner-form

@@ -13,8 +13,8 @@ fn upper(s: str) -> str:
 fn lower(s: str) -> str:
     return __olive_str_lower(s)
 
-fn replace(s: str, from: str, to: str) -> str:
-    return __olive_str_replace(s, from, to)
+fn replace(s: str, frm: str, to: str) -> str:
+    return __olive_str_replace(s, frm, to)
 
 fn find(s: str, needle: str) -> int:
     return __olive_str_find(s, needle)
