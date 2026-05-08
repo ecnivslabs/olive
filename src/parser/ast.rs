@@ -8,7 +8,7 @@ fn next_node_id() -> usize {
 
 use crate::span::Span;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeExpr {
     Named(String),
     Generic { name: String, args: Vec<TypeExpr> },
@@ -18,7 +18,7 @@ pub enum TypeExpr {
     MutRef(Box<TypeExpr>),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BinOp {
     Add, Sub, Mul, Div, FloorDiv, Mod, Pow,
     Eq, NotEq, Lt, LtEq, Gt, GtEq,
@@ -27,13 +27,13 @@ pub enum BinOp {
     Is, IsNot,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnaryOp { Neg, Pos, Not }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AugOp { Add, Sub, Mul, Div, FloorDiv, Mod, Pow }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParamKind { Regular, VarArg, KwArg }
 
 #[derive(Debug, Clone)]
@@ -145,6 +145,7 @@ pub enum StmtKind {
         params:      Vec<Param>,
         return_type: Option<TypeExpr>,
         body:        Vec<Stmt>,
+        decorators:  Vec<String>,
     },
     Class {
         name:  String,

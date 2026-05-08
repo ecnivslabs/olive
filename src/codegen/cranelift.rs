@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
@@ -16,6 +16,7 @@ impl<'a> CraneliftCodegen<'a> {
         let mut flag_builder = settings::builder();
         flag_builder.set("use_colocated_libcalls", "false").unwrap();
         flag_builder.set("is_pic", "false").unwrap();
+        flag_builder.set("opt_level", "speed").unwrap();
         let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {
             panic!("host machine is not supported: {}", msg);
         });
@@ -40,6 +41,15 @@ impl<'a> CraneliftCodegen<'a> {
         builder.symbol("__olive_obj_new", olive_obj_new as *const u8);
         builder.symbol("__olive_obj_set", olive_obj_set as *const u8);
         builder.symbol("__olive_obj_get", olive_obj_get as *const u8);
+        builder.symbol("__olive_memo_get", olive_memo_get as *const u8);
+        builder.symbol("__olive_cache_get", olive_cache_get as *const u8);
+        builder.symbol("__olive_cache_set", olive_cache_set as *const u8);
+        builder.symbol("__olive_cache_has", olive_cache_has as *const u8);
+        builder.symbol("__olive_cache_has_tuple", olive_cache_has_tuple as *const u8);
+        builder.symbol("__olive_cache_get_tuple", olive_cache_get_tuple as *const u8);
+        builder.symbol("__olive_cache_set_tuple", olive_cache_set_tuple as *const u8);
+        builder.symbol("__olive_str_len", olive_str_len as *const u8);
+        builder.symbol("__olive_str_get", olive_str_get as *const u8);
         let module = JITModule::new(builder);
         
         Self {
@@ -54,7 +64,7 @@ impl<'a> CraneliftCodegen<'a> {
         print_sig.params.push(AbiParam::new(types::I64));
         print_sig.returns.push(AbiParam::new(types::I64));
         
-        for name in &["__olive_print_int", "__olive_print_str", "__olive_str", "__olive_copy", "__olive_list_new"] {
+        for name in &["__olive_print_int", "__olive_print_str", "__olive_str", "__olive_copy", "__olive_list_new", "__olive_str_len"] {
             let id = self.module
                 .declare_function(name, Linkage::Import, &print_sig)
                 .unwrap();
@@ -99,12 +109,42 @@ impl<'a> CraneliftCodegen<'a> {
         let list_get_id = self.module.declare_function("__olive_list_get", Linkage::Import, &list_get_sig).unwrap();
         self.func_ids.insert("__olive_list_get".to_string(), list_get_id);
 
+        let mut str_get_sig = self.module.make_signature();
+        str_get_sig.params.push(AbiParam::new(types::I64));
+        str_get_sig.params.push(AbiParam::new(types::I64));
+        str_get_sig.returns.push(AbiParam::new(types::I64));
+        let str_get_id = self.module.declare_function("__olive_str_get", Linkage::Import, &str_get_sig).unwrap();
+        self.func_ids.insert("__olive_str_get".to_string(), str_get_id);
+
         let mut obj_set_sig = self.module.make_signature();
         obj_set_sig.params.push(AbiParam::new(types::I64));
         obj_set_sig.params.push(AbiParam::new(types::I64));
         obj_set_sig.params.push(AbiParam::new(types::I64));
+        obj_set_sig.returns.push(AbiParam::new(types::I64));
         let obj_set_id = self.module.declare_function("__olive_obj_set", Linkage::Import, &obj_set_sig).unwrap();
         self.func_ids.insert("__olive_obj_set".to_string(), obj_set_id);
+
+        let mut cache_set_sig = self.module.make_signature();
+        cache_set_sig.params.push(AbiParam::new(types::I64));
+        cache_set_sig.params.push(AbiParam::new(types::I64));
+        cache_set_sig.params.push(AbiParam::new(types::I64));
+        cache_set_sig.returns.push(AbiParam::new(types::I64));
+        let cache_set_id = self.module.declare_function("__olive_cache_set", Linkage::Import, &cache_set_sig).unwrap();
+        self.func_ids.insert("__olive_cache_set".to_string(), cache_set_id);
+
+        let mut cache_get_sig = self.module.make_signature();
+        cache_get_sig.params.push(AbiParam::new(types::I64));
+        cache_get_sig.params.push(AbiParam::new(types::I64));
+        cache_get_sig.returns.push(AbiParam::new(types::I64));
+        let cache_get_id = self.module.declare_function("__olive_cache_get", Linkage::Import, &cache_get_sig).unwrap();
+        self.func_ids.insert("__olive_cache_get".to_string(), cache_get_id);
+
+        let mut cache_has_sig = self.module.make_signature();
+        cache_has_sig.params.push(AbiParam::new(types::I64));
+        cache_has_sig.params.push(AbiParam::new(types::I64));
+        cache_has_sig.returns.push(AbiParam::new(types::I64));
+        let cache_has_id = self.module.declare_function("__olive_cache_has", Linkage::Import, &cache_has_sig).unwrap();
+        self.func_ids.insert("__olive_cache_has".to_string(), cache_has_id);
 
         let mut obj_get_sig = self.module.make_signature();
         obj_get_sig.params.push(AbiParam::new(types::I64));
@@ -112,6 +152,32 @@ impl<'a> CraneliftCodegen<'a> {
         obj_get_sig.returns.push(AbiParam::new(types::I64));
         let obj_get_id = self.module.declare_function("__olive_obj_get", Linkage::Import, &obj_get_sig).unwrap();
         self.func_ids.insert("__olive_obj_get".to_string(), obj_get_id);
+
+        let mut memo_sig = self.module.make_signature();
+        memo_sig.params.push(AbiParam::new(types::I64)); // fn name string ptr
+        memo_sig.params.push(AbiParam::new(types::I64)); // is_tuple bool
+        memo_sig.returns.push(AbiParam::new(types::I64)); // cache dict ptr
+        let memo_id = self.module.declare_function("__olive_memo_get", Linkage::Import, &memo_sig).unwrap();
+        self.func_ids.insert("__olive_memo_get".to_string(), memo_id);
+
+        let mut cache_tuple_sig = self.module.make_signature();
+        cache_tuple_sig.params.push(AbiParam::new(types::I64)); // cache
+        cache_tuple_sig.params.push(AbiParam::new(types::I64)); // key (ptr)
+        cache_tuple_sig.returns.push(AbiParam::new(types::I64));
+        
+        let id = self.module.declare_function("__olive_cache_has_tuple", Linkage::Import, &cache_tuple_sig).unwrap();
+        self.func_ids.insert("__olive_cache_has_tuple".to_string(), id);
+
+        let id = self.module.declare_function("__olive_cache_get_tuple", Linkage::Import, &cache_tuple_sig).unwrap();
+        self.func_ids.insert("__olive_cache_get_tuple".to_string(), id);
+
+        let mut cache_set_tuple_sig = self.module.make_signature();
+        cache_set_tuple_sig.params.push(AbiParam::new(types::I64)); // cache
+        cache_set_tuple_sig.params.push(AbiParam::new(types::I64)); // key (ptr)
+        cache_set_tuple_sig.params.push(AbiParam::new(types::I64)); // val
+        cache_set_tuple_sig.returns.push(AbiParam::new(types::I64));
+        let id = self.module.declare_function("__olive_cache_set_tuple", Linkage::Import, &cache_set_tuple_sig).unwrap();
+        self.func_ids.insert("__olive_cache_set_tuple".to_string(), id);
 
         for func in self.functions {
             let mut sig = self.module.make_signature();
@@ -132,6 +198,15 @@ impl<'a> CraneliftCodegen<'a> {
         }
     }
 
+    pub fn finalize(&mut self) {
+        self.module.finalize_definitions().unwrap();
+    }
+
+    pub fn get_function(&mut self, name: &str) -> Option<*const u8> {
+        let func_id = self.func_ids.get(name)?;
+        Some(self.module.get_finalized_function(*func_id))
+    }
+
     fn translate_function(&mut self, func: &MirFunction) {
         let mut ctx = self.module.make_context();
 
@@ -144,7 +219,7 @@ impl<'a> CraneliftCodegen<'a> {
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
 
         let blocks: Vec<Block> = func.basic_blocks.iter().map(|_| builder.create_block()).collect();
-        let mut vars = HashMap::new();
+        let mut vars = HashMap::default();
 
         for (i, decl) in func.locals.iter().enumerate() {
             let var = builder.declare_var(cl_type(&decl.ty));
@@ -159,6 +234,7 @@ impl<'a> CraneliftCodegen<'a> {
                 builder.append_block_params_for_function_params(blocks[i]);
                 let params: Vec<Value> = builder.block_params(blocks[i]).to_vec();
                 
+                /*
                 for (local_idx, decl) in func.locals.iter().enumerate() {
                     let var = vars.get(&Local(local_idx)).unwrap();
                     let zero = if cl_type(&decl.ty) == types::F64 {
@@ -168,6 +244,7 @@ impl<'a> CraneliftCodegen<'a> {
                     };
                     builder.def_var(*var, zero);
                 }
+                */
 
                 for (j, val) in params.iter().enumerate() {
                     let var = vars.get(&Local(j + 1)).unwrap();
@@ -434,7 +511,7 @@ impl<'a> CraneliftCodegen<'a> {
                 val
             }
             Operand::Constant(Constant::Int(i)) => builder.ins().iconst(types::I64, *i),
-            Operand::Constant(Constant::Float(f)) => builder.ins().f64const(*f),
+            Operand::Constant(Constant::Float(f)) => builder.ins().f64const(f64::from_bits(*f)),
             Operand::Constant(Constant::Str(s)) => {
                 let c_str = std::ffi::CString::new(s.clone()).unwrap();
                 let ptr = c_str.into_raw() as i64;
@@ -475,15 +552,6 @@ impl<'a> CraneliftCodegen<'a> {
                 builder.ins().return_(&[zero]);
             }
         }
-    }
-    
-    pub fn finalize(&mut self) {
-        self.module.finalize_definitions().unwrap();
-    }
-
-    pub fn get_function(&mut self, name: &str) -> Option<*const u8> {
-        let id = self.func_ids.get(name)?;
-        Some(self.module.get_finalized_function(*id))
     }
 }
 
@@ -568,15 +636,32 @@ extern "C" fn olive_list_get(list: i64, index: i64) -> i64 {
 }
 
 extern "C" fn olive_obj_new() -> i64 {
-    let m: HashMap<String, i64> = HashMap::new();
+    let m: HashMap<String, i64> = HashMap::default();
     Box::into_raw(Box::new(m)) as i64
 }
 
-extern "C" fn olive_obj_set(obj: i64, attr: i64, val: i64) {
-    if obj == 0 || attr == 0 { return; }
+extern "C" fn olive_obj_set(obj: i64, attr: i64, val: i64) -> i64 {
+    if obj == 0 || attr == 0 { return obj; }
     let m = unsafe { &mut *(obj as *mut HashMap<String, i64>) };
     let s = unsafe { std::ffi::CStr::from_ptr(attr as *const i8) }.to_string_lossy().into_owned();
     m.insert(s, val);
+    obj
+}
+
+extern "C" fn olive_str_len(s: i64) -> i64 {
+    if s == 0 { return 0; }
+    let s = unsafe { std::ffi::CStr::from_ptr(s as *const i8) };
+    s.to_bytes().len() as i64
+}
+
+extern "C" fn olive_str_get(s: i64, i: i64) -> i64 {
+    if s == 0 { return 0; }
+    let s = unsafe { std::ffi::CStr::from_ptr(s as *const i8) }.to_bytes();
+    if (i as usize) < s.len() {
+        s[i as usize] as i64
+    } else {
+        0
+    }
 }
 
 extern "C" fn olive_obj_get(obj: i64, attr: i64) -> i64 {
@@ -584,4 +669,75 @@ extern "C" fn olive_obj_get(obj: i64, attr: i64) -> i64 {
     let m = unsafe { &*(obj as *const HashMap<String, i64>) };
     let s = unsafe { std::ffi::CStr::from_ptr(attr as *const i8) }.to_string_lossy();
     *m.get(s.as_ref()).unwrap_or(&0)
+}
+
+extern "C" fn olive_memo_get(name_ptr: i64, is_tuple: i64) -> i64 {
+    use std::sync::{Mutex, OnceLock};
+    static GLOBAL_CACHES_INT: OnceLock<Mutex<HashMap<i64, i64>>> = OnceLock::new();
+    static GLOBAL_CACHES_TUPLE: OnceLock<Mutex<HashMap<i64, i64>>> = OnceLock::new();
+    
+    if is_tuple == 0 {
+        let caches_mutex = GLOBAL_CACHES_INT.get_or_init(|| Mutex::new(HashMap::default()));
+        let mut caches = caches_mutex.lock().unwrap();
+        if let Some(&cache) = caches.get(&name_ptr) {
+            cache
+        } else {
+            let m: HashMap<i64, i64> = HashMap::default();
+            let new_cache = Box::into_raw(Box::new(m)) as i64;
+            caches.insert(name_ptr, new_cache);
+            new_cache
+        }
+    } else {
+        let caches_mutex = GLOBAL_CACHES_TUPLE.get_or_init(|| Mutex::new(HashMap::default()));
+        let mut caches = caches_mutex.lock().unwrap();
+        if let Some(&cache) = caches.get(&name_ptr) {
+            cache
+        } else {
+            let m: HashMap<Vec<i64>, i64> = HashMap::default();
+            let new_cache = Box::into_raw(Box::new(m)) as i64;
+            caches.insert(name_ptr, new_cache);
+            new_cache
+        }
+    }
+}
+
+extern "C" fn olive_cache_get(cache: i64, key: i64) -> i64 {
+    if cache == 0 { return 0; }
+    let m = unsafe { &*(cache as *const HashMap<i64, i64>) };
+    *m.get(&key).unwrap_or(&0)
+}
+
+extern "C" fn olive_cache_has(cache: i64, key: i64) -> i64 {
+    if cache == 0 { return 0; }
+    let m = unsafe { &*(cache as *const HashMap<i64, i64>) };
+    if m.contains_key(&key) { 1 } else { 0 }
+}
+
+extern "C" fn olive_cache_set(cache: i64, key: i64, val: i64) -> i64 {
+    if cache == 0 { return cache; }
+    let m = unsafe { &mut *(cache as *mut HashMap<i64, i64>) };
+    m.insert(key, val);
+    cache
+}
+
+extern "C" fn olive_cache_has_tuple(cache: i64, key_ptr: i64) -> i64 {
+    if cache == 0 || key_ptr == 0 { return 0; }
+    let m = unsafe { &*(cache as *const HashMap<Vec<i64>, i64>) };
+    let v = unsafe { &*(key_ptr as *const Vec<i64>) };
+    if m.contains_key(v) { 1 } else { 0 }
+}
+
+extern "C" fn olive_cache_get_tuple(cache: i64, key_ptr: i64) -> i64 {
+    if cache == 0 || key_ptr == 0 { return 0; }
+    let m = unsafe { &*(cache as *const HashMap<Vec<i64>, i64>) };
+    let v = unsafe { &*(key_ptr as *const Vec<i64>) };
+    *m.get(v).unwrap_or(&0)
+}
+
+extern "C" fn olive_cache_set_tuple(cache: i64, key_ptr: i64, val: i64) -> i64 {
+    if cache == 0 || key_ptr == 0 { return cache; }
+    let m = unsafe { &mut *(cache as *mut HashMap<Vec<i64>, i64>) };
+    let v = unsafe { &*(key_ptr as *const Vec<i64>) };
+    m.insert(v.clone(), val);
+    cache
 }

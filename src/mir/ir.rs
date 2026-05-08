@@ -11,7 +11,7 @@ pub struct Local(pub usize);
 pub struct BasicBlockId(pub usize);
 
 // Operand: constant or local reference.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum Operand {
     // Shared access to a local.
@@ -22,19 +22,19 @@ pub enum Operand {
     Constant(Constant),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum Constant {
     Int(i64),
-    Float(f64),
+    Float(u64), // Use bits to allow Eq/Hash
     Str(String),
     Bool(bool),
     Function(String),
-    Null,
+    None,
 }
 
 // RHS expressions that compute a value.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum Rvalue {
     // Just use the operand.
@@ -61,7 +61,7 @@ pub enum Rvalue {
 }
 
 // Aggregate value kinds (list, tuple, etc).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AggregateKind {
     Tuple,
     List,
@@ -71,14 +71,14 @@ pub enum AggregateKind {
 }
 
 // Block statement.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Statement {
     pub kind: StatementKind,
     #[allow(dead_code)]
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum StatementKind {
     // local = rvalue
@@ -96,7 +96,7 @@ pub enum StatementKind {
 }
 
 // Block terminator.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TerminatorKind {
     // Unconditional branch.
     Goto { target: BasicBlockId },
@@ -112,21 +112,21 @@ pub enum TerminatorKind {
     Unreachable,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Terminator {
     pub kind: TerminatorKind,
     pub span: Span,
 }
 
 // Sequence of statements ending with a terminator.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BasicBlock {
     pub statements: Vec<Statement>,
     pub terminator: Option<Terminator>,
 }
 
 // Metadata for a local.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
 pub struct LocalDecl {
     pub ty: Type,
@@ -136,11 +136,10 @@ pub struct LocalDecl {
 }
 
 // MIR function.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MirFunction {
     pub name: String,
     pub locals: Vec<LocalDecl>,
     pub basic_blocks: Vec<BasicBlock>,
     pub arg_count: usize,
 }
-

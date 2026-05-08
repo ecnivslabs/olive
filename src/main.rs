@@ -12,7 +12,8 @@ use semantic::{Resolver, TypeChecker};
 use mir::MirBuilder;
 use borrow_check::BorrowChecker;
 use codegen::cranelift::CraneliftCodegen;
-use std::{fs, process, path::Path, collections::{HashSet, HashMap}};
+use std::{fs, process, path::Path, collections::HashSet};
+use rustc_hash::FxHashMap as HashMap;
 use clap::Parser as ClapParser;
 use ariadne::{Report, ReportKind, Label, Source};
 
@@ -33,6 +34,10 @@ struct Cli {
     // Print the MIR blocks
     #[arg(long)]
     emit_mir: bool,
+
+    // Show timing report
+    #[arg(short, long)]
+    time: bool,
 }
 
 // Pretty-print semantic errors using Ariadne.
@@ -104,7 +109,7 @@ fn main() {
     let mut loaded = HashSet::new();
     loaded.insert(filename.to_string());
     let mut file_id_counter = 0;
-    let mut sources = HashMap::new();
+    let mut sources = HashMap::default();
     let combined_stmts = load_and_parse(filename, &mut loaded, &mut file_id_counter, &mut sources);
     let program = parser::Program { stmts: combined_stmts };
 
@@ -139,7 +144,14 @@ fn main() {
         println!("{:#?}", mir_builder.functions);
     }
 
+    // Optimization pass.
+    let opt_start = std::time::Instant::now();
+    let inliner = mir::Inliner::new();
+    inliner.run(&mut mir_builder.functions);
+    let opt_duration = opt_start.elapsed();
+
     // Ownership/borrow checking.
+    let borrow_start = std::time::Instant::now();
     for func in &mir_builder.functions {
         let mut checker = BorrowChecker::new(func);
         checker.check();
@@ -155,20 +167,41 @@ fn main() {
             process::exit(1);
         }
     }
+    let borrow_duration = borrow_start.elapsed();
+
+    let cg_start = std::time::Instant::now();
+    let mut codegen = CraneliftCodegen::new(&mir_builder.functions);
+    codegen.generate();
+    codegen.finalize();
+    let cg_duration = cg_start.elapsed();
+
+    if cli.emit_mir {
+        println!("{:#?}", mir_builder.functions);
+    }
 
     if cli.check {
         println!("Check finished successfully.");
         return;
     }
 
-    let mut codegen = CraneliftCodegen::new(&mir_builder.functions);
-    codegen.generate();
-    codegen.finalize();
-
     // Execute the entry point.
     if let Some(main_ptr) = codegen.get_function("__main__") {
         let main_fn: extern "C" fn() -> i64 = unsafe { std::mem::transmute(main_ptr) };
+        let exec_start = std::time::Instant::now();
         let _result = main_fn();
+        let exec_duration = exec_start.elapsed();
+        
+        if cli.time {
+            println!("\n\x1b[1;32m   Olive Execution Report\x1b[0m");
+            println!("\x1b[1;34m   ────────────────────────\x1b[0m");
+            println!("   \x1b[1mOptimization:\x1b[0m  {:?}", opt_duration);
+            println!("   \x1b[1mBorrow Check:\x1b[0m  {:?}", borrow_duration);
+            println!("   \x1b[1mCodegen (JIT):\x1b[0m {:?}", cg_duration);
+            println!("   \x1b[1mExecution:\x1b[0m     {:?}", exec_duration);
+            println!("\x1b[1;34m   ────────────────────────\x1b[0m");
+            println!("   \x1b[1mTotal Startup:\x1b[0m {:?}", opt_duration + borrow_duration + cg_duration);
+            println!();
+        }
     } else {
         println!("No `main` function found to execute.");
     }

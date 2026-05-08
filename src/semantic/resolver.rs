@@ -31,6 +31,12 @@ impl Resolver {
             span: Span::default(),
             is_private: false,
         });
+        table.define(Symbol {
+            name: "len".to_string(),
+            kind: SymbolKind::Function,
+            span: Span::default(),
+            is_private: false,
+        });
         Self { table, errors: Vec::new(), current_file_id: 0 }
     }
 

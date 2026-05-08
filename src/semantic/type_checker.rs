@@ -33,9 +33,17 @@ impl TypeChecker {
         let mut global_env = HashMap::default();
         
         // Register built-in standard library functions.
-        global_env.insert("print".to_string(), Type::Fn(vec![Type::Any], Box::new(Type::Int)));
-        global_env.insert("str".to_string(), Type::Fn(vec![Type::Any], Box::new(Type::Str)));
-        global_env.insert("type".to_string(), Type::Fn(vec![Type::Any], Box::new(Type::Str)));
+        // Optimization: Use static strings and pre-defined types.
+        let builtins = [
+            ("print", Type::Fn(vec![Type::Any], Box::new(Type::Int))),
+            ("str", Type::Fn(vec![Type::Any], Box::new(Type::Str))),
+            ("type", Type::Fn(vec![Type::Any], Box::new(Type::Str))),
+            ("len", Type::Fn(vec![Type::Any], Box::new(Type::Int))),
+        ];
+
+        for (name, ty) in builtins {
+            global_env.insert(name.to_string(), ty);
+        }
 
         Self {
             substitutions: HashMap::default(),
@@ -164,7 +172,7 @@ impl TypeChecker {
                 }
             }
 
-            StmtKind::Fn { name, params, return_type, body } => {
+            StmtKind::Fn { name, params, return_type, body, .. } => {
                 let ret_ty = return_type
                     .as_ref()
                     .map(|ann| self.resolve_type_expr(ann))
@@ -452,7 +460,11 @@ impl TypeChecker {
             ExprKind::Index { obj, index } => {
                 let obj_ty = self.check_expr(obj);
                 let idx_ty = self.check_expr(index);
-                match self.apply_subst(obj_ty) {
+                let mut current_obj_ty = self.apply_subst(obj_ty);
+                while let Type::Ref(inner) | Type::MutRef(inner) = current_obj_ty {
+                    current_obj_ty = *inner;
+                }
+                match current_obj_ty {
                     Type::List(inner) => {
                         self.unify(&Type::Int, &idx_ty, expr.span);
                         *inner

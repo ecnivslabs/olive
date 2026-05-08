@@ -22,6 +22,7 @@ pub struct MirBuilder<'a> {
     current_arg_count: usize,
     var_map: Vec<HashMap<String, Local>>,
     loop_stack: Vec<LoopContext>,
+    memo_context: Option<(Operand, Operand, BasicBlockId)>, // (cache, key, exit_block)
     pub class_hierarchy: HashMap<String, Vec<String>>,
 }
 
@@ -37,6 +38,7 @@ impl<'a> MirBuilder<'a> {
             current_arg_count: 0,
             var_map: Vec::new(),
             loop_stack: Vec::new(),
+            memo_context: None,
             class_hierarchy: HashMap::default(),
         }
     }
@@ -66,11 +68,12 @@ impl<'a> MirBuilder<'a> {
         self.current_arg_count = arg_count;
         self.enter_scope();
 
-        // _0 is always the return value local.
-        self.new_local(Type::Any, Some("_return".to_string()), true);
-
         let start_bb = self.new_block();
         self.current_block = Some(start_bb);
+
+        // _0 is always the return value local.
+        let ret = self.new_local(Type::Any, Some("_return".to_string()), true);
+        self.push_statement(StatementKind::Assign(ret, Rvalue::Use(Operand::Constant(Constant::Int(0)))), Span::default());
     }
 
     fn finish_function(&mut self) {
@@ -217,14 +220,22 @@ impl<'a> MirBuilder<'a> {
                 let rval = self.lower_expr(expr);
                 self.push_statement(StatementKind::Assign(Local(0), Rvalue::Use(rval)), stmt.span);
                 if let Some(bb) = self.current_block {
-                    self.terminate_block(bb, TerminatorKind::Return, Span::default());
+                    if let Some((_, _, exit_bb)) = self.memo_context {
+                        self.terminate_block(bb, TerminatorKind::Goto { target: exit_bb }, stmt.span);
+                    } else {
+                        self.terminate_block(bb, TerminatorKind::Return, stmt.span);
+                    }
                 }
                 self.current_block = Some(self.new_block());
             }
 
             StmtKind::Return(None) => {
                 if let Some(bb) = self.current_block {
-                    self.terminate_block(bb, TerminatorKind::Return, Span::default());
+                    if let Some((_, _, exit_bb)) = self.memo_context {
+                        self.terminate_block(bb, TerminatorKind::Goto { target: exit_bb }, stmt.span);
+                    } else {
+                        self.terminate_block(bb, TerminatorKind::Return, stmt.span);
+                    }
                 }
                 self.current_block = Some(self.new_block());
             }
@@ -366,7 +377,9 @@ impl<'a> MirBuilder<'a> {
     }
 
     fn lower_fn_def(&mut self, stmt: &Stmt) {
-        if let StmtKind::Fn { name, params, body, .. } = &stmt.kind {
+        if let StmtKind::Fn { name, params, body, decorators, .. } = &stmt.kind {
+            let is_memo = decorators.iter().any(|d| d == "memo");
+
             // Save builder state.
             let saved_name = std::mem::take(&mut self.current_name);
             let saved_locals = std::mem::take(&mut self.current_locals);
@@ -379,17 +392,111 @@ impl<'a> MirBuilder<'a> {
             self.start_function(name.clone(), params.len());
 
             // Declare parameters as locals.
+            let mut param_locals = Vec::new();
             for param in params {
-                self.declare_var(param.name.clone(), Type::Any, param.is_mut);
+                let ty = param.type_ann.as_ref()
+                    .map(|ann| self.resolve_type_expr(ann))
+                    .unwrap_or(Type::Any);
+                let local = self.declare_var(param.name.clone(), ty, param.is_mut);
+                param_locals.push(local);
             }
 
-            for s in body {
-                self.lower_stmt(s);
+            if is_memo {
+                // Memoization Logic:
+                // 1. Get/Create the global cache for this function name.
+                // For now, we use a global object.
+                let cache_tmp = self.new_local(Type::Any, Some("cache".to_string()), false);
+                let fn_name_const = Operand::Constant(Constant::Str(name.clone()));
+                
+                let is_tuple_val = if param_locals.len() > 1 { 1 } else { 0 };
+                // We'll add a native __olive_memo_get to return a persistent dict for this name.
+                self.push_statement(StatementKind::Assign(cache_tmp, Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("__olive_memo_get".to_string())),
+                    args: vec![fn_name_const, Operand::Constant(Constant::Int(is_tuple_val))],
+                }), stmt.span);
+
+                // 2. Check if key (for now, assume single arg) exists.
+                // TODO: Support multiple args by packing into a tuple.
+                let key = if param_locals.len() == 1 {
+                    Operand::Copy(param_locals[0])
+                } else {
+                    // Pack args into a tuple for the key.
+                    let tuple_tmp = self.new_local(Type::Any, None, false);
+                    let ops = param_locals.iter().map(|l| Operand::Copy(*l)).collect();
+                    self.push_statement(StatementKind::Assign(tuple_tmp, Rvalue::Aggregate(AggregateKind::Tuple, ops)), stmt.span);
+                    Operand::Copy(tuple_tmp)
+                };
+
+                let (has_fn, get_fn, set_fn) = if param_locals.len() == 1 {
+                    ("__olive_cache_has", "__olive_cache_get", "__olive_cache_set")
+                } else {
+                    ("__olive_cache_has_tuple", "__olive_cache_get_tuple", "__olive_cache_set_tuple")
+                };
+
+                let cond_tmp = self.new_local(Type::Bool, None, false);
+                self.push_statement(StatementKind::Assign(cond_tmp, Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(has_fn.to_string())),
+                    args: vec![Operand::Copy(cache_tmp), key.clone()],
+                }), stmt.span);
+
+                let body_bb = self.new_block();
+                let return_bb = self.new_block();
+                let exit_bb = self.new_block();
+
+                self.memo_context = Some((Operand::Copy(cache_tmp), key.clone(), exit_bb));
+
+                let cur_bb = self.current_block.unwrap();
+                self.terminate_block(cur_bb, TerminatorKind::SwitchInt {
+                    discr: Operand::Copy(cond_tmp),
+                    targets: vec![(1, return_bb)],
+                    otherwise: body_bb,
+                }, stmt.span);
+
+                // Return block (Cache hit):
+                self.current_block = Some(return_bb);
+                let hit_tmp = self.new_local(Type::Any, Some("cache_hit".to_string()), false);
+                self.push_statement(StatementKind::Assign(hit_tmp, Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(get_fn.to_string())),
+                    args: vec![Operand::Copy(cache_tmp), key.clone()],
+                }), stmt.span);
+                self.push_statement(StatementKind::Assign(Local(0), Rvalue::Use(Operand::Copy(hit_tmp))), stmt.span);
+                self.terminate_block(return_bb, TerminatorKind::Return, stmt.span);
+
+                // Body block:
+                self.current_block = Some(body_bb);
+                for s in body {
+                    self.lower_stmt(s);
+                }
+                
+                // After body, if not terminated, go to exit block.
+                if let Some(bb) = self.current_block {
+                    self.terminate_block(bb, TerminatorKind::Goto { target: exit_bb }, stmt.span);
+                }
+
+                // Exit block: Store result in cache and return.
+                self.current_block = Some(exit_bb);
+                let (cache_val, key_val, _) = self.memo_context.as_ref().unwrap().clone();
+                let res_local = Local(0); // return value
+                let dummy = self.new_local(Type::Any, None, false);
+                self.push_statement(StatementKind::Assign(dummy, Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(set_fn.to_string())),
+                    args: vec![cache_val, key_val, Operand::Copy(res_local)],
+                }), stmt.span);
+                self.terminate_block(exit_bb, TerminatorKind::Return, stmt.span);
+                
+                self.memo_context = None;
+
+            } else {
+                // Regular body.
+                for s in body {
+                    self.lower_stmt(s);
+                }
+
+                if let Some(bb) = self.current_block {
+                    self.terminate_block(bb, TerminatorKind::Return, Span::default());
+                }
             }
 
-            if let Some(bb) = self.current_block {
-                self.terminate_block(bb, TerminatorKind::Return, Span::default());
-            }
             self.finish_function();
 
             // Restore builder state.
@@ -400,9 +507,39 @@ impl<'a> MirBuilder<'a> {
             self.var_map = saved_var_map;
             self.loop_stack = saved_loop_stack;
             self.current_arg_count = saved_arg_count;
+        }
+    }
 
-            // Functions are currently resolved statically by name during codegen,
-            // so we don't declare them as local variables containing function pointers yet.
+    fn resolve_type_expr(&self, expr: &crate::parser::TypeExpr) -> Type {
+        match expr {
+            crate::parser::TypeExpr::Named(name) => match name.as_str() {
+                "int" => Type::Int,
+                "float" => Type::Float,
+                "str" => Type::Str,
+                "bool" => Type::Bool,
+                "None" => Type::Null,
+                "Any" => Type::Any,
+                "Never" => Type::Never,
+                _ => Type::Class(name.clone()),
+            },
+            crate::parser::TypeExpr::Generic { name, args } => match (name.as_str(), args.len()) {
+                ("list", 1) => Type::List(Box::new(self.resolve_type_expr(&args[0]))),
+                ("set", 1) => Type::Set(Box::new(self.resolve_type_expr(&args[0]))),
+                ("dict", 2) => Type::Dict(
+                    Box::new(self.resolve_type_expr(&args[0])),
+                    Box::new(self.resolve_type_expr(&args[1])),
+                ),
+                _ => Type::Class(name.clone()),
+            },
+            crate::parser::TypeExpr::Tuple(types) => {
+                Type::Tuple(types.iter().map(|t| self.resolve_type_expr(t)).collect())
+            }
+            crate::parser::TypeExpr::Fn { params, ret } => Type::Fn(
+                params.iter().map(|t| self.resolve_type_expr(t)).collect(),
+                Box::new(self.resolve_type_expr(ret)),
+            ),
+            crate::parser::TypeExpr::Ref(inner) => Type::Ref(Box::new(self.resolve_type_expr(inner))),
+            crate::parser::TypeExpr::MutRef(inner) => Type::MutRef(Box::new(self.resolve_type_expr(inner))),
         }
     }
 
@@ -602,7 +739,7 @@ impl<'a> MirBuilder<'a> {
     fn lower_expr(&mut self, expr: &Expr) -> Operand {
         match &expr.kind {
             ExprKind::Integer(i) => Operand::Constant(Constant::Int(*i)),
-            ExprKind::Float(f) => Operand::Constant(Constant::Float(*f)),
+            ExprKind::Float(f) => Operand::Constant(Constant::Float((*f).to_bits())),
             ExprKind::Str(s) => Operand::Constant(Constant::Str(s.clone())),
             ExprKind::FStr(exprs) => {
                 if exprs.is_empty() {
@@ -644,7 +781,7 @@ impl<'a> MirBuilder<'a> {
                 current_res.unwrap()
             }
             ExprKind::Bool(b) => Operand::Constant(Constant::Bool(*b)),
-            ExprKind::Null => Operand::Constant(Constant::Null),
+            ExprKind::Null => Operand::Constant(Constant::None),
 
             ExprKind::Borrow(inner) => {
                 let tmp = self.new_tmp_for_expr(expr);
@@ -736,6 +873,32 @@ impl<'a> MirBuilder<'a> {
                         let arg_ty = self.get_type(arg_expr.id);
                         let type_str = format!("<class '{}'>", arg_ty);
                         return Operand::Constant(Constant::Str(type_str));
+                }
+
+                if let ExprKind::Identifier(name) = &callee.kind
+                    && name == "len" && !args.is_empty() {
+                        let arg_expr = match &args[0] {
+                            CallArg::Positional(e) | CallArg::Keyword(_, e)
+                            | CallArg::Splat(e) | CallArg::KwSplat(e) => e,
+                        };
+                        let arg_ty = self.get_type(arg_expr.id);
+                        let mut current_arg_ty = arg_ty;
+                        while let Type::Ref(inner) | Type::MutRef(inner) = current_arg_ty {
+                            current_arg_ty = *inner;
+                        }
+
+                        if current_arg_ty == Type::Str {
+                            let arg_op = self.lower_expr(arg_expr);
+                            let tmp = self.new_local(Type::Int, None, false);
+                            self.push_statement(StatementKind::Assign(
+                                tmp,
+                                Rvalue::Call {
+                                    func: Operand::Constant(Constant::Function("__olive_str_len".to_string())),
+                                    args: vec![arg_op],
+                                },
+                            ), expr.span);
+                            return Operand::Copy(tmp);
+                        }
                 }
 
                 // If the callee is an attribute access, it's a method call.
@@ -880,6 +1043,25 @@ impl<'a> MirBuilder<'a> {
             }
 
             ExprKind::Index { obj, index } => {
+                let obj_ty = self.get_type(obj.id);
+                let mut current_obj_ty = obj_ty;
+                while let Type::Ref(inner) | Type::MutRef(inner) = current_obj_ty {
+                    current_obj_ty = *inner;
+                }
+
+                if current_obj_ty == Type::Str {
+                    let o = self.lower_expr(obj);
+                    let i = self.lower_expr(index);
+                    let tmp = self.new_local(Type::Any, None, false);
+                    self.push_statement(StatementKind::Assign(
+                        tmp,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function("__olive_str_get".to_string())),
+                            args: vec![o, i],
+                        },
+                    ), expr.span);
+                    return Operand::Copy(tmp);
+                }
                 let o = self.lower_expr(obj);
                 let i = self.lower_expr(index);
                 let tmp = self.new_tmp_for_expr(expr);

@@ -118,6 +118,7 @@ impl Parser {
             TokenKind::Import   => self.parse_import(),
             TokenKind::From     => self.parse_from_import(),
             TokenKind::Let      => self.parse_let(),
+            TokenKind::At       => self.parse_decorated(),
             TokenKind::Pass     => {
                 let s = self.peek().clone();
                 self.advance(); self.eat_stmt_end()?;
@@ -135,6 +136,24 @@ impl Parser {
             }
             _ => self.parse_expr_or_assign(),
         }
+    }
+
+    fn parse_decorated(&mut self) -> ParseResult<Stmt> {
+        let mut decorators = Vec::new();
+        while self.peek().kind == TokenKind::At {
+            self.advance();
+            let name = self.expect(TokenKind::Identifier)?.value;
+            decorators.push(name);
+            self.skip_newlines();
+        }
+        
+        let mut stmt = self.parse_stmt()?;
+        if let StmtKind::Fn { decorators: ref mut d, .. } = stmt.kind {
+            *d = decorators;
+        } else {
+            return Err(self.err_at(&self.tokens[self.pos], "decorators can only be applied to functions"));
+        }
+        Ok(stmt)
     }
 
     fn parse_block(&mut self) -> ParseResult<Vec<Stmt>> {
@@ -170,7 +189,7 @@ impl Parser {
         };
         let body = self.parse_block()?;
         let span = self.span_from(&start);
-        Ok(Stmt::new(StmtKind::Fn { name, params, return_type, body }, span))
+        Ok(Stmt::new(StmtKind::Fn { name, params, return_type, body, decorators: Vec::new() }, span))
     }
 
     fn parse_params(&mut self) -> ParseResult<Vec<Param>> {

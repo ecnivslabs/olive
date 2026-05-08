@@ -75,6 +75,7 @@ pub enum TokenKind {
     Dot,
     Arrow,
     Semicolon,
+    At,
 
     // layout
     Newline,

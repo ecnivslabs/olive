@@ -596,6 +596,7 @@ impl Lexer {
                 '.' => self.make_tok(TokenKind::Dot,       ".", line, col, start),
                 ';' => self.make_tok(TokenKind::Semicolon, ";", line, col, start),
                 '&' => self.make_tok(TokenKind::Ampersand, "&", line, col, start),
+                '@' => self.make_tok(TokenKind::At,        "@", line, col, start),
 
                 other => return Err(self.err(format!("unexpected character {:?}", other))),
             };
