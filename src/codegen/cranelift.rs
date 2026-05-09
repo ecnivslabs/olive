@@ -447,10 +447,10 @@ impl<'a> CraneliftCodegen<'a> {
                 builder.ins().call(local_func, &[o, attr_val, v]);
             }
             StatementKind::SetIndex(obj, idx, val_op) => {
-                let mut is_list = false;
+                let mut is_list = true;
                 if let Operand::Copy(loc) | Operand::Move(loc) = obj {
-                    if matches!(func_mir.locals[loc.0].ty, OliveType::List(_)) {
-                        is_list = true;
+                    if matches!(func_mir.locals[loc.0].ty, OliveType::Str) {
+                        is_list = false;
                     }
                 }
 
@@ -460,7 +460,7 @@ impl<'a> CraneliftCodegen<'a> {
 
                 if is_list {
                     // Optimized inlined list assignment
-                    let data_ptr = builder.ins().load(types::I64, MemFlags::trusted(), o, 0);
+                    let data_ptr = builder.ins().load(types::I64, MemFlags::trusted().with_readonly(), o, 0);
 
                     let offset = builder.ins().imul_imm(i, 8);
                     let addr = builder.ins().iadd(data_ptr, offset);
@@ -820,10 +820,10 @@ impl<'a> CraneliftCodegen<'a> {
                 builder.inst_results(inst)[0]
             }
             Rvalue::GetIndex(obj, idx) => {
-                let mut is_list = false;
+                let mut is_list = true;
                 if let Operand::Copy(loc) | Operand::Move(loc) = obj {
-                    if matches!(func_mir.locals[loc.0].ty, OliveType::List(_)) {
-                        is_list = true;
+                    if matches!(func_mir.locals[loc.0].ty, OliveType::Str) {
+                        is_list = false;
                     }
                 }
 
@@ -832,7 +832,7 @@ impl<'a> CraneliftCodegen<'a> {
 
                 if is_list {
                     // Optimized inlined list access
-                    let data_ptr = builder.ins().load(types::I64, MemFlags::trusted(), o, 0);
+                    let data_ptr = builder.ins().load(types::I64, MemFlags::trusted().with_readonly(), o, 0);
 
                     let offset = builder.ins().imul_imm(i, 8);
                     let addr = builder.ins().iadd(data_ptr, offset);

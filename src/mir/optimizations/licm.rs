@@ -62,7 +62,6 @@ impl LICM {
                 let bb = &func.basic_blocks[bb_id.0];
                 for (i, stmt) in bb.statements.iter().enumerate() {
                     if let StatementKind::Assign(local, rval) = &stmt.kind {
-                        // Only hoist compiler temporaries assigned EXACTLY ONCE structurally in the loop
                         if func.locals[local.0].name.is_none() && assign_counts.get(local) == Some(&1) && !invariant_locals.contains(local) && self.is_invariant(rval, &defined_in_loop, &invariant_locals) {
                             if self.is_safe_to_hoist(rval) {
                                 invariant_locals.insert(*local);
