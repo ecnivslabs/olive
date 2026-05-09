@@ -13,7 +13,7 @@ class Person:
         self.age = age
 
     fn greet(self):
-        print_str("Hi, I'm " + self.name)
+        print("Hi, I'm " + self.name)
 ```
 
 ## Creating Instances
@@ -36,7 +36,7 @@ class Student(Person):
         self.student_id = student_id
 
     fn study(self):
-        print_str(self.name + " is studying")
+        print(self.name + " is studying")
 ```
 
 ## Attribute Access
@@ -45,7 +45,7 @@ Attributes (fields) are accessed using the dot (`.`) operator. Olive's type chec
 
 ```python
 let s = Student("Bob", 20, 12345)
-print_str(s.name)  # Accessing inherited attribute
+print(s.name)  # Accessing inherited attribute
 s.study()          # Calling a method
 ```
 

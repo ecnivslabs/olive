@@ -24,7 +24,7 @@ Olive supports the walrus operator (`:=`), which allows you to assign values to 
 
 ```python
 if (n := len(items)) > 10:
-    print_str("Too many items")
+    print("Too many items")
 ```
 
 ## Data Types
@@ -75,11 +75,11 @@ Standard Pythonic `if`, `elif`, and `else` structure:
 
 ```python
 if score >= 90:
-    print_str("Grade: A")
+    print("Grade: A")
 elif score >= 80:
-    print_str("Grade: B")
+    print("Grade: B")
 else:
-    print_str("Grade: C")
+    print("Grade: C")
 ```
 
 ### Loops
@@ -91,10 +91,10 @@ Olive supports `while` and `for` loops, both of which can have an optional `else
 ```python
 let mut i = 0
 while i < 5:
-    print_str("Looping...")
+    print("Looping...")
     i += 1
 else:
-    print_str("Done!")
+    print("Done!")
 ```
 
 #### For Loop
@@ -103,7 +103,7 @@ The `for` loop iterates over collections or ranges:
 
 ```python
 for item in ["apple", "banana", "cherry"]:
-    print_str(item)
+    print(item)
 ```
 
 ### Exception Handling
@@ -114,7 +114,7 @@ Olive uses `try`, `except`, `else`, and `finally` for error handling:
 try:
     risky_operation()
 except Exception as e:
-    print_str("Caught an error: " + str(e))
+    print("Caught an error: " + str(e))
 finally:
     cleanup()
 ```

@@ -8,7 +8,7 @@ A basic function definition looks like this:
 
 ```python
 fn greet(name: str) -> None:
-    print_str("Hello, " + name)
+    print("Hello, " + name)
 ```
 
 If the return type is omitted, Olive will attempt to infer it.
@@ -70,4 +70,9 @@ fn fibonacci(n: int) -> int:
     if n <= 1:
         return n
     return fibonacci(n - 1) + fibonacci(n - 2)
+
+## Tail-Call Optimization (TCO)
+
+Olive's compiler automatically identifies and optimizes tail-recursive functions. This means you can write recursive algorithms (like state machines or certain mathematical functions) without worrying about stack overflow errors, as they are transformed into efficient loops at the machine level.
+
 ```
