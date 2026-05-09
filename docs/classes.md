@@ -61,3 +61,18 @@ class Secret:
     fn _internal_method(self):
         pass
 ```
+
+## Method Decorators
+
+Just like standalone functions, class methods can also be enhanced using decorators. This is particularly useful for things like memoizing expensive method calls. 
+
+```python
+class Calculator:
+    @memo
+    fn expensive_computation(self, n: int) -> int:
+        # Some heavy calculation...
+        if n <= 1:
+            return n
+        return self.expensive_computation(n - 1) + self.expensive_computation(n - 2)
+```
+
