@@ -44,15 +44,6 @@ import utils
 # utils._secret()  # Error: cannot access private member `_secret`
 ```
 
-## Standard Library
-
-Olive comes with a small but growing standard library of built-in functions:
-
-- `print(value)`: Prints a value to the console.
-- `str(value)`: Converts a value to its string representation.
-- `type(value)`: Returns the type of a value as a string.
-- `len(collection)`: Returns the length of a list, set, or dictionary.
-
 ## Project Organization
 
 A typical Olive project might look like this:
