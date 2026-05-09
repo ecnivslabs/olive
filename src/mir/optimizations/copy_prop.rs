@@ -115,14 +115,9 @@ impl CopyPropagation {
     }
 
     fn propagate_copies_in_operand(&self, op: &mut Operand, map: &HashMap<Local, Local>) -> bool {
-        if let Operand::Copy(l) | Operand::Move(l) = op {
+        if let Operand::Copy(l) = op {
             if let Some(new_l) = map.get(l) {
-                let old_kind_is_move = matches!(op, Operand::Move(_));
-                if old_kind_is_move {
-                    *op = Operand::Move(*new_l);
-                } else {
-                    *op = Operand::Copy(*new_l);
-                }
+                *op = Operand::Copy(*new_l);
                 return true;
             }
         }

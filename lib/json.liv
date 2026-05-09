@@ -1,0 +1,8 @@
+# json library
+# using native bridge for now
+
+fn dumps(obj) -> str:
+    return __olive_json_dumps(obj)
+
+fn loads(s: str):
+    return __olive_json_loads(s)

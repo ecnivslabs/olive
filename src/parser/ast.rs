@@ -8,6 +8,12 @@ fn next_node_id() -> usize {
 
 use crate::span::Span;
 
+#[derive(Debug, Clone)]
+pub struct EnumVariant {
+    pub name: String,
+    pub types: Vec<TypeExpr>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeExpr {
     pub kind: TypeExprKind,
@@ -197,6 +203,24 @@ pub enum ExprKind {
 
     Borrow(Box<Expr>),
     MutBorrow(Box<Expr>),
+
+    Match {
+        expr: Box<Expr>,
+        cases: Vec<MatchCase>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct MatchCase {
+    pub pattern: MatchPattern,
+    pub body: Vec<Stmt>,
+}
+
+#[derive(Debug, Clone)]
+pub enum MatchPattern {
+    Variant(String, Vec<MatchPattern>),
+    Identifier(String),
+    Wildcard,
 }
 
 #[derive(Debug, Clone)]
@@ -241,6 +265,10 @@ pub enum StmtKind {
         bases: Vec<Expr>,
         body: Vec<Stmt>,
     },
+    Enum {
+        name: String,
+        variants: Vec<EnumVariant>,
+    },
     If {
         condition: Expr,
         then_body: Vec<Stmt>,
@@ -280,6 +308,11 @@ pub enum StmtKind {
         type_ann: Option<TypeExpr>,
         value: Expr,
         is_mut: bool,
+    },
+    Const {
+        name: String,
+        type_ann: Option<TypeExpr>,
+        value: Expr,
     },
     Assign {
         target: Expr,

@@ -1,0 +1,15 @@
+# pure olive time
+# uses __olive_time_* for os access
+# everything else is pure olive
+
+fn time() -> float:
+    return __olive_time_now()
+
+fn now() -> float:
+    return __olive_time_now()
+
+fn sleep(secs: float):
+    return __olive_time_sleep(secs)
+
+fn monotonic() -> float:
+    return __olive_time_now()

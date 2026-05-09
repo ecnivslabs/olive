@@ -5,7 +5,7 @@ use rustc_hash::FxHashMap as HashMap;
 use rustc_hash::FxHashSet as HashSet;
 use std::collections::VecDeque;
 
-// Tracking state for each local variable.
+// track local variable state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LocalState {
     /// The local has been assigned a value and is usable.
@@ -131,7 +131,7 @@ impl<'a> BorrowChecker<'a> {
         }
         entry_states[0] = Some(init_state);
 
-        // Fixed-point iteration.
+        // iterative fixed-point
         let mut worklist: VecDeque<usize> = VecDeque::new();
         worklist.push_back(0);
         let mut in_worklist: Vec<bool> = vec![false; num_blocks];
@@ -300,6 +300,7 @@ impl<'a> BorrowChecker<'a> {
                 self.check_operand(obj, state, span);
                 self.check_operand(idx, state, span);
             }
+            Rvalue::GetTag(op) => self.check_operand(op, state, span),
             Rvalue::Ref(local) => {
                 let s = state.get(*local);
                 if s != LocalState::Initialized {

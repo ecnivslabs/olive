@@ -1,22 +1,23 @@
 use super::error::SemanticError;
 use super::types::Type;
 use crate::parser::{
-    BinOp, CallArg, Expr, ExprKind, ForTarget, Program, Stmt, StmtKind, TypeExpr, TypeExprKind,
-    UnaryOp,
+    BinOp, CallArg, Expr, ExprKind, ForTarget, MatchPattern, Program, Stmt, StmtKind, TypeExpr,
+    TypeExprKind, UnaryOp,
 };
 use crate::span::Span;
 use rustc_hash::FxHashMap as HashMap;
 
-// Static type inference and validation.
+// type checking
 pub struct TypeChecker {
     substitutions: HashMap<usize, Type>,
     pub expr_types: HashMap<usize, Type>,
-    type_env: Vec<HashMap<String, Type>>,
+    pub type_env: Vec<HashMap<String, Type>>,
     current_return_type: Option<Type>,
     pub errors: Vec<SemanticError>,
     pub class_hierarchy: HashMap<String, Vec<String>>,
     mut_env: Vec<HashMap<String, bool>>,
     pub field_types: HashMap<(String, String), Type>,
+    pub enum_variants: HashMap<String, Vec<String>>,
     current_class: Option<String>,
 }
 
@@ -24,7 +25,7 @@ impl TypeChecker {
     pub fn new() -> Self {
         let mut global_env = HashMap::default();
 
-        // Standard library built-ins.
+        // built-ins
         let builtins = [
             ("print", Type::Fn(vec![Type::Any], Box::new(Type::Int))),
             ("str", Type::Fn(vec![Type::Any], Box::new(Type::Str))),
@@ -52,6 +53,7 @@ impl TypeChecker {
             class_hierarchy: HashMap::default(),
             mut_env: vec![HashMap::default()],
             field_types: HashMap::default(),
+            enum_variants: HashMap::default(),
             current_class: None,
         }
     }
@@ -123,6 +125,23 @@ impl TypeChecker {
                     val_ty
                 };
                 self.define_type(name, var_ty, *is_mut);
+            }
+
+            StmtKind::Const {
+                name,
+                type_ann,
+                value,
+            } => {
+                let val_ty = self.check_expr(value);
+                let declared_ty = type_ann.as_ref().map(|ann| self.resolve_type_expr(ann));
+                let var_ty = if let Some(decl) = declared_ty {
+                    self.unify(&decl, &val_ty, stmt.span);
+                    decl
+                } else {
+                    val_ty
+                };
+                // consts are immutable
+                self.define_type(name, var_ty, false);
             }
 
             StmtKind::ExprStmt(expr) => {
@@ -347,6 +366,22 @@ impl TypeChecker {
             | StmtKind::Raise(None)
             | StmtKind::Import(_)
             | StmtKind::FromImport { .. } => {}
+            StmtKind::Enum { name, variants } => {
+                self.define_type(name, Type::Enum(name.clone()), false);
+                let mut variant_names = Vec::new();
+                for variant in variants {
+                    variant_names.push(variant.name.clone());
+                    let mut param_types = Vec::new();
+                    for ty_expr in &variant.types {
+                        param_types.push(self.resolve_type_expr(ty_expr));
+                    }
+                    // variant returns enum type
+                    let fn_ty = Type::Fn(param_types, Box::new(Type::Enum(name.clone())));
+                    let variant_mangled = format!("{}::{}", name, variant.name);
+                    self.define_type(&variant_mangled, fn_ty, false);
+                }
+                self.enum_variants.insert(name.clone(), variant_names);
+            }
         }
     }
 
@@ -464,10 +499,10 @@ impl TypeChecker {
                         }));
                     }
 
-                    // Unify with __init__ if it exists.
+                    // check __init__
                     let init_name = format!("{}::__init__", name);
                     if let Some(Type::Fn(params, _)) = self.lookup_type(&init_name) {
-                        // params[0] is 'self', so skip it for constructor call arguments.
+                        // skip self
                         for (p, a) in params.iter().skip(1).zip(arg_types) {
                             self.unify(p, &a, expr.span);
                         }
@@ -519,6 +554,13 @@ impl TypeChecker {
             }
 
             ExprKind::Attr { obj, attr } => {
+                if let ExprKind::Identifier(name) = &obj.kind {
+                    let mangled = format!("{}::{}", name, attr);
+                    if let Some(ty) = self.lookup_type(&mangled) {
+                        return ty;
+                    }
+                }
+
                 let obj_ty = self.check_expr(obj);
                 let resolved_obj = self.apply_subst(obj_ty);
                 if let Type::Class(ref class_name) = resolved_obj {
@@ -540,6 +582,7 @@ impl TypeChecker {
                             return ty.clone();
                         }
 
+                        // check base classes
                         if let Some(bases) = self.class_hierarchy.get(&current) {
                             for base in bases {
                                 queue.push(base.clone());
@@ -601,6 +644,62 @@ impl TypeChecker {
                 let v = self.check_expr(value);
                 self.leave_scope();
                 Type::Dict(Box::new(k), Box::new(v))
+            }
+            ExprKind::Match { expr, cases } => {
+                let match_ty = self.check_expr(expr);
+                let mut return_ty = Type::new_var();
+                
+                let mut matched_variants = std::collections::HashSet::new();
+                let mut has_wildcard = false;
+
+                for case in cases {
+                    self.enter_scope();
+                    
+                    match &case.pattern {
+                        crate::parser::ast::MatchPattern::Variant(v_name, _) => {
+                            matched_variants.insert(v_name.clone());
+                        }
+                        _ => {}
+                    }
+                    if let crate::parser::ast::MatchPattern::Wildcard = &case.pattern {
+                        has_wildcard = true;
+                    }
+
+                    self.check_pattern(&case.pattern, &match_ty, expr.span);
+                    
+                    let mut case_ty = Type::Null;
+                    if case.body.is_empty() {
+                        case_ty = Type::Null;
+                    } else {
+                        for stmt in &case.body {
+                            self.check_stmt(stmt);
+                            if let StmtKind::ExprStmt(e) = &stmt.kind {
+                                case_ty = self.infer_expr(e);
+                            }
+                        }
+                    }
+                    self.unify(&return_ty, &case_ty, expr.span);
+                    return_ty = case_ty;
+                    
+                    self.leave_scope();
+                }
+
+                if !has_wildcard {
+                    if let Type::Enum(enum_name) = &match_ty {
+                        if let Some(all_variants) = self.enum_variants.get(enum_name) {
+                            for v in all_variants {
+                                if !matched_variants.contains(v) {
+                                    self.errors.push(SemanticError::Custom {
+                                        msg: format!("non-exhaustive patterns: variant {} not covered", v),
+                                        span: expr.span,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                return_ty
             }
         }
     }
@@ -836,7 +935,13 @@ impl TypeChecker {
                 "None" => Type::Null,
                 "Any" => Type::Any,
                 "Never" => Type::Never,
-                _ => Type::Class(name.clone()),
+                _ => {
+                    if let Some(Type::Enum(e)) = self.lookup_type(name) {
+                        Type::Enum(e)
+                    } else {
+                        Type::Class(name.clone())
+                    }
+                }
             },
             TypeExprKind::Generic(name, args) => match (name.as_str(), args.len()) {
                 ("list", 1) => Type::List(Box::new(self.resolve_type_expr(&args[0]))),
@@ -861,6 +966,47 @@ impl TypeChecker {
             ),
             TypeExprKind::Ref(inner) => Type::Ref(Box::new(self.resolve_type_expr(inner))),
             TypeExprKind::MutRef(inner) => Type::MutRef(Box::new(self.resolve_type_expr(inner))),
+        }
+    }
+
+    fn check_pattern(&mut self, pattern: &MatchPattern, match_ty: &Type, span: Span) {
+        match pattern {
+            MatchPattern::Wildcard => {}
+            MatchPattern::Identifier(name) => {
+                self.define_type(name, match_ty.clone(), false);
+            }
+            MatchPattern::Variant(v_name, inner_patterns) => {
+                if let Type::Enum(enum_name) = match_ty {
+                    let variant_mangled = format!("{}::{}", enum_name, v_name);
+                    if let Some(Type::Fn(param_types, _)) = self.lookup_type(&variant_mangled) {
+                        if param_types.len() == inner_patterns.len() {
+                            for (p, p_ty) in inner_patterns.iter().zip(param_types) {
+                                self.check_pattern(p, &p_ty, span);
+                            }
+                        } else {
+                            self.errors.push(SemanticError::Custom {
+                                msg: format!(
+                                    "expected {} arguments for variant {}, found {}",
+                                    param_types.len(),
+                                    v_name,
+                                    inner_patterns.len()
+                                ),
+                                span,
+                            });
+                        }
+                    } else {
+                        self.errors.push(SemanticError::UndefinedName {
+                            name: variant_mangled,
+                            span,
+                        });
+                    }
+                } else {
+                    self.errors.push(SemanticError::Custom {
+                        msg: format!("expected Enum type, found {}", match_ty),
+                        span,
+                    });
+                }
+            }
         }
     }
 }

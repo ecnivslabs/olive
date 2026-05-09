@@ -13,6 +13,8 @@ pub enum Type {
     Null,
     // Named user-defined type (class)
     Class(String),
+    // Enum type
+    Enum(String),
     // Function type: (params) -> return_type
     Fn(Vec<Type>, Box<Type>),
     // Tuple type: (T1, T2, ...)
@@ -80,7 +82,7 @@ impl fmt::Display for Type {
             Type::Str => write!(f, "str"),
             Type::Bool => write!(f, "bool"),
             Type::Null => write!(f, "None"),
-            Type::Class(name) => write!(f, "{}", name),
+            Type::Class(name) | Type::Enum(name) => write!(f, "{}", name),
             Type::Fn(params, ret) => {
                 write!(f, "(")?;
                 for (i, p) in params.iter().enumerate() {

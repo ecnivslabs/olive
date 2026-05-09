@@ -37,7 +37,7 @@ impl Inliner {
                                 continue;
                             }
                             if let Some(target_fn) = fn_map.get(name) {
-                                // Inline small, non-recursive functions.
+                                // inline small functions
                                 if target_fn.basic_blocks.len() < 100 {
                                     call_found = Some((stmt_idx, name.clone(), args.clone()));
                                     break;
@@ -74,12 +74,12 @@ impl Inliner {
     ) {
         let local_offset = caller.locals.len();
 
-        // 1. Copy callee locals to caller.
+        // copy locals
         for decl in &callee.locals {
             caller.locals.push(decl.clone());
         }
 
-        // 2. Split the current block at the call site.
+        // split block
         let mut tail_statements = caller.basic_blocks[bb_idx].statements.split_off(stmt_idx);
         let call_stmt = tail_statements.remove(0);
         let ret_local = if let StatementKind::Assign(l, _) = call_stmt.kind {
@@ -94,14 +94,14 @@ impl Inliner {
             terminator: caller.basic_blocks[bb_idx].terminator.take(),
         };
 
-        // 3. Map callee blocks to caller.
+        // map blocks
         let block_offset = caller.basic_blocks.len() + 1; // +1 because we'll add the tail later
         let mut callee_bb_map = HashMap::default();
         for (i, _) in callee.basic_blocks.iter().enumerate() {
             callee_bb_map.insert(BasicBlockId(i), BasicBlockId(block_offset + i));
         }
 
-        // 4. Connect caller's first half to callee's entry block.
+        // connect entry
         caller.basic_blocks[bb_idx].terminator = Some(Terminator {
             kind: TerminatorKind::Goto {
                 target: BasicBlockId(block_offset),
@@ -109,11 +109,11 @@ impl Inliner {
             span: call_stmt.span,
         });
 
-        // 5. Connect parameters.
+        // connect params
         let mut init_stmts = Vec::new();
         for (j, arg) in args.iter().enumerate() {
             let param_local = Local(local_offset + j + 1);
-            // Mark storage as live for the parameter.
+            // mark storage live
             init_stmts.push(Statement {
                 kind: StatementKind::StorageLive(param_local),
                 span: call_stmt.span,
@@ -124,37 +124,37 @@ impl Inliner {
             });
         }
 
-        // Mark locals as live.
+        // mark locals live
         for j in (callee.arg_count + 1)..callee.locals.len() {
             init_stmts.push(Statement {
                 kind: StatementKind::StorageLive(Local(local_offset + j)),
                 span: call_stmt.span,
             });
         }
-        // Local 0 is the return value.
+        // local 0 is return
         init_stmts.push(Statement {
             kind: StatementKind::StorageLive(Local(local_offset)),
             span: call_stmt.span,
         });
 
-        // 6. Translate callee blocks and add them to caller.
+        // translate blocks
         let mut translated_blocks = Vec::new();
         for (i, bb) in callee.basic_blocks.iter().enumerate() {
             let mut new_bb = bb.clone();
 
-            // Remap locals in statements.
-            for stmt in &mut new_bb.statements {
-                self.remap_statement(stmt, local_offset);
-            }
+            // remap locals
+    for stmt in &mut new_bb.statements {
+        self.remap_statement(stmt, local_offset);
+    }
 
-            // If it's the entry block, prepend parameter initialization.
+            // prepend param init
             if i == 0 {
                 let mut combined = init_stmts.clone();
                 combined.extend(new_bb.statements);
                 new_bb.statements = combined;
             }
 
-            // Remap terminator.
+            // remap terminator
             if let Some(term) = &mut new_bb.terminator {
                 match &mut term.kind {
                     TerminatorKind::Goto { target } => {
@@ -172,9 +172,9 @@ impl Inliner {
                         *otherwise = *callee_bb_map.get(otherwise).unwrap();
                     }
                     TerminatorKind::Return => {
-                        // Replace return with goto tail.
+                        // replace return with goto
                         if let Some(dest) = ret_local {
-                            // Assign callee's _0 (return value) to caller's destination.
+                            // assign return value
                             new_bb.statements.push(Statement {
                                 kind: StatementKind::Assign(
                                     dest,
@@ -188,7 +188,7 @@ impl Inliner {
                     _ => {}
                 }
             } else {
-                // Implicit return.
+                // implicit return
                 new_bb.terminator = Some(Terminator {
                     kind: TerminatorKind::Goto { target: tail_bb_id },
                     span: call_stmt.span,
@@ -197,7 +197,7 @@ impl Inliner {
             translated_blocks.push(new_bb);
         }
 
-        // Add the blocks.
+        // add blocks
         caller.basic_blocks.push(tail_bb); // This will have ID tail_bb_id
         caller.basic_blocks.extend(translated_blocks);
     }
@@ -232,7 +232,7 @@ impl Inliner {
 
     fn remap_rvalue(&self, rval: &mut Rvalue, offset: usize) {
         match rval {
-            Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::GetAttr(op, _) => {
+            Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::GetAttr(op, _) | Rvalue::GetTag(op) => {
                 self.remap_operand(op, offset);
             }
             Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) => {

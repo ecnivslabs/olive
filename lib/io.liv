@@ -1,0 +1,5 @@
+fn say_hello(name: str):
+    print("Hello, " + name + "!")
+
+fn log(msg: str):
+    print("[LOG] " + msg)

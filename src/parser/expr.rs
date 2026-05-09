@@ -315,8 +315,8 @@ impl Parser {
         let mut expr = self.parse_primary()?;
         loop {
             match self.peek().kind {
-                TokenKind::Dot => {
-                    self.advance();
+                TokenKind::Dot | TokenKind::DoubleColon => {
+                    let op = self.advance();
                     let attr = self.expect(TokenKind::Identifier)?.value;
                     let span = self.span_from(&Token {
                         kind: TokenKind::Identifier,
@@ -326,13 +326,24 @@ impl Parser {
                         span: (expr.span.start, expr.span.end),
                         file_id: expr.span.file_id,
                     });
-                    expr = Expr::new(
-                        ExprKind::Attr {
-                            obj: Box::new(expr),
-                            attr,
-                        },
-                        span,
-                    );
+                    if op.kind == TokenKind::DoubleColon {
+                        if let ExprKind::Identifier(ref name) = expr.kind {
+                            expr = Expr::new(
+                                ExprKind::Identifier(format!("{}::{}", name, attr)),
+                                span,
+                            );
+                        } else {
+                            return Err(self.err_at(&op, "expected identifier before '::'"));
+                        }
+                    } else {
+                        expr = Expr::new(
+                            ExprKind::Attr {
+                                obj: Box::new(expr),
+                                attr,
+                            },
+                            span,
+                        );
+                    }
                 }
                 TokenKind::LBracket => {
                     self.advance();
@@ -406,6 +417,85 @@ impl Parser {
             }
         }
         Ok(args)
+    }
+
+    pub(crate) fn parse_match(&mut self, start_tok: Token) -> ParseResult<Expr> {
+        let start = Span {
+            file_id: start_tok.file_id,
+            line: start_tok.line,
+            col: start_tok.col,
+            start: start_tok.span.0,
+            end: start_tok.span.1,
+        };
+        
+        let expr = self.parse_expr()?;
+        self.expect(TokenKind::Colon)?;
+        
+        let mut cases = Vec::new();
+        if self.peek().kind == TokenKind::Newline {
+            self.advance();
+            self.expect(TokenKind::Indent)?;
+            self.skip_newlines();
+            while self.peek().kind != TokenKind::Dedent && self.peek().kind != TokenKind::Eof {
+                // Parse pattern
+                let pattern = self.parse_pattern()?;
+                
+                let body = self.parse_block()?;
+                cases.push(MatchCase { pattern, body });
+                self.skip_newlines();
+            }
+            let end_span = self.peek().span.1;
+            self.expect(TokenKind::Dedent)?;
+            
+            // Inject a synthetic Newline token to terminate the enclosing statement
+            // because the Dedent effectively ends the logical line.
+            let dummy = self.peek().clone();
+            self.tokens.insert(self.pos, crate::lexer::Token {
+                kind: TokenKind::Newline,
+                value: "\n".into(),
+                line: dummy.line,
+                col: dummy.col,
+                span: dummy.span,
+                file_id: dummy.file_id,
+            });
+            
+            Ok(Expr::new(ExprKind::Match {
+                expr: Box::new(expr),
+                cases,
+            }, Span { end: end_span, ..start }))
+        } else {
+            return Err(self.err_at(&self.tokens[self.pos], "expected newline and indented block for match cases"));
+        }
+    }
+
+    pub(crate) fn parse_pattern(&mut self) -> ParseResult<MatchPattern> {
+        if self.peek().kind == TokenKind::Underscore {
+            self.advance();
+            Ok(MatchPattern::Wildcard)
+        } else {
+            let tok = self.expect(TokenKind::Identifier)?;
+            let name = tok.value.clone();
+            if self.peek().kind == TokenKind::LParen {
+                self.advance();
+                let mut patterns = Vec::new();
+                while self.peek().kind != TokenKind::RParen && self.peek().kind != TokenKind::Eof {
+                    patterns.push(self.parse_pattern()?);
+                    if self.peek().kind == TokenKind::Comma {
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+                self.expect(TokenKind::RParen)?;
+                Ok(MatchPattern::Variant(name, patterns))
+            } else {
+                if name.chars().next().unwrap().is_uppercase() {
+                    Ok(MatchPattern::Variant(name, vec![]))
+                } else {
+                    Ok(MatchPattern::Identifier(name))
+                }
+            }
+        }
     }
 
     pub(crate) fn parse_comp_clauses(&mut self) -> ParseResult<Vec<CompClause>> {
@@ -584,6 +674,10 @@ impl Parser {
             TokenKind::Null => {
                 self.advance();
                 Ok(Expr::new(ExprKind::Null, start))
+            }
+            TokenKind::Match => {
+                self.advance();
+                self.parse_match(tok)
             }
             TokenKind::Identifier => {
                 self.advance();

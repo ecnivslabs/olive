@@ -10,6 +10,7 @@ impl Parser {
         match self.peek().kind {
             TokenKind::Fn => self.parse_fn(),
             TokenKind::Class => self.parse_class(),
+            TokenKind::Enum => self.parse_enum(),
             TokenKind::If => self.parse_if(),
             TokenKind::While => self.parse_while(),
             TokenKind::For => self.parse_for(),
@@ -20,6 +21,7 @@ impl Parser {
             TokenKind::Import => self.parse_import(),
             TokenKind::From => self.parse_from_import(),
             TokenKind::Let => self.parse_let(),
+            TokenKind::Const => self.parse_const(),
             TokenKind::At => self.parse_decorated(),
             TokenKind::Pass => {
                 let s = self.peek().clone();
@@ -187,6 +189,45 @@ impl Parser {
         let body = self.parse_block()?;
         let span = self.span_from(&start);
         Ok(Stmt::new(StmtKind::Class { name, bases, body }, span))
+    }
+
+    pub(crate) fn parse_enum(&mut self) -> ParseResult<Stmt> {
+        let start = self.peek().clone();
+        self.expect(TokenKind::Enum)?;
+        let name = self.expect(TokenKind::Identifier)?.value;
+        self.expect(TokenKind::Colon)?;
+        
+        let mut variants = Vec::new();
+        
+        if self.peek().kind == TokenKind::Newline {
+            self.advance();
+            self.expect(TokenKind::Indent)?;
+            self.skip_newlines();
+            while self.peek().kind != TokenKind::Dedent && self.peek().kind != TokenKind::Eof {
+                let v_name = self.expect(TokenKind::Identifier)?.value;
+                let mut types = Vec::new();
+                if self.peek().kind == TokenKind::LParen {
+                    self.advance();
+                    while self.peek().kind != TokenKind::RParen && self.peek().kind != TokenKind::Eof {
+                        types.push(self.parse_type_expr()?);
+                        if self.peek().kind == TokenKind::Comma {
+                            self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+                    self.expect(TokenKind::RParen)?;
+                }
+                variants.push(EnumVariant { name: v_name, types });
+                self.skip_newlines();
+            }
+            self.expect(TokenKind::Dedent)?;
+        } else {
+            return Err(self.err_at(&self.tokens[self.pos], "expected newline and indented block for enum"));
+        }
+
+        let span = self.span_from(&start);
+        Ok(Stmt::new(StmtKind::Enum { name, variants }, span))
     }
 
     pub(crate) fn parse_if(&mut self) -> ParseResult<Stmt> {
@@ -517,6 +558,30 @@ impl Parser {
                 type_ann,
                 value,
                 is_mut,
+            },
+            span,
+        ))
+    }
+
+    pub(crate) fn parse_const(&mut self) -> ParseResult<Stmt> {
+        let start = self.peek().clone();
+        self.expect(TokenKind::Const)?;
+        let name = self.expect(TokenKind::Identifier)?.value;
+        let type_ann = if self.peek().kind == TokenKind::Colon {
+            self.advance();
+            Some(self.parse_type_expr()?)
+        } else {
+            None
+        };
+        self.expect(TokenKind::Equal)?;
+        let value = self.parse_expr()?;
+        self.eat_stmt_end()?;
+        let span = self.span_from(&start);
+        Ok(Stmt::new(
+            StmtKind::Const {
+                name,
+                type_ann,
+                value,
             },
             span,
         ))

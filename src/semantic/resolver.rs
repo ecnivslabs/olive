@@ -1,6 +1,8 @@
 use super::error::SemanticError;
 use super::symbol_table::{ScopeKind, Symbol, SymbolKind, SymbolTable};
-use crate::parser::*;
+use crate::parser::ast::{
+    CallArg, CompClause, Expr, ExprKind, ForTarget, MatchPattern, Param, Program, Stmt, StmtKind,
+};
 use crate::span::Span;
 
 pub struct Resolver {
@@ -75,7 +77,6 @@ impl Resolver {
         }
     }
 
-    // Register fn/class names in a block before full traversal to support recursion.
     fn hoist_fns_and_classes(&mut self, stmts: &[Stmt]) {
         for stmt in stmts {
             match &stmt.kind {
@@ -84,6 +85,13 @@ impl Resolver {
                 }
                 StmtKind::Class { name, .. } => {
                     self.define_sym(name, SymbolKind::Class, stmt.span);
+                }
+                StmtKind::Enum { name, variants } => {
+                    self.define_sym(name, SymbolKind::Enum, stmt.span);
+                    for variant in variants {
+                        let mangled = format!("{}::{}", name, variant.name);
+                        self.define_sym(&mangled, SymbolKind::Function, stmt.span);
+                    }
                 }
                 _ => {}
             }
@@ -104,6 +112,11 @@ impl Resolver {
     fn resolve_stmt(&mut self, stmt: &Stmt) {
         match &stmt.kind {
             StmtKind::Let { name, value, .. } => {
+                self.resolve_expr(value);
+                self.define_sym(name, SymbolKind::Variable, stmt.span);
+            }
+
+            StmtKind::Const { name, value, .. } => {
                 self.resolve_expr(value);
                 self.define_sym(name, SymbolKind::Variable, stmt.span);
             }
@@ -260,6 +273,9 @@ impl Resolver {
             StmtKind::ExprStmt(expr) => self.resolve_expr(expr),
 
             StmtKind::Pass | StmtKind::Break | StmtKind::Continue => {}
+            StmtKind::Enum { .. } => {
+                // Enum definition has been hoisted, no inner block to resolve
+            }
         }
     }
 
@@ -338,6 +354,9 @@ impl Resolver {
     fn resolve_expr(&mut self, expr: &Expr) {
         match &expr.kind {
             ExprKind::Identifier(name) => {
+                if name.starts_with("__olive_") {
+                    return;
+                }
                 if let Some(sym) = self.table.lookup(name) {
                     if sym.is_private && sym.span.file_id != expr.span.file_id {
                         self.errors.push(SemanticError::PrivateAccess {
@@ -377,7 +396,24 @@ impl Resolver {
                 self.resolve_expr(index);
             }
 
-            ExprKind::Attr { obj, .. } => self.resolve_expr(obj),
+            ExprKind::Attr { obj, attr } => {
+                if let ExprKind::Identifier(name) = &obj.kind {
+                    if let Some(sym) = self.table.lookup(name) {
+                        if sym.kind == SymbolKind::Import {
+                            let mangled = format!("{}::{}", name, attr);
+                            if self.table.lookup(&mangled).is_none() {
+                                self.errors.push(SemanticError::UndefinedName {
+                                    name: mangled,
+                                    span: expr.span,
+                                });
+                            }
+                            return;
+                        }
+                    }
+                }
+                self.resolve_expr(obj);
+            }
+
 
             ExprKind::List(elems) | ExprKind::Tuple(elems) | ExprKind::Set(elems) => {
                 for e in elems {
@@ -428,6 +464,31 @@ impl Resolver {
                     for e in exprs {
                         self.resolve_expr(e);
                     }
+                }
+            }
+            ExprKind::Match { expr, cases } => {
+                self.resolve_expr(expr);
+                for case in cases {
+                    self.table.push(ScopeKind::Block);
+                    self.resolve_pattern(&case.pattern, expr.span);
+                    for stmt in &case.body {
+                        self.resolve_stmt(stmt);
+                    }
+                    self.table.pop();
+                }
+            }
+        }
+    }
+
+    fn resolve_pattern(&mut self, pattern: &MatchPattern, span: Span) {
+        match pattern {
+            MatchPattern::Wildcard => {}
+            MatchPattern::Identifier(name) => {
+                self.define_sym(name, SymbolKind::Variable, span);
+            }
+            MatchPattern::Variant(_, inner_patterns) => {
+                for p in inner_patterns {
+                    self.resolve_pattern(p, span);
                 }
             }
         }

@@ -10,6 +10,7 @@ pub enum TokenKind {
     // keywords
     Fn,
     Let,
+    Const,
     If,
     Else,
     Elif,
@@ -37,6 +38,8 @@ pub enum TokenKind {
     As,
     Assert,
     Mut,
+    Enum,
+    Match,
 
     // operators
     Plus,
@@ -76,6 +79,8 @@ pub enum TokenKind {
     Arrow,
     Semicolon,
     At,
+    Underscore,
+    DoubleColon,
 
     // layout
     Newline,

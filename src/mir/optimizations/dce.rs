@@ -67,7 +67,7 @@ impl Transform for DeadCodeElimination {
 impl DeadCodeElimination {
     fn record_rvalue_usage(&self, rval: &Rvalue, used: &mut HashSet<Local>) {
         match rval {
-            Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::GetAttr(op, _) => {
+            Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::GetAttr(op, _) | Rvalue::GetTag(op) => {
                 self.record_operand_usage(op, used)
             }
             Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) => {

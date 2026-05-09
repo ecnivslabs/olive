@@ -18,8 +18,10 @@ cranelift-frontend = "0.131.1"
 cranelift-jit = "0.131.1"
 cranelift-module = "0.131.1"
 cranelift-native = "0.131.1"
+rand = "0.10.1"
 rustc-hash = "2.1.2"
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.149"
 toml = "0.8"
 
 [profile.release]

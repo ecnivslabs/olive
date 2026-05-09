@@ -382,6 +382,7 @@ impl Lexer {
         let kind = match ident.as_str() {
             "fn" => TokenKind::Fn,
             "let" => TokenKind::Let,
+            "const" => TokenKind::Const,
             "if" => TokenKind::If,
             "else" => TokenKind::Else,
             "elif" => TokenKind::Elif,
@@ -409,6 +410,9 @@ impl Lexer {
             "class" => TokenKind::Class,
             "is" => TokenKind::Is,
             "mut" => TokenKind::Mut,
+            "enum" => TokenKind::Enum,
+            "match" => TokenKind::Match,
+            "_" => TokenKind::Underscore,
             _ => TokenKind::Identifier,
         };
         Ok(self.make_tok(kind, ident, line, col, start))
@@ -561,6 +565,9 @@ impl Lexer {
                     if self.peek() == Some('=') {
                         self.advance();
                         self.make_tok(TokenKind::ColonEqual, ":=", line, col, start)
+                    } else if self.peek() == Some(':') {
+                        self.advance();
+                        self.make_tok(TokenKind::DoubleColon, "::", line, col, start)
                     } else {
                         self.make_tok(TokenKind::Colon, ":", line, col, start)
                     }

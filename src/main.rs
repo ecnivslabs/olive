@@ -89,6 +89,7 @@ fn report_error(sources: &HashMap<usize, (String, String)>, msg: &str, span: spa
 
 fn load_and_parse(
     filename: &str,
+    is_main: bool,
     loaded: &mut HashSet<String>,
     file_id_counter: &mut usize,
     sources: &mut HashMap<usize, (String, String)>,
@@ -140,31 +141,120 @@ fn load_and_parse(
     };
 
     let mut all_stmts = Vec::new();
+    let mod_name = if is_main {
+        "__main__".to_string()
+    } else {
+        Path::new(filename)
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string()
+    };
+
+    all_stmts.push(parser::Stmt::new(
+        parser::StmtKind::Const {
+            name: "__name__".to_string(),
+            type_ann: None,
+            value: parser::Expr::new(
+                parser::ExprKind::Str(mod_name),
+                span::Span::default(),
+            ),
+        },
+        span::Span::default(),
+    ));
+
     let parent_dir = Path::new(filename).parent().unwrap_or(Path::new("."));
 
     for stmt in program.stmts {
         match &stmt.kind {
             parser::StmtKind::Import(parts) => {
                 let mod_name = parts.join("/");
-                let mod_path = parent_dir.join(format!("{}.liv", mod_name));
+                let mut mod_path = parent_dir.join(format!("{}.liv", mod_name));
+                
+                if !mod_path.exists() {
+                    // Try std lib in /lib
+                    mod_path = Path::new("lib").join(format!("{}.liv", mod_name));
+                }
+
+                if !mod_path.exists() {
+                    report_error(sources, &format!("module '{}' not found", mod_name), stmt.span);
+                    process::exit(1);
+                }
+
                 let path_str = mod_path.to_string_lossy().to_string();
 
                 if !loaded.contains(&path_str) {
                     loaded.insert(path_str.clone());
                     let mut imported_stmts =
-                        load_and_parse(&path_str, loaded, file_id_counter, sources);
+                        load_and_parse(&path_str, false, loaded, file_id_counter, sources);
+                    
+                    // Mangling for namespacing: module::name
+                    let mod_prefix = parts.last().unwrap();
+                    let mut defined_names = HashSet::new();
+                    for s in &imported_stmts {
+                        match &s.kind {
+                            parser::StmtKind::Fn { name, .. }
+                            | parser::StmtKind::Class { name, .. }
+                            | parser::StmtKind::Let { name, .. }
+                            | parser::StmtKind::Const { name, .. } => {
+                                defined_names.insert(name.clone());
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    mangle_statements(&mut imported_stmts, mod_prefix, &defined_names);
+
                     imported_stmts.retain(|s| {
                         matches!(
                             s.kind,
-                            parser::StmtKind::Fn { .. } | parser::StmtKind::Class { .. }
+                            parser::StmtKind::Fn { .. }
+                                | parser::StmtKind::Class { .. }
+                                | parser::StmtKind::Let { .. }
+                                | parser::StmtKind::Const { .. }
                         )
+                    });
+
+                    all_stmts.extend(imported_stmts);
+                }
+                all_stmts.push(stmt.clone());
+            }
+            parser::StmtKind::FromImport { module, names } => {
+                let mod_name = module.join("/");
+                let mut mod_path = parent_dir.join(format!("{}.liv", mod_name));
+                
+                if !mod_path.exists() {
+                    mod_path = Path::new("lib").join(format!("{}.liv", mod_name));
+                }
+
+                if !mod_path.exists() {
+                    report_error(sources, &format!("module '{}' not found", mod_name), stmt.span);
+                    process::exit(1);
+                }
+
+                let path_str = mod_path.to_string_lossy().to_string();
+
+                if !loaded.contains(&path_str) {
+                    loaded.insert(path_str.clone());
+                    let mut imported_stmts =
+                        load_and_parse(&path_str, false, loaded, file_id_counter, sources);
+                    
+                    imported_stmts.retain(|s| {
+                        match &s.kind {
+                            parser::StmtKind::Fn { name, .. } | parser::StmtKind::Class { name, .. } => {
+                                names.contains(name)
+                            }
+                            _ => false,
+                        }
                     });
                     all_stmts.extend(imported_stmts);
                 }
+                all_stmts.push(stmt.clone());
             }
             _ => all_stmts.push(stmt),
         }
     }
+
 
     all_stmts
 }
@@ -174,7 +264,7 @@ fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: bool, e
     loaded.insert(filename.to_string());
     let mut file_id_counter = 0;
     let mut sources = HashMap::default();
-    let combined_stmts = load_and_parse(filename, &mut loaded, &mut file_id_counter, &mut sources);
+    let combined_stmts = load_and_parse(filename, true, &mut loaded, &mut file_id_counter, &mut sources);
     let program = parser::Program {
         stmts: combined_stmts,
     };
@@ -203,7 +293,7 @@ fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: bool, e
         process::exit(1);
     }
 
-    let mut mir_builder = MirBuilder::new(&type_checker.expr_types);
+    let mut mir_builder = MirBuilder::new(&type_checker.expr_types, &type_checker.type_env[0]);
     mir_builder.build_program(&program);
 
     if emit_mir {
@@ -214,6 +304,15 @@ fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: bool, e
     let optimizer = mir::Optimizer::new();
     optimizer.run(&mut mir_builder.functions);
     let opt_duration = opt_start.elapsed();
+    
+    // show __main__ mir after optimizations
+    if emit_mir {
+        for f in &mir_builder.functions {
+            if f.name == "__main__" {
+                println!("{:#?}", f);
+            }
+        }
+    }
 
     let borrow_start = std::time::Instant::now();
     for func in &mir_builder.functions {
@@ -302,7 +401,7 @@ fn compile_and_test(filename: &str, _show_time: bool) {
     loaded.insert(filename.to_string());
     let mut file_id_counter = 0;
     let mut sources = HashMap::default();
-    let combined_stmts = load_and_parse(filename, &mut loaded, &mut file_id_counter, &mut sources);
+    let combined_stmts = load_and_parse(filename, true, &mut loaded, &mut file_id_counter, &mut sources);
     let program = parser::Program {
         stmts: combined_stmts,
     };
@@ -327,7 +426,7 @@ fn compile_and_test(filename: &str, _show_time: bool) {
         process::exit(1);
     }
 
-    let mut mir_builder = MirBuilder::new(&type_checker.expr_types);
+    let mut mir_builder = MirBuilder::new(&type_checker.expr_types, &type_checker.type_env[0]);
     mir_builder.build_program(&program);
 
     let optimizer = mir::Optimizer::new();
@@ -601,5 +700,111 @@ fn main() {
 
             compile_and_test(&config.package.entry, time);
         }
+    }
+}
+
+fn mangle_statements(stmts: &mut [parser::Stmt], prefix: &str, names: &HashSet<String>) {
+    for stmt in stmts {
+        mangle_stmt(stmt, prefix, names);
+    }
+}
+
+fn mangle_stmt(stmt: &mut parser::Stmt, prefix: &str, names: &HashSet<String>) {
+    match &mut stmt.kind {
+        parser::StmtKind::Fn { name, body, .. } => {
+            if names.contains(name) {
+                *name = format!("{}::{}", prefix, name);
+            }
+            for s in body {
+                mangle_stmt(s, prefix, names);
+            }
+        }
+        parser::StmtKind::Class { name, body, .. } => {
+            if names.contains(name) {
+                *name = format!("{}::{}", prefix, name);
+            }
+            for s in body {
+                mangle_stmt(s, prefix, names);
+            }
+        }
+        parser::StmtKind::If { then_body, elif_clauses, else_body, condition } => {
+            mangle_expr(condition, prefix, names);
+            for s in then_body { mangle_stmt(s, prefix, names); }
+            for (cond, body) in elif_clauses {
+                mangle_expr(cond, prefix, names);
+                for s in body { mangle_stmt(s, prefix, names); }
+            }
+            if let Some(body) = else_body {
+                for s in body { mangle_stmt(s, prefix, names); }
+            }
+        }
+        parser::StmtKind::While { condition, body, else_body } => {
+            mangle_expr(condition, prefix, names);
+            for s in body { mangle_stmt(s, prefix, names); }
+            if let Some(body) = else_body {
+                for s in body { mangle_stmt(s, prefix, names); }
+            }
+        }
+        parser::StmtKind::For { iter, body, else_body, .. } => {
+            mangle_expr(iter, prefix, names);
+            for s in body { mangle_stmt(s, prefix, names); }
+            if let Some(body) = else_body {
+                for s in body { mangle_stmt(s, prefix, names); }
+            }
+        }
+        parser::StmtKind::Let { name, value, .. } | parser::StmtKind::Const { name, value, .. } => {
+            if names.contains(name) {
+                *name = format!("{}::{}", prefix, name);
+            }
+            mangle_expr(value, prefix, names);
+        }
+        parser::StmtKind::Assign { target, value } | parser::StmtKind::AugAssign { target, value, .. } => {
+            mangle_expr(target, prefix, names);
+            mangle_expr(value, prefix, names);
+        }
+        parser::StmtKind::Return(Some(e)) | parser::StmtKind::Raise(Some(e)) | parser::StmtKind::ExprStmt(e) => {
+            mangle_expr(e, prefix, names);
+        }
+        _ => {}
+    }
+}
+
+fn mangle_expr(expr: &mut parser::Expr, prefix: &str, names: &HashSet<String>) {
+    match &mut expr.kind {
+        parser::ExprKind::Identifier(name) => {
+            if names.contains(name) {
+                *name = format!("{}::{}", prefix, name);
+            }
+        }
+        parser::ExprKind::BinOp { left, right, .. } => {
+            mangle_expr(left, prefix, names);
+            mangle_expr(right, prefix, names);
+        }
+        parser::ExprKind::UnaryOp { operand, .. } => mangle_expr(operand, prefix, names),
+        parser::ExprKind::Call { callee, args } => {
+            mangle_expr(callee, prefix, names);
+            for arg in args {
+                match arg {
+                    parser::CallArg::Positional(e) | parser::CallArg::Keyword(_, e) | parser::CallArg::Splat(e) | parser::CallArg::KwSplat(e) => {
+                        mangle_expr(e, prefix, names);
+                    }
+                }
+            }
+        }
+        parser::ExprKind::Index { obj, index } => {
+            mangle_expr(obj, prefix, names);
+            mangle_expr(index, prefix, names);
+        }
+        parser::ExprKind::Attr { obj, .. } => mangle_expr(obj, prefix, names),
+        parser::ExprKind::List(elems) | parser::ExprKind::Tuple(elems) | parser::ExprKind::Set(elems) => {
+            for e in elems { mangle_expr(e, prefix, names); }
+        }
+        parser::ExprKind::Dict(pairs) => {
+            for (k, v) in pairs {
+                mangle_expr(k, prefix, names);
+                mangle_expr(v, prefix, names);
+            }
+        }
+        _ => {}
     }
 }

@@ -1,0 +1,393 @@
+# math library for olive
+# all algorithms implemented in pure olive
+
+const PI = 3.141592653589793
+const E  = 2.718281828459045
+const TAU = 6.283185307179586
+const INF = 1.0e308
+const _SQRT2 = 1.4142135623730951
+
+
+fn abs(x: float) -> float:
+    if x < 0.0:
+        return -x
+    return x
+
+fn _iabs(x: int) -> int:
+    if x < 0:
+        return -x
+    return x
+
+fn floor(x: float) -> int:
+    let i = int(x)
+    if x < 0.0 and float(i) != x:
+        return i - 1
+    return i
+
+fn ceil(x: float) -> int:
+    let i = int(x)
+    if x > 0.0 and float(i) < x:
+        return i + 1
+    return i
+
+fn fmod(x: float, y: float) -> float:
+    return x - float(int(x / y)) * y
+
+fn copysign(x: float, y: float) -> float:
+    let a = abs(x)
+    if y < 0.0:
+        return -a
+    return a
+
+fn isclose(a: float, b: float) -> bool:
+    return abs(a - b) < 1.0e-9
+
+
+fn sqrt(x: float) -> float:
+    # newton-raphson (fast convergence)
+    if x < 0.0:
+        return 0.0 / 0.0
+    if x == 0.0:
+        return 0.0
+    let mut g = x
+    if g > 1.0:
+        g = g / 2.0
+    let mut i = 0
+    while i < 60:
+        g = 0.5 * (g + x / g)
+        i = i + 1
+    return g
+
+fn cbrt(x: float) -> float:
+    if x == 0.0:
+        return 0.0
+    let sign = 1.0
+    let mut v = x
+    if v < 0.0:
+        v = -v
+    let mut g = v / 3.0
+    if g < 1.0:
+        g = 1.0
+    let mut i = 0
+    while i < 80:
+        g = (2.0 * g + v / (g * g)) / 3.0
+        i = i + 1
+    if x < 0.0:
+        return -g
+    return g
+
+fn hypot(x: float, y: float) -> float:
+    return sqrt(x * x + y * y)
+
+fn pow(base: float, exponent: float) -> float:
+    return base ** exponent
+
+fn ipow(base: int, exponent: int) -> int:
+    return base ** exponent
+
+
+fn exp(x: float) -> float:
+    # range reduction: exp(x) = 2^k * exp(r)
+    if x == 0.0:
+        return 1.0
+    if x > 709.0:
+        return INF
+    if x < -709.0:
+        return 0.0
+
+    # Reduce: x = k*ln2 + r,  |r| <= ln2/2
+    let ln2 = 0.6931471805599453
+    let k = floor(x / ln2 + 0.5)
+    let r = x - float(k) * ln2
+
+    # taylor series for exp(r)
+    let mut sum = 1.0
+    let mut term = 1.0
+    let mut n = 1
+    while n <= 25:
+        term = term * r / float(n)
+        sum = sum + term
+        if abs(term) < 1.0e-16:
+            break
+        n = n + 1
+
+    # Multiply by 2^k  via repeated squaring
+    let mut result = sum
+    let mut p = _iabs(k)
+    let mut base = 2.0
+    if k < 0:
+        let mut j = 0
+        while j < p:
+            result = result / 2.0
+            j = j + 1
+    else:
+        let mut j = 0
+        while j < p:
+            result = result * 2.0
+            j = j + 1
+    return result
+
+fn expm1(x: float) -> float:
+    # use taylor for small x to keep precision
+    if abs(x) < 0.01:
+        let mut sum = 0.0
+        let mut term = x
+        let mut n = 1
+        while n <= 20:
+            sum = sum + term
+            n = n + 1
+            term = term * x / float(n)
+        return sum
+    return exp(x) - 1.0
+
+fn log(x: float) -> float:
+    # natural log using halley's method
+    if x <= 0.0:
+        return 0.0 / 0.0
+    if x == 1.0:
+        return 0.0
+
+    # initial guess
+    let mut y = 0.0
+    let mut v = x
+    # Bring v into [0.5, 2) by multiplying/dividing by e
+    while v > 2.0:
+        v = v / E
+        y = y + 1.0
+    while v < 0.5:
+        v = v * E
+        y = y - 1.0
+
+    # halley iterations
+    let mut g = y + (v - 1.0) / (v + 1.0) * 2.0
+    let mut i = 0
+    while i < 40:
+        let eg = exp(g)
+        let diff = v - eg
+        if abs(diff) < 1.0e-15 * v:
+            break
+        g = g + 2.0 * diff / (v + eg)
+        i = i + 1
+    return g
+
+fn log2(x: float) -> float:
+    return log(x) / 0.6931471805599453
+
+fn log10(x: float) -> float:
+    return log(x) / 2.302585092994046
+
+fn log1p(x: float) -> float:
+    if abs(x) < 0.01:
+        # taylor: x - x^2/2 + x^3/3 - ...
+        let mut sum = 0.0
+        let mut term = x
+        let mut n = 1
+        while n <= 25:
+            sum = sum + term / float(n)
+            n = n + 1
+            term = term * (-x)
+        return sum
+    return log(1.0 + x)
+
+
+fn _reduce_angle(x: float) -> float:
+    # Reduce to [-PI, PI]
+    let mut a = x
+    while a > PI:
+        a = a - TAU
+    while a < -PI:
+        a = a + TAU
+    return a
+
+fn sin(x: float) -> float:
+    # taylor series
+    let a = _reduce_angle(x)
+    let mut sum = 0.0
+    let mut term = a
+    let mut n = 1
+    while n <= 30:
+        sum = sum + term
+        term = -term * a * a / float((2 * n) * (2 * n + 1))
+        n = n + 1
+    return sum
+
+fn cos(x: float) -> float:
+    # taylor series
+    let a = _reduce_angle(x)
+    let mut sum = 0.0
+    let mut term = 1.0
+    let mut n = 0
+    while n <= 30:
+        sum = sum + term
+        term = -term * a * a / float((2 * n + 1) * (2 * n + 2))
+        n = n + 1
+    return sum
+
+fn tan(x: float) -> float:
+    let c = cos(x)
+    if abs(c) < 1.0e-15:
+        if sin(x) > 0.0:
+            return INF
+        return -INF
+    return sin(x) / c
+
+
+fn atan(x: float) -> float:
+    # use identity for |x| > 1: atan(x) = PI/2 - atan(1/x)
+    if x > 1.0:
+        return PI / 2.0 - atan(1.0 / x)
+    if x < -1.0:
+        return -PI / 2.0 - atan(1.0 / x)
+    # taylor series
+    let mut sum = 0.0
+    let mut term = x
+    let x2 = x * x
+    let mut n = 0
+    while n < 60:
+        sum = sum + term / float(2 * n + 1)
+        term = -term * x2
+        n = n + 1
+    return sum
+
+fn atan2(y: float, x: float) -> float:
+    if x > 0.0:
+        return atan(y / x)
+    if x < 0.0:
+        if y >= 0.0:
+            return atan(y / x) + PI
+        return atan(y / x) - PI
+    # x == 0
+    if y > 0.0:
+        return PI / 2.0
+    if y < 0.0:
+        return -PI / 2.0
+    return 0.0
+
+fn asin(x: float) -> float:
+    # asin(x) = atan(x / sqrt(1 - x^2))
+    if x >= 1.0:
+        return PI / 2.0
+    if x <= -1.0:
+        return -PI / 2.0
+    return atan(x / sqrt(1.0 - x * x))
+
+fn acos(x: float) -> float:
+    return PI / 2.0 - asin(x)
+
+
+fn sinh(x: float) -> float:
+    let e = exp(x)
+    return (e - 1.0 / e) / 2.0
+
+fn cosh(x: float) -> float:
+    let e = exp(x)
+    return (e + 1.0 / e) / 2.0
+
+fn tanh(x: float) -> float:
+    if x > 20.0:
+        return 1.0
+    if x < -20.0:
+        return -1.0
+    let e2 = exp(2.0 * x)
+    return (e2 - 1.0) / (e2 + 1.0)
+
+fn asinh(x: float) -> float:
+    return log(x + sqrt(x * x + 1.0))
+
+fn acosh(x: float) -> float:
+    if x < 1.0:
+        return 0.0 / 0.0
+    return log(x + sqrt(x * x - 1.0))
+
+fn atanh(x: float) -> float:
+    if abs(x) >= 1.0:
+        return 0.0 / 0.0
+    return 0.5 * log((1.0 + x) / (1.0 - x))
+
+
+fn round(x: float) -> int:
+    if x >= 0.0:
+        return floor(x + 0.5)
+    return ceil(x - 0.5)
+
+fn clamp(x: float, lo: float, hi: float) -> float:
+    if x < lo:
+        return lo
+    if x > hi:
+        return hi
+    return x
+
+fn min(a: float, b: float) -> float:
+    if a < b:
+        return a
+    return b
+
+fn max(a: float, b: float) -> float:
+    if a > b:
+        return a
+    return b
+
+
+fn factorial(n: int) -> int:
+    if n <= 1:
+        return 1
+    let mut result = 1
+    let mut i = 2
+    while i <= n:
+        result = result * i
+        i = i + 1
+    return result
+
+fn gcd(a: int, b: int) -> int:
+    let mut x = _iabs(a)
+    let mut y = _iabs(b)
+    while y != 0:
+        let t = y
+        y = x % y
+        x = t
+    return x
+
+fn lcm(a: int, b: int) -> int:
+    if a == 0 or b == 0:
+        return 0
+    return _iabs(a * b) / gcd(a, b)
+
+fn comb(n: int, k: int) -> int:
+    if k < 0 or k > n:
+        return 0
+    let mut kk = k
+    if kk > n - kk:
+        kk = n - kk
+    let mut result = 1
+    let mut i = 0
+    while i < kk:
+        result = result * (n - i) / (i + 1)
+        i = i + 1
+    return result
+
+fn perm(n: int, k: int) -> int:
+    if k < 0 or k > n:
+        return 0
+    let mut result = 1
+    let mut i = 0
+    while i < k:
+        result = result * (n - i)
+        i = i + 1
+    return result
+
+
+fn degrees(x: float) -> float:
+    return x * 180.0 / PI
+
+fn radians(x: float) -> float:
+    return x * PI / 180.0
+
+
+fn erf(x: float) -> float:
+    # horner-form approximation
+    let t = 1.0 / (1.0 + 0.3275911 * abs(x))
+    let poly = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))))
+    let result = 1.0 - poly * exp(-x * x)
+    if x < 0.0:
+        return -result
+    return result

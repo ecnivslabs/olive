@@ -100,6 +100,8 @@ impl LoopVectorizer {
             }
         }
         let limit = limit?;
+        let mut loads = Vec::new();
+        let mut stores = Vec::new();
 
         for &bb_id in &lp.body {
             for stmt in &func.basic_blocks[bb_id.0].statements {

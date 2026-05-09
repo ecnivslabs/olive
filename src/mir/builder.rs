@@ -1,11 +1,13 @@
 use super::ir::*;
 use crate::mir::AggregateKind;
-use crate::parser::{CallArg, CompClause, Expr, ExprKind, ForTarget, Program, Stmt, StmtKind};
+use crate::parser::{
+    CallArg, CompClause, Expr, ExprKind, ForTarget, MatchPattern, Program, Stmt, StmtKind,
+};
 use crate::semantic::types::Type;
 use crate::span::Span;
 use rustc_hash::FxHashMap as HashMap;
 
-// Break/continue targets for loops.
+// loop targets
 struct LoopContext {
     header: BasicBlockId,
     exit: BasicBlockId,
@@ -14,6 +16,7 @@ struct LoopContext {
 pub struct MirBuilder<'a> {
     pub functions: Vec<MirFunction>,
     pub expr_types: &'a HashMap<usize, Type>,
+    pub global_types: &'a HashMap<String, Type>,
 
     current_name: String,
     current_locals: Vec<LocalDecl>,
@@ -22,15 +25,18 @@ pub struct MirBuilder<'a> {
     current_arg_count: usize,
     var_map: Vec<HashMap<String, Local>>,
     loop_stack: Vec<LoopContext>,
-    memo_context: Option<(Operand, Operand, BasicBlockId)>, // (cache, key, exit_block)
+    memo_context: Option<(Operand, Operand, BasicBlockId)>, // memo state
     pub class_hierarchy: HashMap<String, Vec<String>>,
+    pub globals: HashMap<String, Operand>,
+    pub enum_variants: HashMap<String, (String, usize)>,
 }
 
 impl<'a> MirBuilder<'a> {
-    pub fn new(expr_types: &'a HashMap<usize, Type>) -> Self {
+    pub fn new(expr_types: &'a HashMap<usize, Type>, global_types: &'a HashMap<String, Type>) -> Self {
         Self {
             functions: Vec::new(),
             expr_types,
+            global_types,
             current_name: String::new(),
             current_locals: Vec::new(),
             current_blocks: Vec::new(),
@@ -40,11 +46,13 @@ impl<'a> MirBuilder<'a> {
             loop_stack: Vec::new(),
             memo_context: None,
             class_hierarchy: HashMap::default(),
+            globals: HashMap::default(),
+            enum_variants: HashMap::default(),
         }
     }
 
     pub fn build_program(&mut self, program: &Program) {
-        self.start_function("__main__".to_string(), 0);
+        self.start_function("__main__".to_string(), 0, Type::Any);
 
         for stmt in &program.stmts {
             match &stmt.kind {
@@ -59,7 +67,7 @@ impl<'a> MirBuilder<'a> {
         self.finish_function();
     }
 
-    fn start_function(&mut self, name: String, arg_count: usize) {
+    fn start_function(&mut self, name: String, arg_count: usize, ret_ty: Type) {
         self.current_name = name;
         self.current_locals.clear();
         self.current_blocks.clear();
@@ -71,10 +79,15 @@ impl<'a> MirBuilder<'a> {
         let start_bb = self.new_block();
         self.current_block = Some(start_bb);
 
-        // _0 is return value.
-        let ret = self.new_local(Type::Any, Some("_return".to_string()), true);
+        // _0 is return
+        let default_val = match ret_ty {
+            Type::Float => Operand::Constant(Constant::Float(0.0f64.to_bits())),
+            Type::Bool => Operand::Constant(Constant::Bool(false)),
+            _ => Operand::Constant(Constant::Int(0)),
+        };
+        let ret = self.new_local(ret_ty, Some("_return".to_string()), true);
         self.push_statement(
-            StatementKind::Assign(ret, Rvalue::Use(Operand::Constant(Constant::Int(0)))),
+            StatementKind::Assign(ret, Rvalue::Use(default_val)),
             Span::default(),
         );
     }
@@ -87,8 +100,7 @@ impl<'a> MirBuilder<'a> {
             basic_blocks: std::mem::take(&mut self.current_blocks),
             arg_count: self.current_arg_count,
         };
-        // If a function with this name already exists (e.g. from an import or redefinition),
-        // remove it so that the new definition takes precedence.
+        // remove existing to let new one take precedence
         self.functions.retain(|f| f.name != func.name);
         self.functions.push(func);
     }
@@ -115,7 +127,7 @@ impl<'a> MirBuilder<'a> {
 
     fn new_tmp_for_expr(&mut self, expr: &Expr) -> Local {
         let ty = self.get_type(expr.id);
-        self.new_local(ty, None, true) // Temporaries are mutable
+        self.new_local(ty, None, true)
     }
 
     fn new_local(&mut self, ty: Type, name: Option<String>, is_mut: bool) -> Local {
@@ -192,6 +204,19 @@ impl<'a> MirBuilder<'a> {
                 let ty = self.get_type(value.id);
                 let local = self.declare_var(name.clone(), ty, *is_mut);
                 self.push_statement(StatementKind::Assign(local, Rvalue::Use(rval)), stmt.span);
+            }
+
+            StmtKind::Const { name, value, .. } => {
+                let rval = self.lower_expr(value);
+                // Attempt to inline literal constants.
+                if let Operand::Constant(_) = &rval {
+                    self.globals.insert(name.clone(), rval);
+                } else {
+                    // Fallback to immutable local.
+                    let ty = self.get_type(value.id);
+                    let local = self.declare_var(name.clone(), ty, false);
+                    self.push_statement(StatementKind::Assign(local, Rvalue::Use(rval)), stmt.span);
+                }
             }
 
             StmtKind::ExprStmt(expr) => {
@@ -338,7 +363,7 @@ impl<'a> MirBuilder<'a> {
                 if let Some(m) = msg {
                     self.lower_expr(m);
                 }
-                // Assert is lowered as: if !test trap.
+                // lowered as if !test trap
                 let pass_bb = self.new_block();
                 let fail_bb = self.new_block();
                 if let Some(bb) = self.current_block {
@@ -365,7 +390,7 @@ impl<'a> MirBuilder<'a> {
                 }
                 self.class_hierarchy.insert(name.clone(), base_names);
 
-                // Lower class methods as mangled functions.
+                // mangle class methods
                 for stmt in body {
                     if let StmtKind::Fn { name: fn_name, .. } = &stmt.kind {
                         let mangled_name = format!("{}::{}", name, fn_name);
@@ -386,6 +411,12 @@ impl<'a> MirBuilder<'a> {
             | StmtKind::Import(_)
             | StmtKind::FromImport { .. }
             | StmtKind::Try { .. } => {}
+            StmtKind::Enum { name, variants } => {
+                for (i, variant) in variants.iter().enumerate() {
+                    let mangled = format!("{}::{}", name, variant.name);
+                    self.enum_variants.insert(mangled, (name.clone(), i));
+                }
+            }
         }
     }
 
@@ -413,7 +444,7 @@ impl<'a> MirBuilder<'a> {
                 self.push_statement(StatementKind::SetIndex(obj_op, idx_op, rval), target.span);
             }
             ExprKind::Tuple(elems) => {
-                // Tuple unpacking assignment.
+                // tuple unpacking
                 let rhs_local = self.new_tmp_for_expr(value);
                 self.push_statement(
                     StatementKind::Assign(rhs_local, Rvalue::Use(rval)),
@@ -452,12 +483,13 @@ impl<'a> MirBuilder<'a> {
             params,
             body,
             decorators,
+            return_type,
             ..
         } = &stmt.kind
         {
             let is_memo = decorators.iter().any(|d| d == "memo");
 
-            // Save builder state.
+            // save state
             let saved_name = std::mem::take(&mut self.current_name);
             let saved_locals = std::mem::take(&mut self.current_locals);
             let saved_blocks = std::mem::take(&mut self.current_blocks);
@@ -466,7 +498,12 @@ impl<'a> MirBuilder<'a> {
             let saved_loop_stack = std::mem::take(&mut self.loop_stack);
             let saved_arg_count = self.current_arg_count;
 
-            self.start_function(name.clone(), params.len());
+            let ret_ty = return_type
+                .as_ref()
+                .map(|ann| self.resolve_type_expr(ann))
+                .unwrap_or(Type::Any);
+
+            self.start_function(name.clone(), params.len(), ret_ty);
 
             // Declare parameters as locals.
             let mut param_locals = Vec::new();
@@ -481,13 +518,13 @@ impl<'a> MirBuilder<'a> {
             }
 
             if is_memo {
-                // Memoization:
+                // memoization
                 // 1. Get/Create global cache.
                 let cache_tmp = self.new_local(Type::Any, Some("cache".to_string()), false);
                 let fn_name_const = Operand::Constant(Constant::Str(name.clone()));
 
                 let is_tuple_val = if param_locals.len() > 1 { 1 } else { 0 };
-                // We'll add a native __olive_memo_get to return a persistent dict for this name.
+                // get/create cache
                 self.push_statement(
                     StatementKind::Assign(
                         cache_tmp,
@@ -504,11 +541,11 @@ impl<'a> MirBuilder<'a> {
                     stmt.span,
                 );
 
-                // Check if key exists.
+                // check cache
                 let key = if param_locals.len() == 1 {
                     Operand::Copy(param_locals[0])
                 } else {
-                    // Pack args into a tuple for the key.
+                    // pack args
                     let tuple_tmp = self.new_local(Type::Any, None, false);
                     let ops = param_locals.iter().map(|l| Operand::Copy(*l)).collect();
                     self.push_statement(
@@ -564,7 +601,7 @@ impl<'a> MirBuilder<'a> {
                     stmt.span,
                 );
 
-                // Return block (Cache hit):
+                // cache hit
                 self.current_block = Some(return_bb);
                 let hit_tmp = self.new_local(Type::Any, Some("cache_hit".to_string()), false);
                 self.push_statement(
@@ -583,18 +620,18 @@ impl<'a> MirBuilder<'a> {
                 );
                 self.terminate_block(return_bb, TerminatorKind::Return, stmt.span);
 
-                // Body block:
+                // body
                 self.current_block = Some(body_bb);
                 for s in body {
                     self.lower_stmt(s);
                 }
 
-                // After body, if not terminated, go to exit block.
+                // fallthrough
                 if let Some(bb) = self.current_block {
                     self.terminate_block(bb, TerminatorKind::Goto { target: exit_bb }, stmt.span);
                 }
 
-                // Exit block: Store result in cache and return.
+                // cache miss store
                 self.current_block = Some(exit_bb);
                 let (cache_val, key_val, _) = self.memo_context.as_ref().unwrap().clone();
                 let res_local = Local(0); // return value
@@ -613,7 +650,6 @@ impl<'a> MirBuilder<'a> {
 
                 self.memo_context = None;
             } else {
-                // Regular body.
                 for s in body {
                     self.lower_stmt(s);
                 }
@@ -625,7 +661,7 @@ impl<'a> MirBuilder<'a> {
 
             self.finish_function();
 
-            // Restore builder state.
+            // restore state
             self.current_name = saved_name;
             self.current_locals = saved_locals;
             self.current_blocks = saved_blocks;
@@ -647,7 +683,13 @@ impl<'a> MirBuilder<'a> {
                 "None" => Type::Null,
                 "Any" => Type::Any,
                 "Never" => Type::Never,
-                _ => Type::Class(name.clone()),
+                _ => {
+                    if let Some(Type::Enum(e)) = self.global_types.get(name) {
+                        Type::Enum(e.clone())
+                    } else {
+                        Type::Class(name.clone())
+                    }
+                }
             },
             TypeExprKind::Generic(name, args) => match (name.as_str(), args.len()) {
                 ("list", 1) => Type::List(Box::new(self.resolve_type_expr(&args[0]))),
@@ -853,7 +895,7 @@ impl<'a> MirBuilder<'a> {
         body: &[Stmt],
         else_body: &Option<Vec<Stmt>>,
     ) {
-        // For loops are lowered as while loops over an iterator.
+        // lowered as while loop over iterator
         let iter_op = self.lower_expr(iter);
         let iter_local = self.new_local(Type::Any, Some("_iter".to_string()), true);
         self.push_statement(
@@ -873,7 +915,7 @@ impl<'a> MirBuilder<'a> {
             );
         }
 
-        // Header: check if iterator has next.
+        // check if next exists
         self.current_block = Some(header_bb);
         let has_next = self.new_local(Type::Bool, None, true);
         self.push_statement(
@@ -1044,6 +1086,8 @@ impl<'a> MirBuilder<'a> {
                     } else {
                         Operand::Copy(local)
                     }
+                } else if let Some(global_op) = self.globals.get(name) {
+                    global_op.clone()
                 } else {
                     // Fallback: assume it's a function identifier
                     Operand::Constant(Constant::Function(name.clone()))
@@ -1134,10 +1178,20 @@ impl<'a> MirBuilder<'a> {
                         return Operand::Copy(tmp);
                     }
                 }
-                if let ExprKind::Identifier(name) = &callee.kind
-                    && name == "list_new"
-                    && !args.is_empty()
-                {
+                if let ExprKind::Identifier(name) = &callee.kind {
+                    if let Some(&(_, tag)) = self.enum_variants.get(name) {
+                        let tmp = self.new_tmp_for_expr(expr);
+                        self.push_statement(
+                            StatementKind::Assign(
+                                tmp,
+                                Rvalue::Aggregate(AggregateKind::EnumVariant(tag), arg_ops),
+                            ),
+                            expr.span,
+                        );
+                        return Operand::Copy(tmp);
+                    }
+                    
+                    if name == "list_new" && !args.is_empty() {
                     let arg_expr = match &args[0] {
                         CallArg::Positional(e)
                         | CallArg::Keyword(_, e)
@@ -1160,9 +1214,44 @@ impl<'a> MirBuilder<'a> {
                     );
                     return Operand::Copy(tmp);
                 }
+            }
 
                 // If the callee is an attribute access, it's a method call.
                 if let ExprKind::Attr { obj, attr } = &callee.kind {
+                    if let ExprKind::Identifier(name) = &obj.kind {
+                        // Check if it's a module function call (math.sqrt())
+                        let mangled = format!("{}::{}", name, attr);
+                        
+                        // Check if it's an enum variant constructor
+                        let tag_opt = self.enum_variants.get(&mangled).map(|(_, t)| *t);
+                        if let Some(tag) = tag_opt {
+                            let tmp = self.new_tmp_for_expr(expr);
+                            self.push_statement(
+                                StatementKind::Assign(
+                                    tmp,
+                                    Rvalue::Aggregate(AggregateKind::EnumVariant(tag), arg_ops),
+                                ),
+                                expr.span,
+                            );
+                            return Operand::Copy(tmp);
+                        }
+
+                        // If it's a namespaced function, lower it as a direct call
+                        let callee_op = Operand::Constant(Constant::Function(mangled));
+                        let tmp = self.new_tmp_for_expr(expr);
+                        self.push_statement(
+                            StatementKind::Assign(
+                                tmp,
+                                Rvalue::Call {
+                                    func: callee_op,
+                                    args: arg_ops,
+                                },
+                            ),
+                            expr.span,
+                        );
+                        return Operand::Copy(tmp);
+                    }
+
                     let obj_op = self.lower_expr(obj);
                     let tmp = self.new_tmp_for_expr(expr);
 
@@ -1313,6 +1402,23 @@ impl<'a> MirBuilder<'a> {
             }
 
             ExprKind::Attr { obj, attr } => {
+                if let ExprKind::Identifier(name) = &obj.kind {
+                    // Check if it's a module attribute (math.PI)
+                    let mangled = format!("{}::{}", name, attr);
+                    if let Some(local) = self.lookup_var(&mangled) {
+                        let ty = self.current_locals[local.0].ty.clone();
+                        return if ty.is_move_type() {
+                            Operand::Move(local)
+                        } else {
+                            Operand::Copy(local)
+                        };
+                    }
+                    if let Some(global_op) = self.globals.get(&mangled) {
+                        return global_op.clone();
+                    }
+                    // Fallback: assume it's a function (math.sqrt)
+                    return Operand::Constant(Constant::Function(mangled));
+                }
                 let o = self.lower_expr_as_copy(obj);
                 let tmp = self.new_tmp_for_expr(expr);
                 self.push_statement(
@@ -1401,6 +1507,173 @@ impl<'a> MirBuilder<'a> {
                     expr.span,
                     ty,
                 )
+            }
+            ExprKind::Match { expr: match_expr, cases } => {
+                let discr_op = self.lower_expr(match_expr);
+                let discr_local = match discr_op {
+                    Operand::Copy(l) | Operand::Move(l) => l,
+                    _ => {
+                        let tmp = self.new_local(self.get_type(match_expr.id), None, false);
+                        self.push_statement(
+                            StatementKind::Assign(tmp, Rvalue::Use(discr_op)),
+                            match_expr.span,
+                        );
+                        tmp
+                    }
+                };
+
+                let exit_bb = self.new_block();
+                let result_ty = self.get_type(expr.id);
+                let result_tmp = self.new_local(result_ty, None, false);
+
+                for case in cases {
+                    let success_bb = self.new_block();
+                    let failure_bb = self.new_block();
+                    
+                    let match_ty = self.get_type(match_expr.id);
+                    self.lower_pattern(&case.pattern, discr_local, &match_ty, success_bb, failure_bb, expr.span);
+                    
+                    self.current_block = Some(success_bb);
+                    self.enter_scope();
+                    
+                    let mut last_op = Operand::Constant(Constant::None);
+                    if case.body.is_empty() {
+                        self.push_statement(
+                            StatementKind::Assign(result_tmp, Rvalue::Use(last_op)),
+                            expr.span,
+                        );
+                    } else {
+                        for (i, stmt) in case.body.iter().enumerate() {
+                            if i == case.body.len() - 1 {
+                                if let StmtKind::ExprStmt(e) = &stmt.kind {
+                                    last_op = self.lower_expr(e);
+                                } else {
+                                    self.lower_stmt(stmt);
+                                }
+                                self.push_statement(
+                                    StatementKind::Assign(result_tmp, Rvalue::Use(last_op.clone())),
+                                    stmt.span,
+                                );
+                            } else {
+                                self.lower_stmt(stmt);
+                            }
+                        }
+                    }
+
+                    self.terminate_block(self.current_block.unwrap(), TerminatorKind::Goto { target: exit_bb }, expr.span);
+                    self.leave_scope();
+                    
+                    self.current_block = Some(failure_bb);
+                }
+
+                self.terminate_block(self.current_block.unwrap(), TerminatorKind::Goto { target: exit_bb }, expr.span);
+                self.current_block = Some(exit_bb);
+                Operand::Copy(result_tmp)
+            }
+        }
+    }
+
+    fn lower_pattern(
+        &mut self,
+        pattern: &MatchPattern,
+        discr: Local,
+        match_ty: &Type,
+        success_bb: BasicBlockId,
+        failure_bb: BasicBlockId,
+        expr_span: Span,
+    ) {
+        match pattern {
+            MatchPattern::Wildcard => {
+                self.terminate_block(
+                    self.current_block.unwrap(),
+                    TerminatorKind::Goto { target: success_bb },
+                    expr_span,
+                );
+            }
+            MatchPattern::Identifier(name) => {
+                let binding_local = self.declare_var(name.clone(), match_ty.clone(), true);
+                self.push_statement(
+                    StatementKind::Assign(binding_local, Rvalue::Use(Operand::Copy(discr))),
+                    expr_span,
+                );
+                self.terminate_block(
+                    self.current_block.unwrap(),
+                    TerminatorKind::Goto { target: success_bb },
+                    expr_span,
+                );
+            }
+            MatchPattern::Variant(v_name, inner_patterns) => {
+                // get tag
+                let tag_tmp = self.new_local(Type::Int, None, false);
+                self.push_statement(
+                    StatementKind::Assign(tag_tmp, Rvalue::GetTag(Operand::Copy(discr))),
+                    expr_span,
+                );
+
+                // lookup tag
+                let mut tag_id = 0;
+                if let Type::Enum(enum_name) = match_ty {
+                    let mangled = format!("{}::{}", enum_name, v_name);
+                    if let Some((_, tag)) = self.enum_variants.get(&mangled) {
+                        tag_id = *tag as i64;
+                    }
+                }
+
+                // switch on tag
+                let variant_match_bb = self.new_block();
+                self.terminate_block(
+                    self.current_block.unwrap(),
+                    TerminatorKind::SwitchInt {
+                        discr: Operand::Copy(tag_tmp),
+                        targets: vec![(tag_id, variant_match_bb)],
+                        otherwise: failure_bb,
+                    },
+                    expr_span,
+                );
+
+                self.current_block = Some(variant_match_bb);
+
+                // handle inner patterns
+                if inner_patterns.is_empty() {
+                    self.terminate_block(
+                        variant_match_bb,
+                        TerminatorKind::Goto { target: success_bb },
+                        expr_span,
+                    );
+                } else {
+                    let mut param_types = vec![Type::Any; inner_patterns.len()];
+                    if let Type::Enum(enum_name) = match_ty {
+                        let mangled = format!("{}::{}", enum_name, v_name);
+                        if let Some(Type::Fn(pts, _)) = self.global_types.get(&mangled) {
+                            param_types = pts.clone();
+                        }
+                    }
+
+                    let mut current_bb = variant_match_bb;
+                    for (i, (p, p_ty)) in inner_patterns.iter().zip(param_types.iter()).enumerate() {
+                        self.current_block = Some(current_bb);
+                        let val_tmp = self.new_local(p_ty.clone() as Type, None, false);
+                        self.push_statement(
+                            StatementKind::Assign(
+                                val_tmp,
+                                Rvalue::GetIndex(
+                                    Operand::Copy(discr),
+                                    Operand::Constant(Constant::Int(i as i64)),
+                                ),
+                            ),
+                            expr_span,
+                        );
+
+                        let next_bb = if i == inner_patterns.len() - 1 {
+                            success_bb
+                        } else {
+                            self.new_block()
+                        };
+
+                        self.lower_pattern(p, val_tmp, p_ty, next_bb, failure_bb, expr_span);
+                        current_bb = next_bb;
+                    }
+                }
             }
         }
     }

@@ -6,6 +6,7 @@ pub enum SymbolKind {
     Variable,
     Function,
     Class,
+    Enum,
     Parameter,
     LoopVar,
     Import,
