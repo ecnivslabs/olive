@@ -1,7 +1,7 @@
-use crate::parser::*;
-use crate::span::Span;
 use super::error::SemanticError;
 use super::symbol_table::{ScopeKind, Symbol, SymbolKind, SymbolTable};
+use crate::parser::*;
+use crate::span::Span;
 
 pub struct Resolver {
     pub table: SymbolTable,
@@ -61,7 +61,11 @@ impl Resolver {
             span: Span::default(),
             is_private: false,
         });
-        Self { table, errors: Vec::new(), current_file_id: 0 }
+        Self {
+            table,
+            errors: Vec::new(),
+            current_file_id: 0,
+        }
     }
 
     pub fn resolve_program(&mut self, program: &Program) {
@@ -88,7 +92,12 @@ impl Resolver {
 
     fn define_sym(&mut self, name: &str, kind: SymbolKind, span: Span) {
         let is_private = name.starts_with('_');
-        let sym = Symbol { name: name.to_string(), kind, span, is_private };
+        let sym = Symbol {
+            name: name.to_string(),
+            kind,
+            span,
+            is_private,
+        };
         self.table.define(sym);
     }
 
@@ -109,7 +118,12 @@ impl Resolver {
                 self.resolve_assign_target(target);
             }
 
-            StmtKind::Fn { name: _, params, body, .. } => {
+            StmtKind::Fn {
+                name: _,
+                params,
+                body,
+                ..
+            } => {
                 // name already hoisted
                 self.table.push(ScopeKind::Function);
                 self.resolve_params(params);
@@ -120,7 +134,11 @@ impl Resolver {
                 self.table.pop();
             }
 
-            StmtKind::Class { name: _, bases, body } => {
+            StmtKind::Class {
+                name: _,
+                bases,
+                body,
+            } => {
                 for base in bases {
                     self.resolve_expr(base);
                 }
@@ -132,7 +150,12 @@ impl Resolver {
                 self.table.pop();
             }
 
-            StmtKind::If { condition, then_body, elif_clauses, else_body } => {
+            StmtKind::If {
+                condition,
+                then_body,
+                elif_clauses,
+                else_body,
+            } => {
                 self.resolve_expr(condition);
                 self.resolve_block(then_body);
                 for (cond, body) in elif_clauses {
@@ -144,7 +167,11 @@ impl Resolver {
                 }
             }
 
-            StmtKind::While { condition, body, else_body } => {
+            StmtKind::While {
+                condition,
+                body,
+                else_body,
+            } => {
                 self.resolve_expr(condition);
                 self.resolve_block(body);
                 if let Some(body) = else_body {
@@ -152,7 +179,12 @@ impl Resolver {
                 }
             }
 
-            StmtKind::For { target, iter, body, else_body } => {
+            StmtKind::For {
+                target,
+                iter,
+                body,
+                else_body,
+            } => {
                 self.resolve_expr(iter);
                 self.table.push(ScopeKind::Block);
                 self.define_for_target(target);
@@ -166,7 +198,12 @@ impl Resolver {
                 }
             }
 
-            StmtKind::Try { body, handlers, else_body, finally_body } => {
+            StmtKind::Try {
+                body,
+                handlers,
+                else_body,
+                finally_body,
+            } => {
                 self.resolve_block(body);
                 for handler in handlers {
                     if let Some(exc) = &handler.exc_type {
@@ -327,8 +364,10 @@ impl Resolver {
                 self.resolve_expr(callee);
                 for arg in args {
                     match arg {
-                        CallArg::Positional(e) | CallArg::Keyword(_, e)
-                        | CallArg::Splat(e) | CallArg::KwSplat(e) => self.resolve_expr(e),
+                        CallArg::Positional(e)
+                        | CallArg::Keyword(_, e)
+                        | CallArg::Splat(e)
+                        | CallArg::KwSplat(e) => self.resolve_expr(e),
                     }
                 }
             }
@@ -359,7 +398,11 @@ impl Resolver {
                 self.table.pop();
             }
 
-            ExprKind::DictComp { key, value, clauses } => {
+            ExprKind::DictComp {
+                key,
+                value,
+                clauses,
+            } => {
                 self.resolve_comp_clauses(clauses);
                 self.resolve_expr(key);
                 self.resolve_expr(value);
@@ -375,8 +418,12 @@ impl Resolver {
                 self.resolve_expr(inner);
             }
 
-            ExprKind::Integer(_) | ExprKind::Float(_) | ExprKind::Str(_)
-            | ExprKind::FStr(_) | ExprKind::Bool(_) | ExprKind::Null => {
+            ExprKind::Integer(_)
+            | ExprKind::Float(_)
+            | ExprKind::Str(_)
+            | ExprKind::FStr(_)
+            | ExprKind::Bool(_)
+            | ExprKind::Null => {
                 if let ExprKind::FStr(exprs) = &expr.kind {
                     for e in exprs {
                         self.resolve_expr(e);

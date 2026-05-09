@@ -57,7 +57,7 @@ impl Type {
     /// Returns true if this type has move semantics (heap allocated or complex).
     pub fn is_move_type(&self) -> bool {
         match self {
-            Type::Int | Type::Float | Type::Bool | Type::Null | Type::Never => false,
+            Type::Int | Type::Float | Type::Bool | Type::Null | Type::Never | Type::Any => false,
             Type::Ref(_) | Type::MutRef(_) => false, // References are Copy
             _ => true,
         }
@@ -76,7 +76,9 @@ impl fmt::Display for Type {
             Type::Fn(params, ret) => {
                 write!(f, "(")?;
                 for (i, p) in params.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{}", p)?;
                 }
                 write!(f, ") -> {}", ret)
@@ -84,7 +86,9 @@ impl fmt::Display for Type {
             Type::Tuple(elems) => {
                 write!(f, "(")?;
                 for (i, e) in elems.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{}", e)?;
                 }
                 if elems.len() == 1 {

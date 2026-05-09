@@ -1,15 +1,18 @@
-use rustc_hash::FxHashMap as HashMap;
+use crate::mir::{
+    Constant, Local, MirFunction, Operand, Rvalue, Statement, StatementKind, Terminator,
+    TerminatorKind,
+};
+use crate::semantic::types::Type as OliveType;
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{FuncId, Linkage, Module};
-use crate::mir::{MirFunction, Rvalue, Operand, Constant, Terminator, TerminatorKind, Statement, StatementKind, Local};
-use crate::semantic::types::Type as OliveType;
+use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
+use rustc_hash::FxHashMap as HashMap;
 
 pub struct CraneliftCodegen<'a> {
     functions: &'a [MirFunction],
     module: JITModule,
     func_ids: HashMap<String, FuncId>,
-    string_pool: HashMap<String, i64>,
+    string_ids: HashMap<String, DataId>,
 }
 
 impl<'a> CraneliftCodegen<'a> {
@@ -25,13 +28,14 @@ impl<'a> CraneliftCodegen<'a> {
             .finish(settings::Flags::new(flag_builder))
             .map_err(|msg| panic!("host machine is not supported: {}", msg))
             .unwrap();
-            
+
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
-        
-        // Runtime symbols.
+
         builder.symbol("__olive_print_int", olive_print as *const u8);
         builder.symbol("__olive_print_float", olive_print_float as *const u8);
         builder.symbol("__olive_print_str", olive_print_str as *const u8);
+        builder.symbol("__olive_print_list", olive_print_list as *const u8);
+        builder.symbol("__olive_print_obj", olive_print_obj as *const u8);
         builder.symbol("__olive_str", olive_str as *const u8);
         builder.symbol("__olive_int", olive_int as *const u8);
         builder.symbol("__olive_float", olive_float as *const u8);
@@ -62,175 +66,121 @@ impl<'a> CraneliftCodegen<'a> {
         builder.symbol("__olive_cache_set_tuple", olive_cache_set_tuple as *const u8);
         builder.symbol("__olive_str_len", olive_str_len as *const u8);
         builder.symbol("__olive_str_get", olive_str_get as *const u8);
+        builder.symbol("__olive_free_str", olive_free_str as *const u8);
+        builder.symbol("__olive_free_list", olive_free_list as *const u8);
+        builder.symbol("__olive_free_obj", olive_free_obj as *const u8);
+        builder.symbol("__olive_pow", olive_pow as *const u8);
+        builder.symbol("__olive_in_list", olive_in_list as *const u8);
+        builder.symbol("__olive_in_obj", olive_in_obj as *const u8);
+        builder.symbol("__olive_list_append", olive_list_append as *const u8);
+        builder.symbol("__olive_set_add", olive_set_add as *const u8);
+        builder.symbol("__olive_iter", olive_iter as *const u8);
+        builder.symbol("__olive_next", olive_next as *const u8);
+        builder.symbol("__olive_has_next", olive_has_next as *const u8);
         let module = JITModule::new(builder);
-        
+
         Self {
             functions,
             module,
             func_ids: HashMap::default(),
-            string_pool: HashMap::default(),
+            string_ids: HashMap::default(),
         }
     }
 
     pub fn generate(&mut self) {
-        let mut int_sig = self.module.make_signature();
-        int_sig.params.push(AbiParam::new(types::I64));
-        int_sig.returns.push(AbiParam::new(types::I64));
+        let mut sig_i64_i64 = self.module.make_signature();
+        sig_i64_i64.params.push(AbiParam::new(types::I64));
+        sig_i64_i64.returns.push(AbiParam::new(types::I64));
 
-        let mut float_param_only_sig = self.module.make_signature();
-        float_param_only_sig.params.push(AbiParam::new(types::F64));
-        float_param_only_sig.returns.push(AbiParam::new(types::I64));
+        let mut sig_f64_i64 = self.module.make_signature();
+        sig_f64_i64.params.push(AbiParam::new(types::F64));
+        sig_f64_i64.returns.push(AbiParam::new(types::I64));
 
-        let mut float_ret_sig = self.module.make_signature();
-        float_ret_sig.params.push(AbiParam::new(types::I64));
-        float_ret_sig.returns.push(AbiParam::new(types::F64));
+        let mut sig_i64_f64 = self.module.make_signature();
+        sig_i64_f64.params.push(AbiParam::new(types::I64));
+        sig_i64_f64.returns.push(AbiParam::new(types::F64));
 
-        let mut float_param_sig = self.module.make_signature();
-        float_param_sig.params.push(AbiParam::new(types::F64));
-        float_param_sig.returns.push(AbiParam::new(types::I64));
+        let mut sig_f64_f64 = self.module.make_signature();
+        sig_f64_f64.params.push(AbiParam::new(types::F64));
+        sig_f64_f64.returns.push(AbiParam::new(types::F64));
 
-        let mut int_to_float_sig = self.module.make_signature();
-        int_to_float_sig.params.push(AbiParam::new(types::I64));
-        int_to_float_sig.returns.push(AbiParam::new(types::F64));
+        let mut sig_void_i64 = self.module.make_signature();
+        sig_void_i64.returns.push(AbiParam::new(types::I64));
 
-        let mut float_to_float_sig = self.module.make_signature();
-        float_to_float_sig.params.push(AbiParam::new(types::F64));
-        float_to_float_sig.returns.push(AbiParam::new(types::F64));
+        let mut sig_i64_i64_i64 = self.module.make_signature();
+        sig_i64_i64_i64.params.push(AbiParam::new(types::I64));
+        sig_i64_i64_i64.params.push(AbiParam::new(types::I64));
+        sig_i64_i64_i64.returns.push(AbiParam::new(types::I64));
 
-        let int_fns = ["__olive_print_int", "__olive_print_str", "__olive_str", "__olive_int", "__olive_bool", "__olive_str_to_int", "__olive_copy", "__olive_list_new", "__olive_str_len"];
-        let float_param_only_fns = ["__olive_print_float", "__olive_float_to_str", "__olive_float_to_int", "__olive_bool_from_float"];
-        let float_ret_fns = ["__olive_str_to_float"];
-        let int_to_float_fns = ["__olive_int_to_float", "__olive_float"];
-        let float_to_float_fns = ["__olive_copy_float"];
+        let mut sig_i64_i64_void = self.module.make_signature();
+        sig_i64_i64_void.params.push(AbiParam::new(types::I64));
+        sig_i64_i64_void.params.push(AbiParam::new(types::I64));
 
-        for name in &int_fns {
-            let id = self.module.declare_function(name, Linkage::Import, &int_sig).unwrap();
+        let mut sig_i64_i64_i64_i64 = self.module.make_signature();
+        sig_i64_i64_i64_i64.params.push(AbiParam::new(types::I64));
+        sig_i64_i64_i64_i64.params.push(AbiParam::new(types::I64));
+        sig_i64_i64_i64_i64.params.push(AbiParam::new(types::I64));
+        sig_i64_i64_i64_i64.returns.push(AbiParam::new(types::I64));
+
+        let mut sig_i64_void = self.module.make_signature();
+        sig_i64_void.params.push(AbiParam::new(types::I64));
+
+        let imports = [
+            ("__olive_print_int", &sig_i64_i64),
+            ("__olive_print_str", &sig_i64_i64),
+            ("__olive_print_list", &sig_i64_i64),
+            ("__olive_print_obj", &sig_i64_i64),
+            ("__olive_str", &sig_i64_i64),
+            ("__olive_int", &sig_i64_i64),
+            ("__olive_bool", &sig_i64_i64),
+            ("__olive_str_to_int", &sig_i64_i64),
+            ("__olive_copy", &sig_i64_i64),
+            ("__olive_list_new", &sig_i64_i64),
+            ("__olive_str_len", &sig_i64_i64),
+            ("__olive_print_float", &sig_f64_i64),
+            ("__olive_float_to_str", &sig_f64_i64),
+            ("__olive_float_to_int", &sig_f64_i64),
+            ("__olive_bool_from_float", &sig_f64_i64),
+            ("__olive_str_to_float", &sig_i64_f64),
+            ("__olive_int_to_float", &sig_i64_f64),
+            ("__olive_float", &sig_i64_f64),
+            ("__olive_copy_float", &sig_f64_f64),
+            ("__olive_obj_new", &sig_void_i64),
+            ("__olive_str_concat", &sig_i64_i64_i64),
+            ("__olive_str_eq", &sig_i64_i64_i64),
+            ("__olive_list_get", &sig_i64_i64_i64),
+            ("__olive_str_get", &sig_i64_i64_i64),
+            ("__olive_cache_get", &sig_i64_i64_i64),
+            ("__olive_cache_has", &sig_i64_i64_i64),
+            ("__olive_obj_get", &sig_i64_i64_i64),
+            ("__olive_memo_get", &sig_i64_i64_i64),
+            ("__olive_cache_has_tuple", &sig_i64_i64_i64),
+            ("__olive_cache_get_tuple", &sig_i64_i64_i64),
+            ("__olive_list_set", &sig_i64_i64_i64_i64),
+            ("__olive_obj_set", &sig_i64_i64_i64_i64),
+            ("__olive_cache_set", &sig_i64_i64_i64_i64),
+            ("__olive_cache_set_tuple", &sig_i64_i64_i64_i64),
+            ("__olive_free", &sig_i64_void),
+            ("__olive_free_str", &sig_i64_void),
+            ("__olive_free_list", &sig_i64_void),
+            ("__olive_free_obj", &sig_i64_void),
+            ("__olive_pow", &sig_i64_i64_i64),
+            ("__olive_in_list", &sig_i64_i64_i64),
+            ("__olive_in_obj", &sig_i64_i64_i64),
+            ("__olive_list_append", &sig_i64_i64_void),
+            ("__olive_set_add", &sig_i64_i64_void),
+            ("__olive_iter", &sig_i64_i64),
+            ("__olive_next", &sig_i64_i64),
+            ("__olive_has_next", &sig_i64_i64),
+        ];
+
+        for (name, sig) in imports {
+            let id = self
+                .module
+                .declare_function(name, Linkage::Import, sig)
+                .unwrap();
             self.func_ids.insert(name.to_string(), id);
         }
-        for name in &float_param_only_fns {
-            let id = self.module.declare_function(name, Linkage::Import, &float_param_only_sig).unwrap();
-            self.func_ids.insert(name.to_string(), id);
-        }
-        for name in &float_ret_fns {
-            let id = self.module.declare_function(name, Linkage::Import, &float_ret_sig).unwrap();
-            self.func_ids.insert(name.to_string(), id);
-        }
-        for name in &int_to_float_fns {
-            let id = self.module.declare_function(name, Linkage::Import, &int_to_float_sig).unwrap();
-            self.func_ids.insert(name.to_string(), id);
-        }
-        for name in float_to_float_fns {
-            let id = self.module.declare_function(name, Linkage::Import, &float_to_float_sig).unwrap();
-            self.func_ids.insert(name.to_string(), id);
-        }
-
-        let mut obj_new_sig = self.module.make_signature();
-        obj_new_sig.returns.push(AbiParam::new(types::I64));
-        let obj_new_id = self.module.declare_function("__olive_obj_new", Linkage::Import, &obj_new_sig).unwrap();
-        self.func_ids.insert("__olive_obj_new".to_string(), obj_new_id);
-
-        let mut concat_sig = self.module.make_signature();
-        concat_sig.params.push(AbiParam::new(types::I64));
-        concat_sig.params.push(AbiParam::new(types::I64));
-        concat_sig.returns.push(AbiParam::new(types::I64));
-        let concat_id = self.module.declare_function("__olive_str_concat", Linkage::Import, &concat_sig).unwrap();
-        self.func_ids.insert("__olive_str_concat".to_string(), concat_id);
-        
-        let mut free_sig = self.module.make_signature();
-        free_sig.params.push(AbiParam::new(types::I64));
-        let free_id = self.module.declare_function("__olive_free", Linkage::Import, &free_sig).unwrap();
-        self.func_ids.insert("__olive_free".to_string(), free_id);
-
-        let mut eq_sig = self.module.make_signature();
-        eq_sig.params.push(AbiParam::new(types::I64));
-        eq_sig.params.push(AbiParam::new(types::I64));
-        eq_sig.returns.push(AbiParam::new(types::I64));
-        let eq_id = self.module.declare_function("__olive_str_eq", Linkage::Import, &eq_sig).unwrap();
-        self.func_ids.insert("__olive_str_eq".to_string(), eq_id);
-
-        let mut list_set_sig = self.module.make_signature();
-        list_set_sig.params.push(AbiParam::new(types::I64));
-        list_set_sig.params.push(AbiParam::new(types::I64));
-        list_set_sig.params.push(AbiParam::new(types::I64));
-        let list_set_id = self.module.declare_function("__olive_list_set", Linkage::Import, &list_set_sig).unwrap();
-        self.func_ids.insert("__olive_list_set".to_string(), list_set_id);
-
-        let mut list_get_sig = self.module.make_signature();
-        list_get_sig.params.push(AbiParam::new(types::I64));
-        list_get_sig.params.push(AbiParam::new(types::I64));
-        list_get_sig.returns.push(AbiParam::new(types::I64));
-        let list_get_id = self.module.declare_function("__olive_list_get", Linkage::Import, &list_get_sig).unwrap();
-        self.func_ids.insert("__olive_list_get".to_string(), list_get_id);
-
-        let mut str_get_sig = self.module.make_signature();
-        str_get_sig.params.push(AbiParam::new(types::I64));
-        str_get_sig.params.push(AbiParam::new(types::I64));
-        str_get_sig.returns.push(AbiParam::new(types::I64));
-        let str_get_id = self.module.declare_function("__olive_str_get", Linkage::Import, &str_get_sig).unwrap();
-        self.func_ids.insert("__olive_str_get".to_string(), str_get_id);
-
-        let mut obj_set_sig = self.module.make_signature();
-        obj_set_sig.params.push(AbiParam::new(types::I64));
-        obj_set_sig.params.push(AbiParam::new(types::I64));
-        obj_set_sig.params.push(AbiParam::new(types::I64));
-        obj_set_sig.returns.push(AbiParam::new(types::I64));
-        let obj_set_id = self.module.declare_function("__olive_obj_set", Linkage::Import, &obj_set_sig).unwrap();
-        self.func_ids.insert("__olive_obj_set".to_string(), obj_set_id);
-
-        let mut cache_set_sig = self.module.make_signature();
-        cache_set_sig.params.push(AbiParam::new(types::I64));
-        cache_set_sig.params.push(AbiParam::new(types::I64));
-        cache_set_sig.params.push(AbiParam::new(types::I64));
-        cache_set_sig.returns.push(AbiParam::new(types::I64));
-        let cache_set_id = self.module.declare_function("__olive_cache_set", Linkage::Import, &cache_set_sig).unwrap();
-        self.func_ids.insert("__olive_cache_set".to_string(), cache_set_id);
-
-        let mut cache_get_sig = self.module.make_signature();
-        cache_get_sig.params.push(AbiParam::new(types::I64));
-        cache_get_sig.params.push(AbiParam::new(types::I64));
-        cache_get_sig.returns.push(AbiParam::new(types::I64));
-        let cache_get_id = self.module.declare_function("__olive_cache_get", Linkage::Import, &cache_get_sig).unwrap();
-        self.func_ids.insert("__olive_cache_get".to_string(), cache_get_id);
-
-        let mut cache_has_sig = self.module.make_signature();
-        cache_has_sig.params.push(AbiParam::new(types::I64));
-        cache_has_sig.params.push(AbiParam::new(types::I64));
-        cache_has_sig.returns.push(AbiParam::new(types::I64));
-        let cache_has_id = self.module.declare_function("__olive_cache_has", Linkage::Import, &cache_has_sig).unwrap();
-        self.func_ids.insert("__olive_cache_has".to_string(), cache_has_id);
-
-        let mut obj_get_sig = self.module.make_signature();
-        obj_get_sig.params.push(AbiParam::new(types::I64));
-        obj_get_sig.params.push(AbiParam::new(types::I64));
-        obj_get_sig.returns.push(AbiParam::new(types::I64));
-        let obj_get_id = self.module.declare_function("__olive_obj_get", Linkage::Import, &obj_get_sig).unwrap();
-        self.func_ids.insert("__olive_obj_get".to_string(), obj_get_id);
-
-        let mut memo_sig = self.module.make_signature();
-        memo_sig.params.push(AbiParam::new(types::I64)); // fn name string ptr
-        memo_sig.params.push(AbiParam::new(types::I64)); // is_tuple bool
-        memo_sig.returns.push(AbiParam::new(types::I64)); // cache dict ptr
-        let memo_id = self.module.declare_function("__olive_memo_get", Linkage::Import, &memo_sig).unwrap();
-        self.func_ids.insert("__olive_memo_get".to_string(), memo_id);
-
-        let mut cache_tuple_sig = self.module.make_signature();
-        cache_tuple_sig.params.push(AbiParam::new(types::I64)); // cache
-        cache_tuple_sig.params.push(AbiParam::new(types::I64)); // key (ptr)
-        cache_tuple_sig.returns.push(AbiParam::new(types::I64));
-        
-        let id = self.module.declare_function("__olive_cache_has_tuple", Linkage::Import, &cache_tuple_sig).unwrap();
-        self.func_ids.insert("__olive_cache_has_tuple".to_string(), id);
-
-        let id = self.module.declare_function("__olive_cache_get_tuple", Linkage::Import, &cache_tuple_sig).unwrap();
-        self.func_ids.insert("__olive_cache_get_tuple".to_string(), id);
-
-        let mut cache_set_tuple_sig = self.module.make_signature();
-        cache_set_tuple_sig.params.push(AbiParam::new(types::I64)); // cache
-        cache_set_tuple_sig.params.push(AbiParam::new(types::I64)); // key (ptr)
-        cache_set_tuple_sig.params.push(AbiParam::new(types::I64)); // val
-        cache_set_tuple_sig.returns.push(AbiParam::new(types::I64));
-        let id = self.module.declare_function("__olive_cache_set_tuple", Linkage::Import, &cache_set_tuple_sig).unwrap();
-        self.func_ids.insert("__olive_cache_set_tuple".to_string(), id);
 
         for func in self.functions {
             let mut sig = self.module.make_signature();
@@ -238,16 +188,74 @@ impl<'a> CraneliftCodegen<'a> {
                 sig.params.push(AbiParam::new(types::I64));
             }
             sig.returns.push(AbiParam::new(types::I64));
-            
-            let func_id = self.module
+
+            let func_id = self
+                .module
                 .declare_function(&func.name, Linkage::Export, &sig)
                 .unwrap();
             self.func_ids.insert(func.name.clone(), func_id);
         }
 
+        for func in self.functions {
+            self.collect_strings(func);
+        }
+
         let functions_mir = self.functions.to_vec();
         for func in functions_mir {
             self.translate_function(&func);
+        }
+    }
+
+    fn collect_strings(&mut self, func: &MirFunction) {
+        for bb in &func.basic_blocks {
+            for stmt in &bb.statements {
+                if let StatementKind::Assign(_, rval) = &stmt.kind {
+                    self.collect_strings_in_rvalue(rval);
+                }
+            }
+        }
+    }
+
+    fn collect_strings_in_rvalue(&mut self, rval: &Rvalue) {
+        match rval {
+            Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::GetAttr(op, _) => {
+                self.collect_strings_in_operand(op);
+            }
+            Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) => {
+                self.collect_strings_in_operand(l);
+                self.collect_strings_in_operand(r);
+            }
+            Rvalue::Call { func, args } => {
+                self.collect_strings_in_operand(func);
+                for arg in args {
+                    self.collect_strings_in_operand(arg);
+                }
+            }
+            Rvalue::Aggregate(_, ops) => {
+                for op in ops {
+                    self.collect_strings_in_operand(op);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn collect_strings_in_operand(&mut self, op: &Operand) {
+        if let Operand::Constant(Constant::Str(s)) = op {
+            if !self.string_ids.contains_key(s) {
+                let mut data_ctx = DataDescription::new();
+                let mut bytes = s.as_bytes().to_vec();
+                bytes.push(0);
+                data_ctx.define(bytes.into_boxed_slice());
+
+                let name = format!("str_{}", self.string_ids.len());
+                let id = self
+                    .module
+                    .declare_data(&name, Linkage::Export, false, false)
+                    .unwrap();
+                self.module.define_data(id, &data_ctx).unwrap();
+                self.string_ids.insert(s.clone(), id);
+            }
         }
     }
 
@@ -271,7 +279,11 @@ impl<'a> CraneliftCodegen<'a> {
         let mut builder_ctx = FunctionBuilderContext::new();
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
 
-        let blocks: Vec<Block> = func.basic_blocks.iter().map(|_| builder.create_block()).collect();
+        let blocks: Vec<Block> = func
+            .basic_blocks
+            .iter()
+            .map(|_| builder.create_block())
+            .collect();
         let mut vars = HashMap::default();
 
         for (i, decl) in func.locals.iter().enumerate() {
@@ -279,14 +291,19 @@ impl<'a> CraneliftCodegen<'a> {
             vars.insert(Local(i), var);
         }
 
-        // Compute predecessor counts for early block sealing.
         let mut pred_count = vec![0u32; func.basic_blocks.len()];
         for bb in &func.basic_blocks {
             if let Some(term) = &bb.terminator {
                 match &term.kind {
-                    TerminatorKind::Goto { target } => { pred_count[target.0] += 1; }
-                    TerminatorKind::SwitchInt { targets, otherwise, .. } => {
-                        for (_, t) in targets { pred_count[t.0] += 1; }
+                    TerminatorKind::Goto { target } => {
+                        pred_count[target.0] += 1;
+                    }
+                    TerminatorKind::SwitchInt {
+                        targets, otherwise, ..
+                    } => {
+                        for (_, t) in targets {
+                            pred_count[t.0] += 1;
+                        }
                         pred_count[otherwise.0] += 1;
                     }
                     _ => {}
@@ -299,7 +316,6 @@ impl<'a> CraneliftCodegen<'a> {
         for (i, bb) in func.basic_blocks.iter().enumerate() {
             builder.switch_to_block(blocks[i]);
 
-            // Seal entry block immediately (no predecessors from outside).
             if i == 0 && !sealed[i] {
                 builder.seal_block(blocks[i]);
                 sealed[i] = true;
@@ -314,14 +330,28 @@ impl<'a> CraneliftCodegen<'a> {
                     builder.def_var(*var, *val);
                 }
             }
-            
+
             for stmt in &bb.statements {
-                Self::translate_statement(func, &mut self.module, &self.func_ids, &mut builder, stmt, &vars, &mut self.string_pool);
+                Self::translate_statement(
+                    func,
+                    &mut self.module,
+                    &self.func_ids,
+                    &self.string_ids,
+                    &mut builder,
+                    stmt,
+                    &vars,
+                );
             }
-            
+
             if let Some(term) = &bb.terminator {
-                Self::translate_terminator(&mut builder, term, &blocks, &vars, &mut self.string_pool);
-                // Seal successor blocks when all predecessors are filled.
+                Self::translate_terminator(
+                    &mut builder,
+                    term,
+                    &blocks,
+                    &vars,
+                    &self.string_ids,
+                    &mut self.module,
+                );
                 match &term.kind {
                     TerminatorKind::Goto { target } => {
                         filled_pred[target.0] += 1;
@@ -330,7 +360,9 @@ impl<'a> CraneliftCodegen<'a> {
                             sealed[target.0] = true;
                         }
                     }
-                    TerminatorKind::SwitchInt { targets, otherwise, .. } => {
+                    TerminatorKind::SwitchInt {
+                        targets, otherwise, ..
+                    } => {
                         for (_, t) in targets {
                             filled_pred[t.0] += 1;
                             if filled_pred[t.0] == pred_count[t.0] && !sealed[t.0] {
@@ -339,7 +371,9 @@ impl<'a> CraneliftCodegen<'a> {
                             }
                         }
                         filled_pred[otherwise.0] += 1;
-                        if filled_pred[otherwise.0] == pred_count[otherwise.0] && !sealed[otherwise.0] {
+                        if filled_pred[otherwise.0] == pred_count[otherwise.0]
+                            && !sealed[otherwise.0]
+                        {
                             builder.seal_block(blocks[otherwise.0]);
                             sealed[otherwise.0] = true;
                         }
@@ -352,66 +386,110 @@ impl<'a> CraneliftCodegen<'a> {
             }
         }
 
-        // Seal any remaining unsealed blocks.
         for (i, block) in blocks.iter().enumerate() {
             if !sealed[i] {
                 builder.seal_block(*block);
             }
         }
-        
+
         builder.finalize();
 
         let func_id = self.func_ids.get(&func.name).unwrap();
         self.module.define_function(*func_id, &mut ctx).unwrap();
     }
 
-    fn translate_statement(func_mir: &MirFunction, module: &mut JITModule, func_ids: &HashMap<String, FuncId>, builder: &mut FunctionBuilder, stmt: &Statement, vars: &HashMap<Local, Variable>, string_pool: &mut HashMap<String, i64>) {
+    fn translate_statement(
+        func_mir: &MirFunction,
+        module: &mut JITModule,
+        func_ids: &HashMap<String, FuncId>,
+        string_ids: &HashMap<String, DataId>,
+        builder: &mut FunctionBuilder,
+        stmt: &Statement,
+        vars: &HashMap<Local, Variable>,
+    ) {
         match &stmt.kind {
             StatementKind::Assign(local, rval) => {
-                let val = Self::translate_rvalue(func_mir, module, func_ids, builder, rval, vars, string_pool);
+                let val = Self::translate_rvalue(
+                    func_mir,
+                    module,
+                    func_ids,
+                    string_ids,
+                    builder,
+                    rval,
+                    vars,
+                );
                 let var = vars.get(local).unwrap();
                 builder.def_var(*var, val);
             }
             StatementKind::SetAttr(obj, attr, val_op) => {
-                let o = Self::translate_operand(builder, obj, vars, string_pool);
-                let v = Self::translate_operand(builder, val_op, vars, string_pool);
-                
+                let o = Self::translate_operand(builder, obj, vars, string_ids, module);
+                let v = Self::translate_operand(builder, val_op, vars, string_ids, module);
+
                 let c_str = std::ffi::CString::new(attr.clone()).unwrap();
                 let attr_ptr = c_str.into_raw() as i64;
                 let attr_val = builder.ins().iconst(types::I64, attr_ptr);
-                
+
                 let set_id = func_ids.get("__olive_obj_set").unwrap();
                 let local_func = module.declare_func_in_func(*set_id, builder.func);
                 builder.ins().call(local_func, &[o, attr_val, v]);
             }
             StatementKind::SetIndex(obj, idx, val_op) => {
-                let o = Self::translate_operand(builder, obj, vars, string_pool);
-                let i = Self::translate_operand(builder, idx, vars, string_pool);
-                let v = Self::translate_operand(builder, val_op, vars, string_pool);
-                
-                let len = builder.ins().load(types::I64, MemFlags::new().with_readonly(), o, 0);
-                let cmp_ge_len = builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, i, len);
-                builder.ins().trapnz(cmp_ge_len, TrapCode::unwrap_user(2));
+                let o = Self::translate_operand(builder, obj, vars, string_ids, module);
+                let i = Self::translate_operand(builder, idx, vars, string_ids, module);
+                let v = Self::translate_operand(builder, val_op, vars, string_ids, module);
 
-                let one = builder.ins().iconst(types::I64, 1);
-                let idx_plus_one = builder.ins().iadd(i, one);
-                let byte_offset = builder.ins().ishl_imm(idx_plus_one, 3);
-                let elem_ptr = builder.ins().iadd(o, byte_offset);
-                
-                builder.ins().store(MemFlags::new(), v, elem_ptr, 0);
+                let set_id = func_ids.get("__olive_list_set").unwrap();
+                let local_func = module.declare_func_in_func(*set_id, builder.func);
+                builder.ins().call(local_func, &[o, i, v]);
             }
-            _ => {}
+            StatementKind::Drop(local) => {
+                let ty = &func_mir.locals[local.0].ty;
+                if !ty.is_move_type() {
+                    return;
+                }
+
+                let var = vars.get(local).unwrap();
+                let val = builder.use_var(*var);
+
+                let free_func_name = match ty {
+                    OliveType::Str => "__olive_free_str",
+                    OliveType::List(_) | OliveType::Tuple(_) | OliveType::Set(_) => {
+                        "__olive_free_list"
+                    }
+                    OliveType::Dict(_, _) | OliveType::Class(_) => "__olive_free_obj",
+                    _ => "__olive_free",
+                };
+
+                let free_id = func_ids.get(free_func_name).unwrap();
+                let local_func = module.declare_func_in_func(*free_id, builder.func);
+                builder.ins().call(local_func, &[val]);
+
+                let zero = builder.ins().iconst(types::I64, 0);
+                builder.def_var(*var, zero);
+            }
+            StatementKind::StorageLive(_) | StatementKind::StorageDead(_) => {}
         }
     }
 
-    fn translate_rvalue(func_mir: &MirFunction, module: &mut JITModule, func_ids: &HashMap<String, FuncId>, builder: &mut FunctionBuilder, rval: &Rvalue, vars: &HashMap<Local, Variable>, string_pool: &mut HashMap<String, i64>) -> Value {
+    fn translate_rvalue(
+        func_mir: &MirFunction,
+        module: &mut JITModule,
+        func_ids: &HashMap<String, FuncId>,
+        string_ids: &HashMap<String, DataId>,
+        builder: &mut FunctionBuilder,
+        rval: &Rvalue,
+        vars: &HashMap<Local, Variable>,
+    ) -> Value {
         match rval {
-            Rvalue::Use(op) => Self::translate_operand(builder, op, vars, string_pool),
+            Rvalue::Use(op) => Self::translate_operand(builder, op, vars, string_ids, module),
             Rvalue::Call { func, args } => {
-                let call_args: Vec<Value> = args.iter().map(|a| Self::translate_operand(builder, a, vars, string_pool)).collect();
-                
+                let call_args: Vec<Value> = args
+                    .iter()
+                    .map(|a| Self::translate_operand(builder, a, vars, string_ids, module))
+                    .collect();
+
                 if let Operand::Constant(Constant::Function(name)) = func {
-                    let (resolved_name, final_call_args) = if name == "print" && !args.is_empty() {
+                    let resolved_name = if (name == "print" || name == "str" || name == "int" || name == "float" || name == "bool" || name == "iter" || name == "next" || name == "has_next") && !args.is_empty() {
                         let mut arg_type = OliveType::Int;
                         match &args[0] {
                             Operand::Constant(Constant::Str(_)) => arg_type = OliveType::Str,
@@ -427,73 +505,60 @@ impl<'a> CraneliftCodegen<'a> {
                             current_ty = inner;
                         }
 
-                        let target = if *current_ty == OliveType::Str {
-                            "__olive_print_str"
-                        } else if *current_ty == OliveType::Float {
-                            "__olive_print_float"
-                        } else {
-                            "__olive_print_int"
-                        };
-                        (target, call_args.clone())
-                    } else if (name == "str" || name == "int" || name == "float" || name == "bool") && !args.is_empty() {
-                        let mut arg_type = OliveType::Int;
-                        match &args[0] {
-                            Operand::Constant(Constant::Str(_)) => arg_type = OliveType::Str,
-                            Operand::Constant(Constant::Float(_)) => arg_type = OliveType::Float,
-                            Operand::Copy(l) | Operand::Move(l) => {
-                                arg_type = func_mir.locals[l.0].ty.clone();
+                        match name.as_str() {
+                            "print" => {
+                                if *current_ty == OliveType::Str { "__olive_print_str" }
+                                else if *current_ty == OliveType::Float { "__olive_print_float" }
+                                else if matches!(current_ty, OliveType::List(_) | OliveType::Tuple(_) | OliveType::Set(_)) { "__olive_print_list" }
+                                else if matches!(current_ty, OliveType::Dict(_, _) | OliveType::Class(_)) { "__olive_print_obj" }
+                                else { "__olive_print_int" }
                             }
-                            _ => {}
-                        }
-                        let mut current_ty = &arg_type;
-                        while let OliveType::Ref(inner) | OliveType::MutRef(inner) = current_ty {
-                            current_ty = inner;
-                        }
-                        
-                        let target = match name.as_str() {
                             "str" => {
                                 if *current_ty == OliveType::Str { "__olive_copy" }
                                 else if *current_ty == OliveType::Float { "__olive_float_to_str" }
                                 else { "__olive_str" }
-                            },
+                            }
                             "int" => {
                                 if *current_ty == OliveType::Int { "__olive_int" }
                                 else if *current_ty == OliveType::Float { "__olive_float_to_int" }
                                 else if *current_ty == OliveType::Str { "__olive_str_to_int" }
                                 else { "__olive_int" }
-                            },
+                            }
                             "float" => {
                                 if *current_ty == OliveType::Float { "__olive_copy_float" }
                                 else if *current_ty == OliveType::Int { "__olive_int_to_float" }
                                 else if *current_ty == OliveType::Str { "__olive_str_to_float" }
                                 else { "__olive_float" }
-                            },
+                            }
                             "bool" => {
                                 if *current_ty == OliveType::Float { "__olive_bool_from_float" }
                                 else { "__olive_bool" }
-                            },
-                            _ => unreachable!(),
-                        };
-                        (target, call_args.clone())
+                            }
+                            "iter" => "__olive_iter",
+                            "next" => "__olive_next",
+                            "has_next" => "__olive_has_next",
+                            _ => name.as_str(),
+                        }
                     } else {
-                        (name.as_str(), call_args.clone())
+                        name.as_str()
                     };
-                    
+
                     if let Some(&func_id) = func_ids.get(resolved_name) {
                         let local_func = module.declare_func_in_func(func_id, builder.func);
-                        let inst = builder.ins().call(local_func, &final_call_args);
+                        let inst = builder.ins().call(local_func, &call_args);
                         let results = builder.inst_results(inst);
-                        if results.is_empty() {
-                            return builder.ins().iconst(types::I64, 0);
-                        }
-                        return results[0];
+                        return if results.is_empty() {
+                            builder.ins().iconst(types::I64, 0)
+                        } else {
+                            results[0]
+                        };
                     }
                 }
                 builder.ins().iconst(types::I64, 0)
             }
             Rvalue::BinaryOp(op, lhs, rhs) => {
-                let l = Self::translate_operand(builder, lhs, vars, string_pool);
-                let r = Self::translate_operand(builder, rhs, vars, string_pool);
+                let l = Self::translate_operand(builder, lhs, vars, string_ids, module);
+                let r = Self::translate_operand(builder, rhs, vars, string_ids, module);
                 use crate::parser::BinOp::*;
                 match op {
                     Add => {
@@ -507,16 +572,16 @@ impl<'a> CraneliftCodegen<'a> {
                             }
                             _ => {}
                         }
-                        // Fallback: if rhs is a string constant, treat as string addition.
                         if !is_str {
                             if let Operand::Constant(Constant::Str(_)) = rhs {
                                 is_str = true;
                             }
                         }
-                        
+
                         if is_str {
                             let concat_func_id = func_ids.get("__olive_str_concat").unwrap();
-                            let local_func = module.declare_func_in_func(*concat_func_id, builder.func);
+                            let local_func =
+                                module.declare_func_in_func(*concat_func_id, builder.func);
                             let inst = builder.ins().call(local_func, &[l, r]);
                             builder.inst_results(inst)[0]
                         } else {
@@ -562,37 +627,97 @@ impl<'a> CraneliftCodegen<'a> {
                         let res = builder.ins().icmp(IntCC::NotEqual, l, r);
                         builder.ins().uextend(types::I64, res)
                     }
-                    Lt => {
-                        let res = builder.ins().icmp(IntCC::SignedLessThan, l, r);
-                        builder.ins().uextend(types::I64, res)
-                    }
-                    LtEq => {
-                        let res = builder.ins().icmp(IntCC::SignedLessThanOrEqual, l, r);
-                        builder.ins().uextend(types::I64, res)
-                    }
-                    Gt => {
-                        let res = builder.ins().icmp(IntCC::SignedGreaterThan, l, r);
-                        builder.ins().uextend(types::I64, res)
-                    }
-                    GtEq => {
-                        let res = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, l, r);
-                        builder.ins().uextend(types::I64, res)
-                    }
-                    NotEq => {
-                        let res = builder.ins().icmp(IntCC::NotEqual, l, r);
-                        builder.ins().uextend(types::I64, res)
+                    Lt | LtEq | Gt | GtEq | NotEq => {
+                        let mut is_float = false;
+                        if let Operand::Copy(loc) | Operand::Move(loc) = lhs {
+                            if func_mir.locals[loc.0].ty == OliveType::Float { is_float = true; }
+                        } else if let Operand::Constant(Constant::Float(_)) = lhs {
+                            is_float = true;
+                        }
+
+                        if is_float {
+                            let cc = match op {
+                                Lt => FloatCC::LessThan,
+                                LtEq => FloatCC::LessThanOrEqual,
+                                Gt => FloatCC::GreaterThan,
+                                GtEq => FloatCC::GreaterThanOrEqual,
+                                NotEq => FloatCC::NotEqual,
+                                _ => unreachable!(),
+                            };
+                            let res = builder.ins().fcmp(cc, l, r);
+                            builder.ins().uextend(types::I64, res)
+                        } else {
+                            let cc = match op {
+                                Lt => IntCC::SignedLessThan,
+                                LtEq => IntCC::SignedLessThanOrEqual,
+                                Gt => IntCC::SignedGreaterThan,
+                                GtEq => IntCC::SignedGreaterThanOrEqual,
+                                NotEq => IntCC::NotEqual,
+                                _ => unreachable!(),
+                            };
+                            let res = builder.ins().icmp(cc, l, r);
+                            builder.ins().uextend(types::I64, res)
+                        }
                     }
                     Shl => builder.ins().ishl(l, r),
                     Shr => builder.ins().sshr(l, r),
-                    _ => builder.ins().iconst(types::I64, 0),
+                    And => builder.ins().band(l, r),
+                    Or => builder.ins().bor(l, r),
+                    Pow => {
+                        let pow_id = func_ids.get("__olive_pow").unwrap();
+                        let local_func = module.declare_func_in_func(*pow_id, builder.func);
+                        let inst = builder.ins().call(local_func, &[l, r]);
+                        builder.inst_results(inst)[0]
+                    }
+                    In => {
+                        let mut is_obj = false;
+                        if let Operand::Copy(loc) | Operand::Move(loc) = rhs {
+                            let ty = &func_mir.locals[loc.0].ty;
+                            if matches!(ty, OliveType::Dict(_, _) | OliveType::Class(_)) {
+                                is_obj = true;
+                            }
+                        }
+                        let func_name = if is_obj {
+                            "__olive_in_obj"
+                        } else {
+                            "__olive_in_list"
+                        };
+                        let in_id = func_ids.get(func_name).unwrap();
+                        let local_func = module.declare_func_in_func(*in_id, builder.func);
+                        let inst = builder.ins().call(local_func, &[l, r]);
+                        builder.inst_results(inst)[0]
+                    }
+                    NotIn => {
+                        let mut is_obj = false;
+                        if let Operand::Copy(loc) | Operand::Move(loc) = rhs {
+                            let ty = &func_mir.locals[loc.0].ty;
+                            if matches!(ty, OliveType::Dict(_, _) | OliveType::Class(_)) {
+                                is_obj = true;
+                            }
+                        }
+                        let func_name = if is_obj {
+                            "__olive_in_obj"
+                        } else {
+                            "__olive_in_list"
+                        };
+                        let in_id = func_ids.get(func_name).unwrap();
+                        let local_func = module.declare_func_in_func(*in_id, builder.func);
+                        let inst = builder.ins().call(local_func, &[l, r]);
+                        let res = builder.inst_results(inst)[0];
+                        let is_zero = builder.ins().icmp_imm(IntCC::Equal, res, 0);
+                        builder.ins().uextend(types::I64, is_zero)
+                    }
                 }
             }
             Rvalue::UnaryOp(op, operand) => {
-                let o = Self::translate_operand(builder, operand, vars, string_pool);
+                let o = Self::translate_operand(builder, operand, vars, string_ids, module);
                 use crate::parser::UnaryOp::*;
                 match op {
                     Neg => builder.ins().ineg(o),
-                    Not => builder.ins().bnot(o),
+                    Not => {
+                        let res = builder.ins().icmp_imm(IntCC::Equal, o, 0);
+                        builder.ins().uextend(types::I64, res)
+                    }
                     Pos => o,
                 }
             }
@@ -601,88 +726,128 @@ impl<'a> CraneliftCodegen<'a> {
                 builder.use_var(*var)
             }
             Rvalue::GetAttr(obj, attr) => {
-                let o = Self::translate_operand(builder, obj, vars, string_pool);
+                let o = Self::translate_operand(builder, obj, vars, string_ids, module);
                 let c_str = std::ffi::CString::new(attr.clone()).unwrap();
                 let attr_ptr = c_str.into_raw() as i64;
                 let attr_val = builder.ins().iconst(types::I64, attr_ptr);
-                
+
                 let get_id = func_ids.get("__olive_obj_get").unwrap();
                 let local_func = module.declare_func_in_func(*get_id, builder.func);
                 let inst = builder.ins().call(local_func, &[o, attr_val]);
                 builder.inst_results(inst)[0]
             }
             Rvalue::GetIndex(obj, idx) => {
-                let o = Self::translate_operand(builder, obj, vars, string_pool);
-                let i = Self::translate_operand(builder, idx, vars, string_pool);
-                
-                let len = builder.ins().load(types::I64, MemFlags::new().with_readonly(), o, 0);
-                let cmp_ge_len = builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, i, len);
-                builder.ins().trapnz(cmp_ge_len, TrapCode::unwrap_user(2));
+                let o = Self::translate_operand(builder, obj, vars, string_ids, module);
+                let i = Self::translate_operand(builder, idx, vars, string_ids, module);
 
-                let one = builder.ins().iconst(types::I64, 1);
-                let idx_plus_one = builder.ins().iadd(i, one);
-                let byte_offset = builder.ins().ishl_imm(idx_plus_one, 3);
-                let elem_ptr = builder.ins().iadd(o, byte_offset);
-                
-                builder.ins().load(types::I64, MemFlags::new(), elem_ptr, 0)
+                let get_id = func_ids.get("__olive_list_get").unwrap();
+                let local_func = module.declare_func_in_func(*get_id, builder.func);
+                let inst = builder.ins().call(local_func, &[o, i]);
+                builder.inst_results(inst)[0]
             }
-            Rvalue::Aggregate(_, ops) => {
-                let count = builder.ins().iconst(types::I64, ops.len() as i64);
-                let new_id = func_ids.get("__olive_list_new").unwrap();
-                let new_func = module.declare_func_in_func(*new_id, builder.func);
-                let inst = builder.ins().call(new_func, &[count]);
-                let list_ptr = builder.inst_results(inst)[0];
+            Rvalue::Aggregate(kind, ops) => {
+                use crate::mir::ir::AggregateKind;
+                match kind {
+                    AggregateKind::Dict => {
+                        let new_id = func_ids.get("__olive_obj_new").unwrap();
+                        let new_func = module.declare_func_in_func(*new_id, builder.func);
+                        let inst = builder.ins().call(new_func, &[]);
+                        let dict_ptr = builder.inst_results(inst)[0];
 
-                for (idx, op) in ops.iter().enumerate() {
-                    let val = Self::translate_operand(builder, op, vars, string_pool);
-                    let byte_offset = builder.ins().iconst(types::I64, ((idx + 1) * 8) as i64);
-                    let elem_ptr = builder.ins().iadd(list_ptr, byte_offset);
-                    builder.ins().store(MemFlags::new(), val, elem_ptr, 0);
+                        let set_id = func_ids.get("__olive_obj_set").unwrap();
+                        let set_func = module.declare_func_in_func(*set_id, builder.func);
+
+                        for i in (0..ops.len()).step_by(2) {
+                            let key = Self::translate_operand(builder, &ops[i], vars, string_ids, module);
+                            let val = Self::translate_operand(builder, &ops[i+1], vars, string_ids, module);
+                            builder.ins().call(set_func, &[dict_ptr, key, val]);
+                        }
+                        dict_ptr
+                    }
+                    AggregateKind::Set => {
+                        let count = builder.ins().iconst(types::I64, ops.len() as i64);
+                        let new_id = func_ids.get("__olive_list_new").unwrap();
+                        let new_func = module.declare_func_in_func(*new_id, builder.func);
+                        let inst = builder.ins().call(new_func, &[count]);
+                        let set_ptr = builder.inst_results(inst)[0];
+
+                        let add_id = func_ids.get("__olive_set_add").unwrap();
+                        let add_func = module.declare_func_in_func(*add_id, builder.func);
+
+                        for op in ops {
+                            let val = Self::translate_operand(builder, op, vars, string_ids, module);
+                            builder.ins().call(add_func, &[set_ptr, val]);
+                        }
+                        set_ptr
+                    }
+                    _ => {
+                        let count = builder.ins().iconst(types::I64, ops.len() as i64);
+                        let new_id = func_ids.get("__olive_list_new").unwrap();
+                        let new_func = module.declare_func_in_func(*new_id, builder.func);
+                        let inst = builder.ins().call(new_func, &[count]);
+                        let list_ptr = builder.inst_results(inst)[0];
+
+                        let append_id = func_ids.get("__olive_list_append").unwrap();
+                        let append_func = module.declare_func_in_func(*append_id, builder.func);
+
+                        for op in ops {
+                            let val = Self::translate_operand(builder, op, vars, string_ids, module);
+                            builder.ins().call(append_func, &[list_ptr, val]);
+                        }
+                        list_ptr
+                    }
                 }
-                list_ptr
             }
         }
     }
 
-    fn translate_operand(builder: &mut FunctionBuilder, op: &Operand, vars: &HashMap<Local, Variable>, string_pool: &mut HashMap<String, i64>) -> Value {
+    fn translate_operand(
+        builder: &mut FunctionBuilder,
+        op: &Operand,
+        vars: &HashMap<Local, Variable>,
+        string_ids: &HashMap<String, DataId>,
+        module: &mut JITModule,
+    ) -> Value {
         match op {
-            Operand::Copy(local) => {
-                let var = vars.get(local).unwrap();
+            Operand::Copy(l) | Operand::Move(l) => {
+                let var = vars.get(l).expect("variable not found");
                 builder.use_var(*var)
-            }
-            Operand::Move(local) => {
-                let var = vars.get(local).unwrap();
-                let val = builder.use_var(*var);
-                let zero = builder.ins().iconst(types::I64, 0);
-                builder.def_var(*var, zero);
-                val
             }
             Operand::Constant(c) => match c {
                 Constant::Int(i) => builder.ins().iconst(types::I64, *i),
                 Constant::Float(f) => builder.ins().f64const(f64::from_bits(*f)),
-                Constant::Bool(b) => builder.ins().iconst(types::I64, if *b { 1 } else { 0 }),
+                Constant::Bool(b) => {
+                    let val = if *b { 1 } else { 0 };
+                    builder.ins().iconst(types::I64, val)
+                }
                 Constant::Str(s) => {
-                    if let Some(&ptr) = string_pool.get(s) {
-                        builder.ins().iconst(types::I64, ptr)
-                    } else {
-                        let c_str = std::ffi::CString::new(s.clone()).unwrap();
-                        let ptr = c_str.into_raw() as i64;
-                        string_pool.insert(s.clone(), ptr);
-                        builder.ins().iconst(types::I64, ptr)
-                    }
+                    let id = *string_ids.get(s).expect("string constant not found");
+                    let local_id = module.declare_data_in_func(id, builder.func);
+                    builder.ins().symbol_value(types::I64, local_id)
                 }
                 _ => builder.ins().iconst(types::I64, 0),
             },
         }
     }
 
-    fn translate_terminator(builder: &mut FunctionBuilder, term: &Terminator, blocks: &[Block], vars: &HashMap<Local, Variable>, string_pool: &mut HashMap<String, i64>) {
+    fn translate_terminator(
+        builder: &mut FunctionBuilder,
+        term: &Terminator,
+        blocks: &[Block],
+        vars: &HashMap<Local, Variable>,
+        string_ids: &HashMap<String, DataId>,
+        module: &mut JITModule,
+    ) {
         match &term.kind {
             TerminatorKind::Goto { target } => {
                 builder.ins().jump(blocks[target.0], &[]);
             }
-            TerminatorKind::SwitchInt { discr, targets, otherwise } => {
-                let val = Self::translate_operand(builder, discr, vars, string_pool);
+            TerminatorKind::SwitchInt {
+                discr,
+                targets,
+                otherwise,
+            } => {
+                let val = Self::translate_operand(builder, discr, vars, string_ids, module);
                 if targets.len() == 1 && targets[0].0 == 1 {
                     let target_block = blocks[targets[0].1.0];
                     let else_block = blocks[otherwise.0];
@@ -736,6 +901,36 @@ extern "C" fn olive_print_str(val: i64) -> i64 {
     0
 }
 
+extern "C" fn olive_print_list(ptr: i64) -> i64 {
+    if ptr == 0 {
+        println!("[]");
+        return 0;
+    }
+    let v = unsafe { &*(ptr as *const Vec<i64>) };
+    print!("[");
+    for (i, val) in v.iter().enumerate() {
+        if i > 0 { print!(", "); }
+        print!("{}", val);
+    }
+    println!("]");
+    0
+}
+
+extern "C" fn olive_print_obj(ptr: i64) -> i64 {
+    if ptr == 0 {
+        println!("{{}}");
+        return 0;
+    }
+    let m = unsafe { &*(ptr as *const HashMap<String, i64>) };
+    print!("{{");
+    for (i, (k, v)) in m.iter().enumerate() {
+        if i > 0 { print!(", "); }
+        print!("'{}': {}", k, v);
+    }
+    println!("}}");
+    0
+}
+
 extern "C" fn olive_str(val: i64) -> i64 {
     let s = format!("{}", val);
     let c_str = std::ffi::CString::new(s).unwrap();
@@ -773,76 +968,83 @@ extern "C" fn olive_int_to_float(val: i64) -> f64 {
 }
 
 extern "C" fn olive_str_to_int(ptr: i64) -> i64 {
-    if ptr == 0 { return 0; }
+    if ptr == 0 {
+        return 0;
+    }
     let s = unsafe { std::ffi::CStr::from_ptr(ptr as *const i8) }.to_string_lossy();
     s.parse::<i64>().unwrap_or(0)
 }
 
 extern "C" fn olive_str_to_float(ptr: i64) -> f64 {
-    if ptr == 0 { return 0.0; }
+    if ptr == 0 {
+        return 0.0;
+    }
     let s = unsafe { std::ffi::CStr::from_ptr(ptr as *const i8) }.to_string_lossy();
     s.parse::<f64>().unwrap_or(0.0)
 }
 
-
 extern "C" fn olive_str_concat(l: i64, r: i64) -> i64 {
-    let sl = if l == 0 { "".into() } else { unsafe { std::ffi::CStr::from_ptr(l as *const i8) }.to_string_lossy() };
-    let sr = if r == 0 { "".into() } else { unsafe { std::ffi::CStr::from_ptr(r as *const i8) }.to_string_lossy() };
+    let sl = if l == 0 {
+        "".into()
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(l as *const i8) }.to_string_lossy()
+    };
+    let sr = if r == 0 {
+        "".into()
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(r as *const i8) }.to_string_lossy()
+    };
     let s = format!("{}{}", sl, sr);
     let c_str = std::ffi::CString::new(s).unwrap();
     c_str.into_raw() as i64
 }
 
-extern "C" fn olive_free(_ptr: i64) {
-    // Leak memory for now.
-}
+extern "C" fn olive_free(_ptr: i64) {}
 
-extern "C" fn olive_copy(ptr: i64) -> i64 {
-    if ptr == 0 { return 0; }
-    unsafe {
-        let s = std::ffi::CStr::from_ptr(ptr as *const i8).to_owned();
-        s.into_raw() as i64
-    }
-}
-
-extern "C" fn olive_str_eq(l: i64, r: i64) -> i64 {
-    if l == r { return 1; }
-    if l == 0 || r == 0 { return 0; }
-    let sl = unsafe { std::ffi::CStr::from_ptr(l as *const i8) };
-    let sr = unsafe { std::ffi::CStr::from_ptr(r as *const i8) };
-    if sl == sr { 1 } else { 0 }
-}
-
-extern "C" fn olive_list_new(len: i64) -> i64 {
-    let mut v: Vec<i64> = vec![0; (len + 1) as usize];
-    v[0] = len;
-    let ptr = v.as_mut_ptr();
-    std::mem::forget(v);
-    ptr as i64
-}
-
-extern "C" fn olive_list_set(list: i64, index: i64, val: i64) {
-    if list == 0 { return; }
-    unsafe {
-        let ptr = list as *mut i64;
-        let len = *ptr;
-        if index >= 0 && index < len {
-            *ptr.add((index + 1) as usize) = val;
+extern "C" fn olive_free_str(ptr: i64) {
+    if ptr != 0 {
+        unsafe {
+            let _ = std::ffi::CString::from_raw(ptr as *mut std::ffi::c_char);
         }
     }
 }
 
-extern "C" fn olive_list_get(list: i64, index: i64) -> i64 {
-    if list == 0 { return 0; }
+extern "C" fn olive_free_list(ptr: i64) {
+    if ptr != 0 {
+        unsafe {
+            let p = ptr as *mut i64;
+            let len = *p;
+            let _ = Vec::from_raw_parts(p, (len + 1) as usize, (len + 1) as usize);
+        }
+    }
+}
+
+extern "C" fn olive_free_obj(ptr: i64) {
+    if ptr != 0 {
+        unsafe {
+            let _ = Box::from_raw(ptr as *mut HashMap<String, i64>);
+        }
+    }
+}
+
+extern "C" fn olive_pow(l: i64, r: i64) -> i64 {
+    (l as f64).powf(r as f64) as i64
+}
+
+extern "C" fn olive_in_list(val: i64, list: i64) -> i64 {
+    if list == 0 {
+        return 0;
+    }
     unsafe {
         let ptr = list as *const i64;
         let len = *ptr;
-        if index >= 0 && index < len {
-            *ptr.add((index + 1) as usize)
-        } else {
-            0
+        for i in 0..len {
+            if *ptr.add((i + 1) as usize) == val {
+                return 1;
+            }
         }
     }
+    0
 }
 
 extern "C" fn olive_obj_new() -> i64 {
@@ -855,31 +1057,21 @@ extern "C" fn olive_copy_float(val: f64) -> f64 {
 }
 
 extern "C" fn olive_obj_set(obj: i64, attr: i64, val: i64) -> i64 {
-    if obj == 0 || attr == 0 { return obj; }
+    if obj == 0 || attr == 0 {
+        return obj;
+    }
     let m = unsafe { &mut *(obj as *mut HashMap<String, i64>) };
-    let s = unsafe { std::ffi::CStr::from_ptr(attr as *const i8) }.to_string_lossy().into_owned();
+    let s = unsafe { std::ffi::CStr::from_ptr(attr as *const i8) }
+        .to_string_lossy()
+        .into_owned();
     m.insert(s, val);
     obj
 }
 
-extern "C" fn olive_str_len(s: i64) -> i64 {
-    if s == 0 { return 0; }
-    let s = unsafe { std::ffi::CStr::from_ptr(s as *const i8) };
-    s.to_bytes().len() as i64
-}
-
-extern "C" fn olive_str_get(s: i64, i: i64) -> i64 {
-    if s == 0 { return 0; }
-    let s = unsafe { std::ffi::CStr::from_ptr(s as *const i8) }.to_bytes();
-    if (i as usize) < s.len() {
-        s[i as usize] as i64
-    } else {
-        0
-    }
-}
-
 extern "C" fn olive_obj_get(obj: i64, attr: i64) -> i64 {
-    if obj == 0 || attr == 0 { return 0; }
+    if obj == 0 || attr == 0 {
+        return 0;
+    }
     let m = unsafe { &*(obj as *const HashMap<String, i64>) };
     let s = unsafe { std::ffi::CStr::from_ptr(attr as *const i8) }.to_string_lossy();
     *m.get(s.as_ref()).unwrap_or(&0)
@@ -891,7 +1083,9 @@ extern "C" fn olive_memo_get(name_ptr: i64, is_tuple: i64) -> i64 {
         static GLOBAL_CACHES_INT: OnceLock<Mutex<HashMap<String, i64>>> = OnceLock::new();
         let caches_mutex = GLOBAL_CACHES_INT.get_or_init(|| Mutex::new(HashMap::default()));
         let mut caches = caches_mutex.lock().unwrap();
-        let name = unsafe { std::ffi::CStr::from_ptr(name_ptr as *const i8) }.to_string_lossy().into_owned();
+        let name = unsafe { std::ffi::CStr::from_ptr(name_ptr as *const i8) }
+            .to_string_lossy()
+            .into_owned();
         if let Some(&cache) = caches.get(&name) {
             cache
         } else {
@@ -904,7 +1098,9 @@ extern "C" fn olive_memo_get(name_ptr: i64, is_tuple: i64) -> i64 {
         static GLOBAL_CACHES_TUPLE: OnceLock<Mutex<HashMap<String, i64>>> = OnceLock::new();
         let caches_mutex = GLOBAL_CACHES_TUPLE.get_or_init(|| Mutex::new(HashMap::default()));
         let mut caches = caches_mutex.lock().unwrap();
-        let name = unsafe { std::ffi::CStr::from_ptr(name_ptr as *const i8) }.to_string_lossy().into_owned();
+        let name = unsafe { std::ffi::CStr::from_ptr(name_ptr as *const i8) }
+            .to_string_lossy()
+            .into_owned();
         if let Some(&cache) = caches.get(&name) {
             cache
         } else {
@@ -917,42 +1113,204 @@ extern "C" fn olive_memo_get(name_ptr: i64, is_tuple: i64) -> i64 {
 }
 
 extern "C" fn olive_cache_get(cache: i64, key: i64) -> i64 {
-    if cache == 0 { return 0; }
+    if cache == 0 {
+        return 0;
+    }
     let m = unsafe { &*(cache as *const HashMap<i64, i64>) };
     *m.get(&key).unwrap_or(&0)
 }
 
 extern "C" fn olive_cache_has(cache: i64, key: i64) -> i64 {
-    if cache == 0 { return 0; }
+    if cache == 0 {
+        return 0;
+    }
     let m = unsafe { &*(cache as *const HashMap<i64, i64>) };
     if m.contains_key(&key) { 1 } else { 0 }
 }
 
 extern "C" fn olive_cache_set(cache: i64, key: i64, val: i64) -> i64 {
-    if cache == 0 { return cache; }
+    if cache == 0 {
+        return cache;
+    }
     let m = unsafe { &mut *(cache as *mut HashMap<i64, i64>) };
     m.insert(key, val);
     cache
 }
 
+fn read_tuple(ptr: i64) -> Vec<i64> {
+    if ptr == 0 {
+        return vec![];
+    }
+    unsafe {
+        let p = ptr as *const i64;
+        let len = *p as usize;
+        let mut v = Vec::with_capacity(len);
+        for i in 0..len {
+            v.push(*(p.add(i + 1)));
+        }
+        v
+    }
+}
+
 extern "C" fn olive_cache_has_tuple(cache: i64, key_ptr: i64) -> i64 {
-    if cache == 0 || key_ptr == 0 { return 0; }
+    if cache == 0 || key_ptr == 0 {
+        return 0;
+    }
     let m = unsafe { &*(cache as *const HashMap<Vec<i64>, i64>) };
-    let v = unsafe { &*(key_ptr as *const Vec<i64>) };
-    if m.contains_key(v) { 1 } else { 0 }
+    let v = read_tuple(key_ptr);
+    if m.contains_key(&v) { 1 } else { 0 }
 }
 
 extern "C" fn olive_cache_get_tuple(cache: i64, key_ptr: i64) -> i64 {
-    if cache == 0 || key_ptr == 0 { return 0; }
+    if cache == 0 || key_ptr == 0 {
+        return 0;
+    }
     let m = unsafe { &*(cache as *const HashMap<Vec<i64>, i64>) };
-    let v = unsafe { &*(key_ptr as *const Vec<i64>) };
-    *m.get(v).unwrap_or(&0)
+    let v = read_tuple(key_ptr);
+    *m.get(&v).unwrap_or(&0)
 }
 
 extern "C" fn olive_cache_set_tuple(cache: i64, key_ptr: i64, val: i64) -> i64 {
-    if cache == 0 || key_ptr == 0 { return cache; }
+    if cache == 0 || key_ptr == 0 {
+        return cache;
+    }
     let m = unsafe { &mut *(cache as *mut HashMap<Vec<i64>, i64>) };
-    let v = unsafe { &*(key_ptr as *const Vec<i64>) };
-    m.insert(v.clone(), val);
+    let v = read_tuple(key_ptr);
+    m.insert(v, val);
     cache
+}
+extern "C" fn olive_copy(ptr: i64) -> i64 {
+    if ptr == 0 {
+        return 0;
+    }
+    unsafe {
+        let s = std::ffi::CStr::from_ptr(ptr as *const i8).to_owned();
+        s.into_raw() as i64
+    }
+}
+
+extern "C" fn olive_str_eq(l: i64, r: i64) -> i64 {
+    if l == r {
+        return 1;
+    }
+    if l == 0 || r == 0 {
+        return 0;
+    }
+    let sl = unsafe { std::ffi::CStr::from_ptr(l as *const i8) };
+    let sr = unsafe { std::ffi::CStr::from_ptr(r as *const i8) };
+    if sl == sr { 1 } else { 0 }
+}
+
+extern "C" fn olive_list_new(len: i64) -> i64 {
+    let v: Vec<i64> = Vec::with_capacity(len as usize);
+    Box::into_raw(Box::new(v)) as i64
+}
+
+extern "C" fn olive_list_set(list_ptr: i64, idx: i64, val: i64) {
+    if list_ptr == 0 {
+        return;
+    }
+    let v = unsafe { &mut *(list_ptr as *mut Vec<i64>) };
+    if (idx as usize) < v.len() {
+        v[idx as usize] = val;
+    }
+}
+
+extern "C" fn olive_list_get(list_ptr: i64, idx: i64) -> i64 {
+    if list_ptr == 0 {
+        return 0;
+    }
+    let v = unsafe { &*(list_ptr as *const Vec<i64>) };
+    if (idx as usize) < v.len() {
+        v[idx as usize]
+    } else {
+        0
+    }
+}
+
+extern "C" fn olive_list_append(list_ptr: i64, val: i64) {
+    if list_ptr == 0 {
+        return;
+    }
+    let v = unsafe { &mut *(list_ptr as *mut Vec<i64>) };
+    v.push(val);
+}
+
+
+extern "C" fn olive_in_obj(val: i64, obj_ptr: i64) -> i64 {
+    if obj_ptr == 0 || val == 0 {
+        return 0;
+    }
+    let m = unsafe { &*(obj_ptr as *const HashMap<String, i64>) };
+    let s = unsafe { std::ffi::CStr::from_ptr(val as *const i8) };
+    if m.contains_key(&s.to_string_lossy().into_owned()) {
+        1
+    } else {
+        0
+    }
+}
+
+struct OliveIter {
+    list_ptr: i64,
+    index: usize,
+}
+
+extern "C" fn olive_iter(list_ptr: i64) -> i64 {
+    let it = Box::new(OliveIter {
+        list_ptr,
+        index: 0,
+    });
+    Box::into_raw(it) as i64
+}
+
+extern "C" fn olive_has_next(iter_ptr: i64) -> i64 {
+    if iter_ptr == 0 { return 0; }
+    let it = unsafe { &*(iter_ptr as *const OliveIter) };
+    if it.list_ptr == 0 { return 0; }
+    let v = unsafe { &*(it.list_ptr as *const Vec<i64>) };
+    if it.index < v.len() { 1 } else { 0 }
+}
+
+extern "C" fn olive_next(iter_ptr: i64) -> i64 {
+    if iter_ptr == 0 { return 0; }
+    let it = unsafe { &mut *(iter_ptr as *mut OliveIter) };
+    if it.list_ptr == 0 { return 0; }
+    let v = unsafe { &*(it.list_ptr as *const Vec<i64>) };
+    if it.index < v.len() {
+        let val = v[it.index];
+        it.index += 1;
+        val
+    } else {
+        0
+    }
+}
+
+extern "C" fn olive_str_len(s: i64) -> i64 {
+    if s == 0 {
+        return 0;
+    }
+    let s = unsafe { std::ffi::CStr::from_ptr(s as *const i8) };
+    s.to_bytes().len() as i64
+}
+
+extern "C" fn olive_str_get(s: i64, i: i64) -> i64 {
+    if s == 0 {
+        return 0;
+    }
+    let s = unsafe { std::ffi::CStr::from_ptr(s as *const i8) }.to_bytes();
+    if (i as usize) < s.len() {
+        s[i as usize] as i64
+    } else {
+        0
+    }
+}
+
+extern "C" fn olive_set_add(list_ptr: i64, val: i64) {
+    if list_ptr == 0 {
+        return;
+    }
+    let v = unsafe { &mut *(list_ptr as *mut Vec<i64>) };
+    if !v.contains(&val) {
+        v.push(val);
+    }
 }

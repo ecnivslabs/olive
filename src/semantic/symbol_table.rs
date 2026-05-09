@@ -1,5 +1,5 @@
-use rustc_hash::FxHashMap as HashMap;
 use crate::span::Span;
+use rustc_hash::FxHashMap as HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SymbolKind {
@@ -37,7 +37,10 @@ pub struct Scope {
 
 impl Scope {
     pub fn new(kind: ScopeKind) -> Self {
-        Self { kind, symbols: HashMap::default() }
+        Self {
+            kind,
+            symbols: HashMap::default(),
+        }
     }
 
     pub fn define(&mut self, sym: Symbol) -> Option<Symbol> {
@@ -55,7 +58,9 @@ pub struct SymbolTable {
 
 impl SymbolTable {
     pub fn new() -> Self {
-        Self { scopes: vec![Scope::new(ScopeKind::Global)] }
+        Self {
+            scopes: vec![Scope::new(ScopeKind::Global)],
+        }
     }
 
     pub fn push(&mut self, kind: ScopeKind) {

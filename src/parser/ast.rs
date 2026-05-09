@@ -11,41 +11,78 @@ use crate::span::Span;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeExpr {
     Named(String),
-    Generic { name: String, args: Vec<TypeExpr> },
+    Generic {
+        name: String,
+        args: Vec<TypeExpr>,
+    },
     Tuple(Vec<TypeExpr>),
-    Fn { params: Vec<TypeExpr>, ret: Box<TypeExpr> },
+    Fn {
+        params: Vec<TypeExpr>,
+        ret: Box<TypeExpr>,
+    },
     Ref(Box<TypeExpr>),
     MutRef(Box<TypeExpr>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BinOp {
-    Add, Sub, Mul, Div, FloorDiv, Mod, Pow,
-    Eq, NotEq, Lt, LtEq, Gt, GtEq,
-    And, Or,
-    In, NotIn,
-    Is, IsNot,
-    Shl, Shr,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    FloorDiv,
+    Mod,
+    Pow,
+    Eq,
+    NotEq,
+    Lt,
+    LtEq,
+    Gt,
+    GtEq,
+    And,
+    Or,
+    In,
+    NotIn,
+    Is,
+    IsNot,
+    Shl,
+    Shr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum UnaryOp { Neg, Pos, Not }
+pub enum UnaryOp {
+    Neg,
+    Pos,
+    Not,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AugOp { Add, Sub, Mul, Div, FloorDiv, Mod, Pow }
+pub enum AugOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    FloorDiv,
+    Mod,
+    Pow,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ParamKind { Regular, VarArg, KwArg }
+pub enum ParamKind {
+    Regular,
+    VarArg,
+    KwArg,
+}
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct Param {
-    pub name:     String,
+    pub name: String,
     pub type_ann: Option<TypeExpr>,
-    pub default:  Option<Expr>,
-    pub kind:     ParamKind,
-    pub is_mut:   bool,
-    pub span:     Span,
+    pub default: Option<Expr>,
+    pub kind: ParamKind,
+    pub is_mut: bool,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -57,17 +94,17 @@ pub enum ForTarget {
 
 #[derive(Debug, Clone)]
 pub struct CompClause {
-    pub target:    ForTarget,
-    pub iter:      Expr,
+    pub target: ForTarget,
+    pub iter: Expr,
     pub condition: Option<Expr>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ExceptHandler {
     pub exc_type: Option<Expr>,
-    pub name:     Option<String>,
-    pub body:     Vec<Stmt>,
-    pub span:     Span,
+    pub name: Option<String>,
+    pub body: Vec<Stmt>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -79,7 +116,11 @@ pub struct Expr {
 
 impl Expr {
     pub fn new(kind: ExprKind, span: Span) -> Self {
-        Self { id: next_node_id(), kind, span }
+        Self {
+            id: next_node_id(),
+            kind,
+            span,
+        }
     }
 }
 
@@ -93,23 +134,52 @@ pub enum ExprKind {
     Null,
     Identifier(String),
 
-    BinOp   { left: Box<Expr>, op: BinOp, right: Box<Expr> },
-    UnaryOp { op: UnaryOp, operand: Box<Expr> },
+    BinOp {
+        left: Box<Expr>,
+        op: BinOp,
+        right: Box<Expr>,
+    },
+    UnaryOp {
+        op: UnaryOp,
+        operand: Box<Expr>,
+    },
 
-    Call  { callee: Box<Expr>, args: Vec<CallArg> },
-    Index { obj: Box<Expr>, index: Box<Expr> },
-    Attr  { obj: Box<Expr>, attr: String },
+    Call {
+        callee: Box<Expr>,
+        args: Vec<CallArg>,
+    },
+    Index {
+        obj: Box<Expr>,
+        index: Box<Expr>,
+    },
+    Attr {
+        obj: Box<Expr>,
+        attr: String,
+    },
 
     List(Vec<Expr>),
     Tuple(Vec<Expr>),
     Set(Vec<Expr>),
     Dict(Vec<(Expr, Expr)>),
 
-    ListComp { elt: Box<Expr>, clauses: Vec<CompClause> },
-    SetComp  { elt: Box<Expr>, clauses: Vec<CompClause> },
-    DictComp { key: Box<Expr>, value: Box<Expr>, clauses: Vec<CompClause> },
+    ListComp {
+        elt: Box<Expr>,
+        clauses: Vec<CompClause>,
+    },
+    SetComp {
+        elt: Box<Expr>,
+        clauses: Vec<CompClause>,
+    },
+    DictComp {
+        key: Box<Expr>,
+        value: Box<Expr>,
+        clauses: Vec<CompClause>,
+    },
 
-    Walrus { name: String, value: Box<Expr> },
+    Walrus {
+        name: String,
+        value: Box<Expr>,
+    },
 
     Borrow(Box<Expr>),
     MutBorrow(Box<Expr>),
@@ -134,7 +204,11 @@ pub struct Stmt {
 
 impl Stmt {
     pub fn new(kind: StmtKind, span: Span) -> Self {
-        Self { id: next_node_id(), kind, span }
+        Self {
+            id: next_node_id(),
+            kind,
+            span,
+        }
     }
 }
 
@@ -142,48 +216,66 @@ impl Stmt {
 #[allow(dead_code)]
 pub enum StmtKind {
     Fn {
-        name:        String,
-        params:      Vec<Param>,
+        name: String,
+        params: Vec<Param>,
         return_type: Option<TypeExpr>,
-        body:        Vec<Stmt>,
-        decorators:  Vec<String>,
+        body: Vec<Stmt>,
+        decorators: Vec<String>,
     },
     Class {
-        name:  String,
+        name: String,
         bases: Vec<Expr>,
-        body:  Vec<Stmt>,
+        body: Vec<Stmt>,
     },
     If {
-        condition:    Expr,
-        then_body:    Vec<Stmt>,
+        condition: Expr,
+        then_body: Vec<Stmt>,
         elif_clauses: Vec<(Expr, Vec<Stmt>)>,
-        else_body:    Option<Vec<Stmt>>,
+        else_body: Option<Vec<Stmt>>,
     },
     While {
         condition: Expr,
-        body:      Vec<Stmt>,
+        body: Vec<Stmt>,
         else_body: Option<Vec<Stmt>>,
     },
     For {
-        target:    ForTarget,
-        iter:      Expr,
-        body:      Vec<Stmt>,
+        target: ForTarget,
+        iter: Expr,
+        body: Vec<Stmt>,
         else_body: Option<Vec<Stmt>>,
     },
     Try {
-        body:         Vec<Stmt>,
-        handlers:     Vec<ExceptHandler>,
-        else_body:    Option<Vec<Stmt>>,
+        body: Vec<Stmt>,
+        handlers: Vec<ExceptHandler>,
+        else_body: Option<Vec<Stmt>>,
         finally_body: Option<Vec<Stmt>>,
     },
     Return(Option<Expr>),
     Raise(Option<Expr>),
-    Assert { test: Expr, msg: Option<Expr> },
+    Assert {
+        test: Expr,
+        msg: Option<Expr>,
+    },
     Import(Vec<String>),
-    FromImport { module: Vec<String>, names: Vec<String> },
-    Let { name: String, type_ann: Option<TypeExpr>, value: Expr, is_mut: bool },
-    Assign    { target: Expr, value: Expr },
-    AugAssign { target: Expr, op: AugOp, value: Expr },
+    FromImport {
+        module: Vec<String>,
+        names: Vec<String>,
+    },
+    Let {
+        name: String,
+        type_ann: Option<TypeExpr>,
+        value: Expr,
+        is_mut: bool,
+    },
+    Assign {
+        target: Expr,
+        value: Expr,
+    },
+    AugAssign {
+        target: Expr,
+        op: AugOp,
+        value: Expr,
+    },
     Pass,
     Break,
     Continue,

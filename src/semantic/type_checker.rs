@@ -1,10 +1,10 @@
-use rustc_hash::FxHashMap as HashMap;
+use super::error::SemanticError;
+use super::types::Type;
 use crate::parser::{
-    Expr, ExprKind, Stmt, StmtKind, Program, TypeExpr, BinOp, UnaryOp, CallArg, ForTarget,
+    BinOp, CallArg, Expr, ExprKind, ForTarget, Program, Stmt, StmtKind, TypeExpr, UnaryOp,
 };
 use crate::span::Span;
-use super::types::Type;
-use super::error::SemanticError;
+use rustc_hash::FxHashMap as HashMap;
 
 // Static type inference and validation.
 pub struct TypeChecker {
@@ -22,7 +22,7 @@ pub struct TypeChecker {
 impl TypeChecker {
     pub fn new() -> Self {
         let mut global_env = HashMap::default();
-        
+
         // Standard library built-ins.
         let builtins = [
             ("print", Type::Fn(vec![Type::Any], Box::new(Type::Int))),
@@ -32,7 +32,10 @@ impl TypeChecker {
             ("bool", Type::Fn(vec![Type::Any], Box::new(Type::Bool))),
             ("type", Type::Fn(vec![Type::Any], Box::new(Type::Str))),
             ("len", Type::Fn(vec![Type::Any], Box::new(Type::Int))),
-            ("list_new", Type::Fn(vec![Type::Int], Box::new(Type::List(Box::new(Type::Any))))),
+            (
+                "list_new",
+                Type::Fn(vec![Type::Int], Box::new(Type::List(Box::new(Type::Any)))),
+            ),
         ];
 
         for (name, ty) in builtins {
@@ -61,7 +64,6 @@ impl TypeChecker {
         self.type_env.pop();
         self.mut_env.pop();
     }
-
 
     fn define_type(&mut self, name: &str, ty: Type, is_mut: bool) {
         if let Some(scope) = self.type_env.last_mut() {
@@ -94,7 +96,6 @@ impl TypeChecker {
         for stmt in &program.stmts {
             self.check_stmt(stmt);
         }
-        
 
         let ids: Vec<usize> = self.expr_types.keys().cloned().collect();
         for id in ids {
@@ -106,7 +107,12 @@ impl TypeChecker {
 
     fn check_stmt(&mut self, stmt: &Stmt) {
         match &stmt.kind {
-            StmtKind::Let { name, type_ann, value, is_mut } => {
+            StmtKind::Let {
+                name,
+                type_ann,
+                value,
+                is_mut,
+            } => {
                 let val_ty = self.check_expr(value);
                 let declared_ty = type_ann.as_ref().map(|ann| self.resolve_type_expr(ann));
                 let var_ty = if let Some(decl) = declared_ty {
@@ -126,7 +132,6 @@ impl TypeChecker {
                 let val_ty = self.check_expr(value);
                 let target_ty = self.check_expr(target);
                 self.unify(&target_ty, &val_ty, stmt.span);
-                
 
                 if let ExprKind::Attr { obj, attr } = &target.kind {
                     let obj_ty = self.check_expr(obj);
@@ -137,11 +142,15 @@ impl TypeChecker {
                 }
 
                 if let ExprKind::Identifier(name) = &target.kind
-                    && !self.is_mutable(name) {
-                        self.errors.push(SemanticError::Custom {
-                            msg: format!("cannot reassign immutable variable `{}` (did you mean `let mut {}`?)", name, name),
-                            span: stmt.span,
-                        });
+                    && !self.is_mutable(name)
+                {
+                    self.errors.push(SemanticError::Custom {
+                        msg: format!(
+                            "cannot reassign immutable variable `{}` (did you mean `let mut {}`?)",
+                            name, name
+                        ),
+                        span: stmt.span,
+                    });
                 }
             }
 
@@ -152,7 +161,12 @@ impl TypeChecker {
                 self.unify(&target_ty, &result_ty, stmt.span);
             }
 
-            StmtKind::If { condition, then_body, elif_clauses, else_body } => {
+            StmtKind::If {
+                condition,
+                then_body,
+                elif_clauses,
+                else_body,
+            } => {
                 let cond_ty = self.check_expr(condition);
                 self.expect_truthy(&cond_ty, stmt.span);
                 self.check_block(then_body);
@@ -166,7 +180,13 @@ impl TypeChecker {
                 }
             }
 
-            StmtKind::Fn { name, params, return_type, body, .. } => {
+            StmtKind::Fn {
+                name,
+                params,
+                return_type,
+                body,
+                ..
+            } => {
                 let ret_ty = return_type
                     .as_ref()
                     .map(|ann| self.resolve_type_expr(ann))
@@ -214,7 +234,11 @@ impl TypeChecker {
                 self.leave_scope();
             }
 
-            StmtKind::While { condition, body, else_body } => {
+            StmtKind::While {
+                condition,
+                body,
+                else_body,
+            } => {
                 let cond_ty = self.check_expr(condition);
                 self.expect_truthy(&cond_ty, stmt.span);
                 self.check_block(body);
@@ -223,7 +247,12 @@ impl TypeChecker {
                 }
             }
 
-            StmtKind::For { target, iter, body, else_body } => {
+            StmtKind::For {
+                target,
+                iter,
+                body,
+                else_body,
+            } => {
                 let iter_ty = self.check_expr(iter);
                 self.enter_scope();
                 self.bind_for_target(target, &iter_ty, stmt.span);
@@ -245,20 +274,25 @@ impl TypeChecker {
                 }
                 self.class_hierarchy.insert(name.clone(), base_names);
                 self.define_type(name, Type::Class(name.clone()), false);
-                
+
                 let prev_class = self.current_class.take();
                 self.current_class = Some(name.clone());
-                
+
                 self.enter_scope();
                 for s in body {
                     self.check_stmt(s);
                 }
                 self.leave_scope();
-                
+
                 self.current_class = prev_class;
             }
 
-            StmtKind::Try { body, handlers, else_body, finally_body } => {
+            StmtKind::Try {
+                body,
+                handlers,
+                else_body,
+                finally_body,
+            } => {
                 self.check_block(body);
                 for handler in handlers {
                     if let Some(exc) = &handler.exc_type {
@@ -306,8 +340,12 @@ impl TypeChecker {
                 }
             }
 
-            StmtKind::Pass | StmtKind::Break | StmtKind::Continue
-            | StmtKind::Raise(None) | StmtKind::Import(_) | StmtKind::FromImport { .. } => {}
+            StmtKind::Pass
+            | StmtKind::Break
+            | StmtKind::Continue
+            | StmtKind::Raise(None)
+            | StmtKind::Import(_)
+            | StmtKind::FromImport { .. } => {}
         }
     }
 
@@ -347,17 +385,16 @@ impl TypeChecker {
             ExprKind::MutBorrow(inner) => {
                 let inner_ty = self.check_expr(inner);
                 if let ExprKind::Identifier(name) = &inner.kind
-                    && !self.is_mutable(name) {
-                        self.errors.push(SemanticError::Custom {
-                            msg: format!("cannot mutably borrow immutable variable `{}`", name),
-                            span: expr.span,
-                        });
+                    && !self.is_mutable(name)
+                {
+                    self.errors.push(SemanticError::Custom {
+                        msg: format!("cannot mutably borrow immutable variable `{}`", name),
+                        span: expr.span,
+                    });
                 }
                 Type::MutRef(Box::new(inner_ty))
             }
-            ExprKind::Identifier(name) => {
-                self.lookup_type(name).unwrap_or_else(Type::new_var)
-            }
+            ExprKind::Identifier(name) => self.lookup_type(name).unwrap_or_else(Type::new_var),
 
             ExprKind::BinOp { left, op, right } => {
                 let l_ty = self.check_expr(left);
@@ -414,16 +451,18 @@ impl TypeChecker {
             ExprKind::Call { callee, args } => {
                 let callee_ty = self.check_expr(callee);
                 let resolved_callee = self.apply_subst(callee_ty.clone());
-                
+
                 if let Type::Class(name) = resolved_callee {
                     let mut arg_types = Vec::new();
                     for arg in args {
                         arg_types.push(self.check_expr(match arg {
-                            CallArg::Positional(e) | CallArg::Keyword(_, e)
-                            | CallArg::Splat(e) | CallArg::KwSplat(e) => e,
+                            CallArg::Positional(e)
+                            | CallArg::Keyword(_, e)
+                            | CallArg::Splat(e)
+                            | CallArg::KwSplat(e) => e,
                         }));
                     }
-                    
+
                     // Unify with __init__ if it exists.
                     let init_name = format!("{}::__init__", name);
                     if let Some(Type::Fn(params, _)) = self.lookup_type(&init_name) {
@@ -432,15 +471,17 @@ impl TypeChecker {
                             self.unify(p, &a, expr.span);
                         }
                     }
-                    
+
                     return Type::Class(name);
                 }
 
                 let mut arg_types = Vec::with_capacity(args.len());
                 for arg in args {
                     match arg {
-                        CallArg::Positional(e) | CallArg::Keyword(_, e)
-                        | CallArg::Splat(e) | CallArg::KwSplat(e) => {
+                        CallArg::Positional(e)
+                        | CallArg::Keyword(_, e)
+                        | CallArg::Splat(e)
+                        | CallArg::KwSplat(e) => {
                             arg_types.push(self.check_expr(e));
                         }
                     }
@@ -482,20 +523,22 @@ impl TypeChecker {
                 if let Type::Class(ref class_name) = resolved_obj {
                     let mut queue = vec![class_name.clone()];
                     let mut seen = std::collections::HashSet::new();
-                    
+
                     while let Some(current) = queue.pop() {
-                        if !seen.insert(current.clone()) { continue; }
-                        
+                        if !seen.insert(current.clone()) {
+                            continue;
+                        }
+
                         let mangled = format!("{}::{}", current, attr);
                         if let Some(ty) = self.lookup_type(&mangled) {
                             return ty;
                         }
-                        
+
                         // Check if it's a known field.
                         if let Some(ty) = self.field_types.get(&(current.clone(), attr.clone())) {
                             return ty.clone();
                         }
-                        
+
                         if let Some(bases) = self.class_hierarchy.get(&current) {
                             for base in bases {
                                 queue.push(base.clone());
@@ -507,7 +550,7 @@ impl TypeChecker {
                 if attr == "copy" {
                     return Type::Fn(vec![], Box::new(resolved_obj));
                 }
-                
+
                 if attr == "str" {
                     return Type::Fn(vec![], Box::new(Type::Str));
                 }
@@ -546,7 +589,11 @@ impl TypeChecker {
                 Type::Set(Box::new(inner))
             }
 
-            ExprKind::DictComp { key, value, clauses } => {
+            ExprKind::DictComp {
+                key,
+                value,
+                clauses,
+            } => {
                 self.enter_scope();
                 self.check_comp_clauses(clauses, expr.span);
                 let k = self.check_expr(key);
@@ -559,15 +606,28 @@ impl TypeChecker {
 
     fn check_binop(&mut self, op: &BinOp, l: &Type, r: &Type, span: Span) -> Type {
         match op {
-            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div
-            | BinOp::FloorDiv | BinOp::Mod | BinOp::Pow
-            | BinOp::Shl | BinOp::Shr => {
+            BinOp::Add
+            | BinOp::Sub
+            | BinOp::Mul
+            | BinOp::Div
+            | BinOp::FloorDiv
+            | BinOp::Mod
+            | BinOp::Pow
+            | BinOp::Shl
+            | BinOp::Shr => {
                 self.unify(l, r, span);
                 self.apply_subst(l.clone())
             }
-            BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq
-            | BinOp::Gt | BinOp::GtEq | BinOp::In | BinOp::NotIn
-            | BinOp::Is | BinOp::IsNot => Type::Bool,
+            BinOp::Eq
+            | BinOp::NotEq
+            | BinOp::Lt
+            | BinOp::LtEq
+            | BinOp::Gt
+            | BinOp::GtEq
+            | BinOp::In
+            | BinOp::NotIn
+            | BinOp::Is
+            | BinOp::IsNot => Type::Bool,
             BinOp::And | BinOp::Or => {
                 self.unify(l, r, span);
                 self.apply_subst(l.clone())
@@ -576,8 +636,10 @@ impl TypeChecker {
     }
 
     fn check_aug_op(
-        &mut self, _op: &crate::parser::AugOp,
-        target: &Type, val: &Type,
+        &mut self,
+        _op: &crate::parser::AugOp,
+        target: &Type,
+        val: &Type,
         span: Span,
     ) -> Type {
         self.unify(target, val, span);
@@ -594,7 +656,9 @@ impl TypeChecker {
             Type::Dict(k, _) => *k,
             Type::Str => Type::Str,
             Type::Tuple(elems) => {
-                if elems.is_empty() { Type::Any } else {
+                if elems.is_empty() {
+                    Type::Any
+                } else {
                     let common = Type::new_var();
                     for e in &elems {
                         self.unify(&common, e, span);
@@ -609,20 +673,18 @@ impl TypeChecker {
             ForTarget::Name(name, _) => {
                 self.define_type(name, elem_ty, true);
             }
-            ForTarget::Tuple(names, _) => {
-                match self.apply_subst(elem_ty) {
-                    Type::Tuple(elems) if elems.len() == names.len() => {
-                        for ((name, _), ty) in names.iter().zip(elems) {
-                            self.define_type(name, ty, true);
-                        }
-                    }
-                    _ => {
-                        for (name, _) in names {
-                            self.define_type(name, Type::new_var(), false);
-                        }
+            ForTarget::Tuple(names, _) => match self.apply_subst(elem_ty) {
+                Type::Tuple(elems) if elems.len() == names.len() => {
+                    for ((name, _), ty) in names.iter().zip(elems) {
+                        self.define_type(name, ty, true);
                     }
                 }
-            }
+                _ => {
+                    for (name, _) in names {
+                        self.define_type(name, Type::new_var(), false);
+                    }
+                }
+            },
         }
     }
 
@@ -640,7 +702,9 @@ impl TypeChecker {
         let t1 = self.apply_subst(t1.clone());
         let t2 = self.apply_subst(t2.clone());
 
-        if t1 == t2 { return; }
+        if t1 == t2 {
+            return;
+        }
 
         match (t1, t2) {
             (Type::Any, _) | (_, Type::Any) => {}
@@ -668,7 +732,11 @@ impl TypeChecker {
             (Type::Tuple(a), Type::Tuple(b)) => {
                 if a.len() != b.len() {
                     self.errors.push(SemanticError::Custom {
-                        msg: format!("tuple length mismatch: expected {}, found {}", a.len(), b.len()),
+                        msg: format!(
+                            "tuple length mismatch: expected {}, found {}",
+                            a.len(),
+                            b.len()
+                        ),
                         span,
                     });
                 } else {
@@ -681,7 +749,11 @@ impl TypeChecker {
             (Type::Fn(p1, r1), Type::Fn(p2, r2)) => {
                 if p1.len() != p2.len() {
                     self.errors.push(SemanticError::Custom {
-                        msg: format!("function arity mismatch: expected {}, found {}", p1.len(), p2.len()),
+                        msg: format!(
+                            "function arity mismatch: expected {}, found {}",
+                            p1.len(),
+                            p2.len()
+                        ),
                         span,
                     });
                 } else {
@@ -704,7 +776,9 @@ impl TypeChecker {
     fn occurs_check(&self, id: usize, ty: &Type) -> bool {
         match ty {
             Type::Var(other_id) => {
-                if id == *other_id { return true; }
+                if id == *other_id {
+                    return true;
+                }
                 if let Some(resolved) = self.substitutions.get(other_id) {
                     return self.occurs_check(id, resolved);
                 }

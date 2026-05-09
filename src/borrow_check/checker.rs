@@ -1,9 +1,9 @@
 use crate::mir::*;
-use crate::span::Span;
 use crate::semantic::SemanticError;
-use std::collections::VecDeque;
+use crate::span::Span;
 use rustc_hash::FxHashMap as HashMap;
 use rustc_hash::FxHashSet as HashSet;
+use std::collections::VecDeque;
 
 // Tracking state for each local variable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,7 +32,10 @@ impl FlowState {
     }
 
     fn get(&self, local: Local) -> LocalState {
-        self.locals.get(local.0).copied().unwrap_or(LocalState::Dead)
+        self.locals
+            .get(local.0)
+            .copied()
+            .unwrap_or(LocalState::Dead)
     }
 
     fn set(&mut self, local: Local, state: LocalState) -> Result<(), String> {
@@ -179,12 +182,11 @@ impl<'a> BorrowChecker<'a> {
         }
     }
 
-
     fn transfer_stmt(&mut self, stmt: &Statement, state: &mut FlowState) {
         match &stmt.kind {
             StatementKind::Assign(lhs, rvalue) => {
                 self.check_rvalue(rvalue, state, stmt.span);
-                
+
                 // Track provenance for references
                 match rvalue {
                     Rvalue::Ref(rhs) | Rvalue::MutRef(rhs) => {
@@ -231,12 +233,13 @@ impl<'a> BorrowChecker<'a> {
                 // If it's already moved, drop is a no-op at runtime.
                 // But for the borrow checker, we just ensure it was initialized at some point.
                 if state.get(*local) == LocalState::Initialized
-                    && let Err(msg) = state.set(*local, LocalState::Moved) {
-                         let name = self.local_name(*local);
-                         self.errors.push(SemanticError::Custom {
-                             msg: format!("{} `{}` (lifetime error)", msg, name),
-                             span: stmt.span,
-                         });
+                    && let Err(msg) = state.set(*local, LocalState::Moved)
+                {
+                    let name = self.local_name(*local);
+                    self.errors.push(SemanticError::Custom {
+                        msg: format!("{} `{}` (lifetime error)", msg, name),
+                        span: stmt.span,
+                    });
                 }
             }
         }
@@ -251,12 +254,13 @@ impl<'a> BorrowChecker<'a> {
         }
     }
 
-
     fn successors(&self, bb: &BasicBlock) -> Vec<usize> {
         match &bb.terminator {
             Some(t) => match &t.kind {
                 TerminatorKind::Goto { target } => vec![target.0],
-                TerminatorKind::SwitchInt { targets, otherwise, .. } => {
+                TerminatorKind::SwitchInt {
+                    targets, otherwise, ..
+                } => {
                     let mut succs: Vec<usize> = targets.iter().map(|(_, bb)| bb.0).collect();
                     succs.push(otherwise.0);
                     succs
@@ -315,7 +319,10 @@ impl<'a> BorrowChecker<'a> {
                 if s != LocalState::Initialized {
                     let name = self.local_name(*local);
                     self.errors.push(SemanticError::Custom {
-                        msg: format!("cannot mutably borrow uninitialized or moved variable `{}`", name),
+                        msg: format!(
+                            "cannot mutably borrow uninitialized or moved variable `{}`",
+                            name
+                        ),
                         span,
                     });
                 }
@@ -331,7 +338,10 @@ impl<'a> BorrowChecker<'a> {
                 if borrow.0 > 0 || borrow.1 {
                     let name = self.local_name(*local);
                     self.errors.push(SemanticError::Custom {
-                        msg: format!("cannot borrow `{}` as mutable because it is already borrowed", name),
+                        msg: format!(
+                            "cannot borrow `{}` as mutable because it is already borrowed",
+                            name
+                        ),
                         span,
                     });
                 }
@@ -355,39 +365,30 @@ impl<'a> BorrowChecker<'a> {
 
     fn check_operand(&mut self, op: &Operand, state: &mut FlowState, span: Span) {
         match op {
-            Operand::Copy(local) | Operand::Move(local) => {
-                match state.get(*local) {
-                    LocalState::Dead => {
-                        let name = self.local_name(*local);
-                        self.errors.push(SemanticError::Custom {
-                            msg: format!(
-                                "use of possibly uninitialized variable `{}`",
-                                name
-                            ),
-                            span,
-                        });
-                    }
-                    LocalState::Moved => {
-                        let name = self.local_name(*local);
-                        self.errors.push(SemanticError::Custom {
-                            msg: format!(
-                                "use of moved variable `{}`",
-                                name
-                            ),
-                            span,
-                        });
-                    }
-                    LocalState::Initialized => {
-                        if let Operand::Move(_) = op {
-                            let _ = state.set(*local, LocalState::Moved);
-                        }
+            Operand::Copy(local) | Operand::Move(local) => match state.get(*local) {
+                LocalState::Dead => {
+                    let name = self.local_name(*local);
+                    self.errors.push(SemanticError::Custom {
+                        msg: format!("use of possibly uninitialized variable `{}`", name),
+                        span,
+                    });
+                }
+                LocalState::Moved => {
+                    let name = self.local_name(*local);
+                    self.errors.push(SemanticError::Custom {
+                        msg: format!("use of moved variable `{}`", name),
+                        span,
+                    });
+                }
+                LocalState::Initialized => {
+                    if let Operand::Move(_) = op {
+                        let _ = state.set(*local, LocalState::Moved);
                     }
                 }
-            }
+            },
             Operand::Constant(_) => {}
         }
     }
-
 
     fn release_dead_borrows(&self, state: &mut FlowState, live_locals: &HashSet<Local>) {
         // We only release the borrow if ALL locals that hold this reference are dead.
@@ -413,10 +414,11 @@ impl<'a> BorrowChecker<'a> {
 
     // Helper to get a readable name for a local (for errors).
     fn local_name(&self, local: Local) -> String {
-        self.func.locals.get(local.0)
+        self.func
+            .locals
+            .get(local.0)
             .and_then(|decl| decl.name.as_ref())
             .cloned()
             .unwrap_or_else(|| format!("_{}", local.0))
     }
-
 }

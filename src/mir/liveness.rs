@@ -14,18 +14,18 @@ impl Liveness {
         for bb in &func.basic_blocks {
             live_after.push(vec![HashSet::default(); bb.statements.len() + 1]);
         }
-        
+
         let mut changed = true;
         while changed {
             changed = false;
-            
+
             // Process blocks in reverse order to speed up fixed-point convergence.
             for (bb_idx, bb) in func.basic_blocks.iter().enumerate().rev() {
                 // Compute live variables at the end of the block by taking the union of live_in of all successors.
                 let mut current_live = HashSet::default();
                 let succs = Self::successors(bb);
                 for succ in succs {
-                    let succ_live_in = &live_after[succ][0]; 
+                    let succ_live_in = &live_after[succ][0];
                     for &l in succ_live_in {
                         current_live.insert(l);
                     }
@@ -37,7 +37,7 @@ impl Liveness {
                     live_after[bb_idx][term_idx] = current_live.clone();
                     changed = true;
                 }
-                
+
                 Self::update_liveness(&mut current_live, bb.terminator.as_ref());
 
                 // Propagate liveness backwards through the statements in the block.
@@ -59,7 +59,9 @@ impl Liveness {
         match &bb.terminator {
             Some(t) => match &t.kind {
                 TerminatorKind::Goto { target } => vec![target.0],
-                TerminatorKind::SwitchInt { targets, otherwise, .. } => {
+                TerminatorKind::SwitchInt {
+                    targets, otherwise, ..
+                } => {
                     let mut s: Vec<_> = targets.iter().map(|(_, b)| b.0).collect();
                     s.push(otherwise.0);
                     s
@@ -73,8 +75,9 @@ impl Liveness {
     // Update live set based on the terminator.
     fn update_liveness(live: &mut HashSet<Local>, term: Option<&Terminator>) {
         if let Some(t) = term
-            && let TerminatorKind::SwitchInt { discr, .. } = &t.kind {
-                Self::use_op(live, discr);
+            && let TerminatorKind::SwitchInt { discr, .. } = &t.kind
+        {
+            Self::use_op(live, discr);
         }
     }
 
@@ -111,10 +114,14 @@ impl Liveness {
             }
             Rvalue::Call { func, args } => {
                 Self::use_op(live, func);
-                for a in args { Self::use_op(live, a); }
+                for a in args {
+                    Self::use_op(live, a);
+                }
             }
             Rvalue::Aggregate(_, ops) => {
-                for o in ops { Self::use_op(live, o); }
+                for o in ops {
+                    Self::use_op(live, o);
+                }
             }
             Rvalue::GetAttr(o, _) => Self::use_op(live, o),
             Rvalue::GetIndex(o, i) => {
@@ -137,4 +144,3 @@ impl Liveness {
         }
     }
 }
-

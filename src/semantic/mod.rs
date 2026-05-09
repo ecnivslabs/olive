@@ -1,8 +1,8 @@
 mod error;
 mod resolver;
 mod symbol_table;
-pub mod types;
 pub mod type_checker;
+pub mod types;
 
 pub use error::SemanticError;
 pub use resolver::Resolver;

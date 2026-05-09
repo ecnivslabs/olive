@@ -49,11 +49,31 @@ impl Lexer {
     }
 
     fn err(&self, msg: impl Into<String>) -> LexError {
-        LexError { message: msg.into(), line: self.line, col: self.col, start: self.pos, end: self.pos + 1 }
+        LexError {
+            message: msg.into(),
+            line: self.line,
+            col: self.col,
+            start: self.pos,
+            end: self.pos + 1,
+        }
     }
 
-    fn make_tok(&self, kind: TokenKind, value: impl Into<String>, line: usize, col: usize, start: usize) -> Token {
-        Token { kind, value: value.into(), line, col, span: (start, self.pos), file_id: self.file_id }
+    fn make_tok(
+        &self,
+        kind: TokenKind,
+        value: impl Into<String>,
+        line: usize,
+        col: usize,
+        start: usize,
+    ) -> Token {
+        Token {
+            kind,
+            value: value.into(),
+            line,
+            col,
+            span: (start, self.pos),
+            file_id: self.file_id,
+        }
     }
 
     fn skip_inline_whitespace(&mut self) {
@@ -67,15 +87,20 @@ impl Lexer {
         }
     }
 
-
     fn handle_indent(&mut self, nl_line: usize, nl_pos: usize) -> LexResult<Option<Token>> {
         let mut depth = 0usize;
         let mut has_tab = false;
         let mut has_space = false;
         while matches!(self.peek(), Some(' ') | Some('\t')) {
             match self.advance().unwrap() {
-                '\t' => { has_tab = true; depth += 4; }
-                _    => { has_space = true; depth += 1; }
+                '\t' => {
+                    has_tab = true;
+                    depth += 4;
+                }
+                _ => {
+                    has_space = true;
+                    depth += 1;
+                }
             }
         }
         if has_tab && has_space {
@@ -87,7 +112,6 @@ impl Lexer {
                 end: self.pos,
             });
         }
-
 
         if matches!(self.peek(), Some('\n') | Some('#') | None) {
             while matches!(self.peek(), Some(c) if c != '\n') {
@@ -103,7 +127,8 @@ impl Lexer {
             self.pending.push_back(Token {
                 kind: TokenKind::Indent,
                 value: String::new(),
-                line: nl_line, col: 1,
+                line: nl_line,
+                col: 1,
                 span: (nl_pos, self.pos),
                 file_id: self.file_id,
             });
@@ -113,7 +138,8 @@ impl Lexer {
                 self.pending.push_back(Token {
                     kind: TokenKind::Dedent,
                     value: String::new(),
-                    line: nl_line, col: 1,
+                    line: nl_line,
+                    col: 1,
                     span: (nl_pos, self.pos),
                     file_id: self.file_id,
                 });
@@ -135,13 +161,20 @@ impl Lexer {
         Ok(Some(Token {
             kind: TokenKind::Newline,
             value: "\n".into(),
-            line: nl_line, col: 1,
+            line: nl_line,
+            col: 1,
             span: (nl_pos, nl_pos + 1),
             file_id: self.file_id,
         }))
     }
 
-    fn read_string(&mut self, quote: char, line: usize, col: usize, start: usize) -> LexResult<Token> {
+    fn read_string(
+        &mut self,
+        quote: char,
+        line: usize,
+        col: usize,
+        start: usize,
+    ) -> LexResult<Token> {
         let triple = self.peek() == Some(quote) && self.peek_next() == Some(quote);
         if triple {
             self.advance();
@@ -151,17 +184,26 @@ impl Lexer {
         let mut s = String::new();
         loop {
             match self.advance() {
-                None => return Err(LexError {
-                    message: "unterminated string literal".into(),
-                    line, col,
-                    start, end: self.pos,
-                }),
-                Some(c) if !triple && c == '\n' => return Err(LexError {
-                    message: "newline inside single-quoted string; use triple quotes for multiline"
-                        .into(),
-                    line, col,
-                    start, end: self.pos,
-                }),
+                None => {
+                    return Err(LexError {
+                        message: "unterminated string literal".into(),
+                        line,
+                        col,
+                        start,
+                        end: self.pos,
+                    });
+                }
+                Some(c) if !triple && c == '\n' => {
+                    return Err(LexError {
+                        message:
+                            "newline inside single-quoted string; use triple quotes for multiline"
+                                .into(),
+                        line,
+                        col,
+                        start,
+                        end: self.pos,
+                    });
+                }
                 Some(c) if c == quote => {
                     if triple {
                         if self.peek() == Some(quote) && self.peek_next() == Some(quote) {
@@ -175,19 +217,26 @@ impl Lexer {
                     }
                 }
                 Some('\\') => match self.advance() {
-                    Some('n')  => s.push('\n'),
-                    Some('t')  => s.push('\t'),
-                    Some('r')  => s.push('\r'),
+                    Some('n') => s.push('\n'),
+                    Some('t') => s.push('\t'),
+                    Some('r') => s.push('\r'),
                     Some('\\') => s.push('\\'),
                     Some('\'') => s.push('\''),
-                    Some('"')  => s.push('"'),
+                    Some('"') => s.push('"'),
                     Some('\n') => {} // escaped newline
-                    Some(c)    => { s.push('\\'); s.push(c); }
-                    None       => return Err(LexError {
-                        message: "unterminated escape sequence".into(),
-                        line, col,
-                        start: self.pos - 1, end: self.pos,
-                    }),
+                    Some(c) => {
+                        s.push('\\');
+                        s.push(c);
+                    }
+                    None => {
+                        return Err(LexError {
+                            message: "unterminated escape sequence".into(),
+                            line,
+                            col,
+                            start: self.pos - 1,
+                            end: self.pos,
+                        });
+                    }
                 },
                 Some(c) => s.push(c),
             }
@@ -195,7 +244,13 @@ impl Lexer {
         Ok(self.make_tok(TokenKind::String, s, line, col, start))
     }
 
-    fn read_number(&mut self, first: char, line: usize, col: usize, start: usize) -> LexResult<Token> {
+    fn read_number(
+        &mut self,
+        first: char,
+        line: usize,
+        col: usize,
+        start: usize,
+    ) -> LexResult<Token> {
         // Base-prefixed literals: 0x, 0o, 0b
         if first == '0' {
             match self.peek() {
@@ -203,7 +258,13 @@ impl Lexer {
                     self.advance();
                     let mut num = String::from("0x");
                     if !matches!(self.peek(), Some(c) if c.is_ascii_hexdigit()) {
-                        return Err(LexError { message: "invalid hexadecimal literal".into(), line, col, start, end: self.pos });
+                        return Err(LexError {
+                            message: "invalid hexadecimal literal".into(),
+                            line,
+                            col,
+                            start,
+                            end: self.pos,
+                        });
                     }
                     while matches!(self.peek(), Some(c) if c.is_ascii_hexdigit()) {
                         num.push(self.advance().unwrap());
@@ -214,7 +275,13 @@ impl Lexer {
                     self.advance();
                     let mut num = String::from("0o");
                     if !matches!(self.peek(), Some(c) if matches!(c, '0'..='7')) {
-                        return Err(LexError { message: "invalid octal literal".into(), line, col, start, end: self.pos });
+                        return Err(LexError {
+                            message: "invalid octal literal".into(),
+                            line,
+                            col,
+                            start,
+                            end: self.pos,
+                        });
                     }
                     while matches!(self.peek(), Some(c) if matches!(c, '0'..='7')) {
                         num.push(self.advance().unwrap());
@@ -225,7 +292,13 @@ impl Lexer {
                     self.advance();
                     let mut num = String::from("0b");
                     if !matches!(self.peek(), Some('0' | '1')) {
-                        return Err(LexError { message: "invalid binary literal".into(), line, col, start, end: self.pos });
+                        return Err(LexError {
+                            message: "invalid binary literal".into(),
+                            line,
+                            col,
+                            start,
+                            end: self.pos,
+                        });
                     }
                     while matches!(self.peek(), Some('0' | '1')) {
                         num.push(self.advance().unwrap());
@@ -262,8 +335,10 @@ impl Lexer {
             if !matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
                 return Err(LexError {
                     message: format!("invalid scientific notation: '{}'", num),
-                    line, col,
-                    start, end: self.pos,
+                    line,
+                    col,
+                    start,
+                    end: self.pos,
                 });
             }
             while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
@@ -272,14 +347,27 @@ impl Lexer {
         }
 
         Ok(self.make_tok(
-            if is_float { TokenKind::Float } else { TokenKind::Integer },
-            num, line, col, start,
+            if is_float {
+                TokenKind::Float
+            } else {
+                TokenKind::Integer
+            },
+            num,
+            line,
+            col,
+            start,
         ))
     }
 
-    fn read_ident(&mut self, first: char, line: usize, col: usize, start: usize) -> LexResult<Token> {
+    fn read_ident(
+        &mut self,
+        first: char,
+        line: usize,
+        col: usize,
+        start: usize,
+    ) -> LexResult<Token> {
         let mut ident = String::from(first);
-        
+
         // Detect f-string prefix: f"..." or f'...'
         if first == 'f' && (self.peek() == Some('"') || self.peek() == Some('\'')) {
             let quote = self.advance().unwrap();
@@ -292,36 +380,36 @@ impl Lexer {
             ident.push(self.advance().unwrap());
         }
         let kind = match ident.as_str() {
-            "fn"     => TokenKind::Fn,
-            "let"    => TokenKind::Let,
-            "if"     => TokenKind::If,
-            "else"   => TokenKind::Else,
-            "elif"   => TokenKind::Elif,
-            "while"  => TokenKind::While,
-            "for"    => TokenKind::For,
-            "in"     => TokenKind::In,
+            "fn" => TokenKind::Fn,
+            "let" => TokenKind::Let,
+            "if" => TokenKind::If,
+            "else" => TokenKind::Else,
+            "elif" => TokenKind::Elif,
+            "while" => TokenKind::While,
+            "for" => TokenKind::For,
+            "in" => TokenKind::In,
             "return" => TokenKind::Return,
-            "True"   => TokenKind::True,
-            "False"  => TokenKind::False,
-            "None"   => TokenKind::Null,
-            "not"    => TokenKind::Not,
-            "and"    => TokenKind::And,
-            "or"     => TokenKind::Or,
-            "pass"     => TokenKind::Pass,
-            "break"    => TokenKind::Break,
+            "True" => TokenKind::True,
+            "False" => TokenKind::False,
+            "None" => TokenKind::Null,
+            "not" => TokenKind::Not,
+            "and" => TokenKind::And,
+            "or" => TokenKind::Or,
+            "pass" => TokenKind::Pass,
+            "break" => TokenKind::Break,
             "continue" => TokenKind::Continue,
-            "try"      => TokenKind::Try,
-            "except"   => TokenKind::Except,
-            "finally"  => TokenKind::Finally,
-            "raise"    => TokenKind::Raise,
-            "as"       => TokenKind::As,
-            "assert"   => TokenKind::Assert,
+            "try" => TokenKind::Try,
+            "except" => TokenKind::Except,
+            "finally" => TokenKind::Finally,
+            "raise" => TokenKind::Raise,
+            "as" => TokenKind::As,
+            "assert" => TokenKind::Assert,
             "import" => TokenKind::Import,
-            "from"   => TokenKind::From,
-            "class"  => TokenKind::Class,
-            "is"     => TokenKind::Is,
-            "mut"    => TokenKind::Mut,
-            _        => TokenKind::Identifier,
+            "from" => TokenKind::From,
+            "class" => TokenKind::Class,
+            "is" => TokenKind::Is,
+            "mut" => TokenKind::Mut,
+            _ => TokenKind::Identifier,
         };
         Ok(self.make_tok(kind, ident, line, col, start))
     }
@@ -334,21 +422,19 @@ impl Lexer {
 
             self.skip_inline_whitespace();
 
-            let line  = self.line;
-            let col   = self.col;
+            let line = self.line;
+            let col = self.col;
             let start = self.pos;
 
             let ch = match self.advance() {
                 None => {
-
                     if let Some(&(open, dl, dc)) = self.delimiter_stack.last() {
                         return Err(LexError {
-                            message: format!(
-                                "unclosed '{}' opened at {}:{}",
-                                open, dl, dc
-                            ),
-                            line, col,
-                            start: self.pos, end: self.pos + 1,
+                            message: format!("unclosed '{}' opened at {}:{}", open, dl, dc),
+                            line,
+                            col,
+                            start: self.pos,
+                            end: self.pos + 1,
                         });
                     }
 
@@ -359,27 +445,35 @@ impl Lexer {
                             self.pending.push_back(Token {
                                 kind: TokenKind::Dedent,
                                 value: String::new(),
-                                line, col, span: (start, start),
+                                line,
+                                col,
+                                span: (start, start),
                                 file_id: self.file_id,
                             });
                         }
                         self.pending.push_back(Token {
                             kind: TokenKind::Eof,
                             value: String::new(),
-                            line, col, span: (start, start),
+                            line,
+                            col,
+                            span: (start, start),
                             file_id: self.file_id,
                         });
                         return Ok(Token {
                             kind: TokenKind::Newline,
                             value: "\n".into(),
-                            line, col, span: (start, start),
+                            line,
+                            col,
+                            span: (start, start),
                             file_id: self.file_id,
                         });
                     }
                     return Ok(Token {
                         kind: TokenKind::Eof,
                         value: String::new(),
-                        line, col, span: (start, start),
+                        line,
+                        col,
+                        span: (start, start),
                         file_id: self.file_id,
                     });
                 }
@@ -393,7 +487,7 @@ impl Lexer {
                     }
                     match self.handle_indent(line, start)? {
                         Some(tok) => tok,
-                        None      => continue,
+                        None => continue,
                     }
                 }
 
@@ -539,14 +633,18 @@ impl Lexer {
                     match self.delimiter_stack.pop() {
                         None => return Err(self.err("unmatched ')'")),
                         Some(('(', _, _)) => {}
-                        Some((open, dl, dc)) => return Err(LexError {
-                            message: format!(
-                                "mismatched delimiter: '{}' opened at {}:{} closed by ')'",
-                                open, dl, dc
-                            ),
-                            line, col,
-                            start: self.pos - 1, end: self.pos,
-                        }),
+                        Some((open, dl, dc)) => {
+                            return Err(LexError {
+                                message: format!(
+                                    "mismatched delimiter: '{}' opened at {}:{} closed by ')'",
+                                    open, dl, dc
+                                ),
+                                line,
+                                col,
+                                start: self.pos - 1,
+                                end: self.pos,
+                            });
+                        }
                     }
                     self.make_tok(TokenKind::RParen, ")", line, col, start)
                 }
@@ -558,14 +656,18 @@ impl Lexer {
                     match self.delimiter_stack.pop() {
                         None => return Err(self.err("unmatched ']'")),
                         Some(('[', _, _)) => {}
-                        Some((open, dl, dc)) => return Err(LexError {
-                            message: format!(
-                                "mismatched delimiter: '{}' opened at {}:{} closed by ']'",
-                                open, dl, dc
-                            ),
-                            line, col,
-                            start: self.pos - 1, end: self.pos,
-                        }),
+                        Some((open, dl, dc)) => {
+                            return Err(LexError {
+                                message: format!(
+                                    "mismatched delimiter: '{}' opened at {}:{} closed by ']'",
+                                    open, dl, dc
+                                ),
+                                line,
+                                col,
+                                start: self.pos - 1,
+                                end: self.pos,
+                            });
+                        }
                     }
                     self.make_tok(TokenKind::RBracket, "]", line, col, start)
                 }
@@ -577,23 +679,27 @@ impl Lexer {
                     match self.delimiter_stack.pop() {
                         None => return Err(self.err("unmatched '}'")),
                         Some(('{', _, _)) => {}
-                        Some((open, dl, dc)) => return Err(LexError {
-                            message: format!(
-                                "mismatched delimiter: '{}' opened at {}:{} closed by '}}'",
-                                open, dl, dc
-                            ),
-                            line, col,
-                            start: self.pos - 1, end: self.pos,
-                        }),
+                        Some((open, dl, dc)) => {
+                            return Err(LexError {
+                                message: format!(
+                                    "mismatched delimiter: '{}' opened at {}:{} closed by '}}'",
+                                    open, dl, dc
+                                ),
+                                line,
+                                col,
+                                start: self.pos - 1,
+                                end: self.pos,
+                            });
+                        }
                     }
                     self.make_tok(TokenKind::RBrace, "}", line, col, start)
                 }
 
-                ',' => self.make_tok(TokenKind::Comma,     ",", line, col, start),
-                '.' => self.make_tok(TokenKind::Dot,       ".", line, col, start),
+                ',' => self.make_tok(TokenKind::Comma, ",", line, col, start),
+                '.' => self.make_tok(TokenKind::Dot, ".", line, col, start),
                 ';' => self.make_tok(TokenKind::Semicolon, ";", line, col, start),
                 '&' => self.make_tok(TokenKind::Ampersand, "&", line, col, start),
-                '@' => self.make_tok(TokenKind::At,        "@", line, col, start),
+                '@' => self.make_tok(TokenKind::At, "@", line, col, start),
 
                 other => return Err(self.err(format!("unexpected character {:?}", other))),
             };
@@ -608,7 +714,9 @@ impl Lexer {
             let tok = self.next_token()?;
             let is_eof = tok.kind == TokenKind::Eof;
             tokens.push(tok);
-            if is_eof { break; }
+            if is_eof {
+                break;
+            }
         }
         Ok(tokens)
     }

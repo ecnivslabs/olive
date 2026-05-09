@@ -1,22 +1,22 @@
-mod lexer;
-mod parser;
-mod semantic;
-mod mir;
 mod borrow_check;
 mod codegen;
+mod lexer;
+mod mir;
+mod parser;
+mod semantic;
 mod span;
 
-use lexer::{Lexer, TokenKind};
-use parser::Parser;
-use semantic::{Resolver, TypeChecker};
-use mir::MirBuilder;
+use ariadne::{Label, Report, ReportKind, Source};
 use borrow_check::BorrowChecker;
-use codegen::cranelift::CraneliftCodegen;
-use std::{fs, process, path::Path, collections::HashSet};
-use rustc_hash::FxHashMap as HashMap;
 use clap::{Parser as ClapParser, Subcommand};
+use codegen::cranelift::CraneliftCodegen;
+use lexer::{Lexer, TokenKind};
+use mir::MirBuilder;
+use parser::Parser;
+use rustc_hash::FxHashMap as HashMap;
+use semantic::{Resolver, TypeChecker};
 use serde::{Deserialize, Serialize};
-use ariadne::{Report, ReportKind, Label, Source};
+use std::{collections::HashSet, fs, path::Path, process};
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Config {
@@ -45,9 +45,7 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Create a new olive project
-    New {
-        name: String,
-    },
+    New { name: String },
     /// Build the current project (checks for errors)
     Build {
         #[arg(short, long)]
@@ -56,13 +54,13 @@ enum Commands {
     Run {
         /// The file to run (optional if in a project)
         file: Option<String>,
-        
+
         #[arg(short, long)]
         time: bool,
-        
+
         #[arg(long)]
         emit_ast: bool,
-        
+
         #[arg(long)]
         emit_mir: bool,
     },
@@ -78,9 +76,10 @@ enum Commands {
     },
 }
 
-
 fn report_error(sources: &HashMap<usize, (String, String)>, msg: &str, span: span::Span) {
-    let (filename, source) = sources.get(&span.file_id).expect("file not found in sources");
+    let (filename, source) = sources
+        .get(&span.file_id)
+        .expect("file not found in sources");
     let _ = Report::build(ReportKind::Error, (filename.as_str(), span.start..span.end))
         .with_message(msg)
         .with_label(Label::new((filename.as_str(), span.start..span.end)).with_message(msg))
@@ -88,8 +87,12 @@ fn report_error(sources: &HashMap<usize, (String, String)>, msg: &str, span: spa
         .print((filename.as_str(), Source::from(source)));
 }
 
-
-fn load_and_parse(filename: &str, loaded: &mut HashSet<String>, file_id_counter: &mut usize, sources: &mut HashMap<usize, (String, String)>) -> Vec<parser::Stmt> {
+fn load_and_parse(
+    filename: &str,
+    loaded: &mut HashSet<String>,
+    file_id_counter: &mut usize,
+    sources: &mut HashMap<usize, (String, String)>,
+) -> Vec<parser::Stmt> {
     let current_file_id = *file_id_counter;
     *file_id_counter += 1;
 
@@ -97,13 +100,23 @@ fn load_and_parse(filename: &str, loaded: &mut HashSet<String>, file_id_counter:
         eprintln!("error reading {}: {e}", filename);
         process::exit(1);
     });
-    
+
     sources.insert(current_file_id, (filename.to_string(), source.clone()));
 
     let tokens = match Lexer::new(&source, current_file_id).tokenise() {
         Ok(t) => t,
         Err(e) => {
-            report_error(sources, &e.message, span::Span { file_id: current_file_id, line: e.line, col: e.col, start: e.start, end: e.end });
+            report_error(
+                sources,
+                &e.message,
+                span::Span {
+                    file_id: current_file_id,
+                    line: e.line,
+                    col: e.col,
+                    start: e.start,
+                    end: e.end,
+                },
+            );
             process::exit(1);
         }
     };
@@ -111,7 +124,17 @@ fn load_and_parse(filename: &str, loaded: &mut HashSet<String>, file_id_counter:
     let program = match Parser::new(tokens).parse_program() {
         Ok(p) => p,
         Err(e) => {
-            report_error(sources, &e.message, span::Span { file_id: current_file_id, line: e.line, col: e.col, start: e.start, end: e.end });
+            report_error(
+                sources,
+                &e.message,
+                span::Span {
+                    file_id: current_file_id,
+                    line: e.line,
+                    col: e.col,
+                    start: e.start,
+                    end: e.end,
+                },
+            );
             process::exit(1);
         }
     };
@@ -125,11 +148,17 @@ fn load_and_parse(filename: &str, loaded: &mut HashSet<String>, file_id_counter:
                 let mod_name = parts.join("/");
                 let mod_path = parent_dir.join(format!("{}.liv", mod_name));
                 let path_str = mod_path.to_string_lossy().to_string();
-                
+
                 if !loaded.contains(&path_str) {
                     loaded.insert(path_str.clone());
-                    let mut imported_stmts = load_and_parse(&path_str, loaded, file_id_counter, sources);
-                    imported_stmts.retain(|s| matches!(s.kind, parser::StmtKind::Fn { .. } | parser::StmtKind::Class { .. }));
+                    let mut imported_stmts =
+                        load_and_parse(&path_str, loaded, file_id_counter, sources);
+                    imported_stmts.retain(|s| {
+                        matches!(
+                            s.kind,
+                            parser::StmtKind::Fn { .. } | parser::StmtKind::Class { .. }
+                        )
+                    });
                     all_stmts.extend(imported_stmts);
                 }
             }
@@ -146,7 +175,9 @@ fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: bool, e
     let mut file_id_counter = 0;
     let mut sources = HashMap::default();
     let combined_stmts = load_and_parse(filename, &mut loaded, &mut file_id_counter, &mut sources);
-    let program = parser::Program { stmts: combined_stmts };
+    let program = parser::Program {
+        stmts: combined_stmts,
+    };
 
     if emit_ast {
         println!("{:#?}", program);
@@ -179,12 +210,10 @@ fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: bool, e
         println!("{:#?}", mir_builder.functions);
     }
 
-
     let opt_start = std::time::Instant::now();
     let inliner = mir::Inliner::new();
     inliner.run(&mut mir_builder.functions);
     let opt_duration = opt_start.elapsed();
-
 
     let borrow_start = std::time::Instant::now();
     for func in &mir_builder.functions {
@@ -192,12 +221,20 @@ fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: bool, e
         checker.check();
         if !checker.errors.is_empty() {
             for e in &checker.errors {
-                 match e {
-                     semantic::SemanticError::Custom { msg, span } => {
-                          report_error(&sources, &format!("borrow error in {}: {}", func.name, msg), *span);
-                     }
-                     _ => report_error(&sources, &format!("borrow error in {}: {}", func.name, e), e.span()),
-                 }
+                match e {
+                    semantic::SemanticError::Custom { msg, span } => {
+                        report_error(
+                            &sources,
+                            &format!("borrow error in {}: {}", func.name, msg),
+                            *span,
+                        );
+                    }
+                    _ => report_error(
+                        &sources,
+                        &format!("borrow error in {}: {}", func.name, e),
+                        e.span(),
+                    ),
+                }
             }
             process::exit(1);
         }
@@ -213,23 +250,22 @@ fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: bool, e
     if !run {
         println!("\x1b[1;32mFinished\x1b[0m build successfully.");
         if show_time {
-             println!("\n\x1b[1;32m   Olive Build Report\x1b[0m");
-             println!("\x1b[1;34m   ────────────────────────\x1b[0m");
-             println!("   \x1b[1mOptimization:\x1b[0m  {:?}", opt_duration);
-             println!("   \x1b[1mBorrow Check:\x1b[0m  {:?}", borrow_duration);
-             println!("   \x1b[1mCodegen (JIT):\x1b[0m {:?}", cg_duration);
-             println!("\x1b[1;34m   ────────────────────────\x1b[0m");
+            println!("\n\x1b[1;32m   Olive Build Report\x1b[0m");
+            println!("\x1b[1;34m   ────────────────────────\x1b[0m");
+            println!("   \x1b[1mOptimization:\x1b[0m  {:?}", opt_duration);
+            println!("   \x1b[1mBorrow Check:\x1b[0m  {:?}", borrow_duration);
+            println!("   \x1b[1mCodegen (JIT):\x1b[0m {:?}", cg_duration);
+            println!("\x1b[1;34m   ────────────────────────\x1b[0m");
         }
         return;
     }
-
 
     if let Some(main_ptr) = codegen.get_function("__main__") {
         let main_fn: extern "C" fn() -> i64 = unsafe { std::mem::transmute(main_ptr) };
         let exec_start = std::time::Instant::now();
         let _result = main_fn();
         let exec_duration = exec_start.elapsed();
-        
+
         if show_time {
             println!("\n\x1b[1;32m   Olive Execution Report\x1b[0m");
             println!("\x1b[1;34m   ────────────────────────\x1b[0m");
@@ -238,7 +274,10 @@ fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: bool, e
             println!("   \x1b[1mCodegen (JIT):\x1b[0m {:?}", cg_duration);
             println!("   \x1b[1mExecution:\x1b[0m     {:?}", exec_duration);
             println!("\x1b[1;34m   ────────────────────────\x1b[0m");
-            println!("   \x1b[1mTotal Startup:\x1b[0m {:?}", opt_duration + borrow_duration + cg_duration);
+            println!(
+                "   \x1b[1mTotal Startup:\x1b[0m {:?}",
+                opt_duration + borrow_duration + cg_duration
+            );
             println!();
         }
     } else {
@@ -252,7 +291,9 @@ fn compile_and_test(filename: &str, _show_time: bool) {
     let mut file_id_counter = 0;
     let mut sources = HashMap::default();
     let combined_stmts = load_and_parse(filename, &mut loaded, &mut file_id_counter, &mut sources);
-    let program = parser::Program { stmts: combined_stmts };
+    let program = parser::Program {
+        stmts: combined_stmts,
+    };
 
     let mut resolver = Resolver::new();
     resolver.resolve_program(&program);
@@ -285,7 +326,11 @@ fn compile_and_test(filename: &str, _show_time: bool) {
         checker.check();
         if !checker.errors.is_empty() {
             for e in &checker.errors {
-                 report_error(&sources, &format!("borrow error in {}: {}", func.name, e), e.span());
+                report_error(
+                    &sources,
+                    &format!("borrow error in {}: {}", func.name, e),
+                    e.span(),
+                );
             }
             process::exit(1);
         }
@@ -300,20 +345,23 @@ fn compile_and_test(filename: &str, _show_time: bool) {
     let mut failed = 0;
 
     for stmt in &program.stmts {
-        if let parser::StmtKind::Fn { name, decorators, .. } = &stmt.kind {
+        if let parser::StmtKind::Fn {
+            name, decorators, ..
+        } = &stmt.kind
+        {
             if decorators.iter().any(|d| d == "test") {
                 print!("test {} ... ", name);
                 std::io::Write::flush(&mut std::io::stdout()).unwrap();
-                
+
                 if let Some(func_ptr) = codegen.get_function(name) {
                     let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(func_ptr) };
-                    
+
                     let start = std::time::Instant::now();
                     // Catching traps in JIT needs a signal handler, so we'll just run it.
                     // If it fails, the process might exit.
                     let _res = func();
                     let duration = start.elapsed();
-                    
+
                     println!("\x1b[1;32mok\x1b[0m ({:?})", duration);
                     passed += 1;
                 } else {
@@ -324,7 +372,16 @@ fn compile_and_test(filename: &str, _show_time: bool) {
         }
     }
 
-    println!("\ntest result: {}. \x1b[1;32m{} passed\x1b[0m; \x1b[1;31m{} failed\x1b[0m\n", if failed == 0 { "\x1b[1;32mok\x1b[0m" } else { "\x1b[1;31mFAILED\x1b[0m" }, passed, failed);
+    println!(
+        "\ntest result: {}. \x1b[1;32m{} passed\x1b[0m; \x1b[1;31m{} failed\x1b[0m\n",
+        if failed == 0 {
+            "\x1b[1;32mok\x1b[0m"
+        } else {
+            "\x1b[1;31mFAILED\x1b[0m"
+        },
+        passed,
+        failed
+    );
     if failed > 0 {
         process::exit(1);
     }
@@ -354,8 +411,14 @@ fn format_file(filename: &str) {
 
     for tok in tokens {
         match tok.kind {
-            TokenKind::Indent => { indent_level += 1; continue; }
-            TokenKind::Dedent => { indent_level -= 1; continue; }
+            TokenKind::Indent => {
+                indent_level += 1;
+                continue;
+            }
+            TokenKind::Dedent => {
+                indent_level -= 1;
+                continue;
+            }
             TokenKind::Newline => {
                 formatted.push('\n');
                 at_start_of_line = true;
@@ -369,15 +432,30 @@ fn format_file(filename: &str) {
                     at_start_of_line = false;
                 } else {
                     match tok.kind {
-                        TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace | TokenKind::Colon | TokenKind::Comma | TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace | TokenKind::Dot => {}
+                        TokenKind::LParen
+                        | TokenKind::LBracket
+                        | TokenKind::LBrace
+                        | TokenKind::Colon
+                        | TokenKind::Comma
+                        | TokenKind::RParen
+                        | TokenKind::RBracket
+                        | TokenKind::RBrace
+                        | TokenKind::Dot => {}
                         _ => {
-                             if !matches!(last_kind, TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace | TokenKind::Dot | TokenKind::At) {
-                                 formatted.push(' ');
-                             }
+                            if !matches!(
+                                last_kind,
+                                TokenKind::LParen
+                                    | TokenKind::LBracket
+                                    | TokenKind::LBrace
+                                    | TokenKind::Dot
+                                    | TokenKind::At
+                            ) {
+                                formatted.push(' ');
+                            }
                         }
                     }
                 }
-                
+
                 match tok.kind {
                     TokenKind::String => {
                         formatted.push('"');
@@ -392,12 +470,12 @@ fn format_file(filename: &str) {
                     }
                     _ => formatted.push_str(&tok.value),
                 }
-                
+
                 last_kind = tok.kind;
             }
         }
     }
-    
+
     fs::write(filename, formatted).unwrap();
     println!("\x1b[1;32mFormatted\x1b[0m {}", filename);
 }
@@ -425,7 +503,7 @@ fn main() {
             }
 
             fs::create_dir_all(path.join("src")).unwrap();
-            
+
             let config = Config {
                 package: Package {
                     name: name.clone(),
@@ -433,17 +511,20 @@ fn main() {
                     entry: "src/main.liv".to_string(),
                 },
             };
-            
+
             let toml = toml::to_string(&config).unwrap();
             fs::write(path.join("pit.toml"), toml).unwrap();
-            
+
             let main_liv = "fn main():\n    print(\"Hello from Olive!\")\n\nmain()\n";
             fs::write(path.join("src/main.liv"), main_liv).unwrap();
-            
+
             let gitignore = ".env\n.env.*\n*.secret\n";
             fs::write(path.join(".gitignore"), gitignore).unwrap();
 
-            println!("\x1b[1;32mCreated\x1b[0m binary (application) `{}` package", name);
+            println!(
+                "\x1b[1;32mCreated\x1b[0m binary (application) `{}` package",
+                name
+            );
         }
         Commands::Build { time } => {
             let config_path = Path::new("pit.toml");
@@ -451,13 +532,18 @@ fn main() {
                 eprintln!("error: could not find `pit.toml` in current directory");
                 process::exit(1);
             }
-            
+
             let config_str = fs::read_to_string(config_path).unwrap();
             let config: Config = toml::from_str(&config_str).unwrap();
-            
+
             compile_and_run(&config.package.entry, false, time, false, false);
         }
-        Commands::Run { file, time, emit_ast, emit_mir } => {
+        Commands::Run {
+            file,
+            time,
+            emit_ast,
+            emit_mir,
+        } => {
             if let Some(f) = file {
                 compile_and_run(&f, true, time, emit_ast, emit_mir);
             } else {
@@ -466,10 +552,10 @@ fn main() {
                     eprintln!("error: no file specified and no `pit.toml` found");
                     process::exit(1);
                 }
-                
+
                 let config_str = fs::read_to_string(config_path).unwrap();
                 let config: Config = toml::from_str(&config_str).unwrap();
-                
+
                 compile_and_run(&config.package.entry, true, time, emit_ast, emit_mir);
             }
         }
@@ -484,7 +570,7 @@ fn main() {
             } else {
                 let config_path = Path::new("pit.toml");
                 if config_path.exists() {
-                     walk_and_format(Path::new("."));
+                    walk_and_format(Path::new("."));
                 } else {
                     eprintln!("error: no file specified and no `pit.toml` found");
                     process::exit(1);
@@ -497,10 +583,10 @@ fn main() {
                 eprintln!("error: could not find `pit.toml` in current directory");
                 process::exit(1);
             }
-            
+
             let config_str = fs::read_to_string(config_path).unwrap();
             let config: Config = toml::from_str(&config_str).unwrap();
-            
+
             compile_and_test(&config.package.entry, time);
         }
     }

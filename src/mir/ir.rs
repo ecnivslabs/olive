@@ -1,5 +1,5 @@
-use crate::semantic::types::Type;
 use crate::parser::{BinOp, UnaryOp};
+use crate::semantic::types::Type;
 use crate::span::Span;
 
 // Local variable or temporary.
@@ -99,7 +99,9 @@ pub enum StatementKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TerminatorKind {
     // Unconditional branch.
-    Goto { target: BasicBlockId },
+    Goto {
+        target: BasicBlockId,
+    },
     // Conditional branch.
     SwitchInt {
         discr: Operand,
