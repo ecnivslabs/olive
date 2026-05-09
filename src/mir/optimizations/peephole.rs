@@ -64,6 +64,33 @@ impl Transform for PeepholeOptimize {
                             *rval = Rvalue::Use(Operand::Constant(Constant::Bool(true)));
                             changed = true;
                         }
+                        Rvalue::BinaryOp(Sub, l, r) if l == r => {
+                            *rval = Rvalue::Use(Operand::Constant(Constant::Int(0)));
+                            changed = true;
+                        }
+                        Rvalue::BinaryOp(Shl, op, Operand::Constant(Constant::Int(0)))
+                        | Rvalue::BinaryOp(Shr, op, Operand::Constant(Constant::Int(0))) => {
+                            *rval = Rvalue::Use(op.clone());
+                            changed = true;
+                        }
+                        Rvalue::BinaryOp(And, _, Operand::Constant(Constant::Int(0)))
+                        | Rvalue::BinaryOp(And, Operand::Constant(Constant::Int(0)), _) => {
+                            *rval = Rvalue::Use(Operand::Constant(Constant::Int(0)));
+                            changed = true;
+                        }
+                        Rvalue::BinaryOp(Or, op, Operand::Constant(Constant::Int(0)))
+                        | Rvalue::BinaryOp(Or, Operand::Constant(Constant::Int(0)), op) => {
+                            *rval = Rvalue::Use(op.clone());
+                            changed = true;
+                        }
+                        Rvalue::BinaryOp(And, l, r) if l == r => {
+                            *rval = Rvalue::Use(l.clone());
+                            changed = true;
+                        }
+                        Rvalue::BinaryOp(Or, l, r) if l == r => {
+                            *rval = Rvalue::Use(l.clone());
+                            changed = true;
+                        }
                         _ => {}
                     }
                 }

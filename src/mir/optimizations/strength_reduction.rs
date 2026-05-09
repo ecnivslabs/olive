@@ -14,7 +14,6 @@ impl Transform for StrengthReduction {
                 if let StatementKind::Assign(_, rval) = &mut stmt.kind {
                     use crate::parser::BinOp::*;
                     match rval {
-                        // x * 2^n -> x << n
                         Rvalue::BinaryOp(Mul, op, Operand::Constant(Constant::Int(c)))
                         | Rvalue::BinaryOp(Mul, Operand::Constant(Constant::Int(c)), op)
                             if *c > 2 && (*c as u64).is_power_of_two() =>
@@ -28,7 +27,6 @@ impl Transform for StrengthReduction {
                             );
                             changed = true;
                         }
-                        // x / 2^n -> x >> n (for positive divisor)
                         Rvalue::BinaryOp(Div, op, Operand::Constant(Constant::Int(c)))
                         | Rvalue::BinaryOp(FloorDiv, op, Operand::Constant(Constant::Int(c)))
                             if *c > 1 && (*c as u64).is_power_of_two() =>
@@ -42,6 +40,21 @@ impl Transform for StrengthReduction {
                             );
                             changed = true;
                         }
+                        Rvalue::BinaryOp(Mod, op, Operand::Constant(Constant::Int(c)))
+                            if *c > 1 && (*c as u64).is_power_of_two() =>
+                        {
+                            let mask = *c - 1;
+                            let saved_op = op.clone();
+                            *rval = Rvalue::BinaryOp(
+                                And,
+                                saved_op,
+                                Operand::Constant(Constant::Int(mask)),
+                            );
+                            changed = true;
+                        }
+                        // x * 3 -> (x << 1) + x — handled by Cranelift's own lowering,
+                        // so we skip it here to avoid code bloat.
+                        // x * 2 is handled by peephole (x + x).
                         _ => {}
                     }
                 }

@@ -84,7 +84,6 @@ impl FlowState {
     }
 }
 
-// If either path says Moved, the result is Moved. If one is Dead and other Initialized, result is Dead.
 fn merge_states(a: LocalState, b: LocalState) -> LocalState {
     match (a, b) {
         (LocalState::Moved, _) | (_, LocalState::Moved) => LocalState::Moved,

@@ -217,6 +217,18 @@ fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: bool, e
 
     let borrow_start = std::time::Instant::now();
     for func in &mir_builder.functions {
+        let needs_check = func.locals.iter().any(|l| l.ty.is_move_type())
+            || func.basic_blocks.iter().any(|bb| {
+                bb.statements.iter().any(|s| {
+                    matches!(
+                        &s.kind,
+                        mir::StatementKind::Assign(_, mir::Rvalue::Ref(_) | mir::Rvalue::MutRef(_))
+                    )
+                })
+            });
+        if !needs_check {
+            continue;
+        }
         let mut checker = BorrowChecker::new(func);
         checker.check();
         if !checker.errors.is_empty() {

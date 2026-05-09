@@ -39,7 +39,9 @@ impl Transform for CommonSubexpressionElimination {
                     available_expressions.retain(|(expr, _)| !self.uses_local(expr, *dest));
                 } else if matches!(
                     stmt.kind,
-                    StatementKind::SetIndex(..) | StatementKind::SetAttr(..) | StatementKind::VectorStore(..)
+                    StatementKind::SetIndex(..)
+                        | StatementKind::SetAttr(..)
+                        | StatementKind::VectorStore(..)
                 ) {
                     // Invalidate all heap-based expressions.
                     available_expressions.retain(|(expr, _)| {
@@ -58,10 +60,16 @@ impl CommonSubexpressionElimination {
     fn uses_local(&self, rval: &Rvalue, local: Local) -> bool {
         match rval {
             Rvalue::Use(op) | Rvalue::UnaryOp(_, op) => self.is_local(op, local),
-            Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) => self.is_local(l, local) || self.is_local(r, local),
+            Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) => {
+                self.is_local(l, local) || self.is_local(r, local)
+            }
             Rvalue::VectorSplat(op, _) => self.is_local(op, local),
-            Rvalue::VectorLoad(obj, idx, _) => self.is_local(obj, local) || self.is_local(idx, local),
-            Rvalue::VectorFMA(a, b, c) => self.is_local(a, local) || self.is_local(b, local) || self.is_local(c, local),
+            Rvalue::VectorLoad(obj, idx, _) => {
+                self.is_local(obj, local) || self.is_local(idx, local)
+            }
+            Rvalue::VectorFMA(a, b, c) => {
+                self.is_local(a, local) || self.is_local(b, local) || self.is_local(c, local)
+            }
             _ => false,
         }
     }

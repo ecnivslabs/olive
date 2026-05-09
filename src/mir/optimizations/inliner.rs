@@ -33,7 +33,7 @@ impl Inliner {
                             },
                         ) = &stmt.kind
                         {
-                            if name == &func.name && current_depth >= 8 {
+                            if name == &func.name && current_depth >= 2 {
                                 continue;
                             }
                             if let Some(target_fn) = fn_map.get(name) {

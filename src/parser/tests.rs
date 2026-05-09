@@ -9,11 +9,6 @@ mod tests {
         Parser::new(tokens).parse_program().expect("parse error")
     }
 
-    fn parse_err(src: &str) -> String {
-        let tokens = Lexer::new(src, 0).tokenise().expect("lex error");
-        Parser::new(tokens).parse_program().unwrap_err().message
-    }
-
     fn first(p: &Program) -> &StmtKind {
         &p.stmts.first().expect("empty program").kind
     }

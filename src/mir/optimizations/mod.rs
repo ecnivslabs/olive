@@ -5,11 +5,14 @@ pub mod const_prop;
 pub mod copy_prop;
 pub mod cse;
 pub mod dce;
+pub mod gvn;
 pub mod inliner;
 pub mod licm;
+pub mod loop_unroll;
 pub mod peephole;
 pub mod simplify_cfg;
 pub mod strength_reduction;
+pub mod tail_call;
 pub mod vectorize;
 
 #[allow(dead_code)]

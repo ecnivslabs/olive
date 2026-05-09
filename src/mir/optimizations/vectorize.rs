@@ -1,7 +1,7 @@
 #![allow(dead_code)]
-use crate::mir::*;
-use crate::mir::optimizations::Transform;
 use crate::mir::loop_utils;
+use crate::mir::optimizations::Transform;
+use crate::mir::*;
 use crate::semantic::types::Type as OliveType;
 use crate::span::Span;
 use rustc_hash::FxHashMap;
@@ -24,12 +24,11 @@ impl Transform for LoopVectorizer {
     }
 }
 
-/// Describes a loop that has passed legality analysis and is safe to vectorize.
 struct VectorizationPlan {
     induction: Local,
     limit: Operand,
     width: usize,
-    loads: Vec<(Local, Operand)>,   // (dest, collection) for GetIndex(collection, i)
+    loads: Vec<(Local, Operand)>, // (dest, collection) for GetIndex(collection, i)
     stores: Vec<(Operand, Operand)>, // (collection, value) for SetIndex(collection, i, value)
 }
 
@@ -42,10 +41,7 @@ impl LoopVectorizer {
         }
     }
 
-    /// Strict legality + profitability analysis.
-    /// Returns None if the loop cannot or should not be vectorized.
     fn analyze(&self, func: &MirFunction, lp: &loop_utils::Loop) -> Option<VectorizationPlan> {
-        // Reject loops that already contain SIMD operations (already vectorized).
         for &bb_id in &lp.body {
             for stmt in &func.basic_blocks[bb_id.0].statements {
                 match &stmt.kind {
@@ -58,7 +54,6 @@ impl LoopVectorizer {
             }
         }
 
-        // Find a single induction variable: i = i + 1 in a latch block.
         let mut induction = None;
         for &latch_id in &lp.latches {
             let latch = &func.basic_blocks[latch_id.0];
@@ -74,7 +69,7 @@ impl LoopVectorizer {
                 {
                     if *src == *local {
                         if induction.is_some() {
-                            return None; // Multiple induction variables — bail.
+                            return None;
                         }
                         induction = Some(*local);
                     }
@@ -83,7 +78,6 @@ impl LoopVectorizer {
         }
         let i = induction?;
 
-        // Find `i < limit` comparison in the header.
         let header = &func.basic_blocks[lp.header.0];
         if !matches!(
             header.terminator.as_ref().map(|t| &t.kind),
@@ -96,11 +90,7 @@ impl LoopVectorizer {
         for stmt in header.statements.iter().rev() {
             if let StatementKind::Assign(
                 _,
-                Rvalue::BinaryOp(
-                    crate::parser::BinOp::Lt,
-                    Operand::Copy(idx),
-                    lim,
-                ),
+                Rvalue::BinaryOp(crate::parser::BinOp::Lt, Operand::Copy(idx), lim),
             ) = &stmt.kind
             {
                 if *idx == i {
@@ -110,11 +100,6 @@ impl LoopVectorizer {
             }
         }
         let limit = limit?;
-
-        // Collect linear loads: dest = GetIndex(collection, i)
-        let mut loads = Vec::new();
-        // Collect linear stores: SetIndex(collection, i, value)
-        let mut stores = Vec::new();
 
         for &bb_id in &lp.body {
             for stmt in &func.basic_blocks[bb_id.0].statements {
@@ -132,13 +117,10 @@ impl LoopVectorizer {
             }
         }
 
-        // Profitability: require at least one linear load for vectorization to make sense.
         if loads.is_empty() {
             return None;
         }
 
-        // Reject loops with early exits (break statements) — vectorizing them
-        // requires complex mask operations we don't support yet.
         if lp.exits.len() > 1 {
             return None;
         }
@@ -153,7 +135,12 @@ impl LoopVectorizer {
     }
 
     /// Apply the vectorization transformation.
-    fn transform(&self, func: &mut MirFunction, lp: &loop_utils::Loop, plan: &VectorizationPlan) -> bool {
+    fn transform(
+        &self,
+        func: &mut MirFunction,
+        lp: &loop_utils::Loop,
+        plan: &VectorizationPlan,
+    ) -> bool {
         let i = plan.induction;
         let width = plan.width;
 
@@ -164,7 +151,6 @@ impl LoopVectorizer {
             None => return false,
         };
 
-        // Step 2: Create a pre-header block that computes vec_limit = limit - width + 1.
         let vec_limit_local = Local(func.locals.len());
         func.locals.push(LocalDecl {
             ty: OliveType::Int,
@@ -175,19 +161,17 @@ impl LoopVectorizer {
 
         let pre_header_id = BasicBlockId(func.basic_blocks.len());
         func.basic_blocks.push(BasicBlock {
-            statements: vec![
-                Statement {
-                    kind: StatementKind::Assign(
-                        vec_limit_local,
-                        Rvalue::BinaryOp(
-                            crate::parser::BinOp::Sub,
-                            plan.limit.clone(),
-                            Operand::Constant(Constant::Int((width - 1) as i64)),
-                        ),
+            statements: vec![Statement {
+                kind: StatementKind::Assign(
+                    vec_limit_local,
+                    Rvalue::BinaryOp(
+                        crate::parser::BinOp::Sub,
+                        plan.limit.clone(),
+                        Operand::Constant(Constant::Int((width - 1) as i64)),
                     ),
-                    span: Span::default(),
-                },
-            ],
+                ),
+                span: Span::default(),
+            }],
             terminator: Some(Terminator {
                 kind: TerminatorKind::Goto { target: lp.header },
                 span: Span::default(),
@@ -209,7 +193,9 @@ impl LoopVectorizer {
                     TerminatorKind::Goto { target } if *target == lp.header => {
                         *target = pre_header_id;
                     }
-                    TerminatorKind::SwitchInt { targets, otherwise, .. } => {
+                    TerminatorKind::SwitchInt {
+                        targets, otherwise, ..
+                    } => {
                         for (_, t) in targets.iter_mut() {
                             if *t == lp.header {
                                 *t = pre_header_id;
@@ -224,8 +210,6 @@ impl LoopVectorizer {
             }
         }
 
-        // Step 3: Modify the vector loop header condition from `i < limit` to `i < vec_limit`.
-        //         And redirect the exit edge to the epilogue header.
         let cond_local = {
             let header = &func.basic_blocks[lp.header.0];
             let mut found = None;
@@ -270,7 +254,6 @@ impl LoopVectorizer {
             return false;
         }
 
-        // Step 4: Transform the vector loop body — replace scalar ops with SIMD equivalents.
         let mut vector_locals: FxHashMap<Local, Local> = FxHashMap::default();
         let load_set: FxHashMap<Local, Operand> = plan.loads.iter().cloned().collect();
 
@@ -296,11 +279,26 @@ impl LoopVectorizer {
                     }
 
                     // BinaryOp where both operands have vector versions
-                    StatementKind::Assign(dest, Rvalue::BinaryOp(op, Operand::Copy(l), Operand::Copy(r)))
-                        if vector_locals.contains_key(l) || vector_locals.contains_key(r) =>
-                    {
-                        let vl = self.ensure_vector(func, *l, width, &mut vector_locals, &mut new_stmts, stmt.span);
-                        let vr = self.ensure_vector(func, *r, width, &mut vector_locals, &mut new_stmts, stmt.span);
+                    StatementKind::Assign(
+                        dest,
+                        Rvalue::BinaryOp(op, Operand::Copy(l), Operand::Copy(r)),
+                    ) if vector_locals.contains_key(l) || vector_locals.contains_key(r) => {
+                        let vl = self.ensure_vector(
+                            func,
+                            *l,
+                            width,
+                            &mut vector_locals,
+                            &mut new_stmts,
+                            stmt.span,
+                        );
+                        let vr = self.ensure_vector(
+                            func,
+                            *r,
+                            width,
+                            &mut vector_locals,
+                            &mut new_stmts,
+                            stmt.span,
+                        );
                         let v = self.alloc_vector_local(func, *dest, width);
                         vector_locals.insert(*dest, v);
                         new_stmts.push(Statement {
@@ -336,7 +334,6 @@ impl LoopVectorizer {
             func.basic_blocks[bb_id.0].statements = new_stmts;
         }
 
-        // Step 5: Change the latch increment from +1 to +width.
         for &latch_id in &lp.latches {
             let latch = &mut func.basic_blocks[latch_id.0];
             for stmt in &mut latch.statements {
@@ -384,10 +381,7 @@ impl LoopVectorizer {
         let v = self.alloc_vector_local(func, local, width);
         vector_locals.insert(local, v);
         stmts.push(Statement {
-            kind: StatementKind::Assign(
-                v,
-                Rvalue::VectorSplat(Operand::Copy(local), width),
-            ),
+            kind: StatementKind::Assign(v, Rvalue::VectorSplat(Operand::Copy(local), width)),
             span,
         });
         v

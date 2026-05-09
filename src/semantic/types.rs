@@ -59,7 +59,13 @@ impl Type {
     /// Returns true if this type has move semantics (heap allocated or complex).
     pub fn is_move_type(&self) -> bool {
         match self {
-            Type::Int | Type::Float | Type::Bool | Type::Null | Type::Never | Type::Any | Type::Vector(_, _) => false,
+            Type::Int
+            | Type::Float
+            | Type::Bool
+            | Type::Null
+            | Type::Never
+            | Type::Any
+            | Type::Vector(_, _) => false,
             Type::Ref(_) | Type::MutRef(_) => false, // References are Copy
             _ => true,
         }

@@ -38,7 +38,7 @@ pub enum TypeExprKind {
     MutRef(Box<TypeExpr>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum BinOp {
     Add,
     Sub,
@@ -63,14 +63,14 @@ pub enum BinOp {
     Shr,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum UnaryOp {
     Neg,
     Pos,
     Not,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AugOp {
     Add,
     Sub,

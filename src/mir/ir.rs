@@ -11,7 +11,7 @@ pub struct Local(pub usize);
 pub struct BasicBlockId(pub usize);
 
 // Operand: constant or local reference.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum Operand {
     // Shared access to a local.
@@ -22,7 +22,7 @@ pub enum Operand {
     Constant(Constant),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum Constant {
     Int(i64),
@@ -34,7 +34,7 @@ pub enum Constant {
 }
 
 // RHS expressions that compute a value.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum Rvalue {
     // Just use the operand.
@@ -67,7 +67,7 @@ pub enum Rvalue {
 }
 
 // Aggregate value kinds (list, tuple, etc).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AggregateKind {
     Tuple,
     List,

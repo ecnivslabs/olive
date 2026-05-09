@@ -21,11 +21,10 @@ pub fn find_loops(func: &MirFunction) -> Vec<Loop> {
         let n = BasicBlockId(n_idx);
         for &d in &successors(bb) {
             if dominators[n.0].contains(&d) {
-                // Found a back-edge n -> d
                 let mut body = HashSet::default();
                 body.insert(d);
                 body.insert(n);
-                
+
                 let mut stack = vec![n];
                 while let Some(m) = stack.pop() {
                     for p in predecessors(func, m) {
@@ -35,8 +34,7 @@ pub fn find_loops(func: &MirFunction) -> Vec<Loop> {
                         }
                     }
                 }
-                
-                // Find exits
+
                 let mut exits = Vec::new();
                 for &b_id in &body {
                     for &s in &successors(&func.basic_blocks[b_id.0]) {
@@ -62,7 +60,7 @@ fn compute_dominators(func: &MirFunction) -> Vec<HashSet<BasicBlockId>> {
     let num_blocks = func.basic_blocks.len();
     let all_blocks: HashSet<BasicBlockId> = (0..num_blocks).map(BasicBlockId).collect();
     let mut dominators = vec![all_blocks.clone(); num_blocks];
-    
+
     if num_blocks > 0 {
         dominators[0] = [BasicBlockId(0)].iter().cloned().collect();
     }
@@ -84,7 +82,7 @@ fn compute_dominators(func: &MirFunction) -> Vec<HashSet<BasicBlockId>> {
                 set.insert(BasicBlockId(i));
                 set
             };
-            
+
             if new_dom != dominators[i] {
                 dominators[i] = new_dom;
                 changed = true;
@@ -104,11 +102,13 @@ fn predecessors(func: &MirFunction, target: BasicBlockId) -> Vec<BasicBlockId> {
     preds
 }
 
-pub fn clone_blocks(func: &mut MirFunction, blocks: &HashSet<BasicBlockId>) -> std::collections::HashMap<BasicBlockId, BasicBlockId> {
+pub fn clone_blocks(
+    func: &mut MirFunction,
+    blocks: &HashSet<BasicBlockId>,
+) -> std::collections::HashMap<BasicBlockId, BasicBlockId> {
     let mut map = std::collections::HashMap::new();
     let _old_len = func.basic_blocks.len();
-    
-    // First pass: create empty blocks and build mapping
+
     for &id in blocks {
         let new_id = BasicBlockId(func.basic_blocks.len());
         map.insert(id, new_id);
@@ -117,12 +117,11 @@ pub fn clone_blocks(func: &mut MirFunction, blocks: &HashSet<BasicBlockId>) -> s
             terminator: None,
         });
     }
-    
-    // Second pass: copy statements and terminators with remapped targets
+
     for &id in blocks {
         let new_id = *map.get(&id).unwrap();
         let old_bb = func.basic_blocks[id.0].clone();
-        
+
         let mut new_bb = old_bb;
         if let Some(term) = &mut new_bb.terminator {
             match &mut term.kind {
@@ -131,7 +130,9 @@ pub fn clone_blocks(func: &mut MirFunction, blocks: &HashSet<BasicBlockId>) -> s
                         *target = new_target;
                     }
                 }
-                TerminatorKind::SwitchInt { targets, otherwise, .. } => {
+                TerminatorKind::SwitchInt {
+                    targets, otherwise, ..
+                } => {
                     for (_, t) in targets {
                         if let Some(&new_target) = map.get(t) {
                             *t = new_target;
@@ -146,7 +147,7 @@ pub fn clone_blocks(func: &mut MirFunction, blocks: &HashSet<BasicBlockId>) -> s
         }
         func.basic_blocks[new_id.0] = new_bb;
     }
-    
+
     map
 }
 
@@ -154,7 +155,9 @@ fn successors(bb: &BasicBlock) -> Vec<BasicBlockId> {
     match &bb.terminator {
         Some(t) => match &t.kind {
             TerminatorKind::Goto { target } => vec![*target],
-            TerminatorKind::SwitchInt { targets, otherwise, .. } => {
+            TerminatorKind::SwitchInt {
+                targets, otherwise, ..
+            } => {
                 let mut s: Vec<_> = targets.iter().map(|(_, b)| *b).collect();
                 s.push(*otherwise);
                 s

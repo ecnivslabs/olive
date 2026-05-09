@@ -24,42 +24,57 @@ impl Transform for ConstantPropagation {
         }
 
         let mut safe_constants: HashMap<Local, Constant> = HashMap::default();
-        for (local, count) in assign_counts {
-            if count == 1 {
-                if let Some(c) = constant_assignments.get(&local) {
-                    safe_constants.insert(local, c.clone());
+        for (local, count) in &assign_counts {
+            if *count == 1 {
+                if let Some(c) = constant_assignments.get(local) {
+                    safe_constants.insert(*local, c.clone());
                 }
             }
-        }
-
-        if safe_constants.is_empty() {
-            return false;
         }
 
         let mut changed = false;
-        for bb in &mut func.basic_blocks {
-            for stmt in &mut bb.statements {
-                if let StatementKind::Assign(_, rval) = &mut stmt.kind {
-                    changed |= self.propagate_constants_in_rvalue(rval, &safe_constants);
-                } else if let StatementKind::SetIndex(obj, idx, val) = &mut stmt.kind {
-                    changed |= self.propagate_constants_in_operand(obj, &safe_constants);
-                    changed |= self.propagate_constants_in_operand(idx, &safe_constants);
-                    changed |= self.propagate_constants_in_operand(val, &safe_constants);
-                } else if let StatementKind::SetAttr(obj, _, val) = &mut stmt.kind {
-                    changed |= self.propagate_constants_in_operand(obj, &safe_constants);
-                    changed |= self.propagate_constants_in_operand(val, &safe_constants);
-                } else if let StatementKind::VectorStore(obj, idx, val) = &mut stmt.kind {
-                    changed |= self.propagate_constants_in_operand(obj, &safe_constants);
-                    changed |= self.propagate_constants_in_operand(idx, &safe_constants);
-                    changed |= self.propagate_constants_in_operand(val, &safe_constants);
+
+        if !safe_constants.is_empty() {
+            for bb in &mut func.basic_blocks {
+                for stmt in &mut bb.statements {
+                    if let StatementKind::Assign(_, rval) = &mut stmt.kind {
+                        changed |= self.propagate_constants_in_rvalue(rval, &safe_constants);
+                    } else if let StatementKind::SetIndex(obj, idx, val) = &mut stmt.kind {
+                        changed |= self.propagate_constants_in_operand(obj, &safe_constants);
+                        changed |= self.propagate_constants_in_operand(idx, &safe_constants);
+                        changed |= self.propagate_constants_in_operand(val, &safe_constants);
+                    } else if let StatementKind::SetAttr(obj, _, val) = &mut stmt.kind {
+                        changed |= self.propagate_constants_in_operand(obj, &safe_constants);
+                        changed |= self.propagate_constants_in_operand(val, &safe_constants);
+                    } else if let StatementKind::VectorStore(obj, idx, val) = &mut stmt.kind {
+                        changed |= self.propagate_constants_in_operand(obj, &safe_constants);
+                        changed |= self.propagate_constants_in_operand(idx, &safe_constants);
+                        changed |= self.propagate_constants_in_operand(val, &safe_constants);
+                    }
                 }
-            }
-            if let Some(term) = &mut bb.terminator {
-                if let TerminatorKind::SwitchInt { discr, .. } = &mut term.kind {
-                    changed |= self.propagate_constants_in_operand(discr, &safe_constants);
+                if let Some(term) = &mut bb.terminator {
+                    if let TerminatorKind::SwitchInt { discr, .. } = &mut term.kind {
+                        changed |= self.propagate_constants_in_operand(discr, &safe_constants);
+                    }
                 }
             }
         }
+
+        for bb in &mut func.basic_blocks {
+            let mut local_consts: HashMap<Local, Constant> = HashMap::default();
+            for stmt in &mut bb.statements {
+                if let StatementKind::Assign(dest, rval) = &mut stmt.kind {
+                    changed |= self.propagate_constants_in_rvalue(rval, &local_consts);
+
+                    if let Rvalue::Use(Operand::Constant(c)) = rval {
+                        local_consts.insert(*dest, c.clone());
+                    } else {
+                        local_consts.remove(dest);
+                    }
+                }
+            }
+        }
+
         changed
     }
 }

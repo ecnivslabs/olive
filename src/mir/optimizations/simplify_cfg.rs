@@ -10,6 +10,7 @@ impl Transform for SimplifyCfg {
     fn run(&self, func: &mut MirFunction) -> bool {
         let mut changed = false;
         changed |= self.branch_simplification(func);
+        changed |= self.merge_linear_blocks(func);
         changed |= self.unreachable_block_elimination(func);
         changed
     }
@@ -47,6 +48,71 @@ impl SimplifyCfg {
                         term.kind = TerminatorKind::Goto {
                             target: goto_target,
                         };
+                        changed = true;
+                    } else if let TerminatorKind::SwitchInt {
+                        targets, otherwise, ..
+                    } = &term.kind
+                    {
+                        if targets.iter().all(|(_, t)| *t == *otherwise) {
+                            let target = *otherwise;
+                            term.kind = TerminatorKind::Goto { target };
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        changed
+    }
+
+    fn merge_linear_blocks(&self, func: &mut MirFunction) -> bool {
+        let n = func.basic_blocks.len();
+        if n <= 1 {
+            return false;
+        }
+
+        let mut pred_count = vec![0u32; n];
+        pred_count[0] = 1;
+        for bb in &func.basic_blocks {
+            if let Some(term) = &bb.terminator {
+                match &term.kind {
+                    TerminatorKind::Goto { target } => {
+                        if target.0 < n {
+                            pred_count[target.0] += 1;
+                        }
+                    }
+                    TerminatorKind::SwitchInt {
+                        targets, otherwise, ..
+                    } => {
+                        for (_, t) in targets {
+                            if t.0 < n {
+                                pred_count[t.0] += 1;
+                            }
+                        }
+                        if otherwise.0 < n {
+                            pred_count[otherwise.0] += 1;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let mut changed = false;
+        for i in 0..n {
+            if let Some(term) = &func.basic_blocks[i].terminator {
+                if let TerminatorKind::Goto { target } = &term.kind {
+                    let t = target.0;
+                    if t != i && t < n && t != 0 && pred_count[t] == 1 {
+                        let target_bb = func.basic_blocks[t].clone();
+                        let bb = &mut func.basic_blocks[i];
+                        bb.statements.extend(target_bb.statements);
+                        bb.terminator = target_bb.terminator;
+                        func.basic_blocks[t].statements.clear();
+                        func.basic_blocks[t].terminator = Some(Terminator {
+                            kind: TerminatorKind::Unreachable,
+                            span: crate::span::Span::default(),
+                        });
                         changed = true;
                     }
                 }
@@ -92,7 +158,6 @@ impl SimplifyCfg {
             return false;
         }
 
-        // Build remapping for block indices.
         let mut remap = vec![0usize; n];
         let mut new_idx = 0;
         for i in 0..n {
@@ -102,7 +167,6 @@ impl SimplifyCfg {
             }
         }
 
-        // Remap terminators.
         for i in 0..n {
             if !reachable[i] {
                 continue;
@@ -125,7 +189,6 @@ impl SimplifyCfg {
             }
         }
 
-        // Remove unreachable blocks.
         let mut idx = 0;
         func.basic_blocks.retain(|_| {
             let keep = reachable[idx];
