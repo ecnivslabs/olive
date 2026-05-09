@@ -33,6 +33,8 @@ pub enum Type {
     Any,
     // "Never" type for unreachable paths
     Never,
+    // Vector type for SIMD: Vector(element_type, width)
+    Vector(Box<Type>, usize),
 }
 
 impl Type {
@@ -57,7 +59,7 @@ impl Type {
     /// Returns true if this type has move semantics (heap allocated or complex).
     pub fn is_move_type(&self) -> bool {
         match self {
-            Type::Int | Type::Float | Type::Bool | Type::Null | Type::Never | Type::Any => false,
+            Type::Int | Type::Float | Type::Bool | Type::Null | Type::Never | Type::Any | Type::Vector(_, _) => false,
             Type::Ref(_) | Type::MutRef(_) => false, // References are Copy
             _ => true,
         }
@@ -104,6 +106,7 @@ impl fmt::Display for Type {
             Type::Var(id) => write!(f, "?T{}", id),
             Type::Any => write!(f, "Any"),
             Type::Never => write!(f, "Never"),
+            Type::Vector(t, w) => write!(f, "{}x{}", t, w),
         }
     }
 }

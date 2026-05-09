@@ -637,10 +637,11 @@ impl<'a> MirBuilder<'a> {
     }
 
     fn resolve_type_expr(&self, expr: &crate::parser::TypeExpr) -> Type {
-        match expr {
-            crate::parser::TypeExpr::Named(name) => match name.as_str() {
-                "int" => Type::Int,
-                "float" => Type::Float,
+        use crate::parser::TypeExprKind;
+        match &expr.kind {
+            TypeExprKind::Name(name) => match name.as_str() {
+                "int" | "i64" => Type::Int,
+                "float" | "f64" => Type::Float,
                 "str" => Type::Str,
                 "bool" => Type::Bool,
                 "None" => Type::Null,
@@ -648,7 +649,7 @@ impl<'a> MirBuilder<'a> {
                 "Never" => Type::Never,
                 _ => Type::Class(name.clone()),
             },
-            crate::parser::TypeExpr::Generic { name, args } => match (name.as_str(), args.len()) {
+            TypeExprKind::Generic(name, args) => match (name.as_str(), args.len()) {
                 ("list", 1) => Type::List(Box::new(self.resolve_type_expr(&args[0]))),
                 ("set", 1) => Type::Set(Box::new(self.resolve_type_expr(&args[0]))),
                 ("dict", 2) => Type::Dict(
@@ -657,19 +658,20 @@ impl<'a> MirBuilder<'a> {
                 ),
                 _ => Type::Class(name.clone()),
             },
-            crate::parser::TypeExpr::Tuple(types) => {
+            TypeExprKind::List(inner) => Type::List(Box::new(self.resolve_type_expr(inner))),
+            TypeExprKind::Dict(k, v) => Type::Dict(
+                Box::new(self.resolve_type_expr(k)),
+                Box::new(self.resolve_type_expr(v)),
+            ),
+            TypeExprKind::Tuple(types) => {
                 Type::Tuple(types.iter().map(|t| self.resolve_type_expr(t)).collect())
             }
-            crate::parser::TypeExpr::Fn { params, ret } => Type::Fn(
+            TypeExprKind::Fn { params, ret } => Type::Fn(
                 params.iter().map(|t| self.resolve_type_expr(t)).collect(),
                 Box::new(self.resolve_type_expr(ret)),
             ),
-            crate::parser::TypeExpr::Ref(inner) => {
-                Type::Ref(Box::new(self.resolve_type_expr(inner)))
-            }
-            crate::parser::TypeExpr::MutRef(inner) => {
-                Type::MutRef(Box::new(self.resolve_type_expr(inner)))
-            }
+            TypeExprKind::Ref(inner) => Type::Ref(Box::new(self.resolve_type_expr(inner))),
+            TypeExprKind::MutRef(inner) => Type::MutRef(Box::new(self.resolve_type_expr(inner))),
         }
     }
 
@@ -1365,11 +1367,25 @@ impl<'a> MirBuilder<'a> {
 
             ExprKind::ListComp { elt, clauses } => {
                 let ty = self.get_type(expr.id);
-                self.lower_comprehension(None, Some(elt), clauses, AggregateKind::List, expr.span, ty)
+                self.lower_comprehension(
+                    None,
+                    Some(elt),
+                    clauses,
+                    AggregateKind::List,
+                    expr.span,
+                    ty,
+                )
             }
             ExprKind::SetComp { elt, clauses } => {
                 let ty = self.get_type(expr.id);
-                self.lower_comprehension(None, Some(elt), clauses, AggregateKind::Set, expr.span, ty)
+                self.lower_comprehension(
+                    None,
+                    Some(elt),
+                    clauses,
+                    AggregateKind::Set,
+                    expr.span,
+                    ty,
+                )
             }
             ExprKind::DictComp {
                 key,
@@ -1400,7 +1416,10 @@ impl<'a> MirBuilder<'a> {
         match target {
             ForTarget::Name(name, _) => {
                 let local = self.declare_var(name.clone(), Type::Any, true);
-                self.push_statement(StatementKind::Assign(local, Rvalue::Use(Operand::Copy(val))), span);
+                self.push_statement(
+                    StatementKind::Assign(local, Rvalue::Use(Operand::Copy(val))),
+                    span,
+                );
             }
             ForTarget::Tuple(names, _) => {
                 for (i, (name, _)) in names.iter().enumerate() {
@@ -1408,7 +1427,10 @@ impl<'a> MirBuilder<'a> {
                     self.push_statement(
                         StatementKind::Assign(
                             local,
-                            Rvalue::GetIndex(Operand::Copy(val), Operand::Constant(Constant::Int(i as i64))),
+                            Rvalue::GetIndex(
+                                Operand::Copy(val),
+                                Operand::Constant(Constant::Int(i as i64)),
+                            ),
                         ),
                         span,
                     );
@@ -1429,7 +1451,10 @@ impl<'a> MirBuilder<'a> {
         let result_local = self.new_local(result_ty, None, true);
         self.push_statement(StatementKind::StorageLive(result_local), span);
         self.push_statement(
-            StatementKind::Assign(result_local, Rvalue::Aggregate(aggregate_kind.clone(), vec![])),
+            StatementKind::Assign(
+                result_local,
+                Rvalue::Aggregate(aggregate_kind.clone(), vec![]),
+            ),
             span,
         );
 
@@ -1513,7 +1538,11 @@ impl<'a> MirBuilder<'a> {
             span,
         );
 
-        self.terminate_block(self.current_block.unwrap(), TerminatorKind::Goto { target: cond_bb }, span);
+        self.terminate_block(
+            self.current_block.unwrap(),
+            TerminatorKind::Goto { target: cond_bb },
+            span,
+        );
 
         self.current_block = Some(cond_bb);
         let has_next = self.new_local(Type::Bool, None, false);
@@ -1564,7 +1593,13 @@ impl<'a> MirBuilder<'a> {
                 span,
             );
         } else {
-            self.terminate_block(self.current_block.unwrap(), TerminatorKind::Goto { target: next_clause_bb }, span);
+            self.terminate_block(
+                self.current_block.unwrap(),
+                TerminatorKind::Goto {
+                    target: next_clause_bb,
+                },
+                span,
+            );
         }
 
         self.current_block = Some(next_clause_bb);
@@ -1577,7 +1612,11 @@ impl<'a> MirBuilder<'a> {
             aggregate_kind,
             span,
         );
-        self.terminate_block(self.current_block.unwrap(), TerminatorKind::Goto { target: cond_bb }, span);
+        self.terminate_block(
+            self.current_block.unwrap(),
+            TerminatorKind::Goto { target: cond_bb },
+            span,
+        );
 
         self.current_block = Some(exit_bb);
     }

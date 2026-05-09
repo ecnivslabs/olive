@@ -9,18 +9,32 @@ fn next_node_id() -> usize {
 use crate::span::Span;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TypeExpr {
-    Named(String),
-    Generic {
-        name: String,
-        args: Vec<TypeExpr>,
-    },
+pub struct TypeExpr {
+    pub kind: TypeExprKind,
+    pub span: Span,
+}
+
+impl TypeExpr {
+    pub fn new(kind: TypeExprKind, span: Span) -> Self {
+        Self { kind, span }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypeExprKind {
+    Name(String),
+    Generic(String, Vec<TypeExpr>),
     Tuple(Vec<TypeExpr>),
+    List(Box<TypeExpr>),
+    Dict(Box<TypeExpr>, Box<TypeExpr>),
+    #[allow(dead_code)]
     Fn {
         params: Vec<TypeExpr>,
         ret: Box<TypeExpr>,
     },
+    #[allow(dead_code)]
     Ref(Box<TypeExpr>),
+    #[allow(dead_code)]
     MutRef(Box<TypeExpr>),
 }
 

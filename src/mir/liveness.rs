@@ -101,6 +101,11 @@ impl Liveness {
                 live.remove(local);
             }
             StatementKind::StorageLive(_) => {}
+            StatementKind::VectorStore(obj, idx, val) => {
+                Self::use_op(live, obj);
+                Self::use_op(live, idx);
+                Self::use_op(live, val);
+            }
         }
     }
 
@@ -130,6 +135,16 @@ impl Liveness {
             }
             Rvalue::Ref(l) | Rvalue::MutRef(l) => {
                 live.insert(*l);
+            }
+            Rvalue::VectorSplat(op, _) => Self::use_op(live, op),
+            Rvalue::VectorLoad(obj, idx, _) => {
+                Self::use_op(live, obj);
+                Self::use_op(live, idx);
+            }
+            Rvalue::VectorFMA(a, b, c) => {
+                Self::use_op(live, a);
+                Self::use_op(live, b);
+                Self::use_op(live, c);
             }
         }
     }

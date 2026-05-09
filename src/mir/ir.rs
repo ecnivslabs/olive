@@ -58,6 +58,12 @@ pub enum Rvalue {
     Ref(Local),
     /// Creates a mutable reference to a local (&mut local).
     MutRef(Local),
+    /// SIMD: Create a vector from a scalar.
+    VectorSplat(Operand, usize),
+    /// SIMD: Load a vector from a collection at index.
+    VectorLoad(Operand, Operand, usize),
+    /// SIMD: Fused Multiply-Add (a * b + c).
+    VectorFMA(Operand, Operand, Operand),
 }
 
 // Aggregate value kinds (list, tuple, etc).
@@ -93,6 +99,8 @@ pub enum StatementKind {
     StorageDead(Local),
     /// Explicitly drops the value in a local.
     Drop(Local),
+    /// SIMD: Store a vector to a collection at index.
+    VectorStore(Operand, Operand, Operand),
 }
 
 // Block terminator.

@@ -211,8 +211,8 @@ fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: bool, e
     }
 
     let opt_start = std::time::Instant::now();
-    let inliner = mir::Inliner::new();
-    inliner.run(&mut mir_builder.functions);
+    let optimizer = mir::Optimizer::new();
+    optimizer.run(&mut mir_builder.functions);
     let opt_duration = opt_start.elapsed();
 
     let borrow_start = std::time::Instant::now();
@@ -318,8 +318,8 @@ fn compile_and_test(filename: &str, _show_time: bool) {
     let mut mir_builder = MirBuilder::new(&type_checker.expr_types);
     mir_builder.build_program(&program);
 
-    let inliner = mir::Inliner::new();
-    inliner.run(&mut mir_builder.functions);
+    let optimizer = mir::Optimizer::new();
+    optimizer.run(&mut mir_builder.functions);
 
     for func in &mir_builder.functions {
         let mut checker = BorrowChecker::new(func);

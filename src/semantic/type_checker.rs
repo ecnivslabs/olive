@@ -1,7 +1,8 @@
 use super::error::SemanticError;
 use super::types::Type;
 use crate::parser::{
-    BinOp, CallArg, Expr, ExprKind, ForTarget, Program, Stmt, StmtKind, TypeExpr, UnaryOp,
+    BinOp, CallArg, Expr, ExprKind, ForTarget, Program, Stmt, StmtKind, TypeExpr, TypeExprKind,
+    UnaryOp,
 };
 use crate::span::Span;
 use rustc_hash::FxHashMap as HashMap;
@@ -826,10 +827,10 @@ impl TypeChecker {
     }
 
     fn resolve_type_expr(&self, expr: &TypeExpr) -> Type {
-        match expr {
-            TypeExpr::Named(name) => match name.as_str() {
-                "int" => Type::Int,
-                "float" => Type::Float,
+        match &expr.kind {
+            TypeExprKind::Name(name) => match name.as_str() {
+                "int" | "i64" => Type::Int,
+                "float" | "f64" => Type::Float,
                 "str" => Type::Str,
                 "bool" => Type::Bool,
                 "None" => Type::Null,
@@ -837,7 +838,7 @@ impl TypeChecker {
                 "Never" => Type::Never,
                 _ => Type::Class(name.clone()),
             },
-            TypeExpr::Generic { name, args } => match (name.as_str(), args.len()) {
+            TypeExprKind::Generic(name, args) => match (name.as_str(), args.len()) {
                 ("list", 1) => Type::List(Box::new(self.resolve_type_expr(&args[0]))),
                 ("set", 1) => Type::Set(Box::new(self.resolve_type_expr(&args[0]))),
                 ("dict", 2) => Type::Dict(
@@ -846,15 +847,20 @@ impl TypeChecker {
                 ),
                 _ => Type::Class(name.clone()),
             },
-            TypeExpr::Tuple(types) => {
+            TypeExprKind::List(inner) => Type::List(Box::new(self.resolve_type_expr(inner))),
+            TypeExprKind::Dict(k, v) => Type::Dict(
+                Box::new(self.resolve_type_expr(k)),
+                Box::new(self.resolve_type_expr(v)),
+            ),
+            TypeExprKind::Tuple(types) => {
                 Type::Tuple(types.iter().map(|t| self.resolve_type_expr(t)).collect())
             }
-            TypeExpr::Fn { params, ret } => Type::Fn(
+            TypeExprKind::Fn { params, ret } => Type::Fn(
                 params.iter().map(|t| self.resolve_type_expr(t)).collect(),
                 Box::new(self.resolve_type_expr(ret)),
             ),
-            TypeExpr::Ref(inner) => Type::Ref(Box::new(self.resolve_type_expr(inner))),
-            TypeExpr::MutRef(inner) => Type::MutRef(Box::new(self.resolve_type_expr(inner))),
+            TypeExprKind::Ref(inner) => Type::Ref(Box::new(self.resolve_type_expr(inner))),
+            TypeExprKind::MutRef(inner) => Type::MutRef(Box::new(self.resolve_type_expr(inner))),
         }
     }
 }

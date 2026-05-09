@@ -242,6 +242,12 @@ impl<'a> BorrowChecker<'a> {
                     });
                 }
             }
+            StatementKind::VectorStore(obj, idx, val) => {
+                self.check_mutation(obj, state, stmt.span);
+                self.check_operand(obj, state, stmt.span);
+                self.check_operand(idx, state, stmt.span);
+                self.check_operand(val, state, stmt.span);
+            }
         }
     }
 
@@ -346,6 +352,16 @@ impl<'a> BorrowChecker<'a> {
                     });
                 }
                 borrow.1 = true;
+            }
+            Rvalue::VectorSplat(op, _) => self.check_operand(op, state, span),
+            Rvalue::VectorLoad(obj, idx, _) => {
+                self.check_operand(obj, state, span);
+                self.check_operand(idx, state, span);
+            }
+            Rvalue::VectorFMA(a, b, c) => {
+                self.check_operand(a, state, span);
+                self.check_operand(b, state, span);
+                self.check_operand(c, state, span);
             }
         }
     }

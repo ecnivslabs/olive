@@ -8,6 +8,13 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use rustc_hash::FxHashMap as HashMap;
 
+#[repr(C)]
+struct StableVec {
+    ptr: *mut i64,
+    cap: usize,
+    len: usize,
+}
+
 pub struct CraneliftCodegen<'a> {
     functions: &'a [MirFunction],
     module: JITModule,
@@ -40,7 +47,10 @@ impl<'a> CraneliftCodegen<'a> {
         builder.symbol("__olive_int", olive_int as *const u8);
         builder.symbol("__olive_float", olive_float as *const u8);
         builder.symbol("__olive_bool", olive_bool as *const u8);
-        builder.symbol("__olive_bool_from_float", olive_bool_from_float as *const u8);
+        builder.symbol(
+            "__olive_bool_from_float",
+            olive_bool_from_float as *const u8,
+        );
         builder.symbol("__olive_float_to_str", olive_float_to_str as *const u8);
         builder.symbol("__olive_float_to_int", olive_float_to_int as *const u8);
         builder.symbol("__olive_int_to_float", olive_int_to_float as *const u8);
@@ -61,9 +71,18 @@ impl<'a> CraneliftCodegen<'a> {
         builder.symbol("__olive_cache_get", olive_cache_get as *const u8);
         builder.symbol("__olive_cache_set", olive_cache_set as *const u8);
         builder.symbol("__olive_cache_has", olive_cache_has as *const u8);
-        builder.symbol("__olive_cache_has_tuple", olive_cache_has_tuple as *const u8);
-        builder.symbol("__olive_cache_get_tuple", olive_cache_get_tuple as *const u8);
-        builder.symbol("__olive_cache_set_tuple", olive_cache_set_tuple as *const u8);
+        builder.symbol(
+            "__olive_cache_has_tuple",
+            olive_cache_has_tuple as *const u8,
+        );
+        builder.symbol(
+            "__olive_cache_get_tuple",
+            olive_cache_get_tuple as *const u8,
+        );
+        builder.symbol(
+            "__olive_cache_set_tuple",
+            olive_cache_set_tuple as *const u8,
+        );
         builder.symbol("__olive_str_len", olive_str_len as *const u8);
         builder.symbol("__olive_str_get", olive_str_get as *const u8);
         builder.symbol("__olive_free_str", olive_free_str as *const u8);
@@ -410,13 +429,7 @@ impl<'a> CraneliftCodegen<'a> {
         match &stmt.kind {
             StatementKind::Assign(local, rval) => {
                 let val = Self::translate_rvalue(
-                    func_mir,
-                    module,
-                    func_ids,
-                    string_ids,
-                    builder,
-                    rval,
-                    vars,
+                    func_mir, module, func_ids, string_ids, builder, rval, vars,
                 );
                 let var = vars.get(local).unwrap();
                 builder.def_var(*var, val);
@@ -434,13 +447,29 @@ impl<'a> CraneliftCodegen<'a> {
                 builder.ins().call(local_func, &[o, attr_val, v]);
             }
             StatementKind::SetIndex(obj, idx, val_op) => {
+                let mut is_list = false;
+                if let Operand::Copy(loc) | Operand::Move(loc) = obj {
+                    if matches!(func_mir.locals[loc.0].ty, OliveType::List(_)) {
+                        is_list = true;
+                    }
+                }
+
                 let o = Self::translate_operand(builder, obj, vars, string_ids, module);
                 let i = Self::translate_operand(builder, idx, vars, string_ids, module);
                 let v = Self::translate_operand(builder, val_op, vars, string_ids, module);
 
-                let set_id = func_ids.get("__olive_list_set").unwrap();
-                let local_func = module.declare_func_in_func(*set_id, builder.func);
-                builder.ins().call(local_func, &[o, i, v]);
+                if is_list {
+                    // Optimized inlined list assignment
+                    let data_ptr = builder.ins().load(types::I64, MemFlags::trusted(), o, 0);
+
+                    let offset = builder.ins().imul_imm(i, 8);
+                    let addr = builder.ins().iadd(data_ptr, offset);
+                    builder.ins().store(MemFlags::trusted(), v, addr, 0);
+                } else {
+                    let set_id = func_ids.get("__olive_list_set").unwrap();
+                    let local_func = module.declare_func_in_func(*set_id, builder.func);
+                    builder.ins().call(local_func, &[o, i, v]);
+                }
             }
             StatementKind::Drop(local) => {
                 let ty = &func_mir.locals[local.0].ty;
@@ -468,6 +497,16 @@ impl<'a> CraneliftCodegen<'a> {
                 builder.def_var(*var, zero);
             }
             StatementKind::StorageLive(_) | StatementKind::StorageDead(_) => {}
+            StatementKind::VectorStore(obj, idx, val_op) => {
+                let o = Self::translate_operand(builder, obj, vars, string_ids, module);
+                let i = Self::translate_operand(builder, idx, vars, string_ids, module);
+                let v = Self::translate_operand(builder, val_op, vars, string_ids, module);
+
+                let data_ptr = builder.ins().load(types::I64, MemFlags::trusted(), o, 0);
+                let offset = builder.ins().imul_imm(i, 8);
+                let addr = builder.ins().iadd(data_ptr, offset);
+                builder.ins().store(MemFlags::trusted(), v, addr, 0);
+            }
         }
     }
 
@@ -489,7 +528,16 @@ impl<'a> CraneliftCodegen<'a> {
                     .collect();
 
                 if let Operand::Constant(Constant::Function(name)) = func {
-                    let resolved_name = if (name == "print" || name == "str" || name == "int" || name == "float" || name == "bool" || name == "iter" || name == "next" || name == "has_next") && !args.is_empty() {
+                    let resolved_name = if (name == "print"
+                        || name == "str"
+                        || name == "int"
+                        || name == "float"
+                        || name == "bool"
+                        || name == "iter"
+                        || name == "next"
+                        || name == "has_next")
+                        && !args.is_empty()
+                    {
                         let mut arg_type = OliveType::Int;
                         match &args[0] {
                             Operand::Constant(Constant::Str(_)) => arg_type = OliveType::Str,
@@ -507,32 +555,61 @@ impl<'a> CraneliftCodegen<'a> {
 
                         match name.as_str() {
                             "print" => {
-                                if *current_ty == OliveType::Str { "__olive_print_str" }
-                                else if *current_ty == OliveType::Float { "__olive_print_float" }
-                                else if matches!(current_ty, OliveType::List(_) | OliveType::Tuple(_) | OliveType::Set(_)) { "__olive_print_list" }
-                                else if matches!(current_ty, OliveType::Dict(_, _) | OliveType::Class(_)) { "__olive_print_obj" }
-                                else { "__olive_print_int" }
+                                if *current_ty == OliveType::Str {
+                                    "__olive_print_str"
+                                } else if *current_ty == OliveType::Float {
+                                    "__olive_print_float"
+                                } else if matches!(
+                                    current_ty,
+                                    OliveType::List(_) | OliveType::Tuple(_) | OliveType::Set(_)
+                                ) {
+                                    "__olive_print_list"
+                                } else if matches!(
+                                    current_ty,
+                                    OliveType::Dict(_, _) | OliveType::Class(_)
+                                ) {
+                                    "__olive_print_obj"
+                                } else {
+                                    "__olive_print_int"
+                                }
                             }
                             "str" => {
-                                if *current_ty == OliveType::Str { "__olive_copy" }
-                                else if *current_ty == OliveType::Float { "__olive_float_to_str" }
-                                else { "__olive_str" }
+                                if *current_ty == OliveType::Str {
+                                    "__olive_copy"
+                                } else if *current_ty == OliveType::Float {
+                                    "__olive_float_to_str"
+                                } else {
+                                    "__olive_str"
+                                }
                             }
                             "int" => {
-                                if *current_ty == OliveType::Int { "__olive_int" }
-                                else if *current_ty == OliveType::Float { "__olive_float_to_int" }
-                                else if *current_ty == OliveType::Str { "__olive_str_to_int" }
-                                else { "__olive_int" }
+                                if *current_ty == OliveType::Int {
+                                    "__olive_int"
+                                } else if *current_ty == OliveType::Float {
+                                    "__olive_float_to_int"
+                                } else if *current_ty == OliveType::Str {
+                                    "__olive_str_to_int"
+                                } else {
+                                    "__olive_int"
+                                }
                             }
                             "float" => {
-                                if *current_ty == OliveType::Float { "__olive_copy_float" }
-                                else if *current_ty == OliveType::Int { "__olive_int_to_float" }
-                                else if *current_ty == OliveType::Str { "__olive_str_to_float" }
-                                else { "__olive_float" }
+                                if *current_ty == OliveType::Float {
+                                    "__olive_copy_float"
+                                } else if *current_ty == OliveType::Int {
+                                    "__olive_int_to_float"
+                                } else if *current_ty == OliveType::Str {
+                                    "__olive_str_to_float"
+                                } else {
+                                    "__olive_float"
+                                }
                             }
                             "bool" => {
-                                if *current_ty == OliveType::Float { "__olive_bool_from_float" }
-                                else { "__olive_bool" }
+                                if *current_ty == OliveType::Float {
+                                    "__olive_bool_from_float"
+                                } else {
+                                    "__olive_bool"
+                                }
                             }
                             "iter" => "__olive_iter",
                             "next" => "__olive_next",
@@ -600,8 +677,12 @@ impl<'a> CraneliftCodegen<'a> {
                             Operand::Constant(Constant::Float(_)) => is_float = true,
                             Operand::Copy(loc) | Operand::Move(loc) => {
                                 let ty = &func_mir.locals[loc.0].ty;
-                                if *ty == OliveType::Str { is_str = true; }
-                                if *ty == OliveType::Float { is_float = true; }
+                                if *ty == OliveType::Str {
+                                    is_str = true;
+                                }
+                                if *ty == OliveType::Float {
+                                    is_float = true;
+                                }
                             }
                             _ => {}
                         }
@@ -630,7 +711,9 @@ impl<'a> CraneliftCodegen<'a> {
                     Lt | LtEq | Gt | GtEq | NotEq => {
                         let mut is_float = false;
                         if let Operand::Copy(loc) | Operand::Move(loc) = lhs {
-                            if func_mir.locals[loc.0].ty == OliveType::Float { is_float = true; }
+                            if func_mir.locals[loc.0].ty == OliveType::Float {
+                                is_float = true;
+                            }
                         } else if let Operand::Constant(Constant::Float(_)) = lhs {
                             is_float = true;
                         }
@@ -737,13 +820,29 @@ impl<'a> CraneliftCodegen<'a> {
                 builder.inst_results(inst)[0]
             }
             Rvalue::GetIndex(obj, idx) => {
+                let mut is_list = false;
+                if let Operand::Copy(loc) | Operand::Move(loc) = obj {
+                    if matches!(func_mir.locals[loc.0].ty, OliveType::List(_)) {
+                        is_list = true;
+                    }
+                }
+
                 let o = Self::translate_operand(builder, obj, vars, string_ids, module);
                 let i = Self::translate_operand(builder, idx, vars, string_ids, module);
 
-                let get_id = func_ids.get("__olive_list_get").unwrap();
-                let local_func = module.declare_func_in_func(*get_id, builder.func);
-                let inst = builder.ins().call(local_func, &[o, i]);
-                builder.inst_results(inst)[0]
+                if is_list {
+                    // Optimized inlined list access
+                    let data_ptr = builder.ins().load(types::I64, MemFlags::trusted(), o, 0);
+
+                    let offset = builder.ins().imul_imm(i, 8);
+                    let addr = builder.ins().iadd(data_ptr, offset);
+                    builder.ins().load(types::I64, MemFlags::trusted(), addr, 0)
+                } else {
+                    let get_id = func_ids.get("__olive_list_get").unwrap();
+                    let local_func = module.declare_func_in_func(*get_id, builder.func);
+                    let inst = builder.ins().call(local_func, &[o, i]);
+                    builder.inst_results(inst)[0]
+                }
             }
             Rvalue::Aggregate(kind, ops) => {
                 use crate::mir::ir::AggregateKind;
@@ -758,8 +857,15 @@ impl<'a> CraneliftCodegen<'a> {
                         let set_func = module.declare_func_in_func(*set_id, builder.func);
 
                         for i in (0..ops.len()).step_by(2) {
-                            let key = Self::translate_operand(builder, &ops[i], vars, string_ids, module);
-                            let val = Self::translate_operand(builder, &ops[i+1], vars, string_ids, module);
+                            let key =
+                                Self::translate_operand(builder, &ops[i], vars, string_ids, module);
+                            let val = Self::translate_operand(
+                                builder,
+                                &ops[i + 1],
+                                vars,
+                                string_ids,
+                                module,
+                            );
                             builder.ins().call(set_func, &[dict_ptr, key, val]);
                         }
                         dict_ptr
@@ -775,7 +881,8 @@ impl<'a> CraneliftCodegen<'a> {
                         let add_func = module.declare_func_in_func(*add_id, builder.func);
 
                         for op in ops {
-                            let val = Self::translate_operand(builder, op, vars, string_ids, module);
+                            let val =
+                                Self::translate_operand(builder, op, vars, string_ids, module);
                             builder.ins().call(add_func, &[set_ptr, val]);
                         }
                         set_ptr
@@ -791,11 +898,39 @@ impl<'a> CraneliftCodegen<'a> {
                         let append_func = module.declare_func_in_func(*append_id, builder.func);
 
                         for op in ops {
-                            let val = Self::translate_operand(builder, op, vars, string_ids, module);
+                            let val =
+                                Self::translate_operand(builder, op, vars, string_ids, module);
                             builder.ins().call(append_func, &[list_ptr, val]);
                         }
                         list_ptr
                     }
+                }
+            }
+            Rvalue::VectorSplat(op, width) => {
+                let val = Self::translate_operand(builder, op, vars, string_ids, module);
+                let inner_ty = builder.func.dfg.value_type(val);
+                let vec_ty = inner_ty.by(*width as u32).expect("invalid splat width");
+                builder.ins().splat(vec_ty, val)
+            }
+            Rvalue::VectorLoad(obj, idx, width) => {
+                let o = Self::translate_operand(builder, obj, vars, string_ids, module);
+                let i = Self::translate_operand(builder, idx, vars, string_ids, module);
+                let data_ptr = builder.ins().load(types::I64, MemFlags::trusted(), o, 0);
+                let offset = builder.ins().imul_imm(i, 8);
+                let addr = builder.ins().iadd(data_ptr, offset);
+                let vec_ty = types::I64.by(*width as u32).unwrap();
+                builder.ins().load(vec_ty, MemFlags::trusted(), addr, 0)
+            }
+            Rvalue::VectorFMA(a_op, b_op, c_op) => {
+                let a = Self::translate_operand(builder, a_op, vars, string_ids, module);
+                let b = Self::translate_operand(builder, b_op, vars, string_ids, module);
+                let c = Self::translate_operand(builder, c_op, vars, string_ids, module);
+                let ty = builder.func.dfg.value_type(a);
+                if ty.is_int() || ty.lane_type().is_int() {
+                    let prod = builder.ins().imul(a, b);
+                    builder.ins().iadd(prod, c)
+                } else {
+                    builder.ins().fma(a, b, c)
                 }
             }
         }
@@ -877,6 +1012,11 @@ fn cl_type(ty: &OliveType) -> cranelift::prelude::Type {
     match ty {
         OliveType::Int | OliveType::Bool => types::I64,
         OliveType::Float => types::F64,
+        OliveType::Vector(inner, width) => match &**inner {
+            OliveType::Int => types::I64.by(*width as u32).expect("invalid vector width"),
+            OliveType::Float => types::F64.by(*width as u32).expect("invalid vector width"),
+            _ => types::I64,
+        },
         _ => types::I64,
     }
 }
@@ -909,7 +1049,9 @@ extern "C" fn olive_print_list(ptr: i64) -> i64 {
     let v = unsafe { &*(ptr as *const Vec<i64>) };
     print!("[");
     for (i, val) in v.iter().enumerate() {
-        if i > 0 { print!(", "); }
+        if i > 0 {
+            print!(", ");
+        }
         print!("{}", val);
     }
     println!("]");
@@ -924,7 +1066,9 @@ extern "C" fn olive_print_obj(ptr: i64) -> i64 {
     let m = unsafe { &*(ptr as *const HashMap<String, i64>) };
     print!("{{");
     for (i, (k, v)) in m.iter().enumerate() {
-        if i > 0 { print!(", "); }
+        if i > 0 {
+            print!(", ");
+        }
         print!("'{}': {}", k, v);
     }
     println!("}}");
@@ -1012,9 +1156,10 @@ extern "C" fn olive_free_str(ptr: i64) {
 extern "C" fn olive_free_list(ptr: i64) {
     if ptr != 0 {
         unsafe {
-            let p = ptr as *mut i64;
-            let len = *p;
-            let _ = Vec::from_raw_parts(p, (len + 1) as usize, (len + 1) as usize);
+            let s = Box::from_raw(ptr as *mut StableVec);
+            if s.ptr != std::ptr::null_mut() {
+                let _ = Vec::from_raw_parts(s.ptr, s.len, s.cap);
+            }
         }
     }
 }
@@ -1202,17 +1347,28 @@ extern "C" fn olive_str_eq(l: i64, r: i64) -> i64 {
 }
 
 extern "C" fn olive_list_new(len: i64) -> i64 {
-    let v: Vec<i64> = Vec::with_capacity(len as usize);
-    Box::into_raw(Box::new(v)) as i64
+    let mut v: Vec<i64> = vec![0i64; len as usize];
+    let ptr = v.as_mut_ptr();
+    let cap = v.capacity();
+    let length = v.len();
+    std::mem::forget(v);
+    let stable = Box::new(StableVec {
+        ptr,
+        cap,
+        len: length,
+    });
+    Box::into_raw(stable) as i64
 }
 
 extern "C" fn olive_list_set(list_ptr: i64, idx: i64, val: i64) {
     if list_ptr == 0 {
         return;
     }
-    let v = unsafe { &mut *(list_ptr as *mut Vec<i64>) };
-    if (idx as usize) < v.len() {
-        v[idx as usize] = val;
+    let s = unsafe { &mut *(list_ptr as *mut StableVec) };
+    if (idx as usize) < s.len {
+        unsafe {
+            *s.ptr.add(idx as usize) = val;
+        }
     }
 }
 
@@ -1220,9 +1376,9 @@ extern "C" fn olive_list_get(list_ptr: i64, idx: i64) -> i64 {
     if list_ptr == 0 {
         return 0;
     }
-    let v = unsafe { &*(list_ptr as *const Vec<i64>) };
-    if (idx as usize) < v.len() {
-        v[idx as usize]
+    let s = unsafe { &*(list_ptr as *const StableVec) };
+    if (idx as usize) < s.len {
+        unsafe { *s.ptr.add(idx as usize) }
     } else {
         0
     }
@@ -1232,10 +1388,16 @@ extern "C" fn olive_list_append(list_ptr: i64, val: i64) {
     if list_ptr == 0 {
         return;
     }
-    let v = unsafe { &mut *(list_ptr as *mut Vec<i64>) };
-    v.push(val);
+    unsafe {
+        let s = &mut *(list_ptr as *mut StableVec);
+        let mut v = Vec::from_raw_parts(s.ptr, s.len, s.cap);
+        v.push(val);
+        s.ptr = v.as_mut_ptr();
+        s.cap = v.capacity();
+        s.len = v.len();
+        std::mem::forget(v);
+    }
 }
-
 
 extern "C" fn olive_in_obj(val: i64, obj_ptr: i64) -> i64 {
     if obj_ptr == 0 || val == 0 {
@@ -1256,25 +1418,30 @@ struct OliveIter {
 }
 
 extern "C" fn olive_iter(list_ptr: i64) -> i64 {
-    let it = Box::new(OliveIter {
-        list_ptr,
-        index: 0,
-    });
+    let it = Box::new(OliveIter { list_ptr, index: 0 });
     Box::into_raw(it) as i64
 }
 
 extern "C" fn olive_has_next(iter_ptr: i64) -> i64 {
-    if iter_ptr == 0 { return 0; }
+    if iter_ptr == 0 {
+        return 0;
+    }
     let it = unsafe { &*(iter_ptr as *const OliveIter) };
-    if it.list_ptr == 0 { return 0; }
+    if it.list_ptr == 0 {
+        return 0;
+    }
     let v = unsafe { &*(it.list_ptr as *const Vec<i64>) };
     if it.index < v.len() { 1 } else { 0 }
 }
 
 extern "C" fn olive_next(iter_ptr: i64) -> i64 {
-    if iter_ptr == 0 { return 0; }
+    if iter_ptr == 0 {
+        return 0;
+    }
     let it = unsafe { &mut *(iter_ptr as *mut OliveIter) };
-    if it.list_ptr == 0 { return 0; }
+    if it.list_ptr == 0 {
+        return 0;
+    }
     let v = unsafe { &*(it.list_ptr as *const Vec<i64>) };
     if it.index < v.len() {
         let val = v[it.index];
