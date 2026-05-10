@@ -1,4 +1,5 @@
 pub mod abi;
+pub mod desugar;
 mod error;
 pub mod lint;
 pub(crate) mod pyi;

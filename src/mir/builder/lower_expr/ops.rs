@@ -52,6 +52,72 @@ impl<'a> MirBuilder<'a> {
                 );
                 return self.operand_for_local(neg);
             }
+
+            // With `None` statically on one side the result can fold to a
+            // constant. Only `None` equals `None`, and a value of a scalar type
+            // that can never hold null is never equal to `None`. Unions, `Any`,
+            // and reference types may carry a null at runtime, so they fall
+            // through to the ordinary comparison.
+            let is_scalar = |t: &Type| {
+                matches!(
+                    t,
+                    Type::Int
+                        | Type::I8
+                        | Type::I16
+                        | Type::I32
+                        | Type::U8
+                        | Type::U16
+                        | Type::U32
+                        | Type::U64
+                        | Type::Usize
+                        | Type::Float
+                        | Type::F32
+                        | Type::Bool
+                )
+            };
+            let l_null = matches!(l_ty, Type::Null);
+            let r_null = matches!(r_ty, Type::Null);
+            if l_null && r_null {
+                self.lower_expr_as_copy(left);
+                self.lower_expr_as_copy(right);
+                return Operand::Constant(Constant::Bool(matches!(op, crate::parser::BinOp::Eq)));
+            }
+            if (l_null && is_scalar(&r_ty)) || (r_null && is_scalar(&l_ty)) {
+                self.lower_expr_as_copy(left);
+                self.lower_expr_as_copy(right);
+                return Operand::Constant(Constant::Bool(!matches!(op, crate::parser::BinOp::Eq)));
+            }
+            // Comparing a pointer-backed value against `None` is a raw null
+            // check, not a structural or Python-level comparison, so test the
+            // pointer against 0 directly and never dereference it.
+            if l_null || r_null {
+                let operand = if l_null { right } else { left };
+                let v = self.lower_expr_as_copy(operand);
+                let is_zero = self.new_local(Type::Bool, None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        is_zero,
+                        Rvalue::BinaryOp(
+                            crate::parser::BinOp::Eq,
+                            v,
+                            Operand::Constant(Constant::Int(0)),
+                        ),
+                    ),
+                    span,
+                );
+                if matches!(op, crate::parser::BinOp::Eq) {
+                    return self.operand_for_local(is_zero);
+                }
+                let neg = self.new_local(Type::Bool, None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        neg,
+                        Rvalue::UnaryOp(crate::parser::UnaryOp::Not, Operand::Copy(is_zero)),
+                    ),
+                    span,
+                );
+                return self.operand_for_local(neg);
+            }
         }
 
         if r_ty == Type::Str && matches!(op, crate::parser::BinOp::In | crate::parser::BinOp::NotIn)

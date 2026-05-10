@@ -670,7 +670,7 @@ mod tests {
     #[test]
     fn match_arm_bindings_no_errors() {
         let errors = borrow_check(
-            "enum Opt:\n    Some(i64)\n    None\n\nfn unwrap_or(o: Opt, default: i64) -> i64:\n    match o:\n        case Some(v):\n            return v\n        case None:\n            return default\n",
+            "enum Opt:\n    Some(i64)\n    Nil\n\nfn unwrap_or(o: Opt, default: i64) -> i64:\n    match o:\n        case Some(v):\n            return v\n        case Nil:\n            return default\n",
         );
         assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
     }

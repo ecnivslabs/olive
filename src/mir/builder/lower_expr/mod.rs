@@ -17,6 +17,13 @@ impl<'a> MirBuilder<'a> {
     /// (a raw slot can't tell float-bits/null from an int); scalar `Any`
     /// variables/args/returns stay raw, so this is the sole boxing site.
     pub(super) fn coerce_to_elem(&mut self, op: Operand, elem: &Expr, elem_ty: &Type) -> Operand {
+        // A trait-object element holds a fat pointer (data + vtable), so a
+        // concrete struct stored into one must be widened the same way an
+        // argument or assignment is.
+        if let Type::TraitObject(_, _) = elem_ty {
+            let from_ty = self.get_type(elem.id);
+            return self.coerce(op, &from_ty, elem_ty, elem.span);
+        }
         if *elem_ty != Type::Any {
             return op;
         }
@@ -111,6 +118,12 @@ impl<'a> MirBuilder<'a> {
             }
         }
 
+        // `None` carries no type tag once it sits in an `Any` slot, so box it to
+        // the runtime null sentinel rather than leaving a bare `0`.
+        if *to_ty == Type::Any && *from_ty == Type::Null {
+            return self.box_into_any(op, from_ty, span);
+        }
+
         op
     }
 
@@ -118,6 +131,32 @@ impl<'a> MirBuilder<'a> {
         match &expr.kind {
             ExprKind::Integer(i) => Operand::Constant(Constant::Int(*i)),
             ExprKind::Null => Operand::Constant(Constant::Int(0)),
+            ExprKind::Range {
+                start,
+                end,
+                inclusive,
+            } => {
+                let start_op = self.lower_expr_as_copy(start);
+                let end_op = self.lower_expr_as_copy(end);
+                let tmp = self.new_local(Type::List(Box::new(Type::Int)), None, true);
+                self.push_statement(
+                    StatementKind::Assign(
+                        tmp,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(
+                                "__olive_range_list".to_string(),
+                            )),
+                            args: vec![
+                                start_op,
+                                end_op,
+                                Operand::Constant(Constant::Int(*inclusive as i64)),
+                            ],
+                        },
+                    ),
+                    expr.span,
+                );
+                Operand::Copy(tmp)
+            }
             ExprKind::Float(f) => Operand::Constant(Constant::Float((*f).to_bits())),
             ExprKind::Str(s) => Operand::Constant(Constant::Str(s.clone())),
             ExprKind::FStr(exprs) => self.lower_fstr_expr(exprs, expr.span),

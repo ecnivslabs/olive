@@ -198,7 +198,7 @@ mod tests {
     fn test_any_null_distinct_from_zero() {
         // A boxed `null` in an `Any` slot is not equal to the integer zero.
         let mut cg = compile(
-            "fn f() -> i64:\n    let xs: [Any] = [null, 0]\n    let mut r = 0\n    if xs[0] == null:\n        r = r + 1\n    if xs[1] == null:\n        r = r + 10\n    return r\n",
+            "fn f() -> i64:\n    let xs: [Any] = [None, 0]\n    let mut r = 0\n    if xs[0] == None:\n        r = r + 1\n    if xs[1] == None:\n        r = r + 10\n    return r\n",
         );
         assert_eq!(call_i64(&mut cg, "f"), 1);
     }

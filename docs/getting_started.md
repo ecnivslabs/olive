@@ -38,6 +38,9 @@ cd my_app
 This generates a minimal project structure:
 - `src/main.liv`: The primary source file.
 - `pit.toml`: The project configuration and dependency manifest.
+- `.gitignore`: Pre-populated to keep secrets and build output out of version control.
+
+It also initializes a git repository in the new directory.
 
 ## Running the Code
 
@@ -83,5 +86,5 @@ Olive packages are called **pods**. You declare them in your project manifest:
 * `pit add pod_name`: Adds the specified pod to `pit.toml`.
 * `pit install`: Downloads and installs all dependencies.
 
-All dependencies are resolved and stored in the local `.pit_pods/` directory, ensuring builds are self-contained.
+Resolved dependencies are stored in a shared cache under `~/.pit/pods/`, keyed by the Olive version, so a given pod is downloaded once and reused across projects. Compiled output for the current project goes in `grove/`, which the generated `.gitignore` excludes from version control.
 

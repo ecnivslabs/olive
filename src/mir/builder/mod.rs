@@ -31,6 +31,10 @@ pub struct MirBuilder<'a> {
     pub expr_kwarg_maps: &'a HashMap<usize, Vec<usize>>,
     pub global_types: &'a HashMap<String, Type>,
     pub struct_fields: HashMap<String, Vec<String>>,
+    /// Per struct, the default-value expression for each field (or `None` when
+    /// the field has no default). Used to fill omitted trailing fields at a
+    /// construction site.
+    pub(super) struct_field_defaults: HashMap<String, Vec<Option<crate::parser::Expr>>>,
     pub traits: &'a HashMap<String, crate::semantic::type_checker::TraitDef>,
 
     pub(super) current_name: String,
@@ -80,6 +84,7 @@ impl<'a> MirBuilder<'a> {
             expr_kwarg_maps,
             global_types,
             struct_fields,
+            struct_field_defaults: HashMap::default(),
             traits,
             current_name: String::new(),
             current_locals: Vec::new(),
@@ -153,6 +158,14 @@ impl<'a> MirBuilder<'a> {
                         let mangled = format!("{}::{}", alias, c.name);
                         self.globals
                             .insert(mangled, Operand::Constant(Constant::Int(c.value)));
+                    }
+                }
+                StmtKind::Struct { name, fields, .. } => {
+                    if fields.iter().any(|f| f.default.is_some()) {
+                        self.struct_field_defaults.insert(
+                            name.clone(),
+                            fields.iter().map(|f| f.default.clone()).collect(),
+                        );
                     }
                 }
                 _ => {}
@@ -712,7 +725,7 @@ mod tests {
 
     #[test]
     fn enum_variant_produces_aggregate() {
-        let (fns, _) = build("enum Opt:\n    Some(i64)\n    None\n\nlet v = Some(42)\n");
+        let (fns, _) = build("enum Opt:\n    Some(i64)\n    Nil\n\nlet v = Some(42)\n");
         let main = fns.iter().find(|f| f.name == "__main__").unwrap();
         let has_aggregate = main.basic_blocks.iter().any(|bb| {
             bb.statements

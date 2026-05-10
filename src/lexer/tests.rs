@@ -28,7 +28,7 @@ mod lexer_tests {
 
     #[test]
     fn keyword_tokens_produced() {
-        let kinds = tokenise_kinds("fn let if else while for return True False null\n");
+        let kinds = tokenise_kinds("fn let if else while for return True False None\n");
         assert!(kinds.contains(&TokenKind::Fn));
         assert!(kinds.contains(&TokenKind::Let));
         assert!(kinds.contains(&TokenKind::If));
@@ -130,7 +130,7 @@ mod lexer_tests {
 
     #[test]
     fn keywords_not_identifiers() {
-        let kinds = tokenise_kinds("fn let if else while for return struct enum null\n");
+        let kinds = tokenise_kinds("fn let if else while for return struct enum None\n");
         assert!(
             !kinds.contains(&TokenKind::Identifier),
             "keywords should not be identifiers"

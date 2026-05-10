@@ -433,6 +433,16 @@ pub extern "C" fn olive_str(val: i64) -> i64 {
 /// `str()` of an `Any`: renders the value's content (boxed float/bool, string,
 /// container), strings unquoted.
 #[unsafe(no_mangle)]
+pub extern "C" fn olive_none_to_str(_val: i64) -> i64 {
+    olive_str_internal("None")
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_bool_to_str(val: i64) -> i64 {
+    olive_str_internal(if val != 0 { "True" } else { "False" })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn olive_any_to_str(val: i64) -> i64 {
     if val & 1 == 1 && (val & !1) > 0x10000 {
         return olive_str_internal(&olive_str_from_ptr(val));
@@ -845,7 +855,7 @@ pub extern "C" fn olive_typeof_str(val: i64) -> i64 {
         KIND_BYTES => "bytes",
         KIND_FLOAT => "float",
         KIND_BOOL => "bool",
-        KIND_NULL => "null",
+        KIND_NULL => "None",
         KIND_PYOBJECT => "PyObject",
         _ => "int",
     };

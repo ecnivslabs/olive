@@ -1,31 +1,43 @@
 # Structs and Objects
 
-Structs define custom, compound data structures in Olive. They group related fields and declare implementation methods.
+Structs are the compound data types in Olive. They group related fields and carry methods that operate on those fields.
 
 ## Defining a Struct
 
-A struct defines the layout of your data. Fields must have explicit types.
+A struct lists its fields, each with an explicit type. A field may give a default value, which lets it be omitted when constructing the struct. Fields with defaults must come last.
 
 ```rust
 struct User:
     username: str
     email: str
-    is_active: bool = True  // Default value
+    is_active: bool = True
+```
+
+## Constructing a Struct
+
+Without a custom initializer, a struct is built by passing its fields in order. Trailing fields that have a default may be left out:
+
+```rust
+let u = User("vince", "v@example.com")          // is_active defaults to True
+let banned = User("mallory", "m@example.com", False)
 ```
 
 ## Adding Behavior with `impl`
 
-Methods are defined in an `impl` block for the struct. Methods that operate on an instance must take `self` as their first parameter.
+Methods live in an `impl` block. A method that works on an instance takes `self` as its first parameter:
 
 ```rust
 impl User:
     fn deactivate(self):
         self.is_active = False
+
+    fn describe(self) -> str:
+        return f"{self.username} active={self.is_active}"
 ```
 
-## Initialization (`__init__`)
+## Custom Initialization (`__init__`)
 
-When an instance of a struct is created, Olive calls the `__init__` method if it's defined. This is where setup logic or validation is performed.
+Define `__init__` when construction needs validation or derived fields. Olive calls it when the struct is built:
 
 ```rust
 struct Rectangle:
@@ -35,7 +47,7 @@ struct Rectangle:
 
 impl Rectangle:
     fn __init__(self, w: float, h: float):
-        assert w > 0 and h > 0, "Dimensions must be positive"
+        assert w > 0.0 and h > 0.0, "dimensions must be positive"
         self.width = w
         self.height = h
         self.area = w * h
@@ -43,11 +55,11 @@ impl Rectangle:
 let r = Rectangle(10.0, 5.0)
 ```
 
-If no `__init__` is defined, Olive generates a default constructor that takes all fields in order.
+With an `__init__`, the constructor takes the parameters that `__init__` declares rather than the raw fields.
 
-## Generics (Type Parameters)
+## Generic Structs
 
-Structs can be generic, allowing any type of data to be stored.
+A struct can take type parameters in `[...]`, so it can hold any type:
 
 ```rust
 struct Box[T]:
@@ -63,7 +75,7 @@ let str_box = Box("item")  // T is str
 
 ## Composition
 
-Olive uses composition rather than object-oriented inheritance. Structs can nest other structs to reuse fields or behavior.
+Olive composes structs rather than inheriting between them. A struct holds other structs to reuse their data and behavior:
 
 ```rust
 struct Admin:
@@ -77,28 +89,27 @@ impl Admin:
 
 ## Visibility and Privacy
 
-Fields and methods starting with an underscore are **private**. They can only be accessed within the module where the struct is defined.
+A field or method whose name starts with an underscore is private. It is reachable only from within the module that defines the struct:
 
 ```rust
 struct Account:
     _balance: float
 
 impl Account:
-    fn get_balance(self) -> float:
-        return self._balance  // OK: internal access
+    fn balance(self) -> float:
+        return self._balance
 ```
 
 ## Implementing Traits
 
-You can implement traits for your structs to provide standardized behavior.
+A struct can implement a trait to gain a shared set of methods. See [Traits](traits.md) for the full picture:
 
 ```rust
 trait Describable:
-    fn describe(self) -> str
+    fn describe(self) -> str:
+        return "an object"
 
 impl Describable for User:
     fn describe(self) -> str:
-        return f"User({self.username}, active={self.is_active})"
+        return f"User({self.username})"
 ```
-
-See [Traits](traits.md) for more details.

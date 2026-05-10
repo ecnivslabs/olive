@@ -39,7 +39,7 @@ Replaces a function call with the actual body of the function. This removes the 
 ### Loop-Invariant Code Motion (LICM)
 Computations that produce the same result on every iteration of a loop are moved (hoisted) outside the loop.
 ```rust
-for i in range(1000):
+for i in 0..1000:
     let val = x * y  // This is moved before the 'for' starts
     print(i + val)
 ```

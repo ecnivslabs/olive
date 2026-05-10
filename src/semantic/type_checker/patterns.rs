@@ -212,7 +212,7 @@ mod tests {
     #[test]
     fn variant_pattern_with_data() {
         let tc = typeck(
-            "enum Opt:\n    Some(i64)\n    None\nlet x = Some(42)\nmatch x:\n    case Some(v):\n        let y = v\n    case None:\n        pass\n",
+            "enum Opt:\n    Some(i64)\n    Nil\nlet x = Some(42)\nmatch x:\n    case Some(v):\n        let y = v\n    case Nil:\n        pass\n",
         );
         assert!(tc.errors.is_empty());
     }

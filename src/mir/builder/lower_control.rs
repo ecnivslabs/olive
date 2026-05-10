@@ -1,7 +1,7 @@
 use super::LoopContext;
 use super::MirBuilder;
 use crate::mir::ir::*;
-use crate::parser::{Expr, ForTarget, Stmt};
+use crate::parser::{Expr, ExprKind, ForTarget, Stmt};
 use crate::semantic::types::Type;
 use crate::span::Span;
 
@@ -221,6 +221,17 @@ impl<'a> MirBuilder<'a> {
         body: &[Stmt],
         else_body: &Option<Vec<Stmt>>,
     ) {
+        if let ExprKind::Range {
+            start,
+            end,
+            inclusive,
+        } = &iter.kind
+            && let ForTarget::Name(name, _) = target
+        {
+            self.lower_for_range(name, start, end, *inclusive, body, else_body);
+            return;
+        }
+
         let iter_expr_op = self.lower_expr(iter);
         let iter_local = self.new_local(Type::Any, Some("_iter_obj".to_string()), true);
 
@@ -351,6 +362,123 @@ impl<'a> MirBuilder<'a> {
             }
         }
 
+        self.current_block = Some(exit_bb);
+    }
+
+    /// Lowers `for name in start..end` to a counted loop, avoiding any iterator
+    /// allocation. `continue` lands on the latch so the counter still advances.
+    fn lower_for_range(
+        &mut self,
+        name: &str,
+        start: &Expr,
+        end: &Expr,
+        inclusive: bool,
+        body: &[Stmt],
+        else_body: &Option<Vec<Stmt>>,
+    ) {
+        let start_op = self.lower_expr(start);
+        let end_op = self.lower_expr(end);
+        let end_local = self.new_local(Type::Int, None, false);
+        self.push_statement(
+            StatementKind::Assign(end_local, Rvalue::Use(end_op)),
+            end.span,
+        );
+
+        self.enter_scope();
+        let i_local = self.declare_var(name.to_string(), Type::Int, true);
+        self.push_statement(
+            StatementKind::Assign(i_local, Rvalue::Use(start_op)),
+            start.span,
+        );
+
+        let cond_bb = self.new_block();
+        let body_bb = self.new_block();
+        let latch_bb = self.new_block();
+        let exit_bb = self.new_block();
+
+        if let Some(bb) = self.current_block {
+            self.terminate_block(bb, TerminatorKind::Goto { target: cond_bb }, start.span);
+        }
+
+        self.current_block = Some(cond_bb);
+        let cond = self.new_local(Type::Bool, None, false);
+        let cmp = if inclusive {
+            crate::parser::BinOp::LtEq
+        } else {
+            crate::parser::BinOp::Lt
+        };
+        self.push_statement(
+            StatementKind::Assign(
+                cond,
+                Rvalue::BinaryOp(cmp, Operand::Copy(i_local), Operand::Copy(end_local)),
+            ),
+            start.span,
+        );
+        let after_bb = if else_body.is_some() {
+            self.new_block()
+        } else {
+            exit_bb
+        };
+        self.terminate_block(
+            cond_bb,
+            TerminatorKind::SwitchInt {
+                discr: Operand::Copy(cond),
+                targets: vec![(1, body_bb)],
+                otherwise: after_bb,
+            },
+            start.span,
+        );
+
+        self.loop_stack.push(LoopContext {
+            header: latch_bb,
+            exit: exit_bb,
+        });
+        self.current_block = Some(body_bb);
+        for s in body {
+            self.lower_stmt(s);
+        }
+        if let Some(bb) = self.current_block {
+            self.terminate_block(
+                bb,
+                TerminatorKind::Goto { target: latch_bb },
+                Span::default(),
+            );
+        }
+
+        self.current_block = Some(latch_bb);
+        self.push_statement(
+            StatementKind::Assign(
+                i_local,
+                Rvalue::BinaryOp(
+                    crate::parser::BinOp::Add,
+                    Operand::Copy(i_local),
+                    Operand::Constant(Constant::Int(1)),
+                ),
+            ),
+            Span::default(),
+        );
+        self.terminate_block(
+            latch_bb,
+            TerminatorKind::Goto { target: cond_bb },
+            Span::default(),
+        );
+        self.loop_stack.pop();
+
+        if let Some(eb) = else_body {
+            self.current_block = Some(after_bb);
+            for s in eb {
+                self.lower_stmt(s);
+            }
+            if let Some(bb) = self.current_block {
+                self.terminate_block(
+                    bb,
+                    TerminatorKind::Goto { target: exit_bb },
+                    Span::default(),
+                );
+            }
+        }
+
+        self.leave_scope();
         self.current_block = Some(exit_bb);
     }
 }

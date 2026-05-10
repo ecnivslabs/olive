@@ -12,7 +12,7 @@ impl Lowerer<'_> {
                 text(self.slice(e.span.start, e.span.end))
             }
             ExprKind::Bool(b) => text(if *b { "True" } else { "False" }),
-            ExprKind::Null => text("null"),
+            ExprKind::Null => text("None"),
             ExprKind::Identifier(name) => text(name.clone()),
 
             ExprKind::BinOp { left, op, right } => {
@@ -36,6 +36,15 @@ impl Lowerer<'_> {
             ExprKind::MutBorrow(x) => concat(text("&mut "), self.unary_operand(x, 11)),
             ExprKind::Deref(x) => concat(text("*"), self.unary_operand(x, 11)),
 
+            ExprKind::Range {
+                start,
+                end,
+                inclusive,
+            } => concat_all([
+                self.expr(start),
+                text(if *inclusive { "..=" } else { ".." }),
+                self.expr(end),
+            ]),
             ExprKind::Try(x) => {
                 if self.span_starts_with_try(e.span) {
                     concat(text("try "), self.unary_operand(x, 11))

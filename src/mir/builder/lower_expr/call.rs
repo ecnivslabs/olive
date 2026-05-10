@@ -198,7 +198,7 @@ impl<'a> MirBuilder<'a> {
             Type::List(_) | Type::Tuple(_) => "list",
             Type::Dict(_, _) => "dict",
             Type::Set(_) => "set",
-            Type::Null => "null",
+            Type::Null => "None",
             Type::Enum(_, _) => "enum",
             Type::Any | Type::PyObject | Type::PyNamed(_, _) | Type::Var(_) => {
                 let arg = self.lower_expr(arg_expr);

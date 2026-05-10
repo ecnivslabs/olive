@@ -1,66 +1,76 @@
 # C / Rust Interop (FFI)
 
-Olive interfaces directly with external libraries written in C, C++, or Rust, provided they expose a C-compatible ABI. This allows you to call native shared libraries with zero runtime overhead.
+Olive calls external libraries written in C, C++, or Rust, as long as they expose a C-compatible ABI. The calls compile down to direct foreign function calls with no runtime overhead.
 
 ## Native Imports
 
-Use the `import` statement to load shared libraries (`.so`, `.dll`, or `.dylib`) and declare their signatures:
+Use the `import` statement to load a shared library (`.so`, `.dll`, or `.dylib`) and declare the signatures you need from it:
 
 ```rust
 import "libc.so.6" as libc:
-    fn printf(fmt: cstr, *args) -> int
+    fn printf(fmt: str, *args) -> int
     fn malloc(size: int) -> *void
     fn free(ptr: *void)
 ```
 
-Olive matches the declared signatures to direct foreign function calls at compile-time.
+The compiler binds each declared signature to a direct call at compile time. A trailing `*args` marks a variadic function such as `printf`.
 
-### C-Strings (`cstr`)
+### Strings
 
-Olive strings are UTF-8 sequences. To interface with null-terminated C strings, use the `cstr` type. The compiler handles the null-termination conversions automatically when passing Olive string literals or variables to a parameter typed as `cstr`.
+Olive strings are UTF-8. When you pass a `str` to a parameter that a C function expects as `char*`, the compiler hands over a null-terminated copy automatically, so you declare the parameter as `str` and call it with an ordinary Olive string:
+
+```rust
+import "libc.so.6" as libc:
+    fn puts(s: str) -> int
+
+fn main():
+    unsafe:
+        libc.puts("written through libc")
+```
 
 ## Structs and Unions
 
-Define the layout of native structs and unions inside the import block to match the C memory layouts:
+Declare the layout of native structs and unions inside the import block so it matches the C memory layout. A union is written as `union struct`:
 
 ```rust
-import "libgit2.so" as git:
-    struct git_repository:
-        path: cstr
+import "libfoo.so" as foo:
+    struct Settings:
+        name: str
         is_bare: int
-    
-    union config_value:
+
+    union struct Value:
         b: bool
         i: int
-        s: cstr
+        f: float
 ```
 
 ### Bitfields
 
-Specify low-level C struct bitfield widths using the `@` symbol:
+Inside an import block, give a struct field an explicit bit width with `@`:
 
 ```rust
-struct Flags:
-    is_ready: int @ 1
-    error_code: int @ 3
-    reserved: int @ 4
+import "libfoo.so" as foo:
+    struct Flags:
+        is_ready: int @ 1
+        error_code: int @ 3
+        reserved: int @ 4
 ```
 
 ## Calling Conventions
 
-The standard C calling convention is the default. If you need to specify a different calling convention (common on Windows), apply convention directives:
+The C calling convention is the default. To name a different one, put a convention directive above the function. This matters mainly on Windows:
 
 ```rust
 import "user32.dll" as win:
     @stdcall
-    fn MessageBoxA(hWnd: *void, text: cstr, caption: cstr, type: int) -> int
+    fn MessageBoxA(hWnd: *void, text: str, caption: str, type: int) -> int
 ```
 
-Supported annotations include `@cdecl`, `@stdcall`, and `@fastcall`.
+The directives are `@cdecl`, `@stdcall`, and `@fastcall`. `@stdcall` and `@fastcall` only apply to 32-bit Windows; on every other target they carry no meaning, and the compiler warns if you use them there.
 
 ## Unsafe Blocks
 
-Because the borrow checker cannot analyze memory safety across FFI boundaries or raw pointer access, FFI calls and pointer dereferences must occur inside an `unsafe:` block.
+The borrow checker cannot reason about memory across the FFI boundary or through raw pointers, so foreign calls and pointer dereferences must sit inside an `unsafe:` block:
 
 ```rust
 import "libc.so.6" as libc:
@@ -70,14 +80,12 @@ import "libc.so.6" as libc:
 fn allocate_example():
     unsafe:
         let ptr = libc.malloc(1024)
-        // Raw pointer operations
         libc.free(ptr)
 ```
 
-Keep `unsafe` scopes minimal and encapsulate pointer operations inside safe public interfaces.
+Keep `unsafe` scopes small and wrap pointer work behind a safe interface.
 
 ## Pointers vs References
 
-* **References** (`&T` and `&mut T`): Safe, tracked, and validated by the compiler.
-* **Raw Pointers** (`*T` and `*void`): Unchecked addresses. These can only be dereferenced inside `unsafe` blocks.
-
+* **References** (`&T` and `&mut T`): safe, tracked, and validated by the compiler.
+* **Raw pointers** (`*T` and `*void`): unchecked addresses, only usable inside `unsafe` blocks.

@@ -1,10 +1,10 @@
 # Generics
 
-Generics enable code reuse across multiple data types while maintaining compile-time type safety. The compiler monomorphizes generic definitions, generating specialized machine instructions for each concrete type to ensure zero-cost runtime performance.
+Generics let one definition work across many types while keeping full compile-time type checking. The compiler monomorphizes each generic definition, emitting a specialized version for every concrete type it is used with, so there is no runtime cost.
 
 ## Type Parameters
 
-Type parameters are placeholders for types, usually represented by single capital letters like `T`, `U`, or `V`. They are defined in square brackets `[]`.
+Type parameters stand in for types. They are written in square brackets after the name, usually as single capitals like `T`, `U`, or `V`.
 
 ### Generic Functions
 
@@ -12,69 +12,35 @@ Type parameters are placeholders for types, usually represented by single capita
 fn swap[T](a: T, b: T) -> (T, T):
     return (b, a)
 
-let (x, y) = swap(10, 20)        // T is int
-let (s1, s2) = swap("a", "b")    // T is str
+let x, y = swap(10, 20)        // T is int
+let s1, s2 = swap("a", "b")    // T is str
 ```
 
-The Olive compiler uses **monomorphization**. This means it generates a specialized version of the function for every type you use it with, so there is zero runtime overhead for using generics.
+Because of monomorphization, the `int` call and the `str` call compile to separate, fully typed functions.
 
 ### Generic Structs
 
-Structs can also be generic, allowing them to act as containers for any data type.
+A struct can take type parameters too, which makes it a container for any type:
 
 ```rust
-struct Result[T, E]:
-    value: T | None
-    error: E | None
+struct Holder[T]:
+    value: T
 
-impl Result[T, E]:
-    fn is_ok(self) -> bool:
-        return self.error == None
-```
+impl Holder[T]:
+    fn get(self) -> T:
+        return self.value
 
-## Trait Bounds (Constraints)
-
-Sometimes you need a generic type to support certain operations. For example, if you want to compare two values, they must implement a trait that defines comparison.
-
-```rust
-trait Comparable:
-    fn compare(self, other: self) -> int
-
-fn max[T: Comparable](a: T, b: T) -> T:
-    if a.compare(b) > 0:
-        return a
-    return b
-```
-
-The `: Comparable` syntax is a **trait bound**, restricting `T` to types that implement the `Comparable` trait.
-
-## Generic Traits
-
-Traits themselves can be generic, allowing them to define behavior that relates multiple types.
-
-```rust
-trait Converter[T, U]:
-    fn convert(self, input: T) -> U
-
-struct IntToStringConverter:
-    pass
-
-impl Converter[int, str] for IntToStringConverter:
-    fn convert(self, input: int) -> str:
-        return str(input)
+let int_holder = Holder(99)     // T is int
+let str_holder = Holder("hi")   // T is str
 ```
 
 ## Type Inference
 
-In most cases, specifying types when calling a generic function is unnecessary. The compiler looks at the arguments passed and "fills in" the type parameters.
+You rarely name the type parameter at a call. The compiler reads it from the arguments:
 
 ```rust
-let list = [1, 2, 3]
-let item = first(list) // The compiler knows T is int because list is [int]
-```
+fn first[T](items: [T]) -> T:
+    return items[0]
 
-If the compiler cannot determine the types, or if a more explicit definition is desired, types can be provided manually:
-
-```rust
-let item = first[int](list)
+let item = first([1, 2, 3])    // T is int, inferred from the list
 ```

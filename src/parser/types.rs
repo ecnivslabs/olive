@@ -16,6 +16,11 @@ impl Parser {
     pub(crate) fn parse_single_type_expr(&mut self) -> ParseResult<TypeExpr> {
         let start = self.peek().clone();
         match self.peek().kind {
+            TokenKind::Null => {
+                self.advance();
+                let span = self.span_from(&start);
+                Ok(TypeExpr::new(TypeExprKind::Name("None".to_string()), span))
+            }
             TokenKind::Identifier => {
                 let name = self.advance().value;
                 if self.peek().kind == TokenKind::Dot {

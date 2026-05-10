@@ -69,6 +69,17 @@ pub extern "C" fn olive_list_new(len: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn olive_range_list(start: i64, end: i64, inclusive: i64) -> i64 {
+    let last = if inclusive != 0 { end + 1 } else { end };
+    let count = (last - start).max(0);
+    let list = olive_list_new(count);
+    for i in 0..count {
+        olive_list_set(list, i, start + i);
+    }
+    list
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn olive_list_set(list_ptr: i64, idx: i64, val: i64) {
     if list_ptr == 0 {
         return;
@@ -143,6 +154,26 @@ pub extern "C" fn olive_list_remove(list_ptr: i64, idx: i64) -> i64 {
         }
         let mut v = Vec::from_raw_parts(s.ptr, s.len, s.cap);
         let val = v.remove(idx);
+        s.ptr = v.as_mut_ptr();
+        s.cap = v.capacity();
+        s.len = v.len();
+        std::mem::forget(v);
+        val
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_pop(list_ptr: i64) -> i64 {
+    if list_ptr == 0 {
+        return 0;
+    }
+    unsafe {
+        let s = &mut *(list_ptr as *mut StableVec);
+        if s.len == 0 {
+            return 0;
+        }
+        let mut v = Vec::from_raw_parts(s.ptr, s.len, s.cap);
+        let val = v.pop().unwrap_or(0);
         s.ptr = v.as_mut_ptr();
         s.cap = v.capacity();
         s.len = v.len();

@@ -28,7 +28,7 @@ fn test_generate_with_struct() {
 #[test]
 fn test_generate_with_enum() {
     let mut cg = compile(
-        "enum Opt:\n    Some(i64)\n    None\n\nfn f() -> i64:\n    let o = Some(42)\n    match o:\n        case Some(v):\n            return v\n        case None:\n            return 0\n",
+        "enum Opt:\n    Some(i64)\n    Nil\n\nfn f() -> i64:\n    let o = Some(42)\n    match o:\n        case Some(v):\n            return v\n        case Nil:\n            return 0\n",
     );
     assert_eq!(call_i64(&mut cg, "f"), 42);
 }

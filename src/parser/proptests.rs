@@ -66,7 +66,7 @@ mod parser_proptests {
             Just("fn"), Just("let"), Just("if"), Just("else"),
             Just("while"), Just("for"), Just("return"), Just("struct"),
             Just("enum"), Just("impl"), Just("trait"), Just("match"),
-            Just("true"), Just("false"), Just("null"), Just("pass"),
+            Just("true"), Just("false"), Just("None"), Just("pass"),
         ].prop_map(|s| s.to_string())) {
             let src = format!("{kw}\n");
             lex_and_parse(&src);

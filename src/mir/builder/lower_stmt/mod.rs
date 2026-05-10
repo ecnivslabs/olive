@@ -737,7 +737,7 @@ impl<'a> MirBuilder<'a> {
                     }
                 });
 
-                if !fields.is_empty() && !has_user_init {
+                if !has_user_init {
                     let init_name = format!("{}::__init__", name);
                     let n_params = fields.len() + 1;
 

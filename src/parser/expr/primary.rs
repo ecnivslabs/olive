@@ -91,7 +91,8 @@ impl Parser {
             | TokenKind::Float
             | TokenKind::String
             | TokenKind::True
-            | TokenKind::False => {
+            | TokenKind::False
+            | TokenKind::Null => {
                 let expr = self.parse_primary()?;
                 Ok(MatchPattern::Literal(expr))
             }

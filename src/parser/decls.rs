@@ -502,7 +502,7 @@ mod tests {
 
     #[test]
     fn parse_enum_with_tuple_variants() {
-        let mut p = make_parser("enum Opt:\n    Some(i64)\n    None\n");
+        let mut p = make_parser("enum Opt:\n    Some(i64)\n    Nil\n");
         let stmt = p.parse_enum().expect("parse failed");
         match &stmt.kind {
             StmtKind::Enum { variants, .. } => {

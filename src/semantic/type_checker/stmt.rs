@@ -535,6 +535,23 @@ impl TypeChecker {
                     name.clone(),
                     fields.iter().map(|f| f.name.clone()).collect(),
                 );
+                let required = fields.iter().filter(|f| f.default.is_none()).count();
+                self.struct_required_fields.insert(name.clone(), required);
+                if fields
+                    .iter()
+                    .enumerate()
+                    .any(|(i, f)| f.default.is_some() && i < required)
+                {
+                    self.errors.push(super::super::error::SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0413",
+                            format!("`{name}` has a field with a default before one without"),
+                            stmt.span,
+                        )
+                        .label("fields with defaults must come last")
+                        .help("move every field that has a default value to the end of the struct"),
+                    ));
+                }
 
                 self.enter_scope();
                 for tp in type_params {
