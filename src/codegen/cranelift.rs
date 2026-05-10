@@ -88,9 +88,12 @@ impl<'a> CraneliftCodegen<'a> {
         builder.symbol("__olive_str_len", olive_str_len as *const u8);
         builder.symbol("__olive_str_get", olive_str_get as *const u8);
         builder.symbol("__olive_time_now", olive_time_now as *const u8);
+        builder.symbol("__olive_time_monotonic", olive_time_monotonic as *const u8);
         builder.symbol("__olive_time_sleep", olive_time_sleep as *const u8);
-        builder.symbol("__olive_json_dumps", olive_json_dumps as *const u8);
-        builder.symbol("__olive_json_loads", olive_json_loads as *const u8);
+        builder.symbol("__olive_str_slice", olive_str_slice as *const u8);
+        builder.symbol("__olive_str_char", olive_str_char as *const u8);
+        builder.symbol("__olive_file_read", olive_file_read as *const u8);
+        builder.symbol("__olive_file_write", olive_file_write as *const u8);
         builder.symbol("__olive_free_str", olive_free_str as *const u8);
         builder.symbol("__olive_free_list", olive_free_list as *const u8);
         builder.symbol("__olive_free_obj", olive_free_obj as *const u8);
@@ -224,8 +227,6 @@ impl<'a> CraneliftCodegen<'a> {
             ("__olive_has_next", &sig_i64_i64),
             ("__olive_time_now", &sig_void_f64),
             ("__olive_time_sleep", &sig_f64_void),
-            ("__olive_json_dumps", &sig_i64_i64),
-            ("__olive_json_loads", &sig_i64_i64),
             ("__olive_enum_new", &sig_i64_i64_i64),
             ("__olive_enum_tag", &sig_i64_i64),
             ("__olive_enum_get", &sig_i64_i64_i64),
@@ -509,8 +510,6 @@ fn resolve_builtin_import(
             "__olive_has_next" => Some("__olive_has_next"),
             "__olive_time_now" => Some("__olive_time_now"),
             "__olive_time_sleep" => Some("__olive_time_sleep"),
-            "__olive_json_dumps" => Some("__olive_json_dumps"),
-            "__olive_json_loads" => Some("__olive_json_loads"),
             "__olive_enum_new" => Some("__olive_enum_new"),
             "__olive_enum_tag" => Some("__olive_enum_tag"),
             "__olive_enum_get" => Some("__olive_enum_get"),
@@ -597,8 +596,6 @@ fn resolve_builtin_import(
         "random::seed" => Some("__olive_random_seed"),
         "random::random" => Some("__olive_random_get"),
         // Module functions (json)
-        "json::dumps" => Some("__olive_json_dumps"),
-        "json::loads" => Some("__olive_json_loads"),
         _ => None,
     }
 }
@@ -1907,36 +1904,76 @@ extern "C" fn olive_time_now() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64()
 }
 
+extern "C" fn olive_time_monotonic() -> f64 {
+    use std::time::Instant;
+    use std::sync::OnceLock;
+    static START: OnceLock<Instant> = OnceLock::new();
+    let start = START.get_or_init(Instant::now);
+    start.elapsed().as_secs_f64()
+}
+
 extern "C" fn olive_time_sleep(secs: f64) {
     use std::{thread, time::Duration};
     thread::sleep(Duration::from_secs_f64(secs));
 }
 
-// json
-fn olive_to_json(ptr: i64) -> serde_json::Value {
-    if ptr == 0 { return serde_json::Value::Null; }
-    
-    // stubbed for now
-    serde_json::Value::String(format!("<Object at {}>", ptr))
+// string ops
+extern "C" fn olive_str_slice(s: i64, start: i64, end: i64) -> i64 {
+    if s == 0 { return 0; }
+    let p = s & !1;
+    let c_str = unsafe { std::ffi::CStr::from_ptr(p as *const i8) };
+    let text = c_str.to_string_lossy();
+    let chars: Vec<char> = text.chars().collect();
+    let mut st = start;
+    let mut en = end;
+    if st < 0 { st = 0; }
+    if en > chars.len() as i64 { en = chars.len() as i64; }
+    if st >= en { return olive_str_internal(""); }
+    let sliced: String = chars[st as usize..en as usize].iter().collect();
+    olive_str_internal(&sliced)
 }
 
-extern "C" fn olive_json_dumps(obj_ptr: i64) -> i64 {
-    let val = olive_to_json(obj_ptr);
-    let s = serde_json::to_string(&val).unwrap_or_else(|_| "null".to_string());
-    olive_str_internal(&s)
+extern "C" fn olive_str_char(s: i64, i: i64) -> i64 {
+    if s == 0 { return 0; }
+    let p = s & !1;
+    let c_str = unsafe { std::ffi::CStr::from_ptr(p as *const i8) };
+    let text = c_str.to_string_lossy();
+    let chars: Vec<char> = text.chars().collect();
+    if i < 0 || i >= chars.len() as i64 { return olive_str_internal(""); }
+    let mut sliced = String::new();
+    sliced.push(chars[i as usize]);
+    olive_str_internal(&sliced)
+}
+
+// io
+extern "C" fn olive_file_read(path: i64) -> i64 {
+    if path == 0 { return 0; }
+    let p = path & !1;
+    let c_str = unsafe { std::ffi::CStr::from_ptr(p as *const i8) };
+    let path_str = c_str.to_string_lossy();
+    if let Ok(content) = std::fs::read_to_string(path_str.as_ref()) {
+        olive_str_internal(&content)
+    } else {
+        0
+    }
+}
+
+extern "C" fn olive_file_write(path: i64, data: i64) -> i64 {
+    if path == 0 || data == 0 { return 0; }
+    let p_path = path & !1;
+    let p_data = data & !1;
+    let c_path = unsafe { std::ffi::CStr::from_ptr(p_path as *const i8) };
+    let c_data = unsafe { std::ffi::CStr::from_ptr(p_data as *const i8) };
+    if std::fs::write(c_path.to_string_lossy().as_ref(), c_data.to_bytes()).is_ok() {
+        1
+    } else {
+        0
+    }
 }
 
 fn olive_str_internal(s: &str) -> i64 {
     let c_str = std::ffi::CString::new(s).unwrap();
     c_str.into_raw() as i64
-}
-
-extern "C" fn olive_json_loads(json_ptr: i64) -> i64 {
-    if json_ptr == 0 { return 0; }
-    let s = unsafe { std::ffi::CStr::from_ptr(json_ptr as *const i8) };
-    let text = s.to_string_lossy();
-    let val: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
-    json_to_olive(val)
 }
 
 
@@ -2002,32 +2039,4 @@ extern "C" fn olive_free_enum(ptr: i64) {
     }
 }
 
-fn json_to_olive(val: serde_json::Value) -> i64 {
-    match val {
-        serde_json::Value::String(s) => olive_str_internal(&s),
-        serde_json::Value::Number(n) => {
-            if n.is_f64() {
-                // bitcast float to i64
-                n.as_f64().unwrap().to_bits() as i64
-            } else {
-                n.as_i64().unwrap_or(0)
-            }
-        }
-        serde_json::Value::Array(arr) => {
-            let list = olive_list_new(arr.len() as i64);
-            for (i, v) in arr.into_iter().enumerate() {
-                olive_list_set(list, i as i64, json_to_olive(v));
-            }
-            list
-        }
-        serde_json::Value::Object(obj) => {
-            let dict = olive_obj_new();
-            for (k, v) in obj {
-                let k_ptr = olive_str_internal(&k);
-                olive_obj_set(dict, k_ptr, json_to_olive(v));
-            }
-            dict
-        }
-        _ => 0,
-    }
-}
+

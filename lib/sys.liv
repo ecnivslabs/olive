@@ -1,9 +1,0 @@
-# sys native bridge
-# calls __olive_ intrinsics
-# other libs are pure olive
-
-fn clock() -> float:
-    return __olive_time_now()
-
-fn sleep(secs: float):
-    return __olive_time_sleep(secs)

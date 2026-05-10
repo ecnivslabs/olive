@@ -1,8 +1,145 @@
-# json library
-# using native bridge for now
+fn _skip_whitespace(s: str, mut i: int) -> int:
+    let n = len(s)
+    while i < n:
+        let c = __olive_str_char(s, i)
+        if c != " " and c != "\n" and c != "\r" and c != "\t":
+            break
+        i = i + 1
+    return i
 
-fn dumps(obj) -> str:
-    return __olive_json_dumps(obj)
+fn _parse_string(s: str, mut i: int):
+    # s[i] == '"'
+    i = i + 1
+    let start = i
+    let n = len(s)
+    while i < n:
+        let c = __olive_str_char(s, i)
+        if c == "\"":
+            break
+        # ignore escapes for now
+        i = i + 1
+    let val = __olive_str_slice(s, start, i)
+    return [val, i + 1]
+
+fn _parse_number(s: str, mut i: int):
+    let start = i
+    let n = len(s)
+    let mut is_float = false
+    while i < n:
+        let c = __olive_str_char(s, i)
+        if c == ".":
+            is_float = true
+        elif c != "-" and c != "0" and c != "1" and c != "2" and c != "3" and c != "4" and c != "5" and c != "6" and c != "7" and c != "8" and c != "9":
+            break
+        i = i + 1
+    let val_str = __olive_str_slice(s, start, i)
+    if is_float:
+        return [float(val_str), i]
+    return [int(val_str), i]
+
+fn _parse_array(s: str, mut i: int):
+    # s[i] == '['
+    i = i + 1
+    let mut arr = []
+    let n = len(s)
+    i = _skip_whitespace(s, i)
+    if i < n and __olive_str_char(s, i) == "]":
+        return [arr, i + 1]
+    while i < n:
+        let parsed = _parse_value(s, i)
+        arr = arr + [parsed[0]]
+        i = _skip_whitespace(s, parsed[1])
+        let c = __olive_str_char(s, i)
+        if c == "]":
+            return [arr, i + 1]
+        if c == ",":
+            i = i + 1
+        else:
+            break # error
+    return [arr, i]
+
+fn _parse_object(s: str, mut i: int):
+    # s[i] == '{'
+    i = i + 1
+    let mut obj = {}
+    let n = len(s)
+    i = _skip_whitespace(s, i)
+    if i < n and __olive_str_char(s, i) == "}":
+        return [obj, i + 1]
+    while i < n:
+        i = _skip_whitespace(s, i)
+        let parsed_key = _parse_string(s, i)
+        let key = parsed_key[0]
+        i = _skip_whitespace(s, parsed_key[1])
+        # expect ':'
+        i = i + 1
+        let parsed_val = _parse_value(s, i)
+        obj[key] = parsed_val[0]
+        i = _skip_whitespace(s, parsed_val[1])
+        let c = __olive_str_char(s, i)
+        if c == "}":
+            return [obj, i + 1]
+        if c == ",":
+            i = i + 1
+        else:
+            break
+    return [obj, i]
+
+fn _parse_value(s: str, mut i: int):
+    i = _skip_whitespace(s, i)
+    let c = __olive_str_char(s, i)
+    if c == "\"":
+        return _parse_string(s, i)
+    if c == "[":
+        return _parse_array(s, i)
+    if c == "{":
+        return _parse_object(s, i)
+    if c == "t":
+        return [true, i + 4] # true
+    if c == "f":
+        return [false, i + 5] # false
+    if c == "n":
+        return [0, i + 4] # null stub
+    return _parse_number(s, i)
 
 fn loads(s: str):
-    return __olive_json_loads(s)
+    let res = _parse_value(s, 0)
+    return res[0]
+
+fn _stringify(obj):
+    if obj == null:
+        return "null"
+    if type(obj) == "bool":
+        if obj:
+            return "true"
+        return "false"
+    if type(obj) == "int" or type(obj) == "float":
+        return str(obj)
+    if type(obj) == "str":
+        return "\"" + obj + "\""
+    if type(obj) == "list":
+        let mut s = "["
+        let mut i = 0
+        let n = len(obj)
+        while i < n:
+            s = s + _stringify(obj[i])
+            if i < n - 1:
+                s = s + ", "
+            i = i + 1
+        return s + "]"
+    if type(obj) == "dict":
+        let mut s = "{"
+        let keys = obj.keys()
+        let n = len(keys)
+        let mut i = 0
+        while i < n:
+            let k = keys[i]
+            s = s + "\"" + str(k) + "\": " + _stringify(obj[k])
+            if i < n - 1:
+                s = s + ", "
+            i = i + 1
+        return s + "}"
+    return "\"<unknown>\""
+
+fn dumps(obj) -> str:
+    return _stringify(obj)

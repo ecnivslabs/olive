@@ -1,5 +1,13 @@
-fn say_hello(name: str):
-    print("Hello, " + name + "!")
+fn read_file(path: str) -> str:
+    let content = __olive_file_read(path)
+    # 0 indicates read failure in the backend
+    if content == 0:
+        return ""
+    return content
 
-fn log(msg: str):
-    print("[LOG] " + msg)
+fn write_file(path: str, data: str) -> bool:
+    let res = __olive_file_write(path, data)
+    return res == 1
+
+fn print_line(msg: str):
+    print(msg)
