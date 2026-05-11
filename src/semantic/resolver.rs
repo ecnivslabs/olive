@@ -71,20 +71,28 @@ impl Resolver {
     }
 
     pub fn resolve_program(&mut self, program: &Program) {
-        self.hoist_fns_and_classes(&program.stmts);
+        self.hoist_fns_and_structs(&program.stmts);
         for stmt in &program.stmts {
             self.resolve_stmt(stmt);
         }
     }
 
-    fn hoist_fns_and_classes(&mut self, stmts: &[Stmt]) {
+    fn hoist_fns_and_structs(&mut self, stmts: &[Stmt]) {
         for stmt in stmts {
             match &stmt.kind {
                 StmtKind::Fn { name, .. } => {
                     self.define_sym(name, SymbolKind::Function, stmt.span);
                 }
-                StmtKind::Class { name, .. } => {
-                    self.define_sym(name, SymbolKind::Class, stmt.span);
+                StmtKind::Struct { name, .. } => {
+                    self.define_sym(name, SymbolKind::Struct, stmt.span);
+                }
+                StmtKind::Impl { type_name, body } => {
+                    for s in body {
+                        if let StmtKind::Fn { name: fn_name, .. } = &s.kind {
+                            let mangled = format!("{}::{}", type_name, fn_name);
+                            self.define_sym(&mangled, SymbolKind::Function, s.span);
+                        }
+                    }
                 }
                 StmtKind::Enum { name, variants } => {
                     self.define_sym(name, SymbolKind::Enum, stmt.span);
@@ -137,26 +145,26 @@ impl Resolver {
                 body,
                 ..
             } => {
-                // name already hoisted
                 self.table.push(ScopeKind::Function);
                 self.resolve_params(params);
-                self.hoist_fns_and_classes(body);
+                self.hoist_fns_and_structs(body);
                 for s in body {
                     self.resolve_stmt(s);
                 }
                 self.table.pop();
             }
 
-            StmtKind::Class {
-                name: _,
-                bases,
-                body,
-            } => {
-                for base in bases {
-                    self.resolve_expr(base);
+            StmtKind::Struct { body, .. } => {
+                // struct field declarations have no resolvable expressions by default
+                // any consts/nested types in body are resolved here
+                for s in body {
+                    self.resolve_stmt(s);
                 }
-                self.table.push(ScopeKind::Class);
-                self.hoist_fns_and_classes(body);
+            }
+
+            StmtKind::Impl { type_name: _, body } => {
+                self.table.push(ScopeKind::Struct);
+                self.hoist_fns_and_structs(body);
                 for s in body {
                     self.resolve_stmt(s);
                 }
@@ -201,7 +209,7 @@ impl Resolver {
                 self.resolve_expr(iter);
                 self.table.push(ScopeKind::Block);
                 self.define_for_target(target);
-                self.hoist_fns_and_classes(body);
+                self.hoist_fns_and_structs(body);
                 for s in body {
                     self.resolve_stmt(s);
                 }
@@ -226,7 +234,7 @@ impl Resolver {
                     if let Some(name) = &handler.name {
                         self.define_sym(name, SymbolKind::Variable, handler.span);
                     }
-                    self.hoist_fns_and_classes(&handler.body);
+                    self.hoist_fns_and_structs(&handler.body);
                     for s in &handler.body {
                         self.resolve_stmt(s);
                     }
@@ -281,7 +289,7 @@ impl Resolver {
 
     fn resolve_block(&mut self, stmts: &[Stmt]) {
         self.table.push(ScopeKind::Block);
-        self.hoist_fns_and_classes(stmts);
+        self.hoist_fns_and_structs(stmts);
         for s in stmts {
             self.resolve_stmt(s);
         }

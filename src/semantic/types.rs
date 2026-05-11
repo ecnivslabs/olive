@@ -11,8 +11,8 @@ pub enum Type {
     Str,
     Bool,
     Null,
-    // Named user-defined type (class)
-    Class(String),
+    // Named user-defined type (struct)
+    Struct(String),
     // Enum type
     Enum(String),
     // Function type: (params) -> return_type
@@ -84,7 +84,7 @@ impl fmt::Display for Type {
             Type::Str => write!(f, "str"),
             Type::Bool => write!(f, "bool"),
             Type::Null => write!(f, "None"),
-            Type::Class(name) | Type::Enum(name) => write!(f, "{}", name),
+            Type::Struct(name) | Type::Enum(name) => write!(f, "{}", name),
             Type::Fn(params, ret) => {
                 write!(f, "(")?;
                 for (i, p) in params.iter().enumerate() {

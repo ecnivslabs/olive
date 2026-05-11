@@ -14,11 +14,10 @@ pub struct TypeChecker {
     pub type_env: Vec<HashMap<String, Type>>,
     current_return_type: Option<Type>,
     pub errors: Vec<SemanticError>,
-    pub class_hierarchy: HashMap<String, Vec<String>>,
     mut_env: Vec<HashMap<String, bool>>,
     pub field_types: HashMap<(String, String), Type>,
     pub enum_variants: HashMap<String, Vec<String>>,
-    current_class: Option<String>,
+    current_struct: Option<String>,
 }
 
 impl TypeChecker {
@@ -50,11 +49,10 @@ impl TypeChecker {
             type_env: vec![global_env],
             current_return_type: None,
             errors: Vec::new(),
-            class_hierarchy: HashMap::default(),
             mut_env: vec![HashMap::default()],
             field_types: HashMap::default(),
             enum_variants: HashMap::default(),
-            current_class: None,
+            current_struct: None,
         }
     }
 
@@ -156,8 +154,8 @@ impl TypeChecker {
                 if let ExprKind::Attr { obj, attr } = &target.kind {
                     let obj_ty = self.check_expr(obj);
                     let resolved_obj = self.apply_subst(obj_ty);
-                    if let Type::Class(class_name) = resolved_obj {
-                        self.field_types.insert((class_name, attr.clone()), val_ty);
+                    if let Type::Struct(struct_name) = resolved_obj {
+                        self.field_types.insert((struct_name, attr.clone()), val_ty);
                     }
                 }
 
@@ -221,14 +219,14 @@ impl TypeChecker {
                     param_types.push(p_ty);
                 }
 
-                let final_name = if let Some(class_name) = &self.current_class {
-                    format!("{}::{}", class_name, name)
+                let final_name = if let Some(struct_name) = &self.current_struct {
+                    format!("{}::{}", struct_name, name)
                 } else {
                     name.clone()
                 };
 
                 let fn_ty = Type::Fn(param_types.clone(), Box::new(ret_ty.clone()));
-                if self.current_class.is_some() && self.type_env.len() >= 2 {
+                if self.current_struct.is_some() && self.type_env.len() >= 2 {
                     let outer_idx = self.type_env.len() - 2;
                     self.type_env[outer_idx].insert(final_name.clone(), fn_ty.clone());
                 } else {
@@ -240,8 +238,8 @@ impl TypeChecker {
                 self.current_return_type = Some(ret_ty);
 
                 for (i, (param, mut p_ty)) in params.iter().zip(param_types).enumerate() {
-                    if i == 0 && self.current_class.is_some() && param.name == "self" {
-                        p_ty = Type::Class(self.current_class.clone().unwrap());
+                    if i == 0 && self.current_struct.is_some() && param.name == "self" {
+                        p_ty = Type::Struct(self.current_struct.clone().unwrap());
                     }
                     self.define_type(&param.name, p_ty, param.is_mut);
                 }
@@ -285,26 +283,40 @@ impl TypeChecker {
                 }
             }
 
-            StmtKind::Class { name, bases, body } => {
-                let mut base_names = Vec::new();
-                for base in bases {
-                    if let ExprKind::Identifier(base_name) = &base.kind {
-                        base_names.push(base_name.clone());
-                    }
+            StmtKind::Struct { name, fields, body } => {
+                // register the struct as a named type
+                self.define_type(name, Type::Struct(name.clone()), false);
+
+                // register field types so attribute access resolves
+                for field in fields {
+                    let field_ty = field
+                        .type_ann
+                        .as_ref()
+                        .map(|ann| self.resolve_type_expr(ann))
+                        .unwrap_or(Type::Any);
+                    self.field_types.insert((name.clone(), field.name.clone()), field_ty);
                 }
-                self.class_hierarchy.insert(name.clone(), base_names);
-                self.define_type(name, Type::Class(name.clone()), false);
 
-                let prev_class = self.current_class.take();
-                self.current_class = Some(name.clone());
-
+                // check any associated stmts in the struct body
+                let prev_struct = self.current_struct.take();
+                self.current_struct = Some(name.clone());
                 self.enter_scope();
                 for s in body {
                     self.check_stmt(s);
                 }
                 self.leave_scope();
+                self.current_struct = prev_struct;
+            }
 
-                self.current_class = prev_class;
+            StmtKind::Impl { type_name, body } => {
+                let prev_struct = self.current_struct.take();
+                self.current_struct = Some(type_name.clone());
+                self.enter_scope();
+                for s in body {
+                    self.check_stmt(s);
+                }
+                self.leave_scope();
+                self.current_struct = prev_struct;
             }
 
             StmtKind::Try {
@@ -488,7 +500,7 @@ impl TypeChecker {
                 let callee_ty = self.check_expr(callee);
                 let resolved_callee = self.apply_subst(callee_ty.clone());
 
-                if let Type::Class(name) = resolved_callee {
+                if let Type::Struct(name) = resolved_callee {
                     let mut arg_types = Vec::new();
                     for arg in args {
                         arg_types.push(self.check_expr(match arg {
@@ -519,7 +531,7 @@ impl TypeChecker {
                         }
                     }
 
-                    return Type::Class(name);
+                    return Type::Struct(name);
                 }
 
                 let mut arg_types = Vec::with_capacity(args.len());
@@ -589,31 +601,15 @@ impl TypeChecker {
 
                 let obj_ty = self.check_expr(obj);
                 let resolved_obj = self.apply_subst(obj_ty);
-                if let Type::Class(ref class_name) = resolved_obj {
-                    let mut queue = vec![class_name.clone()];
-                    let mut seen = std::collections::HashSet::new();
+                if let Type::Struct(ref struct_name) = resolved_obj {
+                    let mangled = format!("{}::{}", struct_name, attr);
+                    if let Some(ty) = self.lookup_type(&mangled) {
+                        return ty;
+                    }
 
-                    while let Some(current) = queue.pop() {
-                        if !seen.insert(current.clone()) {
-                            continue;
-                        }
-
-                        let mangled = format!("{}::{}", current, attr);
-                        if let Some(ty) = self.lookup_type(&mangled) {
-                            return ty;
-                        }
-
-                        // Check if it's a known field.
-                        if let Some(ty) = self.field_types.get(&(current.clone(), attr.clone())) {
-                            return ty.clone();
-                        }
-
-                        // check base classes
-                        if let Some(bases) = self.class_hierarchy.get(&current) {
-                            for base in bases {
-                                queue.push(base.clone());
-                            }
-                        }
+                    // Check if it's a known field.
+                    if let Some(ty) = self.field_types.get(&(struct_name.clone(), attr.clone())) {
+                        return ty.clone();
                     }
                 }
 
@@ -890,14 +886,13 @@ impl TypeChecker {
                 }
             }
 
-            (Type::Class(a_name), Type::Class(b_name)) => {
-                if self.is_subtype(&Type::Class(b_name.clone()), &Type::Class(a_name.clone())) {
-                    return;
+            (Type::Struct(a_name), Type::Struct(b_name)) => {
+                if a_name != b_name {
+                    self.errors.push(SemanticError::Custom {
+                        msg: format!("type mismatch: expected `{}`, found `{}`", t1, t2),
+                        span,
+                    });
                 }
-                self.errors.push(SemanticError::Custom {
-                    msg: format!("type mismatch: expected `{}`, found `{}`", t1, t2),
-                    span,
-                });
             }
 
             (_t1_match, _t2_match) => {
@@ -910,43 +905,6 @@ impl TypeChecker {
         }
 
     }
-
-    fn is_subtype(&mut self, sub: &Type, sup: &Type) -> bool {
-        let sub = self.apply_subst(sub.clone());
-        let sup = self.apply_subst(sup.clone());
-
-        if sub == sup {
-            return true;
-        }
-
-        match (sub, sup) {
-            (Type::Class(sub_name), Type::Class(sup_name)) => {
-                let mut queue = vec![sub_name];
-                let mut seen = std::collections::HashSet::new();
-                while let Some(current) = queue.pop() {
-                    if current == sup_name {
-                        return true;
-                    }
-                    if !seen.insert(current.clone()) {
-                        continue;
-                    }
-                    if let Some(bases) = self.class_hierarchy.get(&current) {
-                        for base in bases {
-                            queue.push(base.clone());
-                        }
-                    }
-                }
-                false
-            }
-            (Type::List(sub_inner), Type::List(sup_inner)) => {
-                // Covariant for now to allow [Circle] -> [Shape]
-                self.is_subtype(&sub_inner, &sup_inner)
-            }
-            (_, Type::Any) => true,
-            _ => false,
-        }
-    }
-
 
     fn occurs_check(&self, id: usize, ty: &Type) -> bool {
         match ty {
@@ -1014,7 +972,7 @@ impl TypeChecker {
                     if let Some(Type::Enum(e)) = self.lookup_type(name) {
                         Type::Enum(e)
                     } else {
-                        Type::Class(name.clone())
+                        Type::Struct(name.clone())
                     }
                 }
             },
@@ -1025,7 +983,7 @@ impl TypeChecker {
                     Box::new(self.resolve_type_expr(&args[0])),
                     Box::new(self.resolve_type_expr(&args[1])),
                 ),
-                _ => Type::Class(name.clone()),
+                _ => Type::Struct(name.clone()),
             },
             TypeExprKind::List(inner) => Type::List(Box::new(self.resolve_type_expr(inner))),
             TypeExprKind::Dict(k, v) => Type::Dict(

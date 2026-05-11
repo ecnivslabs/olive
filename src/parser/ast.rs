@@ -260,10 +260,14 @@ pub enum StmtKind {
         body: Vec<Stmt>,
         decorators: Vec<String>,
     },
-    Class {
+    Struct {
         name: String,
-        bases: Vec<Expr>,
-        body: Vec<Stmt>,
+        fields: Vec<Param>,  // named fields with optional type annotations
+        body: Vec<Stmt>,     // associated consts / nested types inside struct block
+    },
+    Impl {
+        type_name: String,   // which struct this impl is for
+        body: Vec<Stmt>,     // fn definitions
     },
     Enum {
         name: String,

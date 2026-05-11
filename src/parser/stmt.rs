@@ -9,7 +9,8 @@ impl Parser {
     pub(crate) fn parse_stmt(&mut self) -> ParseResult<Stmt> {
         match self.peek().kind {
             TokenKind::Fn => self.parse_fn(),
-            TokenKind::Class => self.parse_class(),
+            TokenKind::Struct => self.parse_struct(),
+            TokenKind::Impl => self.parse_impl(),
             TokenKind::Enum => self.parse_enum(),
             TokenKind::If => self.parse_if(),
             TokenKind::While => self.parse_while(),
@@ -166,29 +167,68 @@ impl Parser {
         Ok(params)
     }
 
-    pub(crate) fn parse_class(&mut self) -> ParseResult<Stmt> {
+    pub(crate) fn parse_struct(&mut self) -> ParseResult<Stmt> {
         let start = self.peek().clone();
-        self.expect(TokenKind::Class)?;
+        self.expect(TokenKind::Struct)?;
         let name = self.expect(TokenKind::Identifier)?.value;
-        let bases = if self.peek().kind == TokenKind::LParen {
+        // parse indented field block: `name: Type` per line
+        self.expect(TokenKind::Colon)?;
+        let mut fields: Vec<Param> = Vec::new();
+        let mut body: Vec<Stmt> = Vec::new();
+        if self.peek().kind == TokenKind::Newline {
             self.advance();
-            let mut bases = Vec::new();
-            while self.peek().kind != TokenKind::RParen && self.peek().kind != TokenKind::Eof {
-                bases.push(self.parse_expr()?);
-                if self.peek().kind == TokenKind::Comma {
-                    self.advance();
+            self.expect(TokenKind::Indent)?;
+            self.skip_newlines();
+            while self.peek().kind != TokenKind::Dedent && self.peek().kind != TokenKind::Eof {
+                // each line is either `name: Type` or a const/pass
+                if self.peek().kind == TokenKind::Identifier && {
+                    // look-ahead: next token after ident should be Colon
+                    let next_idx = self.pos + 1;
+                    next_idx < self.tokens.len()
+                        && self.tokens[next_idx].kind == TokenKind::Colon
+                } {
+                    let field_start = self.peek().clone();
+                    let field_name = self.expect(TokenKind::Identifier)?.value;
+                    self.expect(TokenKind::Colon)?;
+                    let type_ann = Some(self.parse_type_expr()?);
+                    // optional default
+                    let default = if self.peek().kind == TokenKind::Equal {
+                        self.advance();
+                        Some(self.parse_expr()?)
+                    } else {
+                        None
+                    };
+                    self.eat_stmt_end()?;
+                    let span = self.span_from(&field_start);
+                    fields.push(Param {
+                        name: field_name,
+                        type_ann,
+                        default,
+                        kind: ParamKind::Regular,
+                        is_mut: false,
+                        span,
+                    });
                 } else {
-                    break;
+                    body.push(self.parse_stmt()?);
                 }
+                self.skip_newlines();
             }
-            self.expect(TokenKind::RParen)?;
-            bases
+            self.expect(TokenKind::Dedent)?;
         } else {
-            Vec::new()
-        };
+            // inline empty struct — just a newline
+            self.eat_stmt_end()?;
+        }
+        let span = self.span_from(&start);
+        Ok(Stmt::new(StmtKind::Struct { name, fields, body }, span))
+    }
+
+    pub(crate) fn parse_impl(&mut self) -> ParseResult<Stmt> {
+        let start = self.peek().clone();
+        self.expect(TokenKind::Impl)?;
+        let type_name = self.expect(TokenKind::Identifier)?.value;
         let body = self.parse_block()?;
         let span = self.span_from(&start);
-        Ok(Stmt::new(StmtKind::Class { name, bases, body }, span))
+        Ok(Stmt::new(StmtKind::Impl { type_name, body }, span))
     }
 
     pub(crate) fn parse_enum(&mut self) -> ParseResult<Stmt> {

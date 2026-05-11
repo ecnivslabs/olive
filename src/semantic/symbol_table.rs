@@ -5,7 +5,7 @@ use rustc_hash::FxHashMap as HashMap;
 pub enum SymbolKind {
     Variable,
     Function,
-    Class,
+    Struct,
     Enum,
     Parameter,
     LoopVar,
@@ -25,7 +25,7 @@ pub struct Symbol {
 pub enum ScopeKind {
     Global,
     Function,
-    Class,
+    Struct,
     Block,
     Comprehension,
 }

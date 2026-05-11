@@ -27,7 +27,6 @@ pub struct MirBuilder<'a> {
     loop_stack: Vec<LoopContext>,
     scope_locals: Vec<Vec<Local>>,
     memo_context: Option<(Operand, Operand, BasicBlockId)>, // memo state
-    pub class_hierarchy: HashMap<String, Vec<String>>,
     pub globals: HashMap<String, Operand>,
     pub enum_variants: HashMap<String, (String, usize)>,
 }
@@ -47,7 +46,6 @@ impl<'a> MirBuilder<'a> {
             loop_stack: Vec::new(),
             scope_locals: Vec::new(),
             memo_context: None,
-            class_hierarchy: HashMap::default(),
             globals: HashMap::default(),
             enum_variants: HashMap::default(),
         }
@@ -58,7 +56,7 @@ impl<'a> MirBuilder<'a> {
 
         for stmt in &program.stmts {
             match &stmt.kind {
-                StmtKind::Fn { .. } => self.lower_fn_def(stmt),
+                StmtKind::Fn { .. } | StmtKind::Impl { .. } => self.lower_fn_def_or_impl(stmt),
                 _ => self.lower_stmt(stmt),
             }
         }
@@ -366,6 +364,19 @@ impl<'a> MirBuilder<'a> {
                 self.lower_fn_def(stmt);
             }
 
+            StmtKind::Impl { type_name, body } => {
+                for s in body {
+                    if let StmtKind::Fn { name: fn_name, .. } = &s.kind {
+                        let mangled_name = format!("{}::{}", type_name, fn_name);
+                        let mut impl_stmt = s.clone();
+                        if let StmtKind::Fn { name: ref mut n, .. } = impl_stmt.kind {
+                            *n = mangled_name;
+                        }
+                        self.lower_fn_def(&impl_stmt);
+                    }
+                }
+            }
+
             StmtKind::Raise(Some(expr)) => {
                 self.lower_expr(expr);
                 if let Some(bb) = self.current_block {
@@ -379,7 +390,6 @@ impl<'a> MirBuilder<'a> {
                 if let Some(m) = msg {
                     self.lower_expr(m);
                 }
-                // lowered as if !test trap
                 let pass_bb = self.new_block();
                 let fail_bb = self.new_block();
                 if let Some(bb) = self.current_block {
@@ -397,30 +407,66 @@ impl<'a> MirBuilder<'a> {
                 self.current_block = Some(pass_bb);
             }
 
-            StmtKind::Class { name, bases, body } => {
-                let mut base_names = Vec::new();
-                for base in bases {
-                    if let ExprKind::Identifier(base_name) = &base.kind {
-                        base_names.push(base_name.clone());
-                    }
-                }
-                self.class_hierarchy.insert(name.clone(), base_names);
+            StmtKind::Struct { name, fields, .. } => {
+                // Struct definition, synthesize __init__ if needed
 
-                // mangle class methods
-                for stmt in body {
-                    if let StmtKind::Fn { name: fn_name, .. } = &stmt.kind {
-                        let mangled_name = format!("{}::{}", name, fn_name);
-                        let mut class_stmt = stmt.clone();
-                        if let StmtKind::Fn {
-                            name: ref mut n, ..
-                        } = class_stmt.kind
-                        {
-                            *n = mangled_name;
-                        }
-                        self.lower_fn_def(&class_stmt);
+                // Only synthesize __init__ if user hasn't defined one in an impl block.
+                // We synthesize it now; impl blocks lower after, so they'll overwrite if needed.
+                if !fields.is_empty() {
+                    let init_name = format!("{}::__init__", name);
+                    let n_params = fields.len() + 1; // self + each field
+
+                    // Save current function state.
+                    let saved_name = std::mem::take(&mut self.current_name);
+                    let saved_locals = std::mem::take(&mut self.current_locals);
+                    let saved_blocks = std::mem::take(&mut self.current_blocks);
+                    let saved_block = self.current_block.take();
+                    let saved_var_map = std::mem::take(&mut self.var_map);
+                    let saved_loop_stack = std::mem::take(&mut self.loop_stack);
+                    let saved_arg_count = self.current_arg_count;
+
+                    self.start_function(init_name, n_params, Type::Null);
+
+                    // Param 0 = self (the object), params 1..N = field values.
+                    let self_local = self.new_local(Type::Struct(name.clone()), Some("self".to_string()), false);
+                    let mut field_locals = Vec::new();
+                    for field in fields {
+                        let field_ty = field.type_ann.as_ref()
+                            .map(|ann| self.resolve_type_expr(ann))
+                            .unwrap_or(Type::Any);
+                        let fl = self.new_local(field_ty, Some(field.name.clone()), false);
+                        field_locals.push((field.name.clone(), fl));
                     }
+
+                    // Emit SetAttr for each field.
+                    for (field_name, fl) in &field_locals {
+                        self.push_statement(
+                            StatementKind::SetAttr(
+                                Operand::Copy(self_local),
+                                field_name.clone(),
+                                Operand::Copy(*fl),
+                            ),
+                            Span::default(),
+                        );
+                    }
+
+                    if let Some(bb) = self.current_block {
+                        self.terminate_block(bb, TerminatorKind::Return, Span::default());
+                    }
+
+                    self.finish_function();
+
+                    // Restore state.
+                    self.current_name = saved_name;
+                    self.current_locals = saved_locals;
+                    self.current_blocks = saved_blocks;
+                    self.current_block = saved_block;
+                    self.var_map = saved_var_map;
+                    self.loop_stack = saved_loop_stack;
+                    self.current_arg_count = saved_arg_count;
                 }
             }
+
 
             StmtKind::Pass
             | StmtKind::Raise(None)
@@ -688,6 +734,27 @@ impl<'a> MirBuilder<'a> {
         }
     }
 
+    fn lower_fn_def_or_impl(&mut self, stmt: &Stmt) {
+        match &stmt.kind {
+            StmtKind::Fn { .. } => self.lower_fn_def(stmt),
+            StmtKind::Impl { type_name, body } => {
+                let type_name = type_name.clone();
+                let body = body.clone();
+                for s in &body {
+                    if let StmtKind::Fn { name: fn_name, .. } = &s.kind {
+                        let mangled = format!("{}::{}", type_name, fn_name);
+                        let mut impl_stmt = s.clone();
+                        if let StmtKind::Fn { name: ref mut n, .. } = impl_stmt.kind {
+                            *n = mangled;
+                        }
+                        self.lower_fn_def(&impl_stmt);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn resolve_type_expr(&self, expr: &crate::parser::TypeExpr) -> Type {
         use crate::parser::TypeExprKind;
         match &expr.kind {
@@ -703,7 +770,7 @@ impl<'a> MirBuilder<'a> {
                     if let Some(Type::Enum(e)) = self.global_types.get(name) {
                         Type::Enum(e.clone())
                     } else {
-                        Type::Class(name.clone())
+                        Type::Struct(name.clone())
                     }
                 }
             },
@@ -714,7 +781,7 @@ impl<'a> MirBuilder<'a> {
                     Box::new(self.resolve_type_expr(&args[0])),
                     Box::new(self.resolve_type_expr(&args[1])),
                 ),
-                _ => Type::Class(name.clone()),
+                _ => Type::Struct(name.clone()),
             },
             TypeExprKind::List(inner) => Type::List(Box::new(self.resolve_type_expr(inner))),
             TypeExprKind::Dict(k, v) => Type::Dict(
@@ -1194,7 +1261,7 @@ impl<'a> MirBuilder<'a> {
                         | CallArg::KwSplat(e) => e,
                     };
                     let arg_ty = self.get_type(arg_expr.id);
-                    let type_str = format!("<class '{}'>", arg_ty);
+                    let type_str = format!("<struct '{}'>", arg_ty);
                     return Operand::Constant(Constant::Str(type_str));
                 }
 
@@ -1349,18 +1416,8 @@ impl<'a> MirBuilder<'a> {
                     let obj_ty = self.get_type(obj.id);
                     let mut method_name = attr.clone();
 
-                    if let Type::Class(class_name) = obj_ty {
-                        let mut queue = vec![class_name];
-                        let mut seen = std::collections::HashSet::new();
-                        while let Some(current) = queue.pop() {
-                            if !seen.insert(current.clone()) {
-                                continue;
-                            }
-
-                            let mangled = format!("{}::{}", current, attr);
-                            method_name = mangled;
-                            break;
-                        }
+                    if let Type::Struct(struct_name) = obj_ty {
+                        method_name = format!("{}::{}", struct_name, attr);
                     }
 
                     self.push_statement(
@@ -1376,9 +1433,9 @@ impl<'a> MirBuilder<'a> {
                     return self.operand_for_local(tmp);
                 }
 
-                // If the callee is a Class, this is a constructor call.
+                // If the callee is a Struct, this is a constructor call.
                 let callee_ty = self.get_type(callee.id);
-                if let Type::Class(class_name) = callee_ty {
+                if let Type::Struct(struct_name) = callee_ty {
                     let obj_tmp = self.new_tmp_for_expr(expr);
                     self.push_statement(
                         StatementKind::Assign(
@@ -1393,7 +1450,7 @@ impl<'a> MirBuilder<'a> {
                         expr.span,
                     );
 
-                    let init_name = format!("{}::__init__", class_name);
+                    let init_name = format!("{}::__init__", struct_name);
                     let mut init_args = vec![Operand::Copy(obj_tmp)];
                     init_args.extend(arg_ops);
 

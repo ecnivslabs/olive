@@ -194,10 +194,13 @@ fn load_and_parse(
                     for s in &imported_stmts {
                         match &s.kind {
                             parser::StmtKind::Fn { name, .. }
-                            | parser::StmtKind::Class { name, .. }
+                            | parser::StmtKind::Struct { name, .. }
                             | parser::StmtKind::Let { name, .. }
                             | parser::StmtKind::Const { name, .. } => {
                                 defined_names.insert(name.clone());
+                            }
+                            parser::StmtKind::Impl { type_name, .. } => {
+                                defined_names.insert(type_name.clone());
                             }
                             _ => {}
                         }
@@ -209,7 +212,8 @@ fn load_and_parse(
                         matches!(
                             s.kind,
                             parser::StmtKind::Fn { .. }
-                                | parser::StmtKind::Class { .. }
+                                | parser::StmtKind::Struct { .. }
+                                | parser::StmtKind::Impl { .. }
                                 | parser::StmtKind::Let { .. }
                                 | parser::StmtKind::Const { .. }
                         )
@@ -241,8 +245,12 @@ fn load_and_parse(
                     
                     imported_stmts.retain(|s| {
                         match &s.kind {
-                            parser::StmtKind::Fn { name, .. } | parser::StmtKind::Class { name, .. } => {
+                            parser::StmtKind::Fn { name, .. }
+                            | parser::StmtKind::Struct { name, .. } => {
                                 names.contains(name)
+                            }
+                            parser::StmtKind::Impl { type_name, .. } => {
+                                names.contains(type_name)
                             }
                             _ => false,
                         }
@@ -717,9 +725,17 @@ fn mangle_stmt(stmt: &mut parser::Stmt, prefix: &str, names: &HashSet<String>) {
                 mangle_stmt(s, prefix, names);
             }
         }
-        parser::StmtKind::Class { name, body, .. } => {
+        parser::StmtKind::Struct { name, body, .. } => {
             if names.contains(name) {
                 *name = format!("{}::{}", prefix, name);
+            }
+            for s in body {
+                mangle_stmt(s, prefix, names);
+            }
+        }
+        parser::StmtKind::Impl { type_name, body } => {
+            if names.contains(type_name) {
+                *type_name = format!("{}::{}", prefix, type_name);
             }
             for s in body {
                 mangle_stmt(s, prefix, names);
