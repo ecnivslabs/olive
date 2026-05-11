@@ -3,14 +3,15 @@
 
 <p align="center">
   <a href="https://github.com/ecnivs/olive/stargazers">
-    <img src="https://img.shields.io/github/stars/ecnivs/olive?style=for-the-badge&color=green">
+    <img src="https://img.shields.io/github/stars/ecnivs/olive?style=flat-square"">
   </a>
   <a href="https://github.com/ecnivs/olive/issues">
-    <img src="https://img.shields.io/github/issues/ecnivs/olive?style=for-the-badge&color=blue">
+    <img src="https://img.shields.io/github/issues/ecnivs/olive?style=flat-square"">
   </a>
   <a href="https://github.com/ecnivs/olive/blob/master/LICENSE">
-    <img src="https://img.shields.io/github/license/ecnivs/olive?style=for-the-badge&color=orange">
+    <img src="https://img.shields.io/github/license/ecnivs/olive?style=flat-square">
   </a>
+  <img src="https://img.shields.io/github/languages/top/ecnivs/olive?style=flat-square"
 </p>
 
 ## Overview
