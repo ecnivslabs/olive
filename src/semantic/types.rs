@@ -7,6 +7,7 @@ static TYPE_VAR_COUNTER: AtomicUsize = AtomicUsize::new(0);
 #[allow(dead_code)]
 pub enum Type {
     Int,
+    I32,
     Float,
     Str,
     Bool,
@@ -52,16 +53,17 @@ impl Type {
         matches!(self, Type::Var(_))
     }
 
-    /// Returns true if this is a numeric type (Int or Float).
+    /// Returns true if this is a numeric type (Int, I32, or Float).
     #[allow(dead_code)]
     pub fn is_numeric(&self) -> bool {
-        matches!(self, Type::Int | Type::Float)
+        matches!(self, Type::Int | Type::I32 | Type::Float)
     }
 
     /// Returns true if this type has move semantics (heap allocated or complex).
     pub fn is_move_type(&self) -> bool {
         match self {
             Type::Int
+            | Type::I32
             | Type::Float
             | Type::Bool
             | Type::Null
@@ -80,6 +82,7 @@ impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Type::Int => write!(f, "int"),
+            Type::I32 => write!(f, "i32"),
             Type::Float => write!(f, "float"),
             Type::Str => write!(f, "str"),
             Type::Bool => write!(f, "bool"),

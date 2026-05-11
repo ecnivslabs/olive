@@ -750,6 +750,7 @@ impl<'a> MirBuilder<'a> {
         match &expr.kind {
             TypeExprKind::Name(name) => match name.as_str() {
                 "int" | "i64" => Type::Int,
+                "i32" => Type::I32,
                 "float" | "f64" => Type::Float,
                 "str" => Type::Str,
                 "bool" => Type::Bool,

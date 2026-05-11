@@ -29,6 +29,8 @@ impl TypeChecker {
             ("print", Type::Fn(vec![Type::Any], Box::new(Type::Int))),
             ("str", Type::Fn(vec![Type::Any], Box::new(Type::Str))),
             ("int", Type::Fn(vec![Type::Any], Box::new(Type::Int))),
+            ("i64", Type::Fn(vec![Type::Any], Box::new(Type::Int))),
+            ("i32", Type::Fn(vec![Type::Any], Box::new(Type::I32))),
             ("float", Type::Fn(vec![Type::Any], Box::new(Type::Float))),
             ("bool", Type::Fn(vec![Type::Any], Box::new(Type::Bool))),
             ("type", Type::Fn(vec![Type::Any], Box::new(Type::Str))),
@@ -589,8 +591,11 @@ impl TypeChecker {
                 if attr == "str" {
                     return Type::Fn(vec![], Box::new(Type::Str));
                 }
-                if attr == "int" {
+                if attr == "int" || attr == "i64" {
                     return Type::Fn(vec![], Box::new(Type::Int));
+                }
+                if attr == "i32" {
+                    return Type::Fn(vec![], Box::new(Type::I32));
                 }
                 if attr == "float" {
                     return Type::Fn(vec![], Box::new(Type::Float));
@@ -941,6 +946,7 @@ impl TypeChecker {
         match &expr.kind {
             TypeExprKind::Name(name) => match name.as_str() {
                 "int" | "i64" => Type::Int,
+                "i32" => Type::I32,
                 "float" | "f64" => Type::Float,
                 "str" => Type::Str,
                 "bool" => Type::Bool,

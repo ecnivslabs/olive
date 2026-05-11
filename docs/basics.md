@@ -33,8 +33,9 @@ Olive is statically typed but features powerful type inference.
 
 ### Primitive Types
 
-- `int`: 64-bit integers (`42`, `-7`).
-- `float`: 64-bit floating-point numbers (`3.14`, `-0.5`).
+- `int` / `i64`: 64-bit integers (`42`, `-7`).
+- `i32`: 32-bit integers.
+- `float` / `f64`: 64-bit floating-point numbers (`3.14`, `-0.5`).
 - `str`: UTF-8 encoded strings (`"Hello"`).
 - `bool`: Boolean values (`True`, `False`).
 - `None`: Represents the absence of a value.
@@ -106,18 +107,15 @@ for item in ["apple", "banana", "cherry"]:
     print(item)
 ```
 
-### Exception Handling
+### Error Handling
 
-Olive uses `try`, `except`, `else`, and `finally` for error handling:
+Olive uses a Rust-inspired `Result` type pattern for error handling, moving away from traditional exceptions. The `try` expression can be used to handle errors gracefully:
 
 ```python
-try:
-    risky_operation()
-except Exception as e:
-    print("Caught an error: " + str(e))
-finally:
-    cleanup()
+let value = try risky_operation()
 ```
+
+You can also use union types for errors and explicitly match on them if needed.
 
 ### Assertions
 

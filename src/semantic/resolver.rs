@@ -34,6 +34,18 @@ impl Resolver {
             is_private: false,
         });
         table.define(Symbol {
+            name: "i64".to_string(),
+            kind: SymbolKind::Function,
+            span: Span::default(),
+            is_private: false,
+        });
+        table.define(Symbol {
+            name: "i32".to_string(),
+            kind: SymbolKind::Function,
+            span: Span::default(),
+            is_private: false,
+        });
+        table.define(Symbol {
             name: "float".to_string(),
             kind: SymbolKind::Function,
             span: Span::default(),
