@@ -31,7 +31,15 @@ impl TypeChecker {
             ("int", Type::Fn(vec![Type::Any], Box::new(Type::Int))),
             ("i64", Type::Fn(vec![Type::Any], Box::new(Type::Int))),
             ("i32", Type::Fn(vec![Type::Any], Box::new(Type::I32))),
+            ("i16", Type::Fn(vec![Type::Any], Box::new(Type::I16))),
+            ("i8", Type::Fn(vec![Type::Any], Box::new(Type::I8))),
+            ("u64", Type::Fn(vec![Type::Any], Box::new(Type::U64))),
+            ("u32", Type::Fn(vec![Type::Any], Box::new(Type::U32))),
+            ("u16", Type::Fn(vec![Type::Any], Box::new(Type::U16))),
+            ("u8", Type::Fn(vec![Type::Any], Box::new(Type::U8))),
             ("float", Type::Fn(vec![Type::Any], Box::new(Type::Float))),
+            ("f64", Type::Fn(vec![Type::Any], Box::new(Type::Float))),
+            ("f32", Type::Fn(vec![Type::Any], Box::new(Type::F32))),
             ("bool", Type::Fn(vec![Type::Any], Box::new(Type::Bool))),
             ("type", Type::Fn(vec![Type::Any], Box::new(Type::Str))),
             ("len", Type::Fn(vec![Type::Any], Box::new(Type::Int))),
@@ -594,11 +602,17 @@ impl TypeChecker {
                 if attr == "int" || attr == "i64" {
                     return Type::Fn(vec![], Box::new(Type::Int));
                 }
-                if attr == "i32" {
-                    return Type::Fn(vec![], Box::new(Type::I32));
-                }
-                if attr == "float" {
-                    return Type::Fn(vec![], Box::new(Type::Float));
+                match attr.as_str() {
+                    "i32" => return Type::Fn(vec![], Box::new(Type::I32)),
+                    "i16" => return Type::Fn(vec![], Box::new(Type::I16)),
+                    "i8"  => return Type::Fn(vec![], Box::new(Type::I8)),
+                    "u64" => return Type::Fn(vec![], Box::new(Type::U64)),
+                    "u32" => return Type::Fn(vec![], Box::new(Type::U32)),
+                    "u16" => return Type::Fn(vec![], Box::new(Type::U16)),
+                    "u8"  => return Type::Fn(vec![], Box::new(Type::U8)),
+                    "float" | "f64" => return Type::Fn(vec![], Box::new(Type::Float)),
+                    "f32" => return Type::Fn(vec![], Box::new(Type::F32)),
+                    _ => {}
                 }
                 if attr == "bool" {
                     return Type::Fn(vec![], Box::new(Type::Bool));
@@ -947,7 +961,14 @@ impl TypeChecker {
             TypeExprKind::Name(name) => match name.as_str() {
                 "int" | "i64" => Type::Int,
                 "i32" => Type::I32,
+                "i16" => Type::I16,
+                "i8" => Type::I8,
+                "u64" => Type::U64,
+                "u32" => Type::U32,
+                "u16" => Type::U16,
+                "u8" => Type::U8,
                 "float" | "f64" => Type::Float,
+                "f32" => Type::F32,
                 "str" => Type::Str,
                 "bool" => Type::Bool,
                 "None" => Type::Null,

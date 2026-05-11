@@ -7,8 +7,15 @@ static TYPE_VAR_COUNTER: AtomicUsize = AtomicUsize::new(0);
 #[allow(dead_code)]
 pub enum Type {
     Int,
+    I8,
+    I16,
     I32,
+    U8,
+    U16,
+    U32,
+    U64,
     Float,
+    F32,
     Str,
     Bool,
     Null,
@@ -53,18 +60,25 @@ impl Type {
         matches!(self, Type::Var(_))
     }
 
-    /// Returns true if this is a numeric type (Int, I32, or Float).
+    /// Returns true if this is a numeric type.
     #[allow(dead_code)]
     pub fn is_numeric(&self) -> bool {
-        matches!(self, Type::Int | Type::I32 | Type::Float)
+        matches!(self, Type::Int | Type::I8 | Type::I16 | Type::I32 | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::Float | Type::F32)
     }
 
     /// Returns true if this type has move semantics (heap allocated or complex).
     pub fn is_move_type(&self) -> bool {
         match self {
             Type::Int
+            | Type::I8
+            | Type::I16
             | Type::I32
+            | Type::U8
+            | Type::U16
+            | Type::U32
+            | Type::U64
             | Type::Float
+            | Type::F32
             | Type::Bool
             | Type::Null
             | Type::Never
@@ -82,8 +96,15 @@ impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Type::Int => write!(f, "int"),
+            Type::I8 => write!(f, "i8"),
+            Type::I16 => write!(f, "i16"),
             Type::I32 => write!(f, "i32"),
+            Type::U8 => write!(f, "u8"),
+            Type::U16 => write!(f, "u16"),
+            Type::U32 => write!(f, "u32"),
+            Type::U64 => write!(f, "u64"),
             Type::Float => write!(f, "float"),
+            Type::F32 => write!(f, "f32"),
             Type::Str => write!(f, "str"),
             Type::Bool => write!(f, "bool"),
             Type::Null => write!(f, "None"),

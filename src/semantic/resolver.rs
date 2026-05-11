@@ -33,30 +33,14 @@ impl Resolver {
             span: Span::default(),
             is_private: false,
         });
-        table.define(Symbol {
-            name: "i64".to_string(),
-            kind: SymbolKind::Function,
-            span: Span::default(),
-            is_private: false,
-        });
-        table.define(Symbol {
-            name: "i32".to_string(),
-            kind: SymbolKind::Function,
-            span: Span::default(),
-            is_private: false,
-        });
-        table.define(Symbol {
-            name: "float".to_string(),
-            kind: SymbolKind::Function,
-            span: Span::default(),
-            is_private: false,
-        });
-        table.define(Symbol {
-            name: "bool".to_string(),
-            kind: SymbolKind::Function,
-            span: Span::default(),
-            is_private: false,
-        });
+        for ty_name in ["i64", "i32", "i16", "i8", "u64", "u32", "u16", "u8", "float", "f64", "f32", "bool"] {
+            table.define(Symbol {
+                name: ty_name.to_string(),
+                kind: SymbolKind::Function,
+                span: Span::default(),
+                is_private: false,
+            });
+        }
         table.define(Symbol {
             name: "type".to_string(),
             kind: SymbolKind::Function,

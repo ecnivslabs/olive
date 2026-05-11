@@ -34,8 +34,10 @@ Olive is statically typed but features powerful type inference.
 ### Primitive Types
 
 - `int` / `i64`: 64-bit integers (`42`, `-7`).
-- `i32`: 32-bit integers.
+- `i32`, `i16`, `i8`: 32, 16, and 8-bit signed integers.
+- `u64`, `u32`, `u16`, `u8`: Unsigned integers.
 - `float` / `f64`: 64-bit floating-point numbers (`3.14`, `-0.5`).
+- `f32`: 32-bit floating-point numbers.
 - `str`: UTF-8 encoded strings (`"Hello"`).
 - `bool`: Boolean values (`True`, `False`).
 - `None`: Represents the absence of a value.
