@@ -82,7 +82,7 @@ While memory safety is paramount, safety analysis can be expensive for JIT compi
 
 If a function:
 1.  Only uses primitive types (like `int`, `float`, `bool`) that follow copy semantics.
-2.  Does not use any move-only types (like `list`, `dict`, `class` instances).
+2.  Does not use any move-only types (like `list`, `dict`, `struct` instances).
 3.  Does not create or use any references (`&` or `&mut`).
 
 The compiler **skips the borrow checking pass entirely** for that function. This allows simple compute kernels and utility functions to be JIT-compiled and executed with zero safety-analysis overhead, matching the startup latency of non-memory-safe JITs while maintaining total safety for complex data structures.

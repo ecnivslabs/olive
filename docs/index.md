@@ -11,7 +11,7 @@ Olive is a systems-oriented language designed for developers who value both expr
 - [**Basic Syntax and Types**](basics.md): Explore variables, primitive types, and control flow.
 - [**Functions**](functions.md): Learn how to define and use functions and lambdas.
 - [**Enums and Pattern Matching**](enums.md): Discover how to handle complex state and branching using enums and the `match` statement.
-- [**Classes and OOP**](classes.md): Dive into Olive's object-oriented programming system.
+- [**Structs and Composition**](structs.md): Dive into Olive's data modeling and static composition system.
 - [**Ownership and Safety**](ownership.md): Understand OBRM, borrowing, and memory safety rules.
 - [**High-Performance Optimizations**](optimizations.md): Explore the compiler's optimization pipeline.
 - [**Modules and Project Structure**](modules.md): Organize your code into modules and manage visibility.
