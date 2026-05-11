@@ -5,6 +5,27 @@ use crate::parser::{CallArg, Expr, ExprKind};
 use crate::semantic::types::Type;
 use crate::span::Span;
 
+/// Builtins whose runtime function is selected from the argument's concrete
+/// static type (see `map_builtin_to_runtime`). Their nominal parameter is
+/// `Any`, but boxing the argument would both pick the wrong runtime helper and
+/// allocate a boxed scalar on every call, so their operands are passed raw.
+fn is_type_dispatched_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "print"
+            | "str"
+            | "int"
+            | "float"
+            | "bool"
+            | "iter"
+            | "next"
+            | "has_next"
+            | "slice"
+            | "list"
+            | "dict"
+    )
+}
+
 impl<'a> MirBuilder<'a> {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn lower_attr_method_call_section(
@@ -556,7 +577,17 @@ impl<'a> MirBuilder<'a> {
             Vec::new()
         };
 
-        let final_args = if let Some(name) = &call_fn_name {
+        // The type-dispatched builtins take a nominal `Any` parameter but
+        // resolve a concrete runtime function from the argument's static type
+        // (e.g. `int(f64)` -> `float_to_int`). Boxing the argument into `Any`
+        // would defeat that dispatch and, in a hot loop, allocate a boxed
+        // scalar per call, so they receive their operands raw.
+        let final_args = if call_fn_name
+            .as_deref()
+            .is_some_and(is_type_dispatched_builtin)
+        {
+            arg_ops.clone()
+        } else if let Some(name) = &call_fn_name {
             self.pack_fn_call_args(name, &arg_ops, &arg_tys, &param_tys, &arg_kw_names, span)
         } else {
             let mut res = Vec::new();

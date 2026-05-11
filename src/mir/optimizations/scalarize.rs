@@ -231,12 +231,13 @@ fn collect_field_map(
                     let next = map.len();
                     map.insert(field.clone(), (next, ty));
                 }
-                StatementKind::Assign(_, Rvalue::GetAttr(op, field))
+                StatementKind::Assign(dst, Rvalue::GetAttr(op, field))
                     if operand_local(op).is_some_and(|l| aliases.contains(&l))
                         && !map.contains_key(field) =>
                 {
+                    let ty = func.locals[dst.0].ty.clone();
                     let next = map.len();
-                    map.insert(field.clone(), (next, crate::semantic::types::Type::Any));
+                    map.insert(field.clone(), (next, ty));
                 }
                 StatementKind::SetIndex(op, idx_op, val)
                     if operand_local(op).is_some_and(|l| aliases.contains(&l)) =>
@@ -261,7 +262,7 @@ fn collect_field_map(
                         map.insert(field, (next, ty));
                     }
                 }
-                StatementKind::Assign(_, Rvalue::GetIndex(op, idx_op))
+                StatementKind::Assign(dst, Rvalue::GetIndex(op, idx_op))
                     if operand_local(op).is_some_and(|l| aliases.contains(&l)) =>
                 {
                     let field = match idx_op {
@@ -270,8 +271,14 @@ fn collect_field_map(
                         _ => continue,
                     };
                     if !map.contains_key(&field) {
+                        // The scalar replacing this slot must carry the element's
+                        // real type, not a blanket `Any`. A wrong `Any` here
+                        // parks a raw scalar in an `Any`-typed local, which then
+                        // routes later arithmetic through the boxing `any_*`
+                        // helpers and corrupts the value.
+                        let ty = func.locals[dst.0].ty.clone();
                         let next = map.len();
-                        map.insert(field, (next, crate::semantic::types::Type::Any));
+                        map.insert(field, (next, ty));
                     }
                 }
                 _ => {}
@@ -318,8 +325,13 @@ fn rewrite(
                         });
                     }
                     for i in (0..ops.len()).step_by(2) {
-                        if let Operand::Constant(Constant::Str(ref s)) = ops[i]
-                            && let Some(&(idx, _)) = field_map.get(s)
+                        let field = match ops[i] {
+                            Operand::Constant(Constant::Int(n)) => Some(n.to_string()),
+                            Operand::Constant(Constant::Str(ref s)) => Some(s.clone()),
+                            _ => None,
+                        };
+                        if let Some(field) = field
+                            && let Some(&(idx, _)) = field_map.get(&field)
                         {
                             new_stmts.push(Statement {
                                 kind: StatementKind::Assign(

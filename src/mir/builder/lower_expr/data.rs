@@ -198,7 +198,7 @@ impl<'a> MirBuilder<'a> {
             .iter()
             .map(|e| {
                 let op = self.lower_expr(e);
-                self.coerce_to_elem(op, e, &elem_box_ty)
+                self.coerce_to_hashable(op, e, &elem_box_ty)
             })
             .collect();
         let tmp = self.new_local(self.get_type(expr_id), None, false);
@@ -222,7 +222,7 @@ impl<'a> MirBuilder<'a> {
         let mut ops = Vec::new();
         for (k, v) in pairs {
             let kop = self.lower_expr(k);
-            ops.push(self.coerce_to_elem(kop, k, &key_box_ty));
+            ops.push(self.coerce_to_hashable(kop, k, &key_box_ty));
             let vop = self.lower_expr(v);
             ops.push(self.coerce_to_elem(vop, v, &val_box_ty));
         }

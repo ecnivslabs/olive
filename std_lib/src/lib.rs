@@ -57,6 +57,7 @@ pub(crate) const KIND_ITER: i64 = 8;
 pub(crate) const KIND_FLOAT: i64 = 11;
 pub(crate) const KIND_BOOL: i64 = 12;
 pub(crate) const KIND_NULL: i64 = 13;
+pub(crate) const KIND_INT: i64 = 14;
 
 pub use tracking::{active_objects_count, is_active_object, register_object, unregister_object};
 
@@ -71,21 +72,59 @@ pub struct StableVec {
 #[derive(Clone, Copy)]
 pub struct OliveStringKey(pub i64);
 
+/// How a dict/set key word is identified. A scalar is hashed and compared by
+/// its value so that the same key reaches the same entry whether it arrives raw
+/// (a bare int from a literal) or boxed (an `Any`-typed variable carrying a
+/// `KIND_INT` box); a boxed scalar is never matched by its heap address.
+enum KeyClass {
+    Str(&'static str),
+    Scalar(i64, i64),
+    Raw(i64),
+}
+
+fn classify_key(v: i64) -> KeyClass {
+    if v & 1 == 1 && (v & !1) > 0x10000 {
+        return KeyClass::Str(olive_str_as_str(v).unwrap_or(""));
+    }
+    if is_active_object(v) {
+        let kind = unsafe { *(v as *const i64) };
+        if matches!(kind, KIND_INT | KIND_FLOAT | KIND_BOOL | KIND_NULL) {
+            let b = unsafe { &*(v as *const boxed::OliveBoxed) };
+            // A boxed int collapses to the same class as a bare int of equal
+            // value; the other boxed scalars keep their own kind so a boxed
+            // `null` never collides with the integer zero.
+            return KeyClass::Scalar(kind, b.bits);
+        }
+        return KeyClass::Raw(v);
+    }
+    // A bare non-pointer word is an unboxed integer (raw ints, bools, and the
+    // null/zero sentinel all live here); normalize it to the int class so it
+    // matches its boxed form.
+    KeyClass::Scalar(KIND_INT, v)
+}
+
 impl PartialEq for OliveStringKey {
     fn eq(&self, other: &Self) -> bool {
         if self.0 == other.0 {
             return true;
         }
-        let s1 = olive_str_as_str(self.0).unwrap_or("");
-        let s2 = olive_str_as_str(other.0).unwrap_or("");
-        s1 == s2
+        match (classify_key(self.0), classify_key(other.0)) {
+            (KeyClass::Str(a), KeyClass::Str(b)) => a == b,
+            (KeyClass::Scalar(ka, va), KeyClass::Scalar(kb, vb)) => ka == kb && va == vb,
+            _ => false,
+        }
     }
 }
 impl Eq for OliveStringKey {}
 impl std::hash::Hash for OliveStringKey {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        if let Some(s) = olive_str_as_str(self.0) {
-            s.hash(state);
+        match classify_key(self.0) {
+            KeyClass::Str(s) => s.hash(state),
+            KeyClass::Scalar(kind, bits) => {
+                kind.hash(state);
+                bits.hash(state);
+            }
+            KeyClass::Raw(v) => v.hash(state),
         }
     }
 }
@@ -344,6 +383,10 @@ fn format_list_elem(val: i64) -> String {
                 return if b.bits != 0 { "True" } else { "False" }.to_string();
             }
             KIND_NULL => return "None".to_string(),
+            KIND_INT => {
+                let b = unsafe { &*(val as *const boxed::OliveBoxed) };
+                return format!("{}", b.bits);
+            }
             KIND_LIST => return format_list(val),
             KIND_OBJ => {
                 let m = unsafe { &*(val as *const OliveObj) };
@@ -459,6 +502,10 @@ pub extern "C" fn olive_any_to_str(val: i64) -> i64 {
                 return olive_str_internal(if b.bits != 0 { "True" } else { "False" });
             }
             KIND_NULL => return olive_str_internal("None"),
+            KIND_INT => {
+                let b = unsafe { &*(val as *const boxed::OliveBoxed) };
+                return olive_str_internal(&format!("{}", b.bits));
+            }
             KIND_PYOBJECT => {
                 let p = python::olive_py_to_str(val as python::PyObject);
                 return if p != 0 {
@@ -545,28 +592,22 @@ pub extern "C" fn olive_str_to_float(ptr: i64) -> f64 {
 
 /// `+` on operands whose static type is `Any`: dispatch on the runtime kind so
 /// strings concatenate, floats and ints add, and lists join, rather than blindly
-/// adding the two words as integers.
+/// adding the two words as integers. Every scalar reaching here is boxed (the
+/// compiler boxes a concrete operand before an `Any` op), so a bare low-bit
+/// pointer is unambiguously a string. The integer result is reboxed because the
+/// expression's static type is `Any`.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_any_add(a: i64, b: i64) -> i64 {
-    let is_string = |v: i64| v & 1 == 1 && (v & !1) > 0x10000;
-    if is_string(a) || is_string(b) {
+    if any_is_str(a) || any_is_str(b) {
         return olive_str_concat(a, b);
     }
-    let kind = |v: i64| {
-        if is_active_object(v) {
-            unsafe { *(v as *const i64) }
-        } else {
-            0
-        }
-    };
-    let (ka, kb) = (kind(a), kind(b));
-    if ka == KIND_FLOAT || kb == KIND_FLOAT {
+    if any_is_float(a) || any_is_float(b) {
         return boxed::olive_box_float(boxed::olive_unbox_float(a) + boxed::olive_unbox_float(b));
     }
-    if ka == KIND_LIST && kb == KIND_LIST {
+    if any_is_list(a) && any_is_list(b) {
         return crate::list::olive_list_concat(a, b);
     }
-    a + b
+    boxed::olive_box_int(boxed::olive_unbox_int(a) + boxed::olive_unbox_int(b))
 }
 
 fn any_is_str(v: i64) -> bool {
@@ -577,8 +618,12 @@ fn any_is_float(v: i64) -> bool {
     is_active_object(v) && unsafe { *(v as *const i64) } == KIND_FLOAT
 }
 
+fn any_is_list(v: i64) -> bool {
+    is_active_object(v) && unsafe { *(v as *const i64) } == KIND_LIST
+}
+
 /// Arithmetic on `Any` operands: a float on either side promotes to float,
-/// otherwise both are integers.
+/// otherwise both are integers and the result is reboxed as an `Any` int.
 macro_rules! any_arith {
     ($name:ident, $op:tt) => {
         #[unsafe(no_mangle)]
@@ -586,7 +631,7 @@ macro_rules! any_arith {
             if any_is_float(a) || any_is_float(b) {
                 boxed::olive_box_float(boxed::olive_unbox_float(a) $op boxed::olive_unbox_float(b))
             } else {
-                a $op b
+                boxed::olive_box_int(boxed::olive_unbox_int(a) $op boxed::olive_unbox_int(b))
             }
         }
     };
@@ -598,10 +643,13 @@ any_arith!(olive_any_mul, *);
 pub extern "C" fn olive_any_div(a: i64, b: i64) -> i64 {
     if any_is_float(a) || any_is_float(b) {
         boxed::olive_box_float(boxed::olive_unbox_float(a) / boxed::olive_unbox_float(b))
-    } else if b == 0 {
-        0
     } else {
-        a / b
+        let d = boxed::olive_unbox_int(b);
+        boxed::olive_box_int(if d == 0 {
+            0
+        } else {
+            boxed::olive_unbox_int(a) / d
+        })
     }
 }
 
@@ -609,15 +657,19 @@ pub extern "C" fn olive_any_div(a: i64, b: i64) -> i64 {
 pub extern "C" fn olive_any_mod(a: i64, b: i64) -> i64 {
     if any_is_float(a) || any_is_float(b) {
         boxed::olive_box_float(boxed::olive_unbox_float(a) % boxed::olive_unbox_float(b))
-    } else if b == 0 {
-        0
     } else {
-        a % b
+        let d = boxed::olive_unbox_int(b);
+        boxed::olive_box_int(if d == 0 {
+            0
+        } else {
+            boxed::olive_unbox_int(a) % d
+        })
     }
 }
 
 /// Comparison on `Any` operands: two strings compare lexicographically, a float
-/// on either side compares as float, otherwise as integers.
+/// on either side compares as float, otherwise as integers. The boolean result
+/// is a concrete `Bool`, so it stays a bare word.
 macro_rules! any_cmp {
     ($name:ident, $op:tt) => {
         #[unsafe(no_mangle)]
@@ -627,7 +679,7 @@ macro_rules! any_cmp {
             } else if any_is_float(a) || any_is_float(b) {
                 boxed::olive_unbox_float(a) $op boxed::olive_unbox_float(b)
             } else {
-                a $op b
+                boxed::olive_unbox_int(a) $op boxed::olive_unbox_int(b)
             };
             r as i64
         }
@@ -856,7 +908,7 @@ pub extern "C" fn olive_free_any(ptr: i64) {
         KIND_OBJ => olive_free_obj(ptr),
         KIND_ENUM => olive_free_enum(ptr),
         KIND_BYTES => bytes::olive_buf_free(ptr),
-        KIND_FLOAT | KIND_BOOL | KIND_NULL => boxed::olive_free_boxed(ptr),
+        KIND_FLOAT | KIND_BOOL | KIND_NULL | KIND_INT => boxed::olive_free_boxed(ptr),
         crate::result::KIND_RESULT => crate::result::olive_free_result(ptr),
         KIND_PYOBJECT => python::olive_py_decref(ptr as *mut std::os::raw::c_void),
         KIND_ITER => olive_free_iter(ptr),
