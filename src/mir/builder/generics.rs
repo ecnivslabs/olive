@@ -118,6 +118,7 @@ impl<'a> MirBuilder<'a> {
         }
 
         let mut specialized_stmt = generic_stmt.clone();
+        let mut fn_type_map: Option<HashMap<String, Type>> = None;
         match &mut specialized_stmt.kind {
             StmtKind::Fn {
                 name: n,
@@ -137,6 +138,7 @@ impl<'a> MirBuilder<'a> {
                 }
 
                 self.replace_types_in_fn(p, rt, b, &type_map);
+                fn_type_map = Some(type_map);
             }
             StmtKind::Struct {
                 name: n,
@@ -162,7 +164,15 @@ impl<'a> MirBuilder<'a> {
             _ => {}
         }
 
+        // While lowering the specialized body, resolve type parameters read from
+        // the original `expr_types` (e.g. a `Box(..)` construct inside the body)
+        // to the concrete instance. Saved/restored to support nesting.
+        let saved = std::mem::take(&mut self.mono_type_map);
+        if let Some(map) = fn_type_map {
+            self.mono_type_map = map;
+        }
         self.lower_stmt(&specialized_stmt);
+        self.mono_type_map = saved;
         specialized_name
     }
 

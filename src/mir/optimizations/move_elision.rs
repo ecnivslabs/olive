@@ -94,11 +94,15 @@ impl MoveElision {
             | Rvalue::GetTypeId(op)
             | Rvalue::FatPtrData(op)
             | Rvalue::Cast(op, _) => self.optimize_operand(op, live_after, locals),
-            Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) => {
+            Rvalue::BinaryOp(_, l, r) => {
                 let mut changed = self.optimize_operand(l, live_after, locals);
                 changed |= self.optimize_operand(r, live_after, locals);
                 changed
             }
+            // Indexing reads an element that may alias the container's storage,
+            // so the container must not be moved (freed) here even on its last
+            // use. The index is an integer and never a move type.
+            Rvalue::GetIndex(_, _) => false,
             Rvalue::Call { func: f_op, args } => {
                 let mut changed = self.optimize_operand(f_op, live_after, locals);
                 for arg in args {

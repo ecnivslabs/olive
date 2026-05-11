@@ -310,6 +310,12 @@ impl<'a> MirBuilder<'a> {
             current_obj_ty = *inner;
         }
 
+        // `f[int]` is an explicit type argument on a function, not a real index;
+        // it lowers to the function itself, with inference picking the type.
+        if matches!(current_obj_ty, Type::Fn(_, _, _)) {
+            return self.lower_expr(obj);
+        }
+
         if let ExprKind::Slice { start, stop, step } = &index.kind
             && (current_obj_ty == Type::PyObject || current_obj_ty == Type::Any)
         {

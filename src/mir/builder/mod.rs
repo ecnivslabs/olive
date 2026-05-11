@@ -35,6 +35,10 @@ pub struct MirBuilder<'a> {
     /// the field has no default). Used to fill omitted trailing fields at a
     /// construction site.
     pub(super) struct_field_defaults: HashMap<String, Vec<Option<crate::parser::Expr>>>,
+    /// Type-parameter substitution active while lowering a monomorphized
+    /// function, so types read from the original (generic) `expr_types` are
+    /// resolved to the concrete instance. Empty outside monomorphization.
+    pub(super) mono_type_map: HashMap<String, Type>,
     pub traits: &'a HashMap<String, crate::semantic::type_checker::TraitDef>,
 
     pub(super) current_name: String,
@@ -85,6 +89,7 @@ impl<'a> MirBuilder<'a> {
             global_types,
             struct_fields,
             struct_field_defaults: HashMap::default(),
+            mono_type_map: HashMap::default(),
             traits,
             current_name: String::new(),
             current_locals: Vec::new(),
@@ -446,9 +451,50 @@ impl<'a> MirBuilder<'a> {
     }
 
     pub(super) fn get_type(&self, expr_id: usize) -> Type {
-        match self.expr_types.get(&expr_id).cloned().unwrap_or(Type::Any) {
+        let ty = self.expr_types.get(&expr_id).cloned().unwrap_or(Type::Any);
+        let ty = if self.mono_type_map.is_empty() {
+            ty
+        } else {
+            self.subst_mono_type(&ty)
+        };
+        match ty {
             Type::PyNamed(_, _) => Type::PyObject,
             ty => ty,
+        }
+    }
+
+    /// Applies the active monomorphization substitution to a type. A type
+    /// parameter shows up either as `Param(n)` or, once resolved through the
+    /// type checker, as a zero-arg `Struct(n)`; both map to the concrete type.
+    pub(super) fn subst_mono_type(&self, ty: &Type) -> Type {
+        match ty {
+            Type::Param(n) => self
+                .mono_type_map
+                .get(n)
+                .cloned()
+                .unwrap_or_else(|| ty.clone()),
+            Type::Struct(n, args) if args.is_empty() && self.mono_type_map.contains_key(n) => {
+                self.mono_type_map[n].clone()
+            }
+            Type::Struct(n, args) => Type::Struct(
+                n.clone(),
+                args.iter().map(|a| self.subst_mono_type(a)).collect(),
+            ),
+            Type::Enum(n, args) => Type::Enum(
+                n.clone(),
+                args.iter().map(|a| self.subst_mono_type(a)).collect(),
+            ),
+            Type::List(t) => Type::List(Box::new(self.subst_mono_type(t))),
+            Type::Set(t) => Type::Set(Box::new(self.subst_mono_type(t))),
+            Type::Dict(k, v) => Type::Dict(
+                Box::new(self.subst_mono_type(k)),
+                Box::new(self.subst_mono_type(v)),
+            ),
+            Type::Tuple(ts) => Type::Tuple(ts.iter().map(|t| self.subst_mono_type(t)).collect()),
+            Type::Ref(t) => Type::Ref(Box::new(self.subst_mono_type(t))),
+            Type::MutRef(t) => Type::MutRef(Box::new(self.subst_mono_type(t))),
+            Type::Ptr(t) => Type::Ptr(Box::new(self.subst_mono_type(t))),
+            _ => ty.clone(),
         }
     }
 
@@ -543,6 +589,15 @@ impl<'a> MirBuilder<'a> {
 
     pub(super) fn declare_var(&mut self, name: String, ty: Type, is_mut: bool) -> Local {
         let local = self.new_local(ty, Some(name.clone()), is_mut);
+        self.var_map.last_mut().unwrap().insert(name, local);
+        local
+    }
+
+    /// Declares a variable that does not own its value. Used for bindings that
+    /// are views into a value owned elsewhere (e.g. a tuple-destructure target
+    /// pointing into the iterated element), so the value is not freed twice.
+    pub(super) fn declare_var_view(&mut self, name: String, ty: Type, is_mut: bool) -> Local {
+        let local = self.new_local_with_owning(ty, Some(name.clone()), is_mut, false);
         self.var_map.last_mut().unwrap().insert(name, local);
         local
     }

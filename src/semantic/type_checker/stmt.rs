@@ -274,6 +274,15 @@ impl TypeChecker {
                         p_ty = s_ty;
                     }
 
+                    // `*args: T` collects positionals into a `[T]` and
+                    // `**kwargs: T` collects keywords into a `dict[str, T]`, so
+                    // each answers the right collection operations.
+                    match param.kind {
+                        ParamKind::VarArg => p_ty = Type::List(Box::new(p_ty)),
+                        ParamKind::KwArg => p_ty = Type::Dict(Box::new(Type::Str), Box::new(p_ty)),
+                        ParamKind::Regular => {}
+                    }
+
                     if let Some(default_expr) = &param.default {
                         let default_ty = self.check_expr(default_expr);
                         self.unify(&p_ty, &default_ty, param.span);
@@ -591,7 +600,15 @@ impl TypeChecker {
                 }
 
                 let prev_struct = self.current_struct.take();
-                self.current_struct = Some(type_name.to_string());
+                // Use the bare type name (e.g. `Box`, not `Box[T]`) so methods
+                // can look up the struct's type parameters and carry them as
+                // their own generic arguments.
+                let base_type_name = match &type_name.kind {
+                    crate::parser::TypeExprKind::Generic(n, _) => n.clone(),
+                    crate::parser::TypeExprKind::Name(n) => n.clone(),
+                    _ => type_name.to_string(),
+                };
+                self.current_struct = Some(base_type_name);
                 self.enter_scope();
                 for s in body {
                     self.check_stmt(s);
@@ -677,6 +694,10 @@ impl TypeChecker {
             } => {
                 let prev_struct = self.current_struct.take();
                 self.current_struct = Some(name.clone());
+
+                // Within its own default methods a trait satisfies itself, so a
+                // default may call a sibling method through `self`.
+                self.type_traits.insert((name.clone(), name.clone()));
 
                 self.enter_scope();
                 for tp in type_params {
@@ -1023,6 +1044,12 @@ impl TypeChecker {
                 else_body,
                 ..
             } => {
+                // Only an `if` with an `else` can yield a value on every path, so
+                // only then is it an implicit return. A bare `if` (no `else`) is
+                // control flow and must not be checked as a returned value.
+                let Some(else_last) = else_body.as_ref().and_then(|b| b.last()) else {
+                    return;
+                };
                 if let Some(last) = then_body.last() {
                     self.check_tail_return(last, expected);
                 }
@@ -1031,11 +1058,7 @@ impl TypeChecker {
                         self.check_tail_return(last, expected);
                     }
                 }
-                if let Some(body) = else_body
-                    && let Some(last) = body.last()
-                {
-                    self.check_tail_return(last, expected);
-                }
+                self.check_tail_return(else_last, expected);
             }
             StmtKind::UnsafeBlock(body) => {
                 if let Some(last) = body.last() {

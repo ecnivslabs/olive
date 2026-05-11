@@ -78,6 +78,28 @@ let version = 1.0
 print(f"Welcome to {name} v{version:.2f}")
 ```
 
+### String Methods
+
+Strings carry the common text operations:
+
+```rust
+print("HeLLo".upper())              // HELLO
+print("HeLLo".lower())              // hello
+print("  hi  ".strip())            // hi
+print("a,b,c".split(","))          // [a, b, c]
+print(",".join(["x", "y", "z"]))   // x,y,z
+print("hello".replace("l", "L"))   // heLLo
+print("hello".find("ll"))          // 2
+print("hello".startswith("he"))    // True
+```
+
+Iterate a string by character:
+
+```rust
+for ch in "hi":
+    print(ch)
+```
+
 ## Collections
 
 ### Lists
@@ -91,7 +113,7 @@ let first = numbers[0]
 let last = numbers.pop()  // removes and returns 4
 ```
 
-Lists also support `insert(index, value)`, `remove(index)`, and `extend(other)`. Two lists join with `+`.
+Lists also support `insert(index, value)`, `remove(index)`, `extend(other)`, `sort()`, and `reverse()`. Two lists join with `+`.
 
 ### Fixed Arrays
 
@@ -122,6 +144,17 @@ Hash-map key-value collections:
 ```rust
 let scores = {"Alice": 95, "Bob": 88}
 print(scores["Alice"])
+print(scores.get("Bob"))
+```
+
+A dict supports `get(key)`, `keys()`, `values()`, `items()`, and `remove(key)`. Iterate the keys directly, or the key-value pairs with `items()`:
+
+```rust
+for name in &scores:
+    print(name)
+
+for name, score in scores.items():
+    print(f"{name}: {score}")
 ```
 
 ### Sets
@@ -211,4 +244,3 @@ Iterating over `&numbers` borrows the list rather than consuming it, so it stays
 * `assert(condition, message)`: Aborts execution with a message if the condition is false.
 
 Integer ranges are written with the `..` and `..=` operators rather than a function, for example `0..n` or `1..=n`.
-

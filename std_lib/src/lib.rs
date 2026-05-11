@@ -543,6 +543,103 @@ pub extern "C" fn olive_str_to_float(ptr: i64) -> f64 {
     })
 }
 
+/// `+` on operands whose static type is `Any`: dispatch on the runtime kind so
+/// strings concatenate, floats and ints add, and lists join, rather than blindly
+/// adding the two words as integers.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_any_add(a: i64, b: i64) -> i64 {
+    let is_string = |v: i64| v & 1 == 1 && (v & !1) > 0x10000;
+    if is_string(a) || is_string(b) {
+        return olive_str_concat(a, b);
+    }
+    let kind = |v: i64| {
+        if is_active_object(v) {
+            unsafe { *(v as *const i64) }
+        } else {
+            0
+        }
+    };
+    let (ka, kb) = (kind(a), kind(b));
+    if ka == KIND_FLOAT || kb == KIND_FLOAT {
+        return boxed::olive_box_float(boxed::olive_unbox_float(a) + boxed::olive_unbox_float(b));
+    }
+    if ka == KIND_LIST && kb == KIND_LIST {
+        return crate::list::olive_list_concat(a, b);
+    }
+    a + b
+}
+
+fn any_is_str(v: i64) -> bool {
+    v & 1 == 1 && (v & !1) > 0x10000
+}
+
+fn any_is_float(v: i64) -> bool {
+    is_active_object(v) && unsafe { *(v as *const i64) } == KIND_FLOAT
+}
+
+/// Arithmetic on `Any` operands: a float on either side promotes to float,
+/// otherwise both are integers.
+macro_rules! any_arith {
+    ($name:ident, $op:tt) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $name(a: i64, b: i64) -> i64 {
+            if any_is_float(a) || any_is_float(b) {
+                boxed::olive_box_float(boxed::olive_unbox_float(a) $op boxed::olive_unbox_float(b))
+            } else {
+                a $op b
+            }
+        }
+    };
+}
+any_arith!(olive_any_sub, -);
+any_arith!(olive_any_mul, *);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_any_div(a: i64, b: i64) -> i64 {
+    if any_is_float(a) || any_is_float(b) {
+        boxed::olive_box_float(boxed::olive_unbox_float(a) / boxed::olive_unbox_float(b))
+    } else if b == 0 {
+        0
+    } else {
+        a / b
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_any_mod(a: i64, b: i64) -> i64 {
+    if any_is_float(a) || any_is_float(b) {
+        boxed::olive_box_float(boxed::olive_unbox_float(a) % boxed::olive_unbox_float(b))
+    } else if b == 0 {
+        0
+    } else {
+        a % b
+    }
+}
+
+/// Comparison on `Any` operands: two strings compare lexicographically, a float
+/// on either side compares as float, otherwise as integers.
+macro_rules! any_cmp {
+    ($name:ident, $op:tt) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $name(a: i64, b: i64) -> i64 {
+            let r = if any_is_str(a) && any_is_str(b) {
+                olive_str_from_ptr(a) $op olive_str_from_ptr(b)
+            } else if any_is_float(a) || any_is_float(b) {
+                boxed::olive_unbox_float(a) $op boxed::olive_unbox_float(b)
+            } else {
+                a $op b
+            };
+            r as i64
+        }
+    };
+}
+any_cmp!(olive_any_lt, <);
+any_cmp!(olive_any_le, <=);
+any_cmp!(olive_any_gt, >);
+any_cmp!(olive_any_ge, >=);
+any_cmp!(olive_any_eq, ==);
+any_cmp!(olive_any_ne, !=);
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_concat(l: i64, r: i64) -> i64 {
     let l_bytes = if l == 0 {
