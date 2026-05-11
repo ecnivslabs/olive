@@ -4,7 +4,7 @@ use rustc_hash::FxHashMap as HashMap;
 use crate::mir::optimizations::{
     Transform, const_fold::ConstantFolding, const_prop::ConstantPropagation,
     copy_prop::CopyPropagation, dce::DeadCodeElimination, gvn::GlobalValueNumbering,
-    inliner::Inliner, licm::LICM, loop_unroll::LoopUnroll, peephole::PeepholeOptimize,
+    inliner::Inliner, licm::LICM, loop_unroll::LoopUnroll, move_elision::MoveElision, peephole::PeepholeOptimize,
     simplify_cfg::SimplifyCfg, strength_reduction::StrengthReduction, tail_call::TailCallOpt,
 };
 
@@ -26,6 +26,7 @@ impl Optimizer {
                 Box::new(GlobalValueNumbering),
                 Box::new(SimplifyCfg),
                 Box::new(DeadCodeElimination),
+                Box::new(MoveElision),
             ],
             late_passes: vec![
                 Box::new(TailCallOpt),

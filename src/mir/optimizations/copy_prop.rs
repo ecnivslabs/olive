@@ -16,7 +16,7 @@ impl Transform for CopyPropagation {
             for stmt in &bb.statements {
                 if let StatementKind::Assign(dest, rval) = &stmt.kind {
                     *assign_counts.entry(*dest).or_insert(0) += 1;
-                    if let Rvalue::Use(Operand::Copy(src) | Operand::Move(src)) = rval {
+                    if let Rvalue::Use(Operand::Copy(src)) = rval {
                         copy_assignments.insert(*dest, *src);
                     }
                 }

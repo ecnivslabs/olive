@@ -21,33 +21,32 @@ impl Liveness {
 
             // Process blocks in reverse order to speed up fixed-point convergence.
             for (bb_idx, bb) in func.basic_blocks.iter().enumerate().rev() {
-                // Compute live variables at the end of the block by taking the union of live_in of all successors.
+                // current_live is live-after the block (union of successors).
                 let mut current_live = HashSet::default();
                 let succs = Self::successors(bb);
-                for succ in succs {
-                    let succ_live_in = &live_after[succ][0];
-                    for &l in succ_live_in {
+                for succ in &succs {
+                    for &l in &live_after[*succ][0] {
                         current_live.insert(l);
                     }
                 }
 
-                // Check if the liveness state at the terminator has changed.
-                let term_idx = bb.statements.len();
-                if live_after[bb_idx][term_idx] != current_live {
-                    live_after[bb_idx][term_idx] = current_live.clone();
+                // Update with terminator to get live-before-terminator.
+                Self::update_liveness(&mut current_live, bb.terminator.as_ref());
+                
+                if live_after[bb_idx][bb.statements.len()] != current_live {
+                    live_after[bb_idx][bb.statements.len()] = current_live.clone();
                     changed = true;
                 }
 
-                Self::update_liveness(&mut current_live, bb.terminator.as_ref());
-
-                // Propagate liveness backwards through the statements in the block.
+                // Propagate backwards through statements.
                 for stmt_idx in (0..bb.statements.len()).rev() {
+                    Self::update_stmt_liveness(&mut current_live, &bb.statements[stmt_idx]);
                     if live_after[bb_idx][stmt_idx] != current_live {
                         live_after[bb_idx][stmt_idx] = current_live.clone();
                         changed = true;
                     }
-                    Self::update_stmt_liveness(&mut current_live, &bb.statements[stmt_idx]);
                 }
+
             }
         }
 

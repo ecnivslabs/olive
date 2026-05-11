@@ -8,8 +8,13 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use rustc_hash::FxHashMap as HashMap;
 
+const KIND_LIST: i64 = 1;
+const KIND_OBJ: i64 = 2;
+const KIND_ENUM: i64 = 3;
+
 #[repr(C)]
 struct StableVec {
+    kind: i64,
     ptr: *mut i64,
     cap: usize,
     len: usize,
@@ -59,7 +64,8 @@ impl<'a> CraneliftCodegen<'a> {
         builder.symbol("__olive_str_to_int", olive_str_to_int as *const u8);
         builder.symbol("__olive_str_to_float", olive_str_to_float as *const u8);
         builder.symbol("__olive_str_concat", olive_str_concat as *const u8);
-        builder.symbol("__olive_free", olive_free as *const u8);
+        builder.symbol("__olive_list_concat", olive_list_concat as *const u8);
+        builder.symbol("__olive_free", olive_free_any as *const u8);
         builder.symbol("__olive_copy", olive_copy as *const u8);
         builder.symbol("__olive_copy_float", olive_copy_float as *const u8);
         builder.symbol("__olive_str_eq", olive_str_eq as *const u8);
@@ -69,6 +75,7 @@ impl<'a> CraneliftCodegen<'a> {
         builder.symbol("__olive_obj_new", olive_obj_new as *const u8);
         builder.symbol("__olive_obj_set", olive_obj_set as *const u8);
         builder.symbol("__olive_obj_get", olive_obj_get as *const u8);
+        builder.symbol("__olive_obj_len", olive_obj_len as *const u8);
         builder.symbol("__olive_memo_get", olive_memo_get as *const u8);
         builder.symbol("__olive_cache_get", olive_cache_get as *const u8);
         builder.symbol("__olive_cache_set", olive_cache_set as *const u8);
@@ -86,6 +93,7 @@ impl<'a> CraneliftCodegen<'a> {
             olive_cache_set_tuple as *const u8,
         );
         builder.symbol("__olive_str_len", olive_str_len as *const u8);
+        builder.symbol("__olive_list_len", olive_list_len as *const u8);
         builder.symbol("__olive_str_get", olive_str_get as *const u8);
         builder.symbol("__olive_time_now", olive_time_now as *const u8);
         builder.symbol("__olive_time_monotonic", olive_time_monotonic as *const u8);
@@ -101,6 +109,9 @@ impl<'a> CraneliftCodegen<'a> {
         builder.symbol("__olive_in_list", olive_in_list as *const u8);
         builder.symbol("__olive_in_obj", olive_in_obj as *const u8);
         builder.symbol("__olive_list_append", olive_list_append as *const u8);
+        builder.symbol("__olive_get_index_any", olive_get_index_any as *const u8);
+        builder.symbol("__olive_set_index_any", olive_set_index_any as *const u8);
+        builder.symbol("__olive_free_any", olive_free_any as *const u8);
         builder.symbol("__olive_enum_new", olive_enum_new as *const u8);
         builder.symbol("__olive_enum_tag", olive_enum_tag as *const u8);
         builder.symbol("__olive_enum_get", olive_enum_get as *const u8);
@@ -189,6 +200,7 @@ impl<'a> CraneliftCodegen<'a> {
             ("__olive_copy", &sig_i64_i64),
             ("__olive_list_new", &sig_i64_i64),
             ("__olive_str_len", &sig_i64_i64),
+            ("__olive_list_len", &sig_i64_i64),
             ("__olive_print_float", &sig_f64_i64),
             ("__olive_float_to_str", &sig_f64_i64),
             ("__olive_float_to_int", &sig_f64_i64),
@@ -199,8 +211,10 @@ impl<'a> CraneliftCodegen<'a> {
             ("__olive_copy_float", &sig_f64_f64),
             ("__olive_obj_new", &sig_void_i64),
             ("__olive_str_concat", &sig_i64_i64_i64),
+            ("__olive_list_concat", &sig_i64_i64_i64),
             ("__olive_str_eq", &sig_i64_i64_i64),
             ("__olive_list_get", &sig_i64_i64_i64),
+            ("__olive_get_index_any", &sig_i64_i64_i64),
             ("__olive_str_get", &sig_i64_i64_i64),
             ("__olive_cache_get", &sig_i64_i64_i64),
             ("__olive_cache_has", &sig_i64_i64_i64),
@@ -210,12 +224,14 @@ impl<'a> CraneliftCodegen<'a> {
             ("__olive_cache_get_tuple", &sig_i64_i64_i64),
             ("__olive_list_set", &sig_i64_i64_i64_i64),
             ("__olive_obj_set", &sig_i64_i64_i64_i64),
+            ("__olive_set_index_any", &sig_i64_i64_i64_i64),
             ("__olive_cache_set", &sig_i64_i64_i64_i64),
             ("__olive_cache_set_tuple", &sig_i64_i64_i64_i64),
             ("__olive_free", &sig_i64_void),
             ("__olive_free_str", &sig_i64_void),
             ("__olive_free_list", &sig_i64_void),
             ("__olive_free_obj", &sig_i64_void),
+            ("__olive_free_any", &sig_i64_void),
             ("__olive_pow", &sig_i64_i64_i64),
             ("__olive_pow_float", &sig_f64_f64_f64),
             ("__olive_in_list", &sig_i64_i64_i64),
@@ -232,6 +248,9 @@ impl<'a> CraneliftCodegen<'a> {
             ("__olive_enum_get", &sig_i64_i64_i64),
             ("__olive_enum_set", &sig_i64_i64_i64_void),
             ("__olive_free_enum", &sig_i64_void),
+            ("__olive_str_char", &sig_i64_i64_i64),
+            ("__olive_str_slice", &sig_i64_i64_i64_i64),
+            ("__olive_obj_len", &sig_i64_i64),
         ];
 
         for &(name, sig) in imports {
@@ -338,6 +357,8 @@ fn collect_needed_imports(functions: &[MirFunction]) -> std::collections::HashSe
                     }
                     StatementKind::SetIndex(..) => {
                         needed.insert("__olive_list_set");
+                        needed.insert("__olive_obj_set");
+                        needed.insert("__olive_set_index_any");
                     }
                     StatementKind::Drop(local) => {
                         let ty = &func.locals[local.0].ty;
@@ -388,6 +409,8 @@ fn scan_rvalue_imports(
                 Add => {
                     if is_str_op(func_mir, lhs) {
                         needed.insert("__olive_str_concat");
+                    } else if is_list_op(func_mir, lhs) {
+                        needed.insert("__olive_list_concat");
                     }
                 }
                 Eq => {
@@ -421,6 +444,8 @@ fn scan_rvalue_imports(
         }
         Rvalue::GetIndex(obj, _) => {
             needed.insert("__olive_list_get");
+            needed.insert("__olive_obj_get");
+            needed.insert("__olive_get_index_any");
             if let Operand::Copy(loc) | Operand::Move(loc) = obj {
                 let ty = &func_mir.locals[loc.0].ty;
                 if matches!(ty, OliveType::Str) {
@@ -448,6 +473,7 @@ fn scan_rvalue_imports(
                 _ => {
                     needed.insert("__olive_list_new");
                     needed.insert("__olive_list_append");
+                    needed.insert("__olive_set_index_any");
                 }
             }
         }
@@ -484,8 +510,13 @@ fn resolve_builtin_import(
             "__olive_list_set" => Some("__olive_list_set"),
             "__olive_list_append" => Some("__olive_list_append"),
             "__olive_str_len" => Some("__olive_str_len"),
+            "__olive_list_len" => Some("__olive_list_len"),
+            "__olive_get_index_any" => Some("__olive_get_index_any"),
+            "__olive_set_index_any" => Some("__olive_set_index_any"),
+            "__olive_free_any" => Some("__olive_free_any"),
             "__olive_str_get" => Some("__olive_str_get"),
             "__olive_str_concat" => Some("__olive_str_concat"),
+            "__olive_list_concat" => Some("__olive_list_concat"),
             "__olive_str_eq" => Some("__olive_str_eq"),
             "__olive_obj_new" => Some("__olive_obj_new"),
             "__olive_obj_get" => Some("__olive_obj_get"),
@@ -514,11 +545,13 @@ fn resolve_builtin_import(
             "__olive_enum_tag" => Some("__olive_enum_tag"),
             "__olive_enum_get" => Some("__olive_enum_get"),
             "__olive_enum_set" => Some("__olive_enum_set"),
+            "__olive_str_char" => Some("__olive_str_char"),
+            "__olive_str_slice" => Some("__olive_str_slice"),
             _ => None,
         };
     }
     match name {
-        "print" | "str" | "int" | "float" | "bool" | "iter" | "next" | "has_next"
+        "print" | "str" | "int" | "float" | "bool" | "iter" | "next" | "has_next" | "len"
             if !args.is_empty() =>
         {
             let mut arg_type = OliveType::Int;
@@ -533,6 +566,11 @@ fn resolve_builtin_import(
                 current_ty = inner;
             }
             Some(match name {
+                "len" => match current_ty {
+                    OliveType::Str => "__olive_str_len",
+                    OliveType::Dict(_, _) | OliveType::Class(_) | OliveType::Any => "__olive_obj_len",
+                    _ => "__olive_list_len",
+                },
                 "print" => match current_ty {
                     OliveType::Str => "__olive_print_str",
                     OliveType::Float => "__olive_print_float",
@@ -612,6 +650,16 @@ fn is_float_op(func_mir: &MirFunction, op: &Operand) -> bool {
     match op {
         Operand::Constant(Constant::Float(_)) => true,
         Operand::Copy(loc) | Operand::Move(loc) => func_mir.locals[loc.0].ty == OliveType::Float,
+        _ => false,
+    }
+}
+
+fn is_list_op(func_mir: &MirFunction, op: &Operand) -> bool {
+    match op {
+        Operand::Copy(loc) | Operand::Move(loc) => {
+            let ty = &func_mir.locals[loc.0].ty;
+            matches!(ty, OliveType::List(_) | OliveType::Tuple(_) | OliveType::Set(_))
+        }
         _ => false,
     }
 }
@@ -798,30 +846,44 @@ impl<'a> CraneliftCodegen<'a> {
                 builder.ins().call(local_func, &[o, attr_val, v]);
             }
             StatementKind::SetIndex(obj, idx, val_op) => {
-                let mut is_list = true;
-                if let Operand::Copy(loc) | Operand::Move(loc) = obj {
-                    if matches!(func_mir.locals[loc.0].ty, OliveType::Str) {
-                        is_list = false;
-                    }
-                }
+                let ty = if let Operand::Copy(loc) | Operand::Move(loc) = obj {
+                    &func_mir.locals[loc.0].ty
+                } else {
+                    &OliveType::Any
+                };
 
                 let o = Self::translate_operand(builder, obj, vars, string_ids, module);
                 let i = Self::translate_operand(builder, idx, vars, string_ids, module);
                 let v = Self::translate_operand(builder, val_op, vars, string_ids, module);
 
-                if is_list {
-                    let data_ptr =
-                        builder
-                            .ins()
-                            .load(types::I64, MemFlags::trusted().with_readonly(), o, 0);
+                match ty {
+                    OliveType::Dict(_, _) | OliveType::Class(_) => {
+                        let set_id = func_ids.get("__olive_obj_set").unwrap();
+                        let local_func = module.declare_func_in_func(*set_id, builder.func);
+                        builder.ins().call(local_func, &[o, i, v]);
+                    }
+                    OliveType::Any => {
+                        let set_id = func_ids.get("__olive_set_index_any").unwrap();
+                        let local_func = module.declare_func_in_func(*set_id, builder.func);
+                        builder.ins().call(local_func, &[o, i, v]);
+                    }
 
-                    let offset = builder.ins().imul_imm(i, 8);
-                    let addr = builder.ins().iadd(data_ptr, offset);
-                    builder.ins().store(MemFlags::trusted(), v, addr, 0);
-                } else {
-                    let set_id = func_ids.get("__olive_list_set").unwrap();
-                    let local_func = module.declare_func_in_func(*set_id, builder.func);
-                    builder.ins().call(local_func, &[o, i, v]);
+                    OliveType::Enum(_) => {
+                        let set_id = func_ids.get("__olive_enum_set").unwrap();
+                        let local_func = module.declare_func_in_func(*set_id, builder.func);
+                        builder.ins().call(local_func, &[o, i, v]);
+                    }
+                    _ => {
+                        // List
+                        let data_ptr =
+                            builder
+                                .ins()
+                                .load(types::I64, MemFlags::trusted().with_readonly(), o, 8);
+
+                        let offset = builder.ins().imul_imm(i, 8);
+                        let addr = builder.ins().iadd(data_ptr, offset);
+                        builder.ins().store(MemFlags::trusted(), v, addr, 0);
+                    }
                 }
             }
             StatementKind::Drop(local) => {
@@ -840,6 +902,7 @@ impl<'a> CraneliftCodegen<'a> {
                     }
                     OliveType::Dict(_, _) | OliveType::Class(_) => "__olive_free_obj",
                     OliveType::Enum(_) => "__olive_free_enum",
+                    OliveType::Any => "__olive_free_any",
                     _ => "__olive_free",
                 };
 
@@ -856,7 +919,7 @@ impl<'a> CraneliftCodegen<'a> {
                 let i = Self::translate_operand(builder, idx, vars, string_ids, module);
                 let v = Self::translate_operand(builder, val_op, vars, string_ids, module);
 
-                let data_ptr = builder.ins().load(types::I64, MemFlags::trusted(), o, 0);
+                let data_ptr = builder.ins().load(types::I64, MemFlags::trusted(), o, 8);
                 let offset = builder.ins().imul_imm(i, 8);
                 let addr = builder.ins().iadd(data_ptr, offset);
                 builder.ins().store(MemFlags::trusted(), v, addr, 0);
@@ -889,7 +952,8 @@ impl<'a> CraneliftCodegen<'a> {
                         || name == "bool"
                         || name == "iter"
                         || name == "next"
-                        || name == "has_next")
+                        || name == "has_next"
+                        || name == "len")
                         && !args.is_empty()
                     {
                         let mut arg_type = OliveType::Int;
@@ -908,6 +972,13 @@ impl<'a> CraneliftCodegen<'a> {
                         }
 
                         match name.as_str() {
+                            "len" => {
+                                if *current_ty == OliveType::Str {
+                                    "__olive_str_len"
+                                } else {
+                                    "__olive_list_len"
+                                }
+                            }
                             "print" => {
                                 if *current_ty == OliveType::Str {
                                     "__olive_print_str"
@@ -995,9 +1066,16 @@ impl<'a> CraneliftCodegen<'a> {
                     Add => {
                         let is_str = is_str_op(func_mir, lhs);
                         let is_float = is_float_op(func_mir, lhs);
+                        let is_list = is_list_op(func_mir, lhs);
 
                         if is_str {
                             let concat_func_id = func_ids.get("__olive_str_concat").unwrap();
+                            let local_func =
+                                module.declare_func_in_func(*concat_func_id, builder.func);
+                            let inst = builder.ins().call(local_func, &[l, r]);
+                            builder.inst_results(inst)[0]
+                        } else if is_list {
+                            let concat_func_id = func_ids.get("__olive_list_concat").unwrap();
                             let local_func =
                                 module.declare_func_in_func(*concat_func_id, builder.func);
                             let inst = builder.ins().call(local_func, &[l, r]);
@@ -1119,7 +1197,10 @@ impl<'a> CraneliftCodegen<'a> {
                     In => {
                         let mut is_obj = false;
                         if let Operand::Copy(loc) | Operand::Move(loc) = rhs {
-                            let ty = &func_mir.locals[loc.0].ty;
+                            let mut ty = &func_mir.locals[loc.0].ty;
+                            while let OliveType::Ref(inner) | OliveType::MutRef(inner) = ty {
+                                ty = inner;
+                            }
                             if matches!(ty, OliveType::Dict(_, _) | OliveType::Class(_)) {
                                 is_obj = true;
                             }
@@ -1137,7 +1218,10 @@ impl<'a> CraneliftCodegen<'a> {
                     NotIn => {
                         let mut is_obj = false;
                         if let Operand::Copy(loc) | Operand::Move(loc) = rhs {
-                            let ty = &func_mir.locals[loc.0].ty;
+                            let mut ty = &func_mir.locals[loc.0].ty;
+                            while let OliveType::Ref(inner) | OliveType::MutRef(inner) = ty {
+                                ty = inner;
+                            }
                             if matches!(ty, OliveType::Dict(_, _) | OliveType::Class(_)) {
                                 is_obj = true;
                             }
@@ -1198,42 +1282,46 @@ impl<'a> CraneliftCodegen<'a> {
                 builder.inst_results(inst)[0]
             }
             Rvalue::GetIndex(obj, idx) => {
-                let mut is_list = true;
-                if let Operand::Copy(loc) | Operand::Move(loc) = obj {
-                    if matches!(func_mir.locals[loc.0].ty, OliveType::Str) {
-                        is_list = false;
-                    }
-                }
-
-                let mut is_enum = false;
-                if let Operand::Copy(loc) | Operand::Move(loc) = obj {
-                    if let OliveType::Enum(_) = &func_mir.locals[loc.0].ty {
-                        is_enum = true;
-                    }
-                }
-
+                let ty = if let Operand::Copy(loc) | Operand::Move(loc) = obj {
+                    &func_mir.locals[loc.0].ty
+                } else {
+                    &OliveType::Any
+                };
+                
                 let o = Self::translate_operand(builder, obj, vars, string_ids, module);
                 let i = Self::translate_operand(builder, idx, vars, string_ids, module);
 
-                if is_enum {
-                    let get_id = func_ids.get("__olive_enum_get").unwrap();
-                    let local_func = module.declare_func_in_func(*get_id, builder.func);
-                    let inst = builder.ins().call(local_func, &[o, i]);
-                    builder.inst_results(inst)[0]
-                } else if is_list {
-                    let data_ptr =
-                        builder
-                            .ins()
-                            .load(types::I64, MemFlags::trusted().with_readonly(), o, 0);
-
-                    let offset = builder.ins().imul_imm(i, 8);
-                    let addr = builder.ins().iadd(data_ptr, offset);
-                    builder.ins().load(types::I64, MemFlags::trusted(), addr, 0)
-                } else {
-                    let get_id = func_ids.get("__olive_list_get").unwrap();
-                    let local_func = module.declare_func_in_func(*get_id, builder.func);
-                    let inst = builder.ins().call(local_func, &[o, i]);
-                    builder.inst_results(inst)[0]
+                match ty {
+                    OliveType::Enum(_) => {
+                        let get_id = func_ids.get("__olive_enum_get").unwrap();
+                        let local_func = module.declare_func_in_func(*get_id, builder.func);
+                        let inst = builder.ins().call(local_func, &[o, i]);
+                        builder.inst_results(inst)[0]
+                    }
+                    OliveType::Dict(_, _) | OliveType::Class(_) => {
+                        let get_id = func_ids.get("__olive_obj_get").unwrap();
+                        let local_func = module.declare_func_in_func(*get_id, builder.func);
+                        let inst = builder.ins().call(local_func, &[o, i]);
+                        builder.inst_results(inst)[0]
+                    }
+                    OliveType::Any => {
+                        let get_id = func_ids.get("__olive_get_index_any").unwrap();
+                        let local_func = module.declare_func_in_func(*get_id, builder.func);
+                        let inst = builder.ins().call(local_func, &[o, i]);
+                        builder.inst_results(inst)[0]
+                    }
+                    OliveType::Str => {
+                        let get_id = func_ids.get("__olive_str_get").unwrap();
+                        let local_func = module.declare_func_in_func(*get_id, builder.func);
+                        let inst = builder.ins().call(local_func, &[o, i]);
+                        builder.inst_results(inst)[0]
+                    }
+                    _ => {
+                        let get_id = func_ids.get("__olive_get_index_any").unwrap();
+                        let local_func = module.declare_func_in_func(*get_id, builder.func);
+                        let inst = builder.ins().call(local_func, &[o, i]);
+                        builder.inst_results(inst)[0]
+                    }
                 }
             }
             Rvalue::Aggregate(kind, ops) => {
@@ -1330,7 +1418,7 @@ impl<'a> CraneliftCodegen<'a> {
             Rvalue::VectorLoad(obj, idx, width) => {
                 let o = Self::translate_operand(builder, obj, vars, string_ids, module);
                 let i = Self::translate_operand(builder, idx, vars, string_ids, module);
-                let data_ptr = builder.ins().load(types::I64, MemFlags::trusted(), o, 0);
+                let data_ptr = builder.ins().load(types::I64, MemFlags::trusted(), o, 8);
                 let offset = builder.ins().imul_imm(i, 8);
                 let addr = builder.ins().iadd(data_ptr, offset);
                 let vec_ty = types::I64.by(*width as u32).unwrap();
@@ -1565,7 +1653,6 @@ extern "C" fn olive_str_concat(l: i64, r: i64) -> i64 {
     olive_str_internal(&s)
 }
 
-extern "C" fn olive_free(_ptr: i64) {}
 
 extern "C" fn olive_free_str(ptr: i64) {
     if ptr != 0 && (ptr & 1) == 0 {
@@ -1590,7 +1677,7 @@ extern "C" fn olive_free_list(ptr: i64) {
 extern "C" fn olive_free_obj(ptr: i64) {
     if ptr != 0 {
         unsafe {
-            let _ = Box::from_raw(ptr as *mut HashMap<String, i64>);
+            let _ = Box::from_raw(ptr as *mut OliveObj);
         }
     }
 }
@@ -1603,24 +1690,71 @@ extern "C" fn olive_pow_float(l: f64, r: f64) -> f64 {
     l.powf(r)
 }
 
-extern "C" fn olive_in_list(val: i64, list: i64) -> i64 {
-    if list == 0 {
+extern "C" fn olive_in_list(val: i64, list_ptr: i64) -> i64 {
+    if list_ptr == 0 {
         return 0;
     }
-    unsafe {
-        let ptr = list as *const i64;
-        let len = *ptr;
-        for i in 0..len {
-            if *ptr.add((i + 1) as usize) == val {
-                return 1;
-            }
+    let s = unsafe { &*(list_ptr as *const StableVec) };
+    for i in 0..s.len {
+        if unsafe { *s.ptr.add(i) } == val {
+            return 1;
         }
     }
     0
 }
 
+extern "C" fn olive_list_concat(l_ptr: i64, r_ptr: i64) -> i64 {
+    if l_ptr == 0 && r_ptr == 0 { return 0; }
+    let (l_len, l_data) = if l_ptr != 0 {
+        let s = unsafe { &*(l_ptr as *const StableVec) };
+        (s.len, s.ptr)
+    } else {
+        (0, std::ptr::null_mut())
+    };
+    let (r_len, r_data) = if r_ptr != 0 {
+        let s = unsafe { &*(r_ptr as *const StableVec) };
+        (s.len, s.ptr)
+    } else {
+        (0, std::ptr::null_mut())
+    };
+
+    let total_len = l_len + r_len;
+    let mut v = Vec::with_capacity(total_len);
+    unsafe {
+        if !l_data.is_null() {
+            std::ptr::copy_nonoverlapping(l_data, v.as_mut_ptr(), l_len);
+        }
+        if !r_data.is_null() {
+            std::ptr::copy_nonoverlapping(r_data, v.as_mut_ptr().add(l_len), r_len);
+        }
+        v.set_len(total_len);
+    }
+    
+    let ptr = v.as_mut_ptr();
+    let cap = v.capacity();
+    let length = v.len();
+    std::mem::forget(v);
+    
+    let stable = Box::new(StableVec {
+        kind: KIND_LIST,
+        ptr,
+        cap,
+        len: length,
+    });
+    Box::into_raw(stable) as i64
+}
+
+#[repr(C)]
+struct OliveObj {
+    kind: i64,
+    fields: HashMap<String, i64>,
+}
+
 extern "C" fn olive_obj_new() -> i64 {
-    let m = Box::new(HashMap::<String, i64>::default());
+    let m = Box::new(OliveObj {
+        kind: KIND_OBJ,
+        fields: HashMap::default(),
+    });
     Box::into_raw(m) as i64
 }
 
@@ -1632,19 +1766,29 @@ extern "C" fn olive_obj_set(obj_ptr: i64, attr: i64, val: i64) -> i64 {
     if obj_ptr == 0 || attr == 0 {
         return obj_ptr;
     }
-    let m = unsafe { &mut *(obj_ptr as *mut HashMap<String, i64>) };
-    let s = unsafe { std::ffi::CStr::from_ptr(attr as *const i8).to_string_lossy().into_owned() };
-    m.insert(s, val);
+    let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
+    let p = attr & !1;
+    let s = unsafe { std::ffi::CStr::from_ptr(p as *const i8).to_string_lossy().into_owned() };
+    m.fields.insert(s, val);
     obj_ptr
+}
+
+extern "C" fn olive_obj_len(obj_ptr: i64) -> i64 {
+    if obj_ptr == 0 {
+        return 0;
+    }
+    let m = unsafe { &*(obj_ptr as *const OliveObj) };
+    m.fields.len() as i64
 }
 
 extern "C" fn olive_obj_get(obj_ptr: i64, attr: i64) -> i64 {
     if obj_ptr == 0 || attr == 0 {
         return 0;
     }
-    let m = unsafe { &*(obj_ptr as *const HashMap<String, i64>) };
-    let s = unsafe { std::ffi::CStr::from_ptr(attr as *const i8).to_string_lossy() };
-    *m.get(s.as_ref()).unwrap_or(&0)
+    let m = unsafe { &*(obj_ptr as *const OliveObj) };
+    let p = attr & !1;
+    let s = unsafe { std::ffi::CStr::from_ptr(p as *const i8).to_string_lossy() };
+    *m.fields.get(s.as_ref()).unwrap_or(&0)
 }
 
 extern "C" fn olive_memo_get(name_ptr: i64, is_tuple: i64) -> i64 {
@@ -1752,6 +1896,7 @@ extern "C" fn olive_copy(ptr: i64) -> i64 {
     olive_str_internal(&s.to_string_lossy())
 }
 
+
 extern "C" fn olive_str_eq(l: i64, r: i64) -> i64 {
     if l == r { return 1; }
     if l == 0 || r == 0 { return 0; }
@@ -1770,6 +1915,7 @@ extern "C" fn olive_list_new(len: i64) -> i64 {
     let length = v.len();
     std::mem::forget(v);
     let stable = Box::new(StableVec {
+        kind: KIND_LIST,
         ptr,
         cap,
         len: length,
@@ -1787,6 +1933,12 @@ extern "C" fn olive_list_set(list_ptr: i64, idx: i64, val: i64) {
             *s.ptr.add(idx as usize) = val;
         }
     }
+}
+
+extern "C" fn olive_list_len(ptr: i64) -> i64 {
+    if ptr == 0 { return 0; }
+    let s = unsafe { &*(ptr as *const StableVec) };
+    s.len as i64
 }
 
 extern "C" fn olive_list_get(list_ptr: i64, idx: i64) -> i64 {
@@ -1820,12 +1972,52 @@ extern "C" fn olive_in_obj(val: i64, obj_ptr: i64) -> i64 {
     if obj_ptr == 0 || val == 0 {
         return 0;
     }
-    let m = unsafe { &*(obj_ptr as *const HashMap<String, i64>) };
-    let s = unsafe { std::ffi::CStr::from_ptr(val as *const i8).to_string_lossy().into_owned() };
-    if m.contains_key(&s) {
+    let m = unsafe { &*(obj_ptr as *const OliveObj) };
+    let p = val & !1;
+    let s = unsafe { std::ffi::CStr::from_ptr(p as *const i8).to_string_lossy().into_owned() };
+    if m.fields.contains_key(&s) {
         1
     } else {
         0
+    }
+}
+
+extern "C" fn olive_get_index_any(obj: i64, index: i64) -> i64 {
+    if obj == 0 { return 0; }
+    if obj & 1 != 0 {
+        return olive_str_get(obj, index);
+    }
+    let kind = unsafe { *(obj as *const i64) };
+    match kind {
+        KIND_LIST => olive_list_get(obj, index),
+        KIND_OBJ => olive_obj_get(obj, index),
+        _ => 0,
+    }
+}
+
+extern "C" fn olive_set_index_any(obj: i64, index: i64, val: i64) {
+    if obj == 0 { return; }
+    if obj & 1 != 0 { return; }
+    let kind = unsafe { *(obj as *const i64) };
+    match kind {
+        KIND_LIST => olive_list_set(obj, index, val),
+        KIND_OBJ => { olive_obj_set(obj, index, val); },
+        _ => {},
+    }
+}
+
+extern "C" fn olive_free_any(ptr: i64) {
+    if ptr == 0 { return; }
+    if ptr & 1 != 0 {
+        olive_free_str(ptr);
+        return;
+    }
+    let kind = unsafe { *(ptr as *const i64) };
+    match kind {
+        KIND_LIST => olive_free_list(ptr),
+        KIND_OBJ => olive_free_obj(ptr),
+        KIND_ENUM => olive_free_enum(ptr),
+        _ => {}
     }
 }
 
@@ -1847,8 +2039,8 @@ extern "C" fn olive_has_next(iter_ptr: i64) -> i64 {
     if it.list_ptr == 0 {
         return 0;
     }
-    let v = unsafe { &*(it.list_ptr as *const Vec<i64>) };
-    if it.index < v.len() { 1 } else { 0 }
+    let s = unsafe { &*(it.list_ptr as *const StableVec) };
+    if it.index < s.len { 1 } else { 0 }
 }
 
 extern "C" fn olive_next(iter_ptr: i64) -> i64 {
@@ -1859,9 +2051,9 @@ extern "C" fn olive_next(iter_ptr: i64) -> i64 {
     if it.list_ptr == 0 {
         return 0;
     }
-    let v = unsafe { &*(it.list_ptr as *const Vec<i64>) };
-    if it.index < v.len() {
-        let val = v[it.index];
+    let s = unsafe { &*(it.list_ptr as *const StableVec) };
+    if it.index < s.len {
+        let val = unsafe { *s.ptr.add(it.index) };
         it.index += 1;
         val
     } else {
@@ -1873,7 +2065,8 @@ extern "C" fn olive_str_len(s: i64) -> i64 {
     if s == 0 { return 0; }
     let p = s & !1;
     let c_str = unsafe { std::ffi::CStr::from_ptr(p as *const i8) };
-    c_str.to_bytes().len() as i64
+    let len = c_str.to_bytes().len() as i64;
+    len
 }
 
 extern "C" fn olive_str_get(s: i64, i: i64) -> i64 {
@@ -1882,7 +2075,8 @@ extern "C" fn olive_str_get(s: i64, i: i64) -> i64 {
     let c_str = unsafe { std::ffi::CStr::from_ptr(p as *const i8) };
     let bytes = c_str.to_bytes();
     if (i as usize) < bytes.len() {
-        bytes[i as usize] as i64
+        let char_str = format!("{}", bytes[i as usize] as char);
+        olive_str_internal(&char_str)
     } else {
         0
     }
@@ -1979,6 +2173,7 @@ fn olive_str_internal(s: &str) -> i64 {
 
 #[repr(C)]
 struct OliveEnum {
+    kind: i64,
     tag: i64,
     payload_ptr: *mut i64,
     payload_len: usize,
@@ -1990,6 +2185,7 @@ extern "C" fn olive_enum_new(tag: i64, arg_count: i64) -> i64 {
     let payload_len = payload.len();
     std::mem::forget(payload);
     let e = Box::new(OliveEnum {
+        kind: KIND_ENUM,
         tag,
         payload_ptr,
         payload_len,

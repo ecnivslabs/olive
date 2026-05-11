@@ -67,8 +67,10 @@ impl Type {
             | Type::Null
             | Type::Never
             | Type::Any
+            | Type::Str
+            | Type::Ref(_)
+            | Type::MutRef(_)
             | Type::Vector(_, _) => false,
-            Type::Ref(_) | Type::MutRef(_) => false, // References are Copy
             _ => true,
         }
     }

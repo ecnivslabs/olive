@@ -25,6 +25,7 @@ pub struct MirBuilder<'a> {
     current_arg_count: usize,
     var_map: Vec<HashMap<String, Local>>,
     loop_stack: Vec<LoopContext>,
+    scope_locals: Vec<Vec<Local>>,
     memo_context: Option<(Operand, Operand, BasicBlockId)>, // memo state
     pub class_hierarchy: HashMap<String, Vec<String>>,
     pub globals: HashMap<String, Operand>,
@@ -44,6 +45,7 @@ impl<'a> MirBuilder<'a> {
             current_arg_count: 0,
             var_map: Vec::new(),
             loop_stack: Vec::new(),
+            scope_locals: Vec::new(),
             memo_context: None,
             class_hierarchy: HashMap::default(),
             globals: HashMap::default(),
@@ -107,11 +109,12 @@ impl<'a> MirBuilder<'a> {
 
     fn enter_scope(&mut self) {
         self.var_map.push(HashMap::default());
+        self.scope_locals.push(Vec::new());
     }
 
     fn leave_scope(&mut self) {
-        if let Some(scope) = self.var_map.pop() {
-            for (_, local) in scope {
+        if let Some(locals) = self.scope_locals.pop() {
+            for local in locals.into_iter().rev() {
                 let ty = self.current_locals[local.0].ty.clone();
                 if ty.is_move_type() {
                     self.push_statement(StatementKind::Drop(local), Span::default());
@@ -119,6 +122,7 @@ impl<'a> MirBuilder<'a> {
                 self.push_statement(StatementKind::StorageDead(local), Span::default());
             }
         }
+        self.var_map.pop();
     }
 
     fn get_type(&self, expr_id: usize) -> Type {
@@ -132,13 +136,18 @@ impl<'a> MirBuilder<'a> {
 
     fn new_local(&mut self, ty: Type, name: Option<String>, is_mut: bool) -> Local {
         let id = self.current_locals.len();
+        let local = Local(id);
         self.current_locals.push(LocalDecl {
             ty,
             name,
             span: Span::default(),
             is_mut,
         });
-        Local(id)
+        self.push_statement(StatementKind::StorageLive(local), Span::default());
+        if let Some(scope) = self.scope_locals.last_mut() {
+            scope.push(local);
+        }
+        local
     }
 
     fn new_block(&mut self) -> BasicBlockId {
@@ -168,7 +177,6 @@ impl<'a> MirBuilder<'a> {
 
     fn declare_var(&mut self, name: String, ty: Type, is_mut: bool) -> Local {
         let local = self.new_local(ty, Some(name.clone()), is_mut);
-        self.push_statement(StatementKind::StorageLive(local), Span::default());
         self.var_map.last_mut().unwrap().insert(name, local);
         local
     }
@@ -180,6 +188,14 @@ impl<'a> MirBuilder<'a> {
             }
         }
         None
+    }
+
+    fn operand_for_local(&self, local: Local) -> Operand {
+        if self.current_locals[local.0].ty.is_move_type() {
+            Operand::Move(local)
+        } else {
+            Operand::Copy(local)
+        }
     }
 
     fn is_terminated(&self) -> bool {
@@ -896,10 +912,18 @@ impl<'a> MirBuilder<'a> {
         else_body: &Option<Vec<Stmt>>,
     ) {
         // lowered as while loop over iterator
-        let iter_op = self.lower_expr(iter);
-        let iter_local = self.new_local(Type::Any, Some("_iter".to_string()), true);
+        let iter_expr_op = self.lower_expr(iter);
+        let iter_local = self.new_local(Type::Any, Some("_iter_obj".to_string()), true);
+        
+        // __olive_iter()
         self.push_statement(
-            StatementKind::Assign(iter_local, Rvalue::Use(iter_op)),
+            StatementKind::Assign(
+                iter_local,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("__olive_iter".to_string())),
+                    args: vec![iter_expr_op],
+                },
+            ),
             iter.span,
         );
 
@@ -915,11 +939,17 @@ impl<'a> MirBuilder<'a> {
             );
         }
 
-        // check if next exists
+        // check if next exists: __olive_has_next()
         self.current_block = Some(header_bb);
-        let has_next = self.new_local(Type::Bool, None, true);
+        let has_next = self.new_local(Type::Bool, None, false);
         self.push_statement(
-            StatementKind::Assign(has_next, Rvalue::Use(Operand::Copy(iter_local))),
+            StatementKind::Assign(
+                has_next,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("__olive_has_next".to_string())),
+                    args: vec![Operand::Copy(iter_local)],
+                },
+            ),
             iter.span,
         );
 
@@ -946,15 +976,44 @@ impl<'a> MirBuilder<'a> {
         self.current_block = Some(body_bb);
         self.enter_scope();
 
+        // Get next value: __olive_next()
+        let next_val = self.new_local(Type::Any, None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                next_val,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("__olive_next".to_string())),
+                    args: vec![Operand::Copy(iter_local)],
+                },
+            ),
+            iter.span,
+        );
+
         // Bind the loop variable.
         match target {
             ForTarget::Name(name, _) => {
-                self.declare_var(name.clone(), Type::Any, true); // loop var is mutable by default? or immutable? 
-                // in python it's mutable. in olive let's make it mutable.
+                let local = self.declare_var(name.clone(), Type::Any, true);
+                self.push_statement(
+                    StatementKind::Assign(local, Rvalue::Use(Operand::Copy(next_val))),
+                    iter.span,
+                );
             }
             ForTarget::Tuple(names, _) => {
-                for (name, _) in names {
-                    self.declare_var(name.clone(), Type::Any, true);
+                for (i, (name, _)) in names.iter().enumerate() {
+                    let local = self.declare_var(name.clone(), Type::Any, true);
+                    let idx_op = Operand::Constant(Constant::Int(i as i64));
+                    let elem_tmp = self.new_local(Type::Any, None, false);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            elem_tmp,
+                            Rvalue::GetIndex(Operand::Copy(next_val), idx_op),
+                        ),
+                        iter.span,
+                    );
+                    self.push_statement(
+                        StatementKind::Assign(local, Rvalue::Use(Operand::Copy(elem_tmp))),
+                        iter.span,
+                    );
                 }
             }
         }
@@ -1021,7 +1080,7 @@ impl<'a> MirBuilder<'a> {
                             ),
                             e.span,
                         );
-                        Operand::Copy(tmp)
+                        self.operand_for_local(tmp)
                     };
 
                     if let Some(res) = current_res {
@@ -1058,7 +1117,7 @@ impl<'a> MirBuilder<'a> {
                     Rvalue::Use(op)
                 };
                 self.push_statement(StatementKind::Assign(tmp, rval), expr.span);
-                Operand::Copy(tmp)
+                self.operand_for_local(tmp)
             }
 
             ExprKind::MutBorrow(inner) => {
@@ -1075,17 +1134,12 @@ impl<'a> MirBuilder<'a> {
                     Rvalue::Use(op)
                 };
                 self.push_statement(StatementKind::Assign(tmp, rval), expr.span);
-                Operand::Copy(tmp)
+                self.operand_for_local(tmp)
             }
 
             ExprKind::Identifier(name) => {
                 if let Some(local) = self.lookup_var(name) {
-                    let ty = self.current_locals[local.0].ty.clone();
-                    if ty.is_move_type() {
-                        Operand::Move(local)
-                    } else {
-                        Operand::Copy(local)
-                    }
+                    Operand::Copy(local)
                 } else if let Some(global_op) = self.globals.get(name) {
                     global_op.clone()
                 } else {
@@ -1102,7 +1156,7 @@ impl<'a> MirBuilder<'a> {
                     StatementKind::Assign(tmp, Rvalue::BinaryOp(op.clone(), l, r)),
                     expr.span,
                 );
-                Operand::Copy(tmp)
+                self.operand_for_local(tmp)
             }
 
             ExprKind::UnaryOp { op, operand } => {
@@ -1112,7 +1166,7 @@ impl<'a> MirBuilder<'a> {
                     StatementKind::Assign(tmp, Rvalue::UnaryOp(op.clone(), o)),
                     expr.span,
                 );
-                Operand::Copy(tmp)
+                self.operand_for_local(tmp)
             }
 
             ExprKind::Call { callee, args } => {
@@ -1175,7 +1229,23 @@ impl<'a> MirBuilder<'a> {
                             ),
                             expr.span,
                         );
-                        return Operand::Copy(tmp);
+                        return self.operand_for_local(tmp);
+                    } else if matches!(current_arg_ty, Type::List(_) | Type::Tuple(_) | Type::Set(_) | Type::Dict(_, _) | Type::Any) {
+                        let arg_op = self.lower_expr(arg_expr);
+                        let tmp = self.new_local(Type::Int, None, false);
+                        self.push_statement(
+                            StatementKind::Assign(
+                                tmp,
+                                Rvalue::Call {
+                                    func: Operand::Constant(Constant::Function(
+                                        "__olive_list_len".to_string(),
+                                    )),
+                                    args: vec![arg_op],
+                                },
+                            ),
+                            expr.span,
+                        );
+                        return self.operand_for_local(tmp);
                     }
                 }
                 if let ExprKind::Identifier(name) = &callee.kind {
@@ -1188,7 +1258,7 @@ impl<'a> MirBuilder<'a> {
                             ),
                             expr.span,
                         );
-                        return Operand::Copy(tmp);
+                        return self.operand_for_local(tmp);
                     }
                     
                     if name == "list_new" && !args.is_empty() {
@@ -1212,7 +1282,7 @@ impl<'a> MirBuilder<'a> {
                         ),
                         expr.span,
                     );
-                    return Operand::Copy(tmp);
+                    return self.operand_for_local(tmp);
                 }
             }
 
@@ -1233,7 +1303,7 @@ impl<'a> MirBuilder<'a> {
                                 ),
                                 expr.span,
                             );
-                            return Operand::Copy(tmp);
+                            return self.operand_for_local(tmp);
                         }
 
                         // If it's a namespaced function, lower it as a direct call
@@ -1249,7 +1319,7 @@ impl<'a> MirBuilder<'a> {
                             ),
                             expr.span,
                         );
-                        return Operand::Copy(tmp);
+                        return self.operand_for_local(tmp);
                     }
 
                     let obj_op = self.lower_expr(obj);
@@ -1273,7 +1343,7 @@ impl<'a> MirBuilder<'a> {
                             ),
                             expr.span,
                         );
-                        return Operand::Copy(tmp);
+                        return self.operand_for_local(tmp);
                     }
 
                     let obj_ty = self.get_type(obj.id);
@@ -1303,7 +1373,7 @@ impl<'a> MirBuilder<'a> {
                         ),
                         expr.span,
                     );
-                    return Operand::Copy(tmp);
+                    return self.operand_for_local(tmp);
                 }
 
                 // If the callee is a Class, this is a constructor call.
@@ -1354,7 +1424,7 @@ impl<'a> MirBuilder<'a> {
                     ),
                     expr.span,
                 );
-                Operand::Copy(tmp)
+                self.operand_for_local(tmp)
             }
 
             ExprKind::List(elems) => {
@@ -1364,7 +1434,7 @@ impl<'a> MirBuilder<'a> {
                     StatementKind::Assign(tmp, Rvalue::Aggregate(AggregateKind::List, ops)),
                     expr.span,
                 );
-                Operand::Copy(tmp)
+                self.operand_for_local(tmp)
             }
 
             ExprKind::Tuple(elems) => {
@@ -1374,7 +1444,7 @@ impl<'a> MirBuilder<'a> {
                     StatementKind::Assign(tmp, Rvalue::Aggregate(AggregateKind::Tuple, ops)),
                     expr.span,
                 );
-                Operand::Copy(tmp)
+                self.operand_for_local(tmp)
             }
 
             ExprKind::Set(elems) => {
@@ -1384,7 +1454,7 @@ impl<'a> MirBuilder<'a> {
                     StatementKind::Assign(tmp, Rvalue::Aggregate(AggregateKind::Set, ops)),
                     expr.span,
                 );
-                Operand::Copy(tmp)
+                self.operand_for_local(tmp)
             }
 
             ExprKind::Dict(pairs) => {
@@ -1398,7 +1468,7 @@ impl<'a> MirBuilder<'a> {
                     StatementKind::Assign(tmp, Rvalue::Aggregate(AggregateKind::Dict, ops)),
                     expr.span,
                 );
-                Operand::Copy(tmp)
+                self.operand_for_local(tmp)
             }
 
             ExprKind::Attr { obj, attr } => {
@@ -1425,7 +1495,7 @@ impl<'a> MirBuilder<'a> {
                     StatementKind::Assign(tmp, Rvalue::GetAttr(o, attr.clone())),
                     expr.span,
                 );
-                Operand::Copy(tmp)
+                self.operand_for_local(tmp)
             }
 
             ExprKind::Index { obj, index } => {
@@ -1451,7 +1521,7 @@ impl<'a> MirBuilder<'a> {
                         ),
                         expr.span,
                     );
-                    return Operand::Copy(tmp);
+                    return self.operand_for_local(tmp);
                 }
                 let o = self.lower_expr_as_copy(obj);
                 let i = self.lower_expr(index);
@@ -1460,7 +1530,7 @@ impl<'a> MirBuilder<'a> {
                     StatementKind::Assign(tmp, Rvalue::GetIndex(o, i)),
                     expr.span,
                 );
-                Operand::Copy(tmp)
+                self.operand_for_local(tmp)
             }
 
             ExprKind::Walrus { name, value } => {

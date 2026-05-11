@@ -503,8 +503,19 @@ impl TypeChecker {
                     let init_name = format!("{}::__init__", name);
                     if let Some(Type::Fn(params, _)) = self.lookup_type(&init_name) {
                         // skip self
-                        for (p, a) in params.iter().skip(1).zip(arg_types) {
-                            self.unify(p, &a, expr.span);
+                        if params.len() != arg_types.len() + 1 {
+                            self.errors.push(SemanticError::Custom {
+                                msg: format!(
+                                    "constructor arity mismatch: expected {}, found {}",
+                                    params.len() - 1,
+                                    arg_types.len()
+                                ),
+                                span: expr.span,
+                            });
+                        } else {
+                            for (p, a) in params.iter().skip(1).zip(arg_types) {
+                                self.unify(p, &a, expr.span);
+                            }
                         }
                     }
 
@@ -522,10 +533,25 @@ impl TypeChecker {
                         }
                     }
                 }
+
+                let mut final_callee_ty = callee_ty.clone();
+                // Special case for method calls: if it's an attribute access that resolved to a method,
+                // we need to account for the implicit 'self' argument.
+                if let ExprKind::Attr { .. } = &callee.kind {
+                    if let Type::Fn(params, _) = &resolved_callee {
+                        if !params.is_empty() && params.len() == arg_types.len() + 1 {
+                            // It's a method call with self implicit.
+                            // Construct a type that matches the CALL SITE arity.
+                            final_callee_ty = Type::Fn(params.iter().skip(1).cloned().collect(), Box::new(self.apply_subst(Type::new_var())));
+                        }
+                    }
+                }
+
                 let ret_ty = Type::new_var();
                 let expected_fn = Type::Fn(arg_types, Box::new(ret_ty.clone()));
-                self.unify(&callee_ty, &expected_fn, expr.span);
+                self.unify(&final_callee_ty, &expected_fn, expr.span);
                 self.apply_subst(ret_ty)
+
             }
 
             ExprKind::Index { obj, index } => {
@@ -806,27 +832,27 @@ impl TypeChecker {
             return;
         }
 
-        match (t1, t2) {
+        match (&t1, &t2) {
             (Type::Any, _) | (_, Type::Any) => {}
             (Type::Never, _) | (_, Type::Never) => {}
 
             (Type::Var(id), other) | (other, Type::Var(id)) => {
-                if self.occurs_check(id, &other) {
+                if self.occurs_check(*id, other) {
                     self.errors.push(SemanticError::Custom {
                         msg: "recursive type detected during unification".into(),
                         span,
                     });
                 } else {
-                    self.substitutions.insert(id, other);
+                    self.substitutions.insert(*id, other.clone());
                 }
             }
 
-            (Type::List(a), Type::List(b)) => self.unify(&a, &b, span),
-            (Type::Set(a), Type::Set(b)) => self.unify(&a, &b, span),
+            (Type::List(a), Type::List(b)) => self.unify(a, b, span),
+            (Type::Set(a), Type::Set(b)) => self.unify(a, b, span),
 
             (Type::Dict(k1, v1), Type::Dict(k2, v2)) => {
-                self.unify(&k1, &k2, span);
-                self.unify(&v1, &v2, span);
+                self.unify(k1, k2, span);
+                self.unify(v1, v2, span);
             }
 
             (Type::Tuple(a), Type::Tuple(b)) => {
@@ -860,18 +886,67 @@ impl TypeChecker {
                     for (a, b) in p1.iter().zip(p2.iter()) {
                         self.unify(a, b, span);
                     }
-                    self.unify(&r1, &r2, span);
+                    self.unify(r1, r2, span);
                 }
             }
 
-            (t1, t2) => {
+            (Type::Class(a_name), Type::Class(b_name)) => {
+                if self.is_subtype(&Type::Class(b_name.clone()), &Type::Class(a_name.clone())) {
+                    return;
+                }
                 self.errors.push(SemanticError::Custom {
                     msg: format!("type mismatch: expected `{}`, found `{}`", t1, t2),
                     span,
                 });
             }
+
+            (_t1_match, _t2_match) => {
+                self.errors.push(SemanticError::Custom {
+                    msg: format!("type mismatch: expected `{}`, found `{}`", t1, t2),
+                    span,
+                });
+            }
+
+        }
+
+    }
+
+    fn is_subtype(&mut self, sub: &Type, sup: &Type) -> bool {
+        let sub = self.apply_subst(sub.clone());
+        let sup = self.apply_subst(sup.clone());
+
+        if sub == sup {
+            return true;
+        }
+
+        match (sub, sup) {
+            (Type::Class(sub_name), Type::Class(sup_name)) => {
+                let mut queue = vec![sub_name];
+                let mut seen = std::collections::HashSet::new();
+                while let Some(current) = queue.pop() {
+                    if current == sup_name {
+                        return true;
+                    }
+                    if !seen.insert(current.clone()) {
+                        continue;
+                    }
+                    if let Some(bases) = self.class_hierarchy.get(&current) {
+                        for base in bases {
+                            queue.push(base.clone());
+                        }
+                    }
+                }
+                false
+            }
+            (Type::List(sub_inner), Type::List(sup_inner)) => {
+                // Covariant for now to allow [Circle] -> [Shape]
+                self.is_subtype(&sub_inner, &sup_inner)
+            }
+            (_, Type::Any) => true,
+            _ => false,
         }
     }
+
 
     fn occurs_check(&self, id: usize, ty: &Type) -> bool {
         match ty {

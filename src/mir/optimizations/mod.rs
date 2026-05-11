@@ -9,6 +9,7 @@ pub mod gvn;
 pub mod inliner;
 pub mod licm;
 pub mod loop_unroll;
+pub mod move_elision;
 pub mod peephole;
 pub mod simplify_cfg;
 pub mod strength_reduction;

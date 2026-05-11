@@ -293,24 +293,21 @@ fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: bool, e
         process::exit(1);
     }
 
+    println!("DEBUG: starting MIR build");
     let mut mir_builder = MirBuilder::new(&type_checker.expr_types, &type_checker.type_env[0]);
     mir_builder.build_program(&program);
-
-    if emit_mir {
-        println!("{:#?}", mir_builder.functions);
-    }
+    println!("DEBUG: MIR build finished, starting optimization");
 
     let opt_start = std::time::Instant::now();
     let optimizer = mir::Optimizer::new();
     optimizer.run(&mut mir_builder.functions);
+    println!("DEBUG: optimization finished, starting borrow check");
     let opt_duration = opt_start.elapsed();
     
     // show __main__ mir after optimizations
     if emit_mir {
         for f in &mir_builder.functions {
-            if f.name == "__main__" {
-                println!("{:#?}", f);
-            }
+            println!("{:#?}", f);
         }
     }
 
@@ -603,6 +600,7 @@ fn walk_and_format(path: &Path) {
 }
 
 fn main() {
+    println!("DEBUG: main started");
     let cli = Cli::parse();
 
     match cli.command {
