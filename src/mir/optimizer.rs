@@ -5,9 +5,9 @@ use crate::mir::optimizations::{
     Transform, algebraic::AlgebraicSimplification, const_fold::ConstantFolding,
     const_prop::ConstantPropagation, copy_prop::CopyPropagation,
     cse::CommonSubexpressionElimination, dce::DeadCodeElimination, gvn::GlobalValueNumbering,
-    inliner::Inliner, licm::Licm, loop_unroll::LoopUnroll, move_elision::MoveElision,
-    peephole::PeepholeOptimize, scalarize::ScalarizeStructs, simplify_cfg::SimplifyCfg,
-    strength_reduction::StrengthReduction, tail_call::TailCallOpt, vectorize::LoopVectorizer,
+    inliner::Inliner, licm::Licm, move_elision::MoveElision, peephole::PeepholeOptimize,
+    scalarize::ScalarizeStructs, simplify_cfg::SimplifyCfg, strength_reduction::StrengthReduction,
+    tail_call::TailCallOpt, vectorize::LoopVectorizer,
 };
 
 pub struct Optimizer {
@@ -42,7 +42,6 @@ impl Optimizer {
                 Box::new(TailCallOpt),
                 Box::new(Licm),
                 Box::new(LoopVectorizer),
-                Box::new(LoopUnroll),
                 Box::new(SimplifyCfg),
                 Box::new(DeadCodeElimination),
                 Box::new(CopyPropagation),

@@ -26,6 +26,88 @@ struct VectorizationPlan {
     loads: Vec<(Local, Operand)>,
 }
 
+/// A type is vectorizable only if it lowers to a Cranelift SIMD lane type.
+/// Pointer/aggregate element types (structs, `bytes`, etc.) fall back to a
+/// scalar `i64` in `cl_type`, so wrapping them in a vector would declare a
+/// scalar local while emitting a real SIMD value — a codegen type mismatch.
+fn is_simd_scalar(ty: &OliveType) -> bool {
+    matches!(
+        ty,
+        OliveType::Int
+            | OliveType::U64
+            | OliveType::Usize
+            | OliveType::I32
+            | OliveType::U32
+            | OliveType::I16
+            | OliveType::U16
+            | OliveType::I8
+            | OliveType::U8
+            | OliveType::Bool
+            | OliveType::Float
+            | OliveType::F32
+    )
+}
+
+/// Cranelift lane width in bits for a SIMD-compatible scalar.
+fn simd_lane_bits(ty: &OliveType) -> Option<u32> {
+    match ty {
+        OliveType::Int | OliveType::U64 | OliveType::Usize | OliveType::Float => Some(64),
+        OliveType::I32 | OliveType::U32 | OliveType::F32 => Some(32),
+        OliveType::I16 | OliveType::U16 => Some(16),
+        OliveType::I8 | OliveType::U8 | OliveType::Bool => Some(8),
+        _ => None,
+    }
+}
+
+fn operand_local(op: &Operand) -> Option<Local> {
+    match op {
+        Operand::Copy(l) | Operand::Move(l) => Some(*l),
+        Operand::Constant(_) => None,
+    }
+}
+
+/// Collects every local read by an rvalue.
+fn rvalue_reads(rval: &Rvalue, out: &mut Vec<Local>) {
+    let mut push = |op: &Operand| {
+        if let Some(l) = operand_local(op) {
+            out.push(l);
+        }
+    };
+    match rval {
+        Rvalue::Use(op)
+        | Rvalue::UnaryOp(_, op)
+        | Rvalue::Cast(op, _)
+        | Rvalue::GetAttr(op, _)
+        | Rvalue::GetTag(op)
+        | Rvalue::GetTypeId(op)
+        | Rvalue::VectorSplat(op, _)
+        | Rvalue::PtrLoad(op)
+        | Rvalue::FatPtrData(op)
+        | Rvalue::VTableLoad { vtable: op, .. } => push(op),
+        Rvalue::BinaryOp(_, a, b) | Rvalue::GetIndex(a, b) | Rvalue::VectorLoad(a, b, _) => {
+            push(a);
+            push(b);
+        }
+        Rvalue::VectorFMA(a, b, c) => {
+            push(a);
+            push(b);
+            push(c);
+        }
+        Rvalue::Call { func, args } => {
+            push(func);
+            for a in args {
+                push(a);
+            }
+        }
+        Rvalue::Aggregate(_, ops) => {
+            for op in ops {
+                push(op);
+            }
+        }
+        Rvalue::Ref(l) | Rvalue::MutRef(l) => out.push(*l),
+    }
+}
+
 impl LoopVectorizer {
     fn try_vectorize(&self, func: &mut MirFunction, lp: &loop_utils::Loop) -> bool {
         if let Some(plan) = self.analyze(func, lp) {
@@ -100,6 +182,9 @@ impl LoopVectorizer {
                     &stmt.kind
                     && *idx == i
                 {
+                    if !is_simd_scalar(&func.locals[dest.0].ty) {
+                        return None;
+                    }
                     loads.push((*dest, obj.clone()));
                 }
             }
@@ -113,10 +198,138 @@ impl LoopVectorizer {
             return None;
         }
 
+        // All loaded lanes must share a width so they pack into one SIMD
+        // register, and that register is capped at 128 bits — the width every
+        // Cranelift target backend supports for integer lanes (wider vectors
+        // like i64x4 need AVX2 and are rejected by the backend).
+        let lane_bits = simd_lane_bits(&func.locals[loads[0].0.0].ty)?;
+        for (dest, _) in &loads {
+            if simd_lane_bits(&func.locals[dest.0].ty) != Some(lane_bits) {
+                return None;
+            }
+        }
+        let width = (128 / lane_bits) as usize;
+        if width < 2 {
+            return None;
+        }
+
+        // Build the set of locals that will become vectors: the loaded lanes
+        // plus any value derived from them through elementwise binary ops.
+        let mut vec_locals: rustc_hash::FxHashSet<Local> = loads.iter().map(|(d, _)| *d).collect();
+        loop {
+            let mut changed = false;
+            for &bb_id in &lp.body {
+                for stmt in &func.basic_blocks[bb_id.0].statements {
+                    if let StatementKind::Assign(
+                        dest,
+                        Rvalue::BinaryOp(_, Operand::Copy(l), Operand::Copy(r)),
+                    ) = &stmt.kind
+                        && (vec_locals.contains(l) || vec_locals.contains(r))
+                        && !vec_locals.contains(dest)
+                    {
+                        if simd_lane_bits(&func.locals[dest.0].ty) != Some(lane_bits) {
+                            return None;
+                        }
+                        vec_locals.insert(*dest);
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+
+        // The transform only knows how to rewrite three shapes that touch a
+        // vectorized local: a load at `i`, an elementwise binary op of two
+        // operands, and a store at `i`. If any other statement reads a
+        // vectorized local, vectorizing would feed a SIMD value into scalar
+        // code, so bail out and leave the loop untouched.
+        for &bb_id in &lp.body {
+            for stmt in &func.basic_blocks[bb_id.0].statements {
+                let allowed = match &stmt.kind {
+                    StatementKind::Assign(dest, Rvalue::GetIndex(_, Operand::Copy(idx)))
+                        if *idx == i && vec_locals.contains(dest) =>
+                    {
+                        true
+                    }
+                    StatementKind::Assign(
+                        dest,
+                        Rvalue::BinaryOp(_, Operand::Copy(_), Operand::Copy(_)),
+                    ) if vec_locals.contains(dest) => true,
+                    StatementKind::SetIndex(_, Operand::Copy(idx), _) if *idx == i => true,
+                    _ => {
+                        let mut reads = Vec::new();
+                        match &stmt.kind {
+                            StatementKind::Assign(_, rval) => rvalue_reads(rval, &mut reads),
+                            StatementKind::SetAttr(o, _, v) | StatementKind::PtrStore(o, v) => {
+                                reads.extend(operand_local(o));
+                                reads.extend(operand_local(v));
+                            }
+                            StatementKind::SetIndex(o, idx, v)
+                            | StatementKind::VectorStore(o, idx, v) => {
+                                reads.extend(operand_local(o));
+                                reads.extend(operand_local(idx));
+                                reads.extend(operand_local(v));
+                            }
+                            StatementKind::Drop(l) => reads.push(*l),
+                            StatementKind::StorageLive(_) | StatementKind::StorageDead(_) => {}
+                        }
+                        !reads.iter().any(|l| vec_locals.contains(l))
+                    }
+                };
+                if !allowed {
+                    return None;
+                }
+            }
+        }
+
+        // A vectorized local must not escape the loop body. If one is read in
+        // any other block (e.g. a reduction accumulator printed afterwards),
+        // the scalar copy never receives the per-lane updates, so refuse to
+        // vectorize rather than miscompile.
+        let body_set: rustc_hash::FxHashSet<BasicBlockId> = lp.body.iter().copied().collect();
+        for (bb_id, bb) in func.basic_blocks.iter().enumerate() {
+            if body_set.contains(&BasicBlockId(bb_id)) {
+                continue;
+            }
+            for stmt in &bb.statements {
+                let mut reads = Vec::new();
+                match &stmt.kind {
+                    StatementKind::Assign(_, rval) => rvalue_reads(rval, &mut reads),
+                    StatementKind::SetAttr(o, _, v) | StatementKind::PtrStore(o, v) => {
+                        reads.extend(operand_local(o));
+                        reads.extend(operand_local(v));
+                    }
+                    StatementKind::SetIndex(o, idx, v) | StatementKind::VectorStore(o, idx, v) => {
+                        reads.extend(operand_local(o));
+                        reads.extend(operand_local(idx));
+                        reads.extend(operand_local(v));
+                    }
+                    StatementKind::Drop(l) => reads.push(*l),
+                    StatementKind::StorageLive(_) | StatementKind::StorageDead(_) => {}
+                }
+                if reads.iter().any(|l| vec_locals.contains(l)) {
+                    return None;
+                }
+            }
+            if let Some(term) = &bb.terminator {
+                let discr = match &term.kind {
+                    TerminatorKind::SwitchInt { discr, .. } => operand_local(discr),
+                    _ => None,
+                };
+                if let Some(l) = discr
+                    && vec_locals.contains(&l)
+                {
+                    return None;
+                }
+            }
+        }
+
         Some(VectorizationPlan {
             induction: i,
             limit,
-            width: 4,
+            width,
             loads,
         })
     }
