@@ -254,8 +254,17 @@ impl TypeChecker {
                     self.define_type(&param.name, p_ty, param.is_mut);
                 }
 
-                for s in body {
+                for (i, s) in body.iter().enumerate() {
                     self.check_stmt(s);
+                    if i == body.len() - 1 {
+                        if let StmtKind::ExprStmt(e) = &s.kind {
+                            if let Some(last_ty) = self.expr_types.get(&e.id).cloned() {
+                                if let Some(expected) = self.current_return_type.clone() {
+                                    self.unify(&expected, &last_ty, s.span);
+                                }
+                            }
+                        }
+                    }
                 }
 
                 self.current_return_type = prev_ret;
@@ -293,7 +302,7 @@ impl TypeChecker {
                 }
             }
 
-            StmtKind::Struct { name, fields, body } => {
+            StmtKind::Struct { name, fields, body, .. } => {
                 // register the struct as a named type
                 self.define_type(name, Type::Struct(name.clone()), false);
 
@@ -355,9 +364,9 @@ impl TypeChecker {
             StmtKind::Pass
             | StmtKind::Break
             | StmtKind::Continue
-            | StmtKind::Import(_)
+            | StmtKind::Import { .. }
             | StmtKind::FromImport { .. } => {}
-            StmtKind::Enum { name, variants } => {
+            StmtKind::Enum { name, variants, .. } => {
                 self.define_type(name, Type::Enum(name.clone()), false);
                 let mut variant_names = Vec::new();
                 for variant in variants {
@@ -403,7 +412,6 @@ impl TypeChecker {
                 Type::Str
             }
             ExprKind::Bool(_) => Type::Bool,
-            ExprKind::Null => Type::Null,
 
             ExprKind::Borrow(inner) => {
                 let inner_ty = self.check_expr(inner);
@@ -621,12 +629,6 @@ impl TypeChecker {
                 Type::new_var()
             }
 
-            ExprKind::Walrus { name, value } => {
-                let val_ty = self.check_expr(value);
-                self.define_type(name, val_ty.clone(), false);
-                val_ty
-            }
-
             ExprKind::ListComp { elt, clauses } => {
                 self.enter_scope();
                 self.check_comp_clauses(clauses, expr.span);
@@ -714,11 +716,11 @@ impl TypeChecker {
 
             ExprKind::Try(inner) => {
                 let inner_ty = self.check_expr(inner);
-                // In a fully typed system, we would unpack Result<T, E> into T here
-                // For now, if the inner type is known, we just return it, 
-                // or assume we return the 'Ok' variant type.
-                // We'll just return inner_ty for simplicity right now unless it's a Union
-                // In proper Rust style: try expr -> expr.unwrap()
+                if let Type::Union(variants) = &inner_ty {
+                    if !variants.is_empty() {
+                        return variants[0].clone();
+                    }
+                }
                 inner_ty
             }
         }
@@ -730,7 +732,6 @@ impl TypeChecker {
             | BinOp::Sub
             | BinOp::Mul
             | BinOp::Div
-            | BinOp::FloorDiv
             | BinOp::Mod
             | BinOp::Pow
             | BinOp::Shl
@@ -745,9 +746,7 @@ impl TypeChecker {
             | BinOp::Gt
             | BinOp::GtEq
             | BinOp::In
-            | BinOp::NotIn
-            | BinOp::Is
-            | BinOp::IsNot => Type::Bool,
+            | BinOp::NotIn => Type::Bool,
             BinOp::And | BinOp::Or => {
                 self.unify(l, r, span);
                 self.apply_subst(l.clone())
@@ -1009,11 +1008,21 @@ impl TypeChecker {
             ),
             TypeExprKind::Ref(inner) => Type::Ref(Box::new(self.resolve_type_expr(inner))),
             TypeExprKind::MutRef(inner) => Type::MutRef(Box::new(self.resolve_type_expr(inner))),
-            TypeExprKind::Union(_left, _right) => {
-                // Just use the left type for now in the type checker, or introduce a union type
-                // if we have one. We don't have a Type::Union yet, so let's use Type::Any
-                // or just the first type.
-                Type::Any
+            TypeExprKind::Union(a, b) => {
+                let ta = self.resolve_type_expr(a);
+                let tb = self.resolve_type_expr(b);
+                let mut vars = Vec::new();
+                if let Type::Union(mut va) = ta {
+                    vars.append(&mut va);
+                } else {
+                    vars.push(ta);
+                }
+                if let Type::Union(mut vb) = tb {
+                    vars.append(&mut vb);
+                } else {
+                    vars.push(tb);
+                }
+                Type::Union(vars)
             }
         }
     }

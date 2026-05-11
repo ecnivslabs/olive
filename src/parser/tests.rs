@@ -55,7 +55,6 @@ mod tests {
             expr_stmt(&parse("False\n")),
             ExprKind::Bool(false)
         ));
-        assert!(matches!(expr_stmt(&parse("None\n")), ExprKind::Null));
     }
 
     #[test]

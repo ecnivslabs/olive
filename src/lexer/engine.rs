@@ -77,12 +77,33 @@ impl Lexer {
     }
 
     fn skip_inline_whitespace(&mut self) {
-        while matches!(self.peek(), Some(' ') | Some('\t') | Some('\r')) {
-            self.advance();
-        }
-        if self.peek() == Some('#') {
-            while matches!(self.peek(), Some(c) if c != '\n') {
+        loop {
+            let mut skipped = false;
+            while matches!(self.peek(), Some(' ') | Some('\t') | Some('\r')) {
                 self.advance();
+                skipped = true;
+            }
+            if self.peek() == Some('/') && self.peek_next() == Some('/') {
+                while matches!(self.peek(), Some(c) if c != '\n') {
+                    self.advance();
+                }
+                skipped = true;
+            }
+            if self.peek() == Some('/') && self.peek_next() == Some('*') {
+                self.advance();
+                self.advance();
+                while let Some(c) = self.peek() {
+                    if c == '*' && self.peek_next() == Some('/') {
+                        self.advance();
+                        self.advance();
+                        break;
+                    }
+                    self.advance();
+                }
+                skipped = true;
+            }
+            if !skipped {
+                break;
             }
         }
     }
@@ -113,7 +134,29 @@ impl Lexer {
             });
         }
 
-        if matches!(self.peek(), Some('\n') | Some('#') | None) {
+        if self.peek() == Some('/') && self.peek_next() == Some('/') {
+            while matches!(self.peek(), Some(c) if c != '\n') {
+                self.advance();
+            }
+            return Ok(None);
+        }
+        if self.peek() == Some('/') && self.peek_next() == Some('*') {
+            self.advance();
+            self.advance();
+            while let Some(c) = self.peek() {
+                if c == '*' && self.peek_next() == Some('/') {
+                    self.advance();
+                    self.advance();
+                    break;
+                }
+                self.advance();
+            }
+            // Block comment on its own line: we return None so the lexer retries.
+            // Note: If the block comment ends on a new line, it handled the indentation up to the /*
+            // The next token will be read correctly.
+            return Ok(None);
+        }
+        if matches!(self.peek(), Some('\n') | None) {
             while matches!(self.peek(), Some(c) if c != '\n') {
                 self.advance();
             }
@@ -392,7 +435,6 @@ impl Lexer {
             "return" => TokenKind::Return,
             "True" => TokenKind::True,
             "False" => TokenKind::False,
-            "None" => TokenKind::Null,
             "not" => TokenKind::Not,
             "and" => TokenKind::And,
             "or" => TokenKind::Or,
@@ -406,7 +448,6 @@ impl Lexer {
             "from" => TokenKind::From,
             "struct" => TokenKind::Struct,
             "impl" => TokenKind::Impl,
-            "is" => TokenKind::Is,
             "mut" => TokenKind::Mut,
             "enum" => TokenKind::Enum,
             "match" => TokenKind::Match,
@@ -560,10 +601,7 @@ impl Lexer {
                     }
                 }
                 ':' => {
-                    if self.peek() == Some('=') {
-                        self.advance();
-                        self.make_tok(TokenKind::ColonEqual, ":=", line, col, start)
-                    } else if self.peek() == Some(':') {
+                    if self.peek() == Some(':') {
                         self.advance();
                         self.make_tok(TokenKind::DoubleColon, "::", line, col, start)
                     } else {
@@ -606,15 +644,7 @@ impl Lexer {
                     }
                 }
                 '/' => {
-                    if self.peek() == Some('/') {
-                        self.advance();
-                        if self.peek() == Some('=') {
-                            self.advance();
-                            self.make_tok(TokenKind::DoubleSlashEqual, "//=", line, col, start)
-                        } else {
-                            self.make_tok(TokenKind::DoubleSlash, "//", line, col, start)
-                        }
-                    } else if self.peek() == Some('=') {
+                    if self.peek() == Some('=') {
                         self.advance();
                         self.make_tok(TokenKind::SlashEqual, "/=", line, col, start)
                     } else {
@@ -706,6 +736,8 @@ impl Lexer {
                 '&' => self.make_tok(TokenKind::Ampersand, "&", line, col, start),
                 '@' => self.make_tok(TokenKind::At, "@", line, col, start),
                 '|' => self.make_tok(TokenKind::Pipe, "|", line, col, start),
+                '?' => self.make_tok(TokenKind::Question, "?", line, col, start),
+                '#' => self.make_tok(TokenKind::Hash, "#", line, col, start),
 
                 other => return Err(self.err(format!("unexpected character {:?}", other))),
             };

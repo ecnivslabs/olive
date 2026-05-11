@@ -31,7 +31,6 @@ impl Parser {
                     | TokenKind::MinusEqual
                     | TokenKind::StarEqual
                     | TokenKind::SlashEqual
-                    | TokenKind::DoubleSlashEqual
                     | TokenKind::PercentEqual
                     | TokenKind::DoubleStarEqual
                     | TokenKind::Newline
@@ -51,29 +50,6 @@ impl Parser {
     }
 
     pub(crate) fn parse_expr(&mut self) -> ParseResult<Expr> {
-        if self.peek().kind == TokenKind::Identifier
-            && self.peek_at(1).kind == TokenKind::ColonEqual
-        {
-            let tok = self.peek().clone();
-            let name = self.advance().value;
-            self.advance(); // :=
-            let value = self.parse_or()?;
-            let span = tok.span;
-            let end = value.span.end;
-            return Ok(Expr::new(
-                ExprKind::Walrus {
-                    name,
-                    value: Box::new(value),
-                },
-                Span {
-                    file_id: tok.file_id,
-                    line: tok.line,
-                    col: tok.col,
-                    start: span.0,
-                    end,
-                },
-            ));
-        }
         self.parse_or()
     }
 
@@ -138,15 +114,6 @@ impl Parser {
                 TokenKind::DoubleEqual => {
                     self.advance();
                     BinOp::Eq
-                }
-                TokenKind::Is => {
-                    self.advance();
-                    if self.peek().kind == TokenKind::Not {
-                        self.advance();
-                        BinOp::IsNot
-                    } else {
-                        BinOp::Is
-                    }
                 }
                 TokenKind::NotEqual => {
                     self.advance();
@@ -227,7 +194,6 @@ impl Parser {
             let op = match self.peek().kind {
                 TokenKind::Star => BinOp::Mul,
                 TokenKind::Slash => BinOp::Div,
-                TokenKind::DoubleSlash => BinOp::FloorDiv,
                 TokenKind::Percent => BinOp::Mod,
                 _ => break,
             };
@@ -391,6 +357,11 @@ impl Parser {
                         },
                         span,
                     );
+                }
+                TokenKind::Question => {
+                    let op = self.advance();
+                    let span = expr.span.merge(self.span_from(&op));
+                    expr = Expr::new(ExprKind::Try(Box::new(expr)), span);
                 }
                 _ => break,
             }
@@ -677,10 +648,6 @@ impl Parser {
             TokenKind::False => {
                 self.advance();
                 Ok(Expr::new(ExprKind::Bool(false), start))
-            }
-            TokenKind::Null => {
-                self.advance();
-                Ok(Expr::new(ExprKind::Null, start))
             }
             TokenKind::Match => {
                 self.advance();

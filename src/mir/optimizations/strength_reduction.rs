@@ -28,7 +28,6 @@ impl Transform for StrengthReduction {
                             changed = true;
                         }
                         Rvalue::BinaryOp(Div, op, Operand::Constant(Constant::Int(c)))
-                        | Rvalue::BinaryOp(FloorDiv, op, Operand::Constant(Constant::Int(c)))
                             if *c > 1 && (*c as u64).is_power_of_two() =>
                         {
                             let shift = (*c as u64).trailing_zeros() as i64;

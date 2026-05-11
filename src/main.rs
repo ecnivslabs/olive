@@ -167,10 +167,10 @@ fn load_and_parse(
 
     for stmt in program.stmts {
         match &stmt.kind {
-            parser::StmtKind::Import(parts) => {
-                let mod_name = parts.join("/");
+            parser::StmtKind::Import { module, alias } => {
+                let mod_name = module.join("/");
                 let mut mod_path = parent_dir.join(format!("{}.liv", mod_name));
-                
+
                 if !mod_path.exists() {
                     // Try std lib in /lib
                     mod_path = Path::new("lib").join(format!("{}.liv", mod_name));
@@ -187,9 +187,9 @@ fn load_and_parse(
                     loaded.insert(path_str.clone());
                     let mut imported_stmts =
                         load_and_parse(&path_str, false, loaded, file_id_counter, sources);
-                    
-                    // Mangling for namespacing: module::name
-                    let mod_prefix = parts.last().unwrap();
+
+                    // Mangling for namespacing: module::name (or alias::name)
+                    let mod_prefix = alias.as_deref().unwrap_or_else(|| module.last().unwrap().as_str());
                     let mut defined_names = HashSet::new();
                     for s in &imported_stmts {
                         match &s.kind {
@@ -226,7 +226,7 @@ fn load_and_parse(
             parser::StmtKind::FromImport { module, names } => {
                 let mod_name = module.join("/");
                 let mut mod_path = parent_dir.join(format!("{}.liv", mod_name));
-                
+
                 if !mod_path.exists() {
                     mod_path = Path::new("lib").join(format!("{}.liv", mod_name));
                 }
@@ -242,15 +242,15 @@ fn load_and_parse(
                     loaded.insert(path_str.clone());
                     let mut imported_stmts =
                         load_and_parse(&path_str, false, loaded, file_id_counter, sources);
-                    
+
                     imported_stmts.retain(|s| {
                         match &s.kind {
                             parser::StmtKind::Fn { name, .. }
                             | parser::StmtKind::Struct { name, .. } => {
-                                names.contains(name)
+                                names.iter().any(|(n, _)| n == name)
                             }
                             parser::StmtKind::Impl { type_name, .. } => {
-                                names.contains(type_name)
+                                names.iter().any(|(n, _)| n == type_name)
                             }
                             _ => false,
                         }

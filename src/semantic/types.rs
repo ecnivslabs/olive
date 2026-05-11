@@ -23,6 +23,8 @@ pub enum Type {
     Struct(String),
     // Enum type
     Enum(String),
+    // Union type: A | B
+    Union(Vec<Type>),
     // Function type: (params) -> return_type
     Fn(Vec<Type>, Box<Type>),
     // Tuple type: (T1, T2, ...)
@@ -108,6 +110,15 @@ impl fmt::Display for Type {
             Type::Str => write!(f, "str"),
             Type::Bool => write!(f, "bool"),
             Type::Null => write!(f, "None"),
+            Type::Union(variants) => {
+                for (i, v) in variants.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " | ")?;
+                    }
+                    write!(f, "{}", v)?;
+                }
+                Ok(())
+            }
             Type::Struct(name) | Type::Enum(name) => write!(f, "{}", name),
             Type::Fn(params, ret) => {
                 write!(f, "(")?;

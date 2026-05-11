@@ -23,7 +23,7 @@ impl Transform for ConstantFolding {
                             Add => Some(Constant::Int((*a).wrapping_add(*b))),
                             Sub => Some(Constant::Int((*a).wrapping_sub(*b))),
                             Mul => Some(Constant::Int((*a).wrapping_mul(*b))),
-                            Div | FloorDiv => {
+                            Div => {
                                 if *b != 0 {
                                     Some(Constant::Int(*a / *b))
                                 } else {

@@ -19,8 +19,7 @@ impl Transform for PeepholeOptimize {
                         | Rvalue::BinaryOp(Sub, op, Operand::Constant(Constant::Int(0)))
                         | Rvalue::BinaryOp(Mul, op, Operand::Constant(Constant::Int(1)))
                         | Rvalue::BinaryOp(Mul, Operand::Constant(Constant::Int(1)), op)
-                        | Rvalue::BinaryOp(Div, op, Operand::Constant(Constant::Int(1)))
-                        | Rvalue::BinaryOp(FloorDiv, op, Operand::Constant(Constant::Int(1))) => {
+                        | Rvalue::BinaryOp(Div, op, Operand::Constant(Constant::Int(1))) => {
                             *rval = Rvalue::Use(op.clone());
                             changed = true;
                         }
@@ -29,7 +28,7 @@ impl Transform for PeepholeOptimize {
                             *rval = Rvalue::Use(op.clone());
                             changed = true;
                         }
-                        Rvalue::BinaryOp(Div, l, r) | Rvalue::BinaryOp(FloorDiv, l, r)
+                        Rvalue::BinaryOp(Div, l, r)
                             if l == r =>
                         {
                             *rval = Rvalue::Use(Operand::Constant(Constant::Int(1)));

@@ -249,7 +249,6 @@ impl<'a> MirBuilder<'a> {
                     crate::parser::AugOp::Sub => crate::parser::BinOp::Sub,
                     crate::parser::AugOp::Mul => crate::parser::BinOp::Mul,
                     crate::parser::AugOp::Div => crate::parser::BinOp::Div,
-                    crate::parser::AugOp::FloorDiv => crate::parser::BinOp::FloorDiv,
                     crate::parser::AugOp::Mod => crate::parser::BinOp::Mod,
                     crate::parser::AugOp::Pow => crate::parser::BinOp::Pow,
                 };
@@ -461,9 +460,9 @@ impl<'a> MirBuilder<'a> {
 
 
             StmtKind::Pass
-            | StmtKind::Import(_)
+            | StmtKind::Import { .. }
             | StmtKind::FromImport { .. } => {}
-            StmtKind::Enum { name, variants } => {
+            StmtKind::Enum { name, variants, .. } => {
                 for (i, variant) in variants.iter().enumerate() {
                     let mangled = format!("{}::{}", name, variant.name);
                     self.enum_variants.insert(mangled, (name.clone(), i));
@@ -702,7 +701,21 @@ impl<'a> MirBuilder<'a> {
 
                 self.memo_context = None;
             } else {
-                for s in body {
+                for (i, s) in body.iter().enumerate() {
+                    if i == body.len() - 1 {
+                        if let StmtKind::ExprStmt(e) = &s.kind {
+                            let rval = self.lower_expr(e);
+                            self.push_statement(
+                                StatementKind::Assign(Local(0), Rvalue::Use(rval)),
+                                e.span,
+                            );
+                            if let Some(bb) = self.current_block {
+                                self.terminate_block(bb, TerminatorKind::Return, e.span);
+                            }
+                            self.current_block = Some(self.new_block());
+                            continue;
+                        }
+                    }
                     self.lower_stmt(s);
                 }
 
@@ -795,7 +808,22 @@ impl<'a> MirBuilder<'a> {
             ),
             TypeExprKind::Ref(inner) => Type::Ref(Box::new(self.resolve_type_expr(inner))),
             TypeExprKind::MutRef(inner) => Type::MutRef(Box::new(self.resolve_type_expr(inner))),
-            TypeExprKind::Union(_, _) => Type::Any, // simple fallback for now
+            TypeExprKind::Union(a, b) => {
+                let ta = self.resolve_type_expr(a);
+                let tb = self.resolve_type_expr(b);
+                let mut vars = Vec::new();
+                if let Type::Union(mut va) = ta {
+                    vars.append(&mut va);
+                } else {
+                    vars.push(ta);
+                }
+                if let Type::Union(mut vb) = tb {
+                    vars.append(&mut vb);
+                } else {
+                    vars.push(tb);
+                }
+                Type::Union(vars)
+            }
         }
     }
 
@@ -1167,11 +1195,55 @@ impl<'a> MirBuilder<'a> {
                 current_res.unwrap()
             }
             ExprKind::Bool(b) => Operand::Constant(Constant::Bool(*b)),
-            ExprKind::Null => Operand::Constant(Constant::None),
 
             ExprKind::Try(inner) => {
-                // simple pass-through for now. a full implementation would check for Ok/Err
-                self.lower_expr(inner)
+                let inner_op = self.lower_expr(inner);
+                let tag_tmp = self.new_local(Type::Int, None, false);
+                self.push_statement(
+                    StatementKind::Assign(tag_tmp, Rvalue::GetTag(inner_op.clone())),
+                    expr.span,
+                );
+
+                let success_bb = self.new_block();
+                let error_bb = self.new_block();
+
+                if let Some(bb) = self.current_block {
+                    self.terminate_block(
+                        bb,
+                        TerminatorKind::SwitchInt {
+                            discr: Operand::Copy(tag_tmp),
+                            targets: vec![(0, success_bb)],
+                            otherwise: error_bb,
+                        },
+                        expr.span,
+                    );
+                }
+
+                // Error branch: return the union directly
+                self.current_block = Some(error_bb);
+                self.push_statement(
+                    StatementKind::Assign(Local(0), Rvalue::Use(inner_op.clone())),
+                    expr.span,
+                );
+                self.terminate_block(error_bb, TerminatorKind::Return, expr.span);
+
+                // Success branch: extract payload
+                self.current_block = Some(success_bb);
+                let payload_tmp = self.new_local(Type::Any, None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        payload_tmp,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(
+                                "__olive_enum_get".to_string(),
+                            )),
+                            args: vec![inner_op, Operand::Constant(Constant::Int(0))],
+                        },
+                    ),
+                    expr.span,
+                );
+
+                Operand::Copy(payload_tmp)
             }
 
             ExprKind::Borrow(inner) => {
@@ -1592,14 +1664,6 @@ impl<'a> MirBuilder<'a> {
                     expr.span,
                 );
                 self.operand_for_local(tmp)
-            }
-
-            ExprKind::Walrus { name, value } => {
-                let val = self.lower_expr(value);
-                let ty = self.get_type(value.id);
-                let local = self.declare_var(name.clone(), ty, false);
-                self.push_statement(StatementKind::Assign(local, Rvalue::Use(val)), expr.span);
-                Operand::Copy(local)
             }
 
             ExprKind::ListComp { elt, clauses } => {

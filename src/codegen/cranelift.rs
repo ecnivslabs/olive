@@ -903,6 +903,7 @@ impl<'a> CraneliftCodegen<'a> {
                     OliveType::Dict(_, _) | OliveType::Struct(_) => "__olive_free_obj",
                     OliveType::Enum(_) => "__olive_free_enum",
                     OliveType::Any => "__olive_free_any",
+                    OliveType::Union(_) => "__olive_free_any",
                     _ => "__olive_free",
                 };
 
@@ -1107,7 +1108,6 @@ impl<'a> CraneliftCodegen<'a> {
                             builder.ins().sdiv(l, r)
                         }
                     }
-                    FloorDiv => builder.ins().sdiv(l, r),
                     Mod => builder.ins().srem(l, r),
                     Eq => {
                         let mut is_str = false;
@@ -1140,14 +1140,7 @@ impl<'a> CraneliftCodegen<'a> {
                             builder.ins().uextend(types::I64, res)
                         }
                     }
-                    Is => {
-                        let res = builder.ins().icmp(IntCC::Equal, l, r);
-                        builder.ins().uextend(types::I64, res)
-                    }
-                    IsNot => {
-                        let res = builder.ins().icmp(IntCC::NotEqual, l, r);
-                        builder.ins().uextend(types::I64, res)
-                    }
+
                     Lt | LtEq | Gt | GtEq | NotEq => {
                         let mut is_float = false;
                         if let Operand::Copy(loc) | Operand::Move(loc) = lhs {

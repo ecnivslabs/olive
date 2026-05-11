@@ -51,7 +51,6 @@ pub enum BinOp {
     Sub,
     Mul,
     Div,
-    FloorDiv,
     Mod,
     Pow,
     Eq,
@@ -64,8 +63,6 @@ pub enum BinOp {
     Or,
     In,
     NotIn,
-    Is,
-    IsNot,
     Shl,
     Shr,
 }
@@ -83,7 +80,6 @@ pub enum AugOp {
     Sub,
     Mul,
     Div,
-    FloorDiv,
     Mod,
     Pow,
 }
@@ -145,7 +141,6 @@ pub enum ExprKind {
     Str(String),
     FStr(Vec<Expr>),
     Bool(bool),
-    Null,
     Identifier(String),
 
     BinOp {
@@ -188,11 +183,6 @@ pub enum ExprKind {
         key: Box<Expr>,
         value: Box<Expr>,
         clauses: Vec<CompClause>,
-    },
-
-    Walrus {
-        name: String,
-        value: Box<Expr>,
     },
 
     Borrow(Box<Expr>),
@@ -260,6 +250,7 @@ pub enum StmtKind {
         name: String,
         fields: Vec<Param>,  // named fields with optional type annotations
         body: Vec<Stmt>,     // associated consts / nested types inside struct block
+        decorators: Vec<String>,
     },
     Impl {
         type_name: String,   // which struct this impl is for
@@ -268,6 +259,7 @@ pub enum StmtKind {
     Enum {
         name: String,
         variants: Vec<EnumVariant>,
+        decorators: Vec<String>,
     },
     If {
         condition: Expr,
@@ -291,10 +283,13 @@ pub enum StmtKind {
         test: Expr,
         msg: Option<Expr>,
     },
-    Import(Vec<String>),
+    Import {
+        module: Vec<String>,
+        alias: Option<String>, // import X as Y
+    },
     FromImport {
         module: Vec<String>,
-        names: Vec<String>,
+        names: Vec<(String, Option<String>)>, // (name, alias)
     },
     Let {
         name: String,

@@ -90,7 +90,7 @@ impl Resolver {
                         }
                     }
                 }
-                StmtKind::Enum { name, variants } => {
+                StmtKind::Enum { name, variants, .. } => {
                     self.define_sym(name, SymbolKind::Enum, stmt.span);
                     for variant in variants {
                         let mangled = format!("{}::{}", name, variant.name);
@@ -230,14 +230,25 @@ impl Resolver {
                 }
             }
 
-            StmtKind::Import(parts) => {
-                let name = parts.last().unwrap().clone();
-                self.define_sym(&name, SymbolKind::Import, stmt.span);
+            StmtKind::Import { module, alias } => {
+                // The bound name is either the alias or the last segment
+                let name = alias.as_deref()
+                    .unwrap_or_else(|| module.last().unwrap().as_str());
+                self.define_sym(name, SymbolKind::Import, stmt.span);
             }
 
             StmtKind::FromImport { names, .. } => {
-                for name in names {
-                    self.define_sym(name, SymbolKind::Import, stmt.span);
+                for (name, alias) in names {
+                    if name.starts_with('_') {
+                        self.errors.push(SemanticError::PrivateAccess {
+                            name: name.clone(),
+                            span: stmt.span,
+                        });
+                    } else {
+                        // bind as alias if provided, else original name
+                        let bound = alias.as_deref().unwrap_or(name.as_str());
+                        self.define_sym(bound, SymbolKind::Import, stmt.span);
+                    }
                 }
             }
 
@@ -416,11 +427,6 @@ impl Resolver {
                 self.table.pop();
             }
 
-            ExprKind::Walrus { name, value } => {
-                self.resolve_expr(value);
-                self.define_sym(name, SymbolKind::Variable, expr.span);
-            }
-
             ExprKind::Borrow(inner) | ExprKind::MutBorrow(inner) => {
                 self.resolve_expr(inner);
             }
@@ -429,8 +435,7 @@ impl Resolver {
             | ExprKind::Float(_)
             | ExprKind::Str(_)
             | ExprKind::FStr(_)
-            | ExprKind::Bool(_)
-            | ExprKind::Null => {
+            | ExprKind::Bool(_) => {
                 if let ExprKind::FStr(exprs) = &expr.kind {
                     for e in exprs {
                         self.resolve_expr(e);

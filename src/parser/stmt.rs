@@ -46,25 +46,42 @@ impl Parser {
 
     pub(crate) fn parse_decorated(&mut self) -> ParseResult<Stmt> {
         let mut decorators = Vec::new();
-        while self.peek().kind == TokenKind::At {
+        while self.peek().kind == TokenKind::Hash {
             self.advance();
-            let name = self.expect(TokenKind::Identifier)?.value;
+            let mut name = self.expect(TokenKind::Identifier)?.value;
+            // Parse optional args like (Debug, Clone)
+            if self.peek().kind == TokenKind::LParen {
+                self.advance(); // '('
+                name.push('(');
+                while self.peek().kind != TokenKind::RParen && self.peek().kind != TokenKind::Eof {
+                    let tok = self.advance();
+                    name.push_str(&tok.value);
+                    if tok.kind == TokenKind::Comma {
+                        name.push(' ');
+                    }
+                }
+                self.expect(TokenKind::RParen)?;
+                name.push(')');
+            }
             decorators.push(name);
             self.skip_newlines();
         }
 
         let mut stmt = self.parse_stmt()?;
-        if let StmtKind::Fn {
-            decorators: ref mut d,
-            ..
-        } = stmt.kind
-        {
-            *d = decorators;
-        } else {
-            return Err(self.err_at(
-                &self.tokens[self.pos],
-                "decorators can only be applied to functions",
-            ));
+        match &mut stmt.kind {
+            StmtKind::Fn { decorators: d, .. } |
+            StmtKind::Struct { decorators: d, .. } |
+            StmtKind::Enum { decorators: d, .. } => {
+                *d = decorators;
+            }
+            _ => {
+                if !decorators.is_empty() {
+                    return Err(self.err_at(
+                        &self.tokens[self.pos],
+                        "decorators can only be applied to functions, structs, and enums",
+                    ));
+                }
+            }
         }
         Ok(stmt)
     }
@@ -169,6 +186,11 @@ impl Parser {
         let start = self.peek().clone();
         self.expect(TokenKind::Struct)?;
         let name = self.expect(TokenKind::Identifier)?.value;
+        if let Some(first_char) = name.chars().next() {
+            if !first_char.is_uppercase() {
+                return Err(self.err_at(&start, "struct names must be capitalized"));
+            }
+        }
         // parse indented field block: `name: Type` per line
         self.expect(TokenKind::Colon)?;
         let mut fields: Vec<Param> = Vec::new();
@@ -217,7 +239,7 @@ impl Parser {
             self.eat_stmt_end()?;
         }
         let span = self.span_from(&start);
-        Ok(Stmt::new(StmtKind::Struct { name, fields, body }, span))
+        Ok(Stmt::new(StmtKind::Struct { name, fields, body, decorators: Vec::new() }, span))
     }
 
     pub(crate) fn parse_impl(&mut self) -> ParseResult<Stmt> {
@@ -233,6 +255,11 @@ impl Parser {
         let start = self.peek().clone();
         self.expect(TokenKind::Enum)?;
         let name = self.expect(TokenKind::Identifier)?.value;
+        if let Some(first_char) = name.chars().next() {
+            if !first_char.is_uppercase() {
+                return Err(self.err_at(&start, "enum names must be capitalized"));
+            }
+        }
         self.expect(TokenKind::Colon)?;
         
         let mut variants = Vec::new();
@@ -265,7 +292,7 @@ impl Parser {
         }
 
         let span = self.span_from(&start);
-        Ok(Stmt::new(StmtKind::Enum { name, variants }, span))
+        Ok(Stmt::new(StmtKind::Enum { name, variants, decorators: Vec::new() }, span))
     }
 
     pub(crate) fn parse_if(&mut self) -> ParseResult<Stmt> {
@@ -460,14 +487,20 @@ impl Parser {
     pub(crate) fn parse_import(&mut self) -> ParseResult<Stmt> {
         let start = self.peek().clone();
         self.expect(TokenKind::Import)?;
-        let mut path = vec![self.expect(TokenKind::Identifier)?.value];
+        let mut module = vec![self.expect(TokenKind::Identifier)?.value];
         while self.peek().kind == TokenKind::Dot {
             self.advance();
-            path.push(self.expect(TokenKind::Identifier)?.value);
+            module.push(self.expect(TokenKind::Identifier)?.value);
         }
+        let alias = if self.peek().kind == TokenKind::As {
+            self.advance();
+            Some(self.expect(TokenKind::Identifier)?.value)
+        } else {
+            None
+        };
         self.eat_stmt_end()?;
         let span = self.span_from(&start);
-        Ok(Stmt::new(StmtKind::Import(path), span))
+        Ok(Stmt::new(StmtKind::Import { module, alias }, span))
     }
 
     pub(crate) fn parse_from_import(&mut self) -> ParseResult<Stmt> {
@@ -479,10 +512,21 @@ impl Parser {
             module.push(self.expect(TokenKind::Identifier)?.value);
         }
         self.expect(TokenKind::Import)?;
-        let mut names = vec![self.expect(TokenKind::Identifier)?.value];
-        while self.peek().kind == TokenKind::Comma {
-            self.advance();
-            names.push(self.expect(TokenKind::Identifier)?.value);
+        let mut names = Vec::new();
+        loop {
+            let name = self.expect(TokenKind::Identifier)?.value;
+            let alias = if self.peek().kind == TokenKind::As {
+                self.advance();
+                Some(self.expect(TokenKind::Identifier)?.value)
+            } else {
+                None
+            };
+            names.push((name, alias));
+            if self.peek().kind == TokenKind::Comma {
+                self.advance();
+            } else {
+                break;
+            }
         }
         self.eat_stmt_end()?;
         let span = self.span_from(&start);
@@ -568,7 +612,6 @@ impl Parser {
             | TokenKind::MinusEqual
             | TokenKind::StarEqual
             | TokenKind::SlashEqual
-            | TokenKind::DoubleSlashEqual
             | TokenKind::PercentEqual
             | TokenKind::DoubleStarEqual) => {
                 if !Self::is_valid_assign_target(&lhs) {
@@ -588,7 +631,6 @@ impl Parser {
                     TokenKind::MinusEqual => AugOp::Sub,
                     TokenKind::StarEqual => AugOp::Mul,
                     TokenKind::SlashEqual => AugOp::Div,
-                    TokenKind::DoubleSlashEqual => AugOp::FloorDiv,
                     TokenKind::PercentEqual => AugOp::Mod,
                     TokenKind::DoubleStarEqual => AugOp::Pow,
                     _ => unreachable!(),
