@@ -270,3 +270,52 @@ fn regression_membership_in_any_list_matches_scalar() {
     );
     assert_eq!(call_i64(&mut cg, "f"), 1);
 }
+
+#[test]
+fn regression_tuple_constant_index_scalarized() {
+    // A non-escaping tuple read by constant index never reaches the heap; the
+    // scalar-replacement must preserve every element.
+    let mut cg =
+        compile("fn f() -> i64:\n    let t = (10, 20, 30)\n    return t[0] + t[1] + t[2]\n");
+    assert_eq!(call_i64(&mut cg, "f"), 60);
+}
+
+#[test]
+fn regression_tuple_destructure_scalarized() {
+    // Multi-assignment from a non-escaping tuple lowers to per-element constant
+    // index reads, so the aggregate is replaced by scalars yet still adds up.
+    let mut cg = compile(
+        "fn f() -> i64:\n    let mut a = 0\n    let mut b = 0\n    let mut c = 0\n    a, b, c = (10, 12, 20)\n    return a + b + c\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 42);
+}
+
+#[test]
+fn regression_tuple_returned_survives_escape_guard() {
+    // The tuple escapes through the return slot, so it must stay allocated and
+    // come back intact at the call site.
+    let mut cg = compile(
+        "fn make() -> (i64, i64):\n    let t = (40, 2)\n    return t\n\nfn f() -> i64:\n    let p = make()\n    return p[0] + p[1]\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 42);
+}
+
+#[test]
+fn regression_tuple_indexed_then_returned() {
+    // Reading a field locally and also returning the tuple: the local read may
+    // be served from a scalar, but the returned aggregate must still be whole.
+    let mut cg = compile(
+        "fn make() -> (i64, i64, i64):\n    let t = (10, 20, 30)\n    let _z = t[0]\n    return t\n\nfn f() -> i64:\n    let p = make()\n    return p[0] + p[1] + p[2]\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 60);
+}
+
+#[test]
+fn regression_tuple_rebuilt_in_loop() {
+    // A fresh tuple each iteration is the pattern stack promotion targets: the
+    // running pair must advance correctly with no per-iteration allocation.
+    let mut cg = compile(
+        "fn f() -> i64:\n    let mut a = 0\n    let mut b = 1\n    let mut i = 0\n    while i < 5:\n        let t = (b, a + b)\n        a = t[0]\n        b = t[1]\n        i = i + 1\n    return b\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 8);
+}

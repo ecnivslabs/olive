@@ -34,6 +34,14 @@ impl Transform for ScalarizeStructs {
                 }
             }
 
+            // An aggregate whose alias set reaches the return slot (Local(0)) or
+            // a parameter (Local(1..=arg_count)) escapes the frame: the caller
+            // owns it after the call returns, so its fields must stay backed by
+            // a real allocation. Bail before touching it.
+            if aliases.iter().any(|a| a.0 <= func.arg_count) {
+                continue;
+            }
+
             if !can_scalarize(func, &aliases, candidate) {
                 continue;
             }
@@ -77,7 +85,8 @@ fn find_candidates(func: &MirFunction) -> Vec<Local> {
                         *seen.entry(*local).or_insert(0) += 1;
                     }
                     Rvalue::Aggregate(crate::mir::ir::AggregateKind::Dict, _)
-                    | Rvalue::Aggregate(crate::mir::ir::AggregateKind::List, _) => {
+                    | Rvalue::Aggregate(crate::mir::ir::AggregateKind::List, _)
+                    | Rvalue::Aggregate(crate::mir::ir::AggregateKind::Tuple, _) => {
                         *seen.entry(*local).or_insert(0) += 1;
                     }
                     _ => {}
@@ -103,7 +112,10 @@ fn can_scalarize(func: &MirFunction, aliases: &HashSet<Local>, origin: Local) ->
         for stmt in &bb.statements {
             if let StatementKind::Assign(
                 l,
-                Rvalue::Aggregate(crate::mir::ir::AggregateKind::List, ops),
+                Rvalue::Aggregate(
+                    crate::mir::ir::AggregateKind::List | crate::mir::ir::AggregateKind::Tuple,
+                    ops,
+                ),
             ) = &stmt.kind
                 && *l == origin
             {
@@ -137,7 +149,10 @@ fn can_scalarize(func: &MirFunction, aliases: &HashSet<Local>, origin: Local) ->
 
                 StatementKind::Assign(
                     l,
-                    Rvalue::Aggregate(crate::mir::ir::AggregateKind::List, _),
+                    Rvalue::Aggregate(
+                        crate::mir::ir::AggregateKind::List | crate::mir::ir::AggregateKind::Tuple,
+                        _,
+                    ),
                 ) if *l == origin => {}
 
                 StatementKind::SetAttr(op, _, val)
@@ -346,7 +361,10 @@ fn rewrite(
 
                 StatementKind::Assign(
                     l,
-                    Rvalue::Aggregate(crate::mir::ir::AggregateKind::List, ref ops),
+                    Rvalue::Aggregate(
+                        crate::mir::ir::AggregateKind::List | crate::mir::ir::AggregateKind::Tuple,
+                        ref ops,
+                    ),
                 ) if l == origin => {
                     for i in 0..field_map.len() {
                         new_stmts.push(Statement {
@@ -613,5 +631,105 @@ mod tests {
         )]);
         // Just ensure it runs without panicking
         ScalarizeStructs.run(&mut f);
+    }
+
+    fn aggregate_count(f: &MirFunction) -> usize {
+        f.basic_blocks
+            .iter()
+            .flat_map(|bb| &bb.statements)
+            .filter(|s| matches!(&s.kind, StatementKind::Assign(_, Rvalue::Aggregate(_, _))))
+            .count()
+    }
+
+    #[test]
+    fn tuple_constant_index_is_scalarized() {
+        use crate::semantic::types::Type;
+        // Local(1) holds a non-escaping tuple read by a constant index into the
+        // scalar Local(2), which is returned. The tuple itself never escapes.
+        let mut f = MirFunction {
+            name: "f".into(),
+            locals: vec![
+                local_decl(Type::Int),
+                local_decl(Type::Tuple(vec![Type::Int, Type::Int])),
+                local_decl(Type::Int),
+            ],
+            basic_blocks: vec![bb(
+                vec![
+                    assign(
+                        1,
+                        Rvalue::Aggregate(
+                            AggregateKind::Tuple,
+                            vec![
+                                Operand::Constant(Constant::Int(10)),
+                                Operand::Constant(Constant::Int(20)),
+                            ],
+                        ),
+                    ),
+                    assign(
+                        2,
+                        Rvalue::GetIndex(
+                            Operand::Copy(Local(1)),
+                            Operand::Constant(Constant::Int(0)),
+                        ),
+                    ),
+                    assign(0, Rvalue::Use(Operand::Copy(Local(2)))),
+                ],
+                TerminatorKind::Return,
+            )],
+            arg_count: 0,
+            vararg_idx: None,
+            kwarg_idx: None,
+            param_names: vec![],
+            is_async: false,
+        };
+        assert!(ScalarizeStructs.run(&mut f));
+        assert_eq!(aggregate_count(&f), 0);
+    }
+
+    #[test]
+    fn returned_tuple_is_not_scalarized() {
+        use crate::semantic::types::Type;
+        // The same tuple is both read locally and assigned into the return slot
+        // Local(0). Because it escapes, the escape guard must leave the
+        // allocation in place even though a field read is present.
+        let tup = Type::Tuple(vec![Type::Int, Type::Int]);
+        let mut f = MirFunction {
+            name: "f".into(),
+            locals: vec![
+                local_decl(tup.clone()),
+                local_decl(tup),
+                local_decl(Type::Int),
+            ],
+            basic_blocks: vec![bb(
+                vec![
+                    assign(
+                        1,
+                        Rvalue::Aggregate(
+                            AggregateKind::Tuple,
+                            vec![
+                                Operand::Constant(Constant::Int(1)),
+                                Operand::Constant(Constant::Int(2)),
+                            ],
+                        ),
+                    ),
+                    assign(
+                        2,
+                        Rvalue::GetIndex(
+                            Operand::Copy(Local(1)),
+                            Operand::Constant(Constant::Int(0)),
+                        ),
+                    ),
+                    assign(0, Rvalue::Use(Operand::Copy(Local(1)))),
+                ],
+                TerminatorKind::Return,
+            )],
+            arg_count: 0,
+            vararg_idx: None,
+            kwarg_idx: None,
+            param_names: vec![],
+            is_async: false,
+        };
+        assert!(!ScalarizeStructs.run(&mut f));
+        assert_eq!(aggregate_count(&f), 1);
     }
 }
