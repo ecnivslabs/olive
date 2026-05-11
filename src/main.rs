@@ -776,7 +776,7 @@ fn mangle_stmt(stmt: &mut parser::Stmt, prefix: &str, names: &HashSet<String>) {
             mangle_expr(target, prefix, names);
             mangle_expr(value, prefix, names);
         }
-        parser::StmtKind::Return(Some(e)) | parser::StmtKind::Raise(Some(e)) | parser::StmtKind::ExprStmt(e) => {
+        parser::StmtKind::Return(Some(e)) | parser::StmtKind::ExprStmt(e) => {
             mangle_expr(e, prefix, names);
         }
         _ => {}

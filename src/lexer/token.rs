@@ -33,9 +33,6 @@ pub enum TokenKind {
     Struct,
     Impl,
     Try,
-    Except,
-    Finally,
-    Raise,
     As,
     Assert,
     Mut,
@@ -66,6 +63,7 @@ pub enum TokenKind {
     PercentEqual,
     DoubleStarEqual,
     Ampersand,
+    Pipe,
 
     // symbols
     LParen,

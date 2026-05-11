@@ -319,33 +319,6 @@ impl TypeChecker {
                 self.current_struct = prev_struct;
             }
 
-            StmtKind::Try {
-                body,
-                handlers,
-                else_body,
-                finally_body,
-            } => {
-                self.check_block(body);
-                for handler in handlers {
-                    if let Some(exc) = &handler.exc_type {
-                        self.check_expr(exc);
-                    }
-                    self.enter_scope();
-                    if let Some(name) = &handler.name {
-                        self.define_type(name, Type::Any, false);
-                    }
-                    for s in &handler.body {
-                        self.check_stmt(s);
-                    }
-                    self.leave_scope();
-                }
-                if let Some(body) = else_body {
-                    self.check_block(body);
-                }
-                if let Some(body) = finally_body {
-                    self.check_block(body);
-                }
-            }
 
             StmtKind::Return(Some(expr)) => {
                 let ret_ty = self.check_expr(expr);
@@ -360,9 +333,6 @@ impl TypeChecker {
                 }
             }
 
-            StmtKind::Raise(Some(expr)) => {
-                self.check_expr(expr);
-            }
 
             StmtKind::Assert { test, msg } => {
                 let test_ty = self.check_expr(test);
@@ -375,7 +345,6 @@ impl TypeChecker {
             StmtKind::Pass
             | StmtKind::Break
             | StmtKind::Continue
-            | StmtKind::Raise(None)
             | StmtKind::Import(_)
             | StmtKind::FromImport { .. } => {}
             StmtKind::Enum { name, variants } => {
@@ -723,6 +692,16 @@ impl TypeChecker {
                 
                 return_ty
             }
+
+            ExprKind::Try(inner) => {
+                let inner_ty = self.check_expr(inner);
+                // In a fully typed system, we would unpack Result<T, E> into T here
+                // For now, if the inner type is known, we just return it, 
+                // or assume we return the 'Ok' variant type.
+                // We'll just return inner_ty for simplicity right now unless it's a Union
+                // In proper Rust style: try expr -> expr.unwrap()
+                inner_ty
+            }
         }
     }
 
@@ -991,14 +970,24 @@ impl TypeChecker {
                 Box::new(self.resolve_type_expr(v)),
             ),
             TypeExprKind::Tuple(types) => {
-                Type::Tuple(types.iter().map(|t| self.resolve_type_expr(t)).collect())
+                let mut resolved = Vec::new();
+                for ty in types {
+                    resolved.push(self.resolve_type_expr(ty));
+                }
+                Type::Tuple(resolved)
             }
             TypeExprKind::Fn { params, ret } => Type::Fn(
-                params.iter().map(|t| self.resolve_type_expr(t)).collect(),
+                params.iter().map(|p| self.resolve_type_expr(p)).collect(),
                 Box::new(self.resolve_type_expr(ret)),
             ),
             TypeExprKind::Ref(inner) => Type::Ref(Box::new(self.resolve_type_expr(inner))),
             TypeExprKind::MutRef(inner) => Type::MutRef(Box::new(self.resolve_type_expr(inner))),
+            TypeExprKind::Union(_left, _right) => {
+                // Just use the left type for now in the type checker, or introduce a union type
+                // if we have one. We don't have a Type::Union yet, so let's use Type::Any
+                // or just the first type.
+                Type::Any
+            }
         }
     }
 

@@ -33,6 +33,7 @@ pub enum TypeExprKind {
     Tuple(Vec<TypeExpr>),
     List(Box<TypeExpr>),
     Dict(Box<TypeExpr>, Box<TypeExpr>),
+    Union(Box<TypeExpr>, Box<TypeExpr>),
     #[allow(dead_code)]
     Fn {
         params: Vec<TypeExpr>,
@@ -119,13 +120,6 @@ pub struct CompClause {
     pub condition: Option<Expr>,
 }
 
-#[derive(Debug, Clone)]
-pub struct ExceptHandler {
-    pub exc_type: Option<Expr>,
-    pub name: Option<String>,
-    pub body: Vec<Stmt>,
-    pub span: Span,
-}
 
 #[derive(Debug, Clone)]
 pub struct Expr {
@@ -203,6 +197,8 @@ pub enum ExprKind {
 
     Borrow(Box<Expr>),
     MutBorrow(Box<Expr>),
+
+    Try(Box<Expr>),
 
     Match {
         expr: Box<Expr>,
@@ -290,14 +286,7 @@ pub enum StmtKind {
         body: Vec<Stmt>,
         else_body: Option<Vec<Stmt>>,
     },
-    Try {
-        body: Vec<Stmt>,
-        handlers: Vec<ExceptHandler>,
-        else_body: Option<Vec<Stmt>>,
-        finally_body: Option<Vec<Stmt>>,
-    },
     Return(Option<Expr>),
-    Raise(Option<Expr>),
     Assert {
         test: Expr,
         msg: Option<Expr>,

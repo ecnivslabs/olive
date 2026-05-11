@@ -219,34 +219,6 @@ impl Resolver {
                 }
             }
 
-            StmtKind::Try {
-                body,
-                handlers,
-                else_body,
-                finally_body,
-            } => {
-                self.resolve_block(body);
-                for handler in handlers {
-                    if let Some(exc) = &handler.exc_type {
-                        self.resolve_expr(exc);
-                    }
-                    self.table.push(ScopeKind::Block);
-                    if let Some(name) = &handler.name {
-                        self.define_sym(name, SymbolKind::Variable, handler.span);
-                    }
-                    self.hoist_fns_and_structs(&handler.body);
-                    for s in &handler.body {
-                        self.resolve_stmt(s);
-                    }
-                    self.table.pop();
-                }
-                if let Some(body) = else_body {
-                    self.resolve_block(body);
-                }
-                if let Some(body) = finally_body {
-                    self.resolve_block(body);
-                }
-            }
 
             StmtKind::Return(expr) => {
                 if let Some(e) = expr {
@@ -254,11 +226,6 @@ impl Resolver {
                 }
             }
 
-            StmtKind::Raise(expr) => {
-                if let Some(e) = expr {
-                    self.resolve_expr(e);
-                }
-            }
 
             StmtKind::Assert { test, msg } => {
                 self.resolve_expr(test);
@@ -484,6 +451,10 @@ impl Resolver {
                     }
                     self.table.pop();
                 }
+            }
+
+            ExprKind::Try(inner) => {
+                self.resolve_expr(inner);
             }
         }
     }

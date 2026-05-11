@@ -377,14 +377,6 @@ impl<'a> MirBuilder<'a> {
                 }
             }
 
-            StmtKind::Raise(Some(expr)) => {
-                self.lower_expr(expr);
-                if let Some(bb) = self.current_block {
-                    self.terminate_block(bb, TerminatorKind::Unreachable, Span::default());
-                }
-                self.current_block = Some(self.new_block());
-            }
-
             StmtKind::Assert { test, msg } => {
                 let test_op = self.lower_expr(test);
                 if let Some(m) = msg {
@@ -469,10 +461,8 @@ impl<'a> MirBuilder<'a> {
 
 
             StmtKind::Pass
-            | StmtKind::Raise(None)
             | StmtKind::Import(_)
-            | StmtKind::FromImport { .. }
-            | StmtKind::Try { .. } => {}
+            | StmtKind::FromImport { .. } => {}
             StmtKind::Enum { name, variants } => {
                 for (i, variant) in variants.iter().enumerate() {
                     let mangled = format!("{}::{}", name, variant.name);
@@ -797,6 +787,7 @@ impl<'a> MirBuilder<'a> {
             ),
             TypeExprKind::Ref(inner) => Type::Ref(Box::new(self.resolve_type_expr(inner))),
             TypeExprKind::MutRef(inner) => Type::MutRef(Box::new(self.resolve_type_expr(inner))),
+            TypeExprKind::Union(_, _) => Type::Any, // simple fallback for now
         }
     }
 
@@ -1169,6 +1160,11 @@ impl<'a> MirBuilder<'a> {
             }
             ExprKind::Bool(b) => Operand::Constant(Constant::Bool(*b)),
             ExprKind::Null => Operand::Constant(Constant::None),
+
+            ExprKind::Try(inner) => {
+                // simple pass-through for now. a full implementation would check for Ok/Err
+                self.lower_expr(inner)
+            }
 
             ExprKind::Borrow(inner) => {
                 let tmp = self.new_tmp_for_expr(expr);

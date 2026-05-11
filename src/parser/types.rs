@@ -3,6 +3,17 @@ use crate::lexer::TokenKind;
 
 impl Parser {
     pub(crate) fn parse_type_expr(&mut self) -> ParseResult<TypeExpr> {
+        let mut left = self.parse_single_type_expr()?;
+        while self.peek().kind == TokenKind::Pipe {
+            self.advance();
+            let right = self.parse_single_type_expr()?;
+            let span = left.span.merge(right.span);
+            left = TypeExpr::new(TypeExprKind::Union(Box::new(left), Box::new(right)), span);
+        }
+        Ok(left)
+    }
+
+    pub(crate) fn parse_single_type_expr(&mut self) -> ParseResult<TypeExpr> {
         let start = self.peek().clone();
         match self.peek().kind {
             TokenKind::Identifier => {

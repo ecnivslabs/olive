@@ -15,9 +15,7 @@ impl Parser {
             TokenKind::If => self.parse_if(),
             TokenKind::While => self.parse_while(),
             TokenKind::For => self.parse_for(),
-            TokenKind::Try => self.parse_try(),
             TokenKind::Return => self.parse_return(),
-            TokenKind::Raise => self.parse_raise(),
             TokenKind::Assert => self.parse_assert(),
             TokenKind::Import => self.parse_import(),
             TokenKind::From => self.parse_from_import(),
@@ -432,76 +430,6 @@ impl Parser {
         }
     }
 
-    pub(crate) fn parse_try(&mut self) -> ParseResult<Stmt> {
-        let start = self.peek().clone();
-        self.expect(TokenKind::Try)?;
-        let body = self.parse_block()?;
-
-        let mut handlers = Vec::new();
-        let mut else_body: Option<Vec<Stmt>> = None;
-        let mut finally_body: Option<Vec<Stmt>> = None;
-
-        self.skip_newlines();
-
-        while self.peek().kind == TokenKind::Except {
-            let handler_start = self.peek().clone();
-            self.advance();
-            let exc_type = if self.peek().kind != TokenKind::Colon {
-                Some(self.parse_expr()?)
-            } else {
-                None
-            };
-            let name = if self.peek().kind == TokenKind::As {
-                self.advance();
-                Some(self.expect(TokenKind::Identifier)?.value)
-            } else {
-                None
-            };
-            let handler_body = self.parse_block()?;
-            let handler_span = self.span_from(&handler_start);
-            handlers.push(ExceptHandler {
-                exc_type,
-                name,
-                body: handler_body,
-                span: handler_span,
-            });
-            self.skip_newlines();
-        }
-
-        if self.peek().kind == TokenKind::Else {
-            self.advance();
-            else_body = Some(self.parse_block()?);
-            self.skip_newlines();
-        }
-
-        if self.peek().kind == TokenKind::Finally {
-            self.advance();
-            finally_body = Some(self.parse_block()?);
-        }
-
-        if handlers.is_empty() && finally_body.is_none() {
-            let tok = self.peek().clone();
-            return Err(ParseError {
-                message: "try without except or finally".into(),
-                line: tok.line,
-                col: tok.col,
-                start: tok.span.0,
-                end: tok.span.1,
-            });
-        }
-
-        let span = self.span_from(&start);
-        Ok(Stmt::new(
-            StmtKind::Try {
-                body,
-                handlers,
-                else_body,
-                finally_body,
-            },
-            span,
-        ))
-    }
-
     pub(crate) fn parse_return(&mut self) -> ParseResult<Stmt> {
         let start = self.peek().clone();
         self.expect(TokenKind::Return)?;
@@ -512,18 +440,6 @@ impl Parser {
         self.eat_stmt_end()?;
         let span = self.span_from(&start);
         Ok(Stmt::new(StmtKind::Return(value), span))
-    }
-
-    pub(crate) fn parse_raise(&mut self) -> ParseResult<Stmt> {
-        let start = self.peek().clone();
-        self.expect(TokenKind::Raise)?;
-        let value = match self.peek().kind {
-            TokenKind::Newline | TokenKind::Semicolon | TokenKind::Eof | TokenKind::Dedent => None,
-            _ => Some(self.parse_expr()?),
-        };
-        self.eat_stmt_end()?;
-        let span = self.span_from(&start);
-        Ok(Stmt::new(StmtKind::Raise(value), span))
     }
 
     pub(crate) fn parse_assert(&mut self) -> ParseResult<Stmt> {

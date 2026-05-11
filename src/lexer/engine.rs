@@ -400,9 +400,6 @@ impl Lexer {
             "break" => TokenKind::Break,
             "continue" => TokenKind::Continue,
             "try" => TokenKind::Try,
-            "except" => TokenKind::Except,
-            "finally" => TokenKind::Finally,
-            "raise" => TokenKind::Raise,
             "as" => TokenKind::As,
             "assert" => TokenKind::Assert,
             "import" => TokenKind::Import,
@@ -708,6 +705,7 @@ impl Lexer {
                 ';' => self.make_tok(TokenKind::Semicolon, ";", line, col, start),
                 '&' => self.make_tok(TokenKind::Ampersand, "&", line, col, start),
                 '@' => self.make_tok(TokenKind::At, "@", line, col, start),
+                '|' => self.make_tok(TokenKind::Pipe, "|", line, col, start),
 
                 other => return Err(self.err(format!("unexpected character {:?}", other))),
             };

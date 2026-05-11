@@ -395,11 +395,10 @@ mod tests {
     }
 
     #[test]
-    fn try_except_basic() {
-        match first(&parse("try:\n    x\nexcept:\n    pass\n")) {
-            StmtKind::Try { handlers, .. } => {
-                assert_eq!(handlers.len(), 1);
-                assert!(handlers[0].exc_type.is_none());
+    fn try_expr_basic() {
+        match expr_stmt(&parse("try parse()\n")) {
+            ExprKind::Try(inner) => {
+                assert!(matches!(inner.kind, ExprKind::Call { .. }));
             }
             _ => panic!(),
         }

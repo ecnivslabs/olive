@@ -248,6 +248,13 @@ impl Parser {
 
     pub(crate) fn parse_unary(&mut self) -> ParseResult<Expr> {
         match self.peek().kind {
+            TokenKind::Try => {
+                let start = self.peek().clone();
+                self.advance();
+                let operand = self.parse_unary()?;
+                let span = self.span_from(&start);
+                Ok(Expr::new(ExprKind::Try(Box::new(operand)), span))
+            }
             TokenKind::Ampersand => {
                 let start = self.peek().clone();
                 self.advance();
