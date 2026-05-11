@@ -134,7 +134,7 @@ impl<'a> MirBuilder<'a> {
             return op;
         }
 
-        if let Some(op) = self.lower_list_method(obj, attr, &arg_ops, span, expr_id) {
+        if let Some(op) = self.lower_list_method(obj, attr, &arg_ops, &arg_tys, span, expr_id) {
             return op;
         }
 
@@ -411,6 +411,7 @@ impl<'a> MirBuilder<'a> {
         obj: &Expr,
         attr: &str,
         arg_ops: &[Operand],
+        arg_tys: &[Type],
         span: Span,
         expr_id: usize,
     ) -> Option<Operand> {
@@ -449,8 +450,28 @@ impl<'a> MirBuilder<'a> {
         };
         let obj_op = self.lower_expr_as_copy(obj);
         let returns_elem = matches!(attr, "pop" | "remove");
+        // A scalar stored into or matched against an `[Any]` element slot is
+        // boxed the same way a list literal element is, so the stored word stays
+        // self-describing and a lookup word matches it. `insert(i, v)` boxes its
+        // value (second) argument; the rest box their first.
+        let value_arg = match attr {
+            "append" | "remove" => Some(0usize),
+            "insert" => Some(1usize),
+            _ => None,
+        };
         let mut call_args = vec![obj_op.clone()];
-        call_args.extend_from_slice(arg_ops);
+        if *elem == Type::Any && value_arg.is_some() {
+            for (i, op) in arg_ops.iter().enumerate() {
+                if Some(i) == value_arg {
+                    let from_ty = arg_tys.get(i).cloned().unwrap_or(Type::Any);
+                    call_args.push(self.box_into_any(op.clone(), &from_ty, span));
+                } else {
+                    call_args.push(op.clone());
+                }
+            }
+        } else {
+            call_args.extend_from_slice(arg_ops);
+        }
         let tmp = self.new_local(self.get_type(expr_id), None, false);
         self.push_statement(
             StatementKind::Assign(

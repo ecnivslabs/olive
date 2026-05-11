@@ -1,73 +1,86 @@
-//! Boxed scalars for `Any` slots. A bare `i64` is ambiguous once its static
-//! type is erased: a float reads as an int, `null` as `0`, and a large odd int
-//! is bit-identical to a low-bit-tagged string pointer. So every scalar that
-//! flows into an `Any` (a container element, an `Any` variable/argument/return,
-//! or an operand of an `Any` arithmetic op) is boxed behind a kind header to
-//! stay self-describing. Only pointers, already self-describing, stay bare.
+//! Scalar representation inside an `Any` slot. A bare `i64` is ambiguous once
+//! its static type is erased: a large odd int is bit-identical to a low-bit
+//! tagged string pointer. Heap objects are 8-aligned (low 3 bits clear) and
+//! strings carry bit 0, which leaves three low-bit patterns free for inline
+//! immediates that need no allocation:
+//!
+//! * `TAG_INT`  (`& 7 == 2`): a 61-bit signed integer in the high bits.
+//! * `TAG_BOOL` (`& 7 == 4`): `0` or `1` in the high bits.
+//! * `TAG_NULL` (`& 7 == 6`): the sole `null` word, exactly `TAG_NULL`.
+//!
+//! An int outside the 61-bit range falls back to a heap `OliveBoxed` (`KIND_INT`)
+//! and a float always uses one (`KIND_FLOAT`), since neither fits beside a tag.
+//! Only these heap forms and ordinary pointers are tracked; an immediate is a
+//! plain register value with no lifetime.
 
-use crate::{
-    KIND_BOOL, KIND_FLOAT, KIND_INT, KIND_NULL, is_active_object, olive_str_from_ptr,
-    register_object,
-};
+use crate::{KIND_FLOAT, KIND_INT, is_active_object, olive_str_from_ptr, register_object};
 
-/// A scalar inside an `Any`. `bits` is the float bit pattern (`KIND_FLOAT`),
-/// `0`/`1` (`KIND_BOOL`), or unused (`KIND_NULL`).
+/// Low-bit tag selecting an inline immediate. Heap pointers use `0`, strings
+/// use bit `0`; these three are the remaining even, non-zero patterns.
+pub const TAG_INT: i64 = 2;
+pub const TAG_BOOL: i64 = 4;
+pub const TAG_NULL: i64 = 6;
+pub const TAG_MASK: i64 = 7;
+
+/// Inclusive bounds of an inline `TAG_INT` payload (61-bit signed). Anything
+/// wider is heap-boxed so no value is silently truncated.
+const INT_MIN: i64 = -(1 << 60);
+const INT_MAX: i64 = (1 << 60) - 1;
+
+/// A scalar too wide to inline. `bits` is the integer (`KIND_INT`) or the float
+/// bit pattern (`KIND_FLOAT`).
 #[repr(C)]
 pub struct OliveBoxed {
     pub kind: i64,
     pub bits: i64,
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_box_int(i: i64) -> i64 {
-    let res = Box::into_raw(Box::new(OliveBoxed {
-        kind: KIND_INT,
-        bits: i,
-    })) as i64;
+fn heap_box(kind: i64, bits: i64) -> i64 {
+    let res = Box::into_raw(Box::new(OliveBoxed { kind, bits })) as i64;
     register_object(res);
     res
+}
+
+/// Encodes an integer for an `Any` slot: inline when it fits 61 bits, otherwise
+/// a heap `KIND_INT` box.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_box_int(i: i64) -> i64 {
+    if (INT_MIN..=INT_MAX).contains(&i) {
+        (i << 3) | TAG_INT
+    } else {
+        heap_box(KIND_INT, i)
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_box_float(f: f64) -> i64 {
-    let res = Box::into_raw(Box::new(OliveBoxed {
-        kind: KIND_FLOAT,
-        bits: f.to_bits() as i64,
-    })) as i64;
-    register_object(res);
-    res
+    heap_box(KIND_FLOAT, f.to_bits() as i64)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_box_bool(b: i64) -> i64 {
-    let res = Box::into_raw(Box::new(OliveBoxed {
-        kind: KIND_BOOL,
-        bits: (b != 0) as i64,
-    })) as i64;
-    register_object(res);
-    res
+    (((b != 0) as i64) << 3) | TAG_BOOL
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_box_null() -> i64 {
-    let res = Box::into_raw(Box::new(OliveBoxed {
-        kind: KIND_NULL,
-        bits: 0,
-    })) as i64;
-    register_object(res);
-    res
+    TAG_NULL
 }
 
-/// Whether an `Any` is `null`. A bare `0` is the integer zero; `null` is always
-/// boxed.
+/// Whether an `Any` is `null`.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_any_is_null(v: i64) -> i64 {
-    (is_active_object(v) && unsafe { *(v as *const i64) } == KIND_NULL) as i64
+    (v == TAG_NULL) as i64
 }
 
-/// `float()` of an `Any`: unbox, parse a string, or widen a raw int.
+/// `float()` of an `Any`: unbox, parse a string, or widen an integer.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_unbox_float(v: i64) -> f64 {
+    match v & TAG_MASK {
+        TAG_INT | TAG_BOOL => return (v >> 3) as f64,
+        TAG_NULL => return 0.0,
+        _ => {}
+    }
     if let Some(b) = as_boxed(v) {
         return match b.kind {
             KIND_FLOAT => f64::from_bits(b.bits as u64),
@@ -80,10 +93,15 @@ pub extern "C" fn olive_unbox_float(v: i64) -> f64 {
     v as f64
 }
 
-/// `int()` of an `Any`: unbox (float truncates), parse a string, or pass a raw
-/// int through.
+/// `int()` of an `Any`: unbox (float truncates), parse a string, or pass an
+/// integer through.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_unbox_int(v: i64) -> i64 {
+    match v & TAG_MASK {
+        TAG_INT | TAG_BOOL => return v >> 3,
+        TAG_NULL => return 0,
+        _ => {}
+    }
     if let Some(b) = as_boxed(v) {
         return match b.kind {
             KIND_FLOAT => f64::from_bits(b.bits as u64) as i64,
@@ -101,10 +119,15 @@ fn is_str(v: i64) -> bool {
     v & 1 == 1 && (v & !1) > 0x10000
 }
 
-/// Truthiness of an `Any`: by value for boxed bool/float, non-empty for strings,
-/// present otherwise. `0` is false.
+/// Truthiness of an `Any`: by value for an inline scalar or boxed float,
+/// non-empty for strings, present otherwise. `null` and `0` are false.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_any_truthy(v: i64) -> i64 {
+    match v & TAG_MASK {
+        TAG_INT | TAG_BOOL => return (v >> 3 != 0) as i64,
+        TAG_NULL => return 0,
+        _ => {}
+    }
     if v == 0 {
         return 0;
     }
@@ -121,27 +144,58 @@ pub extern "C" fn olive_any_truthy(v: i64) -> i64 {
     1
 }
 
-/// Frees a scalar from one of the `olive_box_*` constructors.
+/// Frees a heap scalar from `heap_box`; inline immediates own nothing.
 pub fn olive_free_boxed(ptr: i64) {
-    if ptr != 0 {
+    if ptr != 0 && ptr & TAG_MASK == 0 {
         unsafe {
             drop(Box::from_raw(ptr as *mut OliveBoxed));
         }
     }
 }
 
-/// Borrows `v` as a boxed scalar if it is one.
+/// Borrows `v` as a heap-boxed scalar if it is one.
 fn as_boxed(v: i64) -> Option<&'static OliveBoxed> {
     if !is_active_object(v) {
         return None;
     }
     let b = unsafe { &*(v as *const OliveBoxed) };
-    matches!(b.kind, KIND_FLOAT | KIND_BOOL | KIND_NULL | KIND_INT).then_some(b)
+    matches!(b.kind, KIND_FLOAT | KIND_INT).then_some(b)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_int_roundtrip() {
+        for i in [0, 1, -1, 42, -42, 1 << 40, -(1 << 40), INT_MAX, INT_MIN] {
+            let p = olive_box_int(i);
+            assert_eq!(p & TAG_MASK, TAG_INT, "{i} should be inline");
+            assert_eq!(olive_unbox_int(p), i);
+            assert_eq!(olive_unbox_float(p), i as f64);
+            assert_eq!(olive_any_is_null(p), 0);
+        }
+    }
+
+    #[test]
+    fn big_int_falls_back_to_heap() {
+        let big = INT_MAX + 1;
+        let p = olive_box_int(big);
+        assert_eq!(p & TAG_MASK, 0, "out-of-range int should be heap-boxed");
+        assert_eq!(olive_unbox_int(p), big);
+        olive_free_boxed(p);
+    }
+
+    #[test]
+    fn large_odd_int_is_never_a_string() {
+        // The bug inline tagging exists to kill: a large odd int read as a
+        // tagged string pointer. As an immediate it carries `TAG_INT`, so its
+        // low bit is clear and the string heuristic can never match it.
+        let big = 200_000_001;
+        let p = olive_box_int(big);
+        assert_eq!(p & 1, 0);
+        assert_eq!(olive_unbox_int(p), big);
+    }
 
     #[test]
     fn box_unbox_float_roundtrip() {
@@ -154,60 +208,21 @@ mod tests {
     fn box_unbox_bool_roundtrip() {
         let t = olive_box_bool(1);
         let f = olive_box_bool(0);
+        assert_eq!(t & TAG_MASK, TAG_BOOL);
         assert_eq!(olive_unbox_int(t), 1);
         assert_eq!(olive_unbox_int(f), 0);
-        olive_free_boxed(t);
-        olive_free_boxed(f);
-    }
-
-    #[test]
-    fn unbox_raw_passthrough() {
-        assert_eq!(olive_unbox_int(42), 42);
-        assert_eq!(olive_unbox_float(42), 42.0);
-    }
-
-    #[test]
-    fn box_unbox_int_roundtrip() {
-        // A large odd int is bit-identical to a tagged string pointer; boxing
-        // keeps it self-describing so it never trips the string heuristic.
-        let big = 200_000_001;
-        let p = olive_box_int(big);
-        assert_eq!(olive_unbox_int(p), big);
-        assert_eq!(olive_unbox_float(p), big as f64);
-        assert_eq!(olive_any_is_null(p), 0);
-        assert_eq!(olive_any_truthy(p), 1);
-        olive_free_boxed(p);
-    }
-
-    #[test]
-    fn boxed_int_zero_is_truthy_falsy_by_value() {
-        let z = olive_box_int(0);
-        assert_eq!(olive_any_truthy(z), 0, "boxed 0 is falsy");
-        assert_eq!(olive_any_is_null(z), 0, "boxed 0 is not null");
-        olive_free_boxed(z);
-    }
-
-    #[test]
-    fn boxed_null_is_distinct_from_int_zero() {
-        let n = olive_box_null();
-        assert_eq!(olive_any_is_null(n), 1, "boxed null is null");
-        assert_eq!(
-            olive_any_is_null(0),
-            0,
-            "bare 0 is the integer zero, not null"
-        );
-        assert_eq!(olive_any_is_null(42), 0);
-        assert_eq!(olive_any_truthy(n), 0, "null is falsy");
-        olive_free_boxed(n);
-    }
-
-    #[test]
-    fn boxed_bool_truthiness() {
-        let t = olive_box_bool(1);
-        let f = olive_box_bool(0);
         assert_eq!(olive_any_truthy(t), 1);
         assert_eq!(olive_any_truthy(f), 0);
-        olive_free_boxed(t);
-        olive_free_boxed(f);
+    }
+
+    #[test]
+    fn null_is_distinct_from_int_zero() {
+        let n = olive_box_null();
+        let z = olive_box_int(0);
+        assert_eq!(olive_any_is_null(n), 1);
+        assert_eq!(olive_any_is_null(z), 0);
+        assert_eq!(olive_any_is_null(0), 0, "bare 0 is the integer zero");
+        assert_eq!(olive_any_truthy(n), 0, "null is falsy");
+        assert_eq!(olive_any_truthy(z), 0, "zero is falsy");
     }
 }

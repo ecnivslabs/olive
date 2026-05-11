@@ -120,6 +120,42 @@ impl<'a> MirBuilder<'a> {
             }
         }
 
+        // Membership in an `[Any]`/`{Any}` compares the needle word against the
+        // stored element words. A scalar element is boxed on the way in, so the
+        // needle is boxed the same way; equal inline scalars share one word and
+        // match exactly.
+        if matches!(op, crate::parser::BinOp::In | crate::parser::BinOp::NotIn)
+            && matches!(&r_ty, Type::List(e) | Type::Set(e) if **e == Type::Any)
+        {
+            let l_ty = self.get_type(left.id).clone();
+            let haystack = self.lower_expr_as_copy(right);
+            let needle = self.lower_expr_as_copy(left);
+            let needle = self.box_into_any(needle, &l_ty, span);
+            let call_tmp = self.new_local(Type::Bool, None, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    call_tmp,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function("__olive_in_list".to_string())),
+                        args: vec![needle, haystack],
+                    },
+                ),
+                span,
+            );
+            if matches!(op, crate::parser::BinOp::In) {
+                return self.operand_for_local(call_tmp);
+            }
+            let not_tmp = self.new_local(Type::Bool, None, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    not_tmp,
+                    Rvalue::UnaryOp(crate::parser::UnaryOp::Not, Operand::Copy(call_tmp)),
+                ),
+                span,
+            );
+            return self.operand_for_local(not_tmp);
+        }
+
         if r_ty == Type::Str && matches!(op, crate::parser::BinOp::In | crate::parser::BinOp::NotIn)
         {
             let haystack = self.lower_expr_as_copy(right);
