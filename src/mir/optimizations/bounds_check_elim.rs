@@ -140,7 +140,7 @@ impl BoundsCheckElim {
 }
 
 /// Value of each local at the loop header guard: last write across the header's
-/// dominators (header included), in dominance order — every iteration runs them
+/// dominators (header included), in dominance order; every iteration runs them
 /// before the guard. The body-reassigned counter keeps its pre-loop value here.
 fn entry_state(
     func: &MirFunction,

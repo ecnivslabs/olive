@@ -29,7 +29,7 @@ struct VectorizationPlan {
 /// A type is vectorizable only if it lowers to a Cranelift SIMD lane type.
 /// Pointer/aggregate element types (structs, `bytes`, etc.) fall back to a
 /// scalar `i64` in `cl_type`, so wrapping them in a vector would declare a
-/// scalar local while emitting a real SIMD value — a codegen type mismatch.
+/// scalar local while emitting a real SIMD value, a codegen type mismatch.
 fn is_simd_scalar(ty: &OliveType) -> bool {
     matches!(
         ty,
@@ -199,7 +199,7 @@ impl LoopVectorizer {
         }
 
         // All loaded lanes must share a width so they pack into one SIMD
-        // register, and that register is capped at 128 bits — the width every
+        // register, and that register is capped at 128 bits, the width every
         // Cranelift target backend supports for integer lanes (wider vectors
         // like i64x4 need AVX2 and are rejected by the backend).
         let lane_bits = simd_lane_bits(&func.locals[loads[0].0.0].ty)?;

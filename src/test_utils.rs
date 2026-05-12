@@ -8,7 +8,7 @@ use rustc_hash::FxHashSet as HashSet;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 /// The Olive runtime keeps a process-global object registry (`std_lib`'s pointer
-/// bounds and active-object set), which is sound for one program per process —
+/// bounds and active-object set), which is sound for one program per process,
 /// how an Olive binary actually runs. The unit tests instead JIT and run many
 /// independent programs inside the single test process, so running them at once
 /// lets their registries corrupt each other. Execution is serialized through
