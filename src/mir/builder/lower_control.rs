@@ -345,7 +345,7 @@ impl<'a> MirBuilder<'a> {
                     self.push_statement(
                         StatementKind::Assign(
                             elem_tmp,
-                            Rvalue::GetIndex(Operand::Copy(next_val), idx_op),
+                            Rvalue::GetIndex(Operand::Copy(next_val), idx_op, false),
                         ),
                         iter.span,
                     );

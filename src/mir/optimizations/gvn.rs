@@ -29,7 +29,7 @@ impl Transform for GlobalValueNumbering {
                     if let Operand::Copy(l) | Operand::Move(l) = obj {
                         *assign_counts.entry(*l).or_insert(0) += if in_loop { 2 } else { 1 };
                     }
-                } else if let StatementKind::SetIndex(obj, _, _) = &stmt.kind {
+                } else if let StatementKind::SetIndex(obj, _, _, _) = &stmt.kind {
                     if let Operand::Copy(l) | Operand::Move(l) = obj {
                         *assign_counts.entry(*l).or_insert(0) += if in_loop { 2 } else { 1 };
                     }
@@ -125,7 +125,7 @@ impl GlobalValueNumbering {
     fn uses_local(&self, rval: &Rvalue, local: Local) -> bool {
         match rval {
             Rvalue::Use(op) | Rvalue::UnaryOp(_, op) => self.is_local(op, local),
-            Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) => {
+            Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r, _) => {
                 self.is_local(l, local) || self.is_local(r, local)
             }
             _ => false,

@@ -17,7 +17,7 @@ impl Transform for DeadCodeElimination {
                         self.record_operand_usage(obj, &mut used);
                         self.record_operand_usage(val, &mut used);
                     }
-                    StatementKind::SetIndex(obj, idx, val) => {
+                    StatementKind::SetIndex(obj, idx, val, _) => {
                         self.record_operand_usage(obj, &mut used);
                         self.record_operand_usage(idx, &mut used);
                         self.record_operand_usage(val, &mut used);
@@ -72,7 +72,7 @@ impl DeadCodeElimination {
             | Rvalue::GetTypeId(op)
             | Rvalue::FatPtrData(op)
             | Rvalue::Cast(op, _) => self.record_operand_usage(op, used),
-            Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) => {
+            Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r, _) => {
                 self.record_operand_usage(l, used);
                 self.record_operand_usage(r, used);
             }

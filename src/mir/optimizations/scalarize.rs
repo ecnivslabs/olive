@@ -171,7 +171,7 @@ fn can_scalarize(func: &MirFunction, aliases: &HashSet<Local>, origin: Local) ->
                     }
                 }
 
-                StatementKind::SetIndex(op, idx_op, val)
+                StatementKind::SetIndex(op, idx_op, val, _)
                     if operand_local(op).is_some_and(|l| aliases.contains(&l)) =>
                 {
                     match idx_op {
@@ -188,7 +188,7 @@ fn can_scalarize(func: &MirFunction, aliases: &HashSet<Local>, origin: Local) ->
                     }
                 }
 
-                StatementKind::Assign(dst, Rvalue::GetIndex(op, idx_op))
+                StatementKind::Assign(dst, Rvalue::GetIndex(op, idx_op, _))
                     if operand_local(op).is_some_and(|l| aliases.contains(&l)) =>
                 {
                     match idx_op {
@@ -254,7 +254,7 @@ fn collect_field_map(
                     let next = map.len();
                     map.insert(field.clone(), (next, ty));
                 }
-                StatementKind::SetIndex(op, idx_op, val)
+                StatementKind::SetIndex(op, idx_op, val, _)
                     if operand_local(op).is_some_and(|l| aliases.contains(&l)) =>
                 {
                     let field = match idx_op {
@@ -277,7 +277,7 @@ fn collect_field_map(
                         map.insert(field, (next, ty));
                     }
                 }
-                StatementKind::Assign(dst, Rvalue::GetIndex(op, idx_op))
+                StatementKind::Assign(dst, Rvalue::GetIndex(op, idx_op, _))
                     if operand_local(op).is_some_and(|l| aliases.contains(&l)) =>
                 {
                     let field = match idx_op {
@@ -414,7 +414,7 @@ fn rewrite(
                     }
                 }
 
-                StatementKind::SetIndex(ref op, ref idx_op, ref val)
+                StatementKind::SetIndex(ref op, ref idx_op, ref val, _)
                     if operand_local(op).is_some_and(|l| aliases.contains(&l)) =>
                 {
                     let field = match idx_op {
@@ -433,7 +433,7 @@ fn rewrite(
                     }
                 }
 
-                StatementKind::Assign(dst, Rvalue::GetIndex(ref op, ref idx_op))
+                StatementKind::Assign(dst, Rvalue::GetIndex(ref op, ref idx_op, _))
                     if operand_local(op).is_some_and(|l| aliases.contains(&l)) =>
                 {
                     let field = match idx_op {
@@ -482,7 +482,7 @@ fn stmt_references(stmt: &Statement, local: Local) -> bool {
         StatementKind::SetAttr(op, _, val) => {
             operand_local(op) == Some(local) || operand_is(val, local)
         }
-        StatementKind::SetIndex(obj, idx, val) => {
+        StatementKind::SetIndex(obj, idx, val, _) => {
             operand_is(obj, local) || operand_is(idx, local) || operand_is(val, local)
         }
         StatementKind::Drop(l) | StatementKind::StorageLive(l) | StatementKind::StorageDead(l) => {
@@ -507,7 +507,7 @@ fn rval_references(rval: &Rvalue, local: Local) -> bool {
         | Rvalue::PtrLoad(op)
         | Rvalue::VTableLoad { vtable: op, .. }
         | Rvalue::VectorSplat(op, _) => operand_is(op, local),
-        Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) => {
+        Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r, _) => {
             operand_is(l, local) || operand_is(r, local)
         }
         Rvalue::Call { func, args } => {
@@ -670,6 +670,7 @@ mod tests {
                         Rvalue::GetIndex(
                             Operand::Copy(Local(1)),
                             Operand::Constant(Constant::Int(0)),
+                            false,
                         ),
                     ),
                     assign(0, Rvalue::Use(Operand::Copy(Local(2)))),
@@ -717,6 +718,7 @@ mod tests {
                         Rvalue::GetIndex(
                             Operand::Copy(Local(1)),
                             Operand::Constant(Constant::Int(0)),
+                            false,
                         ),
                     ),
                     assign(0, Rvalue::Use(Operand::Copy(Local(1)))),

@@ -85,7 +85,7 @@ impl CommonSubexpressionElimination {
         };
         match kind {
             StatementKind::Assign(_, rval) => Self::for_each_operand(rval, &mut scan),
-            StatementKind::SetIndex(obj, idx, val) => {
+            StatementKind::SetIndex(obj, idx, val, _) => {
                 scan(obj);
                 scan(idx);
                 scan(val);
@@ -119,7 +119,7 @@ impl CommonSubexpressionElimination {
             | Rvalue::Cast(op, _)
             | Rvalue::PtrLoad(op)
             | Rvalue::VectorSplat(op, _) => f(op),
-            Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) | Rvalue::VectorLoad(l, r, _) => {
+            Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r, _) | Rvalue::VectorLoad(l, r, _) => {
                 f(l);
                 f(r);
             }

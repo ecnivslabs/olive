@@ -60,7 +60,16 @@ pub(super) fn first_party_files(entry: &str, sources: &super::errors::Sources) -
         .collect()
 }
 
+/// Compiles with the full optimizing pipeline. Used by the in-process test
+/// harness so every optimizer pass stays exercised.
+#[cfg(test)]
 pub fn run_pipeline(filename: &str) -> Result<PipelineOutput, ()> {
+    run_pipeline_opt(filename, true)
+}
+
+/// Compiles `filename`, running the full optimizer when `release` is set and the
+/// lean debug pipeline otherwise, so non-release builds stay fast.
+pub fn run_pipeline_opt(filename: &str, release: bool) -> Result<PipelineOutput, ()> {
     let t0 = std::time::Instant::now();
     let mut loaded = HashSet::new();
     loaded.insert(filename.to_string());
@@ -139,7 +148,11 @@ pub fn run_pipeline(filename: &str) -> Result<PipelineOutput, ()> {
     }
 
     let opt_start = std::time::Instant::now();
-    let optimizer = mir::Optimizer::new();
+    let optimizer = if release {
+        mir::Optimizer::new()
+    } else {
+        mir::Optimizer::minimal()
+    };
     optimizer.run(&mut mir_builder.functions);
     let opt_duration = opt_start.elapsed();
 

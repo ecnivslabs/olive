@@ -105,7 +105,7 @@ impl<'a> MirBuilder<'a> {
                     self.push_statement(
                         StatementKind::Assign(
                             elem_tmp,
-                            Rvalue::GetIndex(Operand::Copy(rhs_local), idx_op),
+                            Rvalue::GetIndex(Operand::Copy(rhs_local), idx_op, false),
                         ),
                         value.span,
                     );
@@ -158,7 +158,7 @@ impl<'a> MirBuilder<'a> {
                     self.push_statement(
                         StatementKind::Assign(
                             elem_tmp,
-                            Rvalue::GetIndex(Operand::Copy(rhs_local), idx_op),
+                            Rvalue::GetIndex(Operand::Copy(rhs_local), idx_op, false),
                         ),
                         value.span,
                     );
@@ -284,7 +284,7 @@ impl<'a> MirBuilder<'a> {
                             );
                         } else {
                             self.push_statement(
-                                StatementKind::SetIndex(obj_op, idx_op, Operand::Copy(tmp)),
+                                StatementKind::SetIndex(obj_op, idx_op, Operand::Copy(tmp), false),
                                 stmt.span,
                             );
                         }

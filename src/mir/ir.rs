@@ -41,11 +41,17 @@ pub enum Rvalue {
     Use(Operand),
     BinaryOp(BinOp, Operand, Operand),
     UnaryOp(UnaryOp, Operand),
-    Call { func: Operand, args: Vec<Operand> },
+    Call {
+        func: Operand,
+        args: Vec<Operand>,
+    },
     Aggregate(AggregateKind, Vec<Operand>),
     Cast(Operand, Type),
     GetAttr(Operand, String),
-    GetIndex(Operand, Operand),
+    /// Indexed read `obj[idx]`. The `bool` is `unchecked`: when set, the
+    /// bounds-check elimination pass has proven `idx` is always in range, so
+    /// codegen omits the per-access bounds check. Lowering always emits `false`.
+    GetIndex(Operand, Operand, bool),
     GetTag(Operand),
     GetTypeId(Operand),
     Ref(Local),
@@ -55,7 +61,10 @@ pub enum Rvalue {
     VectorFMA(Operand, Operand, Operand),
     PtrLoad(Operand),
     FatPtrData(Operand),
-    VTableLoad { vtable: Operand, method_idx: usize },
+    VTableLoad {
+        vtable: Operand,
+        method_idx: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,7 +76,10 @@ pub struct Statement {
 pub enum StatementKind {
     Assign(Local, Rvalue),
     SetAttr(Operand, String, Operand),
-    SetIndex(Operand, Operand, Operand),
+    /// Indexed write `obj[idx] = val`. The trailing `bool` is `unchecked`, with
+    /// the same meaning as on [`Rvalue::GetIndex`]: set only by bounds-check
+    /// elimination once `idx` is proven in range. Lowering always emits `false`.
+    SetIndex(Operand, Operand, Operand, bool),
     StorageLive(Local),
     StorageDead(Local),
     Drop(Local),
@@ -251,10 +263,10 @@ mod tests {
 
     #[test]
     fn rvalue_get_index() {
-        let r = Rvalue::GetIndex(Operand::Copy(Local(0)), Operand::Copy(Local(1)));
+        let r = Rvalue::GetIndex(Operand::Copy(Local(0)), Operand::Copy(Local(1)), false);
         assert!(matches!(
             r,
-            Rvalue::GetIndex(Operand::Copy(Local(0)), Operand::Copy(Local(1)))
+            Rvalue::GetIndex(Operand::Copy(Local(0)), Operand::Copy(Local(1)), false)
         ));
     }
 

@@ -77,7 +77,10 @@ impl<'a> MirBuilder<'a> {
                         target.span,
                     );
                 } else {
-                    self.push_statement(StatementKind::SetIndex(obj_op, idx_op, rval), target.span);
+                    self.push_statement(
+                        StatementKind::SetIndex(obj_op, idx_op, rval, false),
+                        target.span,
+                    );
                 }
             }
             ExprKind::Deref(ptr_expr) => {
@@ -96,7 +99,7 @@ impl<'a> MirBuilder<'a> {
                     self.push_statement(
                         StatementKind::Assign(
                             elem_tmp,
-                            Rvalue::GetIndex(Operand::Copy(rhs_local), idx_op),
+                            Rvalue::GetIndex(Operand::Copy(rhs_local), idx_op, false),
                         ),
                         elem.span,
                     );

@@ -319,3 +319,41 @@ fn regression_tuple_rebuilt_in_loop() {
     );
     assert_eq!(call_i64(&mut cg, "f"), 8);
 }
+
+#[test]
+fn regression_bce_const_index_value() {
+    // A constant index into a fixed-length list elides its bounds check; the
+    // value read must still be the right element.
+    let mut cg =
+        compile("fn f() -> i64:\n    let xs = [10, 20, 30, 40]\n    return xs[0] + xs[3]\n");
+    assert_eq!(call_i64(&mut cg, "f"), 50);
+}
+
+#[test]
+fn regression_bce_len_bounded_loop_sum() {
+    // `while i < len(xs)` indexed by the induction variable: every access is
+    // unchecked, and the sum must match.
+    let mut cg = compile(
+        "fn f() -> i64:\n    let xs = [1, 2, 3, 4, 5]\n    let mut acc = 0\n    let mut i = 0\n    while i < len(xs):\n        acc = acc + xs[i]\n        i = i + 1\n    return acc\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 15);
+}
+
+#[test]
+fn regression_bce_len_bounded_loop_write() {
+    // An indexed write inside a len-bounded loop is unchecked yet must store
+    // into the right slot; reading back confirms the element-preserving path.
+    let mut cg = compile(
+        "fn f() -> i64:\n    let mut xs = [1, 2, 3, 4]\n    let mut i = 0\n    while i < len(xs):\n        xs[i] = xs[i] * 10\n        i = i + 1\n    return xs[0] + xs[1] + xs[2] + xs[3]\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 100);
+}
+
+#[test]
+fn regression_bce_repeated_dynamic_index() {
+    // Two reads of the same dynamic index in a block: the second is redundant
+    // and must read the same value as the first.
+    let mut cg =
+        compile("fn f(i: i64) -> i64:\n    let xs = [7, 8, 9]\n    return xs[i] + xs[i]\n");
+    assert_eq!(call_i64_1(&mut cg, "f", 1), 16);
+}

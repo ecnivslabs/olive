@@ -84,7 +84,7 @@ fn rvalue_reads(rval: &Rvalue, out: &mut Vec<Local>) {
         | Rvalue::PtrLoad(op)
         | Rvalue::FatPtrData(op)
         | Rvalue::VTableLoad { vtable: op, .. } => push(op),
-        Rvalue::BinaryOp(_, a, b) | Rvalue::GetIndex(a, b) | Rvalue::VectorLoad(a, b, _) => {
+        Rvalue::BinaryOp(_, a, b) | Rvalue::GetIndex(a, b, _) | Rvalue::VectorLoad(a, b, _) => {
             push(a);
             push(b);
         }
@@ -178,7 +178,7 @@ impl LoopVectorizer {
 
         for &bb_id in &lp.body {
             for stmt in &func.basic_blocks[bb_id.0].statements {
-                if let StatementKind::Assign(dest, Rvalue::GetIndex(obj, Operand::Copy(idx))) =
+                if let StatementKind::Assign(dest, Rvalue::GetIndex(obj, Operand::Copy(idx), _)) =
                     &stmt.kind
                     && *idx == i
                 {
@@ -248,7 +248,7 @@ impl LoopVectorizer {
         for &bb_id in &lp.body {
             for stmt in &func.basic_blocks[bb_id.0].statements {
                 let allowed = match &stmt.kind {
-                    StatementKind::Assign(dest, Rvalue::GetIndex(_, Operand::Copy(idx)))
+                    StatementKind::Assign(dest, Rvalue::GetIndex(_, Operand::Copy(idx), _))
                         if *idx == i && vec_locals.contains(dest) =>
                     {
                         true
@@ -257,7 +257,7 @@ impl LoopVectorizer {
                         dest,
                         Rvalue::BinaryOp(_, Operand::Copy(_), Operand::Copy(_)),
                     ) if vec_locals.contains(dest) => true,
-                    StatementKind::SetIndex(_, Operand::Copy(idx), _) if *idx == i => true,
+                    StatementKind::SetIndex(_, Operand::Copy(idx), _, _) if *idx == i => true,
                     _ => {
                         let mut reads = Vec::new();
                         match &stmt.kind {
@@ -266,7 +266,7 @@ impl LoopVectorizer {
                                 reads.extend(operand_local(o));
                                 reads.extend(operand_local(v));
                             }
-                            StatementKind::SetIndex(o, idx, v)
+                            StatementKind::SetIndex(o, idx, v, _)
                             | StatementKind::VectorStore(o, idx, v) => {
                                 reads.extend(operand_local(o));
                                 reads.extend(operand_local(idx));
@@ -301,7 +301,8 @@ impl LoopVectorizer {
                         reads.extend(operand_local(o));
                         reads.extend(operand_local(v));
                     }
-                    StatementKind::SetIndex(o, idx, v) | StatementKind::VectorStore(o, idx, v) => {
+                    StatementKind::SetIndex(o, idx, v, _)
+                    | StatementKind::VectorStore(o, idx, v) => {
                         reads.extend(operand_local(o));
                         reads.extend(operand_local(idx));
                         reads.extend(operand_local(v));
@@ -460,7 +461,7 @@ impl LoopVectorizer {
 
             for stmt in old_stmts {
                 match &stmt.kind {
-                    StatementKind::Assign(dest, Rvalue::GetIndex(obj, Operand::Copy(idx)))
+                    StatementKind::Assign(dest, Rvalue::GetIndex(obj, Operand::Copy(idx), _))
                         if *idx == i && load_set.contains_key(dest) =>
                     {
                         let v = self.alloc_vector_local(func, *dest, width);
@@ -505,7 +506,7 @@ impl LoopVectorizer {
                         });
                     }
 
-                    StatementKind::SetIndex(obj, Operand::Copy(idx), Operand::Copy(val))
+                    StatementKind::SetIndex(obj, Operand::Copy(idx), Operand::Copy(val), _)
                         if *idx == i =>
                     {
                         if let Some(&vval) = vector_locals.get(val) {

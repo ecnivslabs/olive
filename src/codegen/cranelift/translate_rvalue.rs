@@ -290,7 +290,8 @@ impl<M: Module> CraneliftCodegen<M> {
                 let inst = builder.ins().call(local_func, &[o]);
                 builder.inst_results(inst)[0]
             }
-            Rvalue::GetIndex(obj, idx) => {
+            Rvalue::GetIndex(obj, idx, unchecked) => {
+                let unchecked = *unchecked;
                 let mut ty = match obj {
                     Operand::Copy(loc) | Operand::Move(loc) => &func_mir.locals[loc.0].ty,
                     Operand::Constant(Constant::Str(_)) => &OliveType::Str,
@@ -361,7 +362,9 @@ impl<M: Module> CraneliftCodegen<M> {
                             o,
                             24,
                         );
-                        emit_bounds_check(builder, module, func_ids, i, len, loc);
+                        if !unchecked {
+                            emit_bounds_check(builder, module, func_ids, i, len, loc);
+                        }
                         let offset = builder.ins().imul_imm(i, 8);
                         let addr = builder.ins().iadd(data_ptr, offset);
                         let fast_val = builder.ins().load(types::I64, MemFlags::trusted(), addr, 0);
@@ -399,7 +402,9 @@ impl<M: Module> CraneliftCodegen<M> {
                             o,
                             24,
                         );
-                        emit_bounds_check(builder, module, func_ids, i, len, loc);
+                        if !unchecked {
+                            emit_bounds_check(builder, module, func_ids, i, len, loc);
+                        }
                         let data_ptr = builder.ins().load(
                             types::I64,
                             MemFlags::trusted().with_readonly(),
@@ -418,7 +423,9 @@ impl<M: Module> CraneliftCodegen<M> {
                             o,
                             16,
                         );
-                        emit_bounds_check(builder, module, func_ids, i, len, loc);
+                        if !unchecked {
+                            emit_bounds_check(builder, module, func_ids, i, len, loc);
+                        }
                         let data_ptr = builder.ins().load(
                             types::I64,
                             MemFlags::trusted().with_readonly(),

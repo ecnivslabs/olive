@@ -140,6 +140,7 @@ impl<'a> MirBuilder<'a> {
                                 Rvalue::GetIndex(
                                     Operand::Copy(discr),
                                     Operand::Constant(Constant::Int(i as i64)),
+                                    false,
                                 ),
                             ),
                             expr_span,
@@ -217,6 +218,7 @@ impl<'a> MirBuilder<'a> {
                             Rvalue::GetIndex(
                                 Operand::Copy(val),
                                 Operand::Constant(Constant::Int(i as i64)),
+                                false,
                             ),
                         ),
                         span,

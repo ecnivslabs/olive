@@ -12,7 +12,7 @@ use crate::codegen::cranelift::CraneliftCodegen;
 use crate::parser;
 use linker::{compute_source_hash, ensure_dir, exec_binary, link_object};
 use loader::collect_source_files;
-use pipeline::run_pipeline;
+use pipeline::run_pipeline_opt;
 use std::{collections::HashSet, fs, path::Path, process};
 
 pub fn compile_and_run(
@@ -23,7 +23,7 @@ pub fn compile_and_run(
     emit_mir: bool,
     release: bool,
 ) {
-    let out = match run_pipeline(filename) {
+    let out = match run_pipeline_opt(filename, release) {
         Ok(o) => o,
         Err(_) => std::process::exit(1),
     };
@@ -76,7 +76,7 @@ pub fn compile_and_run(
 }
 
 pub fn compile_and_emit(filename: &str, output: &str, show_time: bool, release: bool) {
-    let out = match run_pipeline(filename) {
+    let out = match run_pipeline_opt(filename, release) {
         Ok(o) => o,
         Err(_) => std::process::exit(1),
     };
@@ -208,7 +208,7 @@ pub fn compile_and_run_aot(filename: &str, show_time: bool, release: bool) {
 }
 
 pub fn compile_and_test(filename: &str, _show_time: bool, release: bool) {
-    let out = match run_pipeline(filename) {
+    let out = match run_pipeline_opt(filename, release) {
         Ok(o) => o,
         Err(_) => std::process::exit(1),
     };

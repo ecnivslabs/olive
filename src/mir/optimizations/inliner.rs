@@ -249,7 +249,7 @@ impl Inliner {
                 self.remap_operand(obj, offset);
                 self.remap_operand(val, offset);
             }
-            StatementKind::SetIndex(obj, idx, val) => {
+            StatementKind::SetIndex(obj, idx, val, _) => {
                 self.remap_operand(obj, offset);
                 self.remap_operand(idx, offset);
                 self.remap_operand(val, offset);
@@ -282,7 +282,7 @@ impl Inliner {
             | Rvalue::Cast(op, _) => {
                 self.remap_operand(op, offset);
             }
-            Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) => {
+            Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r, _) => {
                 self.remap_operand(l, offset);
                 self.remap_operand(r, offset);
             }

@@ -370,7 +370,10 @@ impl<'a> MirBuilder<'a> {
                 span,
             );
         } else {
-            self.push_statement(StatementKind::Assign(tmp, Rvalue::GetIndex(o, i_raw)), span);
+            self.push_statement(
+                StatementKind::Assign(tmp, Rvalue::GetIndex(o, i_raw, false)),
+                span,
+            );
         }
         self.operand_for_local(tmp)
     }

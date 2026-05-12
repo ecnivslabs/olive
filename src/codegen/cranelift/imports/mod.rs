@@ -290,7 +290,7 @@ pub(super) fn scan_rvalue_imports(
         Rvalue::GetTypeId(..) => {
             needed.insert("__olive_enum_type_id");
         }
-        Rvalue::GetIndex(obj, _) => {
+        Rvalue::GetIndex(obj, _, _) => {
             needed.insert("__olive_list_get");
             needed.insert("__olive_obj_get");
             needed.insert("__olive_get_index_any");

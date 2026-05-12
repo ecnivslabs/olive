@@ -30,7 +30,7 @@ impl Transform for ConstantPropagation {
                     if let Operand::Copy(l) | Operand::Move(l) = obj {
                         *assign_counts.entry(*l).or_insert(0) += if in_loop { 2 } else { 1 };
                     }
-                } else if let StatementKind::SetIndex(obj, _, _) = &stmt.kind {
+                } else if let StatementKind::SetIndex(obj, _, _, _) = &stmt.kind {
                     if let Operand::Copy(l) | Operand::Move(l) = obj {
                         *assign_counts.entry(*l).or_insert(0) += if in_loop { 2 } else { 1 };
                     }
@@ -62,7 +62,7 @@ impl Transform for ConstantPropagation {
                 for stmt in &mut bb.statements {
                     if let StatementKind::Assign(_, rval) = &mut stmt.kind {
                         changed |= self.propagate_constants_in_rvalue(rval, &safe_constants);
-                    } else if let StatementKind::SetIndex(obj, idx, val) = &mut stmt.kind {
+                    } else if let StatementKind::SetIndex(obj, idx, val, _) = &mut stmt.kind {
                         changed |= self.propagate_constants_in_operand(obj, &safe_constants);
                         changed |= self.propagate_constants_in_operand(idx, &safe_constants);
                         changed |= self.propagate_constants_in_operand(val, &safe_constants);
@@ -112,7 +112,7 @@ impl ConstantPropagation {
             Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::GetAttr(op, _) => {
                 self.propagate_constants_in_operand(op, map)
             }
-            Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) => {
+            Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r, _) => {
                 let mut changed = self.propagate_constants_in_operand(l, map);
                 changed |= self.propagate_constants_in_operand(r, map);
                 changed

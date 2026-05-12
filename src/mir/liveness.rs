@@ -80,7 +80,7 @@ impl Liveness {
                 Self::use_op(live, obj);
                 Self::use_op(live, val);
             }
-            StatementKind::SetIndex(obj, idx, val) => {
+            StatementKind::SetIndex(obj, idx, val, _) => {
                 Self::use_op(live, obj);
                 Self::use_op(live, idx);
                 Self::use_op(live, val);
@@ -122,7 +122,7 @@ impl Liveness {
                 }
             }
             Rvalue::GetAttr(o, _) => Self::use_op(live, o),
-            Rvalue::GetIndex(o, i) => {
+            Rvalue::GetIndex(o, i, _) => {
                 Self::use_op(live, o);
                 Self::use_op(live, i);
             }

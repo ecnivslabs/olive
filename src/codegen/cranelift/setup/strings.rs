@@ -90,7 +90,7 @@ impl<M: Module> CraneliftCodegen<M> {
                         self.intern_attr_string(attr);
                         self.collect_strings_in_operand(val_op);
                     }
-                    StatementKind::SetIndex(obj_op, idx_op, val_op) => {
+                    StatementKind::SetIndex(obj_op, idx_op, val_op, _) => {
                         self.collect_strings_in_operand(obj_op);
                         self.collect_strings_in_operand(idx_op);
                         self.collect_strings_in_operand(val_op);
@@ -111,7 +111,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 self.collect_strings_in_operand(op);
                 self.intern_attr_string(attr);
             }
-            Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) => {
+            Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r, _) => {
                 self.collect_strings_in_operand(l);
                 self.collect_strings_in_operand(r);
             }

@@ -1,6 +1,7 @@
 use crate::mir::MirFunction;
 
 pub mod algebraic;
+pub mod bounds_check_elim;
 pub mod const_fold;
 pub mod const_prop;
 pub mod copy_prop;

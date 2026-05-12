@@ -2,8 +2,8 @@ use crate::mir::*;
 use rustc_hash::FxHashMap as HashMap;
 
 use crate::mir::optimizations::{
-    Transform, algebraic::AlgebraicSimplification, const_fold::ConstantFolding,
-    const_prop::ConstantPropagation, copy_prop::CopyPropagation,
+    Transform, algebraic::AlgebraicSimplification, bounds_check_elim::BoundsCheckElim,
+    const_fold::ConstantFolding, const_prop::ConstantPropagation, copy_prop::CopyPropagation,
     cse::CommonSubexpressionElimination, dce::DeadCodeElimination, gvn::GlobalValueNumbering,
     inliner::Inliner, licm::Licm, move_elision::MoveElision, peephole::PeepholeOptimize,
     scalarize::ScalarizeStructs, simplify_cfg::SimplifyCfg, strength_reduction::StrengthReduction,
@@ -14,6 +14,7 @@ pub struct Optimizer {
     scalar_passes: Vec<Box<dyn Transform>>,
     late_passes: Vec<Box<dyn Transform>>,
     inliner: Inliner,
+    release: bool,
 }
 
 impl Default for Optimizer {
@@ -23,7 +24,19 @@ impl Default for Optimizer {
 }
 
 impl Optimizer {
+    /// Full optimizing pipeline. Used for release builds and by the in-process
+    /// test harness so every pass stays exercised.
     pub fn new() -> Self {
+        Self::with_release(true)
+    }
+
+    /// Lean pipeline for debug builds: only the cleanup needed to keep codegen
+    /// fast and the MIR sane, trading runtime speed for quick compiles.
+    pub fn minimal() -> Self {
+        Self::with_release(false)
+    }
+
+    fn with_release(release: bool) -> Self {
         Self {
             scalar_passes: vec![
                 Box::new(CopyPropagation),
@@ -52,10 +65,19 @@ impl Optimizer {
                 Box::new(DeadCodeElimination),
             ],
             inliner: Inliner::new(),
+            release,
         }
     }
 
     pub fn run(&self, functions: &mut [MirFunction]) {
+        if !self.release {
+            for func in functions.iter_mut() {
+                SimplifyCfg.run(func);
+                DeadCodeElimination.run(func);
+            }
+            return;
+        }
+
         let fn_map: HashMap<String, MirFunction> = functions
             .iter()
             .map(|f| (f.name.clone(), f.clone()))
@@ -104,6 +126,10 @@ impl Optimizer {
             for pass in &self.late_passes {
                 pass.run(func);
             }
+
+            // Runs last so no later pass can rewrite an access whose bounds
+            // check it has already proven redundant.
+            BoundsCheckElim.run(func);
         }
     }
 }

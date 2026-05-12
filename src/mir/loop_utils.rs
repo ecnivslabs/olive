@@ -56,6 +56,11 @@ pub fn find_loops(func: &MirFunction) -> Vec<Loop> {
     loops
 }
 
+/// For each block, the set of blocks that dominate it (including itself).
+pub fn dominators(func: &MirFunction) -> Vec<HashSet<BasicBlockId>> {
+    compute_dominators(func)
+}
+
 fn compute_dominators(func: &MirFunction) -> Vec<HashSet<BasicBlockId>> {
     let num_blocks = func.basic_blocks.len();
     let all_blocks: HashSet<BasicBlockId> = (0..num_blocks).map(BasicBlockId).collect();

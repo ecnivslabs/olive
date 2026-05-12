@@ -50,7 +50,7 @@ impl Transform for CopyPropagation {
                     StatementKind::Assign(_, rval) => {
                         changed |= self.propagate_copies_in_rvalue(rval, &safe_copies);
                     }
-                    StatementKind::SetIndex(obj, idx, val) => {
+                    StatementKind::SetIndex(obj, idx, val, _) => {
                         changed |= self.propagate_copies_in_operand(obj, &safe_copies);
                         changed |= self.propagate_copies_in_operand(idx, &safe_copies);
                         changed |= self.propagate_copies_in_operand(val, &safe_copies);
@@ -83,7 +83,7 @@ impl CopyPropagation {
             Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::GetAttr(op, _) => {
                 self.propagate_copies_in_operand(op, map)
             }
-            Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) => {
+            Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r, _) => {
                 let mut changed = self.propagate_copies_in_operand(l, map);
                 changed |= self.propagate_copies_in_operand(r, map);
                 changed

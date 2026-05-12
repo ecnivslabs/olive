@@ -228,7 +228,7 @@ impl<'a> BorrowChecker<'a> {
                     state.self_fields.insert(field.clone());
                 }
             }
-            StatementKind::SetIndex(obj, idx, val) => {
+            StatementKind::SetIndex(obj, idx, val, _) => {
                 self.check_mutation(obj, state, stmt.span);
                 self.check_operand(obj, state, stmt.span);
                 self.check_operand(idx, state, stmt.span);
@@ -331,7 +331,7 @@ impl<'a> BorrowChecker<'a> {
                 }
             }
             Rvalue::GetAttr(op, _) => self.check_operand(op, state, span),
-            Rvalue::GetIndex(obj, idx) => {
+            Rvalue::GetIndex(obj, idx, _) => {
                 self.check_operand(obj, state, span);
                 self.check_operand(idx, state, span);
             }

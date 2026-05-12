@@ -445,7 +445,8 @@ impl<M: Module> CraneliftCodegen<M> {
                 let local_func = module.declare_func_in_func(*set_id, builder.func);
                 builder.ins().call(local_func, &[o, attr_val, v]);
             }
-            StatementKind::SetIndex(obj, idx, val_op) => {
+            StatementKind::SetIndex(obj, idx, val_op, unchecked) => {
+                let unchecked = *unchecked;
                 let mut ty = if let Operand::Copy(loc) | Operand::Move(loc) = obj {
                     &func_mir.locals[loc.0].ty
                 } else {
@@ -498,7 +499,9 @@ impl<M: Module> CraneliftCodegen<M> {
                             o,
                             16,
                         );
-                        emit_bounds_check(builder, module, func_ids, i, len, loc);
+                        if !unchecked {
+                            emit_bounds_check(builder, module, func_ids, i, len, loc);
+                        }
                         let data_ptr = builder.ins().load(
                             types::I64,
                             MemFlags::trusted().with_readonly(),
@@ -517,7 +520,9 @@ impl<M: Module> CraneliftCodegen<M> {
                             o,
                             24,
                         );
-                        emit_bounds_check(builder, module, func_ids, i, len, loc);
+                        if !unchecked {
+                            emit_bounds_check(builder, module, func_ids, i, len, loc);
+                        }
                         let data_ptr = builder.ins().load(
                             types::I64,
                             MemFlags::trusted().with_readonly(),

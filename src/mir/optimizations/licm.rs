@@ -39,7 +39,7 @@ impl Licm {
                     if let Operand::Copy(l) | Operand::Move(l) = obj {
                         *assign_counts.entry(*l).or_insert(0) += 1;
                     }
-                } else if let StatementKind::SetIndex(obj, _, _) = &stmt.kind {
+                } else if let StatementKind::SetIndex(obj, _, _, _) = &stmt.kind {
                     if let Operand::Copy(l) | Operand::Move(l) = obj {
                         *assign_counts.entry(*l).or_insert(0) += 1;
                     }
@@ -65,7 +65,7 @@ impl Licm {
                     if let Operand::Copy(l) | Operand::Move(l) = obj {
                         defined_in_loop.insert(*l);
                     }
-                } else if let StatementKind::SetIndex(obj, _, _) = &stmt.kind {
+                } else if let StatementKind::SetIndex(obj, _, _, _) = &stmt.kind {
                     if let Operand::Copy(l) | Operand::Move(l) = obj {
                         defined_in_loop.insert(*l);
                     }
@@ -125,7 +125,7 @@ impl Licm {
             Rvalue::Use(op) | Rvalue::UnaryOp(_, op) => {
                 self.is_op_invariant(op, defined_in_loop, invariant_locals)
             }
-            Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) => {
+            Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r, _) => {
                 self.is_op_invariant(l, defined_in_loop, invariant_locals)
                     && self.is_op_invariant(r, defined_in_loop, invariant_locals)
             }
@@ -153,7 +153,7 @@ impl Licm {
             Rvalue::Use(_)
                 | Rvalue::UnaryOp(_, _)
                 | Rvalue::BinaryOp(_, _, _)
-                | Rvalue::GetIndex(_, _)
+                | Rvalue::GetIndex(_, _, _)
         )
     }
 

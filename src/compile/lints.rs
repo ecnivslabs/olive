@@ -18,7 +18,7 @@ pub fn check_const_index_bounds(funcs: &[MirFunction], sources: &Sources) -> boo
         }
         for bb in &func.basic_blocks {
             for stmt in &bb.statements {
-                let StatementKind::Assign(_, Rvalue::GetIndex(obj, idx)) = &stmt.kind else {
+                let StatementKind::Assign(_, Rvalue::GetIndex(obj, idx, _)) = &stmt.kind else {
                     continue;
                 };
                 let Some(origin) = operand_local(obj).map(|l| resolve_origin(func, l)) else {
@@ -123,7 +123,7 @@ fn fixed_length_lists(func: &MirFunction) -> HashMap<usize, usize> {
                         _ => {}
                     }
                 }
-                StatementKind::SetIndex(obj, _, val) => {
+                StatementKind::SetIndex(obj, _, val, _) => {
                     disq(obj, &mut disqualified);
                     disq(val, &mut disqualified);
                 }
@@ -195,6 +195,7 @@ mod tests {
                 Rvalue::GetIndex(
                     Operand::Copy(Local(src)),
                     Operand::Constant(Constant::Int(i)),
+                    false,
                 ),
             ),
             span: Span::default(),

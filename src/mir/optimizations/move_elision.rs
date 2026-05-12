@@ -45,7 +45,7 @@ impl MoveElision {
                 changed |= self.optimize_operand(val, live_after, locals);
                 changed
             }
-            StatementKind::SetIndex(obj, idx, val) => {
+            StatementKind::SetIndex(obj, idx, val, _) => {
                 let mut changed = self.optimize_operand(obj, live_after, locals);
                 changed |= self.optimize_operand(idx, live_after, locals);
                 changed |= self.optimize_operand(val, live_after, locals);
@@ -102,7 +102,7 @@ impl MoveElision {
             // Indexing reads an element that may alias the container's storage,
             // so the container must not be moved (freed) here even on its last
             // use. The index is an integer and never a move type.
-            Rvalue::GetIndex(_, _) => false,
+            Rvalue::GetIndex(_, _, _) => false,
             Rvalue::Call { func: f_op, args } => {
                 let mut changed = self.optimize_operand(f_op, live_after, locals);
                 for arg in args {
