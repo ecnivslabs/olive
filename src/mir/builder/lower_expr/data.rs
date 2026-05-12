@@ -316,14 +316,19 @@ impl<'a> MirBuilder<'a> {
             return self.lower_expr(obj);
         }
 
-        if let ExprKind::Slice { start, stop, step } = &index.kind
-            && (current_obj_ty == Type::PyObject || current_obj_ty == Type::Any)
-        {
-            return self.lower_py_slice(
+        if let ExprKind::Slice { start, stop, step } = &index.kind {
+            let func_name = match &current_obj_ty {
+                Type::PyObject | Type::Any => "__olive_py_getslice",
+                Type::Str => "__olive_str_getslice",
+                Type::List(_) | Type::Tuple(_) | Type::Set(_) => "__olive_list_getslice",
+                _ => "__olive_list_getslice",
+            };
+            return self.lower_slice(
                 obj,
                 start.as_deref(),
                 stop.as_deref(),
                 step.as_deref(),
+                func_name,
                 span,
                 expr_id,
             );
@@ -378,12 +383,14 @@ impl<'a> MirBuilder<'a> {
         self.operand_for_local(tmp)
     }
 
-    pub(super) fn lower_py_slice(
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn lower_slice(
         &mut self,
         obj: &Expr,
         start: Option<&Expr>,
         stop: Option<&Expr>,
         step: Option<&Expr>,
+        func_name: &str,
         span: Span,
         expr_id: usize,
     ) -> Operand {
@@ -418,7 +425,7 @@ impl<'a> MirBuilder<'a> {
             StatementKind::Assign(
                 tmp,
                 Rvalue::Call {
-                    func: Operand::Constant(Constant::Function("__olive_py_getslice".to_string())),
+                    func: Operand::Constant(Constant::Function(func_name.to_string())),
                     args: vec![o, start_op, stop_op, step_op, flags_op],
                 },
             ),

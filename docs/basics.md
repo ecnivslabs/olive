@@ -147,6 +147,8 @@ print(scores["Alice"])
 print(scores.get("Bob"))
 ```
 
+Dicts and sets are hash-backed, so iteration order is unspecified and may differ from insertion order. Do not rely on it; sort the keys if you need a stable order.
+
 A dict supports `get(key)`, `keys()`, `values()`, `items()`, and `remove(key)`. Iterate the keys directly, or the key-value pairs with `items()`:
 
 ```rust

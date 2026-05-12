@@ -126,7 +126,15 @@ impl Lowerer<'_> {
                 let arms: Vec<Doc> = cases
                     .iter()
                     .map(|c| {
-                        let pat = concat(self.pattern(&c.pattern), text(":"));
+                        let pat = match &c.guard {
+                            Some(g) => concat_all([
+                                self.pattern(&c.pattern),
+                                text(" if "),
+                                self.expr(g),
+                                text(":"),
+                            ]),
+                            None => concat(self.pattern(&c.pattern), text(":")),
+                        };
                         self.suite_expr(pat, &c.body)
                     })
                     .collect();
@@ -137,6 +145,18 @@ impl Lowerer<'_> {
             }
 
             ExprKind::AsyncBlock(body) => self.suite_expr(text("async:"), body),
+
+            ExprKind::Ternary {
+                cond,
+                then,
+                otherwise,
+            } => concat_all([
+                self.expr(then),
+                text(" if "),
+                self.expr(cond),
+                text(" else "),
+                self.expr(otherwise),
+            ]),
         }
     }
 

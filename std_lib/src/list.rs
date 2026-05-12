@@ -80,6 +80,95 @@ pub extern "C" fn olive_range_list(start: i64, end: i64, inclusive: i64) -> i64 
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn olive_list_min_int(ptr: i64) -> i64 {
+    let v = checked_nonempty(ptr, "min");
+    let mut m = unsafe { *v.ptr };
+    for i in 1..v.len {
+        let e = unsafe { *v.ptr.add(i) };
+        if e < m {
+            m = e;
+        }
+    }
+    m
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_max_int(ptr: i64) -> i64 {
+    let v = checked_nonempty(ptr, "max");
+    let mut m = unsafe { *v.ptr };
+    for i in 1..v.len {
+        let e = unsafe { *v.ptr.add(i) };
+        if e > m {
+            m = e;
+        }
+    }
+    m
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_min_float(ptr: i64) -> f64 {
+    let v = checked_nonempty(ptr, "min");
+    let mut m = f64::from_bits(unsafe { *v.ptr } as u64);
+    for i in 1..v.len {
+        let e = f64::from_bits(unsafe { *v.ptr.add(i) } as u64);
+        if e < m {
+            m = e;
+        }
+    }
+    m
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_max_float(ptr: i64) -> f64 {
+    let v = checked_nonempty(ptr, "max");
+    let mut m = f64::from_bits(unsafe { *v.ptr } as u64);
+    for i in 1..v.len {
+        let e = f64::from_bits(unsafe { *v.ptr.add(i) } as u64);
+        if e > m {
+            m = e;
+        }
+    }
+    m
+}
+
+fn checked_nonempty<'a>(ptr: i64, who: &str) -> &'a StableVec {
+    if ptr == 0 {
+        crate::panic::abort(&format!("{who}() of empty list"), None);
+    }
+    let v = unsafe { &*(ptr as *const StableVec) };
+    if v.len == 0 {
+        crate::panic::abort(&format!("{who}() of empty list"), None);
+    }
+    v
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_sum_int(ptr: i64) -> i64 {
+    if ptr == 0 {
+        return 0;
+    }
+    let v = unsafe { &*(ptr as *const StableVec) };
+    let mut acc: i64 = 0;
+    for i in 0..v.len {
+        acc = acc.wrapping_add(unsafe { *v.ptr.add(i) });
+    }
+    acc
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_sum_float(ptr: i64) -> f64 {
+    if ptr == 0 {
+        return 0.0;
+    }
+    let v = unsafe { &*(ptr as *const StableVec) };
+    let mut acc = 0.0f64;
+    for i in 0..v.len {
+        acc += f64::from_bits(unsafe { *v.ptr.add(i) } as u64);
+    }
+    acc
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn olive_list_set(list_ptr: i64, idx: i64, val: i64) {
     if list_ptr == 0 {
         return;
@@ -257,6 +346,77 @@ pub extern "C" fn olive_list_concat(l: i64, r: i64) -> i64 {
     })) as i64;
     register_object(res);
     res
+}
+
+const SLICE_HAS_START: i64 = 1;
+const SLICE_HAS_STOP: i64 = 2;
+const SLICE_HAS_STEP: i64 = 4;
+
+/// Resolves a Python slice against a sequence length, returning the selected
+/// indices. Handles negative bounds, clamping, omitted endpoints, and negative
+/// steps exactly as CPython's `PySlice_AdjustIndices`.
+pub(crate) fn slice_indices(len: i64, start: i64, stop: i64, step: i64, flags: i64) -> Vec<usize> {
+    let step = if flags & SLICE_HAS_STEP != 0 { step } else { 1 };
+    if step == 0 {
+        crate::panic::abort("slice step cannot be zero", None);
+    }
+    let (lower, upper) = if step < 0 { (-1, len - 1) } else { (0, len) };
+    let clamp = |mut v: i64| -> i64 {
+        if v < 0 {
+            v += len;
+            if v < lower {
+                v = lower;
+            }
+        } else if v > upper {
+            v = upper;
+        }
+        v
+    };
+    let start = if flags & SLICE_HAS_START == 0 {
+        if step < 0 { upper } else { lower }
+    } else {
+        clamp(start)
+    };
+    let stop = if flags & SLICE_HAS_STOP == 0 {
+        if step < 0 { lower } else { upper }
+    } else {
+        clamp(stop)
+    };
+    let mut out = Vec::new();
+    let mut i = start;
+    if step > 0 {
+        while i < stop {
+            out.push(i as usize);
+            i += step;
+        }
+    } else {
+        while i > stop {
+            out.push(i as usize);
+            i += step;
+        }
+    }
+    out
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_getslice(
+    ptr: i64,
+    start: i64,
+    stop: i64,
+    step: i64,
+    flags: i64,
+) -> i64 {
+    if ptr == 0 {
+        return olive_list_new(0);
+    }
+    let v = unsafe { &*(ptr as *const StableVec) };
+    let idxs = slice_indices(v.len as i64, start, stop, step, flags);
+    let out = olive_list_new(idxs.len() as i64);
+    let ov = unsafe { &mut *(out as *mut StableVec) };
+    for (j, &i) in idxs.iter().enumerate() {
+        unsafe { *ov.ptr.add(j) = *v.ptr.add(i) };
+    }
+    out
 }
 
 #[unsafe(no_mangle)]

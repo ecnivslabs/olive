@@ -60,19 +60,21 @@ impl Parser {
         while self.peek().kind == TokenKind::At || self.peek().kind == TokenKind::Hash {
             if self.peek().kind == TokenKind::At {
                 self.advance();
-                let name = self.expect(TokenKind::Identifier)?.value;
+                let name_tok = self.expect(TokenKind::Identifier)?;
                 decorators.push(Decorator {
-                    name,
+                    name: name_tok.value.clone(),
                     is_directive: false,
+                    span: Self::tok_span(&name_tok),
                 });
             } else {
                 self.advance();
                 self.expect(TokenKind::LBracket)?;
                 while self.peek().kind != TokenKind::RBracket {
-                    let name = self.expect(TokenKind::Identifier)?.value;
+                    let name_tok = self.expect(TokenKind::Identifier)?;
                     decorators.push(Decorator {
-                        name,
+                        name: name_tok.value.clone(),
                         is_directive: true,
+                        span: Self::tok_span(&name_tok),
                     });
                     if self.peek().kind == TokenKind::Comma {
                         self.advance();

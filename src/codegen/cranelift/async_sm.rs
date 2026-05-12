@@ -226,6 +226,8 @@ impl<M: Module> CraneliftCodegen<M> {
                         &self.func_ids,
                         &self.string_ids,
                         &self.struct_fields,
+                        &self.field_types,
+                        &self.enum_defs,
                         &self.c_struct_offsets,
                         &self.c_struct_names,
                         &self.c_struct_sizes,

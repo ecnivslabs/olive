@@ -38,10 +38,17 @@ impl Parser {
                     end: case_tok.span.1,
                 };
                 let pattern = self.parse_pattern()?;
+                let guard = if self.peek().kind == TokenKind::If {
+                    self.advance();
+                    Some(self.parse_or()?)
+                } else {
+                    None
+                };
 
                 let body = self.parse_block()?;
                 cases.push(MatchCase {
                     pattern,
+                    guard,
                     body,
                     span: case_span,
                 });
@@ -133,7 +140,7 @@ impl Parser {
             self.advance();
             let target = self.parse_for_target()?;
             self.expect(TokenKind::In)?;
-            let iter = self.parse_or()?;
+            let iter = self.parse_range()?;
             let condition = if self.peek().kind == TokenKind::If {
                 self.advance();
                 Some(self.parse_or()?)
@@ -174,7 +181,10 @@ impl Parser {
                     let s: String = chars[last_pos..i].iter().collect();
                     let s = s.replace("{{", "{").replace("}}", "}");
                     if !s.is_empty() {
-                        exprs.push(Expr::new(ExprKind::Str(s), span));
+                        exprs.push(FStrPart {
+                            expr: Expr::new(ExprKind::Str(s), span),
+                            spec: None,
+                        });
                     }
                 }
 
@@ -194,7 +204,8 @@ impl Parser {
                     return Err(self.err_at(&tok, "unclosed '{' in f-string"));
                 }
 
-                let expr_str: String = chars[start_expr..i - 1].iter().collect();
+                let field: String = chars[start_expr..i - 1].iter().collect();
+                let (expr_str, spec) = split_fstring_spec(&field);
                 if expr_str.trim().is_empty() {
                     return Err(self.err_at(&tok, "empty expression in f-string"));
                 }
@@ -216,7 +227,7 @@ impl Parser {
                     start: tok.span.0 + start_expr,
                     end: tok.span.0 + i,
                 })?;
-                exprs.push(expr);
+                exprs.push(FStrPart { expr, spec });
 
                 last_pos = i;
             } else if chars[i] == '}' {
@@ -234,7 +245,10 @@ impl Parser {
             let s: String = chars[last_pos..].iter().collect();
             let s = s.replace("{{", "{").replace("}}", "}");
             if !s.is_empty() {
-                exprs.push(Expr::new(ExprKind::Str(s), span));
+                exprs.push(FStrPart {
+                    expr: Expr::new(ExprKind::Str(s), span),
+                    spec: None,
+                });
             }
         }
 
@@ -462,4 +476,26 @@ impl Parser {
             )),
         }
     }
+}
+
+/// Splits an f-string field into its expression and optional format spec at the
+/// first top-level colon, leaving colons inside slices, indexes, or nested
+/// braces untouched.
+fn split_fstring_spec(field: &str) -> (String, Option<String>) {
+    let chars: Vec<char> = field.chars().collect();
+    let mut depth = 0i32;
+    for (i, &c) in chars.iter().enumerate() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ':' if depth == 0 => {
+                return (
+                    chars[..i].iter().collect(),
+                    Some(chars[i + 1..].iter().collect()),
+                );
+            }
+            _ => {}
+        }
+    }
+    (field.to_string(), None)
 }

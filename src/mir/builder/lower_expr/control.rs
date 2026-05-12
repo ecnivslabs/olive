@@ -6,6 +6,53 @@ use crate::semantic::types::Type;
 use crate::span::Span;
 
 impl<'a> MirBuilder<'a> {
+    pub(super) fn lower_ternary_expr(
+        &mut self,
+        cond: &Expr,
+        then: &Expr,
+        otherwise: &Expr,
+        span: Span,
+        expr_id: usize,
+    ) -> Operand {
+        let tmp = self.new_local(self.get_type(expr_id), None, false);
+        let c = self.lower_expr(cond);
+        let c_ty = self.get_type(cond.id);
+        let disc = self.truthify(c, &c_ty, span);
+
+        let then_bb = self.new_block();
+        let else_bb = self.new_block();
+        let merge_bb = self.new_block();
+
+        if let Some(bb) = self.current_block {
+            self.terminate_block(
+                bb,
+                TerminatorKind::SwitchInt {
+                    discr: disc,
+                    targets: vec![(0, else_bb)],
+                    otherwise: then_bb,
+                },
+                span,
+            );
+        }
+
+        self.current_block = Some(then_bb);
+        let t = self.lower_expr(then);
+        self.push_statement(StatementKind::Assign(tmp, Rvalue::Use(t)), span);
+        if let Some(bb) = self.current_block {
+            self.terminate_block(bb, TerminatorKind::Goto { target: merge_bb }, span);
+        }
+
+        self.current_block = Some(else_bb);
+        let o = self.lower_expr(otherwise);
+        self.push_statement(StatementKind::Assign(tmp, Rvalue::Use(o)), span);
+        if let Some(bb) = self.current_block {
+            self.terminate_block(bb, TerminatorKind::Goto { target: merge_bb }, span);
+        }
+
+        self.current_block = Some(merge_bb);
+        self.operand_for_local(tmp)
+    }
+
     pub(super) fn lower_try_expr(&mut self, inner: &Expr, span: Span, _expr_id: usize) -> Operand {
         if self.is_py_call(inner) {
             return self.lower_try_py(inner, span);
@@ -282,6 +329,25 @@ impl<'a> MirBuilder<'a> {
 
             self.current_block = Some(success_bb);
             self.enter_scope();
+
+            // A guard runs with the pattern's bindings in scope; if it is false the
+            // arm is skipped and matching falls through to the next case.
+            if let Some(guard) = &case.guard {
+                let g = self.lower_expr(guard);
+                let g_ty = self.get_type(guard.id);
+                let disc = self.truthify(g, &g_ty, span);
+                let body_bb = self.new_block();
+                self.terminate_block(
+                    self.current_block.unwrap(),
+                    TerminatorKind::SwitchInt {
+                        discr: disc,
+                        targets: vec![(0, failure_bb)],
+                        otherwise: body_bb,
+                    },
+                    span,
+                );
+                self.current_block = Some(body_bb);
+            }
 
             let mut last_op = Operand::Constant(Constant::None);
             if case.body.is_empty() {

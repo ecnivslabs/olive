@@ -138,6 +138,10 @@ impl<'a> MirBuilder<'a> {
             return op;
         }
 
+        if let Some(op) = self.lower_set_method(obj, attr, &arg_ops, &arg_tys, span, expr_id) {
+            return op;
+        }
+
         if let Some(op) = self.lower_str_method(obj, attr, &arg_ops, span, expr_id) {
             return op;
         }
@@ -487,6 +491,64 @@ impl<'a> MirBuilder<'a> {
             Some(self.operand_for_local(tmp))
         } else {
             Some(obj_op)
+        }
+    }
+
+    /// Lowers `add`/`remove` on a native set to the runtime calls. Both mutate in
+    /// place; `add` yields the set, `remove` yields the removed element.
+    fn lower_set_method(
+        &mut self,
+        obj: &Expr,
+        attr: &str,
+        arg_ops: &[Operand],
+        arg_tys: &[Type],
+        span: Span,
+        expr_id: usize,
+    ) -> Option<Operand> {
+        if !matches!(attr, "add" | "remove" | "contains") {
+            return None;
+        }
+        let mut recv_ty = self.get_type(obj.id);
+        while let Type::Ref(inner) | Type::MutRef(inner) = recv_ty {
+            recv_ty = *inner;
+        }
+        let elem: Type = match &recv_ty {
+            Type::Set(e) => (**e).clone(),
+            _ => return None,
+        };
+        let runtime = match attr {
+            "add" => "__olive_set_add",
+            "remove" => "__olive_set_remove",
+            "contains" => "__olive_set_contains",
+            _ => return None,
+        };
+        let obj_op = self.lower_expr_as_copy(obj);
+        let mut call_args = vec![obj_op.clone()];
+        // An `Any`-element set boxes its scalar argument so the stored word stays
+        // self-describing, the same as list elements.
+        if let Some(op) = arg_ops.first() {
+            if elem == Type::Any {
+                let from_ty = arg_tys.first().cloned().unwrap_or(Type::Any);
+                call_args.push(self.box_into_any(op.clone(), &from_ty, span));
+            } else {
+                call_args.push(op.clone());
+            }
+        }
+        let tmp = self.new_local(self.get_type(expr_id), None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                tmp,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(runtime.to_string())),
+                    args: call_args,
+                },
+            ),
+            span,
+        );
+        if attr == "add" {
+            Some(obj_op)
+        } else {
+            Some(self.operand_for_local(tmp))
         }
     }
 

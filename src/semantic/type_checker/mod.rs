@@ -52,6 +52,9 @@ pub struct TypeChecker {
     pub(super) mut_env: Vec<HashMap<String, bool>>,
     pub field_types: HashMap<(String, String), Type>,
     pub enum_variants: HashMap<String, Vec<String>>,
+    /// Enum name to its variants in tag order, each with its payload types. Used
+    /// to render enum values by name when printing.
+    pub enum_defs: HashMap<String, Vec<(String, Vec<Type>)>>,
     pub(super) current_struct: Option<String>,
     pub(super) async_depth: usize,
     pub(super) vararg_fns: HashSet<String>,
@@ -391,6 +394,7 @@ impl TypeChecker {
             mut_env: vec![HashMap::default()],
             field_types: HashMap::default(),
             enum_variants,
+            enum_defs: HashMap::default(),
             current_struct: None,
             async_depth: 0,
             vararg_fns: HashSet::default(),

@@ -27,6 +27,8 @@ pub struct PipelineTimings {
 pub struct PipelineOutput {
     pub functions: Vec<MirFunction>,
     pub struct_fields: HashMap<String, Vec<String>>,
+    pub field_types: HashMap<(String, String), crate::semantic::types::Type>,
+    pub enum_defs: HashMap<String, Vec<(String, Vec<crate::semantic::types::Type>)>>,
     pub vtables: HashMap<String, Vec<String>>,
     pub global_vars: Vec<String>,
     pub native_libs: Vec<NativeLib>,
@@ -87,6 +89,7 @@ pub fn run_pipeline_opt(filename: &str, release: bool) -> Result<PipelineOutput,
         stmts: combined_stmts,
     };
     crate::semantic::desugar::desugar_trait_defaults(&mut program);
+    crate::semantic::desugar::desugar_bare_variants(&mut program);
     let parse_duration = t0.elapsed();
 
     let first_party = first_party_files(filename, &sources);
@@ -194,6 +197,8 @@ pub fn run_pipeline_opt(filename: &str, release: bool) -> Result<PipelineOutput,
     Ok(PipelineOutput {
         functions: mir_builder.functions,
         struct_fields: mir_builder.struct_fields,
+        field_types: type_checker.field_types.clone(),
+        enum_defs: type_checker.enum_defs.clone(),
         vtables: mir_builder.vtables,
         global_vars: mir_builder.global_vars,
         native_libs,
@@ -286,6 +291,8 @@ mod tests {
         let output = PipelineOutput {
             functions: vec![],
             struct_fields: HashMap::default(),
+            field_types: HashMap::default(),
+            enum_defs: HashMap::default(),
             vtables: HashMap::default(),
             global_vars: vec![],
             native_libs: vec![],
@@ -318,6 +325,8 @@ mod tests {
         let output = PipelineOutput {
             functions: vec![],
             struct_fields,
+            field_types: HashMap::default(),
+            enum_defs: HashMap::default(),
             vtables,
             global_vars: vec!["GLOBAL".to_string()],
             native_libs: vec![(

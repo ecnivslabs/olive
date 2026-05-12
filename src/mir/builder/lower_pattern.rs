@@ -200,18 +200,29 @@ impl<'a> MirBuilder<'a> {
         }
     }
 
-    pub(super) fn bind_for_target(&mut self, target: &ForTarget, val: Local, span: Span) {
+    pub(super) fn bind_for_target(
+        &mut self,
+        target: &ForTarget,
+        val: Local,
+        elem_ty: &Type,
+        span: Span,
+    ) {
         match target {
             ForTarget::Name(name, _) => {
-                let local = self.declare_var(name.clone(), Type::Any, true);
+                let local = self.declare_var(name.clone(), elem_ty.clone(), true);
                 self.push_statement(
                     StatementKind::Assign(local, Rvalue::Use(Operand::Copy(val))),
                     span,
                 );
             }
             ForTarget::Tuple(names) => {
+                let comp_tys: Vec<Type> = match elem_ty {
+                    Type::Tuple(comps) => comps.clone(),
+                    _ => Vec::new(),
+                };
                 for (i, (name, _)) in names.iter().enumerate() {
-                    let local = self.declare_var(name.clone(), Type::Any, true);
+                    let bind_ty = comp_tys.get(i).cloned().unwrap_or(Type::Any);
+                    let local = self.declare_var(name.clone(), bind_ty, true);
                     self.push_statement(
                         StatementKind::Assign(
                             local,
@@ -309,6 +320,18 @@ impl<'a> MirBuilder<'a> {
         }
 
         let clause = &clauses[clause_idx];
+        // Type the yielded value by the iterable's element type so concrete
+        // values are read raw rather than as boxed `Any`, matching `for` loops.
+        let mut iter_ty = self.get_type(clause.iter.id);
+        while let Type::Ref(inner) | Type::MutRef(inner) = iter_ty {
+            iter_ty = *inner;
+        }
+        let elem_ty = match iter_ty {
+            Type::Str => Type::Str,
+            Type::List(t) | Type::Set(t) => *t,
+            Type::Dict(k, _) => *k,
+            _ => Type::Any,
+        };
         let iter_op = self.lower_expr(&clause.iter);
         let cond_bb = self.new_block();
         let body_bb = self.new_block();
@@ -356,7 +379,7 @@ impl<'a> MirBuilder<'a> {
         );
 
         self.current_block = Some(body_bb);
-        let next_val = self.new_local(Type::Any, None, true);
+        let next_val = self.new_local(elem_ty.clone(), None, true);
         self.push_statement(
             StatementKind::Assign(
                 next_val,
@@ -368,7 +391,7 @@ impl<'a> MirBuilder<'a> {
             span,
         );
 
-        self.bind_for_target(&clause.target, next_val, span);
+        self.bind_for_target(&clause.target, next_val, &elem_ty, span);
 
         if let Some(cond_expr) = &clause.condition {
             let cond_val = self.lower_expr(cond_expr);

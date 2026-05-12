@@ -62,6 +62,17 @@ pub extern "C" fn olive_str_get_checked(s: i64, i: i64, loc: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn olive_str_getslice(s: i64, start: i64, stop: i64, step: i64, flags: i64) -> i64 {
+    if s == 0 {
+        return olive_str_internal("");
+    }
+    let chars: Vec<char> = olive_str_from_ptr(s).chars().collect();
+    let idxs = crate::list::slice_indices(chars.len() as i64, start, stop, step, flags);
+    let out: String = idxs.iter().map(|&i| chars[i]).collect();
+    olive_str_internal(&out)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn olive_str_slice(s: i64, start: i64, end: i64) -> i64 {
     let text = olive_str_from_ptr(s);
     let start = start as usize;

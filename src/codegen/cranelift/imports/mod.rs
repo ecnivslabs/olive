@@ -94,6 +94,16 @@ pub(super) fn scan_rvalue_imports(
                     needed.insert("__olive_ffi_snapshot_errno");
                 }
             }
+            if (name == "print" || name == "str")
+                && let [Operand::Copy(l) | Operand::Move(l)] = args.as_slice()
+                && needs_type_descriptor(&func_mir.locals[l.0].ty)
+            {
+                needed.insert(if name == "print" {
+                    "__olive_print_typed"
+                } else {
+                    "__olive_format_typed"
+                });
+            }
         }
         Rvalue::Call { .. } => {}
         Rvalue::BinaryOp(op, lhs, rhs) => {
@@ -367,5 +377,5 @@ mod tests;
 
 pub(super) use builtins::{
     cl_type, is_any_op, is_float_op, is_list_op, is_pyobj_op, is_str_op, is_u64_op,
-    map_builtin_to_runtime, resolve_builtin_import,
+    map_builtin_to_runtime, needs_type_descriptor, resolve_builtin_import, type_descriptor,
 };

@@ -48,4 +48,14 @@ pub(super) const ENTRIES: &[Explanation] = &[
         fixed: "fn helper():\n    print(\"used\")\n\nfn main():\n    helper()",
         notes: &["Call it, export it if it is public API, or delete it."],
     },
+    Explanation {
+        code: "W0660",
+        title: "unknown decorator",
+        summary: "A decorator name is not one Olive recognizes. Olive decorators are a \
+                  fixed set, not arbitrary wrappers, so an unknown name is silently \
+                  dropped and the function runs exactly as if it were absent.",
+        wrong: "@cache\nfn slow(n: int) -> int:\n    return n\n\nfn main():\n    print(slow(1))",
+        fixed: "@memo\nfn slow(n: int) -> int:\n    return n\n\nfn main():\n    print(slow(1))",
+        notes: &["Recognized decorators are `@memo`, `#[test]`, and `@safe`; remove the rest."],
+    },
 ];

@@ -28,6 +28,7 @@ impl Resolver {
             "len",
             "max",
             "min",
+            "sum",
             "list_new",
             "list",
             "dict",
@@ -108,6 +109,27 @@ impl Resolver {
                     }
                 }
                 _ => {}
+            }
+        }
+    }
+
+    /// Olive decorators are a fixed directive set, not arbitrary wrappers. An
+    /// unrecognized name is silently dropped by codegen, so flag it rather than
+    /// let it look effective.
+    fn check_decorators(&mut self, decorators: &[crate::parser::ast::Decorator]) {
+        const KNOWN: &[&str] = &["memo", "test", "safe"];
+        for d in decorators {
+            if !KNOWN.contains(&d.name.as_str()) {
+                self.warnings.push(SemanticError::rich(
+                    crate::compile::errors::Diagnostic::error(
+                        "W0660",
+                        format!("unknown decorator `@{}`", d.name),
+                        d.span,
+                    )
+                    .into_warning()
+                    .label("not a recognized decorator")
+                    .note("Olive decorators are `@memo`, `#[test]`, and `@safe`; this one has no effect"),
+                ));
             }
         }
     }
@@ -215,8 +237,10 @@ impl Resolver {
                 type_params,
                 params,
                 body,
+                decorators,
                 ..
             } => {
+                self.check_decorators(decorators);
                 self.table.push(ScopeKind::Function);
                 for tp in type_params {
                     self.define_sym(tp, SymbolKind::Variable, stmt.span);
@@ -608,17 +632,29 @@ impl Resolver {
             | ExprKind::FStr(_)
             | ExprKind::Bool(_)
             | ExprKind::Null => {
-                if let ExprKind::FStr(exprs) = &expr.kind {
-                    for e in exprs {
-                        self.resolve_expr(e);
+                if let ExprKind::FStr(parts) = &expr.kind {
+                    for p in parts {
+                        self.resolve_expr(&p.expr);
                     }
                 }
+            }
+            ExprKind::Ternary {
+                cond,
+                then,
+                otherwise,
+            } => {
+                self.resolve_expr(cond);
+                self.resolve_expr(then);
+                self.resolve_expr(otherwise);
             }
             ExprKind::Match { expr, cases } => {
                 self.resolve_expr(expr);
                 for case in cases {
                     self.table.push(ScopeKind::Block);
                     self.resolve_pattern(&case.pattern);
+                    if let Some(g) = &case.guard {
+                        self.resolve_expr(g);
+                    }
                     for stmt in &case.body {
                         self.resolve_stmt(stmt);
                     }

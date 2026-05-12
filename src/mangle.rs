@@ -256,9 +256,9 @@ pub fn mangle_expr(expr: &mut Expr, prefix: &str, names: &HashSet<String>) {
                 mangle_expr(v, prefix, names);
             }
         }
-        ExprKind::FStr(exprs) => {
-            for e in exprs {
-                mangle_expr(e, prefix, names);
+        ExprKind::FStr(parts) => {
+            for p in parts {
+                mangle_expr(&mut p.expr, prefix, names);
             }
         }
         ExprKind::Borrow(inner) | ExprKind::MutBorrow(inner) | ExprKind::Deref(inner) => {
@@ -267,12 +267,24 @@ pub fn mangle_expr(expr: &mut Expr, prefix: &str, names: &HashSet<String>) {
         ExprKind::Try(inner) | ExprKind::Await(inner) => {
             mangle_expr(inner, prefix, names);
         }
+        ExprKind::Ternary {
+            cond,
+            then,
+            otherwise,
+        } => {
+            mangle_expr(cond, prefix, names);
+            mangle_expr(then, prefix, names);
+            mangle_expr(otherwise, prefix, names);
+        }
         ExprKind::Match {
             expr: match_expr,
             cases,
         } => {
             mangle_expr(match_expr, prefix, names);
             for case in cases {
+                if let Some(g) = &mut case.guard {
+                    mangle_expr(g, prefix, names);
+                }
                 for stmt in &mut case.body {
                     mangle_stmt(stmt, prefix, names);
                 }
