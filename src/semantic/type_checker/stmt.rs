@@ -336,6 +336,20 @@ impl TypeChecker {
                     self.vararg_fns.insert(final_name.clone());
                 }
 
+                // Count leading required params, skipping `self` to match the
+                // self-stripped signature a method call site compares against.
+                let positional: Vec<&crate::parser::Param> = params
+                    .iter()
+                    .filter(|p| matches!(p.kind, ParamKind::Regular) && p.name != "self")
+                    .collect();
+                let required = positional
+                    .iter()
+                    .take_while(|p| p.default.is_none())
+                    .count();
+                if required < positional.len() {
+                    self.fn_required_args.insert(final_name.clone(), required);
+                }
+
                 self.enter_scope();
                 let prev_ret = self.current_return_type.take();
                 self.current_return_type = Some(inner_ret_ty);

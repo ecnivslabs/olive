@@ -115,11 +115,7 @@ impl<M: Module> CraneliftCodegen<M> {
         let frame_ptr = builder.block_params(entry_blk)[0];
         for (i, decl) in func.locals.iter().enumerate() {
             let ty = cl_type(&decl.ty);
-            let z = if ty == types::F64 {
-                builder.ins().f64const(0.0)
-            } else {
-                builder.ins().iconst(types::I64, 0)
-            };
+            let z = super::imports::typed_zero(&mut builder, ty);
             builder.def_var(vars[&Local(i)], z);
         }
         builder.def_var(frame_var, frame_ptr);

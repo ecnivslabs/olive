@@ -122,6 +122,13 @@ pub fn run_pipeline_opt(filename: &str, release: bool) -> Result<PipelineOutput,
         }
         return Err(());
     }
+    let closure_errors = crate::semantic::closure_check::check_closures(&program);
+    if !closure_errors.is_empty() {
+        for e in &closure_errors {
+            e.to_diagnostic().emit(&sources);
+        }
+        return Err(());
+    }
     for lint in crate::semantic::lint::lint_program(&program) {
         if first_party.contains(&lint.primary_span().file_id) {
             lint.emit(&sources);

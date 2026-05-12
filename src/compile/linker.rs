@@ -76,6 +76,17 @@ pub fn find_library_dir() -> Option<PathBuf> {
     None
 }
 
+/// Link arg for an imported native lib: bare stem `m` -> `-lm`, but a full
+/// `.so` name (e.g. versioned `libc.so.6`) needs `-l:` exact-name linking,
+/// since the stem form would seek the nonexistent `liblibc.so.6.so`.
+fn lib_link_arg(name: &str) -> String {
+    if name.contains(".so") {
+        format!("-l:{}", name)
+    } else {
+        format!("-l{}", name)
+    }
+}
+
 pub fn link_object(obj_path: &str, out: &str, native_libs: &[FfiLibInfo]) {
     let lib_dir = find_library_dir();
     let mut cmd = std::process::Command::new("cc");
@@ -94,9 +105,19 @@ pub fn link_object(obj_path: &str, out: &str, native_libs: &[FfiLibInfo]) {
 
     for (_, path, _, _, _) in native_libs {
         let lib_path = Path::new(path.as_str());
-        if lib_path.is_absolute() && lib_path.exists() {
-            cmd.arg(path);
-            if let Some(dir) = lib_path.parent() {
+        // Path refs (`./libfoo.so`, `/opt/lib/bar.so`) link directly, relative
+        // ones resolved against cwd; bare names go through the `-l` forms.
+        let is_path_ref = path.contains('/') || path.contains('\\');
+        if is_path_ref {
+            let resolved = if lib_path.is_absolute() {
+                lib_path.to_path_buf()
+            } else {
+                std::env::current_dir()
+                    .map(|d| d.join(lib_path))
+                    .unwrap_or_else(|_| lib_path.to_path_buf())
+            };
+            cmd.arg(&resolved);
+            if let Some(dir) = resolved.parent() {
                 let standard = matches!(
                     dir.to_str().unwrap_or(""),
                     "/lib" | "/usr/lib" | "/usr/local/lib"
@@ -107,7 +128,7 @@ pub fn link_object(obj_path: &str, out: &str, native_libs: &[FfiLibInfo]) {
                 }
             }
         } else {
-            cmd.arg(format!("-l{}", path));
+            cmd.arg(lib_link_arg(path));
         }
     }
 
@@ -222,6 +243,18 @@ mod tests {
     #[test]
     fn exec_binary_nonexistent() {
         assert_eq!(exec_binary("nonexistent_command_xyz_123"), 1);
+    }
+
+    #[test]
+    fn lib_link_arg_bare_stem() {
+        assert_eq!(lib_link_arg("m"), "-lm");
+        assert_eq!(lib_link_arg("z"), "-lz");
+    }
+
+    #[test]
+    fn lib_link_arg_versioned_so() {
+        assert_eq!(lib_link_arg("libc.so.6"), "-l:libc.so.6");
+        assert_eq!(lib_link_arg("libfoo.so"), "-l:libfoo.so");
     }
 
     #[test]

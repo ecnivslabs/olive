@@ -27,12 +27,17 @@ pub(super) fn collect_needed_imports(
                             needed.insert("__olive_py_copy_ref");
                         }
                     }
-                    StatementKind::SetIndex(..) => {
+                    StatementKind::SetIndex(_, _, val_op, _) => {
                         needed.insert("__olive_list_set");
                         needed.insert("__olive_obj_set");
                         needed.insert("__olive_set_index_any");
                         needed.insert("__olive_bounds_fail");
                         needed.insert("__olive_nil_index_fail");
+                        if let Operand::Copy(src) = val_op
+                            && matches!(func.locals[src.0].ty, OliveType::PyObject)
+                        {
+                            needed.insert("__olive_py_copy_ref");
+                        }
                     }
                     StatementKind::Drop(local) => {
                         let ty = &func.locals[local.0].ty;
@@ -213,6 +218,11 @@ pub(super) fn scan_rvalue_imports(
                     if is_str {
                         needed.insert("__olive_str_eq");
                     } else if is_pyobj {
+                        // Codegen boxes a non-Python operand before the compare, so
+                        // the conversion helpers must be imported alongside `py_eq`,
+                        // exactly as the ordered comparisons below do.
+                        needed.insert("__olive_py_from_float");
+                        needed.insert("__olive_py_from_int");
                         needed.insert("__olive_py_eq");
                     }
                 }
@@ -318,7 +328,7 @@ pub(super) fn scan_rvalue_imports(
                 }
             }
         }
-        Rvalue::Aggregate(kind, _) => {
+        Rvalue::Aggregate(kind, ops) => {
             use crate::mir::ir::AggregateKind;
             match kind {
                 AggregateKind::Dict => {
@@ -339,6 +349,13 @@ pub(super) fn scan_rvalue_imports(
                     needed.insert("__olive_list_append");
                     needed.insert("__olive_set_index_any");
                 }
+            }
+            if !matches!(kind, AggregateKind::FatPtr)
+                && ops.iter().any(|op| {
+                    matches!(op, Operand::Copy(src) if matches!(func_mir.locals[src.0].ty, OliveType::PyObject))
+                })
+            {
+                needed.insert("__olive_py_copy_ref");
             }
         }
         Rvalue::UnaryOp(op, operand) => {
@@ -378,4 +395,5 @@ mod tests;
 pub(super) use builtins::{
     cl_type, is_any_op, is_float_op, is_list_op, is_pyobj_op, is_str_op, is_u64_op,
     map_builtin_to_runtime, needs_type_descriptor, resolve_builtin_import, type_descriptor,
+    typed_zero,
 };

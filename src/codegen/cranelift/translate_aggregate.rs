@@ -1,12 +1,42 @@
 use super::CraneliftCodegen;
 use crate::mir::ir::AggregateKind;
-use crate::mir::{Local, Operand};
+use crate::mir::{Local, MirFunction, Operand};
+use crate::semantic::types::Type as OliveType;
 use cranelift::prelude::*;
 use cranelift_module::{DataId, FuncId, Module};
 use rustc_hash::FxHashMap as HashMap;
 
 impl<M: Module> CraneliftCodegen<M> {
+    /// Increfs a borrowed `PyObject` element; the container decrefs it on drop.
+    fn translate_aggregate_elem(
+        func_mir: &MirFunction,
+        builder: &mut FunctionBuilder,
+        vars: &HashMap<Local, Variable>,
+        string_ids: &HashMap<String, DataId>,
+        module: &mut M,
+        func_ids: &HashMap<String, FuncId>,
+        op: &Operand,
+    ) -> Value {
+        let val = Self::translate_operand(builder, op, vars, string_ids, module, func_ids);
+        if let Operand::Copy(src) = op
+            && matches!(func_mir.locals[src.0].ty, OliveType::PyObject)
+        {
+            let copy_ref_id = func_ids
+                .get("__olive_py_copy_ref")
+                .expect("missing __olive_py_copy_ref");
+            let local_func = module.declare_func_in_func(*copy_ref_id, builder.func);
+            let inst = builder.ins().call(local_func, &[val]);
+            return builder.inst_results(inst)[0];
+        }
+        if builder.func.dfg.value_type(val) == types::F64 {
+            return builder.ins().bitcast(types::I64, MemFlags::new(), val);
+        }
+        val
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn translate_aggregate(
+        func_mir: &MirFunction,
         builder: &mut FunctionBuilder,
         vars: &HashMap<Local, Variable>,
         string_ids: &HashMap<String, DataId>,
@@ -30,20 +60,18 @@ impl<M: Module> CraneliftCodegen<M> {
                 let set_func = module.declare_func_in_func(*set_id, builder.func);
 
                 for i in (0..ops.len()).step_by(2) {
-                    let key = Self::translate_operand(
-                        builder, &ops[i], vars, string_ids, module, func_ids,
+                    let key = Self::translate_aggregate_elem(
+                        func_mir, builder, vars, string_ids, module, func_ids, &ops[i],
                     );
-                    let mut val = Self::translate_operand(
+                    let val = Self::translate_aggregate_elem(
+                        func_mir,
                         builder,
-                        &ops[i + 1],
                         vars,
                         string_ids,
                         module,
                         func_ids,
+                        &ops[i + 1],
                     );
-                    if builder.func.dfg.value_type(val) == types::F64 {
-                        val = builder.ins().bitcast(types::I64, MemFlags::new(), val);
-                    }
                     builder.ins().call(set_func, &[dict_ptr, key, val]);
                 }
                 dict_ptr
@@ -66,13 +94,9 @@ impl<M: Module> CraneliftCodegen<M> {
 
                 for (i, op) in ops.iter().enumerate() {
                     let idx = builder.ins().iconst(types::I64, i as i64);
-                    let val =
-                        Self::translate_operand(builder, op, vars, string_ids, module, func_ids);
-                    let val = if builder.func.dfg.value_type(val) == types::F64 {
-                        builder.ins().bitcast(types::I64, MemFlags::new(), val)
-                    } else {
-                        val
-                    };
+                    let val = Self::translate_aggregate_elem(
+                        func_mir, builder, vars, string_ids, module, func_ids, op,
+                    );
                     builder.ins().call(set_func, &[enum_ptr, idx, val]);
                 }
                 enum_ptr
@@ -92,11 +116,9 @@ impl<M: Module> CraneliftCodegen<M> {
                 let add_func = module.declare_func_in_func(*add_id, builder.func);
 
                 for op in ops {
-                    let mut val =
-                        Self::translate_operand(builder, op, vars, string_ids, module, func_ids);
-                    if builder.func.dfg.value_type(val) == types::F64 {
-                        val = builder.ins().bitcast(types::I64, MemFlags::new(), val);
-                    }
+                    let val = Self::translate_aggregate_elem(
+                        func_mir, builder, vars, string_ids, module, func_ids, op,
+                    );
                     builder.ins().call(add_func, &[set_ptr, val]);
                 }
                 set_ptr
@@ -133,11 +155,9 @@ impl<M: Module> CraneliftCodegen<M> {
                     .ins()
                     .load(types::I64, MemFlags::trusted(), list_ptr, 8);
                 for (i, op) in ops.iter().enumerate() {
-                    let mut val =
-                        Self::translate_operand(builder, op, vars, string_ids, module, func_ids);
-                    if builder.func.dfg.value_type(val) == types::F64 {
-                        val = builder.ins().bitcast(types::I64, MemFlags::new(), val);
-                    }
+                    let val = Self::translate_aggregate_elem(
+                        func_mir, builder, vars, string_ids, module, func_ids, op,
+                    );
                     builder
                         .ins()
                         .store(MemFlags::trusted(), val, data_ptr, (i * 8) as i32);

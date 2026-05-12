@@ -71,6 +71,14 @@ impl<'a> MirBuilder<'a> {
     }
 
     pub(super) fn lower_identifier_expr(&mut self, name: &str, expr_id: usize) -> Operand {
+        // A non-capturing nested fn as a value is its lifted code pointer;
+        // capturing ones are rejected as escapes by the resolver before here.
+        if self.lookup_var(name).is_none()
+            && let Some(info) = self.lookup_nested_fn(name)
+            && self.resolve_captures(&info.raw_captures).is_empty()
+        {
+            return Operand::Constant(Constant::Function(info.mangled));
+        }
         if let Some(local) = self.lookup_var(name) {
             let ty = self.current_locals[local.0].ty.clone();
             if matches!(ty, Type::PyObject) {

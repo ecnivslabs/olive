@@ -1,7 +1,31 @@
 use crate::mir::{Constant, MirFunction, Operand};
 use crate::semantic::types::Type as OliveType;
-use cranelift::prelude::types;
+use cranelift::prelude::{FunctionBuilder, InstBuilder, Value, types};
 use rustc_hash::FxHashMap as HashMap;
+
+/// Typed zero (int/float/vector) for `ty`; SSA builder asserts the stored
+/// value's type equals the variable's declared type.
+pub(crate) fn typed_zero(builder: &mut FunctionBuilder, ty: cranelift::prelude::Type) -> Value {
+    if ty == types::F64 {
+        builder.ins().f64const(0.0)
+    } else if ty == types::F32 {
+        builder.ins().f32const(0.0)
+    } else if ty.is_int() {
+        builder.ins().iconst(ty, 0)
+    } else if ty.is_vector() {
+        let lane = ty.lane_type();
+        let scalar = if lane == types::F64 {
+            builder.ins().f64const(0.0)
+        } else if lane == types::F32 {
+            builder.ins().f32const(0.0)
+        } else {
+            builder.ins().iconst(lane, 0)
+        };
+        builder.ins().splat(ty, scalar)
+    } else {
+        builder.ins().iconst(types::I64, 0)
+    }
+}
 
 /// Collections store elements raw, so `print`/`str` need the static type to
 /// render them. These are the types routed through the typed formatter.
@@ -239,6 +263,7 @@ pub(crate) fn resolve_builtin_import(
             "__olive_next" => Some("__olive_next"),
             "__olive_has_next" => Some("__olive_has_next"),
             "__olive_time_now" => Some("__olive_time_now"),
+            "__olive_time_monotonic" => Some("__olive_time_monotonic"),
             "__olive_time_sleep" => Some("__olive_time_sleep"),
             "__olive_enum_new" => Some("__olive_enum_new"),
             "__olive_enum_tag" => Some("__olive_enum_tag"),

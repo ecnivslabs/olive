@@ -30,6 +30,34 @@ impl TypeChecker {
 
     /// Tries to unify, rolling back both errors and substitutions on failure so
     /// the probe leaves no trace. Returns whether the types are compatible.
+    /// Resolves a call's registered name and whether it is a struct method
+    /// (implicit `self`). Attributes are methods only when the receiver's struct
+    /// type names a function; else a module fn or function-typed field.
+    fn resolve_call_target(&mut self, callee: &Expr) -> (Option<String>, bool) {
+        match &callee.kind {
+            ExprKind::Identifier(name) => (Some(name.clone()), false),
+            ExprKind::Attr { obj, attr } => {
+                let obj_ty = self
+                    .expr_types
+                    .get(&obj.id)
+                    .cloned()
+                    .map(|t| self.apply_subst(t));
+                if let Some(Type::Struct(sname, _)) = obj_ty {
+                    let method = format!("{}::{}", sname, attr);
+                    if matches!(self.lookup_type(&method), Some(Type::Fn(..))) {
+                        return (Some(method), true);
+                    }
+                }
+                if let ExprKind::Identifier(alias) = &obj.kind {
+                    (Some(format!("{}::{}", alias, attr)), false)
+                } else {
+                    (None, false)
+                }
+            }
+            _ => (None, false),
+        }
+    }
+
     pub(super) fn unify_silently(&mut self, a: &Type, b: &Type, span: Span) -> bool {
         let errs_before = self.errors.len();
         let subst_before = self.substitutions.clone();
@@ -517,7 +545,20 @@ impl TypeChecker {
                     }
                 }
 
-                if let ExprKind::Attr { .. } = &callee.kind
+                // Struct methods drop their receiver so params line up with args;
+                // a function-typed field is not a method and keeps all of them.
+                let (registered_name, is_method) = self.resolve_call_target(callee);
+
+                if is_method
+                    && let Type::Fn(params, ret, args) = &resolved_callee
+                    && !params.is_empty()
+                {
+                    final_callee_ty = Type::Fn(
+                        params.iter().skip(1).cloned().collect(),
+                        ret.clone(),
+                        args.clone(),
+                    );
+                } else if let ExprKind::Attr { .. } = &callee.kind
                     && let Type::Fn(params, ret, args) = &resolved_callee
                     && !params.is_empty()
                     && params.len() == arg_types.len() + 1
@@ -554,6 +595,21 @@ impl TypeChecker {
                     } else {
                         Vec::new()
                     };
+
+                    // Lowering fills omitted trailing defaults; their declared
+                    // types stand in so the call type-checks as if passed.
+                    let mut arg_types = arg_types;
+                    if let Type::Fn(declared, _, _) = &final_callee_ty
+                        && declared.len() > arg_types.len()
+                        && let Some(name) = &registered_name
+                        && let Some(&required) = self.fn_required_args.get(name)
+                        && arg_types.len() >= required
+                    {
+                        for declared_ty in &declared[arg_types.len()..] {
+                            arg_types.push(declared_ty.clone());
+                        }
+                    }
+
                     let expected_fn = Type::Fn(arg_types, Box::new(ret_ty.clone()), expected_args);
                     self.unify(&final_callee_ty, &expected_fn, expr.span);
                     self.apply_subst(ret_ty)

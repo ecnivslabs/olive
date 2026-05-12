@@ -1,3 +1,4 @@
+mod closures;
 mod generics;
 mod lower_control;
 mod lower_expr;
@@ -25,6 +26,15 @@ pub(super) struct LoopContext {
     pub(super) exit: BasicBlockId,
 }
 
+/// A lifted nested fn: `mangled` is the global name (`parent$name`),
+/// `raw_captures` the free-var list filtered to live locals per site.
+#[derive(Clone)]
+pub(super) struct NestedFnInfo {
+    pub(super) mangled: String,
+    pub(super) raw_captures: Vec<String>,
+    pub(super) param_tys: Vec<Type>,
+}
+
 pub struct MirBuilder<'a> {
     pub functions: Vec<MirFunction>,
     pub expr_types: &'a HashMap<usize, Type>,
@@ -47,6 +57,8 @@ pub struct MirBuilder<'a> {
     pub(super) current_block: Option<BasicBlockId>,
     pub(super) current_arg_count: usize,
     pub(super) var_map: Vec<HashMap<String, Local>>,
+    /// Nested-fn table per enclosing fn, pushed on body entry, popped on exit.
+    pub(super) nested_fns: Vec<HashMap<String, NestedFnInfo>>,
     pub(super) loop_stack: Vec<LoopContext>,
     pub(super) scope_locals: Vec<Vec<Local>>,
     pub(super) memo_context: Option<(Operand, Operand, BasicBlockId)>,
@@ -97,6 +109,7 @@ impl<'a> MirBuilder<'a> {
             current_block: None,
             current_arg_count: 0,
             var_map: Vec::new(),
+            nested_fns: Vec::new(),
             loop_stack: Vec::new(),
             scope_locals: Vec::new(),
             memo_context: None,

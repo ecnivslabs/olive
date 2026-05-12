@@ -7,13 +7,8 @@ use cranelift_jit::JITModule;
 use rustc_hash::FxHashSet as HashSet;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-/// The Olive runtime keeps a process-global object registry (`std_lib`'s pointer
-/// bounds and active-object set), which is sound for one program per process,
-/// how an Olive binary actually runs. The unit tests instead JIT and run many
-/// independent programs inside the single test process, so running them at once
-/// lets their registries corrupt each other. Execution is serialized through
-/// this lock (compilation stays parallel) so the harness mirrors one program at
-/// a time. Compilation is the slow phase, so the suite stays fast.
+/// Runtime registry is process-global; serialize exec so concurrent JIT'd
+/// programs don't corrupt each other's registry. Compilation stays parallel.
 fn exec_lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -22,6 +17,15 @@ fn exec_lock() -> MutexGuard<'static, ()> {
 }
 
 pub fn compile(src: &str) -> CraneliftCodegen<JITModule> {
+    compile_with(src, Optimizer::new())
+}
+
+/// Lean `pit run` pipeline; full opt can scalarize/inline a bug away.
+pub fn compile_minimal(src: &str) -> CraneliftCodegen<JITModule> {
+    compile_with(src, Optimizer::minimal())
+}
+
+fn compile_with(src: &str, opt: Optimizer) -> CraneliftCodegen<JITModule> {
     let tokens = Lexer::new(src, 0).tokenise().unwrap();
     let mut prog = Parser::new(tokens).parse_program().unwrap();
     crate::semantic::desugar::desugar_trait_defaults(&mut prog);
@@ -41,7 +45,6 @@ pub fn compile(src: &str) -> CraneliftCodegen<JITModule> {
         HashSet::default(),
     );
     builder.build_program(&prog);
-    let opt = Optimizer::new();
     opt.run(&mut builder.functions);
     let mut cg = CraneliftCodegen::new_jit(
         builder.functions,

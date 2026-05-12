@@ -8,51 +8,27 @@ impl Transform for TailCallOpt {
     fn run(&self, func: &mut MirFunction) -> bool {
         let func_name = func.name.clone();
         let arg_count = func.arg_count;
+
+        // Back-edge target can't be the entry: codegen seals it as predecessor-free,
+        // so move the body into a fresh header and leave entry as a one-time jump.
+        let header = match self.split_entry(func, &func_name, arg_count) {
+            Some(h) => h,
+            None => return false,
+        };
+
         let mut changed = false;
-
         for bb_idx in 0..func.basic_blocks.len() {
-            if let Some(term) = &func.basic_blocks[bb_idx].terminator {
-                if !matches!(term.kind, TerminatorKind::Return) {
-                    continue;
-                }
-            } else {
+            let Some(args) =
+                Self::tail_call_args(&func.basic_blocks[bb_idx], &func_name, arg_count)
+            else {
                 continue;
-            }
-
-            let stmts = &func.basic_blocks[bb_idx].statements;
-            if stmts.len() < 2 {
-                continue;
-            }
-
-            let last = &stmts[stmts.len() - 1];
-            let second_last = &stmts[stmts.len() - 2];
-
-            let copy_src = match &last.kind {
-                StatementKind::Assign(Local(0), Rvalue::Use(Operand::Copy(src))) => *src,
-                StatementKind::Assign(Local(0), Rvalue::Use(Operand::Move(src))) => *src,
-                _ => continue,
             };
 
-            let args = match &second_last.kind {
-                StatementKind::Assign(
-                    dest,
-                    Rvalue::Call {
-                        func: Operand::Constant(Constant::Function(name)),
-                        args,
-                    },
-                ) if *dest == copy_src && *name == func_name => args.clone(),
-                _ => continue,
-            };
-
-            if args.len() != arg_count {
-                continue;
-            }
-
-            let span = stmts[stmts.len() - 1].span;
-            let bb = &mut func.basic_blocks[bb_idx];
-
-            bb.statements.pop();
-            bb.statements.pop();
+            let span = func.basic_blocks[bb_idx]
+                .statements
+                .last()
+                .map(|s| s.span)
+                .unwrap_or_default();
 
             let base_tmp = func.locals.len();
             for _ in 0..arg_count {
@@ -65,13 +41,17 @@ impl Transform for TailCallOpt {
                 });
             }
 
+            let bb = &mut func.basic_blocks[bb_idx];
+            bb.statements.pop();
+            bb.statements.pop();
+
+            // Stage args through temporaries so each sees pre-update param values.
             for (j, arg) in args.iter().enumerate() {
                 bb.statements.push(Statement {
                     kind: StatementKind::Assign(Local(base_tmp + j), Rvalue::Use(arg.clone())),
                     span,
                 });
             }
-
             for j in 0..arg_count {
                 bb.statements.push(Statement {
                     kind: StatementKind::Assign(
@@ -84,7 +64,7 @@ impl Transform for TailCallOpt {
 
             bb.terminator = Some(Terminator {
                 kind: TerminatorKind::Goto {
-                    target: BasicBlockId(0),
+                    target: BasicBlockId(header),
                 },
                 span,
             });
@@ -93,6 +73,77 @@ impl Transform for TailCallOpt {
         }
 
         changed
+    }
+}
+
+impl TailCallOpt {
+    /// Args of a self tail call ending `bb` (same-name call filling every param), else `None`.
+    fn tail_call_args(bb: &BasicBlock, func_name: &str, arg_count: usize) -> Option<Vec<Operand>> {
+        if !matches!(bb.terminator.as_ref()?.kind, TerminatorKind::Return) {
+            return None;
+        }
+        let stmts = &bb.statements;
+        if stmts.len() < 2 {
+            return None;
+        }
+        let copy_src = match &stmts[stmts.len() - 1].kind {
+            StatementKind::Assign(
+                Local(0),
+                Rvalue::Use(Operand::Copy(src) | Operand::Move(src)),
+            ) => *src,
+            _ => return None,
+        };
+        let args = match &stmts[stmts.len() - 2].kind {
+            StatementKind::Assign(
+                dest,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(name)),
+                    args,
+                },
+            ) if *dest == copy_src && name == func_name => args.clone(),
+            _ => return None,
+        };
+        if args.len() != arg_count {
+            return None;
+        }
+        Some(args)
+    }
+
+    /// Moves entry contents into a new header block (entry jumps to it) and returns
+    /// its index when a self tail call exists, else leaves the fn and returns `None`.
+    fn split_entry(
+        &self,
+        func: &mut MirFunction,
+        func_name: &str,
+        arg_count: usize,
+    ) -> Option<usize> {
+        let has_tail = func
+            .basic_blocks
+            .iter()
+            .any(|bb| Self::tail_call_args(bb, func_name, arg_count).is_some());
+        if !has_tail {
+            return None;
+        }
+        let header = func.basic_blocks.len();
+        let span = func.basic_blocks[0]
+            .terminator
+            .as_ref()
+            .map(|t| t.span)
+            .unwrap_or_default();
+        let entry = std::mem::replace(
+            &mut func.basic_blocks[0],
+            BasicBlock {
+                statements: Vec::new(),
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Goto {
+                        target: BasicBlockId(header),
+                    },
+                    span,
+                }),
+            },
+        );
+        func.basic_blocks.push(entry);
+        Some(header)
     }
 }
 
