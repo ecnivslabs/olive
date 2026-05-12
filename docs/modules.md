@@ -9,20 +9,24 @@ You can import other Olive files using the `import` statement. Olive maps dots i
 ```python
 import math
 import utilities.network
+import physics.gravity as gravity
 
 let x = math.sqrt(16)
+let g = gravity.G
 ```
-
-By default, an `import math` statement will look for a file named `math.liv` in the same directory as the current file.
-
-## From-Imports
-
-If you only need specific members from a module, use the `from ... import` syntax:
-
-```python
-from math import sqrt, pi
+ 
+ By default, an `import math` statement will look for a file named `math.liv` in the same directory as the current file.
+ 
+ ## From-Imports
+ 
+ If you only need specific members from a module, use the `from ... import` syntax:
+ 
+ ```python
+ from math import sqrt, pi
+from data.processing import clean_string as clean, parse_json as parse
 
 print(sqrt(pi))
+let data = parse(clean(raw_input))
 ```
 
 ## Visibility and Privacy

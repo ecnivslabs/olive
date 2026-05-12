@@ -59,6 +59,12 @@ impl Resolver {
             span: Span::default(),
             is_private: false,
         });
+        table.define(Symbol {
+            name: "None".to_string(),
+            kind: SymbolKind::Variable,
+            span: Span::default(),
+            is_private: false,
+        });
         Self {
             table,
             errors: Vec::new(),
@@ -470,6 +476,9 @@ impl Resolver {
                 for p in inner_patterns {
                     self.resolve_pattern(p, span);
                 }
+            }
+            MatchPattern::Literal(expr) => {
+                self.resolve_expr(expr);
             }
         }
     }

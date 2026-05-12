@@ -447,32 +447,40 @@ impl Parser {
     }
 
     pub(crate) fn parse_pattern(&mut self) -> ParseResult<MatchPattern> {
-        if self.peek().kind == TokenKind::Underscore {
-            self.advance();
-            Ok(MatchPattern::Wildcard)
-        } else {
-            let tok = self.expect(TokenKind::Identifier)?;
-            let name = tok.value.clone();
-            if self.peek().kind == TokenKind::LParen {
+        match self.peek().kind {
+            TokenKind::Underscore => {
                 self.advance();
-                let mut patterns = Vec::new();
-                while self.peek().kind != TokenKind::RParen && self.peek().kind != TokenKind::Eof {
-                    patterns.push(self.parse_pattern()?);
-                    if self.peek().kind == TokenKind::Comma {
-                        self.advance();
+                Ok(MatchPattern::Wildcard)
+            }
+            TokenKind::Integer | TokenKind::Float | TokenKind::String | TokenKind::True | TokenKind::False => {
+                let expr = self.parse_primary()?;
+                Ok(MatchPattern::Literal(expr))
+            }
+            TokenKind::Identifier => {
+                let tok = self.advance();
+                let name = tok.value.clone();
+                if self.peek().kind == TokenKind::LParen {
+                    self.advance();
+                    let mut patterns = Vec::new();
+                    while self.peek().kind != TokenKind::RParen && self.peek().kind != TokenKind::Eof {
+                        patterns.push(self.parse_pattern()?);
+                        if self.peek().kind == TokenKind::Comma {
+                            self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+                    self.expect(TokenKind::RParen)?;
+                    Ok(MatchPattern::Variant(name, patterns))
+                } else {
+                    if name.chars().next().unwrap().is_uppercase() {
+                        Ok(MatchPattern::Variant(name, vec![]))
                     } else {
-                        break;
+                        Ok(MatchPattern::Identifier(name))
                     }
                 }
-                self.expect(TokenKind::RParen)?;
-                Ok(MatchPattern::Variant(name, patterns))
-            } else {
-                if name.chars().next().unwrap().is_uppercase() {
-                    Ok(MatchPattern::Variant(name, vec![]))
-                } else {
-                    Ok(MatchPattern::Identifier(name))
-                }
             }
+            _ => Err(self.err_at(&self.tokens[self.pos], "expected pattern")),
         }
     }
 

@@ -65,7 +65,7 @@ main()
 The `pit` toolchain provides powerful flags for developers:
 
 - `pit build --time`: Build the project and show detailed timing reports for optimization, borrow checking, and codegen.
-- `pit test`: Automatically find and run all functions decorated with `@test`.
+- `pit test`: Automatically find and run all functions decorated with `#[test]`.
 - `pit format`: Format all files in your project to match the standard Olive style.
 - `pit run --emit-mir`: View the Middle Intermediate Representation of your code to see the optimizer in action.
 

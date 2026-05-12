@@ -9,6 +9,12 @@ fn next_node_id() -> usize {
 use crate::span::Span;
 
 #[derive(Debug, Clone)]
+pub struct Decorator {
+    pub name: String,
+    pub is_directive: bool, // true for #[], false for @
+}
+
+#[derive(Debug, Clone)]
 pub struct EnumVariant {
     pub name: String,
     pub types: Vec<TypeExpr>,
@@ -206,6 +212,7 @@ pub struct MatchCase {
 pub enum MatchPattern {
     Variant(String, Vec<MatchPattern>),
     Identifier(String),
+    Literal(Expr),
     Wildcard,
 }
 
@@ -244,13 +251,13 @@ pub enum StmtKind {
         params: Vec<Param>,
         return_type: Option<TypeExpr>,
         body: Vec<Stmt>,
-        decorators: Vec<String>,
+        decorators: Vec<Decorator>,
     },
     Struct {
         name: String,
         fields: Vec<Param>,  // named fields with optional type annotations
         body: Vec<Stmt>,     // associated consts / nested types inside struct block
-        decorators: Vec<String>,
+        decorators: Vec<Decorator>,
     },
     Impl {
         type_name: String,   // which struct this impl is for
@@ -259,7 +266,7 @@ pub enum StmtKind {
     Enum {
         name: String,
         variants: Vec<EnumVariant>,
-        decorators: Vec<String>,
+        decorators: Vec<Decorator>,
     },
     If {
         condition: Expr,

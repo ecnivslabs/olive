@@ -30,13 +30,13 @@ The true power of enums shines when you pair them with the `match` statement. `m
 ```python
 fn process_message(msg: Message) -> None:
     match msg:
-        case Quit:
+        Quit:
             print("Quitting...")
-        case Move(x, y):
+        Move(x, y):
             print(f"Moving to {x}, {y}")
-        case Write(text):
+        Write(text):
             print(text)
-        case ChangeColor(r, g, b):
+        ChangeColor(r, g, b):
             print(f"Changing color to {r}, {g}, {b}")
 ```
 
@@ -47,10 +47,25 @@ You can use a wildcard (`_`) if you only care about a few specific variants and 
 ```python
 fn handle_response(res: WebResponse) -> None:
     match res:
-        case Success:
+        Success:
             print("Everything went perfectly!")
-        case _:
+        _:
             print("Something went wrong.")
 ```
+
+### Pattern Bindings
+
+You can also bind values to names in a match pattern. This is particularly useful for catching any value and using it in the branch body:
+
+```python
+fn log_status(status: int):
+    match status:
+        200:
+            print("OK")
+        code:
+            print(f"Received non-200 status: {code}")
+```
+
+In the example above, `code` is a pattern binding that matches any value and makes it available as a variable inside the branch.
 
 Using enums and pattern matching together brings an incredible amount of expressiveness and safety to your code, ensuring you explicitly handle all possible states of a value.

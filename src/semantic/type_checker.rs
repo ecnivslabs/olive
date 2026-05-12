@@ -1065,6 +1065,10 @@ impl TypeChecker {
                     });
                 }
             }
+            MatchPattern::Literal(expr) => {
+                let expr_ty = self.check_expr(expr);
+                self.unify(match_ty, &expr_ty, span);
+            }
         }
     }
 }

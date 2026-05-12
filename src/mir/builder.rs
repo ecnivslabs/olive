@@ -1,7 +1,7 @@
 use super::ir::*;
 use crate::mir::AggregateKind;
 use crate::parser::{
-    CallArg, CompClause, Expr, ExprKind, ForTarget, MatchPattern, Program, Stmt, StmtKind,
+    BinOp, CallArg, CompClause, Expr, ExprKind, ForTarget, MatchPattern, Program, Stmt, StmtKind,
 };
 use crate::semantic::types::Type;
 use crate::span::Span;
@@ -538,7 +538,9 @@ impl<'a> MirBuilder<'a> {
             ..
         } = &stmt.kind
         {
-            let is_memo = decorators.iter().any(|d| d == "memo");
+            let is_memo = decorators
+                .iter()
+                .any(|d| d.name == "memo" && !d.is_directive);
 
             // save state
             let saved_name = std::mem::take(&mut self.current_name);
@@ -1869,6 +1871,26 @@ impl<'a> MirBuilder<'a> {
                         current_bb = next_bb;
                     }
                 }
+            }
+            MatchPattern::Literal(lit_expr) => {
+                let lit_op = self.lower_expr(lit_expr);
+                let is_eq = self.new_local(Type::Bool, None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        is_eq,
+                        Rvalue::BinaryOp(BinOp::Eq, Operand::Copy(discr), lit_op),
+                    ),
+                    expr_span,
+                );
+                self.terminate_block(
+                    self.current_block.unwrap(),
+                    TerminatorKind::SwitchInt {
+                        discr: Operand::Copy(is_eq),
+                        targets: vec![(1, success_bb)],
+                        otherwise: failure_bb,
+                    },
+                    expr_span,
+                );
             }
         }
     }

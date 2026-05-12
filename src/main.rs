@@ -465,7 +465,7 @@ fn compile_and_test(filename: &str, _show_time: bool) {
             name, decorators, ..
         } = &stmt.kind
         {
-            if decorators.iter().any(|d| d == "test") {
+            if decorators.iter().any(|d| d.name == "test" && d.is_directive) {
                 print!("test {} ... ", name);
                 std::io::Write::flush(&mut std::io::stdout()).unwrap();
 

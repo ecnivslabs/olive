@@ -18,13 +18,27 @@ let mut count = 0
 count = 1  # This is allowed
 ```
 
-### The Walrus Operator
+### Constants
 
-Olive supports the walrus operator (`:=`), which allows you to assign values to variables within an expression:
+Constants are declared using the `const` keyword. They must be initialized with a value that can be determined at compile-time and cannot be mutable.
 
 ```python
-if (n := len(items)) > 10:
-    print("Too many items")
+const MAX_RETRIES = 5
+const PI: float = 3.14159
+```
+
+### Augmented Assignment
+
+Olive supports augmented assignment for all basic arithmetic operations:
+
+```python
+let mut x = 10
+x += 5   # x is 15
+x -= 3   # x is 12
+x *= 2   # x is 24
+x /= 4   # x is 6
+x %= 5   # x is 1
+x **= 3  # x is 1
 ```
 
 ## Data Types
@@ -40,7 +54,17 @@ Olive is statically typed but features powerful type inference.
 - `f32`: 32-bit floating-point numbers.
 - `str`: UTF-8 encoded strings (`"Hello"`).
 - `bool`: Boolean values (`True`, `False`).
-- `None`: Represents the absence of a value.
+- `None`: Represents the absence of a value (maps to the internal `Null` type).
+
+### F-Strings (Formatted Strings)
+
+Olive supports f-strings for easy string interpolation. Prefix a string with `f` and use `{}` to embed expressions:
+
+```python
+let name = "Olive"
+let greeting = f"Hello, {name}!"
+print(greeting) # Hello, Olive!
+```
 
 ### Collection Types
 
@@ -55,22 +79,14 @@ Collections are generic and can be type-annotated:
 
 ### Comparisons
 
-Olive distinguishes between value equality and object identity:
+Olive uses standard comparison operators:
 
 - `==`: Checks if two values are equal.
 - `!=`: Checks if two values are not equal.
-- `is`: Checks for **object identity** (whether two references point to the same object).
-- `is not`: Checks if two references point to different objects.
-
-```python
-let a = [1, 2]
-let b = [1, 2]
-let c = a
-
-print(a == b)   # True (same values)
-print(a is b)   # False (different objects)
-print(a is c)   # True (same object reference)
-```
+- `<`: Less than.
+- `>`: Greater than.
+- `<=`: Less than or equal to.
+- `>=`: Greater than or equal to.
 
 ### If Statements
 
@@ -109,15 +125,40 @@ for item in ["apple", "banana", "cherry"]:
     print(item)
 ```
 
-### Error Handling
+#### Tuple Unpacking in Loops
 
-Olive uses a Rust-inspired `Result` type pattern for error handling, moving away from traditional exceptions. The `try` expression can be used to handle errors gracefully:
+You can unpack tuples directly in the `for` loop header:
 
 ```python
-let value = try risky_operation()
+let points = [(1, 2), (3, 4), (5, 6)]
+for (x, y) in points:
+    print(f"Point at {x}, {y}")
 ```
 
-You can also use union types for errors and explicitly match on them if needed.
+### Error Handling
+
+Olive uses a Rust-inspired `Result` type pattern for error handling. A `Result` is typically a union type like `Type | Error`.
+
+#### The `try` Expression
+
+The `try` keyword (or the `?` postfix operator) can be used to handle errors gracefully by propagating them up the call stack if they occur:
+
+```python
+# Both are equivalent
+let value = try risky_operation()
+let value = risky_operation()?
+```
+
+#### Union Types
+
+You can define functions that return multiple types to represent success or failure:
+
+```python
+fn divide(a: int, b: int) -> int | str:
+    if b == 0:
+        return "Division by zero"
+    return a / b
+```
 
 ### Assertions
 

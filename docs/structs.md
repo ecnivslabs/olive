@@ -31,7 +31,23 @@ let p = Person("Alice", 30)
 p.greet()
 ```
 
-If a custom constructor is needed, you can define an `__init__` method in the `impl` block. However, the default constructor behavior takes the fields defined in the struct.
+If a custom constructor is needed, you can define an `__init__` method in the `impl` block. The default constructor behavior takes the fields defined in the struct, but `__init__` allows you to perform custom initialization logic.
+
+```python
+struct Rectangle:
+    width: int
+    height: int
+    area: int
+
+impl Rectangle:
+    fn __init__(self, w: int, h: int):
+        self.width = w
+        self.height = h
+        self.area = w * h
+
+let rect = Rectangle(10, 20)
+print(f"Area: {rect.area}")
+```
 
 ## Composition over Inheritance
 

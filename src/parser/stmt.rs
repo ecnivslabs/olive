@@ -21,7 +21,7 @@ impl Parser {
             TokenKind::From => self.parse_from_import(),
             TokenKind::Let => self.parse_let(),
             TokenKind::Const => self.parse_const(),
-            TokenKind::At => self.parse_decorated(),
+            TokenKind::At | TokenKind::Hash => self.parse_decorated(),
             TokenKind::Pass => {
                 let s = self.peek().clone();
                 self.advance();
@@ -46,24 +46,36 @@ impl Parser {
 
     pub(crate) fn parse_decorated(&mut self) -> ParseResult<Stmt> {
         let mut decorators = Vec::new();
-        while self.peek().kind == TokenKind::Hash {
-            self.advance();
-            let mut name = self.expect(TokenKind::Identifier)?.value;
-            // Parse optional args like (Debug, Clone)
-            if self.peek().kind == TokenKind::LParen {
-                self.advance(); // '('
-                name.push('(');
-                while self.peek().kind != TokenKind::RParen && self.peek().kind != TokenKind::Eof {
-                    let tok = self.advance();
-                    name.push_str(&tok.value);
-                    if tok.kind == TokenKind::Comma {
-                        name.push(' ');
+        while self.peek().kind == TokenKind::At || self.peek().kind == TokenKind::Hash {
+            if self.peek().kind == TokenKind::At {
+                self.advance();
+                let name = self.expect(TokenKind::Identifier)?.value;
+                decorators.push(Decorator {
+                    name,
+                    is_directive: false,
+                });
+            } else {
+                self.advance(); // '#'
+                self.expect(TokenKind::LBracket)?;
+                while self.peek().kind != TokenKind::RBracket {
+                    let name = self.expect(TokenKind::Identifier)?.value;
+                    decorators.push(Decorator {
+                        name,
+                        is_directive: true,
+                    });
+                    if self.peek().kind == TokenKind::Comma {
+                        self.advance();
+                    } else if self.peek().kind == TokenKind::RBracket {
+                        break;
+                    } else {
+                        return Err(self.err_at(self.peek(), format!(
+                            "expected ',' or ']' in directive, found {:?}",
+                            self.peek().kind
+                        )));
                     }
                 }
-                self.expect(TokenKind::RParen)?;
-                name.push(')');
+                self.expect(TokenKind::RBracket)?;
             }
-            decorators.push(name);
             self.skip_newlines();
         }
 
