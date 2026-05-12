@@ -120,7 +120,7 @@ impl Parser {
                     BinOp::NotEq
                 }
                 TokenKind::Not => {
-                    // Check for 'not in' or binary 'not' (alias for !=)
+                    // check not in
                     self.advance();
                     if self.peek().kind == TokenKind::In {
                         self.advance();
@@ -221,6 +221,13 @@ impl Parser {
                 let span = self.span_from(&start);
                 Ok(Expr::new(ExprKind::Try(Box::new(operand)), span))
             }
+            TokenKind::Await => {
+                let start = self.peek().clone();
+                self.advance();
+                let operand = self.parse_unary()?;
+                let span = self.span_from(&start);
+                Ok(Expr::new(ExprKind::Await(Box::new(operand)), span))
+            }
             TokenKind::Ampersand => {
                 let start = self.peek().clone();
                 self.advance();
@@ -290,6 +297,13 @@ impl Parser {
             match self.peek().kind {
                 TokenKind::Dot | TokenKind::DoubleColon => {
                     let op = self.advance();
+                    // postfix await
+                    if op.kind == TokenKind::Dot && self.peek().kind == TokenKind::Await {
+                        let end_tok = self.advance();
+                        let span = expr.span.merge(self.span_from(&end_tok));
+                        expr = Expr::new(ExprKind::Await(Box::new(expr)), span);
+                        continue;
+                    }
                     let attr = self.expect(TokenKind::Identifier)?.value;
                     let span = self.span_from(&Token {
                         kind: TokenKind::Identifier,
@@ -405,44 +419,54 @@ impl Parser {
             start: start_tok.span.0,
             end: start_tok.span.1,
         };
-        
+
         let expr = self.parse_expr()?;
         self.expect(TokenKind::Colon)?;
-        
+
         let mut cases = Vec::new();
         if self.peek().kind == TokenKind::Newline {
             self.advance();
             self.expect(TokenKind::Indent)?;
             self.skip_newlines();
             while self.peek().kind != TokenKind::Dedent && self.peek().kind != TokenKind::Eof {
-                // Parse pattern
                 let pattern = self.parse_pattern()?;
-                
+
                 let body = self.parse_block()?;
                 cases.push(MatchCase { pattern, body });
                 self.skip_newlines();
             }
             let end_span = self.peek().span.1;
             self.expect(TokenKind::Dedent)?;
-            
-            // Inject a synthetic Newline token to terminate the enclosing statement
-            // because the Dedent effectively ends the logical line.
+
+            // terminate match stmt
             let dummy = self.peek().clone();
-            self.tokens.insert(self.pos, crate::lexer::Token {
-                kind: TokenKind::Newline,
-                value: "\n".into(),
-                line: dummy.line,
-                col: dummy.col,
-                span: dummy.span,
-                file_id: dummy.file_id,
-            });
-            
-            Ok(Expr::new(ExprKind::Match {
-                expr: Box::new(expr),
-                cases,
-            }, Span { end: end_span, ..start }))
+            self.tokens.insert(
+                self.pos,
+                crate::lexer::Token {
+                    kind: TokenKind::Newline,
+                    value: "\n".into(),
+                    line: dummy.line,
+                    col: dummy.col,
+                    span: dummy.span,
+                    file_id: dummy.file_id,
+                },
+            );
+
+            Ok(Expr::new(
+                ExprKind::Match {
+                    expr: Box::new(expr),
+                    cases,
+                },
+                Span {
+                    end: end_span,
+                    ..start
+                },
+            ))
         } else {
-            return Err(self.err_at(&self.tokens[self.pos], "expected newline and indented block for match cases"));
+            return Err(self.err_at(
+                &self.tokens[self.pos],
+                "expected newline and indented block for match cases",
+            ));
         }
     }
 
@@ -452,7 +476,11 @@ impl Parser {
                 self.advance();
                 Ok(MatchPattern::Wildcard)
             }
-            TokenKind::Integer | TokenKind::Float | TokenKind::String | TokenKind::True | TokenKind::False => {
+            TokenKind::Integer
+            | TokenKind::Float
+            | TokenKind::String
+            | TokenKind::True
+            | TokenKind::False => {
                 let expr = self.parse_primary()?;
                 Ok(MatchPattern::Literal(expr))
             }
@@ -462,7 +490,9 @@ impl Parser {
                 if self.peek().kind == TokenKind::LParen {
                     self.advance();
                     let mut patterns = Vec::new();
-                    while self.peek().kind != TokenKind::RParen && self.peek().kind != TokenKind::Eof {
+                    while self.peek().kind != TokenKind::RParen
+                        && self.peek().kind != TokenKind::Eof
+                    {
                         patterns.push(self.parse_pattern()?);
                         if self.peek().kind == TokenKind::Comma {
                             self.advance();
@@ -522,13 +552,13 @@ impl Parser {
 
         while i < chars.len() {
             if chars[i] == '{' {
-                // Check if it's double {{
+                // double brace
                 if i + 1 < chars.len() && chars[i + 1] == '{' {
                     i += 2;
                     continue;
                 }
 
-                // Add literal part before {
+                // literal part
                 if i > last_pos {
                     let s: String = chars[last_pos..i].iter().collect();
                     let s = s.replace("{{", "{").replace("}}", "}");
@@ -537,7 +567,7 @@ impl Parser {
                     }
                 }
 
-                // Find matching }
+                // find match
                 i += 1;
                 let start_expr = i;
                 let mut brace_count = 1;
@@ -559,7 +589,7 @@ impl Parser {
                     return Err(self.err_at(&tok, "empty expression in f-string"));
                 }
 
-                // Lex and parse expr_str
+                // parse inner
                 let mut lexer = crate::lexer::Lexer::new(&expr_str, tok.file_id);
                 let tokens = lexer.tokenise().map_err(|e| ParseError {
                     message: format!("lexer error in f-string: {}", e.message),
@@ -660,6 +690,25 @@ impl Parser {
             TokenKind::Match => {
                 self.advance();
                 self.parse_match(tok)
+            }
+            TokenKind::Async => {
+                self.advance();
+                let body = self.parse_block()?;
+                let span = self.span_from(&tok);
+                // terminate async block
+                let dummy = self.tokens[self.pos].clone();
+                self.tokens.insert(
+                    self.pos,
+                    Token {
+                        kind: TokenKind::Newline,
+                        value: "\n".into(),
+                        line: dummy.line,
+                        col: dummy.col,
+                        span: dummy.span,
+                        file_id: dummy.file_id,
+                    },
+                );
+                Ok(Expr::new(ExprKind::AsyncBlock(body), span))
             }
             TokenKind::Identifier => {
                 self.advance();

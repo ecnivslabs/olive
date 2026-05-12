@@ -151,9 +151,7 @@ impl Lexer {
                 }
                 self.advance();
             }
-            // Block comment on its own line: we return None so the lexer retries.
-            // Note: If the block comment ends on a new line, it handled the indentation up to the /*
-            // The next token will be read correctly.
+            // ignore block comment line
             return Ok(None);
         }
         if matches!(self.peek(), Some('\n') | None) {
@@ -266,7 +264,7 @@ impl Lexer {
                     Some('\\') => s.push('\\'),
                     Some('\'') => s.push('\''),
                     Some('"') => s.push('"'),
-                    Some('\n') => {} // escaped newline
+                    Some('\n') => {} // escaped nl
                     Some(c) => {
                         s.push('\\');
                         s.push(c);
@@ -294,7 +292,7 @@ impl Lexer {
         col: usize,
         start: usize,
     ) -> LexResult<Token> {
-        // Base-prefixed literals: 0x, 0o, 0b
+        // base prefixed: 0x, 0o, 0b
         if first == '0' {
             match self.peek() {
                 Some('x') | Some('X') => {
@@ -359,7 +357,7 @@ impl Lexer {
             num.push(self.advance().unwrap());
         }
 
-        // Fractional part.
+        // fraction
         if self.peek() == Some('.') && matches!(self.peek_next(), Some(c) if c.is_ascii_digit()) {
             is_float = true;
             num.push(self.advance().unwrap()); // '.'
@@ -368,7 +366,7 @@ impl Lexer {
             }
         }
 
-        // Scientific notation.
+        // scientific
         if matches!(self.peek(), Some('e') | Some('E')) {
             is_float = true;
             num.push(self.advance().unwrap());
@@ -411,7 +409,7 @@ impl Lexer {
     ) -> LexResult<Token> {
         let mut ident = String::from(first);
 
-        // Detect f-string prefix: f"..." or f'...'
+        // f-string prefix
         if first == 'f' && (self.peek() == Some('"') || self.peek() == Some('\'')) {
             let quote = self.advance().unwrap();
             let mut tok = self.read_string(quote, line, col, start)?;
@@ -451,6 +449,8 @@ impl Lexer {
             "mut" => TokenKind::Mut,
             "enum" => TokenKind::Enum,
             "match" => TokenKind::Match,
+            "async" => TokenKind::Async,
+            "await" => TokenKind::Await,
             "_" => TokenKind::Underscore,
             _ => TokenKind::Identifier,
         };

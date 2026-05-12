@@ -95,9 +95,7 @@ impl GlobalValueNumbering {
     fn op_stable(&self, op: &Operand, counts: &HashMap<Local, usize>, arg_count: usize) -> bool {
         match op {
             Operand::Constant(_) => true,
-            Operand::Copy(l) | Operand::Move(l) => {
-                l.0 <= arg_count || counts.get(l) == Some(&1)
-            }
+            Operand::Copy(l) | Operand::Move(l) => l.0 <= arg_count || counts.get(l) == Some(&1),
         }
     }
 

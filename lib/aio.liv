@@ -1,0 +1,21 @@
+# async io
+
+# run blocking
+fn run(future):
+    return await future
+
+# read async
+fn read_file(path: str):
+    return __olive_async_file_read(path)
+
+# write async
+fn write_file(path: str, data: str):
+    return __olive_async_file_write(path, data)
+
+# wait all
+fn gather(futures):
+    return __olive_gather(futures)
+
+# free future
+fn free_future(future):
+    __olive_free_future(future)

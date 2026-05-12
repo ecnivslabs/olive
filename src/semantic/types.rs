@@ -47,6 +47,8 @@ pub enum Type {
     Never,
     // Vector type for SIMD: Vector(element_type, width)
     Vector(Box<Type>, usize),
+    // Future[T]: produced by async fn / async: blocks
+    Future(Box<Type>),
 }
 
 impl Type {
@@ -65,7 +67,19 @@ impl Type {
     /// Returns true if this is a numeric type.
     #[allow(dead_code)]
     pub fn is_numeric(&self) -> bool {
-        matches!(self, Type::Int | Type::I8 | Type::I16 | Type::I32 | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::Float | Type::F32)
+        matches!(
+            self,
+            Type::Int
+                | Type::I8
+                | Type::I16
+                | Type::I32
+                | Type::U8
+                | Type::U16
+                | Type::U32
+                | Type::U64
+                | Type::Float
+                | Type::F32
+        )
     }
 
     /// Returns true if this type has move semantics (heap allocated or complex).
@@ -88,7 +102,8 @@ impl Type {
             | Type::Str
             | Type::Ref(_)
             | Type::MutRef(_)
-            | Type::Vector(_, _) => false,
+            | Type::Vector(_, _)
+            | Type::Future(_) => false,
             _ => true,
         }
     }
@@ -152,6 +167,7 @@ impl fmt::Display for Type {
             Type::Any => write!(f, "Any"),
             Type::Never => write!(f, "Never"),
             Type::Vector(t, w) => write!(f, "{}x{}", t, w),
+            Type::Future(t) => write!(f, "Future[{}]", t),
         }
     }
 }

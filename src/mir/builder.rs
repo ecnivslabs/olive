@@ -29,10 +29,14 @@ pub struct MirBuilder<'a> {
     memo_context: Option<(Operand, Operand, BasicBlockId)>, // memo state
     pub globals: HashMap<String, Operand>,
     pub enum_variants: HashMap<String, (String, usize)>,
+    current_is_async: bool,
 }
 
 impl<'a> MirBuilder<'a> {
-    pub fn new(expr_types: &'a HashMap<usize, Type>, global_types: &'a HashMap<String, Type>) -> Self {
+    pub fn new(
+        expr_types: &'a HashMap<usize, Type>,
+        global_types: &'a HashMap<String, Type>,
+    ) -> Self {
         Self {
             functions: Vec::new(),
             expr_types,
@@ -48,6 +52,7 @@ impl<'a> MirBuilder<'a> {
             memo_context: None,
             globals: HashMap::default(),
             enum_variants: HashMap::default(),
+            current_is_async: false,
         }
     }
 
@@ -99,6 +104,7 @@ impl<'a> MirBuilder<'a> {
             locals: std::mem::take(&mut self.current_locals),
             basic_blocks: std::mem::take(&mut self.current_blocks),
             arg_count: self.current_arg_count,
+            is_async: self.current_is_async,
         };
         // remove existing to let new one take precedence
         self.functions.retain(|f| f.name != func.name);
@@ -222,11 +228,11 @@ impl<'a> MirBuilder<'a> {
 
             StmtKind::Const { name, value, .. } => {
                 let rval = self.lower_expr(value);
-                // Attempt to inline literal constants.
+                // inline literals
                 if let Operand::Constant(_) = &rval {
                     self.globals.insert(name.clone(), rval);
                 } else {
-                    // Fallback to immutable local.
+                    // fallback to local
                     let ty = self.get_type(value.id);
                     let local = self.declare_var(name.clone(), ty, false);
                     self.push_statement(StatementKind::Assign(local, Rvalue::Use(rval)), stmt.span);
@@ -368,7 +374,10 @@ impl<'a> MirBuilder<'a> {
                     if let StmtKind::Fn { name: fn_name, .. } = &s.kind {
                         let mangled_name = format!("{}::{}", type_name, fn_name);
                         let mut impl_stmt = s.clone();
-                        if let StmtKind::Fn { name: ref mut n, .. } = impl_stmt.kind {
+                        if let StmtKind::Fn {
+                            name: ref mut n, ..
+                        } = impl_stmt.kind
+                        {
                             *n = mangled_name;
                         }
                         self.lower_fn_def(&impl_stmt);
@@ -399,15 +408,12 @@ impl<'a> MirBuilder<'a> {
             }
 
             StmtKind::Struct { name, fields, .. } => {
-                // Struct definition, synthesize __init__ if needed
-
-                // Only synthesize __init__ if user hasn't defined one in an impl block.
-                // We synthesize it now; impl blocks lower after, so they'll overwrite if needed.
+                // synthesize __init__
                 if !fields.is_empty() {
                     let init_name = format!("{}::__init__", name);
                     let n_params = fields.len() + 1; // self + each field
 
-                    // Save current function state.
+                    // save state
                     let saved_name = std::mem::take(&mut self.current_name);
                     let saved_locals = std::mem::take(&mut self.current_locals);
                     let saved_blocks = std::mem::take(&mut self.current_blocks);
@@ -418,18 +424,21 @@ impl<'a> MirBuilder<'a> {
 
                     self.start_function(init_name, n_params, Type::Null);
 
-                    // Param 0 = self (the object), params 1..N = field values.
-                    let self_local = self.new_local(Type::Struct(name.clone()), Some("self".to_string()), false);
+                    // params
+                    let self_local =
+                        self.new_local(Type::Struct(name.clone()), Some("self".to_string()), false);
                     let mut field_locals = Vec::new();
                     for field in fields {
-                        let field_ty = field.type_ann.as_ref()
+                        let field_ty = field
+                            .type_ann
+                            .as_ref()
                             .map(|ann| self.resolve_type_expr(ann))
                             .unwrap_or(Type::Any);
                         let fl = self.new_local(field_ty, Some(field.name.clone()), false);
                         field_locals.push((field.name.clone(), fl));
                     }
 
-                    // Emit SetAttr for each field.
+                    // emit attrs
                     for (field_name, fl) in &field_locals {
                         self.push_statement(
                             StatementKind::SetAttr(
@@ -447,7 +456,7 @@ impl<'a> MirBuilder<'a> {
 
                     self.finish_function();
 
-                    // Restore state.
+                    // restore state
                     self.current_name = saved_name;
                     self.current_locals = saved_locals;
                     self.current_blocks = saved_blocks;
@@ -458,10 +467,7 @@ impl<'a> MirBuilder<'a> {
                 }
             }
 
-
-            StmtKind::Pass
-            | StmtKind::Import { .. }
-            | StmtKind::FromImport { .. } => {}
+            StmtKind::Pass | StmtKind::Import { .. } | StmtKind::FromImport { .. } => {}
             StmtKind::Enum { name, variants, .. } => {
                 for (i, variant) in variants.iter().enumerate() {
                     let mangled = format!("{}::{}", name, variant.name);
@@ -535,6 +541,7 @@ impl<'a> MirBuilder<'a> {
             body,
             decorators,
             return_type,
+            is_async,
             ..
         } = &stmt.kind
         {
@@ -550,6 +557,8 @@ impl<'a> MirBuilder<'a> {
             let saved_var_map = std::mem::take(&mut self.var_map);
             let saved_loop_stack = std::mem::take(&mut self.loop_stack);
             let saved_arg_count = self.current_arg_count;
+            let saved_is_async = self.current_is_async;
+            self.current_is_async = *is_async;
 
             let ret_ty = return_type
                 .as_ref()
@@ -558,7 +567,7 @@ impl<'a> MirBuilder<'a> {
 
             self.start_function(name.clone(), params.len(), ret_ty);
 
-            // Declare parameters as locals.
+            // params as locals
             let mut param_locals = Vec::new();
             for param in params {
                 let ty = param
@@ -572,7 +581,7 @@ impl<'a> MirBuilder<'a> {
 
             if is_memo {
                 // memoization
-                // 1. Get/Create global cache.
+                // cache
                 let cache_tmp = self.new_local(Type::Any, Some("cache".to_string()), false);
                 let fn_name_const = Operand::Constant(Constant::Str(name.clone()));
 
@@ -736,6 +745,7 @@ impl<'a> MirBuilder<'a> {
             self.var_map = saved_var_map;
             self.loop_stack = saved_loop_stack;
             self.current_arg_count = saved_arg_count;
+            self.current_is_async = saved_is_async;
         }
     }
 
@@ -749,7 +759,10 @@ impl<'a> MirBuilder<'a> {
                     if let StmtKind::Fn { name: fn_name, .. } = &s.kind {
                         let mangled = format!("{}::{}", type_name, fn_name);
                         let mut impl_stmt = s.clone();
-                        if let StmtKind::Fn { name: ref mut n, .. } = impl_stmt.kind {
+                        if let StmtKind::Fn {
+                            name: ref mut n, ..
+                        } = impl_stmt.kind
+                        {
                             *n = mangled;
                         }
                         self.lower_fn_def(&impl_stmt);
@@ -1010,7 +1023,7 @@ impl<'a> MirBuilder<'a> {
         // lowered as while loop over iterator
         let iter_expr_op = self.lower_expr(iter);
         let iter_local = self.new_local(Type::Any, Some("_iter_obj".to_string()), true);
-        
+
         // __olive_iter()
         self.push_statement(
             StatementKind::Assign(
@@ -1248,6 +1261,55 @@ impl<'a> MirBuilder<'a> {
                 Operand::Copy(payload_tmp)
             }
 
+            // await: lower the future operand then call __olive_await to resolve it.
+            // Full state-machine transform is deferred; this emits a runtime poll call.
+            ExprKind::Await(inner) => {
+                let inner_op = self.lower_expr(inner);
+                let result_ty = self.get_type(expr.id);
+                let tmp = self.new_local(result_ty, None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        tmp,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(
+                                "__olive_await".to_string(),
+                            )),
+                            args: vec![inner_op],
+                        },
+                    ),
+                    expr.span,
+                );
+                Operand::Copy(tmp)
+            }
+
+            // async: block — wrap body in a closure-like future object.
+            ExprKind::AsyncBlock(body) => {
+                let tmp = self.new_local(Type::Any, None, false);
+                // Lower body stmts; last value becomes the future payload.
+                self.enter_scope();
+                let mut last_op = Operand::Constant(Constant::None);
+                for s in body {
+                    self.lower_stmt(s);
+                    if let StmtKind::ExprStmt(e) = &s.kind {
+                        last_op = self.lower_expr(e);
+                    }
+                }
+                self.leave_scope();
+                self.push_statement(
+                    StatementKind::Assign(
+                        tmp,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(
+                                "__olive_make_future".to_string(),
+                            )),
+                            args: vec![last_op],
+                        },
+                    ),
+                    expr.span,
+                );
+                Operand::Copy(tmp)
+            }
+
             ExprKind::Borrow(inner) => {
                 let tmp = self.new_tmp_for_expr(expr);
                 let rval = if let ExprKind::Identifier(name) = &inner.kind {
@@ -1375,7 +1437,14 @@ impl<'a> MirBuilder<'a> {
                             expr.span,
                         );
                         return self.operand_for_local(tmp);
-                    } else if matches!(current_arg_ty, Type::List(_) | Type::Tuple(_) | Type::Set(_) | Type::Dict(_, _) | Type::Any) {
+                    } else if matches!(
+                        current_arg_ty,
+                        Type::List(_)
+                            | Type::Tuple(_)
+                            | Type::Set(_)
+                            | Type::Dict(_, _)
+                            | Type::Any
+                    ) {
                         let arg_op = self.lower_expr(arg_expr);
                         let tmp = self.new_local(Type::Int, None, false);
                         self.push_statement(
@@ -1405,38 +1474,38 @@ impl<'a> MirBuilder<'a> {
                         );
                         return self.operand_for_local(tmp);
                     }
-                    
+
                     if name == "list_new" && !args.is_empty() {
-                    let arg_expr = match &args[0] {
-                        CallArg::Positional(e)
-                        | CallArg::Keyword(_, e)
-                        | CallArg::Splat(e)
-                        | CallArg::KwSplat(e) => e,
-                    };
-                    let arg_op = self.lower_expr(arg_expr);
-                    let tmp = self.new_local(Type::List(Box::new(Type::Any)), None, false);
-                    self.push_statement(
-                        StatementKind::Assign(
-                            tmp,
-                            Rvalue::Call {
-                                func: Operand::Constant(Constant::Function(
-                                    "__olive_list_new".to_string(),
-                                )),
-                                args: vec![arg_op],
-                            },
-                        ),
-                        expr.span,
-                    );
-                    return self.operand_for_local(tmp);
+                        let arg_expr = match &args[0] {
+                            CallArg::Positional(e)
+                            | CallArg::Keyword(_, e)
+                            | CallArg::Splat(e)
+                            | CallArg::KwSplat(e) => e,
+                        };
+                        let arg_op = self.lower_expr(arg_expr);
+                        let tmp = self.new_local(Type::List(Box::new(Type::Any)), None, false);
+                        self.push_statement(
+                            StatementKind::Assign(
+                                tmp,
+                                Rvalue::Call {
+                                    func: Operand::Constant(Constant::Function(
+                                        "__olive_list_new".to_string(),
+                                    )),
+                                    args: vec![arg_op],
+                                },
+                            ),
+                            expr.span,
+                        );
+                        return self.operand_for_local(tmp);
+                    }
                 }
-            }
 
                 // If the callee is an attribute access, it's a method call.
                 if let ExprKind::Attr { obj, attr } = &callee.kind {
                     if let ExprKind::Identifier(name) = &obj.kind {
                         // Check if it's a module function call (math.sqrt())
                         let mangled = format!("{}::{}", name, attr);
-                        
+
                         // Check if it's an enum variant constructor
                         let tag_opt = self.enum_variants.get(&mangled).map(|(_, t)| *t);
                         if let Some(tag) = tag_opt {
@@ -1705,7 +1774,10 @@ impl<'a> MirBuilder<'a> {
                     ty,
                 )
             }
-            ExprKind::Match { expr: match_expr, cases } => {
+            ExprKind::Match {
+                expr: match_expr,
+                cases,
+            } => {
                 let discr_op = self.lower_expr(match_expr);
                 let discr_local = match discr_op {
                     Operand::Copy(l) | Operand::Move(l) => l,
@@ -1726,13 +1798,20 @@ impl<'a> MirBuilder<'a> {
                 for case in cases {
                     let success_bb = self.new_block();
                     let failure_bb = self.new_block();
-                    
+
                     let match_ty = self.get_type(match_expr.id);
-                    self.lower_pattern(&case.pattern, discr_local, &match_ty, success_bb, failure_bb, expr.span);
-                    
+                    self.lower_pattern(
+                        &case.pattern,
+                        discr_local,
+                        &match_ty,
+                        success_bb,
+                        failure_bb,
+                        expr.span,
+                    );
+
                     self.current_block = Some(success_bb);
                     self.enter_scope();
-                    
+
                     let mut last_op = Operand::Constant(Constant::None);
                     if case.body.is_empty() {
                         self.push_statement(
@@ -1757,13 +1836,21 @@ impl<'a> MirBuilder<'a> {
                         }
                     }
 
-                    self.terminate_block(self.current_block.unwrap(), TerminatorKind::Goto { target: exit_bb }, expr.span);
+                    self.terminate_block(
+                        self.current_block.unwrap(),
+                        TerminatorKind::Goto { target: exit_bb },
+                        expr.span,
+                    );
                     self.leave_scope();
-                    
+
                     self.current_block = Some(failure_bb);
                 }
 
-                self.terminate_block(self.current_block.unwrap(), TerminatorKind::Goto { target: exit_bb }, expr.span);
+                self.terminate_block(
+                    self.current_block.unwrap(),
+                    TerminatorKind::Goto { target: exit_bb },
+                    expr.span,
+                );
                 self.current_block = Some(exit_bb);
                 Operand::Copy(result_tmp)
             }
@@ -1847,7 +1934,8 @@ impl<'a> MirBuilder<'a> {
                     }
 
                     let mut current_bb = variant_match_bb;
-                    for (i, (p, p_ty)) in inner_patterns.iter().zip(param_types.iter()).enumerate() {
+                    for (i, (p, p_ty)) in inner_patterns.iter().zip(param_types.iter()).enumerate()
+                    {
                         self.current_block = Some(current_bb);
                         let val_tmp = self.new_local(p_ty.clone() as Type, None, false);
                         self.push_statement(

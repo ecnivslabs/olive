@@ -1,5 +1,4 @@
-# math library for olive
-# all algorithms implemented in pure olive
+# math algorithms in pure olive
 
 const PI = 3.141592653589793
 const E  = 2.718281828459045
@@ -44,7 +43,7 @@ fn isclose(a: float, b: float) -> bool:
 
 
 fn sqrt(x: float) -> float:
-    # newton-raphson (fast convergence)
+    # newton-raphson
     if x < 0.0:
         return 0.0 / 0.0
     if x == 0.0:
@@ -87,7 +86,7 @@ fn ipow(base: int, exponent: int) -> int:
 
 
 fn exp(x: float) -> float:
-    # range reduction: exp(x) = 2^k * exp(r)
+    # range reduction
     if x == 0.0:
         return 1.0
     if x > 709.0:
@@ -95,12 +94,12 @@ fn exp(x: float) -> float:
     if x < -709.0:
         return 0.0
 
-    # Reduce: x = k*ln2 + r,  |r| <= ln2/2
+    # range reduction
     let ln2 = 0.6931471805599453
     let k = floor(x / ln2 + 0.5)
     let r = x - float(k) * ln2
 
-    # taylor series for exp(r)
+    # taylor series
     let mut sum = 1.0
     let mut term = 1.0
     let mut n = 1
@@ -111,7 +110,7 @@ fn exp(x: float) -> float:
             break
         n = n + 1
 
-    # Multiply by 2^k  via repeated squaring
+    # scale by 2^k
     let mut result = sum
     let mut p = _iabs(k)
     let mut base = 2.0
@@ -128,7 +127,7 @@ fn exp(x: float) -> float:
     return result
 
 fn expm1(x: float) -> float:
-    # use taylor for small x to keep precision
+    # small x optimization
     if abs(x) < 0.01:
         let mut sum = 0.0
         let mut term = x
@@ -141,16 +140,13 @@ fn expm1(x: float) -> float:
     return exp(x) - 1.0
 
 fn log(x: float) -> float:
-    # natural log using halley's method
     if x <= 0.0:
         return 0.0 / 0.0
     if x == 1.0:
         return 0.0
 
-    # initial guess
     let mut y = 0.0
     let mut v = x
-    # Bring v into [0.5, 2) by multiplying/dividing by e
     while v > 2.0:
         v = v / E
         y = y + 1.0
@@ -158,7 +154,6 @@ fn log(x: float) -> float:
         v = v * E
         y = y - 1.0
 
-    # halley iterations
     let mut g = y + (v - 1.0) / (v + 1.0) * 2.0
     let mut i = 0
     while i < 40:
@@ -178,7 +173,6 @@ fn log10(x: float) -> float:
 
 fn log1p(x: float) -> float:
     if abs(x) < 0.01:
-        # taylor: x - x^2/2 + x^3/3 - ...
         let mut sum = 0.0
         let mut term = x
         let mut n = 1
@@ -191,7 +185,6 @@ fn log1p(x: float) -> float:
 
 
 fn _reduce_angle(x: float) -> float:
-    # Reduce to [-PI, PI]
     let mut a = x
     while a > PI:
         a = a - TAU
@@ -200,7 +193,6 @@ fn _reduce_angle(x: float) -> float:
     return a
 
 fn sin(x: float) -> float:
-    # taylor series
     let a = _reduce_angle(x)
     let mut sum = 0.0
     let mut term = a
@@ -212,7 +204,6 @@ fn sin(x: float) -> float:
     return sum
 
 fn cos(x: float) -> float:
-    # taylor series
     let a = _reduce_angle(x)
     let mut sum = 0.0
     let mut term = 1.0
@@ -233,12 +224,10 @@ fn tan(x: float) -> float:
 
 
 fn atan(x: float) -> float:
-    # use identity for |x| > 1: atan(x) = PI/2 - atan(1/x)
     if x > 1.0:
         return PI / 2.0 - atan(1.0 / x)
     if x < -1.0:
         return -PI / 2.0 - atan(1.0 / x)
-    # taylor series
     let mut sum = 0.0
     let mut term = x
     let x2 = x * x
@@ -256,7 +245,6 @@ fn atan2(y: float, x: float) -> float:
         if y >= 0.0:
             return atan(y / x) + PI
         return atan(y / x) - PI
-    # x == 0
     if y > 0.0:
         return PI / 2.0
     if y < 0.0:
@@ -264,7 +252,6 @@ fn atan2(y: float, x: float) -> float:
     return 0.0
 
 fn asin(x: float) -> float:
-    # asin(x) = atan(x / sqrt(1 - x^2))
     if x >= 1.0:
         return PI / 2.0
     if x <= -1.0:
@@ -384,7 +371,7 @@ fn radians(x: float) -> float:
 
 
 fn erf(x: float) -> float:
-    # horner-form approximation
+    # horner-form
     let t = 1.0 / (1.0 + 0.3275911 * abs(x))
     let poly = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))))
     let result = 1.0 - poly * exp(-x * x)

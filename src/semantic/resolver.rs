@@ -33,7 +33,9 @@ impl Resolver {
             span: Span::default(),
             is_private: false,
         });
-        for ty_name in ["i64", "i32", "i16", "i8", "u64", "u32", "u16", "u8", "float", "f64", "f32", "bool"] {
+        for ty_name in [
+            "i64", "i32", "i16", "i8", "u64", "u32", "u16", "u8", "float", "f64", "f32", "bool",
+        ] {
             table.define(Symbol {
                 name: ty_name.to_string(),
                 kind: SymbolKind::Function,
@@ -221,13 +223,11 @@ impl Resolver {
                 }
             }
 
-
             StmtKind::Return(expr) => {
                 if let Some(e) = expr {
                     self.resolve_expr(e);
                 }
             }
-
 
             StmtKind::Assert { test, msg } => {
                 self.resolve_expr(test);
@@ -238,7 +238,8 @@ impl Resolver {
 
             StmtKind::Import { module, alias } => {
                 // The bound name is either the alias or the last segment
-                let name = alias.as_deref()
+                let name = alias
+                    .as_deref()
                     .unwrap_or_else(|| module.last().unwrap().as_str());
                 self.define_sym(name, SymbolKind::Import, stmt.span);
             }
@@ -402,7 +403,6 @@ impl Resolver {
                 self.resolve_expr(obj);
             }
 
-
             ExprKind::List(elems) | ExprKind::Tuple(elems) | ExprKind::Set(elems) => {
                 for e in elems {
                     self.resolve_expr(e);
@@ -462,6 +462,16 @@ impl Resolver {
 
             ExprKind::Try(inner) => {
                 self.resolve_expr(inner);
+            }
+            ExprKind::Await(inner) => {
+                self.resolve_expr(inner);
+            }
+            ExprKind::AsyncBlock(body) => {
+                self.table.push(ScopeKind::Block);
+                for s in body {
+                    self.resolve_stmt(s);
+                }
+                self.table.pop();
             }
         }
     }

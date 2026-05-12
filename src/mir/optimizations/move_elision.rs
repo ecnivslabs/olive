@@ -1,9 +1,8 @@
 use super::Transform;
-use crate::mir::*;
 use crate::mir::liveness::Liveness;
+use crate::mir::*;
 
-/// MoveElision pass converts Operand::Copy to Operand::Move for move-types
-/// if the local variable is no longer live after the statement.
+// elide copies if local not live after stmt
 pub struct MoveElision;
 
 impl Transform for MoveElision {
@@ -68,7 +67,9 @@ impl MoveElision {
         locals: &[LocalDecl],
     ) -> bool {
         match &mut term.kind {
-            TerminatorKind::SwitchInt { discr, .. } => self.optimize_operand(discr, live_after, locals),
+            TerminatorKind::SwitchInt { discr, .. } => {
+                self.optimize_operand(discr, live_after, locals)
+            }
             _ => false,
         }
     }
@@ -80,9 +81,10 @@ impl MoveElision {
         locals: &[LocalDecl],
     ) -> bool {
         match rval {
-            Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::GetAttr(op, _) | Rvalue::GetTag(op) => {
-                self.optimize_operand(op, live_after, locals)
-            }
+            Rvalue::Use(op)
+            | Rvalue::UnaryOp(_, op)
+            | Rvalue::GetAttr(op, _)
+            | Rvalue::GetTag(op) => self.optimize_operand(op, live_after, locals),
             Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) => {
                 let mut changed = self.optimize_operand(l, live_after, locals);
                 changed |= self.optimize_operand(r, live_after, locals);
@@ -133,12 +135,8 @@ impl MoveElision {
                         return true;
                     }
                 }
-
-
             }
         }
         false
     }
-
-
 }

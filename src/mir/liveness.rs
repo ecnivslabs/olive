@@ -32,7 +32,7 @@ impl Liveness {
 
                 // Update with terminator to get live-before-terminator.
                 Self::update_liveness(&mut current_live, bb.terminator.as_ref());
-                
+
                 if live_after[bb_idx][bb.statements.len()] != current_live {
                     live_after[bb_idx][bb.statements.len()] = current_live.clone();
                     changed = true;
@@ -46,7 +46,6 @@ impl Liveness {
                         changed = true;
                     }
                 }
-
             }
         }
 

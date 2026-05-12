@@ -28,9 +28,7 @@ impl Transform for PeepholeOptimize {
                             *rval = Rvalue::Use(op.clone());
                             changed = true;
                         }
-                        Rvalue::BinaryOp(Div, l, r)
-                            if l == r =>
-                        {
+                        Rvalue::BinaryOp(Div, l, r) if l == r => {
                             *rval = Rvalue::Use(Operand::Constant(Constant::Int(1)));
                             changed = true;
                         }

@@ -54,10 +54,7 @@ pub enum Rvalue {
     // unary op
     UnaryOp(UnaryOp, Operand),
     // function/method call
-    Call {
-        func: Operand,
-        args: Vec<Operand>,
-    },
+    Call { func: Operand, args: Vec<Operand> },
     // aggregate construction
     Aggregate(AggregateKind, Vec<Operand>),
     // attribute access
@@ -91,17 +88,17 @@ pub struct Statement {
 pub enum StatementKind {
     // local = rvalue
     Assign(Local, Rvalue),
-    /// Writes a value to an object attribute.
+    // write to attribute
     SetAttr(Operand, String, Operand),
-    /// Writes a value to a collection index.
+    // write to index
     SetIndex(Operand, Operand, Operand),
-    /// Marks a local's storage as live.
+    // mark storage live
     StorageLive(Local),
-    /// Marks a local's storage as dead.
+    // mark storage dead
     StorageDead(Local),
-    /// Explicitly drops the value in a local.
+    // drop local
     Drop(Local),
-    /// SIMD: Store a vector to a collection at index.
+    // simd: vector store
     VectorStore(Operand, Operand, Operand),
 }
 
@@ -154,4 +151,5 @@ pub struct MirFunction {
     pub locals: Vec<LocalDecl>,
     pub basic_blocks: Vec<BasicBlock>,
     pub arg_count: usize,
+    pub is_async: bool,
 }

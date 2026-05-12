@@ -18,6 +18,7 @@ pub struct TypeChecker {
     pub field_types: HashMap<(String, String), Type>,
     pub enum_variants: HashMap<String, Vec<String>>,
     current_struct: Option<String>,
+    async_depth: usize,
 }
 
 impl TypeChecker {
@@ -47,6 +48,29 @@ impl TypeChecker {
                 "list_new",
                 Type::Fn(vec![Type::Int], Box::new(Type::List(Box::new(Type::Any)))),
             ),
+            (
+                "__olive_async_file_read",
+                Type::Fn(vec![Type::Str], Box::new(Type::Future(Box::new(Type::Str)))),
+            ),
+            (
+                "__olive_async_file_write",
+                Type::Fn(
+                    vec![Type::Str, Type::Str],
+                    Box::new(Type::Future(Box::new(Type::Int))),
+                ),
+            ),
+            (
+                "__olive_gather",
+                Type::Fn(vec![Type::Any], Box::new(Type::List(Box::new(Type::Any)))),
+            ),
+            (
+                "__olive_free_future",
+                Type::Fn(vec![Type::Any], Box::new(Type::Int)),
+            ),
+            (
+                "__olive_spawn_task",
+                Type::Fn(vec![Type::Any], Box::new(Type::Future(Box::new(Type::Any)))),
+            ),
         ];
 
         for (name, ty) in builtins {
@@ -63,6 +87,7 @@ impl TypeChecker {
             field_types: HashMap::default(),
             enum_variants: HashMap::default(),
             current_struct: None,
+            async_depth: 0,
         }
     }
 
@@ -213,12 +238,18 @@ impl TypeChecker {
                 params,
                 return_type,
                 body,
+                is_async,
                 ..
             } => {
-                let ret_ty = return_type
+                let inner_ret_ty = return_type
                     .as_ref()
                     .map(|ann| self.resolve_type_expr(ann))
                     .unwrap_or_else(Type::new_var);
+                let ret_ty = if *is_async {
+                    Type::Future(Box::new(inner_ret_ty.clone()))
+                } else {
+                    inner_ret_ty.clone()
+                };
                 let mut param_types = Vec::with_capacity(params.len());
                 for param in params {
                     let p_ty = param
@@ -245,7 +276,11 @@ impl TypeChecker {
 
                 self.enter_scope();
                 let prev_ret = self.current_return_type.take();
-                self.current_return_type = Some(ret_ty);
+                // inside async fn body, `return T` is valid (Future wrapping is implicit)
+                self.current_return_type = Some(inner_ret_ty);
+                if *is_async {
+                    self.async_depth += 1;
+                }
 
                 for (i, (param, mut p_ty)) in params.iter().zip(param_types).enumerate() {
                     if i == 0 && self.current_struct.is_some() && param.name == "self" {
@@ -267,6 +302,9 @@ impl TypeChecker {
                     }
                 }
 
+                if *is_async {
+                    self.async_depth -= 1;
+                }
                 self.current_return_type = prev_ret;
                 self.leave_scope();
             }
@@ -302,7 +340,9 @@ impl TypeChecker {
                 }
             }
 
-            StmtKind::Struct { name, fields, body, .. } => {
+            StmtKind::Struct {
+                name, fields, body, ..
+            } => {
                 // register the struct as a named type
                 self.define_type(name, Type::Struct(name.clone()), false);
 
@@ -313,7 +353,8 @@ impl TypeChecker {
                         .as_ref()
                         .map(|ann| self.resolve_type_expr(ann))
                         .unwrap_or(Type::Any);
-                    self.field_types.insert((name.clone(), field.name.clone()), field_ty);
+                    self.field_types
+                        .insert((name.clone(), field.name.clone()), field_ty);
                 }
 
                 // check any associated stmts in the struct body
@@ -338,7 +379,6 @@ impl TypeChecker {
                 self.current_struct = prev_struct;
             }
 
-
             StmtKind::Return(Some(expr)) => {
                 let ret_ty = self.check_expr(expr);
                 if let Some(expected) = self.current_return_type.clone() {
@@ -351,7 +391,6 @@ impl TypeChecker {
                     self.unify(&expected, &Type::Null, stmt.span);
                 }
             }
-
 
             StmtKind::Assert { test, msg } => {
                 let test_ty = self.check_expr(test);
@@ -541,7 +580,10 @@ impl TypeChecker {
                         if !params.is_empty() && params.len() == arg_types.len() + 1 {
                             // It's a method call with self implicit.
                             // Construct a type that matches the CALL SITE arity.
-                            final_callee_ty = Type::Fn(params.iter().skip(1).cloned().collect(), Box::new(self.apply_subst(Type::new_var())));
+                            final_callee_ty = Type::Fn(
+                                params.iter().skip(1).cloned().collect(),
+                                Box::new(self.apply_subst(Type::new_var())),
+                            );
                         }
                     }
                 }
@@ -550,7 +592,6 @@ impl TypeChecker {
                 let expected_fn = Type::Fn(arg_types, Box::new(ret_ty.clone()));
                 self.unify(&final_callee_ty, &expected_fn, expr.span);
                 self.apply_subst(ret_ty)
-
             }
 
             ExprKind::Index { obj, index } => {
@@ -613,11 +654,11 @@ impl TypeChecker {
                 match attr.as_str() {
                     "i32" => return Type::Fn(vec![], Box::new(Type::I32)),
                     "i16" => return Type::Fn(vec![], Box::new(Type::I16)),
-                    "i8"  => return Type::Fn(vec![], Box::new(Type::I8)),
+                    "i8" => return Type::Fn(vec![], Box::new(Type::I8)),
                     "u64" => return Type::Fn(vec![], Box::new(Type::U64)),
                     "u32" => return Type::Fn(vec![], Box::new(Type::U32)),
                     "u16" => return Type::Fn(vec![], Box::new(Type::U16)),
-                    "u8"  => return Type::Fn(vec![], Box::new(Type::U8)),
+                    "u8" => return Type::Fn(vec![], Box::new(Type::U8)),
                     "float" | "f64" => return Type::Fn(vec![], Box::new(Type::Float)),
                     "f32" => return Type::Fn(vec![], Box::new(Type::F32)),
                     _ => {}
@@ -660,13 +701,13 @@ impl TypeChecker {
             ExprKind::Match { expr, cases } => {
                 let match_ty = self.check_expr(expr);
                 let mut return_ty = Type::new_var();
-                
+
                 let mut matched_variants = std::collections::HashSet::new();
                 let mut has_wildcard = false;
 
                 for case in cases {
                     self.enter_scope();
-                    
+
                     match &case.pattern {
                         crate::parser::ast::MatchPattern::Variant(v_name, _) => {
                             matched_variants.insert(v_name.clone());
@@ -678,7 +719,7 @@ impl TypeChecker {
                     }
 
                     self.check_pattern(&case.pattern, &match_ty, expr.span);
-                    
+
                     let mut case_ty = Type::Null;
                     if case.body.is_empty() {
                         case_ty = Type::Null;
@@ -692,7 +733,7 @@ impl TypeChecker {
                     }
                     self.unify(&return_ty, &case_ty, expr.span);
                     return_ty = case_ty;
-                    
+
                     self.leave_scope();
                 }
 
@@ -702,7 +743,10 @@ impl TypeChecker {
                             for v in all_variants {
                                 if !matched_variants.contains(v) {
                                     self.errors.push(SemanticError::Custom {
-                                        msg: format!("non-exhaustive patterns: variant {} not covered", v),
+                                        msg: format!(
+                                            "non-exhaustive patterns: variant {} not covered",
+                                            v
+                                        ),
                                         span: expr.span,
                                     });
                                 }
@@ -710,7 +754,7 @@ impl TypeChecker {
                         }
                     }
                 }
-                
+
                 return_ty
             }
 
@@ -722,6 +766,40 @@ impl TypeChecker {
                     }
                 }
                 inner_ty
+            }
+
+            ExprKind::Await(inner) => {
+                let inner_ty = self.check_expr(inner);
+                match inner_ty {
+                    Type::Future(t) => *t,
+                    Type::Any | Type::Var(_) => Type::Any,
+                    other => {
+                        self.errors.push(SemanticError::Custom {
+                            msg: format!("'await' requires a Future[T], got {}", other),
+                            span: expr.span,
+                        });
+                        Type::Any
+                    }
+                }
+            }
+
+            ExprKind::AsyncBlock(body) => {
+                self.async_depth += 1;
+                self.enter_scope();
+                let mut last_ty = Type::Null;
+                for (i, s) in body.iter().enumerate() {
+                    self.check_stmt(s);
+                    if i == body.len() - 1 {
+                        if let StmtKind::ExprStmt(e) = &s.kind {
+                            if let Some(t) = self.expr_types.get(&e.id).cloned() {
+                                last_ty = t;
+                            }
+                        }
+                    }
+                }
+                self.leave_scope();
+                self.async_depth -= 1;
+                Type::Future(Box::new(last_ty))
             }
         }
     }
@@ -842,6 +920,7 @@ impl TypeChecker {
 
             (Type::List(a), Type::List(b)) => self.unify(a, b, span),
             (Type::Set(a), Type::Set(b)) => self.unify(a, b, span),
+            (Type::Future(a), Type::Future(b)) => self.unify(a, b, span),
 
             (Type::Dict(k1, v1), Type::Dict(k2, v2)) => {
                 self.unify(k1, k2, span);
@@ -898,9 +977,7 @@ impl TypeChecker {
                     span,
                 });
             }
-
         }
-
     }
 
     fn occurs_check(&self, id: usize, ty: &Type) -> bool {
@@ -988,6 +1065,7 @@ impl TypeChecker {
                     Box::new(self.resolve_type_expr(&args[0])),
                     Box::new(self.resolve_type_expr(&args[1])),
                 ),
+                ("Future", 1) => Type::Future(Box::new(self.resolve_type_expr(&args[0]))),
                 _ => Type::Struct(name.clone()),
             },
             TypeExprKind::List(inner) => Type::List(Box::new(self.resolve_type_expr(inner))),

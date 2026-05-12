@@ -37,6 +37,10 @@ impl Inliner {
                                 continue;
                             }
                             if let Some(target_fn) = fn_map.get(name) {
+                                // do not inline async fns — their return must be wrapped by codegen
+                                if target_fn.is_async {
+                                    continue;
+                                }
                                 // inline small functions
                                 if target_fn.basic_blocks.len() < 100 {
                                     call_found = Some((stmt_idx, name.clone(), args.clone()));
@@ -143,9 +147,9 @@ impl Inliner {
             let mut new_bb = bb.clone();
 
             // remap locals
-    for stmt in &mut new_bb.statements {
-        self.remap_statement(stmt, local_offset);
-    }
+            for stmt in &mut new_bb.statements {
+                self.remap_statement(stmt, local_offset);
+            }
 
             // prepend param init
             if i == 0 {
@@ -232,7 +236,10 @@ impl Inliner {
 
     fn remap_rvalue(&self, rval: &mut Rvalue, offset: usize) {
         match rval {
-            Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::GetAttr(op, _) | Rvalue::GetTag(op) => {
+            Rvalue::Use(op)
+            | Rvalue::UnaryOp(_, op)
+            | Rvalue::GetAttr(op, _)
+            | Rvalue::GetTag(op) => {
                 self.remap_operand(op, offset);
             }
             Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) => {

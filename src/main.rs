@@ -155,10 +155,7 @@ fn load_and_parse(
         parser::StmtKind::Const {
             name: "__name__".to_string(),
             type_ann: None,
-            value: parser::Expr::new(
-                parser::ExprKind::Str(mod_name),
-                span::Span::default(),
-            ),
+            value: parser::Expr::new(parser::ExprKind::Str(mod_name), span::Span::default()),
         },
         span::Span::default(),
     ));
@@ -177,7 +174,11 @@ fn load_and_parse(
                 }
 
                 if !mod_path.exists() {
-                    report_error(sources, &format!("module '{}' not found", mod_name), stmt.span);
+                    report_error(
+                        sources,
+                        &format!("module '{}' not found", mod_name),
+                        stmt.span,
+                    );
                     process::exit(1);
                 }
 
@@ -188,8 +189,10 @@ fn load_and_parse(
                     let mut imported_stmts =
                         load_and_parse(&path_str, false, loaded, file_id_counter, sources);
 
-                    // Mangling for namespacing: module::name (or alias::name)
-                    let mod_prefix = alias.as_deref().unwrap_or_else(|| module.last().unwrap().as_str());
+                    // mangle for namespacing
+                    let mod_prefix = alias
+                        .as_deref()
+                        .unwrap_or_else(|| module.last().unwrap().as_str());
                     let mut defined_names = HashSet::new();
                     for s in &imported_stmts {
                         match &s.kind {
@@ -232,7 +235,11 @@ fn load_and_parse(
                 }
 
                 if !mod_path.exists() {
-                    report_error(sources, &format!("module '{}' not found", mod_name), stmt.span);
+                    report_error(
+                        sources,
+                        &format!("module '{}' not found", mod_name),
+                        stmt.span,
+                    );
                     process::exit(1);
                 }
 
@@ -243,17 +250,15 @@ fn load_and_parse(
                     let mut imported_stmts =
                         load_and_parse(&path_str, false, loaded, file_id_counter, sources);
 
-                    imported_stmts.retain(|s| {
-                        match &s.kind {
-                            parser::StmtKind::Fn { name, .. }
-                            | parser::StmtKind::Struct { name, .. } => {
-                                names.iter().any(|(n, _)| n == name)
-                            }
-                            parser::StmtKind::Impl { type_name, .. } => {
-                                names.iter().any(|(n, _)| n == type_name)
-                            }
-                            _ => false,
+                    imported_stmts.retain(|s| match &s.kind {
+                        parser::StmtKind::Fn { name, .. }
+                        | parser::StmtKind::Struct { name, .. } => {
+                            names.iter().any(|(n, _)| n == name)
                         }
+                        parser::StmtKind::Impl { type_name, .. } => {
+                            names.iter().any(|(n, _)| n == type_name)
+                        }
+                        _ => false,
                     });
                     all_stmts.extend(imported_stmts);
                 }
@@ -263,7 +268,6 @@ fn load_and_parse(
         }
     }
 
-
     all_stmts
 }
 
@@ -272,7 +276,13 @@ fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: bool, e
     loaded.insert(filename.to_string());
     let mut file_id_counter = 0;
     let mut sources = HashMap::default();
-    let combined_stmts = load_and_parse(filename, true, &mut loaded, &mut file_id_counter, &mut sources);
+    let combined_stmts = load_and_parse(
+        filename,
+        true,
+        &mut loaded,
+        &mut file_id_counter,
+        &mut sources,
+    );
     let program = parser::Program {
         stmts: combined_stmts,
     };
@@ -301,18 +311,15 @@ fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: bool, e
         process::exit(1);
     }
 
-    println!("DEBUG: starting MIR build");
     let mut mir_builder = MirBuilder::new(&type_checker.expr_types, &type_checker.type_env[0]);
     mir_builder.build_program(&program);
-    println!("DEBUG: MIR build finished, starting optimization");
 
     let opt_start = std::time::Instant::now();
     let optimizer = mir::Optimizer::new();
     optimizer.run(&mut mir_builder.functions);
-    println!("DEBUG: optimization finished, starting borrow check");
     let opt_duration = opt_start.elapsed();
-    
-    // show __main__ mir after optimizations
+
+    // show mir after opts
     if emit_mir {
         for f in &mir_builder.functions {
             println!("{:#?}", f);
@@ -406,7 +413,13 @@ fn compile_and_test(filename: &str, _show_time: bool) {
     loaded.insert(filename.to_string());
     let mut file_id_counter = 0;
     let mut sources = HashMap::default();
-    let combined_stmts = load_and_parse(filename, true, &mut loaded, &mut file_id_counter, &mut sources);
+    let combined_stmts = load_and_parse(
+        filename,
+        true,
+        &mut loaded,
+        &mut file_id_counter,
+        &mut sources,
+    );
     let program = parser::Program {
         stmts: combined_stmts,
     };
@@ -465,7 +478,10 @@ fn compile_and_test(filename: &str, _show_time: bool) {
             name, decorators, ..
         } = &stmt.kind
         {
-            if decorators.iter().any(|d| d.name == "test" && d.is_directive) {
+            if decorators
+                .iter()
+                .any(|d| d.name == "test" && d.is_directive)
+            {
                 print!("test {} ... ", name);
                 std::io::Write::flush(&mut std::io::stdout()).unwrap();
 
@@ -473,8 +489,7 @@ fn compile_and_test(filename: &str, _show_time: bool) {
                     let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(func_ptr) };
 
                     let start = std::time::Instant::now();
-                    // Catching traps in JIT needs a signal handler, so we'll just run it.
-                    // If it fails, the process might exit.
+                    // run jit
                     let _res = func();
                     let duration = start.elapsed();
 
@@ -608,7 +623,6 @@ fn walk_and_format(path: &Path) {
 }
 
 fn main() {
-    println!("DEBUG: main started");
     let cli = Cli::parse();
 
     match cli.command {
@@ -741,29 +755,57 @@ fn mangle_stmt(stmt: &mut parser::Stmt, prefix: &str, names: &HashSet<String>) {
                 mangle_stmt(s, prefix, names);
             }
         }
-        parser::StmtKind::If { then_body, elif_clauses, else_body, condition } => {
+        parser::StmtKind::If {
+            then_body,
+            elif_clauses,
+            else_body,
+            condition,
+        } => {
             mangle_expr(condition, prefix, names);
-            for s in then_body { mangle_stmt(s, prefix, names); }
+            for s in then_body {
+                mangle_stmt(s, prefix, names);
+            }
             for (cond, body) in elif_clauses {
                 mangle_expr(cond, prefix, names);
-                for s in body { mangle_stmt(s, prefix, names); }
+                for s in body {
+                    mangle_stmt(s, prefix, names);
+                }
             }
             if let Some(body) = else_body {
-                for s in body { mangle_stmt(s, prefix, names); }
+                for s in body {
+                    mangle_stmt(s, prefix, names);
+                }
             }
         }
-        parser::StmtKind::While { condition, body, else_body } => {
+        parser::StmtKind::While {
+            condition,
+            body,
+            else_body,
+        } => {
             mangle_expr(condition, prefix, names);
-            for s in body { mangle_stmt(s, prefix, names); }
+            for s in body {
+                mangle_stmt(s, prefix, names);
+            }
             if let Some(body) = else_body {
-                for s in body { mangle_stmt(s, prefix, names); }
+                for s in body {
+                    mangle_stmt(s, prefix, names);
+                }
             }
         }
-        parser::StmtKind::For { iter, body, else_body, .. } => {
+        parser::StmtKind::For {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
             mangle_expr(iter, prefix, names);
-            for s in body { mangle_stmt(s, prefix, names); }
+            for s in body {
+                mangle_stmt(s, prefix, names);
+            }
             if let Some(body) = else_body {
-                for s in body { mangle_stmt(s, prefix, names); }
+                for s in body {
+                    mangle_stmt(s, prefix, names);
+                }
             }
         }
         parser::StmtKind::Let { name, value, .. } | parser::StmtKind::Const { name, value, .. } => {
@@ -772,7 +814,8 @@ fn mangle_stmt(stmt: &mut parser::Stmt, prefix: &str, names: &HashSet<String>) {
             }
             mangle_expr(value, prefix, names);
         }
-        parser::StmtKind::Assign { target, value } | parser::StmtKind::AugAssign { target, value, .. } => {
+        parser::StmtKind::Assign { target, value }
+        | parser::StmtKind::AugAssign { target, value, .. } => {
             mangle_expr(target, prefix, names);
             mangle_expr(value, prefix, names);
         }
@@ -799,7 +842,10 @@ fn mangle_expr(expr: &mut parser::Expr, prefix: &str, names: &HashSet<String>) {
             mangle_expr(callee, prefix, names);
             for arg in args {
                 match arg {
-                    parser::CallArg::Positional(e) | parser::CallArg::Keyword(_, e) | parser::CallArg::Splat(e) | parser::CallArg::KwSplat(e) => {
+                    parser::CallArg::Positional(e)
+                    | parser::CallArg::Keyword(_, e)
+                    | parser::CallArg::Splat(e)
+                    | parser::CallArg::KwSplat(e) => {
                         mangle_expr(e, prefix, names);
                     }
                 }
@@ -810,8 +856,12 @@ fn mangle_expr(expr: &mut parser::Expr, prefix: &str, names: &HashSet<String>) {
             mangle_expr(index, prefix, names);
         }
         parser::ExprKind::Attr { obj, .. } => mangle_expr(obj, prefix, names),
-        parser::ExprKind::List(elems) | parser::ExprKind::Tuple(elems) | parser::ExprKind::Set(elems) => {
-            for e in elems { mangle_expr(e, prefix, names); }
+        parser::ExprKind::List(elems)
+        | parser::ExprKind::Tuple(elems)
+        | parser::ExprKind::Set(elems) => {
+            for e in elems {
+                mangle_expr(e, prefix, names);
+            }
         }
         parser::ExprKind::Dict(pairs) => {
             for (k, v) in pairs {

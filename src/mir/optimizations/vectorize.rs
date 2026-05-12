@@ -136,7 +136,7 @@ impl LoopVectorizer {
         })
     }
 
-    /// Apply the vectorization transformation.
+    // vectorize loop
     fn transform(
         &self,
         func: &mut MirFunction,
@@ -365,8 +365,7 @@ impl LoopVectorizer {
         true
     }
 
-    /// Get the vector version of a local. If it already has one, return it.
-    /// Otherwise, emit a VectorSplat to broadcast the scalar into a vector.
+    // splat scalar to vector if needed
     fn ensure_vector(
         &self,
         func: &mut MirFunction,

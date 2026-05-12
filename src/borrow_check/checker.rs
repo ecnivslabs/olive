@@ -8,18 +8,18 @@ use std::collections::VecDeque;
 // track local variable state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LocalState {
-    /// The local has been assigned a value and is usable.
+    // initialized and usable
     Initialized,
-    /// The local has been moved and is no longer usable.
+    // moved and unusable
     Moved,
-    /// The local's storage is not yet live.
+    // storage not live
     Dead,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FlowState {
     locals: Vec<LocalState>,
-    /// local -> (immutable_count, is_mutably_borrowed)
+    // local -> (immut_count, is_mut)
     borrows: Vec<(usize, bool)>,
 }
 
@@ -96,7 +96,7 @@ pub struct BorrowChecker<'a> {
     pub func: &'a MirFunction,
     pub errors: Vec<SemanticError>,
     pub liveness: Liveness,
-    /// Tracks which reference points to which local (e.g. let r = &a => provenance[r] = a)
+    // reference provenance
     pub provenance: HashMap<Local, Local>,
 }
 

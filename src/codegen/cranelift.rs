@@ -11,6 +11,15 @@ use rustc_hash::FxHashMap as HashMap;
 const KIND_LIST: i64 = 1;
 const KIND_OBJ: i64 = 2;
 const KIND_ENUM: i64 = 3;
+const KIND_SM_FUTURE: i64 = 5;
+const POLL_PENDING: i64 = i64::MIN;
+
+struct SmAwaitPoint {
+    bb_idx: usize,
+    stmt_idx: usize,
+    result_local: Local,
+    sub_future_local: Local,
+}
 
 #[repr(C)]
 struct StableVec {
@@ -102,6 +111,21 @@ impl<'a> CraneliftCodegen<'a> {
         builder.symbol("__olive_str_char", olive_str_char as *const u8);
         builder.symbol("__olive_file_read", olive_file_read as *const u8);
         builder.symbol("__olive_file_write", olive_file_write as *const u8);
+        builder.symbol("__olive_make_future", olive_make_future as *const u8);
+        builder.symbol("__olive_await", olive_await_future as *const u8);
+        builder.symbol("__olive_spawn_task", olive_spawn_task as *const u8);
+        builder.symbol("__olive_free_future", olive_free_future as *const u8);
+        builder.symbol("__olive_alloc", olive_alloc as *const u8);
+        builder.symbol(
+            "__olive_async_file_read",
+            olive_async_file_read as *const u8,
+        );
+        builder.symbol(
+            "__olive_async_file_write",
+            olive_async_file_write as *const u8,
+        );
+        builder.symbol("__olive_gather", olive_gather as *const u8);
+        builder.symbol("__olive_sm_poll", olive_sm_poll as *const u8);
         builder.symbol("__olive_free_str", olive_free_str as *const u8);
         builder.symbol("__olive_free_list", olive_free_list as *const u8);
         builder.symbol("__olive_free_obj", olive_free_obj as *const u8);
@@ -251,10 +275,30 @@ impl<'a> CraneliftCodegen<'a> {
             ("__olive_str_char", &sig_i64_i64_i64),
             ("__olive_str_slice", &sig_i64_i64_i64_i64),
             ("__olive_obj_len", &sig_i64_i64),
+            ("__olive_make_future", &sig_i64_i64),
+            ("__olive_await", &sig_i64_i64),
+            ("__olive_spawn_task", &sig_i64_i64),
+            ("__olive_free_future", &sig_i64_i64),
+            ("__olive_alloc", &sig_i64_i64),
+            ("__olive_async_file_read", &sig_i64_i64),
+            ("__olive_async_file_write", &sig_i64_i64_i64),
+            ("__olive_gather", &sig_i64_i64),
+            ("__olive_sm_poll", &sig_i64_i64),
         ];
 
+        let has_async = self.functions.iter().any(|f| f.is_async);
+
         for &(name, sig) in imports {
-            if !needed.contains(name) {
+            let always_needed = matches!(
+                name,
+                "__olive_make_future"
+                    | "__olive_await"
+                    | "__olive_spawn_task"
+                    | "__olive_alloc"
+                    | "__olive_free_future"
+                    | "__olive_sm_poll"
+            );
+            if !needed.contains(name) && !(always_needed && has_async) {
                 continue;
             }
             let id = self
@@ -273,11 +317,41 @@ impl<'a> CraneliftCodegen<'a> {
             let ret_ty = &func.locals[0].ty;
             sig.returns.push(AbiParam::new(cl_type(ret_ty)));
 
-            let func_id = self
-                .module
-                .declare_function(&func.name, Linkage::Export, &sig)
-                .unwrap();
-            self.func_ids.insert(func.name.clone(), func_id);
+            if func.is_async {
+                let can_sm = Self::analyze_async_sm(func).is_some();
+                if can_sm {
+                    // poll func
+                    let poll_name = format!("{}__sm_poll", func.name);
+                    let mut poll_sig = self.module.make_signature();
+                    poll_sig.params.push(AbiParam::new(types::I64));
+                    poll_sig.returns.push(AbiParam::new(types::I64));
+                    let poll_id = self
+                        .module
+                        .declare_function(&poll_name, Linkage::Local, &poll_sig)
+                        .unwrap();
+                    self.func_ids.insert(poll_name, poll_id);
+                } else {
+                    // thread fallback
+                    let body_name = format!("{}__async_body", func.name);
+                    let body_id = self
+                        .module
+                        .declare_function(&body_name, Linkage::Local, &sig)
+                        .unwrap();
+                    self.func_ids.insert(body_name, body_id);
+                }
+                // future wrapper
+                let wrapper_id = self
+                    .module
+                    .declare_function(&func.name, Linkage::Export, &sig)
+                    .unwrap();
+                self.func_ids.insert(func.name.clone(), wrapper_id);
+            } else {
+                let func_id = self
+                    .module
+                    .declare_function(&func.name, Linkage::Export, &sig)
+                    .unwrap();
+                self.func_ids.insert(func.name.clone(), func_id);
+            }
         }
 
         for func in self.functions {
@@ -287,7 +361,22 @@ impl<'a> CraneliftCodegen<'a> {
         let func_count = self.functions.len();
         for i in 0..func_count {
             let func = self.functions[i].clone();
-            self.translate_function(&func);
+            if func.is_async {
+                if let Some(await_points) = Self::analyze_async_sm(&func) {
+                    // state machine
+                    self.translate_async_sm_poll(&func, &await_points);
+                    self.generate_sm_wrapper(&func);
+                } else {
+                    // thread fallback
+                    let mut body_func = func.clone();
+                    body_func.name = format!("{}__async_body", func.name);
+                    body_func.is_async = false;
+                    self.translate_function(&body_func);
+                    self.generate_async_wrapper(&func);
+                }
+            } else {
+                self.translate_function(&func);
+            }
         }
     }
 
@@ -331,6 +420,10 @@ impl<'a> CraneliftCodegen<'a> {
                 let mut data_ctx = DataDescription::new();
                 let mut bytes = s.as_bytes().to_vec();
                 bytes.push(0);
+                // pad for tagging
+                if bytes.len() % 2 != 0 {
+                    bytes.push(0);
+                }
                 data_ctx.define(bytes.into_boxed_slice());
 
                 let name = format!("str_{}", self.string_ids.len());
@@ -547,6 +640,15 @@ fn resolve_builtin_import(
             "__olive_enum_set" => Some("__olive_enum_set"),
             "__olive_str_char" => Some("__olive_str_char"),
             "__olive_str_slice" => Some("__olive_str_slice"),
+            "__olive_make_future" => Some("__olive_make_future"),
+            "__olive_await" => Some("__olive_await"),
+            "__olive_spawn_task" => Some("__olive_spawn_task"),
+            "__olive_free_future" => Some("__olive_free_future"),
+            "__olive_alloc" => Some("__olive_alloc"),
+            "__olive_async_file_read" => Some("__olive_async_file_read"),
+            "__olive_async_file_write" => Some("__olive_async_file_write"),
+            "__olive_gather" => Some("__olive_gather"),
+            "__olive_sm_poll" => Some("__olive_sm_poll"),
             _ => None,
         };
     }
@@ -568,7 +670,9 @@ fn resolve_builtin_import(
             Some(match name {
                 "len" => match current_ty {
                     OliveType::Str => "__olive_str_len",
-                    OliveType::Dict(_, _) | OliveType::Struct(_) | OliveType::Any => "__olive_obj_len",
+                    OliveType::Dict(_, _) | OliveType::Struct(_) | OliveType::Any => {
+                        "__olive_obj_len"
+                    }
                     _ => "__olive_list_len",
                 },
                 "print" => match current_ty {
@@ -616,7 +720,7 @@ fn resolve_builtin_import(
             })
         }
         "list_new" => Some("__olive_list_new"),
-        // Module functions (math)
+        // math
         "math::sin" => Some("__olive_math_sin"),
         "math::cos" => Some("__olive_math_cos"),
         "math::tan" => Some("__olive_math_tan"),
@@ -627,13 +731,13 @@ fn resolve_builtin_import(
         "math::log" => Some("__olive_math_log"),
         "math::log10" => Some("__olive_math_log10"),
         "math::exp" => Some("__olive_math_exp"),
-        // Module functions (time)
+        // time
         "time::time" | "time::now" => Some("__olive_time_now"),
         "time::sleep" => Some("__olive_time_sleep"),
-        // Module functions (random)
+        // random
         "random::seed" => Some("__olive_random_seed"),
         "random::random" => Some("__olive_random_get"),
-        // Module functions (json)
+        // json
         _ => None,
     }
 }
@@ -658,7 +762,10 @@ fn is_list_op(func_mir: &MirFunction, op: &Operand) -> bool {
     match op {
         Operand::Copy(loc) | Operand::Move(loc) => {
             let ty = &func_mir.locals[loc.0].ty;
-            matches!(ty, OliveType::List(_) | OliveType::Tuple(_) | OliveType::Set(_))
+            matches!(
+                ty,
+                OliveType::List(_) | OliveType::Tuple(_) | OliveType::Set(_)
+            )
         }
         _ => false,
     }
@@ -674,6 +781,441 @@ impl<'a> CraneliftCodegen<'a> {
         Some(self.module.get_finalized_function(*func_id))
     }
 
+    // sm lowering analysis
+    // collect await points via bfs
+    fn analyze_async_sm(func: &MirFunction) -> Option<Vec<SmAwaitPoint>> {
+        let n_bbs = func.basic_blocks.len();
+        // bfs
+        let mut visited = vec![false; n_bbs];
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back(0usize);
+        let mut order = Vec::new();
+        while let Some(bb_idx) = queue.pop_front() {
+            if visited[bb_idx] {
+                continue;
+            }
+            visited[bb_idx] = true;
+            order.push(bb_idx);
+            let bb = &func.basic_blocks[bb_idx];
+            if let Some(term) = &bb.terminator {
+                match &term.kind {
+                    TerminatorKind::Goto { target } => queue.push_back(target.0),
+                    TerminatorKind::SwitchInt {
+                        targets, otherwise, ..
+                    } => {
+                        for (_, t) in targets {
+                            queue.push_back(t.0);
+                        }
+                        queue.push_back(otherwise.0);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut points = Vec::new();
+        for bb_idx in order {
+            let bb = &func.basic_blocks[bb_idx];
+            for (stmt_idx, stmt) in bb.statements.iter().enumerate() {
+                if let StatementKind::Assign(
+                    result_local,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function(name)),
+                        args,
+                    },
+                ) = &stmt.kind
+                {
+                    if name == "__olive_await" {
+                        if let Some(sub_op) = args.first() {
+                            let sub_local = match sub_op {
+                                Operand::Copy(l) | Operand::Move(l) => *l,
+                                _ => return None,
+                            };
+                            points.push(SmAwaitPoint {
+                                bb_idx,
+                                stmt_idx,
+                                result_local: *result_local,
+                                sub_future_local: sub_local,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        if points.is_empty() {
+            None
+        } else {
+            Some(points)
+        }
+    }
+
+    // generate sm poll function
+    // frame: [state, future, locals...]
+    fn translate_async_sm_poll(&mut self, func: &MirFunction, await_points: &[SmAwaitPoint]) {
+        let poll_name = format!("{}__sm_poll", func.name);
+        let poll_id = *self.func_ids.get(&poll_name).unwrap();
+        let num_locals = func.locals.len();
+        let n_awaits = await_points.len();
+        let n_bbs = func.basic_blocks.len();
+        let mf = MemFlags::trusted();
+
+        // frame layout
+        let frame_off = |local: Local| -> i32 { ((local.0 + 2) * 8) as i32 };
+
+        let mut ctx = self.module.make_context();
+        ctx.func.signature.params.push(AbiParam::new(types::I64));
+        ctx.func.signature.returns.push(AbiParam::new(types::I64));
+        let mut bctx = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut bctx);
+
+        // declare ssa vars
+        let mut vars: HashMap<Local, Variable> = HashMap::default();
+        for (i, decl) in func.locals.iter().enumerate() {
+            vars.insert(Local(i), builder.declare_var(cl_type(&decl.ty)));
+        }
+        let frame_var = builder.declare_var(types::I64);
+
+        // map awaits to blocks
+        let mut bb_awaits: Vec<Vec<usize>> = vec![Vec::new(); n_bbs];
+        for (idx, ap) in await_points.iter().enumerate() {
+            bb_awaits[ap.bb_idx].push(idx);
+        }
+        // segment count
+        let n_segs: Vec<usize> = (0..n_bbs).map(|i| bb_awaits[i].len() + 1).collect();
+
+        // create blocks
+        let entry_blk = builder.create_block();
+        let dispatch_blk = builder.create_block();
+        let done_blk = builder.create_block();
+        let state_blks: Vec<Block> = (0..=n_awaits).map(|_| builder.create_block()).collect();
+        // block segments
+        // segments
+        let seg_blks: Vec<Vec<Block>> = (0..n_bbs)
+            .map(|i| (0..n_segs[i]).map(|_| builder.create_block()).collect())
+            .collect();
+
+        // entry
+        builder.switch_to_block(entry_blk);
+        builder.seal_block(entry_blk);
+        builder.append_block_params_for_function_params(entry_blk);
+        let frame_ptr = builder.block_params(entry_blk)[0];
+        let zero = builder.ins().iconst(types::I64, 0);
+        for v in vars.values() {
+            builder.def_var(*v, zero);
+        }
+        builder.def_var(frame_var, frame_ptr);
+        builder.ins().jump(dispatch_blk, &[]);
+        builder.seal_block(dispatch_blk);
+
+        // dispatch
+        builder.switch_to_block(dispatch_blk);
+        let frame_d = builder.use_var(frame_var);
+        let state_val = builder.ins().load(types::I64, mf, frame_d, 0);
+        let mut sw = cranelift::frontend::Switch::new();
+        for k in 0..=n_awaits {
+            sw.set_entry(k as u128, state_blks[k]);
+        }
+        sw.emit(&mut builder, state_val, done_blk);
+        for blk in &state_blks {
+            builder.seal_block(*blk);
+        }
+        builder.seal_block(done_blk);
+
+        // state 0: load params
+        builder.switch_to_block(state_blks[0]);
+        {
+            let frame_s = builder.use_var(frame_var);
+            for i in 1..=func.arg_count {
+                let local = Local(i);
+                let val = builder
+                    .ins()
+                    .load(types::I64, mf, frame_s, frame_off(local));
+                builder.def_var(vars[&local], val);
+            }
+        }
+        builder.ins().jump(seg_blks[0][0], &[]);
+
+        // handle awaits
+        for k in 1..=n_awaits {
+            let ap = &await_points[k - 1];
+            let seg_idx_in_bb = bb_awaits[ap.bb_idx]
+                .iter()
+                .position(|&i| i == k - 1)
+                .unwrap();
+            let resume_seg = seg_idx_in_bb + 1;
+
+            builder.switch_to_block(state_blks[k]);
+            {
+                let frame_s = builder.use_var(frame_var);
+                for i in 0..num_locals {
+                    let local = Local(i);
+                    let val = builder
+                        .ins()
+                        .load(types::I64, mf, frame_s, frame_off(local));
+                    builder.def_var(vars[&local], val);
+                }
+                // load sub-future
+                let sub_future = builder.ins().load(types::I64, mf, frame_s, 8);
+                let sm_poll_id = *self.func_ids.get("__olive_sm_poll").unwrap();
+                let sm_poll_ref = self.module.declare_func_in_func(sm_poll_id, builder.func);
+                let poll_call = builder.ins().call(sm_poll_ref, &[sub_future]);
+                let poll_result = builder.inst_results(poll_call)[0];
+
+                let pend_c = builder.ins().iconst(types::I64, POLL_PENDING);
+                let is_pend = builder.ins().icmp(IntCC::Equal, poll_result, pend_c);
+
+                let pend_blk = builder.create_block();
+                let cont_blk = builder.create_block();
+                builder.ins().brif(is_pend, pend_blk, &[], cont_blk, &[]);
+
+                builder.seal_block(pend_blk);
+                builder.switch_to_block(pend_blk);
+                builder.ins().return_(&[pend_c]);
+
+                builder.seal_block(cont_blk);
+                builder.switch_to_block(cont_blk);
+                // reload for ssa
+                let frame_c = builder.use_var(frame_var);
+                for i in 0..num_locals {
+                    let local = Local(i);
+                    let val = builder
+                        .ins()
+                        .load(types::I64, mf, frame_c, frame_off(local));
+                    builder.def_var(vars[&local], val);
+                }
+                // store result
+                builder.def_var(vars[&ap.result_local], poll_result);
+            }
+            builder.ins().jump(seg_blks[ap.bb_idx][resume_seg], &[]);
+        }
+
+        // segments
+        for bb_i in 0..n_bbs {
+            let bb = func.basic_blocks[bb_i].clone();
+            for seg_j in 0..n_segs[bb_i] {
+                builder.switch_to_block(seg_blks[bb_i][seg_j]);
+
+                // stmt range
+                let start_stmt = if seg_j == 0 {
+                    0
+                } else {
+                    await_points[bb_awaits[bb_i][seg_j - 1]].stmt_idx + 1
+                };
+                let (end_stmt, maybe_ap_idx) = if seg_j < bb_awaits[bb_i].len() {
+                    let ap_idx = bb_awaits[bb_i][seg_j];
+                    (await_points[ap_idx].stmt_idx, Some(ap_idx))
+                } else {
+                    (bb.statements.len(), None)
+                };
+
+                for stmt in &bb.statements[start_stmt..end_stmt] {
+                    Self::translate_statement(
+                        func,
+                        &mut self.module,
+                        &self.func_ids,
+                        &self.string_ids,
+                        &mut builder,
+                        stmt,
+                        &vars,
+                    );
+                }
+
+                if let Some(ap_idx) = maybe_ap_idx {
+                    // yield point: save state
+                    let ap = &await_points[ap_idx];
+                    let frame_sw = builder.use_var(frame_var);
+                    for i in 0..num_locals {
+                        let local = Local(i);
+                        let val = builder.use_var(vars[&local]);
+                        builder.ins().store(mf, val, frame_sw, frame_off(local));
+                    }
+                    let sub_fv = builder.use_var(vars[&ap.sub_future_local]);
+                    builder.ins().store(mf, sub_fv, frame_sw, 8);
+                    let new_st = builder.ins().iconst(types::I64, (ap_idx + 1) as i64);
+                    builder.ins().store(mf, new_st, frame_sw, 0);
+                    let pv = builder.ins().iconst(types::I64, POLL_PENDING);
+                    builder.ins().return_(&[pv]);
+                } else {
+                    // terminator
+                    match bb.terminator.as_ref().map(|t| t.kind.clone()) {
+                        Some(TerminatorKind::Return) => {
+                            let ret_val = builder.use_var(vars[&Local(0)]);
+                            let frame_r = builder.use_var(frame_var);
+                            let done_s = builder.ins().iconst(types::I64, -1i64);
+                            builder.ins().store(mf, done_s, frame_r, 0);
+                            builder.ins().return_(&[ret_val]);
+                        }
+                        Some(TerminatorKind::Goto { target }) => {
+                            builder.ins().jump(seg_blks[target.0][0], &[]);
+                        }
+                        Some(TerminatorKind::SwitchInt {
+                            discr,
+                            targets,
+                            otherwise,
+                        }) => {
+                            let val = Self::translate_operand(
+                                &mut builder,
+                                &discr,
+                                &vars,
+                                &self.string_ids,
+                                &mut self.module,
+                            );
+                            if targets.len() == 1 && targets[0].0 == 1 {
+                                let cond = builder.ins().icmp_imm(IntCC::NotEqual, val, 0);
+                                builder.ins().brif(
+                                    cond,
+                                    seg_blks[targets[0].1.0][0],
+                                    &[],
+                                    seg_blks[otherwise.0][0],
+                                    &[],
+                                );
+                            } else {
+                                let mut sw2 = cranelift::frontend::Switch::new();
+                                for (v, t) in &targets {
+                                    sw2.set_entry(*v as u128, seg_blks[t.0][0]);
+                                }
+                                sw2.emit(&mut builder, val, seg_blks[otherwise.0][0]);
+                            }
+                        }
+                        Some(TerminatorKind::Unreachable) | None => {
+                            builder.ins().trap(TrapCode::unwrap_user(1));
+                        }
+                    }
+                }
+            }
+        }
+
+        // done
+        builder.switch_to_block(done_blk);
+        let z = builder.ins().iconst(types::I64, 0);
+        builder.ins().return_(&[z]);
+
+        // seal segments
+        for bb_i in 0..n_bbs {
+            for seg_j in 0..n_segs[bb_i] {
+                builder.seal_block(seg_blks[bb_i][seg_j]);
+            }
+        }
+
+        builder.finalize();
+        self.module.define_function(poll_id, &mut ctx).unwrap();
+    }
+
+    // wrapper: alloc frame
+    fn generate_sm_wrapper(&mut self, func: &MirFunction) {
+        let poll_name = format!("{}__sm_poll", func.name);
+        let poll_fn_id = *self.func_ids.get(&poll_name).unwrap();
+        let num_locals = func.locals.len();
+        // frame: [state, future, locals...]
+        let frame_size = ((num_locals + 2) * 8) as i64;
+
+        let mut ctx = self.module.make_context();
+        for i in 0..func.arg_count {
+            let ty = &func.locals[i + 1].ty;
+            ctx.func.signature.params.push(AbiParam::new(cl_type(ty)));
+        }
+        ctx.func.signature.returns.push(AbiParam::new(types::I64));
+
+        let mut bctx = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut bctx);
+        let entry = builder.create_block();
+        builder.switch_to_block(entry);
+        builder.seal_block(entry);
+        builder.append_block_params_for_function_params(entry);
+        let params: Vec<Value> = builder.block_params(entry).to_vec();
+
+        let mf = MemFlags::trusted();
+        let alloc_id = *self.func_ids.get("__olive_alloc").unwrap();
+        let alloc_ref = self.module.declare_func_in_func(alloc_id, builder.func);
+
+        // alloc frame
+        let fsz = builder.ins().iconst(types::I64, frame_size);
+        let frame_call = builder.ins().call(alloc_ref, &[fsz]);
+        let frame_ptr = builder.inst_results(frame_call)[0];
+
+        // initial state
+        let zero = builder.ins().iconst(types::I64, 0);
+        builder.ins().store(mf, zero, frame_ptr, 0);
+
+        // store args
+        for (i, &param) in params.iter().enumerate() {
+            let offset = ((i + 3) * 8) as i32; // Local(i+1) at (i+1+2)*8
+            builder.ins().store(mf, param, frame_ptr, offset);
+        }
+
+        // alloc future
+        let future_sz = builder.ins().iconst(types::I64, 24);
+        let fut_call = builder.ins().call(alloc_ref, &[future_sz]);
+        let fut_ptr = builder.inst_results(fut_call)[0];
+
+        let kind_val = builder.ins().iconst(types::I64, KIND_SM_FUTURE);
+        builder.ins().store(mf, kind_val, fut_ptr, 0);
+
+        let poll_ref = self.module.declare_func_in_func(poll_fn_id, builder.func);
+        let poll_addr = builder.ins().func_addr(types::I64, poll_ref);
+        builder.ins().store(mf, poll_addr, fut_ptr, 8);
+        builder.ins().store(mf, frame_ptr, fut_ptr, 16);
+
+        builder.ins().return_(&[fut_ptr]);
+        builder.finalize();
+
+        let wrapper_id = *self.func_ids.get(&func.name).unwrap();
+        self.module.define_function(wrapper_id, &mut ctx).unwrap();
+    }
+
+    // spawn: package args
+    fn generate_async_wrapper(&mut self, func: &MirFunction) {
+        let body_name = format!("{}__async_body", func.name);
+        let body_func_id = *self.func_ids.get(&body_name).unwrap();
+
+        let mut ctx = self.module.make_context();
+        for i in 0..func.arg_count {
+            let ty = &func.locals[i + 1].ty;
+            ctx.func.signature.params.push(AbiParam::new(cl_type(ty)));
+        }
+        ctx.func.signature.returns.push(AbiParam::new(types::I64));
+
+        let mut builder_ctx = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
+
+        let entry = builder.create_block();
+        builder.switch_to_block(entry);
+        builder.seal_block(entry);
+        builder.append_block_params_for_function_params(entry);
+        let params: Vec<Value> = builder.block_params(entry).to_vec();
+
+        // callback layout
+        let callback_size = 8i64 * (2 + func.arg_count as i64);
+
+        let alloc_id = *self.func_ids.get("__olive_alloc").unwrap();
+        let alloc_ref = self.module.declare_func_in_func(alloc_id, builder.func);
+        let size_val = builder.ins().iconst(types::I64, callback_size);
+        let call = builder.ins().call(alloc_ref, &[size_val]);
+        let cb_ptr = builder.inst_results(call)[0];
+
+        let body_ref = self.module.declare_func_in_func(body_func_id, builder.func);
+        let fn_ptr_val = builder.ins().func_addr(types::I64, body_ref);
+        let mf = MemFlags::new();
+        builder.ins().store(mf, fn_ptr_val, cb_ptr, 0);
+
+        let nargs_val = builder.ins().iconst(types::I64, func.arg_count as i64);
+        builder.ins().store(mf, nargs_val, cb_ptr, 8);
+
+        for (i, &arg) in params.iter().enumerate() {
+            builder.ins().store(mf, arg, cb_ptr, 8 * (2 + i) as i32);
+        }
+
+        let spawn_id = *self.func_ids.get("__olive_spawn_task").unwrap();
+        let spawn_ref = self.module.declare_func_in_func(spawn_id, builder.func);
+        let call = builder.ins().call(spawn_ref, &[cb_ptr]);
+        let future_ptr = builder.inst_results(call)[0];
+
+        builder.ins().return_(&[future_ptr]);
+        builder.finalize();
+
+        let wrapper_id = *self.func_ids.get(&func.name).unwrap();
+        self.module.define_function(wrapper_id, &mut ctx).unwrap();
+    }
+
     fn translate_function(&mut self, func: &MirFunction) {
         let mut ctx = self.module.make_context();
 
@@ -682,7 +1224,10 @@ impl<'a> CraneliftCodegen<'a> {
             ctx.func.signature.params.push(AbiParam::new(cl_type(ty)));
         }
         let ret_ty = &func.locals[0].ty;
-        ctx.func.signature.returns.push(AbiParam::new(cl_type(ret_ty)));
+        ctx.func
+            .signature
+            .returns
+            .push(AbiParam::new(cl_type(ret_ty)));
 
         let mut builder_ctx = FunctionBuilderContext::new();
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
@@ -759,6 +1304,8 @@ impl<'a> CraneliftCodegen<'a> {
                     &vars,
                     &self.string_ids,
                     &mut self.module,
+                    &self.func_ids,
+                    func.is_async,
                 );
                 match &term.kind {
                     TerminatorKind::Goto { target } => {
@@ -875,10 +1422,12 @@ impl<'a> CraneliftCodegen<'a> {
                     }
                     _ => {
                         // List
-                        let data_ptr =
-                            builder
-                                .ins()
-                                .load(types::I64, MemFlags::trusted().with_readonly(), o, 8);
+                        let data_ptr = builder.ins().load(
+                            types::I64,
+                            MemFlags::trusted().with_readonly(),
+                            o,
+                            8,
+                        );
 
                         let offset = builder.ins().imul_imm(i, 8);
                         let addr = builder.ins().iadd(data_ptr, offset);
@@ -1181,7 +1730,11 @@ impl<'a> CraneliftCodegen<'a> {
                     Or => builder.ins().bor(l, r),
                     Pow => {
                         let is_float = is_float_op(func_mir, lhs);
-                        let func_name = if is_float { "__olive_pow_float" } else { "__olive_pow" };
+                        let func_name = if is_float {
+                            "__olive_pow_float"
+                        } else {
+                            "__olive_pow"
+                        };
                         let pow_id = func_ids.get(func_name).unwrap();
                         let local_func = module.declare_func_in_func(*pow_id, builder.func);
                         let inst = builder.ins().call(local_func, &[l, r]);
@@ -1280,7 +1833,7 @@ impl<'a> CraneliftCodegen<'a> {
                 } else {
                     &OliveType::Any
                 };
-                
+
                 let o = Self::translate_operand(builder, obj, vars, string_ids, module);
                 let i = Self::translate_operand(builder, idx, vars, string_ids, module);
 
@@ -1356,7 +1909,8 @@ impl<'a> CraneliftCodegen<'a> {
 
                         for (i, op) in ops.iter().enumerate() {
                             let idx = builder.ins().iconst(types::I64, i as i64);
-                            let val = Self::translate_operand(builder, op, vars, string_ids, module);
+                            let val =
+                                Self::translate_operand(builder, op, vars, string_ids, module);
                             let val = if builder.func.dfg.value_type(val) == types::F64 {
                                 builder.ins().bitcast(types::I64, MemFlags::new(), val)
                             } else {
@@ -1384,10 +1938,10 @@ impl<'a> CraneliftCodegen<'a> {
                         set_ptr
                     }
                     _ => {
-                        let count = builder.ins().iconst(types::I64, ops.len() as i64);
+                        let zero = builder.ins().iconst(types::I64, 0i64);
                         let new_id = func_ids.get("__olive_list_new").unwrap();
                         let new_func = module.declare_func_in_func(*new_id, builder.func);
-                        let inst = builder.ins().call(new_func, &[count]);
+                        let inst = builder.ins().call(new_func, &[zero]);
                         let list_ptr = builder.inst_results(inst)[0];
 
                         let append_id = func_ids.get("__olive_list_append").unwrap();
@@ -1479,6 +2033,8 @@ impl<'a> CraneliftCodegen<'a> {
         vars: &HashMap<Local, Variable>,
         string_ids: &HashMap<String, DataId>,
         module: &mut JITModule,
+        func_ids: &HashMap<String, FuncId>,
+        is_async: bool,
     ) {
         match &term.kind {
             TerminatorKind::Goto { target } => {
@@ -1506,7 +2062,15 @@ impl<'a> CraneliftCodegen<'a> {
             TerminatorKind::Return => {
                 let var = vars.get(&Local(0)).unwrap();
                 let ret_val = builder.use_var(*var);
-                builder.ins().return_(&[ret_val]);
+                if is_async {
+                    let make_future_id = func_ids.get("__olive_make_future").unwrap();
+                    let local_func = module.declare_func_in_func(*make_future_id, builder.func);
+                    let call = builder.ins().call(local_func, &[ret_val]);
+                    let future_val = builder.inst_results(call)[0];
+                    builder.ins().return_(&[future_val]);
+                } else {
+                    builder.ins().return_(&[ret_val]);
+                }
             }
             TerminatorKind::Unreachable => {
                 builder.ins().trap(TrapCode::unwrap_user(1));
@@ -1557,7 +2121,9 @@ extern "C" fn olive_print_list(ptr: i64) -> i64 {
     let v = unsafe { &*(ptr as *const StableVec) };
     print!("[");
     for i in 0..v.len {
-        if i > 0 { print!(", "); }
+        if i > 0 {
+            print!(", ");
+        }
         let elem = unsafe { *v.ptr.add(i) };
         print!("{}", elem);
     }
@@ -1573,7 +2139,9 @@ extern "C" fn olive_print_obj(ptr: i64) -> i64 {
     let m = unsafe { &*(ptr as *const HashMap<String, i64>) };
     print!("{{");
     for (i, (k, &v)) in m.iter().enumerate() {
-        if i > 0 { print!(", "); }
+        if i > 0 {
+            print!(", ");
+        }
         print!("'{}': {}", k, v);
     }
     println!("}}");
@@ -1616,14 +2184,18 @@ extern "C" fn olive_int_to_float(val: i64) -> f64 {
 }
 
 extern "C" fn olive_str_to_int(ptr: i64) -> i64 {
-    if ptr == 0 { return 0; }
+    if ptr == 0 {
+        return 0;
+    }
     let p = ptr & !1;
     let s = unsafe { std::ffi::CStr::from_ptr(p as *const i8) };
     s.to_string_lossy().parse::<i64>().unwrap_or(0)
 }
 
 extern "C" fn olive_str_to_float(ptr: i64) -> f64 {
-    if ptr == 0 { return 0.0; }
+    if ptr == 0 {
+        return 0.0;
+    }
     let p = ptr & !1;
     let s = unsafe { std::ffi::CStr::from_ptr(p as *const i8) };
     s.to_string_lossy().parse::<f64>().unwrap_or(0.0)
@@ -1634,18 +2206,25 @@ extern "C" fn olive_str_concat(l: i64, r: i64) -> i64 {
         "".to_string()
     } else {
         let p = l & !1;
-        unsafe { std::ffi::CStr::from_ptr(p as *const i8).to_string_lossy().into_owned() }
+        unsafe {
+            std::ffi::CStr::from_ptr(p as *const i8)
+                .to_string_lossy()
+                .into_owned()
+        }
     };
     let sr = if r == 0 {
         "".to_string()
     } else {
         let p = r & !1;
-        unsafe { std::ffi::CStr::from_ptr(p as *const i8).to_string_lossy().into_owned() }
+        unsafe {
+            std::ffi::CStr::from_ptr(p as *const i8)
+                .to_string_lossy()
+                .into_owned()
+        }
     };
     let s = format!("{}{}", sl, sr);
     olive_str_internal(&s)
 }
-
 
 extern "C" fn olive_free_str(ptr: i64) {
     if ptr != 0 && (ptr & 1) == 0 {
@@ -1654,7 +2233,6 @@ extern "C" fn olive_free_str(ptr: i64) {
         }
     }
 }
-
 
 extern "C" fn olive_free_list(ptr: i64) {
     if ptr != 0 {
@@ -1697,7 +2275,9 @@ extern "C" fn olive_in_list(val: i64, list_ptr: i64) -> i64 {
 }
 
 extern "C" fn olive_list_concat(l_ptr: i64, r_ptr: i64) -> i64 {
-    if l_ptr == 0 && r_ptr == 0 { return 0; }
+    if l_ptr == 0 && r_ptr == 0 {
+        return 0;
+    }
     let (l_len, l_data) = if l_ptr != 0 {
         let s = unsafe { &*(l_ptr as *const StableVec) };
         (s.len, s.ptr)
@@ -1722,12 +2302,12 @@ extern "C" fn olive_list_concat(l_ptr: i64, r_ptr: i64) -> i64 {
         }
         v.set_len(total_len);
     }
-    
+
     let ptr = v.as_mut_ptr();
     let cap = v.capacity();
     let length = v.len();
     std::mem::forget(v);
-    
+
     let stable = Box::new(StableVec {
         kind: KIND_LIST,
         ptr,
@@ -1761,7 +2341,11 @@ extern "C" fn olive_obj_set(obj_ptr: i64, attr: i64, val: i64) -> i64 {
     }
     let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
     let p = attr & !1;
-    let s = unsafe { std::ffi::CStr::from_ptr(p as *const i8).to_string_lossy().into_owned() };
+    let s = unsafe {
+        std::ffi::CStr::from_ptr(p as *const i8)
+            .to_string_lossy()
+            .into_owned()
+    };
     m.fields.insert(s, val);
     obj_ptr
 }
@@ -1790,7 +2374,11 @@ extern "C" fn olive_memo_get(name_ptr: i64, is_tuple: i64) -> i64 {
         static GLOBAL_CACHES_INT: OnceLock<Mutex<HashMap<String, i64>>> = OnceLock::new();
         let caches_mutex = GLOBAL_CACHES_INT.get_or_init(|| Mutex::new(HashMap::default()));
         let mut caches = caches_mutex.lock().unwrap();
-        let name = unsafe { std::ffi::CStr::from_ptr(name_ptr as *const i8).to_string_lossy().into_owned() };
+        let name = unsafe {
+            std::ffi::CStr::from_ptr(name_ptr as *const i8)
+                .to_string_lossy()
+                .into_owned()
+        };
         if let Some(&cache) = caches.get(&name) {
             cache
         } else {
@@ -1803,7 +2391,11 @@ extern "C" fn olive_memo_get(name_ptr: i64, is_tuple: i64) -> i64 {
         static GLOBAL_CACHES_TUPLE: OnceLock<Mutex<HashMap<String, i64>>> = OnceLock::new();
         let caches_mutex = GLOBAL_CACHES_TUPLE.get_or_init(|| Mutex::new(HashMap::default()));
         let mut caches = caches_mutex.lock().unwrap();
-        let name = unsafe { std::ffi::CStr::from_ptr(name_ptr as *const i8).to_string_lossy().into_owned() };
+        let name = unsafe {
+            std::ffi::CStr::from_ptr(name_ptr as *const i8)
+                .to_string_lossy()
+                .into_owned()
+        };
         if let Some(&cache) = caches.get(&name) {
             cache
         } else {
@@ -1883,23 +2475,27 @@ extern "C" fn olive_cache_set_tuple(cache: i64, key_ptr: i64, val: i64) -> i64 {
     cache
 }
 extern "C" fn olive_copy(ptr: i64) -> i64 {
-    if ptr == 0 { return 0; }
+    if ptr == 0 {
+        return 0;
+    }
     let p = ptr & !1;
     let s = unsafe { std::ffi::CStr::from_ptr(p as *const i8) };
     olive_str_internal(&s.to_string_lossy())
 }
 
-
 extern "C" fn olive_str_eq(l: i64, r: i64) -> i64 {
-    if l == r { return 1; }
-    if l == 0 || r == 0 { return 0; }
+    if l == r {
+        return 1;
+    }
+    if l == 0 || r == 0 {
+        return 0;
+    }
     let pl = l & !1;
     let pr = r & !1;
     let sl = unsafe { std::ffi::CStr::from_ptr(pl as *const i8) };
     let sr = unsafe { std::ffi::CStr::from_ptr(pr as *const i8) };
     if sl == sr { 1 } else { 0 }
 }
-
 
 extern "C" fn olive_list_new(len: i64) -> i64 {
     let mut v: Vec<i64> = vec![0i64; len as usize];
@@ -1929,7 +2525,9 @@ extern "C" fn olive_list_set(list_ptr: i64, idx: i64, val: i64) {
 }
 
 extern "C" fn olive_list_len(ptr: i64) -> i64 {
-    if ptr == 0 { return 0; }
+    if ptr == 0 {
+        return 0;
+    }
     let s = unsafe { &*(ptr as *const StableVec) };
     s.len as i64
 }
@@ -1967,16 +2565,18 @@ extern "C" fn olive_in_obj(val: i64, obj_ptr: i64) -> i64 {
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
     let p = val & !1;
-    let s = unsafe { std::ffi::CStr::from_ptr(p as *const i8).to_string_lossy().into_owned() };
-    if m.fields.contains_key(&s) {
-        1
-    } else {
-        0
-    }
+    let s = unsafe {
+        std::ffi::CStr::from_ptr(p as *const i8)
+            .to_string_lossy()
+            .into_owned()
+    };
+    if m.fields.contains_key(&s) { 1 } else { 0 }
 }
 
 extern "C" fn olive_get_index_any(obj: i64, index: i64) -> i64 {
-    if obj == 0 { return 0; }
+    if obj == 0 {
+        return 0;
+    }
     if obj & 1 != 0 {
         return olive_str_get(obj, index);
     }
@@ -1989,18 +2589,26 @@ extern "C" fn olive_get_index_any(obj: i64, index: i64) -> i64 {
 }
 
 extern "C" fn olive_set_index_any(obj: i64, index: i64, val: i64) {
-    if obj == 0 { return; }
-    if obj & 1 != 0 { return; }
+    if obj == 0 {
+        return;
+    }
+    if obj & 1 != 0 {
+        return;
+    }
     let kind = unsafe { *(obj as *const i64) };
     match kind {
         KIND_LIST => olive_list_set(obj, index, val),
-        KIND_OBJ => { olive_obj_set(obj, index, val); },
-        _ => {},
+        KIND_OBJ => {
+            olive_obj_set(obj, index, val);
+        }
+        _ => {}
     }
 }
 
 extern "C" fn olive_free_any(ptr: i64) {
-    if ptr == 0 { return; }
+    if ptr == 0 {
+        return;
+    }
     if ptr & 1 != 0 {
         olive_free_str(ptr);
         return;
@@ -2055,7 +2663,9 @@ extern "C" fn olive_next(iter_ptr: i64) -> i64 {
 }
 
 extern "C" fn olive_str_len(s: i64) -> i64 {
-    if s == 0 { return 0; }
+    if s == 0 {
+        return 0;
+    }
     let p = s & !1;
     let c_str = unsafe { std::ffi::CStr::from_ptr(p as *const i8) };
     let len = c_str.to_bytes().len() as i64;
@@ -2063,7 +2673,9 @@ extern "C" fn olive_str_len(s: i64) -> i64 {
 }
 
 extern "C" fn olive_str_get(s: i64, i: i64) -> i64 {
-    if s == 0 { return 0; }
+    if s == 0 {
+        return 0;
+    }
     let p = s & !1;
     let c_str = unsafe { std::ffi::CStr::from_ptr(p as *const i8) };
     let bytes = c_str.to_bytes();
@@ -2088,12 +2700,15 @@ extern "C" fn olive_set_add(list_ptr: i64, val: i64) {
 // time
 extern "C" fn olive_time_now() -> f64 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64()
 }
 
 extern "C" fn olive_time_monotonic() -> f64 {
-    use std::time::Instant;
     use std::sync::OnceLock;
+    use std::time::Instant;
     static START: OnceLock<Instant> = OnceLock::new();
     let start = START.get_or_init(Instant::now);
     start.elapsed().as_secs_f64()
@@ -2106,27 +2721,39 @@ extern "C" fn olive_time_sleep(secs: f64) {
 
 // string ops
 extern "C" fn olive_str_slice(s: i64, start: i64, end: i64) -> i64 {
-    if s == 0 { return 0; }
+    if s == 0 {
+        return 0;
+    }
     let p = s & !1;
     let c_str = unsafe { std::ffi::CStr::from_ptr(p as *const i8) };
     let text = c_str.to_string_lossy();
     let chars: Vec<char> = text.chars().collect();
     let mut st = start;
     let mut en = end;
-    if st < 0 { st = 0; }
-    if en > chars.len() as i64 { en = chars.len() as i64; }
-    if st >= en { return olive_str_internal(""); }
+    if st < 0 {
+        st = 0;
+    }
+    if en > chars.len() as i64 {
+        en = chars.len() as i64;
+    }
+    if st >= en {
+        return olive_str_internal("");
+    }
     let sliced: String = chars[st as usize..en as usize].iter().collect();
     olive_str_internal(&sliced)
 }
 
 extern "C" fn olive_str_char(s: i64, i: i64) -> i64 {
-    if s == 0 { return 0; }
+    if s == 0 {
+        return 0;
+    }
     let p = s & !1;
     let c_str = unsafe { std::ffi::CStr::from_ptr(p as *const i8) };
     let text = c_str.to_string_lossy();
     let chars: Vec<char> = text.chars().collect();
-    if i < 0 || i >= chars.len() as i64 { return olive_str_internal(""); }
+    if i < 0 || i >= chars.len() as i64 {
+        return olive_str_internal("");
+    }
     let mut sliced = String::new();
     sliced.push(chars[i as usize]);
     olive_str_internal(&sliced)
@@ -2134,7 +2761,9 @@ extern "C" fn olive_str_char(s: i64, i: i64) -> i64 {
 
 // io
 extern "C" fn olive_file_read(path: i64) -> i64 {
-    if path == 0 { return 0; }
+    if path == 0 {
+        return 0;
+    }
     let p = path & !1;
     let c_str = unsafe { std::ffi::CStr::from_ptr(p as *const i8) };
     let path_str = c_str.to_string_lossy();
@@ -2146,7 +2775,9 @@ extern "C" fn olive_file_read(path: i64) -> i64 {
 }
 
 extern "C" fn olive_file_write(path: i64, data: i64) -> i64 {
-    if path == 0 || data == 0 { return 0; }
+    if path == 0 || data == 0 {
+        return 0;
+    }
     let p_path = path & !1;
     let p_data = data & !1;
     let c_path = unsafe { std::ffi::CStr::from_ptr(p_path as *const i8) };
@@ -2162,7 +2793,6 @@ fn olive_str_internal(s: &str) -> i64 {
     let c_str = std::ffi::CString::new(s).unwrap();
     c_str.into_raw() as i64
 }
-
 
 #[repr(C)]
 struct OliveEnum {
@@ -2228,4 +2858,508 @@ extern "C" fn olive_free_enum(ptr: i64) {
     }
 }
 
+// async runtime: stackless executor
 
+const KIND_FUTURE: i64 = 4;
+
+use std::collections::VecDeque;
+use std::sync::{
+    Arc, Condvar, Mutex, OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
+
+// task
+
+struct OliveTask {
+    sm_future: i64,
+    queued: AtomicBool,
+    done: AtomicBool,
+    completions: Mutex<Vec<Arc<Completion>>>,
+    sm_waiters: Mutex<Vec<Arc<OliveTask>>>,
+}
+
+struct Completion {
+    result: Mutex<Option<i64>>,
+    cvar: Condvar,
+}
+
+// executor
+
+struct OliveExecutor {
+    ready: Mutex<VecDeque<Arc<OliveTask>>>,
+    wakeup: Condvar,
+    task_map: Mutex<std::collections::HashMap<i64, Arc<OliveTask>>>,
+    shutdown: AtomicBool,
+}
+
+static EXECUTOR: OnceLock<Arc<OliveExecutor>> = OnceLock::new();
+
+fn olive_executor() -> &'static Arc<OliveExecutor> {
+    EXECUTOR.get_or_init(|| {
+        let ex = Arc::new(OliveExecutor {
+            ready: Mutex::new(VecDeque::new()),
+            wakeup: Condvar::new(),
+            task_map: Mutex::new(std::collections::HashMap::new()),
+            shutdown: AtomicBool::new(false),
+        });
+        let n = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        for _ in 0..n {
+            let ex2 = ex.clone();
+            std::thread::Builder::new()
+                .name("olive-executor".into())
+                .spawn(move || executor_worker(ex2))
+                .unwrap();
+        }
+        ex
+    })
+}
+
+fn executor_worker(ex: Arc<OliveExecutor>) {
+    loop {
+        if ex.shutdown.load(Ordering::Relaxed) {
+            return;
+        }
+        let task = {
+            let mut q = ex.ready.lock().unwrap();
+            loop {
+                if let Some(t) = q.pop_front() {
+                    break t;
+                }
+                q = ex.wakeup.wait(q).unwrap();
+                if ex.shutdown.load(Ordering::Relaxed) {
+                    return;
+                }
+            }
+        };
+        // mark not queued
+        task.queued.store(false, Ordering::SeqCst);
+        executor_drive(&ex, task);
+    }
+}
+
+fn executor_enqueue(ex: &OliveExecutor, task: Arc<OliveTask>) {
+    if task
+        .queued
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+    {
+        ex.ready.lock().unwrap().push_back(task);
+        ex.wakeup.notify_one();
+    }
+}
+
+fn executor_get_or_create_task(ex: &OliveExecutor, sm_future_ptr: i64) -> Arc<OliveTask> {
+    let mut map = ex.task_map.lock().unwrap();
+    if let Some(t) = map.get(&sm_future_ptr) {
+        return t.clone();
+    }
+    let t = Arc::new(OliveTask {
+        sm_future: sm_future_ptr,
+        queued: AtomicBool::new(false),
+        done: AtomicBool::new(false),
+        completions: Mutex::new(Vec::new()),
+        sm_waiters: Mutex::new(Vec::new()),
+    });
+    map.insert(sm_future_ptr, t.clone());
+    t
+}
+
+fn executor_drive(ex: &Arc<OliveExecutor>, task: Arc<OliveTask>) {
+    // poll sm
+    let sf = unsafe { &*(task.sm_future as *const OliveSmFuture) };
+    let poll_fn: fn(i64) -> i64 = unsafe { std::mem::transmute(sf.poll_fn as usize) };
+    let result = poll_fn(sf.frame);
+
+    if result != POLL_PENDING {
+        // mark done and notify waiters
+        task.done.store(true, Ordering::SeqCst);
+        // done: signal waiters
+        let comps = std::mem::take(&mut *task.completions.lock().unwrap());
+        for c in &comps {
+            *c.result.lock().unwrap() = Some(result);
+            c.cvar.notify_all();
+        }
+        let waiters = std::mem::take(&mut *task.sm_waiters.lock().unwrap());
+        for w in waiters {
+            executor_enqueue(ex, w);
+        }
+        ex.task_map.lock().unwrap().remove(&task.sm_future);
+        return;
+    }
+
+    // pending: check sub-future
+    let sub_future = unsafe { *((sf.frame + 8) as *const i64) };
+    if sub_future == 0 {
+        // no sub-future: re-queue
+        executor_enqueue(ex, task);
+        return;
+    }
+
+    let sub_kind = unsafe { *(sub_future as *const i64) };
+
+    if sub_kind == KIND_FUTURE {
+        // spawn waker thread
+        // re-queue when done
+        let sf_obj = unsafe { &*(sub_future as *const OliveFuture) };
+        let shared = unsafe { Arc::from_raw(sf_obj.shared as *const FutureShared) };
+        let shared2 = shared.clone();
+        std::mem::forget(shared); // keep ref-count balanced
+        let ex2 = ex.clone();
+        std::thread::Builder::new()
+            .name("olive-waker".into())
+            .spawn(move || {
+                // wait for future
+                let mut st = shared2.state.lock().unwrap();
+                loop {
+                    match &*st {
+                        FutureState::Ready(_) => break,
+                        FutureState::Pending => {
+                            st = shared2.cvar.wait(st).unwrap();
+                        }
+                    }
+                }
+                drop(st);
+                // wake parent
+                executor_enqueue(&ex2, task);
+            })
+            .unwrap();
+    } else if sub_kind == KIND_SM_FUTURE {
+        // push-then-check
+        // re-queue if done
+        let sub_task = executor_get_or_create_task(ex, sub_future);
+        sub_task.sm_waiters.lock().unwrap().push(task.clone());
+        if sub_task.done.load(Ordering::SeqCst) {
+            // already done: self-enqueue
+            sub_task
+                .sm_waiters
+                .lock()
+                .unwrap()
+                .retain(|t| !Arc::ptr_eq(t, &task));
+            executor_enqueue(ex, task);
+        } else {
+            executor_enqueue(ex, sub_task);
+        }
+    } else {
+        // unknown: re-queue
+        executor_enqueue(ex, task);
+    }
+}
+
+// sm future layout
+#[repr(C)]
+struct OliveSmFuture {
+    kind: i64,
+    poll_fn: i64,
+    frame: i64,
+}
+
+// non-blocking poll
+extern "C" fn olive_sm_poll(future: i64) -> i64 {
+    if future == 0 {
+        return 0;
+    }
+    let kind = unsafe { *(future as *const i64) };
+    if kind == KIND_SM_FUTURE {
+        let f = unsafe { &*(future as *const OliveSmFuture) };
+        let poll_fn: fn(i64) -> i64 = unsafe { std::mem::transmute(f.poll_fn as usize) };
+        poll_fn(f.frame)
+    } else {
+        // non-blocking check
+        let f = unsafe { &*(future as *const OliveFuture) };
+        let shared = unsafe { &*(f.shared as *const FutureShared) };
+        let guard = shared.state.lock().unwrap();
+        match &*guard {
+            FutureState::Ready(v) => *v,
+            FutureState::Pending => POLL_PENDING,
+        }
+    }
+}
+
+enum FutureState {
+    Pending,
+    Ready(i64),
+}
+
+struct FutureShared {
+    state: Mutex<FutureState>,
+    cvar: Condvar,
+}
+
+#[repr(C)]
+struct OliveFuture {
+    kind: i64,
+    shared: i64, // raw ptr into Arc<FutureShared>
+}
+
+fn call_jit_fn(fn_ptr: usize, args: &[i64]) -> i64 {
+    unsafe {
+        match args.len() {
+            0 => {
+                let f: extern "C" fn() -> i64 = std::mem::transmute(fn_ptr);
+                f()
+            }
+            1 => {
+                let f: extern "C" fn(i64) -> i64 = std::mem::transmute(fn_ptr);
+                f(args[0])
+            }
+            2 => {
+                let f: extern "C" fn(i64, i64) -> i64 = std::mem::transmute(fn_ptr);
+                f(args[0], args[1])
+            }
+            3 => {
+                let f: extern "C" fn(i64, i64, i64) -> i64 = std::mem::transmute(fn_ptr);
+                f(args[0], args[1], args[2])
+            }
+            4 => {
+                let f: extern "C" fn(i64, i64, i64, i64) -> i64 = std::mem::transmute(fn_ptr);
+                f(args[0], args[1], args[2], args[3])
+            }
+            5 => {
+                let f: extern "C" fn(i64, i64, i64, i64, i64) -> i64 = std::mem::transmute(fn_ptr);
+                f(args[0], args[1], args[2], args[3], args[4])
+            }
+            6 => {
+                let f: extern "C" fn(i64, i64, i64, i64, i64, i64) -> i64 =
+                    std::mem::transmute(fn_ptr);
+                f(args[0], args[1], args[2], args[3], args[4], args[5])
+            }
+            7 => {
+                let f: extern "C" fn(i64, i64, i64, i64, i64, i64, i64) -> i64 =
+                    std::mem::transmute(fn_ptr);
+                f(
+                    args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                )
+            }
+            8 => {
+                let f: extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64) -> i64 =
+                    std::mem::transmute(fn_ptr);
+                f(
+                    args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7],
+                )
+            }
+            _ => panic!("async fn: too many arguments (max 8)"),
+        }
+    }
+}
+
+extern "C" fn olive_make_future(val: i64) -> i64 {
+    let shared = Arc::new(FutureShared {
+        state: Mutex::new(FutureState::Ready(val)),
+        cvar: Condvar::new(),
+    });
+    let f = Box::new(OliveFuture {
+        kind: KIND_FUTURE,
+        shared: Arc::into_raw(shared) as i64,
+    });
+    Box::into_raw(f) as i64
+}
+
+extern "C" fn olive_await_future(future: i64) -> i64 {
+    if future == 0 {
+        return 0;
+    }
+    let kind = unsafe { *(future as *const i64) };
+    if kind == KIND_SM_FUTURE {
+        // completion
+        let completion = Arc::new(Completion {
+            result: Mutex::new(None),
+            cvar: Condvar::new(),
+        });
+        let ex = olive_executor();
+        let task = executor_get_or_create_task(ex, future);
+        task.completions.lock().unwrap().push(completion.clone());
+        executor_enqueue(ex, task);
+        // wait
+        let mut r = completion.result.lock().unwrap();
+        loop {
+            match *r {
+                Some(v) => return v,
+                None => r = completion.cvar.wait(r).unwrap(),
+            }
+        }
+    } else {
+        // wait
+        let f = unsafe { &*(future as *const OliveFuture) };
+        let shared = unsafe { Arc::from_raw(f.shared as *const FutureShared) };
+        let result = {
+            let mut state = shared.state.lock().unwrap();
+            loop {
+                match &*state {
+                    FutureState::Ready(v) => break *v,
+                    FutureState::Pending => {
+                        state = shared.cvar.wait(state).unwrap();
+                    }
+                }
+            }
+        };
+        std::mem::forget(shared);
+        result
+    }
+}
+
+extern "C" fn olive_spawn_task(callback: i64) -> i64 {
+    let cb = callback as *const i64;
+    let fn_ptr = unsafe { *cb } as usize;
+    let nargs = unsafe { *cb.add(1) } as usize;
+    let args: Vec<i64> = (0..nargs).map(|i| unsafe { *cb.add(2 + i) }).collect();
+    unsafe {
+        let layout = std::alloc::Layout::from_size_align(8 * (2 + nargs), 8).unwrap();
+        std::alloc::dealloc(callback as *mut u8, layout);
+    }
+
+    let shared = Arc::new(FutureShared {
+        state: Mutex::new(FutureState::Pending),
+        cvar: Condvar::new(),
+    });
+    let shared2 = shared.clone();
+
+    std::thread::spawn(move || {
+        let result = call_jit_fn(fn_ptr, &args);
+        let mut state = shared2.state.lock().unwrap();
+        *state = FutureState::Ready(result);
+        shared2.cvar.notify_all();
+    });
+
+    let f = Box::new(OliveFuture {
+        kind: KIND_FUTURE,
+        shared: Arc::into_raw(shared) as i64,
+    });
+    Box::into_raw(f) as i64
+}
+
+extern "C" fn olive_free_future(future: i64) -> i64 {
+    if future == 0 {
+        return 0;
+    }
+    let f = unsafe { Box::from_raw(future as *mut OliveFuture) };
+    unsafe { Arc::from_raw(f.shared as *const FutureShared) };
+    0
+}
+
+extern "C" fn olive_alloc(size: i64) -> i64 {
+    let layout = std::alloc::Layout::from_size_align(size as usize, 8).unwrap();
+    unsafe { std::alloc::alloc_zeroed(layout) as i64 }
+}
+
+extern "C" fn olive_async_file_read(path: i64) -> i64 {
+    let path_str = if path == 0 {
+        String::new()
+    } else {
+        let ptr = (path & !1) as *const i8;
+        unsafe { std::ffi::CStr::from_ptr(ptr) }
+            .to_string_lossy()
+            .into_owned()
+    };
+
+    let shared = Arc::new(FutureShared {
+        state: Mutex::new(FutureState::Pending),
+        cvar: Condvar::new(),
+    });
+    let shared2 = shared.clone();
+
+    std::thread::spawn(move || {
+        let result = match std::fs::read_to_string(&path_str) {
+            Ok(content) => {
+                let mut bytes = content.into_bytes();
+                bytes.push(0);
+                let ptr = Box::into_raw(bytes.into_boxed_slice()) as *mut u8;
+                (ptr as i64) | 1
+            }
+            Err(_) => 0,
+        };
+        let mut state = shared2.state.lock().unwrap();
+        *state = FutureState::Ready(result);
+        shared2.cvar.notify_all();
+    });
+
+    let f = Box::new(OliveFuture {
+        kind: KIND_FUTURE,
+        shared: Arc::into_raw(shared) as i64,
+    });
+    Box::into_raw(f) as i64
+}
+
+extern "C" fn olive_async_file_write(path: i64, data: i64) -> i64 {
+    let path_str = if path == 0 {
+        String::new()
+    } else {
+        let ptr = (path & !1) as *const i8;
+        unsafe { std::ffi::CStr::from_ptr(ptr) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    let data_str = if data == 0 {
+        String::new()
+    } else {
+        let ptr = (data & !1) as *const i8;
+        unsafe { std::ffi::CStr::from_ptr(ptr) }
+            .to_string_lossy()
+            .into_owned()
+    };
+
+    let shared = Arc::new(FutureShared {
+        state: Mutex::new(FutureState::Pending),
+        cvar: Condvar::new(),
+    });
+    let shared2 = shared.clone();
+
+    std::thread::spawn(move || {
+        let result = match std::fs::write(&path_str, data_str.as_bytes()) {
+            Ok(_) => 0i64,
+            Err(_) => -1i64,
+        };
+        let mut state = shared2.state.lock().unwrap();
+        *state = FutureState::Ready(result);
+        shared2.cvar.notify_all();
+    });
+
+    let f = Box::new(OliveFuture {
+        kind: KIND_FUTURE,
+        shared: Arc::into_raw(shared) as i64,
+    });
+    Box::into_raw(f) as i64
+}
+
+extern "C" fn olive_gather(futures_list: i64) -> i64 {
+    if futures_list == 0 {
+        let v = Box::new(StableVec {
+            kind: KIND_LIST,
+            ptr: std::ptr::null_mut(),
+            cap: 0,
+            len: 0,
+        });
+        return Box::into_raw(v) as i64;
+    }
+    let list = unsafe { &*(futures_list as *const StableVec) };
+    let n = list.len;
+    let mut results: Vec<i64> = vec![POLL_PENDING; n];
+    let mut done = 0usize;
+    while done < n {
+        for i in 0..n {
+            if results[i] == POLL_PENDING {
+                let fut = unsafe { *list.ptr.add(i) };
+                let r = olive_sm_poll(fut);
+                if r != POLL_PENDING {
+                    results[i] = r;
+                    done += 1;
+                }
+            }
+        }
+        if done < n {
+            std::thread::yield_now();
+        }
+    }
+    let mut res = results;
+    let ptr = res.as_mut_ptr();
+    let cap = res.capacity();
+    let len = res.len();
+    std::mem::forget(res);
+    Box::into_raw(Box::new(StableVec {
+        kind: KIND_LIST,
+        ptr,
+        cap,
+        len,
+    })) as i64
+}

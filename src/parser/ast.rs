@@ -122,7 +122,6 @@ pub struct CompClause {
     pub condition: Option<Expr>,
 }
 
-
 #[derive(Debug, Clone)]
 pub struct Expr {
     pub id: usize,
@@ -195,6 +194,8 @@ pub enum ExprKind {
     MutBorrow(Box<Expr>),
 
     Try(Box<Expr>),
+    Await(Box<Expr>),
+    AsyncBlock(Vec<Stmt>),
 
     Match {
         expr: Box<Expr>,
@@ -252,16 +253,17 @@ pub enum StmtKind {
         return_type: Option<TypeExpr>,
         body: Vec<Stmt>,
         decorators: Vec<Decorator>,
+        is_async: bool,
     },
     Struct {
         name: String,
-        fields: Vec<Param>,  // named fields with optional type annotations
-        body: Vec<Stmt>,     // associated consts / nested types inside struct block
+        fields: Vec<Param>, // named fields with optional type annotations
+        body: Vec<Stmt>,    // associated consts / nested types inside struct block
         decorators: Vec<Decorator>,
     },
     Impl {
-        type_name: String,   // which struct this impl is for
-        body: Vec<Stmt>,     // fn definitions
+        type_name: String, // which struct this impl is for
+        body: Vec<Stmt>,   // fn definitions
     },
     Enum {
         name: String,

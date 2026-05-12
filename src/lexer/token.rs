@@ -36,6 +36,8 @@ pub enum TokenKind {
     Mut,
     Enum,
     Match,
+    Async,
+    Await,
 
     // operators
     Plus,
