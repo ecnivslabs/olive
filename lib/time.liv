@@ -9,12 +9,12 @@ fn sleep(secs: float):
 
 fn is_leap_year(year: int) -> bool:
     if year % 400 == 0:
-        return true
+        return True
     if year % 100 == 0:
-        return false
+        return False
     if year % 4 == 0:
-        return true
-    return false
+        return True
+    return False
 
 fn _days_in_month(year: int, month: int) -> int:
     if month == 2:
@@ -26,7 +26,7 @@ fn _days_in_month(year: int, month: int) -> int:
     return 31
 
 fn gmtime(timestamp: float):
-    # Converts a unix epoch timestamp to a dict with year, month, day, hour, min, sec
+//Converts a unix epoch timestamp to a dict with year, month, day, hour, min, sec
     let mut days = int(timestamp / 86400.0)
     let mut rem = int(timestamp) - (days * 86400)
     
@@ -37,7 +37,7 @@ fn gmtime(timestamp: float):
     let secs = rem - (mins * 60)
     
     let mut year = 1970
-    while true:
+    while True:
         let mut year_days = 365
         if is_leap_year(year):
             year_days = 366

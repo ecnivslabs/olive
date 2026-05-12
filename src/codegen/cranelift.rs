@@ -125,6 +125,8 @@ impl<'a> CraneliftCodegen<'a> {
             olive_async_file_write as *const u8,
         );
         builder.symbol("__olive_gather", olive_gather as *const u8);
+        builder.symbol("__olive_select", olive_select as *const u8);
+        builder.symbol("__olive_cancel_future", olive_cancel_future as *const u8);
         builder.symbol("__olive_sm_poll", olive_sm_poll as *const u8);
         builder.symbol("__olive_free_str", olive_free_str as *const u8);
         builder.symbol("__olive_free_list", olive_free_list as *const u8);
@@ -283,6 +285,8 @@ impl<'a> CraneliftCodegen<'a> {
             ("__olive_async_file_read", &sig_i64_i64),
             ("__olive_async_file_write", &sig_i64_i64_i64),
             ("__olive_gather", &sig_i64_i64),
+            ("__olive_select", &sig_i64_i64),
+            ("__olive_cancel_future", &sig_i64_i64),
             ("__olive_sm_poll", &sig_i64_i64),
         ];
 
@@ -648,6 +652,8 @@ fn resolve_builtin_import(
             "__olive_async_file_read" => Some("__olive_async_file_read"),
             "__olive_async_file_write" => Some("__olive_async_file_write"),
             "__olive_gather" => Some("__olive_gather"),
+            "__olive_select" => Some("__olive_select"),
+            "__olive_cancel_future" => Some("__olive_cancel_future"),
             "__olive_sm_poll" => Some("__olive_sm_poll"),
             _ => None,
         };
@@ -898,9 +904,14 @@ impl<'a> CraneliftCodegen<'a> {
         builder.seal_block(entry_blk);
         builder.append_block_params_for_function_params(entry_blk);
         let frame_ptr = builder.block_params(entry_blk)[0];
-        let zero = builder.ins().iconst(types::I64, 0);
-        for v in vars.values() {
-            builder.def_var(*v, zero);
+        for (i, decl) in func.locals.iter().enumerate() {
+            let ty = cl_type(&decl.ty);
+            let z = if ty == types::F64 {
+                builder.ins().f64const(0.0)
+            } else {
+                builder.ins().iconst(types::I64, 0)
+            };
+            builder.def_var(vars[&Local(i)], z);
         }
         builder.def_var(frame_var, frame_ptr);
         builder.ins().jump(dispatch_blk, &[]);
@@ -926,9 +937,10 @@ impl<'a> CraneliftCodegen<'a> {
             let frame_s = builder.use_var(frame_var);
             for i in 1..=func.arg_count {
                 let local = Local(i);
+                let ty = cl_type(&func.locals[i].ty);
                 let val = builder
                     .ins()
-                    .load(types::I64, mf, frame_s, frame_off(local));
+                    .load(ty, mf, frame_s, frame_off(local));
                 builder.def_var(vars[&local], val);
             }
         }
@@ -948,9 +960,10 @@ impl<'a> CraneliftCodegen<'a> {
                 let frame_s = builder.use_var(frame_var);
                 for i in 0..num_locals {
                     let local = Local(i);
+                    let ty = cl_type(&func.locals[i].ty);
                     let val = builder
                         .ins()
-                        .load(types::I64, mf, frame_s, frame_off(local));
+                        .load(ty, mf, frame_s, frame_off(local));
                     builder.def_var(vars[&local], val);
                 }
                 // load sub-future
@@ -977,9 +990,10 @@ impl<'a> CraneliftCodegen<'a> {
                 let frame_c = builder.use_var(frame_var);
                 for i in 0..num_locals {
                     let local = Local(i);
+                    let ty = cl_type(&func.locals[i].ty);
                     let val = builder
                         .ins()
-                        .load(types::I64, mf, frame_c, frame_off(local));
+                        .load(ty, mf, frame_c, frame_off(local));
                     builder.def_var(vars[&local], val);
                 }
                 // store result
@@ -1025,6 +1039,7 @@ impl<'a> CraneliftCodegen<'a> {
                     let frame_sw = builder.use_var(frame_var);
                     for i in 0..num_locals {
                         let local = Local(i);
+                        let _ty = cl_type(&func.locals[i].ty);
                         let val = builder.use_var(vars[&local]);
                         builder.ins().store(mf, val, frame_sw, frame_off(local));
                     }
@@ -1143,7 +1158,7 @@ impl<'a> CraneliftCodegen<'a> {
         }
 
         // alloc future
-        let future_sz = builder.ins().iconst(types::I64, 24);
+        let future_sz = builder.ins().iconst(types::I64, 32);
         let fut_call = builder.ins().call(alloc_ref, &[future_sz]);
         let fut_ptr = builder.inst_results(fut_call)[0];
 
@@ -3053,6 +3068,7 @@ struct OliveSmFuture {
     kind: i64,
     poll_fn: i64,
     frame: i64,
+    cancelled: i64,
 }
 
 // non-blocking poll
@@ -3322,44 +3338,116 @@ extern "C" fn olive_async_file_write(path: i64, data: i64) -> i64 {
     Box::into_raw(f) as i64
 }
 
+#[repr(C)]
+struct GatherFrame {
+    state: i64,
+    awaiting_list: i64,
+    futures_list: i64,
+    results: i64,
+    done: usize,
+}
+
+extern "C" fn olive_gather_poll(frame: i64) -> i64 {
+    let f = unsafe { &mut *(frame as *mut GatherFrame) };
+    if f.state == -1 { return f.results; }
+    
+    let list = unsafe { &*(f.futures_list as *const StableVec) };
+    let n = list.len;
+    let results_vec = unsafe { &*(f.results as *const StableVec) };
+    let results = unsafe { std::slice::from_raw_parts_mut(results_vec.ptr, n) };
+    
+    let mut any_pending = false;
+    for i in 0..n {
+        if results[i] == POLL_PENDING {
+            let fut = unsafe { *list.ptr.add(i) };
+            let r = olive_sm_poll(fut);
+            if r != POLL_PENDING {
+                results[i] = r;
+                f.done += 1;
+            } else {
+                any_pending = true;
+            }
+        }
+    }
+    
+    if any_pending {
+        f.awaiting_list = f.futures_list;
+        POLL_PENDING
+    } else {
+        f.state = -1;
+        f.results
+    }
+}
+
 extern "C" fn olive_gather(futures_list: i64) -> i64 {
     if futures_list == 0 {
-        let v = Box::new(StableVec {
-            kind: KIND_LIST,
-            ptr: std::ptr::null_mut(),
-            cap: 0,
-            len: 0,
-        });
+        let v = Box::new(StableVec { kind: KIND_LIST, ptr: std::ptr::null_mut(), cap: 0, len: 0 });
         return Box::into_raw(v) as i64;
     }
     let list = unsafe { &*(futures_list as *const StableVec) };
     let n = list.len;
-    let mut results: Vec<i64> = vec![POLL_PENDING; n];
-    let mut done = 0usize;
-    while done < n {
-        for i in 0..n {
-            if results[i] == POLL_PENDING {
-                let fut = unsafe { *list.ptr.add(i) };
-                let r = olive_sm_poll(fut);
-                if r != POLL_PENDING {
-                    results[i] = r;
-                    done += 1;
-                }
-            }
-        }
-        if done < n {
-            std::thread::yield_now();
+    
+    let mut res_vec = vec![POLL_PENDING; n];
+    let ptr = res_vec.as_mut_ptr();
+    let cap = res_vec.capacity();
+    let len = res_vec.len();
+    std::mem::forget(res_vec);
+    
+    let results_list = Box::into_raw(Box::new(StableVec { kind: KIND_LIST, ptr, cap, len })) as i64;
+    
+    let frame = Box::into_raw(Box::new(GatherFrame {
+        state: 0, awaiting_list: 0, futures_list, results: results_list, done: 0,
+    })) as i64;
+    
+    Box::into_raw(Box::new(OliveSmFuture {
+        kind: KIND_SM_FUTURE, poll_fn: olive_gather_poll as *const () as usize as i64, frame, cancelled: 0,
+    })) as i64
+}
+
+#[repr(C)]
+struct SelectFrame {
+    state: i64,
+    awaiting_list: i64,
+    futures_list: i64,
+}
+
+extern "C" fn olive_select_poll(frame: i64) -> i64 {
+    let f = unsafe { &mut *(frame as *mut SelectFrame) };
+    let list = unsafe { &*(f.futures_list as *const StableVec) };
+    let n = list.len;
+    
+    for i in 0..n {
+        let fut = unsafe { *list.ptr.add(i) };
+        let r = olive_sm_poll(fut);
+        if r != POLL_PENDING {
+            let mut res_vec = vec![i as i64, r];
+            let ptr = res_vec.as_mut_ptr();
+            let cap = res_vec.capacity();
+            let len = res_vec.len();
+            std::mem::forget(res_vec);
+            return Box::into_raw(Box::new(StableVec { kind: KIND_LIST, ptr, cap, len })) as i64;
         }
     }
-    let mut res = results;
-    let ptr = res.as_mut_ptr();
-    let cap = res.capacity();
-    let len = res.len();
-    std::mem::forget(res);
-    Box::into_raw(Box::new(StableVec {
-        kind: KIND_LIST,
-        ptr,
-        cap,
-        len,
+    f.awaiting_list = f.futures_list;
+    POLL_PENDING
+}
+
+extern "C" fn olive_select(futures_list: i64) -> i64 {
+    if futures_list == 0 { return 0; }
+    let frame = Box::into_raw(Box::new(SelectFrame {
+        state: 0, awaiting_list: 0, futures_list,
+    })) as i64;
+    Box::into_raw(Box::new(OliveSmFuture {
+        kind: KIND_SM_FUTURE, poll_fn: olive_select_poll as *const () as usize as i64, frame, cancelled: 0,
     })) as i64
+}
+
+extern "C" fn olive_cancel_future(future: i64) -> i64 {
+    if future == 0 { return 0; }
+    let kind = unsafe { *(future as *const i64) };
+    if kind == KIND_SM_FUTURE {
+        let f = unsafe { &mut *(future as *mut OliveSmFuture) };
+        f.cancelled = 1;
+    }
+    0
 }
