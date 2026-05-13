@@ -1,6 +1,6 @@
 # Basic Syntax and Types
 
-Olive's syntax is heavily inspired by Python — indentation-based, clean, with a focus on readability. It adds explicit variable declarations and a static type system on top.
+Olive uses indentation-based syntax: clean, structured, with a focus on readability. It adds explicit variable declarations and a static type system.
 
 ## Variables and Mutability
 

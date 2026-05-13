@@ -1,6 +1,6 @@
 # Compiler Internals
 
-The Olive compiler (`olivc`) transforms source code into optimized native machine code through a sequence of representations. Each stage is designed to run fast — the target from `pit run` to execution is milliseconds, not seconds.
+The Olive compiler (`olivc`) transforms source code into optimized native machine code through a sequence of representations. Each stage is designed to run fast. The target from `pit run` to execution is milliseconds, not seconds.
 
 ## 1. Lexical Analysis (`lexer/`)
 
@@ -22,7 +22,7 @@ The parser consumes the token stream and produces an Abstract Syntax Tree (AST).
 This stage verifies the program's structure and types.
 
 - **Name resolution**: Builds a hierarchy of symbol tables, handling shadowing, nested scopes, and module-level visibility. The `_` prefix convention for private names is enforced here.
-- **Type inference**: Olive uses a Hindley-Milner-inspired type system with unification. Types are static, but annotations are often optional — the compiler infers them from usage.
+- **Type inference**: Olive uses a Hindley-Milner-inspired type system with unification. Types are static, but annotations are often optional; the compiler infers them from usage.
 - **Method resolution**: Dispatches method calls to the correct `impl` block implementation.
 
 ## 4. Middle Intermediate Representation (MIR)
@@ -30,13 +30,13 @@ This stage verifies the program's structure and types.
 MIR is the central representation in the compiler. It models the program as a Control Flow Graph (CFG) where each node is a basic block.
 
 - **Basic blocks**: A sequence of statements with no internal jumps. Execution enters at the top and exits at the bottom.
-- **Terminators**: Every block ends with exactly one terminator — `Goto`, `SwitchInt`, `Return`, or `Unreachable`. This makes control flow explicit and easy to analyze.
-- **Lowering**: High-level constructs — `for` loops, comprehensions, `with` statements — are lowered into simple assignments and jumps before any optimization runs.
+- **Terminators**: Every block ends with exactly one terminator: `Goto`, `SwitchInt`, `Return`, or `Unreachable`. This makes control flow explicit and easy to analyze.
+- **Lowering**: High-level constructs (`for` loops, comprehensions, `with` statements) are lowered into simple assignments and jumps before any optimization runs.
 - **Argument packing**: Named, variadic, and keyword arguments are packed into their final forms at the MIR level.
 
 ## 5. Borrow Checking (`borrow_check/`)
 
-The borrow checker enforces memory safety on the MIR CFG — no garbage collector needed.
+The borrow checker enforces memory safety on the MIR CFG without a garbage collector.
 
 - **Liveness analysis**: Computes which variables are live at each program point.
 - **Dataflow tracking**: Follows references back to their origin to verify aliasing and mutation rules.
@@ -49,7 +49,7 @@ The final stage compiles MIR to native machine code through Cranelift.
 
 - **SSA generation**: MIR is converted to Static Single Assignment form, which is Cranelift's native input format.
 - **Intrinsics**: The JIT runtime provides optimized intrinsics for memory allocation, string operations, SIMD, and built-in standard library calls.
-- **Standard library**: Built-in runtime symbols — `math`, `io`, `aio`, `net`, `http`, `random` — are resolved from a dynamically loaded shared library rather than being baked into the JIT. This keeps startup fast and the binary lean.
+- **Standard library**: Built-in runtime symbols (`math`, `io`, `aio`, `net`, `http`, `random`) are resolved from a dynamically loaded shared library rather than being baked into the JIT. This keeps startup fast and the binary lean.
 - **Execution**: Compiled functions are loaded into executable memory and invoked directly by the Olive runtime.
 
 ## Error Reporting & Diagnostics

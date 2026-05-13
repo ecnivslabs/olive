@@ -2,7 +2,7 @@
 
 ## Installation
 
-Olive is currently built from source. You'll need the [Rust toolchain](https://rustup.rs/) installed first.
+Olive is currently built from source. You'll need `cargo` installed. Get it from [rustup.rs](https://rustup.rs/) if you don't have it.
 
 1. **Clone the repository**:
    ```bash
@@ -64,7 +64,7 @@ main()
 
 ## Core Concepts to Know
 
-**Indentation defines blocks.** There are no braces. Consistent indentation is required — the compiler will tell you if it's wrong.
+**Indentation defines blocks.** There are no braces. Consistent indentation is required; the compiler will tell you if it's wrong.
 
 **Variables are immutable by default.** Use `let mut` when you need to reassign. This isn't a restriction so much as a signal in the code: if something is `mut`, it changes; if it isn't, it doesn't.
 

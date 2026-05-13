@@ -42,7 +42,7 @@ Once scalar logic is refined, the compiler applies structural transformations:
 
 ### Inlining
 
-Replaces a function call with the body of the called function. This eliminates call overhead and allows all scalar passes to work across the former call boundary. The compiler uses a size-based heuristic to decide when inlining is worth it — small, frequently-called functions are good candidates; large functions are not.
+Replaces a function call with the body of the called function. This eliminates call overhead and allows all scalar passes to work across the former call boundary. The compiler uses a size-based heuristic to decide when inlining is worth it. Small, frequently-called functions are good candidates; large functions are not.
 
 ### Loop-Invariant Code Motion (LICM)
 
@@ -76,5 +76,5 @@ Olive is built for the JIT environment, where startup time matters. Two mechanis
 
 The `pit` toolchain exposes compiler internals for inspection:
 
-- `pit build --time`: Shows a per-phase timing breakdown — how long was spent in borrow checking, each optimization pass, and codegen.
+- `pit build --time`: Shows a per-phase timing breakdown: how long was spent in borrow checking, each optimization pass, and codegen.
 - `pit run --emit-mir`: Prints the optimized MIR as readable text. You can verify that constants were folded, loops were hoisted, and tail calls were identified.

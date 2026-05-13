@@ -16,18 +16,18 @@
 
 ## Overview
 
-Olive is a systems-oriented programming language with Python-inspired syntax, an ownership-based memory model, and a JIT compiler built on Cranelift. It's designed for developers who want safety and performance without switching to a language that requires a C++ degree to read.
+Olive is a systems-oriented programming language with a clean, indentation-based syntax, an ownership-based memory model, and a JIT compiler built on Cranelift. It's designed for developers who want safety and performance without sacrificing readable code.
 
-The goal is straightforward: code that's as readable as Python, runs close to native speed, and catches memory errors at compile time — not in production.
+The goal is straightforward: expressive code that runs close to native speed and catches memory errors at compile time, not in production.
 
 ## Features
 
 - **Indentation-based syntax**: Blocks are defined by whitespace, keeping code clean and consistent.
 - **Memory safety without a GC**: Ownership-Based Resource Management (OBRM) and a borrow checker with Non-Lexical Lifetimes (NLL) catch memory errors at compile time.
 - **JIT compilation via Cranelift**: Generates optimized native code at runtime.
-- **True stackless async**: An `async`/`await` model backed by a multi-threaded executor. Futures are compiled state machines — no heap allocation per suspension point.
-- **MIR optimization pipeline**: Global Value Numbering, Tail-Call Optimization, Loop-Invariant Code Motion, inlining, and more — all running before codegen.
-- **Standard library modules**: `math`, `io`, `aio`, `net`, `http`, `random` — loaded dynamically at runtime.
+- **True stackless async**: An `async`/`await` model backed by a multi-threaded executor. Futures are compiled state machines with no heap allocation per suspension point.
+- **MIR optimization pipeline**: Global Value Numbering, Tail-Call Optimization, Loop-Invariant Code Motion, inlining, and more, all running before codegen.
+- **Standard library modules**: `math`, `io`, `aio`, `net`, `http`, `random`, loaded dynamically at runtime.
 - **Detailed diagnostics**: Colorized, context-aware error reports that point to the problem and suggest a fix.
 - **Unified toolchain**: `pit` handles building, running, testing, and formatting.
 
@@ -36,7 +36,7 @@ The goal is straightforward: code that's as readable as Python, runs close to na
 `pit` is the single entry point for all development tasks:
 
 - `pit new <name>`: Creates a new project with the standard directory layout.
-- `pit run`: Runs your project through the full pipeline — borrow checking, optimization, JIT, execution.
+- `pit run`: Runs your project through the full pipeline: borrow checking, optimization, JIT, execution.
 - `pit build`: Performs semantic analysis and builds without running.
 - `pit test`: Finds and runs all functions marked with `#[test]`.
 - `pit fmt`: Formats all `.liv` files to the standard Olive style.

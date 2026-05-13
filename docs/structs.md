@@ -1,6 +1,6 @@
 # Structs and Composition
 
-Olive uses `struct` and `impl` blocks to define data types and their behavior. There's no class hierarchy — composition replaces inheritance.
+Olive uses `struct` and `impl` blocks to define data types and their behavior. There's no class hierarchy; composition replaces inheritance.
 
 ## Defining a Struct
 
@@ -77,7 +77,7 @@ The type checker tracks field types throughout and will catch type mismatches be
 
 ## Visibility
 
-By convention, names starting with an underscore are private to the module. The compiler enforces this — you can't import or access a `_`-prefixed member from outside its defining module:
+By convention, names starting with an underscore are private to the module. The compiler enforces this: you can't import or access a `_`-prefixed member from outside its defining module:
 
 ```python
 struct Secret:

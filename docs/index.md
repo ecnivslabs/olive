@@ -2,7 +2,7 @@
 
 This is the reference documentation for the Olive programming language.
 
-Olive is a systems-oriented language with Python-inspired syntax, ownership-based memory safety, and a JIT compiler built on Cranelift. It's meant for developers who need real performance and safety guarantees without abandoning readability.
+Olive is a systems-oriented language with a clean, indentation-based syntax, ownership-based memory safety, and a JIT compiler built on Cranelift. It's meant for developers who need real performance and safety guarantees without abandoning readability.
 
 ## Documentation Sections
 

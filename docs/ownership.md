@@ -1,10 +1,10 @@
 # Ownership and Memory Safety
 
-Olive manages memory through Ownership-Based Resource Management (OBRM). There's no garbage collector — instead, the compiler tracks ownership at compile time and inserts deallocation exactly where it's needed. You get deterministic memory management without writing `free`.
+Olive manages memory through Ownership-Based Resource Management (OBRM). There's no garbage collector. The compiler tracks ownership at compile time and inserts deallocation exactly where it's needed. You get deterministic memory management without writing `free`.
 
 ## The Three Rules of Ownership
 
-1. Every value has exactly one **owner** — the variable that holds it.
+1. Every value has exactly one **owner**: the variable that holds it.
 2. There can only be **one owner** at a time.
 3. When the owner goes out of scope, the value is **dropped**.
 
@@ -56,7 +56,7 @@ r[0] = 10     # OK
 
 > You can have many readers OR one writer, but never both at the same time.
 
-This rule eliminates an entire category of bugs — data races, use-after-free through aliases, and concurrent mutation — at the language level.
+This rule eliminates an entire category of bugs at the language level: data races, use-after-free through aliases, and concurrent mutation.
 
 ## Non-Lexical Lifetimes (NLL)
 
@@ -67,7 +67,7 @@ let mut x = 5
 let r = &x
 print(r)    # r is used here for the last time
 
-x = 10      # OK — the borrow by `r` ended after the print
+x = 10      # OK: the borrow by `r` ended after the print
 ```
 
 ## Initialization Tracking

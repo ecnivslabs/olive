@@ -102,7 +102,7 @@ io.file_write("output.txt", "hello")
 
 ### `aio`
 
-Asynchronous file operations — these return futures and must be used with `await`:
+Asynchronous file operations that return futures. Must be used with `await`:
 
 ```python
 import aio

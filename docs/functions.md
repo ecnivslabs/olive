@@ -70,7 +70,7 @@ fn fibonacci(n: int) -> int:
 
 ## Tail-Call Optimization (TCO)
 
-The compiler automatically identifies tail-recursive calls and transforms them into direct jumps. Recursive functions structured as tail calls won't overflow the stack — they compile to the same code as an iterative loop.
+The compiler automatically identifies tail-recursive calls and transforms them into direct jumps. Recursive functions structured as tail calls won't overflow the stack; they compile to the same code as an iterative loop.
 
 ## Decorators and Directives
 
