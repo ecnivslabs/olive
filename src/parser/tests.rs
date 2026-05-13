@@ -489,7 +489,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn nested_async_blocks() {
         let src = "async:\n    let x = await async:\n        return 1\n    return x\n";

@@ -1,23 +1,21 @@
 # Functions
 
-Functions are first-class citizens in Olive. They are defined using the `fn` keyword and support optional type annotations for parameters and return values.
+Functions are first-class values in Olive. They're defined with the `fn` keyword and support optional type annotations on parameters and return values.
 
 ## Defining Functions
-
-A basic function definition looks like this:
 
 ```python
 fn greet(name: str) -> None:
     print("Hello, " + name)
 ```
 
-If the return type is omitted, Olive will attempt to infer it.
+If the return type annotation is omitted, Olive infers it.
 
 ## Function Arguments
 
 ### Parameters and Types
 
-Parameters can be annotated with types and can also be marked as mutable if the function needs to modify its own local copy of the parameter:
+Parameters can carry type annotations. If a function needs to modify its own local copy of a parameter, mark it `mut`:
 
 ```python
 fn increment(mut value: int) -> int:
@@ -25,13 +23,9 @@ fn increment(mut value: int) -> int:
     return value
 ```
 
-### Advanced Parameter Types
+### Variadic and Keyword Arguments
 
-Olive is designed to support various parameter kinds, similar to Python:
-
-- **Regular Parameters**: Standard positional or keyword arguments.
-- **VarArgs (`*args`)**: For accepting a variable number of positional arguments.
-- **KwArgs (`**kwargs`)**: For accepting a variable number of keyword arguments.
+Olive supports variadic (`*args`) and keyword (`**kwargs`) parameters, fully implemented in the MIR backend:
 
 ```python
 fn sum_all(*numbers: int) -> int:
@@ -47,11 +41,9 @@ let s = sum_all(1, 2, 3, 4, 5)
 configure(debug=True, verbose=False)
 ```
 
-> **Note**: Currently, the compiler is optimized for regular parameters, with full support for variadic and keyword arguments being actively expanded in the backend.
-
 ## First-Class Functions
 
-You can pass functions as arguments to other functions or assign them to variables:
+Functions can be passed as arguments or assigned to variables. The type of a function is written as `(ArgTypes) -> ReturnType`:
 
 ```python
 fn apply(f: (int) -> int, val: int) -> int:
@@ -63,21 +55,11 @@ fn square(x: int) -> int:
 let result = apply(square, 5)  # result is 25
 ```
 
-## Closures and Lambdas
+## Lambdas
 
-Olive supports anonymous functions (lambdas) and closures that can capture variables from their environment:
-
-```python
-let multiplier = 2
-let double = lambda x: x * multiplier
-print(double(10)) # 20
-```
-
-> **Note**: Lambda syntax and closures are planned for future versions of the MIR implementation.
+Lambda (anonymous function) syntax is planned but not yet implemented. Use named functions in the meantime.
 
 ## Recursion
-
-Functions can call themselves recursively:
 
 ```python
 fn fibonacci(n: int) -> int:
@@ -88,18 +70,18 @@ fn fibonacci(n: int) -> int:
 
 ## Tail-Call Optimization (TCO)
 
-Olive's compiler automatically identifies and optimizes tail-recursive functions. This means you can write recursive algorithms (like state machines or certain mathematical functions) without worrying about stack overflow errors, as they are transformed into efficient loops at the machine level.
+The compiler automatically identifies tail-recursive calls and transforms them into direct jumps. Recursive functions structured as tail calls won't overflow the stack — they compile to the same code as an iterative loop.
 
 ## Decorators and Directives
 
-Olive distinguishes between runtime decorators and compile-time directives:
+Olive distinguishes between two kinds of function annotations:
 
-- **@decorators**: Used for runtime behavior or meta-programming (e.g., `@memo`).
-- **#[directives]**: Used for compiler transforms or metadata (e.g., `#[test]`, `#[derive]`).
+- **`@decorators`**: Applied at runtime. Used for meta-programming, caching, and other runtime behavior.
+- **`#[directives]`**: Applied at compile time. Used to pass instructions to the compiler or toolchain.
 
-### Runtime Decorators (@)
+### Runtime Decorators (`@`)
 
-A great example is the built-in `@memo` decorator. If you have a computationally expensive recursive function—like our Fibonacci example above—you can dramatically speed it up by caching its results. 
+The built-in `@memo` decorator caches function results by argument. It's useful for expensive recursive computations:
 
 ```python
 @memo
@@ -109,11 +91,11 @@ fn fibonacci(n: int) -> int:
     return fibonacci(n - 1) + fibonacci(n - 2)
 ```
 
-Under the hood, `@memo` seamlessly hooks into a highly optimized, integer-keyed cache system. It intercepts function calls, returning the cached result if it exists, or running the function and storing the new result if it doesn't.
+`@memo` hooks into an integer-keyed cache. On each call, it checks whether the result for those arguments is already stored. If so, it returns it immediately. If not, it runs the function and stores the result before returning.
 
-### Compiler Directives (#)
+### Compiler Directives (`#`)
 
-Directives like `#[test]` tell the `pit` toolchain how to handle specific items:
+Directives tell the `pit` toolchain how to treat specific items. The most common is `#[test]`, which marks a function for the test runner:
 
 ```python
 #[test]
@@ -121,3 +103,4 @@ fn test_math():
     assert 1 + 1 == 2
 ```
 
+Running `pit test` finds all functions with `#[test]` and executes them, reporting results.

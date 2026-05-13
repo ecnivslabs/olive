@@ -16,54 +16,60 @@
 
 ## Overview
 
-Olive is a modern, high-performance programming language designed for developers who value both expressive clarity and performance. It bridges the gap between high-level productivity and low-level control through an ownership model and a JIT-based compilation pipeline.
+Olive is a systems-oriented programming language with Python-inspired syntax, an ownership-based memory model, and a JIT compiler built on Cranelift. It's designed for developers who want safety and performance without switching to a language that requires a C++ degree to read.
 
-Whether you are building low-latency systems, complex backends, or high-performance tools, Olive provides a safe and efficient environment where your code runs as fast as it reads.
+The goal is straightforward: code that's as readable as Python, runs close to native speed, and catches memory errors at compile time — not in production.
 
 ## Features
 
-- **Indentation-Based Syntax**: A clean, readable structure that focuses on clarity while maintaining the efficiency of a systems language.
-- **Memory Safety**: Ownership-Based Resource Management (OBRM) and a borrow checker with Non-Lexical Lifetimes (NLL) provide safety at compile-time without a garbage collector.
-- **JIT-Accelerated Execution**: The Cranelift compilation engine generates optimized machine code on the fly for performance matching native languages.
-- **Advanced Optimizations**: A multi-stage MIR optimization pipeline includes Global Value Numbering, Tail-Call Optimization, and Loop-Invariant Code Motion.
-- **Detailed Diagnostics**: Colorized, context-aware error reports provide clear feedback and suggestions for resolving issues.
-- **Unified Toolchain**: The `pit` tool manages the entire development lifecycle, from project creation to testing and formatting.
+- **Indentation-based syntax**: Blocks are defined by whitespace, keeping code clean and consistent.
+- **Memory safety without a GC**: Ownership-Based Resource Management (OBRM) and a borrow checker with Non-Lexical Lifetimes (NLL) catch memory errors at compile time.
+- **JIT compilation via Cranelift**: Generates optimized native code at runtime.
+- **True stackless async**: An `async`/`await` model backed by a multi-threaded executor. Futures are compiled state machines — no heap allocation per suspension point.
+- **MIR optimization pipeline**: Global Value Numbering, Tail-Call Optimization, Loop-Invariant Code Motion, inlining, and more — all running before codegen.
+- **Standard library modules**: `math`, `io`, `aio`, `net`, `http`, `random` — loaded dynamically at runtime.
+- **Detailed diagnostics**: Colorized, context-aware error reports that point to the problem and suggest a fix.
+- **Unified toolchain**: `pit` handles building, running, testing, and formatting.
 
 ## The `pit` Toolchain
 
-`pit` serves as the primary interface for development:
+`pit` is the single entry point for all development tasks:
 
-- `pit new <name>`: Initializes a new project.
-- `pit run`: Builds, optimizes, and executes projects.
-- `pit build`: Performs deep semantic checks and builds the project.
-- `pit test`: Executes the test suite and generates reports.
-- `pit format`: Standardizes codebase formatting.
-
+- `pit new <name>`: Creates a new project with the standard directory layout.
+- `pit run`: Runs your project through the full pipeline — borrow checking, optimization, JIT, execution.
+- `pit build`: Performs semantic analysis and builds without running.
+- `pit test`: Finds and runs all functions marked with `#[test]`.
+- `pit fmt`: Formats all `.liv` files to the standard Olive style.
+- `pit build --time`: Shows a timing breakdown for each compiler phase.
+- `pit run --emit-mir`: Prints the optimized MIR so you can see exactly what the compiler produced.
 
 ## Optimization Pipeline
 
-The compiler (olivc) includes a optimization suite operating on the Middle Intermediate Representation (MIR). These passes are iterative; for example, Constant Propagation may reveal a branch that is always taken, which Simplify CFG can convert into a direct jump, enabling further pruning via Dead Code Elimination.
+The compiler runs an iterative optimization suite on the Middle Intermediate Representation (MIR). These passes compose well: Constant Propagation can expose a branch that's always taken, which Simplify CFG turns into a direct jump, which Dead Code Elimination then prunes. The result is that each pass benefits from the work of the others.
 
-Detailed information on these transformations is available in the [High-Performance Optimizations](docs/optimizations.md) guide.
+See the [High-Performance Optimizations](docs/optimizations.md) guide for details.
 
 ## Documentation
 
-Comprehensive guides are available to assist with development:
-
 - [Introduction to Olive](docs/introduction.md)
 - [Getting Started](docs/getting_started.md)
-- [Ownership and Safety](docs/ownership.md)
 - [Basic Syntax and Types](docs/basics.md)
+- [Functions](docs/functions.md)
+- [Enums and Pattern Matching](docs/enums.md)
+- [Structs and Composition](docs/structs.md)
+- [Ownership and Safety](docs/ownership.md)
+- [Async and Concurrency](docs/async.md)
+- [High-Performance Optimizations](docs/optimizations.md)
+- [Modules and Standard Library](docs/modules.md)
 - [Compiler Internals](docs/internals.md)
 - [Full Index](docs/index.md)
 
 ## Contributing
 
-Feel free to:
 1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Submit a pull request
+2. Create your feature branch (`git checkout -b feature/my-feature`)
+3. Commit your changes (`git commit -m 'Add my feature'`)
+4. Push to the branch (`git push origin feature/my-feature`)
+5. Open a pull request
 
-#### *I'd appreciate any feedback or code reviews you might have!*
+#### *Feedback and code reviews are always welcome.*

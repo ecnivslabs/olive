@@ -1,33 +1,35 @@
 # Introduction to Olive
 
-Olive is a systems-oriented programming language designed for the modern era. It is built for developers who require the uncompromising speed of low-level languages without sacrificing the expressive power, safety, and productivity of high-level environments.
+Olive is a systems-oriented programming language built for developers who need real performance and memory safety, but don't want to give up readable code to get there.
 
-At its heart, Olive provides **deterministic control without the cognitive load**. Instead of relying on a garbage collector that can introduce unpredictable latency, Olive uses **Ownership-Based Resource Management (OBRM)**. This approach allows the compiler to manage memory and resources at compile-time, ensuring that applications are both lean and fast.
+The design sits between Python and Rust. The syntax is close to Python — indentation-based, expressive, easy to scan. The memory model is ownership-based, like Rust, but enforced through a compiler that tries to give useful error messages rather than cryptic ones. Under the hood, a JIT compiler built on Cranelift turns your code into optimized native instructions.
 
 ## Philosophy
 
-1. **Performance is a Feature**: The goal is that developers shouldn't have to rewrite code in another language just to make it fast. Olive is designed from the ground up to match the performance of C++ and Rust.
-2. **Safety is Mandatory**: Memory errors and data races are handled at compile-time. Olive's strict borrow checker ensures that code is safe by construction.
-3. **Productivity is Paramount**: A language is only as good as its tooling and syntax. Olive features a clean, readable syntax and a unified toolchain that stays out of the way.
+**Performance is not optional.** Olive doesn't ask you to prototype in one language and rewrite in another. The compiler is designed to produce fast code from the start — through an iterative MIR optimization pipeline, JIT compilation, and SIMD vectorization where it's safe to do so.
+
+**Safety is enforced at compile time.** Memory errors and data races are caught before the program runs, not in production. The borrow checker isn't a suggestion — it's part of the language model.
+
+**Readability is a design constraint.** If the code is hard to read, it's harder to reason about, harder to review, and harder to maintain. Olive's syntax is deliberately clean. The toolchain handles formatting so the style question is settled from day one.
 
 ## Key Features
 
-- **Elegant, Indentation-Based Syntax**: Clean, readable code that executes with the efficiency of a systems language.
-- **Memory Safety**: A borrow checker with Non-Lexical Lifetimes (NLL) ensures memory errors are caught before execution.
-- **JIT-Accelerated Execution**: Leveraging the Cranelift compilation engine, Olive generates optimized machine code on the fly for near-native performance.
-- **Advanced MIR Optimizations**: From Loop-Invariant Code Motion to Tail-Call Optimization, the compiler is designed to maximize performance.
-- **Detailed Diagnostics**: Context-aware error reports that don't just tell you what went wrong, but show you how to fix it.
-- **Unified Toolchain (`pit`)**: A single tool for building, testing, formatting, and managing your projects.
+- **Indentation-based syntax**: Block structure is defined by whitespace, keeping noise low.
+- **Memory safety**: A borrow checker with Non-Lexical Lifetimes (NLL) catches errors at compile time without a garbage collector.
+- **JIT compilation**: The Cranelift backend generates optimized native code at runtime, measured in milliseconds from `pit run` to execution.
+- **True stackless async**: `async fn` and `await` backed by a multi-threaded, state-machine executor — no heap allocation per suspension point.
+- **MIR optimization pipeline**: Loop-Invariant Code Motion, Tail-Call Optimization, Global Value Numbering, inlining, and more.
+- **Detailed diagnostics**: Error reports that show the relevant code, point to the exact location, and suggest how to fix it.
+- **Unified toolchain (`pit`)**: Build, run, test, format — one tool for the full development cycle.
 
-## The Architecture
+## The Compiler Pipeline
 
-The Olive compiler pipeline is structured as a modern compilation pipeline:
+Olive compiles through a sequence of representations, each suited to a different kind of analysis:
 
-1. **Lexical Analysis**: Source code is tokenized into meaningful units with support for features like F-strings and SIMD intrinsics.
-2. **Parsing**: Organized into a logical Abstract Syntax Tree (AST) using an efficient recursive descent parser.
-3. **Semantic Analysis**: Symbol resolution and type checking ensure the integrity of your code's logic and types.
-4. **MIR Lowering**: The AST is lowered to a Middle Intermediate Representation (MIR) designed for high-level, CFG-based analysis.
-5. **Borrow Checking**: The MIR is analyzed to enforce strict memory safety and ownership rules.
-6. **Optimized Codegen**: The MIR passes through an extensive optimization suite before being compiled to machine code via Cranelift.
-
-Olive aims to provide a faster and safer development experience without compromising on performance.
+1. **Lexical Analysis**: Source code is tokenized. The lexer handles indentation tracking, F-strings, and SIMD intrinsics.
+2. **Parsing**: Tokens become an Abstract Syntax Tree using a handwritten recursive descent parser.
+3. **Semantic Analysis**: Symbol resolution and type checking verify the structure and types of your program.
+4. **MIR Lowering**: The AST is lowered to a Control Flow Graph-based Middle Intermediate Representation, designed for analysis and optimization.
+5. **Borrow Checking**: The MIR is analyzed to enforce ownership and aliasing rules.
+6. **Optimization**: An iterative suite of passes transforms the MIR before codegen.
+7. **Codegen**: The optimized MIR is compiled to native machine code via Cranelift.

@@ -1,10 +1,10 @@
 # Structs and Composition
 
-Olive utilizes a static, composition-based data model using `struct` and `impl` blocks, similar to Rust, instead of traditional class-based inheritance.
+Olive uses `struct` and `impl` blocks to define data types and their behavior. There's no class hierarchy — composition replaces inheritance.
 
 ## Defining a Struct
 
-Structs are defined using the `struct` keyword and describe the data layout.
+Structs describe the data layout. Fields are listed with their types:
 
 ```python
 struct Person:
@@ -14,7 +14,7 @@ struct Person:
 
 ## Adding Behavior with `impl`
 
-To add methods to a struct, use an `impl` block. The first parameter of a method should be `self` if it needs to access the struct's data.
+Methods go in a separate `impl` block. Methods that need to access the struct's data take `self` as the first parameter:
 
 ```python
 impl Person:
@@ -24,14 +24,14 @@ impl Person:
 
 ## Creating Instances
 
-To create an instance of a struct, call the struct name as if it were a function, passing the required fields in order:
+Call the struct name like a function, passing field values in order:
 
 ```python
 let p = Person("Alice", 30)
 p.greet()
 ```
 
-If a custom constructor is needed, you can define an `__init__` method in the `impl` block. The default constructor behavior takes the fields defined in the struct, but `__init__` allows you to perform custom initialization logic.
+For custom initialization logic, define an `__init__` method in the `impl` block:
 
 ```python
 struct Rectangle:
@@ -51,7 +51,7 @@ print(f"Area: {rect.area}")
 
 ## Composition over Inheritance
 
-Olive does not support inheritance. Instead, it encourages composition by embedding structs within each other.
+Olive doesn't support inheritance. If you want one type to include the behavior of another, embed it as a field:
 
 ```python
 struct Student:
@@ -65,17 +65,19 @@ impl Student:
 
 ## Attribute Access
 
-Attributes (fields) are accessed using the dot (`.`) operator. Olive's type checker tracks the types of fields to ensure type safety.
+Fields and nested fields are accessed with the dot operator:
 
 ```python
 let s = Student(Person("Bob", 20), 12345)
-print(s.person.name)  # Accessing nested attribute
+print(s.person.name)  # Accessing nested field
 s.study()             # Calling a method
 ```
 
+The type checker tracks field types throughout and will catch type mismatches before the code runs.
+
 ## Visibility
 
-By convention, attributes or methods starting with an underscore (`_`) are considered private to the module and should not be accessed from outside. The compiler enforces these visibility rules during the resolution phase.
+By convention, names starting with an underscore are private to the module. The compiler enforces this — you can't import or access a `_`-prefixed member from outside its defining module:
 
 ```python
 struct Secret:
@@ -88,7 +90,7 @@ impl Secret:
 
 ## Method Decorators
 
-Just like standalone functions, struct methods can also be enhanced using decorators. This is particularly useful for things like memoizing expensive method calls.
+Methods can use the same decorators as standalone functions. The `@memo` decorator is useful on methods that do expensive computation with the same inputs:
 
 ```python
 struct Calculator:
@@ -97,7 +99,6 @@ struct Calculator:
 impl Calculator:
     @memo
     fn expensive_computation(self, n: int) -> int:
-        # Some heavy calculation...
         if n <= 1:
             return n
         return self.expensive_computation(n - 1) + self.expensive_computation(n - 2)

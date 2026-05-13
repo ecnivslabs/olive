@@ -1,16 +1,18 @@
 # Ownership and Memory Safety
 
-Olive's most distinctive feature is its **Ownership-Based Resource Management (OBRM)**. This architectural pillar ensures total memory safety and eliminates data races at compile-time, providing the performance of manual memory management without the associated risks.
+Olive manages memory through Ownership-Based Resource Management (OBRM). There's no garbage collector — instead, the compiler tracks ownership at compile time and inserts deallocation exactly where it's needed. You get deterministic memory management without writing `free`.
 
 ## The Three Rules of Ownership
 
-1. Each value in Olive has a variable that's called its **owner**.
+1. Every value has exactly one **owner** — the variable that holds it.
 2. There can only be **one owner** at a time.
 3. When the owner goes out of scope, the value is **dropped**.
 
+These rules are enforced by the compiler. Violations are caught before the program runs.
+
 ## Move Semantics
 
-When you assign a variable to another or pass it to a function, the ownership is **moved**. The original variable can no longer be used.
+Assigning a variable to another variable, or passing it to a function, **moves** ownership. The original binding becomes invalid:
 
 ```python
 let list1 = [1, 2, 3]
@@ -19,13 +21,15 @@ let list2 = list1  # ownership moves to list2
 # print(list1)     # Error: use of moved variable `list1`
 ```
 
+This applies to heap-allocated types like lists, dicts, and structs. Primitive types like `int` and `float` are copied automatically.
+
 ## Borrowing
 
-Borrowing allows you to access a value without taking ownership. This is done using references.
+Borrowing lets you access a value without taking ownership. You hold a reference, use it, and the owner retains its value when you're done.
 
 ### Immutable Borrows (`&`)
 
-You can create multiple immutable references to a value. While a value is borrowed immutably, it cannot be modified or moved.
+Multiple immutable references can coexist. While any immutable reference is live, the value cannot be modified or moved:
 
 ```python
 let list = [1, 2, 3]
@@ -38,7 +42,7 @@ print(r2[0])  # OK
 
 ### Mutable Borrows (`&mut`)
 
-If you need to modify a borrowed value, you can use a mutable reference. However, you can have **only one** mutable reference to a piece of data in a particular scope.
+A mutable reference allows modification, but there can be only one in a given scope. You can't hold a mutable reference alongside any other reference to the same value:
 
 ```python
 let mut list = [1, 2, 3]
@@ -48,26 +52,27 @@ r[0] = 10     # OK
 # let r2 = &list # Error: cannot borrow as immutable because it's already borrowed as mutable
 ```
 
-### The Golden Rule: Aliasing XOR Mutation
+### The Core Rule: Aliasing XOR Mutation
 
-Olive enforces the core principle of memory safety:
-> You can have many readers OR exactly one writer, but never both at the same time.
+> You can have many readers OR one writer, but never both at the same time.
+
+This rule eliminates an entire category of bugs — data races, use-after-free through aliases, and concurrent mutation — at the language level.
 
 ## Non-Lexical Lifetimes (NLL)
 
-Unlike older borrow checkers that release borrows at the end of a block, Olive's borrow checker is "smart." It uses **Non-Lexical Lifetimes** to release a borrow as soon as the reference is no longer used.
+Olive's borrow checker understands that a borrow ends when the reference is last used, not when the enclosing scope ends. This avoids false positives that would otherwise force unnecessary restructuring:
 
 ```python
 let mut x = 5
 let r = &x
 print(r)    # r is used here for the last time
 
-x = 10      # OK! The borrow of `x` by `r` ended after the print statement
+x = 10      # OK — the borrow by `r` ended after the print
 ```
 
 ## Initialization Tracking
 
-Olive tracks the state of every variable to ensure you never use uninitialized memory.
+The compiler tracks initialization state for every variable. Using a variable before it's assigned is a compile-time error:
 
 ```python
 let x: int
@@ -76,13 +81,12 @@ x = 10
 print(x)    # OK
 ```
 
-## Optimization: Conditional Borrow Checking
+## Conditional Borrow Checking
 
-While memory safety is paramount, safety analysis can be expensive for JIT compilation. To ensure the fastest possible startup, the Olive compiler employs **Conditional Borrow Checking**.
+Borrow checking is thorough, and thorough analysis has a cost. To minimize JIT startup time, the compiler skips the borrow checking pass entirely for functions that meet all of the following:
 
-If a function:
-1.  Only uses primitive types (like `int`, `float`, `bool`) that follow copy semantics.
-2.  Does not use any move-only types (like `list`, `dict`, `struct` instances).
-3.  Does not create or use any references (`&` or `&mut`).
+1. Only use primitive types (`int`, `float`, `bool`) that follow copy semantics.
+2. Don't use any move-only types (`list`, `dict`, struct instances).
+3. Don't create or use any references (`&` or `&mut`).
 
-The compiler **skips the borrow checking pass entirely** for that function. This allows simple compute kernels and utility functions to be JIT-compiled and executed with zero safety-analysis overhead, matching the startup latency of non-memory-safe JITs while maintaining total safety for complex data structures.
+These functions can't violate memory safety by construction, so running the borrow checker on them would add overhead for no benefit. Simple compute kernels and pure math functions get compiled with no safety-analysis overhead. Complex data structure code gets the full analysis.

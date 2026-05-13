@@ -1,10 +1,8 @@
-# Modules and Project Structure
-
-Olive features a simple yet powerful module system that allows you to organize your code into reusable components.
+# Modules and Standard Library
 
 ## Importing Modules
 
-You can import other Olive files using the `import` statement. Olive maps dots in the module name to directory separators.
+Use the `import` statement to bring in other Olive files. Dots in the module name map to directory separators:
 
 ```python
 import math
@@ -14,15 +12,15 @@ import physics.gravity as gravity
 let x = math.sqrt(16)
 let g = gravity.G
 ```
- 
- By default, an `import math` statement will look for a file named `math.liv` in the same directory as the current file.
- 
- ## From-Imports
- 
- If you only need specific members from a module, use the `from ... import` syntax:
- 
- ```python
- from math import sqrt, pi
+
+By default, `import math` looks for `math.liv` in the same directory as the current file.
+
+## From-Imports
+
+If you only need specific names from a module, use `from ... import`:
+
+```python
+from math import sqrt, pi
 from data.processing import clean_string as clean, parse_json as parse
 
 print(sqrt(pi))
@@ -31,12 +29,10 @@ let data = parse(clean(raw_input))
 
 ## Visibility and Privacy
 
-Olive uses a naming convention to enforce visibility:
+Olive uses a naming convention for visibility:
 
-- **Public**: Any name that does **not** start with an underscore is public and can be accessed from other modules.
-- **Private**: Any name starting with an underscore (e.g., `_internal_helper`) is private to the module where it is defined.
-
-The compiler will raise an error if you attempt to import or access a private member from another module.
+- **Public**: Any name that doesn't start with an underscore. Accessible from other modules.
+- **Private**: Names starting with `_` are private to the module where they're defined. The compiler enforces this.
 
 ```python
 # In utils.liv
@@ -50,7 +46,7 @@ import utils
 
 ## Project Organization
 
-A typical Olive project might look like this:
+A typical project layout:
 
 ```text
 my_project/
@@ -61,8 +57,93 @@ my_project/
     └── network.liv
 ```
 
-In `main.liv`, you would import these as:
+In `main.liv`:
+
 ```python
 import models
 import utils.network
+```
+
+## Standard Library
+
+Olive ships with a standard library loaded dynamically at runtime. These modules are available without any additional setup.
+
+### `math`
+
+Common mathematical functions:
+
+```python
+import math
+
+let s = math.sin(3.14)
+let c = math.cos(0.0)
+let t = math.tan(0.785)
+
+let a = math.asin(1.0)
+let b = math.acos(0.0)
+let r = math.atan(1.0)
+let r2 = math.atan2(1.0, 1.0)
+
+let l = math.log(2.718)
+let l10 = math.log10(100.0)
+let e = math.exp(1.0)
+```
+
+### `io`
+
+Synchronous file operations:
+
+```python
+import io
+
+let contents = io.file_read("data.txt")
+io.file_write("output.txt", "hello")
+```
+
+### `aio`
+
+Asynchronous file operations — these return futures and must be used with `await`:
+
+```python
+import aio
+
+async fn read_file():
+    let contents = await aio.async_file_read("data.txt")
+    await aio.async_file_write("output.txt", contents)
+```
+
+### `net`
+
+Low-level TCP networking:
+
+```python
+import net
+
+let stream = net.tcp_connect("127.0.0.1:8080")
+net.tcp_send(stream, "GET / HTTP/1.0\r\n\r\n")
+let response = net.tcp_recv(stream, 4096)
+net.tcp_close(stream)
+```
+
+### `http`
+
+Simple HTTP client:
+
+```python
+import http
+
+let body = http.http_get("https://example.com/api/data")
+let resp = http.http_post("https://example.com/api/submit", "{\"key\": \"value\"}")
+```
+
+### `random`
+
+Random number generation:
+
+```python
+import random
+
+random.random_seed(42)
+let f = random.random_get()          # float in [0.0, 1.0)
+let n = random.random_int(1, 100)    # int in [1, 100]
 ```

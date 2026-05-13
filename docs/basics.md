@@ -1,17 +1,17 @@
 # Basic Syntax and Types
 
-Olive's syntax is heavily inspired by Python, emphasizing readability and structural clarity through indentation. However, it introduces explicit variable declarations and a robust type system.
+Olive's syntax is heavily inspired by Python — indentation-based, clean, with a focus on readability. It adds explicit variable declarations and a static type system on top.
 
 ## Variables and Mutability
 
-In Olive, variables are declared using the `let` keyword. By default, all variables are **immutable**.
+Variables are declared with `let`. By default, they're immutable.
 
 ```python
 let name = "Olive"
 # name = "New Name"  <-- Error: cannot reassign immutable variable
 ```
 
-To create a mutable variable, use the `let mut` syntax:
+To make a variable mutable, use `let mut`:
 
 ```python
 let mut count = 0
@@ -20,7 +20,7 @@ count = 1  # This is allowed
 
 ### Constants
 
-Constants are declared using the `const` keyword. They must be initialized with a value that can be determined at compile-time and cannot be mutable.
+Constants are declared with `const`. They must be initialized with a compile-time value and cannot be made mutable.
 
 ```python
 const MAX_RETRIES = 5
@@ -43,22 +43,22 @@ x **= 3  # x is 1
 
 ## Data Types
 
-Olive is statically typed but features powerful type inference.
+Olive is statically typed with type inference. You usually don't need to write out the types unless you want to.
 
 ### Primitive Types
 
-- `int` / `i64`: 64-bit integers (`42`, `-7`).
+- `int` / `i64`: 64-bit signed integer (`42`, `-7`).
 - `i32`, `i16`, `i8`: 32, 16, and 8-bit signed integers.
 - `u64`, `u32`, `u16`, `u8`: Unsigned integers.
-- `float` / `f64`: 64-bit floating-point numbers (`3.14`, `-0.5`).
-- `f32`: 32-bit floating-point numbers.
-- `str`: UTF-8 encoded strings (`"Hello"`).
-- `bool`: Boolean values (`True`, `False`).
-- `None`: Represents the absence of a value (maps to the internal `Null` type).
+- `float` / `f64`: 64-bit floating-point (`3.14`, `-0.5`).
+- `f32`: 32-bit floating-point.
+- `str`: UTF-8 string (`"Hello"`).
+- `bool`: Boolean (`True`, `False`).
+- `None`: The absence of a value.
 
-### F-Strings (Formatted Strings)
+### F-Strings
 
-Olive supports f-strings for easy string interpolation. Prefix a string with `f` and use `{}` to embed expressions:
+Prefix a string literal with `f` and use `{}` to embed expressions:
 
 ```python
 let name = "Olive"
@@ -68,7 +68,7 @@ print(greeting) # Hello, Olive!
 
 ### Collection Types
 
-Collections are generic and can be type-annotated:
+Collections are generic and support type annotations:
 
 - **Lists**: `let names: list[str] = ["Alice", "Bob"]`
 - **Sets**: `let unique_ids: set[int] = {1, 2, 3}`
@@ -81,16 +81,12 @@ Collections are generic and can be type-annotated:
 
 Olive uses standard comparison operators:
 
-- `==`: Checks if two values are equal.
-- `!=`: Checks if two values are not equal.
-- `<`: Less than.
-- `>`: Greater than.
-- `<=`: Less than or equal to.
-- `>=`: Greater than or equal to.
+- `==`: Equal.
+- `!=`: Not equal.
+- `<`, `>`: Less than, greater than.
+- `<=`, `>=`: Less than or equal to, greater than or equal to.
 
 ### If Statements
-
-Standard Pythonic `if`, `elif`, and `else` structure:
 
 ```python
 if score >= 90:
@@ -103,7 +99,7 @@ else:
 
 ### Loops
 
-Olive supports `while` and `for` loops, both of which can have an optional `else` block that executes if the loop finishes naturally (without a `break`).
+Both `while` and `for` loops support an optional `else` block that runs if the loop finishes without hitting a `break`.
 
 #### While Loop
 
@@ -118,16 +114,12 @@ else:
 
 #### For Loop
 
-The `for` loop iterates over collections or ranges:
-
 ```python
 for item in ["apple", "banana", "cherry"]:
     print(item)
 ```
 
 #### Tuple Unpacking in Loops
-
-You can unpack tuples directly in the `for` loop header:
 
 ```python
 let points = [(1, 2), (3, 4), (5, 6)]
@@ -137,21 +129,18 @@ for (x, y) in points:
 
 ### Error Handling
 
-Olive uses a Rust-inspired `Result` type pattern for error handling. A `Result` is typically a union type like `Type | Error`.
+Olive uses a `Result`-style pattern for error handling. A function can return a union type like `int | str` to signal success or failure.
 
 #### The `try` Expression
 
-The `try` keyword (or the `?` postfix operator) can be used to handle errors gracefully by propagating them up the call stack if they occur:
+The `try` keyword (or the `?` postfix operator) propagates errors up the call stack. Both forms are equivalent:
 
 ```python
-# Both are equivalent
 let value = try risky_operation()
 let value = risky_operation()?
 ```
 
-#### Union Types
-
-You can define functions that return multiple types to represent success or failure:
+#### Union Return Types
 
 ```python
 fn divide(a: int, b: int) -> int | str:
@@ -162,15 +151,15 @@ fn divide(a: int, b: int) -> int | str:
 
 ### Assertions
 
-You can use `assert` to verify assumptions during development. If the condition is false, the program will raise an error (and optionally print a custom message).
-
 ```python
 assert x > 0, "x must be positive"
 ```
 
+If the condition is false, the program raises an error with the message provided.
+
 ## Comprehensions
 
-Olive supports powerful comprehension syntax for lists, sets, and dictionaries, allowing you to create new collections from existing ones concisely.
+Olive supports list, set, and dictionary comprehensions.
 
 ### List Comprehensions
 

@@ -1,10 +1,8 @@
 # Getting Started with Olive
 
-Follow these steps to set up the Olive toolchain and start building high-performance applications.
-
 ## Installation
 
-Currently, Olive is built from source. Ensure you have the [Rust toolchain](https://rustup.rs/) installed on your machine.
+Olive is currently built from source. You'll need the [Rust toolchain](https://rustup.rs/) installed first.
 
 1. **Clone the repository**:
    ```bash
@@ -12,46 +10,43 @@ Currently, Olive is built from source. Ensure you have the [Rust toolchain](http
    cd olive
    ```
 
-2. **Build and Install**:
+2. **Build**:
    ```bash
    cargo build --release
    ```
-   For convenience, you can add the binary to your path:
+   Then copy the binary somewhere on your PATH:
    ```bash
    cp target/release/pit /usr/local/bin/pit
    ```
 
-3. **Verify the installation**:
+3. **Verify**:
    ```bash
    pit --help
    ```
 
-## Creating Your First Project
+## Creating a Project
 
-Olive features a built-in package manager that makes starting a new project effortless.
+```bash
+pit new my_app
+cd my_app
+```
 
-1. **Initialize a new project**:
-   ```bash
-   pit new my_app
-   cd my_app
-   ```
-
-This creates a standard project structure:
-- `pit.toml`: Your project's configuration and metadata.
+This creates:
+- `pit.toml`: Project configuration and metadata.
 - `src/main.liv`: The entry point for your application.
 - `.gitignore`: Pre-configured for Olive development.
 
 ## Running Your Code
 
-Inside your project directory, simply run:
 ```bash
 pit run
 ```
-Olive will automatically find your entry point, perform optimizations, run the borrow checker, and execute the code via the JIT engine.
 
-## Writing Your First Program
+Olive finds your entry point, runs the borrow checker, applies optimizations, and executes via the JIT engine.
 
-Open `src/main.liv` and you'll see a basic function:
+## Your First Program
+
+Open `src/main.liv` and you'll see:
 
 ```python
 fn main():
@@ -60,19 +55,17 @@ fn main():
 main()
 ```
 
-### Advanced CLI Options
+## Useful CLI Flags
 
-The `pit` toolchain provides powerful flags for developers:
+- `pit build --time`: Build the project and show a timing breakdown for each compiler phase.
+- `pit test`: Find and run all functions marked with `#[test]`.
+- `pit fmt`: Format all `.liv` files in the project to the standard Olive style.
+- `pit run --emit-mir`: Print the optimized MIR so you can see what the compiler produced before codegen.
 
-- `pit build --time`: Build the project and show detailed timing reports for optimization, borrow checking, and codegen.
-- `pit test`: Automatically find and run all functions decorated with `#[test]`.
-- `pit format`: Format all files in your project to match the standard Olive style.
-- `pit run --emit-mir`: View the Middle Intermediate Representation of your code to see the optimizer in action.
+## Core Concepts to Know
 
-## Core Concepts
+**Indentation defines blocks.** There are no braces. Consistent indentation is required — the compiler will tell you if it's wrong.
 
-As you start writing more Olive, keep these concepts in mind:
+**Variables are immutable by default.** Use `let mut` when you need to reassign. This isn't a restriction so much as a signal in the code: if something is `mut`, it changes; if it isn't, it doesn't.
 
-- **Indentation**: Blocks are defined by whitespace. Keep it clean!
-- **Ownership**: Olive uses Ownership-Based Resource Management (OBRM). If you move a value, it's gone from the original location.
-- **Strict Safety**: The compiler is your partner. If it identifies a potential memory issue, it will provide a detailed diagnostic to guide you.
+**Ownership is enforced.** When you assign a value to another variable or pass it to a function, ownership transfers. The original binding can no longer be used. The compiler will catch violations with a clear error message and point to exactly where the problem is.
