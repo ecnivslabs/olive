@@ -1600,14 +1600,6 @@ impl<'a> CraneliftCodegen<'a> {
                             builder.ins().sdiv(l, r)
                         }
                     }
-                    FloorDiv => {
-                        if is_float_op(func_mir, lhs) {
-                            let div = builder.ins().fdiv(l, r);
-                            builder.ins().floor(div)
-                        } else {
-                            builder.ins().sdiv(l, r)
-                        }
-                    }
                     Mod => builder.ins().srem(l, r),
                     Eq => {
                         let mut is_str = false;

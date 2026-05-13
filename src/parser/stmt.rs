@@ -682,7 +682,6 @@ impl Parser {
             | TokenKind::MinusEqual
             | TokenKind::StarEqual
             | TokenKind::SlashEqual
-            | TokenKind::DoubleSlashEqual
             | TokenKind::ShlEqual
             | TokenKind::ShrEqual
             | TokenKind::PercentEqual
@@ -704,7 +703,6 @@ impl Parser {
                     TokenKind::MinusEqual => AugOp::Sub,
                     TokenKind::StarEqual => AugOp::Mul,
                     TokenKind::SlashEqual => AugOp::Div,
-                    TokenKind::DoubleSlashEqual => AugOp::FloorDiv,
                     TokenKind::PercentEqual => AugOp::Mod,
                     TokenKind::DoubleStarEqual => AugOp::Pow,
                     TokenKind::ShlEqual => AugOp::Shl,

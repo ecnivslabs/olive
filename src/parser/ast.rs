@@ -68,7 +68,6 @@ pub enum BinOp {
     NotIn,
     Shl,
     Shr,
-    FloorDiv,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -86,7 +85,6 @@ pub enum AugOp {
     Div,
     Mod,
     Pow,
-    FloorDiv,
     Shl,
     Shr,
 }

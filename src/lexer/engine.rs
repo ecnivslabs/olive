@@ -83,13 +83,11 @@ impl Lexer {
                 self.advance();
                 skipped = true;
             }
-            if self.peek() == Some('#') {
-                if self.peek_next() != Some('[') {
-                    while matches!(self.peek(), Some(c) if c != '\n') {
-                        self.advance();
-                    }
-                    skipped = true;
+            if self.peek() == Some('/') && self.peek_next() == Some('/') {
+                while matches!(self.peek(), Some(c) if c != '\n') {
+                    self.advance();
                 }
+                skipped = true;
             }
             if self.peek() == Some('/') && self.peek_next() == Some('*') {
                 self.advance();
@@ -136,13 +134,11 @@ impl Lexer {
             });
         }
 
-        if self.peek() == Some('#') {
-            if self.peek_next() != Some('[') {
-                while matches!(self.peek(), Some(c) if c != '\n') {
-                    self.advance();
-                }
-                return Ok(None);
+        if self.peek() == Some('/') && self.peek_next() == Some('/') {
+            while matches!(self.peek(), Some(c) if c != '\n') {
+                self.advance();
             }
+            return Ok(None);
         }
         if self.peek() == Some('/') && self.peek_next() == Some('*') {
             self.advance();
@@ -668,14 +664,6 @@ impl Lexer {
                     if self.peek() == Some('=') {
                         self.advance();
                         self.make_tok(TokenKind::SlashEqual, "/=", line, col, start)
-                    } else if self.peek() == Some('/') {
-                        self.advance();
-                        if self.peek() == Some('=') {
-                            self.advance();
-                            self.make_tok(TokenKind::DoubleSlashEqual, "//=", line, col, start)
-                        } else {
-                            self.make_tok(TokenKind::DoubleSlash, "//", line, col, start)
-                        }
                     } else {
                         self.make_tok(TokenKind::Slash, "/", line, col, start)
                     }

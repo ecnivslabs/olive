@@ -60,8 +60,6 @@ pub enum TokenKind {
     SlashEqual,
     PercentEqual,
     DoubleStarEqual,
-    DoubleSlash,
-    DoubleSlashEqual,
     Shl,
     Shr,
     ShlEqual,

@@ -911,7 +911,6 @@ impl TypeChecker {
             | BinOp::Div
             | BinOp::Mod
             | BinOp::Pow
-            | BinOp::FloorDiv
             | BinOp::Shl
             | BinOp::Shr => {
                 self.unify(l, r, span);

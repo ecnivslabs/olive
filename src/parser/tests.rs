@@ -119,21 +119,9 @@ mod tests {
     }
 
     #[test]
-    fn floor_div_mod() {
-        match expr_stmt(&parse("a // b % c\n")) {
-            ExprKind::BinOp {
-                op: BinOp::Mod,
-                left,
-                ..
-            } => assert!(matches!(
-                left.kind,
-                ExprKind::BinOp {
-                    op: BinOp::FloorDiv,
-                    ..
-                }
-            )),
-            _ => panic!(),
-        }
+    fn line_comment_ignored() {
+        let stmts = parse("x = 1 // this is a comment\nx = 2\n");
+        assert_eq!(stmts.stmts.len(), 2);
     }
 
     #[test]
@@ -348,7 +336,6 @@ mod tests {
             ("x -= 1\n", AugOp::Sub),
             ("x *= 1\n", AugOp::Mul),
             ("x /= 1\n", AugOp::Div),
-            ("x //= 1\n", AugOp::FloorDiv),
             ("x %= 1\n", AugOp::Mod),
             ("x **= 1\n", AugOp::Pow),
             ("x <<= 1\n", AugOp::Shl),
@@ -502,25 +489,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn floor_div_precedence_test() {
-        match expr_stmt(&parse("x // y * z\n")) {
-            ExprKind::BinOp {
-                op: BinOp::Mul,
-                left,
-                ..
-            } => {
-                assert!(matches!(
-                    left.kind,
-                    ExprKind::BinOp {
-                        op: BinOp::FloorDiv,
-                        ..
-                    }
-                ));
-            }
-            _ => panic!(),
-        }
-    }
 
     #[test]
     fn nested_async_blocks() {

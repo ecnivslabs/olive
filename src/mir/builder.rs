@@ -423,7 +423,6 @@ impl<'a> MirBuilder<'a> {
                     crate::parser::AugOp::Div => crate::parser::BinOp::Div,
                     crate::parser::AugOp::Mod => crate::parser::BinOp::Mod,
                     crate::parser::AugOp::Pow => crate::parser::BinOp::Pow,
-                    crate::parser::AugOp::FloorDiv => crate::parser::BinOp::FloorDiv,
                     crate::parser::AugOp::Shl => crate::parser::BinOp::Shl,
                     crate::parser::AugOp::Shr => crate::parser::BinOp::Shr,
                 };
