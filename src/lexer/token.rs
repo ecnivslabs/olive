@@ -30,6 +30,7 @@ pub enum TokenKind {
     From,
     Struct,
     Impl,
+    Trait,
     Try,
     As,
     Assert,

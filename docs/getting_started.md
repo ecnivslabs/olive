@@ -55,6 +55,27 @@ fn main():
 main()
 ```
 
+## Interactive Shell
+
+`pit shell` starts an interactive REPL where you can type and run Olive code line by line:
+
+```bash
+pit shell
+```
+
+```
+Olive 0.1.0 (master, ...) on linux
+>>> let x = 10
+>>> print(x)
+10
+>>> fn double(n: int) -> int:
+...     return n * 2
+>>> double(x)
+20
+```
+
+Function and variable definitions persist across lines for the duration of the session. Type `help` for a list of shell commands, or `quit` / `exit` to leave.
+
 ## Useful CLI Flags
 
 - `pit build --time`: Build the project and show a timing breakdown for each compiler phase.

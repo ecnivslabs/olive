@@ -46,13 +46,12 @@ impl LoopUnroll {
                         Operand::Constant(Constant::Int(1)),
                     ),
                 ) = &stmt.kind
+                    && *src == *local
                 {
-                    if *src == *local {
-                        if induction.is_some() {
-                            return false;
-                        }
-                        induction = Some(*local);
+                    if induction.is_some() {
+                        return false;
                     }
+                    induction = Some(*local);
                 }
             }
         }
@@ -107,11 +106,12 @@ impl LoopUnroll {
                     Operand::Constant(Constant::Int(step)),
                 ),
             ) = &mut stmt.kind
+                && *local == iv
+                && *src == iv
+                && *step == 1
             {
-                if *local == iv && *src == iv && *step == 1 {
-                    *step = unroll_factor as i64;
-                    break;
-                }
+                *step = unroll_factor as i64;
+                break;
             }
         }
 

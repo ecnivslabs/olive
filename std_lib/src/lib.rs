@@ -33,6 +33,7 @@ pub struct OliveObj {
 #[repr(C)]
 pub struct OliveEnum {
     pub kind: i64,
+    pub type_id: i64,
     pub tag: i64,
     pub payload_ptr: *mut i64,
     pub payload_len: usize,
@@ -452,17 +453,26 @@ pub extern "C" fn olive_pow_float(base: f64, exp: f64) -> f64 {
 // Internal helpers
 // Enum operations
 #[unsafe(no_mangle)]
-pub extern "C" fn olive_enum_new(tag: i64, arg_count: i64) -> i64 {
+pub extern "C" fn olive_enum_new(type_id: i64, tag: i64, arg_count: i64) -> i64 {
     let mut payload = vec![0i64; arg_count as usize];
     let payload_ptr = payload.as_mut_ptr();
     let payload_len = payload.len();
     std::mem::forget(payload);
     Box::into_raw(Box::new(OliveEnum {
         kind: KIND_ENUM,
+        type_id,
         tag,
         payload_ptr,
         payload_len,
     })) as i64
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_enum_type_id(ptr: i64) -> i64 {
+    if ptr == 0 {
+        return -1;
+    }
+    unsafe { (*(ptr as *const OliveEnum)).type_id }
 }
 
 #[unsafe(no_mangle)]
@@ -615,6 +625,7 @@ pub extern "C" fn olive_get_index_any(obj: i64, index: i64) -> i64 {
     match kind {
         KIND_LIST => olive_list_get(obj, index),
         KIND_OBJ => olive_obj_get(obj, index),
+        KIND_ENUM => olive_enum_get(obj, index),
         _ => 0,
     }
 }

@@ -446,6 +446,7 @@ impl Lexer {
             "from" => TokenKind::From,
             "struct" => TokenKind::Struct,
             "impl" => TokenKind::Impl,
+            "trait" => TokenKind::Trait,
             "mut" => TokenKind::Mut,
             "enum" => TokenKind::Enum,
             "match" => TokenKind::Match,

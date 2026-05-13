@@ -33,13 +33,10 @@ impl Transform for DeadCodeElimination {
                     _ => {}
                 }
             }
-            if let Some(term) = &bb.terminator {
-                match &term.kind {
-                    TerminatorKind::SwitchInt { discr, .. } => {
-                        self.record_operand_usage(discr, &mut used)
-                    }
-                    _ => {}
-                }
+            if let Some(term) = &bb.terminator
+                && let TerminatorKind::SwitchInt { discr, .. } = &term.kind
+            {
+                self.record_operand_usage(discr, &mut used)
             }
         }
 
@@ -70,7 +67,8 @@ impl DeadCodeElimination {
             Rvalue::Use(op)
             | Rvalue::UnaryOp(_, op)
             | Rvalue::GetAttr(op, _)
-            | Rvalue::GetTag(op) => self.record_operand_usage(op, used),
+            | Rvalue::GetTag(op)
+            | Rvalue::GetTypeId(op) => self.record_operand_usage(op, used),
             Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) => {
                 self.record_operand_usage(l, used);
                 self.record_operand_usage(r, used);

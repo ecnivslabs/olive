@@ -490,10 +490,10 @@ impl Parser {
                 },
             ))
         } else {
-            return Err(self.err_at(
+            Err(self.err_at(
                 &self.tokens[self.pos],
                 "expected newline and indented block for match cases",
-            ));
+            ))
         }
     }
 

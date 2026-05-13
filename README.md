@@ -40,6 +40,7 @@ The goal is straightforward: expressive code that runs close to native speed and
 - `pit build`: Performs semantic analysis and builds without running.
 - `pit test`: Finds and runs all functions marked with `#[test]`.
 - `pit fmt`: Formats all `.liv` files to the standard Olive style.
+- `pit shell`: Starts an interactive REPL for running Olive code line by line.
 - `pit build --time`: Shows a timing breakdown for each compiler phase.
 - `pit run --emit-mir`: Prints the optimized MIR so you can see exactly what the compiler produced.
 

@@ -251,8 +251,13 @@ pub enum StmtKind {
         decorators: Vec<Decorator>,
     },
     Impl {
-        type_name: String, // which struct this impl is for
-        body: Vec<Stmt>,   // fn definitions
+        trait_name: Option<String>, // Some("Trait") for `impl Trait for Type`
+        type_name: String,
+        body: Vec<Stmt>,
+    },
+    Trait {
+        name: String,
+        methods: Vec<Stmt>, // Fn stmts with signatures (body = [Pass])
     },
     Enum {
         name: String,

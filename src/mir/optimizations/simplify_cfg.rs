@@ -20,45 +20,43 @@ impl SimplifyCfg {
     fn branch_simplification(&self, func: &mut MirFunction) -> bool {
         let mut changed = false;
         for bb in &mut func.basic_blocks {
-            if let Some(term) = &mut bb.terminator {
-                if let TerminatorKind::SwitchInt {
+            if let Some(term) = &mut bb.terminator
+                && let TerminatorKind::SwitchInt {
                     discr,
                     targets,
                     otherwise,
                 } = &term.kind
+            {
+                if let Operand::Constant(Constant::Bool(b)) = discr {
+                    let val = if *b { 1 } else { 0 };
+                    let goto_target = targets
+                        .iter()
+                        .find(|(v, _)| *v == val)
+                        .map(|(_, t)| *t)
+                        .unwrap_or(*otherwise);
+                    term.kind = TerminatorKind::Goto {
+                        target: goto_target,
+                    };
+                    changed = true;
+                } else if let Operand::Constant(Constant::Int(val)) = discr {
+                    let v = *val;
+                    let goto_target = targets
+                        .iter()
+                        .find(|(tv, _)| *tv == v)
+                        .map(|(_, t)| *t)
+                        .unwrap_or(*otherwise);
+                    term.kind = TerminatorKind::Goto {
+                        target: goto_target,
+                    };
+                    changed = true;
+                } else if let TerminatorKind::SwitchInt {
+                    targets, otherwise, ..
+                } = &term.kind
+                    && targets.iter().all(|(_, t)| *t == *otherwise)
                 {
-                    if let Operand::Constant(Constant::Bool(b)) = discr {
-                        let val = if *b { 1 } else { 0 };
-                        let goto_target = targets
-                            .iter()
-                            .find(|(v, _)| *v == val)
-                            .map(|(_, t)| *t)
-                            .unwrap_or(*otherwise);
-                        term.kind = TerminatorKind::Goto {
-                            target: goto_target,
-                        };
-                        changed = true;
-                    } else if let Operand::Constant(Constant::Int(val)) = discr {
-                        let v = *val;
-                        let goto_target = targets
-                            .iter()
-                            .find(|(tv, _)| *tv == v)
-                            .map(|(_, t)| *t)
-                            .unwrap_or(*otherwise);
-                        term.kind = TerminatorKind::Goto {
-                            target: goto_target,
-                        };
-                        changed = true;
-                    } else if let TerminatorKind::SwitchInt {
-                        targets, otherwise, ..
-                    } = &term.kind
-                    {
-                        if targets.iter().all(|(_, t)| *t == *otherwise) {
-                            let target = *otherwise;
-                            term.kind = TerminatorKind::Goto { target };
-                            changed = true;
-                        }
-                    }
+                    let target = *otherwise;
+                    term.kind = TerminatorKind::Goto { target };
+                    changed = true;
                 }
             }
         }
@@ -100,21 +98,21 @@ impl SimplifyCfg {
 
         let mut changed = false;
         for i in 0..n {
-            if let Some(term) = &func.basic_blocks[i].terminator {
-                if let TerminatorKind::Goto { target } = &term.kind {
-                    let t = target.0;
-                    if t != i && t < n && t != 0 && pred_count[t] == 1 {
-                        let target_bb = func.basic_blocks[t].clone();
-                        let bb = &mut func.basic_blocks[i];
-                        bb.statements.extend(target_bb.statements);
-                        bb.terminator = target_bb.terminator;
-                        func.basic_blocks[t].statements.clear();
-                        func.basic_blocks[t].terminator = Some(Terminator {
-                            kind: TerminatorKind::Unreachable,
-                            span: crate::span::Span::default(),
-                        });
-                        changed = true;
-                    }
+            if let Some(term) = &func.basic_blocks[i].terminator
+                && let TerminatorKind::Goto { target } = &term.kind
+            {
+                let t = target.0;
+                if t != i && t < n && t != 0 && pred_count[t] == 1 {
+                    let target_bb = func.basic_blocks[t].clone();
+                    let bb = &mut func.basic_blocks[i];
+                    bb.statements.extend(target_bb.statements);
+                    bb.terminator = target_bb.terminator;
+                    func.basic_blocks[t].statements.clear();
+                    func.basic_blocks[t].terminator = Some(Terminator {
+                        kind: TerminatorKind::Unreachable,
+                        span: crate::span::Span::default(),
+                    });
+                    changed = true;
                 }
             }
         }
@@ -160,15 +158,15 @@ impl SimplifyCfg {
 
         let mut remap = vec![0usize; n];
         let mut new_idx = 0;
-        for i in 0..n {
-            if reachable[i] {
+        for (i, &is_reachable) in reachable.iter().enumerate() {
+            if is_reachable {
                 remap[i] = new_idx;
                 new_idx += 1;
             }
         }
 
-        for i in 0..n {
-            if !reachable[i] {
+        for (i, &is_reachable) in reachable.iter().enumerate() {
+            if !is_reachable {
                 continue;
             }
             if let Some(term) = &mut func.basic_blocks[i].terminator {

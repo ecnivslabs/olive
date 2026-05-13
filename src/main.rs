@@ -220,6 +220,7 @@ fn load_and_parse(
                             parser::StmtKind::Fn { .. }
                                 | parser::StmtKind::Struct { .. }
                                 | parser::StmtKind::Impl { .. }
+                                | parser::StmtKind::Trait { .. }
                                 | parser::StmtKind::Let { .. }
                                 | parser::StmtKind::Const { .. }
                         )
@@ -480,28 +481,26 @@ fn compile_and_test(filename: &str, _show_time: bool) {
         if let parser::StmtKind::Fn {
             name, decorators, ..
         } = &stmt.kind
-        {
-            if decorators
+            && decorators
                 .iter()
                 .any(|d| d.name == "test" && d.is_directive)
-            {
-                print!("test {} ... ", name);
-                std::io::Write::flush(&mut std::io::stdout()).unwrap();
+        {
+            print!("test {} ... ", name);
+            std::io::Write::flush(&mut std::io::stdout()).unwrap();
 
-                if let Some(func_ptr) = codegen.get_function(name) {
-                    let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(func_ptr) };
+            if let Some(func_ptr) = codegen.get_function(name) {
+                let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(func_ptr) };
 
-                    let start = std::time::Instant::now();
-                    // run jit
-                    let _res = func();
-                    let duration = start.elapsed();
+                let start = std::time::Instant::now();
+                // run jit
+                let _res = func();
+                let duration = start.elapsed();
 
-                    println!("\x1b[1;32mok\x1b[0m ({:?})", duration);
-                    passed += 1;
-                } else {
-                    println!("\x1b[1;31mfailed\x1b[0m (not found)");
-                    failed += 1;
-                }
+                println!("\x1b[1;32mok\x1b[0m ({:?})", duration);
+                passed += 1;
+            } else {
+                println!("\x1b[1;31mfailed\x1b[0m (not found)");
+                failed += 1;
             }
         }
     }
@@ -620,7 +619,7 @@ fn walk_and_format(path: &Path) {
             let entry = entry.unwrap();
             walk_and_format(&entry.path());
         }
-    } else if path.extension().map_or(false, |ext| ext == "liv") {
+    } else if path.extension().is_some_and(|ext| ext == "liv") {
         format_file(path.to_str().unwrap());
     }
 }
@@ -988,6 +987,12 @@ fn run_shell() {
                     });
                     def_stmts.push(stmt);
                 }
+                parser::StmtKind::Trait { name, .. } => {
+                    def_stmts.retain(|s| {
+                        !matches!(&s.kind, parser::StmtKind::Trait { name: n, .. } if n == name)
+                    });
+                    def_stmts.push(stmt);
+                }
                 parser::StmtKind::Let { name, .. } => {
                     let_stmts.retain(|s| {
                         !matches!(&s.kind, parser::StmtKind::Let { name: n, .. } | parser::StmtKind::Const { name: n, .. } if n == name)
@@ -1047,7 +1052,9 @@ fn mangle_stmt(stmt: &mut parser::Stmt, prefix: &str, names: &HashSet<String>) {
                 mangle_stmt(s, prefix, names);
             }
         }
-        parser::StmtKind::Impl { type_name, body } => {
+        parser::StmtKind::Impl {
+            type_name, body, ..
+        } => {
             if names.contains(type_name) {
                 *type_name = format!("{}::{}", prefix, type_name);
             }
@@ -1055,6 +1062,7 @@ fn mangle_stmt(stmt: &mut parser::Stmt, prefix: &str, names: &HashSet<String>) {
                 mangle_stmt(s, prefix, names);
             }
         }
+        parser::StmtKind::Trait { .. } => {}
         parser::StmtKind::If {
             then_body,
             elif_clauses,

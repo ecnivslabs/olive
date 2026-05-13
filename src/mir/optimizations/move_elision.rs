@@ -84,7 +84,8 @@ impl MoveElision {
             Rvalue::Use(op)
             | Rvalue::UnaryOp(_, op)
             | Rvalue::GetAttr(op, _)
-            | Rvalue::GetTag(op) => self.optimize_operand(op, live_after, locals),
+            | Rvalue::GetTag(op)
+            | Rvalue::GetTypeId(op) => self.optimize_operand(op, live_after, locals),
             Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) => {
                 let mut changed = self.optimize_operand(l, live_after, locals);
                 changed |= self.optimize_operand(r, live_after, locals);
@@ -126,15 +127,13 @@ impl MoveElision {
         live_after: &rustc_hash::FxHashSet<Local>,
         locals: &[LocalDecl],
     ) -> bool {
-        if let Operand::Copy(local) = op {
-            if !live_after.contains(local) {
-                let ty = &locals[local.0].ty;
-                if ty.is_move_type() {
-                    if !live_after.contains(local) {
-                        *op = Operand::Move(*local);
-                        return true;
-                    }
-                }
+        if let Operand::Copy(local) = op
+            && !live_after.contains(local)
+        {
+            let ty = &locals[local.0].ty;
+            if ty.is_move_type() {
+                *op = Operand::Move(*local);
+                return true;
             }
         }
         false

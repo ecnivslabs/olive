@@ -39,7 +39,7 @@ pub enum AggregateKind {
     List,
     Set,
     Dict,
-    EnumVariant(usize),
+    EnumVariant(i64, usize),
 }
 
 // Right-hand side expressions in an assignment.
@@ -61,6 +61,8 @@ pub enum Rvalue {
     GetIndex(Operand, Operand),
     // get enum tag
     GetTag(Operand),
+    // get enum type id (discriminates which enum type in a union)
+    GetTypeId(Operand),
     // shared reference
     Ref(Local),
     // mutable reference

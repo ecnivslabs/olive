@@ -228,9 +228,6 @@ impl<'a> BorrowChecker<'a> {
                 let _ = state.set(*local, LocalState::Dead);
             }
             StatementKind::Drop(local) => {
-                // Drop only happens if the variable is still initialized.
-                // If it's already moved, drop is a no-op at runtime.
-                // But for the borrow checker, we just ensure it was initialized at some point.
                 if state.get(*local) == LocalState::Initialized
                     && let Err(msg) = state.set(*local, LocalState::Moved)
                 {
@@ -300,7 +297,7 @@ impl<'a> BorrowChecker<'a> {
                 self.check_operand(obj, state, span);
                 self.check_operand(idx, state, span);
             }
-            Rvalue::GetTag(op) => self.check_operand(op, state, span),
+            Rvalue::GetTag(op) | Rvalue::GetTypeId(op) => self.check_operand(op, state, span),
             Rvalue::Ref(local) => {
                 let s = state.get(*local);
                 if s != LocalState::Initialized {

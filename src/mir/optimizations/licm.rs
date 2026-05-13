@@ -5,9 +5,9 @@ use crate::mir::*;
 use crate::span::Span;
 use rustc_hash::FxHashSet as HashSet;
 
-pub struct LICM;
+pub struct Licm;
 
-impl Transform for LICM {
+impl Transform for Licm {
     fn name(&self) -> &'static str {
         "licm"
     }
@@ -33,7 +33,7 @@ impl Transform for LICM {
     }
 }
 
-impl LICM {
+impl Licm {
     fn optimize_loop(&self, func: &mut MirFunction, lp: &loop_utils::Loop) -> bool {
         let mut assign_counts = rustc_hash::FxHashMap::default();
         for &bb_id in &lp.body {
@@ -45,7 +45,7 @@ impl LICM {
         }
 
         let mut defined_in_loop = HashSet::default();
-        for (local, _count) in &assign_counts {
+        for local in assign_counts.keys() {
             defined_in_loop.insert(*local);
         }
 
@@ -61,18 +61,16 @@ impl LICM {
             for &bb_id in &sorted_body {
                 let bb = &func.basic_blocks[bb_id.0];
                 for (i, stmt) in bb.statements.iter().enumerate() {
-                    if let StatementKind::Assign(local, rval) = &stmt.kind {
-                        if func.locals[local.0].name.is_none()
-                            && assign_counts.get(local) == Some(&1)
-                            && !invariant_locals.contains(local)
-                            && self.is_invariant(rval, &defined_in_loop, &invariant_locals)
-                        {
-                            if self.is_safe_to_hoist(rval) {
-                                invariant_locals.insert(*local);
-                                invariant_stmts.push((bb_id, i));
-                                loop_changed = true;
-                            }
-                        }
+                    if let StatementKind::Assign(local, rval) = &stmt.kind
+                        && func.locals[local.0].name.is_none()
+                        && assign_counts.get(local) == Some(&1)
+                        && !invariant_locals.contains(local)
+                        && self.is_invariant(rval, &defined_in_loop, &invariant_locals)
+                        && self.is_safe_to_hoist(rval)
+                    {
+                        invariant_locals.insert(*local);
+                        invariant_stmts.push((bb_id, i));
+                        loop_changed = true;
                     }
                 }
             }
@@ -118,13 +116,13 @@ impl LICM {
     }
 
     fn is_safe_to_hoist(&self, rval: &Rvalue) -> bool {
-        match rval {
+        matches!(
+            rval,
             Rvalue::Use(_)
-            | Rvalue::UnaryOp(_, _)
-            | Rvalue::BinaryOp(_, _, _)
-            | Rvalue::GetIndex(_, _) => true,
-            _ => false,
-        }
+                | Rvalue::UnaryOp(_, _)
+                | Rvalue::BinaryOp(_, _, _)
+                | Rvalue::GetIndex(_, _)
+        )
     }
 
     fn hoist_invariants(

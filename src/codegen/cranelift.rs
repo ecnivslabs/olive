@@ -107,6 +107,7 @@ impl<'a> CraneliftCodegen<'a> {
                 load!(b"olive_obj_len", "__olive_obj_len");
                 load!(b"olive_enum_new", "__olive_enum_new");
                 load!(b"olive_enum_tag", "__olive_enum_tag");
+                load!(b"olive_enum_type_id", "__olive_enum_type_id");
                 load!(b"olive_enum_get", "__olive_enum_get");
                 load!(b"olive_enum_set", "__olive_enum_set");
                 load!(b"olive_free_enum", "__olive_free_enum");
@@ -253,8 +254,9 @@ impl<'a> CraneliftCodegen<'a> {
             ("__olive_has_next", &sig_i64_i64),
             ("__olive_time_now", &sig_void_f64),
             ("__olive_time_sleep", &sig_f64_void),
-            ("__olive_enum_new", &sig_i64_i64_i64),
+            ("__olive_enum_new", &sig_i64_i64_i64_i64),
             ("__olive_enum_tag", &sig_i64_i64),
+            ("__olive_enum_type_id", &sig_i64_i64),
             ("__olive_enum_get", &sig_i64_i64_i64),
             ("__olive_enum_set", &sig_i64_i64_i64_void),
             ("__olive_free_enum", &sig_i64_void),
@@ -305,7 +307,7 @@ impl<'a> CraneliftCodegen<'a> {
                     | "__olive_free_future"
                     | "__olive_sm_poll"
             );
-            if !needed.contains(name) && !(always_needed && has_async) {
+            if !(needed.contains(name) || always_needed && has_async) {
                 continue;
             }
             let id = self
@@ -422,25 +424,25 @@ impl<'a> CraneliftCodegen<'a> {
     }
 
     fn collect_strings_in_operand(&mut self, op: &Operand) {
-        if let Operand::Constant(Constant::Str(s)) = op {
-            if !self.string_ids.contains_key(s) {
-                let mut data_ctx = DataDescription::new();
-                let mut bytes = s.as_bytes().to_vec();
+        if let Operand::Constant(Constant::Str(s)) = op
+            && !self.string_ids.contains_key(s)
+        {
+            let mut data_ctx = DataDescription::new();
+            let mut bytes = s.as_bytes().to_vec();
+            bytes.push(0);
+            // pad for tagging
+            if bytes.len() % 2 != 0 {
                 bytes.push(0);
-                // pad for tagging
-                if bytes.len() % 2 != 0 {
-                    bytes.push(0);
-                }
-                data_ctx.define(bytes.into_boxed_slice());
-
-                let name = format!("str_{}", self.string_ids.len());
-                let id = self
-                    .module
-                    .declare_data(&name, Linkage::Export, false, false)
-                    .unwrap();
-                self.module.define_data(id, &data_ctx).unwrap();
-                self.string_ids.insert(s.clone(), id);
             }
+            data_ctx.define(bytes.into_boxed_slice());
+
+            let name = format!("str_{}", self.string_ids.len());
+            let id = self
+                .module
+                .declare_data(&name, Linkage::Export, false, false)
+                .unwrap();
+            self.module.define_data(id, &data_ctx).unwrap();
+            self.string_ids.insert(s.clone(), id);
         }
     }
 }
@@ -496,13 +498,15 @@ fn scan_rvalue_imports(
     needed: &mut std::collections::HashSet<&'static str>,
 ) {
     match rval {
-        Rvalue::Call { func, args } => {
-            if let Operand::Constant(Constant::Function(name)) = func {
-                if let Some(r) = resolve_builtin_import(func_mir, name, args) {
-                    needed.insert(r);
-                }
+        Rvalue::Call {
+            func: Operand::Constant(Constant::Function(name)),
+            args,
+        } => {
+            if let Some(r) = resolve_builtin_import(func_mir, name, args) {
+                needed.insert(r);
             }
         }
+        Rvalue::Call { .. } => {}
         Rvalue::BinaryOp(op, lhs, _) => {
             use crate::parser::BinOp::*;
             match op {
@@ -542,6 +546,9 @@ fn scan_rvalue_imports(
         Rvalue::GetTag(..) => {
             needed.insert("__olive_enum_tag");
         }
+        Rvalue::GetTypeId(..) => {
+            needed.insert("__olive_enum_type_id");
+        }
         Rvalue::GetIndex(obj, _) => {
             needed.insert("__olive_list_get");
             needed.insert("__olive_obj_get");
@@ -550,7 +557,7 @@ fn scan_rvalue_imports(
                 let ty = &func_mir.locals[loc.0].ty;
                 if matches!(ty, OliveType::Str) {
                     needed.insert("__olive_str_get");
-                } else if matches!(ty, OliveType::Enum(_)) {
+                } else if matches!(ty, OliveType::Enum(_) | OliveType::Union(_)) {
                     needed.insert("__olive_enum_get");
                 }
             }
@@ -567,7 +574,7 @@ fn scan_rvalue_imports(
                     needed.insert("__olive_set_add");
                     needed.insert("__olive_set_new");
                 }
-                AggregateKind::EnumVariant(_) => {
+                AggregateKind::EnumVariant(_, _) => {
                     needed.insert("__olive_enum_new");
                     needed.insert("__olive_enum_set");
                 }
@@ -645,6 +652,7 @@ fn resolve_builtin_import(
             "__olive_time_sleep" => Some("__olive_time_sleep"),
             "__olive_enum_new" => Some("__olive_enum_new"),
             "__olive_enum_tag" => Some("__olive_enum_tag"),
+            "__olive_enum_type_id" => Some("__olive_enum_type_id"),
             "__olive_enum_get" => Some("__olive_enum_get"),
             "__olive_enum_set" => Some("__olive_enum_set"),
             "__olive_str_char" => Some("__olive_str_char"),
@@ -719,16 +727,10 @@ fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&'static str
         "print" => match current_ty {
             OliveType::Str => Some("__olive_print_str"),
             OliveType::Float => Some("__olive_print_float"),
-            t if matches!(
-                t,
-                OliveType::List(_) | OliveType::Tuple(_) | OliveType::Set(_)
-            ) =>
-            {
+            OliveType::List(_) | OliveType::Tuple(_) | OliveType::Set(_) => {
                 Some("__olive_print_list")
             }
-            t if matches!(t, OliveType::Dict(_, _) | OliveType::Struct(_)) => {
-                Some("__olive_print_obj")
-            }
+            OliveType::Dict(_, _) | OliveType::Struct(_) => Some("__olive_print_obj"),
             _ => Some("__olive_print_int"),
         },
         "str" => match current_ty {
@@ -841,21 +843,19 @@ impl<'a> CraneliftCodegen<'a> {
                         args,
                     },
                 ) = &stmt.kind
+                    && name == "__olive_await"
+                    && let Some(sub_op) = args.first()
                 {
-                    if name == "__olive_await" {
-                        if let Some(sub_op) = args.first() {
-                            let sub_local = match sub_op {
-                                Operand::Copy(l) | Operand::Move(l) => *l,
-                                _ => return None,
-                            };
-                            points.push(SmAwaitPoint {
-                                bb_idx,
-                                stmt_idx,
-                                result_local: *result_local,
-                                sub_future_local: sub_local,
-                            });
-                        }
-                    }
+                    let sub_local = match sub_op {
+                        Operand::Copy(l) | Operand::Move(l) => *l,
+                        _ => return None,
+                    };
+                    points.push(SmAwaitPoint {
+                        bb_idx,
+                        stmt_idx,
+                        result_local: *result_local,
+                        sub_future_local: sub_local,
+                    });
                 }
             }
         }
@@ -932,8 +932,8 @@ impl<'a> CraneliftCodegen<'a> {
         let frame_d = builder.use_var(frame_var);
         let state_val = builder.ins().load(types::I64, mf, frame_d, 0);
         let mut sw = cranelift::frontend::Switch::new();
-        for k in 0..=n_awaits {
-            sw.set_entry(k as u128, state_blks[k]);
+        for (k, &blk) in state_blks.iter().enumerate() {
+            sw.set_entry(k as u128, blk);
         }
         sw.emit(&mut builder, state_val, done_blk);
         for blk in &state_blks {
@@ -1110,9 +1110,9 @@ impl<'a> CraneliftCodegen<'a> {
         builder.ins().return_(&[z]);
 
         // seal segments
-        for bb_i in 0..n_bbs {
-            for seg_j in 0..n_segs[bb_i] {
-                builder.seal_block(seg_blks[bb_i][seg_j]);
+        for seg_row in &seg_blks {
+            for &blk in seg_row {
+                builder.seal_block(blk);
             }
         }
 
@@ -1770,6 +1770,13 @@ impl<'a> CraneliftCodegen<'a> {
                 let inst = builder.ins().call(local_func, &[o]);
                 builder.inst_results(inst)[0]
             }
+            Rvalue::GetTypeId(obj) => {
+                let o = Self::translate_operand(builder, obj, vars, string_ids, module);
+                let fn_id = func_ids.get("__olive_enum_type_id").unwrap();
+                let local_func = module.declare_func_in_func(*fn_id, builder.func);
+                let inst = builder.ins().call(local_func, &[o]);
+                builder.inst_results(inst)[0]
+            }
             Rvalue::GetIndex(obj, idx) => {
                 let ty = if let Operand::Copy(loc) | Operand::Move(loc) = obj {
                     &func_mir.locals[loc.0].ty
@@ -1839,12 +1846,13 @@ impl<'a> CraneliftCodegen<'a> {
                         }
                         dict_ptr
                     }
-                    AggregateKind::EnumVariant(tag) => {
+                    AggregateKind::EnumVariant(type_id, tag) => {
+                        let type_id_val = builder.ins().iconst(types::I64, *type_id);
                         let tag_val = builder.ins().iconst(types::I64, *tag as i64);
                         let count = builder.ins().iconst(types::I64, ops.len() as i64);
                         let new_id = func_ids.get("__olive_enum_new").unwrap();
                         let new_func = module.declare_func_in_func(*new_id, builder.func);
-                        let inst = builder.ins().call(new_func, &[tag_val, count]);
+                        let inst = builder.ins().call(new_func, &[type_id_val, tag_val, count]);
                         let enum_ptr = builder.inst_results(inst)[0];
 
                         let set_id = func_ids.get("__olive_enum_set").unwrap();
@@ -1969,6 +1977,7 @@ impl<'a> CraneliftCodegen<'a> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn translate_terminator(
         builder: &mut FunctionBuilder,
         term: &Terminator,

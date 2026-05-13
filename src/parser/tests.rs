@@ -460,7 +460,9 @@ mod tests {
     #[test]
     fn impl_block_parsing() {
         match first(&parse("impl MyStruct:\n    fn f(): pass\n")) {
-            StmtKind::Impl { type_name, body } => {
+            StmtKind::Impl {
+                type_name, body, ..
+            } => {
                 assert_eq!(type_name, "MyStruct");
                 assert!(matches!(body[0].kind, StmtKind::Fn { .. }));
             }

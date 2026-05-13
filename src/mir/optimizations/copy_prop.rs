@@ -25,10 +25,10 @@ impl Transform for CopyPropagation {
 
         let mut safe_copies: HashMap<Local, Local> = HashMap::default();
         for (dest, src) in copy_assignments {
-            if assign_counts.get(&dest) == Some(&1) {
-                if *assign_counts.get(&src).unwrap_or(&0) <= 1 || src.0 <= func.arg_count {
-                    safe_copies.insert(dest, src);
-                }
+            if assign_counts.get(&dest) == Some(&1)
+                && (*assign_counts.get(&src).unwrap_or(&0) <= 1 || src.0 <= func.arg_count)
+            {
+                safe_copies.insert(dest, src);
             }
         }
 
@@ -60,13 +60,10 @@ impl Transform for CopyPropagation {
                     _ => {}
                 }
             }
-            if let Some(term) = &mut bb.terminator {
-                match &mut term.kind {
-                    TerminatorKind::SwitchInt { discr, .. } => {
-                        changed |= self.propagate_copies_in_operand(discr, &safe_copies);
-                    }
-                    _ => {}
-                }
+            if let Some(term) = &mut bb.terminator
+                && let TerminatorKind::SwitchInt { discr, .. } = &mut term.kind
+            {
+                changed |= self.propagate_copies_in_operand(discr, &safe_copies);
             }
         }
         changed
@@ -115,11 +112,11 @@ impl CopyPropagation {
     }
 
     fn propagate_copies_in_operand(&self, op: &mut Operand, map: &HashMap<Local, Local>) -> bool {
-        if let Operand::Copy(l) = op {
-            if let Some(new_l) = map.get(l) {
-                *op = Operand::Copy(*new_l);
-                return true;
-            }
+        if let Operand::Copy(l) = op
+            && let Some(new_l) = map.get(l)
+        {
+            *op = Operand::Copy(*new_l);
+            return true;
         }
         false
     }

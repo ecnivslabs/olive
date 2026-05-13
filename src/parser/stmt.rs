@@ -12,6 +12,7 @@ impl Parser {
             TokenKind::Async => self.parse_async_stmt(),
             TokenKind::Struct => self.parse_struct(),
             TokenKind::Impl => self.parse_impl(),
+            TokenKind::Trait => self.parse_trait(),
             TokenKind::Enum => self.parse_enum(),
             TokenKind::If => self.parse_if(),
             TokenKind::While => self.parse_while(),
@@ -143,7 +144,7 @@ impl Parser {
             let body = self.parse_block()?;
             let span = self.span_from(&start);
             Ok(Stmt::new(
-                StmtKind::ExprStmt(Expr::new(ExprKind::AsyncBlock(body), span.clone())),
+                StmtKind::ExprStmt(Expr::new(ExprKind::AsyncBlock(body), span)),
                 span,
             ))
         } else {
@@ -237,10 +238,10 @@ impl Parser {
         let start = self.peek().clone();
         self.expect(TokenKind::Struct)?;
         let name = self.expect(TokenKind::Identifier)?.value;
-        if let Some(first_char) = name.chars().next() {
-            if !first_char.is_uppercase() {
-                return Err(self.err_at(&start, "struct names must be capitalized"));
-            }
+        if let Some(first_char) = name.chars().next()
+            && !first_char.is_uppercase()
+        {
+            return Err(self.err_at(&start, "struct names must be capitalized"));
         }
         // fields
         self.expect(TokenKind::Colon)?;
@@ -303,20 +304,54 @@ impl Parser {
     pub(crate) fn parse_impl(&mut self) -> ParseResult<Stmt> {
         let start = self.peek().clone();
         self.expect(TokenKind::Impl)?;
-        let type_name = self.expect(TokenKind::Identifier)?.value;
+        let first_name = self.expect(TokenKind::Identifier)?.value;
+        // `impl Trait for Type:` vs `impl Type:`
+        let (trait_name, type_name) = if self.peek().kind == TokenKind::For {
+            self.advance(); // consume `for`
+            let ty = self.expect(TokenKind::Identifier)?.value;
+            (Some(first_name), ty)
+        } else {
+            (None, first_name)
+        };
         let body = self.parse_block()?;
         let span = self.span_from(&start);
-        Ok(Stmt::new(StmtKind::Impl { type_name, body }, span))
+        Ok(Stmt::new(
+            StmtKind::Impl {
+                trait_name,
+                type_name,
+                body,
+            },
+            span,
+        ))
+    }
+
+    pub(crate) fn parse_trait(&mut self) -> ParseResult<Stmt> {
+        let start = self.peek().clone();
+        self.expect(TokenKind::Trait)?;
+        let name = self.expect(TokenKind::Identifier)?.value;
+        let raw_body = self.parse_block()?;
+        let mut methods = Vec::new();
+        for s in raw_body {
+            match &s.kind {
+                StmtKind::Fn { .. } | StmtKind::Pass => {}
+                _ => return Err(self.err_at(&start, "expected fn or pass in trait body")),
+            }
+            if matches!(s.kind, StmtKind::Fn { .. }) {
+                methods.push(s);
+            }
+        }
+        let span = self.span_from(&start);
+        Ok(Stmt::new(StmtKind::Trait { name, methods }, span))
     }
 
     pub(crate) fn parse_enum(&mut self) -> ParseResult<Stmt> {
         let start = self.peek().clone();
         self.expect(TokenKind::Enum)?;
         let name = self.expect(TokenKind::Identifier)?.value;
-        if let Some(first_char) = name.chars().next() {
-            if !first_char.is_uppercase() {
-                return Err(self.err_at(&start, "enum names must be capitalized"));
-            }
+        if let Some(first_char) = name.chars().next()
+            && !first_char.is_uppercase()
+        {
+            return Err(self.err_at(&start, "enum names must be capitalized"));
         }
         self.expect(TokenKind::Colon)?;
 

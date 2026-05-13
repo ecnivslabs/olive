@@ -66,13 +66,12 @@ impl LoopVectorizer {
                         Operand::Constant(Constant::Int(1)),
                     ),
                 ) = &stmt.kind
+                    && *src == *local
                 {
-                    if *src == *local {
-                        if induction.is_some() {
-                            return None;
-                        }
-                        induction = Some(*local);
+                    if induction.is_some() {
+                        return None;
                     }
+                    induction = Some(*local);
                 }
             }
         }
@@ -92,11 +91,10 @@ impl LoopVectorizer {
                 _,
                 Rvalue::BinaryOp(crate::parser::BinOp::Lt, Operand::Copy(idx), lim),
             ) = &stmt.kind
+                && *idx == i
             {
-                if *idx == i {
-                    limit = Some(lim.clone());
-                    break;
-                }
+                limit = Some(lim.clone());
+                break;
             }
         }
         let limit = limit?;
@@ -220,11 +218,10 @@ impl LoopVectorizer {
                     local,
                     Rvalue::BinaryOp(crate::parser::BinOp::Lt, Operand::Copy(idx), _),
                 ) = &stmt.kind
+                    && *idx == i
                 {
-                    if *idx == i {
-                        found = Some(*local);
-                        break;
-                    }
+                    found = Some(*local);
+                    break;
                 }
             }
             found
@@ -233,24 +230,24 @@ impl LoopVectorizer {
         if let Some(cond_local) = cond_local {
             let header = &mut func.basic_blocks[lp.header.0];
             for stmt in &mut header.statements {
-                if let StatementKind::Assign(l, _) = &stmt.kind {
-                    if *l == cond_local {
-                        stmt.kind = StatementKind::Assign(
-                            cond_local,
-                            Rvalue::BinaryOp(
-                                crate::parser::BinOp::Lt,
-                                Operand::Copy(i),
-                                Operand::Copy(vec_limit_local),
-                            ),
-                        );
-                        break;
-                    }
+                if let StatementKind::Assign(l, _) = &stmt.kind
+                    && *l == cond_local
+                {
+                    stmt.kind = StatementKind::Assign(
+                        cond_local,
+                        Rvalue::BinaryOp(
+                            crate::parser::BinOp::Lt,
+                            Operand::Copy(i),
+                            Operand::Copy(vec_limit_local),
+                        ),
+                    );
+                    break;
                 }
             }
-            if let Some(term) = &mut header.terminator {
-                if let TerminatorKind::SwitchInt { otherwise, .. } = &mut term.kind {
-                    *otherwise = epilogue_header;
-                }
+            if let Some(term) = &mut header.terminator
+                && let TerminatorKind::SwitchInt { otherwise, .. } = &mut term.kind
+            {
+                *otherwise = epilogue_header;
             }
         } else {
             return false;
@@ -352,17 +349,17 @@ impl LoopVectorizer {
                         Operand::Constant(Constant::Int(1)),
                     ),
                 ) = &mut stmt.kind
+                    && *local == i
+                    && *src == i
                 {
-                    if *local == i && *src == i {
-                        stmt.kind = StatementKind::Assign(
-                            i,
-                            Rvalue::BinaryOp(
-                                crate::parser::BinOp::Add,
-                                Operand::Copy(i),
-                                Operand::Constant(Constant::Int(width as i64)),
-                            ),
-                        );
-                    }
+                    stmt.kind = StatementKind::Assign(
+                        i,
+                        Rvalue::BinaryOp(
+                            crate::parser::BinOp::Add,
+                            Operand::Copy(i),
+                            Operand::Constant(Constant::Int(width as i64)),
+                        ),
+                    );
                 }
             }
         }

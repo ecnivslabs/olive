@@ -73,7 +73,9 @@ impl<'a> MirBuilder<'a> {
                 StmtKind::Fn { name, params, .. } => {
                     self.register_fn_meta(name, params);
                 }
-                StmtKind::Impl { type_name, body } => {
+                StmtKind::Impl {
+                    type_name, body, ..
+                } => {
                     for s in body {
                         if let StmtKind::Fn {
                             name: fn_name,
@@ -94,6 +96,7 @@ impl<'a> MirBuilder<'a> {
         for stmt in &program.stmts {
             match &stmt.kind {
                 StmtKind::Fn { .. } | StmtKind::Impl { .. } => self.lower_fn_def_or_impl(stmt),
+                StmtKind::Trait { .. } => {}
                 _ => self.lower_stmt(stmt),
             }
         }
@@ -211,22 +214,24 @@ impl<'a> MirBuilder<'a> {
 
         // Place positional args into regular slots
         let mut pos_consumed = 0;
-        for i in 0..regular_end {
+        for (i, slot) in result.iter_mut().enumerate().take(regular_end) {
             if Some(i) == vararg_idx || Some(i) == kwarg_idx {
                 continue;
             }
             if pos_consumed < positional.len() {
-                result[i] = Some(positional[pos_consumed].clone());
+                *slot = Some(positional[pos_consumed].clone());
                 pos_consumed += 1;
             }
         }
 
         // Place keyword args by name match into regular slots
         for (kw_name, kw_op) in &keyword {
-            if let Some(pos) = param_names.iter().position(|n| n == kw_name) {
-                if Some(pos) != vararg_idx && Some(pos) != kwarg_idx && pos < regular_end {
-                    result[pos] = Some(kw_op.clone());
-                }
+            if let Some(pos) = param_names.iter().position(|n| n == kw_name)
+                && Some(pos) != vararg_idx
+                && Some(pos) != kwarg_idx
+                && pos < regular_end
+            {
+                result[pos] = Some(kw_op.clone());
             }
         }
 
@@ -317,6 +322,20 @@ impl<'a> MirBuilder<'a> {
         if let Some(scope) = self.scope_locals.last_mut() {
             scope.push(local);
         }
+        local
+    }
+
+    // Create a local not tracked by scope — ownership transferred to caller's variable.
+    fn new_unscoped_local(&mut self, ty: Type) -> Local {
+        let id = self.current_locals.len();
+        let local = Local(id);
+        self.current_locals.push(LocalDecl {
+            ty,
+            name: None,
+            span: Span::default(),
+            is_mut: true,
+        });
+        self.push_statement(StatementKind::StorageLive(local), Span::default());
         local
     }
 
@@ -537,7 +556,11 @@ impl<'a> MirBuilder<'a> {
                 self.lower_fn_def(stmt);
             }
 
-            StmtKind::Impl { type_name, body } => {
+            StmtKind::Trait { .. } => {}
+
+            StmtKind::Impl {
+                type_name, body, ..
+            } => {
                 for s in body {
                     if let StmtKind::Fn { name: fn_name, .. } = &s.kind {
                         let mangled_name = format!("{}::{}", type_name, fn_name);
@@ -593,8 +616,8 @@ impl<'a> MirBuilder<'a> {
                     self.start_function(init_name, n_params, Type::Null);
 
                     // params
-                    let self_local =
-                        self.new_local(Type::Struct(name.clone()), Some("self".to_string()), false);
+                    // Use Type::Any so self is not dropped at scope exit (caller owns the struct)
+                    let self_local = self.new_local(Type::Any, Some("self".to_string()), false);
                     let mut field_locals = Vec::new();
                     for field in fields {
                         let field_ty = field
@@ -886,19 +909,19 @@ impl<'a> MirBuilder<'a> {
                 self.memo_context = None;
             } else {
                 for (i, s) in body.iter().enumerate() {
-                    if i == body.len() - 1 {
-                        if let StmtKind::ExprStmt(e) = &s.kind {
-                            let rval = self.lower_expr(e);
-                            self.push_statement(
-                                StatementKind::Assign(Local(0), Rvalue::Use(rval)),
-                                e.span,
-                            );
-                            if let Some(bb) = self.current_block {
-                                self.terminate_block(bb, TerminatorKind::Return, e.span);
-                            }
-                            self.current_block = Some(self.new_block());
-                            continue;
+                    if i == body.len() - 1
+                        && let StmtKind::ExprStmt(e) = &s.kind
+                    {
+                        let rval = self.lower_expr(e);
+                        self.push_statement(
+                            StatementKind::Assign(Local(0), Rvalue::Use(rval)),
+                            e.span,
+                        );
+                        if let Some(bb) = self.current_block {
+                            self.terminate_block(bb, TerminatorKind::Return, e.span);
                         }
+                        self.current_block = Some(self.new_block());
+                        continue;
                     }
                     self.lower_stmt(s);
                 }
@@ -925,7 +948,9 @@ impl<'a> MirBuilder<'a> {
     fn lower_fn_def_or_impl(&mut self, stmt: &Stmt) {
         match &stmt.kind {
             StmtKind::Fn { .. } => self.lower_fn_def(stmt),
-            StmtKind::Impl { type_name, body } => {
+            StmtKind::Impl {
+                type_name, body, ..
+            } => {
                 let type_name = type_name.clone();
                 let body = body.clone();
                 for s in &body {
@@ -1639,12 +1664,16 @@ impl<'a> MirBuilder<'a> {
                     }
                 }
                 if let ExprKind::Identifier(name) = &callee.kind {
-                    if let Some(&(_, tag)) = self.enum_variants.get(name) {
+                    if let Some((enum_name, tag)) = self.enum_variants.get(name).cloned() {
+                        let type_id = Self::enum_type_id(&enum_name);
                         let tmp = self.new_tmp_for_expr(expr);
                         self.push_statement(
                             StatementKind::Assign(
                                 tmp,
-                                Rvalue::Aggregate(AggregateKind::EnumVariant(tag), arg_ops),
+                                Rvalue::Aggregate(
+                                    AggregateKind::EnumVariant(type_id, tag),
+                                    arg_ops,
+                                ),
                             ),
                             expr.span,
                         );
@@ -1679,40 +1708,50 @@ impl<'a> MirBuilder<'a> {
                 // If the callee is an attribute access, it's a method call.
                 if let ExprKind::Attr { obj, attr } = &callee.kind {
                     if let ExprKind::Identifier(name) = &obj.kind {
-                        // Check if it's a module function call (math.sqrt())
-                        let mangled = format!("{}::{}", name, attr);
+                        let obj_ty = self.get_type(obj.id);
+                        // Only treat as module/enum-namespace if not a struct/self variable
+                        let is_struct_var = matches!(obj_ty, Type::Struct(_) | Type::Any)
+                            && self.lookup_var(name).is_some();
+                        if !is_struct_var {
+                            // Check if it's a module function call (math.sqrt())
+                            let mangled = format!("{}::{}", name, attr);
 
-                        // Check if it's an enum variant constructor
-                        let tag_opt = self.enum_variants.get(&mangled).map(|(_, t)| *t);
-                        if let Some(tag) = tag_opt {
+                            // Check if it's an enum variant constructor
+                            let variant_info = self.enum_variants.get(&mangled).cloned();
+                            if let Some((enum_name, tag)) = variant_info {
+                                let type_id = Self::enum_type_id(&enum_name);
+                                let tmp = self.new_tmp_for_expr(expr);
+                                self.push_statement(
+                                    StatementKind::Assign(
+                                        tmp,
+                                        Rvalue::Aggregate(
+                                            AggregateKind::EnumVariant(type_id, tag),
+                                            arg_ops,
+                                        ),
+                                    ),
+                                    expr.span,
+                                );
+                                return self.operand_for_local(tmp);
+                            }
+
+                            // If it's a namespaced function, lower it as a direct call
+                            let callee_op = Operand::Constant(Constant::Function(mangled));
                             let tmp = self.new_tmp_for_expr(expr);
                             self.push_statement(
                                 StatementKind::Assign(
                                     tmp,
-                                    Rvalue::Aggregate(AggregateKind::EnumVariant(tag), arg_ops),
+                                    Rvalue::Call {
+                                        func: callee_op,
+                                        args: arg_ops,
+                                    },
                                 ),
                                 expr.span,
                             );
                             return self.operand_for_local(tmp);
                         }
-
-                        // If it's a namespaced function, lower it as a direct call
-                        let callee_op = Operand::Constant(Constant::Function(mangled));
-                        let tmp = self.new_tmp_for_expr(expr);
-                        self.push_statement(
-                            StatementKind::Assign(
-                                tmp,
-                                Rvalue::Call {
-                                    func: callee_op,
-                                    args: arg_ops,
-                                },
-                            ),
-                            expr.span,
-                        );
-                        return self.operand_for_local(tmp);
                     }
 
-                    let obj_op = self.lower_expr(obj);
+                    let obj_op = self.lower_expr_as_copy(obj);
                     let tmp = self.new_tmp_for_expr(expr);
 
                     // Prepend 'self' (the object) to the arguments.
@@ -1759,7 +1798,8 @@ impl<'a> MirBuilder<'a> {
                 // If the callee is a Struct, this is a constructor call.
                 let callee_ty = self.get_type(callee.id);
                 if let Type::Struct(struct_name) = callee_ty {
-                    let obj_tmp = self.new_tmp_for_expr(expr);
+                    // Unscoped: ownership transfers to the let-binding's local, avoid double-drop.
+                    let obj_tmp = self.new_unscoped_local(self.get_type(expr.id));
                     self.push_statement(
                         StatementKind::Assign(
                             obj_tmp,
@@ -1858,21 +1898,27 @@ impl<'a> MirBuilder<'a> {
 
             ExprKind::Attr { obj, attr } => {
                 if let ExprKind::Identifier(name) = &obj.kind {
-                    // Check if it's a module attribute (math.PI)
-                    let mangled = format!("{}::{}", name, attr);
-                    if let Some(local) = self.lookup_var(&mangled) {
-                        let ty = self.current_locals[local.0].ty.clone();
-                        return if ty.is_move_type() {
-                            Operand::Move(local)
-                        } else {
-                            Operand::Copy(local)
-                        };
+                    let obj_ty = self.get_type(obj.id);
+                    // Only treat as module attr if obj is not a struct/self variable
+                    let is_struct_or_self = matches!(obj_ty, Type::Struct(_) | Type::Any)
+                        && self.lookup_var(name).is_some();
+                    if !is_struct_or_self {
+                        // Check if it's a module attribute (math.PI)
+                        let mangled = format!("{}::{}", name, attr);
+                        if let Some(local) = self.lookup_var(&mangled) {
+                            let ty = self.current_locals[local.0].ty.clone();
+                            return if ty.is_move_type() {
+                                Operand::Move(local)
+                            } else {
+                                Operand::Copy(local)
+                            };
+                        }
+                        if let Some(global_op) = self.globals.get(&mangled) {
+                            return global_op.clone();
+                        }
+                        // Fallback: assume it's a function (math.sqrt)
+                        return Operand::Constant(Constant::Function(mangled));
                     }
-                    if let Some(global_op) = self.globals.get(&mangled) {
-                        return global_op.clone();
-                    }
-                    // Fallback: assume it's a function (math.sqrt)
-                    return Operand::Constant(Constant::Function(mangled));
                 }
                 let o = self.lower_expr_as_copy(obj);
                 let tmp = self.new_tmp_for_expr(expr);
@@ -2038,6 +2084,14 @@ impl<'a> MirBuilder<'a> {
         }
     }
 
+    fn enum_type_id(enum_name: &str) -> i64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = rustc_hash::FxHasher::default();
+        enum_name.hash(&mut h);
+        // Mask sign bit so the value fits both i64 and Cranelift's u128 switch entry.
+        (h.finish() & 0x7FFF_FFFF_FFFF_FFFF) as i64
+    }
+
     fn lower_pattern(
         &mut self,
         pattern: &MatchPattern,
@@ -2068,6 +2122,59 @@ impl<'a> MirBuilder<'a> {
                 );
             }
             MatchPattern::Variant(v_name, inner_patterns) => {
+                // Resolve which enum owns this variant and what tag it has.
+                // For Union types, also record the type_id so we can discriminate
+                // between member enums at runtime.
+                let resolved = match match_ty {
+                    Type::Enum(enum_name) => {
+                        let mangled = format!("{}::{}", enum_name, v_name);
+                        self.enum_variants.get(&mangled).map(|(_, tag)| {
+                            (
+                                enum_name.clone(),
+                                Self::enum_type_id(enum_name),
+                                *tag as i64,
+                            )
+                        })
+                    }
+                    Type::Union(members) => members.iter().find_map(|ty| {
+                        if let Type::Enum(en) = ty {
+                            let mangled = format!("{}::{}", en, v_name);
+                            self.enum_variants
+                                .get(&mangled)
+                                .map(|(_, tag)| (en.clone(), Self::enum_type_id(en), *tag as i64))
+                        } else {
+                            None
+                        }
+                    }),
+                    _ => None,
+                };
+
+                let (enum_name, type_id, tag_id) =
+                    resolved.unwrap_or_else(|| (String::new(), 0, 0));
+
+                // For union types, gate on type_id before checking the variant tag.
+                let tag_check_start_bb = if matches!(match_ty, Type::Union(_)) {
+                    let type_id_tmp = self.new_local(Type::Int, None, false);
+                    self.push_statement(
+                        StatementKind::Assign(type_id_tmp, Rvalue::GetTypeId(Operand::Copy(discr))),
+                        expr_span,
+                    );
+                    let type_match_bb = self.new_block();
+                    self.terminate_block(
+                        self.current_block.unwrap(),
+                        TerminatorKind::SwitchInt {
+                            discr: Operand::Copy(type_id_tmp),
+                            targets: vec![(type_id, type_match_bb)],
+                            otherwise: failure_bb,
+                        },
+                        expr_span,
+                    );
+                    self.current_block = Some(type_match_bb);
+                    type_match_bb
+                } else {
+                    self.current_block.unwrap()
+                };
+
                 // get tag
                 let tag_tmp = self.new_local(Type::Int, None, false);
                 self.push_statement(
@@ -2075,19 +2182,10 @@ impl<'a> MirBuilder<'a> {
                     expr_span,
                 );
 
-                // lookup tag
-                let mut tag_id = 0;
-                if let Type::Enum(enum_name) = match_ty {
-                    let mangled = format!("{}::{}", enum_name, v_name);
-                    if let Some((_, tag)) = self.enum_variants.get(&mangled) {
-                        tag_id = *tag as i64;
-                    }
-                }
-
                 // switch on tag
                 let variant_match_bb = self.new_block();
                 self.terminate_block(
-                    self.current_block.unwrap(),
+                    self.current_block.unwrap_or(tag_check_start_bb),
                     TerminatorKind::SwitchInt {
                         discr: Operand::Copy(tag_tmp),
                         targets: vec![(tag_id, variant_match_bb)],
@@ -2106,13 +2204,18 @@ impl<'a> MirBuilder<'a> {
                         expr_span,
                     );
                 } else {
-                    let mut param_types = vec![Type::Any; inner_patterns.len()];
-                    if let Type::Enum(enum_name) = match_ty {
-                        let mangled = format!("{}::{}", enum_name, v_name);
-                        if let Some(Type::Fn(pts, _)) = self.global_types.get(&mangled) {
-                            param_types = pts.clone();
-                        }
-                    }
+                    let mangled = format!("{}::{}", enum_name, v_name);
+                    let param_types = self
+                        .global_types
+                        .get(&mangled)
+                        .and_then(|ty| {
+                            if let Type::Fn(pts, _) = ty {
+                                Some(pts.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_else(|| vec![Type::Any; inner_patterns.len()]);
 
                     let mut current_bb = variant_match_bb;
                     for (i, (p, p_ty)) in inner_patterns.iter().zip(param_types.iter()).enumerate()
@@ -2230,6 +2333,7 @@ impl<'a> MirBuilder<'a> {
         Operand::Move(result_local)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn lower_comp_clause(
         &mut self,
         elt: Option<(&Expr, &Expr)>,

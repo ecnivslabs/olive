@@ -29,22 +29,22 @@ impl Transform for GlobalValueNumbering {
                 let stmt = &func.basic_blocks[bb_idx].statements[i];
                 if let StatementKind::Assign(dest, rval) = &stmt.kind {
                     let dest = *dest;
-                    if matches!(rval, Rvalue::BinaryOp(..) | Rvalue::UnaryOp(..)) {
-                        if self.operands_stable(rval, &assign_counts, func.arg_count) {
-                            if let Some(&(existing, _)) = value_map.get(rval) {
-                                if existing != dest {
-                                    let new_rval = Rvalue::Use(Operand::Copy(existing));
-                                    if func.basic_blocks[bb_idx].statements[i].kind
-                                        != StatementKind::Assign(dest, new_rval.clone())
-                                    {
-                                        func.basic_blocks[bb_idx].statements[i].kind =
-                                            StatementKind::Assign(dest, new_rval);
-                                        changed = true;
-                                    }
+                    if matches!(rval, Rvalue::BinaryOp(..) | Rvalue::UnaryOp(..))
+                        && self.operands_stable(rval, &assign_counts, func.arg_count)
+                    {
+                        if let Some(&(existing, _)) = value_map.get(rval) {
+                            if existing != dest {
+                                let new_rval = Rvalue::Use(Operand::Copy(existing));
+                                if func.basic_blocks[bb_idx].statements[i].kind
+                                    != StatementKind::Assign(dest, new_rval.clone())
+                                {
+                                    func.basic_blocks[bb_idx].statements[i].kind =
+                                        StatementKind::Assign(dest, new_rval);
+                                    changed = true;
                                 }
-                            } else if assign_counts.get(&dest) == Some(&1) {
-                                value_map.insert(rval.clone(), (dest, bb_idx));
                             }
+                        } else if assign_counts.get(&dest) == Some(&1) {
+                            value_map.insert(rval.clone(), (dest, bb_idx));
                         }
                     }
 

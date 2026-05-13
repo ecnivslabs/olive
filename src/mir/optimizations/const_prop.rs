@@ -25,10 +25,10 @@ impl Transform for ConstantPropagation {
 
         let mut safe_constants: HashMap<Local, Constant> = HashMap::default();
         for (local, count) in &assign_counts {
-            if *count == 1 {
-                if let Some(c) = constant_assignments.get(local) {
-                    safe_constants.insert(*local, c.clone());
-                }
+            if *count == 1
+                && let Some(c) = constant_assignments.get(local)
+            {
+                safe_constants.insert(*local, c.clone());
             }
         }
 
@@ -52,10 +52,10 @@ impl Transform for ConstantPropagation {
                         changed |= self.propagate_constants_in_operand(val, &safe_constants);
                     }
                 }
-                if let Some(term) = &mut bb.terminator {
-                    if let TerminatorKind::SwitchInt { discr, .. } = &mut term.kind {
-                        changed |= self.propagate_constants_in_operand(discr, &safe_constants);
-                    }
+                if let Some(term) = &mut bb.terminator
+                    && let TerminatorKind::SwitchInt { discr, .. } = &mut term.kind
+                {
+                    changed |= self.propagate_constants_in_operand(discr, &safe_constants);
                 }
             }
         }
@@ -129,11 +129,11 @@ impl ConstantPropagation {
         op: &mut Operand,
         map: &HashMap<Local, Constant>,
     ) -> bool {
-        if let Operand::Copy(l) | Operand::Move(l) = op {
-            if let Some(c) = map.get(l) {
-                *op = Operand::Constant(c.clone());
-                return true;
-            }
+        if let Operand::Copy(l) | Operand::Move(l) = op
+            && let Some(c) = map.get(l)
+        {
+            *op = Operand::Constant(c.clone());
+            return true;
         }
         false
     }

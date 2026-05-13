@@ -90,7 +90,9 @@ impl Resolver {
                 StmtKind::Struct { name, .. } => {
                     self.define_sym(name, SymbolKind::Struct, stmt.span);
                 }
-                StmtKind::Impl { type_name, body } => {
+                StmtKind::Impl {
+                    type_name, body, ..
+                } => {
                     for s in body {
                         if let StmtKind::Fn { name: fn_name, .. } = &s.kind {
                             let mangled = format!("{}::{}", type_name, fn_name);
@@ -98,6 +100,7 @@ impl Resolver {
                         }
                     }
                 }
+                StmtKind::Trait { .. } => {}
                 StmtKind::Enum { name, variants, .. } => {
                     self.define_sym(name, SymbolKind::Enum, stmt.span);
                     for variant in variants {
@@ -166,7 +169,7 @@ impl Resolver {
                 }
             }
 
-            StmtKind::Impl { type_name: _, body } => {
+            StmtKind::Impl { body, .. } => {
                 self.table.push(ScopeKind::Struct);
                 self.hoist_fns_and_structs(body);
                 for s in body {
@@ -174,6 +177,8 @@ impl Resolver {
                 }
                 self.table.pop();
             }
+
+            StmtKind::Trait { .. } => {}
 
             StmtKind::If {
                 condition,
@@ -386,19 +391,18 @@ impl Resolver {
             }
 
             ExprKind::Attr { obj, attr } => {
-                if let ExprKind::Identifier(name) = &obj.kind {
-                    if let Some(sym) = self.table.lookup(name) {
-                        if sym.kind == SymbolKind::Import {
-                            let mangled = format!("{}::{}", name, attr);
-                            if self.table.lookup(&mangled).is_none() {
-                                self.errors.push(SemanticError::UndefinedName {
-                                    name: mangled,
-                                    span: expr.span,
-                                });
-                            }
-                            return;
-                        }
+                if let ExprKind::Identifier(name) = &obj.kind
+                    && let Some(sym) = self.table.lookup(name)
+                    && sym.kind == SymbolKind::Import
+                {
+                    let mangled = format!("{}::{}", name, attr);
+                    if self.table.lookup(&mangled).is_none() {
+                        self.errors.push(SemanticError::UndefinedName {
+                            name: mangled,
+                            span: expr.span,
+                        });
                     }
+                    return;
                 }
                 self.resolve_expr(obj);
             }

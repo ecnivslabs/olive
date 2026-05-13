@@ -59,28 +59,28 @@ impl Type {
 
     /// Returns true if this type has move semantics (heap allocated or complex).
     pub fn is_move_type(&self) -> bool {
-        match self {
+        !matches!(
+            self,
             Type::Int
-            | Type::I8
-            | Type::I16
-            | Type::I32
-            | Type::U8
-            | Type::U16
-            | Type::U32
-            | Type::U64
-            | Type::Float
-            | Type::F32
-            | Type::Bool
-            | Type::Null
-            | Type::Never
-            | Type::Any
-            | Type::Str
-            | Type::Ref(_)
-            | Type::MutRef(_)
-            | Type::Vector(_, _)
-            | Type::Future(_) => false,
-            _ => true,
-        }
+                | Type::I8
+                | Type::I16
+                | Type::I32
+                | Type::U8
+                | Type::U16
+                | Type::U32
+                | Type::U64
+                | Type::Float
+                | Type::F32
+                | Type::Bool
+                | Type::Null
+                | Type::Never
+                | Type::Any
+                | Type::Str
+                | Type::Ref(_)
+                | Type::MutRef(_)
+                | Type::Vector(_, _)
+                | Type::Future(_)
+        )
     }
 }
 

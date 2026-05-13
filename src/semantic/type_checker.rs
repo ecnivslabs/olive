@@ -20,6 +20,10 @@ pub struct TypeChecker {
     current_struct: Option<String>,
     async_depth: usize,
     vararg_fns: HashSet<String>,
+    // trait_name -> list of required method names
+    traits: HashMap<String, Vec<String>>,
+    // (type_name, trait_name) -> implemented
+    type_traits: HashSet<(String, String)>,
 }
 
 impl TypeChecker {
@@ -166,6 +170,8 @@ impl TypeChecker {
             current_struct: None,
             async_depth: 0,
             vararg_fns: HashSet::default(),
+            traits: HashMap::default(),
+            type_traits: HashSet::default(),
         }
     }
 
@@ -376,14 +382,12 @@ impl TypeChecker {
 
                 for (i, s) in body.iter().enumerate() {
                     self.check_stmt(s);
-                    if i == body.len() - 1 {
-                        if let StmtKind::ExprStmt(e) = &s.kind {
-                            if let Some(last_ty) = self.expr_types.get(&e.id).cloned() {
-                                if let Some(expected) = self.current_return_type.clone() {
-                                    self.unify(&expected, &last_ty, s.span);
-                                }
-                            }
-                        }
+                    if i == body.len() - 1
+                        && let StmtKind::ExprStmt(e) = &s.kind
+                        && let Some(last_ty) = self.expr_types.get(&e.id).cloned()
+                        && let Some(expected) = self.current_return_type.clone()
+                    {
+                        self.unify(&expected, &last_ty, s.span);
                     }
                 }
 
@@ -453,7 +457,43 @@ impl TypeChecker {
                 self.current_struct = prev_struct;
             }
 
-            StmtKind::Impl { type_name, body } => {
+            StmtKind::Impl {
+                trait_name,
+                type_name,
+                body,
+            } => {
+                // verify all required trait methods are present
+                if let Some(tr) = trait_name {
+                    if let Some(required) = self.traits.get(tr).cloned() {
+                        let provided: HashSet<String> = body
+                            .iter()
+                            .filter_map(|s| {
+                                if let StmtKind::Fn { name, .. } = &s.kind {
+                                    Some(name.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        for method in &required {
+                            if !provided.contains(method) {
+                                self.errors.push(SemanticError::Custom {
+                                    msg: format!(
+                                        "`{}` does not implement `{}::{}` required by trait `{}`",
+                                        type_name, type_name, method, tr
+                                    ),
+                                    span: stmt.span,
+                                });
+                            }
+                        }
+                        self.type_traits.insert((type_name.clone(), tr.clone()));
+                    } else {
+                        self.errors.push(SemanticError::Custom {
+                            msg: format!("undefined trait `{}`", tr),
+                            span: stmt.span,
+                        });
+                    }
+                }
                 let prev_struct = self.current_struct.take();
                 self.current_struct = Some(type_name.clone());
                 self.enter_scope();
@@ -462,6 +502,20 @@ impl TypeChecker {
                 }
                 self.leave_scope();
                 self.current_struct = prev_struct;
+            }
+
+            StmtKind::Trait { name, methods } => {
+                let method_names: Vec<String> = methods
+                    .iter()
+                    .filter_map(|s| {
+                        if let StmtKind::Fn { name, .. } = &s.kind {
+                            Some(name.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                self.traits.insert(name.clone(), method_names);
             }
 
             StmtKind::Return(Some(expr)) => {
@@ -660,17 +714,17 @@ impl TypeChecker {
                 let mut final_callee_ty = callee_ty.clone();
                 // Special case for method calls: if it's an attribute access that resolved to a method,
                 // we need to account for the implicit 'self' argument.
-                if let ExprKind::Attr { .. } = &callee.kind {
-                    if let Type::Fn(params, _) = &resolved_callee {
-                        if !params.is_empty() && params.len() == arg_types.len() + 1 {
-                            // It's a method call with self implicit.
-                            // Construct a type that matches the CALL SITE arity.
-                            final_callee_ty = Type::Fn(
-                                params.iter().skip(1).cloned().collect(),
-                                Box::new(self.apply_subst(Type::new_var())),
-                            );
-                        }
-                    }
+                if let ExprKind::Attr { .. } = &callee.kind
+                    && let Type::Fn(params, _) = &resolved_callee
+                    && !params.is_empty()
+                    && params.len() == arg_types.len() + 1
+                {
+                    // It's a method call with self implicit.
+                    // Construct a type that matches the CALL SITE arity.
+                    final_callee_ty = Type::Fn(
+                        params.iter().skip(1).cloned().collect(),
+                        Box::new(self.apply_subst(Type::new_var())),
+                    );
                 }
 
                 // For vararg/kwarg functions, relax strict arity - just extract return type
@@ -807,11 +861,8 @@ impl TypeChecker {
                 for case in cases {
                     self.enter_scope();
 
-                    match &case.pattern {
-                        crate::parser::ast::MatchPattern::Variant(v_name, _) => {
-                            matched_variants.insert(v_name.clone());
-                        }
-                        _ => {}
+                    if let crate::parser::ast::MatchPattern::Variant(v_name, _) = &case.pattern {
+                        matched_variants.insert(v_name.clone());
                     }
                     if let crate::parser::ast::MatchPattern::Wildcard = &case.pattern {
                         has_wildcard = true;
@@ -837,20 +888,42 @@ impl TypeChecker {
                 }
 
                 if !has_wildcard {
-                    if let Type::Enum(enum_name) = &match_ty {
-                        if let Some(all_variants) = self.enum_variants.get(enum_name) {
-                            for v in all_variants {
-                                if !matched_variants.contains(v) {
-                                    self.errors.push(SemanticError::Custom {
-                                        msg: format!(
-                                            "non-exhaustive patterns: variant {} not covered",
-                                            v
-                                        ),
-                                        span: expr.span,
-                                    });
+                    match &match_ty {
+                        Type::Enum(enum_name) => {
+                            if let Some(all_variants) = self.enum_variants.get(enum_name) {
+                                for v in all_variants {
+                                    if !matched_variants.contains(v) {
+                                        self.errors.push(SemanticError::Custom {
+                                            msg: format!(
+                                                "non-exhaustive patterns: variant {} not covered",
+                                                v
+                                            ),
+                                            span: expr.span,
+                                        });
+                                    }
                                 }
                             }
                         }
+                        Type::Union(members) => {
+                            for ty in members {
+                                if let Type::Enum(en) = ty
+                                    && let Some(all_variants) = self.enum_variants.get(en)
+                                {
+                                    for v in all_variants {
+                                        if !matched_variants.contains(v) {
+                                            self.errors.push(SemanticError::Custom {
+                                                msg: format!(
+                                                    "non-exhaustive patterns: variant {} of {} not covered",
+                                                    v, en
+                                                ),
+                                                span: expr.span,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
 
@@ -859,10 +932,10 @@ impl TypeChecker {
 
             ExprKind::Try(inner) => {
                 let inner_ty = self.check_expr(inner);
-                if let Type::Union(variants) = &inner_ty {
-                    if !variants.is_empty() {
-                        return variants[0].clone();
-                    }
+                if let Type::Union(variants) = &inner_ty
+                    && !variants.is_empty()
+                {
+                    return variants[0].clone();
                 }
                 inner_ty
             }
@@ -888,12 +961,11 @@ impl TypeChecker {
                 let mut last_ty = Type::Null;
                 for (i, s) in body.iter().enumerate() {
                     self.check_stmt(s);
-                    if i == body.len() - 1 {
-                        if let StmtKind::ExprStmt(e) = &s.kind {
-                            if let Some(t) = self.expr_types.get(&e.id).cloned() {
-                                last_ty = t;
-                            }
-                        }
+                    if i == body.len() - 1
+                        && let StmtKind::ExprStmt(e) = &s.kind
+                        && let Some(t) = self.expr_types.get(&e.id).cloned()
+                    {
+                        last_ty = t;
                     }
                 }
                 self.leave_scope();
@@ -1070,6 +1142,16 @@ impl TypeChecker {
                 }
             }
 
+            // T is a subtype of any union that contains T.
+            (other, Type::Union(members)) | (Type::Union(members), other) => {
+                if !members.contains(other) {
+                    self.errors.push(SemanticError::Custom {
+                        msg: format!("type mismatch: expected `{}`, found `{}`", t2, t1),
+                        span,
+                    });
+                }
+            }
+
             (_t1_match, _t2_match) => {
                 self.errors.push(SemanticError::Custom {
                     msg: format!("type mismatch: expected `{}`, found `{}`", t1, t2),
@@ -1211,7 +1293,25 @@ impl TypeChecker {
                 self.define_type(name, match_ty.clone(), false);
             }
             MatchPattern::Variant(v_name, inner_patterns) => {
-                if let Type::Enum(enum_name) = match_ty {
+                // Resolve the enum that owns this variant — either direct Enum or a Union member.
+                let resolved_enum = match match_ty {
+                    Type::Enum(name) => Some(name.clone()),
+                    Type::Union(members) => members.iter().find_map(|ty| {
+                        if let Type::Enum(en) = ty {
+                            let mangled = format!("{}::{}", en, v_name);
+                            if self.lookup_type(&mangled).is_some() {
+                                Some(en.clone())
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    }),
+                    _ => None,
+                };
+
+                if let Some(enum_name) = resolved_enum {
                     let variant_mangled = format!("{}::{}", enum_name, v_name);
                     if let Some(Type::Fn(param_types, _)) = self.lookup_type(&variant_mangled) {
                         if param_types.len() == inner_patterns.len() {
@@ -1237,7 +1337,7 @@ impl TypeChecker {
                     }
                 } else {
                     self.errors.push(SemanticError::Custom {
-                        msg: format!("expected Enum type, found {}", match_ty),
+                        msg: format!("expected Enum or Union type, found {}", match_ty),
                         span,
                     });
                 }
