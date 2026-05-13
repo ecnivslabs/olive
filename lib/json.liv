@@ -10,16 +10,37 @@ fn _skip_whitespace(s: str, mut i: int) -> int:
 fn _parse_string(s: str, mut i: int):
     # s[i] == '"'
     i = i + 1
-    let start = i
     let n = len(s)
+    let mut result = ""
     while i < n:
         let c = __olive_str_char(s, i)
         if c == "\"":
             break
-        # ignore escapes for now
+        if c == "\\":
+            i = i + 1
+            let esc = __olive_str_char(s, i)
+            if esc == "\"":
+                result = result + "\""
+            elif esc == "\\":
+                result = result + "\\"
+            elif esc == "n":
+                result = result + "\n"
+            elif esc == "r":
+                result = result + "\r"
+            elif esc == "t":
+                result = result + "\t"
+            elif esc == "/":
+                result = result + "/"
+            elif esc == "b":
+                result = result + "\b"
+            elif esc == "f":
+                result = result + "\f"
+            else:
+                result = result + esc
+        else:
+            result = result + c
         i = i + 1
-    let val = __olive_str_slice(s, start, i)
-    return [val, i + 1]
+    return [result, i + 1]
 
 fn _parse_number(s: str, mut i: int):
     let start = i
@@ -99,7 +120,7 @@ fn _parse_value(s: str, mut i: int):
     if c == "f":
         return [false, i + 5] # false
     if c == "n":
-        return [0, i + 4] # null stub
+        return [null, i + 4]
     return _parse_number(s, i)
 
 fn loads(s: str):

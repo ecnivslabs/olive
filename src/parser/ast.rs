@@ -40,14 +40,11 @@ pub enum TypeExprKind {
     List(Box<TypeExpr>),
     Dict(Box<TypeExpr>, Box<TypeExpr>),
     Union(Box<TypeExpr>, Box<TypeExpr>),
-    #[allow(dead_code)]
     Fn {
         params: Vec<TypeExpr>,
         ret: Box<TypeExpr>,
     },
-    #[allow(dead_code)]
     Ref(Box<TypeExpr>),
-    #[allow(dead_code)]
     MutRef(Box<TypeExpr>),
 }
 
@@ -71,6 +68,7 @@ pub enum BinOp {
     NotIn,
     Shl,
     Shr,
+    FloorDiv,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -88,6 +86,9 @@ pub enum AugOp {
     Div,
     Mod,
     Pow,
+    FloorDiv,
+    Shl,
+    Shr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,7 +99,6 @@ pub enum ParamKind {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Param {
     pub name: String,
     pub type_ann: Option<TypeExpr>,
@@ -109,10 +109,9 @@ pub struct Param {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum ForTarget {
     Name(String, Span),
-    Tuple(Vec<(String, Span)>, Span),
+    Tuple(Vec<(String, Span)>),
 }
 
 #[derive(Debug, Clone)]
@@ -218,7 +217,6 @@ pub enum MatchPattern {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum CallArg {
     Positional(Expr),
     Keyword(String, Expr),
@@ -228,24 +226,17 @@ pub enum CallArg {
 
 #[derive(Debug, Clone)]
 pub struct Stmt {
-    #[allow(dead_code)]
-    pub id: usize,
     pub kind: StmtKind,
     pub span: Span,
 }
 
 impl Stmt {
     pub fn new(kind: StmtKind, span: Span) -> Self {
-        Self {
-            id: next_node_id(),
-            kind,
-            span,
-        }
+        Self { kind, span }
     }
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum StmtKind {
     Fn {
         name: String,

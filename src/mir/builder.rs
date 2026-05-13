@@ -1,11 +1,19 @@
 use super::ir::*;
 use crate::mir::AggregateKind;
 use crate::parser::{
-    BinOp, CallArg, CompClause, Expr, ExprKind, ForTarget, MatchPattern, Program, Stmt, StmtKind,
+    BinOp, CallArg, CompClause, Expr, ExprKind, ForTarget, MatchPattern, Param, ParamKind, Program,
+    Stmt, StmtKind,
 };
 use crate::semantic::types::Type;
 use crate::span::Span;
 use rustc_hash::FxHashMap as HashMap;
+
+#[derive(Debug, Clone)]
+struct FnMeta {
+    param_names: Vec<String>,
+    vararg_idx: Option<usize>,
+    kwarg_idx: Option<usize>,
+}
 
 // loop targets
 struct LoopContext {
@@ -30,6 +38,7 @@ pub struct MirBuilder<'a> {
     pub globals: HashMap<String, Operand>,
     pub enum_variants: HashMap<String, (String, usize)>,
     current_is_async: bool,
+    fn_meta: HashMap<String, FnMeta>,
 }
 
 impl<'a> MirBuilder<'a> {
@@ -53,10 +62,33 @@ impl<'a> MirBuilder<'a> {
             globals: HashMap::default(),
             enum_variants: HashMap::default(),
             current_is_async: false,
+            fn_meta: HashMap::default(),
         }
     }
 
     pub fn build_program(&mut self, program: &Program) {
+        // Pre-scan: register param metadata for all functions before lowering
+        for stmt in &program.stmts {
+            match &stmt.kind {
+                StmtKind::Fn { name, params, .. } => {
+                    self.register_fn_meta(name, params);
+                }
+                StmtKind::Impl { type_name, body } => {
+                    for s in body {
+                        if let StmtKind::Fn {
+                            name: fn_name,
+                            params,
+                            ..
+                        } = &s.kind
+                        {
+                            let mangled = format!("{}::{}", type_name, fn_name);
+                            self.register_fn_meta(&mangled, params);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         self.start_function("__main__".to_string(), 0, Type::Any);
 
         for stmt in &program.stmts {
@@ -99,16 +131,150 @@ impl<'a> MirBuilder<'a> {
 
     fn finish_function(&mut self) {
         self.leave_scope();
+        let meta = self.fn_meta.get(&self.current_name).cloned();
         let func = MirFunction {
             name: self.current_name.clone(),
             locals: std::mem::take(&mut self.current_locals),
             basic_blocks: std::mem::take(&mut self.current_blocks),
             arg_count: self.current_arg_count,
+            vararg_idx: meta.as_ref().and_then(|m| m.vararg_idx),
+            kwarg_idx: meta.as_ref().and_then(|m| m.kwarg_idx),
+            param_names: meta.map(|m| m.param_names).unwrap_or_default(),
             is_async: self.current_is_async,
         };
         // remove existing to let new one take precedence
         self.functions.retain(|f| f.name != func.name);
         self.functions.push(func);
+    }
+
+    fn register_fn_meta(&mut self, name: &str, params: &[Param]) {
+        let mut vararg_idx = None;
+        let mut kwarg_idx = None;
+        let param_names = params
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                match p.kind {
+                    ParamKind::VarArg => vararg_idx = Some(i),
+                    ParamKind::KwArg => kwarg_idx = Some(i),
+                    ParamKind::Regular => {}
+                }
+                p.name.clone()
+            })
+            .collect();
+        self.fn_meta.insert(
+            name.to_string(),
+            FnMeta {
+                param_names,
+                vararg_idx,
+                kwarg_idx,
+            },
+        );
+    }
+
+    // Pack and reorder call arguments for functions with vararg/kwarg/keyword params.
+    // arg_ops: lowered operands in order. arg_kw_names: Some(name) if keyword arg.
+    fn pack_fn_call_args(
+        &mut self,
+        fn_name: &str,
+        arg_ops: &[Operand],
+        arg_kw_names: &[Option<String>],
+        span: Span,
+    ) -> Vec<Operand> {
+        let meta = match self.fn_meta.get(fn_name).cloned() {
+            Some(m) => m,
+            None => return arg_ops.to_vec(),
+        };
+
+        let param_names = &meta.param_names;
+        let vararg_idx = meta.vararg_idx;
+        let kwarg_idx = meta.kwarg_idx;
+
+        // If no vararg/kwarg and no keyword args used, just return as-is
+        if vararg_idx.is_none() && kwarg_idx.is_none() && arg_kw_names.iter().all(|k| k.is_none()) {
+            return arg_ops.to_vec();
+        }
+
+        let regular_end = vararg_idx.or(kwarg_idx).unwrap_or(param_names.len());
+
+        // Separate positional and keyword (name, op) pairs
+        let mut positional: Vec<Operand> = Vec::new();
+        let mut keyword: Vec<(String, Operand)> = Vec::new();
+        for (op, kw) in arg_ops.iter().zip(arg_kw_names.iter()) {
+            match kw {
+                Some(name) => keyword.push((name.clone(), op.clone())),
+                None => positional.push(op.clone()),
+            }
+        }
+
+        let mut result: Vec<Option<Operand>> = vec![None; param_names.len()];
+
+        // Place positional args into regular slots
+        let mut pos_consumed = 0;
+        for i in 0..regular_end {
+            if Some(i) == vararg_idx || Some(i) == kwarg_idx {
+                continue;
+            }
+            if pos_consumed < positional.len() {
+                result[i] = Some(positional[pos_consumed].clone());
+                pos_consumed += 1;
+            }
+        }
+
+        // Place keyword args by name match into regular slots
+        for (kw_name, kw_op) in &keyword {
+            if let Some(pos) = param_names.iter().position(|n| n == kw_name) {
+                if Some(pos) != vararg_idx && Some(pos) != kwarg_idx && pos < regular_end {
+                    result[pos] = Some(kw_op.clone());
+                }
+            }
+        }
+
+        // Pack extra positional args into vararg list
+        if let Some(vi) = vararg_idx {
+            let extra: Vec<Operand> = positional[pos_consumed..].to_vec();
+            let list_tmp = self.new_local(Type::List(Box::new(Type::Any)), None, false);
+            self.push_statement(
+                StatementKind::Assign(list_tmp, Rvalue::Aggregate(AggregateKind::List, extra)),
+                span,
+            );
+            result[vi] = Some(self.operand_for_local(list_tmp));
+        }
+
+        // Pack unmatched keyword args into kwarg dict
+        if let Some(ki) = kwarg_idx {
+            let extra_kw: Vec<Operand> = keyword
+                .iter()
+                .filter(|(kw_name, _)| {
+                    param_names
+                        .iter()
+                        .position(|n| n == kw_name)
+                        .map(|p| p == ki || p >= regular_end)
+                        .unwrap_or(true)
+                })
+                .flat_map(|(kw_name, kw_op)| {
+                    [
+                        Operand::Constant(Constant::Str(kw_name.clone())),
+                        kw_op.clone(),
+                    ]
+                })
+                .collect();
+            let dict_tmp = self.new_local(
+                Type::Dict(Box::new(Type::Str), Box::new(Type::Any)),
+                None,
+                false,
+            );
+            self.push_statement(
+                StatementKind::Assign(dict_tmp, Rvalue::Aggregate(AggregateKind::Dict, extra_kw)),
+                span,
+            );
+            result[ki] = Some(self.operand_for_local(dict_tmp));
+        }
+
+        result
+            .into_iter()
+            .map(|op| op.unwrap_or(Operand::Constant(Constant::Int(0))))
+            .collect()
     }
 
     fn enter_scope(&mut self) {
@@ -257,6 +423,9 @@ impl<'a> MirBuilder<'a> {
                     crate::parser::AugOp::Div => crate::parser::BinOp::Div,
                     crate::parser::AugOp::Mod => crate::parser::BinOp::Mod,
                     crate::parser::AugOp::Pow => crate::parser::BinOp::Pow,
+                    crate::parser::AugOp::FloorDiv => crate::parser::BinOp::FloorDiv,
+                    crate::parser::AugOp::Shl => crate::parser::BinOp::Shl,
+                    crate::parser::AugOp::Shr => crate::parser::BinOp::Shr,
                 };
                 let lhs_op = self.lower_expr(target);
                 let rhs_op = self.lower_expr(value);
@@ -545,6 +714,11 @@ impl<'a> MirBuilder<'a> {
             ..
         } = &stmt.kind
         {
+            // Register metadata for nested function definitions too
+            if !self.fn_meta.contains_key(name) {
+                self.register_fn_meta(name, params);
+            }
+
             let is_memo = decorators
                 .iter()
                 .any(|d| d.name == "memo" && !d.is_directive);
@@ -1107,7 +1281,7 @@ impl<'a> MirBuilder<'a> {
                     iter.span,
                 );
             }
-            ForTarget::Tuple(names, _) => {
+            ForTarget::Tuple(names) => {
                 for (i, (name, _)) in names.iter().enumerate() {
                     let local = self.declare_var(name.clone(), Type::Any, true);
                     let idx_op = Operand::Constant(Constant::Int(i as i64));
@@ -1378,13 +1552,16 @@ impl<'a> MirBuilder<'a> {
 
             ExprKind::Call { callee, args } => {
                 let mut arg_ops = Vec::new();
+                let mut arg_kw_names: Vec<Option<String>> = Vec::new();
                 for arg in args {
                     match arg {
-                        CallArg::Positional(e)
-                        | CallArg::Keyword(_, e)
-                        | CallArg::Splat(e)
-                        | CallArg::KwSplat(e) => {
+                        CallArg::Positional(e) | CallArg::Splat(e) | CallArg::KwSplat(e) => {
                             arg_ops.push(self.lower_expr(e));
+                            arg_kw_names.push(None);
+                        }
+                        CallArg::Keyword(name, e) => {
+                            arg_ops.push(self.lower_expr(e));
+                            arg_kw_names.push(Some(name.clone()));
                         }
                     }
                 }
@@ -1618,12 +1795,17 @@ impl<'a> MirBuilder<'a> {
 
                 let func = self.lower_expr(callee);
                 let tmp = self.new_tmp_for_expr(expr);
+                let final_args = if let ExprKind::Identifier(fn_name) = &callee.kind {
+                    self.pack_fn_call_args(fn_name, &arg_ops, &arg_kw_names, expr.span)
+                } else {
+                    arg_ops
+                };
                 self.push_statement(
                     StatementKind::Assign(
                         tmp,
                         Rvalue::Call {
                             func,
-                            args: arg_ops,
+                            args: final_args,
                         },
                     ),
                     expr.span,
@@ -1999,7 +2181,7 @@ impl<'a> MirBuilder<'a> {
                     span,
                 );
             }
-            ForTarget::Tuple(names, _) => {
+            ForTarget::Tuple(names) => {
                 for (i, (name, _)) in names.iter().enumerate() {
                     let local = self.declare_var(name.clone(), Type::Any, true);
                     self.push_statement(

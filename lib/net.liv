@@ -1,0 +1,11 @@
+fn tcp_connect(addr: str) -> int:
+    return __olive_net_tcp_connect(addr)
+
+fn tcp_send(conn: int, data: str) -> int:
+    return __olive_net_tcp_send(conn, data)
+
+fn tcp_recv(conn: int, max_len: int) -> str:
+    return __olive_net_tcp_recv(conn, max_len)
+
+fn tcp_close(conn: int):
+    __olive_net_tcp_close(conn)

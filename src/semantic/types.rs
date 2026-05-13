@@ -4,7 +4,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 static TYPE_VAR_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
 pub enum Type {
     Int,
     I8,
@@ -56,30 +55,6 @@ impl Type {
     pub fn new_var() -> Self {
         let id = TYPE_VAR_COUNTER.fetch_add(1, Ordering::Relaxed);
         Type::Var(id)
-    }
-
-    /// Returns true if this is an unresolved type variable.
-    #[allow(dead_code)]
-    pub fn is_var(&self) -> bool {
-        matches!(self, Type::Var(_))
-    }
-
-    /// Returns true if this is a numeric type.
-    #[allow(dead_code)]
-    pub fn is_numeric(&self) -> bool {
-        matches!(
-            self,
-            Type::Int
-                | Type::I8
-                | Type::I16
-                | Type::I32
-                | Type::U8
-                | Type::U16
-                | Type::U32
-                | Type::U64
-                | Type::Float
-                | Type::F32
-        )
     }
 
     /// Returns true if this type has move semantics (heap allocated or complex).

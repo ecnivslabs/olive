@@ -26,7 +26,7 @@ fn _days_in_month(year: int, month: int) -> int:
     return 31
 
 fn gmtime(timestamp: float):
-//Converts a unix epoch timestamp to a dict with year, month, day, hour, min, sec
+#Converts a unix epoch timestamp to a dict with year, month, day, hour, min, sec
     let mut days = int(timestamp / 86400.0)
     let mut rem = int(timestamp) - (days * 86400)
     

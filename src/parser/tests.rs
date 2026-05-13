@@ -208,7 +208,7 @@ mod tests {
     fn call_keyword_arg() {
         match expr_stmt(&parse("f(x=1)\n")) {
             ExprKind::Call { args, .. } => {
-                assert!(matches!(&args[0], CallArg::Keyword(name, _) if name == "x"))
+                assert!(matches!(&args[0], CallArg::Keyword(n, _) if n == "x"))
             }
             _ => panic!(),
         }
@@ -351,6 +351,8 @@ mod tests {
             ("x //= 1\n", AugOp::FloorDiv),
             ("x %= 1\n", AugOp::Mod),
             ("x **= 1\n", AugOp::Pow),
+            ("x <<= 1\n", AugOp::Shl),
+            ("x >>= 1\n", AugOp::Shr),
         ] {
             match first(&parse(src)) {
                 StmtKind::AugAssign { op, .. } => assert_eq!(*op, expected, "src={src}"),
@@ -416,10 +418,121 @@ mod tests {
     }
 
     #[test]
+    fn bitwise_ops() {
+        match expr_stmt(&parse("x << 1 >> 2\n")) {
+            ExprKind::BinOp {
+                op: BinOp::Shr,
+                left,
+                ..
+            } => assert!(matches!(left.kind, ExprKind::BinOp { op: BinOp::Shl, .. })),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn f_string_basic() {
+        match expr_stmt(&parse("f\"x is {x}\"\n")) {
+            ExprKind::FStr(parts) => {
+                assert_eq!(parts.len(), 2);
+                assert!(matches!(parts[0].kind, ExprKind::Str(_)));
+                assert!(matches!(parts[1].kind, ExprKind::Identifier(_)));
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn match_stmt_basic() {
+        match expr_stmt(&parse("match x:\n    case 1: pass\n    case _: pass\n")) {
+            ExprKind::Match { cases, .. } => {
+                assert_eq!(cases.len(), 2);
+                assert!(matches!(cases[0].pattern, MatchPattern::Literal(_)));
+                assert!(matches!(cases[1].pattern, MatchPattern::Wildcard));
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn borrow_exprs() {
+        assert!(matches!(expr_stmt(&parse("&x\n")), ExprKind::Borrow(_)));
+        assert!(matches!(
+            expr_stmt(&parse("&mut x\n")),
+            ExprKind::MutBorrow(_)
+        ));
+    }
+
+    #[test]
+    fn async_block_expr() {
+        match expr_stmt(&parse("async:\n    pass\n")) {
+            ExprKind::AsyncBlock(stmts) => assert!(matches!(stmts[0].kind, StmtKind::Pass)),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn impl_block_parsing() {
+        match first(&parse("impl MyStruct:\n    fn f(): pass\n")) {
+            StmtKind::Impl { type_name, body } => {
+                assert_eq!(type_name, "MyStruct");
+                assert!(matches!(body[0].kind, StmtKind::Fn { .. }));
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
     fn span_line_col() {
         let p = parse("let x = 42\n");
         let stmt = p.stmts.first().unwrap();
         assert_eq!(stmt.span.line, 1);
         assert_eq!(stmt.span.col, 1);
+    }
+    #[test]
+    fn shift_precedence() {
+        match expr_stmt(&parse("x + y << z\n")) {
+            ExprKind::BinOp {
+                op: BinOp::Shl,
+                left,
+                ..
+            } => {
+                assert!(matches!(left.kind, ExprKind::BinOp { op: BinOp::Add, .. }));
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn floor_div_precedence_test() {
+        match expr_stmt(&parse("x // y * z\n")) {
+            ExprKind::BinOp {
+                op: BinOp::Mul,
+                left,
+                ..
+            } => {
+                assert!(matches!(
+                    left.kind,
+                    ExprKind::BinOp {
+                        op: BinOp::FloorDiv,
+                        ..
+                    }
+                ));
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn nested_async_blocks() {
+        let src = "async:\n    let x = await async:\n        return 1\n    return x\n";
+        match first(&parse(src)) {
+            StmtKind::ExprStmt(e) => match &e.kind {
+                ExprKind::AsyncBlock(body) => {
+                    assert_eq!(body.len(), 2);
+                }
+                _ => panic!(),
+            },
+            _ => panic!(),
+        }
     }
 }

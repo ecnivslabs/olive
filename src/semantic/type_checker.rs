@@ -1,11 +1,11 @@
 use super::error::SemanticError;
 use super::types::Type;
 use crate::parser::{
-    BinOp, CallArg, Expr, ExprKind, ForTarget, MatchPattern, Program, Stmt, StmtKind, TypeExpr,
-    TypeExprKind, UnaryOp,
+    BinOp, CallArg, Expr, ExprKind, ForTarget, MatchPattern, ParamKind, Program, Stmt, StmtKind,
+    TypeExpr, TypeExprKind, UnaryOp,
 };
 use crate::span::Span;
-use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 // type checking
 pub struct TypeChecker {
@@ -19,6 +19,7 @@ pub struct TypeChecker {
     pub enum_variants: HashMap<String, Vec<String>>,
     current_struct: Option<String>,
     async_depth: usize,
+    vararg_fns: HashSet<String>,
 }
 
 impl TypeChecker {
@@ -68,6 +69,82 @@ impl TypeChecker {
                 Type::Fn(vec![Type::Any], Box::new(Type::Int)),
             ),
             (
+                "__olive_math_sin",
+                Type::Fn(vec![Type::Float], Box::new(Type::Float)),
+            ),
+            (
+                "__olive_math_cos",
+                Type::Fn(vec![Type::Float], Box::new(Type::Float)),
+            ),
+            (
+                "__olive_math_tan",
+                Type::Fn(vec![Type::Float], Box::new(Type::Float)),
+            ),
+            (
+                "__olive_math_asin",
+                Type::Fn(vec![Type::Float], Box::new(Type::Float)),
+            ),
+            (
+                "__olive_math_acos",
+                Type::Fn(vec![Type::Float], Box::new(Type::Float)),
+            ),
+            (
+                "__olive_math_atan",
+                Type::Fn(vec![Type::Float], Box::new(Type::Float)),
+            ),
+            (
+                "__olive_math_atan2",
+                Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Float)),
+            ),
+            (
+                "__olive_math_log",
+                Type::Fn(vec![Type::Float], Box::new(Type::Float)),
+            ),
+            (
+                "__olive_math_log10",
+                Type::Fn(vec![Type::Float], Box::new(Type::Float)),
+            ),
+            (
+                "__olive_math_exp",
+                Type::Fn(vec![Type::Float], Box::new(Type::Float)),
+            ),
+            (
+                "__olive_random_seed",
+                Type::Fn(vec![Type::Int], Box::new(Type::Null)),
+            ),
+            (
+                "__olive_random_get",
+                Type::Fn(vec![], Box::new(Type::Float)),
+            ),
+            (
+                "__olive_random_int",
+                Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
+            ),
+            (
+                "__olive_net_tcp_connect",
+                Type::Fn(vec![Type::Str], Box::new(Type::Int)),
+            ),
+            (
+                "__olive_net_tcp_send",
+                Type::Fn(vec![Type::Int, Type::Str], Box::new(Type::Int)),
+            ),
+            (
+                "__olive_net_tcp_recv",
+                Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Str)),
+            ),
+            (
+                "__olive_net_tcp_close",
+                Type::Fn(vec![Type::Int], Box::new(Type::Null)),
+            ),
+            (
+                "__olive_http_get",
+                Type::Fn(vec![Type::Str], Box::new(Type::Str)),
+            ),
+            (
+                "__olive_http_post",
+                Type::Fn(vec![Type::Str, Type::Str], Box::new(Type::Str)),
+            ),
+            (
                 "__olive_spawn_task",
                 Type::Fn(vec![Type::Any], Box::new(Type::Future(Box::new(Type::Any)))),
             ),
@@ -88,6 +165,7 @@ impl TypeChecker {
             enum_variants: HashMap::default(),
             current_struct: None,
             async_depth: 0,
+            vararg_fns: HashSet::default(),
         }
     }
 
@@ -272,6 +350,13 @@ impl TypeChecker {
                     self.type_env[outer_idx].insert(final_name.clone(), fn_ty.clone());
                 } else {
                     self.define_type(&final_name, fn_ty.clone(), false);
+                }
+
+                if params
+                    .iter()
+                    .any(|p| matches!(p.kind, ParamKind::VarArg | ParamKind::KwArg))
+                {
+                    self.vararg_fns.insert(final_name.clone());
                 }
 
                 self.enter_scope();
@@ -588,10 +673,24 @@ impl TypeChecker {
                     }
                 }
 
-                let ret_ty = Type::new_var();
-                let expected_fn = Type::Fn(arg_types, Box::new(ret_ty.clone()));
-                self.unify(&final_callee_ty, &expected_fn, expr.span);
-                self.apply_subst(ret_ty)
+                // For vararg/kwarg functions, relax strict arity - just extract return type
+                let is_vararg = if let ExprKind::Identifier(name) = &callee.kind {
+                    self.vararg_fns.contains(name.as_str())
+                } else {
+                    false
+                };
+                if is_vararg {
+                    let ret_ty = Type::new_var();
+                    if let Type::Fn(_, fn_ret) = self.apply_subst(final_callee_ty) {
+                        self.unify(&ret_ty, &fn_ret, expr.span);
+                    }
+                    self.apply_subst(ret_ty)
+                } else {
+                    let ret_ty = Type::new_var();
+                    let expected_fn = Type::Fn(arg_types, Box::new(ret_ty.clone()));
+                    self.unify(&final_callee_ty, &expected_fn, expr.span);
+                    self.apply_subst(ret_ty)
+                }
             }
 
             ExprKind::Index { obj, index } => {
@@ -812,6 +911,7 @@ impl TypeChecker {
             | BinOp::Div
             | BinOp::Mod
             | BinOp::Pow
+            | BinOp::FloorDiv
             | BinOp::Shl
             | BinOp::Shr => {
                 self.unify(l, r, span);
@@ -870,7 +970,7 @@ impl TypeChecker {
             ForTarget::Name(name, _) => {
                 self.define_type(name, elem_ty, true);
             }
-            ForTarget::Tuple(names, _) => match self.apply_subst(elem_ty) {
+            ForTarget::Tuple(names) => match self.apply_subst(elem_ty) {
                 Type::Tuple(elems) if elems.len() == names.len() => {
                     for ((name, _), ty) in names.iter().zip(elems) {
                         self.define_type(name, ty, true);

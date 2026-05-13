@@ -306,7 +306,7 @@ impl Resolver {
             ForTarget::Name(name, span) => {
                 self.define_sym(name, SymbolKind::LoopVar, *span);
             }
-            ForTarget::Tuple(names, _) => {
+            ForTarget::Tuple(names) => {
                 for (name, span) in names {
                     self.define_sym(name, SymbolKind::LoopVar, *span);
                 }

@@ -83,11 +83,13 @@ impl Lexer {
                 self.advance();
                 skipped = true;
             }
-            if self.peek() == Some('/') && self.peek_next() == Some('/') {
-                while matches!(self.peek(), Some(c) if c != '\n') {
-                    self.advance();
+            if self.peek() == Some('#') {
+                if self.peek_next() != Some('[') {
+                    while matches!(self.peek(), Some(c) if c != '\n') {
+                        self.advance();
+                    }
+                    skipped = true;
                 }
-                skipped = true;
             }
             if self.peek() == Some('/') && self.peek_next() == Some('*') {
                 self.advance();
@@ -134,11 +136,13 @@ impl Lexer {
             });
         }
 
-        if self.peek() == Some('/') && self.peek_next() == Some('/') {
-            while matches!(self.peek(), Some(c) if c != '\n') {
-                self.advance();
+        if self.peek() == Some('#') {
+            if self.peek_next() != Some('[') {
+                while matches!(self.peek(), Some(c) if c != '\n') {
+                    self.advance();
+                }
+                return Ok(None);
             }
-            return Ok(None);
         }
         if self.peek() == Some('/') && self.peek_next() == Some('*') {
             self.advance();
@@ -451,6 +455,7 @@ impl Lexer {
             "match" => TokenKind::Match,
             "async" => TokenKind::Async,
             "await" => TokenKind::Await,
+            "case" => TokenKind::Case,
             "_" => TokenKind::Underscore,
             _ => TokenKind::Identifier,
         };
@@ -588,6 +593,14 @@ impl Lexer {
                     if self.peek() == Some('=') {
                         self.advance();
                         self.make_tok(TokenKind::LessEqual, "<=", line, col, start)
+                    } else if self.peek() == Some('<') {
+                        self.advance();
+                        if self.peek() == Some('=') {
+                            self.advance();
+                            self.make_tok(TokenKind::ShlEqual, "<<=", line, col, start)
+                        } else {
+                            self.make_tok(TokenKind::Shl, "<<", line, col, start)
+                        }
                     } else {
                         self.make_tok(TokenKind::Less, "<", line, col, start)
                     }
@@ -596,6 +609,14 @@ impl Lexer {
                     if self.peek() == Some('=') {
                         self.advance();
                         self.make_tok(TokenKind::GreaterEqual, ">=", line, col, start)
+                    } else if self.peek() == Some('>') {
+                        self.advance();
+                        if self.peek() == Some('=') {
+                            self.advance();
+                            self.make_tok(TokenKind::ShrEqual, ">>=", line, col, start)
+                        } else {
+                            self.make_tok(TokenKind::Shr, ">>", line, col, start)
+                        }
                     } else {
                         self.make_tok(TokenKind::Greater, ">", line, col, start)
                     }
@@ -647,6 +668,14 @@ impl Lexer {
                     if self.peek() == Some('=') {
                         self.advance();
                         self.make_tok(TokenKind::SlashEqual, "/=", line, col, start)
+                    } else if self.peek() == Some('/') {
+                        self.advance();
+                        if self.peek() == Some('=') {
+                            self.advance();
+                            self.make_tok(TokenKind::DoubleSlashEqual, "//=", line, col, start)
+                        } else {
+                            self.make_tok(TokenKind::DoubleSlash, "//", line, col, start)
+                        }
                     } else {
                         self.make_tok(TokenKind::Slash, "/", line, col, start)
                     }

@@ -134,13 +134,22 @@ impl Parser {
     }
 
     pub(crate) fn parse_async_stmt(&mut self) -> ParseResult<Stmt> {
+        let start = self.peek().clone();
         self.advance(); // consume `async`
         if self.peek().kind == TokenKind::Fn {
             self.parse_fn(true)
+        } else if self.peek().kind == TokenKind::Colon {
+            // async: block (expression, but used as statement)
+            let body = self.parse_block()?;
+            let span = self.span_from(&start);
+            Ok(Stmt::new(
+                StmtKind::ExprStmt(Expr::new(ExprKind::AsyncBlock(body), span.clone())),
+                span,
+            ))
         } else {
             Err(self.err_at(
                 &self.tokens[self.pos],
-                "expected 'fn' after 'async' at statement level; use 'async:' block in expressions",
+                "expected 'fn' or ':' after 'async' at statement level",
             ))
         }
     }
@@ -456,7 +465,6 @@ impl Parser {
 
     pub(crate) fn parse_for_target(&mut self) -> ParseResult<ForTarget> {
         use crate::span::Span;
-        let outer_start = self.peek().clone();
         if self.peek().kind == TokenKind::LParen {
             self.advance();
             let mut names = Vec::new();
@@ -485,8 +493,7 @@ impl Parser {
                 names.push((tok.value, sp));
             }
             self.expect(TokenKind::RParen)?;
-            let span = self.span_from(&outer_start);
-            return Ok(ForTarget::Tuple(names, span));
+            return Ok(ForTarget::Tuple(names));
         }
         let tok = self.expect(TokenKind::Identifier)?;
         let name_span = Span {
@@ -514,8 +521,7 @@ impl Parser {
                 };
                 names.push((tok.value, sp));
             }
-            let span = self.span_from(&outer_start);
-            Ok(ForTarget::Tuple(names, span))
+            Ok(ForTarget::Tuple(names))
         } else {
             Ok(ForTarget::Name(name, name_span))
         }
@@ -676,6 +682,9 @@ impl Parser {
             | TokenKind::MinusEqual
             | TokenKind::StarEqual
             | TokenKind::SlashEqual
+            | TokenKind::DoubleSlashEqual
+            | TokenKind::ShlEqual
+            | TokenKind::ShrEqual
             | TokenKind::PercentEqual
             | TokenKind::DoubleStarEqual) => {
                 if !Self::is_valid_assign_target(&lhs) {
@@ -695,8 +704,11 @@ impl Parser {
                     TokenKind::MinusEqual => AugOp::Sub,
                     TokenKind::StarEqual => AugOp::Mul,
                     TokenKind::SlashEqual => AugOp::Div,
+                    TokenKind::DoubleSlashEqual => AugOp::FloorDiv,
                     TokenKind::PercentEqual => AugOp::Mod,
                     TokenKind::DoubleStarEqual => AugOp::Pow,
+                    TokenKind::ShlEqual => AugOp::Shl,
+                    TokenKind::ShrEqual => AugOp::Shr,
                     _ => unreachable!(),
                 };
                 let span = self.span_from(&start);

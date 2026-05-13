@@ -108,7 +108,7 @@ impl Parser {
     }
 
     pub(crate) fn parse_comparison(&mut self) -> ParseResult<Expr> {
-        let mut left = self.parse_add()?;
+        let mut left = self.parse_shift()?;
         loop {
             let op = match self.peek().kind {
                 TokenKind::DoubleEqual => {
@@ -151,6 +151,29 @@ impl Parser {
                 }
                 _ => break,
             };
+            let right = self.parse_shift()?;
+            let span = left.span.merge(right.span);
+            left = Expr::new(
+                ExprKind::BinOp {
+                    left: Box::new(left),
+                    op,
+                    right: Box::new(right),
+                },
+                span,
+            );
+        }
+        Ok(left)
+    }
+
+    pub(crate) fn parse_shift(&mut self) -> ParseResult<Expr> {
+        let mut left = self.parse_add()?;
+        loop {
+            let op = match self.peek().kind {
+                TokenKind::Shl => BinOp::Shl,
+                TokenKind::Shr => BinOp::Shr,
+                _ => break,
+            };
+            self.advance();
             let right = self.parse_add()?;
             let span = left.span.merge(right.span);
             left = Expr::new(
@@ -194,6 +217,7 @@ impl Parser {
             let op = match self.peek().kind {
                 TokenKind::Star => BinOp::Mul,
                 TokenKind::Slash => BinOp::Div,
+                TokenKind::DoubleSlash => BinOp::FloorDiv,
                 TokenKind::Percent => BinOp::Mod,
                 _ => break,
             };
@@ -428,7 +452,11 @@ impl Parser {
             self.advance();
             self.expect(TokenKind::Indent)?;
             self.skip_newlines();
+            self.skip_newlines();
             while self.peek().kind != TokenKind::Dedent && self.peek().kind != TokenKind::Eof {
+                if self.peek().kind == TokenKind::Case {
+                    self.advance();
+                }
                 let pattern = self.parse_pattern()?;
 
                 let body = self.parse_block()?;

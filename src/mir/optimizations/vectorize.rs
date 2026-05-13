@@ -336,6 +336,11 @@ impl LoopVectorizer {
             func.basic_blocks[bb_id.0].statements = new_stmts;
         }
 
+        // FMA fusion: a*b+c or c+a*b → VectorFMA(a, b, c)
+        for &bb_id in &lp.body {
+            Self::fuse_fma(&mut func.basic_blocks[bb_id.0].statements);
+        }
+
         for &latch_id in &lp.latches {
             let latch = &mut func.basic_blocks[latch_id.0];
             for stmt in &mut latch.statements {
@@ -363,6 +368,49 @@ impl LoopVectorizer {
         }
 
         true
+    }
+
+    fn fuse_fma(stmts: &mut Vec<Statement>) {
+        let mut i = 0;
+        while i + 1 < stmts.len() {
+            // match: tmp = Mul(va, vb)
+            let mul_info = match &stmts[i].kind {
+                StatementKind::Assign(
+                    dest,
+                    Rvalue::BinaryOp(crate::parser::BinOp::Mul, va, vb),
+                ) => Some((*dest, va.clone(), vb.clone())),
+                _ => None,
+            };
+            if let Some((mul_dest, va, vb)) = mul_info {
+                // match: result = Add(Copy(mul_dest), vc) or Add(vc, Copy(mul_dest))
+                let fma_info = match &stmts[i + 1].kind {
+                    StatementKind::Assign(
+                        add_dest,
+                        Rvalue::BinaryOp(crate::parser::BinOp::Add, lhs, rhs),
+                    ) => {
+                        let add_dest = *add_dest;
+                        if lhs == &Operand::Copy(mul_dest) {
+                            Some((add_dest, rhs.clone()))
+                        } else if rhs == &Operand::Copy(mul_dest) {
+                            Some((add_dest, lhs.clone()))
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+                if let Some((add_dest, vc)) = fma_info {
+                    let span = stmts[i + 1].span;
+                    stmts.remove(i);
+                    stmts[i] = Statement {
+                        kind: StatementKind::Assign(add_dest, Rvalue::VectorFMA(va, vb, vc)),
+                        span,
+                    };
+                    continue;
+                }
+            }
+            i += 1;
+        }
     }
 
     // splat scalar to vector if needed

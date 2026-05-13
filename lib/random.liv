@@ -1,64 +1,17 @@
-# random library
-# uses a linear congruential generator (lcg)
-# auto-seeded with __olive_time_now()
-
-fn _get_state() -> int:
-    let cache = __olive_memo_get("__random_state", 0)
-    let mut state = __olive_cache_get(cache, 0)
-    if state == 0:
-        let t = __olive_time_now()
-        state = int(t * 1000000.0)
-        if state == 0:
-            state = 88172645463325252
-        let cache2 = __olive_memo_get("__random_state", 0)
-        __olive_cache_set(cache2, 0, state)
-    return state
-
-fn _set_state(n: int):
-    let cache = __olive_memo_get("__random_state", 0)
-    let mut state = n
-    if state == 0:
-        state = 88172645463325252
-    __olive_cache_set(cache, 0, state)
-
 fn seed(n: int):
-    _set_state(n)
-
-fn _next_state():
-    # lcg: state = (a * state + c) mod m
-    # knuth's mmix constants
-    let state = _get_state()
-    # a = 6364136223846793005, c = 1442695040888963407
-    let next = state * 6364136223846793005 + 1442695040888963407
-    _set_state(next)
-
-fn _raw() -> int:
-    _next_state()
-    let v = _get_state()
-    if v < 0:
-        return -v
-    return v
+    __olive_random_seed(n)
 
 fn random() -> float:
-    # float in [0.0, 1.0)
-    let r = _raw()
-    let big = 4611686018427387903
-    return float(r % big) / float(big)
+    return __olive_random_get()
 
-fn randint(a: int, b: int) -> int:
-    let r = _raw()
-    let span = b - a + 1
-    return a + (r % span)
-
-fn randrange(start: int, stop: int) -> int:
-    return randint(start, stop - 1)
+fn randint(min: int, max: int) -> int:
+    return __olive_random_int(min, max)
 
 fn choice(lst):
     let idx = randint(0, len(lst) - 1)
     return lst[idx]
 
 fn shuffle(lst):
-    # fisher-yates shuffle
     let n = len(lst)
     let mut i = n - 1
     while i > 0:
@@ -68,21 +21,3 @@ fn shuffle(lst):
         lst[j] = tmp
         i = i - 1
     return lst
-
-fn sample(lst, k: int):
-    # reservoir sampling
-    let n = len(lst)
-    let mut result = []
-    let mut i = 0
-    while i < k and i < n:
-        result = result + [lst[i]]
-        i = i + 1
-    while i < n:
-        let j = randint(0, i)
-        if j < k:
-            result[j] = lst[i]
-        i = i + 1
-    return result
-
-fn uniform(a: float, b: float) -> float:
-    return a + random() * (b - a)

@@ -1,3 +1,14 @@
+fn sin(x: float) -> float: return __olive_math_sin(x)
+fn cos(x: float) -> float: return __olive_math_cos(x)
+fn tan(x: float) -> float: return __olive_math_tan(x)
+fn asin(x: float) -> float: return __olive_math_asin(x)
+fn acos(x: float) -> float: return __olive_math_acos(x)
+fn atan(x: float) -> float: return __olive_math_atan(x)
+fn atan2(y: float, x: float) -> float: return __olive_math_atan2(y, x)
+fn log(x: float) -> float: return __olive_math_log(x)
+fn log10(x: float) -> float: return __olive_math_log10(x)
+fn exp(x: float) -> float: return __olive_math_exp(x)
+
 # math algorithms in pure olive
 
 const PI = 3.141592653589793
@@ -83,184 +94,6 @@ fn pow(base: float, exponent: float) -> float:
 
 fn ipow(base: int, exponent: int) -> int:
     return base ** exponent
-
-
-fn exp(x: float) -> float:
-    # range reduction
-    if x == 0.0:
-        return 1.0
-    if x > 709.0:
-        return INF
-    if x < -709.0:
-        return 0.0
-
-    # range reduction
-    let ln2 = 0.6931471805599453
-    let k = floor(x / ln2 + 0.5)
-    let r = x - float(k) * ln2
-
-    # taylor series
-    let mut sum = 1.0
-    let mut term = 1.0
-    let mut n = 1
-    while n <= 25:
-        term = term * r / float(n)
-        sum = sum + term
-        if abs(term) < 1.0e-16:
-            break
-        n = n + 1
-
-    # scale by 2^k
-    let mut result = sum
-    let mut p = _iabs(k)
-    let mut base = 2.0
-    if k < 0:
-        let mut j = 0
-        while j < p:
-            result = result / 2.0
-            j = j + 1
-    else:
-        let mut j = 0
-        while j < p:
-            result = result * 2.0
-            j = j + 1
-    return result
-
-fn expm1(x: float) -> float:
-    # small x optimization
-    if abs(x) < 0.01:
-        let mut sum = 0.0
-        let mut term = x
-        let mut n = 1
-        while n <= 20:
-            sum = sum + term
-            n = n + 1
-            term = term * x / float(n)
-        return sum
-    return exp(x) - 1.0
-
-fn log(x: float) -> float:
-    if x <= 0.0:
-        return 0.0 / 0.0
-    if x == 1.0:
-        return 0.0
-
-    let mut y = 0.0
-    let mut v = x
-    while v > 2.0:
-        v = v / E
-        y = y + 1.0
-    while v < 0.5:
-        v = v * E
-        y = y - 1.0
-
-    let mut g = y + (v - 1.0) / (v + 1.0) * 2.0
-    let mut i = 0
-    while i < 40:
-        let eg = exp(g)
-        let diff = v - eg
-        if abs(diff) < 1.0e-15 * v:
-            break
-        g = g + 2.0 * diff / (v + eg)
-        i = i + 1
-    return g
-
-fn log2(x: float) -> float:
-    return log(x) / 0.6931471805599453
-
-fn log10(x: float) -> float:
-    return log(x) / 2.302585092994046
-
-fn log1p(x: float) -> float:
-    if abs(x) < 0.01:
-        let mut sum = 0.0
-        let mut term = x
-        let mut n = 1
-        while n <= 25:
-            sum = sum + term / float(n)
-            n = n + 1
-            term = term * (-x)
-        return sum
-    return log(1.0 + x)
-
-
-fn _reduce_angle(x: float) -> float:
-    let mut a = x
-    while a > PI:
-        a = a - TAU
-    while a < -PI:
-        a = a + TAU
-    return a
-
-fn sin(x: float) -> float:
-    let a = _reduce_angle(x)
-    let mut sum = 0.0
-    let mut term = a
-    let mut n = 1
-    while n <= 30:
-        sum = sum + term
-        term = -term * a * a / float((2 * n) * (2 * n + 1))
-        n = n + 1
-    return sum
-
-fn cos(x: float) -> float:
-    let a = _reduce_angle(x)
-    let mut sum = 0.0
-    let mut term = 1.0
-    let mut n = 0
-    while n <= 30:
-        sum = sum + term
-        term = -term * a * a / float((2 * n + 1) * (2 * n + 2))
-        n = n + 1
-    return sum
-
-fn tan(x: float) -> float:
-    let c = cos(x)
-    if abs(c) < 1.0e-15:
-        if sin(x) > 0.0:
-            return INF
-        return -INF
-    return sin(x) / c
-
-
-fn atan(x: float) -> float:
-    if x > 1.0:
-        return PI / 2.0 - atan(1.0 / x)
-    if x < -1.0:
-        return -PI / 2.0 - atan(1.0 / x)
-    let mut sum = 0.0
-    let mut term = x
-    let x2 = x * x
-    let mut n = 0
-    while n < 60:
-        sum = sum + term / float(2 * n + 1)
-        term = -term * x2
-        n = n + 1
-    return sum
-
-fn atan2(y: float, x: float) -> float:
-    if x > 0.0:
-        return atan(y / x)
-    if x < 0.0:
-        if y >= 0.0:
-            return atan(y / x) + PI
-        return atan(y / x) - PI
-    if y > 0.0:
-        return PI / 2.0
-    if y < 0.0:
-        return -PI / 2.0
-    return 0.0
-
-fn asin(x: float) -> float:
-    if x >= 1.0:
-        return PI / 2.0
-    if x <= -1.0:
-        return -PI / 2.0
-    return atan(x / sqrt(1.0 - x * x))
-
-fn acos(x: float) -> float:
-    return PI / 2.0 - asin(x)
-
 
 fn sinh(x: float) -> float:
     let e = exp(x)

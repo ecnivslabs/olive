@@ -71,6 +71,43 @@ impl Parser {
                     span,
                 ))
             }
+            TokenKind::Ampersand => {
+                self.advance();
+                if self.peek().kind == TokenKind::Mut {
+                    self.advance();
+                    let inner = self.parse_single_type_expr()?;
+                    let span = self.span_from(&start);
+                    Ok(TypeExpr::new(TypeExprKind::MutRef(Box::new(inner)), span))
+                } else {
+                    let inner = self.parse_single_type_expr()?;
+                    let span = self.span_from(&start);
+                    Ok(TypeExpr::new(TypeExprKind::Ref(Box::new(inner)), span))
+                }
+            }
+            TokenKind::Fn => {
+                self.advance();
+                self.expect(TokenKind::LParen)?;
+                let mut params = Vec::new();
+                while self.peek().kind != TokenKind::RParen {
+                    params.push(self.parse_type_expr()?);
+                    if self.peek().kind == TokenKind::Comma {
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+                self.expect(TokenKind::RParen)?;
+                self.expect(TokenKind::Arrow)?;
+                let ret = self.parse_type_expr()?;
+                let span = self.span_from(&start);
+                Ok(TypeExpr::new(
+                    TypeExprKind::Fn {
+                        params,
+                        ret: Box::new(ret),
+                    },
+                    span,
+                ))
+            }
             _ => {
                 let tok = self.peek().clone();
                 Err(self.err_at(&tok, "expected type expression"))

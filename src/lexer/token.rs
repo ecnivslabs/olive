@@ -38,6 +38,7 @@ pub enum TokenKind {
     Match,
     Async,
     Await,
+    Case,
 
     // operators
     Plus,
@@ -59,6 +60,12 @@ pub enum TokenKind {
     SlashEqual,
     PercentEqual,
     DoubleStarEqual,
+    DoubleSlash,
+    DoubleSlashEqual,
+    Shl,
+    Shr,
+    ShlEqual,
+    ShrEqual,
     Ampersand,
     Pipe,
 

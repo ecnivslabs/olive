@@ -10,9 +10,8 @@ pub struct Local(pub usize);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BasicBlockId(pub usize);
 
-// operand
+// Operands can be copies, moves, or constants.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
 pub enum Operand {
     // shared access
     Copy(Local),
@@ -22,8 +21,8 @@ pub enum Operand {
     Constant(Constant),
 }
 
+// Constant values supported by the MIR.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
 pub enum Constant {
     Int(i64),
     Float(u64), // use bits for eq/hash
@@ -33,7 +32,7 @@ pub enum Constant {
     None,
 }
 
-// rhs expressions
+// Kind of aggregate construction.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AggregateKind {
     Tuple,
@@ -43,9 +42,8 @@ pub enum AggregateKind {
     EnumVariant(usize),
 }
 
-// rhs expressions
+// Right-hand side expressions in an assignment.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
 pub enum Rvalue {
     // use operand
     Use(Operand),
@@ -75,16 +73,13 @@ pub enum Rvalue {
     VectorFMA(Operand, Operand, Operand),
 }
 
-// block statement
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Statement {
     pub kind: StatementKind,
-    #[allow(dead_code)]
     pub span: Span,
 }
-
+// Possible statements in a basic block.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum StatementKind {
     // local = rvalue
     Assign(Local, Rvalue),
@@ -134,9 +129,8 @@ pub struct BasicBlock {
     pub terminator: Option<Terminator>,
 }
 
-// local metadata
+// Declaration metadata for a local variable.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub struct LocalDecl {
     pub ty: Type,
     pub name: Option<String>,
@@ -151,5 +145,8 @@ pub struct MirFunction {
     pub locals: Vec<LocalDecl>,
     pub basic_blocks: Vec<BasicBlock>,
     pub arg_count: usize,
+    pub vararg_idx: Option<usize>,
+    pub kwarg_idx: Option<usize>,
+    pub param_names: Vec<String>,
     pub is_async: bool,
 }
