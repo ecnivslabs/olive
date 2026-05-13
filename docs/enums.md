@@ -67,3 +67,32 @@ fn log_status(status: int):
 Here, `code` matches any value and makes it available as a variable inside that branch.
 
 Enums and `match` work well together because the compiler knows all possible variants. If you forget to handle one, the compiler can catch it before the code runs.
+
+## Union Types and Discrimination
+
+A union type like `Shape | Color` holds a value that could be any of the listed enum types. `match` handles all of them in one place:
+
+```python
+enum Shape:
+    Circle(float)
+    Square(float)
+
+enum Color:
+    Red
+    Blue
+
+fn describe(val: Shape | Color) -> str:
+    match val:
+        Circle(r):
+            return f"circle with radius {r}"
+        Square(s):
+            return f"square with side {s}"
+        Red:
+            return "red"
+        Blue:
+            return "blue"
+```
+
+The compiler checks that every variant from every enum in the union is handled. If you add a new variant to `Shape` and forget to update the match, you'll get a compile error.
+
+This is useful when a function can return or accept values of fundamentally different kinds without collapsing them into a single flat enum.

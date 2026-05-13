@@ -27,6 +27,8 @@ The goal is straightforward: expressive code that runs close to native speed and
 - **JIT compilation via Cranelift**: Generates optimized native code at runtime.
 - **True stackless async**: An `async`/`await` model backed by a multi-threaded executor. Futures are compiled state machines with no heap allocation per suspension point.
 - **MIR optimization pipeline**: Global Value Numbering, Tail-Call Optimization, Loop-Invariant Code Motion, inlining, and more, all running before codegen.
+- **Traits**: Define method contracts with `trait` and implement them per type. The compiler verifies all required methods are present.
+- **Error handling without exceptions**: Functions return union types to signal failure. `try` and `?` propagate errors up the call stack.
 - **Standard library modules**: `math`, `io`, `aio`, `net`, `http`, `random`, loaded dynamically at runtime.
 - **Detailed diagnostics**: Colorized, context-aware error reports that point to the problem and suggest a fix.
 - **Unified toolchain**: `pit` handles building, running, testing, and formatting.
@@ -52,17 +54,8 @@ See the [High-Performance Optimizations](docs/optimizations.md) guide for detail
 
 ## Documentation
 
-- [Introduction to Olive](docs/introduction.md)
+- [Introduction](docs/introduction.md)
 - [Getting Started](docs/getting_started.md)
-- [Basic Syntax and Types](docs/basics.md)
-- [Functions](docs/functions.md)
-- [Enums and Pattern Matching](docs/enums.md)
-- [Structs and Composition](docs/structs.md)
-- [Ownership and Safety](docs/ownership.md)
-- [Async and Concurrency](docs/async.md)
-- [High-Performance Optimizations](docs/optimizations.md)
-- [Modules and Standard Library](docs/modules.md)
-- [Compiler Internals](docs/internals.md)
 - [Full Index](docs/index.md)
 
 ## Contributing

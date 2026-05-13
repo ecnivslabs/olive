@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::Parser;
+    use crate::parser::Parser;
     use crate::lexer::Lexer;
     use crate::parser::ast::*;
 

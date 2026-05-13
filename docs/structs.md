@@ -88,6 +88,23 @@ impl Secret:
         pass
 ```
 
+## Implementing Traits
+
+A struct can implement a trait using `impl TraitName for TypeName`. This guarantees the struct provides all the methods the trait requires:
+
+```python
+trait Printable:
+    fn display(self) -> str
+
+impl Printable for Person:
+    fn display(self) -> str:
+        return f"{self.name}, age {self.age}"
+```
+
+A struct can implement multiple traits by having multiple `impl ... for` blocks. Regular `impl` blocks (without `for`) can coexist alongside them.
+
+See [Traits](traits.md) for a full walkthrough.
+
 ## Method Decorators
 
 Methods can use the same decorators as standalone functions. The `@memo` decorator is useful on methods that do expensive computation with the same inputs:

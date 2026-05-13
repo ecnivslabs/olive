@@ -129,25 +129,7 @@ for (x, y) in points:
 
 ### Error Handling
 
-Olive uses a `Result`-style pattern for error handling. A function can return a union type like `int | str` to signal success or failure.
-
-#### The `try` Expression
-
-The `try` keyword (or the `?` postfix operator) propagates errors up the call stack. Both forms are equivalent:
-
-```python
-let value = try risky_operation()
-let value = risky_operation()?
-```
-
-#### Union Return Types
-
-```python
-fn divide(a: int, b: int) -> int | str:
-    if b == 0:
-        return "Division by zero"
-    return a / b
-```
+Olive handles errors through union return types and the `try` operator. See [Error Handling](error_handling.md) for the full walkthrough.
 
 ### Assertions
 
@@ -155,7 +137,7 @@ fn divide(a: int, b: int) -> int | str:
 assert x > 0, "x must be positive"
 ```
 
-If the condition is false, the program raises an error with the message provided.
+If the condition is false, the program halts immediately with the message.
 
 ## Comprehensions
 

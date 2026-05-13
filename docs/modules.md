@@ -70,23 +70,80 @@ Olive ships with a standard library loaded dynamically at runtime. These modules
 
 ### `math`
 
-Common mathematical functions:
-
 ```python
 import math
+```
 
-let s = math.sin(3.14)
-let c = math.cos(0.0)
-let t = math.tan(0.785)
+**Constants**
 
-let a = math.asin(1.0)
-let b = math.acos(0.0)
-let r = math.atan(1.0)
-let r2 = math.atan2(1.0, 1.0)
+```python
+math.PI    # 3.141592653589793
+math.E     # 2.718281828459045
+math.TAU   # 6.283185307179586
+math.INF   # 1.0e308
+```
 
-let l = math.log(2.718)
-let l10 = math.log10(100.0)
-let e = math.exp(1.0)
+**Trigonometry** (all angles in radians)
+
+```python
+math.sin(x)         math.asin(x)
+math.cos(x)         math.acos(x)
+math.tan(x)         math.atan(x)
+                    math.atan2(y, x)
+math.degrees(x)     # radians -> degrees
+math.radians(x)     # degrees -> radians
+```
+
+**Exponential and logarithm**
+
+```python
+math.exp(x)         # e^x
+math.log(x)         # natural log
+math.log10(x)       # log base 10
+math.pow(b, e)      # b^e (floats)
+math.ipow(b, e)     # b^e (integers)
+```
+
+**Roots and rounding**
+
+```python
+math.sqrt(x)
+math.cbrt(x)
+math.hypot(x, y)    # sqrt(x² + y²)
+math.floor(x)       # -> int
+math.ceil(x)        # -> int
+math.round(x)       # -> int
+math.abs(x)
+math.clamp(x, lo, hi)
+math.fmod(x, y)
+math.copysign(x, y)
+```
+
+**Hyperbolic**
+
+```python
+math.sinh(x)    math.asinh(x)
+math.cosh(x)    math.acosh(x)
+math.tanh(x)    math.atanh(x)
+```
+
+**Number theory**
+
+```python
+math.gcd(a, b)
+math.lcm(a, b)
+math.factorial(n)
+math.comb(n, k)     # n choose k
+math.perm(n, k)     # n permute k
+```
+
+**Utilities**
+
+```python
+math.min(a, b)
+math.max(a, b)
+math.isclose(a, b)  # abs(a - b) < 1e-9
+math.erf(x)
 ```
 
 ### `io`
