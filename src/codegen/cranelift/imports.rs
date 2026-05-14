@@ -29,7 +29,11 @@ pub(super) fn collect_needed_imports(
                                 OliveType::List(_) | OliveType::Tuple(_) | OliveType::Set(_) => {
                                     needed.insert("__olive_free_list");
                                 }
-                                OliveType::Dict(_, _) | OliveType::Struct(_, _) => {
+                                OliveType::Struct(_, _) => {
+                                    needed.insert("__olive_free_struct");
+                                    needed.insert("__olive_free_obj");
+                                }
+                                OliveType::Dict(_, _) => {
                                     needed.insert("__olive_free_obj");
                                 }
                                 OliveType::Enum(_, _) => {
@@ -195,6 +199,8 @@ pub(super) fn resolve_builtin_import(
             "__olive_free_str" => Some("__olive_free_str"),
             "__olive_free_list" => Some("__olive_free_list"),
             "__olive_free_obj" => Some("__olive_free_obj"),
+            "__olive_struct_alloc" => Some("__olive_struct_alloc"),
+            "__olive_free_struct" => Some("__olive_free_struct"),
             "__olive_cache_get" => Some("__olive_cache_get"),
             "__olive_cache_has" => Some("__olive_cache_has"),
             "__olive_cache_set" => Some("__olive_cache_set"),

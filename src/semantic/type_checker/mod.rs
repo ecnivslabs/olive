@@ -20,7 +20,7 @@ pub struct TypeChecker {
     pub(super) current_struct: Option<String>,
     pub(super) async_depth: usize,
     pub(super) vararg_fns: HashSet<String>,
-    pub(super) struct_fields: HashMap<String, Vec<String>>,
+    pub struct_fields: HashMap<String, Vec<String>>,
     pub(super) traits: HashMap<String, Vec<String>>,
     pub(super) type_traits: HashSet<(String, String)>,
 }

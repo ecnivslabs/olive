@@ -439,16 +439,24 @@ impl<'a> MirBuilder<'a> {
                 let callee_ty = self.get_type(callee.id);
                 if let Type::Struct(struct_name, type_args) = callee_ty {
                     let obj_tmp = self.new_unscoped_local(self.get_type(expr.id));
+                    let alloc_rval = if let Some(fields) = self.struct_fields.get(&struct_name) {
+                        let n = fields.len() as i64;
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(
+                                "__olive_struct_alloc".to_string(),
+                            )),
+                            args: vec![Operand::Constant(Constant::Int(n))],
+                        }
+                    } else {
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(
+                                "__olive_obj_new".to_string(),
+                            )),
+                            args: vec![],
+                        }
+                    };
                     self.push_statement(
-                        StatementKind::Assign(
-                            obj_tmp,
-                            Rvalue::Call {
-                                func: Operand::Constant(Constant::Function(
-                                    "__olive_obj_new".to_string(),
-                                )),
-                                args: vec![],
-                            },
-                        ),
+                        StatementKind::Assign(obj_tmp, alloc_rval),
                         expr.span,
                     );
 
@@ -597,7 +605,7 @@ impl<'a> MirBuilder<'a> {
                 if current_obj_ty == Type::Str {
                     let o = self.lower_expr_as_copy(obj);
                     let i = self.lower_expr(index);
-                    let tmp = self.new_local(Type::Any, None, false);
+                    let tmp = self.new_local(Type::Str, None, false);
                     self.push_statement(
                         StatementKind::Assign(
                             tmp,

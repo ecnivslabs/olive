@@ -66,7 +66,7 @@ pub fn repl_compile_run(
         return false;
     }
 
-    let mut mir_builder = MirBuilder::new(&type_checker.expr_types, &type_checker.type_env[0]);
+    let mut mir_builder = MirBuilder::new(&type_checker.expr_types, &type_checker.type_env[0], type_checker.struct_fields.clone());
     mir_builder.build_program(&program);
 
     let optimizer = mir::Optimizer::new();
@@ -105,7 +105,7 @@ pub fn repl_compile_run(
         return false;
     }
 
-    let mut codegen = CraneliftCodegen::new(&mir_builder.functions);
+    let mut codegen = CraneliftCodegen::new(&mir_builder.functions, mir_builder.struct_fields.clone());
     codegen.generate();
     codegen.finalize();
 

@@ -23,11 +23,12 @@ pub struct CraneliftCodegen<'a> {
     pub(super) module: JITModule,
     pub(super) func_ids: HashMap<String, FuncId>,
     pub(super) string_ids: HashMap<String, DataId>,
+    pub(super) struct_fields: HashMap<String, Vec<String>>,
     pub(super) _std_lib: Option<libloading::Library>,
 }
 
 impl<'a> CraneliftCodegen<'a> {
-    pub fn new(functions: &'a [MirFunction]) -> Self {
+    pub fn new(functions: &'a [MirFunction], struct_fields: HashMap<String, Vec<String>>) -> Self {
         let mut flag_builder = settings::builder();
         flag_builder.set("use_colocated_libcalls", "false").unwrap();
         flag_builder.set("is_pic", "false").unwrap();
@@ -44,119 +45,177 @@ impl<'a> CraneliftCodegen<'a> {
 
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
 
-        let mut std_lib = None;
-        if let Ok(lib) = unsafe {
-            libloading::Library::new("target/debug/libolive_std.so")
-                .or_else(|_| libloading::Library::new("target/release/libolive_std.so"))
-        } {
-            unsafe {
-                macro_rules! load {
-                    ($name:expr, $bind:expr) => {
-                        if let Ok(f) = lib.get::<unsafe extern "C" fn()>($name) {
-                            builder.symbol($bind, *f as *const u8);
-                        }
-                    };
-                }
-                load!(b"olive_time_now", "__olive_time_now");
-                load!(b"olive_time_monotonic", "__olive_time_monotonic");
-                load!(b"olive_time_sleep", "__olive_time_sleep");
-                load!(b"olive_pow", "__olive_pow");
-                load!(b"olive_pow_float", "__olive_pow_float");
-                load!(b"olive_math_sin", "__olive_math_sin");
-                load!(b"olive_math_cos", "__olive_math_cos");
-                load!(b"olive_math_tan", "__olive_math_tan");
-                load!(b"olive_math_asin", "__olive_math_asin");
-                load!(b"olive_math_acos", "__olive_math_acos");
-                load!(b"olive_math_atan", "__olive_math_atan");
-                load!(b"olive_math_atan2", "__olive_math_atan2");
-                load!(b"olive_math_log", "__olive_math_log");
-                load!(b"olive_math_log10", "__olive_math_log10");
-                load!(b"olive_math_exp", "__olive_math_exp");
-                load!(b"olive_random_seed", "__olive_random_seed");
-                load!(b"olive_random_get", "__olive_random_get");
-                load!(b"olive_random_int", "__olive_random_int");
-                load!(b"olive_print", "__olive_print_int");
-                load!(b"olive_print_float", "__olive_print_float");
-                load!(b"olive_print_str", "__olive_print_str");
-                load!(b"olive_print_list", "__olive_print_list");
-                load!(b"olive_print_obj", "__olive_print_obj");
-                load!(b"olive_str", "__olive_str");
-                load!(b"olive_int", "__olive_int");
-                load!(b"olive_float", "__olive_float");
-                load!(b"olive_bool", "__olive_bool");
-                load!(b"olive_bool_from_float", "__olive_bool_from_float");
-                load!(b"olive_float_to_str", "__olive_float_to_str");
-                load!(b"olive_float_to_int", "__olive_float_to_int");
-                load!(b"olive_int_to_float", "__olive_int_to_float");
-                load!(b"olive_str_to_int", "__olive_str_to_int");
-                load!(b"olive_str_to_float", "__olive_str_to_float");
-                load!(b"olive_str_concat", "__olive_str_concat");
-                load!(b"olive_str_eq", "__olive_str_eq");
-                load!(b"olive_str_len", "__olive_str_len");
-                load!(b"olive_str_get", "__olive_str_get");
-                load!(b"olive_copy", "__olive_copy");
-                load!(b"olive_copy_float", "__olive_copy_float");
-                load!(b"olive_list_new", "__olive_list_new");
-                load!(b"olive_list_set", "__olive_list_set");
-                load!(b"olive_list_get", "__olive_list_get");
-                load!(b"olive_list_len", "__olive_list_len");
-                load!(b"olive_list_append", "__olive_list_append");
-                load!(b"olive_obj_new", "__olive_obj_new");
-                load!(b"olive_obj_set", "__olive_obj_set");
-                load!(b"olive_obj_get", "__olive_obj_get");
-                load!(b"olive_obj_len", "__olive_obj_len");
-                load!(b"olive_enum_new", "__olive_enum_new");
-                load!(b"olive_enum_tag", "__olive_enum_tag");
-                load!(b"olive_enum_type_id", "__olive_enum_type_id");
-                load!(b"olive_enum_get", "__olive_enum_get");
-                load!(b"olive_enum_set", "__olive_enum_set");
-                load!(b"olive_free_enum", "__olive_free_enum");
-                load!(b"olive_free_str", "__olive_free_str");
-                load!(b"olive_free_list", "__olive_free_list");
-                load!(b"olive_free_obj", "__olive_free_obj");
-                load!(b"olive_iter", "__olive_iter");
-                load!(b"olive_has_next", "__olive_has_next");
-                load!(b"olive_next", "__olive_next");
-                load!(b"olive_alloc", "__olive_alloc");
-                load!(b"olive_cache_has", "__olive_cache_has");
-                load!(b"olive_cache_get", "__olive_cache_get");
-                load!(b"olive_cache_set", "__olive_cache_set");
-                load!(b"olive_memo_get", "__olive_memo_get");
-                load!(b"olive_cache_has_tuple", "__olive_cache_has_tuple");
-                load!(b"olive_cache_get_tuple", "__olive_cache_get_tuple");
-                load!(b"olive_cache_set_tuple", "__olive_cache_set_tuple");
-                load!(b"olive_get_index_any", "__olive_get_index_any");
-                load!(b"olive_set_index_any", "__olive_set_index_any");
-                load!(b"olive_free_any", "__olive_free_any");
-                load!(b"olive_free_any", "__olive_free");
-                load!(b"olive_file_read", "__olive_file_read");
-                load!(b"olive_file_write", "__olive_file_write");
-                load!(b"olive_make_future", "__olive_make_future");
-                load!(b"olive_await_future", "__olive_await");
-                load!(b"olive_spawn_task", "__olive_spawn_task");
-                load!(b"olive_free_future", "__olive_free_future");
-                load!(b"olive_gather", "__olive_gather");
-                load!(b"olive_select", "__olive_select");
-                load!(b"olive_cancel_future", "__olive_cancel_future");
-                load!(b"olive_sm_poll", "__olive_sm_poll");
-                load!(b"olive_async_file_read", "__olive_async_file_read");
-                load!(b"olive_async_file_write", "__olive_async_file_write");
-                load!(b"olive_net_tcp_connect", "__olive_net_tcp_connect");
-                load!(b"olive_net_tcp_send", "__olive_net_tcp_send");
-                load!(b"olive_net_tcp_recv", "__olive_net_tcp_recv");
-                load!(b"olive_net_tcp_close", "__olive_net_tcp_close");
-                load!(b"olive_http_get", "__olive_http_get");
-                load!(b"olive_http_post", "__olive_http_post");
-                load!(b"olive_in_list", "__olive_in_list");
-                load!(b"olive_in_obj", "__olive_in_obj");
-                load!(b"olive_set_add", "__olive_set_add");
-                load!(b"olive_set_new", "__olive_set_new");
-                load!(b"olive_str_char", "__olive_str_char");
-                load!(b"olive_str_slice", "__olive_str_slice");
-                load!(b"olive_list_concat", "__olive_list_concat");
+        // Compute needed symbols before opening the .so — avoids dlsym for unused symbols.
+        let needed = imports::collect_needed_imports(functions);
+        let has_async = functions.iter().any(|f| f.is_async);
+
+        // (jit_name, c_symbol_bytes) — only load what's actually needed.
+        static SYMBOL_MAP: &[(&str, &[u8])] = &[
+            ("__olive_time_now", b"olive_time_now\0"),
+            ("__olive_time_monotonic", b"olive_time_monotonic\0"),
+            ("__olive_time_sleep", b"olive_time_sleep\0"),
+            ("__olive_pow", b"olive_pow\0"),
+            ("__olive_pow_float", b"olive_pow_float\0"),
+            ("__olive_math_sin", b"olive_math_sin\0"),
+            ("__olive_math_cos", b"olive_math_cos\0"),
+            ("__olive_math_tan", b"olive_math_tan\0"),
+            ("__olive_math_asin", b"olive_math_asin\0"),
+            ("__olive_math_acos", b"olive_math_acos\0"),
+            ("__olive_math_atan", b"olive_math_atan\0"),
+            ("__olive_math_atan2", b"olive_math_atan2\0"),
+            ("__olive_math_log", b"olive_math_log\0"),
+            ("__olive_math_log10", b"olive_math_log10\0"),
+            ("__olive_math_exp", b"olive_math_exp\0"),
+            ("__olive_random_seed", b"olive_random_seed\0"),
+            ("__olive_random_get", b"olive_random_get\0"),
+            ("__olive_random_int", b"olive_random_int\0"),
+            ("__olive_print_int", b"olive_print\0"),
+            ("__olive_print_float", b"olive_print_float\0"),
+            ("__olive_print_str", b"olive_print_str\0"),
+            ("__olive_print_list", b"olive_print_list\0"),
+            ("__olive_print_obj", b"olive_print_obj\0"),
+            ("__olive_str", b"olive_str\0"),
+            ("__olive_int", b"olive_int\0"),
+            ("__olive_float", b"olive_float\0"),
+            ("__olive_bool", b"olive_bool\0"),
+            ("__olive_bool_from_float", b"olive_bool_from_float\0"),
+            ("__olive_float_to_str", b"olive_float_to_str\0"),
+            ("__olive_float_to_int", b"olive_float_to_int\0"),
+            ("__olive_int_to_float", b"olive_int_to_float\0"),
+            ("__olive_str_to_int", b"olive_str_to_int\0"),
+            ("__olive_str_to_float", b"olive_str_to_float\0"),
+            ("__olive_str_concat", b"olive_str_concat\0"),
+            ("__olive_str_eq", b"olive_str_eq\0"),
+            ("__olive_str_len", b"olive_str_len\0"),
+            ("__olive_str_get", b"olive_str_get\0"),
+            ("__olive_copy", b"olive_copy\0"),
+            ("__olive_copy_float", b"olive_copy_float\0"),
+            ("__olive_list_new", b"olive_list_new\0"),
+            ("__olive_list_set", b"olive_list_set\0"),
+            ("__olive_list_get", b"olive_list_get\0"),
+            ("__olive_list_len", b"olive_list_len\0"),
+            ("__olive_list_append", b"olive_list_append\0"),
+            ("__olive_obj_new", b"olive_obj_new\0"),
+            ("__olive_obj_set", b"olive_obj_set\0"),
+            ("__olive_obj_get", b"olive_obj_get\0"),
+            ("__olive_obj_len", b"olive_obj_len\0"),
+            ("__olive_enum_new", b"olive_enum_new\0"),
+            ("__olive_enum_tag", b"olive_enum_tag\0"),
+            ("__olive_enum_type_id", b"olive_enum_type_id\0"),
+            ("__olive_enum_get", b"olive_enum_get\0"),
+            ("__olive_enum_set", b"olive_enum_set\0"),
+            ("__olive_free_enum", b"olive_free_enum\0"),
+            ("__olive_free_str", b"olive_free_str\0"),
+            ("__olive_free_list", b"olive_free_list\0"),
+            ("__olive_free_obj", b"olive_free_obj\0"),
+            ("__olive_struct_alloc", b"olive_struct_alloc\0"),
+            ("__olive_free_struct", b"olive_free_struct\0"),
+            ("__olive_iter", b"olive_iter\0"),
+            ("__olive_has_next", b"olive_has_next\0"),
+            ("__olive_next", b"olive_next\0"),
+            ("__olive_alloc", b"olive_alloc\0"),
+            ("__olive_cache_has", b"olive_cache_has\0"),
+            ("__olive_cache_get", b"olive_cache_get\0"),
+            ("__olive_cache_set", b"olive_cache_set\0"),
+            ("__olive_memo_get", b"olive_memo_get\0"),
+            ("__olive_cache_has_tuple", b"olive_cache_has_tuple\0"),
+            ("__olive_cache_get_tuple", b"olive_cache_get_tuple\0"),
+            ("__olive_cache_set_tuple", b"olive_cache_set_tuple\0"),
+            ("__olive_get_index_any", b"olive_get_index_any\0"),
+            ("__olive_set_index_any", b"olive_set_index_any\0"),
+            ("__olive_free_any", b"olive_free_any\0"),
+            ("__olive_free", b"olive_free_any\0"),
+            ("__olive_file_read", b"olive_file_read\0"),
+            ("__olive_file_write", b"olive_file_write\0"),
+            ("__olive_make_future", b"olive_make_future\0"),
+            ("__olive_await", b"olive_await_future\0"),
+            ("__olive_spawn_task", b"olive_spawn_task\0"),
+            ("__olive_free_future", b"olive_free_future\0"),
+            ("__olive_gather", b"olive_gather\0"),
+            ("__olive_select", b"olive_select\0"),
+            ("__olive_cancel_future", b"olive_cancel_future\0"),
+            ("__olive_sm_poll", b"olive_sm_poll\0"),
+            ("__olive_async_file_read", b"olive_async_file_read\0"),
+            ("__olive_async_file_write", b"olive_async_file_write\0"),
+            ("__olive_net_tcp_connect", b"olive_net_tcp_connect\0"),
+            ("__olive_net_tcp_send", b"olive_net_tcp_send\0"),
+            ("__olive_net_tcp_recv", b"olive_net_tcp_recv\0"),
+            ("__olive_net_tcp_close", b"olive_net_tcp_close\0"),
+            ("__olive_http_get", b"olive_http_get\0"),
+            ("__olive_http_post", b"olive_http_post\0"),
+            ("__olive_in_list", b"olive_in_list\0"),
+            ("__olive_in_obj", b"olive_in_obj\0"),
+            ("__olive_set_add", b"olive_set_add\0"),
+            ("__olive_set_new", b"olive_set_new\0"),
+            ("__olive_str_char", b"olive_str_char\0"),
+            ("__olive_str_slice", b"olive_str_slice\0"),
+            ("__olive_list_concat", b"olive_list_concat\0"),
+        ];
+
+        // Register symbols with the JIT builder.
+        // If the std lib was linked at compile time (ld.so already loaded it before main()),
+        // use dlsym(RTLD_DEFAULT, ...) — no file I/O, just a process-wide symbol lookup.
+        // Otherwise fall back to runtime dlopen via libloading.
+
+        #[cfg(all(olive_std_linked, target_os = "linux"))]
+        let std_lib: Option<libloading::Library> = {
+            // Library is a DT_NEEDED entry — ld.so loaded it before main().
+            // dlsym(RTLD_DEFAULT, ...) finds symbols in all loaded shared libs.
+            unsafe extern "C" {
+                fn dlsym(handle: *mut std::ffi::c_void, symbol: *const std::ffi::c_char) -> *mut std::ffi::c_void;
             }
-            std_lib = Some(lib);
-        }
+            for &(jit_name, c_name) in SYMBOL_MAP {
+                let is_async_needed = has_async
+                    && matches!(
+                        jit_name,
+                        "__olive_make_future"
+                            | "__olive_await"
+                            | "__olive_spawn_task"
+                            | "__olive_alloc"
+                            | "__olive_free_future"
+                            | "__olive_sm_poll"
+                    );
+                if needed.contains(jit_name) || is_async_needed {
+                    let ptr = unsafe { dlsym(std::ptr::null_mut(), c_name.as_ptr() as *const _) };
+                    if !ptr.is_null() {
+                        builder.symbol(jit_name, ptr as *const u8);
+                    }
+                }
+            }
+            None
+        };
+
+        #[cfg(not(all(olive_std_linked, target_os = "linux")))]
+        let std_lib: Option<libloading::Library> = {
+            // Fall back to runtime dlopen.
+            if let Ok(lib) = unsafe {
+                libloading::Library::new("target/debug/libolive_std.so")
+                    .or_else(|_| libloading::Library::new("target/release/libolive_std.so"))
+            } {
+                unsafe {
+                    for &(jit_name, c_name) in SYMBOL_MAP {
+                        let is_async_needed = has_async
+                            && matches!(
+                                jit_name,
+                                "__olive_make_future"
+                                    | "__olive_await"
+                                    | "__olive_spawn_task"
+                                    | "__olive_alloc"
+                                    | "__olive_free_future"
+                                    | "__olive_sm_poll"
+                            );
+                        if needed.contains(jit_name) || is_async_needed {
+                            if let Ok(f) = lib.get::<unsafe extern "C" fn()>(c_name) {
+                                builder.symbol(jit_name, *f as *const u8);
+                            }
+                        }
+                    }
+                }
+                Some(lib)
+            } else {
+                None
+            }
+        };
 
         let module = JITModule::new(builder);
 
@@ -165,6 +224,7 @@ impl<'a> CraneliftCodegen<'a> {
             module,
             func_ids: HashMap::default(),
             string_ids: HashMap::default(),
+            struct_fields,
             _std_lib: std_lib,
         }
     }
@@ -292,6 +352,8 @@ impl<'a> CraneliftCodegen<'a> {
             ("__olive_net_tcp_close", &sig_i64_void),
             ("__olive_http_get", &sig_i64_i64),
             ("__olive_http_post", &sig_i64_i64_i64),
+            ("__olive_struct_alloc", &sig_i64_i64),
+            ("__olive_free_struct", &sig_i64_void),
         ];
 
         let has_async = self.functions.iter().any(|f| f.is_async);

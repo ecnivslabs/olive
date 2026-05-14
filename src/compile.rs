@@ -205,6 +205,7 @@ pub fn load_and_parse(
 }
 
 pub fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: bool, emit_mir: bool) {
+    let t0 = std::time::Instant::now();
     let mut loaded = HashSet::new();
     loaded.insert(filename.to_string());
     let mut file_id_counter = 0;
@@ -219,11 +220,13 @@ pub fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: boo
     let program = parser::Program {
         stmts: combined_stmts,
     };
+    let parse_duration = t0.elapsed();
 
     if emit_ast {
         println!("{:#?}", program);
     }
 
+    let resolve_start = std::time::Instant::now();
     let mut resolver = Resolver::new();
     resolver.resolve_program(&program);
 
@@ -233,7 +236,9 @@ pub fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: boo
         }
         process::exit(1);
     }
+    let resolve_duration = resolve_start.elapsed();
 
+    let typecheck_start = std::time::Instant::now();
     let mut type_checker = TypeChecker::new();
     type_checker.check_program(&program);
 
@@ -243,9 +248,12 @@ pub fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: boo
         }
         process::exit(1);
     }
+    let typecheck_duration = typecheck_start.elapsed();
 
-    let mut mir_builder = MirBuilder::new(&type_checker.expr_types, &type_checker.type_env[0]);
+    let mir_start = std::time::Instant::now();
+    let mut mir_builder = MirBuilder::new(&type_checker.expr_types, &type_checker.type_env[0], type_checker.struct_fields.clone());
     mir_builder.build_program(&program);
+    let mir_duration = mir_start.elapsed();
 
     let opt_start = std::time::Instant::now();
     let optimizer = mir::Optimizer::new();
@@ -297,7 +305,7 @@ pub fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: boo
     let borrow_duration = borrow_start.elapsed();
 
     let cg_start = std::time::Instant::now();
-    let mut codegen = CraneliftCodegen::new(&mir_builder.functions);
+    let mut codegen = CraneliftCodegen::new(&mir_builder.functions, mir_builder.struct_fields.clone());
     codegen.generate();
     codegen.finalize();
     let cg_duration = cg_start.elapsed();
@@ -307,8 +315,12 @@ pub fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: boo
         if show_time {
             println!("\n\x1b[1;32m   Olive Build Report\x1b[0m");
             println!("\x1b[1;34m   ────────────────────────\x1b[0m");
-            println!("   \x1b[1mOptimization:\x1b[0m  {:?}", opt_duration);
-            println!("   \x1b[1mBorrow Check:\x1b[0m  {:?}", borrow_duration);
+            println!("   \x1b[1mParse:        \x1b[0m {:?}", parse_duration);
+            println!("   \x1b[1mResolver:     \x1b[0m {:?}", resolve_duration);
+            println!("   \x1b[1mType Check:   \x1b[0m {:?}", typecheck_duration);
+            println!("   \x1b[1mMIR Build:    \x1b[0m {:?}", mir_duration);
+            println!("   \x1b[1mOptimization: \x1b[0m {:?}", opt_duration);
+            println!("   \x1b[1mBorrow Check: \x1b[0m {:?}", borrow_duration);
             println!("   \x1b[1mCodegen (JIT):\x1b[0m {:?}", cg_duration);
             println!("\x1b[1;34m   ────────────────────────\x1b[0m");
         }
@@ -324,14 +336,18 @@ pub fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: boo
         if show_time {
             println!("\n\x1b[1;32m   Olive Execution Report\x1b[0m");
             println!("\x1b[1;34m   ────────────────────────\x1b[0m");
-            println!("   \x1b[1mOptimization:\x1b[0m  {:?}", opt_duration);
-            println!("   \x1b[1mBorrow Check:\x1b[0m  {:?}", borrow_duration);
+            println!("   \x1b[1mParse:        \x1b[0m {:?}", parse_duration);
+            println!("   \x1b[1mResolver:     \x1b[0m {:?}", resolve_duration);
+            println!("   \x1b[1mType Check:   \x1b[0m {:?}", typecheck_duration);
+            println!("   \x1b[1mMIR Build:    \x1b[0m {:?}", mir_duration);
+            println!("   \x1b[1mOptimization: \x1b[0m {:?}", opt_duration);
+            println!("   \x1b[1mBorrow Check: \x1b[0m {:?}", borrow_duration);
             println!("   \x1b[1mCodegen (JIT):\x1b[0m {:?}", cg_duration);
-            println!("   \x1b[1mExecution:\x1b[0m     {:?}", exec_duration);
+            println!("   \x1b[1mExecution:    \x1b[0m {:?}", exec_duration);
             println!("\x1b[1;34m   ────────────────────────\x1b[0m");
             println!(
                 "   \x1b[1mTotal Startup:\x1b[0m {:?}",
-                opt_duration + borrow_duration + cg_duration
+                parse_duration + resolve_duration + typecheck_duration + mir_duration + opt_duration + borrow_duration + cg_duration
             );
             println!();
         }
@@ -376,7 +392,7 @@ pub fn compile_and_test(filename: &str, _show_time: bool) {
         process::exit(1);
     }
 
-    let mut mir_builder = MirBuilder::new(&type_checker.expr_types, &type_checker.type_env[0]);
+    let mut mir_builder = MirBuilder::new(&type_checker.expr_types, &type_checker.type_env[0], type_checker.struct_fields.clone());
     mir_builder.build_program(&program);
 
     let optimizer = mir::Optimizer::new();
@@ -397,7 +413,7 @@ pub fn compile_and_test(filename: &str, _show_time: bool) {
         }
     }
 
-    let mut codegen = CraneliftCodegen::new(&mir_builder.functions);
+    let mut codegen = CraneliftCodegen::new(&mir_builder.functions, mir_builder.struct_fields.clone());
     codegen.generate();
     codegen.finalize();
 

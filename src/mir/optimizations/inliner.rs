@@ -33,12 +33,23 @@ impl Inliner {
                             },
                         ) = &stmt.kind
                         {
-                            if name == &func.name && current_depth >= 2 {
+                            if name == &func.name {
                                 continue;
                             }
                             if let Some(target_fn) = fn_map.get(name) {
                                 // do not inline async fns — their return must be wrapped by codegen
                                 if target_fn.is_async {
+                                    continue;
+                                }
+                                // do not inline self-recursive functions (avoids exponential blowup)
+                                let is_recursive = target_fn.basic_blocks.iter().any(|bb| {
+                                    bb.statements.iter().any(|s| {
+                                        matches!(&s.kind, StatementKind::Assign(_, Rvalue::Call {
+                                            func: Operand::Constant(Constant::Function(n)), ..
+                                        }) if n == &target_fn.name)
+                                    })
+                                });
+                                if is_recursive {
                                     continue;
                                 }
                                 // inline small functions

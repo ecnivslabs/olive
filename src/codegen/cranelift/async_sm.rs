@@ -220,6 +220,7 @@ impl<'a> CraneliftCodegen<'a> {
                         &mut self.module,
                         &self.func_ids,
                         &self.string_ids,
+                        &self.struct_fields,
                         &mut builder,
                         stmt,
                         &vars,

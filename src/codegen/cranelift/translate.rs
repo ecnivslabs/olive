@@ -10,6 +10,16 @@ use cranelift_jit::JITModule;
 use cranelift_module::{DataId, FuncId, Module};
 use rustc_hash::FxHashMap as HashMap;
 
+fn struct_field_offset(
+    struct_fields: &HashMap<String, Vec<String>>,
+    struct_name: &str,
+    attr: &str,
+) -> Option<i32> {
+    let fields = struct_fields.get(struct_name)?;
+    let idx = fields.iter().position(|f| f == attr)?;
+    Some(8 + (idx as i32) * 8)
+}
+
 impl<'a> CraneliftCodegen<'a> {
     pub(super) fn translate_function(&mut self, func: &MirFunction) {
         let mut ctx = self.module.make_context();
@@ -85,6 +95,7 @@ impl<'a> CraneliftCodegen<'a> {
                     &mut self.module,
                     &self.func_ids,
                     &self.string_ids,
+                    &self.struct_fields,
                     &mut builder,
                     stmt,
                     &vars,
@@ -100,6 +111,7 @@ impl<'a> CraneliftCodegen<'a> {
                     &self.string_ids,
                     &mut self.module,
                     &self.func_ids,
+                    &self.struct_fields,
                     func.is_async,
                 );
                 match &term.kind {
@@ -153,6 +165,7 @@ impl<'a> CraneliftCodegen<'a> {
         module: &mut JITModule,
         func_ids: &HashMap<String, FuncId>,
         string_ids: &HashMap<String, DataId>,
+        struct_fields: &HashMap<String, Vec<String>>,
         builder: &mut FunctionBuilder,
         stmt: &Statement,
         vars: &HashMap<Local, Variable>,
@@ -160,7 +173,7 @@ impl<'a> CraneliftCodegen<'a> {
         match &stmt.kind {
             StatementKind::Assign(local, rval) => {
                 let val = Self::translate_rvalue(
-                    func_mir, module, func_ids, string_ids, builder, rval, vars,
+                    func_mir, module, func_ids, string_ids, struct_fields, builder, rval, vars,
                 );
                 let var = vars.get(local).unwrap();
 
@@ -175,6 +188,24 @@ impl<'a> CraneliftCodegen<'a> {
                 builder.def_var(*var, val);
             }
             StatementKind::SetAttr(obj, attr, val_op) => {
+                let obj_ty = if let Operand::Copy(loc) | Operand::Move(loc) = obj {
+                    &func_mir.locals[loc.0].ty
+                } else {
+                    &OliveType::Any
+                };
+                if let OliveType::Struct(struct_name, _) = obj_ty {
+                    if let Some(offset) = struct_field_offset(struct_fields, struct_name, attr) {
+                        let o = Self::translate_operand(builder, obj, vars, string_ids, module);
+                        let v = Self::translate_operand(builder, val_op, vars, string_ids, module);
+                        let v = if builder.func.dfg.value_type(v) == types::F64 {
+                            builder.ins().bitcast(types::I64, MemFlags::new(), v)
+                        } else {
+                            v
+                        };
+                        builder.ins().store(MemFlags::trusted(), v, o, offset);
+                        return;
+                    }
+                }
                 let o = Self::translate_operand(builder, obj, vars, string_ids, module);
                 let v = Self::translate_operand(builder, val_op, vars, string_ids, module);
 
@@ -252,6 +283,9 @@ impl<'a> CraneliftCodegen<'a> {
                     OliveType::List(_) | OliveType::Tuple(_) | OliveType::Set(_) => {
                         "__olive_free_list"
                     }
+                    OliveType::Struct(name, _) if struct_fields.contains_key(name) => {
+                        "__olive_free_struct"
+                    }
                     OliveType::Dict(_, _) | OliveType::Struct(_, _) => "__olive_free_obj",
                     OliveType::Enum(_, _) => "__olive_free_enum",
                     OliveType::Any => "__olive_free_any",
@@ -290,6 +324,7 @@ impl<'a> CraneliftCodegen<'a> {
         module: &mut JITModule,
         func_ids: &HashMap<String, FuncId>,
         string_ids: &HashMap<String, DataId>,
+        struct_fields: &HashMap<String, Vec<String>>,
         builder: &mut FunctionBuilder,
         rval: &Rvalue,
         vars: &HashMap<Local, Variable>,
@@ -567,6 +602,15 @@ impl<'a> CraneliftCodegen<'a> {
                 builder.use_var(*var)
             }
             Rvalue::GetAttr(obj, attr) => {
+                if let Operand::Copy(loc) | Operand::Move(loc) = obj {
+                    let obj_ty = &func_mir.locals[loc.0].ty;
+                    if let OliveType::Struct(struct_name, _) = obj_ty {
+                        if let Some(offset) = struct_field_offset(struct_fields, struct_name, attr) {
+                            let o = Self::translate_operand(builder, obj, vars, string_ids, module);
+                            return builder.ins().load(types::I64, MemFlags::trusted(), o, offset);
+                        }
+                    }
+                }
                 let o = Self::translate_operand(builder, obj, vars, string_ids, module);
                 let c_str = std::ffi::CString::new(attr.clone()).unwrap();
                 let attr_ptr = c_str.into_raw() as i64;
@@ -592,10 +636,10 @@ impl<'a> CraneliftCodegen<'a> {
                 builder.inst_results(inst)[0]
             }
             Rvalue::GetIndex(obj, idx) => {
-                let ty = if let Operand::Copy(loc) | Operand::Move(loc) = obj {
-                    &func_mir.locals[loc.0].ty
-                } else {
-                    &OliveType::Any
+                let ty = match obj {
+                    Operand::Copy(loc) | Operand::Move(loc) => &func_mir.locals[loc.0].ty,
+                    Operand::Constant(Constant::Str(_)) => &OliveType::Str,
+                    _ => &OliveType::Any,
                 };
 
                 let o = Self::translate_operand(builder, obj, vars, string_ids, module);
@@ -854,6 +898,7 @@ impl<'a> CraneliftCodegen<'a> {
         string_ids: &HashMap<String, DataId>,
         module: &mut JITModule,
         func_ids: &HashMap<String, FuncId>,
+        _struct_fields: &HashMap<String, Vec<String>>,
         is_async: bool,
     ) {
         match &term.kind {

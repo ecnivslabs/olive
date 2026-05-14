@@ -25,6 +25,7 @@ pub struct MirBuilder<'a> {
     pub functions: Vec<MirFunction>,
     pub expr_types: &'a HashMap<usize, Type>,
     pub global_types: &'a HashMap<String, Type>,
+    pub struct_fields: HashMap<String, Vec<String>>,
 
     pub(super) current_name: String,
     pub(super) current_locals: Vec<LocalDecl>,
@@ -46,11 +47,13 @@ impl<'a> MirBuilder<'a> {
     pub fn new(
         expr_types: &'a HashMap<usize, Type>,
         global_types: &'a HashMap<String, Type>,
+        struct_fields: HashMap<String, Vec<String>>,
     ) -> Self {
         Self {
             functions: Vec::new(),
             expr_types,
             global_types,
+            struct_fields,
             current_name: String::new(),
             current_locals: Vec::new(),
             current_blocks: Vec::new(),

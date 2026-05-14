@@ -164,11 +164,21 @@ pub extern "C" fn olive_str_to_float(ptr: i64) -> f64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_concat(l: i64, r: i64) -> i64 {
-    olive_str_internal(&format!(
-        "{}{}",
-        olive_str_from_ptr(l),
-        olive_str_from_ptr(r)
-    ))
+    let l_bytes = if l == 0 {
+        b"" as &[u8]
+    } else {
+        unsafe { std::ffi::CStr::from_ptr((l & !1) as *const i8).to_bytes() }
+    };
+    let r_bytes = if r == 0 {
+        b"" as &[u8]
+    } else {
+        unsafe { std::ffi::CStr::from_ptr((r & !1) as *const i8).to_bytes() }
+    };
+    let mut buf = Vec::with_capacity(l_bytes.len() + r_bytes.len() + 1);
+    buf.extend_from_slice(l_bytes);
+    buf.extend_from_slice(r_bytes);
+    let c_str = unsafe { std::ffi::CString::from_vec_unchecked(buf) };
+    c_str.into_raw() as i64 | 1
 }
 
 #[unsafe(no_mangle)]
@@ -179,11 +189,9 @@ pub extern "C" fn olive_str_eq(l: i64, r: i64) -> i64 {
     if l == 0 || r == 0 {
         return 0;
     }
-    if olive_str_from_ptr(l) == olive_str_from_ptr(r) {
-        1
-    } else {
-        0
-    }
+    let l_cstr = unsafe { std::ffi::CStr::from_ptr((l & !1) as *const i8) };
+    let r_cstr = unsafe { std::ffi::CStr::from_ptr((r & !1) as *const i8) };
+    if l_cstr == r_cstr { 1 } else { 0 }
 }
 
 #[unsafe(no_mangle)]
@@ -404,6 +412,29 @@ pub extern "C" fn olive_obj_len(obj_ptr: i64) -> i64 {
     unsafe { (*(obj_ptr as *const OliveObj)).fields.len() as i64 }
 }
 
+// Flat struct allocation: [n_fields: i64, field0, field1, ...]
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_struct_alloc(n_fields: i64) -> i64 {
+    let total = (n_fields + 1) * 8;
+    let layout = std::alloc::Layout::from_size_align(total as usize, 8).unwrap();
+    let ptr = unsafe { std::alloc::alloc(layout) } as i64;
+    unsafe { *(ptr as *mut i64) = n_fields };
+    ptr
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_free_struct(ptr: i64) {
+    if ptr == 0 {
+        return;
+    }
+    unsafe {
+        let n_fields = *(ptr as *const i64);
+        let total = ((n_fields + 1) * 8) as usize;
+        let layout = std::alloc::Layout::from_size_align_unchecked(total, 8);
+        std::alloc::dealloc(ptr as *mut u8, layout);
+    }
+}
+
 // Free memory
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_free_str(ptr: i64) {
@@ -595,17 +626,25 @@ pub extern "C" fn olive_next(iter_ptr: i64) -> i64 {
 // String indexing
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_len(s: i64) -> i64 {
-    olive_str_from_ptr(s).len() as i64
+    if s == 0 {
+        return 0;
+    }
+    unsafe { std::ffi::CStr::from_ptr((s & !1) as *const i8).to_bytes().len() as i64 }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_get(s: i64, i: i64) -> i64 {
-    let text = olive_str_from_ptr(s);
-    if let Some(c) = text.chars().nth(i as usize) {
-        olive_str_internal(&c.to_string())
-    } else {
-        0
+    if s == 0 {
+        return 0;
     }
+    let ptr = (s & !1) as *const u8;
+    let byte = unsafe { *ptr.add(i as usize) };
+    if byte == 0 {
+        return 0;
+    }
+    let buf = [byte, 0u8];
+    let c_str = unsafe { std::ffi::CString::from_vec_unchecked(buf.to_vec()) };
+    c_str.into_raw() as i64 | 1
 }
 
 #[unsafe(no_mangle)]

@@ -273,7 +273,7 @@ impl<'a> MirBuilder<'a> {
 
                     self.start_function(init_name, n_params, Type::Null);
 
-                    let self_local = self.new_local(Type::Any, Some("self".to_string()), false);
+                    let self_local = self.new_local(Type::Struct(name.clone(), Vec::new()), Some("self".to_string()), false);
                     let mut field_locals = Vec::new();
                     for field in fields {
                         let field_ty = field
@@ -430,6 +430,16 @@ impl<'a> MirBuilder<'a> {
                     .as_ref()
                     .map(|ann| self.resolve_type_expr(ann))
                     .unwrap_or(Type::Any);
+                let ty = if param.name == "self" && name.contains("::") {
+                    let struct_name = name.split("::").next().unwrap_or("");
+                    if self.struct_fields.contains_key(struct_name) {
+                        Type::Struct(struct_name.to_string(), Vec::new())
+                    } else {
+                        ty
+                    }
+                } else {
+                    ty
+                };
                 let local = self.declare_var(param.name.clone(), ty, param.is_mut);
                 param_locals.push(local);
             }
