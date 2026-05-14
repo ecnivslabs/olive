@@ -25,7 +25,7 @@ impl<'a> MirBuilder<'a> {
             ExprKind::Attr { obj, attr } => {
                 let obj_ty = self.get_type(obj.id).clone();
                 let obj_op = self.lower_expr_as_copy(obj);
-                if obj_ty == Type::PyObject {
+                if obj_ty.is_py_value() {
                     let rval_ty = self.get_type(value.id).clone();
                     let py_rval = self.emit_to_py_arg(rval, &rval_ty, target.span);
                     let dummy = self.new_local(Type::Any, None, false);
@@ -56,7 +56,7 @@ impl<'a> MirBuilder<'a> {
                 let obj_ty = self.get_type(obj.id).clone();
                 let obj_op = self.lower_expr_as_copy(obj);
                 let idx_op = self.lower_expr(index);
-                if obj_ty == Type::PyObject {
+                if obj_ty.is_py_value() {
                     let idx_ty = self.get_type(index.id).clone();
                     let rval_ty = self.get_type(value.id).clone();
                     let py_rval = self.emit_to_py_arg(rval, &rval_ty, target.span);

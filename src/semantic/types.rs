@@ -43,7 +43,12 @@ pub enum Type {
 
 impl Type {
     pub fn is_py_value(&self) -> bool {
-        matches!(self, Type::PyObject | Type::PyNamed(_, _))
+        match self {
+            Type::PyObject | Type::PyNamed(_, _) => true,
+            Type::Union(members) => members.iter().any(|m| m.is_py_value()),
+            Type::Ref(inner) | Type::MutRef(inner) => inner.is_py_value(),
+            _ => false,
+        }
     }
 
     pub fn is_move_type(&self) -> bool {

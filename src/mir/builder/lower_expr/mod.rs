@@ -135,7 +135,7 @@ impl<'a> MirBuilder<'a> {
             return Operand::Copy(fat_ptr_tmp);
         }
 
-        if *from_ty == Type::PyObject {
+        if from_ty.is_py_value() {
             let native_ty = match to_ty {
                 Type::Float
                 | Type::F32
@@ -325,7 +325,7 @@ impl<'a> MirBuilder<'a> {
 
         let callee_ty = self.get_type(callee.id);
 
-        if callee_ty == Type::PyObject {
+        if callee_ty.is_py_value() {
             let callee_op = self.lower_expr_as_copy(callee);
             let py_result =
                 self.lower_pyobject_call(callee_op, args, arg_ops, arg_kw_names, expr.span);
@@ -613,11 +613,11 @@ impl<'a> MirBuilder<'a> {
     fn is_py_call(&self, expr: &Expr) -> bool {
         if let ExprKind::Call { callee, .. } = &expr.kind {
             let callee_ty = self.get_type(callee.id);
-            if callee_ty == Type::PyObject {
+            if callee_ty.is_py_value() {
                 return true;
             }
             if let ExprKind::Attr { obj, .. } = &callee.kind {
-                return self.get_type(obj.id) == Type::PyObject;
+                return self.get_type(obj.id).is_py_value();
             }
         }
         false

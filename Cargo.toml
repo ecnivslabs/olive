@@ -4,7 +4,7 @@ default-members = [".", "std_lib"]
 
 [package]
 name = "pit"
-version = "0.4.2"
+version = "0.4.3"
 edition = "2024"
 authors = ["vinceswu"]
 description = "The Olive programming language compiler"

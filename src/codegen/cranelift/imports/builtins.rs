@@ -707,14 +707,20 @@ pub(crate) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
         "next" => Some("__olive_next"),
         "has_next" => Some("__olive_has_next"),
         "slice" => Some("__olive_str_slice"),
-        "list" => match current_ty {
-            OliveType::PyObject => Some("__olive_py_to_list"),
-            _ => None,
-        },
-        "dict" => match current_ty {
-            OliveType::PyObject => Some("__olive_py_to_dict"),
-            _ => None,
-        },
+        "list" => {
+            if current_ty.is_py_value() {
+                Some("__olive_py_to_list")
+            } else {
+                None
+            }
+        }
+        "dict" => {
+            if current_ty.is_py_value() {
+                Some("__olive_py_to_dict")
+            } else {
+                None
+            }
+        }
         "keys" => Some("__olive_obj_keys"),
         "values" => Some("__olive_obj_values"),
         "remove" => Some("__olive_obj_remove"),
