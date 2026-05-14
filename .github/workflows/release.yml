@@ -28,7 +28,7 @@ jobs:
             artifact: pit-linux-aarch64
 
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-latest
             use_cross: false
             artifact: pit-macos-x86_64
 
