@@ -179,7 +179,40 @@ impl<'a> MirBuilder<'a> {
                 ..
             } => {
                 if !type_params.is_empty() {
-                    return; // TODO: generic impl
+                    for s in body {
+                        if let StmtKind::Fn {
+                            name: fn_name,
+                            type_params: fn_type_params,
+                            params,
+                            return_type,
+                            body: fn_body,
+                            decorators,
+                            is_async,
+                        } = &s.kind
+                        {
+                            let mangled_name = format!("{}::{}", type_name, fn_name);
+                            let mut merged_type_params = type_params.clone();
+                            for tp in fn_type_params {
+                                if !merged_type_params.contains(tp) {
+                                    merged_type_params.push(tp.clone());
+                                }
+                            }
+                            let generic_fn = crate::parser::Stmt {
+                                kind: StmtKind::Fn {
+                                    name: mangled_name.clone(),
+                                    type_params: merged_type_params,
+                                    params: params.clone(),
+                                    return_type: return_type.clone(),
+                                    body: fn_body.clone(),
+                                    decorators: decorators.clone(),
+                                    is_async: *is_async,
+                                },
+                                span: s.span,
+                            };
+                            self.generic_fns.insert(mangled_name, generic_fn);
+                        }
+                    }
+                    return;
                 }
                 for s in body {
                     if let StmtKind::Fn {

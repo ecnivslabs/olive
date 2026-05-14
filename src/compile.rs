@@ -670,10 +670,6 @@ pub fn compile_and_emit(filename: &str, out: &str, show_time: bool) {
     }
 }
 
-pub fn compile_file_to_binary(filename: &str, out: &str, show_time: bool) {
-    compile_and_emit(filename, out, show_time);
-}
-
 pub fn compile_and_test(filename: &str, _show_time: bool) {
     let mut loaded = HashSet::new();
     loaded.insert(filename.to_string());

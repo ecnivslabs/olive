@@ -15,10 +15,6 @@ fn installed_path(name: &str, version: &str) -> PathBuf {
     packages_dir().join(name).join(version)
 }
 
-pub fn is_installed(name: &str, version: &str) -> bool {
-    installed_path(name, version).exists()
-}
-
 pub fn download_and_install(pkg: &PackageVersion) -> Result<(), String> {
     let install_dir = installed_path(&pkg.name, &pkg.vers);
 
