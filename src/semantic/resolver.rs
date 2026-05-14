@@ -62,6 +62,12 @@ impl Resolver {
             is_private: false,
         });
         table.define(Symbol {
+            name: "slice".to_string(),
+            kind: SymbolKind::Function,
+            span: Span::default(),
+            is_private: false,
+        });
+        table.define(Symbol {
             name: "None".to_string(),
             kind: SymbolKind::Variable,
             span: Span::default(),

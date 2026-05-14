@@ -48,6 +48,14 @@ impl TypeChecker {
             ("type", Type::Fn(vec![Type::Any], Box::new(Type::Str), Vec::new())),
             ("len", Type::Fn(vec![Type::Any], Box::new(Type::Int), Vec::new())),
             (
+                "slice",
+                Type::Fn(
+                    vec![Type::Any, Type::Int, Type::Int],
+                    Box::new(Type::Any),
+                    Vec::new(),
+                ),
+            ),
+            (
                 "list_new",
                 Type::Fn(vec![Type::Int], Box::new(Type::List(Box::new(Type::Any))), Vec::new()),
             ),

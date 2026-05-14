@@ -311,6 +311,7 @@ impl<'a> CraneliftCodegen<'a> {
                         || name == "iter"
                         || name == "next"
                         || name == "has_next"
+                        || name == "slice"
                         || name == "len")
                         && !args.is_empty()
                     {

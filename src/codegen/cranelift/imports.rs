@@ -250,7 +250,7 @@ pub(super) fn resolve_builtin_import(
         };
     }
     match name {
-        "print" | "str" | "int" | "float" | "bool" | "iter" | "next" | "has_next" | "len"
+        "print" | "str" | "int" | "float" | "bool" | "iter" | "next" | "has_next" | "len" | "slice"
             if !args.is_empty() =>
         {
             let arg_type = match &args[0] {
@@ -316,6 +316,7 @@ pub(super) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
         "iter" => Some("__olive_iter"),
         "next" => Some("__olive_next"),
         "has_next" => Some("__olive_has_next"),
+        "slice" => Some("__olive_str_slice"),
         _ => None,
     }
 }
