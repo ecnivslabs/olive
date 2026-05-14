@@ -351,7 +351,7 @@ impl<'a> MirBuilder<'a> {
                 if let ExprKind::Attr { obj, attr } = &callee.kind {
                     if let ExprKind::Identifier(name) = &obj.kind {
                         let obj_ty = self.get_type(obj.id);
-                        let is_struct_var = matches!(obj_ty, Type::Struct(_) | Type::Any)
+                        let is_struct_var = matches!(obj_ty, Type::Struct(_, _) | Type::Any)
                             && self.lookup_var(name).is_some();
                         if !is_struct_var {
                             let mangled = format!("{}::{}", name, attr);
@@ -414,8 +414,13 @@ impl<'a> MirBuilder<'a> {
                     let obj_ty = self.get_type(obj.id);
                     let mut method_name = attr.clone();
 
-                    if let Type::Struct(struct_name) = obj_ty {
-                        method_name = format!("{}::{}", struct_name, attr);
+                    if let Type::Struct(struct_name, type_args) = obj_ty {
+                        let base_method_name = format!("{}::{}", struct_name, attr);
+                        if !type_args.is_empty() {
+                            method_name = self.monomorphize(&base_method_name, &type_args);
+                        } else {
+                            method_name = base_method_name;
+                        }
                     }
 
                     self.push_statement(
@@ -432,7 +437,7 @@ impl<'a> MirBuilder<'a> {
                 }
 
                 let callee_ty = self.get_type(callee.id);
-                if let Type::Struct(struct_name) = callee_ty {
+                if let Type::Struct(struct_name, type_args) = callee_ty {
                     let obj_tmp = self.new_unscoped_local(self.get_type(expr.id));
                     self.push_statement(
                         StatementKind::Assign(
@@ -447,7 +452,12 @@ impl<'a> MirBuilder<'a> {
                         expr.span,
                     );
 
-                    let init_name = format!("{}::__init__", struct_name);
+                    let base_init_name = format!("{}::__init__", struct_name);
+                    let init_name = if !type_args.is_empty() {
+                        self.monomorphize(&base_init_name, &type_args)
+                    } else {
+                        base_init_name
+                    };
                     let mut init_args = vec![Operand::Copy(obj_tmp)];
                     init_args.extend(arg_ops);
 
@@ -466,10 +476,27 @@ impl<'a> MirBuilder<'a> {
                     return Operand::Copy(obj_tmp);
                 }
 
-                let func = self.lower_expr(callee);
+                let mut func = self.lower_expr(callee);
+                let mut call_fn_name = if let ExprKind::Identifier(name) = &callee.kind {
+                    Some(name.clone())
+                } else {
+                    None
+                };
+
+                if let Some(fn_name) = &call_fn_name {
+                    let callee_ty = self.get_type(callee.id);
+                    if let Type::Fn(_, _, type_args) = callee_ty {
+                        if !type_args.is_empty() && self.generic_fns.contains_key(fn_name) {
+                            let specialized_name = self.monomorphize(fn_name, &type_args);
+                            func = Operand::Constant(Constant::Function(specialized_name.clone()));
+                            call_fn_name = Some(specialized_name);
+                        }
+                    }
+                }
+
                 let tmp = self.new_tmp_for_expr(expr);
-                let final_args = if let ExprKind::Identifier(fn_name) = &callee.kind {
-                    self.pack_fn_call_args(fn_name, &arg_ops, &arg_kw_names, expr.span)
+                let final_args = if let Some(name) = &call_fn_name {
+                    self.pack_fn_call_args(name, &arg_ops, &arg_kw_names, expr.span)
                 } else {
                     arg_ops
                 };
@@ -533,7 +560,7 @@ impl<'a> MirBuilder<'a> {
             ExprKind::Attr { obj, attr } => {
                 if let ExprKind::Identifier(name) = &obj.kind {
                     let obj_ty = self.get_type(obj.id);
-                    let is_struct_or_self = matches!(obj_ty, Type::Struct(_) | Type::Any)
+                    let is_struct_or_self = matches!(obj_ty, Type::Struct(_, _) | Type::Any)
                         && self.lookup_var(name).is_some();
                     if !is_struct_or_self {
                         let mangled = format!("{}::{}", name, attr);
@@ -753,7 +780,7 @@ impl<'a> MirBuilder<'a> {
             }
             MatchPattern::Variant(v_name, inner_patterns) => {
                 let resolved = match match_ty {
-                    Type::Enum(enum_name) => {
+                    Type::Enum(enum_name, _) => {
                         let mangled = format!("{}::{}", enum_name, v_name);
                         self.enum_variants.get(&mangled).map(|(_, tag)| {
                             (
@@ -764,7 +791,7 @@ impl<'a> MirBuilder<'a> {
                         })
                     }
                     Type::Union(members) => members.iter().find_map(|ty| {
-                        if let Type::Enum(en) = ty {
+                        if let Type::Enum(en, _) = ty {
                             let mangled = format!("{}::{}", en, v_name);
                             self.enum_variants
                                 .get(&mangled)
@@ -832,7 +859,7 @@ impl<'a> MirBuilder<'a> {
                         .global_types
                         .get(&mangled)
                         .and_then(|ty| {
-                            if let Type::Fn(pts, _) = ty {
+                            if let Type::Fn(pts, _, _) = ty {
                                 Some(pts.clone())
                             } else {
                                 None

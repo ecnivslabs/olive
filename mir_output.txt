@@ -1,0 +1,1313 @@
+warning: field `type_params` is never read
+   --> src/parser/ast.rs:263:9
+    |
+261 |     Trait {
+    |     ----- field in this variant
+262 |         name: String,
+263 |         type_params: Vec<String>,
+    |         ^^^^^^^^^^^
+    |
+    = note: `StmtKind` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `pit` (bin "pit") generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running `target/debug/pit run tests/generics.ol --emit-mir`
+MirFunction {
+    name: "Wrapper_T::__init__",
+    locals: [
+        LocalDecl {
+            ty: Null,
+            name: Some(
+                "_return",
+            ),
+            span: Span {
+                file_id: 0,
+                line: 0,
+                col: 0,
+                start: 0,
+                end: 0,
+            },
+            is_mut: true,
+        },
+        LocalDecl {
+            ty: Any,
+            name: Some(
+                "self",
+            ),
+            span: Span {
+                file_id: 0,
+                line: 0,
+                col: 0,
+                start: 0,
+                end: 0,
+            },
+            is_mut: false,
+        },
+        LocalDecl {
+            ty: Any,
+            name: Some(
+                "val",
+            ),
+            span: Span {
+                file_id: 0,
+                line: 0,
+                col: 0,
+                start: 0,
+                end: 0,
+            },
+            is_mut: false,
+        },
+    ],
+    basic_blocks: [
+        BasicBlock {
+            statements: [
+                Statement {
+                    kind: StorageLive(
+                        Local(
+                            0,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: Assign(
+                        Local(
+                            0,
+                        ),
+                        Use(
+                            Constant(
+                                Int(
+                                    0,
+                                ),
+                            ),
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: StorageLive(
+                        Local(
+                            1,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: StorageLive(
+                        Local(
+                            2,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: SetAttr(
+                        Copy(
+                            Local(
+                                1,
+                            ),
+                        ),
+                        "val",
+                        Copy(
+                            Local(
+                                2,
+                            ),
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: StorageDead(
+                        Local(
+                            2,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: StorageDead(
+                        Local(
+                            1,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: StorageDead(
+                        Local(
+                            0,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+            ],
+            terminator: Some(
+                Terminator {
+                    kind: Return,
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+            ),
+        },
+    ],
+    arg_count: 2,
+    vararg_idx: None,
+    kwarg_idx: None,
+    param_names: [],
+    is_async: false,
+}
+MirFunction {
+    name: "main",
+    locals: [
+        LocalDecl {
+            ty: Any,
+            name: Some(
+                "_return",
+            ),
+            span: Span {
+                file_id: 0,
+                line: 0,
+                col: 0,
+                start: 0,
+                end: 0,
+            },
+            is_mut: true,
+        },
+        LocalDecl {
+            ty: Struct(
+                "Wrapper",
+                [
+                    Var(
+                        1,
+                    ),
+                ],
+            ),
+            name: None,
+            span: Span {
+                file_id: 0,
+                line: 0,
+                col: 0,
+                start: 0,
+                end: 0,
+            },
+            is_mut: true,
+        },
+        LocalDecl {
+            ty: Struct(
+                "Wrapper",
+                [
+                    Var(
+                        1,
+                    ),
+                ],
+            ),
+            name: None,
+            span: Span {
+                file_id: 0,
+                line: 0,
+                col: 0,
+                start: 0,
+                end: 0,
+            },
+            is_mut: true,
+        },
+        LocalDecl {
+            ty: Struct(
+                "Wrapper",
+                [
+                    Var(
+                        1,
+                    ),
+                ],
+            ),
+            name: Some(
+                "w",
+            ),
+            span: Span {
+                file_id: 0,
+                line: 0,
+                col: 0,
+                start: 0,
+                end: 0,
+            },
+            is_mut: false,
+        },
+        LocalDecl {
+            ty: Param(
+                "T",
+            ),
+            name: None,
+            span: Span {
+                file_id: 0,
+                line: 0,
+                col: 0,
+                start: 0,
+                end: 0,
+            },
+            is_mut: true,
+        },
+        LocalDecl {
+            ty: Int,
+            name: None,
+            span: Span {
+                file_id: 0,
+                line: 0,
+                col: 0,
+                start: 0,
+                end: 0,
+            },
+            is_mut: true,
+        },
+        LocalDecl {
+            ty: Any,
+            name: None,
+            span: Span {
+                file_id: 0,
+                line: 0,
+                col: 0,
+                start: 0,
+                end: 0,
+            },
+            is_mut: true,
+        },
+        LocalDecl {
+            ty: Var(
+                4,
+            ),
+            name: None,
+            span: Span {
+                file_id: 0,
+                line: 0,
+                col: 0,
+                start: 0,
+                end: 0,
+            },
+            is_mut: true,
+        },
+        LocalDecl {
+            ty: Var(
+                4,
+            ),
+            name: Some(
+                "x",
+            ),
+            span: Span {
+                file_id: 0,
+                line: 0,
+                col: 0,
+                start: 0,
+                end: 0,
+            },
+            is_mut: false,
+        },
+        LocalDecl {
+            ty: Int,
+            name: None,
+            span: Span {
+                file_id: 0,
+                line: 0,
+                col: 0,
+                start: 0,
+                end: 0,
+            },
+            is_mut: true,
+        },
+        LocalDecl {
+            ty: Any,
+            name: None,
+            span: Span {
+                file_id: 0,
+                line: 0,
+                col: 0,
+                start: 0,
+                end: 0,
+            },
+            is_mut: true,
+        },
+        LocalDecl {
+            ty: Var(
+                7,
+            ),
+            name: None,
+            span: Span {
+                file_id: 0,
+                line: 0,
+                col: 0,
+                start: 0,
+                end: 0,
+            },
+            is_mut: true,
+        },
+        LocalDecl {
+            ty: Var(
+                7,
+            ),
+            name: Some(
+                "y",
+            ),
+            span: Span {
+                file_id: 0,
+                line: 0,
+                col: 0,
+                start: 0,
+                end: 0,
+            },
+            is_mut: false,
+        },
+        LocalDecl {
+            ty: Int,
+            name: None,
+            span: Span {
+                file_id: 0,
+                line: 0,
+                col: 0,
+                start: 0,
+                end: 0,
+            },
+            is_mut: true,
+        },
+        LocalDecl {
+            ty: Null,
+            name: Some(
+                "_return",
+            ),
+            span: Span {
+                file_id: 0,
+                line: 0,
+                col: 0,
+                start: 0,
+                end: 0,
+            },
+            is_mut: true,
+        },
+        LocalDecl {
+            ty: Any,
+            name: Some(
+                "self",
+            ),
+            span: Span {
+                file_id: 0,
+                line: 0,
+                col: 0,
+                start: 0,
+                end: 0,
+            },
+            is_mut: false,
+        },
+        LocalDecl {
+            ty: Any,
+            name: Some(
+                "val",
+            ),
+            span: Span {
+                file_id: 0,
+                line: 0,
+                col: 0,
+                start: 0,
+                end: 0,
+            },
+            is_mut: false,
+        },
+    ],
+    basic_blocks: [
+        BasicBlock {
+            statements: [
+                Statement {
+                    kind: StorageLive(
+                        Local(
+                            0,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: Assign(
+                        Local(
+                            0,
+                        ),
+                        Use(
+                            Constant(
+                                Int(
+                                    0,
+                                ),
+                            ),
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: StorageLive(
+                        Local(
+                            1,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: Assign(
+                        Local(
+                            1,
+                        ),
+                        Call {
+                            func: Constant(
+                                Function(
+                                    "__olive_obj_new",
+                                ),
+                            ),
+                            args: [],
+                        },
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 8,
+                        col: 13,
+                        start: 95,
+                        end: 105,
+                    },
+                },
+                Statement {
+                    kind: StorageLive(
+                        Local(
+                            2,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: StorageLive(
+                        Local(
+                            15,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 8,
+                        col: 13,
+                        start: 95,
+                        end: 105,
+                    },
+                },
+                Statement {
+                    kind: StorageLive(
+                        Local(
+                            16,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 8,
+                        col: 13,
+                        start: 95,
+                        end: 105,
+                    },
+                },
+                Statement {
+                    kind: StorageLive(
+                        Local(
+                            14,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 8,
+                        col: 13,
+                        start: 95,
+                        end: 105,
+                    },
+                },
+                Statement {
+                    kind: StorageLive(
+                        Local(
+                            14,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: StorageLive(
+                        Local(
+                            15,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: StorageLive(
+                        Local(
+                            16,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: SetAttr(
+                        Copy(
+                            Local(
+                                1,
+                            ),
+                        ),
+                        "val",
+                        Constant(
+                            Int(
+                                1,
+                            ),
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: StorageDead(
+                        Local(
+                            16,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: StorageDead(
+                        Local(
+                            15,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: StorageDead(
+                        Local(
+                            14,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: StorageLive(
+                        Local(
+                            3,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: StorageLive(
+                        Local(
+                            4,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: Assign(
+                        Local(
+                            4,
+                        ),
+                        GetAttr(
+                            Move(
+                                Local(
+                                    1,
+                                ),
+                            ),
+                            "val",
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 9,
+                        col: 11,
+                        start: 116,
+                        end: 121,
+                    },
+                },
+                Statement {
+                    kind: StorageLive(
+                        Local(
+                            5,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: Assign(
+                        Local(
+                            5,
+                        ),
+                        Call {
+                            func: Constant(
+                                Function(
+                                    "print",
+                                ),
+                            ),
+                            args: [
+                                Copy(
+                                    Local(
+                                        4,
+                                    ),
+                                ),
+                            ],
+                        },
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 9,
+                        col: 5,
+                        start: 110,
+                        end: 122,
+                    },
+                },
+                Statement {
+                    kind: StorageLive(
+                        Local(
+                            6,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: StorageLive(
+                        Local(
+                            7,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: Assign(
+                        Local(
+                            7,
+                        ),
+                        Call {
+                            func: Constant(
+                                Function(
+                                    "identity",
+                                ),
+                            ),
+                            args: [
+                                Constant(
+                                    Int(
+                                        42,
+                                    ),
+                                ),
+                            ],
+                        },
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 11,
+                        col: 13,
+                        start: 136,
+                        end: 148,
+                    },
+                },
+                Statement {
+                    kind: StorageLive(
+                        Local(
+                            8,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: Assign(
+                        Local(
+                            8,
+                        ),
+                        Use(
+                            Move(
+                                Local(
+                                    7,
+                                ),
+                            ),
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 11,
+                        col: 5,
+                        start: 128,
+                        end: 149,
+                    },
+                },
+                Statement {
+                    kind: StorageLive(
+                        Local(
+                            9,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: Assign(
+                        Local(
+                            9,
+                        ),
+                        Call {
+                            func: Constant(
+                                Function(
+                                    "print",
+                                ),
+                            ),
+                            args: [
+                                Move(
+                                    Local(
+                                        8,
+                                    ),
+                                ),
+                            ],
+                        },
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 12,
+                        col: 5,
+                        start: 153,
+                        end: 161,
+                    },
+                },
+                Statement {
+                    kind: StorageLive(
+                        Local(
+                            10,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: StorageLive(
+                        Local(
+                            11,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: Assign(
+                        Local(
+                            11,
+                        ),
+                        Call {
+                            func: Constant(
+                                Function(
+                                    "identity",
+                                ),
+                            ),
+                            args: [
+                                Constant(
+                                    Str(
+                                        "hello",
+                                    ),
+                                ),
+                            ],
+                        },
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 14,
+                        col: 13,
+                        start: 175,
+                        end: 192,
+                    },
+                },
+                Statement {
+                    kind: StorageLive(
+                        Local(
+                            12,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: Assign(
+                        Local(
+                            12,
+                        ),
+                        Use(
+                            Move(
+                                Local(
+                                    11,
+                                ),
+                            ),
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 14,
+                        col: 5,
+                        start: 167,
+                        end: 193,
+                    },
+                },
+                Statement {
+                    kind: StorageLive(
+                        Local(
+                            13,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: Assign(
+                        Local(
+                            13,
+                        ),
+                        Call {
+                            func: Constant(
+                                Function(
+                                    "print",
+                                ),
+                            ),
+                            args: [
+                                Move(
+                                    Local(
+                                        12,
+                                    ),
+                                ),
+                            ],
+                        },
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 15,
+                        col: 5,
+                        start: 197,
+                        end: 205,
+                    },
+                },
+                Statement {
+                    kind: Assign(
+                        Local(
+                            0,
+                        ),
+                        Use(
+                            Copy(
+                                Local(
+                                    13,
+                                ),
+                            ),
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 15,
+                        col: 5,
+                        start: 197,
+                        end: 205,
+                    },
+                },
+            ],
+            terminator: Some(
+                Terminator {
+                    kind: Return,
+                    span: Span {
+                        file_id: 0,
+                        line: 15,
+                        col: 5,
+                        start: 197,
+                        end: 205,
+                    },
+                },
+            ),
+        },
+    ],
+    arg_count: 0,
+    vararg_idx: None,
+    kwarg_idx: None,
+    param_names: [],
+    is_async: false,
+}
+MirFunction {
+    name: "__main__",
+    locals: [
+        LocalDecl {
+            ty: Any,
+            name: Some(
+                "_return",
+            ),
+            span: Span {
+                file_id: 0,
+                line: 0,
+                col: 0,
+                start: 0,
+                end: 0,
+            },
+            is_mut: true,
+        },
+        LocalDecl {
+            ty: Var(
+                10,
+            ),
+            name: None,
+            span: Span {
+                file_id: 0,
+                line: 0,
+                col: 0,
+                start: 0,
+                end: 0,
+            },
+            is_mut: true,
+        },
+        LocalDecl {
+            ty: Any,
+            name: None,
+            span: Span {
+                file_id: 0,
+                line: 0,
+                col: 0,
+                start: 0,
+                end: 0,
+            },
+            is_mut: true,
+        },
+    ],
+    basic_blocks: [
+        BasicBlock {
+            statements: [
+                Statement {
+                    kind: StorageLive(
+                        Local(
+                            0,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: Assign(
+                        Local(
+                            0,
+                        ),
+                        Use(
+                            Constant(
+                                Int(
+                                    0,
+                                ),
+                            ),
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: StorageLive(
+                        Local(
+                            1,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: Assign(
+                        Local(
+                            1,
+                        ),
+                        Call {
+                            func: Constant(
+                                Function(
+                                    "main",
+                                ),
+                            ),
+                            args: [],
+                        },
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 17,
+                        col: 1,
+                        start: 207,
+                        end: 213,
+                    },
+                },
+                Statement {
+                    kind: StorageLive(
+                        Local(
+                            2,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: StorageDead(
+                        Local(
+                            2,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: Drop(
+                        Local(
+                            1,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: StorageDead(
+                        Local(
+                            1,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+                Statement {
+                    kind: StorageDead(
+                        Local(
+                            0,
+                        ),
+                    ),
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+            ],
+            terminator: Some(
+                Terminator {
+                    kind: Return,
+                    span: Span {
+                        file_id: 0,
+                        line: 0,
+                        col: 0,
+                        start: 0,
+                        end: 0,
+                    },
+                },
+            ),
+        },
+    ],
+    arg_count: 0,
+    vararg_idx: None,
+    kwarg_idx: None,
+    param_names: [],
+    is_async: false,
+}
+1
+0
+0

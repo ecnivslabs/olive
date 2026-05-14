@@ -39,6 +39,7 @@ pub struct MirBuilder<'a> {
     pub enum_variants: HashMap<String, (String, usize)>,
     pub(super) current_is_async: bool,
     pub(super) fn_meta: HashMap<String, FnMeta>,
+    pub(super) generic_fns: HashMap<String, crate::parser::Stmt>,
 }
 
 impl<'a> MirBuilder<'a> {
@@ -63,6 +64,7 @@ impl<'a> MirBuilder<'a> {
             enum_variants: HashMap::default(),
             current_is_async: false,
             fn_meta: HashMap::default(),
+            generic_fns: HashMap::default(),
         }
     }
 

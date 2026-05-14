@@ -148,11 +148,15 @@ impl Resolver {
 
             StmtKind::Fn {
                 name: _,
+                type_params,
                 params,
                 body,
                 ..
             } => {
                 self.table.push(ScopeKind::Function);
+                for tp in type_params {
+                    self.define_sym(tp, SymbolKind::Variable, stmt.span);
+                }
                 self.resolve_params(params);
                 self.hoist_fns_and_structs(body);
                 for s in body {
@@ -161,16 +165,32 @@ impl Resolver {
                 self.table.pop();
             }
 
-            StmtKind::Struct { body, .. } => {
+            StmtKind::Struct {
+                type_params,
+                body,
+                ..
+            } => {
+                self.table.push(ScopeKind::Block);
+                for tp in type_params {
+                    self.define_sym(tp, SymbolKind::Variable, stmt.span);
+                }
                 // struct field declarations have no resolvable expressions by default
                 // any consts/nested types in body are resolved here
                 for s in body {
                     self.resolve_stmt(s);
                 }
+                self.table.pop();
             }
 
-            StmtKind::Impl { body, .. } => {
+            StmtKind::Impl {
+                type_params,
+                body,
+                ..
+            } => {
                 self.table.push(ScopeKind::Struct);
+                for tp in type_params {
+                    self.define_sym(tp, SymbolKind::Variable, stmt.span);
+                }
                 self.hoist_fns_and_structs(body);
                 for s in body {
                     self.resolve_stmt(s);
@@ -267,8 +287,11 @@ impl Resolver {
             StmtKind::ExprStmt(expr) => self.resolve_expr(expr),
 
             StmtKind::Pass | StmtKind::Break | StmtKind::Continue => {}
-            StmtKind::Enum { .. } => {
-                // Enum definition has been hoisted, no inner block to resolve
+            StmtKind::Enum { type_params: _, .. } => {
+                // Enum definition has been hoisted
+                // But we might have type params in variants (resolved during hoist?)
+                // Actually variants are hoisted in hoist_fns_and_structs.
+                // For now, if variants have type params, we need to handle them.
             }
         }
     }

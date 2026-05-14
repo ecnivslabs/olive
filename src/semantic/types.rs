@@ -18,14 +18,16 @@ pub enum Type {
     Str,
     Bool,
     Null,
-    // Named user-defined type (struct)
-    Struct(String),
-    // Enum type
-    Enum(String),
+    // Named user-defined type (struct): Struct(name, type_args)
+    Struct(String, Vec<Type>),
+    // Enum type: Enum(name, type_args)
+    Enum(String, Vec<Type>),
+    // Type parameter: Param(name)
+    Param(String),
     // Union type: A | B
     Union(Vec<Type>),
-    // Function type: (params) -> return_type
-    Fn(Vec<Type>, Box<Type>),
+    // Function type: Fn(params, return_type, type_args)
+    Fn(Vec<Type>, Box<Type>, Vec<Type>),
     // Tuple type: (T1, T2, ...)
     Tuple(Vec<Type>),
     // List type: [T]
@@ -80,6 +82,7 @@ impl Type {
                 | Type::MutRef(_)
                 | Type::Vector(_, _)
                 | Type::Future(_)
+                | Type::Param(_)
         )
     }
 }
@@ -109,8 +112,32 @@ impl fmt::Display for Type {
                 }
                 Ok(())
             }
-            Type::Struct(name) | Type::Enum(name) => write!(f, "{}", name),
-            Type::Fn(params, ret) => {
+            Type::Struct(name, args) | Type::Enum(name, args) => {
+                write!(f, "{}", name)?;
+                if !args.is_empty() {
+                    write!(f, "[")?;
+                    for (i, arg) in args.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", arg)?;
+                    }
+                    write!(f, "]")?;
+                }
+                Ok(())
+            }
+            Type::Param(name) => write!(f, "{}", name),
+            Type::Fn(params, ret, args) => {
+                if !args.is_empty() {
+                    write!(f, "[")?;
+                    for (i, arg) in args.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", arg)?;
+                    }
+                    write!(f, "]")?;
+                }
                 write!(f, "(")?;
                 for (i, p) in params.iter().enumerate() {
                     if i > 0 {

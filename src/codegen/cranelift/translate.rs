@@ -198,7 +198,7 @@ impl<'a> CraneliftCodegen<'a> {
                 let v = Self::translate_operand(builder, val_op, vars, string_ids, module);
 
                 match ty {
-                    OliveType::Dict(_, _) | OliveType::Struct(_) => {
+                    OliveType::Dict(_, _) | OliveType::Struct(_, _) => {
                         let set_id = func_ids.get("__olive_obj_set").unwrap();
                         let local_func = module.declare_func_in_func(*set_id, builder.func);
                         builder.ins().call(local_func, &[o, i, v]);
@@ -208,7 +208,7 @@ impl<'a> CraneliftCodegen<'a> {
                         let local_func = module.declare_func_in_func(*set_id, builder.func);
                         builder.ins().call(local_func, &[o, i, v]);
                     }
-                    OliveType::Enum(_) => {
+                    OliveType::Enum(_, _) => {
                         let set_id = func_ids.get("__olive_enum_set").unwrap();
                         let local_func = module.declare_func_in_func(*set_id, builder.func);
                         builder.ins().call(local_func, &[o, i, v]);
@@ -240,8 +240,8 @@ impl<'a> CraneliftCodegen<'a> {
                     OliveType::List(_) | OliveType::Tuple(_) | OliveType::Set(_) => {
                         "__olive_free_list"
                     }
-                    OliveType::Dict(_, _) | OliveType::Struct(_) => "__olive_free_obj",
-                    OliveType::Enum(_) => "__olive_free_enum",
+                    OliveType::Dict(_, _) | OliveType::Struct(_, _) => "__olive_free_obj",
+                    OliveType::Enum(_, _) => "__olive_free_enum",
                     OliveType::Any => "__olive_free_any",
                     OliveType::Union(_) => "__olive_free_any",
                     _ => "__olive_free",
@@ -461,7 +461,7 @@ impl<'a> CraneliftCodegen<'a> {
                             while let OliveType::Ref(inner) | OliveType::MutRef(inner) = ty {
                                 ty = inner;
                             }
-                            if matches!(ty, OliveType::Dict(_, _) | OliveType::Struct(_)) {
+                            if matches!(ty, OliveType::Dict(_, _) | OliveType::Struct(_, _)) {
                                 is_obj = true;
                             }
                         }
@@ -482,7 +482,7 @@ impl<'a> CraneliftCodegen<'a> {
                             while let OliveType::Ref(inner) | OliveType::MutRef(inner) = ty {
                                 ty = inner;
                             }
-                            if matches!(ty, OliveType::Dict(_, _) | OliveType::Struct(_)) {
+                            if matches!(ty, OliveType::Dict(_, _) | OliveType::Struct(_, _)) {
                                 is_obj = true;
                             }
                         }
@@ -559,13 +559,13 @@ impl<'a> CraneliftCodegen<'a> {
                 let i = Self::translate_operand(builder, idx, vars, string_ids, module);
 
                 match ty {
-                    OliveType::Enum(_) => {
+                    OliveType::Enum(_, _) => {
                         let get_id = func_ids.get("__olive_enum_get").unwrap();
                         let local_func = module.declare_func_in_func(*get_id, builder.func);
                         let inst = builder.ins().call(local_func, &[o, i]);
                         builder.inst_results(inst)[0]
                     }
-                    OliveType::Dict(_, _) | OliveType::Struct(_) => {
+                    OliveType::Dict(_, _) | OliveType::Struct(_, _) => {
                         let get_id = func_ids.get("__olive_obj_get").unwrap();
                         let local_func = module.declare_func_in_func(*get_id, builder.func);
                         let inst = builder.ins().call(local_func, &[o, i]);

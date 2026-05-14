@@ -159,6 +159,7 @@ impl Parser {
         let start = self.peek().clone();
         self.expect(TokenKind::Fn)?;
         let name = self.expect(TokenKind::Identifier)?.value;
+        let type_params = self.parse_type_params()?;
         self.expect(TokenKind::LParen)?;
         let params = self.parse_params()?;
         self.expect(TokenKind::RParen)?;
@@ -173,6 +174,7 @@ impl Parser {
         Ok(Stmt::new(
             StmtKind::Fn {
                 name,
+                type_params,
                 params,
                 return_type,
                 body,
@@ -238,6 +240,7 @@ impl Parser {
         let start = self.peek().clone();
         self.expect(TokenKind::Struct)?;
         let name = self.expect(TokenKind::Identifier)?.value;
+        let type_params = self.parse_type_params()?;
         if let Some(first_char) = name.chars().next()
             && !first_char.is_uppercase()
         {
@@ -293,6 +296,7 @@ impl Parser {
         Ok(Stmt::new(
             StmtKind::Struct {
                 name,
+                type_params,
                 fields,
                 body,
                 decorators: Vec::new(),
@@ -304,6 +308,7 @@ impl Parser {
     pub(crate) fn parse_impl(&mut self) -> ParseResult<Stmt> {
         let start = self.peek().clone();
         self.expect(TokenKind::Impl)?;
+        let type_params = self.parse_type_params()?;
         let first_name = self.expect(TokenKind::Identifier)?.value;
         // `impl Trait for Type:` vs `impl Type:`
         let (trait_name, type_name) = if self.peek().kind == TokenKind::For {
@@ -317,6 +322,7 @@ impl Parser {
         let span = self.span_from(&start);
         Ok(Stmt::new(
             StmtKind::Impl {
+                type_params,
                 trait_name,
                 type_name,
                 body,
@@ -329,6 +335,7 @@ impl Parser {
         let start = self.peek().clone();
         self.expect(TokenKind::Trait)?;
         let name = self.expect(TokenKind::Identifier)?.value;
+        let type_params = self.parse_type_params()?;
         let raw_body = self.parse_block()?;
         let mut methods = Vec::new();
         for s in raw_body {
@@ -341,13 +348,21 @@ impl Parser {
             }
         }
         let span = self.span_from(&start);
-        Ok(Stmt::new(StmtKind::Trait { name, methods }, span))
+        Ok(Stmt::new(
+            StmtKind::Trait {
+                name,
+                type_params,
+                methods,
+            },
+            span,
+        ))
     }
 
     pub(crate) fn parse_enum(&mut self) -> ParseResult<Stmt> {
         let start = self.peek().clone();
         self.expect(TokenKind::Enum)?;
         let name = self.expect(TokenKind::Identifier)?.value;
+        let type_params = self.parse_type_params()?;
         if let Some(first_char) = name.chars().next()
             && !first_char.is_uppercase()
         {
@@ -396,6 +411,7 @@ impl Parser {
         Ok(Stmt::new(
             StmtKind::Enum {
                 name,
+                type_params,
                 variants,
                 decorators: Vec::new(),
             },
@@ -760,5 +776,22 @@ impl Parser {
                 Ok(Stmt::new(StmtKind::ExprStmt(lhs), span))
             }
         }
+    }
+
+    fn parse_type_params(&mut self) -> ParseResult<Vec<String>> {
+        let mut params = Vec::new();
+        if self.peek().kind == TokenKind::LBracket {
+            self.advance();
+            while self.peek().kind != TokenKind::RBracket && self.peek().kind != TokenKind::Eof {
+                params.push(self.expect(TokenKind::Identifier)?.value);
+                if self.peek().kind == TokenKind::Comma {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+            self.expect(TokenKind::RBracket)?;
+        }
+        Ok(params)
     }
 }

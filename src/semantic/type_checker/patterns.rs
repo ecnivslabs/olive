@@ -63,9 +63,9 @@ impl TypeChecker {
             }
             MatchPattern::Variant(v_name, inner_patterns) => {
                 let resolved_enum = match match_ty {
-                    Type::Enum(name) => Some(name.clone()),
+                    Type::Enum(name, _) => Some(name.clone()),
                     Type::Union(members) => members.iter().find_map(|ty| {
-                        if let Type::Enum(en) = ty {
+                        if let Type::Enum(en, _) = ty {
                             let mangled = format!("{}::{}", en, v_name);
                             if self.lookup_type(&mangled).is_some() {
                                 Some(en.clone())
@@ -81,7 +81,7 @@ impl TypeChecker {
 
                 if let Some(enum_name) = resolved_enum {
                     let variant_mangled = format!("{}::{}", enum_name, v_name);
-                    if let Some(Type::Fn(param_types, _)) = self.lookup_type(&variant_mangled) {
+                    if let Some(Type::Fn(param_types, _, _)) = self.lookup_type(&variant_mangled) {
                         if param_types.len() == inner_patterns.len() {
                             for (p, p_ty) in inner_patterns.iter().zip(param_types) {
                                 self.check_pattern(p, &p_ty, span);

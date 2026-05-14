@@ -29,10 +29,10 @@ pub(super) fn collect_needed_imports(
                                 OliveType::List(_) | OliveType::Tuple(_) | OliveType::Set(_) => {
                                     needed.insert("__olive_free_list");
                                 }
-                                OliveType::Dict(_, _) | OliveType::Struct(_) => {
+                                OliveType::Dict(_, _) | OliveType::Struct(_, _) => {
                                     needed.insert("__olive_free_obj");
                                 }
-                                OliveType::Enum(_) => {
+                                OliveType::Enum(_, _) => {
                                     needed.insert("__olive_free_enum");
                                 }
                                 _ => {
@@ -114,7 +114,7 @@ pub(super) fn scan_rvalue_imports(
                 let ty = &func_mir.locals[loc.0].ty;
                 if matches!(ty, OliveType::Str) {
                     needed.insert("__olive_str_get");
-                } else if matches!(ty, OliveType::Enum(_) | OliveType::Union(_)) {
+                } else if matches!(ty, OliveType::Enum(_, _) | OliveType::Union(_)) {
                     needed.insert("__olive_enum_get");
                 }
             }
@@ -276,7 +276,7 @@ pub(super) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
     match name {
         "len" => match current_ty {
             OliveType::Str => Some("__olive_str_len"),
-            OliveType::Dict(_, _) | OliveType::Struct(_) | OliveType::Any => {
+            OliveType::Dict(_, _) | OliveType::Struct(_, _) | OliveType::Any => {
                 Some("__olive_obj_len")
             }
             _ => Some("__olive_list_len"),
@@ -287,7 +287,7 @@ pub(super) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
             OliveType::List(_) | OliveType::Tuple(_) | OliveType::Set(_) => {
                 Some("__olive_print_list")
             }
-            OliveType::Dict(_, _) | OliveType::Struct(_) => Some("__olive_print_obj"),
+            OliveType::Dict(_, _) | OliveType::Struct(_, _) => Some("__olive_print_obj"),
             _ => Some("__olive_print_int"),
         },
         "str" => match current_ty {

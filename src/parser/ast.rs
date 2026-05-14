@@ -238,6 +238,7 @@ impl Stmt {
 pub enum StmtKind {
     Fn {
         name: String,
+        type_params: Vec<String>,
         params: Vec<Param>,
         return_type: Option<TypeExpr>,
         body: Vec<Stmt>,
@@ -246,21 +247,25 @@ pub enum StmtKind {
     },
     Struct {
         name: String,
+        type_params: Vec<String>,
         fields: Vec<Param>, // named fields with optional type annotations
         body: Vec<Stmt>,    // associated consts / nested types inside struct block
         decorators: Vec<Decorator>,
     },
     Impl {
+        type_params: Vec<String>,
         trait_name: Option<String>, // Some("Trait") for `impl Trait for Type`
         type_name: String,
         body: Vec<Stmt>,
     },
     Trait {
         name: String,
+        type_params: Vec<String>,
         methods: Vec<Stmt>, // Fn stmts with signatures (body = [Pass])
     },
     Enum {
         name: String,
+        type_params: Vec<String>,
         variants: Vec<EnumVariant>,
         decorators: Vec<Decorator>,
     },

@@ -54,13 +54,12 @@ impl TypeChecker {
                 }
             }
 
-            (Type::Fn(p1, r1), Type::Fn(p2, r2)) => {
-                if p1.len() != p2.len() {
+            (Type::Fn(p1, r1, a1), Type::Fn(p2, r2, a2)) => {
+                if p1.len() != p2.len() || a1.len() != a2.len() {
                     self.errors.push(SemanticError::Custom {
                         msg: format!(
-                            "function arity mismatch: expected {}, found {}",
-                            p1.len(),
-                            p2.len()
+                            "function signature mismatch: expected {}, found {}",
+                            t1, t2
                         ),
                         span,
                     });
@@ -69,11 +68,40 @@ impl TypeChecker {
                         self.unify(a, b, span);
                     }
                     self.unify(r1, r2, span);
+                    for (x, y) in a1.iter().zip(a2.iter()) {
+                        self.unify(x, y, span);
+                    }
                 }
             }
 
-            (Type::Struct(a_name), Type::Struct(b_name)) => {
-                if a_name != b_name {
+            (Type::Struct(a_name, a_args), Type::Struct(b_name, b_args)) => {
+                if a_name != b_name || a_args.len() != b_args.len() {
+                    self.errors.push(SemanticError::Custom {
+                        msg: format!("type mismatch: expected `{}`, found `{}`", t1, t2),
+                        span,
+                    });
+                } else {
+                    for (x, y) in a_args.iter().zip(b_args.iter()) {
+                        self.unify(x, y, span);
+                    }
+                }
+            }
+
+            (Type::Enum(a_name, a_args), Type::Enum(b_name, b_args)) => {
+                if a_name != b_name || a_args.len() != b_args.len() {
+                    self.errors.push(SemanticError::Custom {
+                        msg: format!("type mismatch: expected `{}`, found `{}`", t1, t2),
+                        span,
+                    });
+                } else {
+                    for (x, y) in a_args.iter().zip(b_args.iter()) {
+                        self.unify(x, y, span);
+                    }
+                }
+            }
+
+            (Type::Param(a), Type::Param(b)) => {
+                if a != b {
                     self.errors.push(SemanticError::Custom {
                         msg: format!("type mismatch: expected `{}`, found `{}`", t1, t2),
                         span,
@@ -113,10 +141,18 @@ impl TypeChecker {
             Type::List(inner) | Type::Set(inner) => self.occurs_check(id, inner),
             Type::Dict(k, v) => self.occurs_check(id, k) || self.occurs_check(id, v),
             Type::Tuple(elems) => elems.iter().any(|e| self.occurs_check(id, e)),
-            Type::Fn(params, ret) => {
-                params.iter().any(|p| self.occurs_check(id, p)) || self.occurs_check(id, ret)
+            Type::Fn(params, ret, args) => {
+                params.iter().any(|p| self.occurs_check(id, p))
+                    || self.occurs_check(id, ret)
+                    || args.iter().any(|a| self.occurs_check(id, a))
             }
-            Type::Ref(inner) | Type::MutRef(inner) => self.occurs_check(id, inner),
+            Type::Ref(inner) | Type::MutRef(inner) | Type::Future(inner) => {
+                self.occurs_check(id, inner)
+            }
+            Type::Struct(_, args) | Type::Enum(_, args) => {
+                args.iter().any(|arg| self.occurs_check(id, arg))
+            }
+            Type::Union(members) => members.iter().any(|m| self.occurs_check(id, m)),
             _ => false,
         }
     }
@@ -141,12 +177,24 @@ impl TypeChecker {
             Type::Tuple(elems) => {
                 Type::Tuple(elems.into_iter().map(|e| self.apply_subst(e)).collect())
             }
-            Type::Fn(params, ret) => Type::Fn(
+            Type::Fn(params, ret, args) => Type::Fn(
                 params.into_iter().map(|p| self.apply_subst(p)).collect(),
                 Box::new(self.apply_subst(*ret)),
+                args.into_iter().map(|a| self.apply_subst(a)).collect(),
             ),
             Type::Ref(inner) => Type::Ref(Box::new(self.apply_subst(*inner))),
             Type::MutRef(inner) => Type::MutRef(Box::new(self.apply_subst(*inner))),
+            Type::Future(inner) => Type::Future(Box::new(self.apply_subst(*inner))),
+            Type::Struct(name, args) => Type::Struct(
+                name,
+                args.into_iter().map(|a| self.apply_subst(a)).collect(),
+            ),
+            Type::Enum(name, args) => {
+                Type::Enum(name, args.into_iter().map(|a| self.apply_subst(a)).collect())
+            }
+            Type::Union(members) => {
+                Type::Union(members.into_iter().map(|m| self.apply_subst(m)).collect())
+            }
             _ => ty,
         }
     }
@@ -170,23 +218,34 @@ impl TypeChecker {
                 "Any" => Type::Any,
                 "Never" => Type::Never,
                 _ => {
-                    if let Some(Type::Enum(e)) = self.lookup_type(name) {
-                        Type::Enum(e)
+                    if let Some(t) = self.lookup_type(name) {
+                        t
                     } else {
-                        Type::Struct(name.clone())
+                        // might be a type parameter
+                        Type::Param(name.clone())
                     }
                 }
             },
-            TypeExprKind::Generic(name, args) => match (name.as_str(), args.len()) {
-                ("list", 1) => Type::List(Box::new(self.resolve_type_expr(&args[0]))),
-                ("set", 1) => Type::Set(Box::new(self.resolve_type_expr(&args[0]))),
-                ("dict", 2) => Type::Dict(
-                    Box::new(self.resolve_type_expr(&args[0])),
-                    Box::new(self.resolve_type_expr(&args[1])),
-                ),
-                ("Future", 1) => Type::Future(Box::new(self.resolve_type_expr(&args[0]))),
-                _ => Type::Struct(name.clone()),
-            },
+            TypeExprKind::Generic(name, args) => {
+                let resolved_args: Vec<Type> =
+                    args.iter().map(|arg| self.resolve_type_expr(arg)).collect();
+                match name.as_str() {
+                    "list" if args.len() == 1 => Type::List(Box::new(resolved_args[0].clone())),
+                    "set" if args.len() == 1 => Type::Set(Box::new(resolved_args[0].clone())),
+                    "dict" if args.len() == 2 => Type::Dict(
+                        Box::new(resolved_args[0].clone()),
+                        Box::new(resolved_args[1].clone()),
+                    ),
+                    "Future" if args.len() == 1 => Type::Future(Box::new(resolved_args[0].clone())),
+                    _ => {
+                        if let Some(Type::Enum(enum_name, _)) = self.lookup_type(name) {
+                            Type::Enum(enum_name, resolved_args)
+                        } else {
+                            Type::Struct(name.clone(), resolved_args)
+                        }
+                    }
+                }
+            }
             TypeExprKind::List(inner) => Type::List(Box::new(self.resolve_type_expr(inner))),
             TypeExprKind::Dict(k, v) => Type::Dict(
                 Box::new(self.resolve_type_expr(k)),
@@ -202,6 +261,7 @@ impl TypeChecker {
             TypeExprKind::Fn { params, ret } => Type::Fn(
                 params.iter().map(|p| self.resolve_type_expr(p)).collect(),
                 Box::new(self.resolve_type_expr(ret)),
+                Vec::new(),
             ),
             TypeExprKind::Ref(inner) => Type::Ref(Box::new(self.resolve_type_expr(inner))),
             TypeExprKind::MutRef(inner) => Type::MutRef(Box::new(self.resolve_type_expr(inner))),

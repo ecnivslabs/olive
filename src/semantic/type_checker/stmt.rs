@@ -51,7 +51,7 @@ impl TypeChecker {
                 if let crate::parser::ExprKind::Attr { obj, attr } = &target.kind {
                     let obj_ty = self.check_expr(obj);
                     let resolved_obj = self.apply_subst(obj_ty);
-                    if let Type::Struct(struct_name) = resolved_obj {
+                    if let Type::Struct(struct_name, _) = resolved_obj {
                         self.field_types.insert((struct_name, attr.clone()), val_ty);
                     }
                 }
@@ -97,12 +97,18 @@ impl TypeChecker {
 
             StmtKind::Fn {
                 name,
+                type_params,
                 params,
                 return_type,
                 body,
                 is_async,
                 ..
             } => {
+                self.enter_scope();
+                for tp in type_params {
+                    self.define_type(tp, Type::Param(tp.clone()), false);
+                }
+
                 let inner_ret_ty = return_type
                     .as_ref()
                     .map(|ann| self.resolve_type_expr(ann))
@@ -128,13 +134,25 @@ impl TypeChecker {
                     name.clone()
                 };
 
-                let fn_ty = Type::Fn(param_types.clone(), Box::new(ret_ty.clone()));
-                if self.current_struct.is_some() && self.type_env.len() >= 2 {
-                    let outer_idx = self.type_env.len() - 2;
-                    self.type_env[outer_idx].insert(final_name.clone(), fn_ty.clone());
-                } else {
-                    self.define_type(&final_name, fn_ty.clone(), false);
+                let mut all_type_params: Vec<Type> = type_params
+                    .iter()
+                    .map(|p| Type::Param(p.clone()))
+                    .collect();
+
+                if let Some(struct_name) = &self.current_struct {
+                    if let Some(Type::Struct(_, struct_args)) = self.lookup_type(struct_name) {
+                        for arg in struct_args {
+                            if !all_type_params.contains(&arg) {
+                                all_type_params.push(arg);
+                            }
+                        }
+                    }
                 }
+
+                let fn_ty = Type::Fn(param_types.clone(), Box::new(ret_ty.clone()), all_type_params);
+
+                let outer_idx = 0;
+                self.type_env[outer_idx].insert(final_name.clone(), fn_ty.clone());
 
                 if params
                     .iter()
@@ -152,7 +170,13 @@ impl TypeChecker {
 
                 for (i, (param, mut p_ty)) in params.iter().zip(param_types).enumerate() {
                     if i == 0 && self.current_struct.is_some() && param.name == "self" {
-                        p_ty = Type::Struct(self.current_struct.clone().unwrap());
+                        let struct_name = self.current_struct.clone().unwrap();
+                        let struct_ty = self.lookup_type(&struct_name).unwrap();
+                        if let Type::Struct(_, args) = struct_ty {
+                            p_ty = Type::Struct(struct_name, args);
+                        } else {
+                            p_ty = Type::Struct(struct_name, Vec::new());
+                        }
                     }
                     self.define_type(&param.name, p_ty, param.is_mut);
                 }
@@ -172,7 +196,8 @@ impl TypeChecker {
                     self.async_depth -= 1;
                 }
                 self.current_return_type = prev_ret;
-                self.leave_scope();
+                self.leave_scope(); // leave fn scope
+                self.leave_scope(); // leave type param scope
             }
 
             StmtKind::While {
@@ -207,9 +232,26 @@ impl TypeChecker {
             }
 
             StmtKind::Struct {
-                name, fields, body, ..
+                name,
+                type_params,
+                fields,
+                body,
+                ..
             } => {
-                self.define_type(name, Type::Struct(name.clone()), false);
+                let abstract_args = type_params
+                    .iter()
+                    .map(|p| Type::Param(p.clone()))
+                    .collect::<Vec<_>>();
+                self.define_type(name, Type::Struct(name.clone(), abstract_args), false);
+                self.struct_fields.insert(
+                    name.clone(),
+                    fields.iter().map(|f| f.name.clone()).collect(),
+                );
+
+                self.enter_scope();
+                for tp in type_params {
+                    self.define_type(tp, Type::Param(tp.clone()), false);
+                }
 
                 for field in fields {
                     let field_ty = field
@@ -229,13 +271,19 @@ impl TypeChecker {
                 }
                 self.leave_scope();
                 self.current_struct = prev_struct;
+                self.leave_scope(); // type param scope
             }
 
             StmtKind::Impl {
+                type_params,
                 trait_name,
                 type_name,
                 body,
             } => {
+                self.enter_scope();
+                for tp in type_params {
+                    self.define_type(tp, Type::Param(tp.clone()), false);
+                }
                 if let Some(tr) = trait_name {
                     if let Some(required) = self.traits.get(tr).cloned() {
                         let provided: rustc_hash::FxHashSet<String> = body
@@ -275,9 +323,10 @@ impl TypeChecker {
                 }
                 self.leave_scope();
                 self.current_struct = prev_struct;
+                self.leave_scope(); // type param scope
             }
 
-            StmtKind::Trait { name, methods } => {
+            StmtKind::Trait { name, methods, .. } => {
                 let method_names: Vec<String> = methods
                     .iter()
                     .filter_map(|s| {
@@ -318,8 +367,23 @@ impl TypeChecker {
             | StmtKind::Import { .. }
             | StmtKind::FromImport { .. } => {}
 
-            StmtKind::Enum { name, variants, .. } => {
-                self.define_type(name, Type::Enum(name.clone()), false);
+            StmtKind::Enum {
+                name,
+                type_params,
+                variants,
+                ..
+            } => {
+                let abstract_args = type_params
+                    .iter()
+                    .map(|p| Type::Param(p.clone()))
+                    .collect::<Vec<_>>();
+                self.define_type(name, Type::Enum(name.clone(), abstract_args.clone()), false);
+
+                self.enter_scope();
+                for tp in type_params {
+                    self.define_type(tp, Type::Param(tp.clone()), false);
+                }
+
                 let mut variant_names = Vec::new();
                 for variant in variants {
                     variant_names.push(variant.name.clone());
@@ -327,11 +391,16 @@ impl TypeChecker {
                     for ty_expr in &variant.types {
                         param_types.push(self.resolve_type_expr(ty_expr));
                     }
-                    let fn_ty = Type::Fn(param_types, Box::new(Type::Enum(name.clone())));
+                    let fn_ty = Type::Fn(
+                        param_types,
+                        Box::new(Type::Enum(name.clone(), abstract_args.clone())),
+                        abstract_args.clone(),
+                    );
                     let variant_mangled = format!("{}::{}", name, variant.name);
                     self.define_type(&variant_mangled, fn_ty, false);
                 }
                 self.enum_variants.insert(name.clone(), variant_names);
+                self.leave_scope();
             }
         }
     }
