@@ -102,6 +102,7 @@ pub fn mangle_stmt(stmt: &mut Stmt, prefix: &str, names: &HashSet<String>) {
         StmtKind::Return(Some(e)) | StmtKind::ExprStmt(e) => {
             mangle_expr(e, prefix, names);
         }
+        StmtKind::NativeImport { .. } => {}
         _ => {}
     }
 }

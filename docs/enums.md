@@ -1,6 +1,6 @@
 # Enums and Pattern Matching
 
-Enums let you define a type as a fixed set of named variants. They're useful for representing state, modeling data that can take multiple distinct forms, and returning success or error values from functions.
+Sometimes you have data that can be one of several different things. In Olive, we use `enums` for this. They're perfect for representing a set of options, like the status of a web request or different types of messages.
 
 ## Defining Enums
 

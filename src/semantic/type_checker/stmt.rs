@@ -377,6 +377,10 @@ impl TypeChecker {
                 }
             }
 
+            StmtKind::NativeImport { alias, .. } => {
+                self.define_type(alias, super::super::types::Type::Any, false);
+            }
+
             StmtKind::Pass
             | StmtKind::Break
             | StmtKind::Continue

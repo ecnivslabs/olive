@@ -27,6 +27,18 @@ print(sqrt(pi))
 let data = parse(clean(raw_input))
 ```
 
+## Native Imports
+
+If you have a library written in another language (like C or Rust), you can use it directly in Olive. Just import the library file and give it a name:
+
+```python
+import "physics.so" as physics
+
+let result = physics.compute_gravity(10.0, 5.0)
+```
+
+Olive will load the library and let you call its functions just like regular Olive code.
+
 ## Visibility and Privacy
 
 Olive uses a naming convention for visibility:

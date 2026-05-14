@@ -293,7 +293,11 @@ pub enum StmtKind {
     },
     Import {
         module: Vec<String>,
-        alias: Option<String>, // import X as Y
+        alias: Option<String>,
+    },
+    NativeImport {
+        path: String,
+        alias: String,
     },
     FromImport {
         module: Vec<String>,

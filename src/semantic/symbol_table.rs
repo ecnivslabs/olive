@@ -10,6 +10,7 @@ pub enum SymbolKind {
     Parameter,
     LoopVar,
     Import,
+    NativeImport,
 }
 
 #[derive(Debug, Clone)]

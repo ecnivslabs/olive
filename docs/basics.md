@@ -1,159 +1,107 @@
 # Basic Syntax and Types
 
-Olive uses indentation-based syntax: clean, structured, with a focus on readability. It adds explicit variable declarations and a static type system.
+Olive's syntax is designed to be clean and easy to read. The language is "statically typed," which means the compiler helps you keep track of what kind of data your variables are holding.
 
 ## Variables and Mutability
 
-Variables are declared with `let`. By default, they're immutable.
+You declare variables with `let`. By default, once you give a variable a value, you can't change it (it's "immutable").
 
 ```python
 let name = "Olive"
-# name = "New Name"  <-- Error: cannot reassign immutable variable
+# name = "New Name"  <-- This would be an error
 ```
 
-To make a variable mutable, use `let mut`:
+If you know a variable's value will need to change, use `let mut`:
 
 ```python
 let mut count = 0
-count = 1  # This is allowed
+count = 1  # This is fine!
 ```
 
 ### Constants
 
-Constants are declared with `const`. They must be initialized with a compile-time value and cannot be made mutable.
+For values that never change and are known when you write the code, use `const`:
 
 ```python
-const MAX_RETRIES = 5
-const PI: float = 3.14159
-```
-
-### Augmented Assignment
-
-Olive supports augmented assignment for all basic arithmetic operations:
-
-```python
-let mut x = 10
-x += 5   # x is 15
-x -= 3   # x is 12
-x *= 2   # x is 24
-x /= 4   # x is 6
-x %= 5   # x is 1
-x **= 3  # x is 1
+const PI = 3.14159
 ```
 
 ## Data Types
 
-Olive is statically typed with type inference. You usually don't need to write out the types unless you want to.
+Olive can usually figure out the type of a variable on its own, but you can also be explicit if you want.
 
-### Primitive Types
+### Simple Types
 
-- `int` / `i64`: 64-bit signed integer (`42`, `-7`).
-- `i32`, `i16`, `i8`: 32, 16, and 8-bit signed integers.
-- `u64`, `u32`, `u16`, `u8`: Unsigned integers.
-- `float` / `f64`: 64-bit floating-point (`3.14`, `-0.5`).
-- `f32`: 32-bit floating-point.
-- `str`: UTF-8 string (`"Hello"`).
-- `bool`: Boolean (`True`, `False`).
-- `None`: The absence of a value.
+- `int`: Whole numbers (`42`, `-7`).
+- `float`: Numbers with decimals (`3.14`).
+- `str`: Text (`"Hello"`).
+- `bool`: True or False (`True`, `False`).
+- `None`: Represents "no value."
 
 ### F-Strings
 
-Prefix a string literal with `f` and use `{}` to embed expressions:
+You can easily build strings with variables inside them by putting an `f` before the quotes:
 
 ```python
 let name = "Olive"
-let greeting = f"Hello, {name}!"
-print(greeting) # Hello, Olive!
+print(f"Hello, {name}!")
 ```
 
-### Collection Types
+### Collections
 
-Collections are generic and support type annotations:
-
-- **Lists**: `let names: list[str] = ["Alice", "Bob"]`
-- **Sets**: `let unique_ids: set[int] = {1, 2, 3}`
-- **Dictionaries**: `let scores: dict[str, int] = {"Alice": 10, "Bob": 20}`
-- **Tuples**: `let pair: (int, str) = (1, "One")`
+- **Lists**: Ordered groups of items. `[1, 2, 3]`
+- **Sets**: Groups of unique items. `{1, 2, 3}`
+- **Dictionaries**: Pairs of keys and values. `{"name": "Olive", "age": 1}`
+- **Tuples**: Fixed-size groups of different items. `(1, "Olive")`
 
 ## Control Flow
-
-### Comparisons
-
-Olive uses standard comparison operators:
-
-- `==`: Equal.
-- `!=`: Not equal.
-- `<`, `>`: Less than, greater than.
-- `<=`, `>=`: Less than or equal to, greater than or equal to.
 
 ### If Statements
 
 ```python
 if score >= 90:
-    print("Grade: A")
+    print("A")
 elif score >= 80:
-    print("Grade: B")
+    print("B")
 else:
-    print("Grade: C")
+    print("C")
 ```
 
 ### Loops
 
-Both `while` and `for` loops support an optional `else` block that runs if the loop finishes without hitting a `break`.
-
-#### While Loop
-
-```python
-let mut i = 0
-while i < 5:
-    print("Looping...")
-    i += 1
-else:
-    print("Done!")
-```
-
-#### For Loop
+#### For Loops
 
 ```python
 for item in ["apple", "banana", "cherry"]:
     print(item)
 ```
 
-#### Tuple Unpacking in Loops
+#### While Loops
 
 ```python
-let points = [(1, 2), (3, 4), (5, 6)]
-for (x, y) in points:
-    print(f"Point at {x}, {y}")
+let mut i = 0
+while i < 5:
+    print(i)
+    i += 1
 ```
-
-### Error Handling
-
-Olive handles errors through union return types and the `try` operator. See [Error Handling](error_handling.md) for the full walkthrough.
-
-### Assertions
-
-```python
-assert x > 0, "x must be positive"
-```
-
-If the condition is false, the program halts immediately with the message.
 
 ## Comprehensions
 
-Olive supports list, set, and dictionary comprehensions.
-
-### List Comprehensions
+Comprehensions are a quick way to create new collections from existing ones:
 
 ```python
-let numbers = [1, 2, 3, 4, 5]
-let squares = [x * x for x in numbers if x % 2 == 0]
-# squares is [4, 16]
+let numbers = [1, 2, 3, 4]
+let squares = [x * x for x in numbers]  # [1, 4, 9, 16]
 ```
 
-### Set and Dictionary Comprehensions
+## Useful Built-ins
 
-```python
-let unique_chars = {c for c in "abracadabra"}
-let square_map = {x: x * x for x in range(5)}
-```
+Olive comes with several functions you can use anywhere:
+
+- `print(value)`: Shows a value in the console.
+- `len(collection)`: Returns the number of items in a list, string, etc.
+- `range(stop)` or `range(start, stop)`: Generates a sequence of numbers.
+- `str(value)`, `int(value)`, `float(value)`: Converts a value to a different type.
+- `type(value)`: Returns a string describing the type of the value.
+- `assert(condition, message)`: Stops the program if the condition is false.
+

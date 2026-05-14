@@ -1,6 +1,6 @@
-# Structs and Composition
+# Structs and Objects
 
-Olive uses `struct` and `impl` blocks to define data types and their behavior. There's no class hierarchy; composition replaces inheritance.
+When you need to build your own data types in Olive, you use `structs`. Think of a struct as a way to group related data together, and `impl` blocks as a way to define what those structs can *do*.
 
 ## Defining a Struct
 

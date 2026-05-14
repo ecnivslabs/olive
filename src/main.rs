@@ -11,7 +11,10 @@ mod semantic;
 mod span;
 
 use clap::{Parser as ClapParser, Subcommand};
-use compile::{compile_and_run, compile_and_test};
+use compile::{
+    compile_and_emit, compile_and_run, compile_and_run_aot, compile_and_test,
+    compile_hybrid,
+};
 use fmt::{format_file, walk_and_format};
 use repl::run_shell;
 use serde::{Deserialize, Serialize};
@@ -62,6 +65,14 @@ enum Commands {
 
         #[arg(long)]
         emit_mir: bool,
+
+        /// Force pure JIT mode (no caching)
+        #[arg(long)]
+        jit: bool,
+
+        /// AOT compile and run (no cache kept)
+        #[arg(long)]
+        aot: bool,
     },
     /// Format the current project or a specific file
     Fmt {
@@ -72,6 +83,7 @@ enum Commands {
     Test {
         #[arg(short, long)]
         time: bool,
+    },
     },
     /// Start an interactive shell session
     Shell,
@@ -122,27 +134,36 @@ fn main() {
             let config_str = fs::read_to_string(config_path).unwrap();
             let config: Config = toml::from_str(&config_str).unwrap();
 
-            compile_and_run(&config.package.entry, false, time, false, false);
+            let out = format!("target/{}", config.package.name);
+            compile_and_emit(&config.package.entry, &out, time);
         }
         Commands::Run {
             file,
             time,
             emit_ast,
             emit_mir,
+            jit,
+            aot,
         } => {
-            if let Some(f) = file {
-                compile_and_run(&f, true, time, emit_ast, emit_mir);
+            let entry = if let Some(f) = file {
+                f
             } else {
                 let config_path = Path::new("pit.toml");
                 if !config_path.exists() {
                     eprintln!("error: no file specified and no `pit.toml` found");
                     process::exit(1);
                 }
-
                 let config_str = fs::read_to_string(config_path).unwrap();
                 let config: Config = toml::from_str(&config_str).unwrap();
+                config.package.entry
+            };
 
-                compile_and_run(&config.package.entry, true, time, emit_ast, emit_mir);
+            if jit || emit_ast || emit_mir {
+                compile_and_run(&entry, true, time, emit_ast, emit_mir);
+            } else if aot {
+                compile_and_run_aot(&entry, time);
+            } else {
+                compile_hybrid(&entry, time);
             }
         }
         Commands::Fmt { file } => {

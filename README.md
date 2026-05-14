@@ -1,69 +1,67 @@
 <img width="1452" height="352" alt="olive_logo" src="https://github.com/user-attachments/assets/4e8923b3-0943-4a8f-b288-8abf497b900d" />
 
-
 <p align="center">
   <a href="https://github.com/ecnivs/olive/stargazers">
-    <img src="https://img.shields.io/github/stars/ecnivs/olive?style=flat-square"">
+    <img src="https://img.shields.io/github/stars/ecnivs/olive?style=flat-square">
   </a>
   <a href="https://github.com/ecnivs/olive/issues">
-    <img src="https://img.shields.io/github/issues/ecnivs/olive?style=flat-square"">
+    <img src="https://img.shields.io/github/issues/ecnivs/olive?style=flat-square">
   </a>
   <a href="https://github.com/ecnivs/olive/blob/master/LICENSE">
     <img src="https://img.shields.io/github/license/ecnivs/olive?style=flat-square">
   </a>
-  <img src="https://img.shields.io/github/languages/top/ecnivs/olive?style=flat-square"
+  <img src="https://img.shields.io/github/languages/top/ecnivs/olive?style=flat-square">
 </p>
 
-## Overview
+# Olive
 
-Olive is a systems-oriented programming language with a clean, indentation-based syntax, an ownership-based memory model, and a JIT compiler built on Cranelift. It's designed for developers who want safety and performance without sacrificing readable code.
+**A systems language that is easy to write, fast to run, and keeps your memory safe.**
 
-The goal is straightforward: expressive code that runs close to native speed and catches memory errors at compile time, not in production.
+Olive is built for when you want the speed and safety of a systems language without the cognitive overhead of complex syntax. It uses clean, indentation-based structure and an ownership-based memory model (no garbage collector) to give you deterministic performance and rock-solid reliability.
 
-## Features
+## Why Olive?
 
-- **Indentation-based syntax**: Blocks are defined by whitespace, keeping code clean and consistent.
-- **Memory safety without a GC**: Ownership-Based Resource Management (OBRM) and a borrow checker with Non-Lexical Lifetimes (NLL) catch memory errors at compile time.
-- **JIT compilation via Cranelift**: Generates optimized native code at runtime.
-- **True stackless async**: An `async`/`await` model backed by a multi-threaded executor. Futures are compiled state machines with no heap allocation per suspension point.
-- **MIR optimization pipeline**: Global Value Numbering, Tail-Call Optimization, Loop-Invariant Code Motion, inlining, and more, all running before codegen.
-- **Traits**: Define method contracts with `trait` and implement them per type. The compiler verifies all required methods are present.
-- **Error handling without exceptions**: Functions return union types to signal failure. `try` and `?` propagate errors up the call stack.
-- **Standard library modules**: `math`, `io`, `aio`, `net`, `http`, `random`, loaded dynamically at runtime.
-- **Detailed diagnostics**: Colorized, context-aware error reports that point to the problem and suggest a fix.
-- **Unified toolchain**: `pit` handles building, running, testing, and formatting.
+- **Clean Syntax**: No braces, no semicolons. Indentation defines the structure, keeping your code readable and consistent.
+- **Safety by Default**: A borrow checker catches memory errors and data races at compile time. No crashes in production because of a null pointer or a double-free.
+- **Blazing Fast**: Optimized to native code at runtime via a JIT compiler. It's designed to run close to the metal.
+- **Modern Concurrency**: True async/await that's easy to use and extremely efficient.
+- **Smart Speed**: Olive remembers your code. The first run is fast, but the second is instant because of built-in caching.
+- **Friendly Errors**: When things go wrong, the compiler tells you exactly where and why, with suggestions on how to fix it. No more cryptic errors.
 
-## The `pit` Toolchain
+## A Taste of Olive
 
-`pit` is the single entry point for all development tasks:
+```python
+fn calculate_stats(numbers: list[int]) -> (int, float):
+    let mut total = 0
+    for n in numbers:
+        total += n
+    
+    let average = float(total) / float(len(numbers))
+    return (total, average)
 
-- `pit new <name>`: Creates a new project with the standard directory layout.
-- `pit run`: Runs your project through the full pipeline: borrow checking, optimization, JIT, execution.
-- `pit build`: Performs semantic analysis and builds without running.
-- `pit test`: Finds and runs all functions marked with `#[test]`.
-- `pit fmt`: Formats all `.liv` files to the standard Olive style.
-- `pit shell`: Starts an interactive REPL for running Olive code line by line.
-- `pit build --time`: Shows a timing breakdown for each compiler phase.
-- `pit run --emit-mir`: Prints the optimized MIR so you can see exactly what the compiler produced.
+fn main():
+    let data = [10, 20, 30, 40, 50]
+    let (sum, avg) = calculate_stats(data)
+    print(f"Total: {sum}, Average: {avg}")
 
-## Optimization Pipeline
+main()
+```
 
-The compiler runs an iterative optimization suite on the Middle Intermediate Representation (MIR). These passes compose well: Constant Propagation can expose a branch that's always taken, which Simplify CFG turns into a direct jump, which Dead Code Elimination then prunes. The result is that each pass benefits from the work of the others.
+## Getting Started
 
-See the [High-Performance Optimizations](docs/optimizations.md) guide for details.
+1. **Install**: Follow the [Installation Guide](docs/getting_started.md).
+2. **New Project**: `pit new my_app`
+3. **Build**: `pit build`
+4. **Run**: `pit run`
 
 ## Documentation
 
-- [Introduction](docs/introduction.md)
-- [Getting Started](docs/getting_started.md)
-- [Full Index](docs/index.md)
+- [Introduction](docs/introduction.md) — Philosophy and goals.
+- [Basics](docs/basics.md) — Variables, types, and control flow.
+- [Ownership](docs/ownership.md) — How memory safety works.
+- [Async](docs/async.md) — Concurrent programming.
+- [Standard Library](docs/modules.md) — What's in the box.
 
 ## Contributing
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/my-feature`)
-3. Commit your changes (`git commit -m 'Add my feature'`)
-4. Push to the branch (`git push origin feature/my-feature`)
-5. Open a pull request
-
-#### *Feedback and code reviews are always welcome.*
+We love help! Fork the repo, make a branch, and open a PR. Keep it simple, keep it clean.

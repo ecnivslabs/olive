@@ -1,25 +1,25 @@
 # Olive Documentation
 
-This is the reference documentation for the Olive programming language.
+Welcome! This is the official guide to the Olive programming language. Whether you're a seasoned systems programmer or just getting started, you'll find everything you need here.
 
-Olive is a systems-oriented language with a clean, indentation-based syntax, ownership-based memory safety, and a JIT compiler built on Cranelift. It's meant for developers who need real performance and safety guarantees without abandoning readability.
+## Where to Start?
 
-## Documentation Sections
+- [**Introduction**](introduction.md): What is Olive and why did we build it?
+- [**Getting Started**](getting_started.md): How to install Olive and run your first program.
+- [**Basic Syntax**](basics.md): Variables, numbers, strings, and loops.
+- [**Functions**](functions.md): How to group code into reusable blocks.
 
-- [**Introduction**](introduction.md): The core philosophy and design goals behind Olive.
-- [**Getting Started**](getting_started.md): Install the compiler and run your first program.
-- [**Basic Syntax and Types**](basics.md): Variables, types, control flow, and comprehensions.
-- [**Functions**](functions.md): Defining functions, parameter types, decorators, and directives.
-- [**Enums and Pattern Matching**](enums.md): Enum variants with data, `match`, wildcards, and pattern bindings.
-- [**Structs and Composition**](structs.md): Struct definitions, `impl` blocks, and composition over inheritance.
-- [**Traits**](traits.md): Defining contracts with `trait` and implementing them with `impl ... for`.
-- [**Error Handling**](error_handling.md): Union return types, `try`, `?`, and matching on results.
-- [**Ownership and Safety**](ownership.md): OBRM, borrowing, NLL, and how the borrow checker works.
-- [**Async and Concurrency**](async.md): `async fn`, `await`, `gather`, `select`, `cancel`, and the stackless executor.
-- [**High-Performance Optimizations**](optimizations.md): The MIR optimization pipeline and JIT startup model.
-- [**Modules and Standard Library**](modules.md): Module imports, visibility rules, and the built-in standard library.
-- [**Compiler Internals**](internals.md): How the compiler pipeline works from source to machine code.
+## Deep Dives
 
----
+- [**Ownership**](ownership.md): How Olive manages memory without a garbage collector.
+- [**Async**](async.md): Writing fast, concurrent programs with `async` and `await`.
+- [**Error Handling**](error_handling.md): How to deal with things that go wrong.
+- [**Structs and Enums**](structs.md): Building your own data types.
+- [**Traits**](traits.md): Defining shared behavior between different types.
+- [**Modules**](modules.md): Organizing your code and using the standard library.
 
-*Olive is in active development. Contributions and bug reports are welcome.*
+## For the Curious
+
+- [**Optimizations**](optimizations.md): How the compiler makes your code run fast.
+- [**Compiler Internals**](internals.md): A look under the hood at how Olive works.
+

@@ -5,7 +5,7 @@ use cranelift::prelude::*;
 use cranelift_module::Module;
 use rustc_hash::FxHashMap as HashMap;
 
-impl<'a> CraneliftCodegen<'a> {
+impl<'a, M: Module> CraneliftCodegen<'a, M> {
     pub(super) fn analyze_async_sm(func: &MirFunction) -> Option<Vec<SmAwaitPoint>> {
         let n_bbs = func.basic_blocks.len();
         let mut visited = vec![false; n_bbs];

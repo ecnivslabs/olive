@@ -268,11 +268,14 @@ impl Resolver {
             }
 
             StmtKind::Import { module, alias } => {
-                // The bound name is either the alias or the last segment
                 let name = alias
                     .as_deref()
                     .unwrap_or_else(|| module.last().unwrap().as_str());
                 self.define_sym(name, SymbolKind::Import, stmt.span);
+            }
+
+            StmtKind::NativeImport { alias, .. } => {
+                self.define_sym(alias, SymbolKind::NativeImport, stmt.span);
             }
 
             StmtKind::FromImport { names, .. } => {
@@ -422,16 +425,20 @@ impl Resolver {
             ExprKind::Attr { obj, attr } => {
                 if let ExprKind::Identifier(name) = &obj.kind
                     && let Some(sym) = self.table.lookup(name)
-                    && sym.kind == SymbolKind::Import
                 {
-                    let mangled = format!("{}::{}", name, attr);
-                    if self.table.lookup(&mangled).is_none() {
-                        self.errors.push(SemanticError::UndefinedName {
-                            name: mangled,
-                            span: expr.span,
-                        });
+                    if sym.kind == SymbolKind::NativeImport {
+                        return;
                     }
-                    return;
+                    if sym.kind == SymbolKind::Import {
+                        let mangled = format!("{}::{}", name, attr);
+                        if self.table.lookup(&mangled).is_none() {
+                            self.errors.push(SemanticError::UndefinedName {
+                                name: mangled,
+                                span: expr.span,
+                            });
+                        }
+                        return;
+                    }
                 }
                 self.resolve_expr(obj);
             }

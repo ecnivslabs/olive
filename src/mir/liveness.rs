@@ -8,7 +8,7 @@ pub struct Liveness {
 }
 
 impl Liveness {
-    // Compute liveness for all locals in a function.
+    // Figure out which variables are active at every point in the code.
     pub fn compute(func: &MirFunction) -> Self {
         let mut live_after = Vec::new();
         for bb in &func.basic_blocks {
@@ -19,9 +19,9 @@ impl Liveness {
         while changed {
             changed = false;
 
-            // Process blocks in reverse order to speed up fixed-point convergence.
+            // We go backwards to find the fixed point faster.
             for (bb_idx, bb) in func.basic_blocks.iter().enumerate().rev() {
-                // current_live is live-after the block (union of successors).
+                // What's live at the end of this block is what's live at the start of its followers.
                 let mut current_live = HashSet::default();
                 let succs = Self::successors(bb);
                 for succ in &succs {
@@ -30,7 +30,7 @@ impl Liveness {
                     }
                 }
 
-                // Update with terminator to get live-before-terminator.
+                // The jump/return at the end might use some variables too.
                 Self::update_liveness(&mut current_live, bb.terminator.as_ref());
 
                 if live_after[bb_idx][bb.statements.len()] != current_live {
@@ -38,7 +38,7 @@ impl Liveness {
                     changed = true;
                 }
 
-                // Propagate backwards through statements.
+                // Walk up the block and track what's still needed.
                 for stmt_idx in (0..bb.statements.len()).rev() {
                     Self::update_stmt_liveness(&mut current_live, &bb.statements[stmt_idx]);
                     if live_after[bb_idx][stmt_idx] != current_live {
@@ -52,7 +52,7 @@ impl Liveness {
         Self { live_after }
     }
 
-    // Get successor block indices.
+    // Where can we jump to from here?
     fn successors(bb: &BasicBlock) -> Vec<usize> {
         match &bb.terminator {
             Some(t) => match &t.kind {
@@ -79,7 +79,7 @@ impl Liveness {
         }
     }
 
-    // Update live set by processing a statement (backwards).
+    // One step back: remove what's defined, add what's used.
     fn update_stmt_liveness(live: &mut HashSet<Local>, stmt: &Statement) {
         match &stmt.kind {
             StatementKind::Assign(local, rvalue) => {

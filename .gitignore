@@ -1,2 +1,20 @@
+# Rust artifacts
 /target
+
+# Benchmark artifacts
 benchmark/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# AI Agents
+.agents/
+.claude/
+.gemini/

@@ -1,89 +1,67 @@
 # Error Handling
 
-Olive doesn't use exceptions. Errors are values, and functions that can fail say so in their return type. The caller decides what to do with them.
+Olive doesn't use "exceptions" like some other languages. Instead, errors are just values that a function can return. This makes it clear exactly which functions can fail and what kind of errors they might give you.
 
-## Union Return Types
+## Returning Errors
 
-A function signals failure by returning a union type. The first member is the success value; any other member is an error:
+A function signals an error by returning a "union type." This just means it can return one of several different types of data.
 
 ```python
 fn divide(a: int, b: int) -> int | str:
     if b == 0:
-        return "division by zero"
-    return a / b
+        return "division by zero"  # Returning an error message
+    return a / b                   # Returning the result
 ```
 
-The caller gets back either an `int` or a `str`. The type system tracks which.
+In this case, the function returns either an `int` (the result) or a `str` (the error message).
 
-## Handling Results with `match`
+## Handling Errors with `match`
 
-`match` on a union lets you handle each case explicitly:
+The most common way to handle an error is with `match`. The compiler ensures you've handled every possible outcome.
 
 ```python
 fn safe_divide(a: int, b: int):
     match divide(a, b):
         int(result):
             print(f"Result: {result}")
-        str(msg):
-            print(f"Error: {msg}")
+        str(error_msg):
+            print(f"Error: {error_msg}")
 ```
 
-The compiler checks that you've covered every member of the union. If you miss one, you'll get a non-exhaustive match error before the code runs.
+## The `try` Operator
 
-## Propagating Errors with `try`
-
-If you don't want to handle an error locally — just pass it up to the caller — use `try` or the `?` postfix. Both are identical:
+Sometimes you don't want to handle an error right away. You might want to just "pass it up" to whatever called your function. You can do this easily with `try` (or `?` at the end of the line).
 
 ```python
-fn load_config() -> dict | str:
-    let raw = try read_file("config.txt")
-    # or: let raw = read_file("config.txt")?
-    return parse(raw)
+fn load_and_parse(path: str) -> dict | str:
+    # If read_file fails, load_and_parse will exit early and return the error
+    let raw = try read_file(path)
+    
+    # If we get here, raw is the actual file content
+    return parse_json(raw)
 ```
 
-When `read_file` returns an error, `try` immediately returns that error from `load_config`. When it succeeds, execution continues with the unwrapped value.
+## Multiple Error Types
 
-For this to work, the calling function's return type must include the error type that could propagate.
-
-## Chaining
-
-`try` composes naturally. Each step either continues or exits early:
+A function can return several different kinds of errors. You just list them in the return type:
 
 ```python
-fn process(path: str) -> Result | str:
-    let raw    = try read_file(path)
-    let parsed = try parse_json(raw)
-    let result = try validate(parsed)
-    return result
+enum FileError:
+    NotFound
+    NoPermission
+
+fn read_config() -> str | FileError | str:
+    # This could return the content, a FileError, or a plain error message
+    pass
 ```
 
-If any step fails, the rest don't run. The error travels back to whoever called `process`.
+## When to use `assert`
 
-## Returning Multiple Error Types
-
-A function can return more than one kind of error:
+For things that should *never* happen if your code is written correctly, use `assert`:
 
 ```python
-enum ParseError:
-    InvalidSyntax
-    UnexpectedEnd
-
-fn parse(input: str) -> int | str | ParseError:
-    if input == "":
-        return ParseError.UnexpectedEnd
-    if input == "bad":
-        return "malformed input"
-    return int(input)
+assert score >= 0, "Score cannot be negative"
 ```
 
-The caller matches on all three cases.
+If the assertion fails, the program stops immediately. Use this to catch bugs during development.
 
-## Assertions
-
-For conditions that should never be false in correct code, use `assert`:
-
-```python
-assert index >= 0, "index must be non-negative"
-```
-
-An assertion failure crashes the program immediately with the message. Use this for invariants you want to catch during development, not for recoverable errors.

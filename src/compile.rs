@@ -8,7 +8,13 @@ use crate::semantic::{self, Resolver, TypeChecker};
 use crate::span;
 use ariadne::{Label, Report, ReportKind, Source};
 use rustc_hash::FxHashMap as HashMap;
-use std::{collections::HashSet, fs, path::Path, process};
+use std::{
+    collections::HashSet,
+    fs,
+    hash::{Hash, Hasher},
+    path::Path,
+    process,
+};
 
 pub fn report_error(sources: &HashMap<usize, (String, String)>, msg: &str, span: span::Span) {
     let (filename, source) = sources
@@ -159,6 +165,9 @@ pub fn load_and_parse(
                 }
                 all_stmts.push(stmt.clone());
             }
+            parser::StmtKind::NativeImport { .. } => {
+                all_stmts.push(stmt.clone());
+            }
             parser::StmtKind::FromImport { module, names } => {
                 let mod_name = module.join("/");
                 let mut mod_path = parent_dir.join(format!("{}.liv", mod_name));
@@ -202,6 +211,121 @@ pub fn load_and_parse(
     }
 
     all_stmts
+}
+
+fn collect_source_files(
+    filename: &str,
+    collected: &mut Vec<String>,
+    visited: &mut HashSet<String>,
+) {
+    let canonical = fs::canonicalize(filename)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| filename.to_string());
+    if !visited.insert(canonical.clone()) {
+        return;
+    }
+    collected.push(canonical.clone());
+    let source = match fs::read_to_string(filename) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let tokens = match crate::lexer::Lexer::new(&source, 0).tokenise() {
+        Ok(t) => t,
+        Err(_) => return,
+    };
+    let program = match crate::parser::Parser::new(tokens).parse_program() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let parent_dir = Path::new(filename)
+        .parent()
+        .unwrap_or(Path::new("."))
+        .to_path_buf();
+    for stmt in &program.stmts {
+        if let parser::StmtKind::Import { module, .. }
+        | parser::StmtKind::FromImport { module, .. } = &stmt.kind
+        {
+            let mod_name = module.join("/");
+            let mut mod_path = parent_dir.join(format!("{}.liv", mod_name));
+            if !mod_path.exists() {
+                mod_path = Path::new("lib").join(format!("{}.liv", mod_name));
+            }
+            if mod_path.exists() {
+                collect_source_files(
+                    &mod_path.to_string_lossy().to_string(),
+                    collected,
+                    visited,
+                );
+            }
+        }
+    }
+}
+
+fn compute_source_hash(files: &[String]) -> u64 {
+    let mut sorted = files.to_vec();
+    sorted.sort();
+    let mut hasher = rustc_hash::FxHasher::default();
+    for path in &sorted {
+        path.hash(&mut hasher);
+        if let Ok(content) = fs::read(path) {
+            content.hash(&mut hasher);
+        }
+    }
+    hasher.finish()
+}
+
+fn exec_binary(path: &str) -> i32 {
+    std::process::Command::new(path)
+        .status()
+        .map(|s| s.code().unwrap_or(1))
+        .unwrap_or(1)
+}
+
+pub fn compile_hybrid(filename: &str, show_time: bool) {
+    let mut collected = Vec::new();
+    let mut visited = HashSet::new();
+    collect_source_files(filename, &mut collected, &mut visited);
+    let hash = compute_source_hash(&collected);
+
+    fs::create_dir_all("target/.cache").unwrap_or_else(|e| {
+        eprintln!("error: could not create cache directory: {e}");
+        process::exit(1);
+    });
+
+    let manifest_path = "target/.cache/manifest.json";
+    let binary_path = "target/.cache/program";
+
+    let cached = fs::read_to_string(manifest_path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v["hash"].as_u64())
+        .map(|h| h == hash)
+        .unwrap_or(false);
+
+    if cached && Path::new(binary_path).exists() {
+        let code = exec_binary(binary_path);
+        process::exit(code);
+    }
+
+    compile_and_emit(filename, binary_path, show_time);
+
+    let manifest = serde_json::json!({ "hash": hash });
+    fs::write(manifest_path, manifest.to_string()).ok();
+
+    let code = exec_binary(binary_path);
+    process::exit(code);
+}
+
+pub fn compile_and_run_aot(filename: &str, show_time: bool) {
+    let binary_path = "target/.cache/aot_run";
+    fs::create_dir_all("target/.cache").unwrap_or_else(|e| {
+        eprintln!("error: could not create cache directory: {e}");
+        process::exit(1);
+    });
+    compile_and_emit(filename, binary_path, show_time);
+    let code = exec_binary(binary_path);
+    fs::remove_file(binary_path).ok();
+    process::exit(code);
 }
 
 pub fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: bool, emit_mir: bool) {
@@ -304,8 +428,24 @@ pub fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: boo
     }
     let borrow_duration = borrow_start.elapsed();
 
+    let native_libs: Vec<(String, String)> = program
+        .stmts
+        .iter()
+        .filter_map(|s| {
+            if let parser::StmtKind::NativeImport { path, alias } = &s.kind {
+                Some((alias.clone(), path.clone()))
+            } else {
+                None
+            }
+        })
+        .collect();
+
     let cg_start = std::time::Instant::now();
-    let mut codegen = CraneliftCodegen::new(&mir_builder.functions, mir_builder.struct_fields.clone());
+    let mut codegen = CraneliftCodegen::new_jit(
+        &mir_builder.functions,
+        mir_builder.struct_fields.clone(),
+        &native_libs,
+    );
     codegen.generate();
     codegen.finalize();
     let cg_duration = cg_start.elapsed();
@@ -354,6 +494,166 @@ pub fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: boo
     } else {
         println!("No `main` function found to execute.");
     }
+}
+
+pub fn compile_and_emit(filename: &str, out: &str, show_time: bool) {
+    let t0 = std::time::Instant::now();
+    let mut loaded = HashSet::new();
+    loaded.insert(filename.to_string());
+    let mut file_id_counter = 0;
+    let mut sources = HashMap::default();
+    let combined_stmts = load_and_parse(
+        filename,
+        true,
+        &mut loaded,
+        &mut file_id_counter,
+        &mut sources,
+    );
+    let program = parser::Program {
+        stmts: combined_stmts,
+    };
+    let parse_duration = t0.elapsed();
+
+    let resolve_start = std::time::Instant::now();
+    let mut resolver = Resolver::new();
+    resolver.resolve_program(&program);
+
+    if !resolver.errors.is_empty() {
+        for e in &resolver.errors {
+            report_error(&sources, &format!("{}", e), e.span());
+        }
+        process::exit(1);
+    }
+    let resolve_duration = resolve_start.elapsed();
+
+    let typecheck_start = std::time::Instant::now();
+    let mut type_checker = TypeChecker::new();
+    type_checker.check_program(&program);
+
+    if !type_checker.errors.is_empty() {
+        for e in &type_checker.errors {
+            report_error(&sources, &format!("{}", e), e.span());
+        }
+        process::exit(1);
+    }
+    let typecheck_duration = typecheck_start.elapsed();
+
+    let mir_start = std::time::Instant::now();
+    let mut mir_builder = MirBuilder::new(&type_checker.expr_types, &type_checker.type_env[0], type_checker.struct_fields.clone());
+    mir_builder.build_program(&program);
+    let mir_duration = mir_start.elapsed();
+
+    let opt_start = std::time::Instant::now();
+    let optimizer = mir::Optimizer::new();
+    optimizer.run(&mut mir_builder.functions);
+    let opt_duration = opt_start.elapsed();
+
+    let borrow_start = std::time::Instant::now();
+    for func in &mir_builder.functions {
+        let needs_check = func.locals.iter().any(|l| l.ty.is_move_type())
+            || func.basic_blocks.iter().any(|bb| {
+                bb.statements.iter().any(|s| {
+                    matches!(
+                        &s.kind,
+                        StatementKind::Assign(_, Rvalue::Ref(_) | Rvalue::MutRef(_))
+                    )
+                })
+            });
+        if !needs_check {
+            continue;
+        }
+        let mut checker = BorrowChecker::new(func);
+        checker.check();
+        if !checker.errors.is_empty() {
+            for e in &checker.errors {
+                match e {
+                    semantic::SemanticError::Custom { msg, span } => {
+                        report_error(
+                            &sources,
+                            &format!("borrow error in {}: {}", func.name, msg),
+                            *span,
+                        );
+                    }
+                    _ => report_error(
+                        &sources,
+                        &format!("borrow error in {}: {}", func.name, e),
+                        e.span(),
+                    ),
+                }
+            }
+            process::exit(1);
+        }
+    }
+    let borrow_duration = borrow_start.elapsed();
+
+    let cg_start = std::time::Instant::now();
+    let mut codegen = CraneliftCodegen::new_aot(&mir_builder.functions, mir_builder.struct_fields.clone());
+    codegen.generate();
+    let obj_bytes = codegen.emit_object();
+    let cg_duration = cg_start.elapsed();
+
+    let link_start = std::time::Instant::now();
+    fs::create_dir_all("target").unwrap_or_else(|e| {
+        eprintln!("error: could not create target directory: {e}");
+        process::exit(1);
+    });
+
+    let obj_path = format!("{}.o", out);
+    fs::write(&obj_path, &obj_bytes).unwrap_or_else(|e| {
+        eprintln!("error: could not write object file: {e}");
+        process::exit(1);
+    });
+
+    let lib_dir = if Path::new("target/release/libolive_std.so").exists() {
+        "target/release"
+    } else {
+        "target/debug"
+    };
+
+    let abs_lib_dir = fs::canonicalize(lib_dir).unwrap_or_else(|_| Path::new(lib_dir).to_path_buf());
+
+    let status = std::process::Command::new("cc")
+        .args([
+            &obj_path,
+            "-L",
+            lib_dir,
+            "-lolive_std",
+            &format!("-Wl,-rpath,{}", abs_lib_dir.display()),
+            "-o",
+            out,
+        ])
+        .status()
+        .unwrap_or_else(|e| {
+            eprintln!("error: could not invoke cc: {e}");
+            process::exit(1);
+        });
+
+    fs::remove_file(&obj_path).ok();
+
+    if !status.success() {
+        eprintln!("error: linking failed");
+        process::exit(1);
+    }
+    let link_duration = link_start.elapsed();
+
+    println!("\x1b[1;32mFinished\x1b[0m build `{}` successfully.", out);
+    if show_time {
+        println!("\n\x1b[1;32m   Olive Build Report (AOT)\x1b[0m");
+        println!("\x1b[1;34m   ────────────────────────\x1b[0m");
+        println!("   \x1b[1mParse:        \x1b[0m {:?}", parse_duration);
+        println!("   \x1b[1mResolver:     \x1b[0m {:?}", resolve_duration);
+        println!("   \x1b[1mType Check:   \x1b[0m {:?}", typecheck_duration);
+        println!("   \x1b[1mMIR Build:    \x1b[0m {:?}", mir_duration);
+        println!("   \x1b[1mOptimization: \x1b[0m {:?}", opt_duration);
+        println!("   \x1b[1mBorrow Check: \x1b[0m {:?}", borrow_duration);
+        println!("   \x1b[1mCodegen (AOT):\x1b[0m {:?}", cg_duration);
+        println!("   \x1b[1mLink:         \x1b[0m {:?}", link_duration);
+        println!("\x1b[1;34m   ────────────────────────\x1b[0m");
+    }
+}
+
+pub fn compile_file_to_binary(filename: &str, out: &str, show_time: bool) {
+    compile_and_emit(filename, out, show_time);
 }
 
 pub fn compile_and_test(filename: &str, _show_time: bool) {
@@ -413,7 +713,22 @@ pub fn compile_and_test(filename: &str, _show_time: bool) {
         }
     }
 
-    let mut codegen = CraneliftCodegen::new(&mir_builder.functions, mir_builder.struct_fields.clone());
+    let test_native_libs: Vec<(String, String)> = program
+        .stmts
+        .iter()
+        .filter_map(|s| {
+            if let parser::StmtKind::NativeImport { path, alias } = &s.kind {
+                Some((alias.clone(), path.clone()))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let mut codegen = CraneliftCodegen::new_jit(
+        &mir_builder.functions,
+        mir_builder.struct_fields.clone(),
+        &test_native_libs,
+    );
     codegen.generate();
     codegen.finalize();
 

@@ -6,7 +6,6 @@ use crate::mir::{
 };
 use crate::semantic::types::Type as OliveType;
 use cranelift::prelude::*;
-use cranelift_jit::JITModule;
 use cranelift_module::{DataId, FuncId, Module};
 use rustc_hash::FxHashMap as HashMap;
 
@@ -20,7 +19,7 @@ fn struct_field_offset(
     Some(8 + (idx as i32) * 8)
 }
 
-impl<'a> CraneliftCodegen<'a> {
+impl<'a, M: Module> CraneliftCodegen<'a, M> {
     pub(super) fn translate_function(&mut self, func: &MirFunction) {
         let mut ctx = self.module.make_context();
 
@@ -162,7 +161,7 @@ impl<'a> CraneliftCodegen<'a> {
 
     pub(super) fn translate_statement(
         func_mir: &MirFunction,
-        module: &mut JITModule,
+        module: &mut M,
         func_ids: &HashMap<String, FuncId>,
         string_ids: &HashMap<String, DataId>,
         struct_fields: &HashMap<String, Vec<String>>,
@@ -321,7 +320,7 @@ impl<'a> CraneliftCodegen<'a> {
 
     pub(super) fn translate_rvalue(
         func_mir: &MirFunction,
-        module: &mut JITModule,
+        module: &mut M,
         func_ids: &HashMap<String, FuncId>,
         string_ids: &HashMap<String, DataId>,
         struct_fields: &HashMap<String, Vec<String>>,
@@ -664,8 +663,7 @@ impl<'a> CraneliftCodegen<'a> {
                         let slow_block = builder.create_block();
                         let merge_block = builder.create_block();
 
-                        // Load kind and data_ptr before branching so Cranelift GVN can
-                        // CSE these loads across multiple GetIndex calls on the same operand.
+                        // Load these once so the compiler can reuse them if we do multiple index lookups.
                         let data_ptr = builder.ins().load(
                             types::I64,
                             MemFlags::trusted().with_readonly(),
@@ -803,7 +801,7 @@ impl<'a> CraneliftCodegen<'a> {
                         let inst = builder.ins().call(new_func, &[n_val]);
                         let list_ptr = builder.inst_results(inst)[0];
 
-                        // data immediately follows 32-byte header in inline alloc
+                        // The data starts right after the 32-byte header.
                         let data_ptr = builder.ins().iadd_imm(list_ptr, 32);
                         for (i, op) in ops.iter().enumerate() {
                             let val =
@@ -854,7 +852,7 @@ impl<'a> CraneliftCodegen<'a> {
         op: &Operand,
         vars: &HashMap<Local, Variable>,
         string_ids: &HashMap<String, DataId>,
-        module: &mut JITModule,
+        module: &mut M,
     ) -> Value {
         match op {
             Operand::Copy(l) | Operand::Move(l) => {
@@ -896,7 +894,7 @@ impl<'a> CraneliftCodegen<'a> {
         blocks: &[Block],
         vars: &HashMap<Local, Variable>,
         string_ids: &HashMap<String, DataId>,
-        module: &mut JITModule,
+        module: &mut M,
         func_ids: &HashMap<String, FuncId>,
         _struct_fields: &HashMap<String, Vec<String>>,
         is_async: bool,

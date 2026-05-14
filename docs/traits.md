@@ -1,6 +1,6 @@
 # Traits
 
-A trait defines a set of methods that a type must implement. It's a contract: any type that claims to implement the trait must provide all of the listed methods, and the compiler verifies this before the code runs.
+A `trait` is a way to define a set of rules that a type must follow. Think of it as a contract: if a type says it implements a trait, it's promising to provide certain functions. This lets you write code that can work with many different types, as long as they follow the same rules.
 
 ## Defining a Trait
 

@@ -1,52 +1,62 @@
-# Getting Started with Olive
+t# Getting Started
+
+Ready to try Olive? Here's how to get up and running.
 
 ## Installation
 
-Olive is currently built from source. You'll need `cargo` installed. Get it from [rustup.rs](https://rustup.rs/) if you don't have it.
+Right now, Olive is built from source. You'll need to have the Rust toolchain installed. If you don't have it, you can find instructions at [rustup.rs](https://rustup.rs/).
 
-1. **Clone the repository**:
+1. **Grab the code**:
    ```bash
    git clone https://github.com/ecnivs/olive.git
    cd olive
    ```
 
-2. **Build**:
+2. **Build and install**:
    ```bash
    cargo build --release
-   ```
-   Then copy the binary somewhere on your PATH:
-   ```bash
    cp target/release/pit /usr/local/bin/pit
    ```
 
-3. **Verify**:
+3. **Check it works**:
    ```bash
    pit --help
    ```
 
-## Creating a Project
+## Your First Project
+
+Creating a new Olive project is easy with the `pit` tool:
 
 ```bash
 pit new my_app
 cd my_app
 ```
 
-This creates:
-- `pit.toml`: Project configuration and metadata.
-- `src/main.liv`: The entry point for your application.
-- `.gitignore`: Pre-configured for Olive development.
+This sets up everything you need:
+- `src/main.liv`: Where your code lives.
+- `pit.toml`: Settings for your project.
 
 ## Running Your Code
+
+To run your app, just type:
 
 ```bash
 pit run
 ```
 
-Olive finds your entry point, runs the borrow checker, applies optimizations, and executes via the JIT engine.
+### How it runs
 
-## Your First Program
+By default, Olive uses a **Hybrid** mode. It compiles your code once and saves a copy in `target/.cache`. The next time you run it, if the code hasn't changed, it skips the compiling part and starts immediately.
 
-Open `src/main.liv` and you'll see:
+If you want to control how it runs, you can use these flags:
+
+- `pit run --jit`: Runs your code directly in memory every time. Good for quick tests.
+- `pit run --aot`: Compiles your code, runs it, and then cleans up.
+- `pit build`: Builds a permanent, standalone binary file you can share with others.
+
+## Hello, World!
+
+Open `src/main.liv` and you'll see a simple starting point:
 
 ```python
 fn main():
@@ -55,38 +65,26 @@ fn main():
 main()
 ```
 
-## Interactive Shell
+Try changing the message and running `pit run` again!
 
-`pit shell` starts an interactive REPL where you can type and run Olive code line by line:
+## The Interactive Shell
+
+If you just want to play around with some code without creating a project, you can use the interactive shell:
 
 ```bash
 pit shell
 ```
 
+It's a great way to test out ideas or learn the syntax:
+
 ```
-Olive 0.1.0 (master, ...) on linux
 >>> let x = 10
->>> print(x)
-10
->>> fn double(n: int) -> int:
-...     return n * 2
->>> double(x)
+>>> print(x * 2)
 20
 ```
 
-Function and variable definitions persist across lines for the duration of the session. Type `help` for a list of shell commands, or `quit` / `exit` to leave.
+## Useful Tools
 
-## Useful CLI Flags
+- `pit test`: Runs your tests.
+- `pit fmt`: Automatically formats your code so it looks clean and consistent.
 
-- `pit build --time`: Build the project and show a timing breakdown for each compiler phase.
-- `pit test`: Find and run all functions marked with `#[test]`.
-- `pit fmt`: Format all `.liv` files in the project to the standard Olive style.
-- `pit run --emit-mir`: Print the optimized MIR so you can see what the compiler produced before codegen.
-
-## Core Concepts to Know
-
-**Indentation defines blocks.** There are no braces. Consistent indentation is required; the compiler will tell you if it's wrong.
-
-**Variables are immutable by default.** Use `let mut` when you need to reassign. This isn't a restriction so much as a signal in the code: if something is `mut`, it changes; if it isn't, it doesn't.
-
-**Ownership is enforced.** When you assign a value to another variable or pass it to a function, ownership transfers. The original binding can no longer be used. The compiler will catch violations with a clear error message and point to exactly where the problem is.

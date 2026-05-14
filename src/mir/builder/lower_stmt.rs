@@ -312,7 +312,10 @@ impl<'a> MirBuilder<'a> {
                 }
             }
 
-            StmtKind::Pass | StmtKind::Import { .. } | StmtKind::FromImport { .. } => {}
+            StmtKind::Pass
+            | StmtKind::Import { .. }
+            | StmtKind::FromImport { .. }
+            | StmtKind::NativeImport { .. } => {}
             StmtKind::Enum { name, variants, .. } => {
                 for (i, variant) in variants.iter().enumerate() {
                     let mangled = format!("{}::{}", name, variant.name);
