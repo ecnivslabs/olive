@@ -1,3 +1,8 @@
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
 use rustc_hash::FxHashMap as HashMap;
 #[allow(unused_imports)]
 use std::sync::{Mutex, OnceLock};
@@ -194,17 +199,22 @@ pub extern "C" fn olive_copy_float(val: f64) -> f64 {
 // List operations
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_list_new(len: i64) -> i64 {
-    let mut v = vec![0i64; len as usize];
-    let ptr = v.as_mut_ptr();
-    let cap = v.capacity();
-    let length = v.len();
-    std::mem::forget(v);
-    Box::into_raw(Box::new(StableVec {
-        kind: KIND_LIST,
-        ptr,
-        cap,
-        len: length,
-    })) as i64
+    let n = len as usize;
+    let total = 4 + n; // StableVec header = 4 × i64; data follows
+    let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(total * 8, 8) };
+    let raw = unsafe { std::alloc::alloc(layout) as *mut i64 };
+    if raw.is_null() {
+        std::alloc::handle_alloc_error(layout);
+    }
+    let data_ptr = unsafe { raw.add(4) };
+    unsafe {
+        let s = &mut *(raw as *mut StableVec);
+        s.kind = KIND_LIST;
+        s.ptr = data_ptr;
+        s.cap = n;
+        s.len = n;
+    }
+    raw as i64
 }
 
 #[unsafe(no_mangle)]
@@ -248,7 +258,15 @@ pub extern "C" fn olive_list_append(list_ptr: i64, val: i64) {
     }
     unsafe {
         let s = &mut *(list_ptr as *mut StableVec);
-        let mut v = Vec::from_raw_parts(s.ptr, s.len, s.cap);
+        let inline_data = (list_ptr as *mut i64).add(4);
+        let mut v = if s.ptr == inline_data {
+            // Data is inline; copy to an independent heap Vec before appending.
+            let mut owned = Vec::with_capacity(s.len + 1);
+            owned.extend_from_slice(std::slice::from_raw_parts(s.ptr, s.len));
+            owned
+        } else {
+            Vec::from_raw_parts(s.ptr, s.len, s.cap)
+        };
         v.push(val);
         s.ptr = v.as_mut_ptr();
         s.cap = v.capacity();
@@ -349,8 +367,9 @@ pub extern "C" fn olive_obj_set(obj_ptr: i64, attr: i64, val: i64) -> i64 {
     if obj_ptr == 0 || attr == 0 {
         return obj_ptr;
     }
+    let attr_str = olive_str_from_ptr(attr);
     let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
-    m.fields.insert(olive_str_from_ptr(attr), val);
+    m.fields.insert(attr_str, val);
     obj_ptr
 }
 
@@ -359,8 +378,9 @@ pub extern "C" fn olive_obj_get(obj_ptr: i64, attr: i64) -> i64 {
     if obj_ptr == 0 || attr == 0 {
         return 0;
     }
+    let attr_str = olive_str_from_ptr(attr);
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
-    *m.fields.get(&olive_str_from_ptr(attr)).unwrap_or(&0)
+    *m.fields.get(&attr_str).unwrap_or(&0)
 }
 
 #[unsafe(no_mangle)]
@@ -398,9 +418,19 @@ pub extern "C" fn olive_free_str(ptr: i64) {
 pub extern "C" fn olive_free_list(ptr: i64) {
     if ptr != 0 {
         unsafe {
-            let s = Box::from_raw(ptr as *mut StableVec);
-            if !s.ptr.is_null() {
-                let _ = Vec::from_raw_parts(s.ptr, s.len, s.cap);
+            let s = &*(ptr as *const StableVec);
+            let inline_data = (ptr as *mut i64).add(4);
+            if s.ptr == inline_data {
+                // Single-block inline allocation.
+                let total = (4 + s.len) * 8;
+                let layout = std::alloc::Layout::from_size_align_unchecked(total, 8);
+                std::alloc::dealloc(ptr as *mut u8, layout);
+            } else {
+                // Separate header + data allocations.
+                let s = Box::from_raw(ptr as *mut StableVec);
+                if !s.ptr.is_null() {
+                    let _ = Vec::from_raw_parts(s.ptr, s.len, s.cap);
+                }
             }
         }
     }

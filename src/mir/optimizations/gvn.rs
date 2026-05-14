@@ -24,6 +24,7 @@ impl Transform for GlobalValueNumbering {
         }
 
         for bb_idx in 0..func.basic_blocks.len() {
+            value_map.clear();
             let mut i = 0;
             while i < func.basic_blocks[bb_idx].statements.len() {
                 let stmt = &func.basic_blocks[bb_idx].statements[i];

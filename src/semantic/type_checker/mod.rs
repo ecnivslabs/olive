@@ -223,6 +223,15 @@ impl TypeChecker {
             let final_ty = self.apply_subst(ty);
             self.expr_types.insert(id, final_ty);
         }
+
+        for i in 0..self.type_env.len() {
+            let names: Vec<String> = self.type_env[i].keys().cloned().collect();
+            for name in names {
+                let ty = self.type_env[i].get(&name).unwrap().clone();
+                let final_ty = self.apply_subst(ty);
+                self.type_env[i].insert(name, final_ty);
+            }
+        }
     }
 
     pub(super) fn check_block(&mut self, stmts: &[Stmt]) {

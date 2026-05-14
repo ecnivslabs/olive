@@ -182,6 +182,12 @@ impl<'a> CraneliftCodegen<'a> {
                 let attr_ptr = c_str.into_raw() as i64;
                 let attr_val = builder.ins().iconst(types::I64, attr_ptr);
 
+                let v = if builder.func.dfg.value_type(v) == types::F64 {
+                    builder.ins().bitcast(types::I64, MemFlags::new(), v)
+                } else {
+                    v
+                };
+
                 let set_id = func_ids.get("__olive_obj_set").unwrap();
                 let local_func = module.declare_func_in_func(*set_id, builder.func);
                 builder.ins().call(local_func, &[o, attr_val, v]);
@@ -196,6 +202,12 @@ impl<'a> CraneliftCodegen<'a> {
                 let o = Self::translate_operand(builder, obj, vars, string_ids, module);
                 let i = Self::translate_operand(builder, idx, vars, string_ids, module);
                 let v = Self::translate_operand(builder, val_op, vars, string_ids, module);
+
+                let v = if builder.func.dfg.value_type(v) == types::F64 {
+                    builder.ins().bitcast(types::I64, MemFlags::new(), v)
+                } else {
+                    v
+                };
 
                 match ty {
                     OliveType::Dict(_, _) | OliveType::Struct(_, _) => {
@@ -260,7 +272,12 @@ impl<'a> CraneliftCodegen<'a> {
                 let i = Self::translate_operand(builder, idx, vars, string_ids, module);
                 let v = Self::translate_operand(builder, val_op, vars, string_ids, module);
 
-                let data_ptr = builder.ins().load(types::I64, MemFlags::trusted(), o, 8);
+                let data_ptr = builder.ins().load(
+                    types::I64,
+                    MemFlags::trusted().with_readonly(),
+                    o,
+                    8,
+                );
                 let offset = builder.ins().imul_imm(i, 8);
                 let addr = builder.ins().iadd(data_ptr, offset);
                 builder.ins().store(MemFlags::trusted(), v, addr, 0);
@@ -309,9 +326,34 @@ impl<'a> CraneliftCodegen<'a> {
                         name.as_str()
                     };
 
+                    if (resolved_name == "__olive_int" || resolved_name == "__olive_copy_float")
+                        && !call_args.is_empty()
+                    {
+                        return call_args[0];
+                    }
+
                     if let Some(&func_id) = func_ids.get(resolved_name) {
                         let local_func = module.declare_func_in_func(func_id, builder.func);
-                        let inst = builder.ins().call(local_func, &call_args);
+                        let mut final_args = Vec::new();
+                        
+                        // Functions that actually expect F64 arguments
+                        let accepts_float = resolved_name == "__olive_print_float" 
+                            || resolved_name == "__olive_float_to_str"
+                            || resolved_name == "__olive_float_to_int"
+                            || resolved_name == "__olive_bool_from_float"
+                            || resolved_name == "__olive_pow_float"
+                            || resolved_name == "__olive_copy_float";
+
+                        let is_builtin = resolved_name.starts_with("__olive") || resolved_name == "print";
+                        
+                        for &arg in &call_args {
+                            if is_builtin && !accepts_float && builder.func.dfg.value_type(arg) == types::F64 {
+                                final_args.push(builder.ins().bitcast(types::I64, MemFlags::new(), arg));
+                            } else {
+                                final_args.push(arg);
+                            }
+                        }
+                        let inst = builder.ins().call(local_func, &final_args);
                         let results = builder.inst_results(inst);
                         return if results.is_empty() {
                             builder.ins().iconst(types::I64, 0)
@@ -572,16 +614,65 @@ impl<'a> CraneliftCodegen<'a> {
                         builder.inst_results(inst)[0]
                     }
                     OliveType::Any => {
+                        let result_var = builder.declare_var(types::I64);
+                        let fast_block = builder.create_block();
+                        let slow_block = builder.create_block();
+                        let merge_block = builder.create_block();
+
+                        // Load kind and data_ptr before branching so Cranelift GVN can
+                        // CSE these loads across multiple GetIndex calls on the same operand.
+                        let data_ptr = builder.ins().load(
+                            types::I64,
+                            MemFlags::trusted().with_readonly(),
+                            o,
+                            8,
+                        );
+                        let kind = builder.ins().load(
+                            types::I64,
+                            MemFlags::trusted().with_readonly(),
+                            o,
+                            0,
+                        );
+                        let is_list = builder.ins().icmp_imm(IntCC::Equal, kind, 1);
+                        builder.ins().brif(is_list, fast_block, &[], slow_block, &[]);
+
+                        builder.seal_block(fast_block);
+                        builder.switch_to_block(fast_block);
+                        let offset = builder.ins().imul_imm(i, 8);
+                        let addr = builder.ins().iadd(data_ptr, offset);
+                        let fast_val = builder.ins().load(types::I64, MemFlags::trusted(), addr, 0);
+                        builder.def_var(result_var, fast_val);
+                        builder.ins().jump(merge_block, &[]);
+
+                        builder.seal_block(slow_block);
+                        builder.switch_to_block(slow_block);
                         let get_id = func_ids.get("__olive_get_index_any").unwrap();
                         let local_func = module.declare_func_in_func(*get_id, builder.func);
                         let inst = builder.ins().call(local_func, &[o, i]);
-                        builder.inst_results(inst)[0]
+                        let slow_val = builder.inst_results(inst)[0];
+                        builder.def_var(result_var, slow_val);
+                        builder.ins().jump(merge_block, &[]);
+
+                        builder.seal_block(merge_block);
+                        builder.switch_to_block(merge_block);
+                        builder.use_var(result_var)
                     }
                     OliveType::Str => {
                         let get_id = func_ids.get("__olive_str_get").unwrap();
                         let local_func = module.declare_func_in_func(*get_id, builder.func);
                         let inst = builder.ins().call(local_func, &[o, i]);
                         builder.inst_results(inst)[0]
+                    }
+                    OliveType::List(_) | OliveType::Tuple(_) | OliveType::Set(_) => {
+                        let data_ptr = builder.ins().load(
+                            types::I64,
+                            MemFlags::trusted().with_readonly(),
+                            o,
+                            8,
+                        );
+                        let offset = builder.ins().imul_imm(i, 8);
+                        let addr = builder.ins().iadd(data_ptr, offset);
+                        builder.ins().load(types::I64, MemFlags::trusted(), addr, 0)
                     }
                     _ => {
                         let get_id = func_ids.get("__olive_get_index_any").unwrap();
@@ -660,19 +751,24 @@ impl<'a> CraneliftCodegen<'a> {
                         set_ptr
                     }
                     _ => {
-                        let zero = builder.ins().iconst(types::I64, 0i64);
+                        let n = ops.len() as i64;
+                        let n_val = builder.ins().iconst(types::I64, n);
                         let new_id = func_ids.get("__olive_list_new").unwrap();
                         let new_func = module.declare_func_in_func(*new_id, builder.func);
-                        let inst = builder.ins().call(new_func, &[zero]);
+                        let inst = builder.ins().call(new_func, &[n_val]);
                         let list_ptr = builder.inst_results(inst)[0];
 
-                        let append_id = func_ids.get("__olive_list_append").unwrap();
-                        let append_func = module.declare_func_in_func(*append_id, builder.func);
-
-                        for op in ops {
+                        // data immediately follows 32-byte header in inline alloc
+                        let data_ptr = builder.ins().iadd_imm(list_ptr, 32);
+                        for (i, op) in ops.iter().enumerate() {
                             let val =
                                 Self::translate_operand(builder, op, vars, string_ids, module);
-                            builder.ins().call(append_func, &[list_ptr, val]);
+                            builder.ins().store(
+                                MemFlags::trusted(),
+                                val,
+                                data_ptr,
+                                (i * 8) as i32,
+                            );
                         }
                         list_ptr
                     }

@@ -2,11 +2,11 @@ use crate::mir::*;
 use rustc_hash::FxHashMap as HashMap;
 
 use crate::mir::optimizations::{
-    Transform, const_fold::ConstantFolding, const_prop::ConstantPropagation,
-    copy_prop::CopyPropagation, dce::DeadCodeElimination, gvn::GlobalValueNumbering,
-    inliner::Inliner, licm::Licm, loop_unroll::LoopUnroll, move_elision::MoveElision,
-    peephole::PeepholeOptimize, simplify_cfg::SimplifyCfg, strength_reduction::StrengthReduction,
-    tail_call::TailCallOpt,
+    Transform, algebraic::AlgebraicSimplification, const_fold::ConstantFolding,
+    const_prop::ConstantPropagation, copy_prop::CopyPropagation, dce::DeadCodeElimination,
+    gvn::GlobalValueNumbering, inliner::Inliner, licm::Licm, loop_unroll::LoopUnroll,
+    move_elision::MoveElision, peephole::PeepholeOptimize, simplify_cfg::SimplifyCfg,
+    strength_reduction::StrengthReduction, tail_call::TailCallOpt,
 };
 
 pub struct Optimizer {
@@ -22,6 +22,7 @@ impl Optimizer {
                 Box::new(CopyPropagation),
                 Box::new(ConstantPropagation),
                 Box::new(ConstantFolding),
+                Box::new(AlgebraicSimplification),
                 Box::new(StrengthReduction),
                 Box::new(PeepholeOptimize),
                 Box::new(GlobalValueNumbering),

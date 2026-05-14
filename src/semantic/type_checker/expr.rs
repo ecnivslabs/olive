@@ -168,15 +168,15 @@ impl TypeChecker {
                     }
                 }
 
-                let mut final_callee_ty = callee_ty.clone();
+                let mut final_callee_ty = resolved_callee.clone();
                 if let ExprKind::Attr { .. } = &callee.kind
-                    && let Type::Fn(params, _, args) = &resolved_callee
+                    && let Type::Fn(params, ret, args) = &resolved_callee
                     && !params.is_empty()
                     && params.len() == arg_types.len() + 1
                 {
                     final_callee_ty = Type::Fn(
                         params.iter().skip(1).cloned().collect(),
-                        Box::new(self.apply_subst(Type::new_var())),
+                        ret.clone(),
                         args.clone(),
                     );
                 }
@@ -200,7 +200,7 @@ impl TypeChecker {
                         Vec::new()
                     };
                     let expected_fn = Type::Fn(arg_types, Box::new(ret_ty.clone()), expected_args);
-                    self.unify(&resolved_callee, &expected_fn, expr.span);
+                    self.unify(&final_callee_ty, &expected_fn, expr.span);
                     self.apply_subst(ret_ty)
                 }
             }
