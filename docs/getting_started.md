@@ -7,13 +7,13 @@ Here's how to get Olive up and running on your machine.
 **Linux and macOS:**
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/olive-language/olive/main/install.sh | sh
+curl -sSL https://raw.githubusercontent.com/olive-language/olive/master/install.sh | sh
 ```
 
 This downloads the latest `pit` binary for your OS and places it in `~/.local/bin`. You can override the install location:
 
 ```bash
-OLIVE_INSTALL_DIR=/usr/local/bin curl -sSL https://raw.githubusercontent.com/olive-language/olive/main/install.sh | sh
+OLIVE_INSTALL_DIR=/usr/local/bin curl -sSL https://raw.githubusercontent.com/olive-language/olive/master/install.sh | sh
 ```
 
 **Windows:**

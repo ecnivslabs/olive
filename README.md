@@ -52,7 +52,7 @@ main()
 **Linux and macOS:**
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/olive-language/olive/main/install.sh | sh
+curl -sSL https://raw.githubusercontent.com/olive-language/olive/master/install.sh | sh
 ```
 
 **Windows:** download from the [releases page](https://github.com/olive-language/olive/releases/latest).
