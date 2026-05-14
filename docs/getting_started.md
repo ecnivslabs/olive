@@ -88,3 +88,14 @@ It's a great way to test out ideas or learn the syntax:
 - `pit test`: Runs your tests.
 - `pit fmt`: Automatically formats your code so it looks clean and consistent.
 
+## Package Management
+
+Olive has a built-in package manager to handle your dependencies:
+
+- `pit add package@version`: Add a dependency to your project.
+- `pit remove package`: Remove a dependency.
+- `pit install`: Install all dependencies listed in `pit.toml`.
+- `pit publish`: Share your package with the world by publishing it to the registry.
+
+Dependencies are stored in the `.pit_modules/` directory at your project root.
+

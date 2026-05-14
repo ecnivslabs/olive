@@ -3,6 +3,7 @@ use crate::codegen::cranelift::CraneliftCodegen;
 use crate::lexer::Lexer;
 use crate::mangle::mangle_statements;
 use crate::mir::{self, MirBuilder, Rvalue, StatementKind};
+use crate::packages::find_pit_module;
 use crate::parser::{self, Parser};
 use crate::semantic::{self, Resolver, TypeChecker};
 use crate::span;
@@ -113,6 +114,12 @@ pub fn load_and_parse(
                 }
 
                 if !mod_path.exists() {
+                    if let Some(pkg_path) = find_pit_module(&mod_name) {
+                        mod_path = pkg_path;
+                    }
+                }
+
+                if !mod_path.exists() {
                     report_error(
                         sources,
                         &format!("module '{}' not found", mod_name),
@@ -174,6 +181,12 @@ pub fn load_and_parse(
 
                 if !mod_path.exists() {
                     mod_path = Path::new("lib").join(format!("{}.liv", mod_name));
+                }
+
+                if !mod_path.exists() {
+                    if let Some(pkg_path) = find_pit_module(&mod_name) {
+                        mod_path = pkg_path;
+                    }
                 }
 
                 if !mod_path.exists() {
@@ -249,6 +262,11 @@ fn collect_source_files(
             let mut mod_path = parent_dir.join(format!("{}.liv", mod_name));
             if !mod_path.exists() {
                 mod_path = Path::new("lib").join(format!("{}.liv", mod_name));
+            }
+            if !mod_path.exists() {
+                if let Some(pkg_path) = find_pit_module(&mod_name) {
+                    mod_path = pkg_path;
+                }
             }
             if mod_path.exists() {
                 collect_source_files(

@@ -53,6 +53,7 @@ main()
 2. **New Project**: `pit new my_app`
 3. **Build**: `pit build`
 4. **Run**: `pit run`
+5. **Packages**: `pit add package` or `pit install`
 
 ## Documentation
 

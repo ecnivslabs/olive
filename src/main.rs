@@ -5,27 +5,32 @@ mod fmt;
 mod lexer;
 mod mangle;
 mod mir;
+mod packages;
 mod parser;
+mod publish;
+mod registry;
 mod repl;
 mod semantic;
 mod span;
 
 use clap::{Parser as ClapParser, Subcommand};
 use compile::{
-    compile_and_emit, compile_and_run, compile_and_run_aot, compile_and_test,
-    compile_hybrid,
+    compile_and_emit, compile_and_run, compile_and_run_aot, compile_and_test, compile_hybrid,
 };
 use fmt::{format_file, walk_and_format};
 use repl::run_shell;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::{fs, path::Path, process};
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Default)]
 struct Config {
     package: Package,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    dependencies: HashMap<String, String>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Default)]
 struct Package {
     name: String,
     version: String,
@@ -48,45 +53,73 @@ struct Cli {
 enum Commands {
     /// Create a new olive project
     New { name: String },
-    /// Build the current project (checks for errors)
+    /// Build the current project
     Build {
         #[arg(short, long)]
         time: bool,
     },
+    /// Run the project or a file
     Run {
-        /// The file to run (optional if in a project)
         file: Option<String>,
-
         #[arg(short, long)]
         time: bool,
-
         #[arg(long)]
         emit_ast: bool,
-
         #[arg(long)]
         emit_mir: bool,
-
-        /// Force pure JIT mode (no caching)
         #[arg(long)]
         jit: bool,
-
-        /// AOT compile and run (no cache kept)
         #[arg(long)]
         aot: bool,
     },
-    /// Format the current project or a specific file
-    Fmt {
-        /// The file to format (optional if in a project)
-        file: Option<String>,
-    },
-    /// Run tests in the current project
+    /// Format the project or a file
+    Fmt { file: Option<String> },
+    /// Run tests
     Test {
         #[arg(short, long)]
         time: bool,
     },
-    },
-    /// Start an interactive shell session
+    /// Start an interactive shell
     Shell,
+    /// Add a package dependency
+    Add {
+        /// Package name, optionally with version: name or name@1.0.0
+        package: String,
+    },
+    /// Remove a package dependency
+    Remove { package: String },
+    /// Install all dependencies
+    Install,
+    /// Publish this package to the registry
+    Publish,
+}
+
+fn load_config() -> Config {
+    let config_path = Path::new("pit.toml");
+    if !config_path.exists() {
+        eprintln!("error: could not find `pit.toml` in current directory");
+        process::exit(1);
+    }
+    let content = fs::read_to_string(config_path).unwrap();
+    toml::from_str(&content).unwrap_or_else(|e| {
+        eprintln!("error: invalid pit.toml: {}", e);
+        process::exit(1);
+    })
+}
+
+fn save_config(config: &Config) {
+    let content = toml::to_string(config).unwrap();
+    fs::write("pit.toml", content).unwrap();
+}
+
+fn maybe_install_deps(deps: &HashMap<String, String>) {
+    if deps.is_empty() {
+        return;
+    }
+    if let Err(e) = packages::ensure_deps_installed(deps) {
+        eprintln!("error: {}", e);
+        process::exit(1);
+    }
 }
 
 fn main() {
@@ -101,6 +134,7 @@ fn main() {
             }
 
             fs::create_dir_all(path.join("src")).unwrap();
+            fs::create_dir_all(path.join(".pit_modules")).unwrap();
 
             let config = Config {
                 package: Package {
@@ -108,35 +142,34 @@ fn main() {
                     version: "0.1.0".to_string(),
                     entry: "src/main.liv".to_string(),
                 },
+                dependencies: HashMap::new(),
             };
 
-            let toml = toml::to_string(&config).unwrap();
-            fs::write(path.join("pit.toml"), toml).unwrap();
-
-            let main_liv = "fn main():\n    print(\"Hello from Olive!\")\n\nmain()\n";
-            fs::write(path.join("src/main.liv"), main_liv).unwrap();
-
-            let gitignore = ".env\n.env.*\n*.secret\n";
-            fs::write(path.join(".gitignore"), gitignore).unwrap();
+            fs::write(path.join("pit.toml"), toml::to_string(&config).unwrap()).unwrap();
+            fs::write(
+                path.join("src/main.liv"),
+                "fn main():\n    print(\"Hello from Olive!\")\n\nmain()\n",
+            )
+            .unwrap();
+            fs::write(
+                path.join(".gitignore"),
+                ".env\n.env.*\n*.secret\ntarget/\n.pit_modules/\n",
+            )
+            .unwrap();
 
             println!(
                 "\x1b[1;32mCreated\x1b[0m binary (application) `{}` package",
                 name
             );
         }
+
         Commands::Build { time } => {
-            let config_path = Path::new("pit.toml");
-            if !config_path.exists() {
-                eprintln!("error: could not find `pit.toml` in current directory");
-                process::exit(1);
-            }
-
-            let config_str = fs::read_to_string(config_path).unwrap();
-            let config: Config = toml::from_str(&config_str).unwrap();
-
+            let config = load_config();
+            maybe_install_deps(&config.dependencies);
             let out = format!("target/{}", config.package.name);
             compile_and_emit(&config.package.entry, &out, time);
         }
+
         Commands::Run {
             file,
             time,
@@ -148,13 +181,8 @@ fn main() {
             let entry = if let Some(f) = file {
                 f
             } else {
-                let config_path = Path::new("pit.toml");
-                if !config_path.exists() {
-                    eprintln!("error: no file specified and no `pit.toml` found");
-                    process::exit(1);
-                }
-                let config_str = fs::read_to_string(config_path).unwrap();
-                let config: Config = toml::from_str(&config_str).unwrap();
+                let config = load_config();
+                maybe_install_deps(&config.dependencies);
                 config.package.entry
             };
 
@@ -166,6 +194,7 @@ fn main() {
                 compile_hybrid(&entry, time);
             }
         }
+
         Commands::Fmt { file } => {
             if let Some(f) = file {
                 let path = Path::new(&f);
@@ -184,20 +213,88 @@ fn main() {
                 }
             }
         }
+
         Commands::Test { time } => {
-            let config_path = Path::new("pit.toml");
-            if !config_path.exists() {
-                eprintln!("error: could not find `pit.toml` in current directory");
+            let config = load_config();
+            maybe_install_deps(&config.dependencies);
+            compile_and_test(&config.package.entry, time);
+        }
+
+        Commands::Shell => {
+            run_shell();
+        }
+
+        Commands::Add { package } => {
+            let (name, version_req) = if let Some((n, v)) = package.split_once('@') {
+                (n.to_string(), v.to_string())
+            } else {
+                (package.clone(), "latest".to_string())
+            };
+
+            let versions = registry::fetch_versions(&name).unwrap_or_else(|e| {
+                eprintln!("error: {}", e);
+                process::exit(1);
+            });
+
+            let pkg = registry::resolve_version(&versions, &version_req).unwrap_or_else(|| {
+                eprintln!("error: no matching version for '{}@{}'", name, version_req);
+                process::exit(1);
+            });
+
+            let resolved_version = pkg.vers.clone();
+            let pkg = pkg.clone();
+
+            if let Err(e) = packages::download_and_install(&pkg) {
+                eprintln!("error: {}", e);
+                process::exit(1);
+            }
+            if let Err(e) = packages::copy_to_modules(&pkg.name, &pkg.vers) {
+                eprintln!("error: {}", e);
                 process::exit(1);
             }
 
-            let config_str = fs::read_to_string(config_path).unwrap();
-            let config: Config = toml::from_str(&config_str).unwrap();
+            let mut config = load_config();
+            config
+                .dependencies
+                .insert(name.clone(), resolved_version.clone());
+            save_config(&config);
 
-            compile_and_test(&config.package.entry, time);
+            println!(
+                "\x1b[1;32m    Added\x1b[0m {}@{}",
+                name, resolved_version
+            );
         }
-        Commands::Shell => {
-            run_shell();
+
+        Commands::Remove { package } => {
+            let mut config = load_config();
+            if config.dependencies.remove(&package).is_none() {
+                eprintln!("error: '{}' is not a dependency", package);
+                process::exit(1);
+            }
+            save_config(&config);
+            packages::remove_from_modules(&package);
+            println!("\x1b[1;32m  Removed\x1b[0m {}", package);
+        }
+
+        Commands::Install => {
+            let config = load_config();
+            if config.dependencies.is_empty() {
+                println!("No dependencies to install.");
+                return;
+            }
+            if let Err(e) = packages::install_all_deps(&config.dependencies) {
+                eprintln!("error: {}", e);
+                process::exit(1);
+            }
+            println!("\x1b[1;32m   Installed\x1b[0m all dependencies");
+        }
+
+        Commands::Publish => {
+            let config = load_config();
+            if let Err(e) = publish::publish(&config.package.name, &config.package.version) {
+                eprintln!("error: {}", e);
+                process::exit(1);
+            }
         }
     }
 }
