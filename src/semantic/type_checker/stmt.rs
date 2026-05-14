@@ -326,10 +326,23 @@ impl TypeChecker {
                 self.leave_scope(); // type param scope
             }
 
-            StmtKind::Trait { name, methods, .. } => {
+            StmtKind::Trait {
+                name,
+                type_params,
+                methods,
+            } => {
+                let prev_struct = self.current_struct.take();
+                self.current_struct = Some(name.clone());
+
+                self.enter_scope();
+                for tp in type_params {
+                    self.define_type(tp, Type::Param(tp.clone()), false);
+                }
+
                 let method_names: Vec<String> = methods
                     .iter()
                     .filter_map(|s| {
+                        self.check_stmt(s);
                         if let StmtKind::Fn { name, .. } = &s.kind {
                             Some(name.clone())
                         } else {
@@ -337,6 +350,9 @@ impl TypeChecker {
                         }
                     })
                     .collect();
+
+                self.leave_scope();
+                self.current_struct = prev_struct;
                 self.traits.insert(name.clone(), method_names);
             }
 
