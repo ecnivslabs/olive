@@ -38,6 +38,8 @@ pub struct Profile {
 pub struct Pod {
     pub name: String,
     pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
     #[serde(default = "default_entry")]
     pub entry: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -182,6 +184,7 @@ mod tests {
             pod: Some(Pod {
                 name: "my_app".into(),
                 version: "0.1.0".into(),
+                author: None,
                 entry: "src/main.liv".into(),
                 olive: Some(">=0.1".into()),
             }),
@@ -270,6 +273,7 @@ version = "1.0"
         let pod = Pod {
             name: "x".into(),
             version: "1.0".into(),
+            author: None,
             entry: "lib.liv".into(),
             olive: None,
         };
@@ -282,6 +286,7 @@ version = "1.0"
             pod: Some(Pod {
                 name: "test".into(),
                 version: "0.0.1".into(),
+                author: None,
                 entry: "src/main.liv".into(),
                 olive: Some(">=0.1.0".into()),
             }),
@@ -387,6 +392,7 @@ member_dep = "0.5"
             pod: Some(Pod {
                 name: "full_test".into(),
                 version: "2.0.0".into(),
+                author: None,
                 entry: "src/lib.liv".into(),
                 olive: Some(">=0.2".into()),
             }),

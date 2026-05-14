@@ -177,4 +177,17 @@ mod lexer_tests {
         let kinds = tokenise_kinds("\"hello\\nworld\"\n");
         assert!(kinds.contains(&TokenKind::String));
     }
+
+    #[test]
+    fn hex_and_unicode_escapes() {
+        let toks = Lexer::new("\"\\x1b[0m\\u{1F600}\\0\"\n", 0)
+            .tokenise()
+            .unwrap();
+        let s = toks
+            .iter()
+            .find(|t| t.kind == TokenKind::String)
+            .map(|t| t.value.clone())
+            .unwrap();
+        assert_eq!(s, "\u{1b}[0m\u{1F600}\0");
+    }
 }

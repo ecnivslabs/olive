@@ -40,6 +40,11 @@ pub fn execute_build(path: Option<&String>, output: Option<&String>, time: bool,
             }
             let member_config = load_config();
             if let Some(pod) = member_config.pod {
+                crate::compile::loader::set_pod_meta(crate::compile::loader::PodMeta {
+                    name: pod.name.clone(),
+                    version: pod.version.clone(),
+                    author: pod.author.clone().unwrap_or_default(),
+                });
                 run_build_script(time, release);
                 let out = format!("grove/{}", pod.name);
                 println!("\x1b[1;32m   Compiling\x1b[0m {}", pod.name);
@@ -47,6 +52,11 @@ pub fn execute_build(path: Option<&String>, output: Option<&String>, time: bool,
             }
         }
     } else if let Some(pod) = config.pod {
+        crate::compile::loader::set_pod_meta(crate::compile::loader::PodMeta {
+            name: pod.name.clone(),
+            version: pod.version.clone(),
+            author: pod.author.clone().unwrap_or_default(),
+        });
         run_build_script(time, release);
         let out = format!("grove/{}", pod.name);
         compile_and_emit(&pod.entry, &out, time, release);
@@ -71,12 +81,22 @@ pub fn execute_test(time: bool, release: bool) {
             }
             let member_config = load_config();
             if let Some(pod) = member_config.pod {
+                crate::compile::loader::set_pod_meta(crate::compile::loader::PodMeta {
+                    name: pod.name.clone(),
+                    version: pod.version.clone(),
+                    author: pod.author.clone().unwrap_or_default(),
+                });
                 run_build_script(time, release);
                 println!("\x1b[1;34mTesting\x1b[0m {}", pod.name);
                 compile_and_test(&pod.entry, time, release);
             }
         }
     } else if let Some(pod) = config.pod {
+        crate::compile::loader::set_pod_meta(crate::compile::loader::PodMeta {
+            name: pod.name.clone(),
+            version: pod.version.clone(),
+            author: pod.author.clone().unwrap_or_default(),
+        });
         run_build_script(time, release);
         compile_and_test(&pod.entry, time, release);
     } else {

@@ -7,8 +7,7 @@ use crate::parser::ast::{
 use crate::span::Span;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
-/// Validates capturing nested fns: callable only where captures are in scope,
-/// never usable as a bare value. Precise diagnostics instead of a segfault.
+/// Validates nested fn captures are in scope; errors instead of segfaults.
 pub fn check_closures(program: &Program) -> Vec<SemanticError> {
     let mut c = Checker::default();
     for stmt in &program.stmts {

@@ -4,14 +4,7 @@ use crate::mir::*;
 use crate::parser::BinOp;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-/// Sets the `unchecked` flag on `GetIndex`/`SetIndex` whose index is provably in
-/// range, so codegen omits the per-access bounds check. Runs last, so no later
-/// pass can invalidate a flag.
-///
-/// Each proof needs no runtime guard or loop versioning:
-/// 1. constant index into a fixed-length, immutable list/tuple;
-/// 2. a repeat of an `(object, index)` already checked earlier in the block;
-/// 3. a non-negative induction variable bounded by the object's length.
+/// Three proofs: const-index, redundant same-block, induction bounded by len.
 pub struct BoundsCheckElim;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -20,8 +13,7 @@ enum IdxKey {
     Local(usize),
 }
 
-/// The known length of a list or tuple: either a compile-time count, or an
-/// immutable local that held the length at construction (`list_new(n)`).
+/// Known length: compile-time constant or immutable local from list_new(n).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LenKey {
     Const(usize),
@@ -53,8 +45,7 @@ impl Transform for BoundsCheckElim {
 }
 
 impl BoundsCheckElim {
-    /// Cases 1 and 2: constant indices into fixed-length aggregates, and
-    /// redundant re-checks of the same `(object, index)` within a block.
+    /// Proof cases 1+2: const index into fixed-length aggregate; redundant same-block re-check.
     fn collect_local(
         &self,
         func: &MirFunction,
@@ -90,10 +81,7 @@ impl BoundsCheckElim {
         }
     }
 
-    /// Case 3: an index by an induction variable bounded by the object's length,
-    /// in a loop that never resizes the object. Values are read from a loop-entry
-    /// state, not the whole function, so reused storage slots (common after
-    /// inlining) don't confuse it.
+    /// Proof case 3: induction bounded by len(obj); state from loop entry to avoid slot reuse.
     fn collect_loops(
         &self,
         func: &MirFunction,
@@ -139,9 +127,7 @@ impl BoundsCheckElim {
     }
 }
 
-/// Value of each local at the loop header guard: last write across the header's
-/// dominators (header included), in dominance order; every iteration runs them
-/// before the guard. The body-reassigned counter keeps its pre-loop value here.
+/// Last write to each local across dominators of the loop header, in dominance order.
 fn entry_state(
     func: &MirFunction,
     doms: &[FxHashSet<BasicBlockId>],
@@ -175,9 +161,7 @@ fn resolve_entry(entry: &FxHashMap<usize, Rvalue>, local: usize) -> usize {
     cur
 }
 
-/// The length of `obj` as known at loop entry: a constant from an aggregate
-/// literal or `list_new` of a constant, or the local that held the count at
-/// `list_new`.
+/// Length of obj at loop entry: from a literal aggregate or list_new(constant/immutable-local).
 fn length_at_entry(entry: &FxHashMap<usize, Rvalue>, obj: usize) -> Option<LenKey> {
     match entry.get(&resolve_entry(entry, obj))? {
         Rvalue::Aggregate(AggregateKind::List | AggregateKind::Tuple, ops) => {
@@ -192,9 +176,7 @@ fn length_at_entry(entry: &FxHashMap<usize, Rvalue>, obj: usize) -> Option<LenKe
     }
 }
 
-/// Whether `i < limit` keeps `i` below `len(obj)`: limit is `len(obj)`, or the
-/// immutable local that fixed the length at `list_new`, or a constant `<=` a
-/// known fixed length.
+/// True if i < limit guarantees i < len(obj): limit is len(obj), list_new param, or const bound.
 fn limit_bounds_object(
     entry: &FxHashMap<usize, Rvalue>,
     counts: &FxHashMap<usize, usize>,
@@ -231,9 +213,7 @@ fn len_source_at_entry(entry: &FxHashMap<usize, Rvalue>, limit: usize) -> Option
     }
 }
 
-/// Locals assigned exactly once inside the loop body, mapped to their rvalue.
-/// Used to see through the temporary that holds `i + 1` before it is copied
-/// back into the counter.
+/// Single-assignment loop-body locals mapped to their rvalue; used to trace i+1 temporaries.
 fn body_defs(func: &MirFunction, lp: &loop_utils::Loop) -> FxHashMap<usize, Rvalue> {
     let mut count: FxHashMap<usize, usize> = FxHashMap::default();
     let mut def: FxHashMap<usize, Rvalue> = FxHashMap::default();
@@ -249,8 +229,7 @@ fn body_defs(func: &MirFunction, lp: &loop_utils::Loop) -> FxHashMap<usize, Rval
     def
 }
 
-/// Whether `rval` computes `i` plus a non-negative constant, seeing through any
-/// copies from single-assignment loop-body temporaries.
+/// True if rval is i + non-negative constant, tracing single-assignment temps.
 fn is_nonneg_step(body: &FxHashMap<usize, Rvalue>, i: usize, rval: &Rvalue) -> bool {
     let mut cur = rval;
     for _ in 0..=body.len() {
@@ -268,8 +247,7 @@ fn is_nonneg_step(body: &FxHashMap<usize, Rvalue>, i: usize, rval: &Rvalue) -> b
     false
 }
 
-/// True when, inside the loop, `i` is only stepped by a non-negative constant
-/// and it enters the loop as a non-negative value, so it stays in `[0, limit)`.
+/// True if i only increments by positive steps and starts non-negative (stays in [0, limit)).
 fn nonneg_induction(
     func: &MirFunction,
     lp: &loop_utils::Loop,
@@ -293,9 +271,7 @@ fn nonneg_induction(
     )
 }
 
-/// True if `obj` could be reassigned, resized, borrowed, or written through
-/// anywhere in the loop body, which would break the `len(obj)` invariant. A
-/// `SetIndex` is excluded: it replaces an element without changing the length.
+/// True if obj is reassigned, resized, or aliased anywhere in the loop; SetIndex excluded.
 fn mutated_in_loop(func: &MirFunction, lp: &loop_utils::Loop, obj: usize) -> bool {
     for &bb_id in &lp.body {
         for stmt in &func.basic_blocks[bb_id.0].statements {
@@ -343,8 +319,7 @@ fn operand_local(op: &Operand) -> Option<usize> {
     }
 }
 
-/// Locals assigned exactly once, mapped to their rvalue; multi-assignment locals
-/// are omitted so copy-chain resolution can't follow a value that later changed.
+/// Single-assignment locals mapped to their rvalue; multi-assigned locals omitted.
 fn single_defs(func: &MirFunction) -> FxHashMap<usize, Rvalue> {
     let mut count: FxHashMap<usize, usize> = FxHashMap::default();
     let mut def: FxHashMap<usize, Rvalue> = FxHashMap::default();
@@ -382,8 +357,7 @@ fn idx_key(single: &FxHashMap<usize, Rvalue>, idx: &Operand) -> Option<IdxKey> {
     }
 }
 
-/// Counts assignments per local so single-assignment values can be treated as
-/// stable.
+/// Number of assignments to each local.
 fn assign_counts(func: &MirFunction) -> FxHashMap<usize, usize> {
     let mut count: FxHashMap<usize, usize> = FxHashMap::default();
     for bb in &func.basic_blocks {
@@ -396,11 +370,7 @@ fn assign_counts(func: &MirFunction) -> FxHashMap<usize, usize> {
     count
 }
 
-/// Known length of each list/tuple local. Recorded only for single-assignment
-/// locals, and dropped if the collection is later resized via a call, borrow, or
-/// attribute write. Aggregate literals give a constant length; `list_new(n)`
-/// gives `n` when `n` is immutable. `SetIndex`, `len`, and `list_new` preserve
-/// length, so they don't disqualify.
+/// Known lengths of single-assignment list/tuple locals; revoked on resize, call, or borrow.
 fn list_lengths(
     func: &MirFunction,
     single: &FxHashMap<usize, Rvalue>,
@@ -473,9 +443,7 @@ fn is_list_new(func: &Operand) -> bool {
     matches!(func, Operand::Constant(Constant::Function(name)) if name == "__olive_list_new")
 }
 
-/// Drops tracked `(object, index)` pairs that a statement could have
-/// invalidated: a call may resize any collection, a borrow or attribute write
-/// may mutate through an alias, and an assignment redefines its target.
+/// Evicts (object, index) pairs a statement may invalidate.
 fn invalidate(kind: &StatementKind, checked: &mut FxHashSet<(usize, IdxKey)>) {
     match kind {
         StatementKind::Assign(dst, rval) => {
@@ -493,9 +461,7 @@ fn invalidate(kind: &StatementKind, checked: &mut FxHashSet<(usize, IdxKey)>) {
     }
 }
 
-/// At a loop header `cond = i < L; switch cond`, returns the induction local `i`
-/// and the limit operand `L`. The comparison must live in the header block so
-/// it is re-evaluated on every iteration.
+/// Guard `i < L` at the loop header; None if the comparison isn't there.
 fn header_guard(func: &MirFunction, header: BasicBlockId) -> Option<(usize, Operand)> {
     let block = &func.basic_blocks[header.0];
     if !matches!(
@@ -725,8 +691,7 @@ mod tests {
         assert!(!unchecked_at(&f, 0, 3), "call invalidated the prior check");
     }
 
-    /// Builds `i = 0; while i < len(xs): xs[i] ...; i = i + 1` as MIR.
-    /// Block 0 = preheader, block 1 = header, block 2 = body, exit = block 3.
+    /// MIR for `i=0; while i<len(xs): xs[i]; i+=1`. Blocks: 0=preheader, 1=header, 2=body, 3=exit.
     fn len_bounded_loop(index_idx: Operand) -> MirFunction {
         let locals = vec![
             decl(list_ty()),  // 0: xs
@@ -899,8 +864,7 @@ mod tests {
         assert!(!unchecked_at(&f, 2, 0));
     }
 
-    /// Same shape as the `list_new` test but the bound `n` is mutated in the
-    /// loop body, so its value no longer matches the list length.
+    /// Same as len_bounded_loop but n is mutated in the loop body (breaks the bound invariant).
     fn induction_reassigned_bound() -> MirFunction {
         let locals = vec![
             decl(Type::Int),

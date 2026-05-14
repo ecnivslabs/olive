@@ -130,7 +130,7 @@ impl<'a> MirBuilder<'a> {
             }
         }
 
-        if let Some(op) = self.lower_dict_method(obj, attr, &arg_ops, span, expr_id) {
+        if let Some(op) = self.lower_dict_method(obj, attr, &arg_ops, &arg_tys, span, expr_id) {
             return op;
         }
 
@@ -226,8 +226,25 @@ impl<'a> MirBuilder<'a> {
         let obj_op = self.lower_expr_as_copy(obj);
         let tmp = self.new_local(self.get_type(expr_id), None, false);
 
+        // Coerce args to param types so scalars box into Any, matching free-function call path.
+        let callee_ty = self.get_type(callee.id);
+        let coerced_args: Vec<Operand> = if let Type::Fn(ptys, _, _) = &callee_ty {
+            let offset = ptys.len().saturating_sub(arg_ops.len());
+            arg_ops
+                .iter()
+                .enumerate()
+                .map(|(i, op)| {
+                    let from = arg_tys.get(i).cloned().unwrap_or(Type::Any);
+                    let to = ptys.get(i + offset).cloned().unwrap_or(Type::Any);
+                    self.coerce(op.clone(), &from, &to, span)
+                })
+                .collect()
+        } else {
+            arg_ops
+        };
+
         let mut method_args = vec![obj_op];
-        method_args.extend(arg_ops);
+        method_args.extend(coerced_args);
 
         if attr == "copy" {
             self.push_statement(
@@ -591,6 +608,7 @@ impl<'a> MirBuilder<'a> {
         obj: &Expr,
         attr: &str,
         arg_ops: &[Operand],
+        arg_tys: &[Type],
         span: Span,
         expr_id: usize,
     ) -> Option<Operand> {
@@ -598,6 +616,7 @@ impl<'a> MirBuilder<'a> {
             "keys" => "__olive_obj_keys",
             "values" => "__olive_obj_values",
             "items" => "__olive_obj_items",
+            "get" if arg_ops.len() == 2 => "__olive_obj_get_default",
             "get" => "__olive_obj_get",
             "remove" => "__olive_obj_remove",
             _ => return None,
@@ -606,12 +625,26 @@ impl<'a> MirBuilder<'a> {
         while let Type::Ref(inner) | Type::MutRef(inner) = recv_ty {
             recv_ty = *inner;
         }
-        if !matches!(recv_ty, Type::Dict(_, _) | Type::Any) {
-            return None;
-        }
+        let val_ty = match &recv_ty {
+            Type::Dict(_, v) => (**v).clone(),
+            Type::Any => Type::Any,
+            _ => return None,
+        };
         let obj_op = self.lower_expr_as_copy(obj);
         let mut call_args = vec![obj_op];
-        call_args.extend_from_slice(arg_ops);
+        if runtime == "__olive_obj_get_default" {
+            // Default must be boxed into Any so it reads back the same as stored values.
+            call_args.push(arg_ops[0].clone());
+            let default = arg_ops[1].clone();
+            if val_ty == Type::Any {
+                let from_ty = arg_tys.get(1).cloned().unwrap_or(Type::Any);
+                call_args.push(self.box_into_any(default, &from_ty, span));
+            } else {
+                call_args.push(default);
+            }
+        } else {
+            call_args.extend_from_slice(arg_ops);
+        }
         let tmp = self.new_local(self.get_type(expr_id), None, false);
         self.push_statement(
             StatementKind::Assign(

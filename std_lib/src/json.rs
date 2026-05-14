@@ -1,4 +1,6 @@
-use crate::{KIND_LIST, KIND_OBJ, OliveObj, StableVec, olive_str_from_ptr, olive_str_internal};
+use crate::{
+    KIND_ANY_LIST, KIND_LIST, KIND_OBJ, OliveObj, StableVec, olive_str_from_ptr, olive_str_internal,
+};
 use rustc_hash::FxHashMap as HashMap;
 
 pub(crate) fn json_to_olive(val: &serde_json::Value) -> i64 {
@@ -16,7 +18,7 @@ pub(crate) fn json_to_olive(val: &serde_json::Value) -> i64 {
             .unwrap_or_else(|| n.as_f64().unwrap_or(0.0) as i64),
         serde_json::Value::String(s) => olive_str_internal(s),
         serde_json::Value::Array(arr) => {
-            let mut elems: Vec<i64> = arr.iter().map(json_to_olive).collect();
+            let mut elems: Vec<i64> = arr.iter().map(json_to_olive_any).collect();
             let ptr = elems.as_mut_ptr();
             let cap = elems.capacity();
             let len = elems.len();
@@ -33,7 +35,7 @@ pub(crate) fn json_to_olive(val: &serde_json::Value) -> i64 {
             for (k, v) in map {
                 fields.insert(
                     crate::OliveStringKey(olive_str_internal(k)),
-                    json_to_olive(v),
+                    json_to_olive_any(v),
                 );
             }
             Box::into_raw(Box::new(OliveObj {
@@ -44,12 +46,38 @@ pub(crate) fn json_to_olive(val: &serde_json::Value) -> i64 {
     }
 }
 
+/// Like json_to_olive but boxes scalars as self-describing Any (raw bits collide with Any tags).
+pub(crate) fn json_to_olive_any(val: &serde_json::Value) -> i64 {
+    match val {
+        serde_json::Value::Null => crate::boxed::olive_box_null(),
+        serde_json::Value::Bool(b) => crate::boxed::olive_box_bool(*b as i64),
+        serde_json::Value::Number(n) => match n.as_i64() {
+            Some(i) => crate::boxed::olive_box_int(i),
+            None => crate::boxed::olive_box_float(n.as_f64().unwrap_or(0.0)),
+        },
+        serde_json::Value::String(_)
+        | serde_json::Value::Array(_)
+        | serde_json::Value::Object(_) => json_to_olive(val),
+    }
+}
+
 // Linux mmap_min_addr is typically 65536; no valid heap ptr lives below this.
 const MIN_HEAP_PTR: i64 = 0x10000;
 
 pub(crate) fn olive_to_json(val: i64) -> serde_json::Value {
     if val == 0 {
         return serde_json::Value::Null;
+    }
+    // Inline-tagged `Any` scalars, as stored in parsed lists and objects.
+    match val & crate::boxed::TAG_MASK {
+        crate::boxed::TAG_INT => return serde_json::Value::Number((val >> 3).into()),
+        crate::boxed::TAG_BOOL => return serde_json::Value::Bool((val >> 3) != 0),
+        crate::boxed::TAG_NULL => return serde_json::Value::Null,
+        _ => {}
+    }
+    // A tagged string pointer carries bit 0.
+    if val > 0x10000 && val & 1 != 0 {
+        return serde_json::Value::String(olive_str_from_ptr(val));
     }
     // Values below MIN_HEAP_PTR are not valid pointers and are treated as integers.
     if val > 0 && val < MIN_HEAP_PTR {
@@ -58,12 +86,18 @@ pub(crate) fn olive_to_json(val: i64) -> serde_json::Value {
     if val < 0 {
         return serde_json::Value::Number(val.into());
     }
-    if val > 0x10000 && val & 1 != 0 {
-        return serde_json::Value::String(olive_str_from_ptr(val));
-    }
     let kind = unsafe { *(val as *const i64) };
     match kind {
-        KIND_LIST => {
+        crate::KIND_INT => {
+            let b = unsafe { &*(val as *const crate::boxed::OliveBoxed) };
+            serde_json::Value::Number(b.bits.into())
+        }
+        crate::KIND_FLOAT => {
+            let b = unsafe { &*(val as *const crate::boxed::OliveBoxed) };
+            serde_json::Number::from_f64(f64::from_bits(b.bits as u64))
+                .map_or(serde_json::Value::Null, serde_json::Value::Number)
+        }
+        KIND_LIST | KIND_ANY_LIST => {
             let s = unsafe { &*(val as *const StableVec) };
             let elems: Vec<serde_json::Value> = (0..s.len)
                 .map(|i| olive_to_json(unsafe { *s.ptr.add(i) }))
@@ -156,9 +190,11 @@ mod tests {
         let list = unsafe { &*(ptr as *const StableVec) };
         assert_eq!(list.kind, KIND_LIST);
         assert_eq!(list.len, 3);
-        assert_eq!(unsafe { *list.ptr }, 1);
-        assert_eq!(unsafe { *list.ptr.add(1) }, 2);
-        assert_eq!(unsafe { *list.ptr.add(2) }, 3);
+        // Container scalars are stored boxed as self-describing `Any` values.
+        let unbox = crate::boxed::olive_unbox_int;
+        assert_eq!(unbox(unsafe { *list.ptr }), 1);
+        assert_eq!(unbox(unsafe { *list.ptr.add(1) }), 2);
+        assert_eq!(unbox(unsafe { *list.ptr.add(2) }), 3);
     }
 
     #[test]
@@ -167,16 +203,21 @@ mod tests {
         assert_ne!(ptr, 0);
         let obj = unsafe { &*(ptr as *const OliveObj) };
         assert_eq!(obj.kind, KIND_OBJ);
+        let unbox = crate::boxed::olive_unbox_int;
         assert_eq!(
-            *obj.fields
-                .get(&crate::OliveStringKey(olive_str_internal("x")))
-                .unwrap(),
+            unbox(
+                *obj.fields
+                    .get(&crate::OliveStringKey(olive_str_internal("x")))
+                    .unwrap()
+            ),
             10
         );
         assert_eq!(
-            *obj.fields
-                .get(&crate::OliveStringKey(olive_str_internal("y")))
-                .unwrap(),
+            unbox(
+                *obj.fields
+                    .get(&crate::OliveStringKey(olive_str_internal("y")))
+                    .unwrap()
+            ),
             20
         );
     }
@@ -230,10 +271,12 @@ mod tests {
             .unwrap();
         let inner = unsafe { &*(inner_ptr as *const OliveObj) };
         assert_eq!(
-            *inner
-                .fields
-                .get(&crate::OliveStringKey(olive_str_internal("b")))
-                .unwrap(),
+            crate::boxed::olive_unbox_int(
+                *inner
+                    .fields
+                    .get(&crate::OliveStringKey(olive_str_internal("b")))
+                    .unwrap()
+            ),
             99
         );
     }

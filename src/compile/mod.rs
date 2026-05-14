@@ -3,7 +3,7 @@ pub(crate) mod fix;
 pub(crate) mod laws;
 mod linker;
 pub(crate) mod lints;
-mod loader;
+pub(crate) mod loader;
 pub(crate) mod pipeline;
 #[cfg(test)]
 mod tests;
@@ -134,9 +134,12 @@ pub fn compile_hybrid(filename: &str, show_time: bool, release: bool) {
     let mut visited = HashSet::new();
     collect_source_files(filename, &mut collected, &mut py_files, &mut visited);
 
-    // Include Python files in hash so changes to import py "..." modules trigger rebuild
+    // Include Python files and pit.toml in hash so changes trigger rebuild
     let mut all_files = collected.clone();
     all_files.extend(py_files.iter().cloned());
+    if let Ok(p) = std::fs::canonicalize("pit.toml") {
+        all_files.push(p.to_string_lossy().into_owned());
+    }
     let hash = compute_source_hash(&all_files);
 
     ensure_dir("grove/.cache");

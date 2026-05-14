@@ -58,6 +58,13 @@ pub extern "C" fn olive_py_call_safe(func: PyObject, args_list: i64) -> i64 {
             return crate::result::olive_result_err(err_str_ptr);
         }
 
+        // A successful call must not leave the Python error indicator set; some
+        // libraries (e.g. yt-dlp) raise and handle exceptions internally yet
+        // leave it lingering, which would derail the next C-API call.
+        if !PY_ERR_OCCURRED().is_null() {
+            PY_ERR_CLEAR();
+        }
+
         let wrapped = olive_py_wrap_owned(res);
         crate::result::olive_result_ok(wrapped as i64)
     })
@@ -117,6 +124,13 @@ pub extern "C" fn olive_py_call_kw_safe(func: PyObject, args_list: i64, kwargs_d
         {
             let err_str_ptr = crate::olive_str_internal(&err_msg);
             return crate::result::olive_result_err(err_str_ptr);
+        }
+
+        // A successful call must not leave the Python error indicator set; some
+        // libraries (e.g. yt-dlp) raise and handle exceptions internally yet
+        // leave it lingering, which would derail the next C-API call.
+        if !PY_ERR_OCCURRED().is_null() {
+            PY_ERR_CLEAR();
         }
 
         let wrapped = olive_py_wrap_owned(res);

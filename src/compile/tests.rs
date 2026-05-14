@@ -187,4 +187,74 @@ mod compile_pipeline_tests {
         let result = run_pipeline(f.path());
         assert!(result.is_ok(), "if expression should compile");
     }
+
+    #[test]
+    fn pipeline_dict_get_default() {
+        let f = TempFile::new(
+            "fn main():\n    let d: {str: int} = {\"a\": 1}\n    print(d.get(\"a\", 0))\n",
+        );
+        let result = run_pipeline(f.path());
+        assert!(result.is_ok(), "dict.get with default should compile");
+    }
+
+    #[test]
+    fn pipeline_dict_get_too_many_args() {
+        let f = TempFile::new(
+            "fn main():\n    let d: {str: int} = {\"a\": 1}\n    print(d.get(\"a\", 0, 9))\n",
+        );
+        let result = run_pipeline(f.path());
+        assert!(result.is_err(), "dict.get with three args should fail");
+    }
+
+    #[test]
+    fn pipeline_match_catch_all_narrows_to_success() {
+        // A catch-all binding after the error arm narrows to the success member,
+        // so a `str` method resolves on it instead of staying `str | E`.
+        let f = TempFile::new(
+            "enum E:\n    A\nfn f(x: int) -> str | E:\n    if x == 0:\n        return A\n    return \"hi\"\nfn g(x: int) -> str:\n    match f(x):\n        A:\n            return \"none\"\n        v:\n            return v.upper()\n",
+        );
+        let result = run_pipeline(f.path());
+        assert!(
+            result.is_ok(),
+            "catch-all binding should narrow to the success type"
+        );
+    }
+
+    #[test]
+    fn pipeline_import_meta_compiles() {
+        let f = TempFile::new(
+            "import meta\nfn main():\n    print(meta.VERSION)\n    print(meta.NAME)\n    print(meta.AUTHOR)\n    print(meta.PIT_VERSION)\n",
+        );
+        let result = run_pipeline(f.path());
+        assert!(result.is_ok(), "import meta should compile without a pod");
+    }
+
+    #[test]
+    fn pipeline_from_meta_import_compiles() {
+        let f = TempFile::new(
+            "from meta import VERSION, NAME, AUTHOR, PIT_VERSION\nfn main():\n    print(VERSION)\n    print(NAME)\n    print(AUTHOR)\n    print(PIT_VERSION)\n",
+        );
+        let result = run_pipeline(f.path());
+        assert!(
+            result.is_ok(),
+            "from meta import should compile without a pod"
+        );
+    }
+
+    #[test]
+    fn pipeline_import_meta_with_pod_meta_set() {
+        crate::compile::loader::set_pod_meta(crate::compile::loader::PodMeta {
+            name: "testpod".to_string(),
+            version: "1.2.3".to_string(),
+            author: "testauthor".to_string(),
+        });
+        let f = TempFile::new(
+            "import meta\nfn main():\n    print(meta.VERSION)\n    print(meta.PIT_VERSION)\n",
+        );
+        let result = run_pipeline(f.path());
+        assert!(
+            result.is_ok(),
+            "import meta should compile with pod meta set"
+        );
+    }
 }

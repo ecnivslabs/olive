@@ -120,6 +120,7 @@ pub extern "C" fn olive_py_initialize() {
         PY_FLOAT_AS_DOUBLE = compat_dlsym(handle, "PyFloat_AsDouble");
         PY_UNICODE_AS_UTF8 = compat_dlsym(handle, "PyUnicode_AsUTF8");
         PY_LONG_FROM_LONG = compat_dlsym(handle, "PyLong_FromLong");
+        PY_BOOL_FROM_LONG = compat_dlsym(handle, "PyBool_FromLong");
         PY_FLOAT_FROM_DOUBLE = compat_dlsym(handle, "PyFloat_FromDouble");
         PY_UNICODE_FROM_STRING = compat_dlsym(handle, "PyUnicode_FromString");
         PY_LIST_NEW = compat_dlsym(handle, "PyList_New");
@@ -167,6 +168,7 @@ pub extern "C" fn olive_py_initialize() {
         PY_DICT_NEXT = compat_dlsym(handle, "PyDict_Next");
         PY_LIST_GET_ITEM = compat_dlsym(handle, "PyList_GetItem");
         PY_TUPLE_GET_ITEM = compat_dlsym(handle, "PyTuple_GetItem");
+        PY_TUPLE_SIZE = compat_dlsym(handle, "PyTuple_Size");
         PY_TUPLE_TYPE = compat_dlsym(handle, "PyTuple_Type");
         PY_OBJECT_GET_ITER = compat_dlsym(handle, "PyObject_GetIter");
         PY_ITER_NEXT = compat_dlsym(handle, "PyIter_Next");
@@ -225,6 +227,7 @@ pub extern "C" fn olive_py_initialize() {
             PY_FLOAT_AS_DOUBLE = noop_as_double;
             PY_UNICODE_AS_UTF8 = noop_as_utf8;
             PY_LONG_FROM_LONG = noop_from_long;
+            PY_BOOL_FROM_LONG = noop_from_long;
             PY_FLOAT_FROM_DOUBLE = noop_from_double;
             PY_UNICODE_FROM_STRING = noop_from_string;
             PY_LIST_NEW = noop_list_new;
@@ -265,6 +268,7 @@ pub extern "C" fn olive_py_initialize() {
             PY_DICT_NEXT = noop_dict_next;
             PY_LIST_GET_ITEM = noop_getitem_idx;
             PY_TUPLE_GET_ITEM = noop_getitem_idx;
+            PY_TUPLE_SIZE = noop_tuple_size;
             PY_ERR_PRINT = noop_err_print;
             PY_SLICE_NEW = crate::python::python_noop::noop_slice_new;
             return;

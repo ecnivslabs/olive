@@ -27,9 +27,14 @@ impl<'a> MirBuilder<'a> {
                 "Never" => Type::Never,
                 "Any" => Type::Any,
                 "PyObject" => Type::PyObject,
+                "list" => Type::List(Box::new(Type::Any)),
+                "set" => Type::Set(Box::new(Type::Any)),
+                "dict" => Type::Dict(Box::new(Type::Any), Box::new(Type::Any)),
                 _ => {
                     if let Some(Type::Enum(e, args)) = self.global_types.get(name) {
                         Type::Enum(e.clone(), args.clone())
+                    } else if self.traits.contains_key(name) {
+                        Type::TraitObject(name.clone(), Vec::new())
                     } else {
                         Type::Struct(name.clone(), Vec::new())
                     }

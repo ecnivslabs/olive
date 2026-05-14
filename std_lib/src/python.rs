@@ -74,6 +74,54 @@ mod tests {
     use std::os::raw::c_char;
 
     #[test]
+    fn test_any_to_py_unboxes_but_raw_passes_through() {
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        // olive_any_to_py decodes tagged ints; olive_to_py must NOT (raw 2 shares tag bits).
+        let boxed = crate::boxed::olive_box_int(7);
+        assert_ne!(boxed, 7, "small int should be inline-tagged");
+        let py = with_gil(|| crate::python::olive_any_to_py(boxed));
+        let back = with_gil(|| unsafe { PY_LONG_AS_LONG(py) });
+        assert_eq!(back, 7);
+        with_gil(|| unsafe { PY_DEC_REF(py) });
+
+        let raw = with_gil(|| crate::python::olive_to_py(2));
+        let raw_back = with_gil(|| unsafe { PY_LONG_AS_LONG(raw) });
+        assert_eq!(raw_back, 2, "a raw int must pass through unchanged");
+        with_gil(|| unsafe { PY_DEC_REF(raw) });
+    }
+
+    #[test]
+    fn test_realize_makes_real_dict() {
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        unsafe {
+            let obj = crate::olive_obj_new();
+            crate::olive_obj_set(
+                obj,
+                crate::olive_str_internal("k") | 1,
+                crate::boxed::olive_box_int(5),
+            );
+            let realized = crate::python::python_coerce_ffi::olive_py_realize(obj);
+            // The realized value is a wrapped Olive PyObject; unwrap to the raw
+            // Python dict and confirm its type.
+            let raw = olive_py_unwrap(realized);
+            let is_dict = with_gil(|| {
+                let ty = PY_OBJECT_TYPE(raw);
+                !PY_DICT_TYPE.is_null()
+                    && (ty == PY_DICT_TYPE || PY_TYPE_IS_SUBTYPE(ty, PY_DICT_TYPE) != 0)
+            });
+            assert!(is_dict, "realize must produce a real dict");
+            olive_py_decref(realized);
+            crate::olive_free_obj(obj);
+        }
+    }
+
+    #[test]
     fn test_zero_copy_proxy_and_safe_boundaries() {
         if !is_python_available() {
             eprintln!("Python not available, skipping test");

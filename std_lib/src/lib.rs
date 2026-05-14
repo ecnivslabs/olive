@@ -43,12 +43,16 @@ pub mod regex;
 pub mod requests;
 pub mod result;
 pub mod sys;
+pub mod sys_signal;
 mod tracking;
 pub mod uuid;
 pub mod websocket;
 pub mod yaml;
 
 pub(crate) const KIND_LIST: i64 = 1;
+// List whose elements are inline Any-tagged (TAG_INT/BOOL/NULL or heap ptr); list proxy
+// uses olive_any_to_py for elements instead of the raw olive_to_py path.
+pub(crate) const KIND_ANY_LIST: i64 = 15;
 pub(crate) const KIND_OBJ: i64 = 2;
 pub(crate) const KIND_ENUM: i64 = 3;
 pub(crate) const KIND_SET: i64 = 4;
