@@ -187,8 +187,9 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
 
         #[cfg(not(all(olive_std_linked, target_os = "linux")))]
         if let Ok(lib) = unsafe {
-            libloading::Library::new("target/debug/libolive_std.so")
-                .or_else(|_| libloading::Library::new("target/release/libolive_std.so"))
+            let name = libloading::library_filename("olive_std");
+            libloading::Library::new(std::path::Path::new("target/debug").join(&name))
+                .or_else(|_| libloading::Library::new(std::path::Path::new("target/release").join(&name)))
         } {
             unsafe {
                 for &(jit_name, c_name) in SYMBOL_MAP {

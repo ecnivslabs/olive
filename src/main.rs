@@ -12,6 +12,7 @@ mod registry;
 mod repl;
 mod semantic;
 mod span;
+mod upgrade;
 
 use clap::{Parser as ClapParser, Subcommand};
 use compile::{
@@ -97,6 +98,8 @@ enum Commands {
     },
     /// Publish this package to the registry
     Publish,
+    /// Update pit to the latest release
+    Upgrade,
 }
 
 fn load_config() -> Config {
@@ -353,6 +356,13 @@ fn main() {
         Commands::Publish => {
             let config = load_config();
             if let Err(e) = publish::publish(&config.package.name, &config.package.version) {
+                eprintln!("error: {}", e);
+                process::exit(1);
+            }
+        }
+
+        Commands::Upgrade => {
+            if let Err(e) = upgrade::upgrade() {
                 eprintln!("error: {}", e);
                 process::exit(1);
             }

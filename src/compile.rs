@@ -7,6 +7,7 @@ use crate::packages::find_pit_module;
 use crate::parser::{self, Parser};
 use crate::semantic::{self, Resolver, TypeChecker};
 use crate::span;
+use libloading;
 use ariadne::{Label, Report, ReportKind, Source};
 use rustc_hash::FxHashMap as HashMap;
 use std::{
@@ -311,7 +312,11 @@ pub fn compile_hybrid(filename: &str, show_time: bool) {
     });
 
     let manifest_path = "target/.cache/manifest.json";
-    let binary_path = "target/.cache/program";
+    let binary_path = if cfg!(target_os = "windows") {
+        "target/.cache/program.exe"
+    } else {
+        "target/.cache/program"
+    };
 
     let cached = fs::read_to_string(manifest_path)
         .ok()
@@ -335,7 +340,11 @@ pub fn compile_hybrid(filename: &str, show_time: bool) {
 }
 
 pub fn compile_and_run_aot(filename: &str, show_time: bool) {
-    let binary_path = "target/.cache/aot_run";
+    let binary_path = if cfg!(target_os = "windows") {
+        "target/.cache/aot_run.exe"
+    } else {
+        "target/.cache/aot_run"
+    };
     fs::create_dir_all("target/.cache").unwrap_or_else(|e| {
         eprintln!("error: could not create cache directory: {e}");
         process::exit(1);
@@ -622,35 +631,46 @@ pub fn compile_and_emit(filename: &str, out: &str, show_time: bool) {
         process::exit(1);
     });
 
-    let lib_dir = if Path::new("target/release/libolive_std.so").exists() {
-        "target/release"
-    } else {
-        "target/debug"
-    };
-
-    let abs_lib_dir = fs::canonicalize(lib_dir).unwrap_or_else(|_| Path::new(lib_dir).to_path_buf());
-
-    let status = std::process::Command::new("cc")
-        .args([
-            &obj_path,
-            "-L",
-            lib_dir,
-            "-lolive_std",
-            &format!("-Wl,-rpath,{}", abs_lib_dir.display()),
-            "-o",
-            out,
-        ])
-        .status()
-        .unwrap_or_else(|e| {
-            eprintln!("error: could not invoke cc: {e}");
-            process::exit(1);
-        });
-
-    fs::remove_file(&obj_path).ok();
-
-    if !status.success() {
-        eprintln!("error: linking failed");
+    #[cfg(target_os = "windows")]
+    {
+        eprintln!("error: AOT build (pit build) requires MSVC build tools. Ensure `link.exe` is on PATH.");
+        fs::remove_file(&obj_path).ok();
         process::exit(1);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let std_lib_name = libloading::library_filename("olive_std");
+        let lib_dir = if Path::new("target/release").join(&std_lib_name).exists() {
+            "target/release"
+        } else {
+            "target/debug"
+        };
+        let abs_lib_dir = fs::canonicalize(lib_dir).unwrap_or_else(|_| Path::new(lib_dir).to_path_buf());
+        let rpath_flag = format!("-Wl,-rpath,{}", abs_lib_dir.display());
+
+        let status = std::process::Command::new("cc")
+            .args([
+                &obj_path,
+                "-L",
+                lib_dir,
+                "-lolive_std",
+                &rpath_flag,
+                "-o",
+                out,
+            ])
+            .status()
+            .unwrap_or_else(|e| {
+                eprintln!("error: could not invoke cc: {e}");
+                process::exit(1);
+            });
+
+        fs::remove_file(&obj_path).ok();
+
+        if !status.success() {
+            eprintln!("error: linking failed");
+            process::exit(1);
+        }
     }
     let link_duration = link_start.elapsed();
 

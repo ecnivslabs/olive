@@ -1,62 +1,60 @@
-t# Getting Started
+# Getting Started
 
-Ready to try Olive? Here's how to get up and running.
+Here's how to get Olive up and running on your machine.
 
 ## Installation
 
-Right now, Olive is built from source. You'll need to have the Rust toolchain installed. If you don't have it, you can find instructions at [rustup.rs](https://rustup.rs/).
+**Linux and macOS:**
 
-1. **Grab the code**:
-   ```bash
-   git clone https://github.com/ecnivs/olive.git
-   cd olive
-   ```
+```bash
+curl -sSL https://raw.githubusercontent.com/olive-language/olive/main/install.sh | sh
+```
 
-2. **Build and install**:
-   ```bash
-   cargo build --release
-   cp target/release/pit /usr/local/bin/pit
-   ```
+This downloads the latest `pit` binary for your OS and places it in `~/.local/bin`. You can override the install location:
 
-3. **Check it works**:
-   ```bash
-   pit --help
-   ```
+```bash
+OLIVE_INSTALL_DIR=/usr/local/bin curl -sSL https://raw.githubusercontent.com/olive-language/olive/main/install.sh | sh
+```
+
+**Windows:**
+
+Download the binary directly from the [releases page](https://github.com/olive-language/olive/releases/latest) (`pit-windows-x86_64.exe`), rename it to `pit.exe`, and add it to your PATH.
+
+**Verify the install:**
+
+```bash
+pit --version
+```
 
 ## Your First Project
-
-Creating a new Olive project is easy with the `pit` tool:
 
 ```bash
 pit new my_app
 cd my_app
 ```
 
-This sets up everything you need:
-- `src/main.liv`: Where your code lives.
-- `pit.toml`: Settings for your project.
+This creates two files:
+- `src/main.liv`: your code
+- `pit.toml`: project config
 
 ## Running Your Code
-
-To run your app, just type:
 
 ```bash
 pit run
 ```
 
-### How it runs
+By default, Olive uses hybrid mode. It compiles your code and caches the result in `target/.cache`. On the next run, if nothing changed, it skips compilation and starts immediately.
 
-By default, Olive uses a **Hybrid** mode. It compiles your code once and saves a copy in `target/.cache`. The next time you run it, if the code hasn't changed, it skips the compiling part and starts immediately.
+Other run modes:
+- `pit run --jit`: compiles and runs in memory, no cache
+- `pit run --aot`: compiles, runs, then deletes the binary
+- `pit build`: produces a standalone binary in `target/`
 
-If you want to control how it runs, you can use these flags:
-
-- `pit run --jit`: Runs your code directly in memory every time. Good for quick tests.
-- `pit run --aot`: Compiles your code, runs it, and then cleans up.
-- `pit build`: Builds a permanent, standalone binary file you can share with others.
+> **Note:** `pit build` requires a C compiler (`cc`) on Linux/macOS. On Windows, AOT builds are not yet supported.
 
 ## Hello, World!
 
-Open `src/main.liv` and you'll see a simple starting point:
+`src/main.liv` starts with:
 
 ```python
 fn main():
@@ -65,17 +63,15 @@ fn main():
 main()
 ```
 
-Try changing the message and running `pit run` again!
+Change the message and run `pit run` to see it.
 
-## The Interactive Shell
+## Interactive Shell
 
-If you just want to play around with some code without creating a project, you can use the interactive shell:
+No project needed -- just run:
 
 ```bash
 pit shell
 ```
-
-It's a great way to test out ideas or learn the syntax:
 
 ```
 >>> let x = 10
@@ -83,19 +79,24 @@ It's a great way to test out ideas or learn the syntax:
 20
 ```
 
-## Useful Tools
+## Updating Olive
 
-- `pit test`: Runs your tests.
-- `pit fmt`: Automatically formats your code so it looks clean and consistent.
+```bash
+pit upgrade
+```
+
+This checks for a newer release and replaces the current binary in-place. No need to re-run the install script.
+
+## Other Commands
+
+- `pit test`: run tests
+- `pit fmt`: format your code
 
 ## Package Management
 
-Olive has a built-in package manager to handle your dependencies:
+- `pit add package@version`: add a dependency
+- `pit remove package`: remove a dependency
+- `pit install`: install all dependencies from `pit.toml`
+- `pit publish`: publish your package to the registry
 
-- `pit add package@version`: Add a dependency to your project.
-- `pit remove package`: Remove a dependency.
-- `pit install`: Install all dependencies listed in `pit.toml`.
-- `pit publish`: Share your package with the world by publishing it to the registry.
-
-Dependencies are stored in the `.pit_modules/` directory at your project root.
-
+Dependencies go into `.pit_modules/` at your project root.

@@ -1,16 +1,16 @@
 <img width="1452" height="352" alt="olive_logo" src="https://github.com/user-attachments/assets/4e8923b3-0943-4a8f-b288-8abf497b900d" />
 
 <p align="center">
-  <a href="https://github.com/ecnivs/olive/stargazers">
-    <img src="https://img.shields.io/github/stars/ecnivs/olive?style=flat-square">
+  <a href="https://github.com/olive-language/olive/stargazers">
+    <img src="https://img.shields.io/github/stars/olive-language/olive?style=flat-square">
   </a>
-  <a href="https://github.com/ecnivs/olive/issues">
-    <img src="https://img.shields.io/github/issues/ecnivs/olive?style=flat-square">
+  <a href="https://github.com/olive-language/olive/issues">
+    <img src="https://img.shields.io/github/issues/olive-language/olive?style=flat-square">
   </a>
-  <a href="https://github.com/ecnivs/olive/blob/master/LICENSE">
-    <img src="https://img.shields.io/github/license/ecnivs/olive?style=flat-square">
+  <a href="https://github.com/olive-language/olive/blob/master/LICENSE">
+    <img src="https://img.shields.io/github/license/olive-language/olive?style=flat-square">
   </a>
-  <img src="https://img.shields.io/github/languages/top/ecnivs/olive?style=flat-square">
+  <img src="https://img.shields.io/github/languages/top/olive-language/olive?style=flat-square">
 </p>
 
 ## Overview
@@ -49,11 +49,23 @@ main()
 
 ## Getting Started
 
-1. **Install**: Follow the [Installation Guide](docs/getting_started.md).
-2. **New Project**: `pit new my_app`
-3. **Build**: `pit build`
-4. **Run**: `pit run`
-5. **Packages**: `pit add package` or `pit install`
+**Linux and macOS:**
+
+```bash
+curl -sSL https://raw.githubusercontent.com/olive-language/olive/main/install.sh | sh
+```
+
+**Windows:** download from the [releases page](https://github.com/olive-language/olive/releases/latest).
+
+Then:
+
+```bash
+pit new my_app
+cd my_app
+pit run
+```
+
+See the [full guide](docs/getting_started.md) for more.
 
 ## Documentation
 
