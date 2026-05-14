@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/github/languages/top/ecnivs/olive?style=flat-square">
 </p>
 
-# Olive
+## Overview
 
 **A systems language that is easy to write, fast to run, and keeps your memory safe.**
 
