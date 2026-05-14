@@ -1,5 +1,5 @@
-<h1 align="center">Olive</h1>
-<p align="center"><em>The Dream Programming Language</em></p>
+<img width="1452" height="352" alt="olive_logo" src="https://github.com/user-attachments/assets/4e8923b3-0943-4a8f-b288-8abf497b900d" />
+
 
 <p align="center">
   <a href="https://github.com/ecnivs/olive/stargazers">
