@@ -1053,10 +1053,31 @@ impl<'a> MirBuilder<'a> {
         &mut self,
         struct_name: &str,
         type_args: &[Type],
-        arg_ops: Vec<Operand>,
+        mut arg_ops: Vec<Operand>,
+        arg_tys: Vec<Type>,
         span: Span,
         expr_id: usize,
     ) -> Operand {
+        // Unbox Python scalars supplied for concrete native fields; generic
+        // (`Param`) fields fall through `coerce` untouched.
+        if let Some(field_names) = self.struct_fields.get(struct_name).cloned() {
+            for (i, op) in arg_ops.iter_mut().enumerate() {
+                let from_ty = arg_tys.get(i).cloned().unwrap_or(Type::Any);
+                if !from_ty.is_py_value() {
+                    continue;
+                }
+                let Some(field_name) = field_names.get(i) else {
+                    break;
+                };
+                if let Some(field_ty) = self
+                    .struct_field_types
+                    .get(&(struct_name.to_string(), field_name.clone()))
+                    .cloned()
+                {
+                    *op = self.coerce(op.clone(), &from_ty, &field_ty, span);
+                }
+            }
+        }
         let obj_tmp = self.new_unscoped_local(self.get_type(expr_id));
         let alloc_rval = if let Some(fields) = self.struct_fields.get(struct_name) {
             let n = fields.len() as i64;

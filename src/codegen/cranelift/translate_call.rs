@@ -71,8 +71,8 @@ impl<M: Module> CraneliftCodegen<M> {
                 OliveType::Int
             };
             // All Python-valued types (PyNamed, Union containing PyNamed/PyObject, etc.) behave
-            // identically at the runtime level — they are opaque CPython object pointers.
-            // Normalizing to PyObject here ensures builtin dispatch (list, dict, len, …) selects
+            // identically at the runtime level -- they are opaque CPython object pointers.
+            // Normalizing to PyObject here ensures builtin dispatch (list, dict, len, ...) selects
             // the correct __olive_py_* helper regardless of the static named type.
             let arg_type = if arg_type.is_py_value() {
                 OliveType::PyObject

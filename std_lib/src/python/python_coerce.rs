@@ -384,6 +384,40 @@ pub unsafe fn py_to_olive_internal(py_val: PyObject) -> i64 {
     }
 }
 
+/// Converts a Python value to an Any-compatible Olive value. Scalars are boxed
+/// so float/int/truthiness read correctly; strings, lists, dicts stay in Olive
+/// form. Use when the result lands in an Any slot.
+pub unsafe fn py_to_any_internal(py_val: PyObject) -> i64 {
+    unsafe {
+        if py_val.is_null() || py_val == _PY_NONE_STRUCT {
+            return crate::boxed::olive_box_null();
+        }
+        let ty = raw_ob_type(py_val);
+        if !ty.is_null() {
+            let is_sub = |expected: PyObject| {
+                !expected.is_null() && (ty == expected || PY_TYPE_IS_SUBTYPE(ty, expected) != 0)
+            };
+            if is_sub(PY_BOOL_TYPE) {
+                return crate::boxed::olive_box_bool(if PY_LONG_AS_LONG(py_val) != 0 {
+                    1
+                } else {
+                    0
+                });
+            }
+            if is_sub(PY_LONG_TYPE) {
+                let v = PY_LONG_AS_LONG(py_val);
+                #[cfg(windows)]
+                let v = v as i64;
+                return crate::boxed::olive_box_int(v);
+            }
+            if is_sub(PY_FLOAT_TYPE) {
+                return crate::boxed::olive_box_float(PY_FLOAT_AS_DOUBLE(py_val));
+            }
+        }
+        py_to_olive_internal(py_val)
+    }
+}
+
 pub unsafe fn olive_py_to_list_internal(obj: PyObject) -> i64 {
     unsafe {
         let ty = raw_ob_type(obj);

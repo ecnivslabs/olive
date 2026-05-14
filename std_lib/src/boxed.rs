@@ -90,6 +90,9 @@ pub extern "C" fn olive_unbox_float(v: i64) -> f64 {
     if is_str(v) {
         return olive_str_from_ptr(v).trim().parse::<f64>().unwrap_or(0.0);
     }
+    if is_pyobject(v) {
+        return crate::python::olive_py_to_float(v as *mut std::os::raw::c_void);
+    }
     v as f64
 }
 
@@ -111,12 +114,21 @@ pub extern "C" fn olive_unbox_int(v: i64) -> i64 {
     if is_str(v) {
         return olive_str_from_ptr(v).trim().parse::<i64>().unwrap_or(0);
     }
+    if is_pyobject(v) {
+        return crate::python::olive_py_to_int(v as *mut std::os::raw::c_void);
+    }
     v
 }
 
 /// Tagged Olive string pointer, not a raw scalar.
 fn is_str(v: i64) -> bool {
     v & 1 == 1 && (v & !1) > 0x10000
+}
+
+/// True when an Any slot holds a Python object handle that must be unwrapped
+/// before reading as a number.
+fn is_pyobject(v: i64) -> bool {
+    is_active_object(v) && unsafe { *(v as *const i64) } == crate::KIND_PYOBJECT
 }
 
 /// Truthiness of an `Any`: by value for an inline scalar or boxed float,

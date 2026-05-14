@@ -115,10 +115,35 @@ impl<M: Module> CraneliftCodegen<M> {
             .module
             .declare_func_in_func(olive_main_id, builder.func);
         builder.ins().call(local_fn, &[]);
+
+        // Finalize the Python interpreter so atexit handlers run. No-op if never initialized.
+        if let Some(fin_fn) = self.declare_runtime_void_fn("__olive_py_finalize") {
+            let local_fin = self.module.declare_func_in_func(fin_fn, builder.func);
+            builder.ins().call(local_fin, &[]);
+        }
+
         let zero = builder.ins().iconst(types::I32, 0);
         builder.ins().return_(&[zero]);
         builder.finalize();
         self.module.define_function(func_id, &mut ctx).unwrap();
         self.func_ids.insert("main".to_string(), func_id);
+    }
+
+    /// Declares a void->void runtime function resolved from SYMBOL_MAP. Returns cached id.
+    fn declare_runtime_void_fn(&mut self, name: &str) -> Option<cranelift_module::FuncId> {
+        if let Some(&id) = self.func_ids.get(name) {
+            return Some(id);
+        }
+        let decl_name = super::super::SYMBOL_MAP
+            .iter()
+            .find(|&&(k, _)| k == name)
+            .map(|&(_, v)| std::str::from_utf8(&v[..v.len() - 1]).unwrap())?;
+        let sig = self.module.make_signature();
+        let id = self
+            .module
+            .declare_function(decl_name, Linkage::Import, &sig)
+            .ok()?;
+        self.func_ids.insert(name.to_string(), id);
+        Some(id)
     }
 }

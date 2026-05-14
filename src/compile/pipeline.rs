@@ -149,6 +149,7 @@ pub fn run_pipeline_opt(filename: &str, release: bool) -> Result<PipelineOutput,
         .iter()
         .map(|(id, (name, _))| (*id, name.clone()))
         .collect();
+    mir_builder.struct_field_types = type_checker.field_types.clone();
 
     mir_builder.build_program(&program);
     let mir_duration = mir_start.elapsed();

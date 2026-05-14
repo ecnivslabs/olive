@@ -94,6 +94,7 @@ pub fn repl_compile_run(
         &type_checker.traits,
         type_checker.c_ffi_fns.clone(),
     );
+    mir_builder.struct_field_types = type_checker.field_types.clone();
     mir_builder.build_program(&program);
 
     let optimizer = mir::Optimizer::new();

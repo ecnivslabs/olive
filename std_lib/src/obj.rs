@@ -64,7 +64,9 @@ pub extern "C" fn olive_obj_get(obj_ptr: i64, attr: i64) -> i64 {
     }
     let kind = unsafe { *(obj_ptr as *const i64) };
     if kind == KIND_PYOBJECT {
-        return python::olive_py_getattr(obj_ptr as *mut std::ffi::c_void, attr) as i64;
+        // `d["key"]` is item lookup, not attribute access; a Python dict has no
+        // matching attribute. Missing keys read back as `0`, like an Olive dict.
+        return python::olive_py_dict_get_default(obj_ptr, attr, 0);
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
     *m.fields.get(&OliveStringKey(attr)).unwrap_or(&0)
@@ -79,7 +81,9 @@ pub extern "C" fn olive_obj_get_default(obj_ptr: i64, attr: i64, default: i64) -
     }
     let kind = unsafe { *(obj_ptr as *const i64) };
     if kind == KIND_PYOBJECT {
-        return python::olive_py_getattr(obj_ptr as *mut std::ffi::c_void, attr) as i64;
+        // `.get(key, default)` is dict-lookup semantics: index by key (not
+        // attribute) and fall back to `default`, matching Python's `dict.get`.
+        return python::olive_py_dict_get_default(obj_ptr, attr, default);
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
     *m.fields.get(&OliveStringKey(attr)).unwrap_or(&default)

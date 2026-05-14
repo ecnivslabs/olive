@@ -94,6 +94,115 @@ mod tests {
     }
 
     #[test]
+    fn test_dict_get_default_on_pyobject() {
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        // `dict.get(key, default)` on a Python dict must look the key up by item,
+        // not attribute. A real `dict` has no `.title` attribute, so a getattr
+        // would raise; the correct behaviour returns the item or the default.
+        use crate::python::python_coerce_ffi::olive_py_dict_get_default;
+        unsafe {
+            let handle = with_gil(|| {
+                let d = PY_DICT_NEW();
+                let key = PY_UNICODE_FROM_STRING(b"title\0".as_ptr() as *const _);
+                let val = PY_UNICODE_FROM_STRING(b"hello\0".as_ptr() as *const _);
+                PY_DICT_SET_ITEM_STRING(d, b"title\0".as_ptr() as *const _, val);
+                PY_DEC_REF(key);
+                PY_DEC_REF(val);
+                olive_py_wrap_owned(d)
+            });
+            let title_key = crate::olive_str_internal("title") | 1;
+            let missing_key = crate::olive_str_internal("nope") | 1;
+            let default = crate::olive_str_internal("DEFAULT") | 1;
+
+            let got = olive_py_dict_get_default(handle as i64, title_key, default);
+            assert_eq!(
+                crate::olive_str_from_ptr(got),
+                "hello",
+                "present key returns its value, not a getattr error"
+            );
+            let miss = olive_py_dict_get_default(handle as i64, missing_key, default);
+            assert_eq!(
+                crate::olive_str_from_ptr(miss),
+                "DEFAULT",
+                "absent key returns the default"
+            );
+            olive_py_decref(handle);
+
+            // A numeric value must come back boxed into `Any` so `float()`/`int()`
+            // on it unbox correctly instead of reading a raw word as a pointer.
+            let nhandle = with_gil(|| {
+                let d = PY_DICT_NEW();
+                PY_DICT_SET_ITEM_STRING(d, b"dur\0".as_ptr() as *const _, PY_LONG_FROM_LONG(31));
+                olive_py_wrap_owned(d)
+            });
+            let dur_key = crate::olive_str_internal("dur") | 1;
+            let boxed = olive_py_dict_get_default(nhandle as i64, dur_key, default);
+            assert_eq!(
+                crate::boxed::olive_unbox_float(boxed),
+                31.0,
+                "an int value boxes into Any so float() reads it"
+            );
+            olive_py_decref(nhandle);
+        }
+    }
+
+    #[test]
+    fn test_unbox_float_int_on_pyobject_in_any() {
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        // A `{str: Any}` value read from Python is a KIND_PYOBJECT handle. `float`
+        // and `int` on it must unwrap and convert, not read the handle pointer.
+        unsafe {
+            let fhandle = with_gil(|| olive_py_wrap_owned(PY_FLOAT_FROM_DOUBLE(3.5)));
+            assert_eq!(crate::boxed::olive_unbox_float(fhandle as i64), 3.5);
+            assert_eq!(crate::boxed::olive_unbox_int(fhandle as i64), 3);
+            olive_py_decref(fhandle);
+        }
+    }
+
+    #[test]
+    fn test_get_index_any_on_pyobject_nested_list() {
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        // Indexing a PyObject through `olive_get_index_any` calls `olive_py_getitem`
+        // (which returns a wrapped arena handle) then converts the element. The
+        // handle must be unwrapped before conversion, else `py_to_olive_internal`
+        // reads its `py_ptr` field as an `ob_type` and crashes on a list element.
+        unsafe {
+            let outer = with_gil(|| {
+                let inner = PY_LIST_NEW(2);
+                PY_LIST_SET_ITEM(inner, 0, PY_LONG_FROM_LONG(42));
+                PY_LIST_SET_ITEM(inner, 1, PY_LONG_FROM_LONG(99));
+                let pylist = PY_LIST_NEW(1);
+                PY_LIST_SET_ITEM(pylist, 0, inner);
+                olive_py_wrap_owned(pylist)
+            });
+            let elem = crate::olive_get_index_any(outer as i64, 0, 0);
+            assert!(
+                crate::is_active_object(elem),
+                "indexed element must be an object"
+            );
+            assert_eq!(
+                *(elem as *const i64),
+                crate::KIND_LIST,
+                "a nested Python list element converts to an Olive list"
+            );
+            assert_eq!(crate::olive_list_len(elem), 2);
+            assert_eq!(crate::olive_list_get(elem, 0), 42);
+            assert_eq!(crate::olive_list_get(elem, 1), 99);
+            crate::olive_free_list(elem);
+            olive_py_decref(outer);
+        }
+    }
+
+    #[test]
     fn test_realize_makes_real_dict() {
         if !is_python_available() {
             eprintln!("Python not available, skipping test");

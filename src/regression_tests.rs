@@ -539,3 +539,43 @@ fn regression_closure_capture_in_loop() {
     );
     assert_eq!(call_i64(&mut cg, "f"), 12);
 }
+
+#[test]
+fn regression_py_coerce_to_native_let_compiles() {
+    // A PyObject read into a native-annotated binding unboxes via the runtime
+    // converter rather than parking the raw pointer in a typed slot.
+    let _cg = compile("fn f(p: PyObject) -> i64:\n    let n: i64 = p\n    return n\n");
+    let _cg = compile("fn g(p: PyObject) -> f64:\n    let x: f64 = p\n    return x\n");
+}
+
+#[test]
+fn regression_py_coerce_to_str_compiles() {
+    // PyObject -> str must route through __olive_py_to_str; the str cast path was
+    // previously unwired and silently produced an empty value.
+    let _cg = compile("fn f(p: PyObject) -> str:\n    let s: str = p\n    return s\n");
+}
+
+#[test]
+fn regression_py_coerce_return_and_arg_compiles() {
+    let _cg = compile(
+        "fn takes(x: f64) -> f64:\n    return x + x\nfn f(p: PyObject) -> f64:\n    return takes(p)\n",
+    );
+}
+
+#[test]
+fn regression_py_coerce_collection_elements_compiles() {
+    // A PyObject stored into a concretely-typed collection slot unboxes instead
+    // of leaving a raw pointer that later reads as garbage.
+    let _cg = compile("fn f(p: PyObject) -> [f64]:\n    return [p]\n");
+    let _cg = compile("fn g(p: PyObject) -> {str: i64}:\n    return {\"a\": p}\n");
+}
+
+#[test]
+fn regression_py_coerce_struct_field_compiles() {
+    // Constructing a native-field struct from a PyObject must unbox per field;
+    // otherwise a f64 field read off a pointer-sized slot fails register
+    // allocation with a type mismatch.
+    let _cg = compile(
+        "struct Pt:\n    x: f64\n    name: str\nfn f(p: PyObject) -> Pt:\n    return Pt(p, p)\n",
+    );
+}

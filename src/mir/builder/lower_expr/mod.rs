@@ -23,10 +23,13 @@ impl<'a> MirBuilder<'a> {
             let from_ty = self.get_type(elem.id);
             return self.coerce(op, &from_ty, elem_ty, elem.span);
         }
+        let from_ty = self.get_type(elem.id);
+        if from_ty.is_py_value() && !matches!(elem_ty, Type::Any | Type::PyObject) {
+            return self.coerce(op, &from_ty, elem_ty, elem.span);
+        }
         if *elem_ty != Type::Any {
             return op;
         }
-        let from_ty = self.get_type(elem.id);
         self.box_into_any(op, &from_ty, elem.span)
     }
 
@@ -41,10 +44,13 @@ impl<'a> MirBuilder<'a> {
         elem: &Expr,
         elem_ty: &Type,
     ) -> Operand {
+        let from_ty = self.get_type(elem.id);
+        if from_ty.is_py_value() && !matches!(elem_ty, Type::Any | Type::PyObject) {
+            return self.coerce(op, &from_ty, elem_ty, elem.span);
+        }
         if *elem_ty != Type::Any {
             return op;
         }
-        let from_ty = self.get_type(elem.id);
         if from_ty == Type::Null {
             return self.box_into_any(op, &from_ty, elem.span);
         }
@@ -67,6 +73,10 @@ impl<'a> MirBuilder<'a> {
             Type::Float | Type::F32 => Some(("__olive_box_float", true)),
             Type::Bool => Some(("__olive_box_bool", true)),
             Type::Null => Some(("__olive_box_null", false)),
+            // A Python value put into an `Any` slot is materialized to a real
+            // Olive value, so string methods and arithmetic on it work without
+            // an explicit cast at the read site.
+            Type::PyObject | Type::PyNamed(_, _) => Some(("__olive_py_to_any", true)),
             _ => return op,
         };
         let (boxer, takes_arg) = boxer.unwrap();
@@ -135,7 +145,59 @@ impl<'a> MirBuilder<'a> {
             return Operand::Copy(fat_ptr_tmp);
         }
 
+        // Olive value -> PyObject: assigning a native or `Any` value into a
+        // `PyObject` converts it to a real Python object (`1` -> a Python int),
+        // the inverse of reading a `PyObject` into a native slot.
+        if matches!(to_ty, Type::PyObject) && !from_ty.is_py_value() {
+            let conv = match from_ty {
+                Type::Int
+                | Type::I8
+                | Type::I16
+                | Type::I32
+                | Type::U8
+                | Type::U16
+                | Type::U32
+                | Type::U64
+                | Type::Usize
+                | Type::Bool => Some("__olive_py_from_int"),
+                Type::Float | Type::F32 => Some("__olive_py_from_float"),
+                Type::Str => Some("__olive_py_from_str"),
+                Type::Any => Some("__olive_to_pyobject"),
+                _ => None,
+            };
+            if let Some(conv) = conv {
+                let tmp = self.new_local(Type::PyObject, None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        tmp,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(conv.to_string())),
+                            args: vec![op],
+                        },
+                    ),
+                    span,
+                );
+                return Operand::Copy(tmp);
+            }
+        }
+
         if from_ty.is_py_value() {
+            if matches!(to_ty, Type::Str) {
+                let tmp = self.new_local(Type::Str, None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        tmp,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(
+                                "__olive_py_to_str".to_string(),
+                            )),
+                            args: vec![op],
+                        },
+                    ),
+                    span,
+                );
+                return Operand::Copy(tmp);
+            }
             let native_ty = match to_ty {
                 Type::Float
                 | Type::F32
@@ -152,6 +214,7 @@ impl<'a> MirBuilder<'a> {
                 _ => None,
             };
             if let Some(cast_ty) = native_ty {
+                self.emit_set_fault_loc(span);
                 let tmp = self.new_local(cast_ty.clone(), None, false);
                 self.push_statement(StatementKind::Assign(tmp, Rvalue::Cast(op, cast_ty)), span);
                 return Operand::Copy(tmp);
@@ -309,17 +372,22 @@ impl<'a> MirBuilder<'a> {
             None
         };
 
-        let (mut arg_ops, mut arg_kw_names, arg_tys) =
+        let (mut arg_ops, mut arg_kw_names, mut arg_tys) =
             self.lower_call_args(args, callee, callee_name, expr.span);
 
         if let Some(kwarg_map) = self.expr_kwarg_maps.get(&expr.id) {
             let mut new_arg_ops = vec![Operand::Constant(Constant::Int(0)); kwarg_map.len()];
+            let mut new_arg_tys = vec![Type::Any; kwarg_map.len()];
             for (i, op) in arg_ops.iter().enumerate() {
                 if let Some(target_idx) = kwarg_map.iter().position(|&x| x == i) {
                     new_arg_ops[target_idx] = op.clone();
+                    if let Some(ty) = arg_tys.get(i) {
+                        new_arg_tys[target_idx] = ty.clone();
+                    }
                 }
             }
             arg_ops = new_arg_ops;
+            arg_tys = new_arg_tys;
             arg_kw_names = vec![None; arg_ops.len()];
         }
 
@@ -396,6 +464,7 @@ impl<'a> MirBuilder<'a> {
                 &struct_name,
                 &type_args,
                 arg_ops,
+                arg_tys,
                 expr.span,
                 expr.id,
             );

@@ -51,6 +51,16 @@ const PY_UNCAUGHT: Fault = Fault {
     help: Some("wrap the call in `try` or guard the inputs so the exception cannot arise"),
     note: Some("the exception propagated out of Python without being caught"),
 };
+const PY_COERCE: Fault = Fault {
+    code: "E0706",
+    help: Some("convert the Python value to the target type or read it into a PyObject first"),
+    note: Some("Python value cannot be converted to the required native type"),
+};
+
+/// Aborts when a Python value cannot be converted to the required native scalar.
+pub fn abort_py_coerce(msg: &str) -> ! {
+    abort_with(&PY_COERCE, msg, None)
+}
 
 /// A parsed `file:line:col` (or `line:col`) source location.
 struct Location {

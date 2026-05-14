@@ -68,12 +68,34 @@ pub fn compile_and_run(
         let exit_code = main_fn();
         let exec_duration = exec_start.elapsed();
 
+        // Finalize the Python interpreter for atexit handlers. No-op if never initialized.
+        finalize_python_runtime();
+
         if show_time {
             print_jit_timings(&out.timings, cg_duration, Some(exec_duration));
         }
         std::process::exit(exit_code as i32);
     } else {
         println!("No `main` function found to execute.");
+    }
+}
+
+/// Calls `olive_py_finalize` via `dlsym(RTLD_DEFAULT)`, working whether
+/// `olive_std` is linked statically or loaded by the JIT.
+fn finalize_python_runtime() {
+    #[cfg(unix)]
+    unsafe {
+        unsafe extern "C" {
+            fn dlsym(
+                handle: *mut std::ffi::c_void,
+                symbol: *const std::ffi::c_char,
+            ) -> *mut std::ffi::c_void;
+        }
+        let sym = dlsym(std::ptr::null_mut(), c"olive_py_finalize".as_ptr());
+        if !sym.is_null() {
+            let f: extern "C" fn() = std::mem::transmute(sym);
+            f();
+        }
     }
 }
 

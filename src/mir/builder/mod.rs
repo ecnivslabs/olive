@@ -41,6 +41,8 @@ pub struct MirBuilder<'a> {
     pub expr_kwarg_maps: &'a HashMap<usize, Vec<usize>>,
     pub global_types: &'a HashMap<String, Type>,
     pub struct_fields: HashMap<String, Vec<String>>,
+    /// (struct, field) -> field type, used to unbox Python scalars at struct construction sites.
+    pub struct_field_types: HashMap<(String, String), Type>,
     /// Per struct, the default-value expression for each field (or `None` when
     /// the field has no default). Used to fill omitted trailing fields at a
     /// construction site.
@@ -100,6 +102,7 @@ impl<'a> MirBuilder<'a> {
             expr_kwarg_maps,
             global_types,
             struct_fields,
+            struct_field_types: HashMap::default(),
             struct_field_defaults: HashMap::default(),
             mono_type_map: HashMap::default(),
             traits,

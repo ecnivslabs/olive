@@ -188,13 +188,13 @@ pub extern "C" fn olive_py_to_int(obj: PyObject) -> i64 {
         let int_obj = PY_NUMBER_LONG(unwrapped_obj);
         if int_obj.is_null() {
             PY_ERR_CLEAR();
-            return 0;
+            crate::panic::abort_py_coerce("cannot convert this Python value to an integer");
         }
         let result = PY_LONG_AS_LONG(int_obj) as i64;
         PY_DEC_REF(int_obj);
         if !PY_ERR_OCCURRED().is_null() {
             PY_ERR_CLEAR();
-            return 0;
+            crate::panic::abort_py_coerce("cannot convert this Python value to an integer");
         }
         result
     })
@@ -207,7 +207,14 @@ pub extern "C" fn olive_py_to_float(obj: PyObject) -> f64 {
     if unwrapped_obj.is_null() {
         return 0.0;
     }
-    with_gil(|| unsafe { PY_FLOAT_AS_DOUBLE(unwrapped_obj) as f64 })
+    with_gil(|| unsafe {
+        let result = PY_FLOAT_AS_DOUBLE(unwrapped_obj);
+        if result == -1.0 && !PY_ERR_OCCURRED().is_null() {
+            PY_ERR_CLEAR();
+            crate::panic::abort_py_coerce("cannot convert this Python value to a float");
+        }
+        result as f64
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -292,6 +299,51 @@ pub extern "C" fn olive_py_getitem(obj: PyObject, key: PyObject) -> PyObject {
             handle_py_error();
         }
         olive_py_wrap_borrowed(r)
+    })
+}
+
+/// Converts an Olive Any value into a Python object handle. Inverse of py_to_any_internal.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_to_pyobject(val: i64) -> i64 {
+    check_python_loaded();
+    with_gil(|| unsafe { olive_py_wrap_owned(olive_any_to_py(val)) as i64 })
+}
+
+/// Materializes a Python arena handle into a self-describing Any value
+/// (scalars boxed, strings/lists/dicts in Olive form).
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_to_any(obj: i64) -> i64 {
+    check_python_loaded();
+    let raw = unsafe { olive_py_unwrap(obj as PyObject) };
+    if raw.is_null() {
+        return crate::boxed::olive_box_null();
+    }
+    with_gil(|| unsafe { py_to_any_internal(raw) })
+}
+
+/// dict.get(key, default) for Python objects. Looks up by item, returns default on miss.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_dict_get_default(obj: i64, key: i64, default: i64) -> i64 {
+    check_python_loaded();
+    let unwrapped_obj = unsafe { olive_py_unwrap(obj as PyObject) };
+    if unwrapped_obj.is_null() {
+        return default;
+    }
+    with_gil(|| unsafe {
+        let py_key = olive_to_py(key);
+        if py_key.is_null() {
+            return default;
+        }
+        let val = PY_OBJECT_GET_ITEM(unwrapped_obj, py_key);
+        PY_DEC_REF(py_key);
+        if val.is_null() {
+            PY_ERR_CLEAR();
+            return default;
+        }
+        // Result lands in an Any slot, so box scalars.
+        let result = py_to_any_internal(val);
+        PY_DEC_REF(val);
+        result
     })
 }
 

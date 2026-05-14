@@ -858,7 +858,9 @@ pub extern "C" fn olive_get_index_any(obj: i64, index: i64, loc: i64) -> i64 {
             };
             let py_res = python::olive_py_getitem(obj as *mut std::ffi::c_void, key_obj);
             python::olive_py_decref(key_obj);
-            let olive_res = python::olive_py_conv_to_olive(py_res);
+            // getitem returns a wrapped arena handle; unwrap before converting (py_to_olive reads ob_type).
+            let raw_res = unsafe { python::olive_py_unwrap(py_res) };
+            let olive_res = python::olive_py_conv_to_olive(raw_res);
             python::olive_py_decref(py_res);
             olive_res
         }
