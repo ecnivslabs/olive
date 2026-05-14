@@ -10,7 +10,7 @@ The syntax is clean and indentation-based, making it easy to read and write. But
 
 **Safety you can trust.** Memory leaks, double-frees, and data races are some of the hardest bugs to track down. Olive's compiler catches these errors while you're writing the code, not after you've deployed it.
 
-**Code is for humans.** We spend more time reading code than writing it. Olive's design prioritizes readability. No unnecessary symbols or boilerplate—just the logic of your program.
+**Code is for people.** We spend more time reading code than writing it, so Olive is built to be easy on the eyes. No unnecessary symbols or boilerplate; just your program's logic.
 
 ## Key Concepts
 
@@ -25,6 +25,6 @@ When you run an Olive program, it goes through a few stages:
 
 1. **Understanding**: The compiler reads your code and builds a structured map of what you're trying to do.
 2. **Safety Check**: This is where the "borrow checker" looks for potential memory issues. If it finds one, it tells you exactly what's wrong and how to fix it.
-3. **Optimization**: The compiler cleans up your code—removing unnecessary steps and streamlining the logic—to make it as fast as possible.
+3. **Optimization**: The compiler cleans up your code. It removes unnecessary steps and makes the logic as fast as possible.
 4. **Execution**: Finally, it turns your program into machine code that runs directly on your processor.
 

@@ -177,7 +177,7 @@ pub fn run_shell() {
                 continue;
             }
             "license" => {
-                println!("MIT License — see https://github.com/ecnivs/olive/blob/master/LICENSE");
+                println!("MIT License: see https://github.com/ecnivs/olive/blob/master/LICENSE");
                 continue;
             }
             "clear" => {

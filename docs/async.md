@@ -4,7 +4,7 @@ Olive makes it easy to write programs that do many things at once. Whether you'r
 
 ## What is Async?
 
-Normally, if your code has to wait for something—like downloading a file—the whole program stops until that's finished. With `async`, your program can do other work while it waits.
+Normally, if your code has to wait for something (like downloading a file) the whole program stops until it's done. With `async`, your program can do other work while it waits.
 
 ## `async fn` and `await`
 
@@ -17,7 +17,7 @@ async fn fetch_data(url: str) -> str:
     return response
 ```
 
-Calling an `async` function doesn't run it immediately; it returns a "future"—a promise that the work will be done. The work only starts when you `await` it.
+Calling an `async` function doesn't run it immediately. It returns a "future", which is like a promise that the work will eventually be done. The work only starts when you `await` it.
 
 ## Running Multiple Tasks at Once
 

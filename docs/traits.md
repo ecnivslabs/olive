@@ -4,7 +4,7 @@ A `trait` is a way to define a set of rules that a type must follow. Think of it
 
 ## Defining a Trait
 
-A trait body contains method signatures. No implementations go here — just names and types:
+A trait body contains method signatures. No implementations go here; just names and types:
 
 ```python
 trait Drawable:

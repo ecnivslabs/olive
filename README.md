@@ -17,7 +17,7 @@
 
 **A systems language that is easy to write, fast to run, and keeps your memory safe.**
 
-Olive is built for when you want the speed and safety of a systems language without the cognitive overhead of complex syntax. It uses clean, indentation-based structure and an ownership-based memory model (no garbage collector) to give you deterministic performance and rock-solid reliability.
+Olive is for when you want the speed of a systems language without the headache of complex syntax. It uses a clean, indentation-based structure and a smart memory model to give you consistent speed and stability without needing a garbage collector.
 
 ## Why Olive?
 
@@ -56,11 +56,11 @@ main()
 
 ## Documentation
 
-- [Introduction](docs/introduction.md) — Philosophy and goals.
-- [Basics](docs/basics.md) — Variables, types, and control flow.
-- [Ownership](docs/ownership.md) — How memory safety works.
-- [Async](docs/async.md) — Concurrent programming.
-- [Standard Library](docs/modules.md) — What's in the box.
+- [Introduction](docs/introduction.md): Philosophy and goals.
+- [Basics](docs/basics.md): Variables, types, and control flow.
+- [Ownership](docs/ownership.md): How memory safety works.
+- [Async](docs/async.md): Concurrent programming.
+- [Standard Library](docs/modules.md): What's in the box.
 
 ## Contributing
 
