@@ -90,6 +90,11 @@ enum Commands {
     Remove { package: String },
     /// Install all dependencies
     Install,
+    /// Update dependencies to their latest versions
+    Update {
+        /// Update only this package (optional)
+        package: Option<String>,
+    },
     /// Publish this package to the registry
     Publish,
 }
@@ -287,6 +292,62 @@ fn main() {
                 process::exit(1);
             }
             println!("\x1b[1;32m   Installed\x1b[0m all dependencies");
+        }
+
+        Commands::Update { package } => {
+            let mut config = load_config();
+            if config.dependencies.is_empty() {
+                println!("No dependencies to update.");
+                return;
+            }
+
+            let targets: Vec<String> = if let Some(name) = package {
+                if !config.dependencies.contains_key(&name) {
+                    eprintln!("error: '{}' is not a dependency", name);
+                    process::exit(1);
+                }
+                vec![name]
+            } else {
+                config.dependencies.keys().cloned().collect()
+            };
+
+            let mut updated = 0;
+            for name in &targets {
+                let current = config.dependencies[name].clone();
+                let versions = registry::fetch_versions(name).unwrap_or_else(|e| {
+                    eprintln!("error: {}", e);
+                    process::exit(1);
+                });
+                let latest = match registry::resolve_version(&versions, "latest") {
+                    Some(v) => v.clone(),
+                    None => {
+                        eprintln!("warning: no available version for '{}'", name);
+                        continue;
+                    }
+                };
+                if latest.vers == current {
+                    println!("  {} already at {}", name, current);
+                    continue;
+                }
+                if let Err(e) = packages::download_and_install(&latest) {
+                    eprintln!("error: {}", e);
+                    process::exit(1);
+                }
+                if let Err(e) = packages::copy_to_modules(&latest.name, &latest.vers) {
+                    eprintln!("error: {}", e);
+                    process::exit(1);
+                }
+                println!(
+                    "\x1b[1;32m  Updated\x1b[0m {} {} → {}",
+                    name, current, latest.vers
+                );
+                config.dependencies.insert(name.clone(), latest.vers);
+                updated += 1;
+            }
+
+            if updated > 0 {
+                save_config(&config);
+            }
         }
 
         Commands::Publish => {
