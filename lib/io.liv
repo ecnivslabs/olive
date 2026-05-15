@@ -1,13 +1,113 @@
 fn read_file(path: str) -> str:
     let content = __olive_file_read(path)
-    # 0 indicates read failure in the backend
     if content == 0:
         return ""
     return content
 
 fn write_file(path: str, data: str) -> bool:
-    let res = __olive_file_write(path, data)
-    return res == 1
+    return __olive_file_write(path, data) == 1
+
+fn append_file(path: str, data: str) -> bool:
+    return __olive_file_append(path, data) == 1
+
+fn exists(path: str) -> bool:
+    return __olive_file_exists(path) == 1
+
+fn delete(path: str) -> bool:
+    return __olive_file_delete(path) == 1
+
+fn mkdir(path: str) -> bool:
+    return __olive_dir_create(path) == 1
+
+fn listdir(path: str) -> list:
+    return __olive_dir_list(path)
+
+fn stat(path: str):
+    return __olive_file_stat(path)
+
+fn copy(src: str, dst: str) -> bool:
+    return __olive_file_copy(src, dst) == 1
+
+fn rename(src: str, dst: str) -> bool:
+    return __olive_file_rename(src, dst) == 1
+
+fn path_join(a: str, b: str) -> str:
+    return __olive_path_join(a, b)
+
+fn path_dirname(path: str) -> str:
+    return __olive_path_dirname(path)
+
+fn path_basename(path: str) -> str:
+    return __olive_path_basename(path)
+
+fn path_ext(path: str) -> str:
+    return __olive_path_ext(path)
+
+fn path_stem(path: str) -> str:
+    return __olive_path_stem(path)
+
+fn path_is_absolute(path: str) -> bool:
+    return __olive_path_is_absolute(path) == 1
+
+fn temp_dir() -> str:
+    return __olive_temp_dir()
+
+fn temp_file() -> str:
+    let p = __olive_temp_file()
+    if p == 0:
+        return ""
+    return p
+
+fn read_stdin() -> str:
+    return __olive_stdin_read()
+
+fn read_line() -> str:
+    return __olive_stdin_read_line()
+
+fn open(path: str, mode: str) -> int:
+    return __olive_file_open(path, mode)
+
+fn close(handle: int):
+    __olive_file_close(handle)
+
+fn read_n(handle: int, n: int) -> str:
+    return __olive_file_read_n(handle, n)
+
+fn write_handle(handle: int, data: str) -> bool:
+    return __olive_file_write_str(handle, data) == 1
+
+fn seek(handle: int, offset: int, whence: int) -> int:
+    return __olive_file_seek(handle, offset, whence)
+
+fn tell(handle: int) -> int:
+    return __olive_file_tell(handle)
+
+fn read_lines(path: str) -> list:
+    return __olive_file_read_lines(path)
+
+fn bufread_open(path: str) -> int:
+    return __olive_bufread_open(path)
+
+fn bufread_line(br: int) -> str:
+    let result = __olive_bufread_line(br)
+    if result == 0:
+        return ""
+    return result
+
+fn bufread_close(br: int):
+    __olive_bufread_close(br)
+
+fn bufwrite_open(path: str) -> int:
+    return __olive_bufwrite_open(path)
+
+fn bufwrite_write(bw: int, data: str) -> bool:
+    return __olive_bufwrite_write(bw, data) == 1
+
+fn bufwrite_flush(bw: int) -> bool:
+    return __olive_bufwrite_flush(bw) == 1
+
+fn bufwrite_close(bw: int):
+    __olive_bufwrite_close(bw)
 
 fn print_line(msg: str):
     print(msg)

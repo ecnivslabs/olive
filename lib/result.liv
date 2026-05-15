@@ -1,0 +1,29 @@
+fn ok(val) -> obj:
+    return __olive_result_ok(val)
+
+fn err(msg: str) -> obj:
+    return __olive_result_err(msg)
+
+fn is_ok(r) -> bool:
+    return __olive_result_is_ok(r) == 1
+
+fn is_err(r) -> bool:
+    return __olive_result_is_err(r) == 1
+
+fn unwrap(r):
+    return __olive_result_unwrap(r)
+
+fn unwrap_err(r) -> str:
+    let e = __olive_result_unwrap_err(r)
+    if e == 0:
+        return ""
+    return e
+
+fn unwrap_or(r, default):
+    return __olive_result_unwrap_or(r, default)
+
+fn err_msg(r) -> str:
+    let e = __olive_result_err_msg(r)
+    if e == 0:
+        return ""
+    return e

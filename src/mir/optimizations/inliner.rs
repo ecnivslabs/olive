@@ -37,11 +37,11 @@ impl Inliner {
                                 continue;
                             }
                             if let Some(target_fn) = fn_map.get(name) {
-                                // do not inline async fns — their return must be wrapped by codegen
+                                // skip async fns; return needs wrapping
                                 if target_fn.is_async {
                                     continue;
                                 }
-                                // do not inline self-recursive functions (avoids exponential blowup)
+                                // skip self-recursion to avoid bloat
                                 let is_recursive = target_fn.basic_blocks.iter().any(|bb| {
                                     bb.statements.iter().any(|s| {
                                         matches!(&s.kind, StatementKind::Assign(_, Rvalue::Call {
@@ -52,7 +52,7 @@ impl Inliner {
                                 if is_recursive {
                                     continue;
                                 }
-                                // inline small functions
+                                // inline if small
                                 if target_fn.basic_blocks.len() < 100 {
                                     call_found = Some((stmt_idx, name.clone(), args.clone()));
                                     break;
@@ -124,7 +124,7 @@ impl Inliner {
             span: call_stmt.span,
         });
 
-        // connect params
+        // init params
         let mut init_stmts = Vec::new();
         for (j, arg) in args.iter().enumerate() {
             let param_local = Local(local_offset + j + 1);
@@ -146,7 +146,7 @@ impl Inliner {
                 span: call_stmt.span,
             });
         }
-        // local 0 is return
+        // return is local 0
         init_stmts.push(Statement {
             kind: StatementKind::StorageLive(Local(local_offset)),
             span: call_stmt.span,
@@ -162,7 +162,7 @@ impl Inliner {
                 self.remap_statement(stmt, local_offset);
             }
 
-            // prepend param init
+            // init params at entry
             if i == 0 {
                 let mut combined = init_stmts.clone();
                 combined.extend(new_bb.statements);
@@ -187,9 +187,9 @@ impl Inliner {
                         *otherwise = *callee_bb_map.get(otherwise).unwrap();
                     }
                     TerminatorKind::Return => {
-                        // replace return with goto
+                        // return -> goto
                         if let Some(dest) = ret_local {
-                            // assign return value
+                            // set return value
                             new_bb.statements.push(Statement {
                                 kind: StatementKind::Assign(
                                     dest,
@@ -212,7 +212,7 @@ impl Inliner {
             translated_blocks.push(new_bb);
         }
 
-        // add blocks
+        // append blocks
         caller.basic_blocks.push(tail_bb); // This will have ID tail_bb_id
         caller.basic_blocks.extend(translated_blocks);
     }

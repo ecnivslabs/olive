@@ -1,0 +1,77 @@
+fn now() -> float:
+    return __olive_datetime_now()
+
+fn utcnow() -> float:
+    return __olive_datetime_utcnow()
+
+fn parse(s: str) -> float:
+    return __olive_datetime_parse(s)
+
+fn format(ts: float, fmt: str) -> str:
+    return __olive_datetime_format(ts, fmt)
+
+fn format_iso(ts: float) -> str:
+    return __olive_datetime_format(ts, 0)
+
+fn parts(ts: float):
+    return __olive_datetime_parts(ts)
+
+fn from_parts(year: int, month: int, day: int, hour: int, minute: int, second: int) -> float:
+    return __olive_datetime_from_parts(year, month, day, hour, minute, second)
+
+fn local_offset() -> int:
+    return __olive_datetime_local_offset()
+
+fn to_local(ts: float) -> float:
+    return __olive_datetime_to_local(ts)
+
+fn from_local(ts: float) -> float:
+    return __olive_datetime_from_local(ts)
+
+fn weekday(ts: float) -> int:
+    return __olive_datetime_weekday(ts)
+
+fn weekday_name(ts: float) -> str:
+    return __olive_datetime_weekday_name(ts)
+
+fn month_name(ts: float) -> str:
+    return __olive_datetime_month_name(ts)
+
+fn add_days(ts: float, n: int) -> float:
+    return __olive_datetime_add_days(ts, n)
+
+fn add_hours(ts: float, n: int) -> float:
+    return __olive_datetime_add_hours(ts, n)
+
+fn add_minutes(ts: float, n: int) -> float:
+    return __olive_datetime_add_minutes(ts, n)
+
+fn add_seconds(ts: float, n: int) -> float:
+    return __olive_datetime_add_seconds(ts, n)
+
+fn add_months(ts: float, n: int) -> float:
+    return __olive_datetime_add_months(ts, n)
+
+fn add_years(ts: float, n: int) -> float:
+    return __olive_datetime_add_years(ts, n)
+
+fn diff_days(a: float, b: float) -> int:
+    return __olive_datetime_diff_days(a, b)
+
+fn diff_seconds(a: float, b: float) -> int:
+    return __olive_datetime_diff_seconds(a, b)
+
+fn start_of_day(ts: float) -> float:
+    return __olive_datetime_start_of_day(ts)
+
+fn end_of_day(ts: float) -> float:
+    return __olive_datetime_end_of_day(ts)
+
+fn start_of_month(ts: float) -> float:
+    return __olive_datetime_start_of_month(ts)
+
+fn is_leap_year(year: int) -> bool:
+    return __olive_datetime_is_leap_year(year) == 1
+
+fn days_in_month(year: int, month: int) -> int:
+    return __olive_datetime_days_in_month(year, month)

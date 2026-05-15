@@ -1,14 +1,14 @@
 use crate::mir::ir::*;
 use rustc_hash::FxHashSet as HashSet;
 
-// Liveness analysis results.
+// Liveness results.
 pub struct Liveness {
-    // Maps (block, statement_index) -> live locals set.
+    // (block, stmt) -> live set
     pub live_after: Vec<Vec<HashSet<Local>>>,
 }
 
 impl Liveness {
-    // Figure out which variables are active at every point in the code.
+    // compute active variables
     pub fn compute(func: &MirFunction) -> Self {
         let mut live_after = Vec::new();
         for bb in &func.basic_blocks {
@@ -19,9 +19,9 @@ impl Liveness {
         while changed {
             changed = false;
 
-            // We go backwards to find the fixed point faster.
+            // backward pass for fixed point
             for (bb_idx, bb) in func.basic_blocks.iter().enumerate().rev() {
-                // What's live at the end of this block is what's live at the start of its followers.
+                // live at end = live at start of successors
                 let mut current_live = HashSet::default();
                 let succs = Self::successors(bb);
                 for succ in &succs {
@@ -30,7 +30,7 @@ impl Liveness {
                     }
                 }
 
-                // The jump/return at the end might use some variables too.
+                // terminator uses
                 Self::update_liveness(&mut current_live, bb.terminator.as_ref());
 
                 if live_after[bb_idx][bb.statements.len()] != current_live {
@@ -38,7 +38,7 @@ impl Liveness {
                     changed = true;
                 }
 
-                // Walk up the block and track what's still needed.
+                // walk up block
                 for stmt_idx in (0..bb.statements.len()).rev() {
                     Self::update_stmt_liveness(&mut current_live, &bb.statements[stmt_idx]);
                     if live_after[bb_idx][stmt_idx] != current_live {
@@ -52,7 +52,7 @@ impl Liveness {
         Self { live_after }
     }
 
-    // Where can we jump to from here?
+    // get successors
     fn successors(bb: &BasicBlock) -> Vec<usize> {
         match &bb.terminator {
             Some(t) => match &t.kind {
@@ -70,7 +70,7 @@ impl Liveness {
         }
     }
 
-    // Update live set based on the terminator.
+    // update liveness from terminator
     fn update_liveness(live: &mut HashSet<Local>, term: Option<&Terminator>) {
         if let Some(t) = term
             && let TerminatorKind::SwitchInt { discr, .. } = &t.kind
@@ -79,11 +79,11 @@ impl Liveness {
         }
     }
 
-    // One step back: remove what's defined, add what's used.
+    // gen/kill step
     fn update_stmt_liveness(live: &mut HashSet<Local>, stmt: &Statement) {
         match &stmt.kind {
             StatementKind::Assign(local, rvalue) => {
-                live.remove(local); // Definition kills liveness
+                live.remove(local); // def kills
                 Self::use_rvalue(live, rvalue);
             }
             StatementKind::SetAttr(obj, _, val) => {
@@ -107,7 +107,7 @@ impl Liveness {
         }
     }
 
-    // Track uses within an rvalue.
+    // track rvalue uses
     fn use_rvalue(live: &mut HashSet<Local>, rv: &Rvalue) {
         match rv {
             Rvalue::Use(op) | Rvalue::UnaryOp(_, op) => Self::use_op(live, op),
@@ -148,7 +148,7 @@ impl Liveness {
         }
     }
 
-    // Track uses within an operand.
+    // track operand uses
     fn use_op(live: &mut HashSet<Local>, op: &Operand) {
         match op {
             Operand::Copy(l) | Operand::Move(l) => {

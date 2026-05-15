@@ -51,9 +51,7 @@ impl Transform for StrengthReduction {
                             );
                             changed = true;
                         }
-                        // x * 3 -> (x << 1) + x — handled by Cranelift's own lowering,
-                        // so we skip it here to avoid code bloat.
-                        // x * 2 is handled by peephole (x + x).
+                        // x*3/x*2 handled by Cranelift/peephole
                         _ => {}
                     }
                 }

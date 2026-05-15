@@ -286,9 +286,8 @@ impl<'a> MirBuilder<'a> {
                         });
                     }
 
-                    // Body of __init__ is just assignments
-                    // This is hard to represent as AST here without more work.
-                    // Actually, let's just make monomorphize handle Structs too.
+                    // __init__ body is assignments
+                    // Hard to represent as AST; let monomorphize handle structs
                     self.generic_fns.insert(init_name, stmt.clone());
                     return;
                 }
@@ -769,7 +768,7 @@ impl<'a> MirBuilder<'a> {
             return specialized_name;
         }
 
-        // Create specialized Stmt
+        // create specialized Stmt
         let mut specialized_stmt = generic_stmt.clone();
         match &mut specialized_stmt.kind {
             StmtKind::Fn {
@@ -784,7 +783,7 @@ impl<'a> MirBuilder<'a> {
                 *n = specialized_name.clone();
                 *tp = Vec::new();
 
-                // Replace type params in params, return_type, and body
+                // replace type params
                 let mut type_map = HashMap::default();
                 for (param_name, arg_ty) in tp_clone.iter().zip(type_args.iter()) {
                     type_map.insert(param_name.clone(), arg_ty.clone());
@@ -799,8 +798,7 @@ impl<'a> MirBuilder<'a> {
                 ..
             } => {
                 let tp_clone = tp.clone();
-                // For struct, we are monomorphizing __init__
-                // But we need to specialized the struct fields too
+                // monomorphize __init__ for struct; specialize fields
                 let mut type_map = HashMap::default();
                 for (param_name, arg_ty) in tp_clone.iter().zip(type_args.iter()) {
                     type_map.insert(param_name.clone(), arg_ty.clone());

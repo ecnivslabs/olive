@@ -1,0 +1,56 @@
+fn trim(s: str) -> str:
+    return __olive_str_trim(s)
+
+fn trim_start(s: str) -> str:
+    return __olive_str_trim_start(s)
+
+fn trim_end(s: str) -> str:
+    return __olive_str_trim_end(s)
+
+fn upper(s: str) -> str:
+    return __olive_str_upper(s)
+
+fn lower(s: str) -> str:
+    return __olive_str_lower(s)
+
+fn replace(s: str, from: str, to: str) -> str:
+    return __olive_str_replace(s, from, to)
+
+fn find(s: str, needle: str) -> int:
+    return __olive_str_find(s, needle)
+
+fn contains(s: str, needle: str) -> bool:
+    return __olive_str_contains(s, needle) == 1
+
+fn starts_with(s: str, prefix: str) -> bool:
+    return __olive_str_starts_with(s, prefix) == 1
+
+fn ends_with(s: str, suffix: str) -> bool:
+    return __olive_str_ends_with(s, suffix) == 1
+
+fn repeat(s: str, n: int) -> str:
+    return __olive_str_repeat(s, n)
+
+fn split(s: str, sep: str) -> list:
+    return __olive_str_split(s, sep)
+
+fn split_whitespace(s: str) -> list:
+    return __olive_str_split(s, 0)
+
+fn join(parts: list, sep: str) -> str:
+    return __olive_str_join(parts, sep)
+
+fn fmt(template: str, args: list) -> str:
+    return __olive_str_fmt(template, args)
+
+fn char_count(s: str) -> int:
+    return __olive_str_char_count(s)
+
+fn is_ascii(s: str) -> bool:
+    return __olive_str_is_ascii(s) == 1
+
+fn grapheme_count(s: str) -> int:
+    return __olive_str_grapheme_count(s)
+
+fn graphemes(s: str) -> list:
+    return __olive_str_graphemes(s)

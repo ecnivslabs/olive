@@ -618,3 +618,385 @@ pub extern "C" fn olive_cancel_future(future: i64) -> i64 {
     }
     0
 }
+
+// Channels
+
+struct OliveChannel {
+    queue: Mutex<std::collections::VecDeque<i64>>,
+    cvar: Condvar,
+    closed: AtomicBool,
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_chan_new() -> i64 {
+    Box::into_raw(Box::new(OliveChannel {
+        queue: Mutex::new(std::collections::VecDeque::new()),
+        cvar: Condvar::new(),
+        closed: AtomicBool::new(false),
+    })) as i64
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_chan_send(chan: i64, val: i64) -> i64 {
+    if chan == 0 {
+        return 0;
+    }
+    let ch = unsafe { &*(chan as *const OliveChannel) };
+    if ch.closed.load(Ordering::SeqCst) {
+        return 0;
+    }
+    ch.queue.lock().unwrap().push_back(val);
+    ch.cvar.notify_one();
+    1
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_chan_recv(chan: i64) -> i64 {
+    if chan == 0 {
+        return 0;
+    }
+    let ch = unsafe { &*(chan as *const OliveChannel) };
+    let mut q = ch.queue.lock().unwrap();
+    loop {
+        if let Some(v) = q.pop_front() {
+            return v;
+        }
+        if ch.closed.load(Ordering::SeqCst) {
+            return 0;
+        }
+        q = ch.cvar.wait(q).unwrap();
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_chan_try_recv(chan: i64) -> i64 {
+    if chan == 0 {
+        return i64::MIN;
+    }
+    let ch = unsafe { &*(chan as *const OliveChannel) };
+    ch.queue.lock().unwrap().pop_front().unwrap_or(i64::MIN)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_chan_len(chan: i64) -> i64 {
+    if chan == 0 {
+        return 0;
+    }
+    let ch = unsafe { &*(chan as *const OliveChannel) };
+    ch.queue.lock().unwrap().len() as i64
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_chan_close(chan: i64) {
+    if chan == 0 {
+        return;
+    }
+    let ch = unsafe { &*(chan as *const OliveChannel) };
+    ch.closed.store(true, Ordering::SeqCst);
+    ch.cvar.notify_all();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_chan_free(chan: i64) {
+    if chan != 0 {
+        unsafe { drop(Box::from_raw(chan as *mut OliveChannel)) };
+    }
+}
+
+// Mutex
+
+struct OliveMutex {
+    inner: Mutex<(bool, i64)>,
+    cvar: Condvar,
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_mutex_new(val: i64) -> i64 {
+    Box::into_raw(Box::new(OliveMutex {
+        inner: Mutex::new((false, val)),
+        cvar: Condvar::new(),
+    })) as i64
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_mutex_lock(m: i64) -> i64 {
+    if m == 0 {
+        return 0;
+    }
+    let mx = unsafe { &*(m as *const OliveMutex) };
+    let mut guard = mx.inner.lock().unwrap();
+    while guard.0 {
+        guard = mx.cvar.wait(guard).unwrap();
+    }
+    guard.0 = true;
+    guard.1
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_mutex_unlock(m: i64, new_val: i64) {
+    if m == 0 {
+        return;
+    }
+    let mx = unsafe { &*(m as *const OliveMutex) };
+    let mut guard = mx.inner.lock().unwrap();
+    guard.0 = false;
+    guard.1 = new_val;
+    mx.cvar.notify_one();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_mutex_free(m: i64) {
+    if m != 0 {
+        unsafe { drop(Box::from_raw(m as *mut OliveMutex)) };
+    }
+}
+
+// Atomics
+
+use std::sync::atomic::AtomicI64;
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_atomic_new(val: i64) -> i64 {
+    Box::into_raw(Box::new(AtomicI64::new(val))) as i64
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_atomic_get(ptr: i64) -> i64 {
+    if ptr == 0 {
+        return 0;
+    }
+    unsafe { &*(ptr as *const AtomicI64) }.load(Ordering::SeqCst)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_atomic_set(ptr: i64, val: i64) {
+    if ptr == 0 {
+        return;
+    }
+    unsafe { &*(ptr as *const AtomicI64) }.store(val, Ordering::SeqCst);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_atomic_add(ptr: i64, delta: i64) -> i64 {
+    if ptr == 0 {
+        return 0;
+    }
+    unsafe { &*(ptr as *const AtomicI64) }.fetch_add(delta, Ordering::SeqCst)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_atomic_cas(ptr: i64, expected: i64, new_val: i64) -> i64 {
+    if ptr == 0 {
+        return 0;
+    }
+    let a = unsafe { &*(ptr as *const AtomicI64) };
+    match a.compare_exchange(expected, new_val, Ordering::SeqCst, Ordering::SeqCst) {
+        Ok(_) => 1,
+        Err(_) => 0,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_atomic_free(ptr: i64) {
+    if ptr != 0 {
+        unsafe { drop(Box::from_raw(ptr as *mut AtomicI64)) };
+    }
+}
+
+// Worker pool
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_pool_size() -> i64 {
+    std::thread::available_parallelism().map(|n| n.get() as i64).unwrap_or(4)
+}
+
+// Run fn(arg) -> i64 on a pool thread. Returns a future you can await.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_pool_run(fn_ptr: i64, arg: i64) -> i64 {
+    if fn_ptr == 0 {
+        return 0;
+    }
+    let shared = Arc::new(FutureShared {
+        state: Mutex::new(FutureState::Pending),
+        cvar: Condvar::new(),
+    });
+    let shared2 = shared.clone();
+    std::thread::spawn(move || {
+        let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(fn_ptr as usize) };
+        let result = f(arg);
+        let mut state = shared2.state.lock().unwrap();
+        *state = FutureState::Ready(result);
+        shared2.cvar.notify_all();
+    });
+    Box::into_raw(Box::new(OliveFuture {
+        kind: KIND_FUTURE,
+        shared: Arc::into_raw(shared) as i64,
+    })) as i64
+}
+
+// Run fn(arg) -> i64 on a pool thread and block until complete.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_pool_run_sync(fn_ptr: i64, arg: i64) -> i64 {
+    if fn_ptr == 0 {
+        return 0;
+    }
+    let shared = Arc::new(FutureShared {
+        state: Mutex::new(FutureState::Pending),
+        cvar: Condvar::new(),
+    });
+    let shared2 = shared.clone();
+    std::thread::spawn(move || {
+        let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(fn_ptr as usize) };
+        let result = f(arg);
+        let mut state = shared2.state.lock().unwrap();
+        *state = FutureState::Ready(result);
+        shared2.cvar.notify_all();
+    });
+    let mut state = shared.state.lock().unwrap();
+    loop {
+        if let FutureState::Ready(val) = *state {
+            return val;
+        }
+        state = shared.cvar.wait(state).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chan_send_recv() {
+        let ch = olive_chan_new();
+        let val = crate::olive_str_internal("hello");
+        assert_eq!(olive_chan_send(ch, val), 1);
+        assert_eq!(olive_chan_len(ch), 1);
+        let got = olive_chan_recv(ch);
+        assert_eq!(crate::olive_str_from_ptr(got), "hello");
+        assert_eq!(olive_chan_len(ch), 0);
+        olive_chan_free(ch);
+    }
+
+    #[test]
+    fn chan_try_recv_empty() {
+        let ch = olive_chan_new();
+        assert_eq!(olive_chan_try_recv(ch), i64::MIN);
+        olive_chan_free(ch);
+    }
+
+    #[test]
+    fn chan_close_unblocks_recv() {
+        let ch = olive_chan_new();
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            olive_chan_close(ch);
+        });
+        let result = olive_chan_recv(ch);
+        assert_eq!(result, 0);
+        handle.join().unwrap();
+        olive_chan_free(ch);
+    }
+
+    #[test]
+    fn chan_threaded_send_recv() {
+        let ch = olive_chan_new();
+        let handle = std::thread::spawn(move || {
+            let v = crate::olive_str_internal("from thread");
+            olive_chan_send(ch, v);
+        });
+        let got = olive_chan_recv(ch);
+        assert_eq!(crate::olive_str_from_ptr(got), "from thread");
+        handle.join().unwrap();
+        olive_chan_free(ch);
+    }
+
+    #[test]
+    fn mutex_lock_unlock() {
+        let m = olive_mutex_new(42);
+        let val = olive_mutex_lock(m);
+        assert_eq!(val, 42);
+        olive_mutex_unlock(m, 99);
+        let val2 = olive_mutex_lock(m);
+        assert_eq!(val2, 99);
+        olive_mutex_unlock(m, 0);
+        olive_mutex_free(m);
+    }
+
+    #[test]
+    fn mutex_threaded() {
+        let m = olive_mutex_new(0);
+        let mut handles = vec![];
+        for _ in 0..4 {
+            handles.push(std::thread::spawn(move || {
+                let v = olive_mutex_lock(m);
+                olive_mutex_unlock(m, v + 1);
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        let final_val = olive_mutex_lock(m);
+        assert_eq!(final_val, 4);
+        olive_mutex_unlock(m, 0);
+        olive_mutex_free(m);
+    }
+
+    #[test]
+    fn atomic_get_set() {
+        let a = olive_atomic_new(10);
+        assert_eq!(olive_atomic_get(a), 10);
+        olive_atomic_set(a, 20);
+        assert_eq!(olive_atomic_get(a), 20);
+        olive_atomic_free(a);
+    }
+
+    #[test]
+    fn atomic_add() {
+        let a = olive_atomic_new(0);
+        let old = olive_atomic_add(a, 5);
+        assert_eq!(old, 0);
+        assert_eq!(olive_atomic_get(a), 5);
+        olive_atomic_free(a);
+    }
+
+    #[test]
+    fn atomic_cas() {
+        let a = olive_atomic_new(1);
+        assert_eq!(olive_atomic_cas(a, 1, 2), 1);
+        assert_eq!(olive_atomic_get(a), 2);
+        assert_eq!(olive_atomic_cas(a, 1, 3), 0);
+        assert_eq!(olive_atomic_get(a), 2);
+        olive_atomic_free(a);
+    }
+
+    #[test]
+    fn atomic_threaded_increment() {
+        let a = olive_atomic_new(0);
+        let mut handles = vec![];
+        for _ in 0..8 {
+            handles.push(std::thread::spawn(move || {
+                olive_atomic_add(a, 1);
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(olive_atomic_get(a), 8);
+        olive_atomic_free(a);
+    }
+
+    #[test]
+    fn pool_size_positive() {
+        assert!(olive_pool_size() >= 1);
+    }
+
+    extern "C" fn add_one(x: i64) -> i64 {
+        x + 1
+    }
+
+    #[test]
+    fn pool_run_sync_executes() {
+        let result = olive_pool_run_sync(add_one as i64, 41);
+        assert_eq!(result, 42);
+    }
+}

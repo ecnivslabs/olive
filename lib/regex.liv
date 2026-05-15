@@ -1,0 +1,26 @@
+fn match(pattern: str, text: str) -> bool:
+    return __olive_regex_match(pattern, text) == 1
+
+fn find(pattern: str, text: str) -> str:
+    let result = __olive_regex_find(pattern, text)
+    if result == 0:
+        return ""
+    return result
+
+fn find_all(pattern: str, text: str) -> list:
+    return __olive_regex_find_all(pattern, text)
+
+fn replace(pattern: str, text: str, rep: str) -> str:
+    return __olive_regex_replace(pattern, text, rep)
+
+fn replace_all(pattern: str, text: str, rep: str) -> str:
+    return __olive_regex_replace_all(pattern, text, rep)
+
+fn captures(pattern: str, text: str) -> list:
+    return __olive_regex_captures(pattern, text)
+
+fn split(pattern: str, text: str) -> list:
+    return __olive_regex_split(pattern, text)
+
+fn is_valid(pattern: str) -> bool:
+    return __olive_regex_is_valid(pattern) == 1

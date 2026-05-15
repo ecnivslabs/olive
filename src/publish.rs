@@ -71,7 +71,7 @@ pub fn publish(name: &str, version: &str) -> Result<(), String> {
 
     let pr_url = create_registry_pr(&gh, &pod)?;
     println!(
-        "\x1b[1;32m  Published\x1b[0m {}@{} — registry PR: {}",
+        "\x1b[1;32m  Published\x1b[0m {}@{} ; registry PR: {}",
         name, version, pr_url
     );
     Ok(())
@@ -81,7 +81,7 @@ fn resolve_user_repo() -> Result<String, String> {
     git_origin_url()
         .and_then(|url| parse_github_repo(&url))
         .ok_or_else(|| {
-            "cannot determine GitHub repository — add a git remote pointing to GitHub".to_string()
+            "cannot determine GitHub repository - add a git remote pointing to GitHub".to_string()
         })
 }
 
@@ -268,7 +268,7 @@ fn ensure_fork(gh: &GhClient, user: &str) -> Result<String, String> {
     }
 
     Err(format!(
-        "fork not ready after 30s — check https://github.com/{} and retry",
+        "fork not ready after 30s; check https://github.com/{} and retry",
         fork_repo
     ))
 }

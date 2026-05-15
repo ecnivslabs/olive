@@ -1,5 +1,0 @@
-fn get(url: str) -> str:
-    return __olive_http_get(url)
-
-fn post(url: str, body: str) -> str:
-    return __olive_http_post(url, body)

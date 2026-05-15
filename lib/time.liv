@@ -7,60 +7,8 @@ fn monotonic() -> float:
 fn sleep(secs: float):
     __olive_time_sleep(secs)
 
-fn is_leap_year(year: int) -> bool:
-    if year % 400 == 0:
-        return True
-    if year % 100 == 0:
-        return False
-    if year % 4 == 0:
-        return True
-    return False
+fn format(ts: float, fmt: str) -> str:
+    return __olive_time_format(ts, fmt)
 
-fn _days_in_month(year: int, month: int) -> int:
-    if month == 2:
-        if is_leap_year(year):
-            return 29
-        return 28
-    if month == 4 or month == 6 or month == 9 or month == 11:
-        return 30
-    return 31
-
-fn gmtime(timestamp: float):
-#Converts a unix epoch timestamp to a dict with year, month, day, hour, min, sec
-    let mut days = int(timestamp / 86400.0)
-    let mut rem = int(timestamp) - (days * 86400)
-    
-    let hours = rem / 3600
-    rem = rem - (hours * 3600)
-    
-    let mins = rem / 60
-    let secs = rem - (mins * 60)
-    
-    let mut year = 1970
-    while True:
-        let mut year_days = 365
-        if is_leap_year(year):
-            year_days = 366
-        if days < year_days:
-            break
-        days = days - year_days
-        year = year + 1
-
-    let mut month = 1
-    while month <= 12:
-        let md = _days_in_month(year, month)
-        if days < md:
-            break
-        days = days - md
-        month = month + 1
-        
-    let day = days + 1
-    
-    return {
-        "year": year,
-        "month": month,
-        "day": day,
-        "hour": hours,
-        "minute": mins,
-        "second": secs
-    }
+fn format_iso(ts: float) -> str:
+    return __olive_time_format(ts, 0)

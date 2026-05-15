@@ -1,0 +1,68 @@
+fn new(cap: int) -> int:
+    return __olive_buf_new(cap)
+
+fn from_str(s: str) -> int:
+    return __olive_buf_from_str(s)
+
+fn len(buf: int) -> int:
+    return __olive_buf_len(buf)
+
+fn push(buf: int, byte: int):
+    __olive_buf_push(buf, byte)
+
+fn get(buf: int, idx: int) -> int:
+    return __olive_buf_get(buf, idx)
+
+fn set(buf: int, idx: int, val: int):
+    __olive_buf_set(buf, idx, val)
+
+fn to_str(buf: int) -> str:
+    return __olive_buf_to_str(buf)
+
+fn to_hex(buf: int) -> str:
+    return __olive_buf_to_hex(buf)
+
+fn concat(a: int, b: int) -> int:
+    return __olive_buf_concat(a, b)
+
+fn slice(buf: int, start: int, end: int) -> int:
+    return __olive_buf_slice(buf, start, end)
+
+fn free(buf: int):
+    __olive_buf_free(buf)
+
+fn read_u16_le(buf: int, offset: int) -> int:
+    return __olive_buf_read_u16_le(buf, offset)
+
+fn read_u16_be(buf: int, offset: int) -> int:
+    return __olive_buf_read_u16_be(buf, offset)
+
+fn read_u32_le(buf: int, offset: int) -> int:
+    return __olive_buf_read_u32_le(buf, offset)
+
+fn read_u32_be(buf: int, offset: int) -> int:
+    return __olive_buf_read_u32_be(buf, offset)
+
+fn read_u64_le(buf: int, offset: int) -> int:
+    return __olive_buf_read_u64_le(buf, offset)
+
+fn read_u64_be(buf: int, offset: int) -> int:
+    return __olive_buf_read_u64_be(buf, offset)
+
+fn write_u16_le(buf: int, offset: int, val: int):
+    __olive_buf_write_u16_le(buf, offset, val)
+
+fn write_u16_be(buf: int, offset: int, val: int):
+    __olive_buf_write_u16_be(buf, offset, val)
+
+fn write_u32_le(buf: int, offset: int, val: int):
+    __olive_buf_write_u32_le(buf, offset, val)
+
+fn write_u32_be(buf: int, offset: int, val: int):
+    __olive_buf_write_u32_be(buf, offset, val)
+
+fn write_u64_le(buf: int, offset: int, val: int):
+    __olive_buf_write_u64_le(buf, offset, val)
+
+fn write_u64_be(buf: int, offset: int, val: int):
+    __olive_buf_write_u64_be(buf, offset, val)

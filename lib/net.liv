@@ -5,7 +5,58 @@ fn tcp_send(conn: int, data: str) -> int:
     return __olive_net_tcp_send(conn, data)
 
 fn tcp_recv(conn: int, max_len: int) -> str:
-    return __olive_net_tcp_recv(conn, max_len)
+    let result = __olive_net_tcp_recv(conn, max_len)
+    if result == 0:
+        return ""
+    return result
 
 fn tcp_close(conn: int):
     __olive_net_tcp_close(conn)
+
+fn tcp_peer_addr(conn: int) -> str:
+    let result = __olive_net_tcp_peer_addr(conn)
+    if result == 0:
+        return ""
+    return result
+
+fn tcp_set_timeout(conn: int, secs: float) -> bool:
+    return __olive_net_tcp_set_timeout(conn, secs) == 1
+
+fn tcp_listen(addr: str) -> int:
+    return __olive_net_tcp_listen(addr)
+
+fn tcp_accept(server: int) -> int:
+    return __olive_net_tcp_accept(server)
+
+fn tcp_listener_addr(server: int) -> str:
+    let result = __olive_net_tcp_listener_addr(server)
+    if result == 0:
+        return ""
+    return result
+
+fn tcp_listener_close(server: int):
+    __olive_net_tcp_listener_close(server)
+
+fn udp_open(bind_addr: str) -> int:
+    return __olive_net_udp_open(bind_addr)
+
+fn udp_send(sock: int, addr: str, data: str) -> int:
+    return __olive_net_udp_send(sock, addr, data)
+
+fn udp_recv(sock: int, max_len: int):
+    return __olive_net_udp_recv(sock, max_len)
+
+fn udp_set_timeout(sock: int, secs: float) -> bool:
+    return __olive_net_udp_set_timeout(sock, secs) == 1
+
+fn udp_close(sock: int):
+    __olive_net_udp_close(sock)
+
+fn dns_lookup(hostname: str) -> str:
+    let result = __olive_net_dns_lookup(hostname)
+    if result == 0:
+        return ""
+    return result
+
+fn dns_lookup_all(hostname: str) -> list:
+    return __olive_net_dns_lookup_all(hostname)

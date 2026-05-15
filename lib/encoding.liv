@@ -1,0 +1,23 @@
+fn base64_encode(s: str) -> str:
+    return __olive_base64_encode(s)
+
+fn base64_decode(s: str) -> str:
+    let result = __olive_base64_decode(s)
+    if result == 0:
+        return ""
+    return result
+
+fn url_encode(s: str) -> str:
+    return __olive_url_encode(s)
+
+fn url_decode(s: str) -> str:
+    return __olive_url_decode(s)
+
+fn hex_encode(s: str) -> str:
+    return __olive_hex_encode(s)
+
+fn hex_decode(s: str) -> str:
+    let result = __olive_hex_decode(s)
+    if result == 0:
+        return ""
+    return result

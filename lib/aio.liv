@@ -1,29 +1,90 @@
 # async io
 
-# run blocking
 fn run(future):
     return await future
 
-# read async
 fn read_file(path: str):
     return __olive_async_file_read(path)
 
-# write async
 fn write_file(path: str, data: str):
     return __olive_async_file_write(path, data)
 
-# wait all
 fn gather(futures):
     return __olive_gather(futures)
 
-# wait first
 fn select(futures):
     return __olive_select(futures)
 
-# cancel future
 fn cancel(future):
     __olive_cancel_future(future)
 
-# free future
 fn free_future(future):
     __olive_free_future(future)
+
+# channels
+
+fn chan_new() -> int:
+    return __olive_chan_new()
+
+fn chan_send(chan: int, val) -> bool:
+    return __olive_chan_send(chan, val) == 1
+
+fn chan_recv(chan: int):
+    return __olive_chan_recv(chan)
+
+fn chan_try_recv(chan: int):
+    return __olive_chan_try_recv(chan)
+
+fn chan_len(chan: int) -> int:
+    return __olive_chan_len(chan)
+
+fn chan_close(chan: int):
+    __olive_chan_close(chan)
+
+fn chan_free(chan: int):
+    __olive_chan_free(chan)
+
+# mutex
+
+fn mutex_new(val) -> int:
+    return __olive_mutex_new(val)
+
+fn mutex_lock(m: int):
+    return __olive_mutex_lock(m)
+
+fn mutex_unlock(m: int, new_val):
+    __olive_mutex_unlock(m, new_val)
+
+fn mutex_free(m: int):
+    __olive_mutex_free(m)
+
+# atomics
+
+fn atomic_new(val: int) -> int:
+    return __olive_atomic_new(val)
+
+fn atomic_get(ptr: int) -> int:
+    return __olive_atomic_get(ptr)
+
+fn atomic_set(ptr: int, val: int):
+    __olive_atomic_set(ptr, val)
+
+fn atomic_add(ptr: int, delta: int) -> int:
+    return __olive_atomic_add(ptr, delta)
+
+fn atomic_cas(ptr: int, expected: int, new_val: int) -> bool:
+    return __olive_atomic_cas(ptr, expected, new_val) == 1
+
+fn atomic_free(ptr: int):
+    __olive_atomic_free(ptr)
+
+# worker pool
+
+fn pool_size() -> int:
+    return __olive_pool_size()
+
+fn pool_run(fn_ptr: int, arg: int) -> int:
+    return __olive_pool_run(fn_ptr, arg)
+
+fn pool_run_sync(fn_ptr: int, arg: int) -> int:
+    return __olive_pool_run_sync(fn_ptr, arg)

@@ -1,0 +1,29 @@
+fn typeof(val) -> str:
+    return __olive_typeof_str(val)
+
+fn is_null(val) -> bool:
+    return __olive_is_null(val) == 1
+
+fn is_str(val) -> bool:
+    return __olive_is_str(val) == 1
+
+fn is_list(val) -> bool:
+    return __olive_is_list(val) == 1
+
+fn is_obj(val) -> bool:
+    return __olive_is_obj(val) == 1
+
+fn is_bytes(val) -> bool:
+    return __olive_is_bytes(val) == 1
+
+fn fields(obj) -> list:
+    return __olive_obj_keys(obj)
+
+fn panic(msg: str):
+    __olive_panic(msg)
+
+fn atexit(fn_ptr: int):
+    __olive_atexit(fn_ptr)
+
+fn run_exit_hooks():
+    __olive_run_exit_hooks()

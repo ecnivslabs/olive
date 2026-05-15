@@ -28,8 +28,8 @@ struct VectorizationPlan {
     induction: Local,
     limit: Operand,
     width: usize,
-    loads: Vec<(Local, Operand)>, // (dest, collection) for GetIndex(collection, i)
-    stores: Vec<(Operand, Operand)>, // (collection, value) for SetIndex(collection, i, value)
+    loads: Vec<(Local, Operand)>,
+    stores: Vec<(Operand, Operand)>,
 }
 
 impl LoopVectorizer {
@@ -144,7 +144,7 @@ impl LoopVectorizer {
         let i = plan.induction;
         let width = plan.width;
 
-        // Step 1: Clone the original loop body to serve as the scalar epilogue.
+        // clone loop body for scalar epilogue
         let epilogue_map = loop_utils::clone_blocks(func, &lp.body);
         let epilogue_header = match epilogue_map.get(&lp.header) {
             Some(&h) => h,
@@ -178,7 +178,7 @@ impl LoopVectorizer {
             }),
         });
 
-        // Redirect external predecessors of the loop header to the pre-header.
+        // redirect header predecessors to pre-header
         for bb_idx in 0..pre_header_id.0 {
             let bb_id = BasicBlockId(bb_idx);
             if lp.body.contains(&bb_id) {
@@ -262,7 +262,7 @@ impl LoopVectorizer {
 
             for stmt in old_stmts {
                 match &stmt.kind {
-                    // Linear load → VectorLoad
+                    // load -> vector load
                     StatementKind::Assign(dest, Rvalue::GetIndex(obj, Operand::Copy(idx)))
                         if *idx == i && load_set.contains_key(dest) =>
                     {
@@ -277,7 +277,7 @@ impl LoopVectorizer {
                         });
                     }
 
-                    // BinaryOp where both operands have vector versions
+                    // binary op with vectors
                     StatementKind::Assign(
                         dest,
                         Rvalue::BinaryOp(op, Operand::Copy(l), Operand::Copy(r)),
@@ -309,7 +309,7 @@ impl LoopVectorizer {
                         });
                     }
 
-                    // Linear store → VectorStore
+                    // store -> vector store
                     StatementKind::SetIndex(obj, Operand::Copy(idx), Operand::Copy(val))
                         if *idx == i =>
                     {
@@ -333,7 +333,7 @@ impl LoopVectorizer {
             func.basic_blocks[bb_id.0].statements = new_stmts;
         }
 
-        // FMA fusion: a*b+c or c+a*b → VectorFMA(a, b, c)
+        // FMA fusion
         for &bb_id in &lp.body {
             Self::fuse_fma(&mut func.basic_blocks[bb_id.0].statements);
         }
@@ -370,7 +370,7 @@ impl LoopVectorizer {
     fn fuse_fma(stmts: &mut Vec<Statement>) {
         let mut i = 0;
         while i + 1 < stmts.len() {
-            // match: tmp = Mul(va, vb)
+            // match tmp = Mul(va, vb)
             let mul_info = match &stmts[i].kind {
                 StatementKind::Assign(
                     dest,
@@ -379,7 +379,7 @@ impl LoopVectorizer {
                 _ => None,
             };
             if let Some((mul_dest, va, vb)) = mul_info {
-                // match: result = Add(Copy(mul_dest), vc) or Add(vc, Copy(mul_dest))
+                // match result = Add(mul, vc)
                 let fma_info = match &stmts[i + 1].kind {
                     StatementKind::Assign(
                         add_dest,
@@ -410,7 +410,7 @@ impl LoopVectorizer {
         }
     }
 
-    // splat scalar to vector if needed
+    // splat scalar if needed
     fn ensure_vector(
         &self,
         func: &mut MirFunction,
@@ -423,7 +423,7 @@ impl LoopVectorizer {
         if let Some(&v) = vector_locals.get(&local) {
             return v;
         }
-        // Scalar value — splat it.
+        // splat scalar value
         let v = self.alloc_vector_local(func, local, width);
         vector_locals.insert(local, v);
         stmts.push(Statement {
