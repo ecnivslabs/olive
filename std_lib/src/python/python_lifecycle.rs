@@ -4,6 +4,83 @@ use std::ffi::CString;
 use std::os::raw::{c_char, c_void};
 use std::sync::atomic::Ordering;
 
+/// Extract the Python minor version from a `libpython3.X.so` filename.
+/// Returns 0 for unversioned names (e.g. `libpython3.so` symlink).
+fn extract_python_minor(name: &str) -> u64 {
+    let rest = match name.strip_prefix("libpython3") {
+        Some(r) => r,
+        None => return 0,
+    };
+    if rest.is_empty() {
+        return 0;
+    }
+    let after_dot = match rest.strip_prefix('.') {
+        Some(d) => d,
+        None => return 0,
+    };
+    let minor_str = after_dot.split('.').next().unwrap_or("");
+    minor_str.parse().unwrap_or(0)
+}
+
+/// Scan standard library directories for Python 3 shared libraries.
+/// Returns paths sorted by version (highest first). Discovers any Python 3.x
+/// version without hardcoding -- handles 3.13, 3.14, and beyond automatically.
+fn detect_python_libraries() -> Vec<String> {
+    if cfg!(target_os = "windows") {
+        return Vec::new();
+    }
+
+    let ext = if cfg!(target_os = "macos") {
+        "dylib"
+    } else {
+        "so"
+    };
+
+    let search_dirs: &[&str] = if cfg!(target_os = "macos") {
+        &["/usr/lib", "/usr/local/lib", "/opt/homebrew/lib"]
+    } else {
+        &[
+            "/usr/lib",
+            "/usr/lib64",
+            "/lib",
+            "/lib64",
+            "/usr/lib/x86_64-linux-gnu",
+            "/usr/lib/aarch64-linux-gnu",
+            "/usr/lib/arm-linux-gnueabihf",
+            "/lib/x86_64-linux-gnu",
+            "/lib/aarch64-linux-gnu",
+            "/usr/local/lib",
+        ]
+    };
+
+    let mut candidates: Vec<(u64, String)> = Vec::new();
+
+    for dir in search_dirs {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Some(name) = path.file_name() else {
+                    continue;
+                };
+                let name = name.to_string_lossy();
+                if !name.starts_with("libpython3") {
+                    continue;
+                }
+                if !name.ends_with(ext) {
+                    continue;
+                }
+                candidates.push((
+                    extract_python_minor(&name),
+                    path.to_string_lossy().to_string(),
+                ));
+            }
+        }
+    }
+
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    candidates.into_iter().map(|(_, p)| p).collect()
+}
+
 fn find_active_python_library() -> Option<String> {
     for cmd in &["python3", "python"] {
         if let Ok(output) = std::process::Command::new(cmd)
@@ -44,6 +121,18 @@ pub extern "C" fn olive_py_initialize() {
             }
 
         if handle.is_null() {
+            // Dynamic directory scan: discovers any libpython3.X.so/.dylib on the
+            // system and tries the highest version first. Supports any Python 3.x
+            // without needing to update a hardcoded version list.
+            for path in detect_python_libraries() {
+                handle = compat_dlopen(&path);
+                if !handle.is_null() {
+                    break;
+                }
+            }
+
+            // Final fallback: bare name lets the dynamic linker search its standard
+            // paths (ld.so.cache, LD_LIBRARY_PATH, /usr/lib, etc.).
             #[cfg(target_os = "windows")]
             {
                 for name in &[
@@ -53,43 +142,19 @@ pub extern "C" fn olive_py_initialize() {
                     "python310.dll",
                     "python39.dll",
                 ] {
-                    handle = compat_dlopen(name);
                     if !handle.is_null() {
                         break;
                     }
+                    handle = compat_dlopen(name);
                 }
             }
-            #[cfg(target_os = "macos")]
-            {
-                for name in &[
-                    "libpython3.dylib",
-                    "libpython3.12.dylib",
-                    "libpython3.11.dylib",
-                    "libpython3.10.dylib",
-                    "libpython3.9.dylib",
-                    "/opt/homebrew/lib/libpython3.11.dylib",
-                    "/opt/homebrew/lib/libpython3.12.dylib",
-                ] {
-                    handle = compat_dlopen(name);
-                    if !handle.is_null() {
-                        break;
-                    }
-                }
-            }
-            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-            {
-                for name in &[
-                    "libpython3.so",
-                    "libpython3.12.so",
-                    "libpython3.11.so",
-                    "libpython3.10.so",
-                    "libpython3.9.so",
-                ] {
-                    handle = compat_dlopen(name);
-                    if !handle.is_null() {
-                        break;
-                    }
-                }
+            #[cfg(not(target_os = "windows"))]
+            if handle.is_null() {
+                handle = compat_dlopen(if cfg!(target_os = "macos") {
+                    "libpython3.dylib"
+                } else {
+                    "libpython3.so"
+                });
             }
         }
 
