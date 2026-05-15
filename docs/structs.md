@@ -1,122 +1,104 @@
 # Structs and Objects
 
-When you need to build your own data types in Olive, you use `structs`. Think of a struct as a way to group related data together, and `impl` blocks as a way to define what those structs can *do*.
+Structs are the primary way to define custom data structures in Olive. They enable the grouping of related data and the definition of behavior that operates on that data.
 
 ## Defining a Struct
 
-Structs describe the data layout. Fields are listed with their types:
+A struct defines the layout of your data. Fields must have explicit types.
 
 ```python
-struct Person:
-    name: str
-    age: int
+struct User:
+    username: str
+    email: str
+    is_active: bool = True  # Default value
 ```
 
 ## Adding Behavior with `impl`
 
-Methods go in a separate `impl` block. Methods that need to access the struct's data take `self` as the first parameter:
+Methods are defined in an `impl` block for the struct. Methods that operate on an instance must take `self` as their first parameter.
 
 ```python
-impl Person:
-    fn greet(self):
-        print("Hi, I'm " + self.name)
+impl User:
+    fn deactivate(self):
+        self.is_active = False
 ```
 
-## Creating Instances
+## Initialization (`__init__`)
 
-Call the struct name like a function, passing field values in order:
-
-```python
-let p = Person("Alice", 30)
-p.greet()
-```
-
-For custom initialization logic, define an `__init__` method in the `impl` block:
+When an instance of a struct is created, Olive calls the `__init__` method if it's defined. This is where setup logic or validation is performed.
 
 ```python
 struct Rectangle:
-    width: int
-    height: int
-    area: int
+    width: float
+    height: float
+    area: float
 
 impl Rectangle:
-    fn __init__(self, w: int, h: int):
+    fn __init__(self, w: float, h: float):
+        assert w > 0 and h > 0, "Dimensions must be positive"
         self.width = w
         self.height = h
         self.area = w * h
 
-let rect = Rectangle(10, 20)
-print(f"Area: {rect.area}")
+let r = Rectangle(10.0, 5.0)
 ```
 
-## Composition over Inheritance
+If no `__init__` is defined, Olive generates a default constructor that takes all fields in order.
 
-Olive doesn't support inheritance. If you want one type to include the behavior of another, embed it as a field:
+## Generics (Type Parameters)
+
+Structs can be generic, allowing any type of data to be stored.
 
 ```python
-struct Student:
-    person: Person
-    student_id: int
+struct Box[T]:
+    content: T
 
-impl Student:
-    fn study(self):
-        print(self.person.name + " is studying")
+impl Box[T]:
+    fn get(self) -> T:
+        return self.content
+
+let int_box = Box(42)      # T is int
+let str_box = Box("item")  # T is str
 ```
 
-## Attribute Access
+## Composition
 
-Fields and nested fields are accessed with the dot operator:
+Olive encourages composition over inheritance. To reuse the data or behavior of another struct, it can be included as a field.
 
 ```python
-let s = Student(Person("Bob", 20), 12345)
-print(s.person.name)  # Accessing nested field
-s.study()             # Calling a method
+struct Admin:
+    user: User
+    permissions: [str]
+
+impl Admin:
+    fn can_access(self, resource: str) -> bool:
+        return resource in self.permissions
 ```
 
-The type checker tracks field types throughout and will catch type mismatches before the code runs.
+## Visibility and Privacy
 
-## Visibility
-
-By convention, names starting with an underscore are private to the module. The compiler enforces this: you can't import or access a `_`-prefixed member from outside its defining module:
+Fields and methods starting with an underscore are **private**. They can only be accessed within the module where the struct is defined.
 
 ```python
-struct Secret:
-    _data: str
+struct Account:
+    _balance: float
 
-impl Secret:
-    fn _internal_method(self):
-        pass
+impl Account:
+    fn get_balance(self) -> float:
+        return self._balance  # OK: internal access
 ```
 
 ## Implementing Traits
 
-A struct can implement a trait using `impl TraitName for TypeName`. This guarantees the struct provides all the methods the trait requires:
+You can implement traits for your structs to provide standardized behavior.
 
 ```python
-trait Printable:
-    fn display(self) -> str
+trait Describable:
+    fn describe(self) -> str
 
-impl Printable for Person:
-    fn display(self) -> str:
-        return f"{self.name}, age {self.age}"
+impl Describable for User:
+    fn describe(self) -> str:
+        return f"User({self.username}, active={self.is_active})"
 ```
 
-A struct can implement multiple traits by having multiple `impl ... for` blocks. Regular `impl` blocks (without `for`) can coexist alongside them.
-
-See [Traits](traits.md) for a full walkthrough.
-
-## Method Decorators
-
-Methods can use the same decorators as standalone functions. The `@memo` decorator is useful on methods that do expensive computation with the same inputs:
-
-```python
-struct Calculator:
-    pass
-
-impl Calculator:
-    @memo
-    fn expensive_computation(self, n: int) -> int:
-        if n <= 1:
-            return n
-        return self.expensive_computation(n - 1) + self.expensive_computation(n - 2)
-```
+See [Traits](traits.md) for more details.

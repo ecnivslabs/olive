@@ -29,7 +29,7 @@ let data = parse(clean(raw_input))
 
 ## Native Imports
 
-If you have a library written in another language (like C or Rust), you can use it directly in Olive. Just import the library file and give it a name:
+If a library is written in another language (like C or Rust), it can be used in Olive by defining its interface through a native import.
 
 ```python
 import "physics.so" as physics

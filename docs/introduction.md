@@ -1,30 +1,33 @@
 # Introduction to Olive
 
-Olive is a systems programming language designed to be both fast and friendly. Usually, you have to choose: you get the speed and safety of a low-level language but deal with complex syntax, or you get the ease of a high-level language but give up performance. Olive is our attempt to bridge that gap.
+Olive is a general-purpose systems language built to solve the conflict between the speed of a low-level language and the ease of a high-level one. Usually, the choice is between managing every byte manually for performance or relying on a garbage collector that might pause the program at critical moments.
 
-The syntax is clean and indentation-based, making it easy to read and write. But under the hood, it's a true systems language. There's no garbage collector slowing things down; instead, Olive uses a system called "ownership" to manage memory automatically and safely.
+Olive bridges this gap. It provides a systems language with a clean, indentation-based syntax that feels like a scripting language, but compiles to native code that runs close to the metal.
 
 ## Philosophy
 
-**Performance without the pain.** We believe you shouldn't have to rewrite your prototype in another language just to make it fast. Olive is designed to produce optimized machine code right from the start.
+**Performance without the overhead.**
+Prototype code should be production code. Olive is designed to produce optimized machine code right from the start. There is no heavy runtime, no garbage collector, and no hidden costs.
 
-**Safety you can trust.** Memory leaks, double-frees, and data races are some of the hardest bugs to track down. Olive's compiler catches these errors while you're writing the code, not after you've deployed it.
+**Safety by design.**
+Memory leaks and data races are often the result of human error. The Olive compiler acts as a partner, catching these errors during the development phase. If it compiles, it is memory-safe.
 
-**Code is for people.** We spend more time reading code than writing it, so Olive is built to be easy on the eyes. No unnecessary symbols or boilerplate; just your program's logic.
+**Code is for humans.**
+Significantly more time is spent reading code than writing it. Olive removes the noise—no semicolons, no braces, no boilerplate. The logic of the program is structured clearly by indentation.
 
-## Key Concepts
+## Core Concepts
 
-- **Indentation is meaningful**: Your code's structure is defined by how it's indented, keeping things clean and consistent.
-- **Ownership and Borrowing**: This is how Olive stays safe without a garbage collector. The compiler keeps track of who "owns" a piece of data and ensures it's cleaned up when it's no longer needed.
-- **Instant Feedback**: The `pit` toolchain is fast. From running `pit run` to seeing your code execute takes only milliseconds, even with the full safety checks and optimizations running.
-- **Modern Concurrency**: Building high-performance network services should be easy. Olive has built-in support for `async` and `await`, making concurrent code look and feel like regular synchronous code.
+- **Ownership and Borrowing**: This is the heart of Olive's memory safety. Instead of a garbage collector, the compiler tracks who "owns" a piece of data and ensures it's cleaned up the moment it's no longer needed.
+- **The Pit Toolchain**: Developer tools should be fast and helpful. `pit` handles everything from creating new projects to running tests and benchmarks, usually in a matter of milliseconds.
+- **Fearless Concurrency**: Building high-performance services shouldn't be scary. Olive has first-class support for `async` and `await`, allowing you to write concurrent code that looks and behaves like regular synchronous logic.
+- **Native Interop**: Olive doesn't live in a vacuum. It's designed to play well with existing C and C++ libraries, allowing you to use the right tool for the job without jumping through hoops.
 
-## How it Works
+## The Journey of a Program
 
-When you run an Olive program, it goes through a few stages:
+When you run an Olive program, it goes through a few intentional stages:
 
-1. **Understanding**: The compiler reads your code and builds a structured map of what you're trying to do.
-2. **Safety Check**: This is where the "borrow checker" looks for potential memory issues. If it finds one, it tells you exactly what's wrong and how to fix it.
-3. **Optimization**: The compiler cleans up your code. It removes unnecessary steps and makes the logic as fast as possible.
-4. **Execution**: Finally, it turns your program into machine code that runs directly on your processor.
+1. **Analysis**: The compiler builds a representation of your logic, checking for type consistency and structural errors.
+2. **The Borrow Checker**: This is where the magic happens. The compiler validates that your memory usage follows the rules of ownership, preventing crashes before they can happen.
+3. **The Optimizer**: Your code is refined. The compiler eliminates redundant steps, hoists loops, and prepares the logic for the backend.
+4. **JIT Codegen**: Finally, Olive uses the Cranelift backend to generate machine code tailored for your specific processor, then executes it immediately.
 

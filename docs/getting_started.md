@@ -1,60 +1,57 @@
 # Getting Started
 
-Here's how to get Olive up and running on your machine.
+Welcome! Olive is designed to be easy to pick up and fast to run. Here's how to get everything set up on your machine.
 
 ## Installation
 
-**Linux and macOS:**
+### Linux and macOS
+
+The easiest way to install Olive is with the install script. It downloads the latest `pit` binary (an all-in-one tool) and adds it to the path.
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/olive-language/olive/master/install.sh | sh
 ```
 
-This downloads the latest `pit` binary for your OS and places it in `~/.local/bin`. You can override the install location:
+### Windows
 
-```bash
-OLIVE_INSTALL_DIR=/usr/local/bin curl -sSL https://raw.githubusercontent.com/olive-language/olive/master/install.sh | sh
-```
+Head over to the [releases page](https://github.com/olive-language/olive/releases/latest) and download the `pit-windows-x86_64.exe` binary. Rename it to `pit.exe` and add the folder it's in to your system PATH.
 
-**Windows:**
+### Verify the Install
 
-Download the binary directly from the [releases page](https://github.com/olive-language/olive/releases/latest) (`pit-windows-x86_64.exe`), rename it to `pit.exe`, and add it to your PATH.
-
-**Verify the install:**
+Open a new terminal and run:
 
 ```bash
 pit --version
 ```
 
+If you see a version number, you're ready to go!
+
 ## Your First Project
+
+`pit` is used to manage everything from creating projects to running tests. To start a new project, run:
 
 ```bash
 pit new my_app
 cd my_app
 ```
 
-This creates two files:
-- `src/main.liv`: your code
-- `pit.toml`: project config
+This creates a simple project structure for you:
+- `src/main.liv`: Where your code lives.
+- `pit.toml`: Your project's configuration and dependencies.
 
 ## Running Your Code
+
+To run your program, just type:
 
 ```bash
 pit run
 ```
 
-By default, Olive uses hybrid mode. It compiles your code and caches the result in `grove/.cache`. On the next run, if nothing changed, it skips compilation and starts immediately.
-
-Other run modes:
-- `pit run --jit`: compiles and runs in memory, no cache
-- `pit run --aot`: compiles, runs, then deletes the binary
-- `pit build`: produces a standalone binary in `grove/`
-
-> **Note:** `pit build` requires a C compiler (`cc`) on Linux/macOS. On Windows, AOT builds are not yet supported.
+Olive is designed for speed. The first time you run a project, it compiles your code and caches it. The second time you run it, it starts almost instantly.
 
 ## Hello, World!
 
-`src/main.liv` starts with:
+Open `src/main.liv` in your favorite editor. You'll see a simple hello world:
 
 ```python
 fn main():
@@ -63,40 +60,31 @@ fn main():
 main()
 ```
 
-Change the message and run `pit run` to see it.
+Try changing the message and running `pit run` again.
 
-## Interactive Shell
+## The Interactive Shell
 
-No project needed -- just run:
+If you just want to test a quick snippet of code without creating a project, use the interactive shell:
 
 ```bash
 pit shell
 ```
 
-```
->>> let x = 10
->>> print(x * 2)
-20
-```
+It's a great way to explore the language and the standard library.
 
 ## Updating Olive
+
+Olive is constantly being improved. To get the latest features and bug fixes, run:
 
 ```bash
 pit upgrade
 ```
 
-This checks for a newer release and replaces the current binary in-place. No need to re-run the install script.
+## Pods (Package Management)
 
-## Other Commands
+Olive uses "pods" for dependencies. You can add them to your project easily:
 
-- `pit test`: run tests
-- `pit fmt`: format your code
+- `pit add pod_name`: Adds a dependency to your `pit.toml`.
+- `pit install`: Downloads all dependencies listed in your `pit.toml`.
 
-## Pod Management
-
-- `pit add pod@version`: add a dependency
-- `pit remove pod`: remove a dependency
-- `pit install`: install all dependencies from `pit.toml`
-- `pit publish`: publish your pod to the registry
-
-Dependencies go into `.pit_pods/` at your project root.
+All your dependencies are stored locally in the `.pit_pods/` folder, keeping your project self-contained.

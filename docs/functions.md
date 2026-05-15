@@ -1,88 +1,92 @@
 # Functions
 
-Functions are the building blocks of your Olive program. They're easy to define and can be passed around just like any other value.
+Functions are the primary way to organize logic in Olive. They are first-class, meaning they can be passed as arguments, returned from other functions, and stored in variables.
 
 ## Defining Functions
 
-You define a function using the `fn` keyword. You can also specify what types of data it takes and what it returns.
+Use the `fn` keyword to define a function. While Olive can often infer types, explicitly provided types make code easier to read and allow errors to be caught earlier.
 
 ```python
 fn greet(name: str) -> str:
-    return "Hello, " + name
+    return f"Hello, {name}"
 ```
-
-If you don't specify the return type, Olive will try to figure it out for you.
 
 ## Arguments
 
-### Simple Arguments
+### Default Values
+
+You can provide default values for arguments, making them optional when calling the function.
 
 ```python
-fn add(a: int, b: int) -> int:
-    return a + b
+fn power(base: int, exponent: int = 2) -> int:
+    return math.ipow(base, exponent)
+
+print(power(10))     # 100
+print(power(10, 3))  # 1000
 ```
 
-### Flexible Arguments (*args and **kwargs)
+### Variadic Arguments (*args and **kwargs)
 
-Sometimes you don't know how many arguments a function will get. Olive supports flexible arguments:
+To handle an unknown number of arguments, use `*` for positional arguments (captured as a list) and `**` for keyword arguments (captured as a dictionary).
 
 ```python
-fn sum_all(*numbers: int) -> int:
-    let mut total = 0
-    for n in numbers:
-        total += n
-    return total
+fn log(message: str, *tags: str, **metadata: str):
+    print(f"[{' | '.join(tags)}] {message}")
+    for k, v in metadata:
+        print(f"  {k}: {v}")
 
-fn configure(**options: str):
-    # options is a dictionary of the arguments passed
-    pass
-
-sum_all(1, 2, 3)
-configure(debug="true", theme="dark")
+log("Server started", "info", "network", port="8080", host="localhost")
 ```
 
-## Passing Functions Around
+## Generics (Type Parameters)
 
-In Olive, functions are "first-class," which means you can pass them as arguments to other functions or save them in variables.
+Olive supports generics, enabling the creation of functions that work with any type. Type parameters are defined in square brackets after the function name.
 
 ```python
-fn apply_operation(f: (int) -> int, value: int) -> int:
-    return f(value)
+fn first[T](items: [T]) -> T:
+    return items[0]
 
-fn double(x: int) -> int:
-    return x * 2
-
-let result = apply_operation(double, 5)  # result is 10
+let n = first([1, 2, 3])      # T is inferred as int
+let s = first(["a", "b"])    # T is inferred as str
 ```
 
-## Smart Recursion
+## Function Types
 
-Olive is smart about recursive functions (functions that call themselves). If a function is structured in a way that its last action is calling itself (called a "tail call"), the compiler will automatically optimize it so it runs just as fast as a regular loop and never runs out of memory.
+You can use function types to specify that a parameter must be a function with a specific signature.
 
-## Special Tags (@ and #)
+```python
+fn apply(f: fn(int) -> int, val: int) -> int:
+    return f(val)
 
-Olive uses two types of tags to add extra behavior to functions:
+fn square(x: int) -> int: return x * x
+
+print(apply(square, 5))  # 25
+```
+
+## Decorators and Directives
+
+Olive uses tags to modify the behavior of functions at different stages.
 
 ### Decorators (@)
 
-Decorators change how a function works at **runtime**. For example, the `@memo` decorator can speed up your code by remembering the results of previous calls:
+Decorators modify the function's behavior at **runtime**. A common use case is caching results with `@memo`.
 
 ```python
 @memo
-fn expensive_calculation(n: int) -> int:
-    # This will now remember results so it doesn't have to recalculate them
-    pass
+fn fibonacci(n: int) -> int:
+    if n <= 1: return n
+    return fibonacci(n - 1) + fibonacci(n - 2)
 ```
 
 ### Directives (#)
 
-Directives give instructions to the **compiler** or tools. The most common one is `#[test]`, which tells the `pit` tool that this function is a test:
+Directives are instructions for the **compiler** or tools. They don't affect runtime logic directly but change how the code is handled during the build process.
 
 ```python
 #[test]
-fn test_addition():
-    assert 1 + 1 == 2
+fn test_math_logic():
+    assert 2 + 2 == 4
 ```
 
-When you run `pit test`, it will find all functions tagged with `#[test]` and run them for you.
+When you run `pit test`, it identifies all functions tagged with `#[test]` and executes them.
 

@@ -1,6 +1,6 @@
 # Enums and Pattern Matching
 
-Sometimes you have data that can be one of several different things. In Olive, we use `enums` for this. They're perfect for representing a set of options, like the status of a web request or different types of messages.
+Sometimes data can be one of several different things. In Olive, `enums` are used for this. They are ideal for representing a set of options, such as the status of a web request or different types of messages.
 
 ## Defining Enums
 
@@ -95,4 +95,23 @@ fn describe(val: Shape | Color) -> str:
 
 The compiler checks that every variant from every enum in the union is handled. If you add a new variant to `Shape` and forget to update the match, you'll get a compile error.
 
-This is useful when a function can return or accept values of fundamentally different kinds without collapsing them into a single flat enum.
+## Generic Enums
+
+Enums can also be generic, which is particularly useful for representing optional values or results of computations.
+
+```python
+enum Option[T]:
+    Some(T)
+    None
+
+fn find_item(id: int) -> Option[str]:
+    if id == 1:
+        return Some("Found it")
+    return None
+
+match find_item(1):
+    Some(val): print(val)
+    None: print("Not found")
+```
+
+The `Option` and `Result` enums are so useful that they are built into the language, but you can define your own generic enums whenever you need a type that can hold a variety of different types.

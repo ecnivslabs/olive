@@ -1,17 +1,17 @@
 # Basic Syntax and Types
 
-Olive's syntax is designed to be clean and easy to read. The language is "statically typed," which means the compiler helps you keep track of what kind of data your variables are holding.
+Olive's syntax is clean and structured. It's statically typed, but the compiler is smart enough to infer most types for you.
 
 ## Variables and Mutability
 
-You declare variables with `let`. By default, once you give a variable a value, you can't change it (it's "immutable").
+You declare variables with `let`. By default, variables are **immutable**—once a value is assigned, it cannot be changed. This simplifies reasoning about the program's state.
 
 ```python
 let name = "Olive"
 # name = "New Name"  <-- This would be an error
 ```
 
-If you know a variable's value will need to change, use `let mut`:
+To allow a variable to change, use `let mut`:
 
 ```python
 let mut count = 0
@@ -20,60 +20,93 @@ count = 1  # This is fine!
 
 ### Constants
 
-For values that never change and are known when you write the code, use `const`:
+For values that are known at compile-time and never change, use `const`. These are often optimized away entirely by the compiler.
 
 ```python
-const PI = 3.14159
+const MAX_RETRIES = 5
 ```
 
 ## Data Types
 
-Olive can usually figure out the type of a variable on its own, but you can also be explicit if you want.
+### Primitive Types
 
-### Simple Types
+- `int`: Whole numbers (64-bit by default).
+- `float`: Double-precision floating point numbers.
+- `str`: UTF-8 encoded text.
+- `bool`: `True` or `False`.
+- `None`: Represents the absence of a value.
 
-- `int`: Whole numbers (`42`, `-7`).
-- `float`: Numbers with decimals (`3.14`).
-- `str`: Text (`"Hello"`).
-- `bool`: True or False (`True`, `False`).
-- `None`: Represents "no value."
+### Union Types
 
-### F-Strings
+Sometimes a value could be one of several types. You can represent this using the pipe (`|`) symbol:
 
-You can easily build strings with variables inside them by putting an `f` before the quotes:
+```python
+let mut result: int | str = 10
+result = "Error"  # This is valid because result can be an int or a str
+```
+
+Union types are particularly powerful when combined with pattern matching.
+
+### String Formatting (F-Strings)
+
+F-strings are the preferred way to build strings from variables. Just prefix the string with `f`:
 
 ```python
 let name = "Olive"
-print(f"Hello, {name}!")
+let version = 1.0
+print(f"Welcome to {name} v{version:.2f}")
 ```
 
-### Collections
+You can even include basic expressions inside the braces.
 
-- **Lists**: Ordered groups of items. `[1, 2, 3]`
-- **Sets**: Groups of unique items. `{1, 2, 3}`
-- **Dictionaries**: Pairs of keys and values. `{"name": "Olive", "age": 1}`
-- **Tuples**: Fixed-size groups of different items. `(1, "Olive")`
+## Collections
+
+### Lists
+
+Ordered, growable sequences of a single type.
+
+```python
+let mut numbers = [1, 2, 3]
+numbers.push(4)
+let first = numbers[0]
+```
+
+### Dictionaries
+
+Key-value pairs for fast lookups.
+
+```python
+let scores = {"Alice": 95, "Bob": 88}
+print(scores["Alice"])
+```
+
+### Tuples
+
+Fixed-size groups of potentially different types.
+
+```python
+let pair: (int, str) = (1, "Active")
+let (id, status) = pair  # Destructuring
+```
 
 ## Control Flow
 
 ### If Statements
 
-```python
-if score >= 90:
-    print("A")
-elif score >= 80:
-    print("B")
-else:
-    print("C")
-```
+{{ ... }}
 
 ### Loops
 
 #### For Loops
 
+Used to iterate over collections or ranges.
+
 ```python
 for item in ["apple", "banana", "cherry"]:
     print(item)
+
+for i in range(5):
+    print(i)
 ```
 
 #### While Loops
@@ -87,21 +120,17 @@ while i < 5:
 
 ## Comprehensions
 
-Comprehensions are a quick way to create new collections from existing ones:
+A concise way to create new collections from existing ones:
 
 ```python
 let numbers = [1, 2, 3, 4]
-let squares = [x * x for x in numbers]  # [1, 4, 9, 16]
+let squares = [x * x for x in numbers if x % 2 == 0]  # [4, 16]
 ```
 
-## Useful Built-ins
+## Built-in Functions
 
-Olive comes with several functions you can use anywhere:
-
-- `print(value)`: Shows a value in the console.
-- `len(collection)`: Returns the number of items in a list, string, etc.
-- `range(stop)` or `range(start, stop)`: Generates a sequence of numbers.
-- `str(value)`, `int(value)`, `float(value)`: Converts a value to a different type.
-- `type(value)`: Returns a string describing the type of the value.
+- `print(...)`: Outputs values to the console.
+- `len(obj)`: Returns the length of a collection.
+- `type(obj)`: Returns the type of the value as a string.
+- `range(stop)` / `range(start, stop)`: Generates a sequence of integers.
 - `assert(condition, message)`: Stops the program if the condition is false.
-

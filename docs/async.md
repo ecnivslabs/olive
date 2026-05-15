@@ -1,61 +1,59 @@
 # Async and Concurrency
 
-Olive makes it easy to write programs that do many things at once. Whether you're building a web server or a data processing tool, Olive's `async` and `await` keywords let you write concurrent code that is both fast and easy to read.
+Olive is designed for the modern web, where thousands of concurrent tasks are often handled simultaneously. Instead of heavy threads that consume significant memory, Olive uses a lightweight `async` system for writing concurrent code that remains as readable as a standard script.
 
-## What is Async?
+## The `async` Function
 
-Normally, if your code has to wait for something (like downloading a file) the whole program stops until it's done. With `async`, your program can do other work while it waits.
-
-## `async fn` and `await`
-
-To make a function asynchronous, just add `async` before `fn`. Inside that function, you use `await` to wait for a task to finish.
+To make a function asynchronous, just add the `async` keyword. Inside these functions, you can `await` tasks that take time (like network requests or file I/O).
 
 ```python
-async fn fetch_data(url: str) -> str:
-    # This won't stop the whole program; it just pauses this function
-    let response = await http.http_get(url)
-    return response
+async fn fetch_user(id: int) -> User:
+    # This pauses the function, but not the program
+    let raw = await http.get(f"https://api.example.com/users/{id}")
+    return User.parse(raw)
 ```
 
-Calling an `async` function doesn't run it immediately. It returns a "future", which is like a promise that the work will eventually be done. The work only starts when you `await` it.
+When you call an `async` function, it doesn't run immediately. It returns a **Future**—a promise that the work will happen. The work only begins when you `await` the future.
 
-## Running Multiple Tasks at Once
+## Async Blocks
 
-### `gather`: Wait for everything
-
-If you have a bunch of tasks and you want to run all of them at the same time, use `gather`:
+Sometimes you want to run a small piece of code asynchronously without defining a whole new function. You can use an `async:` block for this.
 
 ```python
-let results = await gather([
+fn main():
+    let data = [1, 2, 3]
+    
+    # This starts a task in the background
+    async:
+        process_data(data)
+    
+    print("This runs while data is processing!")
+```
+
+## Running Tasks in Parallel
+
+### `gather`: All at once
+
+If you have multiple tasks and want to wait for all of them to finish, use `gather`. It runs them in parallel and returns all their results as a list.
+
+```python
+let [site1, site2] = await gather([
     fetch_data("https://site1.com"),
-    fetch_data("https://site2.com"),
+    fetch_data("https://site2.com")
 ])
-# All fetches happen at once!
 ```
 
-### `select`: Wait for the winner
+### `select`: The first to finish
 
-Sometimes you just want the result of the first task that finishes. Use `select`:
+If you're racing multiple tasks and only care about the winner, use `select`. It returns the result of the first task that completes and cancels the others.
 
 ```python
-let [index, result] = await select([task_a(), task_b()])
-print(f"Task {index} won the race!")
+let winner = await select([task_a(), task_b()])
 ```
 
-### `cancel`: Stopping a task
+## Why it's different
 
-If you decide you don't need a task anymore, you can stop it with `cancel`:
-
-```python
-let task = fetch_data("https://slow-site.com")
-cancel(task)
-```
-
-## How it Works (Simply)
-
-Olive's concurrency is built to be extremely efficient.
-
-- **Lightweight**: Unlike "threads" in other languages, which can use a lot of memory, Olive's async tasks are tiny. You can run thousands of them at once without slowing down your computer.
-- **Fast**: Olive uses all the cores of your CPU automatically. It spreads your tasks across your processor to get the work done as fast as possible.
-- **No Waste**: Most async systems use extra memory every time they pause. Olive doesn't. It's designed to be as lean as possible, so your programs stay fast even under heavy load.
+- **Zero-Cost Pauses**: Most languages use extra memory to save the "state" of a task when it pauses. Olive's compiler calculates this state at compile-time, making pauses almost free.
+- **True Parallelism**: Olive automatically spreads your tasks across every core of your CPU. You don't have to manage a thread pool; the language handles it for you.
+- **Safety**: The borrow checker applies to async code just like synchronous code. You can't have two tasks changing the same data at once, preventing data races by design.
 
