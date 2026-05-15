@@ -303,7 +303,7 @@ impl<'a> MirBuilder<'a> {
     /// read from its resolved signature. An async function's signature carries
     /// a `Future[T]`, but the `_return` slot holds the inner `T`. A return type
     /// left unconstrained (a bare type variable) falls back to `Any`.
-    fn inferred_return_type(&self, name: &str, is_async: bool) -> Type {
+    pub(crate) fn inferred_return_type(&self, name: &str, is_async: bool) -> Type {
         let ret = match self.global_types.get(name) {
             Some(Type::Fn(_, ret, _)) => (**ret).clone(),
             _ => return Type::Any,

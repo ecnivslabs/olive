@@ -1,24 +1,27 @@
 use super::utils::{load_config, maybe_install_deps, run_build_script};
-use crate::compile::{compile_and_emit, compile_and_test};
+use crate::compile::{cache, compile_and_emit, compile_and_test};
 use std::path::Path;
-
-fn derive_output_name(path: &str, output: Option<&String>) -> String {
-    output.cloned().unwrap_or_else(|| {
-        Path::new(path)
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string()
-    })
-}
 
 pub fn execute_build(path: Option<&String>, output: Option<&String>, time: bool, release: bool) {
     let original_dir = std::env::current_dir().unwrap();
     if let Some(p) = path {
         let path_obj = Path::new(p);
         if path_obj.is_file() || p.ends_with(".liv") {
-            let out = derive_output_name(p, output);
-            compile_and_emit(p, &out, time, release);
+            match output {
+                Some(o) => compile_and_emit(p, o, time, release),
+                None => {
+                    let (target, _) = cache::prepare(p, release);
+                    if cache::is_fresh(&target) {
+                        println!(
+                            "\x1b[1;32mFinished\x1b[0m build `{}` (already up to date).",
+                            target.binary_path
+                        );
+                    } else {
+                        compile_and_emit(p, &target.binary_path, time, release);
+                        cache::record(&target);
+                    }
+                }
+            }
             return;
         }
 
@@ -46,9 +49,17 @@ pub fn execute_build(path: Option<&String>, output: Option<&String>, time: bool,
                     author: pod.author.clone().unwrap_or_default(),
                 });
                 run_build_script(time, release);
-                let out = format!("grove/{}", pod.name);
-                println!("\x1b[1;32m   Compiling\x1b[0m {}", pod.name);
-                compile_and_emit(&pod.entry, &out, time, release);
+                let (target, _) = cache::prepare(&pod.entry, release);
+                if cache::is_fresh(&target) {
+                    println!(
+                        "\x1b[1;32mFinished\x1b[0m build `{}` (already up to date).",
+                        target.binary_path
+                    );
+                } else {
+                    println!("\x1b[1;32m   Compiling\x1b[0m {}", pod.name);
+                    compile_and_emit(&pod.entry, &target.binary_path, time, release);
+                    cache::record(&target);
+                }
             }
         }
     } else if let Some(pod) = config.pod {
@@ -58,8 +69,16 @@ pub fn execute_build(path: Option<&String>, output: Option<&String>, time: bool,
             author: pod.author.clone().unwrap_or_default(),
         });
         run_build_script(time, release);
-        let out = format!("grove/{}", pod.name);
-        compile_and_emit(&pod.entry, &out, time, release);
+        let (target, _) = cache::prepare(&pod.entry, release);
+        if cache::is_fresh(&target) {
+            println!(
+                "\x1b[1;32mFinished\x1b[0m build `{}` (already up to date).",
+                target.binary_path
+            );
+        } else {
+            compile_and_emit(&pod.entry, &target.binary_path, time, release);
+            cache::record(&target);
+        }
     } else {
         eprintln!("error: no pod or workspace defined in pit.toml");
         std::process::exit(1);
@@ -104,33 +123,4 @@ pub fn execute_test(time: bool, release: bool) {
         std::process::exit(1);
     }
     let _ = std::env::set_current_dir(original_dir);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn derive_output_name_uses_file_stem_when_no_output_given() {
-        let result = derive_output_name("src/main.liv", None);
-        assert_eq!(result, "main");
-    }
-
-    #[test]
-    fn derive_output_name_uses_given_output() {
-        let result = derive_output_name("src/main.liv", Some(&"my_prog".into()));
-        assert_eq!(result, "my_prog");
-    }
-
-    #[test]
-    fn derive_output_name_handles_path_without_extension() {
-        let result = derive_output_name("build", None);
-        assert_eq!(result, "build");
-    }
-
-    #[test]
-    fn derive_output_name_prefers_explicit_output() {
-        let result = derive_output_name("foo.liv", Some(&"bar".into()));
-        assert_eq!(result, "bar");
-    }
 }

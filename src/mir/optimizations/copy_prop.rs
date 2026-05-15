@@ -32,9 +32,23 @@ impl Transform for CopyPropagation {
             }
         };
 
+        // An owning move-type value copied into another local is a shallow
+        // alias, not a real duplicate (no refcount bump) - dest and src are
+        // both live handles to the same object. Forwarding such a copy lets
+        // MoveElision independently "move" (consume) each alias in this same
+        // fixpoint loop before the chain is fully collapsed, so two uses of
+        // what is really one object end up anchored to different locals and
+        // each looks like a single, unrelated move to the borrow checker -
+        // which then sees what is really a double-move as if it were sound.
+        let is_owning_move_local = |l: Local| -> bool {
+            func.locals
+                .get(l.0)
+                .is_some_and(|decl| decl.ty.is_move_type() && decl.is_owning)
+        };
+
         let mut safe_copies: HashMap<Local, Local> = HashMap::default();
         for (dest, src) in copy_assignments {
-            if def_count(dest) == 1 && def_count(src) <= 1 {
+            if def_count(dest) == 1 && def_count(src) <= 1 && !is_owning_move_local(src) {
                 safe_copies.insert(dest, src);
             }
         }
@@ -202,6 +216,39 @@ mod tests {
             TerminatorKind::Return,
         )]);
         assert!(!CopyPropagation.run(&mut f));
+    }
+
+    fn move_type_local() -> LocalDecl {
+        LocalDecl {
+            ty: crate::semantic::types::Type::Tuple(vec![crate::semantic::types::Type::Int]),
+            name: None,
+            span: sp(),
+            is_mut: false,
+            is_owning: true,
+        }
+    }
+
+    #[test]
+    fn copy_prop_skips_owning_move_type_source() {
+        // `dest = Copy(owning_src)` is a shallow alias, not a real duplicate.
+        // Forwarding it would let two uses of the same object end up
+        // anchored to different locals, each independently movable.
+        let mut f = func(vec![block(
+            vec![
+                assign(1, Rvalue::Use(Operand::Copy(Local(0)))),
+                assign(2, Rvalue::Use(Operand::Copy(Local(1)))),
+            ],
+            TerminatorKind::Return,
+        )]);
+        f.locals = vec![move_type_local(), move_type_local(), move_type_local()];
+        CopyPropagation.run(&mut f);
+        if let StatementKind::Assign(_, Rvalue::Use(Operand::Copy(l))) =
+            &f.basic_blocks[0].statements[1].kind
+        {
+            assert_eq!(*l, Local(1), "owning move-type alias must not be forwarded");
+        } else {
+            panic!("expected copy assignment");
+        }
     }
 
     #[test]

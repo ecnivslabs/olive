@@ -26,6 +26,15 @@ pub fn set_pod_meta(meta: PodMeta) {
     POD_META.with(|m| *m.borrow_mut() = Some(meta));
 }
 
+pub fn pod_name() -> Option<String> {
+    POD_META.with(|m| m.borrow().as_ref().map(|meta| meta.name.clone()))
+}
+
+#[cfg(test)]
+pub(crate) fn clear_pod_meta() {
+    POD_META.with(|m| *m.borrow_mut() = None);
+}
+
 fn synthesize_meta_stmts(span: span::Span) -> Vec<parser::Stmt> {
     let (name, version, author) = POD_META.with(|m| {
         let borrow = m.borrow();

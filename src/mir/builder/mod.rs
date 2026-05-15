@@ -192,7 +192,7 @@ impl<'a> MirBuilder<'a> {
                 _ => {}
             }
         }
-        self.start_function("__main__".to_string(), 0, Type::Any);
+        self.start_function("__main__".to_string(), 0, Type::Int);
 
         for stmt in &program.stmts {
             match &stmt.kind {
@@ -218,26 +218,75 @@ impl<'a> MirBuilder<'a> {
         });
 
         if has_main_fn && !already_calls_main {
-            let main_call_stmt = crate::parser::Stmt::new(
-                crate::parser::StmtKind::ExprStmt(crate::parser::Expr::new(
-                    crate::parser::ExprKind::Call {
-                        callee: Box::new(crate::parser::Expr::new(
-                            crate::parser::ExprKind::Identifier("main".to_string()),
-                            Span::default(),
-                        )),
-                        args: vec![],
-                    },
-                    Span::default(),
-                )),
+            let main_call_expr = crate::parser::Expr::new(
+                crate::parser::ExprKind::Call {
+                    callee: Box::new(crate::parser::Expr::new(
+                        crate::parser::ExprKind::Identifier("main".to_string()),
+                        Span::default(),
+                    )),
+                    args: vec![],
+                },
                 Span::default(),
             );
-            self.lower_stmt(&main_call_stmt);
+
+            // `main`'s own return type, resolved the same way a regular
+            // function's is. Only an integer-like type is forwarded as the
+            // process exit code (the only sensible reading of a return value
+            // there); anything else keeps the prior behavior of calling
+            // `main` for its side effects and exiting 0.
+            let main_ret_ty = program
+                .stmts
+                .iter()
+                .find_map(|s| match &s.kind {
+                    StmtKind::Fn {
+                        name,
+                        return_type,
+                        is_async,
+                        ..
+                    } if name == "main" => Some(match return_type {
+                        Some(ann) => self.resolve_type_expr(ann),
+                        None => self.inferred_return_type("main", *is_async),
+                    }),
+                    _ => None,
+                })
+                .unwrap_or(Type::Any);
+
+            if Self::is_exit_code_type(&main_ret_ty) {
+                let rval = self.lower_expr(&main_call_expr);
+                let coerced = self.coerce(rval, &main_ret_ty, &Type::Int, Span::default());
+                self.push_statement(
+                    StatementKind::Assign(Local(0), Rvalue::Use(coerced)),
+                    Span::default(),
+                );
+            } else {
+                let main_call_stmt = crate::parser::Stmt::new(
+                    crate::parser::StmtKind::ExprStmt(main_call_expr),
+                    Span::default(),
+                );
+                self.lower_stmt(&main_call_stmt);
+            }
         }
 
         if let Some(bb) = self.current_block {
             self.terminate_block(bb, TerminatorKind::Return, Span::default());
         }
         self.finish_function();
+    }
+
+    /// Whether a type is a sensible process exit code: a plain integer.
+    fn is_exit_code_type(ty: &Type) -> bool {
+        matches!(
+            ty,
+            Type::Int
+                | Type::I8
+                | Type::I16
+                | Type::I32
+                | Type::U8
+                | Type::U16
+                | Type::U32
+                | Type::U64
+                | Type::Usize
+        )
     }
 
     pub(super) fn start_function(&mut self, name: String, arg_count: usize, ret_ty: Type) {

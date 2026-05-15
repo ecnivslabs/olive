@@ -86,5 +86,5 @@ Olive packages are called **pods**. You declare them in your project manifest:
 * `pit add pod_name`: Adds the specified pod to `pit.toml`.
 * `pit install`: Downloads and installs all dependencies.
 
-Resolved dependencies are stored in a shared cache under `~/.pit/pods/`, keyed by the Olive version, so a given pod is downloaded once and reused across projects. Compiled output for the current project goes in `grove/`, which the generated `.gitignore` excludes from version control.
+Resolved dependencies are stored in a shared cache under `~/.pit/pods/`, keyed by the Olive version, so a given pod is downloaded once and reused across projects. Compiled output for the current project goes in `grove/debug/` or `grove/release/` depending on build mode, which the generated `.gitignore` excludes from version control.
 

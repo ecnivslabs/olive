@@ -114,7 +114,8 @@ impl<M: Module> CraneliftCodegen<M> {
         let local_fn = self
             .module
             .declare_func_in_func(olive_main_id, builder.func);
-        builder.ins().call(local_fn, &[]);
+        let call = builder.ins().call(local_fn, &[]);
+        let exit_code_i64 = builder.inst_results(call)[0];
 
         // Finalize the Python interpreter so atexit handlers run. No-op if never initialized.
         if let Some(fin_fn) = self.declare_runtime_void_fn("__olive_py_finalize") {
@@ -122,8 +123,8 @@ impl<M: Module> CraneliftCodegen<M> {
             builder.ins().call(local_fin, &[]);
         }
 
-        let zero = builder.ins().iconst(types::I32, 0);
-        builder.ins().return_(&[zero]);
+        let exit_code_i32 = builder.ins().ireduce(types::I32, exit_code_i64);
+        builder.ins().return_(&[exit_code_i32]);
         builder.finalize();
         self.module.define_function(func_id, &mut ctx).unwrap();
         self.func_ids.insert("main".to_string(), func_id);

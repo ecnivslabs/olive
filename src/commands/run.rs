@@ -58,7 +58,7 @@ pub fn execute_run(
 
     let mode = resolve_run_mode(is_project, jit, aot, hybrid, emit_ast, emit_mir);
     match mode {
-        RunMode::Jit => compile_and_run(&entry, true, time, emit_ast, emit_mir, release),
+        RunMode::Jit => compile_and_run(&entry, time, emit_ast, emit_mir, release),
         RunMode::Aot => compile_and_run_aot(&entry, time, release),
         RunMode::Hybrid => compile_hybrid(&entry, time, release),
     }

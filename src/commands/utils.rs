@@ -140,7 +140,10 @@ pub fn maybe_install_deps(deps: &HashMap<String, String>) {
 pub fn run_build_script(time: bool, release: bool) {
     if Path::new("build.liv").exists() {
         println!("\x1b[1;34mRunning\x1b[0m build.liv");
-        crate::compile::compile_and_run("build.liv", true, time, false, false, release);
+        let code = crate::compile::run_script("build.liv", time, release);
+        if code != 0 {
+            process::exit(code);
+        }
     }
 }
 

@@ -1,3 +1,4 @@
+pub(crate) mod cache;
 pub(crate) mod errors;
 pub(crate) mod fix;
 pub(crate) mod laws;
@@ -10,22 +11,25 @@ mod tests;
 
 use crate::codegen::cranelift::CraneliftCodegen;
 use crate::parser;
-use linker::{compute_source_hash, ensure_dir, exec_binary, link_object};
-use loader::collect_source_files;
+use linker::{ensure_dir, exec_binary, link_object};
 use pipeline::run_pipeline_opt;
-use std::{collections::HashSet, fs, path::Path, process};
+use std::{fs, path::Path, process};
 
-pub fn compile_and_run(
+/// Compiles `filename` via JIT and executes its `main`, returning the
+/// program's exit code instead of terminating the process. This lets a
+/// caller run a script (e.g. a build script) and decide what to do next
+/// based on the result, rather than the whole `pit` process dying inside
+/// what's meant to be a sub-step.
+fn run_jit_to_exit_code(
     filename: &str,
-    run: bool,
     show_time: bool,
     emit_ast: bool,
     emit_mir: bool,
     release: bool,
-) {
+) -> i32 {
     let out = match run_pipeline_opt(filename, release) {
         Ok(o) => o,
-        Err(_) => std::process::exit(1),
+        Err(_) => return 1,
     };
 
     if emit_ast {
@@ -54,30 +58,40 @@ pub fn compile_and_run(
     codegen.finalize();
     let cg_duration = cg_start.elapsed();
 
-    if !run {
-        println!("\x1b[1;32mFinished\x1b[0m build successfully.");
-        if show_time {
-            print_jit_timings(&out.timings, cg_duration, None);
-        }
-        return;
-    }
-
-    if let Some(main_ptr) = codegen.get_function("__main__") {
-        let main_fn: extern "C" fn() -> i64 = unsafe { std::mem::transmute(main_ptr) };
-        let exec_start = std::time::Instant::now();
-        let exit_code = main_fn();
-        let exec_duration = exec_start.elapsed();
-
-        // Finalize the Python interpreter for atexit handlers. No-op if never initialized.
-        finalize_python_runtime();
-
-        if show_time {
-            print_jit_timings(&out.timings, cg_duration, Some(exec_duration));
-        }
-        std::process::exit(exit_code as i32);
-    } else {
+    let Some(main_ptr) = codegen.get_function("__main__") else {
         println!("No `main` function found to execute.");
+        return 0;
+    };
+
+    let main_fn: extern "C" fn() -> i64 = unsafe { std::mem::transmute(main_ptr) };
+    let exec_start = std::time::Instant::now();
+    let exit_code = main_fn();
+    let exec_duration = exec_start.elapsed();
+
+    // Finalize the Python interpreter for atexit handlers. No-op if never initialized.
+    finalize_python_runtime();
+
+    if show_time {
+        print_jit_timings(&out.timings, cg_duration, Some(exec_duration));
     }
+    exit_code as i32
+}
+
+pub fn compile_and_run(
+    filename: &str,
+    show_time: bool,
+    emit_ast: bool,
+    emit_mir: bool,
+    release: bool,
+) {
+    let code = run_jit_to_exit_code(filename, show_time, emit_ast, emit_mir, release);
+    std::process::exit(code);
+}
+
+/// Runs a script (e.g. `build.liv`) to completion and returns its exit code
+/// without terminating the process, so the caller can continue afterward.
+pub fn run_script(filename: &str, show_time: bool, release: bool) -> i32 {
+    run_jit_to_exit_code(filename, show_time, false, false, release)
 }
 
 /// Calls `olive_py_finalize` via `dlsym(RTLD_DEFAULT)`, working whether
@@ -151,37 +165,10 @@ pub fn compile_and_emit(filename: &str, output: &str, show_time: bool, release: 
 }
 
 pub fn compile_hybrid(filename: &str, show_time: bool, release: bool) {
-    let mut collected = Vec::new();
-    let mut py_files = Vec::new();
-    let mut visited = HashSet::new();
-    collect_source_files(filename, &mut collected, &mut py_files, &mut visited);
+    let (target, py_files) = cache::prepare(filename, release);
 
-    // Include Python files and pit.toml in hash so changes trigger rebuild
-    let mut all_files = collected.clone();
-    all_files.extend(py_files.iter().cloned());
-    if let Ok(p) = std::fs::canonicalize("pit.toml") {
-        all_files.push(p.to_string_lossy().into_owned());
-    }
-    let hash = compute_source_hash(&all_files);
-
-    ensure_dir("grove/.cache");
-
-    let manifest_path = "grove/.cache/manifest.json";
-    let binary_path = if cfg!(target_os = "windows") {
-        "grove/.cache/program.exe"
-    } else {
-        "grove/.cache/program"
-    };
-
-    let cached = fs::read_to_string(manifest_path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| v["hash"].as_u64())
-        .map(|h| h == hash)
-        .unwrap_or(false);
-
-    if cached && Path::new(binary_path).exists() {
-        let code = exec_binary(binary_path);
+    if cache::is_fresh(&target) {
+        let code = exec_binary(&target.binary_path);
         process::exit(code);
     }
 
@@ -191,12 +178,10 @@ pub fn compile_hybrid(filename: &str, show_time: bool, release: bool) {
         invalidate_pyc(py_path);
     }
 
-    compile_and_emit(filename, binary_path, show_time, release);
+    compile_and_emit(filename, &target.binary_path, show_time, release);
+    cache::record(&target);
 
-    let manifest = serde_json::json!({ "hash": hash });
-    fs::write(manifest_path, manifest.to_string()).ok();
-
-    let code = exec_binary(binary_path);
+    let code = exec_binary(&target.binary_path);
     process::exit(code);
 }
 
@@ -225,11 +210,11 @@ fn invalidate_pyc(py_path: &str) {
 
 pub fn compile_and_run_aot(filename: &str, show_time: bool, release: bool) {
     let binary_path = if cfg!(target_os = "windows") {
-        "grove/.cache/aot_run.exe"
+        "grove/cache/aot_run.exe"
     } else {
-        "grove/.cache/aot_run"
+        "grove/cache/aot_run"
     };
-    ensure_dir("grove/.cache");
+    ensure_dir("grove/cache");
     compile_and_emit(filename, binary_path, show_time, release);
     let code = exec_binary(binary_path);
     fs::remove_file(binary_path).ok();
