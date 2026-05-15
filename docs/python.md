@@ -68,9 +68,11 @@ Going the other direction, Olive primitives are automatically converted when pas
 | `float` / `f64` | `float` | Coerces via `c_double` |
 | `str` | `str` | UTF-8 |
 | `list` | `OliveListProxy` | Zero-copy wrapper, mutations propagate both ways |
-| `dict` | `OliveDictProxy` | Zero-copy wrapper, mutations propagate both ways |
+| `dict` | `OliveDictProxy` | Zero-copy wrapper, mutations propagate both ways; supports `get`, `setdefault`, `pop`, `keys`, `values`, `items`, `in` |
 | `None` | `None` | `Py_None` |
 | `glm.vec3` etc. | native Python object | Tracked type; erased to `PyObject` at runtime boundary |
+
+When an Olive value is assigned to a native-typed slot (`i64`, `f64`, `str`, struct field, collection element), the compiler inserts the correct runtime unboxer automatically. No manual coercion call needed. The reverse (native to PyObject) is also automatic when passing native values to Python functions.
 
 ## Manual Stub Blocks
 
@@ -86,13 +88,28 @@ import py "mymodule" as mm:
 
 Manual stub blocks take priority over auto-introspection. `PyObject` in a stub declaration is the explicit escape hatch for return types you don't want to track.
 
+## Deep Conversion with `realize`
+
+Olive collections (lists, dicts) passed to Python are wrapped in `OliveListProxy` / `OliveDictProxy` by default. These are zero-copy wrappers: mutations in either language propagate to the other. Some Python libraries call `isinstance(x, dict)` and reject proxies. Use `realize(val)` to deep-convert an Olive value into a real Python object:
+
+```olive
+import py "json" as json
+
+let data = {"key": [1, 2, 3]}
+let real = realize(data)      # deep-converts to a real Python dict
+json.dumps(real)               # works because isinstance(real, dict) is True
+```
+
+`realize` is the inverse of the automatic coercion path. Native Olive values (int, float, str, None) pass through unchanged. Collections are recursively converted to real Python objects on the Python heap.
+
 ## Runtime Library Discovery
 
-Olive locates the active Python shared library at startup using a three-tier fallback:
+Olive locates the active Python shared library at startup using a four-tier fallback:
 
 1. **`OLIVE_PYTHON_PATH`** or **`PYTHON_LIBRARY`** environment variables: checked first; set either to an absolute path to force a specific installation.
 2. **Subprocess query**: Olive spawns `python3` and reads `sysconfig` to find the exact library for the active environment (`venv`, `pyenv`, `conda`, system).
-3. **Hardcoded search paths**: fallback scan of common OS-specific locations (`libpython3.so` on Linux, Homebrew paths on macOS, `python3.dll` on Windows).
+3. **Dynamic directory scan**: Olive scans standard library directories (`/usr/lib`, `/usr/local/lib`, `/opt/homebrew/lib`, etc.) for any `libpython3.X.so` or `libpython3.X.dylib`, picking the highest version. This handles any Python 3.x version without hardcoding.
+4. **Final fallback**: Bare name search via the dynamic linker for common DLL names on Windows (`python3.dll`, `python312.dll`, etc.).
 
 ```bash
 export OLIVE_PYTHON_PATH="/usr/lib/libpython3.14.so"

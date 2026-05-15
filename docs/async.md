@@ -8,8 +8,7 @@ Declare asynchronous functions with the `async` keyword. Use the `await` keyword
 
 ```rust
 async fn fetch_user(id: int) -> User:
-    // Yields control back to the executor while the request is in flight
-    let raw = await http.get(f"https://api.example.com/users/{id}")
+    let raw = requests.get(f"https://api.example.com/users/{id}")
     return User.parse(raw)
 ```
 

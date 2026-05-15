@@ -63,4 +63,4 @@ The compiler identifies patterns of data-parallel work and emits SIMD instructio
 You can use the `pit` toolchain to see what the optimizer is doing to your code:
 
 - `pit run --emit-mir`: Prints the MIR after all optimizations.
-- `pit build --stats`: Shows how many times each optimization pass was triggered and how much code was removed.
+- `pit build --emit-mir`: Prints the MIR after all optimizations.

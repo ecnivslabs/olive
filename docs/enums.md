@@ -97,21 +97,21 @@ The compiler checks that every variant from every enum in the union is handled. 
 
 ## Generic Enums
 
-Enums can also be generic, which is particularly useful for representing optional values or results of computations.
+Enums can also be generic.
 
 ```rust
-enum Option[T]:
-    Some(T)
-    None
+enum Response[T]:
+    Data(T)
+    Error(str)
+    Empty
 
-fn find_item(id: int) -> Option[str]:
+fn find_item(id: int) -> Response[str]:
     if id == 1:
-        return Some("Found it")
-    return None
+        return Data("Found it")
+    return Empty
 
 match find_item(1):
-    Some(val): print(val)
-    None: print("Not found")
+    Data(val): print(val)
+    Error(msg): print(msg)
+    Empty: print("Not found")
 ```
-
-The `Option` and `Result` enums are built into the prelude, but you can define custom generic enums for arbitrary multi-type scenarios.

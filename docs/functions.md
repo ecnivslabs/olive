@@ -71,13 +71,21 @@ Olive uses tags to modify the behavior of functions at different stages.
 
 ### Decorators (@)
 
-Decorators modify the function's behavior at **runtime**. A common use case is caching results with `@memo`.
+Decorators modify the function's behavior at **runtime** or affect code generation. Common decorators:
 
 ```rust
 @memo
 fn fibonacci(n: int) -> int:
     if n <= 1: return n
     return fibonacci(n - 1) + fibonacci(n - 2)
+```
+
+`@safe` marks an FFI function as safe to call without an `unsafe` block:
+
+```rust
+import "libm.so" as math:
+    @safe
+    fn sqrt(x: float) -> float
 ```
 
 ### Directives (#)

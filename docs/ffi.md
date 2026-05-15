@@ -85,6 +85,24 @@ fn allocate_example():
 
 Keep `unsafe` scopes small and wrap pointer work behind a safe interface.
 
+### Marking FFI as Safe (`@safe`)
+
+If a native import block or a specific function is known to be safe (no memory risks), mark it with `@safe`. This skips the `unsafe:` requirement:
+
+```rust
+// All functions in this block are safe to call
+@safe
+import "libm.so" as math:
+    fn sqrt(x: float) -> float
+    fn sin(x: float) -> float
+
+// Or mark individual functions
+import "libfoo.so" as foo:
+    @safe
+    fn get_version() -> int
+    fn set_buffer(ptr: *void, len: int)  // still requires unsafe
+```
+
 ## Pointers vs References
 
 * **References** (`&T` and `&mut T`): safe, tracked, and validated by the compiler.

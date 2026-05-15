@@ -51,9 +51,9 @@ You can name the type explicitly when you want to, though it is rarely needed:
 let item = first[int]([1, 2, 3])
 ```
 
-## Trait Bounds
+## Structural Requirements
 
-Constrain a type parameter with `: Trait` so the parameter is expected to provide that trait's methods:
+You can annotate a type parameter with `: Trait` to document that the parameter must provide the trait's methods:
 
 ```rust
 trait Comparable:
@@ -66,4 +66,4 @@ fn larger[T: Comparable](a: T, b: T) -> T:
     return b
 ```
 
-Any type implementing `Comparable` can be passed to `larger`.
+The bound is structural: if `T` has the methods the body calls, it works. The compiler validates method resolution on the concrete type at instantiation time, not the trait bound itself. A type that happens to have `.rank()` works even without explicitly implementing `Comparable`, though implementing the trait is preferred for clarity.

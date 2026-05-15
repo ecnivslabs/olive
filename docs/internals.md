@@ -49,7 +49,7 @@ The final stage compiles MIR to native machine code through Cranelift.
 
 - **SSA generation**: MIR is converted to Static Single Assignment form, which is Cranelift's native input format.
 - **Intrinsics**: The JIT runtime provides optimized intrinsics for memory allocation, string operations, SIMD, and built-in standard library calls.
-- **Standard library**: Built-in runtime symbols (`math`, `io`, `aio`, `net`, `http`, `random`) are resolved from a dynamically loaded shared library rather than being baked into the JIT. This keeps startup fast and the binary lean.
+- **Standard library**: Built-in runtime symbols (`math`, `io`, `aio`, `net`, `requests`, `random`) are resolved from a dynamically loaded shared library rather than being baked into the JIT. This keeps startup fast and the binary lean.
 - **Execution**: Compiled functions are loaded into executable memory and invoked directly by the Olive runtime.
 
 ## Error Reporting & Diagnostics

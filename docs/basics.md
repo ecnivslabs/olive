@@ -117,7 +117,7 @@ Lists also support `insert(index, value)`, `remove(index)`, `extend(other)`, `so
 
 ### Fixed Arrays
 
-Fixed-size arrays with a known length at compile time:
+Fixed-size arrays with a known length at compile time. The length is structural; to actually allocate a fixed-size buffer, use `bytes_new(n)` or a list with `list_new(n)`.
 
 ```rust
 let mut matrix: [int; 16]
