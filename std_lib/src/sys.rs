@@ -2,13 +2,20 @@ use crate::olive_str_internal;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_sys_hostname() -> i64 {
-    let mut buf = [0u8; 256];
-    unsafe {
-        if libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) == 0 {
-            let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-            let hostname = std::str::from_utf8(&buf[..end]).unwrap_or("unknown");
-            return olive_str_internal(hostname);
+    #[cfg(unix)]
+    {
+        let mut buf = [0u8; 256];
+        unsafe {
+            if libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) == 0 {
+                let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+                let hostname = std::str::from_utf8(&buf[..end]).unwrap_or("unknown");
+                return olive_str_internal(hostname);
+            }
         }
+    }
+    #[cfg(windows)]
+    if let Ok(name) = std::env::var("COMPUTERNAME") {
+        return olive_str_internal(&name);
     }
     olive_str_internal("unknown")
 }
@@ -75,6 +82,7 @@ pub extern "C" fn olive_sys_username() -> i64 {
     if let Ok(user) = std::env::var("USER").or_else(|_| std::env::var("USERNAME")) {
         return olive_str_internal(&user);
     }
+    #[cfg(unix)]
     unsafe {
         let uid = libc::getuid();
         let pw = libc::getpwuid(uid);

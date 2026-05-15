@@ -21,7 +21,13 @@ fn main() {
     // eliminating the runtime dlopen overhead in CraneliftCodegen::new().
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
     let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
-    let target_dir = format!("{}/target/{}", manifest_dir, profile);
+    let target = std::env::var("TARGET").unwrap_or_default();
+    let host = std::env::var("HOST").unwrap_or_default();
+    let target_dir = if !target.is_empty() && target != host {
+        format!("{}/target/{}/{}", manifest_dir, target, profile)
+    } else {
+        format!("{}/target/{}", manifest_dir, profile)
+    };
     let lib_path = format!("{}/libolive_std.so", target_dir);
     // Suppress Rust's cfg unknown-name warning.
     println!("cargo::rustc-check-cfg=cfg(olive_std_linked)");

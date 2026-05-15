@@ -31,6 +31,16 @@ fn unix_to_parts(ts: i64) -> (i64, i64, i64, i64, i64, i64) {
 }
 
 fn local_offset_secs() -> i64 {
+    #[cfg(unix)]
+    return unix_tz_offset();
+    #[cfg(windows)]
+    return windows_tz_offset();
+    #[cfg(not(any(unix, windows)))]
+    return 0;
+}
+
+#[cfg(unix)]
+fn unix_tz_offset() -> i64 {
     unsafe {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -39,6 +49,25 @@ fn local_offset_secs() -> i64 {
         let local = libc::localtime(&ts);
         if local.is_null() { return 0; }
         (*local).tm_gmtoff as i64
+    }
+}
+
+#[cfg(windows)]
+fn windows_tz_offset() -> i64 {
+    unsafe {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as libc::time_t;
+        let mut ltm: libc::tm = std::mem::zeroed();
+        let mut utm: libc::tm = std::mem::zeroed();
+        if libc::localtime_s(&mut ltm, &ts) != 0 { return 0; }
+        if libc::gmtime_s(&mut utm, &ts) != 0 { return 0; }
+        let l = ltm.tm_hour as i64 * 3600 + ltm.tm_min as i64 * 60 + ltm.tm_sec as i64;
+        let u = utm.tm_hour as i64 * 3600 + utm.tm_min as i64 * 60 + utm.tm_sec as i64;
+        let day_diff = (ltm.tm_yday - utm.tm_yday) as i64;
+        let day_secs = if day_diff > 1 { -86400 } else if day_diff < -1 { 86400 } else { day_diff * 86400 };
+        l - u + day_secs
     }
 }
 
