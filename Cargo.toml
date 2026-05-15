@@ -30,6 +30,7 @@ serde_json = "1.0.149"
 toml = "0.8"
 rustyline = { version = "14.0", default-features = false }
 ureq = { version = "2", features = ["json"] }
+openssl = { version = "0.10", features = ["vendored"] }
 blake3 = "1"
 tar = "0.4"
 zstd = "0.13"
