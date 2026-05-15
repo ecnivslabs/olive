@@ -87,6 +87,13 @@ enum Commands {
         pod: Option<String>,
     },
     Publish,
+    Compile {
+        file: String,
+        #[arg(short, long)]
+        output: Option<String>,
+        #[arg(short, long)]
+        time: bool,
+    },
     Upgrade,
 }
 
@@ -338,6 +345,21 @@ fn main() {
                 eprintln!("error: {}", e);
                 process::exit(1);
             }
+        }
+
+        Commands::Compile {
+            file,
+            output,
+            time,
+        } => {
+            let out = output.unwrap_or_else(|| {
+                Path::new(&file)
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string()
+            });
+            compile_and_emit(&file, &out, time);
         }
 
         Commands::Upgrade => {
