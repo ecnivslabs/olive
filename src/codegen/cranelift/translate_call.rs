@@ -38,6 +38,7 @@ impl<M: Module> CraneliftCodegen<M> {
         ffi_vararg_ptrs: &HashMap<String, *const u8>,
         ffi_vararg_ids: &std::collections::HashSet<String>,
         ffi_entries: &[super::FfiFnEntry],
+        dispatch_ids: &HashMap<String, DataId>,
         builder: &mut FunctionBuilder,
         vars: &HashMap<Local, Variable>,
         func: &Operand,
@@ -400,6 +401,18 @@ impl<M: Module> CraneliftCodegen<M> {
                     let sig_ref = builder.import_signature(sig);
                     let fn_addr = builder.ins().func_addr(types::I64, local_func);
                     builder.ins().call_indirect(sig_ref, fn_addr, &final_args)
+                } else if let Some(&cell_id) = dispatch_ids.get(resolved_name) {
+                    // Route through the function's dispatch cell instead of calling
+                    // `local_func` directly, so a future tier-up recompiler can retarget
+                    // the cell without touching this call site. Reuses `local_func`'s
+                    // already-registered signature; only the callee address changes.
+                    let local_cell = module.declare_data_in_func(cell_id, builder.func);
+                    let cell_ptr = builder.ins().symbol_value(types::I64, local_cell);
+                    let target = builder
+                        .ins()
+                        .load(types::I64, MemFlags::trusted(), cell_ptr, 0);
+                    let sig_ref = builder.func.dfg.ext_funcs[local_func].signature;
+                    builder.ins().call_indirect(sig_ref, target, &final_args)
                 } else {
                     builder.ins().call(local_func, &final_args)
                 };

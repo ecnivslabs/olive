@@ -1,11 +1,13 @@
 mod async_sm;
 mod imports;
 mod jit_loader;
+pub(crate) mod profile;
 mod setup;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod tests_extended;
+pub(crate) mod tier_up;
 mod translate;
 mod translate_aggregate;
 mod translate_binop;
@@ -14,13 +16,28 @@ mod translate_rvalue;
 
 use crate::mir::{Local, MirFunction};
 use cranelift::prelude::*;
-use cranelift_jit::{JITBuilder, JITModule};
+use cranelift_jit::{ArenaMemoryProvider, JITBuilder, JITModule};
 use cranelift_module::{DataId, FuncId, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use rustc_hash::FxHashMap as HashMap;
 use std::process;
 
+/// Reserves one region for the JIT module's whole life, not per-retier (see `new_jit`).
+const JIT_ARENA_SIZE: usize = 128 * 1024 * 1024;
+
 pub(super) const KIND_SM_FUTURE: i64 = 5;
+
+/// Site graduated all-int; kept in sync by hand with `std_lib`'s `ANY_SITE_SAMPLE_WINDOW`.
+pub(crate) const ANY_SITE_GRADUATED: u8 = 8;
+
+/// Ops with a guarded fast path; `kind_history.rs` and `translate_binop.rs` must agree.
+pub(super) fn is_specializable_any_binop(op: &crate::parser::BinOp) -> bool {
+    use crate::parser::BinOp::*;
+    matches!(
+        op,
+        Add | Sub | Mul | Div | Mod | Lt | LtEq | Gt | GtEq | Eq | NotEq
+    )
+}
 
 pub(super) type FfiStructFieldLayout = (String, i32, String, Option<(u8, u8)>);
 pub(super) type FfiLibInfo = (
@@ -476,16 +493,27 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_str_char_count", b"olive_str_char_count\0"),
     ("__olive_str_concat", b"olive_str_concat\0"),
     ("__olive_any_add", b"olive_any_add\0"),
+    ("__olive_any_add_profiled", b"olive_any_add_profiled\0"),
     ("__olive_any_sub", b"olive_any_sub\0"),
+    ("__olive_any_sub_profiled", b"olive_any_sub_profiled\0"),
     ("__olive_any_mul", b"olive_any_mul\0"),
+    ("__olive_any_mul_profiled", b"olive_any_mul_profiled\0"),
     ("__olive_any_div", b"olive_any_div\0"),
+    ("__olive_any_div_profiled", b"olive_any_div_profiled\0"),
     ("__olive_any_mod", b"olive_any_mod\0"),
+    ("__olive_any_mod_profiled", b"olive_any_mod_profiled\0"),
     ("__olive_any_lt", b"olive_any_lt\0"),
+    ("__olive_any_lt_profiled", b"olive_any_lt_profiled\0"),
     ("__olive_any_le", b"olive_any_le\0"),
+    ("__olive_any_le_profiled", b"olive_any_le_profiled\0"),
     ("__olive_any_gt", b"olive_any_gt\0"),
+    ("__olive_any_gt_profiled", b"olive_any_gt_profiled\0"),
     ("__olive_any_ge", b"olive_any_ge\0"),
+    ("__olive_any_ge_profiled", b"olive_any_ge_profiled\0"),
     ("__olive_any_eq", b"olive_any_eq\0"),
+    ("__olive_any_eq_profiled", b"olive_any_eq_profiled\0"),
     ("__olive_any_ne", b"olive_any_ne\0"),
+    ("__olive_any_ne_profiled", b"olive_any_ne_profiled\0"),
     ("__olive_str_contains", b"olive_str_contains\0"),
     ("__olive_str_ends_with", b"olive_str_ends_with\0"),
     ("__olive_str_eq", b"olive_str_eq\0"),
@@ -612,7 +640,49 @@ pub struct CraneliftCodegen<M: Module> {
     pub(super) global_vars: Vec<String>,
     pub(super) file_names: HashMap<usize, String>,
     pub(super) loc_ids: HashMap<crate::span::Span, DataId>,
+    /// Whether to emit per-function call-count instrumentation (`setup/profiling.rs`).
+    /// On for JIT (feeds future tier-up decisions), off for AOT unless a profile is requested.
+    /// `pub(crate)` (wider than most fields here) so test harnesses can toggle it pre-`generate()`.
+    pub(crate) profile: bool,
+    /// Function name -> its `__olive_hotcount$<name>` data segment, set by `generate_hotcounts`.
+    pub(super) hotcount_ids: HashMap<String, DataId>,
+    /// Function name -> its `__olive_dispatch$<name>` pointer cell, set by `generate_dispatch_cells`.
+    /// Calls to a function with a cell go through it (load + call_indirect) so a future
+    /// tier-up recompiler can retarget the cell without touching call sites. Populated
+    /// only when `profile` is set (JIT); AOT keeps today's direct calls.
+    pub(super) dispatch_ids: HashMap<String, DataId>,
+    /// One 1-byte kind-history cell per `Any`-typed `+` call site in source order,
+    /// allocated by `generate_kind_history` (counts sites first, then allocates).
+    /// `translate_binop.rs` consumes them via `any_add_site_cursor` in the same
+    /// deterministic statement walk `translate_function` already does, so the same
+    /// site always gets the same cell across a `generate()` call. Populated only
+    /// when `profile` is set. Feeds Phase 2 (Any-op inline specialization); nothing
+    /// reads these cells yet.
+    pub(super) any_add_site_ids: Vec<DataId>,
+    pub(super) any_add_site_cursor: usize,
+    /// Function name -> `[start, end)` range in `any_add_site_ids` that function's
+    /// own sites occupy, recorded by `generate_kind_history` in the same order
+    /// `count_any_add_sites` visits functions. `retier()` resets the cursor to a
+    /// function's own `start` before re-translating it, so re-consuming site slots
+    /// during a retier reads back *that function's* observed history instead of
+    /// silently running off the end of the array (which reads as permanently
+    /// out-of-bounds -- safe, since every consumer bounds-checks, but it would
+    /// make specialization never fire at all).
+    pub(super) any_add_site_ranges: HashMap<String, (usize, usize)>,
+    /// Site indices (within the function currently being retiered's own
+    /// `any_add_site_ranges` range) `retier()` found graduated to all-int.
+    /// `translate_binop.rs` emits the guarded native fast path for these instead
+    /// of an unconditional runtime call. Always empty outside a retier.
+    pub(super) specialize_sites: rustc_hash::FxHashSet<usize>,
 }
+
+// The only field blocking auto-derived `Send` is `ffi_vararg_ptrs: HashMap<String, *const u8>`
+// -- raw function pointers into an FFI library kept alive for the process lifetime by `_libs`.
+// They're set once during `new_jit` and only ever read as call targets afterward, so moving a
+// `CraneliftCodegen<JITModule>` into the tier-up thread (`tier_up::spawn_tier_up_thread`) is
+// sound: all mutation of the codegen state (including these pointers' owning struct) happens
+// under the `Mutex` that wraps it, never concurrently.
+unsafe impl Send for CraneliftCodegen<JITModule> {}
 
 fn c_prim_layout(ty: &str) -> (i32, i32) {
     match ty {
@@ -778,6 +848,11 @@ impl CraneliftCodegen<JITModule> {
             });
 
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        // Default provider mmaps per finalize call; a retier can land >2GB
+        // from the runtime lib and panic the relocation (32-bit displacement).
+        if let Ok(arena) = ArenaMemoryProvider::new_with_size(JIT_ARENA_SIZE) {
+            builder.memory_provider(Box::new(arena));
+        }
 
         let needed = imports::collect_needed_imports(&functions);
         let has_async = functions.iter().any(|f| f.is_async);
@@ -926,6 +1001,13 @@ impl CraneliftCodegen<JITModule> {
             global_vars,
             file_names,
             loc_ids: HashMap::default(),
+            profile: true,
+            hotcount_ids: HashMap::default(),
+            dispatch_ids: HashMap::default(),
+            any_add_site_ids: Vec::new(),
+            any_add_site_cursor: 0,
+            any_add_site_ranges: HashMap::default(),
+            specialize_sites: rustc_hash::FxHashSet::default(),
         }
     }
 
@@ -939,6 +1021,17 @@ impl CraneliftCodegen<JITModule> {
     pub fn get_function(&mut self, name: &str) -> Option<*const u8> {
         let func_id = self.func_ids.get(name)?;
         Some(self.module.get_finalized_function(*func_id))
+    }
+
+    /// Reads a function's call-count counter. Only meaningful after `finalize()`
+    /// and only for functions `generate_hotcounts` instrumented (sync, non-async).
+    pub fn hotcount(&mut self, func_name: &str) -> Option<i64> {
+        let id = *self.hotcount_ids.get(func_name)?;
+        let bytes = self.module.get_finalized_data(id).0;
+        let arr: [u8; 8] = unsafe { std::slice::from_raw_parts(bytes, 8) }
+            .try_into()
+            .unwrap();
+        Some(i64::from_ne_bytes(arr))
     }
 }
 
@@ -1061,6 +1154,13 @@ impl CraneliftCodegen<ObjectModule> {
             global_vars,
             file_names,
             loc_ids: HashMap::default(),
+            profile: false,
+            hotcount_ids: HashMap::default(),
+            dispatch_ids: HashMap::default(),
+            any_add_site_ids: Vec::new(),
+            any_add_site_cursor: 0,
+            any_add_site_ranges: HashMap::default(),
+            specialize_sites: rustc_hash::FxHashSet::default(),
         }
     }
 

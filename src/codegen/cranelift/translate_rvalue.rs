@@ -4,7 +4,7 @@ use crate::mir::{Constant, Local, MirFunction, Operand, Rvalue};
 use crate::semantic::types::Type as OliveType;
 use cranelift::prelude::*;
 use cranelift_module::{DataId, FuncId, Module};
-use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Materialises a tagged Olive string pointer for an interned source location,
 /// or a null pointer when no location was recorded for the site.
@@ -175,6 +175,10 @@ impl<M: Module> CraneliftCodegen<M> {
         ffi_vararg_ptrs: &HashMap<String, *const u8>,
         ffi_vararg_ids: &std::collections::HashSet<String>,
         ffi_entries: &[super::FfiFnEntry],
+        dispatch_ids: &HashMap<String, DataId>,
+        any_add_site_ids: &[DataId],
+        any_add_site_cursor: &mut usize,
+        specialize_sites: &HashSet<usize>,
         builder: &mut FunctionBuilder,
         rval: &Rvalue,
         vars: &HashMap<Local, Variable>,
@@ -197,13 +201,26 @@ impl<M: Module> CraneliftCodegen<M> {
                 ffi_vararg_ptrs,
                 ffi_vararg_ids,
                 ffi_entries,
+                dispatch_ids,
                 builder,
                 vars,
                 func,
                 args,
             ),
             Rvalue::BinaryOp(op, lhs, rhs) => Self::translate_binop(
-                func_mir, module, func_ids, string_ids, builder, vars, op, lhs, rhs, loc_id,
+                func_mir,
+                module,
+                func_ids,
+                string_ids,
+                any_add_site_ids,
+                any_add_site_cursor,
+                specialize_sites,
+                builder,
+                vars,
+                op,
+                lhs,
+                rhs,
+                loc_id,
             ),
             Rvalue::UnaryOp(op, operand) => {
                 let operand_ty = match operand {

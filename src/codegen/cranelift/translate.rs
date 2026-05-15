@@ -8,7 +8,7 @@ use crate::semantic::types::Type as OliveType;
 use crate::span::Span;
 use cranelift::prelude::*;
 use cranelift_module::{DataId, FuncId, Module};
-use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 pub(super) type FieldInfo<'a> = (i32, &'a str, Option<(u8, u8)>);
 
@@ -142,6 +142,14 @@ impl<M: Module> CraneliftCodegen<M> {
                     }
                     builder.def_var(*var, *val);
                 }
+
+                if let Some(&hotcount_id) = self.hotcount_ids.get(&func.name) {
+                    let local_id = self.module.declare_data_in_func(hotcount_id, builder.func);
+                    let ptr = builder.ins().symbol_value(types::I64, local_id);
+                    let count = builder.ins().load(types::I64, MemFlags::trusted(), ptr, 0);
+                    let next = builder.ins().iadd_imm(count, 1);
+                    builder.ins().store(MemFlags::trusted(), next, ptr, 0);
+                }
             }
 
             for stmt in &bb.statements {
@@ -160,6 +168,10 @@ impl<M: Module> CraneliftCodegen<M> {
                     &self.ffi_vararg_ptrs,
                     &self.ffi_vararg_ids,
                     &self.ffi_entries,
+                    &self.dispatch_ids,
+                    &self.any_add_site_ids,
+                    &mut self.any_add_site_cursor,
+                    &self.specialize_sites,
                     &mut builder,
                     stmt,
                     &vars,
@@ -245,6 +257,10 @@ impl<M: Module> CraneliftCodegen<M> {
         ffi_vararg_ptrs: &HashMap<String, *const u8>,
         ffi_vararg_ids: &std::collections::HashSet<String>,
         ffi_entries: &[super::FfiFnEntry],
+        dispatch_ids: &HashMap<String, DataId>,
+        any_add_site_ids: &[DataId],
+        any_add_site_cursor: &mut usize,
+        specialize_sites: &HashSet<usize>,
         builder: &mut FunctionBuilder,
         stmt: &Statement,
         vars: &HashMap<Local, Variable>,
@@ -266,6 +282,10 @@ impl<M: Module> CraneliftCodegen<M> {
                     ffi_vararg_ptrs,
                     ffi_vararg_ids,
                     ffi_entries,
+                    dispatch_ids,
+                    any_add_site_ids,
+                    any_add_site_cursor,
+                    specialize_sites,
                     builder,
                     rval,
                     vars,

@@ -18,4 +18,6 @@ pub mod olive_tests;
 #[cfg(test)]
 pub mod regression_tests;
 #[cfg(test)]
+pub mod speculation_tests;
+#[cfg(test)]
 pub mod test_utils;

@@ -5,6 +5,7 @@ pub(crate) mod laws;
 mod linker;
 pub(crate) mod lints;
 pub(crate) mod loader;
+mod pgo;
 pub(crate) mod pipeline;
 #[cfg(test)]
 mod tests;
@@ -26,8 +27,9 @@ fn run_jit_to_exit_code(
     emit_ast: bool,
     emit_mir: bool,
     release: bool,
+    write_profile: bool,
 ) -> i32 {
-    let out = match run_pipeline_opt(filename, release) {
+    let out = match run_pipeline_opt(filename, release, None) {
         Ok(o) => o,
         Err(_) => return 1,
     };
@@ -63,6 +65,11 @@ fn run_jit_to_exit_code(
         return 0;
     };
 
+    // Handed off to the background tier-up thread from here on; the main thread
+    // never touches `codegen` directly again, only the raw `main_ptr` obtained above.
+    let codegen = std::sync::Arc::new(std::sync::Mutex::new(codegen));
+    let _tier_up_handle = crate::codegen::cranelift::tier_up::spawn_tier_up_thread(codegen.clone());
+
     let main_fn: extern "C" fn() -> i64 = unsafe { std::mem::transmute(main_ptr) };
     let exec_start = std::time::Instant::now();
     let exit_code = main_fn();
@@ -70,6 +77,13 @@ fn run_jit_to_exit_code(
 
     // Finalize the Python interpreter for atexit handlers. No-op if never initialized.
     finalize_python_runtime();
+
+    // Best-effort: a failed write must never affect the program's exit code.
+    if write_profile && let Ok(mut cg) = codegen.lock() {
+        let profile = cg.export_profile();
+        let (target, _) = cache::prepare(filename, release);
+        pgo::write(&profile, &pgo::path_for_hash(target.hash()));
+    }
 
     if show_time {
         print_jit_timings(&out.timings, cg_duration, Some(exec_duration));
@@ -84,14 +98,15 @@ pub fn compile_and_run(
     emit_mir: bool,
     release: bool,
 ) {
-    let code = run_jit_to_exit_code(filename, show_time, emit_ast, emit_mir, release);
+    let code = run_jit_to_exit_code(filename, show_time, emit_ast, emit_mir, release, true);
     std::process::exit(code);
 }
 
 /// Runs a script (e.g. `build.liv`) to completion and returns its exit code
 /// without terminating the process, so the caller can continue afterward.
+/// No PGO write -- a build script isn't the program `--pgo` is meant to capture.
 pub fn run_script(filename: &str, show_time: bool, release: bool) -> i32 {
-    run_jit_to_exit_code(filename, show_time, false, false, release)
+    run_jit_to_exit_code(filename, show_time, false, false, release, false)
 }
 
 /// Calls `olive_py_finalize` via `dlsym(RTLD_DEFAULT)`, working whether
@@ -113,8 +128,25 @@ fn finalize_python_runtime() {
     }
 }
 
-pub fn compile_and_emit(filename: &str, output: &str, show_time: bool, release: bool) {
-    let out = match run_pipeline_opt(filename, release) {
+pub fn compile_and_emit(
+    filename: &str,
+    output: &str,
+    show_time: bool,
+    release: bool,
+    pgo: Option<&str>,
+) {
+    // Loaded early: feeds both the inliner's hot-function threshold below
+    // and `apply_profile` later, one file read for both.
+    let profile = pgo.and_then(|path| match pgo::load(path) {
+        Some(p) => Some(p),
+        None => {
+            eprintln!("warning: could not read PGO profile at {path}, building without it");
+            None
+        }
+    });
+    let hot_functions = profile.as_ref().map(pgo::hot_functions);
+
+    let out = match run_pipeline_opt(filename, release, hot_functions) {
         Ok(o) => o,
         Err(_) => std::process::exit(1),
     };
@@ -131,6 +163,12 @@ pub fn compile_and_emit(filename: &str, output: &str, show_time: bool, release: 
         &out.native_libs,
         release,
     );
+    // Must run before `generate()` -- seeds `specialize_sites` for translation.
+    if let Some(profile) = &profile {
+        let applied = codegen.apply_profile(profile);
+        let path = pgo.expect("profile is only Some when pgo path was Some");
+        println!("\x1b[1;32m   PGO\x1b[0m applied {applied} specialization(s) from {path}");
+    }
     codegen.generate();
     let obj_bytes = codegen.emit_object();
     let cg_duration = cg_start.elapsed();
@@ -178,7 +216,12 @@ pub fn compile_hybrid(filename: &str, show_time: bool, release: bool) {
         invalidate_pyc(py_path);
     }
 
-    compile_and_emit(filename, &target.binary_path, show_time, release);
+    // Auto-pickup: reuse a profile from an earlier `pit run`, no flag needed.
+    let auto_pgo_path = pgo::path_for_hash(target.hash());
+    let pgo_arg = Path::new(&auto_pgo_path)
+        .exists()
+        .then_some(auto_pgo_path.as_str());
+    compile_and_emit(filename, &target.binary_path, show_time, release, pgo_arg);
     cache::record(&target);
 
     let code = exec_binary(&target.binary_path);
@@ -215,14 +258,14 @@ pub fn compile_and_run_aot(filename: &str, show_time: bool, release: bool) {
         "grove/cache/aot_run"
     };
     ensure_dir("grove/cache");
-    compile_and_emit(filename, binary_path, show_time, release);
+    compile_and_emit(filename, binary_path, show_time, release, None);
     let code = exec_binary(binary_path);
     fs::remove_file(binary_path).ok();
     process::exit(code);
 }
 
 pub fn compile_and_test(filename: &str, _show_time: bool, release: bool) {
-    let out = match run_pipeline_opt(filename, release) {
+    let out = match run_pipeline_opt(filename, release, None) {
         Ok(o) => o,
         Err(_) => std::process::exit(1),
     };

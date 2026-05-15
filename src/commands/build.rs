@@ -2,13 +2,19 @@ use super::utils::{load_config, maybe_install_deps, run_build_script};
 use crate::compile::{cache, compile_and_emit, compile_and_test};
 use std::path::Path;
 
-pub fn execute_build(path: Option<&String>, output: Option<&String>, time: bool, release: bool) {
+pub fn execute_build(
+    path: Option<&String>,
+    output: Option<&String>,
+    time: bool,
+    release: bool,
+    pgo: Option<&str>,
+) {
     let original_dir = std::env::current_dir().unwrap();
     if let Some(p) = path {
         let path_obj = Path::new(p);
         if path_obj.is_file() || p.ends_with(".liv") {
             match output {
-                Some(o) => compile_and_emit(p, o, time, release),
+                Some(o) => compile_and_emit(p, o, time, release, pgo),
                 None => {
                     let (target, _) = cache::prepare(p, release);
                     if cache::is_fresh(&target) {
@@ -17,7 +23,7 @@ pub fn execute_build(path: Option<&String>, output: Option<&String>, time: bool,
                             target.binary_path
                         );
                     } else {
-                        compile_and_emit(p, &target.binary_path, time, release);
+                        compile_and_emit(p, &target.binary_path, time, release, pgo);
                         cache::record(&target);
                     }
                 }
@@ -57,7 +63,7 @@ pub fn execute_build(path: Option<&String>, output: Option<&String>, time: bool,
                     );
                 } else {
                     println!("\x1b[1;32m   Compiling\x1b[0m {}", pod.name);
-                    compile_and_emit(&pod.entry, &target.binary_path, time, release);
+                    compile_and_emit(&pod.entry, &target.binary_path, time, release, None);
                     cache::record(&target);
                 }
             }
@@ -76,7 +82,7 @@ pub fn execute_build(path: Option<&String>, output: Option<&String>, time: bool,
                 target.binary_path
             );
         } else {
-            compile_and_emit(&pod.entry, &target.binary_path, time, release);
+            compile_and_emit(&pod.entry, &target.binary_path, time, release, None);
             cache::record(&target);
         }
     } else {
