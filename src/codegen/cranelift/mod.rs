@@ -71,10 +71,12 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_free_obj", b"olive_free_obj\0"),
     ("__olive_struct_alloc", b"olive_struct_alloc\0"),
     ("__olive_free_struct", b"olive_free_struct\0"),
+    ("__olive_free_c_struct", b"olive_free_c_struct\0"),
     ("__olive_iter", b"olive_iter\0"),
     ("__olive_has_next", b"olive_has_next\0"),
     ("__olive_next", b"olive_next\0"),
     ("__olive_alloc", b"olive_alloc\0"),
+    ("__olive_vararg_call", b"olive_vararg_call\0"),
     ("__olive_cache_has", b"olive_cache_has\0"),
     ("__olive_cache_get", b"olive_cache_get\0"),
     ("__olive_cache_set", b"olive_cache_set\0"),
@@ -114,11 +116,29 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
 ];
 pub(super) const POLL_PENDING: i64 = i64::MIN;
 
+const ASYNC_RUNTIME_SYMS: &[&str] = &[
+    "__olive_make_future",
+    "__olive_await",
+    "__olive_spawn_task",
+    "__olive_alloc",
+    "__olive_free_future",
+    "__olive_sm_poll",
+];
+
 pub(super) struct SmAwaitPoint {
     pub(super) bb_idx: usize,
     pub(super) stmt_idx: usize,
     pub(super) result_local: Local,
     pub(super) sub_future_local: Local,
+}
+
+pub(super) struct FfiFnEntry {
+    pub(super) jit_name: String,
+    pub(super) c_name: String,
+    pub(super) params: Vec<String>,
+    pub(super) ret: Option<String>,
+    pub(super) is_vararg: bool,
+    pub(super) n_fixed: usize,
 }
 
 pub struct CraneliftCodegen<'a, M: Module> {
@@ -129,14 +149,73 @@ pub struct CraneliftCodegen<'a, M: Module> {
     pub(super) struct_fields: HashMap<String, Vec<String>>,
     pub(super) _libs: Vec<libloading::Library>,
     pub(super) native_aliases: std::collections::HashSet<String>,
+    pub(super) ffi_entries: Vec<FfiFnEntry>,
+    pub(super) ffi_vararg_ptrs: HashMap<String, *const u8>,
+    pub(super) ffi_vararg_ids: std::collections::HashSet<String>,
+    pub(super) c_struct_offsets: HashMap<String, Vec<(String, i32)>>,
+    pub(super) c_struct_sizes: HashMap<String, i64>,
+    pub(super) c_struct_names: std::collections::HashSet<String>,
     pub(super) aot: bool,
+}
+
+fn c_prim_layout(ty: &str) -> (i32, i32) {
+    match ty {
+        "f64" | "i64" | "u64" => (8, 8),
+        "f32" | "i32" | "u32" => (4, 4),
+        "i16" | "u16" => (2, 2),
+        "i8" | "u8" | "bool" => (1, 1),
+        _ => (8, 8),
+    }
+}
+
+fn c_abi_layout(fields: &[crate::parser::ast::FfiStructField]) -> (Vec<(String, i32)>, i64) {
+    let mut offset = 0i32;
+    let mut layout = Vec::new();
+    let mut max_align = 1i32;
+    for field in fields {
+        let ty = type_expr_to_name(&field.ty);
+        let (size, align) = c_prim_layout(&ty);
+        max_align = max_align.max(align);
+        let padding = (align - (offset % align)) % align;
+        offset += padding;
+        layout.push((field.name.clone(), offset));
+        offset += size;
+    }
+    let total = if max_align > 0 {
+        let r = offset % max_align;
+        if r == 0 { offset } else { offset + max_align - r }
+    } else {
+        offset
+    };
+    (layout, total as i64)
+}
+
+fn type_expr_to_name(t: &crate::parser::ast::TypeExpr) -> String {
+    match &t.kind {
+        crate::parser::ast::TypeExprKind::Name(n) => n.clone(),
+        crate::parser::ast::TypeExprKind::Ref(inner)
+        | crate::parser::ast::TypeExprKind::MutRef(inner) => type_expr_to_name(inner),
+        _ => "int".to_string(),
+    }
+}
+
+pub(super) fn ffi_cl_type(name: &str) -> cranelift::prelude::Type {
+    use cranelift::prelude::types;
+    match name {
+        "float" | "f64" => types::F64,
+        "f32" => types::F32,
+        "i32" | "u32" => types::I32,
+        "i16" | "u16" => types::I16,
+        "i8" | "u8" => types::I8,
+        _ => types::I64,
+    }
 }
 
 impl<'a> CraneliftCodegen<'a, JITModule> {
     pub fn new_jit(
         functions: &'a [MirFunction],
         struct_fields: HashMap<String, Vec<String>>,
-        native_lib_paths: &[(String, String)],
+        native_lib_paths: &[(String, String, Vec<crate::parser::ast::FfiFnSig>, Vec<crate::parser::ast::FfiStructDef>)],
     ) -> Self {
         let mut flag_builder = settings::builder();
         flag_builder.set("use_colocated_libcalls", "false").unwrap();
@@ -159,6 +238,12 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
 
         let mut libs: Vec<libloading::Library> = Vec::new();
         let mut native_aliases = std::collections::HashSet::new();
+        let mut ffi_entries: Vec<FfiFnEntry> = Vec::new();
+        let mut ffi_vararg_ptrs: HashMap<String, *const u8> = HashMap::default();
+        let mut c_struct_offsets: HashMap<String, Vec<(String, i32)>> = HashMap::default();
+        let mut c_struct_sizes: HashMap<String, i64> = HashMap::default();
+        let mut c_struct_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let has_c_structs = native_lib_paths.iter().any(|(_, _, _, structs)| !structs.is_empty());
 
         #[cfg(all(olive_std_linked, target_os = "linux"))]
         {
@@ -166,17 +251,9 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
                 fn dlsym(handle: *mut std::ffi::c_void, symbol: *const std::ffi::c_char) -> *mut std::ffi::c_void;
             }
             for &(jit_name, c_name) in SYMBOL_MAP {
-                let is_async_needed = has_async
-                    && matches!(
-                        jit_name,
-                        "__olive_make_future"
-                            | "__olive_await"
-                            | "__olive_spawn_task"
-                            | "__olive_alloc"
-                            | "__olive_free_future"
-                            | "__olive_sm_poll"
-                    );
-                if needed.contains(jit_name) || is_async_needed {
+                let is_async_needed = has_async && ASYNC_RUNTIME_SYMS.contains(&jit_name);
+                let needed_for_c = jit_name == "__olive_alloc" && has_c_structs;
+                if needed.contains(jit_name) || is_async_needed || needed_for_c {
                     let ptr = unsafe { dlsym(std::ptr::null_mut(), c_name.as_ptr() as *const _) };
                     if !ptr.is_null() {
                         builder.symbol(jit_name, ptr as *const u8);
@@ -220,17 +297,9 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
         if let Some(lib) = lib {
             unsafe {
                 for &(jit_name, c_name) in SYMBOL_MAP {
-                    let is_async_needed = has_async
-                        && matches!(
-                            jit_name,
-                            "__olive_make_future"
-                                | "__olive_await"
-                                | "__olive_spawn_task"
-                                | "__olive_alloc"
-                                | "__olive_free_future"
-                                | "__olive_sm_poll"
-                        );
-                    if needed.contains(jit_name) || is_async_needed {
+                    let is_async_needed = has_async && ASYNC_RUNTIME_SYMS.contains(&jit_name);
+                    let needed_for_c = jit_name == "__olive_alloc" && has_c_structs;
+                    if needed.contains(jit_name) || is_async_needed || needed_for_c {
                         if let Ok(f) = lib.get::<unsafe extern "C" fn()>(c_name) {
                             builder.symbol(jit_name, *f as *const u8);
                         }
@@ -240,34 +309,64 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
             libs.push(lib);
         }
 
-        for (alias, path) in native_lib_paths {
+        for (alias, path, ffi_sigs, ffi_structs) in native_lib_paths {
+            for ffi_struct in ffi_structs {
+                let type_name = format!("{}::{}", alias, ffi_struct.name);
+                let (layout, total_size) = c_abi_layout(&ffi_struct.fields);
+                c_struct_offsets.insert(type_name.clone(), layout);
+                c_struct_sizes.insert(type_name.clone(), total_size);
+                c_struct_names.insert(type_name);
+            }
             if let Ok(lib) = unsafe { libloading::Library::new(path) } {
                 native_aliases.insert(alias.clone());
-                let prefix = format!("{}::", alias);
-                for func in functions {
-                    for bb in &func.basic_blocks {
-                        for stmt in &bb.statements {
-                            if let crate::mir::StatementKind::Assign(
-                                _,
-                                crate::mir::Rvalue::Call {
-                                    func: crate::mir::Operand::Constant(
-                                        crate::mir::Constant::Function(name),
-                                    ),
-                                    ..
-                                },
-                            ) = &stmt.kind
-                                && name.starts_with(&prefix)
-                            {
-                                let mut sym_bytes: Vec<u8> =
-                                    name.as_bytes().to_vec();
-                                sym_bytes.push(0);
-                                if let Ok(f) =
-                                    unsafe { lib.get::<unsafe extern "C" fn()>(&*sym_bytes) }
+                if ffi_sigs.is_empty() {
+                    let prefix = format!("{}::", alias);
+                    for func in functions {
+                        for bb in &func.basic_blocks {
+                            for stmt in &bb.statements {
+                                if let crate::mir::StatementKind::Assign(
+                                    _,
+                                    crate::mir::Rvalue::Call {
+                                        func: crate::mir::Operand::Constant(
+                                            crate::mir::Constant::Function(name),
+                                        ),
+                                        ..
+                                    },
+                                ) = &stmt.kind
+                                    && name.starts_with(&prefix)
+                                    && !c_struct_names.contains(name.as_str())
                                 {
-                                    builder.symbol(name, *f as *const u8);
+                                    let c_sym = format!("{}\0", &name[prefix.len()..]);
+                                    if let Ok(f) = unsafe {
+                                        lib.get::<unsafe extern "C" fn()>(c_sym.as_bytes())
+                                    } {
+                                        builder.symbol(name, *f as *const u8);
+                                    }
                                 }
                             }
                         }
+                    }
+                } else {
+                    for sig in ffi_sigs {
+                        let jit_name = format!("{}::{}", alias, sig.name);
+                        let c_sym = format!("{}\0", sig.name);
+                        if let Ok(f) = unsafe {
+                            lib.get::<unsafe extern "C" fn()>(c_sym.as_bytes())
+                        } {
+                            if sig.is_vararg {
+                                ffi_vararg_ptrs.insert(jit_name.clone(), *f as *const u8);
+                            } else {
+                                builder.symbol(&jit_name, *f as *const u8);
+                            }
+                        }
+                        ffi_entries.push(FfiFnEntry {
+                            jit_name,
+                            c_name: sig.name.clone(),
+                            params: sig.params.iter().map(|p| type_expr_to_name(&p.ty)).collect(),
+                            ret: sig.ret.as_ref().map(type_expr_to_name),
+                            is_vararg: sig.is_vararg,
+                            n_fixed: sig.params.len(),
+                        });
                     }
                 }
                 libs.push(lib);
@@ -286,6 +385,12 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
             struct_fields,
             _libs: libs,
             native_aliases,
+            ffi_entries,
+            ffi_vararg_ptrs,
+            ffi_vararg_ids: std::collections::HashSet::new(),
+            c_struct_offsets,
+            c_struct_sizes,
+            c_struct_names,
             aot: false,
         }
     }
@@ -301,7 +406,11 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
 }
 
 impl<'a> CraneliftCodegen<'a, ObjectModule> {
-    pub fn new_aot(functions: &'a [MirFunction], struct_fields: HashMap<String, Vec<String>>) -> Self {
+    pub fn new_aot(
+        functions: &'a [MirFunction],
+        struct_fields: HashMap<String, Vec<String>>,
+        native_lib_paths: &[(String, String, Vec<crate::parser::ast::FfiFnSig>, Vec<crate::parser::ast::FfiStructDef>)],
+    ) -> Self {
         let mut flag_builder = settings::builder();
         flag_builder.set("use_colocated_libcalls", "false").unwrap();
         flag_builder.set("is_pic", "true").unwrap();
@@ -319,6 +428,31 @@ impl<'a> CraneliftCodegen<'a, ObjectModule> {
         let obj_builder = ObjectBuilder::new(isa, "olive", cranelift_module::default_libcall_names()).unwrap();
         let module = ObjectModule::new(obj_builder);
 
+        let mut ffi_entries: Vec<FfiFnEntry> = Vec::new();
+        let mut c_struct_offsets: HashMap<String, Vec<(String, i32)>> = HashMap::default();
+        let mut c_struct_sizes: HashMap<String, i64> = HashMap::default();
+        let mut c_struct_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for (alias, _path, ffi_sigs, ffi_structs) in native_lib_paths {
+            for ffi_struct in ffi_structs {
+                let type_name = format!("{}::{}", alias, ffi_struct.name);
+                let (layout, total_size) = c_abi_layout(&ffi_struct.fields);
+                c_struct_offsets.insert(type_name.clone(), layout);
+                c_struct_sizes.insert(type_name.clone(), total_size);
+                c_struct_names.insert(type_name);
+            }
+            for sig in ffi_sigs {
+                ffi_entries.push(FfiFnEntry {
+                    jit_name: format!("{}::{}", alias, sig.name),
+                    c_name: sig.name.clone(),
+                    params: sig.params.iter().map(|p| type_expr_to_name(&p.ty)).collect(),
+                    ret: sig.ret.as_ref().map(type_expr_to_name),
+                    is_vararg: sig.is_vararg,
+                    n_fixed: sig.params.len(),
+                });
+            }
+        }
+
         Self {
             functions,
             module,
@@ -327,6 +461,12 @@ impl<'a> CraneliftCodegen<'a, ObjectModule> {
             struct_fields,
             _libs: Vec::new(),
             native_aliases: std::collections::HashSet::new(),
+            ffi_entries,
+            ffi_vararg_ptrs: HashMap::default(),
+            ffi_vararg_ids: std::collections::HashSet::new(),
+            c_struct_offsets,
+            c_struct_sizes,
+            c_struct_names,
             aot: true,
         }
     }
@@ -362,8 +502,12 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
         let sig_i64_i64_i64 = mk_sig(&[types::I64, types::I64], &[types::I64]);
         let sig_i64_i64_void = mk_sig(&[types::I64, types::I64], &[]);
         let sig_f64_f64_f64 = mk_sig(&[types::F64, types::F64], &[types::F64]);
-        let sig_i64_i64_i64_i64 = mk_sig(&[types::I64, types::I64, types::I64], &[types::I64]);
+        let sig_i64_i64_i64_i64 = mk_sig(&[types::I64, types::I64, types::I64, types::I64], &[types::I64]);
         let sig_i64_i64_i64_void = mk_sig(&[types::I64, types::I64, types::I64], &[]);
+        let sig_i64_5_i64 = mk_sig(
+            &[types::I64, types::I64, types::I64, types::I64, types::I64],
+            &[types::I64],
+        );
 
         let import_table: &[(&str, &cranelift::prelude::Signature)] = &[
             ("__olive_print_int", &sig_i64_i64),
@@ -462,21 +606,17 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
             ("__olive_http_post", &sig_i64_i64_i64),
             ("__olive_struct_alloc", &sig_i64_i64),
             ("__olive_free_struct", &sig_i64_void),
+            ("__olive_free_c_struct", &sig_i64_i64_void),
+            ("__olive_vararg_call", &sig_i64_5_i64),
         ];
 
         let has_async = self.functions.iter().any(|f| f.is_async);
+        let has_c_structs = !self.c_struct_sizes.is_empty();
 
         for &(name, sig) in import_table {
-            let always_needed = matches!(
-                name,
-                "__olive_make_future"
-                    | "__olive_await"
-                    | "__olive_spawn_task"
-                    | "__olive_alloc"
-                    | "__olive_free_future"
-                    | "__olive_sm_poll"
-            );
-            if !(needed.contains(name) || always_needed && has_async) {
+            let always_needed = ASYNC_RUNTIME_SYMS.contains(&name);
+            let needed_for_c = name == "__olive_alloc" && has_c_structs;
+            if !(needed.contains(name) || always_needed && has_async || needed_for_c) {
                 continue;
             }
             let decl_name = if self.aot {
@@ -495,6 +635,34 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
             self.func_ids.insert(name.to_string(), id);
         }
 
+        for entry in &self.ffi_entries {
+            if entry.is_vararg && !self.aot {
+                continue;
+            }
+            if self.func_ids.contains_key(&entry.jit_name) {
+                continue;
+            }
+            let mut sig = self.module.make_signature();
+            sig.call_conv = self.module.isa().default_call_conv();
+            for param_name in &entry.params {
+                sig.params.push(AbiParam::new(ffi_cl_type(param_name)));
+            }
+            if let Some(ret_name) = &entry.ret {
+                if ret_name != "void" {
+                    sig.returns.push(AbiParam::new(ffi_cl_type(ret_name)));
+                }
+            } else {
+                sig.returns.push(AbiParam::new(types::I64));
+            }
+            let decl_name = if self.aot { &entry.c_name } else { &entry.jit_name };
+            if let Ok(id) = self.module.declare_function(decl_name, Linkage::Import, &sig) {
+                self.func_ids.insert(entry.jit_name.clone(), id);
+                if entry.is_vararg {
+                    self.ffi_vararg_ids.insert(entry.jit_name.clone());
+                }
+            }
+        }
+
         if !self.native_aliases.is_empty() {
             for func in self.functions {
                 for bb in &func.basic_blocks {
@@ -511,7 +679,8 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                                 .native_aliases
                                 .iter()
                                 .any(|alias| name.starts_with(&format!("{}::", alias)));
-                            if is_native && !self.func_ids.contains_key(name.as_str()) {
+                            let is_vararg = self.ffi_vararg_ptrs.contains_key(name.as_str());
+                            if is_native && !self.func_ids.contains_key(name.as_str()) && !is_vararg {
                                 let mut sig = self.module.make_signature();
                                 for arg in args {
                                     let ty = match arg {
@@ -603,6 +772,34 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                 self.translate_function(&func);
             }
         }
+
+        if self.aot {
+            self.emit_aot_main();
+        }
+    }
+
+    fn emit_aot_main(&mut self) {
+        let Some(&olive_main_id) = self.func_ids.get("__main__") else { return };
+        let mut sig = self.module.make_signature();
+        sig.params.push(AbiParam::new(types::I32));
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I32));
+        let Ok(func_id) = self.module.declare_function("main", Linkage::Export, &sig) else { return };
+        let mut ctx = self.module.make_context();
+        ctx.func.signature = sig;
+        let mut builder_ctx = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
+        let block = builder.create_block();
+        builder.append_block_params_for_function_params(block);
+        builder.switch_to_block(block);
+        builder.seal_block(block);
+        let local_fn = self.module.declare_func_in_func(olive_main_id, builder.func);
+        builder.ins().call(local_fn, &[]);
+        let zero = builder.ins().iconst(types::I32, 0);
+        builder.ins().return_(&[zero]);
+        builder.finalize();
+        self.module.define_function(func_id, &mut ctx).unwrap();
+        self.func_ids.insert("main".to_string(), func_id);
     }
 
     fn collect_strings(&mut self, func: &MirFunction) {

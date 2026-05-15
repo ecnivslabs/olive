@@ -75,6 +75,40 @@ pub extern "C" fn olive_alloc(size: i64) -> *mut u8 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn olive_free_c_struct(ptr: *mut u8, size: i64) {
+    if !ptr.is_null() {
+        let layout = std::alloc::Layout::from_size_align(size as usize, 8).unwrap();
+        unsafe { std::alloc::dealloc(ptr, layout) }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_vararg_call(
+    fn_ptr: i64,
+    n_fixed: i64,
+    n_total: i64,
+    arg_types: *const i64,
+    arg_vals: *const i64,
+) -> i64 {
+    use libffi::middle::{arg, Cif, CodePtr, Type};
+    let n = n_total as usize;
+    let nf = (n_fixed as usize).max(1).min(n);
+    let types: Vec<Type> = (0..n)
+        .map(|i| {
+            if unsafe { *arg_types.add(i) } == 1 {
+                Type::f64()
+            } else {
+                Type::i64()
+            }
+        })
+        .collect();
+    let cif = Cif::new_variadic(types.into_iter(), nf, Type::i64());
+    let vals: Vec<i64> = (0..n).map(|i| unsafe { *arg_vals.add(i) }).collect();
+    let ffi_args: Vec<_> = vals.iter().map(|v| arg(v)).collect();
+    unsafe { cif.call::<i64>(CodePtr(fn_ptr as *mut _), &ffi_args) }
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn olive_print(val: i64) -> i64 {
     println!("{}", val);
     0

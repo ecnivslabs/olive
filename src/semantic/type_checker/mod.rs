@@ -23,6 +23,7 @@ pub struct TypeChecker {
     pub struct_fields: HashMap<String, Vec<String>>,
     pub(super) traits: HashMap<String, Vec<String>>,
     pub(super) type_traits: HashSet<(String, String)>,
+    pub(super) c_ffi_structs: HashSet<String>,
 }
 
 impl TypeChecker {
@@ -180,6 +181,7 @@ impl TypeChecker {
             struct_fields: HashMap::default(),
             traits: HashMap::default(),
             type_traits: HashSet::default(),
+            c_ffi_structs: HashSet::default(),
         }
     }
 

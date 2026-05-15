@@ -104,9 +104,9 @@ pub fn walk_and_format(path: &Path) {
                 walk_and_format(&entry.path());
             }
         }
-    } else if path.extension().is_some_and(|ext| ext == "liv") {
-        if let Some(s) = path.to_str() {
-            format_file(s);
-        }
+    } else if path.extension().is_some_and(|ext| ext == "liv")
+        && let Some(s) = path.to_str()
+    {
+        format_file(s);
     }
 }

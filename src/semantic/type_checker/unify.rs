@@ -74,6 +74,10 @@ impl TypeChecker {
                 }
             }
 
+            (Type::Struct(name, _), Type::Int)
+            | (Type::Int, Type::Struct(name, _))
+                if self.c_ffi_structs.contains(name.as_str()) => {}
+
             (Type::Struct(a_name, a_args), Type::Struct(b_name, b_args)) => {
                 if a_name != b_name || a_args.len() != b_args.len() {
                     self.errors.push(SemanticError::Custom {

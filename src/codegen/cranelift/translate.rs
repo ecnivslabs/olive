@@ -11,9 +11,13 @@ use rustc_hash::FxHashMap as HashMap;
 
 fn struct_field_offset(
     struct_fields: &HashMap<String, Vec<String>>,
+    c_struct_offsets: &HashMap<String, Vec<(String, i32)>>,
     struct_name: &str,
     attr: &str,
 ) -> Option<i32> {
+    if let Some(fields) = c_struct_offsets.get(struct_name) {
+        return fields.iter().find(|(n, _)| n == attr).map(|&(_, off)| off);
+    }
     let fields = struct_fields.get(struct_name)?;
     let idx = fields.iter().position(|f| f == attr)?;
     Some(8 + (idx as i32) * 8)
@@ -95,6 +99,12 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                     &self.func_ids,
                     &self.string_ids,
                     &self.struct_fields,
+                    &self.c_struct_offsets,
+                    &self.c_struct_names,
+                    &self.c_struct_sizes,
+                    &self.ffi_vararg_ptrs,
+                    &self.ffi_vararg_ids,
+                    &self.ffi_entries,
                     &mut builder,
                     stmt,
                     &vars,
@@ -166,6 +176,12 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
         func_ids: &HashMap<String, FuncId>,
         string_ids: &HashMap<String, DataId>,
         struct_fields: &HashMap<String, Vec<String>>,
+        c_struct_offsets: &HashMap<String, Vec<(String, i32)>>,
+        c_struct_names: &std::collections::HashSet<String>,
+        c_struct_sizes: &HashMap<String, i64>,
+        ffi_vararg_ptrs: &HashMap<String, *const u8>,
+        ffi_vararg_ids: &std::collections::HashSet<String>,
+        ffi_entries: &[super::FfiFnEntry],
         builder: &mut FunctionBuilder,
         stmt: &Statement,
         vars: &HashMap<Local, Variable>,
@@ -173,7 +189,19 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
         match &stmt.kind {
             StatementKind::Assign(local, rval) => {
                 let val = Self::translate_rvalue(
-                    func_mir, module, func_ids, string_ids, struct_fields, builder, rval, vars,
+                    func_mir,
+                    module,
+                    func_ids,
+                    string_ids,
+                    struct_fields,
+                    c_struct_offsets,
+                    c_struct_sizes,
+                    ffi_vararg_ptrs,
+                    ffi_vararg_ids,
+                    ffi_entries,
+                    builder,
+                    rval,
+                    vars,
                 );
                 let var = vars.get(local).unwrap();
 
@@ -194,10 +222,10 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                     &OliveType::Any
                 };
                 if let OliveType::Struct(struct_name, _) = obj_ty
-                    && let Some(offset) = struct_field_offset(struct_fields, struct_name, attr)
+                    && let Some(offset) = struct_field_offset(struct_fields, c_struct_offsets, struct_name, attr)
                 {
-                    let o = Self::translate_operand(builder, obj, vars, string_ids, module);
-                    let v = Self::translate_operand(builder, val_op, vars, string_ids, module);
+                    let o = Self::translate_operand(builder, obj, vars, string_ids, module, func_ids);
+                    let v = Self::translate_operand(builder, val_op, vars, string_ids, module, func_ids);
                     let v = if builder.func.dfg.value_type(v) == types::F64 {
                         builder.ins().bitcast(types::I64, MemFlags::new(), v)
                     } else {
@@ -206,8 +234,8 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                     builder.ins().store(MemFlags::trusted(), v, o, offset);
                     return;
                 }
-                let o = Self::translate_operand(builder, obj, vars, string_ids, module);
-                let v = Self::translate_operand(builder, val_op, vars, string_ids, module);
+                let o = Self::translate_operand(builder, obj, vars, string_ids, module, func_ids);
+                let v = Self::translate_operand(builder, val_op, vars, string_ids, module, func_ids);
 
                 let c_str = std::ffi::CString::new(attr.clone()).unwrap();
                 let attr_ptr = c_str.into_raw() as i64;
@@ -230,9 +258,9 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                     &OliveType::Any
                 };
 
-                let o = Self::translate_operand(builder, obj, vars, string_ids, module);
-                let i = Self::translate_operand(builder, idx, vars, string_ids, module);
-                let v = Self::translate_operand(builder, val_op, vars, string_ids, module);
+                let o = Self::translate_operand(builder, obj, vars, string_ids, module, func_ids);
+                let i = Self::translate_operand(builder, idx, vars, string_ids, module, func_ids);
+                let v = Self::translate_operand(builder, val_op, vars, string_ids, module, func_ids);
 
                 let v = if builder.func.dfg.value_type(v) == types::F64 {
                     builder.ins().bitcast(types::I64, MemFlags::new(), v)
@@ -274,6 +302,22 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                 if !ty.is_move_type() {
                     return;
                 }
+                if let OliveType::Struct(name, _) = ty
+                    && c_struct_names.contains(name.as_str())
+                {
+                    let var = vars.get(local).unwrap();
+                    let val = builder.use_var(*var);
+                    let size = c_struct_sizes.get(name.as_str()).unwrap();
+                    let size_val = builder.ins().iconst(types::I64, *size);
+                    
+                    let free_id = func_ids.get("__olive_free_c_struct").unwrap();
+                    let local_func = module.declare_func_in_func(*free_id, builder.func);
+                    builder.ins().call(local_func, &[val, size_val]);
+
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    builder.def_var(*var, zero);
+                    return;
+                }
 
                 let var = vars.get(local).unwrap();
                 let val = builder.use_var(*var);
@@ -302,9 +346,9 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
             }
             StatementKind::StorageLive(_) | StatementKind::StorageDead(_) => {}
             StatementKind::VectorStore(obj, idx, val_op) => {
-                let o = Self::translate_operand(builder, obj, vars, string_ids, module);
-                let i = Self::translate_operand(builder, idx, vars, string_ids, module);
-                let v = Self::translate_operand(builder, val_op, vars, string_ids, module);
+                let o = Self::translate_operand(builder, obj, vars, string_ids, module, func_ids);
+                let i = Self::translate_operand(builder, idx, vars, string_ids, module, func_ids);
+                let v = Self::translate_operand(builder, val_op, vars, string_ids, module, func_ids);
 
                 let data_ptr = builder.ins().load(
                     types::I64,
@@ -326,19 +370,34 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
         func_ids: &HashMap<String, FuncId>,
         string_ids: &HashMap<String, DataId>,
         struct_fields: &HashMap<String, Vec<String>>,
+        c_struct_offsets: &HashMap<String, Vec<(String, i32)>>,
+        c_struct_sizes: &HashMap<String, i64>,
+        ffi_vararg_ptrs: &HashMap<String, *const u8>,
+        ffi_vararg_ids: &std::collections::HashSet<String>,
+        ffi_entries: &[super::FfiFnEntry],
         builder: &mut FunctionBuilder,
         rval: &Rvalue,
         vars: &HashMap<Local, Variable>,
     ) -> Value {
         match rval {
-            Rvalue::Use(op) => Self::translate_operand(builder, op, vars, string_ids, module),
+            Rvalue::Use(op) => Self::translate_operand(builder, op, vars, string_ids, module, func_ids),
             Rvalue::Call { func, args } => {
                 let call_args: Vec<Value> = args
                     .iter()
-                    .map(|a| Self::translate_operand(builder, a, vars, string_ids, module))
+                    .map(|a| Self::translate_operand(builder, a, vars, string_ids, module, func_ids))
                     .collect();
 
                 if let Operand::Constant(Constant::Function(name)) = func {
+                    if let Some(&size) = c_struct_sizes.get(name.as_str()) {
+                        if let Some(&alloc_id) = func_ids.get("__olive_alloc") {
+                            let local_fn = module.declare_func_in_func(alloc_id, builder.func);
+                            let size_val = builder.ins().iconst(types::I64, size);
+                            let inst = builder.ins().call(local_fn, &[size_val]);
+                            return builder.inst_results(inst)[0];
+                        }
+                        return builder.ins().iconst(types::I64, 0);
+                    }
+
                     let resolved_name = if (name == "print"
                         || name == "str"
                         || name == "int"
@@ -369,12 +428,14 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                         return call_args[0];
                     }
 
+                    let is_ffi = resolved_name.contains("::") && !resolved_name.starts_with("__olive");
+
                     if let Some(&func_id) = func_ids.get(resolved_name) {
+                        let is_aot_vararg = ffi_vararg_ids.contains(resolved_name);
                         let local_func = module.declare_func_in_func(func_id, builder.func);
                         let mut final_args = Vec::new();
-                        
-                        // Functions that actually expect F64 arguments
-                        let accepts_float = resolved_name == "__olive_print_float" 
+
+                        let accepts_float = resolved_name == "__olive_print_float"
                             || resolved_name == "__olive_float_to_str"
                             || resolved_name == "__olive_float_to_int"
                             || resolved_name == "__olive_bool_from_float"
@@ -382,13 +443,39 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                             || resolved_name == "__olive_copy_float";
 
                         let is_builtin = resolved_name.starts_with("__olive") || resolved_name == "print";
-                        
-                        for &arg in &call_args {
-                            if is_builtin && !accepts_float && builder.func.dfg.value_type(arg) == types::F64 {
+
+                        for (i, &arg) in call_args.iter().enumerate() {
+                            let is_str_arg = args.get(i).is_some_and(|op| match op {
+                                Operand::Constant(Constant::Str(_)) => true,
+                                Operand::Copy(l) | Operand::Move(l) => {
+                                    matches!(func_mir.locals[l.0].ty, OliveType::Str)
+                                }
+                                _ => false,
+                            });
+                            if (is_ffi || is_aot_vararg) && is_str_arg {
+                                final_args.push(builder.ins().band_imm(arg, -2));
+                            } else if is_builtin && !accepts_float && builder.func.dfg.value_type(arg) == types::F64 {
                                 final_args.push(builder.ins().bitcast(types::I64, MemFlags::new(), arg));
                             } else {
                                 final_args.push(arg);
                             }
+                        }
+                        if is_aot_vararg {
+                            let mut sig = module.make_signature();
+                            sig.call_conv = module.isa().default_call_conv();
+                            for &a in &final_args {
+                                sig.params.push(AbiParam::new(builder.func.dfg.value_type(a)));
+                            }
+                            sig.returns.push(AbiParam::new(types::I64));
+                            let sig_ref = builder.import_signature(sig);
+                            let fn_addr = builder.ins().func_addr(types::I64, local_func);
+                            let inst = builder.ins().call_indirect(sig_ref, fn_addr, &final_args);
+                            let results = builder.inst_results(inst);
+                            return if results.is_empty() {
+                                builder.ins().iconst(types::I64, 0)
+                            } else {
+                                results[0]
+                            };
                         }
                         let inst = builder.ins().call(local_func, &final_args);
                         let results = builder.inst_results(inst);
@@ -398,12 +485,64 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                             results[0]
                         };
                     }
+
+                    if let Some(&fn_ptr) = ffi_vararg_ptrs.get(resolved_name) {
+                        let n_fixed = ffi_entries
+                            .iter()
+                            .find(|e| e.jit_name == resolved_name)
+                            .map(|e| e.n_fixed)
+                            .unwrap_or(0);
+                        let n_total = call_args.len();
+
+                        let types_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            (n_total * 8) as u32,
+                            3,
+                        ));
+                        let vals_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            (n_total * 8) as u32,
+                            3,
+                        ));
+
+                        for (i, &arg_val) in call_args.iter().enumerate() {
+                            let is_float = builder.func.dfg.value_type(arg_val) == types::F64;
+                            let type_id = if is_float { 1i64 } else { 0i64 };
+                            let type_val = builder.ins().iconst(types::I64, type_id);
+                            builder
+                                .ins()
+                                .stack_store(type_val, types_slot, (i * 8) as i32);
+
+                            let val_to_store = if is_float {
+                                builder.ins().bitcast(types::I64, MemFlags::new(), arg_val)
+                            } else {
+                                arg_val
+                            };
+                            builder
+                                .ins()
+                                .stack_store(val_to_store, vals_slot, (i * 8) as i32);
+                        }
+
+                        let types_ptr = builder.ins().stack_addr(types::I64, types_slot, 0);
+                        let vals_ptr = builder.ins().stack_addr(types::I64, vals_slot, 0);
+                        let fn_ptr_val = builder.ins().iconst(types::I64, fn_ptr as i64);
+                        let nf_val = builder.ins().iconst(types::I64, n_fixed as i64);
+                        let nt_val = builder.ins().iconst(types::I64, n_total as i64);
+
+                        let call_id = func_ids.get("__olive_vararg_call").unwrap();
+                        let local_func = module.declare_func_in_func(*call_id, builder.func);
+                        let inst = builder.ins().call(
+                            local_func,
+                            &[fn_ptr_val, nf_val, nt_val, types_ptr, vals_ptr],
+                        );
+                        return builder.inst_results(inst)[0];
+                    }
                 }
                 builder.ins().iconst(types::I64, 0)
             }
             Rvalue::BinaryOp(op, lhs, rhs) => {
-                let l = Self::translate_operand(builder, lhs, vars, string_ids, module);
-                let r = Self::translate_operand(builder, rhs, vars, string_ids, module);
+                let l = Self::translate_operand(builder, lhs, vars, string_ids, module, func_ids);
+                let r = Self::translate_operand(builder, rhs, vars, string_ids, module, func_ids);
                 use crate::parser::BinOp::*;
                 match op {
                     Add => {
@@ -533,54 +672,32 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                         let inst = builder.ins().call(local_func, &[l, r]);
                         builder.inst_results(inst)[0]
                     }
-                    In => {
-                        let mut is_obj = false;
-                        if let Operand::Copy(loc) | Operand::Move(loc) = rhs {
+                    In | NotIn => {
+                        let is_obj = if let Operand::Copy(loc) | Operand::Move(loc) = rhs {
                             let mut ty = &func_mir.locals[loc.0].ty;
                             while let OliveType::Ref(inner) | OliveType::MutRef(inner) = ty {
                                 ty = inner;
                             }
-                            if matches!(ty, OliveType::Dict(_, _) | OliveType::Struct(_, _)) {
-                                is_obj = true;
-                            }
-                        }
-                        let func_name = if is_obj {
-                            "__olive_in_obj"
+                            matches!(ty, OliveType::Dict(_, _) | OliveType::Struct(_, _))
                         } else {
-                            "__olive_in_list"
+                            false
                         };
-                        let in_id = func_ids.get(func_name).unwrap();
-                        let local_func = module.declare_func_in_func(*in_id, builder.func);
-                        let inst = builder.ins().call(local_func, &[l, r]);
-                        builder.inst_results(inst)[0]
-                    }
-                    NotIn => {
-                        let mut is_obj = false;
-                        if let Operand::Copy(loc) | Operand::Move(loc) = rhs {
-                            let mut ty = &func_mir.locals[loc.0].ty;
-                            while let OliveType::Ref(inner) | OliveType::MutRef(inner) = ty {
-                                ty = inner;
-                            }
-                            if matches!(ty, OliveType::Dict(_, _) | OliveType::Struct(_, _)) {
-                                is_obj = true;
-                            }
-                        }
-                        let func_name = if is_obj {
-                            "__olive_in_obj"
-                        } else {
-                            "__olive_in_list"
-                        };
+                        let func_name = if is_obj { "__olive_in_obj" } else { "__olive_in_list" };
                         let in_id = func_ids.get(func_name).unwrap();
                         let local_func = module.declare_func_in_func(*in_id, builder.func);
                         let inst = builder.ins().call(local_func, &[l, r]);
                         let res = builder.inst_results(inst)[0];
-                        let is_zero = builder.ins().icmp_imm(IntCC::Equal, res, 0);
-                        builder.ins().uextend(types::I64, is_zero)
+                        if matches!(op, NotIn) {
+                            let is_zero = builder.ins().icmp_imm(IntCC::Equal, res, 0);
+                            builder.ins().uextend(types::I64, is_zero)
+                        } else {
+                            res
+                        }
                     }
                 }
             }
             Rvalue::UnaryOp(op, operand) => {
-                let o = Self::translate_operand(builder, operand, vars, string_ids, module);
+                let o = Self::translate_operand(builder, operand, vars, string_ids, module, func_ids);
                 use crate::parser::UnaryOp::*;
                 match op {
                     Neg => {
@@ -606,13 +723,13 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                 if let Operand::Copy(loc) | Operand::Move(loc) = obj {
                     let obj_ty = &func_mir.locals[loc.0].ty;
                     if let OliveType::Struct(struct_name, _) = obj_ty
-                        && let Some(offset) = struct_field_offset(struct_fields, struct_name, attr)
+                        && let Some(offset) = struct_field_offset(struct_fields, c_struct_offsets, struct_name, attr)
                     {
-                        let o = Self::translate_operand(builder, obj, vars, string_ids, module);
+                        let o = Self::translate_operand(builder, obj, vars, string_ids, module, func_ids);
                         return builder.ins().load(types::I64, MemFlags::trusted(), o, offset);
                     }
                 }
-                let o = Self::translate_operand(builder, obj, vars, string_ids, module);
+                let o = Self::translate_operand(builder, obj, vars, string_ids, module, func_ids);
                 let c_str = std::ffi::CString::new(attr.clone()).unwrap();
                 let attr_ptr = c_str.into_raw() as i64;
                 let attr_val = builder.ins().iconst(types::I64, attr_ptr);
@@ -623,14 +740,14 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                 builder.inst_results(inst)[0]
             }
             Rvalue::GetTag(obj) => {
-                let o = Self::translate_operand(builder, obj, vars, string_ids, module);
+                let o = Self::translate_operand(builder, obj, vars, string_ids, module, func_ids);
                 let tag_id = func_ids.get("__olive_enum_tag").unwrap();
                 let local_func = module.declare_func_in_func(*tag_id, builder.func);
                 let inst = builder.ins().call(local_func, &[o]);
                 builder.inst_results(inst)[0]
             }
             Rvalue::GetTypeId(obj) => {
-                let o = Self::translate_operand(builder, obj, vars, string_ids, module);
+                let o = Self::translate_operand(builder, obj, vars, string_ids, module, func_ids);
                 let fn_id = func_ids.get("__olive_enum_type_id").unwrap();
                 let local_func = module.declare_func_in_func(*fn_id, builder.func);
                 let inst = builder.ins().call(local_func, &[o]);
@@ -643,8 +760,8 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                     _ => &OliveType::Any,
                 };
 
-                let o = Self::translate_operand(builder, obj, vars, string_ids, module);
-                let i = Self::translate_operand(builder, idx, vars, string_ids, module);
+                let o = Self::translate_operand(builder, obj, vars, string_ids, module, func_ids);
+                let i = Self::translate_operand(builder, idx, vars, string_ids, module, func_ids);
 
                 match ty {
                     OliveType::Enum(_, _) => {
@@ -665,7 +782,6 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                         let slow_block = builder.create_block();
                         let merge_block = builder.create_block();
 
-                        // Load these once so the compiler can reuse them if we do multiple index lookups.
                         let data_ptr = builder.ins().load(
                             types::I64,
                             MemFlags::trusted().with_readonly(),
@@ -740,14 +856,21 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                         let set_func = module.declare_func_in_func(*set_id, builder.func);
 
                         for i in (0..ops.len()).step_by(2) {
-                            let key =
-                                Self::translate_operand(builder, &ops[i], vars, string_ids, module);
+                            let key = Self::translate_operand(
+                                builder,
+                                &ops[i],
+                                vars,
+                                string_ids,
+                                module,
+                                func_ids,
+                            );
                             let val = Self::translate_operand(
                                 builder,
                                 &ops[i + 1],
                                 vars,
                                 string_ids,
                                 module,
+                                func_ids,
                             );
                             builder.ins().call(set_func, &[dict_ptr, key, val]);
                         }
@@ -768,7 +891,7 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                         for (i, op) in ops.iter().enumerate() {
                             let idx = builder.ins().iconst(types::I64, i as i64);
                             let val =
-                                Self::translate_operand(builder, op, vars, string_ids, module);
+                                Self::translate_operand(builder, op, vars, string_ids, module, func_ids);
                             let val = if builder.func.dfg.value_type(val) == types::F64 {
                                 builder.ins().bitcast(types::I64, MemFlags::new(), val)
                             } else {
@@ -790,7 +913,7 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
 
                         for op in ops {
                             let val =
-                                Self::translate_operand(builder, op, vars, string_ids, module);
+                                Self::translate_operand(builder, op, vars, string_ids, module, func_ids);
                             builder.ins().call(add_func, &[set_ptr, val]);
                         }
                         set_ptr
@@ -803,11 +926,10 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                         let inst = builder.ins().call(new_func, &[n_val]);
                         let list_ptr = builder.inst_results(inst)[0];
 
-                        // The data starts right after the 32-byte header.
                         let data_ptr = builder.ins().iadd_imm(list_ptr, 32);
                         for (i, op) in ops.iter().enumerate() {
                             let val =
-                                Self::translate_operand(builder, op, vars, string_ids, module);
+                                Self::translate_operand(builder, op, vars, string_ids, module, func_ids);
                             builder.ins().store(
                                 MemFlags::trusted(),
                                 val,
@@ -820,14 +942,14 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                 }
             }
             Rvalue::VectorSplat(op, width) => {
-                let val = Self::translate_operand(builder, op, vars, string_ids, module);
+                let val = Self::translate_operand(builder, op, vars, string_ids, module, func_ids);
                 let inner_ty = builder.func.dfg.value_type(val);
                 let vec_ty = inner_ty.by(*width as u32).expect("invalid splat width");
                 builder.ins().splat(vec_ty, val)
             }
             Rvalue::VectorLoad(obj, idx, width) => {
-                let o = Self::translate_operand(builder, obj, vars, string_ids, module);
-                let i = Self::translate_operand(builder, idx, vars, string_ids, module);
+                let o = Self::translate_operand(builder, obj, vars, string_ids, module, func_ids);
+                let i = Self::translate_operand(builder, idx, vars, string_ids, module, func_ids);
                 let data_ptr = builder.ins().load(types::I64, MemFlags::trusted(), o, 8);
                 let offset = builder.ins().imul_imm(i, 8);
                 let addr = builder.ins().iadd(data_ptr, offset);
@@ -835,9 +957,9 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                 builder.ins().load(vec_ty, MemFlags::trusted(), addr, 0)
             }
             Rvalue::VectorFMA(a_op, b_op, c_op) => {
-                let a = Self::translate_operand(builder, a_op, vars, string_ids, module);
-                let b = Self::translate_operand(builder, b_op, vars, string_ids, module);
-                let c = Self::translate_operand(builder, c_op, vars, string_ids, module);
+                let a = Self::translate_operand(builder, a_op, vars, string_ids, module, func_ids);
+                let b = Self::translate_operand(builder, b_op, vars, string_ids, module, func_ids);
+                let c = Self::translate_operand(builder, c_op, vars, string_ids, module, func_ids);
                 let ty = builder.func.dfg.value_type(a);
                 if ty.is_int() || ty.lane_type().is_int() {
                     let prod = builder.ins().imul(a, b);
@@ -855,6 +977,7 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
         vars: &HashMap<Local, Variable>,
         string_ids: &HashMap<String, DataId>,
         module: &mut M,
+        func_ids: &HashMap<String, FuncId>,
     ) -> Value {
         match op {
             Operand::Copy(l) | Operand::Move(l) => {
@@ -884,6 +1007,14 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                     let ptr = builder.ins().symbol_value(types::I64, local_id);
                     builder.ins().bor_imm(ptr, 1)
                 }
+                Constant::Function(name) => {
+                    if let Some(&func_id) = func_ids.get(name) {
+                        let local_ref = module.declare_func_in_func(func_id, builder.func);
+                        builder.ins().func_addr(types::I64, local_ref)
+                    } else {
+                        builder.ins().iconst(types::I64, 0)
+                    }
+                }
                 _ => builder.ins().iconst(types::I64, 0),
             },
         }
@@ -910,7 +1041,7 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                 targets,
                 otherwise,
             } => {
-                let val = Self::translate_operand(builder, discr, vars, string_ids, module);
+                let val = Self::translate_operand(builder, discr, vars, string_ids, module, func_ids);
                 if targets.len() == 1 && targets[0].0 == 1 {
                     let target_block = blocks[targets[0].1.0];
                     let else_block = blocks[otherwise.0];

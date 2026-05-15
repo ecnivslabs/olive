@@ -605,6 +605,74 @@ impl Parser {
         Ok(Stmt::new(StmtKind::Assert { test, msg }, span))
     }
 
+    pub(crate) fn parse_ffi_struct_def(&mut self) -> ParseResult<FfiStructDef> {
+        self.expect(TokenKind::Struct)?;
+        let name = self.expect(TokenKind::Identifier)?.value;
+        self.expect(TokenKind::Colon)?;
+        self.expect(TokenKind::Newline)?;
+        self.expect(TokenKind::Indent)?;
+        self.skip_newlines();
+        let mut fields = Vec::new();
+        while self.peek().kind != TokenKind::Dedent && self.peek().kind != TokenKind::Eof {
+            let field_name = self.expect(TokenKind::Identifier)?.value;
+            self.expect(TokenKind::Colon)?;
+            let ty = self.parse_type_expr()?;
+            fields.push(FfiStructField { name: field_name, ty });
+            self.eat_stmt_end()?;
+            self.skip_newlines();
+        }
+        self.expect(TokenKind::Dedent)?;
+        Ok(FfiStructDef { name, fields })
+    }
+
+    pub(crate) fn parse_ffi_fn_sig(&mut self) -> ParseResult<FfiFnSig> {
+        self.expect(TokenKind::Fn)?;
+        let name = self.expect(TokenKind::Identifier)?.value;
+        self.expect(TokenKind::LParen)?;
+        let mut params = Vec::new();
+        let mut is_vararg = false;
+        while self.peek().kind != TokenKind::RParen && self.peek().kind != TokenKind::Eof {
+            if self.peek().kind == TokenKind::Star
+                || (self.peek().kind == TokenKind::Dot
+                    && self.peek_at(1).kind == TokenKind::Dot)
+            {
+                if self.peek().kind == TokenKind::Dot {
+                    self.advance();
+                    self.advance();
+                    if self.peek().kind == TokenKind::Dot {
+                        self.advance();
+                    }
+                } else {
+                    self.advance();
+                    self.expect(TokenKind::Identifier)?;
+                }
+                is_vararg = true;
+                if self.peek().kind == TokenKind::Comma {
+                    self.advance();
+                }
+                break;
+            }
+            let param_name = self.expect(TokenKind::Identifier)?.value;
+            self.expect(TokenKind::Colon)?;
+            let ty = self.parse_type_expr()?;
+            params.push(FfiParam { name: param_name, ty });
+            if self.peek().kind == TokenKind::Comma {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        self.expect(TokenKind::RParen)?;
+        let ret = if self.peek().kind == TokenKind::Arrow {
+            self.advance();
+            Some(self.parse_type_expr()?)
+        } else {
+            None
+        };
+        self.eat_stmt_end()?;
+        Ok(FfiFnSig { name, params, ret, is_vararg })
+    }
+
     pub(crate) fn parse_import(&mut self) -> ParseResult<Stmt> {
         let start = self.peek().clone();
         self.expect(TokenKind::Import)?;
@@ -612,9 +680,38 @@ impl Parser {
             let path = self.advance().value.clone();
             self.expect(TokenKind::As)?;
             let alias = self.expect(TokenKind::Identifier)?.value;
+            if self.peek().kind == TokenKind::Colon
+                && self.peek_at(1).kind == TokenKind::Newline
+            {
+                self.advance();
+                self.advance();
+                self.expect(TokenKind::Indent)?;
+                self.skip_newlines();
+                let mut functions = Vec::new();
+                let mut structs = Vec::new();
+                while self.peek().kind != TokenKind::Dedent
+                    && self.peek().kind != TokenKind::Eof
+                {
+                    if self.peek().kind == TokenKind::Struct {
+                        structs.push(self.parse_ffi_struct_def()?);
+                    } else {
+                        functions.push(self.parse_ffi_fn_sig()?);
+                    }
+                    self.skip_newlines();
+                }
+                self.expect(TokenKind::Dedent)?;
+                let span = self.span_from(&start);
+                return Ok(Stmt::new(
+                    StmtKind::NativeImport { path, alias, functions, structs },
+                    span,
+                ));
+            }
             self.eat_stmt_end()?;
             let span = self.span_from(&start);
-            return Ok(Stmt::new(StmtKind::NativeImport { path, alias }, span));
+            return Ok(Stmt::new(
+                StmtKind::NativeImport { path, alias, functions: Vec::new(), structs: Vec::new() },
+                span,
+            ));
         }
         let mut module = vec![self.expect(TokenKind::Identifier)?.value];
         while self.peek().kind == TokenKind::Dot {

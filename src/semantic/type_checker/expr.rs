@@ -181,10 +181,17 @@ impl TypeChecker {
                     );
                 }
 
-                let is_vararg = if let ExprKind::Identifier(name) = &callee.kind {
-                    self.vararg_fns.contains(name.as_str())
-                } else {
-                    false
+                let is_vararg = match &callee.kind {
+                    ExprKind::Identifier(name) => self.vararg_fns.contains(name.as_str()),
+                    ExprKind::Attr { obj, attr } => {
+                        if let ExprKind::Identifier(alias) = &obj.kind {
+                            let mangled = format!("{}::{}", alias, attr);
+                            self.vararg_fns.contains(mangled.as_str())
+                        } else {
+                            false
+                        }
+                    }
+                    _ => false,
                 };
                 if is_vararg {
                     let ret_ty = Type::new_var();

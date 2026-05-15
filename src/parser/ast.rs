@@ -9,6 +9,33 @@ fn next_node_id() -> usize {
 use crate::span::Span;
 
 #[derive(Debug, Clone)]
+pub struct FfiParam {
+    #[allow(dead_code)]
+    pub name: String,
+    pub ty: TypeExpr,
+}
+
+#[derive(Debug, Clone)]
+pub struct FfiFnSig {
+    pub name: String,
+    pub params: Vec<FfiParam>,
+    pub ret: Option<TypeExpr>,
+    pub is_vararg: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct FfiStructField {
+    pub name: String,
+    pub ty: TypeExpr,
+}
+
+#[derive(Debug, Clone)]
+pub struct FfiStructDef {
+    pub name: String,
+    pub fields: Vec<FfiStructField>,
+}
+
+#[derive(Debug, Clone)]
 pub struct Decorator {
     pub name: String,
     pub is_directive: bool, // true for #[], false for @
@@ -298,6 +325,8 @@ pub enum StmtKind {
     NativeImport {
         path: String,
         alias: String,
+        functions: Vec<FfiFnSig>,
+        structs: Vec<FfiStructDef>,
     },
     FromImport {
         module: Vec<String>,

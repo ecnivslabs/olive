@@ -3,6 +3,15 @@ use super::super::types::Type;
 use super::TypeChecker;
 use crate::parser::{ParamKind, Stmt, StmtKind};
 
+fn ffi_type(t: Type) -> Type {
+    match t {
+        Type::I8 | Type::I16 | Type::I32 | Type::U8 | Type::U16 | Type::U32 | Type::U64 => Type::Int,
+        Type::Ref(inner) => Type::Ref(Box::new(ffi_type(*inner))),
+        Type::MutRef(inner) => Type::MutRef(Box::new(ffi_type(*inner))),
+        other => other,
+    }
+}
+
 impl TypeChecker {
     pub(super) fn check_stmt(&mut self, stmt: &Stmt) {
         match &stmt.kind {
@@ -377,8 +386,36 @@ impl TypeChecker {
                 }
             }
 
-            StmtKind::NativeImport { alias, .. } => {
+            StmtKind::NativeImport { alias, functions, structs, .. } => {
                 self.define_type(alias, super::super::types::Type::Any, false);
+                for sig in functions {
+                    let param_types: Vec<Type> = sig
+                        .params
+                        .iter()
+                        .map(|p| ffi_type(self.resolve_type_expr(&p.ty)))
+                        .collect();
+                    let ret_type = ffi_type(
+                        sig.ret
+                            .as_ref()
+                            .map(|t| self.resolve_type_expr(t))
+                            .unwrap_or(Type::Null),
+                    );
+                    let fn_type = Type::Fn(param_types, Box::new(ret_type), vec![]);
+                    let mangled = format!("{}::{}", alias, sig.name);
+                    self.define_type(&mangled, fn_type, false);
+                    if sig.is_vararg {
+                        self.vararg_fns.insert(mangled);
+                    }
+                }
+                for s in structs {
+                    let type_name = format!("{}::{}", alias, s.name);
+                    self.define_type(&type_name, Type::Struct(type_name.clone(), vec![]), false);
+                    self.c_ffi_structs.insert(type_name.clone());
+                    for field in &s.fields {
+                        let field_ty = ffi_type(self.resolve_type_expr(&field.ty));
+                        self.field_types.insert((type_name.clone(), field.name.clone()), field_ty);
+                    }
+                }
             }
 
             StmtKind::Pass

@@ -221,6 +221,12 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                         &self.func_ids,
                         &self.string_ids,
                         &self.struct_fields,
+                        &self.c_struct_offsets,
+                        &self.c_struct_names,
+                        &self.c_struct_sizes,
+                        &self.ffi_vararg_ptrs,
+                        &self.ffi_vararg_ids,
+                        &self.ffi_entries,
                         &mut builder,
                         stmt,
                         &vars,
@@ -265,6 +271,7 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                                 &vars,
                                 &self.string_ids,
                                 &mut self.module,
+                                &self.func_ids,
                             );
                             if targets.len() == 1 && targets[0].0 == 1 {
                                 let cond = builder.ins().icmp_imm(IntCC::NotEqual, val, 0);

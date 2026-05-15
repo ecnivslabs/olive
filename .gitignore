@@ -14,7 +14,4 @@ benchmark/
 .DS_Store
 Thumbs.db
 
-# AI Agents
-.agents/
-.claude/
-.gemini/
+grove/

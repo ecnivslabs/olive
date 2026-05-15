@@ -274,8 +274,16 @@ impl Resolver {
                 self.define_sym(name, SymbolKind::Import, stmt.span);
             }
 
-            StmtKind::NativeImport { alias, .. } => {
+            StmtKind::NativeImport { alias, functions, structs, .. } => {
                 self.define_sym(alias, SymbolKind::NativeImport, stmt.span);
+                for sig in functions {
+                    let mangled = format!("{}::{}", alias, sig.name);
+                    self.define_sym(&mangled, SymbolKind::Function, stmt.span);
+                }
+                for s in structs {
+                    let mangled = format!("{}::{}", alias, s.name);
+                    self.define_sym(&mangled, SymbolKind::Struct, stmt.span);
+                }
             }
 
             StmtKind::FromImport { names, .. } => {

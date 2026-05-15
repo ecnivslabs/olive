@@ -454,12 +454,12 @@ pub fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: boo
     }
     let borrow_duration = borrow_start.elapsed();
 
-    let native_libs: Vec<(String, String)> = program
+    let native_libs: Vec<(String, String, Vec<parser::ast::FfiFnSig>, Vec<parser::ast::FfiStructDef>)> = program
         .stmts
         .iter()
         .filter_map(|s| {
-            if let parser::StmtKind::NativeImport { path, alias } = &s.kind {
-                Some((alias.clone(), path.clone()))
+            if let parser::StmtKind::NativeImport { path, alias, functions, structs } = &s.kind {
+                Some((alias.clone(), path.clone(), functions.clone(), structs.clone()))
             } else {
                 None
             }
@@ -669,8 +669,20 @@ pub fn compile_and_emit(filename: &str, out: &str, show_time: bool) {
     }
     let borrow_duration = borrow_start.elapsed();
 
+    let native_libs: Vec<(String, String, Vec<parser::ast::FfiFnSig>, Vec<parser::ast::FfiStructDef>)> = program
+        .stmts
+        .iter()
+        .filter_map(|s| {
+            if let parser::StmtKind::NativeImport { path, alias, functions, structs } = &s.kind {
+                Some((alias.clone(), path.clone(), functions.clone(), structs.clone()))
+            } else {
+                None
+            }
+        })
+        .collect();
+
     let cg_start = std::time::Instant::now();
-    let mut codegen = CraneliftCodegen::new_aot(&mir_builder.functions, mir_builder.struct_fields.clone());
+    let mut codegen = CraneliftCodegen::new_aot(&mir_builder.functions, mir_builder.struct_fields.clone(), &native_libs);
     codegen.generate();
     let obj_bytes = codegen.emit_object();
     let cg_duration = cg_start.elapsed();
@@ -698,7 +710,7 @@ pub fn compile_and_emit(filename: &str, out: &str, show_time: bool) {
     {
         let lib_dir = find_library_dir();
         let mut cmd = std::process::Command::new("cc");
-        
+
         cmd.arg(&obj_path);
 
         if let Some(ref dir) = lib_dir {
@@ -708,6 +720,24 @@ pub fn compile_and_emit(filename: &str, out: &str, show_time: bool) {
             cmd.arg(format!("-Wl,-rpath,{}", dir.display()));
         } else {
             cmd.arg("-lolive_std");
+        }
+
+        for (_, path, _, _) in &native_libs {
+            let lib_path = std::path::Path::new(path);
+            if lib_path.is_absolute() && lib_path.exists() {
+                cmd.arg(path);
+                if let Some(dir) = lib_path.parent() {
+                    let standard = matches!(
+                        dir.to_str().unwrap_or(""),
+                        "/lib" | "/usr/lib" | "/usr/local/lib"
+                    );
+                    if !standard {
+                        cmd.arg(format!("-Wl,-rpath,{}", dir.display()));
+                    }
+                }
+            } else {
+                cmd.arg(format!("-l{}", path));
+            }
         }
 
         cmd.arg("-o");
@@ -801,12 +831,12 @@ pub fn compile_and_test(filename: &str, _show_time: bool) {
         }
     }
 
-    let test_native_libs: Vec<(String, String)> = program
+    let test_native_libs: Vec<(String, String, Vec<parser::ast::FfiFnSig>, Vec<parser::ast::FfiStructDef>)> = program
         .stmts
         .iter()
         .filter_map(|s| {
-            if let parser::StmtKind::NativeImport { path, alias } = &s.kind {
-                Some((alias.clone(), path.clone()))
+            if let parser::StmtKind::NativeImport { path, alias, functions, structs } = &s.kind {
+                Some((alias.clone(), path.clone(), functions.clone(), structs.clone()))
             } else {
                 None
             }
