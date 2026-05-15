@@ -27,7 +27,7 @@ pub mod requests;
 pub mod result;
 pub mod sys;
 pub mod uuid;
-pub mod ws;
+pub mod websocket;
 pub mod yaml;
 
 pub(crate) const KIND_LIST: i64 = 1;

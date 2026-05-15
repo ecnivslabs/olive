@@ -465,12 +465,12 @@ pub(super) fn resolve_builtin_import(
             "__olive_buf_write_u64_le" => Some("__olive_buf_write_u64_le"),
             "__olive_buf_write_u64_be" => Some("__olive_buf_write_u64_be"),
             // websocket
-            "__olive_ws_connect" => Some("__olive_ws_connect"),
-            "__olive_ws_send" => Some("__olive_ws_send"),
-            "__olive_ws_send_binary" => Some("__olive_ws_send_binary"),
-            "__olive_ws_recv" => Some("__olive_ws_recv"),
-            "__olive_ws_recv_binary" => Some("__olive_ws_recv_binary"),
-            "__olive_ws_close" => Some("__olive_ws_close"),
+            "__olive_websocket_connect" => Some("__olive_websocket_connect"),
+            "__olive_websocket_send" => Some("__olive_websocket_send"),
+            "__olive_websocket_send_binary" => Some("__olive_websocket_send_binary"),
+            "__olive_websocket_recv" => Some("__olive_websocket_recv"),
+            "__olive_websocket_recv_binary" => Some("__olive_websocket_recv_binary"),
+            "__olive_websocket_close" => Some("__olive_websocket_close"),
             // yaml / toml
             "__olive_yaml_parse" => Some("__olive_yaml_parse"),
             "__olive_yaml_stringify" => Some("__olive_yaml_stringify"),

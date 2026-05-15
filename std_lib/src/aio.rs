@@ -132,7 +132,7 @@ fn executor_drive(ex: &Arc<OliveExecutor>, task: Arc<OliveTask>) {
     }
 
     let sub_kind = unsafe { *(sub_future as *const i64) };
-
+    if sub_kind == KIND_FUTURE {
         let sf_obj = unsafe { &*(sub_future as *const OliveFuture) };
         let shared = unsafe { Arc::from_raw(sf_obj.shared as *const FutureShared) };
         let shared2 = shared.clone();
