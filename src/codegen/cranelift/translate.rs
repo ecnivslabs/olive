@@ -23,6 +23,39 @@ pub(super) fn c_struct_field_info<'a>(
         .map(|(_, off, ty, bits)| (*off, ty.as_str(), *bits))
 }
 
+pub(super) fn free_func_name_for_type(
+    ty: &OliveType,
+    struct_fields: &HashMap<String, Vec<String>>,
+) -> &'static str {
+    match ty {
+        OliveType::Str => "__olive_free_str",
+        OliveType::Bytes => "__olive_buf_free",
+        OliveType::List(_) | OliveType::Tuple(_) | OliveType::Set(_) => "__olive_free_list",
+        OliveType::Struct(name, _) if struct_fields.contains_key(name) => "__olive_free_struct",
+        OliveType::Dict(_, _) | OliveType::Struct(_, _) => "__olive_free_obj",
+        OliveType::Enum(_, _) => "__olive_free_enum",
+        OliveType::Any => "__olive_free_any",
+        // `T | None` is represented as the raw `T` value with `None` as a zero
+        // sentinel, not an Any-boxed value with a runtime kind tag -- freeing
+        // it through `__olive_free_any` misreads whatever `T`'s own header
+        // word means (e.g. a struct's field count) as a kind tag. Route to
+        // `T`'s real free function instead; only fall back to the generic
+        // kind-dispatch for a union that doesn't reduce to a single type.
+        OliveType::Union(members) => {
+            let non_null: Vec<&OliveType> = members
+                .iter()
+                .filter(|m| !matches!(m, OliveType::Null))
+                .collect();
+            match non_null.as_slice() {
+                [single] => free_func_name_for_type(single, struct_fields),
+                _ => "__olive_free_any",
+            }
+        }
+        OliveType::PyObject => "__olive_py_decref",
+        _ => "__olive_free",
+    }
+}
+
 pub(super) fn truncate_for_store(
     builder: &mut FunctionBuilder,
     val: Value,
@@ -434,6 +467,22 @@ impl<M: Module> CraneliftCodegen<M> {
                         } else {
                             v
                         };
+
+                        // Overwriting an owning field must release whatever it held;
+                        // otherwise every reassignment (e.g. a per-frame camera field) leaks.
+                        // Struct storage is zero-initialized, so the first write decrefs a
+                        // harmless null.
+                        if let Some(field_ty) = field_types.get(&(struct_name.clone(), attr.clone()))
+                            && matches!(field_ty, OliveType::PyObject)
+                        {
+                            let decref_id = func_ids
+                                .get("__olive_py_decref")
+                                .expect("missing __olive_py_decref");
+                            let decref_func = module.declare_func_in_func(*decref_id, builder.func);
+                            let old = builder.ins().load(types::I64, MemFlags::trusted(), o, offset);
+                            builder.ins().call(decref_func, &[old]);
+                        }
+
                         builder.ins().store(MemFlags::trusted(), v, o, offset);
                         return;
                     }
@@ -605,22 +654,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 let var = vars.get(local).unwrap();
                 let val = builder.use_var(*var);
 
-                let free_func_name = match ty {
-                    OliveType::Str => "__olive_free_str",
-                    OliveType::Bytes => "__olive_buf_free",
-                    OliveType::List(_) | OliveType::Tuple(_) | OliveType::Set(_) => {
-                        "__olive_free_list"
-                    }
-                    OliveType::Struct(name, _) if struct_fields.contains_key(name) => {
-                        "__olive_free_struct"
-                    }
-                    OliveType::Dict(_, _) | OliveType::Struct(_, _) => "__olive_free_obj",
-                    OliveType::Enum(_, _) => "__olive_free_enum",
-                    OliveType::Any => "__olive_free_any",
-                    OliveType::Union(_) => "__olive_free_any",
-                    OliveType::PyObject => "__olive_py_decref",
-                    _ => "__olive_free",
-                };
+                let free_func_name = free_func_name_for_type(ty, struct_fields);
 
                 let free_id = func_ids
                     .get(free_func_name)

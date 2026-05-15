@@ -179,6 +179,7 @@ impl<'a> MirBuilder<'a> {
         self.loop_stack.push(LoopContext {
             header: header_bb,
             exit: exit_bb,
+            scope_depth: self.scope_locals.len(),
         });
         self.current_block = Some(body_bb);
         self.enter_scope();
@@ -289,6 +290,7 @@ impl<'a> MirBuilder<'a> {
         self.loop_stack.push(LoopContext {
             header: header_bb,
             exit: exit_bb,
+            scope_depth: self.scope_locals.len(),
         });
         self.current_block = Some(body_bb);
         self.enter_scope();
@@ -458,6 +460,9 @@ impl<'a> MirBuilder<'a> {
         self.loop_stack.push(LoopContext {
             header: latch_bb,
             exit: exit_bb,
+            // The loop's own scope (`i_local` + body) was already entered above,
+            // unlike the other loop forms, so it sits one frame lower.
+            scope_depth: self.scope_locals.len().saturating_sub(1),
         });
         self.current_block = Some(body_bb);
         for s in body {

@@ -24,7 +24,10 @@ impl<'a> MirBuilder<'a> {
                 );
             }
             MatchPattern::Identifier(name, _) => {
-                let binding_local = self.declare_var(name.clone(), match_ty.clone(), true);
+                // A catch-all/type-narrowing binding aliases the scrutinee (or an
+                // already-non-owning payload extracted from it) rather than owning
+                // a separate value; the scrutinee's own drop releases it.
+                let binding_local = self.declare_var_view(name.clone(), match_ty.clone(), true);
                 self.push_statement(
                     StatementKind::Assign(binding_local, Rvalue::Use(Operand::Copy(discr))),
                     expr_span,
@@ -221,7 +224,9 @@ impl<'a> MirBuilder<'a> {
     ) {
         match target {
             ForTarget::Name(name, _) => {
-                let local = self.declare_var(name.clone(), elem_ty.clone(), true);
+                // Binds an alias of `val`, which the comprehension's own
+                // iteration machinery owns and drops; not a separate value.
+                let local = self.declare_var_view(name.clone(), elem_ty.clone(), true);
                 self.push_statement(
                     StatementKind::Assign(local, Rvalue::Use(Operand::Copy(val))),
                     span,
@@ -234,7 +239,7 @@ impl<'a> MirBuilder<'a> {
                 };
                 for (i, (name, _)) in names.iter().enumerate() {
                     let bind_ty = comp_tys.get(i).cloned().unwrap_or(Type::Any);
-                    let local = self.declare_var(name.clone(), bind_ty, true);
+                    let local = self.declare_var_view(name.clone(), bind_ty, true);
                     self.push_statement(
                         StatementKind::Assign(
                             local,

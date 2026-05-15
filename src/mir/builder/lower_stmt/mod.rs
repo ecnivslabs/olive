@@ -202,11 +202,16 @@ impl<'a> MirBuilder<'a> {
                     let expr_ty = self.get_type(expr.id).clone();
                     let ret_ty = self.current_locals[0].ty.clone();
                     rval = self.coerce(rval, &expr_ty, &ret_ty, expr.span);
+                    let exclude = match rval {
+                        Operand::Copy(l) | Operand::Move(l) => Some(l),
+                        _ => None,
+                    };
                     self.push_statement(
                         StatementKind::Assign(Local(0), Rvalue::Use(rval)),
                         expr.span,
                     );
                     if let Some(bb) = self.current_block {
+                        self.emit_open_scope_drops(0, exclude);
                         self.emit_defers();
                         self.terminate_block(bb, TerminatorKind::Return, expr.span);
                     }
@@ -327,11 +332,16 @@ impl<'a> MirBuilder<'a> {
                 let expr_ty = self.get_type(expr.id).clone();
                 let ret_ty = self.current_locals[0].ty.clone();
                 rval = self.coerce(rval, &expr_ty, &ret_ty, stmt.span);
+                let exclude = match rval {
+                    Operand::Copy(l) | Operand::Move(l) => Some(l),
+                    _ => None,
+                };
                 self.push_statement(
                     StatementKind::Assign(Local(0), Rvalue::Use(rval)),
                     stmt.span,
                 );
                 if let Some(bb) = self.current_block {
+                    self.emit_open_scope_drops(0, exclude);
                     if let Some((_, _, exit_bb)) = self.memo_context {
                         self.terminate_block(
                             bb,
@@ -348,6 +358,7 @@ impl<'a> MirBuilder<'a> {
 
             StmtKind::Return(None) => {
                 if let Some(bb) = self.current_block {
+                    self.emit_open_scope_drops(0, None);
                     if let Some((_, _, exit_bb)) = self.memo_context {
                         self.terminate_block(
                             bb,
@@ -585,7 +596,9 @@ impl<'a> MirBuilder<'a> {
             StmtKind::Break => {
                 if let Some(ctx) = self.loop_stack.last() {
                     let exit = ctx.exit;
+                    let depth = ctx.scope_depth;
                     if let Some(bb) = self.current_block {
+                        self.emit_open_scope_drops(depth, None);
                         self.terminate_block(
                             bb,
                             TerminatorKind::Goto { target: exit },
@@ -599,7 +612,9 @@ impl<'a> MirBuilder<'a> {
             StmtKind::Continue => {
                 if let Some(ctx) = self.loop_stack.last() {
                     let header = ctx.header;
+                    let depth = ctx.scope_depth;
                     if let Some(bb) = self.current_block {
+                        self.emit_open_scope_drops(depth, None);
                         self.terminate_block(
                             bb,
                             TerminatorKind::Goto { target: header },

@@ -1117,7 +1117,11 @@ impl<'a> MirBuilder<'a> {
             }
         }
 
-        let init_res = self.new_local(self.get_type(expr_id), None, false);
+        // `__init__`'s call result is a required assignment target, not a
+        // meaningful value -- the constructed object is `obj_tmp`, returned
+        // below. Unscoped like `obj_tmp` so it is never scope-dropped as if it
+        // owned a second, aliased copy of the struct.
+        let init_res = self.new_unscoped_local(self.get_type(expr_id));
         self.push_statement(
             StatementKind::Assign(
                 init_res,

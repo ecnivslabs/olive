@@ -24,6 +24,10 @@ pub(super) struct FnMeta {
 pub(super) struct LoopContext {
     pub(super) header: BasicBlockId,
     pub(super) exit: BasicBlockId,
+    /// `scope_locals` depth of the loop's own frame(s); `break`/`continue` drop
+    /// everything from this depth up, since they skip the loop body's normal
+    /// end-of-iteration `leave_scope`.
+    pub(super) scope_depth: usize,
 }
 
 /// A lifted nested fn: `mangled` is the global name (`parent$name`),
@@ -513,6 +517,38 @@ impl<'a> MirBuilder<'a> {
             }
         }
         self.var_map.pop();
+    }
+
+    /// Drops every owning local in the open scope frames from `from_depth` up,
+    /// without popping them, for a control-transfer statement (`return`,
+    /// `break`, `continue`) that jumps out of those scopes early. Without this,
+    /// only the eventual *normal* `leave_scope` would drop them -- but that
+    /// call lands in the block created after the jump, which has no
+    /// predecessor and is deleted as dead code by the optimizer, silently
+    /// leaking every local the jump skipped past.
+    ///
+    /// `exclude` is the local (if any) whose value is being carried out by the
+    /// jump itself (e.g. `return that_local`); its ownership has already
+    /// transferred to `_return`; dropping it here would free the value out
+    /// from under the caller.
+    pub(super) fn emit_open_scope_drops(&mut self, from_depth: usize, exclude: Option<Local>) {
+        // Local(0) is always `_return` (registered in scope by `start_function`
+        // before the body is lowered); it holds the value being carried out and
+        // must never be dropped here regardless of `exclude`.
+        let to_drop: Vec<Local> = self.scope_locals[from_depth..]
+            .iter()
+            .rev()
+            .flat_map(|frame| frame.iter().rev().copied())
+            .filter(|&local| {
+                local != Local(0) && Some(local) != exclude && {
+                    let decl = &self.current_locals[local.0];
+                    decl.ty.is_move_type() && decl.is_owning
+                }
+            })
+            .collect();
+        for local in to_drop {
+            self.push_statement(StatementKind::Drop(local), Span::default());
+        }
     }
 
     pub(super) fn get_type(&self, expr_id: usize) -> Type {

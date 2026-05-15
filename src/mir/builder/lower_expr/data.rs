@@ -89,7 +89,11 @@ impl<'a> MirBuilder<'a> {
         } else if let Some(global_op) = self.globals.get(name).cloned() {
             if let Operand::Constant(Constant::GlobalData(_)) = &global_op {
                 let ty = self.get_type(expr_id);
-                let tmp = self.new_local(ty, None, false);
+                // A raw read of the global's stored pointer, not a new
+                // reference to it -- the global owns it permanently, so this
+                // local must never be scope-dropped (would decref/free a
+                // shared value, e.g. an imported Python module, on every use).
+                let tmp = self.new_local_with_owning(ty, None, false, false);
                 self.push_statement(
                     StatementKind::Assign(tmp, Rvalue::PtrLoad(global_op.clone())),
                     Span::default(),
