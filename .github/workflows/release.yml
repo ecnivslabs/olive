@@ -83,11 +83,27 @@ jobs:
         if: matrix.os == 'windows-latest'
         run: cp target/${{ matrix.target }}/release/pit.exe ${{ matrix.artifact }}
 
+      - name: Rename library (Linux)
+        if: runner.os == 'Linux'
+        run: cp target/${{ matrix.target }}/release/libolive_std.so libolive_std-${{ matrix.target == 'x86_64-unknown-linux-musl' && 'linux-x86_64' || 'linux-aarch64' }}.so
+
+      - name: Rename library (macOS)
+        if: runner.os == 'macOS'
+        run: cp target/${{ matrix.target }}/release/libolive_std.dylib libolive_std-${{ matrix.target == 'x86_64-apple-darwin' && 'macos-x86_64' || 'macos-aarch64' }}.dylib
+
+      - name: Rename library (Windows)
+        if: runner.os == 'Windows'
+        run: cp target/${{ matrix.target }}/release/libolive_std.dll libolive_std-windows-x86_64.dll
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}
+          name: ${{ matrix.artifact }}-bundle
+          path: |
+            ${{ matrix.artifact }}
+            libolive_std-*.so
+            libolive_std-*.dylib
+            libolive_std-*.dll
 
   release:
     name: Create Release

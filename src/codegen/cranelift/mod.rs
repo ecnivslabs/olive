@@ -186,11 +186,38 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
         }
 
         #[cfg(not(all(olive_std_linked, target_os = "linux")))]
-        if let Ok(lib) = unsafe {
+        let lib = unsafe {
             let name = libloading::library_filename("olive_std");
-            libloading::Library::new(std::path::Path::new("target/debug").join(&name))
-                .or_else(|_| libloading::Library::new(std::path::Path::new("target/release").join(&name)))
-        } {
+            let mut paths = vec![
+                std::path::PathBuf::from("target/release").join(&name),
+                std::path::PathBuf::from("target/debug").join(&name),
+            ];
+
+            if let Ok(exe_path) = std::env::current_exe() {
+                if let Some(exe_dir) = exe_path.parent() {
+                    paths.push(exe_dir.join(&name));
+                    if let Some(parent) = exe_dir.parent() {
+                        paths.push(parent.join("lib").join(&name));
+                    }
+                }
+            }
+
+            paths.push(std::path::PathBuf::from("/usr/local/lib").join(&name));
+            paths.push(std::path::PathBuf::from("/usr/lib").join(&name));
+            paths.push(std::path::PathBuf::from("/lib").join(&name));
+
+            let mut loaded_lib = None;
+            for path in paths {
+                if let Ok(l) = libloading::Library::new(&path) {
+                    loaded_lib = Some(l);
+                    break;
+                }
+            }
+            loaded_lib
+        };
+
+        #[cfg(not(all(olive_std_linked, target_os = "linux")))]
+        if let Some(lib) = lib {
             unsafe {
                 for &(jit_name, c_name) in SYMBOL_MAP {
                     let is_async_needed = has_async

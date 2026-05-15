@@ -14,7 +14,7 @@ use std::{
     collections::HashSet,
     fs,
     hash::{Hash, Hasher},
-    path::Path,
+    path::{Path, PathBuf},
     process,
 };
 
@@ -111,7 +111,7 @@ pub fn load_and_parse(
                 let mut mod_path = parent_dir.join(format!("{}.liv", mod_name));
 
                 if !mod_path.exists() {
-                    mod_path = Path::new("lib").join(format!("{}.liv", mod_name));
+                    mod_path = find_std_lib_src_dir().join(format!("{}.liv", mod_name));
                 }
 
                 if !mod_path.exists() {
@@ -181,7 +181,7 @@ pub fn load_and_parse(
                 let mut mod_path = parent_dir.join(format!("{}.liv", mod_name));
 
                 if !mod_path.exists() {
-                    mod_path = Path::new("lib").join(format!("{}.liv", mod_name));
+                    mod_path = find_std_lib_src_dir().join(format!("{}.liv", mod_name));
                 }
 
                 if !mod_path.exists() {
@@ -262,7 +262,7 @@ fn collect_source_files(
             let mod_name = module.join("/");
             let mut mod_path = parent_dir.join(format!("{}.liv", mod_name));
             if !mod_path.exists() {
-                mod_path = Path::new("lib").join(format!("{}.liv", mod_name));
+                mod_path = find_std_lib_src_dir().join(format!("{}.liv", mod_name));
             }
             if !mod_path.exists() {
                 if let Some(pkg_path) = find_pit_module(&mod_name) {
@@ -523,6 +523,79 @@ pub fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: boo
     }
 }
 
+fn find_std_lib_src_dir() -> PathBuf {
+    // 1. Check CWD (for developers)
+    if Path::new("lib").exists() {
+        return PathBuf::from("lib");
+    }
+
+    // 2. Check alongside executable
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            // Check ./lib relative to exe
+            let lib_dir = exe_dir.join("lib");
+            if lib_dir.exists() {
+                return lib_dir;
+            }
+            // Check ../lib/olive relative to exe
+            if let Some(parent) = exe_dir.parent() {
+                let std_lib = parent.join("lib").join("olive");
+                if std_lib.exists() {
+                    return std_lib;
+                }
+            }
+        }
+    }
+
+    // 3. System paths
+    for dir in &["/usr/local/lib/olive", "/usr/lib/olive", "/lib/olive"] {
+        let path = Path::new(dir);
+        if path.exists() {
+            return path.to_path_buf();
+        }
+    }
+
+    PathBuf::from("lib") // Fallback to current dir
+}
+
+fn find_library_dir() -> Option<PathBuf> {
+    let lib_name = libloading::library_filename("olive_std");
+
+    // 1. Check CWD (target/release or target/debug) - for developers
+    for dir in &["target/release", "target/debug"] {
+        let path = Path::new(dir);
+        if path.join(&lib_name).exists() {
+            return Some(fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()));
+        }
+    }
+
+    // 2. Check alongside executable
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            if exe_dir.join(&lib_name).exists() {
+                return Some(exe_dir.to_path_buf());
+            }
+            // Check ../lib from bin
+            if let Some(parent) = exe_dir.parent() {
+                let lib_dir = parent.join("lib");
+                if lib_dir.join(&lib_name).exists() {
+                    return Some(lib_dir);
+                }
+            }
+        }
+    }
+
+    // 3. Check system paths
+    for dir in &["/usr/local/lib", "/usr/lib", "/lib"] {
+        let path = Path::new(dir);
+        if path.join(&lib_name).exists() {
+            return Some(path.to_path_buf());
+        }
+    }
+
+    None
+}
+
 pub fn compile_and_emit(filename: &str, out: &str, show_time: bool) {
     let t0 = std::time::Instant::now();
     let mut loaded = HashSet::new();
@@ -640,25 +713,25 @@ pub fn compile_and_emit(filename: &str, out: &str, show_time: bool) {
 
     #[cfg(not(target_os = "windows"))]
     {
-        let std_lib_name = libloading::library_filename("olive_std");
-        let lib_dir = if Path::new("target/release").join(&std_lib_name).exists() {
-            "target/release"
+        let lib_dir = find_library_dir();
+        let mut cc_args = vec![obj_path.as_str()];
+        
+        if let Some(ref dir) = lib_dir {
+            cc_args.push("-L");
+            cc_args.push(dir.to_str().unwrap());
+            cc_args.push("-lolive_std");
+            
+            let rpath = format!("-Wl,-rpath,{}", dir.display());
+            cc_args.push(&rpath);
         } else {
-            "target/debug"
-        };
-        let abs_lib_dir = fs::canonicalize(lib_dir).unwrap_or_else(|_| Path::new(lib_dir).to_path_buf());
-        let rpath_flag = format!("-Wl,-rpath,{}", abs_lib_dir.display());
+            cc_args.push("-lolive_std");
+        }
+        
+        cc_args.push("-o");
+        cc_args.push(out);
 
         let status = std::process::Command::new("cc")
-            .args([
-                &obj_path,
-                "-L",
-                lib_dir,
-                "-lolive_std",
-                &rpath_flag,
-                "-o",
-                out,
-            ])
+            .args(&cc_args)
             .status()
             .unwrap_or_else(|e| {
                 eprintln!("error: could not invoke cc: {e}");
