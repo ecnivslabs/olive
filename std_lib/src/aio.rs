@@ -391,7 +391,7 @@ pub extern "C" fn olive_async_file_read(path: i64) -> i64 {
     let path_str = if path == 0 {
         String::new()
     } else {
-        let ptr = (path & !1) as *const i8;
+        let ptr = (path & !1) as *const std::ffi::c_char;
         unsafe { std::ffi::CStr::from_ptr(ptr) }
             .to_string_lossy()
             .into_owned()
@@ -430,7 +430,7 @@ pub extern "C" fn olive_async_file_write(path: i64, data: i64) -> i64 {
     let path_str = if path == 0 {
         String::new()
     } else {
-        let ptr = (path & !1) as *const i8;
+        let ptr = (path & !1) as *const std::ffi::c_char;
         unsafe { std::ffi::CStr::from_ptr(ptr) }
             .to_string_lossy()
             .into_owned()
@@ -438,7 +438,7 @@ pub extern "C" fn olive_async_file_write(path: i64, data: i64) -> i64 {
     let data_str = if data == 0 {
         String::new()
     } else {
-        let ptr = (data & !1) as *const i8;
+        let ptr = (data & !1) as *const std::ffi::c_char;
         unsafe { std::ffi::CStr::from_ptr(ptr) }
             .to_string_lossy()
             .into_owned()

@@ -167,12 +167,12 @@ pub extern "C" fn olive_str_concat(l: i64, r: i64) -> i64 {
     let l_bytes = if l == 0 {
         b"" as &[u8]
     } else {
-        unsafe { std::ffi::CStr::from_ptr((l & !1) as *const i8).to_bytes() }
+        unsafe { std::ffi::CStr::from_ptr((l & !1) as *const std::ffi::c_char).to_bytes() }
     };
     let r_bytes = if r == 0 {
         b"" as &[u8]
     } else {
-        unsafe { std::ffi::CStr::from_ptr((r & !1) as *const i8).to_bytes() }
+        unsafe { std::ffi::CStr::from_ptr((r & !1) as *const std::ffi::c_char).to_bytes() }
     };
     let mut buf = Vec::with_capacity(l_bytes.len() + r_bytes.len() + 1);
     buf.extend_from_slice(l_bytes);
@@ -189,8 +189,8 @@ pub extern "C" fn olive_str_eq(l: i64, r: i64) -> i64 {
     if l == 0 || r == 0 {
         return 0;
     }
-    let l_cstr = unsafe { std::ffi::CStr::from_ptr((l & !1) as *const i8) };
-    let r_cstr = unsafe { std::ffi::CStr::from_ptr((r & !1) as *const i8) };
+    let l_cstr = unsafe { std::ffi::CStr::from_ptr((l & !1) as *const std::ffi::c_char) };
+    let r_cstr = unsafe { std::ffi::CStr::from_ptr((r & !1) as *const std::ffi::c_char) };
     if l_cstr == r_cstr { 1 } else { 0 }
 }
 
@@ -440,7 +440,7 @@ pub extern "C" fn olive_free_struct(ptr: i64) {
 pub extern "C" fn olive_free_str(ptr: i64) {
     if ptr != 0 && (ptr & 1) == 0 {
         unsafe {
-            let _ = std::ffi::CString::from_raw(ptr as *mut i8);
+            let _ = std::ffi::CString::from_raw(ptr as *mut std::ffi::c_char);
         }
     }
 }
@@ -629,7 +629,7 @@ pub extern "C" fn olive_str_len(s: i64) -> i64 {
     if s == 0 {
         return 0;
     }
-    unsafe { std::ffi::CStr::from_ptr((s & !1) as *const i8).to_bytes().len() as i64 }
+    unsafe { std::ffi::CStr::from_ptr((s & !1) as *const std::ffi::c_char).to_bytes().len() as i64 }
 }
 
 #[unsafe(no_mangle)]
@@ -676,7 +676,7 @@ pub fn olive_str_from_ptr(ptr: i64) -> String {
     }
     let p = ptr & !1;
     unsafe {
-        std::ffi::CStr::from_ptr(p as *const i8)
+        std::ffi::CStr::from_ptr(p as *const std::ffi::c_char)
             .to_string_lossy()
             .into_owned()
     }
