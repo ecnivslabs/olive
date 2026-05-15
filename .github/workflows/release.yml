@@ -69,11 +69,11 @@ jobs:
 
       - name: Build (cross)
         if: matrix.use_cross
-        run: cross build --release --target ${{ matrix.target }}
+        run: cross build --release --target ${{ matrix.target }} --workspace
 
       - name: Build (cargo)
         if: '!matrix.use_cross'
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }} --workspace
 
       - name: Rename artifact (Unix)
         if: matrix.os != 'windows-latest'
@@ -93,7 +93,7 @@ jobs:
 
       - name: Rename library (Windows)
         if: runner.os == 'Windows'
-        run: cp target/${{ matrix.target }}/release/libolive_std.dll $(echo ${{ matrix.artifact }} | sed 's/pit/libolive_std/' | sed 's/\.exe//').dll
+        run: cp target/${{ matrix.target }}/release/olive_std.dll $(echo ${{ matrix.artifact }} | sed 's/pit/libolive_std/' | sed 's/\.exe//').dll
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
