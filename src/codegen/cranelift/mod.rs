@@ -139,6 +139,8 @@ pub(super) struct FfiFnEntry {
     pub(super) ret: Option<String>,
     pub(super) is_vararg: bool,
     pub(super) n_fixed: usize,
+    /// Call convention: None (cdecl), stdcall, or fastcall.
+    pub(super) call_conv: Option<String>,
 }
 
 pub struct CraneliftCodegen<'a, M: Module> {
@@ -152,34 +154,89 @@ pub struct CraneliftCodegen<'a, M: Module> {
     pub(super) ffi_entries: Vec<FfiFnEntry>,
     pub(super) ffi_vararg_ptrs: HashMap<String, *const u8>,
     pub(super) ffi_vararg_ids: std::collections::HashSet<String>,
-    pub(super) c_struct_offsets: HashMap<String, Vec<(String, i32)>>,
+    pub(super) c_struct_offsets: HashMap<String, Vec<(String, i32, String)>>,
     pub(super) c_struct_sizes: HashMap<String, i64>,
     pub(super) c_struct_names: std::collections::HashSet<String>,
     pub(super) aot: bool,
+    /// JIT-only: extern global var address + CL type name for synthetic getter emission
+    pub(super) extern_var_ptrs: HashMap<String, (i64, String)>,
 }
 
 fn c_prim_layout(ty: &str) -> (i32, i32) {
     match ty {
-        "f64" | "i64" | "u64" => (8, 8),
+        "f64" | "i64" | "u64" | "ptr" => (8, 8),
         "f32" | "i32" | "u32" => (4, 4),
         "i16" | "u16" => (2, 2),
         "i8" | "u8" | "bool" => (1, 1),
+        _ if ty.starts_with('[') => {
+            // Array: [elem;N]
+            if let Some(semi) = ty.find(';') {
+                let elem = &ty[1..semi];
+                let n: i32 = ty[semi + 1..ty.len() - 1].parse().unwrap_or(1);
+                let (elem_size, elem_align) = c_prim_layout(elem);
+                (elem_size * n, elem_align)
+            } else {
+                (8, 8)
+            }
+        }
         _ => (8, 8),
     }
 }
 
-fn c_abi_layout(fields: &[crate::parser::ast::FfiStructField]) -> (Vec<(String, i32)>, i64) {
+fn c_abi_layout(fields: &[crate::parser::ast::FfiStructField], is_union: bool) -> (Vec<(String, i32, String)>, i64) {
+    if is_union {
+        // Union: fields at 0, size = max size rounded to align.
+        let mut max_size = 0i32;
+        let mut max_align = 1i32;
+        let mut layout = Vec::new();
+        for field in fields {
+            let ty = type_expr_to_name(&field.ty);
+            let (size, align) = c_prim_layout(&ty);
+            max_align = max_align.max(align);
+            max_size = max_size.max(size);
+            layout.push((field.name.clone(), 0, ty.clone()));
+        }
+        let total = if max_align > 0 {
+            let r = max_size % max_align;
+            if r == 0 { max_size } else { max_size + max_align - r }
+        } else {
+            max_size
+        };
+        return (layout, total as i64);
+    }
     let mut offset = 0i32;
     let mut layout = Vec::new();
     let mut max_align = 1i32;
+    let mut current_bit_offset = 0i32;
+    let mut last_bitfield_size = 0i32;
+
     for field in fields {
         let ty = type_expr_to_name(&field.ty);
         let (size, align) = c_prim_layout(&ty);
         max_align = max_align.max(align);
-        let padding = (align - (offset % align)) % align;
-        offset += padding;
-        layout.push((field.name.clone(), offset));
-        offset += size;
+
+        if let Some(bits) = field.bits {
+            if current_bit_offset == 0 || (current_bit_offset + (bits as i32) > last_bitfield_size * 8) || size != last_bitfield_size {
+                // New bitfield unit.
+                let padding = (align - (offset % align)) % align;
+                offset += padding;
+                layout.push((field.name.clone(), offset, ty.clone()));
+                last_bitfield_size = size;
+                current_bit_offset = bits as i32;
+                offset += size;
+            } else {
+                // Pack into unit.
+                layout.push((field.name.clone(), offset - last_bitfield_size, ty.clone()));
+                current_bit_offset += bits as i32;
+            }
+        } else {
+            current_bit_offset = 0;
+            last_bitfield_size = 0;
+            let padding = (align - (offset % align)) % align;
+            offset += padding;
+            layout.push((field.name.clone(), offset, ty.clone()));
+            offset += size;
+        }
     }
     let total = if max_align > 0 {
         let r = offset % max_align;
@@ -195,6 +252,12 @@ fn type_expr_to_name(t: &crate::parser::ast::TypeExpr) -> String {
         crate::parser::ast::TypeExprKind::Name(n) => n.clone(),
         crate::parser::ast::TypeExprKind::Ref(inner)
         | crate::parser::ast::TypeExprKind::MutRef(inner) => type_expr_to_name(inner),
+        // Pointer is 64-bit.
+        crate::parser::ast::TypeExprKind::Ptr(_) => "ptr".to_string(),
+        // Array for c_prim_layout.
+        crate::parser::ast::TypeExprKind::FixedArray(inner, n) => {
+            format!("[{};{}]", type_expr_to_name(inner), n)
+        }
         _ => "int".to_string(),
     }
 }
@@ -207,6 +270,9 @@ pub(super) fn ffi_cl_type(name: &str) -> cranelift::prelude::Type {
         "i32" | "u32" => types::I32,
         "i16" | "u16" => types::I16,
         "i8" | "u8" => types::I8,
+        // ptr and fixed arrays are pointer-sized
+        "ptr" => types::I64,
+        _ if name.starts_with('[') => types::I64,
         _ => types::I64,
     }
 }
@@ -215,7 +281,7 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
     pub fn new_jit(
         functions: &'a [MirFunction],
         struct_fields: HashMap<String, Vec<String>>,
-        native_lib_paths: &[(String, String, Vec<crate::parser::ast::FfiFnSig>, Vec<crate::parser::ast::FfiStructDef>)],
+        native_lib_paths: &[(String, String, Vec<crate::parser::ast::FfiFnSig>, Vec<crate::parser::ast::FfiStructDef>, Vec<crate::parser::ast::FfiVarDef>)],
     ) -> Self {
         let mut flag_builder = settings::builder();
         flag_builder.set("use_colocated_libcalls", "false").unwrap();
@@ -240,10 +306,12 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
         let mut native_aliases = std::collections::HashSet::new();
         let mut ffi_entries: Vec<FfiFnEntry> = Vec::new();
         let mut ffi_vararg_ptrs: HashMap<String, *const u8> = HashMap::default();
-        let mut c_struct_offsets: HashMap<String, Vec<(String, i32)>> = HashMap::default();
+        let mut c_struct_offsets: HashMap<String, Vec<(String, i32, String)>> = HashMap::default();
         let mut c_struct_sizes: HashMap<String, i64> = HashMap::default();
         let mut c_struct_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let has_c_structs = native_lib_paths.iter().any(|(_, _, _, structs)| !structs.is_empty());
+        let has_c_structs = native_lib_paths.iter().any(|(_, _, _, structs, _)| !structs.is_empty());
+        let has_vararg = native_lib_paths.iter().any(|(_, _, sigs, _, _)| sigs.iter().any(|s| s.is_vararg));
+        let mut extern_var_ptrs: HashMap<String, (i64, String)> = HashMap::default();
 
         #[cfg(all(olive_std_linked, target_os = "linux"))]
         {
@@ -252,8 +320,9 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
             }
             for &(jit_name, c_name) in SYMBOL_MAP {
                 let is_async_needed = has_async && ASYNC_RUNTIME_SYMS.contains(&jit_name);
-                let needed_for_c = jit_name == "__olive_alloc" && has_c_structs;
-                if needed.contains(jit_name) || is_async_needed || needed_for_c {
+                let needed_for_c = (jit_name == "__olive_alloc" || jit_name == "__olive_free_c_struct") && has_c_structs;
+                let needed_for_vararg = jit_name == "__olive_vararg_call" && has_vararg;
+                if needed.contains(jit_name) || is_async_needed || needed_for_c || needed_for_vararg {
                     let ptr = unsafe { dlsym(std::ptr::null_mut(), c_name.as_ptr() as *const _) };
                     if !ptr.is_null() {
                         builder.symbol(jit_name, ptr as *const u8);
@@ -298,8 +367,9 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
             unsafe {
                 for &(jit_name, c_name) in SYMBOL_MAP {
                     let is_async_needed = has_async && ASYNC_RUNTIME_SYMS.contains(&jit_name);
-                    let needed_for_c = jit_name == "__olive_alloc" && has_c_structs;
-                    if needed.contains(jit_name) || is_async_needed || needed_for_c {
+                    let needed_for_c = (jit_name == "__olive_alloc" || jit_name == "__olive_free_c_struct") && has_c_structs;
+                    let needed_for_vararg = jit_name == "__olive_vararg_call" && has_vararg;
+                    if needed.contains(jit_name) || is_async_needed || needed_for_c || needed_for_vararg {
                         if let Ok(f) = lib.get::<unsafe extern "C" fn()>(c_name) {
                             builder.symbol(jit_name, *f as *const u8);
                         }
@@ -309,16 +379,26 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
             libs.push(lib);
         }
 
-        for (alias, path, ffi_sigs, ffi_structs) in native_lib_paths {
+        for (alias, path, ffi_sigs, ffi_structs, ffi_vars) in native_lib_paths {
             for ffi_struct in ffi_structs {
                 let type_name = format!("{}::{}", alias, ffi_struct.name);
-                let (layout, total_size) = c_abi_layout(&ffi_struct.fields);
+                let (layout, total_size) = c_abi_layout(&ffi_struct.fields, ffi_struct.is_union);
                 c_struct_offsets.insert(type_name.clone(), layout);
                 c_struct_sizes.insert(type_name.clone(), total_size);
                 c_struct_names.insert(type_name);
             }
             if let Ok(lib) = unsafe { libloading::Library::new(path) } {
                 native_aliases.insert(alias.clone());
+                // Store extern global addresses.
+                for var in ffi_vars {
+                    let sym_bytes = format!("{}\0", var.name);
+                    if let Ok(sym) = unsafe { lib.get::<*const std::ffi::c_void>(sym_bytes.as_bytes()) } {
+                        let addr = *sym as i64;
+                        let ty_str = type_expr_to_name(&var.ty);
+                        let jit_name = format!("{}::{}", alias, var.name);
+                        extern_var_ptrs.insert(jit_name, (addr, ty_str));
+                    }
+                }
                 if ffi_sigs.is_empty() {
                     let prefix = format!("{}::", alias);
                     for func in functions {
@@ -366,6 +446,7 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
                             ret: sig.ret.as_ref().map(type_expr_to_name),
                             is_vararg: sig.is_vararg,
                             n_fixed: sig.params.len(),
+                            call_conv: sig.call_conv.clone(),
                         });
                     }
                 }
@@ -392,6 +473,7 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
             c_struct_sizes,
             c_struct_names,
             aot: false,
+            extern_var_ptrs,
         }
     }
 
@@ -409,7 +491,7 @@ impl<'a> CraneliftCodegen<'a, ObjectModule> {
     pub fn new_aot(
         functions: &'a [MirFunction],
         struct_fields: HashMap<String, Vec<String>>,
-        native_lib_paths: &[(String, String, Vec<crate::parser::ast::FfiFnSig>, Vec<crate::parser::ast::FfiStructDef>)],
+        native_lib_paths: &[(String, String, Vec<crate::parser::ast::FfiFnSig>, Vec<crate::parser::ast::FfiStructDef>, Vec<crate::parser::ast::FfiVarDef>)],
     ) -> Self {
         let mut flag_builder = settings::builder();
         flag_builder.set("use_colocated_libcalls", "false").unwrap();
@@ -429,14 +511,14 @@ impl<'a> CraneliftCodegen<'a, ObjectModule> {
         let module = ObjectModule::new(obj_builder);
 
         let mut ffi_entries: Vec<FfiFnEntry> = Vec::new();
-        let mut c_struct_offsets: HashMap<String, Vec<(String, i32)>> = HashMap::default();
+        let mut c_struct_offsets: HashMap<String, Vec<(String, i32, String)>> = HashMap::default();
         let mut c_struct_sizes: HashMap<String, i64> = HashMap::default();
         let mut c_struct_names: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-        for (alias, _path, ffi_sigs, ffi_structs) in native_lib_paths {
+        for (alias, _path, ffi_sigs, ffi_structs, _ffi_vars) in native_lib_paths {
             for ffi_struct in ffi_structs {
                 let type_name = format!("{}::{}", alias, ffi_struct.name);
-                let (layout, total_size) = c_abi_layout(&ffi_struct.fields);
+                let (layout, total_size) = c_abi_layout(&ffi_struct.fields, ffi_struct.is_union);
                 c_struct_offsets.insert(type_name.clone(), layout);
                 c_struct_sizes.insert(type_name.clone(), total_size);
                 c_struct_names.insert(type_name);
@@ -449,6 +531,7 @@ impl<'a> CraneliftCodegen<'a, ObjectModule> {
                     ret: sig.ret.as_ref().map(type_expr_to_name),
                     is_vararg: sig.is_vararg,
                     n_fixed: sig.params.len(),
+                    call_conv: sig.call_conv.clone(),
                 });
             }
         }
@@ -468,6 +551,7 @@ impl<'a> CraneliftCodegen<'a, ObjectModule> {
             c_struct_sizes,
             c_struct_names,
             aot: true,
+            extern_var_ptrs: HashMap::default(),
         }
     }
 
@@ -612,11 +696,13 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
 
         let has_async = self.functions.iter().any(|f| f.is_async);
         let has_c_structs = !self.c_struct_sizes.is_empty();
+        let has_vararg = !self.ffi_vararg_ptrs.is_empty() || self.ffi_entries.iter().any(|e| e.is_vararg);
 
         for &(name, sig) in import_table {
             let always_needed = ASYNC_RUNTIME_SYMS.contains(&name);
-            let needed_for_c = name == "__olive_alloc" && has_c_structs;
-            if !(needed.contains(name) || always_needed && has_async || needed_for_c) {
+            let needed_for_c = (name == "__olive_alloc" || name == "__olive_free_c_struct") && has_c_structs;
+            let needed_for_vararg = name == "__olive_vararg_call" && has_vararg;
+            if !(needed.contains(name) || always_needed && has_async || needed_for_c || needed_for_vararg) {
                 continue;
             }
             let decl_name = if self.aot {
@@ -643,9 +729,20 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                 continue;
             }
             let mut sig = self.module.make_signature();
-            sig.call_conv = self.module.isa().default_call_conv();
+            // Use FFI call convention.
+            sig.call_conv = match entry.call_conv.as_deref() {
+                #[cfg(target_os = "windows")]
+                Some("stdcall") | Some("fastcall") => cranelift::prelude::isa::CallConv::WindowsFastcall,
+                _ => self.module.isa().default_call_conv(),
+            };
             for param_name in &entry.params {
-                sig.params.push(AbiParam::new(ffi_cl_type(param_name)));
+                if let Some(layout) = self.c_struct_offsets.get(param_name) {
+                    for (_, _, ty_name) in layout {
+                        sig.params.push(AbiParam::new(ffi_cl_type(ty_name)));
+                    }
+                } else {
+                    sig.params.push(AbiParam::new(ffi_cl_type(param_name)));
+                }
             }
             if let Some(ret_name) = &entry.ret {
                 if ret_name != "void" {
@@ -773,8 +870,58 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
             }
         }
 
+        // Emit synthetic getter functions for extern global vars (JIT only)
+        if !self.aot {
+            let var_entries: Vec<(String, i64, String)> = self
+                .extern_var_ptrs
+                .iter()
+                .map(|(name, (addr, ty))| (name.clone(), *addr, ty.clone()))
+                .collect();
+            for (name, addr, ty_str) in var_entries {
+                if !self.func_ids.contains_key(&name) {
+                    self.emit_extern_var_getter(&name, addr, &ty_str);
+                }
+            }
+        }
+
         if self.aot {
             self.emit_aot_main();
+        }
+    }
+
+    /// Emit a zero-arg function `name()` that loads from a fixed C global address.
+    fn emit_extern_var_getter(&mut self, name: &str, addr: i64, ty_str: &str) {
+        use cranelift::prelude::FunctionBuilderContext;
+        let cl_ty = ffi_cl_type(ty_str);
+        let mut sig = self.module.make_signature();
+        sig.returns.push(AbiParam::new(types::I64));
+        let Ok(func_id) = self.module.declare_function(name, Linkage::Local, &sig) else {
+            return;
+        };
+        self.func_ids.insert(name.to_string(), func_id);
+        let mut ctx = self.module.make_context();
+        ctx.func.signature = sig;
+        let mut builder_ctx = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
+        let block = builder.create_block();
+        builder.switch_to_block(block);
+        builder.seal_block(block);
+        let addr_val = builder.ins().iconst(types::I64, addr);
+        let raw = builder.ins().load(cl_ty, cranelift::prelude::MemFlags::trusted(), addr_val, 0);
+        // Always return i64; widen narrower types
+        let val = if cl_ty != types::I64 {
+            if cl_ty.is_float() {
+                builder.ins().bitcast(types::I64, cranelift::prelude::MemFlags::new(), raw)
+            } else {
+                builder.ins().uextend(types::I64, raw)
+            }
+        } else {
+            raw
+        };
+        builder.ins().return_(&[val]);
+        builder.finalize();
+        if self.module.define_function(func_id, &mut ctx).is_err() {
+            eprintln!("warning: failed to emit getter for extern var '{}'", name);
         }
     }
 

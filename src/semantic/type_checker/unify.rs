@@ -285,6 +285,10 @@ impl TypeChecker {
                 }
                 Type::Union(vars)
             }
+            // Raw C pointer: treat as Int (pointer-sized integer)
+            TypeExprKind::Ptr(_) => Type::Int,
+            // Fixed-size C array: treat as a list of Int for type-checking purposes
+            TypeExprKind::FixedArray(_, _) => Type::List(Box::new(Type::Int)),
         }
     }
 }

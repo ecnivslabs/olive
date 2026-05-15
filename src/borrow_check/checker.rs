@@ -5,21 +5,16 @@ use rustc_hash::FxHashMap as HashMap;
 use rustc_hash::FxHashSet as HashSet;
 use std::collections::VecDeque;
 
-// track local variable state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LocalState {
-    // initialized and usable
     Initialized,
-    // moved and unusable
     Moved,
-    // storage not live
     Dead,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FlowState {
     locals: Vec<LocalState>,
-    // local -> (immut_count, is_mut)
     borrows: Vec<(usize, bool)>,
 }
 
@@ -49,7 +44,6 @@ impl FlowState {
                 }
             }
             self.locals[local.0] = state;
-            // When state changes to Dead or Moved, borrows are cleared.
             if state != LocalState::Initialized {
                 self.borrows[local.0] = (0, false);
             }
@@ -57,7 +51,6 @@ impl FlowState {
         Ok(())
     }
 
-    // Merge states at CFG join points. Returns true if anything changed.
     fn join(&mut self, other: &FlowState) -> bool {
         let mut changed = false;
         let len = self.locals.len().max(other.locals.len());
@@ -96,7 +89,6 @@ pub struct BorrowChecker<'a> {
     pub func: &'a MirFunction,
     pub errors: Vec<SemanticError>,
     pub liveness: Liveness,
-    // reference provenance
     pub provenance: HashMap<Local, Local>,
 }
 
@@ -123,7 +115,6 @@ impl<'a> BorrowChecker<'a> {
         let mut entry_states: Vec<Option<FlowState>> = vec![None; num_blocks];
 
         let mut init_state = FlowState::new(num_locals);
-        // Function parameters are initialized by the caller.
         for i in 1..=self.func.arg_count {
             if i < num_locals {
                 let _ = init_state.set(Local(i), LocalState::Initialized);
@@ -142,7 +133,7 @@ impl<'a> BorrowChecker<'a> {
 
             let state = match &entry_states[bb_idx] {
                 Some(s) => s.clone(),
-                None => continue, // Unreachable block.
+                None => continue,
             };
 
             let mut state = state;
@@ -192,7 +183,6 @@ impl<'a> BorrowChecker<'a> {
                         self.provenance.insert(*lhs, *rhs);
                     }
                     Rvalue::Use(Operand::Copy(rhs)) | Rvalue::Use(Operand::Move(rhs)) => {
-                        // If we assign a reference to another variable, it inherits provenance
                         if let Some(prov) = self.provenance.get(rhs).cloned() {
                             self.provenance.insert(*lhs, prov);
                         }
@@ -404,7 +394,6 @@ impl<'a> BorrowChecker<'a> {
     }
 
     fn release_dead_borrows(&self, state: &mut FlowState, live_locals: &HashSet<Local>) {
-        // We only release the borrow if ALL locals that hold this reference are dead.
         let mut still_borrowed = HashSet::default();
         for (ref_var, &pointed_var) in &self.provenance {
             if live_locals.contains(ref_var) {
@@ -414,7 +403,6 @@ impl<'a> BorrowChecker<'a> {
 
         for (ref_var, &pointed_var) in &self.provenance {
             if !live_locals.contains(ref_var) && !still_borrowed.contains(&pointed_var) {
-                // This specific reference is dead, and NO OTHER live local points here.
                 let borrow = &mut state.borrows[pointed_var.0];
                 if borrow.0 > 0 {
                     borrow.0 -= 1;
@@ -425,7 +413,6 @@ impl<'a> BorrowChecker<'a> {
         }
     }
 
-    // Helper to get a readable name for a local (for errors).
     fn local_name(&self, local: Local) -> String {
         self.func
             .locals

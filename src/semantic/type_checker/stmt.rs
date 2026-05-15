@@ -205,8 +205,8 @@ impl TypeChecker {
                     self.async_depth -= 1;
                 }
                 self.current_return_type = prev_ret;
-                self.leave_scope(); // leave fn scope
-                self.leave_scope(); // leave type param scope
+                self.leave_scope();
+                self.leave_scope();
             }
 
             StmtKind::While {
@@ -280,7 +280,7 @@ impl TypeChecker {
                 }
                 self.leave_scope();
                 self.current_struct = prev_struct;
-                self.leave_scope(); // type param scope
+                self.leave_scope();
             }
 
             StmtKind::Impl {
@@ -332,7 +332,7 @@ impl TypeChecker {
                 }
                 self.leave_scope();
                 self.current_struct = prev_struct;
-                self.leave_scope(); // type param scope
+                self.leave_scope();
             }
 
             StmtKind::Trait {
@@ -386,7 +386,7 @@ impl TypeChecker {
                 }
             }
 
-            StmtKind::NativeImport { alias, functions, structs, .. } => {
+            StmtKind::NativeImport { alias, functions, structs, vars, .. } => {
                 self.define_type(alias, super::super::types::Type::Any, false);
                 for sig in functions {
                     let param_types: Vec<Type> = sig
@@ -403,6 +403,10 @@ impl TypeChecker {
                     let fn_type = Type::Fn(param_types, Box::new(ret_type), vec![]);
                     let mangled = format!("{}::{}", alias, sig.name);
                     self.define_type(&mangled, fn_type, false);
+                    let is_safe = sig.decorators.iter().any(|d| d.name == "safe");
+                    if !is_safe {
+                        self.ffi_fns.insert(mangled.clone());
+                    }
                     if sig.is_vararg {
                         self.vararg_fns.insert(mangled);
                     }
@@ -416,6 +420,22 @@ impl TypeChecker {
                         self.field_types.insert((type_name.clone(), field.name.clone()), field_ty);
                     }
                 }
+                for v in vars {
+                    let mangled = format!("{}::{}", alias, v.name);
+                    let fn_type = Type::Fn(vec![], Box::new(Type::Int), vec![]);
+                    self.define_type(&mangled, fn_type, false);
+                    self.ffi_fns.insert(mangled);
+                }
+            }
+
+            StmtKind::UnsafeBlock(body) => {
+                self.unsafe_depth += 1;
+                self.enter_scope();
+                for s in body {
+                    self.check_stmt(s);
+                }
+                self.leave_scope();
+                self.unsafe_depth -= 1;
             }
 
             StmtKind::Pass

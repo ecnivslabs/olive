@@ -116,7 +116,6 @@ impl TypeChecker {
                     if let Some(init_ty) = self.lookup_type(&init_name) {
                         let instantiated_init = self.instantiate(init_ty);
                         if let Type::Fn(params, _, _) = instantiated_init {
-                            // Unify the self parameter with the struct type
                             if !params.is_empty() {
                                 self.unify(&params[0], &Type::Struct(name.clone(), type_args.clone()), expr.span);
                             }
@@ -138,7 +137,6 @@ impl TypeChecker {
                             }
                         }
                     } else {
-                        // Implicit constructor: unify arguments with fields
                         if let Some(fields) = self.struct_fields.get(&name).cloned() {
                             for (i, arg_ty) in arg_types.iter().enumerate() {
                                 if i < fields.len() {
@@ -169,6 +167,25 @@ impl TypeChecker {
                 }
 
                 let mut final_callee_ty = resolved_callee.clone();
+                if let ExprKind::Identifier(name) = &callee.kind {
+                    if self.ffi_fns.contains(name) && self.unsafe_depth == 0 {
+                        self.errors.push(super::super::error::SemanticError::Custom {
+                            msg: format!("call to unsafe FFI function `{}` requires unsafe block", name),
+                            span: expr.span,
+                        });
+                    }
+                } else if let ExprKind::Attr { obj, attr } = &callee.kind {
+                    if let ExprKind::Identifier(alias) = &obj.kind {
+                        let mangled = format!("{}::{}", alias, attr);
+                        if self.ffi_fns.contains(&mangled) && self.unsafe_depth == 0 {
+                            self.errors.push(super::super::error::SemanticError::Custom {
+                                msg: format!("call to unsafe FFI function `{}` requires unsafe block", mangled),
+                                span: expr.span,
+                            });
+                        }
+                    }
+                }
+
                 if let ExprKind::Attr { .. } = &callee.kind
                     && let Type::Fn(params, ret, args) = &resolved_callee
                     && !params.is_empty()

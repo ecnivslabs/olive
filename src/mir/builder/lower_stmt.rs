@@ -348,6 +348,13 @@ impl<'a> MirBuilder<'a> {
             | StmtKind::Import { .. }
             | StmtKind::FromImport { .. }
             | StmtKind::NativeImport { .. } => {}
+
+            StmtKind::UnsafeBlock(body) => {
+                for s in body {
+                    self.lower_stmt(s);
+                }
+            }
+            
             StmtKind::Enum { name, variants, .. } => {
                 for (i, variant) in variants.iter().enumerate() {
                     let mangled = format!("{}::{}", name, variant.name);
@@ -732,6 +739,9 @@ impl<'a> MirBuilder<'a> {
                 }
                 Type::Union(vars)
             }
+            // Raw pointer and fixed arrays are opaque in MIR — treat as Int
+            TypeExprKind::Ptr(_) => Type::Int,
+            TypeExprKind::FixedArray(_, _) => Type::List(Box::new(Type::Int)),
         }
     }
 

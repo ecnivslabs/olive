@@ -151,7 +151,6 @@ impl Lexer {
                 }
                 self.advance();
             }
-            // ignore block comment line
             return Ok(None);
         }
         if matches!(self.peek(), Some('\n') | None) {
@@ -292,7 +291,6 @@ impl Lexer {
         col: usize,
         start: usize,
     ) -> LexResult<Token> {
-        // base prefixed: 0x, 0o, 0b
         if first == '0' {
             match self.peek() {
                 Some('x') | Some('X') => {
@@ -357,7 +355,6 @@ impl Lexer {
             num.push(self.advance().unwrap());
         }
 
-        // fraction
         if self.peek() == Some('.') && matches!(self.peek_next(), Some(c) if c.is_ascii_digit()) {
             is_float = true;
             num.push(self.advance().unwrap()); // '.'
@@ -366,7 +363,6 @@ impl Lexer {
             }
         }
 
-        // scientific
         if matches!(self.peek(), Some('e') | Some('E')) {
             is_float = true;
             num.push(self.advance().unwrap());
@@ -409,7 +405,6 @@ impl Lexer {
     ) -> LexResult<Token> {
         let mut ident = String::from(first);
 
-        // f-string prefix
         if first == 'f' && (self.peek() == Some('"') || self.peek() == Some('\'')) {
             let quote = self.advance().unwrap();
             let mut tok = self.read_string(quote, line, col, start)?;
@@ -453,6 +448,7 @@ impl Lexer {
             "async" => TokenKind::Async,
             "await" => TokenKind::Await,
             "case" => TokenKind::Case,
+            "unsafe" => TokenKind::Unsafe,
             "_" => TokenKind::Underscore,
             _ => TokenKind::Identifier,
         };
@@ -528,7 +524,7 @@ impl Lexer {
             let tok = match ch {
                 '\n' => {
                     if !self.delimiter_stack.is_empty() {
-                        continue; // implicit continuation
+                        continue;
                     }
                     match self.handle_indent(line, start)? {
                         Some(tok) => tok,

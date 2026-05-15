@@ -37,11 +37,9 @@ impl Inliner {
                                 continue;
                             }
                             if let Some(target_fn) = fn_map.get(name) {
-                                // skip async fns; return needs wrapping
                                 if target_fn.is_async {
                                     continue;
                                 }
-                                // skip self-recursion to avoid bloat
                                 let is_recursive = target_fn.basic_blocks.iter().any(|bb| {
                                     bb.statements.iter().any(|s| {
                                         matches!(&s.kind, StatementKind::Assign(_, Rvalue::Call {
@@ -52,7 +50,6 @@ impl Inliner {
                                 if is_recursive {
                                     continue;
                                 }
-                                // inline if small
                                 if target_fn.basic_blocks.len() < 100 {
                                     call_found = Some((stmt_idx, name.clone(), args.clone()));
                                     break;
@@ -89,12 +86,10 @@ impl Inliner {
     ) {
         let local_offset = caller.locals.len();
 
-        // copy locals
         for decl in &callee.locals {
             caller.locals.push(decl.clone());
         }
 
-        // split block
         let mut tail_statements = caller.basic_blocks[bb_idx].statements.split_off(stmt_idx);
         let call_stmt = tail_statements.remove(0);
         let ret_local = if let StatementKind::Assign(l, _) = call_stmt.kind {
@@ -109,14 +104,12 @@ impl Inliner {
             terminator: caller.basic_blocks[bb_idx].terminator.take(),
         };
 
-        // map blocks
         let block_offset = caller.basic_blocks.len() + 1; // +1 because we'll add the tail later
         let mut callee_bb_map = HashMap::default();
         for (i, _) in callee.basic_blocks.iter().enumerate() {
             callee_bb_map.insert(BasicBlockId(i), BasicBlockId(block_offset + i));
         }
 
-        // connect entry
         caller.basic_blocks[bb_idx].terminator = Some(Terminator {
             kind: TerminatorKind::Goto {
                 target: BasicBlockId(block_offset),
@@ -124,11 +117,9 @@ impl Inliner {
             span: call_stmt.span,
         });
 
-        // init params
         let mut init_stmts = Vec::new();
         for (j, arg) in args.iter().enumerate() {
             let param_local = Local(local_offset + j + 1);
-            // mark storage live
             init_stmts.push(Statement {
                 kind: StatementKind::StorageLive(param_local),
                 span: call_stmt.span,
@@ -139,37 +130,31 @@ impl Inliner {
             });
         }
 
-        // mark locals live
         for j in (callee.arg_count + 1)..callee.locals.len() {
             init_stmts.push(Statement {
                 kind: StatementKind::StorageLive(Local(local_offset + j)),
                 span: call_stmt.span,
             });
         }
-        // return is local 0
         init_stmts.push(Statement {
             kind: StatementKind::StorageLive(Local(local_offset)),
             span: call_stmt.span,
         });
 
-        // translate blocks
         let mut translated_blocks = Vec::new();
         for (i, bb) in callee.basic_blocks.iter().enumerate() {
             let mut new_bb = bb.clone();
 
-            // remap locals
             for stmt in &mut new_bb.statements {
                 self.remap_statement(stmt, local_offset);
             }
 
-            // init params at entry
             if i == 0 {
                 let mut combined = init_stmts.clone();
                 combined.extend(new_bb.statements);
                 new_bb.statements = combined;
             }
 
-            // remap terminator
             if let Some(term) = &mut new_bb.terminator {
                 match &mut term.kind {
                     TerminatorKind::Goto { target } => {
@@ -187,9 +172,7 @@ impl Inliner {
                         *otherwise = *callee_bb_map.get(otherwise).unwrap();
                     }
                     TerminatorKind::Return => {
-                        // return -> goto
                         if let Some(dest) = ret_local {
-                            // set return value
                             new_bb.statements.push(Statement {
                                 kind: StatementKind::Assign(
                                     dest,
@@ -203,7 +186,6 @@ impl Inliner {
                     _ => {}
                 }
             } else {
-                // implicit return
                 new_bb.terminator = Some(Terminator {
                     kind: TerminatorKind::Goto { target: tail_bb_id },
                     span: call_stmt.span,
@@ -212,7 +194,6 @@ impl Inliner {
             translated_blocks.push(new_bb);
         }
 
-        // append blocks
         caller.basic_blocks.push(tail_bb); // This will have ID tail_bb_id
         caller.basic_blocks.extend(translated_blocks);
     }

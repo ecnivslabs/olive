@@ -120,7 +120,6 @@ impl Parser {
                     BinOp::NotEq
                 }
                 TokenKind::Not => {
-                    // check not in
                     self.advance();
                     if self.peek().kind == TokenKind::In {
                         self.advance();
@@ -320,7 +319,6 @@ impl Parser {
             match self.peek().kind {
                 TokenKind::Dot | TokenKind::DoubleColon => {
                     let op = self.advance();
-                    // postfix await
                     if op.kind == TokenKind::Dot && self.peek().kind == TokenKind::Await {
                         let end_tok = self.advance();
                         let span = expr.span.merge(self.span_from(&end_tok));
@@ -465,7 +463,6 @@ impl Parser {
             let end_span = self.peek().span.1;
             self.expect(TokenKind::Dedent)?;
 
-            // terminate match stmt
             let dummy = self.peek().clone();
             self.tokens.insert(
                 self.pos,
@@ -579,13 +576,11 @@ impl Parser {
 
         while i < chars.len() {
             if chars[i] == '{' {
-                // double brace
                 if i + 1 < chars.len() && chars[i + 1] == '{' {
                     i += 2;
                     continue;
                 }
 
-                // literal part
                 if i > last_pos {
                     let s: String = chars[last_pos..i].iter().collect();
                     let s = s.replace("{{", "{").replace("}}", "}");
@@ -594,7 +589,6 @@ impl Parser {
                     }
                 }
 
-                // find match
                 i += 1;
                 let start_expr = i;
                 let mut brace_count = 1;
@@ -616,7 +610,6 @@ impl Parser {
                     return Err(self.err_at(&tok, "empty expression in f-string"));
                 }
 
-                // parse inner
                 let mut lexer = crate::lexer::Lexer::new(&expr_str, tok.file_id);
                 let tokens = lexer.tokenise().map_err(|e| ParseError {
                     message: format!("lexer error in f-string: {}", e.message),
@@ -722,7 +715,6 @@ impl Parser {
                 self.advance();
                 let body = self.parse_block()?;
                 let span = self.span_from(&tok);
-                // terminate async block
                 let dummy = self.tokens[self.pos].clone();
                 self.tokens.insert(
                     self.pos,

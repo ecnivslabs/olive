@@ -24,6 +24,8 @@ pub struct TypeChecker {
     pub(super) traits: HashMap<String, Vec<String>>,
     pub(super) type_traits: HashSet<(String, String)>,
     pub(super) c_ffi_structs: HashSet<String>,
+    pub(super) unsafe_depth: usize,
+    pub(super) ffi_fns: HashSet<String>,
 }
 
 impl TypeChecker {
@@ -182,6 +184,8 @@ impl TypeChecker {
             traits: HashMap::default(),
             type_traits: HashSet::default(),
             c_ffi_structs: HashSet::default(),
+            unsafe_depth: 0,
+            ffi_fns: HashSet::default(),
         }
     }
 

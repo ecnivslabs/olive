@@ -55,9 +55,18 @@ impl Parser {
             TokenKind::LBracket => {
                 self.advance();
                 let inner = self.parse_type_expr()?;
-                self.expect(TokenKind::RBracket)?;
-                let span = self.span_from(&start);
-                Ok(TypeExpr::new(TypeExprKind::List(Box::new(inner)), span))
+                if self.peek().kind == TokenKind::Semicolon {
+                    self.advance();
+                    let size_tok = self.expect(TokenKind::Integer)?;
+                    let n = size_tok.value.parse::<usize>().unwrap_or(0);
+                    self.expect(TokenKind::RBracket)?;
+                    let span = self.span_from(&start);
+                    Ok(TypeExpr::new(TypeExprKind::FixedArray(Box::new(inner), n), span))
+                } else {
+                    self.expect(TokenKind::RBracket)?;
+                    let span = self.span_from(&start);
+                    Ok(TypeExpr::new(TypeExprKind::List(Box::new(inner)), span))
+                }
             }
             TokenKind::LBrace => {
                 self.advance();
@@ -83,6 +92,12 @@ impl Parser {
                     let span = self.span_from(&start);
                     Ok(TypeExpr::new(TypeExprKind::Ref(Box::new(inner)), span))
                 }
+            }
+            TokenKind::Star => {
+                self.advance();
+                let inner = self.parse_single_type_expr()?;
+                let span = self.span_from(&start);
+                Ok(TypeExpr::new(TypeExprKind::Ptr(Box::new(inner)), span))
             }
             TokenKind::Fn => {
                 self.advance();

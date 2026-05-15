@@ -419,4 +419,11 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
         let wrapper_id = *self.func_ids.get(&func.name).unwrap();
         self.module.define_function(wrapper_id, &mut ctx).unwrap();
     }
+
+    #[allow(dead_code)]
+    pub(super) fn generate_ffi_trampoline(&mut self, _sig: &crate::parser::ast::FfiFnSig) -> cranelift_module::FuncId {
+        // TODO: Trampoline for C callbacks -> Olive closures.
+        // Needs ABI-matching entry point to pack args and call closure.
+        panic!("FFI trampolines not yet fully implemented");
+    }
 }

@@ -18,48 +18,30 @@ pub enum Type {
     Str,
     Bool,
     Null,
-    // Named user-defined type (struct): Struct(name, type_args)
     Struct(String, Vec<Type>),
-    // Enum type: Enum(name, type_args)
     Enum(String, Vec<Type>),
-    // Type parameter: Param(name)
     Param(String),
-    // Union type: A | B
     Union(Vec<Type>),
-    // Function type: Fn(params, return_type, type_args)
     Fn(Vec<Type>, Box<Type>, Vec<Type>),
-    // Tuple type: (T1, T2, ...)
     Tuple(Vec<Type>),
-    // List type: [T]
     List(Box<Type>),
-    // Dict type: {K: V}
     Dict(Box<Type>, Box<Type>),
-    // Set type: {T}
     Set(Box<Type>),
-    // Reference type: &T
     Ref(Box<Type>),
-    // Mutable reference type: &mut T
     MutRef(Box<Type>),
-    // Type variable for inference
     Var(usize),
-    // "Any" type for dynamic fallback
     Any,
-    // "Never" type for unreachable paths
     Never,
-    // Vector type for SIMD: Vector(element_type, width)
     Vector(Box<Type>, usize),
-    // Future[T]: produced by async fn / async: blocks
     Future(Box<Type>),
 }
 
 impl Type {
-    // Allocate a globally unique type variable ID.
     pub fn new_var() -> Self {
         let id = TYPE_VAR_COUNTER.fetch_add(1, Ordering::Relaxed);
         Type::Var(id)
     }
 
-    /// Returns true if this type has move semantics (heap allocated or complex).
     pub fn is_move_type(&self) -> bool {
         !matches!(
             self,

@@ -11,12 +11,12 @@ use rustc_hash::FxHashMap as HashMap;
 
 fn struct_field_offset(
     struct_fields: &HashMap<String, Vec<String>>,
-    c_struct_offsets: &HashMap<String, Vec<(String, i32)>>,
+    c_struct_offsets: &HashMap<String, Vec<(String, i32, String)>>,
     struct_name: &str,
     attr: &str,
 ) -> Option<i32> {
     if let Some(fields) = c_struct_offsets.get(struct_name) {
-        return fields.iter().find(|(n, _)| n == attr).map(|&(_, off)| off);
+        return fields.iter().find(|(n, _, _)| n == attr).map(|(_, off, _)| *off);
     }
     let fields = struct_fields.get(struct_name)?;
     let idx = fields.iter().position(|f| f == attr)?;
@@ -176,7 +176,7 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
         func_ids: &HashMap<String, FuncId>,
         string_ids: &HashMap<String, DataId>,
         struct_fields: &HashMap<String, Vec<String>>,
-        c_struct_offsets: &HashMap<String, Vec<(String, i32)>>,
+        c_struct_offsets: &HashMap<String, Vec<(String, i32, String)>>,
         c_struct_names: &std::collections::HashSet<String>,
         c_struct_sizes: &HashMap<String, i64>,
         ffi_vararg_ptrs: &HashMap<String, *const u8>,
@@ -370,7 +370,7 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
         func_ids: &HashMap<String, FuncId>,
         string_ids: &HashMap<String, DataId>,
         struct_fields: &HashMap<String, Vec<String>>,
-        c_struct_offsets: &HashMap<String, Vec<(String, i32)>>,
+        c_struct_offsets: &HashMap<String, Vec<(String, i32, String)>>,
         c_struct_sizes: &HashMap<String, i64>,
         ffi_vararg_ptrs: &HashMap<String, *const u8>,
         ffi_vararg_ids: &std::collections::HashSet<String>,
@@ -444,6 +444,8 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
 
                         let is_builtin = resolved_name.starts_with("__olive") || resolved_name == "print";
 
+                        let ffi_entry = ffi_entries.iter().find(|e| e.jit_name == resolved_name);
+
                         for (i, &arg) in call_args.iter().enumerate() {
                             let is_str_arg = args.get(i).is_some_and(|op| match op {
                                 Operand::Constant(Constant::Str(_)) => true,
@@ -452,6 +454,24 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                                 }
                                 _ => false,
                             });
+                            
+                            if is_ffi {
+                                if let Some(entry) = ffi_entry {
+                                    if i < entry.params.len() {
+                                        let p_type = &entry.params[i];
+                                        if let Some(layout) = c_struct_offsets.get(p_type) {
+                                            // Struct by value: unroll fields.
+                                            for (_, offset, ty_name) in layout {
+                                                let cl_ty = super::ffi_cl_type(ty_name);
+                                                let val = builder.ins().load(cl_ty, MemFlags::trusted(), arg, *offset);
+                                                final_args.push(val);
+                                            }
+                                            continue;
+                                        }
+                                    }
+                                }
+                            }
+
                             if (is_ffi || is_aot_vararg) && is_str_arg {
                                 final_args.push(builder.ins().band_imm(arg, -2));
                             } else if is_builtin && !accepts_float && builder.func.dfg.value_type(arg) == types::F64 {

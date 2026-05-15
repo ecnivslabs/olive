@@ -290,10 +290,8 @@ pub(super) fn resolve_builtin_import(
             "__olive_crypto_sha256" => Some("__olive_crypto_sha256"),
             "__olive_crypto_md5" => Some("__olive_crypto_md5"),
             "__olive_time_format" => Some("__olive_time_format"),
-            // string extras
             "__olive_str_fmt" => Some("__olive_str_fmt"),
             "__olive_str_char_count" => Some("__olive_str_char_count"),
-            // io extras
             "__olive_file_read_lines" => Some("__olive_file_read_lines"),
             "__olive_file_open" => Some("__olive_file_open"),
             "__olive_file_close" => Some("__olive_file_close"),
@@ -313,7 +311,6 @@ pub(super) fn resolve_builtin_import(
             "__olive_temp_file" => Some("__olive_temp_file"),
             "__olive_stdin_read" => Some("__olive_stdin_read"),
             "__olive_stdin_read_line" => Some("__olive_stdin_read_line"),
-            // channels
             "__olive_chan_new" => Some("__olive_chan_new"),
             "__olive_chan_send" => Some("__olive_chan_send"),
             "__olive_chan_recv" => Some("__olive_chan_recv"),
@@ -321,19 +318,16 @@ pub(super) fn resolve_builtin_import(
             "__olive_chan_len" => Some("__olive_chan_len"),
             "__olive_chan_close" => Some("__olive_chan_close"),
             "__olive_chan_free" => Some("__olive_chan_free"),
-            // mutex
             "__olive_mutex_new" => Some("__olive_mutex_new"),
             "__olive_mutex_lock" => Some("__olive_mutex_lock"),
             "__olive_mutex_unlock" => Some("__olive_mutex_unlock"),
             "__olive_mutex_free" => Some("__olive_mutex_free"),
-            // atomics
             "__olive_atomic_new" => Some("__olive_atomic_new"),
             "__olive_atomic_get" => Some("__olive_atomic_get"),
             "__olive_atomic_set" => Some("__olive_atomic_set"),
             "__olive_atomic_add" => Some("__olive_atomic_add"),
             "__olive_atomic_cas" => Some("__olive_atomic_cas"),
             "__olive_atomic_free" => Some("__olive_atomic_free"),
-            // net extras
             "__olive_net_tcp_listen" => Some("__olive_net_tcp_listen"),
             "__olive_net_tcp_accept" => Some("__olive_net_tcp_accept"),
             "__olive_net_tcp_listener_addr" => Some("__olive_net_tcp_listener_addr"),
@@ -347,7 +341,6 @@ pub(super) fn resolve_builtin_import(
             "__olive_net_udp_close" => Some("__olive_net_udp_close"),
             "__olive_net_dns_lookup" => Some("__olive_net_dns_lookup"),
             "__olive_net_dns_lookup_all" => Some("__olive_net_dns_lookup_all"),
-            // sys
             "__olive_sys_hostname" => Some("__olive_sys_hostname"),
             "__olive_sys_pid" => Some("__olive_sys_pid"),
             "__olive_sys_cpu_count" => Some("__olive_sys_cpu_count"),
@@ -360,12 +353,10 @@ pub(super) fn resolve_builtin_import(
             "__olive_sys_home_dir" => Some("__olive_sys_home_dir"),
             "__olive_sys_cwd" => Some("__olive_sys_cwd"),
             "__olive_sys_chdir" => Some("__olive_sys_chdir"),
-            // compress
             "__olive_gzip_compress" => Some("__olive_gzip_compress"),
             "__olive_gzip_decompress" => Some("__olive_gzip_decompress"),
             "__olive_zstd_compress" => Some("__olive_zstd_compress"),
             "__olive_zstd_decompress" => Some("__olive_zstd_decompress"),
-            // encoding
             "__olive_base64_encode" => Some("__olive_base64_encode"),
             "__olive_base64_decode" => Some("__olive_base64_decode"),
             "__olive_base64_encode_bytes" => Some("__olive_base64_encode_bytes"),
@@ -373,7 +364,6 @@ pub(super) fn resolve_builtin_import(
             "__olive_url_decode" => Some("__olive_url_decode"),
             "__olive_hex_encode" => Some("__olive_hex_encode"),
             "__olive_hex_decode" => Some("__olive_hex_decode"),
-            // datetime
             "__olive_datetime_now" => Some("__olive_datetime_now"),
             "__olive_datetime_utcnow" => Some("__olive_datetime_utcnow"),
             "__olive_datetime_parse" => Some("__olive_datetime_parse"),
@@ -399,7 +389,6 @@ pub(super) fn resolve_builtin_import(
             "__olive_datetime_start_of_month" => Some("__olive_datetime_start_of_month"),
             "__olive_datetime_is_leap_year" => Some("__olive_datetime_is_leap_year"),
             "__olive_datetime_days_in_month" => Some("__olive_datetime_days_in_month"),
-            // logging
             "__olive_log_set_level" => Some("__olive_log_set_level"),
             "__olive_log_set_format" => Some("__olive_log_set_format"),
             "__olive_log_debug" => Some("__olive_log_debug"),
@@ -409,7 +398,6 @@ pub(super) fn resolve_builtin_import(
             "__olive_log_with_field" => Some("__olive_log_with_field"),
             "__olive_log_clear_fields" => Some("__olive_log_clear_fields"),
             "__olive_log_level_from_str" => Some("__olive_log_level_from_str"),
-            // regex
             "__olive_regex_match" => Some("__olive_regex_match"),
             "__olive_regex_find" => Some("__olive_regex_find"),
             "__olive_regex_find_all" => Some("__olive_regex_find_all"),
@@ -418,12 +406,10 @@ pub(super) fn resolve_builtin_import(
             "__olive_regex_captures" => Some("__olive_regex_captures"),
             "__olive_regex_split" => Some("__olive_regex_split"),
             "__olive_regex_is_valid" => Some("__olive_regex_is_valid"),
-            // uuid
             "__olive_uuid_v4" => Some("__olive_uuid_v4"),
             "__olive_uuid_nil" => Some("__olive_uuid_nil"),
             "__olive_uuid_is_valid" => Some("__olive_uuid_is_valid"),
             "__olive_uuid_to_hex" => Some("__olive_uuid_to_hex"),
-            // crypto extras
             "__olive_crypto_aes_encrypt" => Some("__olive_crypto_aes_encrypt"),
             "__olive_crypto_aes_decrypt" => Some("__olive_crypto_aes_decrypt"),
             "__olive_crypto_argon2_hash" => Some("__olive_crypto_argon2_hash"),
@@ -431,7 +417,6 @@ pub(super) fn resolve_builtin_import(
             "__olive_crypto_rsa_keygen" => Some("__olive_crypto_rsa_keygen"),
             "__olive_crypto_rsa_encrypt" => Some("__olive_crypto_rsa_encrypt"),
             "__olive_crypto_rsa_decrypt" => Some("__olive_crypto_rsa_decrypt"),
-            // result
             "__olive_result_ok" => Some("__olive_result_ok"),
             "__olive_result_err" => Some("__olive_result_err"),
             "__olive_result_is_ok" => Some("__olive_result_is_ok"),
@@ -440,7 +425,6 @@ pub(super) fn resolve_builtin_import(
             "__olive_result_unwrap_err" => Some("__olive_result_unwrap_err"),
             "__olive_result_unwrap_or" => Some("__olive_result_unwrap_or"),
             "__olive_result_err_msg" => Some("__olive_result_err_msg"),
-            // bytes / buffer
             "__olive_buf_new" => Some("__olive_buf_new"),
             "__olive_buf_from_str" => Some("__olive_buf_from_str"),
             "__olive_buf_len" => Some("__olive_buf_len"),
@@ -464,19 +448,16 @@ pub(super) fn resolve_builtin_import(
             "__olive_buf_write_u32_be" => Some("__olive_buf_write_u32_be"),
             "__olive_buf_write_u64_le" => Some("__olive_buf_write_u64_le"),
             "__olive_buf_write_u64_be" => Some("__olive_buf_write_u64_be"),
-            // websocket
             "__olive_websocket_connect" => Some("__olive_websocket_connect"),
             "__olive_websocket_send" => Some("__olive_websocket_send"),
             "__olive_websocket_send_binary" => Some("__olive_websocket_send_binary"),
             "__olive_websocket_recv" => Some("__olive_websocket_recv"),
             "__olive_websocket_recv_binary" => Some("__olive_websocket_recv_binary"),
             "__olive_websocket_close" => Some("__olive_websocket_close"),
-            // yaml / toml
             "__olive_yaml_parse" => Some("__olive_yaml_parse"),
             "__olive_yaml_stringify" => Some("__olive_yaml_stringify"),
             "__olive_toml_parse" => Some("__olive_toml_parse"),
             "__olive_toml_stringify" => Some("__olive_toml_stringify"),
-            // buffered io
             "__olive_bufread_open" => Some("__olive_bufread_open"),
             "__olive_bufread_line" => Some("__olive_bufread_line"),
             "__olive_bufread_close" => Some("__olive_bufread_close"),
@@ -484,7 +465,6 @@ pub(super) fn resolve_builtin_import(
             "__olive_bufwrite_write" => Some("__olive_bufwrite_write"),
             "__olive_bufwrite_flush" => Some("__olive_bufwrite_flush"),
             "__olive_bufwrite_close" => Some("__olive_bufwrite_close"),
-            // reflection / panic / exit hooks
             "__olive_panic" => Some("__olive_panic"),
             "__olive_atexit" => Some("__olive_atexit"),
             "__olive_run_exit_hooks" => Some("__olive_run_exit_hooks"),
@@ -494,11 +474,9 @@ pub(super) fn resolve_builtin_import(
             "__olive_is_obj" => Some("__olive_is_obj"),
             "__olive_is_bytes" => Some("__olive_is_bytes"),
             "__olive_typeof_str" => Some("__olive_typeof_str"),
-            // unicode extras
             "__olive_str_is_ascii" => Some("__olive_str_is_ascii"),
             "__olive_str_grapheme_count" => Some("__olive_str_grapheme_count"),
             "__olive_str_graphemes" => Some("__olive_str_graphemes"),
-            // worker pool
             "__olive_pool_size" => Some("__olive_pool_size"),
             "__olive_pool_run" => Some("__olive_pool_run"),
             "__olive_pool_run_sync" => Some("__olive_pool_run_sync"),

@@ -13,6 +13,14 @@ pub struct FfiParam {
     #[allow(dead_code)]
     pub name: String,
     pub ty: TypeExpr,
+    #[allow(dead_code)]
+    pub is_cstr: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct FfiVarDef {
+    pub name: String,
+    pub ty: TypeExpr,
 }
 
 #[derive(Debug, Clone)]
@@ -21,24 +29,28 @@ pub struct FfiFnSig {
     pub params: Vec<FfiParam>,
     pub ret: Option<TypeExpr>,
     pub is_vararg: bool,
+    pub decorators: Vec<Decorator>,
+    pub call_conv: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct FfiStructField {
     pub name: String,
     pub ty: TypeExpr,
+    pub bits: Option<u8>,
 }
 
 #[derive(Debug, Clone)]
 pub struct FfiStructDef {
     pub name: String,
     pub fields: Vec<FfiStructField>,
+    pub is_union: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct Decorator {
     pub name: String,
-    pub is_directive: bool, // true for #[], false for @
+    pub is_directive: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +85,8 @@ pub enum TypeExprKind {
     },
     Ref(Box<TypeExpr>),
     MutRef(Box<TypeExpr>),
+    Ptr(Box<TypeExpr>),
+    FixedArray(Box<TypeExpr>, usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -275,20 +289,20 @@ pub enum StmtKind {
     Struct {
         name: String,
         type_params: Vec<String>,
-        fields: Vec<Param>, // named fields with optional type annotations
-        body: Vec<Stmt>,    // associated consts / nested types inside struct block
+        fields: Vec<Param>,
+        body: Vec<Stmt>,
         decorators: Vec<Decorator>,
     },
     Impl {
         type_params: Vec<String>,
-        trait_name: Option<String>, // Some("Trait") for `impl Trait for Type`
+        trait_name: Option<String>,
         type_name: String,
         body: Vec<Stmt>,
     },
     Trait {
         name: String,
         type_params: Vec<String>,
-        methods: Vec<Stmt>, // Fn stmts with signatures (body = [Pass])
+        methods: Vec<Stmt>,
     },
     Enum {
         name: String,
@@ -327,10 +341,11 @@ pub enum StmtKind {
         alias: String,
         functions: Vec<FfiFnSig>,
         structs: Vec<FfiStructDef>,
+        vars: Vec<FfiVarDef>,
     },
     FromImport {
         module: Vec<String>,
-        names: Vec<(String, Option<String>)>, // (name, alias)
+        names: Vec<(String, Option<String>)>,
     },
     Let {
         name: String,
@@ -356,6 +371,7 @@ pub enum StmtKind {
     Break,
     Continue,
     ExprStmt(Expr),
+    UnsafeBlock(Vec<Stmt>),
 }
 
 #[derive(Debug, Clone)]

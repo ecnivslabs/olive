@@ -75,12 +75,10 @@ impl SymbolTable {
         }
     }
 
-    // Define in current scope.
     pub fn define(&mut self, sym: Symbol) -> Option<Symbol> {
         self.scopes.last_mut().unwrap().define(sym)
     }
 
-    // Look up name from innermost to outermost scope.
     pub fn lookup(&self, name: &str) -> Option<&Symbol> {
         for scope in self.scopes.iter().rev() {
             if let Some(sym) = scope.get(name) {
@@ -90,7 +88,6 @@ impl SymbolTable {
         None
     }
 
-    // Look up only in the current scope.
     #[allow(dead_code)]
     pub fn lookup_local(&self, name: &str) -> Option<&Symbol> {
         self.scopes.last().unwrap().get(name)

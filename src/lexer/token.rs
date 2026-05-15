@@ -40,6 +40,7 @@ pub enum TokenKind {
     Async,
     Await,
     Case,
+    Unsafe,
 
     // operators
     Plus,

@@ -454,12 +454,12 @@ pub fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: boo
     }
     let borrow_duration = borrow_start.elapsed();
 
-    let native_libs: Vec<(String, String, Vec<parser::ast::FfiFnSig>, Vec<parser::ast::FfiStructDef>)> = program
+    let native_libs: Vec<(String, String, Vec<parser::ast::FfiFnSig>, Vec<parser::ast::FfiStructDef>, Vec<parser::ast::FfiVarDef>)> = program
         .stmts
         .iter()
         .filter_map(|s| {
-            if let parser::StmtKind::NativeImport { path, alias, functions, structs } = &s.kind {
-                Some((alias.clone(), path.clone(), functions.clone(), structs.clone()))
+            if let parser::StmtKind::NativeImport { path, alias, functions, structs, vars } = &s.kind {
+                Some((alias.clone(), path.clone(), functions.clone(), structs.clone(), vars.clone()))
             } else {
                 None
             }
@@ -669,12 +669,12 @@ pub fn compile_and_emit(filename: &str, out: &str, show_time: bool) {
     }
     let borrow_duration = borrow_start.elapsed();
 
-    let native_libs: Vec<(String, String, Vec<parser::ast::FfiFnSig>, Vec<parser::ast::FfiStructDef>)> = program
+    let native_libs: Vec<(String, String, Vec<parser::ast::FfiFnSig>, Vec<parser::ast::FfiStructDef>, Vec<parser::ast::FfiVarDef>)> = program
         .stmts
         .iter()
         .filter_map(|s| {
-            if let parser::StmtKind::NativeImport { path, alias, functions, structs } = &s.kind {
-                Some((alias.clone(), path.clone(), functions.clone(), structs.clone()))
+            if let parser::StmtKind::NativeImport { path, alias, functions, structs, vars } = &s.kind {
+                Some((alias.clone(), path.clone(), functions.clone(), structs.clone(), vars.clone()))
             } else {
                 None
             }
@@ -688,10 +688,14 @@ pub fn compile_and_emit(filename: &str, out: &str, show_time: bool) {
     let cg_duration = cg_start.elapsed();
 
     let link_start = std::time::Instant::now();
-    fs::create_dir_all("grove").unwrap_or_else(|e| {
-        eprintln!("error: could not create grove directory: {e}");
-        process::exit(1);
-    });
+    if let Some(parent) = Path::new(out).parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).unwrap_or_else(|e| {
+                eprintln!("error: could not create output directory {}: {e}", parent.display());
+                process::exit(1);
+            });
+        }
+    }
 
     let obj_path = format!("{}.o", out);
     fs::write(&obj_path, &obj_bytes).unwrap_or_else(|e| {
@@ -722,7 +726,7 @@ pub fn compile_and_emit(filename: &str, out: &str, show_time: bool) {
             cmd.arg("-lolive_std");
         }
 
-        for (_, path, _, _) in &native_libs {
+        for (_, path, _, _, _) in &native_libs {
             let lib_path = std::path::Path::new(path);
             if lib_path.is_absolute() && lib_path.exists() {
                 cmd.arg(path);
@@ -831,12 +835,12 @@ pub fn compile_and_test(filename: &str, _show_time: bool) {
         }
     }
 
-    let test_native_libs: Vec<(String, String, Vec<parser::ast::FfiFnSig>, Vec<parser::ast::FfiStructDef>)> = program
+    let test_native_libs: Vec<(String, String, Vec<parser::ast::FfiFnSig>, Vec<parser::ast::FfiStructDef>, Vec<parser::ast::FfiVarDef>)> = program
         .stmts
         .iter()
         .filter_map(|s| {
-            if let parser::StmtKind::NativeImport { path, alias, functions, structs } = &s.kind {
-                Some((alias.clone(), path.clone(), functions.clone(), structs.clone()))
+            if let parser::StmtKind::NativeImport { path, alias, functions, structs, vars } = &s.kind {
+                Some((alias.clone(), path.clone(), functions.clone(), structs.clone(), vars.clone()))
             } else {
                 None
             }

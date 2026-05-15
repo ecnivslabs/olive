@@ -180,8 +180,6 @@ impl Resolver {
                 for tp in type_params {
                     self.define_sym(tp, SymbolKind::Variable, stmt.span);
                 }
-                // struct field declarations have no resolvable expressions by default
-                // any consts/nested types in body are resolved here
                 for s in body {
                     self.resolve_stmt(s);
                 }
@@ -294,7 +292,6 @@ impl Resolver {
                             span: stmt.span,
                         });
                     } else {
-                        // bind as alias if provided, else original name
                         let bound = alias.as_deref().unwrap_or(name.as_str());
                         self.define_sym(bound, SymbolKind::Import, stmt.span);
                     }
@@ -302,14 +299,15 @@ impl Resolver {
             }
 
             StmtKind::ExprStmt(expr) => self.resolve_expr(expr),
+            
+            StmtKind::UnsafeBlock(body) => {
+                for s in body {
+                    self.resolve_stmt(s);
+                }
+            }
 
             StmtKind::Pass | StmtKind::Break | StmtKind::Continue => {}
-            StmtKind::Enum { type_params: _, .. } => {
-                // Enum definition has been hoisted
-                // But we might have type params in variants (resolved during hoist?)
-                // Actually variants are hoisted in hoist_fns_and_structs.
-                // For now, if variants have type params, we need to handle them.
-            }
+            StmtKind::Enum { .. } => {}
         }
     }
 
@@ -544,13 +542,11 @@ impl Resolver {
     fn resolve_comp_clauses(&mut self, clauses: &[CompClause]) {
         self.table.push(ScopeKind::Comprehension);
         for clause in clauses {
-            // iter resolves in outer scope (before the target is bound)
             self.resolve_expr(&clause.iter);
             self.define_for_target(&clause.target);
             if let Some(cond) = &clause.condition {
                 self.resolve_expr(cond);
             }
         }
-        // caller must pop after resolving the element expression
     }
 }
