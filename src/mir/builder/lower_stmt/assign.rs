@@ -26,8 +26,9 @@ impl<'a> MirBuilder<'a> {
                 let obj_ty = self.get_type(obj.id).clone();
                 let obj_op = self.lower_expr_as_copy(obj);
                 if obj_ty.is_py_value() {
-                    let rval_ty = self.get_type(value.id).clone();
-                    let py_rval = self.emit_to_py_arg(rval, &rval_ty, target.span);
+                    // `rval` was already coerced to `target_ty` above; key the
+                    // to-Python conversion off that so a float isn't wrapped twice.
+                    let py_rval = self.emit_to_py_arg(rval, &target_ty, target.span);
                     let dummy = self.new_local(Type::Any, None, false);
                     self.push_statement(
                         StatementKind::Assign(
@@ -58,8 +59,9 @@ impl<'a> MirBuilder<'a> {
                 let idx_op = self.lower_expr(index);
                 if obj_ty.is_py_value() {
                     let idx_ty = self.get_type(index.id).clone();
-                    let rval_ty = self.get_type(value.id).clone();
-                    let py_rval = self.emit_to_py_arg(rval, &rval_ty, target.span);
+                    // `rval` was already coerced to `target_ty` above; key the
+                    // to-Python conversion off that so a float isn't wrapped twice.
+                    let py_rval = self.emit_to_py_arg(rval, &target_ty, target.span);
                     let func_name = if Self::is_int_ty(&idx_ty) {
                         "__olive_py_setitem_int"
                     } else {

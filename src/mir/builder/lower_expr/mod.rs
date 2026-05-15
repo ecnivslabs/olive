@@ -925,4 +925,29 @@ mod tests {
         });
         assert!(has_cast);
     }
+
+    // A method call that omits a trailing default must coerce each positional
+    // arg against its own param, not against a later one. Skipping more than the
+    // receiver `self` aligned the `int` arg to the omitted `PyObject` default,
+    // coercing it through `py_from_int` into a Python object the callee then read
+    // as a native int.
+    #[test]
+    fn method_omitting_trailing_default_keeps_arg_alignment() {
+        let src = "import py \"math\" as math\n\nstruct S:\n    n: int\n\nimpl S:\n    fn pick(self, count: int, ctx: PyObject = math) -> int:\n        count\n\nfn f() -> int:\n    let s = S(0)\n    return s.pick(7)\n";
+        let fns = build(src);
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        let coerces_arg = f.basic_blocks.iter().any(|bb| {
+            bb.statements.iter().any(|s| {
+                matches!(
+                    &s.kind,
+                    StatementKind::Assign(_, Rvalue::Call { func, .. })
+                        if matches!(func, Operand::Constant(Constant::Function(name)) if name == "__olive_py_from_int")
+                )
+            })
+        });
+        assert!(
+            !coerces_arg,
+            "int arg was misaligned onto the omitted PyObject default"
+        );
+    }
 }
