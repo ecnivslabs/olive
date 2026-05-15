@@ -714,25 +714,23 @@ pub fn compile_and_emit(filename: &str, out: &str, show_time: bool) {
     #[cfg(not(target_os = "windows"))]
     {
         let lib_dir = find_library_dir();
-        let mut cc_args = vec![obj_path.as_str()];
+        let mut cmd = std::process::Command::new("cc");
         
-        if let Some(ref dir) = lib_dir {
-            cc_args.push("-L");
-            cc_args.push(dir.to_str().unwrap());
-            cc_args.push("-lolive_std");
-            
-            let rpath = format!("-Wl,-rpath,{}", dir.display());
-            cc_args.push(&rpath);
-        } else {
-            cc_args.push("-lolive_std");
-        }
-        
-        cc_args.push("-o");
-        cc_args.push(out);
+        cmd.arg(&obj_path);
 
-        let status = std::process::Command::new("cc")
-            .args(&cc_args)
-            .status()
+        if let Some(ref dir) = lib_dir {
+            cmd.arg("-L");
+            cmd.arg(dir);
+            cmd.arg("-lolive_std");
+            cmd.arg(format!("-Wl,-rpath,{}", dir.display()));
+        } else {
+            cmd.arg("-lolive_std");
+        }
+
+        cmd.arg("-o");
+        cmd.arg(out);
+
+        let status = cmd.status()
             .unwrap_or_else(|e| {
                 eprintln!("error: could not invoke cc: {e}");
                 process::exit(1);
