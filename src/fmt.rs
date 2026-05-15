@@ -90,17 +90,23 @@ pub fn format_file(filename: &str) {
         }
     }
 
-    fs::write(filename, formatted).unwrap();
+    if let Err(e) = fs::write(filename, formatted) {
+        eprintln!("error writing {}: {}", filename, e);
+        return;
+    }
     println!("\x1b[1;32mFormatted\x1b[0m {}", filename);
 }
 
 pub fn walk_and_format(path: &Path) {
     if path.is_dir() {
-        for entry in fs::read_dir(path).unwrap() {
-            let entry = entry.unwrap();
-            walk_and_format(&entry.path());
+        if let Ok(entries) = fs::read_dir(path) {
+            for entry in entries.flatten() {
+                walk_and_format(&entry.path());
+            }
         }
     } else if path.extension().is_some_and(|ext| ext == "liv") {
-        format_file(path.to_str().unwrap());
+        if let Some(s) = path.to_str() {
+            format_file(s);
+        }
     }
 }

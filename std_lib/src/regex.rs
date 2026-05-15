@@ -142,7 +142,7 @@ pub extern "C" fn olive_regex_split(pattern: i64, text: i64) -> i64 {
     match Regex::new(&pat) {
         Ok(re) => {
             let mut parts: Vec<i64> = re.split(&txt)
-                .map(|s| olive_str_internal(s))
+                .map(olive_str_internal)
                 .collect();
             let ptr = parts.as_mut_ptr();
             let cap = parts.capacity();
@@ -214,7 +214,7 @@ mod tests {
     fn regex_captures_groups() {
         let list = olive_regex_captures(s(r"(\d{4})-(\d{2})-(\d{2})"), s("date: 2024-01-15"));
         let sv = unsafe { &*(list as *const StableVec) };
-        assert_eq!(sv.len, 4); // group 0 (full match) + 3 capture groups
+        assert_eq!(sv.len, 4);
         assert_eq!(from_ptr(unsafe { *sv.ptr }), "2024-01-15");
         assert_eq!(from_ptr(unsafe { *sv.ptr.add(1) }), "2024");
         assert_eq!(from_ptr(unsafe { *sv.ptr.add(2) }), "01");

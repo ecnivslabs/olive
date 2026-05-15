@@ -530,7 +530,7 @@ impl Parser {
                     self.expect(TokenKind::RParen)?;
                     Ok(MatchPattern::Variant(name, patterns))
                 } else {
-                    if name.chars().next().unwrap().is_uppercase() {
+                    if name.chars().next().is_some_and(char::is_uppercase) {
                         Ok(MatchPattern::Variant(name, vec![]))
                     } else {
                         Ok(MatchPattern::Identifier(name))

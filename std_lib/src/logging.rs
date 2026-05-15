@@ -9,7 +9,7 @@ const LEVEL_INFO: i64 = 1;
 const LEVEL_WARN: i64 = 2;
 const LEVEL_ERROR: i64 = 3;
 
-const FMT_PLAIN: i64 = 0;
+const _FMT_PLAIN: i64 = 0;
 const FMT_JSON: i64 = 1;
 const FMT_COLOR: i64 = 2;
 
@@ -88,7 +88,7 @@ fn emit(level: i64, msg: &str) {
                 eprintln!("[{color}{lname}{reset}] {msg}{fields}");
             }
         }
-        FMT_PLAIN | _ => {
+        _ => {
             let lname = level_name(level);
             if st.fields.is_empty() {
                 eprintln!("[{lname}] {msg}");
@@ -177,7 +177,6 @@ mod tests {
     #[test]
     fn set_level_filters_lower() {
         olive_log_set_level(LEVEL_ERROR);
-        // INFO would be filtered; just verify no panic
         let msg = crate::olive_str_internal("should be filtered");
         olive_log_info(msg);
         olive_log_set_level(LEVEL_INFO);

@@ -67,7 +67,7 @@ pub extern "C" fn olive_dir_create(path: i64) -> i64 {
     if path == 0 {
         return 0;
     }
-    if std::fs::create_dir_all(&olive_str_from_ptr(path)).is_ok() { 1 } else { 0 }
+    if std::fs::create_dir_all(olive_str_from_ptr(path)).is_ok() { 1 } else { 0 }
 }
 
 #[unsafe(no_mangle)]
@@ -140,8 +140,6 @@ pub extern "C" fn olive_file_rename(src: i64, dst: i64) -> i64 {
     if std::fs::rename(&src_str, &dst_str).is_ok() { 1 } else { 0 }
 }
 
-// Path operations
-
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_path_join(a: i64, b: i64) -> i64 {
     let a_str = if a == 0 { String::new() } else { olive_str_from_ptr(a) };
@@ -210,8 +208,6 @@ pub extern "C" fn olive_path_stem(path: i64) -> i64 {
     }
 }
 
-// Temp files
-
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_temp_dir() -> i64 {
     olive_str_internal(&std::env::temp_dir().to_string_lossy())
@@ -222,15 +218,12 @@ pub extern "C" fn olive_temp_file() -> i64 {
     let tmp = std::env::temp_dir();
     let name = format!("olive_{}", uuid::Uuid::new_v4().simple());
     let path = tmp.join(name);
-    // Create the file so the path is reserved
     if std::fs::File::create(&path).is_ok() {
         olive_str_internal(&path.to_string_lossy())
     } else {
         0
     }
 }
-
-// Stdin
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_stdin_read() -> i64 {
@@ -247,7 +240,6 @@ pub extern "C" fn olive_stdin_read_line() -> i64 {
     match std::io::stdin().read_line(&mut line) {
         Ok(0) => olive_str_internal(""),
         Ok(_) => {
-            // Strip trailing newline
             if line.ends_with('\n') {
                 line.pop();
                 if line.ends_with('\r') {
@@ -259,9 +251,6 @@ pub extern "C" fn olive_stdin_read_line() -> i64 {
         Err(_) => olive_str_internal(""),
     }
 }
-
-// Seekable file handles
-// Each handle is a Box<std::fs::File> returned as raw pointer
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_file_open(path: i64, mode: i64) -> i64 {
@@ -361,19 +350,17 @@ pub extern "C" fn olive_file_read_lines(path: i64) -> i64 {
     if path == 0 {
         return empty();
     }
-    let content = match std::fs::read_to_string(&olive_str_from_ptr(path)) {
+    let content = match std::fs::read_to_string(olive_str_from_ptr(path)) {
         Ok(c) => c,
         Err(_) => return empty(),
     };
-    let mut ptrs: Vec<i64> = content.lines().map(|l| olive_str_internal(l)).collect();
+    let mut ptrs: Vec<i64> = content.lines().map(olive_str_internal).collect();
     let ptr = ptrs.as_mut_ptr();
     let cap = ptrs.capacity();
     let len = ptrs.len();
     std::mem::forget(ptrs);
     Box::into_raw(Box::new(StableVec { kind: KIND_LIST, ptr, cap, len })) as i64
 }
-
-// Buffered I/O
 
 use std::io::BufRead;
 

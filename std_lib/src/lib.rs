@@ -68,14 +68,12 @@ pub struct OliveHashSet {
     pub inner: *mut FxHashSet<i64>,
 }
 
-// Memory Allocation
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_alloc(size: i64) -> *mut u8 {
     let layout = std::alloc::Layout::from_size_align(size as usize, 8).unwrap();
     unsafe { std::alloc::alloc(layout) }
 }
 
-// Print functions
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_print(val: i64) -> i64 {
     println!("{}", val);
@@ -135,7 +133,6 @@ pub extern "C" fn olive_print_obj(ptr: i64) -> i64 {
     0
 }
 
-// Conversion
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str(val: i64) -> i64 {
     olive_str_internal(&val.to_string())
@@ -228,7 +225,6 @@ pub extern "C" fn olive_copy_float(val: f64) -> f64 {
     val
 }
 
-// List operations
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_list_new(len: i64) -> i64 {
     let n = len as usize;
@@ -292,7 +288,6 @@ pub extern "C" fn olive_list_append(list_ptr: i64, val: i64) {
         let s = &mut *(list_ptr as *mut StableVec);
         let inline_data = (list_ptr as *mut i64).add(4);
         let mut v = if s.ptr == inline_data {
-            // Data is inline; copy to an independent heap Vec before appending.
             let mut owned = Vec::with_capacity(s.len + 1);
             owned.extend_from_slice(std::slice::from_raw_parts(s.ptr, s.len));
             owned
@@ -352,7 +347,6 @@ pub extern "C" fn olive_in_list(val: i64, list_ptr: i64) -> i64 {
     }
     0
 }
-// Set operations
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_set_new(capacity: i64) -> i64 {
     let cap = capacity as usize;
@@ -383,7 +377,6 @@ pub extern "C" fn olive_set_add(set_ptr: i64, val: i64) {
     }
 }
 
-// Object operations
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_new() -> i64 {
     Box::into_raw(Box::new(OliveObj {
@@ -434,7 +427,6 @@ pub extern "C" fn olive_obj_len(obj_ptr: i64) -> i64 {
     unsafe { (*(obj_ptr as *const OliveObj)).fields.len() as i64 }
 }
 
-// Flat struct allocation: [n_fields: i64, field0, field1, ...]
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_struct_alloc(n_fields: i64) -> i64 {
     let total = (n_fields + 1) * 8;
@@ -457,7 +449,6 @@ pub extern "C" fn olive_free_struct(ptr: i64) {
     }
 }
 
-// Free memory
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_free_str(ptr: i64) {
     if ptr != 0 && (ptr & 1) == 0 {
@@ -474,12 +465,10 @@ pub extern "C" fn olive_free_list(ptr: i64) {
             let s = &*(ptr as *const StableVec);
             let inline_data = (ptr as *mut i64).add(4);
             if s.ptr == inline_data {
-                // Single-block inline allocation.
                 let total = (4 + s.len) * 8;
                 let layout = std::alloc::Layout::from_size_align_unchecked(total, 8);
                 std::alloc::dealloc(ptr as *mut u8, layout);
             } else {
-                // Separate header + data allocations.
                 let s = Box::from_raw(ptr as *mut StableVec);
                 if !s.ptr.is_null() {
                     let _ = Vec::from_raw_parts(s.ptr, s.len, s.cap);
@@ -498,7 +487,6 @@ pub extern "C" fn olive_free_obj(ptr: i64) {
     }
 }
 
-// Time functions
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_time_now() -> f64 {
     SystemTime::now()
@@ -522,7 +510,6 @@ pub extern "C" fn olive_time_sleep(secs: f64) {
     thread::sleep(Duration::from_secs_f64(secs));
 }
 
-// Math helpers (non-module)
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_pow(base: i64, exp: i64) -> i64 {
     base.pow(exp as u32)
@@ -533,8 +520,6 @@ pub extern "C" fn olive_pow_float(base: f64, exp: f64) -> f64 {
     base.powf(exp)
 }
 
-// Internal helpers
-// Enum operations
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_enum_new(type_id: i64, tag: i64, arg_count: i64) -> i64 {
     let mut payload = vec![0i64; arg_count as usize];
@@ -602,7 +587,6 @@ pub extern "C" fn olive_free_enum(ptr: i64) {
     }
 }
 
-// Iterator operations
 struct OliveIter {
     list_ptr: i64,
     index: usize,
@@ -645,7 +629,6 @@ pub extern "C" fn olive_next(iter_ptr: i64) -> i64 {
     }
 }
 
-// String indexing
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_len(s: i64) -> i64 {
     if s == 0 {
@@ -686,7 +669,6 @@ pub extern "C" fn olive_str_slice(s: i64, start: i64, end: i64) -> i64 {
     }
 }
 
-// Internal helpers
 pub fn olive_str_internal(s: &str) -> i64 {
     let c_str = std::ffi::CString::new(s).unwrap_or_else(|_| {
         let safe: String = s.chars().filter(|&c| c != '\0').collect();
@@ -771,7 +753,6 @@ pub extern "C" fn olive_free_any(ptr: i64) {
         _ => {}
     }
 }
-// String utilities
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_trim(s: i64) -> i64 {
@@ -873,10 +854,10 @@ pub extern "C" fn olive_str_repeat(s: i64, n: i64) -> i64 {
 pub extern "C" fn olive_str_split(s: i64, sep: i64) -> i64 {
     let text = if s == 0 { String::new() } else { olive_str_from_ptr(s) };
     let parts: Vec<i64> = if sep == 0 {
-        text.split_whitespace().map(|p| olive_str_internal(p)).collect()
+        text.split_whitespace().map(olive_str_internal).collect()
     } else {
         let sep_str = olive_str_from_ptr(sep);
-        text.split(&sep_str).map(|p| olive_str_internal(p)).collect()
+        text.split(&sep_str).map(olive_str_internal).collect()
     };
     let mut v = parts;
     let ptr = v.as_mut_ptr();
@@ -961,15 +942,13 @@ pub extern "C" fn olive_str_graphemes(s: i64) -> i64 {
         return Box::into_raw(v) as i64;
     }
     let text = olive_str_from_ptr(s);
-    let mut ptrs: Vec<i64> = text.graphemes(true).map(|g| olive_str_internal(g)).collect();
+    let mut ptrs: Vec<i64> = text.graphemes(true).map(olive_str_internal).collect();
     let ptr = ptrs.as_mut_ptr();
     let cap = ptrs.capacity();
     let len = ptrs.len();
     std::mem::forget(ptrs);
     Box::into_raw(Box::new(StableVec { kind: KIND_LIST, ptr, cap, len })) as i64
 }
-
-// Panic
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_panic(msg: i64) -> i64 {
@@ -978,20 +957,16 @@ pub extern "C" fn olive_panic(msg: i64) -> i64 {
     } else {
         olive_str_from_ptr(msg)
     };
-    // run any registered exit hooks before dying
-    if let Some(hooks) = EXIT_HOOKS.get() {
-        if let Ok(list) = hooks.lock() {
+    if let Some(hooks) = EXIT_HOOKS.get()
+        && let Ok(list) = hooks.lock() {
             for &fn_ptr in list.iter() {
                 let f: extern "C" fn() = unsafe { std::mem::transmute(fn_ptr as usize) };
                 f();
             }
         }
-    }
     eprintln!("panic: {text}");
     std::process::exit(1);
 }
-
-// Exit hooks
 
 static EXIT_HOOKS: OnceLock<Mutex<Vec<i64>>> = OnceLock::new();
 
@@ -1015,8 +990,6 @@ pub extern "C" fn olive_run_exit_hooks() {
         }
     }
 }
-
-// Reflection
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_is_null(val: i64) -> i64 {
@@ -1075,8 +1048,6 @@ pub extern "C" fn olive_typeof_str(val: i64) -> i64 {
     olive_str_internal(name)
 }
 
-// Object helpers
-
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_keys(obj_ptr: i64) -> i64 {
     if obj_ptr == 0 {
@@ -1107,11 +1078,9 @@ pub extern "C" fn olive_obj_values(obj_ptr: i64) -> i64 {
     Box::into_raw(Box::new(StableVec { kind: KIND_LIST, ptr, cap, len })) as i64
 }
 
-// Time
-
 pub fn unix_to_ymd_hms(ts: i64) -> (i64, i64, i64, i64, i64, i64) {
     let mut d = ts / 86400;
-    let sec = (ts % 86400 + 86400) % 86400;
+    let sec = ts.rem_euclid(86400);
     let h = sec / 3600;
     let m = (sec % 3600) / 60;
     let s = sec % 60;
@@ -1222,7 +1191,6 @@ pub extern "C" fn olive_memo_get(name_ptr: i64, is_tuple: i64) -> i64 {
     }
 }
 
-// Tuple cache helpers
 fn read_tuple(ptr: i64) -> Vec<i64> {
     unsafe {
         let p = ptr as *const i64;
@@ -1277,8 +1245,6 @@ mod tests {
     fn from_ptr(ptr: i64) -> String {
         olive_str_from_ptr(ptr)
     }
-
-    // String utils
 
     #[test]
     fn str_trim() {
@@ -1350,14 +1316,12 @@ mod tests {
         assert_eq!(from_ptr(joined), "a-b-c");
     }
 
-    // Hash-based set
-
     #[test]
     fn set_add_contains_o1() {
         let set = olive_set_new(4);
         olive_set_add(set, 10);
         olive_set_add(set, 20);
-        olive_set_add(set, 10); // duplicate
+        olive_set_add(set, 10);
         let s = unsafe { &*(set as *const OliveHashSet) };
         assert_eq!(s.len, 2);
         assert_eq!(olive_in_list(10, set), 1);
@@ -1381,14 +1345,11 @@ mod tests {
             olive_set_add(set, i);
         }
         assert_eq!(olive_list_len(set), 5);
-        // all elements reachable via ptr
         let sv = unsafe { &*(set as *const OliveHashSet) };
         let items: Vec<i64> = (0..sv.len).map(|i| unsafe { *sv.ptr.add(i) }).collect();
         assert!(items.contains(&5));
         assert!(items.contains(&1));
     }
-
-    // Obj helpers
 
     #[test]
     fn obj_keys_values() {
@@ -1401,8 +1362,6 @@ mod tests {
         assert_eq!(olive_list_len(vals_ptr), 2);
     }
 
-    // Time format
-
     #[test]
     fn time_format_epoch() {
         let result = from_ptr(olive_time_format(0.0, 0));
@@ -1411,7 +1370,6 @@ mod tests {
 
     #[test]
     fn time_format_known_date() {
-        // 2024-01-15 11:50:45 UTC = 1705319445
         let result = from_ptr(olive_time_format(1705319445.0, 0));
         assert_eq!(result, "2024-01-15T11:50:45");
     }
@@ -1422,8 +1380,6 @@ mod tests {
         let result = from_ptr(olive_time_format(1705319445.0, fmt));
         assert_eq!(result, "2024/01/15");
     }
-
-    // Existing core
 
     #[test]
     fn list_append_and_get() {

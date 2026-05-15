@@ -15,7 +15,7 @@ fn is_leap(year: i64) -> bool {
 }
 
 fn ymd_to_unix(year: i64, month: i64, day: i64, h: i64, min: i64, sec: i64) -> i64 {
-    // Days from 1970-01-01 using Gregorian proleptic calendar
+    // Gregorian proleptic calendar
     let m = if month <= 2 { month + 9 } else { month - 3 };
     let y = if month <= 2 { year - 1 } else { year };
     let era = if y >= 0 { y } else { y - 399 } / 400;
@@ -71,13 +71,8 @@ fn windows_tz_offset() -> i64 {
     }
 }
 
-// Parse a datetime string. Supported formats (detected automatically):
-// ISO 8601: "2024-01-15T11:50:45", "2024-01-15T11:50:45Z", "2024-01-15T11:50:45+05:30"
-// Date only: "2024-01-15"
-// With space: "2024-01-15 11:50:45"
 fn parse_datetime_str(s: &str) -> Option<i64> {
     let s = s.trim();
-    // Try to parse YYYY-MM-DD[T ]HH:MM:SS[Z|±HH:MM]
     if s.len() >= 10 {
         let year = s[0..4].parse::<i64>().ok()?;
         if s.as_bytes().get(4) != Some(&b'-') { return None; }
@@ -181,7 +176,7 @@ pub extern "C" fn olive_datetime_parts(ts: f64) -> i64 {
     fields.insert("hour".to_string(), h);
     fields.insert("minute".to_string(), min);
     fields.insert("second".to_string(), sec);
-    fields.insert("weekday".to_string(), dow); // 0=Mon, 6=Sun
+    fields.insert("weekday".to_string(), dow); // 0=Mon
     fields.insert("timestamp".to_string(), ts as i64);
     Box::into_raw(Box::new(OliveObj { kind: crate::KIND_OBJ, fields })) as i64
 }
@@ -222,7 +217,7 @@ pub extern "C" fn olive_datetime_month_name(ts: f64) -> i64 {
                   "July", "August", "September", "October", "November", "December"];
     let (_, month, _, _, _, _) = unix_to_parts(ts as i64);
     let m = month as usize;
-    olive_str_internal(names[m.min(12).max(1)])
+    olive_str_internal(names[m.clamp(1, 12)])
 }
 
 #[unsafe(no_mangle)]
@@ -340,8 +335,8 @@ pub extern "C" fn olive_datetime_format(ts: f64, fmt: i64) -> i64 {
                     let doy = day_of_year(year, month, day);
                     out.push_str(&format!("{:03}", doy));
                 }
-                Some('u') => out.push_str(&format!("{}", dow + 1)), // Mon=1
-                Some('w') => out.push_str(&format!("{}", (dow + 1) % 7)), // Sun=0
+                Some('u') => out.push_str(&format!("{}", dow + 1)),
+                Some('w') => out.push_str(&format!("{}", (dow + 1) % 7)),
                 Some('%') => out.push('%'),
                 Some('n') => out.push('\n'),
                 Some('t') => out.push('\t'),
@@ -377,7 +372,6 @@ mod tests {
 
     #[test]
     fn parse_iso8601() {
-        // 2024-01-15 11:50:45 UTC = 1705319445
         assert_eq!(olive_datetime_parse(s("2024-01-15T11:50:45")), 1705319445.0);
         assert_eq!(olive_datetime_parse(s("2024-01-15T11:50:45Z")), 1705319445.0);
         assert_eq!(olive_datetime_parse(s("2024-01-15 11:50:45")), 1705319445.0);

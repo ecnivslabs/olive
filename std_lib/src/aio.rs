@@ -10,7 +10,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-// task
 
 struct OliveTask {
     sm_future: i64,
@@ -25,7 +24,6 @@ struct Completion {
     cvar: Condvar,
 }
 
-// executor
 
 struct OliveExecutor {
     ready: Mutex<VecDeque<Arc<OliveTask>>>,
@@ -75,7 +73,6 @@ fn executor_worker(ex: Arc<OliveExecutor>) {
                 }
             }
         };
-        // mark not queued
         task.queued.store(false, Ordering::SeqCst);
         executor_drive(&ex, task);
     }
@@ -109,15 +106,12 @@ fn executor_get_or_create_task(ex: &OliveExecutor, sm_future_ptr: i64) -> Arc<Ol
 }
 
 fn executor_drive(ex: &Arc<OliveExecutor>, task: Arc<OliveTask>) {
-    // poll sm
     let sf = unsafe { &*(task.sm_future as *const OliveSmFuture) };
     let poll_fn: fn(i64) -> i64 = unsafe { std::mem::transmute(sf.poll_fn as usize) };
     let result = poll_fn(sf.frame);
 
     if result != POLL_PENDING {
-        // mark done and notify waiters
         task.done.store(true, Ordering::SeqCst);
-        // done: signal waiters
         let comps = std::mem::take(&mut *task.completions.lock().unwrap());
         for c in &comps {
             *c.result.lock().unwrap() = Some(result);
@@ -131,19 +125,14 @@ fn executor_drive(ex: &Arc<OliveExecutor>, task: Arc<OliveTask>) {
         return;
     }
 
-    // pending: check sub-future
     let sub_future = unsafe { *((sf.frame + 8) as *const i64) };
     if sub_future == 0 {
-        // no sub-future: re-queue
         executor_enqueue(ex, task);
         return;
     }
 
     let sub_kind = unsafe { *(sub_future as *const i64) };
 
-    if sub_kind == KIND_FUTURE {
-        // spawn waker thread
-        // re-queue when done
         let sf_obj = unsafe { &*(sub_future as *const OliveFuture) };
         let shared = unsafe { Arc::from_raw(sf_obj.shared as *const FutureShared) };
         let shared2 = shared.clone();
@@ -152,7 +141,6 @@ fn executor_drive(ex: &Arc<OliveExecutor>, task: Arc<OliveTask>) {
         std::thread::Builder::new()
             .name("olive-waker".into())
             .spawn(move || {
-                // wait for future
                 let mut st = shared2.state.lock().unwrap();
                 loop {
                     match &*st {
@@ -163,17 +151,13 @@ fn executor_drive(ex: &Arc<OliveExecutor>, task: Arc<OliveTask>) {
                     }
                 }
                 drop(st);
-                // wake parent
                 executor_enqueue(&ex2, task);
             })
             .unwrap();
     } else if sub_kind == KIND_SM_FUTURE {
-        // push-then-check
-        // re-queue if done
         let sub_task = executor_get_or_create_task(ex, sub_future);
         sub_task.sm_waiters.lock().unwrap().push(task.clone());
         if sub_task.done.load(Ordering::SeqCst) {
-            // already done: self-enqueue
             sub_task
                 .sm_waiters
                 .lock()
@@ -184,12 +168,10 @@ fn executor_drive(ex: &Arc<OliveExecutor>, task: Arc<OliveTask>) {
             executor_enqueue(ex, sub_task);
         }
     } else {
-        // unknown: re-queue
         executor_enqueue(ex, task);
     }
 }
 
-// sm future layout
 #[repr(C)]
 struct OliveSmFuture {
     kind: i64,
@@ -198,7 +180,6 @@ struct OliveSmFuture {
     cancelled: i64,
 }
 
-// non-blocking poll
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_sm_poll(future: i64) -> i64 {
     if future == 0 {
@@ -210,7 +191,6 @@ pub extern "C" fn olive_sm_poll(future: i64) -> i64 {
         let poll_fn: fn(i64) -> i64 = unsafe { std::mem::transmute(f.poll_fn as usize) };
         poll_fn(f.frame)
     } else {
-        // non-blocking check
         let f = unsafe { &*(future as *const OliveFuture) };
         let shared = unsafe { &*(f.shared as *const FutureShared) };
         let guard = shared.state.lock().unwrap();
@@ -308,7 +288,6 @@ pub extern "C" fn olive_await_future(future: i64) -> i64 {
     }
     let kind = unsafe { *(future as *const i64) };
     if kind == KIND_SM_FUTURE {
-        // completion
         let completion = Arc::new(Completion {
             result: Mutex::new(None),
             cvar: Condvar::new(),
@@ -317,7 +296,6 @@ pub extern "C" fn olive_await_future(future: i64) -> i64 {
         let task = executor_get_or_create_task(ex, future);
         task.completions.lock().unwrap().push(completion.clone());
         executor_enqueue(ex, task);
-        // wait
         let mut r = completion.result.lock().unwrap();
         loop {
             match *r {
@@ -326,7 +304,6 @@ pub extern "C" fn olive_await_future(future: i64) -> i64 {
             }
         }
     } else {
-        // wait
         let f = unsafe { &*(future as *const OliveFuture) };
         let shared = unsafe { Arc::from_raw(f.shared as *const FutureShared) };
         let result = {
@@ -489,12 +466,12 @@ pub extern "C" fn olive_gather_poll(frame: i64) -> i64 {
     let results = unsafe { std::slice::from_raw_parts_mut(results_vec.ptr, n) };
 
     let mut any_pending = false;
-    for i in 0..n {
-        if results[i] == POLL_PENDING {
+    for (i, res) in results.iter_mut().enumerate().take(n) {
+        if *res == POLL_PENDING {
             let fut = unsafe { *list.ptr.add(i) };
             let r = olive_sm_poll(fut);
             if r != POLL_PENDING {
-                results[i] = r;
+                *res = r;
                 f.done += 1;
             } else {
                 any_pending = true;
@@ -619,8 +596,6 @@ pub extern "C" fn olive_cancel_future(future: i64) -> i64 {
     0
 }
 
-// Channels
-
 struct OliveChannel {
     queue: Mutex<std::collections::VecDeque<i64>>,
     cvar: Condvar,
@@ -703,8 +678,6 @@ pub extern "C" fn olive_chan_free(chan: i64) {
     }
 }
 
-// Mutex
-
 struct OliveMutex {
     inner: Mutex<(bool, i64)>,
     cvar: Condvar,
@@ -750,8 +723,6 @@ pub extern "C" fn olive_mutex_free(m: i64) {
         unsafe { drop(Box::from_raw(m as *mut OliveMutex)) };
     }
 }
-
-// Atomics
 
 use std::sync::atomic::AtomicI64;
 
@@ -803,14 +774,11 @@ pub extern "C" fn olive_atomic_free(ptr: i64) {
     }
 }
 
-// Worker pool
-
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_pool_size() -> i64 {
     std::thread::available_parallelism().map(|n| n.get() as i64).unwrap_or(4)
 }
 
-// Run fn(arg) -> i64 on a pool thread. Returns a future you can await.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_pool_run(fn_ptr: i64, arg: i64) -> i64 {
     if fn_ptr == 0 {
@@ -834,7 +802,6 @@ pub extern "C" fn olive_pool_run(fn_ptr: i64, arg: i64) -> i64 {
     })) as i64
 }
 
-// Run fn(arg) -> i64 on a pool thread and block until complete.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_pool_run_sync(fn_ptr: i64, arg: i64) -> i64 {
     if fn_ptr == 0 {
@@ -996,7 +963,7 @@ mod tests {
 
     #[test]
     fn pool_run_sync_executes() {
-        let result = olive_pool_run_sync(add_one as i64, 41);
+        let result = olive_pool_run_sync(add_one as *const () as i64, 41);
         assert_eq!(result, 42);
     }
 }

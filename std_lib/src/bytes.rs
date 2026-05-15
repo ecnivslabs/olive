@@ -109,8 +109,6 @@ pub extern "C" fn olive_buf_free(buf: i64) {
     }
 }
 
-// Endianness — read
-
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_buf_read_u16_le(buf: i64, offset: i64) -> i64 {
     if buf == 0 { return -1; }
@@ -164,8 +162,6 @@ pub extern "C" fn olive_buf_read_u64_be(buf: i64, offset: i64) -> i64 {
     if off + 8 > b.data.len() { return -1; }
     u64::from_be_bytes(b.data[off..off+8].try_into().unwrap()) as i64
 }
-
-// Endianness — write (extend buffer if needed, fill gaps with 0)
 
 fn ensure_len(b: &mut OliveBytes, needed: usize) {
     if b.data.len() < needed {

@@ -5,8 +5,6 @@ use rustc_hash::FxHashMap as HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpStream, TcpListener, UdpSocket};
 
-// TCP client
-
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_net_tcp_connect(addr: i64) -> i64 {
     if addr == 0 {
@@ -52,8 +50,6 @@ pub extern "C" fn olive_net_tcp_close(stream_ptr: i64) {
         unsafe { drop(Box::from_raw(stream_ptr as *mut TcpStream)) };
     }
 }
-
-// TCP server
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_net_tcp_listen(addr: i64) -> i64 {
@@ -122,8 +118,6 @@ pub extern "C" fn olive_net_tcp_set_timeout(stream_ptr: i64, secs: f64) -> i64 {
     if read_ok && write_ok { 1 } else { 0 }
 }
 
-// UDP
-
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_net_udp_open(bind_addr: i64) -> i64 {
     let addr = if bind_addr == 0 {
@@ -187,8 +181,6 @@ pub extern "C" fn olive_net_udp_close(sock_ptr: i64) {
         unsafe { drop(Box::from_raw(sock_ptr as *mut UdpSocket)) };
     }
 }
-
-// DNS
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_net_dns_lookup(hostname: i64) -> i64 {

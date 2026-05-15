@@ -57,11 +57,10 @@ fn read_meminfo_field(field: &str) -> i64 {
     for line in content.lines() {
         if line.starts_with(field) {
             let parts: Vec<&str> = line.split_whitespace().collect();
-            if let Some(kb_str) = parts.get(1) {
-                if let Ok(kb) = kb_str.parse::<i64>() {
+            if let Some(kb_str) = parts.get(1)
+                && let Ok(kb) = kb_str.parse::<i64>() {
                     return kb * 1024;
                 }
-            }
         }
     }
     0
