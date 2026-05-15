@@ -51,16 +51,15 @@ impl Transform for AlgebraicSimplification {
                                 }
                             } else if let Some(Rvalue::BinaryOp(Mul, Operand::Constant(Constant::Int(a)), mul_rhs)) =
                                 single_def.get(src)
+                                && *a % *b == 0
                             {
-                                if *a % *b == 0 {
-                                    let factor = *a / *b;
-                                    *rval = Rvalue::BinaryOp(
-                                        Mul,
-                                        mul_rhs.clone(),
-                                        Operand::Constant(Constant::Int(factor)),
-                                    );
-                                    changed = true;
-                                }
+                                let factor = *a / *b;
+                                *rval = Rvalue::BinaryOp(
+                                    Mul,
+                                    mul_rhs.clone(),
+                                    Operand::Constant(Constant::Int(factor)),
+                                );
+                                changed = true;
                             }
                         }
                         _ => {}

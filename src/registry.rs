@@ -68,7 +68,7 @@ fn parse_versions(body: &str) -> Result<Vec<PodVersion>, String> {
 
 pub fn resolve_version<'a>(versions: &'a [PodVersion], req: &str) -> Option<&'a PodVersion> {
     if req == "*" || req == "latest" {
-        versions.iter().filter(|v| !v.yanked).last()
+        versions.iter().rfind(|v| !v.yanked)
     } else {
         versions.iter().find(|v| v.vers == req && !v.yanked)
     }

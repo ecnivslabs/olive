@@ -139,12 +139,12 @@ impl TypeChecker {
                     .map(|p| Type::Param(p.clone()))
                     .collect();
 
-                if let Some(struct_name) = &self.current_struct {
-                    if let Some(Type::Struct(_, struct_args)) = self.lookup_type(struct_name) {
-                        for arg in struct_args {
-                            if !all_type_params.contains(&arg) {
-                                all_type_params.push(arg);
-                            }
+                if let Some(struct_name) = &self.current_struct
+                    && let Some(Type::Struct(_, struct_args)) = self.lookup_type(struct_name)
+                {
+                    for arg in struct_args {
+                        if !all_type_params.contains(&arg) {
+                            all_type_params.push(arg);
                         }
                     }
                 }

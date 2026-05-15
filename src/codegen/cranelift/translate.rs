@@ -159,6 +159,7 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
         self.module.define_function(*func_id, &mut ctx).unwrap();
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn translate_statement(
         func_mir: &MirFunction,
         module: &mut M,
@@ -192,18 +193,18 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                 } else {
                     &OliveType::Any
                 };
-                if let OliveType::Struct(struct_name, _) = obj_ty {
-                    if let Some(offset) = struct_field_offset(struct_fields, struct_name, attr) {
-                        let o = Self::translate_operand(builder, obj, vars, string_ids, module);
-                        let v = Self::translate_operand(builder, val_op, vars, string_ids, module);
-                        let v = if builder.func.dfg.value_type(v) == types::F64 {
-                            builder.ins().bitcast(types::I64, MemFlags::new(), v)
-                        } else {
-                            v
-                        };
-                        builder.ins().store(MemFlags::trusted(), v, o, offset);
-                        return;
-                    }
+                if let OliveType::Struct(struct_name, _) = obj_ty
+                    && let Some(offset) = struct_field_offset(struct_fields, struct_name, attr)
+                {
+                    let o = Self::translate_operand(builder, obj, vars, string_ids, module);
+                    let v = Self::translate_operand(builder, val_op, vars, string_ids, module);
+                    let v = if builder.func.dfg.value_type(v) == types::F64 {
+                        builder.ins().bitcast(types::I64, MemFlags::new(), v)
+                    } else {
+                        v
+                    };
+                    builder.ins().store(MemFlags::trusted(), v, o, offset);
+                    return;
                 }
                 let o = Self::translate_operand(builder, obj, vars, string_ids, module);
                 let v = Self::translate_operand(builder, val_op, vars, string_ids, module);
@@ -318,6 +319,7 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn translate_rvalue(
         func_mir: &MirFunction,
         module: &mut M,
@@ -603,11 +605,11 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
             Rvalue::GetAttr(obj, attr) => {
                 if let Operand::Copy(loc) | Operand::Move(loc) = obj {
                     let obj_ty = &func_mir.locals[loc.0].ty;
-                    if let OliveType::Struct(struct_name, _) = obj_ty {
-                        if let Some(offset) = struct_field_offset(struct_fields, struct_name, attr) {
-                            let o = Self::translate_operand(builder, obj, vars, string_ids, module);
-                            return builder.ins().load(types::I64, MemFlags::trusted(), o, offset);
-                        }
+                    if let OliveType::Struct(struct_name, _) = obj_ty
+                        && let Some(offset) = struct_field_offset(struct_fields, struct_name, attr)
+                    {
+                        let o = Self::translate_operand(builder, obj, vars, string_ids, module);
+                        return builder.ins().load(types::I64, MemFlags::trusted(), o, offset);
                     }
                 }
                 let o = Self::translate_operand(builder, obj, vars, string_ids, module);

@@ -493,12 +493,12 @@ impl<'a> MirBuilder<'a> {
 
                 if let Some(fn_name) = &call_fn_name {
                     let callee_ty = self.get_type(callee.id);
-                    if let Type::Fn(_, _, type_args) = callee_ty {
-                        if !type_args.is_empty() && self.generic_fns.contains_key(fn_name) {
-                            let specialized_name = self.monomorphize(fn_name, &type_args);
-                            func = Operand::Constant(Constant::Function(specialized_name.clone()));
-                            call_fn_name = Some(specialized_name);
-                        }
+                    if let Type::Fn(_, _, type_args) = callee_ty
+                        && !type_args.is_empty() && self.generic_fns.contains_key(fn_name)
+                    {
+                        let specialized_name = self.monomorphize(fn_name, &type_args);
+                        func = Operand::Constant(Constant::Function(specialized_name.clone()));
+                        call_fn_name = Some(specialized_name);
                     }
                 }
 

@@ -130,7 +130,6 @@ fn main() {
             }
 
             fs::create_dir_all(path.join("src")).unwrap();
-            fs::create_dir_all(path.join(".pit_pods")).unwrap();
 
             let config = Config {
                 pod: Pod {
@@ -149,7 +148,7 @@ fn main() {
             .unwrap();
             fs::write(
                 path.join(".gitignore"),
-                ".env\n.env.*\n*.secret\ngrove/\n.pit_pods/\n",
+                ".env\n.env.*\n*.secret\ngrove/\n",
             )
             .unwrap();
 
@@ -245,10 +244,6 @@ fn main() {
                 eprintln!("error: {}", e);
                 process::exit(1);
             }
-            if let Err(e) = pods::copy_to_pods(&pkg.name, &pkg.vers) {
-                eprintln!("error: {}", e);
-                process::exit(1);
-            }
 
             let mut config = load_config();
             config
@@ -269,7 +264,6 @@ fn main() {
                 process::exit(1);
             }
             save_config(&config);
-            pods::remove_from_pods(&pod);
             println!("\x1b[1;32m  Removed\x1b[0m {}", pod);
         }
 
@@ -322,10 +316,6 @@ fn main() {
                     continue;
                 }
                 if let Err(e) = pods::download_and_install(&latest) {
-                    eprintln!("error: {}", e);
-                    process::exit(1);
-                }
-                if let Err(e) = pods::copy_to_pods(&latest.name, &latest.vers) {
                     eprintln!("error: {}", e);
                     process::exit(1);
                 }

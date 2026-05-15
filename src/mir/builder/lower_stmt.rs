@@ -924,6 +924,7 @@ impl<'a> MirBuilder<'a> {
         }
     }
 
+    #[allow(clippy::only_used_in_recursion)]
     fn replace_types_in_expr(&self, expr: &mut crate::parser::Expr, type_map: &HashMap<String, Type>) {
         match &mut expr.kind {
             crate::parser::ExprKind::BinOp { left, right, .. } => {

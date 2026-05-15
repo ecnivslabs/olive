@@ -256,16 +256,15 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
                                     ..
                                 },
                             ) = &stmt.kind
+                                && name.starts_with(&prefix)
                             {
-                                if name.starts_with(&prefix) {
-                                    let mut sym_bytes: Vec<u8> =
-                                        name.as_bytes().to_vec();
-                                    sym_bytes.push(0);
-                                    if let Ok(f) =
-                                        unsafe { lib.get::<unsafe extern "C" fn()>(&*sym_bytes) }
-                                    {
-                                        builder.symbol(name, *f as *const u8);
-                                    }
+                                let mut sym_bytes: Vec<u8> =
+                                    name.as_bytes().to_vec();
+                                sym_bytes.push(0);
+                                if let Ok(f) =
+                                    unsafe { lib.get::<unsafe extern "C" fn()>(&*sym_bytes) }
+                                {
+                                    builder.symbol(name, *f as *const u8);
                                 }
                             }
                         }

@@ -238,10 +238,10 @@ impl TypeChecker {
                     let mangled = format!("{}::{}", name, attr);
                     if let Some(ty) = self.lookup_type(&mangled) {
                         let instantiated = self.instantiate(ty);
-                        if let Type::Fn(params, _, _) = &instantiated {
-                            if !params.is_empty() {
-                                self.unify(&params[0], &resolved_obj, expr.span);
-                            }
+                        if let Type::Fn(params, _, _) = &instantiated
+                            && !params.is_empty()
+                        {
+                            self.unify(&params[0], &resolved_obj, expr.span);
                         }
                         return instantiated;
                     }
@@ -251,10 +251,10 @@ impl TypeChecker {
                     let mangled = format!("{}::{}", struct_name, attr);
                     if let Some(ty) = self.lookup_type(&mangled) {
                         let instantiated = self.instantiate(ty);
-                        if let Type::Fn(params, _, _) = &instantiated {
-                            if !params.is_empty() {
-                                self.unify(&params[0], &resolved_obj, expr.span);
-                            }
+                        if let Type::Fn(params, _, _) = &instantiated
+                            && !params.is_empty()
+                        {
+                            self.unify(&params[0], &resolved_obj, expr.span);
                         }
                         return instantiated;
                     }
@@ -406,10 +406,9 @@ impl TypeChecker {
                 let inner_ty = self.check_expr(inner);
                 if let Type::Union(variants) = &inner_ty
                     && !variants.is_empty()
+                    && let Type::Enum(_, _) = &variants[0]
                 {
-                    if let Type::Enum(_, _) = &variants[0] {
-                         return variants[0].clone();
-                    }
+                    return variants[0].clone();
                 }
                 inner_ty
             }

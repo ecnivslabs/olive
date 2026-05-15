@@ -7,7 +7,6 @@ use crate::pods::find_pod_path;
 use crate::parser::{self, Parser};
 use crate::semantic::{self, Resolver, TypeChecker};
 use crate::span;
-use libloading;
 use ariadne::{Label, Report, ReportKind, Source};
 use rustc_hash::FxHashMap as HashMap;
 use std::{
@@ -114,10 +113,10 @@ pub fn load_and_parse(
                     mod_path = find_std_lib_src_dir().join(format!("{}.liv", mod_name));
                 }
 
-                if !mod_path.exists() {
-                    if let Some(pkg_path) = find_pod_path(&mod_name) {
-                        mod_path = pkg_path;
-                    }
+                if !mod_path.exists()
+                    && let Some(pkg_path) = find_pod_path(&mod_name)
+                {
+                    mod_path = pkg_path;
                 }
 
                 if !mod_path.exists() {
@@ -184,10 +183,10 @@ pub fn load_and_parse(
                     mod_path = find_std_lib_src_dir().join(format!("{}.liv", mod_name));
                 }
 
-                if !mod_path.exists() {
-                    if let Some(pkg_path) = find_pod_path(&mod_name) {
-                        mod_path = pkg_path;
-                    }
+                if !mod_path.exists()
+                    && let Some(pkg_path) = find_pod_path(&mod_name)
+                {
+                    mod_path = pkg_path;
                 }
 
                 if !mod_path.exists() {
@@ -264,14 +263,14 @@ fn collect_source_files(
             if !mod_path.exists() {
                 mod_path = find_std_lib_src_dir().join(format!("{}.liv", mod_name));
             }
-            if !mod_path.exists() {
-                if let Some(pkg_path) = find_pod_path(&mod_name) {
-                    mod_path = pkg_path;
-                }
+            if !mod_path.exists()
+                && let Some(pkg_path) = find_pod_path(&mod_name)
+            {
+                mod_path = pkg_path;
             }
             if mod_path.exists() {
                 collect_source_files(
-                    &mod_path.to_string_lossy().to_string(),
+                    mod_path.to_string_lossy().as_ref(),
                     collected,
                     visited,
                 );
@@ -527,17 +526,17 @@ fn find_std_lib_src_dir() -> PathBuf {
     if Path::new("lib").exists() {
         return PathBuf::from("lib");
     }
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
-            let lib_dir = exe_dir.join("lib");
-            if lib_dir.exists() {
-                return lib_dir;
-            }
-            if let Some(parent) = exe_dir.parent() {
-                let std_lib = parent.join("lib").join("olive");
-                if std_lib.exists() {
-                    return std_lib;
-                }
+    if let Ok(exe_path) = std::env::current_exe()
+        && let Some(exe_dir) = exe_path.parent()
+    {
+        let lib_dir = exe_dir.join("lib");
+        if lib_dir.exists() {
+            return lib_dir;
+        }
+        if let Some(parent) = exe_dir.parent() {
+            let std_lib = parent.join("lib").join("olive");
+            if std_lib.exists() {
+                return std_lib;
             }
         }
     }
@@ -558,16 +557,16 @@ fn find_library_dir() -> Option<PathBuf> {
             return Some(fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()));
         }
     }
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
-            if exe_dir.join(&lib_name).exists() {
-                return Some(exe_dir.to_path_buf());
-            }
-            if let Some(parent) = exe_dir.parent() {
-                let lib_dir = parent.join("lib");
-                if lib_dir.join(&lib_name).exists() {
-                    return Some(lib_dir);
-                }
+    if let Ok(exe_path) = std::env::current_exe()
+        && let Some(exe_dir) = exe_path.parent()
+    {
+        if exe_dir.join(&lib_name).exists() {
+            return Some(exe_dir.to_path_buf());
+        }
+        if let Some(parent) = exe_dir.parent() {
+            let lib_dir = parent.join("lib");
+            if lib_dir.join(&lib_name).exists() {
+                return Some(lib_dir);
             }
         }
     }

@@ -2,7 +2,7 @@ use crate::registry::{self, PodVersion};
 use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub fn pods_dir() -> PathBuf {
     dirs::home_dir()
@@ -72,45 +72,10 @@ pub fn download_and_install(pod: &PodVersion) -> Result<(), String> {
     Ok(())
 }
 
-pub fn copy_to_pods(name: &str, version: &str) -> Result<(), String> {
-    let install_dir = installed_path(name, version);
-    let local_pods_dir = Path::new(".pit_pods").join(name);
-
-    if local_pods_dir.exists() {
-        fs::remove_dir_all(&local_pods_dir).map_err(|e| e.to_string())?;
-    }
-    fs::create_dir_all(&local_pods_dir).map_err(|e| e.to_string())?;
-
-    copy_dir_all(&install_dir, &local_pods_dir)?;
-    Ok(())
-}
-
-fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
-    for entry in fs::read_dir(src).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-        if src_path.is_dir() {
-            fs::create_dir_all(&dst_path).map_err(|e| e.to_string())?;
-            copy_dir_all(&src_path, &dst_path)?;
-        } else {
-            fs::copy(&src_path, &dst_path).map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(())
-}
-
-pub fn remove_from_pods(name: &str) {
-    let local_pods_dir = Path::new(".pit_pods").join(name);
-    if local_pods_dir.exists() {
-        let _ = fs::remove_dir_all(&local_pods_dir);
-    }
-}
-
 pub fn ensure_deps_installed(deps: &HashMap<String, String>) -> Result<(), String> {
     for (name, version_req) in deps {
-        let local_pods_dir = Path::new(".pit_pods").join(name);
-        if local_pods_dir.exists() {
+        let install_dir = installed_path(name, version_req);
+        if install_dir.exists() {
             continue;
         }
         install_one(name, version_req)?;
@@ -132,7 +97,6 @@ fn install_one(name: &str, version_req: &str) -> Result<(), String> {
         .clone();
 
     download_and_install(&pod)?;
-    copy_to_pods(&pod.name, &pod.vers)?;
 
     if !pod.deps.is_empty() {
         let sub_deps: HashMap<String, String> = pod
@@ -146,26 +110,29 @@ fn install_one(name: &str, version_req: &str) -> Result<(), String> {
 }
 
 pub fn find_pod_path(pod_name: &str) -> Option<PathBuf> {
-    let pod_dir = Path::new(".pit_pods").join(pod_name);
-    if !pod_dir.exists() {
+    let pod_base = pods_dir().join(pod_name);
+    if !pod_base.exists() {
         return None;
     }
 
+    // pick first installed version (mirrors cargo's global store approach)
+    let pod_dir = fs::read_dir(&pod_base).ok()?.filter_map(|e| {
+        let e = e.ok()?;
+        if e.path().is_dir() { Some(e.path()) } else { None }
+    }).next()?;
+
     let pod_toml = pod_dir.join("pit.toml");
-    if pod_toml.exists() {
-        if let Ok(content) = fs::read_to_string(&pod_toml) {
-            if let Ok(val) = toml::from_str::<toml::Value>(&content) {
-                if let Some(entry) = val
-                    .get("pod")
-                    .and_then(|p| p.get("entry"))
-                    .and_then(|e| e.as_str())
-                {
-                    let entry_path = pod_dir.join(entry);
-                    if entry_path.exists() {
-                        return Some(entry_path);
-                    }
-                }
-            }
+    if pod_toml.exists()
+        && let Ok(content) = fs::read_to_string(&pod_toml)
+        && let Ok(val) = toml::from_str::<toml::Value>(&content)
+        && let Some(entry) = val
+            .get("pod")
+            .and_then(|p| p.get("entry"))
+            .and_then(|e| e.as_str())
+    {
+        let entry_path = pod_dir.join(entry);
+        if entry_path.exists() {
+            return Some(entry_path);
         }
     }
 
