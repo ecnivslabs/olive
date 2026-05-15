@@ -116,6 +116,16 @@ mod tests {
         }
     }
 
+    /// `resolve_binary_path` appends `.exe` on Windows; match that here
+    /// instead of hardcoding the Unix-only extensionless name.
+    fn exe(name: &str) -> String {
+        if cfg!(target_os = "windows") {
+            format!("{name}.exe")
+        } else {
+            name.to_string()
+        }
+    }
+
     #[test]
     fn resolve_binary_path_falls_back_to_file_stem_when_no_pod() {
         let _lock = CWD_LOCK.lock().unwrap();
@@ -123,7 +133,7 @@ mod tests {
         loader::clear_pod_meta();
         assert_eq!(
             resolve_binary_path("src/main.liv", false),
-            "grove/debug/main"
+            format!("grove/debug/{}", exe("main"))
         );
     }
 
@@ -138,7 +148,7 @@ mod tests {
         });
         assert_eq!(
             resolve_binary_path("src/main.liv", false),
-            "grove/debug/myproj"
+            format!("grove/debug/{}", exe("myproj"))
         );
     }
 
@@ -151,8 +161,14 @@ mod tests {
             version: "0.1.0".to_string(),
             author: String::new(),
         });
-        assert_eq!(resolve_binary_path("x", false), "grove/debug/myproj");
-        assert_eq!(resolve_binary_path("x", true), "grove/release/myproj");
+        assert_eq!(
+            resolve_binary_path("x", false),
+            format!("grove/debug/{}", exe("myproj"))
+        );
+        assert_eq!(
+            resolve_binary_path("x", true),
+            format!("grove/release/{}", exe("myproj"))
+        );
     }
 
     fn target(binary_path: &str, hash: u64, mode_key: &'static str) -> BuildTarget {

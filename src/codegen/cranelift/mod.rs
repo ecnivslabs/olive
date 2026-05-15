@@ -25,6 +25,26 @@ use std::process;
 /// Reserves one region for the JIT module's whole life, not per-retier (see `new_jit`).
 const JIT_ARENA_SIZE: usize = 128 * 1024 * 1024;
 
+/// Best-effort: reservation failure falls back to the default per-finalize
+/// provider (the relocation-panic risk `JIT_ARENA_SIZE` exists to avoid), so
+/// it's surfaced instead of silently reintroducing that risk. Returns
+/// whether the reservation succeeded, so tests can force the failure path
+/// without capturing stderr.
+fn reserve_jit_arena(builder: &mut JITBuilder, size: usize) -> bool {
+    match ArenaMemoryProvider::new_with_size(size) {
+        Ok(arena) => {
+            builder.memory_provider(Box::new(arena));
+            true
+        }
+        Err(e) => {
+            eprintln!(
+                "warning: JIT arena reservation failed ({e}); tier-up retiering may be unstable"
+            );
+            false
+        }
+    }
+}
+
 pub(super) const KIND_SM_FUTURE: i64 = 5;
 
 /// Site graduated all-int; kept in sync by hand with `std_lib`'s `ANY_SITE_SAMPLE_WINDOW`.
@@ -850,9 +870,7 @@ impl CraneliftCodegen<JITModule> {
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
         // Default provider mmaps per finalize call; a retier can land >2GB
         // from the runtime lib and panic the relocation (32-bit displacement).
-        if let Ok(arena) = ArenaMemoryProvider::new_with_size(JIT_ARENA_SIZE) {
-            builder.memory_provider(Box::new(arena));
-        }
+        reserve_jit_arena(&mut builder, JIT_ARENA_SIZE);
 
         let needed = imports::collect_needed_imports(&functions);
         let has_async = functions.iter().any(|f| f.is_async);

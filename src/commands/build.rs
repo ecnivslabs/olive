@@ -1,5 +1,5 @@
 use super::utils::{load_config, maybe_install_deps, run_build_script};
-use crate::compile::{cache, compile_and_emit, compile_and_test};
+use crate::compile::{cache, compile_and_emit, compile_and_test, pgo};
 use std::path::Path;
 
 pub fn execute_build(
@@ -23,7 +23,16 @@ pub fn execute_build(
                             target.binary_path
                         );
                     } else {
-                        compile_and_emit(p, &target.binary_path, time, release, pgo);
+                        let effective_pgo = pgo
+                            .map(String::from)
+                            .or_else(|| pgo::auto_detect(target.hash()));
+                        compile_and_emit(
+                            p,
+                            &target.binary_path,
+                            time,
+                            release,
+                            effective_pgo.as_deref(),
+                        );
                         cache::record(&target);
                     }
                 }
@@ -63,7 +72,14 @@ pub fn execute_build(
                     );
                 } else {
                     println!("\x1b[1;32m   Compiling\x1b[0m {}", pod.name);
-                    compile_and_emit(&pod.entry, &target.binary_path, time, release, None);
+                    let effective_pgo = pgo::auto_detect(target.hash());
+                    compile_and_emit(
+                        &pod.entry,
+                        &target.binary_path,
+                        time,
+                        release,
+                        effective_pgo.as_deref(),
+                    );
                     cache::record(&target);
                 }
             }
@@ -82,7 +98,16 @@ pub fn execute_build(
                 target.binary_path
             );
         } else {
-            compile_and_emit(&pod.entry, &target.binary_path, time, release, None);
+            let effective_pgo = pgo
+                .map(String::from)
+                .or_else(|| pgo::auto_detect(target.hash()));
+            compile_and_emit(
+                &pod.entry,
+                &target.binary_path,
+                time,
+                release,
+                effective_pgo.as_deref(),
+            );
             cache::record(&target);
         }
     } else {
