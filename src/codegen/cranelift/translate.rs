@@ -434,17 +434,26 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                         let is_aot_vararg = ffi_vararg_ids.contains(resolved_name);
                         let local_func = module.declare_func_in_func(func_id, builder.func);
                         let mut final_args = Vec::new();
-
+                        let mut sret_ptr = None;
+                        let is_builtin = resolved_name.starts_with("__olive") || resolved_name == "print";
                         let accepts_float = resolved_name == "__olive_print_float"
                             || resolved_name == "__olive_float_to_str"
                             || resolved_name == "__olive_float_to_int"
                             || resolved_name == "__olive_bool_from_float"
                             || resolved_name == "__olive_pow_float"
                             || resolved_name == "__olive_copy_float";
-
-                        let is_builtin = resolved_name.starts_with("__olive") || resolved_name == "print";
-
                         let ffi_entry = ffi_entries.iter().find(|e| e.jit_name == resolved_name);
+
+                        if let Some(entry) = ffi_entry {
+                            if entry.use_sret {
+                                let ret_name = entry.ret.as_ref().unwrap();
+                                let size = *c_struct_sizes.get(ret_name).unwrap();
+                                let slot = builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size as u32, 3));
+                                let ptr = builder.ins().stack_addr(module.isa().pointer_type(), slot, 0);
+                                final_args.push(ptr);
+                                sret_ptr = Some(ptr);
+                            }
+                        }
 
                         for (i, &arg) in call_args.iter().enumerate() {
                             let is_str_arg = args.get(i).is_some_and(|op| match op {
@@ -480,7 +489,7 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                                 final_args.push(arg);
                             }
                         }
-                        if is_aot_vararg {
+                        let inst = if is_aot_vararg {
                             let mut sig = module.make_signature();
                             sig.call_conv = module.isa().default_call_conv();
                             for &a in &final_args {
@@ -489,21 +498,32 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                             sig.returns.push(AbiParam::new(types::I64));
                             let sig_ref = builder.import_signature(sig);
                             let fn_addr = builder.ins().func_addr(types::I64, local_func);
-                            let inst = builder.ins().call_indirect(sig_ref, fn_addr, &final_args);
+                            builder.ins().call_indirect(sig_ref, fn_addr, &final_args)
+                        } else {
+                            builder.ins().call(local_func, &final_args)
+                        };
+
+                        let mut ret_val = if let Some(ptr) = sret_ptr {
+                            ptr
+                        } else {
                             let results = builder.inst_results(inst);
-                            return if results.is_empty() {
+                            if results.is_empty() {
                                 builder.ins().iconst(types::I64, 0)
                             } else {
                                 results[0]
-                            };
-                        }
-                        let inst = builder.ins().call(local_func, &final_args);
-                        let results = builder.inst_results(inst);
-                        return if results.is_empty() {
-                            builder.ins().iconst(types::I64, 0)
-                        } else {
-                            results[0]
+                            }
                         };
+
+                        if is_ffi {
+                            if let Some(entry) = ffi_entry {
+                                if let Some(ref r) = entry.ret {
+                                    if r == "str" {
+                                        ret_val = builder.ins().bor_imm(ret_val, 1);
+                                    }
+                                }
+                            }
+                        }
+                        return ret_val;
                     }
 
                     if let Some(&fn_ptr) = ffi_vararg_ptrs.get(resolved_name) {

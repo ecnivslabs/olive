@@ -703,62 +703,54 @@ pub fn compile_and_emit(filename: &str, out: &str, show_time: bool) {
         process::exit(1);
     });
 
-    #[cfg(target_os = "windows")]
-    {
-        eprintln!("error: AOT build (pit build) requires MSVC build tools. Ensure `link.exe` is on PATH.");
-        fs::remove_file(&obj_path).ok();
-        process::exit(1);
+    let lib_dir = find_library_dir();
+    let mut cmd = std::process::Command::new("cc");
+
+    cmd.arg(&obj_path);
+
+    if let Some(ref dir) = lib_dir {
+        cmd.arg("-L");
+        cmd.arg(dir);
+        cmd.arg("-lolive_std");
+        #[cfg(not(target_os = "windows"))]
+        cmd.arg(format!("-Wl,-rpath,{}", dir.display()));
+    } else {
+        cmd.arg("-lolive_std");
     }
 
-    #[cfg(not(target_os = "windows"))]
-    {
-        let lib_dir = find_library_dir();
-        let mut cmd = std::process::Command::new("cc");
-
-        cmd.arg(&obj_path);
-
-        if let Some(ref dir) = lib_dir {
-            cmd.arg("-L");
-            cmd.arg(dir);
-            cmd.arg("-lolive_std");
-            cmd.arg(format!("-Wl,-rpath,{}", dir.display()));
-        } else {
-            cmd.arg("-lolive_std");
-        }
-
-        for (_, path, _, _, _) in &native_libs {
-            let lib_path = std::path::Path::new(path);
-            if lib_path.is_absolute() && lib_path.exists() {
-                cmd.arg(path);
-                if let Some(dir) = lib_path.parent() {
-                    let standard = matches!(
-                        dir.to_str().unwrap_or(""),
-                        "/lib" | "/usr/lib" | "/usr/local/lib"
-                    );
-                    if !standard {
-                        cmd.arg(format!("-Wl,-rpath,{}", dir.display()));
-                    }
+    for (_, path, _, _, _) in &native_libs {
+        let lib_path = std::path::Path::new(path);
+        if lib_path.is_absolute() && lib_path.exists() {
+            cmd.arg(path);
+            if let Some(dir) = lib_path.parent() {
+                let standard = matches!(
+                    dir.to_str().unwrap_or(""),
+                    "/lib" | "/usr/lib" | "/usr/local/lib"
+                );
+                if !standard {
+                    #[cfg(not(target_os = "windows"))]
+                    cmd.arg(format!("-Wl,-rpath,{}", dir.display()));
                 }
-            } else {
-                cmd.arg(format!("-l{}", path));
             }
+        } else {
+            cmd.arg(format!("-l{}", path));
         }
+    }
 
-        cmd.arg("-o");
-        cmd.arg(out);
+    cmd.arg("-o");
+    cmd.arg(out);
 
-        let status = cmd.status()
-            .unwrap_or_else(|e| {
-                eprintln!("error: could not invoke cc: {e}");
-                process::exit(1);
-            });
-
-        fs::remove_file(&obj_path).ok();
-
-        if !status.success() {
-            eprintln!("error: linking failed");
+    let status = cmd.status()
+        .unwrap_or_else(|e| {
+            eprintln!("error: could not invoke cc: {e}");
             process::exit(1);
-        }
+        });
+
+    fs::remove_file(&obj_path).ok();
+
+    if !status.success() {
+        eprintln!("error: linking failed");
+        process::exit(1);
     }
     let link_duration = link_start.elapsed();
 

@@ -4,6 +4,7 @@ mod translate;
 
 use crate::mir::{Constant, Local, MirFunction, Operand, Rvalue, StatementKind};
 use cranelift::prelude::*;
+use cranelift::codegen::ir::ArgumentPurpose;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
@@ -139,8 +140,8 @@ pub(super) struct FfiFnEntry {
     pub(super) ret: Option<String>,
     pub(super) is_vararg: bool,
     pub(super) n_fixed: usize,
-    /// Call convention: None (cdecl), stdcall, or fastcall.
     pub(super) call_conv: Option<String>,
+    pub(super) use_sret: bool,
 }
 
 pub struct CraneliftCodegen<'a, M: Module> {
@@ -158,8 +159,7 @@ pub struct CraneliftCodegen<'a, M: Module> {
     pub(super) c_struct_sizes: HashMap<String, i64>,
     pub(super) c_struct_names: std::collections::HashSet<String>,
     pub(super) aot: bool,
-    /// JIT-only: extern global var address + CL type name for synthetic getter emission
-    pub(super) extern_var_ptrs: HashMap<String, (i64, String)>,
+    pub(super) extern_var_ptrs: HashMap<String, (i64, String, String)>,
 }
 
 fn c_prim_layout(ty: &str) -> (i32, i32) {
@@ -185,7 +185,6 @@ fn c_prim_layout(ty: &str) -> (i32, i32) {
 
 fn c_abi_layout(fields: &[crate::parser::ast::FfiStructField], is_union: bool) -> (Vec<(String, i32, String)>, i64) {
     if is_union {
-        // Union: fields at 0, size = max size rounded to align.
         let mut max_size = 0i32;
         let mut max_align = 1i32;
         let mut layout = Vec::new();
@@ -217,7 +216,6 @@ fn c_abi_layout(fields: &[crate::parser::ast::FfiStructField], is_union: bool) -
 
         if let Some(bits) = field.bits {
             if current_bit_offset == 0 || (current_bit_offset + (bits as i32) > last_bitfield_size * 8) || size != last_bitfield_size {
-                // New bitfield unit.
                 let padding = (align - (offset % align)) % align;
                 offset += padding;
                 layout.push((field.name.clone(), offset, ty.clone()));
@@ -225,7 +223,6 @@ fn c_abi_layout(fields: &[crate::parser::ast::FfiStructField], is_union: bool) -
                 current_bit_offset = bits as i32;
                 offset += size;
             } else {
-                // Pack into unit.
                 layout.push((field.name.clone(), offset - last_bitfield_size, ty.clone()));
                 current_bit_offset += bits as i32;
             }
@@ -252,9 +249,7 @@ fn type_expr_to_name(t: &crate::parser::ast::TypeExpr) -> String {
         crate::parser::ast::TypeExprKind::Name(n) => n.clone(),
         crate::parser::ast::TypeExprKind::Ref(inner)
         | crate::parser::ast::TypeExprKind::MutRef(inner) => type_expr_to_name(inner),
-        // Pointer is 64-bit.
         crate::parser::ast::TypeExprKind::Ptr(_) => "ptr".to_string(),
-        // Array for c_prim_layout.
         crate::parser::ast::TypeExprKind::FixedArray(inner, n) => {
             format!("[{};{}]", type_expr_to_name(inner), n)
         }
@@ -270,7 +265,6 @@ pub(super) fn ffi_cl_type(name: &str) -> cranelift::prelude::Type {
         "i32" | "u32" => types::I32,
         "i16" | "u16" => types::I16,
         "i8" | "u8" => types::I8,
-        // ptr and fixed arrays are pointer-sized
         "ptr" => types::I64,
         _ if name.starts_with('[') => types::I64,
         _ => types::I64,
@@ -311,7 +305,7 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
         let mut c_struct_names: std::collections::HashSet<String> = std::collections::HashSet::new();
         let has_c_structs = native_lib_paths.iter().any(|(_, _, _, structs, _)| !structs.is_empty());
         let has_vararg = native_lib_paths.iter().any(|(_, _, sigs, _, _)| sigs.iter().any(|s| s.is_vararg));
-        let mut extern_var_ptrs: HashMap<String, (i64, String)> = HashMap::default();
+        let mut extern_var_ptrs: HashMap<String, (i64, String, String)> = HashMap::default();
 
         #[cfg(all(olive_std_linked, target_os = "linux"))]
         {
@@ -396,7 +390,7 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
                         let addr = *sym as i64;
                         let ty_str = type_expr_to_name(&var.ty);
                         let jit_name = format!("{}::{}", alias, var.name);
-                        extern_var_ptrs.insert(jit_name, (addr, ty_str));
+                        extern_var_ptrs.insert(jit_name, (addr, ty_str, var.name.clone()));
                     }
                 }
                 if ffi_sigs.is_empty() {
@@ -439,6 +433,15 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
                                 builder.symbol(&jit_name, *f as *const u8);
                             }
                         }
+                        let mut use_sret = false;
+                        if let Some(ret_type) = &sig.ret {
+                            let ret_name = type_expr_to_name(ret_type);
+                            if let Some(&size) = c_struct_sizes.get(&ret_name) {
+                                if size > 16 {
+                                    use_sret = true;
+                                }
+                            }
+                        }
                         ffi_entries.push(FfiFnEntry {
                             jit_name,
                             c_name: sig.name.clone(),
@@ -447,6 +450,7 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
                             is_vararg: sig.is_vararg,
                             n_fixed: sig.params.len(),
                             call_conv: sig.call_conv.clone(),
+                            use_sret,
                         });
                     }
                 }
@@ -515,7 +519,9 @@ impl<'a> CraneliftCodegen<'a, ObjectModule> {
         let mut c_struct_sizes: HashMap<String, i64> = HashMap::default();
         let mut c_struct_names: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-        for (alias, _path, ffi_sigs, ffi_structs, _ffi_vars) in native_lib_paths {
+        let mut extern_var_ptrs: HashMap<String, (i64, String, String)> = HashMap::default();
+
+        for (alias, _path, ffi_sigs, ffi_structs, ffi_vars) in native_lib_paths {
             for ffi_struct in ffi_structs {
                 let type_name = format!("{}::{}", alias, ffi_struct.name);
                 let (layout, total_size) = c_abi_layout(&ffi_struct.fields, ffi_struct.is_union);
@@ -523,7 +529,21 @@ impl<'a> CraneliftCodegen<'a, ObjectModule> {
                 c_struct_sizes.insert(type_name.clone(), total_size);
                 c_struct_names.insert(type_name);
             }
+            for var in ffi_vars {
+                let ty_str = type_expr_to_name(&var.ty);
+                let jit_name = format!("{}::{}", alias, var.name);
+                extern_var_ptrs.insert(jit_name, (0, ty_str, var.name.clone()));
+            }
             for sig in ffi_sigs {
+                let mut use_sret = false;
+                if let Some(ret_name) = &sig.ret {
+                    let ret_ty_name = type_expr_to_name(ret_name);
+                    if let Some(&size) = c_struct_sizes.get(&ret_ty_name) {
+                        if size > 16 {
+                            use_sret = true;
+                        }
+                    }
+                }
                 ffi_entries.push(FfiFnEntry {
                     jit_name: format!("{}::{}", alias, sig.name),
                     c_name: sig.name.clone(),
@@ -532,6 +552,7 @@ impl<'a> CraneliftCodegen<'a, ObjectModule> {
                     is_vararg: sig.is_vararg,
                     n_fixed: sig.params.len(),
                     call_conv: sig.call_conv.clone(),
+                    use_sret,
                 });
             }
         }
@@ -744,7 +765,9 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                     sig.params.push(AbiParam::new(ffi_cl_type(param_name)));
                 }
             }
-            if let Some(ret_name) = &entry.ret {
+            if entry.use_sret {
+                sig.params.insert(0, AbiParam::special(self.module.isa().pointer_type(), ArgumentPurpose::StructReturn));
+            } else if let Some(ret_name) = &entry.ret {
                 if ret_name != "void" {
                     sig.returns.push(AbiParam::new(ffi_cl_type(ret_name)));
                 }
@@ -870,15 +893,17 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
             }
         }
 
-        // Emit synthetic getter functions for extern global vars (JIT only)
-        if !self.aot {
-            let var_entries: Vec<(String, i64, String)> = self
-                .extern_var_ptrs
-                .iter()
-                .map(|(name, (addr, ty))| (name.clone(), *addr, ty.clone()))
-                .collect();
-            for (name, addr, ty_str) in var_entries {
-                if !self.func_ids.contains_key(&name) {
+        // Emit synthetic getter functions for extern global vars
+        let var_entries: Vec<(String, i64, String, String)> = self
+            .extern_var_ptrs
+            .iter()
+            .map(|(name, (addr, ty, c_name))| (name.clone(), *addr, ty.clone(), c_name.clone()))
+            .collect();
+        for (name, addr, ty_str, c_name) in var_entries {
+            if !self.func_ids.contains_key(&name) {
+                if self.aot {
+                    self.emit_aot_extern_var_getter(&name, &ty_str, &c_name);
+                } else {
                     self.emit_extern_var_getter(&name, addr, &ty_str);
                 }
             }
@@ -908,7 +933,50 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
         builder.seal_block(block);
         let addr_val = builder.ins().iconst(types::I64, addr);
         let raw = builder.ins().load(cl_ty, cranelift::prelude::MemFlags::trusted(), addr_val, 0);
-        // Always return i64; widen narrower types
+        let val = if cl_ty != types::I64 {
+            if cl_ty.is_float() {
+                builder.ins().bitcast(types::I64, cranelift::prelude::MemFlags::new(), raw)
+            } else {
+                builder.ins().uextend(types::I64, raw)
+            }
+        } else {
+            raw
+        };
+        builder.ins().return_(&[val]);
+        builder.finalize();
+        if self.module.define_function(func_id, &mut ctx).is_err() {
+            eprintln!("warning: failed to emit getter for extern var '{}'", name);
+        }
+    }
+
+    fn emit_aot_extern_var_getter(&mut self, name: &str, ty_str: &str, c_name: &str) {
+        use cranelift::prelude::FunctionBuilderContext;
+        let cl_ty = ffi_cl_type(ty_str);
+        let mut sig = self.module.make_signature();
+        sig.returns.push(AbiParam::new(types::I64));
+        let Ok(func_id) = self.module.declare_function(name, Linkage::Local, &sig) else {
+            return;
+        };
+        self.func_ids.insert(name.to_string(), func_id);
+        
+        let data_id = match self.module.declare_data(c_name, Linkage::Import, false, false) {
+            Ok(id) => id,
+            Err(_) => return,
+        };
+
+        let mut ctx = self.module.make_context();
+        ctx.func.signature = sig;
+        let mut builder_ctx = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
+        let block = builder.create_block();
+        builder.switch_to_block(block);
+        builder.seal_block(block);
+
+        let sym_val = self.module.declare_data_in_func(data_id, builder.func);
+        let addr_val = builder.ins().symbol_value(types::I64, sym_val);
+        
+        let raw = builder.ins().load(cl_ty, cranelift::prelude::MemFlags::trusted(), addr_val, 0);
+        
         let val = if cl_ty != types::I64 {
             if cl_ty.is_float() {
                 builder.ins().bitcast(types::I64, cranelift::prelude::MemFlags::new(), raw)
