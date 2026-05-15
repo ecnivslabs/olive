@@ -1,30 +1,30 @@
-use crate::registry::{self, PackageVersion};
+use crate::registry::{self, PodVersion};
 use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-pub fn packages_dir() -> PathBuf {
+pub fn pods_dir() -> PathBuf {
     dirs::home_dir()
         .expect("no home dir")
         .join(".pit")
-        .join("packages")
+        .join("pods")
 }
 
 fn installed_path(name: &str, version: &str) -> PathBuf {
-    packages_dir().join(name).join(version)
+    pods_dir().join(name).join(version)
 }
 
-pub fn download_and_install(pkg: &PackageVersion) -> Result<(), String> {
-    let install_dir = installed_path(&pkg.name, &pkg.vers);
+pub fn download_and_install(pod: &PodVersion) -> Result<(), String> {
+    let install_dir = installed_path(&pod.name, &pod.vers);
 
     if install_dir.exists() {
         return Ok(());
     }
 
-    println!("\x1b[1;32m  Downloading\x1b[0m {}@{}", pkg.name, pkg.vers);
+    println!("\x1b[1;32m  Downloading\x1b[0m {}@{}", pod.name, pod.vers);
 
-    let bytes = match ureq::get(&pkg.dl)
+    let bytes = match ureq::get(&pod.dl)
         .set("User-Agent", "pit/0.1.0")
         .call()
     {
@@ -42,10 +42,10 @@ pub fn download_and_install(pkg: &PackageVersion) -> Result<(), String> {
     hasher.update(&bytes);
     let cksum = hasher.finalize().to_hex().to_string();
 
-    if cksum != pkg.cksum {
+    if cksum != pod.cksum {
         return Err(format!(
             "checksum mismatch for {}: expected {}, got {}",
-            pkg.name, pkg.cksum, cksum
+            pod.name, pod.cksum, cksum
         ));
     }
 
@@ -68,20 +68,20 @@ pub fn download_and_install(pkg: &PackageVersion) -> Result<(), String> {
         entry.unpack(&dest).map_err(|e| e.to_string())?;
     }
 
-    println!("\x1b[1;32m  Installed\x1b[0m {}@{}", pkg.name, pkg.vers);
+    println!("\x1b[1;32m  Installed\x1b[0m {}@{}", pod.name, pod.vers);
     Ok(())
 }
 
-pub fn copy_to_modules(name: &str, version: &str) -> Result<(), String> {
+pub fn copy_to_pods(name: &str, version: &str) -> Result<(), String> {
     let install_dir = installed_path(name, version);
-    let modules_dir = Path::new(".pit_modules").join(name);
+    let local_pods_dir = Path::new(".pit_pods").join(name);
 
-    if modules_dir.exists() {
-        fs::remove_dir_all(&modules_dir).map_err(|e| e.to_string())?;
+    if local_pods_dir.exists() {
+        fs::remove_dir_all(&local_pods_dir).map_err(|e| e.to_string())?;
     }
-    fs::create_dir_all(&modules_dir).map_err(|e| e.to_string())?;
+    fs::create_dir_all(&local_pods_dir).map_err(|e| e.to_string())?;
 
-    copy_dir_all(&install_dir, &modules_dir)?;
+    copy_dir_all(&install_dir, &local_pods_dir)?;
     Ok(())
 }
 
@@ -100,17 +100,17 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub fn remove_from_modules(name: &str) {
-    let modules_dir = Path::new(".pit_modules").join(name);
-    if modules_dir.exists() {
-        let _ = fs::remove_dir_all(&modules_dir);
+pub fn remove_from_pods(name: &str) {
+    let local_pods_dir = Path::new(".pit_pods").join(name);
+    if local_pods_dir.exists() {
+        let _ = fs::remove_dir_all(&local_pods_dir);
     }
 }
 
 pub fn ensure_deps_installed(deps: &HashMap<String, String>) -> Result<(), String> {
     for (name, version_req) in deps {
-        let modules_dir = Path::new(".pit_modules").join(name);
-        if modules_dir.exists() {
+        let local_pods_dir = Path::new(".pit_pods").join(name);
+        if local_pods_dir.exists() {
             continue;
         }
         install_one(name, version_req)?;
@@ -127,15 +127,15 @@ pub fn install_all_deps(deps: &HashMap<String, String>) -> Result<(), String> {
 
 fn install_one(name: &str, version_req: &str) -> Result<(), String> {
     let versions = registry::fetch_versions(name)?;
-    let pkg = registry::resolve_version(&versions, version_req)
+    let pod = registry::resolve_version(&versions, version_req)
         .ok_or_else(|| format!("no matching version for '{}@{}'", name, version_req))?
         .clone();
 
-    download_and_install(&pkg)?;
-    copy_to_modules(&pkg.name, &pkg.vers)?;
+    download_and_install(&pod)?;
+    copy_to_pods(&pod.name, &pod.vers)?;
 
-    if !pkg.deps.is_empty() {
-        let sub_deps: HashMap<String, String> = pkg
+    if !pod.deps.is_empty() {
+        let sub_deps: HashMap<String, String> = pod
             .deps
             .iter()
             .map(|d| (d.name.clone(), d.req.clone()))
@@ -145,22 +145,22 @@ fn install_one(name: &str, version_req: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn find_pit_module(mod_name: &str) -> Option<PathBuf> {
-    let pkg_dir = Path::new(".pit_modules").join(mod_name);
-    if !pkg_dir.exists() {
+pub fn find_pod_path(pod_name: &str) -> Option<PathBuf> {
+    let pod_dir = Path::new(".pit_pods").join(pod_name);
+    if !pod_dir.exists() {
         return None;
     }
 
-    let pkg_toml = pkg_dir.join("pit.toml");
-    if pkg_toml.exists() {
-        if let Ok(content) = fs::read_to_string(&pkg_toml) {
+    let pod_toml = pod_dir.join("pit.toml");
+    if pod_toml.exists() {
+        if let Ok(content) = fs::read_to_string(&pod_toml) {
             if let Ok(val) = toml::from_str::<toml::Value>(&content) {
                 if let Some(entry) = val
-                    .get("package")
+                    .get("pod")
                     .and_then(|p| p.get("entry"))
                     .and_then(|e| e.as_str())
                 {
-                    let entry_path = pkg_dir.join(entry);
+                    let entry_path = pod_dir.join(entry);
                     if entry_path.exists() {
                         return Some(entry_path);
                     }
@@ -170,10 +170,10 @@ pub fn find_pit_module(mod_name: &str) -> Option<PathBuf> {
     }
 
     let candidates = [
-        pkg_dir.join(format!("{}.liv", mod_name)),
-        pkg_dir.join("lib.liv"),
-        pkg_dir.join("src").join(format!("{}.liv", mod_name)),
-        pkg_dir.join("src").join("lib.liv"),
+        pod_dir.join(format!("{}.liv", pod_name)),
+        pod_dir.join("lib.liv"),
+        pod_dir.join("src").join(format!("{}.liv", pod_name)),
+        pod_dir.join("src").join("lib.liv"),
     ];
     candidates.into_iter().find(|p| p.exists())
 }

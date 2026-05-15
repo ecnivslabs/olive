@@ -5,7 +5,7 @@ mod fmt;
 mod lexer;
 mod mangle;
 mod mir;
-mod packages;
+mod pods;
 mod parser;
 mod publish;
 mod registry;
@@ -26,13 +26,13 @@ use std::{fs, path::Path, process};
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 struct Config {
-    package: Package,
+    pod: Pod,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     dependencies: HashMap<String, String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
-struct Package {
+struct Pod {
     name: String,
     version: String,
     #[serde(default = "default_entry")]
@@ -52,14 +52,11 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Create a new olive project
     New { name: String },
-    /// Build the current project
     Build {
         #[arg(short, long)]
         time: bool,
     },
-    /// Run the project or a file
     Run {
         file: Option<String>,
         #[arg(short, long)]
@@ -72,33 +69,24 @@ enum Commands {
         jit: bool,
         #[arg(long)]
         aot: bool,
+        #[arg(long)]
+        hybrid: bool,
     },
-    /// Format the project or a file
     Fmt { file: Option<String> },
-    /// Run tests
     Test {
         #[arg(short, long)]
         time: bool,
     },
-    /// Start an interactive shell
     Shell,
-    /// Add a package dependency
     Add {
-        /// Package name, optionally with version: name or name@1.0.0
-        package: String,
+        pod: String,
     },
-    /// Remove a package dependency
-    Remove { package: String },
-    /// Install all dependencies
+    Remove { pod: String },
     Install,
-    /// Update dependencies to their latest versions
     Update {
-        /// Update only this package (optional)
-        package: Option<String>,
+        pod: Option<String>,
     },
-    /// Publish this package to the registry
     Publish,
-    /// Update pit to the latest release
     Upgrade,
 }
 
@@ -124,7 +112,7 @@ fn maybe_install_deps(deps: &HashMap<String, String>) {
     if deps.is_empty() {
         return;
     }
-    if let Err(e) = packages::ensure_deps_installed(deps) {
+    if let Err(e) = pods::ensure_deps_installed(deps) {
         eprintln!("error: {}", e);
         process::exit(1);
     }
@@ -142,10 +130,10 @@ fn main() {
             }
 
             fs::create_dir_all(path.join("src")).unwrap();
-            fs::create_dir_all(path.join(".pit_modules")).unwrap();
+            fs::create_dir_all(path.join(".pit_pods")).unwrap();
 
             let config = Config {
-                package: Package {
+                pod: Pod {
                     name: name.clone(),
                     version: "0.1.0".to_string(),
                     entry: "src/main.liv".to_string(),
@@ -161,12 +149,12 @@ fn main() {
             .unwrap();
             fs::write(
                 path.join(".gitignore"),
-                ".env\n.env.*\n*.secret\ntarget/\n.pit_modules/\n",
+                ".env\n.env.*\n*.secret\ngrove/\n.pit_pods/\n",
             )
             .unwrap();
 
             println!(
-                "\x1b[1;32mCreated\x1b[0m binary (application) `{}` package",
+                "\x1b[1;32mCreated\x1b[0m binary (application) `{}` pod",
                 name
             );
         }
@@ -174,8 +162,8 @@ fn main() {
         Commands::Build { time } => {
             let config = load_config();
             maybe_install_deps(&config.dependencies);
-            let out = format!("target/{}", config.package.name);
-            compile_and_emit(&config.package.entry, &out, time);
+            let out = format!("grove/{}", config.pod.name);
+            compile_and_emit(&config.pod.entry, &out, time);
         }
 
         Commands::Run {
@@ -185,16 +173,17 @@ fn main() {
             emit_mir,
             jit,
             aot,
+            hybrid,
         } => {
-            let entry = if let Some(f) = file {
-                f
+            let (entry, is_project) = if let Some(f) = file {
+                (f, false)
             } else {
                 let config = load_config();
                 maybe_install_deps(&config.dependencies);
-                config.package.entry
+                (config.pod.entry, true)
             };
 
-            if jit || emit_ast || emit_mir {
+            if jit || emit_ast || emit_mir || (!is_project && !aot && !hybrid) {
                 compile_and_run(&entry, true, time, emit_ast, emit_mir);
             } else if aot {
                 compile_and_run_aot(&entry, time);
@@ -225,18 +214,18 @@ fn main() {
         Commands::Test { time } => {
             let config = load_config();
             maybe_install_deps(&config.dependencies);
-            compile_and_test(&config.package.entry, time);
+            compile_and_test(&config.pod.entry, time);
         }
 
         Commands::Shell => {
             run_shell();
         }
 
-        Commands::Add { package } => {
-            let (name, version_req) = if let Some((n, v)) = package.split_once('@') {
+        Commands::Add { pod } => {
+            let (name, version_req) = if let Some((n, v)) = pod.split_once('@') {
                 (n.to_string(), v.to_string())
             } else {
-                (package.clone(), "latest".to_string())
+                (pod.clone(), "latest".to_string())
             };
 
             let versions = registry::fetch_versions(&name).unwrap_or_else(|e| {
@@ -252,11 +241,11 @@ fn main() {
             let resolved_version = pkg.vers.clone();
             let pkg = pkg.clone();
 
-            if let Err(e) = packages::download_and_install(&pkg) {
+            if let Err(e) = pods::download_and_install(&pkg) {
                 eprintln!("error: {}", e);
                 process::exit(1);
             }
-            if let Err(e) = packages::copy_to_modules(&pkg.name, &pkg.vers) {
+            if let Err(e) = pods::copy_to_pods(&pkg.name, &pkg.vers) {
                 eprintln!("error: {}", e);
                 process::exit(1);
             }
@@ -273,15 +262,15 @@ fn main() {
             );
         }
 
-        Commands::Remove { package } => {
+        Commands::Remove { pod } => {
             let mut config = load_config();
-            if config.dependencies.remove(&package).is_none() {
-                eprintln!("error: '{}' is not a dependency", package);
+            if config.dependencies.remove(&pod).is_none() {
+                eprintln!("error: '{}' is not a dependency", pod);
                 process::exit(1);
             }
             save_config(&config);
-            packages::remove_from_modules(&package);
-            println!("\x1b[1;32m  Removed\x1b[0m {}", package);
+            pods::remove_from_pods(&pod);
+            println!("\x1b[1;32m  Removed\x1b[0m {}", pod);
         }
 
         Commands::Install => {
@@ -290,21 +279,21 @@ fn main() {
                 println!("No dependencies to install.");
                 return;
             }
-            if let Err(e) = packages::install_all_deps(&config.dependencies) {
+            if let Err(e) = pods::install_all_deps(&config.dependencies) {
                 eprintln!("error: {}", e);
                 process::exit(1);
             }
             println!("\x1b[1;32m   Installed\x1b[0m all dependencies");
         }
 
-        Commands::Update { package } => {
+        Commands::Update { pod } => {
             let mut config = load_config();
             if config.dependencies.is_empty() {
                 println!("No dependencies to update.");
                 return;
             }
 
-            let targets: Vec<String> = if let Some(name) = package {
+            let targets: Vec<String> = if let Some(name) = pod {
                 if !config.dependencies.contains_key(&name) {
                     eprintln!("error: '{}' is not a dependency", name);
                     process::exit(1);
@@ -332,11 +321,11 @@ fn main() {
                     println!("  {} already at {}", name, current);
                     continue;
                 }
-                if let Err(e) = packages::download_and_install(&latest) {
+                if let Err(e) = pods::download_and_install(&latest) {
                     eprintln!("error: {}", e);
                     process::exit(1);
                 }
-                if let Err(e) = packages::copy_to_modules(&latest.name, &latest.vers) {
+                if let Err(e) = pods::copy_to_pods(&latest.name, &latest.vers) {
                     eprintln!("error: {}", e);
                     process::exit(1);
                 }
@@ -355,7 +344,7 @@ fn main() {
 
         Commands::Publish => {
             let config = load_config();
-            if let Err(e) = publish::publish(&config.package.name, &config.package.version) {
+            if let Err(e) = publish::publish(&config.pod.name, &config.pod.version) {
                 eprintln!("error: {}", e);
                 process::exit(1);
             }

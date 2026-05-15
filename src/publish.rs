@@ -1,4 +1,4 @@
-use crate::registry::PackageVersion;
+use crate::registry::PodVersion;
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde_json::{json, Value};
 use std::fs;
@@ -60,7 +60,7 @@ pub fn publish(name: &str, version: &str) -> Result<(), String> {
     let dl_url = upload_asset(&gh, &user_repo, release_id, name, archive)?;
     println!("\x1b[1;32m  Uploaded\x1b[0m {}", dl_url);
 
-    let pkg = PackageVersion {
+    let pod = PodVersion {
         name: name.to_string(),
         vers: version.to_string(),
         deps: vec![],
@@ -69,7 +69,7 @@ pub fn publish(name: &str, version: &str) -> Result<(), String> {
         yanked: false,
     };
 
-    let pr_url = create_registry_pr(&gh, &pkg)?;
+    let pr_url = create_registry_pr(&gh, &pod)?;
     println!(
         "\x1b[1;32m  Published\x1b[0m {}@{} — registry PR: {}",
         name, version, pr_url
@@ -273,13 +273,13 @@ fn ensure_fork(gh: &GhClient, user: &str) -> Result<String, String> {
     ))
 }
 
-fn create_registry_pr(gh: &GhClient, pkg: &PackageVersion) -> Result<String, String> {
+fn create_registry_pr(gh: &GhClient, pod: &PodVersion) -> Result<String, String> {
     let user = get_current_user(gh)?;
     let fork_repo = ensure_fork(gh, &user)?;
 
-    let prefix = &pkg.name[..pkg.name.len().min(2)];
-    let file_path = format!("{}/{}", prefix, pkg.name);
-    let branch = format!("add-{}-{}", pkg.name, pkg.vers);
+    let prefix = &pod.name[..pod.name.len().min(2)];
+    let file_path = format!("{}/{}", prefix, pod.name);
+    let branch = format!("add-{}-{}", pod.name, pod.vers);
 
     let (current_sha_on_fork, current_content) = match gh
         .get(&format!(
@@ -304,7 +304,7 @@ fn create_registry_pr(gh: &GhClient, pkg: &PackageVersion) -> Result<String, Str
         Err(e) => return Err(format!("registry read failed: {}", e)),
     };
 
-    let new_line = serde_json::to_string(pkg).map_err(|e| e.to_string())?;
+    let new_line = serde_json::to_string(pod).map_err(|e| e.to_string())?;
     let new_content = if current_content.trim().is_empty() {
         new_line
     } else {
@@ -344,7 +344,7 @@ fn create_registry_pr(gh: &GhClient, pkg: &PackageVersion) -> Result<String, Str
     );
     let encoded = B64.encode(new_content.as_bytes());
     let mut update_body = json!({
-        "message": format!("add {}@{}", pkg.name, pkg.vers),
+        "message": format!("add {}@{}", pod.name, pod.vers),
         "content": encoded,
         "branch": branch,
     });
@@ -363,10 +363,10 @@ fn create_registry_pr(gh: &GhClient, pkg: &PackageVersion) -> Result<String, Str
             REGISTRY_REPO
         ))
         .send_json(json!({
-            "title": format!("Add {}@{}", pkg.name, pkg.vers),
+            "title": format!("Add {}@{}", pod.name, pod.vers),
             "body": format!(
-                "New package: **{}** version `{}`\n\nPublished via `pit publish`.",
-                pkg.name, pkg.vers
+                "New pod: **{}** version `{}`\n\nPublished via `pit publish`.",
+                pod.name, pod.vers
             ),
             "head": format!("{}:{}", user, branch),
             "base": "main",

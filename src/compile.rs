@@ -3,7 +3,7 @@ use crate::codegen::cranelift::CraneliftCodegen;
 use crate::lexer::Lexer;
 use crate::mangle::mangle_statements;
 use crate::mir::{self, MirBuilder, Rvalue, StatementKind};
-use crate::packages::find_pit_module;
+use crate::pods::find_pod_path;
 use crate::parser::{self, Parser};
 use crate::semantic::{self, Resolver, TypeChecker};
 use crate::span;
@@ -115,7 +115,7 @@ pub fn load_and_parse(
                 }
 
                 if !mod_path.exists() {
-                    if let Some(pkg_path) = find_pit_module(&mod_name) {
+                    if let Some(pkg_path) = find_pod_path(&mod_name) {
                         mod_path = pkg_path;
                     }
                 }
@@ -185,7 +185,7 @@ pub fn load_and_parse(
                 }
 
                 if !mod_path.exists() {
-                    if let Some(pkg_path) = find_pit_module(&mod_name) {
+                    if let Some(pkg_path) = find_pod_path(&mod_name) {
                         mod_path = pkg_path;
                     }
                 }
@@ -265,7 +265,7 @@ fn collect_source_files(
                 mod_path = find_std_lib_src_dir().join(format!("{}.liv", mod_name));
             }
             if !mod_path.exists() {
-                if let Some(pkg_path) = find_pit_module(&mod_name) {
+                if let Some(pkg_path) = find_pod_path(&mod_name) {
                     mod_path = pkg_path;
                 }
             }
@@ -306,16 +306,16 @@ pub fn compile_hybrid(filename: &str, show_time: bool) {
     collect_source_files(filename, &mut collected, &mut visited);
     let hash = compute_source_hash(&collected);
 
-    fs::create_dir_all("target/.cache").unwrap_or_else(|e| {
+    fs::create_dir_all("grove/.cache").unwrap_or_else(|e| {
         eprintln!("error: could not create cache directory: {e}");
         process::exit(1);
     });
 
-    let manifest_path = "target/.cache/manifest.json";
+    let manifest_path = "grove/.cache/manifest.json";
     let binary_path = if cfg!(target_os = "windows") {
-        "target/.cache/program.exe"
+        "grove/.cache/program.exe"
     } else {
-        "target/.cache/program"
+        "grove/.cache/program"
     };
 
     let cached = fs::read_to_string(manifest_path)
@@ -341,11 +341,11 @@ pub fn compile_hybrid(filename: &str, show_time: bool) {
 
 pub fn compile_and_run_aot(filename: &str, show_time: bool) {
     let binary_path = if cfg!(target_os = "windows") {
-        "target/.cache/aot_run.exe"
+        "grove/.cache/aot_run.exe"
     } else {
-        "target/.cache/aot_run"
+        "grove/.cache/aot_run"
     };
-    fs::create_dir_all("target/.cache").unwrap_or_else(|e| {
+    fs::create_dir_all("grove/.cache").unwrap_or_else(|e| {
         eprintln!("error: could not create cache directory: {e}");
         process::exit(1);
     });
@@ -524,20 +524,15 @@ pub fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: boo
 }
 
 fn find_std_lib_src_dir() -> PathBuf {
-    // 1. Check CWD (for developers)
     if Path::new("lib").exists() {
         return PathBuf::from("lib");
     }
-
-    // 2. Check alongside executable
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
-            // Check ./lib relative to exe
             let lib_dir = exe_dir.join("lib");
             if lib_dir.exists() {
                 return lib_dir;
             }
-            // Check ../lib/olive relative to exe
             if let Some(parent) = exe_dir.parent() {
                 let std_lib = parent.join("lib").join("olive");
                 if std_lib.exists() {
@@ -546,36 +541,28 @@ fn find_std_lib_src_dir() -> PathBuf {
             }
         }
     }
-
-    // 3. System paths
     for dir in &["/usr/local/lib/olive", "/usr/lib/olive", "/lib/olive"] {
         let path = Path::new(dir);
         if path.exists() {
             return path.to_path_buf();
         }
     }
-
-    PathBuf::from("lib") // Fallback to current dir
+    PathBuf::from("lib")
 }
 
 fn find_library_dir() -> Option<PathBuf> {
     let lib_name = libloading::library_filename("olive_std");
-
-    // 1. Check CWD (target/release or target/debug) - for developers
-    for dir in &["target/release", "target/debug"] {
+    for dir in &["grove/release", "grove/debug"] {
         let path = Path::new(dir);
         if path.join(&lib_name).exists() {
             return Some(fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()));
         }
     }
-
-    // 2. Check alongside executable
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
             if exe_dir.join(&lib_name).exists() {
                 return Some(exe_dir.to_path_buf());
             }
-            // Check ../lib from bin
             if let Some(parent) = exe_dir.parent() {
                 let lib_dir = parent.join("lib");
                 if lib_dir.join(&lib_name).exists() {
@@ -584,15 +571,12 @@ fn find_library_dir() -> Option<PathBuf> {
             }
         }
     }
-
-    // 3. Check system paths
     for dir in &["/usr/local/lib", "/usr/lib", "/lib"] {
         let path = Path::new(dir);
         if path.join(&lib_name).exists() {
             return Some(path.to_path_buf());
         }
     }
-
     None
 }
 
@@ -693,8 +677,8 @@ pub fn compile_and_emit(filename: &str, out: &str, show_time: bool) {
     let cg_duration = cg_start.elapsed();
 
     let link_start = std::time::Instant::now();
-    fs::create_dir_all("target").unwrap_or_else(|e| {
-        eprintln!("error: could not create target directory: {e}");
+    fs::create_dir_all("grove").unwrap_or_else(|e| {
+        eprintln!("error: could not create grove directory: {e}");
         process::exit(1);
     });
 

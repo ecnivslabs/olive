@@ -54,7 +54,7 @@ The final stage compiles MIR to native machine code through Cranelift.
 
 ## Error Reporting & Diagnostics
 
-Olive uses the `ariadne` crate for error formatting. Each diagnostic includes:
+Olive uses the `ariadne` library for error formatting. Each diagnostic includes:
 
 1. **Error code and message**: A clear description of what went wrong.
 2. **Source snippet**: The relevant code with markers pointing to the exact location.

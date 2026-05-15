@@ -6,7 +6,7 @@ const REGISTRY_BASE: &str =
     "https://raw.githubusercontent.com/olive-language/pit-registry/main";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PackageVersion {
+pub struct PodVersion {
     pub name: String,
     pub vers: String,
     #[serde(default)]
@@ -37,7 +37,7 @@ fn cache_path(name: &str) -> PathBuf {
         .join(name)
 }
 
-pub fn fetch_versions(name: &str) -> Result<Vec<PackageVersion>, String> {
+pub fn fetch_versions(name: &str) -> Result<Vec<PodVersion>, String> {
     let url = registry_url(name);
     let body = match ureq::get(&url)
         .set("User-Agent", "pit/0.1.0")
@@ -45,7 +45,7 @@ pub fn fetch_versions(name: &str) -> Result<Vec<PackageVersion>, String> {
     {
         Ok(resp) => resp.into_string().map_err(|e| e.to_string())?,
         Err(ureq::Error::Status(404, _)) => {
-            return Err(format!("package '{}' not found in registry", name))
+            return Err(format!("pod '{}' not found in registry", name))
         }
         Err(e) => return Err(format!("registry fetch failed: {}", e)),
     };
@@ -59,14 +59,14 @@ pub fn fetch_versions(name: &str) -> Result<Vec<PackageVersion>, String> {
     parse_versions(&body)
 }
 
-fn parse_versions(body: &str) -> Result<Vec<PackageVersion>, String> {
+fn parse_versions(body: &str) -> Result<Vec<PodVersion>, String> {
     body.lines()
         .filter(|l| !l.trim().is_empty())
         .map(|line| serde_json::from_str(line).map_err(|e| e.to_string()))
         .collect()
 }
 
-pub fn resolve_version<'a>(versions: &'a [PackageVersion], req: &str) -> Option<&'a PackageVersion> {
+pub fn resolve_version<'a>(versions: &'a [PodVersion], req: &str) -> Option<&'a PodVersion> {
     if req == "*" || req == "latest" {
         versions.iter().filter(|v| !v.yanked).last()
     } else {

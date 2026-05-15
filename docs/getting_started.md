@@ -43,12 +43,12 @@ This creates two files:
 pit run
 ```
 
-By default, Olive uses hybrid mode. It compiles your code and caches the result in `target/.cache`. On the next run, if nothing changed, it skips compilation and starts immediately.
+By default, Olive uses hybrid mode. It compiles your code and caches the result in `grove/.cache`. On the next run, if nothing changed, it skips compilation and starts immediately.
 
 Other run modes:
 - `pit run --jit`: compiles and runs in memory, no cache
 - `pit run --aot`: compiles, runs, then deletes the binary
-- `pit build`: produces a standalone binary in `target/`
+- `pit build`: produces a standalone binary in `grove/`
 
 > **Note:** `pit build` requires a C compiler (`cc`) on Linux/macOS. On Windows, AOT builds are not yet supported.
 
@@ -92,11 +92,11 @@ This checks for a newer release and replaces the current binary in-place. No nee
 - `pit test`: run tests
 - `pit fmt`: format your code
 
-## Package Management
+## Pod Management
 
-- `pit add package@version`: add a dependency
-- `pit remove package`: remove a dependency
+- `pit add pod@version`: add a dependency
+- `pit remove pod`: remove a dependency
 - `pit install`: install all dependencies from `pit.toml`
-- `pit publish`: publish your package to the registry
+- `pit publish`: publish your pod to the registry
 
-Dependencies go into `.pit_modules/` at your project root.
+Dependencies go into `.pit_pods/` at your project root.
