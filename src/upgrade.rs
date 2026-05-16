@@ -39,8 +39,8 @@ fn fetch_latest_tag() -> Result<String, String> {
 }
 
 pub fn upgrade() -> Result<(), String> {
-    let artifact = target_triple()
-        .ok_or_else(|| "no prebuilt binary for this platform".to_string())?;
+    let artifact =
+        target_triple().ok_or_else(|| "no prebuilt binary for this platform".to_string())?;
 
     let latest = fetch_latest_tag()?;
     let latest_ver = latest.trim_start_matches('v');
@@ -66,12 +66,11 @@ pub fn upgrade() -> Result<(), String> {
         .read_to_end(&mut buf)
         .map_err(|e| format!("read failed: {}", e))?;
 
-    let current_exe = env::current_exe()
-        .map_err(|e| format!("could not find current executable: {}", e))?;
+    let current_exe =
+        env::current_exe().map_err(|e| format!("could not find current executable: {}", e))?;
 
     let tmp_path = current_exe.with_extension("tmp");
-    fs::write(&tmp_path, &buf)
-        .map_err(|e| format!("could not write temporary file: {}", e))?;
+    fs::write(&tmp_path, &buf).map_err(|e| format!("could not write temporary file: {}", e))?;
 
     #[cfg(unix)]
     {
@@ -80,8 +79,7 @@ pub fn upgrade() -> Result<(), String> {
             .map_err(|e| format!("could not set permissions: {}", e))?;
     }
 
-    fs::rename(&tmp_path, &current_exe)
-        .map_err(|e| format!("could not replace binary: {}", e))?;
+    fs::rename(&tmp_path, &current_exe).map_err(|e| format!("could not replace binary: {}", e))?;
 
     println!("Updated to {}.", latest_ver);
     Ok(())

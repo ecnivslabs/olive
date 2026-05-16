@@ -483,8 +483,12 @@ pub(super) fn resolve_builtin_import(
             _ => None,
         };
     }
+    if name == "ffi_errno" {
+        return Some("__olive_ffi_errno");
+    }
     match name {
-        "print" | "str" | "int" | "float" | "bool" | "iter" | "next" | "has_next" | "len" | "slice"
+        "print" | "str" | "int" | "float" | "bool" | "iter" | "next" | "has_next" | "len"
+        | "slice"
             if !args.is_empty() =>
         {
             let arg_type = match &args[0] {
@@ -552,6 +556,15 @@ pub(super) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
         "has_next" => Some("__olive_has_next"),
         "slice" => Some("__olive_str_slice"),
         _ => None,
+    }
+}
+
+pub(super) fn is_u64_op(func_mir: &MirFunction, op: &Operand) -> bool {
+    match op {
+        Operand::Copy(loc) | Operand::Move(loc) => {
+            matches!(func_mir.locals[loc.0].ty, OliveType::U64)
+        }
+        _ => false,
     }
 }
 

@@ -95,6 +95,7 @@ impl CopyPropagation {
                 }
                 changed
             }
+            Rvalue::PtrLoad(op) => self.propagate_copies_in_operand(op, map),
             Rvalue::VectorSplat(op, _) => self.propagate_copies_in_operand(op, map),
             Rvalue::VectorLoad(obj, idx, _) => {
                 let mut changed = self.propagate_copies_in_operand(obj, map);

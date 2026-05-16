@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod parser_tests {
-    use crate::parser::Parser;
     use crate::lexer::Lexer;
+    use crate::parser::Parser;
     use crate::parser::ast::*;
 
     fn parse(src: &str) -> Program {

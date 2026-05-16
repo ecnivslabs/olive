@@ -153,6 +153,16 @@ impl<'a> MirBuilder<'a> {
                 Operand::Copy(tmp)
             }
 
+            ExprKind::Deref(inner) => {
+                let ptr_op = self.lower_expr(inner);
+                let tmp = self.new_tmp_for_expr(expr);
+                self.push_statement(
+                    StatementKind::Assign(tmp, Rvalue::PtrLoad(ptr_op)),
+                    expr.span,
+                );
+                self.operand_for_local(tmp)
+            }
+
             ExprKind::Borrow(inner) => {
                 let tmp = self.new_tmp_for_expr(expr);
                 let rval = if let ExprKind::Identifier(name) = &inner.kind {
@@ -223,6 +233,19 @@ impl<'a> MirBuilder<'a> {
                 let mut arg_kw_names: Vec<Option<String>> = Vec::new();
                 for arg in args {
                     match arg {
+                        CallArg::Splat(e)
+                            if self.get_type(e.id) == crate::semantic::types::Type::Int =>
+                        {
+                            let ptr_op = self.lower_expr(e);
+                            let tmp =
+                                self.new_local(crate::semantic::types::Type::Int, None, false);
+                            self.push_statement(
+                                StatementKind::Assign(tmp, Rvalue::PtrLoad(ptr_op)),
+                                e.span,
+                            );
+                            arg_ops.push(Operand::Copy(tmp));
+                            arg_kw_names.push(None);
+                        }
                         CallArg::Positional(e) | CallArg::Splat(e) | CallArg::KwSplat(e) => {
                             arg_ops.push(self.lower_expr(e));
                             arg_kw_names.push(None);
@@ -455,10 +478,7 @@ impl<'a> MirBuilder<'a> {
                             args: vec![],
                         }
                     };
-                    self.push_statement(
-                        StatementKind::Assign(obj_tmp, alloc_rval),
-                        expr.span,
-                    );
+                    self.push_statement(StatementKind::Assign(obj_tmp, alloc_rval), expr.span);
 
                     let base_init_name = format!("{}::__init__", struct_name);
                     let init_name = if !type_args.is_empty() {
@@ -494,7 +514,8 @@ impl<'a> MirBuilder<'a> {
                 if let Some(fn_name) = &call_fn_name {
                     let callee_ty = self.get_type(callee.id);
                     if let Type::Fn(_, _, type_args) = callee_ty
-                        && !type_args.is_empty() && self.generic_fns.contains_key(fn_name)
+                        && !type_args.is_empty()
+                        && self.generic_fns.contains_key(fn_name)
                     {
                         let specialized_name = self.monomorphize(fn_name, &type_args);
                         func = Operand::Constant(Constant::Function(specialized_name.clone()));

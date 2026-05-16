@@ -1,13 +1,19 @@
-use crate::{OliveObj, StableVec, KIND_LIST, KIND_OBJ, olive_str_from_ptr, olive_str_internal};
+use crate::{KIND_LIST, KIND_OBJ, OliveObj, StableVec, olive_str_from_ptr, olive_str_internal};
 use rustc_hash::FxHashMap as HashMap;
 
 pub(crate) fn json_to_olive(val: &serde_json::Value) -> i64 {
     match val {
         serde_json::Value::Null => 0,
         serde_json::Value::Bool(b) => {
-            if *b { 1 } else { 0 }
+            if *b {
+                1
+            } else {
+                0
+            }
         }
-        serde_json::Value::Number(n) => n.as_i64().unwrap_or_else(|| n.as_f64().unwrap_or(0.0) as i64),
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .unwrap_or_else(|| n.as_f64().unwrap_or(0.0) as i64),
         serde_json::Value::String(s) => olive_str_internal(s),
         serde_json::Value::Array(arr) => {
             let mut elems: Vec<i64> = arr.iter().map(json_to_olive).collect();
@@ -15,14 +21,22 @@ pub(crate) fn json_to_olive(val: &serde_json::Value) -> i64 {
             let cap = elems.capacity();
             let len = elems.len();
             std::mem::forget(elems);
-            Box::into_raw(Box::new(StableVec { kind: KIND_LIST, ptr, cap, len })) as i64
+            Box::into_raw(Box::new(StableVec {
+                kind: KIND_LIST,
+                ptr,
+                cap,
+                len,
+            })) as i64
         }
         serde_json::Value::Object(map) => {
             let mut fields: HashMap<String, i64> = HashMap::default();
             for (k, v) in map {
                 fields.insert(k.clone(), json_to_olive(v));
             }
-            Box::into_raw(Box::new(OliveObj { kind: KIND_OBJ, fields })) as i64
+            Box::into_raw(Box::new(OliveObj {
+                kind: KIND_OBJ,
+                fields,
+            })) as i64
         }
     }
 }
@@ -34,7 +48,7 @@ pub(crate) fn olive_to_json(val: i64) -> serde_json::Value {
     if val == 0 {
         return serde_json::Value::Null;
     }
-    // Values below MIN_HEAP_PTR can't be valid pointers — treat as integers.
+    // Values below MIN_HEAP_PTR can't be valid pointers  -  treat as integers.
     if val > 0 && val < MIN_HEAP_PTR {
         return serde_json::Value::Number(val.into());
     }
@@ -48,8 +62,9 @@ pub(crate) fn olive_to_json(val: i64) -> serde_json::Value {
     match kind {
         KIND_LIST => {
             let s = unsafe { &*(val as *const StableVec) };
-            let elems: Vec<serde_json::Value> =
-                (0..s.len).map(|i| olive_to_json(unsafe { *s.ptr.add(i) })).collect();
+            let elems: Vec<serde_json::Value> = (0..s.len)
+                .map(|i| olive_to_json(unsafe { *s.ptr.add(i) }))
+                .collect();
             serde_json::Value::Array(elems)
         }
         KIND_OBJ => {

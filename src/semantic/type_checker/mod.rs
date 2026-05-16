@@ -33,23 +33,74 @@ impl TypeChecker {
         let mut global_env = HashMap::default();
 
         let builtins = [
-            ("print", Type::Fn(vec![Type::Any], Box::new(Type::Int), Vec::new())),
-            ("str", Type::Fn(vec![Type::Any], Box::new(Type::Str), Vec::new())),
-            ("int", Type::Fn(vec![Type::Any], Box::new(Type::Int), Vec::new())),
-            ("i64", Type::Fn(vec![Type::Any], Box::new(Type::Int), Vec::new())),
-            ("i32", Type::Fn(vec![Type::Any], Box::new(Type::I32), Vec::new())),
-            ("i16", Type::Fn(vec![Type::Any], Box::new(Type::I16), Vec::new())),
-            ("i8", Type::Fn(vec![Type::Any], Box::new(Type::I8), Vec::new())),
-            ("u64", Type::Fn(vec![Type::Any], Box::new(Type::U64), Vec::new())),
-            ("u32", Type::Fn(vec![Type::Any], Box::new(Type::U32), Vec::new())),
-            ("u16", Type::Fn(vec![Type::Any], Box::new(Type::U16), Vec::new())),
-            ("u8", Type::Fn(vec![Type::Any], Box::new(Type::U8), Vec::new())),
-            ("float", Type::Fn(vec![Type::Any], Box::new(Type::Float), Vec::new())),
-            ("f64", Type::Fn(vec![Type::Any], Box::new(Type::Float), Vec::new())),
-            ("f32", Type::Fn(vec![Type::Any], Box::new(Type::F32), Vec::new())),
-            ("bool", Type::Fn(vec![Type::Any], Box::new(Type::Bool), Vec::new())),
-            ("type", Type::Fn(vec![Type::Any], Box::new(Type::Str), Vec::new())),
-            ("len", Type::Fn(vec![Type::Any], Box::new(Type::Int), Vec::new())),
+            (
+                "print",
+                Type::Fn(vec![Type::Any], Box::new(Type::Int), Vec::new()),
+            ),
+            (
+                "str",
+                Type::Fn(vec![Type::Any], Box::new(Type::Str), Vec::new()),
+            ),
+            (
+                "int",
+                Type::Fn(vec![Type::Any], Box::new(Type::Int), Vec::new()),
+            ),
+            (
+                "i64",
+                Type::Fn(vec![Type::Any], Box::new(Type::Int), Vec::new()),
+            ),
+            (
+                "i32",
+                Type::Fn(vec![Type::Any], Box::new(Type::I32), Vec::new()),
+            ),
+            (
+                "i16",
+                Type::Fn(vec![Type::Any], Box::new(Type::I16), Vec::new()),
+            ),
+            (
+                "i8",
+                Type::Fn(vec![Type::Any], Box::new(Type::I8), Vec::new()),
+            ),
+            (
+                "u64",
+                Type::Fn(vec![Type::Any], Box::new(Type::U64), Vec::new()),
+            ),
+            (
+                "u32",
+                Type::Fn(vec![Type::Any], Box::new(Type::U32), Vec::new()),
+            ),
+            (
+                "u16",
+                Type::Fn(vec![Type::Any], Box::new(Type::U16), Vec::new()),
+            ),
+            (
+                "u8",
+                Type::Fn(vec![Type::Any], Box::new(Type::U8), Vec::new()),
+            ),
+            (
+                "float",
+                Type::Fn(vec![Type::Any], Box::new(Type::Float), Vec::new()),
+            ),
+            (
+                "f64",
+                Type::Fn(vec![Type::Any], Box::new(Type::Float), Vec::new()),
+            ),
+            (
+                "f32",
+                Type::Fn(vec![Type::Any], Box::new(Type::F32), Vec::new()),
+            ),
+            (
+                "bool",
+                Type::Fn(vec![Type::Any], Box::new(Type::Bool), Vec::new()),
+            ),
+            (
+                "type",
+                Type::Fn(vec![Type::Any], Box::new(Type::Str), Vec::new()),
+            ),
+            (
+                "len",
+                Type::Fn(vec![Type::Any], Box::new(Type::Int), Vec::new()),
+            ),
             (
                 "slice",
                 Type::Fn(
@@ -60,11 +111,19 @@ impl TypeChecker {
             ),
             (
                 "list_new",
-                Type::Fn(vec![Type::Int], Box::new(Type::List(Box::new(Type::Any))), Vec::new()),
+                Type::Fn(
+                    vec![Type::Int],
+                    Box::new(Type::List(Box::new(Type::Any))),
+                    Vec::new(),
+                ),
             ),
             (
                 "__olive_async_file_read",
-                Type::Fn(vec![Type::Str], Box::new(Type::Future(Box::new(Type::Str))), Vec::new()),
+                Type::Fn(
+                    vec![Type::Str],
+                    Box::new(Type::Future(Box::new(Type::Str))),
+                    Vec::new(),
+                ),
             ),
             (
                 "__olive_async_file_write",
@@ -76,7 +135,11 @@ impl TypeChecker {
             ),
             (
                 "__olive_gather",
-                Type::Fn(vec![Type::Any], Box::new(Type::List(Box::new(Type::Any))), Vec::new()),
+                Type::Fn(
+                    vec![Type::Any],
+                    Box::new(Type::List(Box::new(Type::Any))),
+                    Vec::new(),
+                ),
             ),
             (
                 "__olive_free_future",
@@ -108,7 +171,11 @@ impl TypeChecker {
             ),
             (
                 "__olive_math_atan2",
-                Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Float), Vec::new()),
+                Type::Fn(
+                    vec![Type::Float, Type::Float],
+                    Box::new(Type::Float),
+                    Vec::new(),
+                ),
             ),
             (
                 "__olive_math_log",
@@ -160,7 +227,15 @@ impl TypeChecker {
             ),
             (
                 "__olive_spawn_task",
-                Type::Fn(vec![Type::Any], Box::new(Type::Future(Box::new(Type::Any))), Vec::new()),
+                Type::Fn(
+                    vec![Type::Any],
+                    Box::new(Type::Future(Box::new(Type::Any))),
+                    Vec::new(),
+                ),
+            ),
+            (
+                "ffi_errno",
+                Type::Fn(vec![], Box::new(Type::Int), Vec::new()),
             ),
         ];
 

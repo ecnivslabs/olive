@@ -108,6 +108,7 @@ impl ConstantPropagation {
                 }
                 changed
             }
+            Rvalue::PtrLoad(op) => self.propagate_constants_in_operand(op, map),
             Rvalue::VectorSplat(op, _) => self.propagate_constants_in_operand(op, map),
             Rvalue::VectorLoad(obj, idx, _) => {
                 let mut changed = self.propagate_constants_in_operand(obj, map);

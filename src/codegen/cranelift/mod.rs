@@ -3,8 +3,8 @@ mod imports;
 mod translate;
 
 use crate::mir::{Constant, Local, MirFunction, Operand, Rvalue, StatementKind};
-use cranelift::prelude::*;
 use cranelift::codegen::ir::ArgumentPurpose;
+use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
@@ -114,6 +114,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_str_char", b"olive_str_char\0"),
     ("__olive_str_slice", b"olive_str_slice\0"),
     ("__olive_list_concat", b"olive_list_concat\0"),
+    ("__olive_ffi_errno", b"olive_ffi_errno\0"),
 ];
 pub(super) const POLL_PENDING: i64 = i64::MIN;
 
@@ -155,9 +156,10 @@ pub struct CraneliftCodegen<'a, M: Module> {
     pub(super) ffi_entries: Vec<FfiFnEntry>,
     pub(super) ffi_vararg_ptrs: HashMap<String, *const u8>,
     pub(super) ffi_vararg_ids: std::collections::HashSet<String>,
-    pub(super) c_struct_offsets: HashMap<String, Vec<(String, i32, String)>>,
+    pub(super) c_struct_offsets: HashMap<String, Vec<(String, i32, String, Option<(u8, u8)>)>>,
     pub(super) c_struct_sizes: HashMap<String, i64>,
     pub(super) c_struct_names: std::collections::HashSet<String>,
+    pub(super) c_struct_destructors: HashMap<String, String>,
     pub(super) aot: bool,
     pub(super) extern_var_ptrs: HashMap<String, (i64, String, String)>,
 }
@@ -169,7 +171,6 @@ fn c_prim_layout(ty: &str) -> (i32, i32) {
         "i16" | "u16" => (2, 2),
         "i8" | "u8" | "bool" => (1, 1),
         _ if ty.starts_with('[') => {
-            // Array: [elem;N]
             if let Some(semi) = ty.find(';') {
                 let elem = &ty[1..semi];
                 let n: i32 = ty[semi + 1..ty.len() - 1].parse().unwrap_or(1);
@@ -183,7 +184,10 @@ fn c_prim_layout(ty: &str) -> (i32, i32) {
     }
 }
 
-fn c_abi_layout(fields: &[crate::parser::ast::FfiStructField], is_union: bool) -> (Vec<(String, i32, String)>, i64) {
+fn c_abi_layout(
+    fields: &[crate::parser::ast::FfiStructField],
+    is_union: bool,
+) -> (Vec<(String, i32, String, Option<(u8, u8)>)>, i64) {
     if is_union {
         let mut max_size = 0i32;
         let mut max_align = 1i32;
@@ -193,11 +197,15 @@ fn c_abi_layout(fields: &[crate::parser::ast::FfiStructField], is_union: bool) -
             let (size, align) = c_prim_layout(&ty);
             max_align = max_align.max(align);
             max_size = max_size.max(size);
-            layout.push((field.name.clone(), 0, ty.clone()));
+            layout.push((field.name.clone(), 0, ty.clone(), None));
         }
         let total = if max_align > 0 {
             let r = max_size % max_align;
-            if r == 0 { max_size } else { max_size + max_align - r }
+            if r == 0 {
+                max_size
+            } else {
+                max_size + max_align - r
+            }
         } else {
             max_size
         };
@@ -215,15 +223,25 @@ fn c_abi_layout(fields: &[crate::parser::ast::FfiStructField], is_union: bool) -
         max_align = max_align.max(align);
 
         if let Some(bits) = field.bits {
-            if current_bit_offset == 0 || (current_bit_offset + (bits as i32) > last_bitfield_size * 8) || size != last_bitfield_size {
+            if current_bit_offset == 0
+                || (current_bit_offset + (bits as i32) > last_bitfield_size * 8)
+                || size != last_bitfield_size
+            {
                 let padding = (align - (offset % align)) % align;
                 offset += padding;
-                layout.push((field.name.clone(), offset, ty.clone()));
+                layout.push((field.name.clone(), offset, ty.clone(), Some((0u8, bits))));
                 last_bitfield_size = size;
                 current_bit_offset = bits as i32;
                 offset += size;
             } else {
-                layout.push((field.name.clone(), offset - last_bitfield_size, ty.clone()));
+                let word_offset = offset - last_bitfield_size;
+                let bit_off = current_bit_offset as u8;
+                layout.push((
+                    field.name.clone(),
+                    word_offset,
+                    ty.clone(),
+                    Some((bit_off, bits)),
+                ));
                 current_bit_offset += bits as i32;
             }
         } else {
@@ -231,13 +249,17 @@ fn c_abi_layout(fields: &[crate::parser::ast::FfiStructField], is_union: bool) -
             last_bitfield_size = 0;
             let padding = (align - (offset % align)) % align;
             offset += padding;
-            layout.push((field.name.clone(), offset, ty.clone()));
+            layout.push((field.name.clone(), offset, ty.clone(), None));
             offset += size;
         }
     }
     let total = if max_align > 0 {
         let r = offset % max_align;
-        if r == 0 { offset } else { offset + max_align - r }
+        if r == 0 {
+            offset
+        } else {
+            offset + max_align - r
+        }
     } else {
         offset
     };
@@ -264,7 +286,7 @@ pub(super) fn ffi_cl_type(name: &str) -> cranelift::prelude::Type {
         "f32" => types::F32,
         "i32" | "u32" => types::I32,
         "i16" | "u16" => types::I16,
-        "i8" | "u8" => types::I8,
+        "i8" | "u8" | "bool" => types::I8,
         "ptr" => types::I64,
         _ if name.starts_with('[') => types::I64,
         _ => types::I64,
@@ -275,7 +297,13 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
     pub fn new_jit(
         functions: &'a [MirFunction],
         struct_fields: HashMap<String, Vec<String>>,
-        native_lib_paths: &[(String, String, Vec<crate::parser::ast::FfiFnSig>, Vec<crate::parser::ast::FfiStructDef>, Vec<crate::parser::ast::FfiVarDef>)],
+        native_lib_paths: &[(
+            String,
+            String,
+            Vec<crate::parser::ast::FfiFnSig>,
+            Vec<crate::parser::ast::FfiStructDef>,
+            Vec<crate::parser::ast::FfiVarDef>,
+        )],
     ) -> Self {
         let mut flag_builder = settings::builder();
         flag_builder.set("use_colocated_libcalls", "false").unwrap();
@@ -300,23 +328,31 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
         let mut native_aliases = std::collections::HashSet::new();
         let mut ffi_entries: Vec<FfiFnEntry> = Vec::new();
         let mut ffi_vararg_ptrs: HashMap<String, *const u8> = HashMap::default();
-        let mut c_struct_offsets: HashMap<String, Vec<(String, i32, String)>> = HashMap::default();
+        let mut c_struct_offsets: HashMap<String, Vec<(String, i32, String, Option<(u8, u8)>)>> =
+            HashMap::default();
         let mut c_struct_sizes: HashMap<String, i64> = HashMap::default();
-        let mut c_struct_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let has_c_structs = native_lib_paths.iter().any(|(_, _, _, structs, _)| !structs.is_empty());
-        let has_vararg = native_lib_paths.iter().any(|(_, _, sigs, _, _)| sigs.iter().any(|s| s.is_vararg));
+        let mut c_struct_names: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let mut c_struct_destructors: HashMap<String, String> = HashMap::default();
+        let has_c_structs = native_lib_paths
+            .iter()
+            .any(|(_, _, _, structs, _)| !structs.is_empty());
         let mut extern_var_ptrs: HashMap<String, (i64, String, String)> = HashMap::default();
 
         #[cfg(all(olive_std_linked, target_os = "linux"))]
         {
             unsafe extern "C" {
-                fn dlsym(handle: *mut std::ffi::c_void, symbol: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+                fn dlsym(
+                    handle: *mut std::ffi::c_void,
+                    symbol: *const std::ffi::c_char,
+                ) -> *mut std::ffi::c_void;
             }
             for &(jit_name, c_name) in SYMBOL_MAP {
                 let is_async_needed = has_async && ASYNC_RUNTIME_SYMS.contains(&jit_name);
-                let needed_for_c = (jit_name == "__olive_alloc" || jit_name == "__olive_free_c_struct") && has_c_structs;
-                let needed_for_vararg = jit_name == "__olive_vararg_call" && has_vararg;
-                if needed.contains(jit_name) || is_async_needed || needed_for_c || needed_for_vararg {
+                let needed_for_c = (jit_name == "__olive_alloc"
+                    || jit_name == "__olive_free_c_struct")
+                    && has_c_structs;
+                if needed.contains(jit_name) || is_async_needed || needed_for_c {
                     let ptr = unsafe { dlsym(std::ptr::null_mut(), c_name.as_ptr() as *const _) };
                     if !ptr.is_null() {
                         builder.symbol(jit_name, ptr as *const u8);
@@ -361,9 +397,10 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
             unsafe {
                 for &(jit_name, c_name) in SYMBOL_MAP {
                     let is_async_needed = has_async && ASYNC_RUNTIME_SYMS.contains(&jit_name);
-                    let needed_for_c = (jit_name == "__olive_alloc" || jit_name == "__olive_free_c_struct") && has_c_structs;
-                    let needed_for_vararg = jit_name == "__olive_vararg_call" && has_vararg;
-                    if needed.contains(jit_name) || is_async_needed || needed_for_c || needed_for_vararg {
+                    let needed_for_c = (jit_name == "__olive_alloc"
+                        || jit_name == "__olive_free_c_struct")
+                        && has_c_structs;
+                    if needed.contains(jit_name) || is_async_needed || needed_for_c {
                         if let Ok(f) = lib.get::<unsafe extern "C" fn()>(c_name) {
                             builder.symbol(jit_name, *f as *const u8);
                         }
@@ -379,14 +416,19 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
                 let (layout, total_size) = c_abi_layout(&ffi_struct.fields, ffi_struct.is_union);
                 c_struct_offsets.insert(type_name.clone(), layout);
                 c_struct_sizes.insert(type_name.clone(), total_size);
-                c_struct_names.insert(type_name);
+                c_struct_names.insert(type_name.clone());
+                if let Some(dtor) = &ffi_struct.destructor {
+                    let dtor_jit = format!("{}::{}", alias, dtor);
+                    c_struct_destructors.insert(type_name, dtor_jit);
+                }
             }
             if let Ok(lib) = unsafe { libloading::Library::new(path) } {
                 native_aliases.insert(alias.clone());
-                // Store extern global addresses.
                 for var in ffi_vars {
                     let sym_bytes = format!("{}\0", var.name);
-                    if let Ok(sym) = unsafe { lib.get::<*const std::ffi::c_void>(sym_bytes.as_bytes()) } {
+                    if let Ok(sym) =
+                        unsafe { lib.get::<*const std::ffi::c_void>(sym_bytes.as_bytes()) }
+                    {
                         let addr = *sym as i64;
                         let ty_str = type_expr_to_name(&var.ty);
                         let jit_name = format!("{}::{}", alias, var.name);
@@ -401,9 +443,10 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
                                 if let crate::mir::StatementKind::Assign(
                                     _,
                                     crate::mir::Rvalue::Call {
-                                        func: crate::mir::Operand::Constant(
-                                            crate::mir::Constant::Function(name),
-                                        ),
+                                        func:
+                                            crate::mir::Operand::Constant(
+                                                crate::mir::Constant::Function(name),
+                                            ),
                                         ..
                                     },
                                 ) = &stmt.kind
@@ -424,9 +467,9 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
                     for sig in ffi_sigs {
                         let jit_name = format!("{}::{}", alias, sig.name);
                         let c_sym = format!("{}\0", sig.name);
-                        if let Ok(f) = unsafe {
-                            lib.get::<unsafe extern "C" fn()>(c_sym.as_bytes())
-                        } {
+                        if let Ok(f) =
+                            unsafe { lib.get::<unsafe extern "C" fn()>(c_sym.as_bytes()) }
+                        {
                             if sig.is_vararg {
                                 ffi_vararg_ptrs.insert(jit_name.clone(), *f as *const u8);
                             } else {
@@ -445,7 +488,11 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
                         ffi_entries.push(FfiFnEntry {
                             jit_name,
                             c_name: sig.name.clone(),
-                            params: sig.params.iter().map(|p| type_expr_to_name(&p.ty)).collect(),
+                            params: sig
+                                .params
+                                .iter()
+                                .map(|p| type_expr_to_name(&p.ty))
+                                .collect(),
                             ret: sig.ret.as_ref().map(type_expr_to_name),
                             is_vararg: sig.is_vararg,
                             n_fixed: sig.params.len(),
@@ -476,6 +523,7 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
             c_struct_offsets,
             c_struct_sizes,
             c_struct_names,
+            c_struct_destructors,
             aot: false,
             extern_var_ptrs,
         }
@@ -495,7 +543,13 @@ impl<'a> CraneliftCodegen<'a, ObjectModule> {
     pub fn new_aot(
         functions: &'a [MirFunction],
         struct_fields: HashMap<String, Vec<String>>,
-        native_lib_paths: &[(String, String, Vec<crate::parser::ast::FfiFnSig>, Vec<crate::parser::ast::FfiStructDef>, Vec<crate::parser::ast::FfiVarDef>)],
+        native_lib_paths: &[(
+            String,
+            String,
+            Vec<crate::parser::ast::FfiFnSig>,
+            Vec<crate::parser::ast::FfiStructDef>,
+            Vec<crate::parser::ast::FfiVarDef>,
+        )],
     ) -> Self {
         let mut flag_builder = settings::builder();
         flag_builder.set("use_colocated_libcalls", "false").unwrap();
@@ -511,13 +565,17 @@ impl<'a> CraneliftCodegen<'a, ObjectModule> {
             .map_err(|msg| panic!("host machine is not supported: {}", msg))
             .unwrap();
 
-        let obj_builder = ObjectBuilder::new(isa, "olive", cranelift_module::default_libcall_names()).unwrap();
+        let obj_builder =
+            ObjectBuilder::new(isa, "olive", cranelift_module::default_libcall_names()).unwrap();
         let module = ObjectModule::new(obj_builder);
 
         let mut ffi_entries: Vec<FfiFnEntry> = Vec::new();
-        let mut c_struct_offsets: HashMap<String, Vec<(String, i32, String)>> = HashMap::default();
+        let mut c_struct_offsets: HashMap<String, Vec<(String, i32, String, Option<(u8, u8)>)>> =
+            HashMap::default();
         let mut c_struct_sizes: HashMap<String, i64> = HashMap::default();
-        let mut c_struct_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut c_struct_names: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let mut c_struct_destructors: HashMap<String, String> = HashMap::default();
 
         let mut extern_var_ptrs: HashMap<String, (i64, String, String)> = HashMap::default();
 
@@ -527,7 +585,11 @@ impl<'a> CraneliftCodegen<'a, ObjectModule> {
                 let (layout, total_size) = c_abi_layout(&ffi_struct.fields, ffi_struct.is_union);
                 c_struct_offsets.insert(type_name.clone(), layout);
                 c_struct_sizes.insert(type_name.clone(), total_size);
-                c_struct_names.insert(type_name);
+                c_struct_names.insert(type_name.clone());
+                if let Some(dtor) = &ffi_struct.destructor {
+                    let dtor_jit = format!("{}::{}", alias, dtor);
+                    c_struct_destructors.insert(type_name, dtor_jit);
+                }
             }
             for var in ffi_vars {
                 let ty_str = type_expr_to_name(&var.ty);
@@ -547,7 +609,11 @@ impl<'a> CraneliftCodegen<'a, ObjectModule> {
                 ffi_entries.push(FfiFnEntry {
                     jit_name: format!("{}::{}", alias, sig.name),
                     c_name: sig.name.clone(),
-                    params: sig.params.iter().map(|p| type_expr_to_name(&p.ty)).collect(),
+                    params: sig
+                        .params
+                        .iter()
+                        .map(|p| type_expr_to_name(&p.ty))
+                        .collect(),
                     ret: sig.ret.as_ref().map(type_expr_to_name),
                     is_vararg: sig.is_vararg,
                     n_fixed: sig.params.len(),
@@ -571,8 +637,9 @@ impl<'a> CraneliftCodegen<'a, ObjectModule> {
             c_struct_offsets,
             c_struct_sizes,
             c_struct_names,
+            c_struct_destructors,
             aot: true,
-            extern_var_ptrs: HashMap::default(),
+            extern_var_ptrs,
         }
     }
 
@@ -607,7 +674,7 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
         let sig_i64_i64_i64 = mk_sig(&[types::I64, types::I64], &[types::I64]);
         let sig_i64_i64_void = mk_sig(&[types::I64, types::I64], &[]);
         let sig_f64_f64_f64 = mk_sig(&[types::F64, types::F64], &[types::F64]);
-        let sig_i64_i64_i64_i64 = mk_sig(&[types::I64, types::I64, types::I64, types::I64], &[types::I64]);
+
         let sig_i64_i64_i64_void = mk_sig(&[types::I64, types::I64, types::I64], &[]);
         let sig_i64_5_i64 = mk_sig(
             &[types::I64, types::I64, types::I64, types::I64, types::I64],
@@ -648,11 +715,11 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
             ("__olive_memo_get", &sig_i64_i64_i64),
             ("__olive_cache_has_tuple", &sig_i64_i64_i64),
             ("__olive_cache_get_tuple", &sig_i64_i64_i64),
-            ("__olive_list_set", &sig_i64_i64_i64_i64),
-            ("__olive_obj_set", &sig_i64_i64_i64_i64),
-            ("__olive_set_index_any", &sig_i64_i64_i64_i64),
-            ("__olive_cache_set", &sig_i64_i64_i64_i64),
-            ("__olive_cache_set_tuple", &sig_i64_i64_i64_i64),
+            ("__olive_list_set", &sig_i64_i64_i64_void),
+            ("__olive_obj_set", &sig_i64_i64_i64),
+            ("__olive_set_index_any", &sig_i64_i64_i64_void),
+            ("__olive_cache_set", &sig_i64_i64_i64),
+            ("__olive_cache_set_tuple", &sig_i64_i64_i64),
             ("__olive_free", &sig_i64_void),
             ("__olive_free_str", &sig_i64_void),
             ("__olive_free_list", &sig_i64_void),
@@ -670,14 +737,14 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
             ("__olive_has_next", &sig_i64_i64),
             ("__olive_time_now", &sig_void_f64),
             ("__olive_time_sleep", &sig_f64_void),
-            ("__olive_enum_new", &sig_i64_i64_i64_i64),
+            ("__olive_enum_new", &sig_i64_i64_i64),
             ("__olive_enum_tag", &sig_i64_i64),
             ("__olive_enum_type_id", &sig_i64_i64),
             ("__olive_enum_get", &sig_i64_i64_i64),
             ("__olive_enum_set", &sig_i64_i64_i64_void),
             ("__olive_free_enum", &sig_i64_void),
             ("__olive_str_char", &sig_i64_i64_i64),
-            ("__olive_str_slice", &sig_i64_i64_i64_i64),
+            ("__olive_str_slice", &sig_i64_i64_i64),
             ("__olive_obj_len", &sig_i64_i64),
             ("__olive_make_future", &sig_i64_i64),
             ("__olive_await", &sig_i64_i64),
@@ -713,17 +780,16 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
             ("__olive_free_struct", &sig_i64_void),
             ("__olive_free_c_struct", &sig_i64_i64_void),
             ("__olive_vararg_call", &sig_i64_5_i64),
+            ("__olive_ffi_errno", &sig_void_i64),
         ];
 
         let has_async = self.functions.iter().any(|f| f.is_async);
         let has_c_structs = !self.c_struct_sizes.is_empty();
-        let has_vararg = !self.ffi_vararg_ptrs.is_empty() || self.ffi_entries.iter().any(|e| e.is_vararg);
-
         for &(name, sig) in import_table {
             let always_needed = ASYNC_RUNTIME_SYMS.contains(&name);
-            let needed_for_c = (name == "__olive_alloc" || name == "__olive_free_c_struct") && has_c_structs;
-            let needed_for_vararg = name == "__olive_vararg_call" && has_vararg;
-            if !(needed.contains(name) || always_needed && has_async || needed_for_c || needed_for_vararg) {
+            let needed_for_c =
+                (name == "__olive_alloc" || name == "__olive_free_c_struct") && has_c_structs;
+            if !(needed.contains(name) || always_needed && has_async || needed_for_c) {
                 continue;
             }
             let decl_name = if self.aot {
@@ -750,15 +816,16 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                 continue;
             }
             let mut sig = self.module.make_signature();
-            // Use FFI call convention.
             sig.call_conv = match entry.call_conv.as_deref() {
                 #[cfg(target_os = "windows")]
-                Some("stdcall") | Some("fastcall") => cranelift::prelude::isa::CallConv::WindowsFastcall,
+                Some("stdcall") | Some("fastcall") => {
+                    cranelift::prelude::isa::CallConv::WindowsFastcall
+                }
                 _ => self.module.isa().default_call_conv(),
             };
             for param_name in &entry.params {
                 if let Some(layout) = self.c_struct_offsets.get(param_name) {
-                    for (_, _, ty_name) in layout {
+                    for (_, _, ty_name, _) in layout {
                         sig.params.push(AbiParam::new(ffi_cl_type(ty_name)));
                     }
                 } else {
@@ -766,7 +833,13 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                 }
             }
             if entry.use_sret {
-                sig.params.insert(0, AbiParam::special(self.module.isa().pointer_type(), ArgumentPurpose::StructReturn));
+                sig.params.insert(
+                    0,
+                    AbiParam::special(
+                        self.module.isa().pointer_type(),
+                        ArgumentPurpose::StructReturn,
+                    ),
+                );
             } else if let Some(ret_name) = &entry.ret {
                 if ret_name != "void" {
                     sig.returns.push(AbiParam::new(ffi_cl_type(ret_name)));
@@ -774,8 +847,15 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
             } else {
                 sig.returns.push(AbiParam::new(types::I64));
             }
-            let decl_name = if self.aot { &entry.c_name } else { &entry.jit_name };
-            if let Ok(id) = self.module.declare_function(decl_name, Linkage::Import, &sig) {
+            let decl_name = if self.aot {
+                &entry.c_name
+            } else {
+                &entry.jit_name
+            };
+            if let Ok(id) = self
+                .module
+                .declare_function(decl_name, Linkage::Import, &sig)
+            {
                 self.func_ids.insert(entry.jit_name.clone(), id);
                 if entry.is_vararg {
                     self.ffi_vararg_ids.insert(entry.jit_name.clone());
@@ -800,7 +880,8 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                                 .iter()
                                 .any(|alias| name.starts_with(&format!("{}::", alias)));
                             let is_vararg = self.ffi_vararg_ptrs.contains_key(name.as_str());
-                            if is_native && !self.func_ids.contains_key(name.as_str()) && !is_vararg {
+                            if is_native && !self.func_ids.contains_key(name.as_str()) && !is_vararg
+                            {
                                 let mut sig = self.module.make_signature();
                                 for arg in args {
                                     let ty = match arg {
@@ -813,11 +894,9 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                                     sig.params.push(AbiParam::new(ty));
                                 }
                                 sig.returns.push(AbiParam::new(types::I64));
-                                if let Ok(id) = self.module.declare_function(
-                                    name,
-                                    Linkage::Import,
-                                    &sig,
-                                ) {
+                                if let Ok(id) =
+                                    self.module.declare_function(name, Linkage::Import, &sig)
+                                {
                                     self.func_ids.insert(name.clone(), id);
                                 }
                             }
@@ -932,10 +1011,14 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
         builder.switch_to_block(block);
         builder.seal_block(block);
         let addr_val = builder.ins().iconst(types::I64, addr);
-        let raw = builder.ins().load(cl_ty, cranelift::prelude::MemFlags::trusted(), addr_val, 0);
+        let raw = builder
+            .ins()
+            .load(cl_ty, cranelift::prelude::MemFlags::trusted(), addr_val, 0);
         let val = if cl_ty != types::I64 {
             if cl_ty.is_float() {
-                builder.ins().bitcast(types::I64, cranelift::prelude::MemFlags::new(), raw)
+                builder
+                    .ins()
+                    .bitcast(types::I64, cranelift::prelude::MemFlags::new(), raw)
             } else {
                 builder.ins().uextend(types::I64, raw)
             }
@@ -958,8 +1041,11 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
             return;
         };
         self.func_ids.insert(name.to_string(), func_id);
-        
-        let data_id = match self.module.declare_data(c_name, Linkage::Import, false, false) {
+
+        let data_id = match self
+            .module
+            .declare_data(c_name, Linkage::Import, false, false)
+        {
             Ok(id) => id,
             Err(_) => return,
         };
@@ -974,12 +1060,16 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
 
         let sym_val = self.module.declare_data_in_func(data_id, builder.func);
         let addr_val = builder.ins().symbol_value(types::I64, sym_val);
-        
-        let raw = builder.ins().load(cl_ty, cranelift::prelude::MemFlags::trusted(), addr_val, 0);
-        
+
+        let raw = builder
+            .ins()
+            .load(cl_ty, cranelift::prelude::MemFlags::trusted(), addr_val, 0);
+
         let val = if cl_ty != types::I64 {
             if cl_ty.is_float() {
-                builder.ins().bitcast(types::I64, cranelift::prelude::MemFlags::new(), raw)
+                builder
+                    .ins()
+                    .bitcast(types::I64, cranelift::prelude::MemFlags::new(), raw)
             } else {
                 builder.ins().uextend(types::I64, raw)
             }
@@ -994,12 +1084,16 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
     }
 
     fn emit_aot_main(&mut self) {
-        let Some(&olive_main_id) = self.func_ids.get("__main__") else { return };
+        let Some(&olive_main_id) = self.func_ids.get("__main__") else {
+            return;
+        };
         let mut sig = self.module.make_signature();
         sig.params.push(AbiParam::new(types::I32));
         sig.params.push(AbiParam::new(types::I64));
         sig.returns.push(AbiParam::new(types::I32));
-        let Ok(func_id) = self.module.declare_function("main", Linkage::Export, &sig) else { return };
+        let Ok(func_id) = self.module.declare_function("main", Linkage::Export, &sig) else {
+            return;
+        };
         let mut ctx = self.module.make_context();
         ctx.func.signature = sig;
         let mut builder_ctx = FunctionBuilderContext::new();
@@ -1008,7 +1102,9 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
         builder.append_block_params_for_function_params(block);
         builder.switch_to_block(block);
         builder.seal_block(block);
-        let local_fn = self.module.declare_func_in_func(olive_main_id, builder.func);
+        let local_fn = self
+            .module
+            .declare_func_in_func(olive_main_id, builder.func);
         builder.ins().call(local_fn, &[]);
         let zero = builder.ins().iconst(types::I32, 0);
         builder.ins().return_(&[zero]);
@@ -1017,11 +1113,38 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
         self.func_ids.insert("main".to_string(), func_id);
     }
 
+    fn intern_attr_string(&mut self, attr: &str) {
+        if self.string_ids.contains_key(attr) {
+            return;
+        }
+        let mut data_ctx = DataDescription::new();
+        let mut bytes = attr.as_bytes().to_vec();
+        bytes.push(0);
+        if bytes.len() % 2 != 0 {
+            bytes.push(0);
+        }
+        data_ctx.define(bytes.into_boxed_slice());
+        let name = format!("str_{}", self.string_ids.len());
+        let id = self
+            .module
+            .declare_data(&name, Linkage::Export, false, false)
+            .unwrap();
+        self.module.define_data(id, &data_ctx).unwrap();
+        self.string_ids.insert(attr.to_string(), id);
+    }
+
     fn collect_strings(&mut self, func: &MirFunction) {
         for bb in &func.basic_blocks {
             for stmt in &bb.statements {
-                if let StatementKind::Assign(_, rval) = &stmt.kind {
-                    self.collect_strings_in_rvalue(rval);
+                match &stmt.kind {
+                    StatementKind::Assign(_, rval) => {
+                        self.collect_strings_in_rvalue(rval);
+                    }
+                    StatementKind::SetAttr(_, attr, val_op) => {
+                        self.intern_attr_string(attr);
+                        self.collect_strings_in_operand(val_op);
+                    }
+                    _ => {}
                 }
             }
         }
@@ -1029,8 +1152,12 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
 
     fn collect_strings_in_rvalue(&mut self, rval: &Rvalue) {
         match rval {
-            Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::GetAttr(op, _) => {
+            Rvalue::Use(op) | Rvalue::UnaryOp(_, op) => {
                 self.collect_strings_in_operand(op);
+            }
+            Rvalue::GetAttr(op, attr) => {
+                self.collect_strings_in_operand(op);
+                self.intern_attr_string(attr);
             }
             Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) => {
                 self.collect_strings_in_operand(l);
@@ -1072,5 +1199,4 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
             self.string_ids.insert(s.clone(), id);
         }
     }
-
 }

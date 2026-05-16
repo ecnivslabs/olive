@@ -5,7 +5,9 @@ use crate::parser::{ParamKind, Stmt, StmtKind};
 
 fn ffi_type(t: Type) -> Type {
     match t {
-        Type::I8 | Type::I16 | Type::I32 | Type::U8 | Type::U16 | Type::U32 | Type::U64 => Type::Int,
+        // ABI-promote small integers to Int (C convention)
+        // U64 is 64-bit; preserve for unsigned semantics
+        Type::I8 | Type::I16 | Type::I32 | Type::U8 | Type::U16 | Type::U32 => Type::Int,
         Type::Ref(inner) => Type::Ref(Box::new(ffi_type(*inner))),
         Type::MutRef(inner) => Type::MutRef(Box::new(ffi_type(*inner))),
         other => other,
@@ -143,10 +145,8 @@ impl TypeChecker {
                     name.clone()
                 };
 
-                let mut all_type_params: Vec<Type> = type_params
-                    .iter()
-                    .map(|p| Type::Param(p.clone()))
-                    .collect();
+                let mut all_type_params: Vec<Type> =
+                    type_params.iter().map(|p| Type::Param(p.clone())).collect();
 
                 if let Some(struct_name) = &self.current_struct
                     && let Some(Type::Struct(_, struct_args)) = self.lookup_type(struct_name)
@@ -158,7 +158,11 @@ impl TypeChecker {
                     }
                 }
 
-                let fn_ty = Type::Fn(param_types.clone(), Box::new(ret_ty.clone()), all_type_params);
+                let fn_ty = Type::Fn(
+                    param_types.clone(),
+                    Box::new(ret_ty.clone()),
+                    all_type_params,
+                );
 
                 let outer_idx = 0;
                 self.type_env[outer_idx].insert(final_name.clone(), fn_ty.clone());
@@ -386,7 +390,15 @@ impl TypeChecker {
                 }
             }
 
-            StmtKind::NativeImport { alias, functions, structs, vars, .. } => {
+            StmtKind::NativeImport {
+                alias,
+                functions,
+                structs,
+                vars,
+                consts,
+                block_safe,
+                ..
+            } => {
                 self.define_type(alias, super::super::types::Type::Any, false);
                 for sig in functions {
                     let param_types: Vec<Type> = sig
@@ -403,7 +415,7 @@ impl TypeChecker {
                     let fn_type = Type::Fn(param_types, Box::new(ret_type), vec![]);
                     let mangled = format!("{}::{}", alias, sig.name);
                     self.define_type(&mangled, fn_type, false);
-                    let is_safe = sig.decorators.iter().any(|d| d.name == "safe");
+                    let is_safe = *block_safe || sig.decorators.iter().any(|d| d.name == "safe");
                     if !is_safe {
                         self.ffi_fns.insert(mangled.clone());
                     }
@@ -417,14 +429,21 @@ impl TypeChecker {
                     self.c_ffi_structs.insert(type_name.clone());
                     for field in &s.fields {
                         let field_ty = ffi_type(self.resolve_type_expr(&field.ty));
-                        self.field_types.insert((type_name.clone(), field.name.clone()), field_ty);
+                        self.field_types
+                            .insert((type_name.clone(), field.name.clone()), field_ty);
                     }
                 }
                 for v in vars {
                     let mangled = format!("{}::{}", alias, v.name);
                     let fn_type = Type::Fn(vec![], Box::new(Type::Int), vec![]);
                     self.define_type(&mangled, fn_type, false);
-                    self.ffi_fns.insert(mangled);
+                    if !block_safe {
+                        self.ffi_fns.insert(mangled);
+                    }
+                }
+                for c in consts {
+                    let mangled = format!("{}::{}", alias, c.name);
+                    self.define_type(&mangled, Type::Int, false);
                 }
             }
 

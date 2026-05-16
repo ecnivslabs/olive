@@ -10,7 +10,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-
 struct OliveTask {
     sm_future: i64,
     queued: AtomicBool,
@@ -23,7 +22,6 @@ struct Completion {
     result: Mutex<Option<i64>>,
     cvar: Condvar,
 }
-
 
 struct OliveExecutor {
     ready: Mutex<VecDeque<Arc<OliveTask>>>,
@@ -776,7 +774,9 @@ pub extern "C" fn olive_atomic_free(ptr: i64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_pool_size() -> i64 {
-    std::thread::available_parallelism().map(|n| n.get() as i64).unwrap_or(4)
+    std::thread::available_parallelism()
+        .map(|n| n.get() as i64)
+        .unwrap_or(4)
 }
 
 #[unsafe(no_mangle)]

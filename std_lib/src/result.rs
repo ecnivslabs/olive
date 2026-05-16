@@ -1,4 +1,4 @@
-use crate::{OliveObj, olive_str_from_ptr, olive_str_internal, olive_panic};
+use crate::{OliveObj, olive_panic, olive_str_from_ptr, olive_str_internal};
 use rustc_hash::FxHashMap as HashMap;
 
 fn make_result(ok: bool, val: i64, err: i64) -> i64 {
@@ -9,7 +9,10 @@ fn make_result(ok: bool, val: i64, err: i64) -> i64 {
     } else {
         fields.insert("err".to_string(), err);
     }
-    Box::into_raw(Box::new(OliveObj { kind: crate::KIND_OBJ, fields })) as i64
+    Box::into_raw(Box::new(OliveObj {
+        kind: crate::KIND_OBJ,
+        fields,
+    })) as i64
 }
 
 #[unsafe(no_mangle)]
@@ -37,7 +40,11 @@ pub extern "C" fn olive_result_is_err(r: i64) -> i64 {
         return 1;
     }
     let obj = unsafe { &*(r as *const OliveObj) };
-    if *obj.fields.get("ok").unwrap_or(&0) == 1 { 0 } else { 1 }
+    if *obj.fields.get("ok").unwrap_or(&0) == 1 {
+        0
+    } else {
+        1
+    }
 }
 
 #[unsafe(no_mangle)]

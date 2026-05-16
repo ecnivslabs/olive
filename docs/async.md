@@ -13,7 +13,7 @@ async fn fetch_user(id: int) -> User:
     return User.parse(raw)
 ```
 
-When you call an `async` function, it doesn't run immediately. It returns a **Future**—a promise that the work will happen. The work only begins when you `await` the future.
+When you call an `async` function, it doesn't run immediately. It returns a **Future** - a promise that the work will happen. The work only begins when you `await` the future.
 
 ## Async Blocks
 
@@ -22,11 +22,11 @@ Sometimes you want to run a small piece of code asynchronously without defining 
 ```python
 fn main():
     let data = [1, 2, 3]
-    
+
     # This starts a task in the background
     async:
         process_data(data)
-    
+
     print("This runs while data is processing!")
 ```
 

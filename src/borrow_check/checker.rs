@@ -111,7 +111,6 @@ impl<'a> BorrowChecker<'a> {
         let num_blocks = self.func.basic_blocks.len();
         let num_locals = self.func.locals.len();
 
-        // entry states. only bb0 starts initialized.
         let mut entry_states: Vec<Option<FlowState>> = vec![None; num_blocks];
 
         let mut init_state = FlowState::new(num_locals);
@@ -122,7 +121,6 @@ impl<'a> BorrowChecker<'a> {
         }
         entry_states[0] = Some(init_state);
 
-        // iterative fixed-point
         let mut worklist: VecDeque<usize> = VecDeque::new();
         worklist.push_back(0);
         let mut in_worklist: Vec<bool> = vec![false; num_blocks];
@@ -142,7 +140,6 @@ impl<'a> BorrowChecker<'a> {
             for (stmt_idx, stmt) in bb.statements.iter().enumerate() {
                 self.transfer_stmt(stmt, &mut state);
 
-                // NLL: Release borrows for references that are no longer live.
                 let live_after = &self.liveness.live_after[bb_idx][stmt_idx];
                 self.release_dead_borrows(&mut state, live_after);
             }
@@ -177,7 +174,6 @@ impl<'a> BorrowChecker<'a> {
             StatementKind::Assign(lhs, rvalue) => {
                 self.check_rvalue(rvalue, state, stmt.span);
 
-                // Track provenance for references
                 match rvalue {
                     Rvalue::Ref(rhs) | Rvalue::MutRef(rhs) => {
                         self.provenance.insert(*lhs, *rhs);
@@ -232,6 +228,10 @@ impl<'a> BorrowChecker<'a> {
                 self.check_mutation(obj, state, stmt.span);
                 self.check_operand(obj, state, stmt.span);
                 self.check_operand(idx, state, stmt.span);
+                self.check_operand(val, state, stmt.span);
+            }
+            StatementKind::PtrStore(ptr, val) => {
+                self.check_operand(ptr, state, stmt.span);
                 self.check_operand(val, state, stmt.span);
             }
         }
@@ -340,6 +340,7 @@ impl<'a> BorrowChecker<'a> {
                 }
                 borrow.1 = true;
             }
+            Rvalue::PtrLoad(op) => self.check_operand(op, state, span),
             Rvalue::VectorSplat(op, _) => self.check_operand(op, state, span),
             Rvalue::VectorLoad(obj, idx, _) => {
                 self.check_operand(obj, state, span);

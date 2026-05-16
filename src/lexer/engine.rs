@@ -263,7 +263,7 @@ impl Lexer {
                     Some('\\') => s.push('\\'),
                     Some('\'') => s.push('\''),
                     Some('"') => s.push('"'),
-                    Some('\n') => {} // escaped nl
+                    Some('\n') => {}
                     Some(c) => {
                         s.push('\\');
                         s.push(c);
@@ -357,7 +357,7 @@ impl Lexer {
 
         if self.peek() == Some('.') && matches!(self.peek_next(), Some(c) if c.is_ascii_digit()) {
             is_float = true;
-            num.push(self.advance().unwrap()); // '.'
+            num.push(self.advance().unwrap());
             while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
                 num.push(self.advance().unwrap());
             }
@@ -449,6 +449,7 @@ impl Lexer {
             "await" => TokenKind::Await,
             "case" => TokenKind::Case,
             "unsafe" => TokenKind::Unsafe,
+            "null" => TokenKind::Null,
             "_" => TokenKind::Underscore,
             _ => TokenKind::Identifier,
         };

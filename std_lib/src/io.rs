@@ -1,4 +1,4 @@
-use crate::{OliveObj, StableVec, KIND_LIST, KIND_OBJ, olive_str_from_ptr, olive_str_internal};
+use crate::{KIND_LIST, KIND_OBJ, OliveObj, StableVec, olive_str_from_ptr, olive_str_internal};
 use rustc_hash::FxHashMap as HashMap;
 use std::io::{Read, Seek, SeekFrom, Write};
 
@@ -21,7 +21,11 @@ pub extern "C" fn olive_file_write(path: i64, data: i64) -> i64 {
     }
     let path_str = olive_str_from_ptr(path);
     let data_str = olive_str_from_ptr(data);
-    if std::fs::write(&path_str, data_str.as_bytes()).is_ok() { 1 } else { 0 }
+    if std::fs::write(&path_str, data_str.as_bytes()).is_ok() {
+        1
+    } else {
+        0
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -31,11 +35,19 @@ pub extern "C" fn olive_file_append(path: i64, data: i64) -> i64 {
     }
     let path_str = olive_str_from_ptr(path);
     let data_str = olive_str_from_ptr(data);
-    let mut f = match std::fs::OpenOptions::new().append(true).create(true).open(&path_str) {
+    let mut f = match std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&path_str)
+    {
         Ok(f) => f,
         Err(_) => return 0,
     };
-    if f.write_all(data_str.as_bytes()).is_ok() { 1 } else { 0 }
+    if f.write_all(data_str.as_bytes()).is_ok() {
+        1
+    } else {
+        0
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -43,7 +55,11 @@ pub extern "C" fn olive_file_exists(path: i64) -> i64 {
     if path == 0 {
         return 0;
     }
-    if std::path::Path::new(&olive_str_from_ptr(path)).exists() { 1 } else { 0 }
+    if std::path::Path::new(&olive_str_from_ptr(path)).exists() {
+        1
+    } else {
+        0
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -54,7 +70,11 @@ pub extern "C" fn olive_file_delete(path: i64) -> i64 {
     let path_str = olive_str_from_ptr(path);
     let p = std::path::Path::new(&path_str);
     if p.is_dir() {
-        if std::fs::remove_dir_all(p).is_ok() { 1 } else { 0 }
+        if std::fs::remove_dir_all(p).is_ok() {
+            1
+        } else {
+            0
+        }
     } else if std::fs::remove_file(p).is_ok() {
         1
     } else {
@@ -67,16 +87,29 @@ pub extern "C" fn olive_dir_create(path: i64) -> i64 {
     if path == 0 {
         return 0;
     }
-    if std::fs::create_dir_all(olive_str_from_ptr(path)).is_ok() { 1 } else { 0 }
+    if std::fs::create_dir_all(olive_str_from_ptr(path)).is_ok() {
+        1
+    } else {
+        0
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_dir_list(path: i64) -> i64 {
-    let path_str = if path == 0 { ".".to_string() } else { olive_str_from_ptr(path) };
+    let path_str = if path == 0 {
+        ".".to_string()
+    } else {
+        olive_str_from_ptr(path)
+    };
     let entries = match std::fs::read_dir(&path_str) {
         Ok(e) => e,
         Err(_) => {
-            let v = Box::new(StableVec { kind: KIND_LIST, ptr: std::ptr::null_mut(), cap: 0, len: 0 });
+            let v = Box::new(StableVec {
+                kind: KIND_LIST,
+                ptr: std::ptr::null_mut(),
+                cap: 0,
+                len: 0,
+            });
             return Box::into_raw(v) as i64;
         }
     };
@@ -89,7 +122,12 @@ pub extern "C" fn olive_dir_list(path: i64) -> i64 {
     let cap = ptrs.capacity();
     let len = ptrs.len();
     std::mem::forget(ptrs);
-    Box::into_raw(Box::new(StableVec { kind: KIND_LIST, ptr, cap, len })) as i64
+    Box::into_raw(Box::new(StableVec {
+        kind: KIND_LIST,
+        ptr,
+        cap,
+        len,
+    })) as i64
 }
 
 #[unsafe(no_mangle)]
@@ -114,7 +152,10 @@ pub extern "C" fn olive_file_stat(path: i64) -> i64 {
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0),
     );
-    Box::into_raw(Box::new(OliveObj { kind: KIND_OBJ, fields })) as i64
+    Box::into_raw(Box::new(OliveObj {
+        kind: KIND_OBJ,
+        fields,
+    })) as i64
 }
 
 #[unsafe(no_mangle)]
@@ -137,13 +178,25 @@ pub extern "C" fn olive_file_rename(src: i64, dst: i64) -> i64 {
     }
     let src_str = olive_str_from_ptr(src);
     let dst_str = olive_str_from_ptr(dst);
-    if std::fs::rename(&src_str, &dst_str).is_ok() { 1 } else { 0 }
+    if std::fs::rename(&src_str, &dst_str).is_ok() {
+        1
+    } else {
+        0
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_path_join(a: i64, b: i64) -> i64 {
-    let a_str = if a == 0 { String::new() } else { olive_str_from_ptr(a) };
-    let b_str = if b == 0 { String::new() } else { olive_str_from_ptr(b) };
+    let a_str = if a == 0 {
+        String::new()
+    } else {
+        olive_str_from_ptr(a)
+    };
+    let b_str = if b == 0 {
+        String::new()
+    } else {
+        olive_str_from_ptr(b)
+    };
     let path = std::path::Path::new(&a_str).join(&b_str);
     olive_str_internal(&path.to_string_lossy())
 }
@@ -157,7 +210,11 @@ pub extern "C" fn olive_path_dirname(path: i64) -> i64 {
     match std::path::Path::new(&p).parent() {
         Some(parent) => {
             let s = parent.to_string_lossy();
-            if s.is_empty() { olive_str_internal(".") } else { olive_str_internal(&s) }
+            if s.is_empty() {
+                olive_str_internal(".")
+            } else {
+                olive_str_internal(&s)
+            }
         }
         None => olive_str_internal("."),
     }
@@ -193,7 +250,11 @@ pub extern "C" fn olive_path_is_absolute(path: i64) -> i64 {
         return 0;
     }
     let p = olive_str_from_ptr(path);
-    if std::path::Path::new(&p).is_absolute() { 1 } else { 0 }
+    if std::path::Path::new(&p).is_absolute() {
+        1
+    } else {
+        0
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -258,13 +319,32 @@ pub extern "C" fn olive_file_open(path: i64, mode: i64) -> i64 {
         return 0;
     }
     let path_str = olive_str_from_ptr(path);
-    let mode_str = if mode == 0 { "r".to_string() } else { olive_str_from_ptr(mode) };
+    let mode_str = if mode == 0 {
+        "r".to_string()
+    } else {
+        olive_str_from_ptr(mode)
+    };
     let file = match mode_str.as_str() {
         "r" => std::fs::OpenOptions::new().read(true).open(&path_str),
-        "w" => std::fs::OpenOptions::new().write(true).create(true).truncate(true).open(&path_str),
-        "a" => std::fs::OpenOptions::new().append(true).create(true).open(&path_str),
-        "r+" => std::fs::OpenOptions::new().read(true).write(true).open(&path_str),
-        "w+" => std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&path_str),
+        "w" => std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path_str),
+        "a" => std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&path_str),
+        "r+" => std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path_str),
+        "w+" => std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path_str),
         _ => std::fs::OpenOptions::new().read(true).open(&path_str),
     };
     match file {
@@ -304,7 +384,11 @@ pub extern "C" fn olive_file_write_str(handle: i64, data: i64) -> i64 {
     }
     let file = unsafe { &mut *(handle as *mut std::fs::File) };
     let data_str = olive_str_from_ptr(data);
-    if file.write_all(data_str.as_bytes()).is_ok() { 1 } else { 0 }
+    if file.write_all(data_str.as_bytes()).is_ok() {
+        1
+    } else {
+        0
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -359,7 +443,12 @@ pub extern "C" fn olive_file_read_lines(path: i64) -> i64 {
     let cap = ptrs.capacity();
     let len = ptrs.len();
     std::mem::forget(ptrs);
-    Box::into_raw(Box::new(StableVec { kind: KIND_LIST, ptr, cap, len })) as i64
+    Box::into_raw(Box::new(StableVec {
+        kind: KIND_LIST,
+        ptr,
+        cap,
+        len,
+    })) as i64
 }
 
 use std::io::BufRead;
@@ -428,7 +517,11 @@ pub extern "C" fn olive_bufwrite_write(bw: i64, data: i64) -> i64 {
     use std::io::Write;
     let handle = unsafe { &mut *(bw as *mut BufWriteHandle) };
     let text = olive_str_from_ptr(data);
-    if handle.0.write_all(text.as_bytes()).is_ok() { 1 } else { 0 }
+    if handle.0.write_all(text.as_bytes()).is_ok() {
+        1
+    } else {
+        0
+    }
 }
 
 #[unsafe(no_mangle)]

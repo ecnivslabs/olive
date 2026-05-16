@@ -143,7 +143,6 @@ impl LoopUnroll {
         let mut new_stmts = Vec::new();
 
         for _ in 0..(unroll_factor - 1) {
-            // Increment IV by 1.
             new_stmts.push(Statement {
                 kind: StatementKind::Assign(
                     iv,
@@ -155,7 +154,6 @@ impl LoopUnroll {
                 ),
                 span: Span::default(),
             });
-            // Copy body statements.
             for stmt in &body_stmts {
                 new_stmts.push(stmt.clone());
             }

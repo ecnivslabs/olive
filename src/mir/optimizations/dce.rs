@@ -30,6 +30,10 @@ impl Transform for DeadCodeElimination {
                         self.record_operand_usage(idx, &mut used);
                         self.record_operand_usage(val, &mut used);
                     }
+                    StatementKind::PtrStore(ptr, val) => {
+                        self.record_operand_usage(ptr, &mut used);
+                        self.record_operand_usage(val, &mut used);
+                    }
                     _ => {}
                 }
             }
@@ -87,6 +91,7 @@ impl DeadCodeElimination {
             Rvalue::Ref(l) | Rvalue::MutRef(l) => {
                 used.insert(*l);
             }
+            Rvalue::PtrLoad(op) => self.record_operand_usage(op, used),
             Rvalue::VectorSplat(op, _) => self.record_operand_usage(op, used),
             Rvalue::VectorLoad(obj, idx, _) => {
                 self.record_operand_usage(obj, used);

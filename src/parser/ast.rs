@@ -45,6 +45,13 @@ pub struct FfiStructDef {
     pub name: String,
     pub fields: Vec<FfiStructField>,
     pub is_union: bool,
+    pub destructor: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FfiConstDef {
+    pub name: String,
+    pub value: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -230,6 +237,7 @@ pub enum ExprKind {
 
     Borrow(Box<Expr>),
     MutBorrow(Box<Expr>),
+    Deref(Box<Expr>),
 
     Try(Box<Expr>),
     Await(Box<Expr>),
@@ -342,6 +350,8 @@ pub enum StmtKind {
         functions: Vec<FfiFnSig>,
         structs: Vec<FfiStructDef>,
         vars: Vec<FfiVarDef>,
+        consts: Vec<FfiConstDef>,
+        block_safe: bool,
     },
     FromImport {
         module: Vec<String>,

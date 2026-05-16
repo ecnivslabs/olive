@@ -5,8 +5,8 @@ mod fmt;
 mod lexer;
 mod mangle;
 mod mir;
-mod pods;
 mod parser;
+mod pods;
 mod publish;
 mod registry;
 mod repl;
@@ -52,7 +52,9 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    New { name: String },
+    New {
+        name: String,
+    },
     Build {
         #[arg(short, long)]
         time: bool,
@@ -72,7 +74,9 @@ enum Commands {
         #[arg(long)]
         hybrid: bool,
     },
-    Fmt { file: Option<String> },
+    Fmt {
+        file: Option<String>,
+    },
     Test {
         #[arg(short, long)]
         time: bool,
@@ -81,7 +85,9 @@ enum Commands {
     Add {
         pod: String,
     },
-    Remove { pod: String },
+    Remove {
+        pod: String,
+    },
     Install,
     Update {
         pod: Option<String>,
@@ -153,11 +159,7 @@ fn main() {
                 "fn main():\n    print(\"Hello from Olive!\")\n\nmain()\n",
             )
             .unwrap();
-            fs::write(
-                path.join(".gitignore"),
-                ".env\n.env.*\n*.secret\ngrove/\n",
-            )
-            .unwrap();
+            fs::write(path.join(".gitignore"), ".env\n.env.*\n*.secret\ngrove/\n").unwrap();
 
             println!(
                 "\x1b[1;32mCreated\x1b[0m binary (application) `{}` pod",
@@ -258,10 +260,7 @@ fn main() {
                 .insert(name.clone(), resolved_version.clone());
             save_config(&config);
 
-            println!(
-                "\x1b[1;32m    Added\x1b[0m {}@{}",
-                name, resolved_version
-            );
+            println!("\x1b[1;32m    Added\x1b[0m {}@{}", name, resolved_version);
         }
 
         Commands::Remove { pod } => {
@@ -347,11 +346,7 @@ fn main() {
             }
         }
 
-        Commands::Compile {
-            file,
-            output,
-            time,
-        } => {
+        Commands::Compile { file, output, time } => {
             let out = output.unwrap_or_else(|| {
                 Path::new(&file)
                     .file_stem()

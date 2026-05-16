@@ -63,6 +63,7 @@ impl CommonSubexpressionElimination {
             Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r) => {
                 self.is_local(l, local) || self.is_local(r, local)
             }
+            Rvalue::PtrLoad(op) => self.is_local(op, local),
             Rvalue::VectorSplat(op, _) => self.is_local(op, local),
             Rvalue::VectorLoad(obj, idx, _) => {
                 self.is_local(obj, local) || self.is_local(idx, local)

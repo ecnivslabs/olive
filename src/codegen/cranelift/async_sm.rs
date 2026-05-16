@@ -224,6 +224,7 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
                         &self.c_struct_offsets,
                         &self.c_struct_names,
                         &self.c_struct_sizes,
+                        &self.c_struct_destructors,
                         &self.ffi_vararg_ptrs,
                         &self.ffi_vararg_ids,
                         &self.ffi_entries,
@@ -421,9 +422,11 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
     }
 
     #[allow(dead_code)]
-    pub(super) fn generate_ffi_trampoline(&mut self, _sig: &crate::parser::ast::FfiFnSig) -> cranelift_module::FuncId {
+    pub(super) fn generate_ffi_trampoline(
+        &mut self,
+        _sig: &crate::parser::ast::FfiFnSig,
+    ) -> cranelift_module::FuncId {
         // TODO: Trampoline for C callbacks -> Olive closures.
-        // Needs ABI-matching entry point to pack args and call closure.
         panic!("FFI trampolines not yet fully implemented");
     }
 }

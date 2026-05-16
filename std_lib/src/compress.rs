@@ -1,5 +1,5 @@
 use crate::{olive_str_from_ptr, olive_str_internal};
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 use std::io::{Read, Write};
 

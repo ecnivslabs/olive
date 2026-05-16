@@ -3,7 +3,7 @@ use crate::olive_str_from_ptr;
 use crate::{OliveObj, olive_str_internal};
 use rustc_hash::FxHashMap as HashMap;
 use std::io::{Read, Write};
-use std::net::{TcpStream, TcpListener, UdpSocket};
+use std::net::{TcpListener, TcpStream, UdpSocket};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_net_tcp_connect(addr: i64) -> i64 {
@@ -25,7 +25,11 @@ pub extern "C" fn olive_net_tcp_send(stream_ptr: i64, data: i64) -> i64 {
     }
     let stream = unsafe { &mut *(stream_ptr as *mut TcpStream) };
     let data_str = crate::olive_str_from_ptr(data);
-    if stream.write_all(data_str.as_bytes()).is_ok() { 0 } else { -1 }
+    if stream.write_all(data_str.as_bytes()).is_ok() {
+        0
+    } else {
+        -1
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -158,8 +162,14 @@ pub extern "C" fn olive_net_udp_recv(sock_ptr: i64, max_len: i64) -> i64 {
             let data_str = String::from_utf8_lossy(&buf).into_owned();
             let mut fields = HashMap::default();
             fields.insert("data".to_string(), olive_str_internal(&data_str));
-            fields.insert("addr".to_string(), olive_str_internal(&src_addr.to_string()));
-            Box::into_raw(Box::new(OliveObj { kind: crate::KIND_OBJ, fields })) as i64
+            fields.insert(
+                "addr".to_string(),
+                olive_str_internal(&src_addr.to_string()),
+            );
+            Box::into_raw(Box::new(OliveObj {
+                kind: crate::KIND_OBJ,
+                fields,
+            })) as i64
         }
         Err(_) => 0,
     }
@@ -172,7 +182,11 @@ pub extern "C" fn olive_net_udp_set_timeout(sock_ptr: i64, secs: f64) -> i64 {
     }
     let sock = unsafe { &*(sock_ptr as *const UdpSocket) };
     let dur = std::time::Duration::from_secs_f64(secs);
-    if sock.set_read_timeout(Some(dur)).is_ok() { 1 } else { 0 }
+    if sock.set_read_timeout(Some(dur)).is_ok() {
+        1
+    } else {
+        0
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -200,7 +214,7 @@ pub extern "C" fn olive_net_dns_lookup(hostname: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_net_dns_lookup_all(hostname: i64) -> i64 {
-    use crate::{StableVec, KIND_LIST};
+    use crate::{KIND_LIST, StableVec};
     let empty_list = || {
         Box::into_raw(Box::new(StableVec {
             kind: KIND_LIST,
@@ -223,7 +237,12 @@ pub extern "C" fn olive_net_dns_lookup_all(hostname: i64) -> i64 {
             let cap = ptrs.capacity();
             let len = ptrs.len();
             std::mem::forget(ptrs);
-            Box::into_raw(Box::new(StableVec { kind: KIND_LIST, ptr, cap, len })) as i64
+            Box::into_raw(Box::new(StableVec {
+                kind: KIND_LIST,
+                ptr,
+                cap,
+                len,
+            })) as i64
         }
         Err(_) => empty_list(),
     }

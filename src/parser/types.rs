@@ -61,7 +61,10 @@ impl Parser {
                     let n = size_tok.value.parse::<usize>().unwrap_or(0);
                     self.expect(TokenKind::RBracket)?;
                     let span = self.span_from(&start);
-                    Ok(TypeExpr::new(TypeExprKind::FixedArray(Box::new(inner), n), span))
+                    Ok(TypeExpr::new(
+                        TypeExprKind::FixedArray(Box::new(inner), n),
+                        span,
+                    ))
                 } else {
                     self.expect(TokenKind::RBracket)?;
                     let span = self.span_from(&start);

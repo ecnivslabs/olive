@@ -1,10 +1,10 @@
-use rustc_hash::FxHashMap as HashMap;
 use super::MirBuilder;
 use crate::mir::AggregateKind;
 use crate::mir::ir::*;
 use crate::parser::{ExprKind, Stmt, StmtKind};
 use crate::semantic::types::Type;
 use crate::span::Span;
+use rustc_hash::FxHashMap as HashMap;
 
 impl<'a> MirBuilder<'a> {
     pub(super) fn lower_stmt(&mut self, stmt: &Stmt) {
@@ -286,8 +286,6 @@ impl<'a> MirBuilder<'a> {
                         });
                     }
 
-                    // __init__ body is assignments
-                    // Hard to represent as AST; let monomorphize handle structs
                     self.generic_fns.insert(init_name, stmt.clone());
                     return;
                 }
@@ -305,7 +303,11 @@ impl<'a> MirBuilder<'a> {
 
                     self.start_function(init_name, n_params, Type::Null);
 
-                    let self_local = self.new_local(Type::Struct(name.clone(), Vec::new()), Some("self".to_string()), false);
+                    let self_local = self.new_local(
+                        Type::Struct(name.clone(), Vec::new()),
+                        Some("self".to_string()),
+                        false,
+                    );
                     let mut field_locals = Vec::new();
                     for field in fields {
                         let field_ty = field
@@ -354,7 +356,7 @@ impl<'a> MirBuilder<'a> {
                     self.lower_stmt(s);
                 }
             }
-            
+
             StmtKind::Enum { name, variants, .. } => {
                 for (i, variant) in variants.iter().enumerate() {
                     let mangled = format!("{}::{}", name, variant.name);
@@ -390,6 +392,10 @@ impl<'a> MirBuilder<'a> {
                 let obj_op = self.lower_expr_as_copy(obj);
                 let idx_op = self.lower_expr(index);
                 self.push_statement(StatementKind::SetIndex(obj_op, idx_op, rval), target.span);
+            }
+            ExprKind::Deref(ptr_expr) => {
+                let ptr_op = self.lower_expr(ptr_expr);
+                self.push_statement(StatementKind::PtrStore(ptr_op, rval), target.span);
             }
             ExprKind::Tuple(elems) => {
                 let rhs_local = self.new_tmp_for_expr(value);
@@ -739,7 +745,7 @@ impl<'a> MirBuilder<'a> {
                 }
                 Type::Union(vars)
             }
-            // Raw pointer and fixed arrays are opaque in MIR — treat as Int
+            // Opaque in MIR: treat as Int
             TypeExprKind::Ptr(_) => Type::Int,
             TypeExprKind::FixedArray(_, _) => Type::List(Box::new(Type::Int)),
         }
@@ -778,7 +784,6 @@ impl<'a> MirBuilder<'a> {
             return specialized_name;
         }
 
-        // create specialized Stmt
         let mut specialized_stmt = generic_stmt.clone();
         match &mut specialized_stmt.kind {
             StmtKind::Fn {
@@ -793,7 +798,6 @@ impl<'a> MirBuilder<'a> {
                 *n = specialized_name.clone();
                 *tp = Vec::new();
 
-                // replace type params
                 let mut type_map = HashMap::default();
                 for (param_name, arg_ty) in tp_clone.iter().zip(type_args.iter()) {
                     type_map.insert(param_name.clone(), arg_ty.clone());
@@ -808,7 +812,7 @@ impl<'a> MirBuilder<'a> {
                 ..
             } => {
                 let tp_clone = tp.clone();
-                // monomorphize __init__ for struct; specialize fields
+                // Monomorphize constructor and specialize fields
                 let mut type_map = HashMap::default();
                 for (param_name, arg_ty) in tp_clone.iter().zip(type_args.iter()) {
                     type_map.insert(param_name.clone(), arg_ty.clone());
@@ -850,15 +854,23 @@ impl<'a> MirBuilder<'a> {
         }
     }
 
-    fn replace_types_in_stmt(&self, stmt: &mut crate::parser::Stmt, type_map: &HashMap<String, Type>) {
+    fn replace_types_in_stmt(
+        &self,
+        stmt: &mut crate::parser::Stmt,
+        type_map: &HashMap<String, Type>,
+    ) {
         match &mut stmt.kind {
-            StmtKind::Let { type_ann, value, .. } => {
+            StmtKind::Let {
+                type_ann, value, ..
+            } => {
                 if let Some(ann) = type_ann {
                     self.replace_type_expr(ann, type_map);
                 }
                 self.replace_types_in_expr(value, type_map);
             }
-            StmtKind::Const { type_ann, value, .. } => {
+            StmtKind::Const {
+                type_ann, value, ..
+            } => {
                 if let Some(ann) = type_ann {
                     self.replace_type_expr(ann, type_map);
                 }
@@ -933,7 +945,11 @@ impl<'a> MirBuilder<'a> {
     }
 
     #[allow(clippy::only_used_in_recursion)]
-    fn replace_types_in_expr(&self, expr: &mut crate::parser::Expr, type_map: &HashMap<String, Type>) {
+    fn replace_types_in_expr(
+        &self,
+        expr: &mut crate::parser::Expr,
+        type_map: &HashMap<String, Type>,
+    ) {
         match &mut expr.kind {
             crate::parser::ExprKind::BinOp { left, right, .. } => {
                 self.replace_types_in_expr(left, type_map);
@@ -994,9 +1010,9 @@ impl<'a> MirBuilder<'a> {
                     self.replace_type_expr(arg, type_map);
                 }
             }
-            TypeExprKind::List(inner)
-            | TypeExprKind::Ref(inner)
-            | TypeExprKind::MutRef(inner) => self.replace_type_expr(inner, type_map),
+            TypeExprKind::List(inner) | TypeExprKind::Ref(inner) | TypeExprKind::MutRef(inner) => {
+                self.replace_type_expr(inner, type_map)
+            }
             TypeExprKind::Tuple(elems) => {
                 for e in elems {
                     self.replace_type_expr(e, type_map);
@@ -1022,12 +1038,10 @@ impl<'a> MirBuilder<'a> {
             Type::Null => TypeExprKind::Name("None".to_string()),
             Type::Any => TypeExprKind::Name("Any".to_string()),
             Type::Never => TypeExprKind::Name("Never".to_string()),
-            Type::List(inner) => {
-                TypeExprKind::List(Box::new(crate::parser::TypeExpr::new(
-                    self.type_to_type_expr_kind(inner),
-                    Span::default(),
-                )))
-            }
+            Type::List(inner) => TypeExprKind::List(Box::new(crate::parser::TypeExpr::new(
+                self.type_to_type_expr_kind(inner),
+                Span::default(),
+            ))),
             Type::Struct(name, args) => {
                 let type_args = args
                     .iter()

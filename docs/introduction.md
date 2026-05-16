@@ -13,7 +13,7 @@ Prototype code should be production code. Olive is designed to produce optimized
 Memory leaks and data races are often the result of human error. The Olive compiler acts as a partner, catching these errors during the development phase. If it compiles, it is memory-safe.
 
 **Code is for humans.**
-Significantly more time is spent reading code than writing it. Olive removes the noise—no semicolons, no braces, no boilerplate. The logic of the program is structured clearly by indentation.
+Significantly more time is spent reading code than writing it. Olive removes the noise - no semicolons, no braces, no boilerplate. The logic of the program is structured clearly by indentation.
 
 ## Core Concepts
 

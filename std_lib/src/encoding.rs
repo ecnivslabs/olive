@@ -1,5 +1,5 @@
 use crate::{olive_str_from_ptr, olive_str_internal};
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_base64_encode(s: i64) -> i64 {
@@ -85,8 +85,16 @@ fn url_encode_str(s: &str) -> String {
             }
             _ => {
                 out.push('%');
-                out.push(char::from_digit((b >> 4) as u32, 16).unwrap_or('0').to_ascii_uppercase());
-                out.push(char::from_digit((b & 0xf) as u32, 16).unwrap_or('0').to_ascii_uppercase());
+                out.push(
+                    char::from_digit((b >> 4) as u32, 16)
+                        .unwrap_or('0')
+                        .to_ascii_uppercase(),
+                );
+                out.push(
+                    char::from_digit((b & 0xf) as u32, 16)
+                        .unwrap_or('0')
+                        .to_ascii_uppercase(),
+                );
             }
         }
     }

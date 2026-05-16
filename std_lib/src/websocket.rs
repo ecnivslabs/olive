@@ -1,6 +1,6 @@
 use crate::{olive_str_from_ptr, olive_str_internal};
-use tungstenite::{connect, Message, WebSocket, stream::MaybeTlsStream};
 use std::net::TcpStream;
+use tungstenite::{Message, WebSocket, connect, stream::MaybeTlsStream};
 
 type WsConn = WebSocket<MaybeTlsStream<TcpStream>>;
 
@@ -23,7 +23,11 @@ pub extern "C" fn olive_websocket_send(handle: i64, msg: i64) -> i64 {
     }
     let ws = unsafe { &mut *(handle as *mut WsConn) };
     let text = olive_str_from_ptr(msg);
-    if ws.send(Message::Text(text)).is_ok() { 1 } else { 0 }
+    if ws.send(Message::Text(text)).is_ok() {
+        1
+    } else {
+        0
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -33,7 +37,11 @@ pub extern "C" fn olive_websocket_send_binary(handle: i64, buf: i64) -> i64 {
     }
     let ws = unsafe { &mut *(handle as *mut WsConn) };
     let bytes_obj = unsafe { &*(buf as *const crate::bytes::OliveBytes) };
-    if ws.send(Message::Binary(bytes_obj.data.clone())).is_ok() { 1 } else { 0 }
+    if ws.send(Message::Binary(bytes_obj.data.clone())).is_ok() {
+        1
+    } else {
+        0
+    }
 }
 
 #[unsafe(no_mangle)]

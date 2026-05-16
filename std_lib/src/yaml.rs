@@ -1,5 +1,5 @@
-use crate::{olive_str_from_ptr, olive_str_internal};
 use crate::json::{json_to_olive, olive_to_json};
+use crate::{olive_str_from_ptr, olive_str_internal};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_yaml_parse(s: i64) -> i64 {
@@ -46,7 +46,7 @@ pub extern "C" fn olive_toml_stringify(ptr: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{OliveObj, StableVec, KIND_LIST, KIND_OBJ};
+    use crate::{KIND_LIST, KIND_OBJ, OliveObj, StableVec};
 
     fn s(text: &str) -> i64 {
         crate::olive_str_internal(text)

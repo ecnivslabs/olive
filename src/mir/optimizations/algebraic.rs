@@ -34,11 +34,16 @@ impl Transform for AlgebraicSimplification {
                 if let StatementKind::Assign(_, rval) = &mut stmt.kind {
                     use crate::parser::BinOp::*;
                     match rval {
-                        Rvalue::BinaryOp(Div, Operand::Copy(src), Operand::Constant(Constant::Int(b)))
-                            if *b != 0 =>
-                        {
-                            if let Some(Rvalue::BinaryOp(Mul, mul_lhs, Operand::Constant(Constant::Int(a)))) =
-                                single_def.get(src)
+                        Rvalue::BinaryOp(
+                            Div,
+                            Operand::Copy(src),
+                            Operand::Constant(Constant::Int(b)),
+                        ) if *b != 0 => {
+                            if let Some(Rvalue::BinaryOp(
+                                Mul,
+                                mul_lhs,
+                                Operand::Constant(Constant::Int(a)),
+                            )) = single_def.get(src)
                             {
                                 if *a % *b == 0 {
                                     let factor = *a / *b;
@@ -49,8 +54,11 @@ impl Transform for AlgebraicSimplification {
                                     );
                                     changed = true;
                                 }
-                            } else if let Some(Rvalue::BinaryOp(Mul, Operand::Constant(Constant::Int(a)), mul_rhs)) =
-                                single_def.get(src)
+                            } else if let Some(Rvalue::BinaryOp(
+                                Mul,
+                                Operand::Constant(Constant::Int(a)),
+                                mul_rhs,
+                            )) = single_def.get(src)
                                 && *a % *b == 0
                             {
                                 let factor = *a / *b;

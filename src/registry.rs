@@ -2,8 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
-const REGISTRY_BASE: &str =
-    "https://raw.githubusercontent.com/olive-language/pit-registry/main";
+const REGISTRY_BASE: &str = "https://raw.githubusercontent.com/olive-language/pit-registry/main";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PodVersion {
@@ -39,13 +38,10 @@ fn cache_path(name: &str) -> PathBuf {
 
 pub fn fetch_versions(name: &str) -> Result<Vec<PodVersion>, String> {
     let url = registry_url(name);
-    let body = match ureq::get(&url)
-        .set("User-Agent", "pit/0.1.0")
-        .call()
-    {
+    let body = match ureq::get(&url).set("User-Agent", "pit/0.1.0").call() {
         Ok(resp) => resp.into_string().map_err(|e| e.to_string())?,
         Err(ureq::Error::Status(404, _)) => {
-            return Err(format!("pod '{}' not found in registry", name))
+            return Err(format!("pod '{}' not found in registry", name));
         }
         Err(e) => return Err(format!("registry fetch failed: {}", e)),
     };

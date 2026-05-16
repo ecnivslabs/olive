@@ -1,6 +1,6 @@
 use crate::registry::PodVersion;
-use base64::{engine::general_purpose::STANDARD as B64, Engine};
-use serde_json::{json, Value};
+use base64::{Engine, engine::general_purpose::STANDARD as B64};
+use serde_json::{Value, json};
 use std::fs;
 use std::path::Path;
 use std::thread;
@@ -180,12 +180,7 @@ fn append_dir(
     Ok(())
 }
 
-fn create_release(
-    gh: &GhClient,
-    repo: &str,
-    name: &str,
-    version: &str,
-) -> Result<u64, String> {
+fn create_release(gh: &GhClient, repo: &str, name: &str, version: &str) -> Result<u64, String> {
     let tag = format!("{}-{}", name, version);
     let url = format!("https://api.github.com/repos/{}/releases", repo);
 
@@ -237,7 +232,6 @@ fn upload_asset(
 fn ensure_fork(gh: &GhClient, user: &str) -> Result<String, String> {
     let fork_repo = format!("{}/pit-registry", user);
 
-    // Check if fork already exists
     if gh
         .get(&format!("https://api.github.com/repos/{}", fork_repo))
         .call()
@@ -246,7 +240,10 @@ fn ensure_fork(gh: &GhClient, user: &str) -> Result<String, String> {
         return Ok(fork_repo);
     }
 
-    println!("\x1b[1;32m    Forking\x1b[0m {} → {}", REGISTRY_REPO, fork_repo);
+    println!(
+        "\x1b[1;32m    Forking\x1b[0m {} → {}",
+        REGISTRY_REPO, fork_repo
+    );
 
     gh.post(&format!(
         "https://api.github.com/repos/{}/forks",
@@ -255,7 +252,6 @@ fn ensure_fork(gh: &GhClient, user: &str) -> Result<String, String> {
     .call()
     .map_err(|e| format!("fork failed: {}", e))?;
 
-    // Poll until fork is ready (up to 30s)
     for _ in 0..15 {
         thread::sleep(Duration::from_secs(2));
         if gh
@@ -311,7 +307,6 @@ fn create_registry_pr(gh: &GhClient, pod: &PodVersion) -> Result<String, String>
         format!("{}\n{}", current_content.trim_end(), new_line)
     };
 
-    // Get fork's main SHA for branch base
     let fork_main: Value = gh
         .get(&format!(
             "https://api.github.com/repos/{}/git/refs/heads/main",
@@ -326,7 +321,6 @@ fn create_registry_pr(gh: &GhClient, pod: &PodVersion) -> Result<String, String>
         .as_str()
         .ok_or("could not get fork main SHA")?;
 
-    // Create branch on fork
     gh.post(&format!(
         "https://api.github.com/repos/{}/git/refs",
         fork_repo
@@ -337,7 +331,6 @@ fn create_registry_pr(gh: &GhClient, pod: &PodVersion) -> Result<String, String>
     }))
     .map_err(|e| format!("create branch failed: {}", e))?;
 
-    // Push file to branch on fork
     let fork_file_url = format!(
         "https://api.github.com/repos/{}/contents/{}",
         fork_repo, file_path
@@ -356,7 +349,6 @@ fn create_registry_pr(gh: &GhClient, pod: &PodVersion) -> Result<String, String>
         .send_json(update_body)
         .map_err(|e| format!("registry update failed: {}", e))?;
 
-    // Open PR from fork to upstream
     let pr_resp: Value = gh
         .post(&format!(
             "https://api.github.com/repos/{}/pulls",

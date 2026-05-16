@@ -5,7 +5,13 @@ fn days_in_month(year: i64, month: i64) -> i64 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
         4 | 6 | 9 | 11 => 30,
-        2 => if is_leap(year) { 29 } else { 28 },
+        2 => {
+            if is_leap(year) {
+                29
+            } else {
+                28
+            }
+        }
         _ => 30,
     }
 }
@@ -47,7 +53,9 @@ fn unix_tz_offset() -> i64 {
             .unwrap_or_default()
             .as_secs() as libc::time_t;
         let local = libc::localtime(&ts);
-        if local.is_null() { return 0; }
+        if local.is_null() {
+            return 0;
+        }
         (*local).tm_gmtoff as i64
     }
 }
@@ -61,12 +69,22 @@ fn windows_tz_offset() -> i64 {
             .as_secs() as libc::time_t;
         let mut ltm: libc::tm = std::mem::zeroed();
         let mut utm: libc::tm = std::mem::zeroed();
-        if libc::localtime_s(&mut ltm, &ts) != 0 { return 0; }
-        if libc::gmtime_s(&mut utm, &ts) != 0 { return 0; }
+        if libc::localtime_s(&mut ltm, &ts) != 0 {
+            return 0;
+        }
+        if libc::gmtime_s(&mut utm, &ts) != 0 {
+            return 0;
+        }
         let l = ltm.tm_hour as i64 * 3600 + ltm.tm_min as i64 * 60 + ltm.tm_sec as i64;
         let u = utm.tm_hour as i64 * 3600 + utm.tm_min as i64 * 60 + utm.tm_sec as i64;
         let day_diff = (ltm.tm_yday - utm.tm_yday) as i64;
-        let day_secs = if day_diff > 1 { -86400 } else if day_diff < -1 { 86400 } else { day_diff * 86400 };
+        let day_secs = if day_diff > 1 {
+            -86400
+        } else if day_diff < -1 {
+            86400
+        } else {
+            day_diff * 86400
+        };
         l - u + day_secs
     }
 }
@@ -75,19 +93,31 @@ fn parse_datetime_str(s: &str) -> Option<i64> {
     let s = s.trim();
     if s.len() >= 10 {
         let year = s[0..4].parse::<i64>().ok()?;
-        if s.as_bytes().get(4) != Some(&b'-') { return None; }
+        if s.as_bytes().get(4) != Some(&b'-') {
+            return None;
+        }
         let month = s[5..7].parse::<i64>().ok()?;
-        if s.as_bytes().get(7) != Some(&b'-') { return None; }
+        if s.as_bytes().get(7) != Some(&b'-') {
+            return None;
+        }
         let day = s[8..10].parse::<i64>().ok()?;
 
         let (h, min, sec, tz_offset) = if s.len() > 10 {
             let sep = s.as_bytes().get(10);
-            if sep != Some(&b'T') && sep != Some(&b' ') { return None; }
-            if s.len() < 19 { return None; }
+            if sep != Some(&b'T') && sep != Some(&b' ') {
+                return None;
+            }
+            if s.len() < 19 {
+                return None;
+            }
             let h = s[11..13].parse::<i64>().ok()?;
-            if s.as_bytes().get(13) != Some(&b':') { return None; }
+            if s.as_bytes().get(13) != Some(&b':') {
+                return None;
+            }
             let min = s[14..16].parse::<i64>().ok()?;
-            if s.as_bytes().get(16) != Some(&b':') { return None; }
+            if s.as_bytes().get(16) != Some(&b':') {
+                return None;
+            }
             let sec = s[17..19].parse::<i64>().ok()?;
             let tz_offset = if s.len() > 19 {
                 parse_tz_suffix(&s[19..])
@@ -178,13 +208,20 @@ pub extern "C" fn olive_datetime_parts(ts: f64) -> i64 {
     fields.insert("second".to_string(), sec);
     fields.insert("weekday".to_string(), dow); // 0=Mon
     fields.insert("timestamp".to_string(), ts as i64);
-    Box::into_raw(Box::new(OliveObj { kind: crate::KIND_OBJ, fields })) as i64
+    Box::into_raw(Box::new(OliveObj {
+        kind: crate::KIND_OBJ,
+        fields,
+    })) as i64
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_datetime_from_parts(
-    year: i64, month: i64, day: i64,
-    hour: i64, minute: i64, second: i64,
+    year: i64,
+    month: i64,
+    day: i64,
+    hour: i64,
+    minute: i64,
+    second: i64,
 ) -> f64 {
     ymd_to_unix(year, month, day, hour, minute, second) as f64
 }
@@ -206,15 +243,36 @@ pub extern "C" fn olive_datetime_weekday(ts: f64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_datetime_weekday_name(ts: f64) -> i64 {
-    let names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+    let names = [
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+        "Sunday",
+    ];
     let dow = day_of_week(ts as i64) as usize;
     olive_str_internal(names[dow.min(6)])
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_datetime_month_name(ts: f64) -> i64 {
-    let names = ["", "January", "February", "March", "April", "May", "June",
-                  "July", "August", "September", "October", "November", "December"];
+    let names = [
+        "",
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
     let (_, month, _, _, _, _) = unix_to_parts(ts as i64);
     let m = month as usize;
     olive_str_internal(names[m.clamp(1, 12)])
@@ -306,11 +364,33 @@ pub extern "C" fn olive_datetime_format(ts: f64, fmt: i64) -> i64 {
         olive_str_from_ptr(fmt)
     };
     let weekday_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-    let weekday_full = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-    let month_names = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    let month_full = ["", "January", "February", "March", "April", "May", "June",
-                      "July", "August", "September", "October", "November", "December"];
+    let weekday_full = [
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+        "Sunday",
+    ];
+    let month_names = [
+        "", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let month_full = [
+        "",
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
     let mut out = String::with_capacity(fmt_str.len() + 16);
     let mut chars = fmt_str.chars().peekable();
     while let Some(c) = chars.next() {
@@ -340,7 +420,10 @@ pub extern "C" fn olive_datetime_format(ts: f64, fmt: i64) -> i64 {
                 Some('%') => out.push('%'),
                 Some('n') => out.push('\n'),
                 Some('t') => out.push('\t'),
-                Some(x) => { out.push('%'); out.push(x); }
+                Some(x) => {
+                    out.push('%');
+                    out.push(x);
+                }
                 None => out.push('%'),
             }
         } else {
@@ -373,7 +456,10 @@ mod tests {
     #[test]
     fn parse_iso8601() {
         assert_eq!(olive_datetime_parse(s("2024-01-15T11:50:45")), 1705319445.0);
-        assert_eq!(olive_datetime_parse(s("2024-01-15T11:50:45Z")), 1705319445.0);
+        assert_eq!(
+            olive_datetime_parse(s("2024-01-15T11:50:45Z")),
+            1705319445.0
+        );
         assert_eq!(olive_datetime_parse(s("2024-01-15 11:50:45")), 1705319445.0);
     }
 

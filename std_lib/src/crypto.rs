@@ -1,10 +1,10 @@
 use crate::{OliveObj, olive_str_from_ptr, olive_str_internal};
-use sha2::{Digest, Sha256};
-use aes_gcm::{Aes256Gcm, Key, Nonce};
 use aes_gcm::aead::{Aead, KeyInit};
-use base64::{engine::general_purpose::STANDARD, Engine};
+use aes_gcm::{Aes256Gcm, Key, Nonce};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use rand::RngCore;
 use rustc_hash::FxHashMap as HashMap;
+use sha2::{Digest, Sha256};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_crypto_sha256(s: i64) -> i64 {
@@ -84,7 +84,10 @@ pub extern "C" fn olive_crypto_aes_decrypt(key_ptr: i64, data_ptr: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_crypto_argon2_hash(password_ptr: i64) -> i64 {
-    use argon2::{password_hash::{PasswordHasher, SaltString, rand_core::OsRng}, Argon2};
+    use argon2::{
+        Argon2,
+        password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
+    };
     if password_ptr == 0 {
         return 0;
     }
@@ -99,7 +102,10 @@ pub extern "C" fn olive_crypto_argon2_hash(password_ptr: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_crypto_argon2_verify(password_ptr: i64, hash_ptr: i64) -> i64 {
-    use argon2::{password_hash::{PasswordHash, PasswordVerifier}, Argon2};
+    use argon2::{
+        Argon2,
+        password_hash::{PasswordHash, PasswordVerifier},
+    };
     if password_ptr == 0 || hash_ptr == 0 {
         return 0;
     }
@@ -109,13 +115,20 @@ pub extern "C" fn olive_crypto_argon2_verify(password_ptr: i64, hash_ptr: i64) -
         Ok(h) => h,
         Err(_) => return 0,
     };
-    if Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok() { 1 } else { 0 }
+    if Argon2::default()
+        .verify_password(password.as_bytes(), &parsed)
+        .is_ok()
+    {
+        1
+    } else {
+        0
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_crypto_rsa_keygen() -> i64 {
-    use rsa::{RsaPrivateKey, RsaPublicKey};
     use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
+    use rsa::{RsaPrivateKey, RsaPublicKey};
     let mut rng = rand::thread_rng();
     let private_key = match RsaPrivateKey::new(&mut rng, 2048) {
         Ok(k) => k,
@@ -135,13 +148,16 @@ pub extern "C" fn olive_crypto_rsa_keygen() -> i64 {
     let mut fields = HashMap::default();
     fields.insert("pub".to_string(), olive_str_internal(&pub_b64));
     fields.insert("priv".to_string(), olive_str_internal(&priv_b64));
-    Box::into_raw(Box::new(OliveObj { kind: crate::KIND_OBJ, fields })) as i64
+    Box::into_raw(Box::new(OliveObj {
+        kind: crate::KIND_OBJ,
+        fields,
+    })) as i64
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_crypto_rsa_encrypt(pub_ptr: i64, data_ptr: i64) -> i64 {
-    use rsa::{RsaPublicKey, Pkcs1v15Encrypt};
     use rsa::pkcs8::DecodePublicKey;
+    use rsa::{Pkcs1v15Encrypt, RsaPublicKey};
     if pub_ptr == 0 || data_ptr == 0 {
         return 0;
     }
@@ -164,8 +180,8 @@ pub extern "C" fn olive_crypto_rsa_encrypt(pub_ptr: i64, data_ptr: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_crypto_rsa_decrypt(priv_ptr: i64, data_ptr: i64) -> i64 {
-    use rsa::{RsaPrivateKey, Pkcs1v15Encrypt};
     use rsa::pkcs8::DecodePrivateKey;
+    use rsa::{Pkcs1v15Encrypt, RsaPrivateKey};
     if priv_ptr == 0 || data_ptr == 0 {
         return 0;
     }
@@ -208,13 +224,19 @@ mod tests {
     #[test]
     fn sha256_empty() {
         let result = from_ptr(olive_crypto_sha256(s("")));
-        assert_eq!(result, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+        assert_eq!(
+            result,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
     }
 
     #[test]
     fn sha256_hello() {
         let result = from_ptr(olive_crypto_sha256(s("hello")));
-        assert_eq!(result, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+        assert_eq!(
+            result,
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
     }
 
     #[test]

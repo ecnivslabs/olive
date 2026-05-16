@@ -24,10 +24,7 @@ pub fn download_and_install(pod: &PodVersion) -> Result<(), String> {
 
     println!("\x1b[1;32m  Downloading\x1b[0m {}@{}", pod.name, pod.vers);
 
-    let bytes = match ureq::get(&pod.dl)
-        .set("User-Agent", "pit/0.1.0")
-        .call()
-    {
+    let bytes = match ureq::get(&pod.dl).set("User-Agent", "pit/0.1.0").call() {
         Ok(resp) => {
             let mut buf = Vec::new();
             resp.into_reader()
@@ -116,10 +113,17 @@ pub fn find_pod_path(pod_name: &str) -> Option<PathBuf> {
     }
 
     // pick first installed version (mirrors cargo's global store approach)
-    let pod_dir = fs::read_dir(&pod_base).ok()?.filter_map(|e| {
-        let e = e.ok()?;
-        if e.path().is_dir() { Some(e.path()) } else { None }
-    }).next()?;
+    let pod_dir = fs::read_dir(&pod_base)
+        .ok()?
+        .filter_map(|e| {
+            let e = e.ok()?;
+            if e.path().is_dir() {
+                Some(e.path())
+            } else {
+                None
+            }
+        })
+        .next()?;
 
     let pod_toml = pod_dir.join("pit.toml");
     if pod_toml.exists()

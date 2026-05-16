@@ -43,7 +43,7 @@ print(r1[0])  # OK
 
 ### Mutable Borrows (`&mut`)
 
-If you need to change the data, you can borrow it with `&mut`. However, while a mutable borrow is active, nobody else can access the data—not even for reading. This prevents **data races**, where one part of your code reads data while another is halfway through changing it.
+If you need to change the data, you can borrow it with `&mut`. However, while a mutable borrow is active, nobody else can access the data - not even for reading. This prevents **data races**, where one part of your code reads data while another is halfway through changing it.
 
 ```python
 let mut list = [1, 2, 3]

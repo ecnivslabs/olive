@@ -92,6 +92,13 @@ impl<'a> MirBuilder<'a> {
                         }
                     }
                 }
+                StmtKind::NativeImport { alias, consts, .. } => {
+                    for c in consts {
+                        let mangled = format!("{}::{}", alias, c.name);
+                        self.globals
+                            .insert(mangled, Operand::Constant(Constant::Int(c.value)));
+                    }
+                }
                 _ => {}
             }
         }

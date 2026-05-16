@@ -58,9 +58,10 @@ fn read_meminfo_field(field: &str) -> i64 {
         if line.starts_with(field) {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if let Some(kb_str) = parts.get(1)
-                && let Ok(kb) = kb_str.parse::<i64>() {
-                    return kb * 1024;
-                }
+                && let Ok(kb) = kb_str.parse::<i64>()
+            {
+                return kb * 1024;
+            }
         }
     }
     0
@@ -115,7 +116,11 @@ pub extern "C" fn olive_sys_chdir(path: i64) -> i64 {
         return 0;
     }
     let p = crate::olive_str_from_ptr(path);
-    if std::env::set_current_dir(&p).is_ok() { 1 } else { 0 }
+    if std::env::set_current_dir(&p).is_ok() {
+        1
+    } else {
+        0
+    }
 }
 
 #[cfg(test)]

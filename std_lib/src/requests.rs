@@ -30,7 +30,11 @@ pub extern "C" fn olive_http_post(url_ptr: i64, body_ptr: i64) -> i64 {
         return 0;
     }
     let url = url_from_ptr(url_ptr);
-    let body = if body_ptr == 0 { String::new() } else { olive_str_from_ptr(body_ptr) };
+    let body = if body_ptr == 0 {
+        String::new()
+    } else {
+        olive_str_from_ptr(body_ptr)
+    };
     match ureq::post(&url).send_bytes(body.as_bytes()) {
         Ok(resp) => match resp.into_string() {
             Ok(s) => olive_str_internal(&s),
@@ -46,7 +50,11 @@ pub extern "C" fn olive_http_post_json(url_ptr: i64, body_ptr: i64) -> i64 {
         return 0;
     }
     let url = url_from_ptr(url_ptr);
-    let body = if body_ptr == 0 { String::new() } else { olive_str_from_ptr(body_ptr) };
+    let body = if body_ptr == 0 {
+        String::new()
+    } else {
+        olive_str_from_ptr(body_ptr)
+    };
     match ureq::post(&url)
         .set("Content-Type", "application/json")
         .send_bytes(body.as_bytes())
@@ -65,7 +73,11 @@ pub extern "C" fn olive_http_put(url_ptr: i64, body_ptr: i64) -> i64 {
         return 0;
     }
     let url = url_from_ptr(url_ptr);
-    let body = if body_ptr == 0 { String::new() } else { olive_str_from_ptr(body_ptr) };
+    let body = if body_ptr == 0 {
+        String::new()
+    } else {
+        olive_str_from_ptr(body_ptr)
+    };
     match ureq::put(&url).send_bytes(body.as_bytes()) {
         Ok(resp) => match resp.into_string() {
             Ok(s) => olive_str_internal(&s),

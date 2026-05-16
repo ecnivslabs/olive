@@ -68,6 +68,12 @@ impl Resolver {
             is_private: false,
         });
         table.define(Symbol {
+            name: "ffi_errno".to_string(),
+            kind: SymbolKind::Function,
+            span: Span::default(),
+            is_private: false,
+        });
+        table.define(Symbol {
             name: "None".to_string(),
             kind: SymbolKind::Variable,
             span: Span::default(),
@@ -172,9 +178,7 @@ impl Resolver {
             }
 
             StmtKind::Struct {
-                type_params,
-                body,
-                ..
+                type_params, body, ..
             } => {
                 self.table.push(ScopeKind::Block);
                 for tp in type_params {
@@ -187,9 +191,7 @@ impl Resolver {
             }
 
             StmtKind::Impl {
-                type_params,
-                body,
-                ..
+                type_params, body, ..
             } => {
                 self.table.push(ScopeKind::Struct);
                 for tp in type_params {
@@ -272,7 +274,12 @@ impl Resolver {
                 self.define_sym(name, SymbolKind::Import, stmt.span);
             }
 
-            StmtKind::NativeImport { alias, functions, structs, .. } => {
+            StmtKind::NativeImport {
+                alias,
+                functions,
+                structs,
+                ..
+            } => {
                 self.define_sym(alias, SymbolKind::NativeImport, stmt.span);
                 for sig in functions {
                     let mangled = format!("{}::{}", alias, sig.name);
@@ -299,7 +306,7 @@ impl Resolver {
             }
 
             StmtKind::ExprStmt(expr) => self.resolve_expr(expr),
-            
+
             StmtKind::UnsafeBlock(body) => {
                 for s in body {
                     self.resolve_stmt(s);
@@ -479,7 +486,7 @@ impl Resolver {
                 self.table.pop();
             }
 
-            ExprKind::Borrow(inner) | ExprKind::MutBorrow(inner) => {
+            ExprKind::Borrow(inner) | ExprKind::MutBorrow(inner) | ExprKind::Deref(inner) => {
                 self.resolve_expr(inner);
             }
 

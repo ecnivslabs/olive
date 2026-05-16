@@ -82,9 +82,7 @@ fn emit(level: i64, msg: &str) {
             if st.fields.is_empty() {
                 eprintln!("[{color}{lname}{reset}] {msg}");
             } else {
-                let fields: String = st.fields.iter()
-                    .map(|(k, v)| format!(" {k}={v}"))
-                    .collect();
+                let fields: String = st.fields.iter().map(|(k, v)| format!(" {k}={v}")).collect();
                 eprintln!("[{color}{lname}{reset}] {msg}{fields}");
             }
         }
@@ -93,9 +91,7 @@ fn emit(level: i64, msg: &str) {
             if st.fields.is_empty() {
                 eprintln!("[{lname}] {msg}");
             } else {
-                let fields: String = st.fields.iter()
-                    .map(|(k, v)| format!(" {k}={v}"))
-                    .collect();
+                let fields: String = st.fields.iter().map(|(k, v)| format!(" {k}={v}")).collect();
                 eprintln!("[{lname}] {msg}{fields}");
             }
         }
@@ -114,33 +110,47 @@ pub extern "C" fn olive_log_set_format(fmt: i64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_log_debug(msg: i64) {
-    if msg == 0 { return; }
+    if msg == 0 {
+        return;
+    }
     emit(LEVEL_DEBUG, &olive_str_from_ptr(msg));
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_log_info(msg: i64) {
-    if msg == 0 { return; }
+    if msg == 0 {
+        return;
+    }
     emit(LEVEL_INFO, &olive_str_from_ptr(msg));
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_log_warn(msg: i64) {
-    if msg == 0 { return; }
+    if msg == 0 {
+        return;
+    }
     emit(LEVEL_WARN, &olive_str_from_ptr(msg));
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_log_error(msg: i64) {
-    if msg == 0 { return; }
+    if msg == 0 {
+        return;
+    }
     emit(LEVEL_ERROR, &olive_str_from_ptr(msg));
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_log_with_field(key: i64, val: i64) {
-    if key == 0 { return; }
+    if key == 0 {
+        return;
+    }
     let k = olive_str_from_ptr(key);
-    let v = if val == 0 { String::new() } else { olive_str_from_ptr(val) };
+    let v = if val == 0 {
+        String::new()
+    } else {
+        olive_str_from_ptr(val)
+    };
     state().lock().unwrap().fields.insert(k, v);
 }
 
@@ -151,7 +161,9 @@ pub extern "C" fn olive_log_clear_fields() {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_log_level_from_str(s: i64) -> i64 {
-    if s == 0 { return LEVEL_INFO; }
+    if s == 0 {
+        return LEVEL_INFO;
+    }
     match olive_str_from_ptr(s).to_uppercase().as_str() {
         "DEBUG" => LEVEL_DEBUG,
         "INFO" => LEVEL_INFO,

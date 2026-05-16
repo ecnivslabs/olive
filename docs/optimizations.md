@@ -1,6 +1,6 @@
 # The Optimization Pipeline
 
-The Olive compiler uses a multi-stage optimization pipeline that operates on the Middle Intermediate Representation (MIR). These passes are iterative and compositional—one pass often reveals opportunities for the next.
+The Olive compiler uses a multi-stage optimization pipeline that operates on the Middle Intermediate Representation (MIR). These passes are iterative and compositional - one pass often reveals opportunities for the next.
 
 ## Scalar Transformations
 
@@ -24,7 +24,7 @@ Uses mathematical identities to simplify expressions.
 GVN assigns a unique ID to every distinct computation. It detects when the same value is computed multiple times, even across different branches, and eliminates the redundancy. Unlike simple CSE, GVN understands commutativity (`x + y` is the same as `y + x`).
 
 ### 4. Move Elision
-In a borrow-checked language, "moving" data is a common operation. Move elision identifies when a move is unnecessary—for example, when a value is moved into a function and then immediately returned—and replaces the move with a simple pointer pass or avoids the copy entirely.
+In a borrow-checked language, "moving" data is a common operation. Move elision identifies when a move is unnecessary - for example, when a value is moved into a function and then immediately returned - and replaces the move with a simple pointer pass or avoids the copy entirely.
 
 ### 5. Dead Code Elimination (DCE)
 Instructions whose results are never used are pruned. This includes removing entire code paths that the compiler can prove are unreachable.

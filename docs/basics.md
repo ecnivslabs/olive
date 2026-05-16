@@ -4,7 +4,7 @@ Olive's syntax is clean and structured. It's statically typed, but the compiler 
 
 ## Variables and Mutability
 
-You declare variables with `let`. By default, variables are **immutable**—once a value is assigned, it cannot be changed. This simplifies reasoning about the program's state.
+You declare variables with `let`. By default, variables are **immutable** - once a value is assigned, it cannot be changed. This simplifies reasoning about the program's state.
 
 ```python
 let name = "Olive"

@@ -1,13 +1,11 @@
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
-    // literals
     Identifier,
     Integer,
     Float,
     String,
     FString,
 
-    // keywords
     Fn,
     Let,
     Const,
@@ -41,8 +39,8 @@ pub enum TokenKind {
     Await,
     Case,
     Unsafe,
+    Null,
 
-    // operators
     Plus,
     Minus,
     Star,
@@ -69,7 +67,6 @@ pub enum TokenKind {
     Ampersand,
     Pipe,
 
-    // symbols
     LParen,
     RParen,
     LBracket,
@@ -87,12 +84,10 @@ pub enum TokenKind {
     Question,
     Hash,
 
-    // layout
     Newline,
     Indent,
     Dedent,
 
-    // end
     Eof,
 }
 
@@ -102,6 +97,6 @@ pub struct Token {
     pub value: String,
     pub line: usize,
     pub col: usize,
-    pub span: (usize, usize), // char offsets [start, end)
+    pub span: (usize, usize),
     pub file_id: usize,
 }

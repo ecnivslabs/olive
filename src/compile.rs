@@ -3,8 +3,8 @@ use crate::codegen::cranelift::CraneliftCodegen;
 use crate::lexer::Lexer;
 use crate::mangle::mangle_statements;
 use crate::mir::{self, MirBuilder, Rvalue, StatementKind};
-use crate::pods::find_pod_path;
 use crate::parser::{self, Parser};
+use crate::pods::find_pod_path;
 use crate::semantic::{self, Resolver, TypeChecker};
 use crate::span;
 use ariadne::{Label, Report, ReportKind, Source};
@@ -269,11 +269,7 @@ fn collect_source_files(
                 mod_path = pkg_path;
             }
             if mod_path.exists() {
-                collect_source_files(
-                    mod_path.to_string_lossy().as_ref(),
-                    collected,
-                    visited,
-                );
+                collect_source_files(mod_path.to_string_lossy().as_ref(), collected, visited);
             }
         }
     }
@@ -401,7 +397,11 @@ pub fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: boo
     let typecheck_duration = typecheck_start.elapsed();
 
     let mir_start = std::time::Instant::now();
-    let mut mir_builder = MirBuilder::new(&type_checker.expr_types, &type_checker.type_env[0], type_checker.struct_fields.clone());
+    let mut mir_builder = MirBuilder::new(
+        &type_checker.expr_types,
+        &type_checker.type_env[0],
+        type_checker.struct_fields.clone(),
+    );
     mir_builder.build_program(&program);
     let mir_duration = mir_start.elapsed();
 
@@ -454,12 +454,32 @@ pub fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: boo
     }
     let borrow_duration = borrow_start.elapsed();
 
-    let native_libs: Vec<(String, String, Vec<parser::ast::FfiFnSig>, Vec<parser::ast::FfiStructDef>, Vec<parser::ast::FfiVarDef>)> = program
+    let native_libs: Vec<(
+        String,
+        String,
+        Vec<parser::ast::FfiFnSig>,
+        Vec<parser::ast::FfiStructDef>,
+        Vec<parser::ast::FfiVarDef>,
+    )> = program
         .stmts
         .iter()
         .filter_map(|s| {
-            if let parser::StmtKind::NativeImport { path, alias, functions, structs, vars } = &s.kind {
-                Some((alias.clone(), path.clone(), functions.clone(), structs.clone(), vars.clone()))
+            if let parser::StmtKind::NativeImport {
+                path,
+                alias,
+                functions,
+                structs,
+                vars,
+                ..
+            } = &s.kind
+            {
+                Some((
+                    alias.clone(),
+                    path.clone(),
+                    functions.clone(),
+                    structs.clone(),
+                    vars.clone(),
+                ))
             } else {
                 None
             }
@@ -513,7 +533,13 @@ pub fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: boo
             println!("\x1b[1;34m   ────────────────────────\x1b[0m");
             println!(
                 "   \x1b[1mTotal Startup:\x1b[0m {:?}",
-                parse_duration + resolve_duration + typecheck_duration + mir_duration + opt_duration + borrow_duration + cg_duration
+                parse_duration
+                    + resolve_duration
+                    + typecheck_duration
+                    + mir_duration
+                    + opt_duration
+                    + borrow_duration
+                    + cg_duration
             );
             println!();
         }
@@ -622,7 +648,11 @@ pub fn compile_and_emit(filename: &str, out: &str, show_time: bool) {
     let typecheck_duration = typecheck_start.elapsed();
 
     let mir_start = std::time::Instant::now();
-    let mut mir_builder = MirBuilder::new(&type_checker.expr_types, &type_checker.type_env[0], type_checker.struct_fields.clone());
+    let mut mir_builder = MirBuilder::new(
+        &type_checker.expr_types,
+        &type_checker.type_env[0],
+        type_checker.struct_fields.clone(),
+    );
     mir_builder.build_program(&program);
     let mir_duration = mir_start.elapsed();
 
@@ -669,12 +699,32 @@ pub fn compile_and_emit(filename: &str, out: &str, show_time: bool) {
     }
     let borrow_duration = borrow_start.elapsed();
 
-    let native_libs: Vec<(String, String, Vec<parser::ast::FfiFnSig>, Vec<parser::ast::FfiStructDef>, Vec<parser::ast::FfiVarDef>)> = program
+    let native_libs: Vec<(
+        String,
+        String,
+        Vec<parser::ast::FfiFnSig>,
+        Vec<parser::ast::FfiStructDef>,
+        Vec<parser::ast::FfiVarDef>,
+    )> = program
         .stmts
         .iter()
         .filter_map(|s| {
-            if let parser::StmtKind::NativeImport { path, alias, functions, structs, vars } = &s.kind {
-                Some((alias.clone(), path.clone(), functions.clone(), structs.clone(), vars.clone()))
+            if let parser::StmtKind::NativeImport {
+                path,
+                alias,
+                functions,
+                structs,
+                vars,
+                ..
+            } = &s.kind
+            {
+                Some((
+                    alias.clone(),
+                    path.clone(),
+                    functions.clone(),
+                    structs.clone(),
+                    vars.clone(),
+                ))
             } else {
                 None
             }
@@ -682,7 +732,11 @@ pub fn compile_and_emit(filename: &str, out: &str, show_time: bool) {
         .collect();
 
     let cg_start = std::time::Instant::now();
-    let mut codegen = CraneliftCodegen::new_aot(&mir_builder.functions, mir_builder.struct_fields.clone(), &native_libs);
+    let mut codegen = CraneliftCodegen::new_aot(
+        &mir_builder.functions,
+        mir_builder.struct_fields.clone(),
+        &native_libs,
+    );
     codegen.generate();
     let obj_bytes = codegen.emit_object();
     let cg_duration = cg_start.elapsed();
@@ -691,7 +745,10 @@ pub fn compile_and_emit(filename: &str, out: &str, show_time: bool) {
     if let Some(parent) = Path::new(out).parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent).unwrap_or_else(|e| {
-                eprintln!("error: could not create output directory {}: {e}", parent.display());
+                eprintln!(
+                    "error: could not create output directory {}: {e}",
+                    parent.display()
+                );
                 process::exit(1);
             });
         }
@@ -740,11 +797,10 @@ pub fn compile_and_emit(filename: &str, out: &str, show_time: bool) {
     cmd.arg("-o");
     cmd.arg(out);
 
-    let status = cmd.status()
-        .unwrap_or_else(|e| {
-            eprintln!("error: could not invoke cc: {e}");
-            process::exit(1);
-        });
+    let status = cmd.status().unwrap_or_else(|e| {
+        eprintln!("error: could not invoke cc: {e}");
+        process::exit(1);
+    });
 
     fs::remove_file(&obj_path).ok();
 
@@ -806,7 +862,11 @@ pub fn compile_and_test(filename: &str, _show_time: bool) {
         process::exit(1);
     }
 
-    let mut mir_builder = MirBuilder::new(&type_checker.expr_types, &type_checker.type_env[0], type_checker.struct_fields.clone());
+    let mut mir_builder = MirBuilder::new(
+        &type_checker.expr_types,
+        &type_checker.type_env[0],
+        type_checker.struct_fields.clone(),
+    );
     mir_builder.build_program(&program);
 
     let optimizer = mir::Optimizer::new();
@@ -827,12 +887,32 @@ pub fn compile_and_test(filename: &str, _show_time: bool) {
         }
     }
 
-    let test_native_libs: Vec<(String, String, Vec<parser::ast::FfiFnSig>, Vec<parser::ast::FfiStructDef>, Vec<parser::ast::FfiVarDef>)> = program
+    let test_native_libs: Vec<(
+        String,
+        String,
+        Vec<parser::ast::FfiFnSig>,
+        Vec<parser::ast::FfiStructDef>,
+        Vec<parser::ast::FfiVarDef>,
+    )> = program
         .stmts
         .iter()
         .filter_map(|s| {
-            if let parser::StmtKind::NativeImport { path, alias, functions, structs, vars } = &s.kind {
-                Some((alias.clone(), path.clone(), functions.clone(), structs.clone(), vars.clone()))
+            if let parser::StmtKind::NativeImport {
+                path,
+                alias,
+                functions,
+                structs,
+                vars,
+                ..
+            } = &s.kind
+            {
+                Some((
+                    alias.clone(),
+                    path.clone(),
+                    functions.clone(),
+                    structs.clone(),
+                    vars.clone(),
+                ))
             } else {
                 None
             }

@@ -223,6 +223,10 @@ impl Inliner {
                 self.remap_operand(idx, offset);
                 self.remap_operand(val, offset);
             }
+            StatementKind::PtrStore(ptr, val) => {
+                self.remap_operand(ptr, offset);
+                self.remap_operand(val, offset);
+            }
         }
     }
 
@@ -253,6 +257,7 @@ impl Inliner {
             Rvalue::Ref(l) | Rvalue::MutRef(l) => {
                 l.0 += offset;
             }
+            Rvalue::PtrLoad(op) => self.remap_operand(op, offset),
             Rvalue::VectorSplat(op, _) => self.remap_operand(op, offset),
             Rvalue::VectorLoad(obj, idx, _) => {
                 self.remap_operand(obj, offset);

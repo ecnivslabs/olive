@@ -1,4 +1,4 @@
-use crate::{StableVec, KIND_LIST, olive_str_from_ptr, olive_str_internal};
+use crate::{KIND_LIST, StableVec, olive_str_from_ptr, olive_str_internal};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_env_get(name: i64) -> i64 {
@@ -17,7 +17,11 @@ pub extern "C" fn olive_env_set(name: i64, val: i64) -> i64 {
         return 0;
     }
     let key = olive_str_from_ptr(name);
-    let value = if val == 0 { String::new() } else { olive_str_from_ptr(val) };
+    let value = if val == 0 {
+        String::new()
+    } else {
+        olive_str_from_ptr(val)
+    };
     unsafe { std::env::set_var(&key, &value) };
     1
 }
@@ -29,7 +33,12 @@ pub extern "C" fn olive_os_args() -> i64 {
     let cap = ptrs.capacity();
     let len = ptrs.len();
     std::mem::forget(ptrs);
-    Box::into_raw(Box::new(StableVec { kind: KIND_LIST, ptr, cap, len })) as i64
+    Box::into_raw(Box::new(StableVec {
+        kind: KIND_LIST,
+        ptr,
+        cap,
+        len,
+    })) as i64
 }
 
 #[unsafe(no_mangle)]
@@ -62,7 +71,11 @@ pub extern "C" fn olive_os_exec_status(cmd: i64) -> i64 {
         return -1;
     }
     let cmd_str = olive_str_from_ptr(cmd);
-    match std::process::Command::new("sh").arg("-c").arg(&cmd_str).status() {
+    match std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&cmd_str)
+        .status()
+    {
         Ok(s) => s.code().unwrap_or(-1) as i64,
         Err(_) => -1,
     }

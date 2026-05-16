@@ -57,10 +57,7 @@ impl TypeChecker {
             (Type::Fn(p1, r1, a1), Type::Fn(p2, r2, a2)) => {
                 if p1.len() != p2.len() || a1.len() != a2.len() {
                     self.errors.push(SemanticError::Custom {
-                        msg: format!(
-                            "function signature mismatch: expected {}, found {}",
-                            t1, t2
-                        ),
+                        msg: format!("function signature mismatch: expected {}, found {}", t1, t2),
                         span,
                     });
                 } else {
@@ -74,8 +71,11 @@ impl TypeChecker {
                 }
             }
 
-            (Type::Struct(name, _), Type::Int)
-            | (Type::Int, Type::Struct(name, _))
+            // U64 and Int have same bit width; allow unification
+            // Semantics enforced at codegen
+            (Type::U64, Type::Int) | (Type::Int, Type::U64) => {}
+
+            (Type::Struct(name, _), Type::Int) | (Type::Int, Type::Struct(name, _))
                 if self.c_ffi_structs.contains(name.as_str()) => {}
 
             (Type::Struct(a_name, a_args), Type::Struct(b_name, b_args)) => {
@@ -193,9 +193,10 @@ impl TypeChecker {
                 name,
                 args.into_iter().map(|a| self.apply_subst(a)).collect(),
             ),
-            Type::Enum(name, args) => {
-                Type::Enum(name, args.into_iter().map(|a| self.apply_subst(a)).collect())
-            }
+            Type::Enum(name, args) => Type::Enum(
+                name,
+                args.into_iter().map(|a| self.apply_subst(a)).collect(),
+            ),
             Type::Union(members) => {
                 Type::Union(members.into_iter().map(|m| self.apply_subst(m)).collect())
             }
@@ -225,7 +226,6 @@ impl TypeChecker {
                     if let Some(t) = self.lookup_type(name) {
                         t
                     } else {
-                        // might be a type parameter
                         Type::Param(name.clone())
                     }
                 }
@@ -285,10 +285,8 @@ impl TypeChecker {
                 }
                 Type::Union(vars)
             }
-            // Raw C pointer: treat as Int (pointer-sized integer)
             TypeExprKind::Ptr(_) => Type::Int,
-            // Fixed-size C array: treat as a list of Int for type-checking purposes
-            TypeExprKind::FixedArray(_, _) => Type::List(Box::new(Type::Int)),
+            TypeExprKind::FixedArray(_, _) => Type::Int,
         }
     }
 }

@@ -18,7 +18,7 @@ pub enum Operand {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Constant {
     Int(i64),
-    Float(u64), // bits for eq/hash
+    Float(u64),
     Str(String),
     Bool(bool),
     Function(String),
@@ -44,12 +44,13 @@ pub enum Rvalue {
     GetAttr(Operand, String),
     GetIndex(Operand, Operand),
     GetTag(Operand),
-    GetTypeId(Operand), // for union discrimination
+    GetTypeId(Operand),
     Ref(Local),
     MutRef(Local),
     VectorSplat(Operand, usize),
     VectorLoad(Operand, Operand, usize),
     VectorFMA(Operand, Operand, Operand),
+    PtrLoad(Operand),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +67,7 @@ pub enum StatementKind {
     StorageDead(Local),
     Drop(Local),
     VectorStore(Operand, Operand, Operand),
+    PtrStore(Operand, Operand),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,14 +90,12 @@ pub struct Terminator {
     pub span: Span,
 }
 
-// basic block sequence
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BasicBlock {
     pub statements: Vec<Statement>,
     pub terminator: Option<Terminator>,
 }
 
-// Declaration metadata for a local variable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalDecl {
     pub ty: Type,

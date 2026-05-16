@@ -24,6 +24,17 @@ impl TypeChecker {
             }
             ExprKind::Bool(_) => Type::Bool,
 
+            ExprKind::Deref(inner) => {
+                self.check_expr(inner);
+                if self.unsafe_depth == 0 {
+                    self.errors
+                        .push(super::super::error::SemanticError::Custom {
+                            msg: "pointer dereference requires unsafe block".into(),
+                            span: expr.span,
+                        });
+                }
+                Type::Int
+            }
             ExprKind::Borrow(inner) => {
                 let inner_ty = self.check_expr(inner);
                 Type::Ref(Box::new(inner_ty))
@@ -117,7 +128,11 @@ impl TypeChecker {
                         let instantiated_init = self.instantiate(init_ty);
                         if let Type::Fn(params, _, _) = instantiated_init {
                             if !params.is_empty() {
-                                self.unify(&params[0], &Type::Struct(name.clone(), type_args.clone()), expr.span);
+                                self.unify(
+                                    &params[0],
+                                    &Type::Struct(name.clone(), type_args.clone()),
+                                    expr.span,
+                                );
                             }
 
                             if params.len() != arg_types.len() + 1 {
@@ -141,9 +156,14 @@ impl TypeChecker {
                             for (i, arg_ty) in arg_types.iter().enumerate() {
                                 if i < fields.len() {
                                     let field_name = &fields[i];
-                                    if let Some(field_ty) = self.field_types.get(&(name.clone(), field_name.clone())).cloned() {
+                                    if let Some(field_ty) = self
+                                        .field_types
+                                        .get(&(name.clone(), field_name.clone()))
+                                        .cloned()
+                                    {
                                         let subst = self.get_struct_subst(&name, &type_args);
-                                        let instantiated_field = self.replace_params_with_vars(field_ty, &subst);
+                                        let instantiated_field =
+                                            self.replace_params_with_vars(field_ty, &subst);
                                         self.unify(&instantiated_field, arg_ty, expr.span);
                                     }
                                 }
@@ -169,19 +189,27 @@ impl TypeChecker {
                 let mut final_callee_ty = resolved_callee.clone();
                 if let ExprKind::Identifier(name) = &callee.kind {
                     if self.ffi_fns.contains(name) && self.unsafe_depth == 0 {
-                        self.errors.push(super::super::error::SemanticError::Custom {
-                            msg: format!("call to unsafe FFI function `{}` requires unsafe block", name),
-                            span: expr.span,
-                        });
+                        self.errors
+                            .push(super::super::error::SemanticError::Custom {
+                                msg: format!(
+                                    "call to unsafe FFI function `{}` requires unsafe block",
+                                    name
+                                ),
+                                span: expr.span,
+                            });
                     }
                 } else if let ExprKind::Attr { obj, attr } = &callee.kind {
                     if let ExprKind::Identifier(alias) = &obj.kind {
                         let mangled = format!("{}::{}", alias, attr);
                         if self.ffi_fns.contains(&mangled) && self.unsafe_depth == 0 {
-                            self.errors.push(super::super::error::SemanticError::Custom {
-                                msg: format!("call to unsafe FFI function `{}` requires unsafe block", mangled),
-                                span: expr.span,
-                            });
+                            self.errors
+                                .push(super::super::error::SemanticError::Custom {
+                                    msg: format!(
+                                        "call to unsafe FFI function `{}` requires unsafe block",
+                                        mangled
+                                    ),
+                                    span: expr.span,
+                                });
                         }
                     }
                 }

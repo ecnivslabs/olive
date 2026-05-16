@@ -1,4 +1,3 @@
-/// Source span tracking exact position in source.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct Span {
     pub file_id: usize,

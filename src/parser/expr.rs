@@ -9,7 +9,10 @@ use crate::span::Span;
 impl Parser {
     pub(crate) fn is_valid_assign_target(expr: &Expr) -> bool {
         match &expr.kind {
-            ExprKind::Identifier(_) | ExprKind::Attr { .. } | ExprKind::Index { .. } => true,
+            ExprKind::Identifier(_)
+            | ExprKind::Attr { .. }
+            | ExprKind::Index { .. }
+            | ExprKind::Deref(_) => true,
             ExprKind::Tuple(elems) => elems.iter().all(Self::is_valid_assign_target),
             _ => false,
         }
@@ -263,6 +266,13 @@ impl Parser {
                     let span = self.span_from(&start);
                     Ok(Expr::new(ExprKind::Borrow(Box::new(operand)), span))
                 }
+            }
+            TokenKind::Star => {
+                let start = self.peek().clone();
+                self.advance();
+                let operand = self.parse_unary()?;
+                let span = self.span_from(&start);
+                Ok(Expr::new(ExprKind::Deref(Box::new(operand)), span))
             }
             TokenKind::Minus => {
                 let start = self.peek().clone();
@@ -706,6 +716,10 @@ impl Parser {
             TokenKind::False => {
                 self.advance();
                 Ok(Expr::new(ExprKind::Bool(false), start))
+            }
+            TokenKind::Null => {
+                self.advance();
+                Ok(Expr::new(ExprKind::Integer(0), start))
             }
             TokenKind::Match => {
                 self.advance();

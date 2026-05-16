@@ -2,7 +2,6 @@ use super::Transform;
 use crate::mir::liveness::Liveness;
 use crate::mir::*;
 
-// elide copies if local not live after stmt
 pub struct MoveElision;
 
 impl Transform for MoveElision {
@@ -56,6 +55,11 @@ impl MoveElision {
                 changed |= self.optimize_operand(val, live_after, locals);
                 changed
             }
+            StatementKind::PtrStore(ptr, val) => {
+                let mut changed = self.optimize_operand(ptr, live_after, locals);
+                changed |= self.optimize_operand(val, live_after, locals);
+                changed
+            }
             _ => false,
         }
     }
@@ -106,6 +110,7 @@ impl MoveElision {
                 changed
             }
             Rvalue::Ref(_) | Rvalue::MutRef(_) => false,
+            Rvalue::PtrLoad(op) => self.optimize_operand(op, live_after, locals),
             Rvalue::VectorSplat(op, _) => self.optimize_operand(op, live_after, locals),
             Rvalue::VectorLoad(obj, idx, _) => {
                 let mut changed = self.optimize_operand(obj, live_after, locals);
