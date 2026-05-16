@@ -22,9 +22,7 @@ pub extern "C" fn olive_str_get(s: i64, i: i64) -> i64 {
     if byte == 0 {
         return 0;
     }
-    let buf = [byte, 0u8];
-    let c_str = unsafe { std::ffi::CString::from_vec_unchecked(buf.to_vec()) };
-    c_str.into_raw() as i64 | 1
+    crate::string_slab::str_alloc(&[byte])
 }
 
 #[unsafe(no_mangle)]
@@ -53,9 +51,7 @@ pub extern "C" fn olive_str_get_checked(s: i64, i: i64, loc: i64) -> i64 {
             crate::panic::olive_bounds_fail(i, j as i64, loc);
         }
         if j == target {
-            let buf = [byte, 0u8];
-            let c_str = unsafe { std::ffi::CString::from_vec_unchecked(buf.to_vec()) };
-            return c_str.into_raw() as i64 | 1;
+            return crate::string_slab::str_alloc(&[byte]);
         }
         j += 1;
     }
@@ -94,11 +90,13 @@ pub extern "C" fn olive_str_slice(s: i64, start: i64, end: i64) -> i64 {
 /// assert!(ptr != 0);
 /// ```
 pub fn olive_str_internal(s: &str) -> i64 {
-    let c_str = std::ffi::CString::new(s).unwrap_or_else(|_| {
-        let safe: String = s.chars().filter(|&c| c != '\0').collect();
-        std::ffi::CString::new(safe).unwrap()
-    });
-    c_str.into_raw() as i64 | 1
+    // The terminator marks the end; an interior nul would make the free path
+    // strlen short and pick the wrong size class, so drop them here.
+    if s.as_bytes().contains(&0) {
+        let safe: Vec<u8> = s.bytes().filter(|&b| b != 0).collect();
+        return crate::string_slab::str_alloc(&safe);
+    }
+    crate::string_slab::str_alloc(s.as_bytes())
 }
 
 /// Converts an Olive string pointer back into an owned `String`.
@@ -282,19 +280,8 @@ pub extern "C" fn olive_str_split(s: i64, sep: i64) -> i64 {
         let sep_str = olive_str_from_ptr(sep);
         text.split(&sep_str).map(olive_str_internal).collect()
     };
-    let mut v = parts;
-    let ptr = v.as_mut_ptr();
-    let cap = v.capacity();
-    let len = v.len();
-    std::mem::forget(v);
-    let res = Box::into_raw(Box::new(StableVec {
-        kind: KIND_LIST,
-        ptr,
-        cap,
-        len,
-    })) as i64;
-    register_object(res);
-    res
+    let v = parts;
+    crate::list::list_from_vec(v)
 }
 
 #[unsafe(no_mangle)]
@@ -396,29 +383,11 @@ pub extern "C" fn olive_str_grapheme_count(s: i64) -> i64 {
 pub extern "C" fn olive_str_graphemes(s: i64) -> i64 {
     use unicode_segmentation::UnicodeSegmentation;
     if s == 0 {
-        let res = Box::into_raw(Box::new(StableVec {
-            kind: KIND_LIST,
-            ptr: std::ptr::null_mut(),
-            cap: 0,
-            len: 0,
-        })) as i64;
-        register_object(res);
-        return res;
+        return crate::list::list_from_vec(Vec::new());
     }
     let text = olive_str_from_ptr(s);
-    let mut ptrs: Vec<i64> = text.graphemes(true).map(olive_str_internal).collect();
-    let ptr = ptrs.as_mut_ptr();
-    let cap = ptrs.capacity();
-    let len = ptrs.len();
-    std::mem::forget(ptrs);
-    let res = Box::into_raw(Box::new(StableVec {
-        kind: KIND_LIST,
-        ptr,
-        cap,
-        len,
-    })) as i64;
-    register_object(res);
-    res
+    let ptrs: Vec<i64> = text.graphemes(true).map(olive_str_internal).collect();
+    crate::list::list_from_vec(ptrs)
 }
 
 #[cfg(test)]

@@ -341,6 +341,7 @@ impl<'a> MirBuilder<'a> {
                     stmt.span,
                 );
                 if let Some(bb) = self.current_block {
+                    self.emit_open_loop_iter_frees();
                     self.emit_open_scope_drops(0, exclude);
                     if let Some((_, _, exit_bb)) = self.memo_context {
                         self.terminate_block(
@@ -358,6 +359,7 @@ impl<'a> MirBuilder<'a> {
 
             StmtKind::Return(None) => {
                 if let Some(bb) = self.current_block {
+                    self.emit_open_loop_iter_frees();
                     self.emit_open_scope_drops(0, None);
                     if let Some((_, _, exit_bb)) = self.memo_context {
                         self.terminate_block(
@@ -411,7 +413,7 @@ impl<'a> MirBuilder<'a> {
                     let ctx_op = self.lower_expr(&item.context_expr);
                     let ctx_ty = self.get_type(item.context_expr.id).clone();
 
-                    if let Type::Struct(name, _) = ctx_ty {
+                    if let Type::Struct(name, _, _) = ctx_ty {
                         let enter_mangled = format!("{}::__enter__", name);
                         let exit_mangled = format!("{}::__exit__", name);
 
@@ -790,7 +792,7 @@ impl<'a> MirBuilder<'a> {
                     self.start_function(init_name, n_params, Type::Null);
 
                     let self_local = self.new_local(
-                        Type::Struct(name.clone(), Vec::new()),
+                        Type::Struct(name.clone(), Vec::new(), false),
                         Some("self".to_string()),
                         false,
                     );

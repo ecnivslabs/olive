@@ -57,4 +57,29 @@ pub(super) const ENTRIES: &[Explanation] = &[
         fixed: "import py \"json\" as json\n\nfn main():\n    json.loads(\"{}\")",
         notes: &["Validate the inputs so the exception cannot arise, or propagate it with `?`."],
     },
+    Explanation {
+        code: "E0706",
+        title: "Python value cannot become the required native type",
+        summary: "A value crossing back from Python did not fit the native type the \
+                  surrounding Olive code requires, and no lossless conversion exists.",
+        wrong: "import py \"json\" as json\n\nfn main():\n    let n: i64 = json.loads(\"\\\"text\\\"\")\n    print(n)",
+        fixed: "import py \"json\" as json\n\nfn main():\n    let v = json.loads(\"\\\"text\\\"\")\n    print(v)",
+        notes: &[
+            "Read the value into an untyped binding first, or convert it explicitly \
+             on the Python side.",
+        ],
+    },
+    Explanation {
+        code: "E0707",
+        title: "stale reference",
+        summary: "A borrowed value outlived its owner. The generation check caught the \
+                  access before the freed memory was read, so the program stops with \
+                  this fault instead of corrupting the heap.",
+        wrong: "fn sink(v):\n    let tmp = [v]\n\nfn main():\n    let a = [1, 2]\n    sink(a)\n    print(a[0])",
+        fixed: "fn sink(v):\n    let tmp = [v]\n\nfn main():\n    let a = [1, 2]\n    print(a[0])\n    sink(a)",
+        notes: &[
+            "Once a value is stored somewhere else, that place owns it: finish reading \
+             through the old name first, or store a copy instead.",
+        ],
+    },
 ];

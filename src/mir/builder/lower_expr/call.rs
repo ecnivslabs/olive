@@ -10,7 +10,6 @@ impl<'a> MirBuilder<'a> {
         &mut self,
         args: &[CallArg],
         _callee: &Expr,
-        callee_name: Option<&str>,
         _span: Span,
     ) -> (Vec<Operand>, Vec<Option<String>>, Vec<Type>) {
         let mut arg_ops = Vec::new();
@@ -31,55 +30,15 @@ impl<'a> MirBuilder<'a> {
                 }
                 CallArg::Positional(e) | CallArg::Splat(e) | CallArg::KwSplat(e) => {
                     let arg_ty = self.get_type(e.id);
-                    let is_copy_arg = matches!(arg_ty, Type::PyObject | Type::Any) || {
-                        if let Some(name) = callee_name {
-                            matches!(
-                                name,
-                                "len"
-                                    | "print"
-                                    | "str"
-                                    | "int"
-                                    | "float"
-                                    | "type"
-                                    | "range"
-                                    | "slice"
-                            )
-                        } else {
-                            false
-                        }
-                    };
-                    if is_copy_arg {
-                        arg_ops.push(self.lower_expr_as_copy(e));
-                    } else {
-                        arg_ops.push(self.lower_expr(e));
-                    }
+                    // Arguments are borrows: the caller keeps ownership and
+                    // frees the value when its own scope ends.
+                    arg_ops.push(self.lower_expr_as_copy(e));
                     arg_kw_names.push(None);
                     arg_tys.push(arg_ty);
                 }
                 CallArg::Keyword(name, e) => {
                     let arg_ty = self.get_type(e.id);
-                    let is_copy_arg = matches!(arg_ty, Type::PyObject | Type::Any) || {
-                        if let Some(name) = callee_name {
-                            matches!(
-                                name,
-                                "len"
-                                    | "print"
-                                    | "str"
-                                    | "int"
-                                    | "float"
-                                    | "type"
-                                    | "range"
-                                    | "slice"
-                            )
-                        } else {
-                            false
-                        }
-                    };
-                    if is_copy_arg {
-                        arg_ops.push(self.lower_expr_as_copy(e));
-                    } else {
-                        arg_ops.push(self.lower_expr(e));
-                    }
+                    arg_ops.push(self.lower_expr_as_copy(e));
                     arg_kw_names.push(Some(name.clone()));
                     arg_tys.push(arg_ty);
                 }

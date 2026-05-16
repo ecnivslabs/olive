@@ -1,6 +1,5 @@
 const KIND_FUTURE: i64 = 4;
 const KIND_SM_FUTURE: i64 = 5;
-const KIND_LIST: i64 = 1;
 const POLL_PENDING: i64 = i64::MIN;
 
 use crate::StableVec;
@@ -489,29 +488,12 @@ pub extern "C" fn olive_gather_poll(frame: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_gather(futures_list: i64) -> i64 {
     if futures_list == 0 {
-        let v = Box::new(StableVec {
-            kind: KIND_LIST,
-            ptr: std::ptr::null_mut(),
-            cap: 0,
-            len: 0,
-        });
-        return Box::into_raw(v) as i64;
+        return crate::list::list_from_vec(Vec::new());
     }
     let list = unsafe { &*(futures_list as *const StableVec) };
     let n = list.len;
 
-    let mut res_vec = vec![POLL_PENDING; n];
-    let ptr = res_vec.as_mut_ptr();
-    let cap = res_vec.capacity();
-    let len = res_vec.len();
-    std::mem::forget(res_vec);
-
-    let results_list = Box::into_raw(Box::new(StableVec {
-        kind: KIND_LIST,
-        ptr,
-        cap,
-        len,
-    })) as i64;
+    let results_list = crate::list::list_from_vec(vec![POLL_PENDING; n]);
 
     let frame = Box::into_raw(Box::new(GatherFrame {
         state: 0,
@@ -546,17 +528,7 @@ pub extern "C" fn olive_select_poll(frame: i64) -> i64 {
         let fut = unsafe { *list.ptr.add(i) };
         let r = olive_sm_poll(fut);
         if r != POLL_PENDING {
-            let mut res_vec = vec![i as i64, r];
-            let ptr = res_vec.as_mut_ptr();
-            let cap = res_vec.capacity();
-            let len = res_vec.len();
-            std::mem::forget(res_vec);
-            return Box::into_raw(Box::new(StableVec {
-                kind: KIND_LIST,
-                ptr,
-                cap,
-                len,
-            })) as i64;
+            return crate::list::list_from_vec(vec![i as i64, r]);
         }
     }
     f.awaiting_list = f.futures_list;

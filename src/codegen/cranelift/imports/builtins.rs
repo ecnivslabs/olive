@@ -40,7 +40,7 @@ pub(crate) fn needs_type_descriptor(ty: &OliveType) -> bool {
             | OliveType::Set(_)
             | OliveType::Tuple(_)
             | OliveType::Dict(_, _)
-            | OliveType::Struct(_, _)
+            | OliveType::Struct(_, _, _)
             | OliveType::Enum(_, _)
     )
 }
@@ -48,6 +48,34 @@ pub(crate) fn needs_type_descriptor(ty: &OliveType) -> bool {
 type StructFields = HashMap<String, Vec<String>>;
 type FieldTypes = HashMap<(String, String), OliveType>;
 type EnumDefs = HashMap<String, Vec<(String, Vec<OliveType>)>>;
+
+/// The type whose descriptor drives a typed drop, if the dropped type has a
+/// useful one. A `T | None` union reduces to `T`; a struct without a known
+/// field layout encodes as an opaque byte the typed free cannot act on, so it
+/// stays on the untyped kind-dispatch path.
+pub(crate) fn drop_descriptor_type<'a>(
+    ty: &'a OliveType,
+    struct_fields: &StructFields,
+) -> Option<&'a OliveType> {
+    let t = match ty {
+        OliveType::Union(members) => {
+            let non_null: Vec<&OliveType> = members
+                .iter()
+                .filter(|m| !matches!(m, OliveType::Null))
+                .collect();
+            match non_null.as_slice() {
+                [single] => *single,
+                _ => return None,
+            }
+        }
+        other => other,
+    };
+    match t {
+        OliveType::Struct(name, _, _) => struct_fields.contains_key(name).then_some(t),
+        _ if needs_type_descriptor(t) => Some(t),
+        _ => None,
+    }
+}
 
 /// Encodes a type as the byte descriptor consumed by `olive_format_typed`. All
 /// bytes are non-zero so the descriptor interns as a NUL-terminated string;
@@ -59,7 +87,7 @@ pub(crate) fn type_descriptor(
     enum_defs: &EnumDefs,
 ) -> String {
     let mut out = Vec::new();
-    let mut visiting = std::collections::HashSet::new();
+    let mut visiting = std::collections::HashMap::new();
     encode_descriptor(
         ty,
         &mut out,
@@ -83,15 +111,16 @@ fn encode_descriptor(
     struct_fields: &StructFields,
     field_types: &FieldTypes,
     enum_defs: &EnumDefs,
-    visiting: &mut std::collections::HashSet<String>,
+    visiting: &mut std::collections::HashMap<String, usize>,
 ) {
     let mut ty = ty;
     while let OliveType::Ref(inner) | OliveType::MutRef(inner) | OliveType::Ptr(inner) = ty {
         ty = inner;
     }
-    let enc = |t: &OliveType, out: &mut Vec<u8>, v: &mut std::collections::HashSet<String>| {
-        encode_descriptor(t, out, struct_fields, field_types, enum_defs, v);
-    };
+    let enc =
+        |t: &OliveType, out: &mut Vec<u8>, v: &mut std::collections::HashMap<String, usize>| {
+            encode_descriptor(t, out, struct_fields, field_types, enum_defs, v);
+        };
     match ty {
         OliveType::Float | OliveType::F32 | OliveType::FloatLiteral(_) => out.push(2),
         OliveType::Bool => out.push(3),
@@ -120,10 +149,18 @@ fn encode_descriptor(
                 enc(it, out, visiting);
             }
         }
-        OliveType::Struct(name, _)
-            if struct_fields.contains_key(name) && !visiting.contains(name) =>
+        OliveType::Struct(name, _, _)
+            if struct_fields.contains_key(name) && visiting.contains_key(name) =>
         {
-            visiting.insert(name.clone());
+            // Recursion detected, emit a back-reference offset.
+            let target_idx = visiting[name];
+            out.push(14);
+            out.push((target_idx >> 8) as u8);
+            out.push((target_idx & 0xff) as u8);
+        }
+        OliveType::Struct(name, _, _) if struct_fields.contains_key(name) => {
+            let start_idx = out.len();
+            visiting.insert(name.clone(), start_idx);
             let fields = &struct_fields[name];
             out.push(12);
             push_len_prefixed(out, name);
@@ -138,8 +175,16 @@ fn encode_descriptor(
             }
             visiting.remove(name);
         }
-        OliveType::Enum(name, _) if enum_defs.contains_key(name) && !visiting.contains(name) => {
-            visiting.insert(name.clone());
+        OliveType::Enum(name, _) if enum_defs.contains_key(name) && visiting.contains_key(name) => {
+            // Recursion detected, emit a back-reference offset.
+            let target_idx = visiting[name];
+            out.push(14);
+            out.push((target_idx >> 8) as u8);
+            out.push((target_idx & 0xff) as u8);
+        }
+        OliveType::Enum(name, _) if enum_defs.contains_key(name) => {
+            let start_idx = out.len();
+            visiting.insert(name.clone(), start_idx);
             let variants = &enum_defs[name];
             out.push(13);
             push_len_prefixed(out, name);
@@ -153,7 +198,10 @@ fn encode_descriptor(
             }
             visiting.remove(name);
         }
-        OliveType::Struct(_, _) | OliveType::Enum(_, _) => out.push(11),
+        OliveType::Struct(_, _, _) | OliveType::Enum(_, _) => out.push(11),
+        // An inference variable that never got bound could hold anything;
+        // claiming a scalar here would skip frees and print raw words.
+        OliveType::Var(_) => out.push(6),
         _ => out.push(1),
     }
 }
@@ -249,10 +297,16 @@ pub(crate) fn resolve_builtin_import(
             "__olive_set_new" => Some("__olive_set_new"),
             "__olive_free" => Some("__olive_free"),
             "__olive_free_str" => Some("__olive_free_str"),
+            "__olive_free_iter" => Some("__olive_free_iter"),
             "__olive_free_list" => Some("__olive_free_list"),
             "__olive_free_obj" => Some("__olive_free_obj"),
             "__olive_struct_alloc" => Some("__olive_struct_alloc"),
             "__olive_free_struct" => Some("__olive_free_struct"),
+            "__olive_free_typed" => Some("__olive_free_typed"),
+            "__olive_str_gen_of" => Some("__olive_str_gen_of"),
+            "__olive_str_gen_stale" => Some("__olive_str_gen_stale"),
+            "__olive_struct_gen_of" => Some("__olive_struct_gen_of"),
+            "__olive_struct_gen_stale" => Some("__olive_struct_gen_stale"),
             "__olive_cache_get" => Some("__olive_cache_get"),
             "__olive_cache_has" => Some("__olive_cache_has"),
             "__olive_cache_set" => Some("__olive_cache_set"),
@@ -627,7 +681,7 @@ pub(crate) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
     match name {
         "len" => match current_ty {
             OliveType::Str => Some("__olive_str_len"),
-            OliveType::Dict(_, _) | OliveType::Struct(_, _) | OliveType::Any => {
+            OliveType::Dict(_, _) | OliveType::Struct(_, _, _) | OliveType::Any => {
                 Some("__olive_obj_len")
             }
             _ => Some("__olive_list_len"),
@@ -671,7 +725,7 @@ pub(crate) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
             OliveType::Bool => Some("__olive_print_bool"),
             OliveType::PyObject | OliveType::PyNamed(_, _) => Some("__olive_print_py"),
             OliveType::Union(_) | OliveType::Any => Some("__olive_print_any"),
-            OliveType::Dict(_, _) | OliveType::Struct(_, _) => Some("__olive_print_obj"),
+            OliveType::Dict(_, _) | OliveType::Struct(_, _, _) => Some("__olive_print_obj"),
             OliveType::Null => Some("__olive_print_str"),
             _ => Some("__olive_print_int"),
         },

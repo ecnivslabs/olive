@@ -437,7 +437,7 @@ impl<M: Module> CraneliftCodegen<M> {
                     while let OliveType::Ref(inner) | OliveType::MutRef(inner) = ty {
                         ty = inner;
                     }
-                    if matches!(ty, OliveType::Dict(_, _) | OliveType::Struct(_, _)) {
+                    if matches!(ty, OliveType::Dict(_, _) | OliveType::Struct(_, _, _)) {
                         is_obj = true;
                     } else if matches!(ty, OliveType::Str) {
                         is_str = true;
@@ -500,9 +500,9 @@ impl<M: Module> CraneliftCodegen<M> {
     /// `*` needs a widening `smulhi`/`imul` overflow check, not a post-hoc
     /// range check: two 61-bit values can multiply past `i64`, and a wrapped
     /// product can coincidentally land back in-range and look valid.
-    /// `/`/`%` need only a zero-divisor check -- quotient/remainder of two
-    /// 61-bit-bounded values can't itself leave that range, and `i64::MIN`
-    /// can't reach here (tag check already bounds operands to ±2^60).
+    /// `%` needs only a zero-divisor check: a remainder's magnitude is below
+    /// the divisor's, which is in range. `/` also range-checks the quotient
+    /// for the one escaping case, `ANY_INT_MIN / -1 = 2^60 > ANY_INT_MAX`.
     /// Comparisons need no check and return a raw `i64` 0/1, not a repacked
     /// `Any` (matches `any_cmp!`'s "stays a bare word" semantics).
     fn translate_any_binop_specialized(
@@ -599,7 +599,19 @@ impl<M: Module> CraneliftCodegen<M> {
                 let shifted = builder.ins().ishl_imm(raw, 3);
                 let tagged = builder.ins().bor_imm(shifted, ANY_TAG_INT);
                 builder.def_var(result_var, tagged);
-                builder.ins().jump(merge_block, &[]);
+                if matches!(op, Div) {
+                    let biased = builder.ins().iadd_imm(raw, -ANY_INT_MIN);
+                    let in_range = builder.ins().icmp_imm(
+                        IntCC::UnsignedLessThanOrEqual,
+                        biased,
+                        ANY_INT_MAX - ANY_INT_MIN,
+                    );
+                    builder
+                        .ins()
+                        .brif(in_range, merge_block, &[], compute_fail_block, &[]);
+                } else {
+                    builder.ins().jump(merge_block, &[]);
+                }
             }
             Lt | LtEq | Gt | GtEq | Eq | NotEq => {
                 let cc = match op {

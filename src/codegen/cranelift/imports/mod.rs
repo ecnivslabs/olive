@@ -53,16 +53,20 @@ pub(super) fn collect_needed_imports(
                                 }
                                 OliveType::List(_) | OliveType::Tuple(_) | OliveType::Set(_) => {
                                     needed.insert("__olive_free_list");
+                                    needed.insert("__olive_free_typed");
                                 }
-                                OliveType::Struct(_, _) => {
+                                OliveType::Struct(_, _, _) => {
                                     needed.insert("__olive_free_struct");
                                     needed.insert("__olive_free_obj");
+                                    needed.insert("__olive_free_typed");
                                 }
                                 OliveType::Dict(_, _) => {
                                     needed.insert("__olive_free_obj");
+                                    needed.insert("__olive_free_typed");
                                 }
                                 OliveType::Enum(_, _) => {
                                     needed.insert("__olive_free_enum");
+                                    needed.insert("__olive_free_typed");
                                 }
                                 OliveType::PyObject => {
                                     needed.insert("__olive_py_decref");
@@ -75,6 +79,7 @@ pub(super) fn collect_needed_imports(
                                 // the whole set since the member isn't known here.
                                 OliveType::Union(_) => {
                                     needed.insert("__olive_free_any");
+                                    needed.insert("__olive_free_typed");
                                     needed.insert("__olive_free_str");
                                     needed.insert("__olive_buf_free");
                                     needed.insert("__olive_free_list");
@@ -88,6 +93,18 @@ pub(super) fn collect_needed_imports(
                                     needed.insert("__olive_free");
                                 }
                             }
+                        }
+                    }
+                    StatementKind::GenCheck { value, .. } => {
+                        needed.insert("__olive_stale_ref_fail");
+                        if crate::mir::optimizations::gencheck::str_backed(&func.locals[value.0].ty)
+                        {
+                            needed.insert("__olive_str_gen_stale");
+                        }
+                        if crate::mir::optimizations::gencheck::struct_backed(
+                            &func.locals[value.0].ty,
+                        ) {
+                            needed.insert("__olive_struct_gen_stale");
                         }
                     }
                     _ => {}
@@ -125,8 +142,21 @@ pub(super) fn scan_rvalue_imports(
                     "__olive_format_typed"
                 });
             }
+            if name == "__olive_copy_typed" {
+                needed.insert("__olive_copy_typed");
+            }
         }
         Rvalue::Call { .. } => {}
+        Rvalue::GenOf(Operand::Copy(l) | Operand::Move(l))
+            if crate::mir::optimizations::gencheck::str_backed(&func_mir.locals[l.0].ty) =>
+        {
+            needed.insert("__olive_str_gen_of");
+        }
+        Rvalue::GenOf(Operand::Copy(l) | Operand::Move(l))
+            if crate::mir::optimizations::gencheck::struct_backed(&func_mir.locals[l.0].ty) =>
+        {
+            needed.insert("__olive_struct_gen_of");
+        }
         Rvalue::BinaryOp(op, lhs, rhs) => {
             use crate::parser::BinOp::*;
             // An `Any` operand routes arithmetic and comparison to the runtime
@@ -420,7 +450,7 @@ mod builtins;
 mod tests;
 
 pub(super) use builtins::{
-    cl_type, is_any_op, is_float_op, is_list_op, is_pyobj_op, is_str_op, is_u64_op,
-    map_builtin_to_runtime, needs_type_descriptor, resolve_builtin_import, type_descriptor,
-    typed_zero,
+    cl_type, drop_descriptor_type, is_any_op, is_float_op, is_list_op, is_pyobj_op, is_str_op,
+    is_u64_op, map_builtin_to_runtime, needs_type_descriptor, resolve_builtin_import,
+    type_descriptor, typed_zero,
 };

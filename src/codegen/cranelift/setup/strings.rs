@@ -73,6 +73,12 @@ impl<M: Module> CraneliftCodegen<M> {
                     ) if !is_float_op(func, lhs) => {
                         self.intern_loc(stmt.span);
                     }
+                    StatementKind::GenCheck { value, .. } => {
+                        self.intern_loc(stmt.span);
+                        if let Some(name) = func.locals[value.0].name.clone() {
+                            self.intern_attr_string(&name);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -96,6 +102,21 @@ impl<M: Module> CraneliftCodegen<M> {
                         self.collect_strings_in_operand(idx_op);
                         self.collect_strings_in_operand(val_op);
                     }
+                    StatementKind::Drop(local) => {
+                        use super::super::imports::{drop_descriptor_type, type_descriptor};
+                        let ty = &func.locals[local.0].ty;
+                        if ty.is_move_type()
+                            && let Some(desc_ty) = drop_descriptor_type(ty, &self.struct_fields)
+                        {
+                            let desc = type_descriptor(
+                                desc_ty,
+                                &self.struct_fields,
+                                &self.field_types,
+                                &self.enum_defs,
+                            );
+                            self.intern_attr_string(&desc);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -111,14 +132,19 @@ impl<M: Module> CraneliftCodegen<M> {
         let Operand::Constant(Constant::Function(name)) = callee else {
             return;
         };
-        if (name != "print" && name != "str") || args.len() != 1 {
+        if name != "print" && name != "str" && name != "__olive_copy_typed" {
+            return;
+        }
+        if args.len() != 1 {
             return;
         }
         let ty = match &args[0] {
             Operand::Copy(l) | Operand::Move(l) => &func.locals[l.0].ty,
             _ => return,
         };
-        if needs_type_descriptor(ty) {
+        // A copy-on-escape always needs its descriptor, even for a bare string
+        // whose print/format path would not.
+        if name == "__olive_copy_typed" || needs_type_descriptor(ty) {
             let desc = type_descriptor(ty, &self.struct_fields, &self.field_types, &self.enum_defs);
             self.intern_attr_string(&desc);
         }

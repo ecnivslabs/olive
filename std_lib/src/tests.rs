@@ -189,14 +189,7 @@ fn time_now_positive() {
 #[test]
 fn str_fmt_basic() {
     let tmpl = s("hello {}!");
-    let mut args_ptrs = vec![s("world")];
-    let args = Box::into_raw(Box::new(StableVec {
-        kind: KIND_LIST,
-        ptr: args_ptrs.as_mut_ptr(),
-        cap: args_ptrs.capacity(),
-        len: args_ptrs.len(),
-    })) as i64;
-    std::mem::forget(args_ptrs);
+    let args = crate::list::list_from_vec(vec![s("world")]);
     let result = from_ptr(olive_str_fmt(tmpl, args));
     assert_eq!(result, "hello world!");
 }
@@ -204,14 +197,7 @@ fn str_fmt_basic() {
 #[test]
 fn str_fmt_multiple_args() {
     let tmpl = s("{} + {} = {}");
-    let mut args_ptrs = vec![s("1"), s("2"), s("3")];
-    let args = Box::into_raw(Box::new(StableVec {
-        kind: KIND_LIST,
-        ptr: args_ptrs.as_mut_ptr(),
-        cap: args_ptrs.capacity(),
-        len: args_ptrs.len(),
-    })) as i64;
-    std::mem::forget(args_ptrs);
+    let args = crate::list::list_from_vec(vec![s("1"), s("2"), s("3")]);
     let result = from_ptr(olive_str_fmt(tmpl, args));
     assert_eq!(result, "1 + 2 = 3");
 }

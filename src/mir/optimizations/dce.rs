@@ -31,6 +31,17 @@ impl Transform for DeadCodeElimination {
                         self.record_operand_usage(ptr, &mut used);
                         self.record_operand_usage(val, &mut used);
                     }
+                    // A drop reads the owned pointer; the assignment feeding
+                    // an owner must not be eliminated out from under it.
+                    StatementKind::Drop(l) => {
+                        if func.locals.get(l.0).is_some_and(|d| d.ty.is_move_type()) {
+                            used.insert(*l);
+                        }
+                    }
+                    StatementKind::GenCheck { value, generation } => {
+                        used.insert(*value);
+                        used.insert(*generation);
+                    }
                     _ => {}
                 }
             }
@@ -90,7 +101,7 @@ impl DeadCodeElimination {
             Rvalue::Ref(l) | Rvalue::MutRef(l) => {
                 used.insert(*l);
             }
-            Rvalue::PtrLoad(op) => self.record_operand_usage(op, used),
+            Rvalue::PtrLoad(op) | Rvalue::GenOf(op) => self.record_operand_usage(op, used),
             Rvalue::VTableLoad { vtable, .. } => self.record_operand_usage(vtable, used),
             Rvalue::VectorSplat(op, _) => self.record_operand_usage(op, used),
             Rvalue::VectorLoad(obj, idx, _) => {
@@ -204,5 +215,43 @@ mod tests {
     fn no_dead_code_empty() {
         let mut f = func(vec![]);
         assert!(!DeadCodeElimination.run(&mut f));
+    }
+
+    #[test]
+    fn drop_keeps_owner_assignment_alive() {
+        let mut f = func(vec![block(
+            vec![
+                assign(
+                    1,
+                    Rvalue::Aggregate(
+                        crate::mir::ir::AggregateKind::List,
+                        vec![Operand::Constant(Constant::Int(1))],
+                    ),
+                ),
+                Statement {
+                    kind: StatementKind::Drop(Local(1)),
+                    span: sp(),
+                },
+            ],
+            TerminatorKind::Return,
+        )]);
+        f.locals = vec![
+            LocalDecl {
+                ty: crate::semantic::types::Type::Int,
+                name: None,
+                span: sp(),
+                is_mut: false,
+                is_owning: true,
+            },
+            LocalDecl {
+                ty: crate::semantic::types::Type::List(Box::new(crate::semantic::types::Type::Int)),
+                name: None,
+                span: sp(),
+                is_mut: false,
+                is_owning: true,
+            },
+        ];
+        assert!(!DeadCodeElimination.run(&mut f));
+        assert_eq!(f.basic_blocks[0].statements.len(), 2);
     }
 }

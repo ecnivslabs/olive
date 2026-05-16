@@ -1,4 +1,4 @@
-use crate::{KIND_LIST, StableVec, olive_str_from_ptr, olive_str_internal};
+use crate::{olive_str_from_ptr, olive_str_internal};
 use regex::Regex;
 
 #[unsafe(no_mangle)]
@@ -38,14 +38,7 @@ pub extern "C" fn olive_regex_find(pattern: i64, text: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_regex_find_all(pattern: i64, text: i64) -> i64 {
-    let empty_list = || {
-        Box::into_raw(Box::new(StableVec {
-            kind: KIND_LIST,
-            ptr: std::ptr::null_mut(),
-            cap: 0,
-            len: 0,
-        })) as i64
-    };
+    let empty_list = || crate::list::list_from_vec(Vec::new());
     if pattern == 0 || text == 0 {
         return empty_list();
     }
@@ -53,20 +46,11 @@ pub extern "C" fn olive_regex_find_all(pattern: i64, text: i64) -> i64 {
     let txt = olive_str_from_ptr(text);
     match Regex::new(&pat) {
         Ok(re) => {
-            let mut matches: Vec<i64> = re
+            let matches: Vec<i64> = re
                 .find_iter(&txt)
                 .map(|m| olive_str_internal(m.as_str()))
                 .collect();
-            let ptr = matches.as_mut_ptr();
-            let cap = matches.capacity();
-            let len = matches.len();
-            std::mem::forget(matches);
-            Box::into_raw(Box::new(StableVec {
-                kind: KIND_LIST,
-                ptr,
-                cap,
-                len,
-            })) as i64
+            crate::list::list_from_vec(matches)
         }
         Err(_) => empty_list(),
     }
@@ -110,14 +94,7 @@ pub extern "C" fn olive_regex_replace_all(pattern: i64, text: i64, rep: i64) -> 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_regex_captures(pattern: i64, text: i64) -> i64 {
-    let empty_list = || {
-        Box::into_raw(Box::new(StableVec {
-            kind: KIND_LIST,
-            ptr: std::ptr::null_mut(),
-            cap: 0,
-            len: 0,
-        })) as i64
-    };
+    let empty_list = || crate::list::list_from_vec(Vec::new());
     if pattern == 0 || text == 0 {
         return empty_list();
     }
@@ -126,23 +103,14 @@ pub extern "C" fn olive_regex_captures(pattern: i64, text: i64) -> i64 {
     match Regex::new(&pat) {
         Ok(re) => match re.captures(&txt) {
             Some(caps) => {
-                let mut groups: Vec<i64> = caps
+                let groups: Vec<i64> = caps
                     .iter()
                     .map(|m| match m {
                         Some(m) => olive_str_internal(m.as_str()),
                         None => 0,
                     })
                     .collect();
-                let ptr = groups.as_mut_ptr();
-                let cap = groups.capacity();
-                let len = groups.len();
-                std::mem::forget(groups);
-                Box::into_raw(Box::new(StableVec {
-                    kind: KIND_LIST,
-                    ptr,
-                    cap,
-                    len,
-                })) as i64
+                crate::list::list_from_vec(groups)
             }
             None => empty_list(),
         },
@@ -152,14 +120,7 @@ pub extern "C" fn olive_regex_captures(pattern: i64, text: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_regex_split(pattern: i64, text: i64) -> i64 {
-    let empty_list = || {
-        Box::into_raw(Box::new(StableVec {
-            kind: KIND_LIST,
-            ptr: std::ptr::null_mut(),
-            cap: 0,
-            len: 0,
-        })) as i64
-    };
+    let empty_list = || crate::list::list_from_vec(Vec::new());
     if pattern == 0 {
         return empty_list();
     }
@@ -171,17 +132,8 @@ pub extern "C" fn olive_regex_split(pattern: i64, text: i64) -> i64 {
     };
     match Regex::new(&pat) {
         Ok(re) => {
-            let mut parts: Vec<i64> = re.split(&txt).map(olive_str_internal).collect();
-            let ptr = parts.as_mut_ptr();
-            let cap = parts.capacity();
-            let len = parts.len();
-            std::mem::forget(parts);
-            Box::into_raw(Box::new(StableVec {
-                kind: KIND_LIST,
-                ptr,
-                cap,
-                len,
-            })) as i64
+            let parts: Vec<i64> = re.split(&txt).map(olive_str_internal).collect();
+            crate::list::list_from_vec(parts)
         }
         Err(_) => empty_list(),
     }
@@ -199,6 +151,7 @@ pub extern "C" fn olive_regex_is_valid(pattern: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::StableVec;
     use crate::olive_str_internal;
 
     fn s(text: &str) -> i64 {

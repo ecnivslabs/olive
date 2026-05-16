@@ -82,6 +82,7 @@ fn rvalue_reads(rval: &Rvalue, out: &mut Vec<Local>) {
         | Rvalue::GetTypeId(op)
         | Rvalue::VectorSplat(op, _)
         | Rvalue::PtrLoad(op)
+        | Rvalue::GenOf(op)
         | Rvalue::FatPtrData(op)
         | Rvalue::VTableLoad { vtable: op, .. } => push(op),
         Rvalue::BinaryOp(_, a, b) | Rvalue::GetIndex(a, b, _) | Rvalue::VectorLoad(a, b, _) => {
@@ -273,6 +274,10 @@ impl LoopVectorizer {
                                 reads.extend(operand_local(v));
                             }
                             StatementKind::Drop(l) => reads.push(*l),
+                            StatementKind::GenCheck { value, generation } => {
+                                reads.push(*value);
+                                reads.push(*generation);
+                            }
                             StatementKind::StorageLive(_) | StatementKind::StorageDead(_) => {}
                         }
                         !reads.iter().any(|l| vec_locals.contains(l))
@@ -308,6 +313,10 @@ impl LoopVectorizer {
                         reads.extend(operand_local(v));
                     }
                     StatementKind::Drop(l) => reads.push(*l),
+                    StatementKind::GenCheck { value, generation } => {
+                        reads.push(*value);
+                        reads.push(*generation);
+                    }
                     StatementKind::StorageLive(_) | StatementKind::StorageDead(_) => {}
                 }
                 if reads.iter().any(|l| vec_locals.contains(l)) {

@@ -18,17 +18,8 @@ pub(crate) fn json_to_olive(val: &serde_json::Value) -> i64 {
             .unwrap_or_else(|| n.as_f64().unwrap_or(0.0) as i64),
         serde_json::Value::String(s) => olive_str_internal(s),
         serde_json::Value::Array(arr) => {
-            let mut elems: Vec<i64> = arr.iter().map(json_to_olive_any).collect();
-            let ptr = elems.as_mut_ptr();
-            let cap = elems.capacity();
-            let len = elems.len();
-            std::mem::forget(elems);
-            Box::into_raw(Box::new(StableVec {
-                kind: KIND_LIST,
-                ptr,
-                cap,
-                len,
-            })) as i64
+            let elems: Vec<i64> = arr.iter().map(json_to_olive_any).collect();
+            crate::list::list_from_vec(elems)
         }
         serde_json::Value::Object(map) => {
             let mut fields = HashMap::default();
@@ -38,10 +29,7 @@ pub(crate) fn json_to_olive(val: &serde_json::Value) -> i64 {
                     json_to_olive_any(v),
                 );
             }
-            Box::into_raw(Box::new(OliveObj {
-                kind: KIND_OBJ,
-                fields,
-            })) as i64
+            crate::obj::new_obj_from_map(fields)
         }
     }
 }

@@ -98,14 +98,19 @@ impl Liveness {
                 Self::use_op(live, ptr);
                 Self::use_op(live, val);
             }
+            StatementKind::GenCheck { value, generation } => {
+                live.insert(*value);
+                live.insert(*generation);
+            }
         }
     }
 
     fn use_rvalue(live: &mut HashSet<Local>, rv: &Rvalue) {
         match rv {
-            Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::FatPtrData(op) => {
-                Self::use_op(live, op)
-            }
+            Rvalue::Use(op)
+            | Rvalue::UnaryOp(_, op)
+            | Rvalue::FatPtrData(op)
+            | Rvalue::GenOf(op) => Self::use_op(live, op),
             Rvalue::BinaryOp(_, l, r) => {
                 Self::use_op(live, l);
                 Self::use_op(live, r);

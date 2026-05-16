@@ -65,6 +65,9 @@ pub enum Rvalue {
         vtable: Operand,
         method_idx: usize,
     },
+    /// Generation word of a slab object, captured when a borrow is created.
+    /// Emitted only by gen-check insertion, after every other pass has run.
+    GenOf(Operand),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +88,13 @@ pub enum StatementKind {
     Drop(Local),
     VectorStore(Operand, Operand, Operand),
     PtrStore(Operand, Operand),
+    /// Panics with a stale-reference fault unless `value` is null or its
+    /// current generation still matches `generation`. Emitted only by
+    /// gen-check insertion, after every other pass has run.
+    GenCheck {
+        value: Local,
+        generation: Local,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

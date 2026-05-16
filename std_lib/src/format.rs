@@ -2,19 +2,20 @@ use crate::{
     OliveEnum, OliveObj, StableVec, format_list_elem, olive_str_from_ptr, olive_str_internal,
 };
 
-const D_INT: u8 = 1;
-const D_FLOAT: u8 = 2;
-const D_BOOL: u8 = 3;
-const D_STR: u8 = 4;
-const D_NULL: u8 = 5;
-const D_ANY: u8 = 6;
-const D_LIST: u8 = 7;
-const D_SET: u8 = 8;
-const D_DICT: u8 = 9;
-const D_TUPLE: u8 = 10;
-const D_OBJ: u8 = 11;
-const D_STRUCT: u8 = 12;
-const D_ENUM: u8 = 13;
+pub(crate) const D_INT: u8 = 1;
+pub(crate) const D_FLOAT: u8 = 2;
+pub(crate) const D_BOOL: u8 = 3;
+pub(crate) const D_STR: u8 = 4;
+pub(crate) const D_NULL: u8 = 5;
+pub(crate) const D_ANY: u8 = 6;
+pub(crate) const D_LIST: u8 = 7;
+pub(crate) const D_SET: u8 = 8;
+pub(crate) const D_DICT: u8 = 9;
+pub(crate) const D_TUPLE: u8 = 10;
+pub(crate) const D_OBJ: u8 = 11;
+pub(crate) const D_STRUCT: u8 = 12;
+pub(crate) const D_ENUM: u8 = 13;
+pub(crate) const D_BACKREF: u8 = 14;
 
 /// Reads a length-prefixed string from a descriptor; length field is biased by 13.
 fn read_lp(desc: *const u8, pos: &mut usize) -> String {
@@ -29,12 +30,12 @@ fn read_lp(desc: *const u8, pos: &mut usize) -> String {
 }
 
 #[inline]
-unsafe fn byte(desc: *const u8, pos: usize) -> u8 {
+pub(crate) unsafe fn byte(desc: *const u8, pos: usize) -> u8 {
     unsafe { *desc.add(pos) }
 }
 
 /// Advances `pos` over one type-descriptor subtree without rendering anything.
-fn skip(desc: *const u8, pos: &mut usize) {
+pub(crate) fn skip(desc: *const u8, pos: &mut usize) {
     let tag = unsafe { byte(desc, *pos) };
     *pos += 1;
     match tag {
@@ -71,6 +72,9 @@ fn skip(desc: *const u8, pos: &mut usize) {
                     skip(desc, pos);
                 }
             }
+        }
+        D_BACKREF => {
+            *pos += 2;
         }
         _ => {}
     }

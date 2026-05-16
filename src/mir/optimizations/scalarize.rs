@@ -456,7 +456,21 @@ fn rewrite(
                     if aliases.contains(&dst)
                         && operand_local(op).is_some_and(|l| aliases.contains(&l)) => {}
 
-                StatementKind::Drop(l) if aliases.contains(&l) => {}
+                // The aggregate owned its heap fields; ownership moves to the
+                // scalar slots, dropped where the aggregate would have been.
+                StatementKind::Drop(l) if aliases.contains(&l) => {
+                    let mut fields: Vec<&(usize, crate::semantic::types::Type)> =
+                        field_map.values().collect();
+                    fields.sort_by_key(|&&(idx, _)| idx);
+                    for &&(idx, ref ty) in &fields {
+                        if ty.is_move_type() {
+                            new_stmts.push(Statement {
+                                kind: StatementKind::Drop(Local(base + idx)),
+                                span: stmt.span,
+                            });
+                        }
+                    }
+                }
 
                 StatementKind::StorageLive(l) | StatementKind::StorageDead(l)
                     if aliases.contains(&l) => {}
@@ -492,6 +506,7 @@ fn stmt_references(stmt: &Statement, local: Local) -> bool {
             operand_is(obj, local) || operand_is(idx, local) || operand_is(val, local)
         }
         StatementKind::PtrStore(ptr, val) => operand_is(ptr, local) || operand_is(val, local),
+        StatementKind::GenCheck { value, generation } => *value == local || *generation == local,
     }
 }
 
@@ -505,6 +520,7 @@ fn rval_references(rval: &Rvalue, local: Local) -> bool {
         | Rvalue::FatPtrData(op)
         | Rvalue::Cast(op, _)
         | Rvalue::PtrLoad(op)
+        | Rvalue::GenOf(op)
         | Rvalue::VTableLoad { vtable: op, .. }
         | Rvalue::VectorSplat(op, _) => operand_is(op, local),
         Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r, _) => {
@@ -733,5 +749,66 @@ mod tests {
         };
         assert!(!ScalarizeStructs.run(&mut f));
         assert_eq!(aggregate_count(&f), 1);
+    }
+
+    #[test]
+    fn drop_of_scalarized_tuple_moves_to_heap_field_slots() {
+        use crate::semantic::types::Type;
+        // Local(1) is a scalarized tuple whose slot 0 holds a list. Its Drop
+        // must become a Drop of the new list slot, or the list leaks.
+        let mut f = MirFunction {
+            name: "f".into(),
+            locals: vec![
+                local_decl(Type::Int),
+                local_decl(Type::Tuple(vec![Type::List(Box::new(Type::Int))])),
+                local_decl(Type::List(Box::new(Type::Int))),
+                local_decl(Type::List(Box::new(Type::Int))),
+            ],
+            basic_blocks: vec![bb(
+                vec![
+                    assign(
+                        2,
+                        Rvalue::Aggregate(
+                            AggregateKind::List,
+                            vec![Operand::Constant(Constant::Int(1))],
+                        ),
+                    ),
+                    assign(
+                        1,
+                        Rvalue::Aggregate(AggregateKind::Tuple, vec![Operand::Copy(Local(2))]),
+                    ),
+                    assign(
+                        3,
+                        Rvalue::GetIndex(
+                            Operand::Copy(Local(1)),
+                            Operand::Constant(Constant::Int(0)),
+                            false,
+                        ),
+                    ),
+                    Statement {
+                        kind: StatementKind::Drop(Local(1)),
+                        span: sp(),
+                    },
+                ],
+                TerminatorKind::Return,
+            )],
+            arg_count: 0,
+            vararg_idx: None,
+            kwarg_idx: None,
+            param_names: vec![],
+            is_async: false,
+        };
+        assert!(ScalarizeStructs.run(&mut f));
+        let slot = Local(4);
+        let drops: Vec<Local> = f.basic_blocks[0]
+            .statements
+            .iter()
+            .filter_map(|s| match &s.kind {
+                StatementKind::Drop(l) => Some(*l),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(drops, vec![slot]);
+        assert_eq!(f.locals[slot.0].ty, Type::List(Box::new(Type::Int)));
     }
 }

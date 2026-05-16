@@ -1,4 +1,4 @@
-use crate::{OliveObj, olive_str_from_ptr, olive_str_internal};
+use crate::{olive_str_from_ptr, olive_str_internal};
 use rustc_hash::FxHashMap as HashMap;
 
 fn days_in_month(year: i64, month: i64) -> i64 {
@@ -210,10 +210,7 @@ pub extern "C" fn olive_datetime_parts(ts: f64) -> i64 {
         crate::OliveStringKey(olive_str_internal("timestamp")),
         ts as i64,
     );
-    Box::into_raw(Box::new(OliveObj {
-        kind: crate::KIND_OBJ,
-        fields,
-    })) as i64
+    crate::obj::new_obj_from_map(fields)
 }
 
 #[unsafe(no_mangle)]
@@ -445,6 +442,7 @@ fn day_of_year(year: i64, month: i64, day: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::OliveObj;
     use crate::olive_str_internal;
 
     fn s(text: &str) -> i64 {

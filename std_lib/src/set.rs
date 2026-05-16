@@ -1,6 +1,13 @@
+use crate::slab::GenSlab;
 use crate::*;
+use std::cell::UnsafeCell;
 
 use rustc_hash::FxHashSet;
+
+thread_local! {
+    static SET_SLAB: UnsafeCell<GenSlab> =
+        const { UnsafeCell::new(GenSlab::new(std::mem::size_of::<OliveHashSet>())) };
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_set_new(capacity: i64) -> i64 {
@@ -10,15 +17,55 @@ pub extern "C" fn olive_set_new(capacity: i64) -> i64 {
     let v_cap = v.capacity();
     std::mem::forget(v);
     let inner = Box::into_raw(Box::new(FxHashSet::<i64>::default()));
-    let res = Box::into_raw(Box::new(OliveHashSet {
-        kind: KIND_SET,
-        ptr,
-        cap: v_cap,
-        len: 0,
-        inner,
-    })) as i64;
-    register_object(res);
-    res
+    SET_SLAB.with(|sl| {
+        let sl = unsafe { &mut *sl.get() };
+        let (body, _) = sl.alloc();
+        unsafe {
+            std::ptr::write(
+                body as *mut OliveHashSet,
+                OliveHashSet {
+                    kind: KIND_SET,
+                    ptr,
+                    cap: v_cap,
+                    len: 0,
+                    inner,
+                },
+            );
+        }
+        body as i64
+    })
+}
+
+pub(crate) fn olive_free_set(ptr: i64) {
+    if ptr == 0 || !crate::slab::ptr_in_slab_span(ptr) {
+        return;
+    }
+    if crate::slab::slot_is_live(ptr) {
+        unsafe { release_set_storage(ptr) };
+    }
+    free_set_slot_raw(ptr);
+}
+
+/// Drops a set's element vector and inner hash set; the slot body persists
+/// after a slab free, so this is safe in either order.
+pub(crate) unsafe fn release_set_storage(ptr: i64) {
+    unsafe {
+        let s = &mut *(ptr as *mut OliveHashSet);
+        if !s.ptr.is_null() {
+            let _ = Vec::from_raw_parts(s.ptr, s.len, s.cap);
+            s.ptr = std::ptr::null_mut();
+        }
+        if !s.inner.is_null() {
+            let _ = Box::from_raw(s.inner);
+            s.inner = std::ptr::null_mut();
+        }
+    }
+}
+
+pub(crate) fn free_set_slot_raw(ptr: i64) {
+    SET_SLAB.with(|sl| {
+        unsafe { &mut *sl.get() }.free(ptr as *mut u8);
+    });
 }
 
 /// Snapshots a set's elements into a list, backing `for x in some_set`.

@@ -99,6 +99,9 @@ fn compile_with(
     );
     builder.build_program(&prog);
     opt.run(&mut builder.functions);
+    for f in &builder.functions {
+        println!("MIR FUNCTION: {}\n{:#?}", f.name, f);
+    }
     let mut cg = CraneliftCodegen::new_jit(
         builder.functions,
         builder.struct_fields,
@@ -122,7 +125,10 @@ pub fn call_i64(cg: &mut CraneliftCodegen<JITModule>, name: &str) -> i64 {
         .unwrap_or_else(|| panic!("function '{}' not found", name));
     let f: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
     let _guard = exec_lock();
-    f()
+    println!("DEBUG CALL JIT FUNCTION START: {}", name);
+    let res = f();
+    println!("DEBUG CALL JIT FUNCTION END: {} -> {}", name, res);
+    res
 }
 
 pub fn call_i64_1(cg: &mut CraneliftCodegen<JITModule>, name: &str, a: i64) -> i64 {

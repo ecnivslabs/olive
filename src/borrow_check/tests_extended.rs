@@ -38,16 +38,13 @@ mod borrow_check_tests_extended {
     }
 
     #[test]
-    fn use_after_move_detected() {
+    fn use_after_call_is_valid() {
+        // Arguments are borrows under inferred ownership: the caller keeps the
+        // list and reading it after the call is fine.
         let errors = borrow_check(
             "fn consume(xs: [i64]) -> i64:\n    return 0\n\nfn caller() -> i64:\n    let xs = [1, 2]\n    consume(xs)\n    return xs[0]\n",
         );
-        assert!(!errors.is_empty(), "use after move should produce an error");
-        assert!(
-            has_error_matching(&errors, "use of moved value"),
-            "expected 'use of moved value', got: {:?}",
-            errors
-        );
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
     }
 
     #[test]

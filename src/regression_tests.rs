@@ -579,3 +579,43 @@ fn regression_py_coerce_struct_field_compiles() {
         "struct Pt:\n    x: f64\n    name: str\nfn f(p: PyObject) -> Pt:\n    return Pt(p, p)\n",
     );
 }
+
+#[test]
+fn regression_subscript_any_boxing() {
+    let mut cg = compile(
+        "fn f() -> Any:\n    let mut xs: [Any] = list_new(2)\n    xs[0] = 200000001\n    return xs[0]\n",
+    );
+    let val = call_i64(&mut cg, "f");
+    // If it is boxed correctly, the low bits will have TAG_INT (2).
+    // If it is raw, it will be 200000001.
+    assert_eq!(val, (200000001 << 3) | 2);
+}
+
+#[test]
+fn regression_subscript_any_boxing_inferred() {
+    let mut cg = compile(
+        "fn f() -> Any:\n    let mut xs = list_new(2)\n    xs[0] = 200000001\n    let mut ys: [Any] = xs\n    return ys[0]\n",
+    );
+    let val = call_i64(&mut cg, "f");
+    assert_eq!(val, (200000001 << 3) | 2);
+}
+
+#[test]
+fn regression_subscript_any_boxing_return() {
+    let mut cg = compile(
+        "fn f() -> [Any]:\n    let mut xs = list_new(2)\n    xs[0] = 200000001\n    return xs\nfn g() -> Any:\n    let xs = f()\n    return xs[0]\n",
+    );
+    let val = call_i64(&mut cg, "g");
+    assert_eq!(val, (200000001 << 3) | 2);
+}
+
+#[test]
+fn regression_list_new_kind_any_list() {
+    // list_new must produce KIND_ANY_LIST (15) so subscript reads round-trip
+    // boxed Any values correctly through function boundaries.
+    let mut cg = compile(
+        "fn make() -> [Any]:\n    let mut xs = list_new(3)\n    xs[0] = 42\n    xs[1] = 99\n    return xs\nfn f() -> Any:\n    let xs = make()\n    return xs[1]\n",
+    );
+    let val = call_i64(&mut cg, "f");
+    assert_eq!(val, (99 << 3) | 2);
+}

@@ -42,7 +42,7 @@ impl TypeChecker {
                     .get(&obj.id)
                     .cloned()
                     .map(|t| self.apply_subst(t));
-                if let Some(Type::Struct(sname, _)) = obj_ty {
+                if let Some(Type::Struct(sname, _, _)) = obj_ty {
                     let method = format!("{}::{}", sname, attr);
                     if matches!(self.lookup_type(&method), Some(Type::Fn(..))) {
                         return (Some(method), true);
@@ -309,7 +309,7 @@ impl TypeChecker {
                 let resolved_callee = self.instantiate(applied);
                 self.expr_types.insert(callee.id, resolved_callee.clone());
 
-                if let Type::Struct(name, type_args) = resolved_callee {
+                if let Type::Struct(name, type_args, is_ffi) = resolved_callee {
                     let init_name = format!("{}::__init__", name);
                     let has_init = self.lookup_type(&init_name).is_some();
                     let expected_fields = if has_init {
@@ -398,7 +398,7 @@ impl TypeChecker {
                                 if !params.is_empty() {
                                     self.unify(
                                         &params[0],
-                                        &Type::Struct(name.clone(), type_args.clone()),
+                                        &Type::Struct(name.clone(), type_args.clone(), is_ffi),
                                         expr.span,
                                     );
                                 }
@@ -477,7 +477,7 @@ impl TypeChecker {
                     // Resolve the type arguments inferred from the field values
                     // (e.g. `Box(7)` becomes `Box[int]`) so methods on the value
                     // monomorphize to the right concrete instance.
-                    return self.apply_subst(Type::Struct(name, type_args));
+                    return self.apply_subst(Type::Struct(name, type_args, is_ffi));
                 }
 
                 // For a plain function call whose positional arguments line up
@@ -713,7 +713,7 @@ impl TypeChecker {
                     inner_obj = *inner.clone();
                 }
 
-                if let Type::Struct(ref struct_name, ref type_args) = inner_obj {
+                if let Type::Struct(ref struct_name, ref type_args, _) = inner_obj {
                     let mangled = format!("{}::{}", struct_name, attr);
                     if let Some(ty) = self.lookup_type(&mangled) {
                         let instantiated = self.instantiate(ty);
@@ -973,7 +973,7 @@ impl TypeChecker {
 
                 let is_error = |ty: &Type| -> bool {
                     match ty {
-                        Type::Struct(name, _) | Type::Enum(name, _) => {
+                        Type::Struct(name, _, _) | Type::Enum(name, _) => {
                             name == "Error"
                                 || name.ends_with("Error")
                                 || self
@@ -1220,7 +1220,23 @@ impl TypeChecker {
             (Type::Str | Type::Any, "find") => Some(Type::Int),
             (Type::Str | Type::Any, "contains" | "startswith" | "endswith") => Some(Type::Bool),
             (Type::List(elem), "pop" | "remove") => Some((**elem).clone()),
-            (Type::List(_), "append" | "insert" | "extend" | "sort" | "reverse") => {
+            (Type::List(elem), "append" | "insert" | "extend" | "sort" | "reverse") => {
+                // An empty literal's element type binds at the first insertion,
+                // so drops and printing see the real element layout.
+                let inserted = match attr {
+                    "append" => arg_tys.first().cloned(),
+                    "insert" => arg_tys.get(1).cloned(),
+                    "extend" => match arg_tys.first().map(|t| self.apply_subst(t.clone())) {
+                        Some(Type::List(e)) => Some((*e).clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let Some(val_ty) = inserted
+                    && matches!(self.apply_subst((**elem).clone()), Type::Var(_))
+                {
+                    self.unify_silently(elem, &val_ty, obj.span);
+                }
                 Some(base.clone())
             }
             (Type::Dict(_, v), "get") => {
@@ -1253,6 +1269,12 @@ impl TypeChecker {
             (Type::Dict(_, v), "remove") => Some((**v).clone()),
             (Type::Set(elem), "add" | "remove") => {
                 let elem = (**elem).clone();
+                if attr == "add"
+                    && let Some(val_ty) = arg_tys.first().cloned()
+                    && matches!(self.apply_subst(elem.clone()), Type::Var(_))
+                {
+                    self.unify_silently(&elem, &val_ty, obj.span);
+                }
                 Some(if attr == "add" { base.clone() } else { elem })
             }
             (Type::Set(elem), "contains") => {

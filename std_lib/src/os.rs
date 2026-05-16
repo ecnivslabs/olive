@@ -1,4 +1,4 @@
-use crate::{KIND_LIST, StableVec, olive_str_from_ptr, olive_str_internal};
+use crate::{olive_str_from_ptr, olive_str_internal};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_env_get(name: i64) -> i64 {
@@ -28,17 +28,8 @@ pub extern "C" fn olive_env_set(name: i64, val: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_os_args() -> i64 {
-    let mut ptrs: Vec<i64> = std::env::args().map(|a| olive_str_internal(&a)).collect();
-    let ptr = ptrs.as_mut_ptr();
-    let cap = ptrs.capacity();
-    let len = ptrs.len();
-    std::mem::forget(ptrs);
-    Box::into_raw(Box::new(StableVec {
-        kind: KIND_LIST,
-        ptr,
-        cap,
-        len,
-    })) as i64
+    let ptrs: Vec<i64> = std::env::args().map(|a| olive_str_internal(&a)).collect();
+    crate::list::list_from_vec(ptrs)
 }
 
 #[unsafe(no_mangle)]
@@ -85,6 +76,7 @@ pub extern "C" fn olive_os_exec_status(cmd: i64) -> i64 {
 mod tests {
     use super::*;
     use crate::olive_str_internal;
+    use crate::{KIND_LIST, StableVec};
 
     fn s(text: &str) -> i64 {
         olive_str_internal(text)

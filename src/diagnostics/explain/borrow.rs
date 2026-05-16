@@ -13,13 +13,19 @@ pub(super) const ENTRIES: &[Explanation] = &[
     Explanation {
         code: "E0501",
         title: "use of a moved value",
-        summary: "A value was moved out of a binding and then used again. After a \
-                  move the original binding no longer owns the value.",
+        summary: "A value was used after the compiler transferred it elsewhere. \
+                  Ownership is inferred: a value only moves at its last use, so \
+                  ordinary code cannot reach this. Seeing it means the compiler's \
+                  ownership inference went wrong and it should be reported as a bug.",
         wrong: "fn consume(xs: [i64]):\n    print(len(xs))\n\n\
                 fn main():\n    let data = [1, 2, 3]\n    consume(data)\n    print(len(data))",
         fixed: "fn consume(xs: [i64]):\n    print(len(xs))\n\n\
                 fn main():\n    let data = [1, 2, 3]\n    print(len(data))\n    consume(data)",
-        notes: &["Finish using the value before the move, pass it by reference, or clone it."],
+        notes: &[
+            "Arguments are borrowed, aliases share the value, and the owning \
+                  binding frees it at scope end; none of these move a value away \
+                  from a later use.",
+        ],
     },
     Explanation {
         code: "E0502",
