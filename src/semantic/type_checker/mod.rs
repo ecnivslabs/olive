@@ -447,3 +447,119 @@ impl TypeChecker {
         subst
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+    use crate::semantic::Resolver;
+
+    fn pipeline(src: &str) -> TypeChecker {
+        let tokens = Lexer::new(src, 0).tokenise().unwrap();
+        let prog = Parser::new(tokens).parse_program().unwrap();
+        let mut r = Resolver::new();
+        r.resolve_program(&prog);
+        let mut tc = TypeChecker::new();
+        tc.check_program(&prog);
+        tc
+    }
+
+    #[test]
+    fn no_errors_on_valid_let() {
+        let tc = pipeline("let x = 42\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn no_errors_on_str_literal() {
+        let tc = pipeline("let s = \"hello\"\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn no_errors_on_arithmetic() {
+        let tc = pipeline("let x = 1 + 2 * 3\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn function_return_type_mismatch_reported() {
+        let tc = pipeline("fn foo() -> i64:\n    return \"wrong type\"\n");
+        assert!(!tc.errors.is_empty());
+    }
+
+    #[test]
+    fn valid_function_return_no_error() {
+        let tc = pipeline("fn foo() -> i64:\n    return 42\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn bool_result_from_comparison() {
+        let tc = pipeline("let b = 1 < 2\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn struct_instantiation_ok() {
+        let tc = pipeline(
+            "struct Point:\n    x: i64\n    y: i64\n\nlet p = Point(1, 2)\n",
+        );
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn struct_field_access_ok() {
+        let tc = pipeline(
+            "struct Point:\n    x: i64\n    y: i64\n\nlet p = Point(3, 4)\nlet v = p.x\n",
+        );
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn generic_function_monomorphizes() {
+        let tc = pipeline(
+            "fn identity[T](x: T) -> T:\n    return x\n\nlet y = identity(10)\n",
+        );
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn ffi_call_outside_unsafe_reported() {
+        let tc = pipeline(
+            "import \"/usr/lib/libc.so.6\" as libc:\n    fn getpid() -> i64\n\nlibc::getpid()\n",
+        );
+        assert!(tc.errors.iter().any(|e| {
+            matches!(e, super::super::error::SemanticError::Custom { msg, .. } if msg.contains("unsafe"))
+        }));
+    }
+
+    #[test]
+    fn ffi_call_inside_unsafe_ok() {
+        let tc = pipeline(
+            "import \"/usr/lib/libc.so.6\" as libc:\n    fn getpid() -> i64\n\nunsafe:\n    libc::getpid()\n",
+        );
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn ffi_safe_decorator_no_unsafe_required() {
+        let tc = pipeline(
+            "import \"/usr/lib/libc.so.6\" as libc:\n    @safe\n    fn getpid() -> i64\n\nlibc::getpid()\n",
+        );
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn nested_function_calls_ok() {
+        let tc = pipeline("fn add(a: i64, b: i64) -> i64:\n    return a + b\n\nlet r = add(add(1, 2), 3)\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn if_else_expression_ok() {
+        let tc = pipeline("let x = 5\nif x > 3:\n    let y = 1\n");
+        assert!(tc.errors.is_empty());
+    }
+}

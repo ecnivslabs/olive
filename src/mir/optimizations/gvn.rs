@@ -5,10 +5,6 @@ use rustc_hash::FxHashMap as HashMap;
 pub struct GlobalValueNumbering;
 
 impl Transform for GlobalValueNumbering {
-    fn name(&self) -> &'static str {
-        "gvn"
-    }
-
     fn run(&self, func: &mut MirFunction) -> bool {
         let mut changed = false;
 

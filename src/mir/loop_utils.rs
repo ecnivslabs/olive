@@ -1,5 +1,5 @@
 use crate::mir::*;
-use rustc_hash::FxHashSet as HashSet;
+use rustc_hash::{FxHashMap, FxHashSet as HashSet};
 
 pub struct Loop {
     pub header: BasicBlockId,
@@ -105,9 +105,8 @@ fn predecessors(func: &MirFunction, target: BasicBlockId) -> Vec<BasicBlockId> {
 pub fn clone_blocks(
     func: &mut MirFunction,
     blocks: &HashSet<BasicBlockId>,
-) -> std::collections::HashMap<BasicBlockId, BasicBlockId> {
-    let mut map = std::collections::HashMap::new();
-    let _old_len = func.basic_blocks.len();
+) -> FxHashMap<BasicBlockId, BasicBlockId> {
+    let mut map = FxHashMap::default();
 
     for &id in blocks {
         let new_id = BasicBlockId(func.basic_blocks.len());

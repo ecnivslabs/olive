@@ -4,9 +4,6 @@ use crate::mir::*;
 pub struct PeepholeOptimize;
 
 impl Transform for PeepholeOptimize {
-    fn name(&self) -> &'static str {
-        "peephole_optimize"
-    }
     fn run(&self, func: &mut MirFunction) -> bool {
         let mut changed = false;
         for bb in &mut func.basic_blocks {

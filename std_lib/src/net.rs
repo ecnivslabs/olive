@@ -1,5 +1,3 @@
-#[allow(unused_imports)]
-use crate::olive_str_from_ptr;
 use crate::{OliveObj, olive_str_internal};
 use rustc_hash::FxHashMap as HashMap;
 use std::io::{Read, Write};

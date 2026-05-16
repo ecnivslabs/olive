@@ -194,7 +194,7 @@ impl Inliner {
             translated_blocks.push(new_bb);
         }
 
-        caller.basic_blocks.push(tail_bb); // This will have ID tail_bb_id
+        caller.basic_blocks.push(tail_bb);
         caller.basic_blocks.extend(translated_blocks);
     }
 

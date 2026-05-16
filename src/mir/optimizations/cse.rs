@@ -4,9 +4,6 @@ use crate::mir::*;
 pub struct CommonSubexpressionElimination;
 
 impl Transform for CommonSubexpressionElimination {
-    fn name(&self) -> &'static str {
-        "common_subexpression_elimination"
-    }
     fn run(&self, func: &mut MirFunction) -> bool {
         let mut changed = false;
         for bb in &mut func.basic_blocks {

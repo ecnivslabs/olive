@@ -3,10 +3,11 @@ use rustc_hash::FxHashMap as HashMap;
 
 use crate::mir::optimizations::{
     Transform, algebraic::AlgebraicSimplification, const_fold::ConstantFolding,
-    const_prop::ConstantPropagation, copy_prop::CopyPropagation, dce::DeadCodeElimination,
-    gvn::GlobalValueNumbering, inliner::Inliner, licm::Licm, loop_unroll::LoopUnroll,
-    move_elision::MoveElision, peephole::PeepholeOptimize, simplify_cfg::SimplifyCfg,
-    strength_reduction::StrengthReduction, tail_call::TailCallOpt,
+    const_prop::ConstantPropagation, copy_prop::CopyPropagation,
+    cse::CommonSubexpressionElimination, dce::DeadCodeElimination, gvn::GlobalValueNumbering,
+    inliner::Inliner, licm::Licm, loop_unroll::LoopUnroll, move_elision::MoveElision,
+    peephole::PeepholeOptimize, simplify_cfg::SimplifyCfg, strength_reduction::StrengthReduction,
+    tail_call::TailCallOpt, vectorize::LoopVectorizer,
 };
 
 pub struct Optimizer {
@@ -24,6 +25,7 @@ impl Optimizer {
                 Box::new(ConstantFolding),
                 Box::new(AlgebraicSimplification),
                 Box::new(StrengthReduction),
+                Box::new(CommonSubexpressionElimination),
                 Box::new(PeepholeOptimize),
                 Box::new(GlobalValueNumbering),
                 Box::new(SimplifyCfg),
@@ -33,6 +35,7 @@ impl Optimizer {
             late_passes: vec![
                 Box::new(TailCallOpt),
                 Box::new(Licm),
+                Box::new(LoopVectorizer),
                 Box::new(LoopUnroll),
                 Box::new(SimplifyCfg),
                 Box::new(DeadCodeElimination),

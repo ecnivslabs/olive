@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use crate::mir::loop_utils;
 use crate::mir::optimizations::Transform;
 use crate::mir::*;
@@ -8,10 +7,6 @@ use rustc_hash::FxHashSet as HashSet;
 pub struct Licm;
 
 impl Transform for Licm {
-    fn name(&self) -> &'static str {
-        "licm"
-    }
-
     fn run(&self, func: &mut MirFunction) -> bool {
         let mut changed = false;
         let loops = loop_utils::find_loops(func);

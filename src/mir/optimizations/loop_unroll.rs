@@ -6,10 +6,6 @@ use crate::span::Span;
 pub struct LoopUnroll;
 
 impl Transform for LoopUnroll {
-    fn name(&self) -> &'static str {
-        "loop_unroll"
-    }
-
     fn run(&self, func: &mut MirFunction) -> bool {
         let loops = loop_utils::find_loops(func);
         for lp in loops {

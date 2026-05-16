@@ -736,15 +736,10 @@ impl Parser {
                 }
                 break;
             }
-            let param_name = self.expect(TokenKind::Identifier)?.value;
+            self.expect(TokenKind::Identifier)?;
             self.expect(TokenKind::Colon)?;
             let ty = self.parse_type_expr()?;
-            let is_cstr = matches!(&ty.kind, crate::parser::TypeExprKind::Name(n) if n == "cstr");
-            params.push(FfiParam {
-                name: param_name,
-                ty,
-                is_cstr,
-            });
+            params.push(FfiParam { ty });
             if self.peek().kind == TokenKind::Comma {
                 self.advance();
             } else {

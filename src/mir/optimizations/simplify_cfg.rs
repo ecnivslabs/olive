@@ -4,9 +4,6 @@ use crate::mir::*;
 pub struct SimplifyCfg;
 
 impl Transform for SimplifyCfg {
-    fn name(&self) -> &'static str {
-        "simplify_cfg"
-    }
     fn run(&self, func: &mut MirFunction) -> bool {
         let mut changed = false;
         changed |= self.branch_simplification(func);

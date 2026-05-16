@@ -5,10 +5,6 @@ use crate::span::Span;
 pub struct TailCallOpt;
 
 impl Transform for TailCallOpt {
-    fn name(&self) -> &'static str {
-        "tail_call_opt"
-    }
-
     fn run(&self, func: &mut MirFunction) -> bool {
         let func_name = func.name.clone();
         let arg_count = func.arg_count;

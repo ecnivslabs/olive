@@ -14,7 +14,6 @@ pub enum SymbolKind {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Symbol {
     pub name: String,
     pub kind: SymbolKind,
@@ -31,8 +30,8 @@ pub enum ScopeKind {
     Comprehension,
 }
 
-#[allow(dead_code)]
 pub struct Scope {
+    #[allow(dead_code)]
     pub kind: ScopeKind,
     symbols: HashMap<String, Symbol>,
 }
@@ -88,18 +87,4 @@ impl SymbolTable {
         None
     }
 
-    #[allow(dead_code)]
-    pub fn lookup_local(&self, name: &str) -> Option<&Symbol> {
-        self.scopes.last().unwrap().get(name)
-    }
-
-    #[allow(dead_code)]
-    pub fn current_scope_kind(&self) -> &ScopeKind {
-        &self.scopes.last().unwrap().kind
-    }
-
-    #[allow(dead_code)]
-    pub fn depth(&self) -> usize {
-        self.scopes.len()
-    }
 }

@@ -9,7 +9,6 @@ const LEVEL_INFO: i64 = 1;
 const LEVEL_WARN: i64 = 2;
 const LEVEL_ERROR: i64 = 3;
 
-const _FMT_PLAIN: i64 = 0;
 const FMT_JSON: i64 = 1;
 const FMT_COLOR: i64 = 2;
 

@@ -5,10 +5,6 @@ use crate::mir::*;
 pub struct MoveElision;
 
 impl Transform for MoveElision {
-    fn name(&self) -> &'static str {
-        "move_elision"
-    }
-
     fn run(&self, func: &mut MirFunction) -> bool {
         let liveness = Liveness::compute(func);
         let mut changed = false;

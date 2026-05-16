@@ -516,7 +516,7 @@ pub fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: boo
     if let Some(main_ptr) = codegen.get_function("__main__") {
         let main_fn: extern "C" fn() -> i64 = unsafe { std::mem::transmute(main_ptr) };
         let exec_start = std::time::Instant::now();
-        let _result = main_fn();
+        let exit_code = main_fn();
         let exec_duration = exec_start.elapsed();
 
         if show_time {
@@ -543,6 +543,7 @@ pub fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: boo
             );
             println!();
         }
+        std::process::exit(exit_code as i32);
     } else {
         println!("No `main` function found to execute.");
     }
@@ -945,7 +946,7 @@ pub fn compile_and_test(filename: &str, _show_time: bool) {
                 let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(func_ptr) };
 
                 let start = std::time::Instant::now();
-                let _res = func();
+                func();
                 let duration = start.elapsed();
 
                 println!("\x1b[1;32mok\x1b[0m ({:?})", duration);

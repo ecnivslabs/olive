@@ -4,9 +4,6 @@ use crate::mir::*;
 pub struct StrengthReduction;
 
 impl Transform for StrengthReduction {
-    fn name(&self) -> &'static str {
-        "strength_reduction"
-    }
     fn run(&self, func: &mut MirFunction) -> bool {
         let mut changed = false;
         for bb in &mut func.basic_blocks {

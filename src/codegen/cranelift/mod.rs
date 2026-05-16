@@ -9,6 +9,7 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use rustc_hash::FxHashMap as HashMap;
+use std::process;
 
 pub(super) const KIND_SM_FUTURE: i64 = 5;
 
@@ -312,12 +313,15 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
         flag_builder.set("enable_alias_analysis", "true").unwrap();
         flag_builder.set("enable_verifier", "false").unwrap();
         let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {
-            panic!("host machine is not supported: {}", msg);
+            eprintln!("error: host architecture not supported: {msg}");
+            process::exit(1);
         });
         let isa = isa_builder
             .finish(settings::Flags::new(flag_builder))
-            .map_err(|msg| panic!("host machine is not supported: {}", msg))
-            .unwrap();
+            .unwrap_or_else(|msg| {
+                eprintln!("error: host architecture not supported: {msg}");
+                process::exit(1);
+            });
 
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
 
@@ -530,7 +534,10 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
     }
 
     pub fn finalize(&mut self) {
-        self.module.finalize_definitions().unwrap();
+        self.module.finalize_definitions().unwrap_or_else(|e| {
+            eprintln!("error: JIT finalization failed: {e}");
+            process::exit(1);
+        });
     }
 
     pub fn get_function(&mut self, name: &str) -> Option<*const u8> {
@@ -558,15 +565,22 @@ impl<'a> CraneliftCodegen<'a, ObjectModule> {
         flag_builder.set("enable_alias_analysis", "true").unwrap();
         flag_builder.set("enable_verifier", "false").unwrap();
         let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {
-            panic!("host machine is not supported: {}", msg);
+            eprintln!("error: host architecture not supported: {msg}");
+            process::exit(1);
         });
         let isa = isa_builder
             .finish(settings::Flags::new(flag_builder))
-            .map_err(|msg| panic!("host machine is not supported: {}", msg))
-            .unwrap();
+            .unwrap_or_else(|msg| {
+                eprintln!("error: host architecture not supported: {msg}");
+                process::exit(1);
+            });
 
         let obj_builder =
-            ObjectBuilder::new(isa, "olive", cranelift_module::default_libcall_names()).unwrap();
+            ObjectBuilder::new(isa, "olive", cranelift_module::default_libcall_names())
+                .unwrap_or_else(|e| {
+                    eprintln!("error: failed to create object builder: {e}");
+                    process::exit(1);
+                });
         let module = ObjectModule::new(obj_builder);
 
         let mut ffi_entries: Vec<FfiFnEntry> = Vec::new();
@@ -993,7 +1007,6 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
         }
     }
 
-    /// Emit a zero-arg function `name()` that loads from a fixed C global address.
     fn emit_extern_var_getter(&mut self, name: &str, addr: i64, ty_str: &str) {
         use cranelift::prelude::FunctionBuilderContext;
         let cl_ty = ffi_cl_type(ty_str);

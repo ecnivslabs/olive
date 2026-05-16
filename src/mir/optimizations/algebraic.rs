@@ -5,10 +5,6 @@ use rustc_hash::FxHashMap as HashMap;
 pub struct AlgebraicSimplification;
 
 impl Transform for AlgebraicSimplification {
-    fn name(&self) -> &'static str {
-        "algebraic_simplification"
-    }
-
     fn run(&self, func: &mut MirFunction) -> bool {
         let mut assign_counts: HashMap<Local, usize> = HashMap::default();
         let mut def_map: HashMap<Local, Rvalue> = HashMap::default();

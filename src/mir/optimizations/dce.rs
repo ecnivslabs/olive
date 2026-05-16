@@ -5,9 +5,6 @@ use std::collections::HashSet;
 pub struct DeadCodeElimination;
 
 impl Transform for DeadCodeElimination {
-    fn name(&self) -> &'static str {
-        "dead_code_elimination"
-    }
     fn run(&self, func: &mut MirFunction) -> bool {
         let mut used = HashSet::new();
         used.insert(Local(0));

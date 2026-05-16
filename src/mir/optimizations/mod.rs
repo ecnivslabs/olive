@@ -17,8 +17,6 @@ pub mod strength_reduction;
 pub mod tail_call;
 pub mod vectorize;
 
-#[allow(dead_code)]
 pub trait Transform {
-    fn name(&self) -> &'static str;
     fn run(&self, func: &mut MirFunction) -> bool;
 }

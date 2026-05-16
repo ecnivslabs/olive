@@ -5,9 +5,6 @@ use rustc_hash::FxHashMap as HashMap;
 pub struct CopyPropagation;
 
 impl Transform for CopyPropagation {
-    fn name(&self) -> &'static str {
-        "copy_propagation"
-    }
     fn run(&self, func: &mut MirFunction) -> bool {
         let mut assign_counts: HashMap<Local, usize> = HashMap::default();
         let mut copy_assignments: HashMap<Local, Local> = HashMap::default();

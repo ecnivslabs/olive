@@ -393,3 +393,109 @@ impl<'a> MirBuilder<'a> {
             .is_none_or(|b| b.terminator.is_some())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::mir::ir::TerminatorKind;
+    use crate::parser::Parser;
+    use crate::semantic::{Resolver, TypeChecker};
+
+    fn build(src: &str) -> (Vec<MirFunction>, rustc_hash::FxHashMap<String, Vec<String>>) {
+        let tokens = Lexer::new(src, 0).tokenise().unwrap();
+        let prog = Parser::new(tokens).parse_program().unwrap();
+        let mut r = Resolver::new();
+        r.resolve_program(&prog);
+        let mut tc = TypeChecker::new();
+        tc.check_program(&prog);
+        let mut builder =
+            MirBuilder::new(&tc.expr_types, &tc.type_env[0], tc.struct_fields.clone());
+        builder.build_program(&prog);
+        (builder.functions, builder.struct_fields)
+    }
+
+    #[test]
+    fn simple_let_produces_assign_stmt() {
+        let (fns, _) = build("let x = 42\n");
+        let main = fns.iter().find(|f| f.name == "__main__").unwrap();
+        let has_assign = main.basic_blocks.iter().any(|bb| {
+            bb.statements
+                .iter()
+                .any(|s| matches!(s.kind, StatementKind::Assign(_, Rvalue::Use(_))))
+        });
+        assert!(has_assign);
+    }
+
+    #[test]
+    fn function_emitted_as_mir_function() {
+        let (fns, _) = build("fn add(a: i64, b: i64) -> i64:\n    return a + b\n");
+        assert!(fns.iter().any(|f| f.name == "add"));
+    }
+
+    #[test]
+    fn function_has_correct_arg_count() {
+        let (fns, _) = build("fn add(a: i64, b: i64) -> i64:\n    return a + b\n");
+        let f = fns.iter().find(|f| f.name == "add").unwrap();
+        assert_eq!(f.arg_count, 2);
+    }
+
+    #[test]
+    fn function_basic_block_has_terminator() {
+        let (fns, _) = build("fn foo() -> i64:\n    return 1\n");
+        let f = fns.iter().find(|f| f.name == "foo").unwrap();
+        assert!(f.basic_blocks.iter().all(|bb| bb.terminator.is_some()));
+    }
+
+    #[test]
+    fn if_statement_creates_multiple_blocks() {
+        let (fns, _) = build(
+            "fn foo(x: i64) -> i64:\n    if x > 0:\n        return 1\n    return 0\n",
+        );
+        let f = fns.iter().find(|f| f.name == "foo").unwrap();
+        assert!(f.basic_blocks.len() >= 2);
+    }
+
+    #[test]
+    fn while_loop_creates_backedge() {
+        let (fns, _) =
+            build("fn count(n: i64) -> i64:\n    let i = 0\n    while i < n:\n        i = i + 1\n    return i\n");
+        let f = fns.iter().find(|f| f.name == "count").unwrap();
+        let has_goto = f.basic_blocks.iter().any(|bb| {
+            bb.terminator
+                .as_ref()
+                .is_some_and(|t| matches!(t.kind, TerminatorKind::Goto { .. }))
+        });
+        assert!(has_goto);
+    }
+
+    #[test]
+    fn struct_fields_registered() {
+        let (_, struct_fields) =
+            build("struct Vec2:\n    x: i64\n    y: i64\n");
+        assert!(struct_fields.contains_key("Vec2"));
+        let fields = &struct_fields["Vec2"];
+        assert!(fields.contains(&"x".to_string()));
+        assert!(fields.contains(&"y".to_string()));
+    }
+
+    #[test]
+    fn generic_fn_monomorphized_on_call() {
+        let (fns, _) = build(
+            "fn id[T](x: T) -> T:\n    return x\n\nlet r = id(5)\n",
+        );
+        assert!(fns.iter().any(|f| f.name.starts_with("id")));
+    }
+
+    #[test]
+    fn binary_op_produces_binop_rvalue() {
+        let (fns, _) = build("fn f() -> i64:\n    return 1 + 2\n");
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        let has_binop = f.basic_blocks.iter().any(|bb| {
+            bb.statements
+                .iter()
+                .any(|s| matches!(s.kind, StatementKind::Assign(_, Rvalue::BinaryOp(_, _, _))))
+        });
+        assert!(has_binop);
+    }
+}

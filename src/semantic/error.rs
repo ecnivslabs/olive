@@ -49,5 +49,3 @@ impl std::fmt::Display for SemanticError {
 
 impl std::error::Error for SemanticError {}
 
-#[allow(dead_code)]
-pub type SemanticResult<T> = Result<T, SemanticError>;

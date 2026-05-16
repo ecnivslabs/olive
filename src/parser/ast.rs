@@ -10,11 +10,7 @@ use crate::span::Span;
 
 #[derive(Debug, Clone)]
 pub struct FfiParam {
-    #[allow(dead_code)]
-    pub name: String,
     pub ty: TypeExpr,
-    #[allow(dead_code)]
-    pub is_cstr: bool,
 }
 
 #[derive(Debug, Clone)]

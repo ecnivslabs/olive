@@ -540,5 +540,32 @@ impl TypeChecker {
         self.apply_subst(target.clone())
     }
 
-    pub(super) fn expect_truthy(&mut self, _ty: &Type, _span: Span) {}
+    pub(super) fn expect_truthy(&mut self, ty: &Type, span: Span) {
+        let resolved = self.apply_subst(ty.clone());
+        match resolved {
+            Type::Null | Type::Never => {
+                self.errors
+                    .push(super::super::error::SemanticError::Custom {
+                        msg: format!("type `{}` cannot be used as a condition", resolved),
+                        span,
+                    });
+            }
+            Type::Fn(..) => {
+                self.errors
+                    .push(super::super::error::SemanticError::Custom {
+                        msg: "function value cannot be used as a condition".into(),
+                        span,
+                    });
+            }
+            Type::Future(_) => {
+                self.errors
+                    .push(super::super::error::SemanticError::Custom {
+                        msg: "future cannot be used as a condition; did you mean to await it?"
+                            .into(),
+                        span,
+                    });
+            }
+            _ => {}
+        }
+    }
 }

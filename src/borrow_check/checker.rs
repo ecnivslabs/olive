@@ -423,3 +423,83 @@ impl<'a> BorrowChecker<'a> {
             .unwrap_or_else(|| format!("_{}", local.0))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::mir::MirBuilder;
+    use crate::parser::Parser;
+    use crate::semantic::{Resolver, TypeChecker};
+
+    fn borrow_check(src: &str) -> Vec<SemanticError> {
+        let tokens = Lexer::new(src, 0).tokenise().unwrap();
+        let prog = Parser::new(tokens).parse_program().unwrap();
+        let mut r = Resolver::new();
+        r.resolve_program(&prog);
+        let mut tc = TypeChecker::new();
+        tc.check_program(&prog);
+        let mut builder =
+            MirBuilder::new(&tc.expr_types, &tc.type_env[0], tc.struct_fields.clone());
+        builder.build_program(&prog);
+        let mut all_errors = Vec::new();
+        for func in &builder.functions {
+            let mut bc = BorrowChecker::new(func);
+            bc.check();
+            all_errors.extend(bc.errors);
+        }
+        all_errors
+    }
+
+    #[test]
+    fn simple_int_binding_no_errors() {
+        let errors = borrow_check("let x = 42\n");
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    }
+
+    #[test]
+    fn function_with_args_no_errors() {
+        let errors = borrow_check("fn add(a: i64, b: i64) -> i64:\n    return a + b\n");
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    }
+
+    #[test]
+    fn arithmetic_no_borrow_errors() {
+        let errors = borrow_check(
+            "fn compute(n: i64) -> i64:\n    let x = n * 2\n    let y = x + 1\n    return y\n",
+        );
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    }
+
+    #[test]
+    fn if_branches_no_errors() {
+        let errors = borrow_check(
+            "fn abs(x: i64) -> i64:\n    if x < 0:\n        return 0 - x\n    return x\n",
+        );
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    }
+
+    #[test]
+    fn while_loop_no_errors() {
+        let errors = borrow_check(
+            "fn sum(n: i64) -> i64:\n    let s = 0\n    let i = 0\n    while i < n:\n        s = s + i\n        i = i + 1\n    return s\n",
+        );
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    }
+
+    #[test]
+    fn multiple_functions_all_clean() {
+        let errors = borrow_check(
+            "fn foo(a: i64) -> i64:\n    return a + 1\n\nfn bar(b: i64) -> i64:\n    return foo(b)\n",
+        );
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    }
+
+    #[test]
+    fn nested_calls_no_errors() {
+        let errors = borrow_check(
+            "fn double(x: i64) -> i64:\n    return x * 2\n\nfn quad(x: i64) -> i64:\n    return double(double(x))\n",
+        );
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    }
+}

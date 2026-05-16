@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use crate::mir::loop_utils;
 use crate::mir::optimizations::Transform;
 use crate::mir::*;
@@ -9,10 +8,6 @@ use rustc_hash::FxHashMap;
 pub struct LoopVectorizer;
 
 impl Transform for LoopVectorizer {
-    fn name(&self) -> &'static str {
-        "vectorize"
-    }
-
     fn run(&self, func: &mut MirFunction) -> bool {
         let loops = loop_utils::find_loops(func);
         for lp in loops {
@@ -29,7 +24,6 @@ struct VectorizationPlan {
     limit: Operand,
     width: usize,
     loads: Vec<(Local, Operand)>,
-    stores: Vec<(Operand, Operand)>,
 }
 
 impl LoopVectorizer {
@@ -99,20 +93,15 @@ impl LoopVectorizer {
         }
         let limit = limit?;
         let mut loads = Vec::new();
-        let mut stores = Vec::new();
 
         for &bb_id in &lp.body {
             for stmt in &func.basic_blocks[bb_id.0].statements {
-                match &stmt.kind {
-                    StatementKind::Assign(dest, Rvalue::GetIndex(obj, Operand::Copy(idx)))
-                        if *idx == i =>
-                    {
+                if let StatementKind::Assign(dest, Rvalue::GetIndex(obj, Operand::Copy(idx))) =
+                    &stmt.kind
+                {
+                    if *idx == i {
                         loads.push((*dest, obj.clone()));
                     }
-                    StatementKind::SetIndex(obj, Operand::Copy(idx), _) if *idx == i => {
-                        stores.push((obj.clone(), Operand::Copy(*idx)));
-                    }
-                    _ => {}
                 }
             }
         }
@@ -130,7 +119,6 @@ impl LoopVectorizer {
             limit,
             width: 4,
             loads,
-            stores,
         })
     }
 

@@ -4,9 +4,6 @@ use crate::mir::*;
 pub struct ConstantFolding;
 
 impl Transform for ConstantFolding {
-    fn name(&self) -> &'static str {
-        "constant_folding"
-    }
     fn run(&self, func: &mut MirFunction) -> bool {
         let mut changed = false;
         for bb in &mut func.basic_blocks {

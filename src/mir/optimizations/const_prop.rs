@@ -5,9 +5,6 @@ use rustc_hash::FxHashMap as HashMap;
 pub struct ConstantPropagation;
 
 impl Transform for ConstantPropagation {
-    fn name(&self) -> &'static str {
-        "constant_propagation"
-    }
     fn run(&self, func: &mut MirFunction) -> bool {
         let mut assign_counts: HashMap<Local, usize> = HashMap::default();
         let mut constant_assignments: HashMap<Local, Constant> = HashMap::default();

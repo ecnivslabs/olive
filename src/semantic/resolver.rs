@@ -8,8 +8,6 @@ use crate::span::Span;
 pub struct Resolver {
     pub table: SymbolTable,
     pub errors: Vec<SemanticError>,
-    #[allow(dead_code)]
-    pub current_file_id: usize,
 }
 
 impl Resolver {
@@ -82,7 +80,6 @@ impl Resolver {
         Self {
             table,
             errors: Vec::new(),
-            current_file_id: 0,
         }
     }
 
@@ -555,5 +552,101 @@ impl Resolver {
                 self.resolve_expr(cond);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    fn resolve(src: &str) -> Resolver {
+        let tokens = Lexer::new(src, 0).tokenise().unwrap();
+        let prog = Parser::new(tokens).parse_program().unwrap();
+        let mut r = Resolver::new();
+        r.resolve_program(&prog);
+        r
+    }
+
+    #[test]
+    fn builtin_print_resolves() {
+        let r = resolve("print(1)\n");
+        assert!(r.errors.is_empty());
+    }
+
+    #[test]
+    fn undefined_name_reported() {
+        let r = resolve("no_such_name\n");
+        assert!(r.errors.iter().any(|e| matches!(
+            e,
+            SemanticError::UndefinedName { name, .. } if name == "no_such_name"
+        )));
+    }
+
+    #[test]
+    fn let_binding_visible_after_definition() {
+        let r = resolve("let x = 42\nprint(x)\n");
+        assert!(r.errors.is_empty());
+    }
+
+    #[test]
+    fn variable_not_visible_before_let() {
+        let r = resolve("print(x)\nlet x = 1\n");
+        assert!(r.errors.iter().any(|e| matches!(e, SemanticError::UndefinedName { .. })));
+    }
+
+    #[test]
+    fn function_hoisting_allows_forward_call() {
+        let r = resolve(
+            "fn main() -> i64:\n    return helper()\n\nfn helper() -> i64:\n    return 0\n",
+        );
+        assert!(r.errors.is_empty());
+    }
+
+    #[test]
+    fn duplicate_param_reported() {
+        let r = resolve("fn bad(x: i64, x: i64):\n    pass\n");
+        assert!(r.errors.iter().any(|e| matches!(e, SemanticError::DuplicateParam { .. })));
+    }
+
+    #[test]
+    fn assign_to_undefined_reported() {
+        let r = resolve("x = 99\n");
+        assert!(r.errors.iter().any(|e| matches!(e, SemanticError::AssignToUndefined { .. })));
+    }
+
+    #[test]
+    fn struct_hoisted_before_use() {
+        let r = resolve(
+            "fn make() -> i64:\n    let p = Point(1, 2)\n    return 0\n\nstruct Point:\n    x: i64\n    y: i64\n",
+        );
+        assert!(r.errors.is_empty());
+    }
+
+    #[test]
+    fn for_loop_binds_target() {
+        let r = resolve("for i in [1, 2, 3]:\n    print(i)\n");
+        assert!(r.errors.is_empty());
+    }
+
+    #[test]
+    fn if_branches_scoped() {
+        let r = resolve("if 1 == 1:\n    let x = 10\n");
+        assert!(r.errors.is_empty());
+    }
+
+    #[test]
+    fn unsafe_block_resolves_body() {
+        let r = resolve("unsafe:\n    let x = 1\n    print(x)\n");
+        assert!(r.errors.is_empty());
+    }
+
+    #[test]
+    fn native_import_alias_defined() {
+        let r = resolve(
+            "import \"/usr/lib/libc.so.6\" as libc:\n    fn puts(s: str) -> i64\n",
+        );
+        assert!(r.errors.is_empty());
     }
 }
