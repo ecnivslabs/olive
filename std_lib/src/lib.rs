@@ -76,7 +76,32 @@ pub extern "C" fn olive_alloc(size: i64) -> *mut u8 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_ffi_errno() -> i64 {
-    unsafe { *libc::__errno_location() as i64 }
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    unsafe {
+        *libc::__errno_location() as i64
+    }
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "dragonfly",
+        target_os = "openbsd",
+        target_os = "netbsd"
+    ))]
+    unsafe {
+        *libc::__error() as i64
+    }
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "dragonfly",
+        target_os = "openbsd",
+        target_os = "netbsd"
+    )))]
+    0
 }
 
 #[unsafe(no_mangle)]
