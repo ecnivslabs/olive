@@ -3,7 +3,7 @@ members = ["std_lib"]
 
 [package]
 name = "pit"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 authors = ["ecnivs"]
 description = "The Olive programming language compiler"
