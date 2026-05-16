@@ -22,7 +22,6 @@ impl<'a> MirBuilder<'a> {
                 "str" => Type::Str,
                 "bool" => Type::Bool,
                 "None" => Type::Null,
-                "Any" => Type::Any,
                 "Never" => Type::Never,
                 _ => {
                     if let Some(Type::Enum(e, args)) = self.global_types.get(name) {
@@ -56,6 +55,7 @@ impl<'a> MirBuilder<'a> {
             ),
             TypeExprKind::Ref(inner) => Type::Ref(Box::new(self.resolve_type_expr(inner))),
             TypeExprKind::MutRef(inner) => Type::MutRef(Box::new(self.resolve_type_expr(inner))),
+            TypeExprKind::Ptr(inner) => Type::Ptr(Box::new(self.resolve_type_expr(inner))),
             TypeExprKind::Union(a, b) => {
                 let ta = self.resolve_type_expr(a);
                 let tb = self.resolve_type_expr(b);
@@ -72,7 +72,6 @@ impl<'a> MirBuilder<'a> {
                 }
                 Type::Union(vars)
             }
-            TypeExprKind::Ptr(_) => Type::Int,
             TypeExprKind::FixedArray(_, _) => Type::List(Box::new(Type::Int)),
         }
     }

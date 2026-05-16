@@ -487,6 +487,26 @@ mod tests {
     }
 
     #[test]
+    fn constant_folding_reduces_ops() {
+        let (mut fns, _) = build("fn f() -> i64:\n    return 2 + 3\n");
+        let opt = crate::mir::Optimizer::new();
+        opt.run(&mut fns);
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        let has_const5 = f.basic_blocks.iter().any(|bb| {
+            bb.statements.iter().any(|s| {
+                matches!(
+                    &s.kind,
+                    StatementKind::Assign(
+                        _,
+                        Rvalue::Use(crate::mir::Operand::Constant(crate::mir::Constant::Int(5)))
+                    )
+                )
+            })
+        });
+        assert!(has_const5, "const fold should produce Int(5) from 2+3");
+    }
+
+    #[test]
     fn binary_op_produces_binop_rvalue() {
         let (fns, _) = build("fn f() -> i64:\n    return 1 + 2\n");
         let f = fns.iter().find(|f| f.name == "f").unwrap();
@@ -496,5 +516,111 @@ mod tests {
                 .any(|s| matches!(s.kind, StatementKind::Assign(_, Rvalue::BinaryOp(_, _, _))))
         });
         assert!(has_binop);
+    }
+
+    #[test]
+    fn nested_if_creates_multiple_blocks() {
+        let (fns, _) = build(
+            "fn sign(x: i64) -> i64:\n    if x > 0:\n        return 1\n    else:\n        if x < 0:\n            return -1\n    return 0\n",
+        );
+        let f = fns.iter().find(|f| f.name == "sign").unwrap();
+        assert!(f.basic_blocks.len() >= 3);
+    }
+
+    #[test]
+    fn for_loop_emits_iter_calls() {
+        let (fns, _) = build(
+            "fn sum_list(xs: [i64]) -> i64:\n    let s = 0\n    for x in xs:\n        s = s + x\n    return s\n",
+        );
+        let f = fns.iter().find(|f| f.name == "sum_list").unwrap();
+        let has_call = f.basic_blocks.iter().any(|bb| {
+            bb.statements
+                .iter()
+                .any(|s| matches!(s.kind, StatementKind::Assign(_, Rvalue::Call { .. })))
+        });
+        assert!(has_call);
+    }
+
+    #[test]
+    fn enum_variant_produces_aggregate() {
+        let (fns, _) = build("enum Opt:\n    Some(i64)\n    None\n\nlet v = Some(42)\n");
+        let main = fns.iter().find(|f| f.name == "__main__").unwrap();
+        let has_aggregate = main.basic_blocks.iter().any(|bb| {
+            bb.statements
+                .iter()
+                .any(|s| matches!(s.kind, StatementKind::Assign(_, Rvalue::Aggregate(_, _))))
+        });
+        assert!(has_aggregate);
+    }
+
+    #[test]
+    fn list_literal_produces_aggregate() {
+        let (fns, _) = build("let xs = [1, 2, 3]\n");
+        let main = fns.iter().find(|f| f.name == "__main__").unwrap();
+        let has_list = main.basic_blocks.iter().any(|bb| {
+            bb.statements
+                .iter()
+                .any(|s| matches!(s.kind, StatementKind::Assign(_, Rvalue::Aggregate(_, _))))
+        });
+        assert!(has_list);
+    }
+
+    #[test]
+    fn recursive_function_has_self_call() {
+        let (fns, _) = build(
+            "fn fact(n: i64) -> i64:\n    if n <= 1:\n        return 1\n    return n * fact(n - 1)\n",
+        );
+        let f = fns.iter().find(|f| f.name == "fact").unwrap();
+        let has_self_call = f.basic_blocks.iter().any(|bb| {
+            bb.statements.iter().any(|s| {
+                if let StatementKind::Assign(_, Rvalue::Call { func, .. }) = &s.kind {
+                    matches!(func, crate::mir::Operand::Constant(crate::mir::Constant::Function(name)) if name == "fact")
+                } else {
+                    false
+                }
+            })
+        });
+        assert!(has_self_call);
+    }
+
+    #[test]
+    fn struct_field_access_produces_getattr() {
+        let (fns, _) = build(
+            "struct Pt:\n    x: i64\n    y: i64\n\nfn get_x(p: Pt) -> i64:\n    return p.x\n",
+        );
+        let f = fns.iter().find(|f| f.name == "get_x").unwrap();
+        let has_getattr = f.basic_blocks.iter().any(|bb| {
+            bb.statements
+                .iter()
+                .any(|s| matches!(s.kind, StatementKind::Assign(_, Rvalue::GetAttr(_, _))))
+        });
+        assert!(has_getattr);
+    }
+
+
+
+    #[test]
+    fn multiple_generic_instantiations_distinct() {
+        let (fns, _) =
+            build("fn id[T](x: T) -> T:\n    return x\n\nlet a = id(1)\nlet b = id(\"hi\")\n");
+        let id_fns: Vec<_> = fns.iter().filter(|f| f.name.starts_with("id")).collect();
+        assert!(
+            id_fns.len() >= 2,
+            "should produce two monomorphized id variants"
+        );
+    }
+
+    #[test]
+    fn match_produces_switch_int_terminator() {
+        let (fns, _) = build(
+            "enum Color:\n    Red\n    Green\n    Blue\n\nfn f(c: Color) -> i64:\n    match c:\n        case Red:\n            return 0\n        case _:\n            return 1\n",
+        );
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        let has_switch = f.basic_blocks.iter().any(|bb| {
+            bb.terminator
+                .as_ref()
+                .is_some_and(|t| matches!(t.kind, crate::mir::ir::TerminatorKind::SwitchInt { .. }))
+        });
+        assert!(has_switch);
     }
 }

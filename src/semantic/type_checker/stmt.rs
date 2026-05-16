@@ -123,7 +123,7 @@ impl TypeChecker {
                 let inner_ret_ty = return_type
                     .as_ref()
                     .map(|ann| self.resolve_type_expr(ann))
-                    .unwrap_or_else(Type::new_var);
+                    .unwrap_or_else(|| self.fresh_var());
                 let ret_ty = if *is_async {
                     Type::Future(Box::new(inner_ret_ty.clone()))
                 } else {
@@ -135,7 +135,7 @@ impl TypeChecker {
                         .type_ann
                         .as_ref()
                         .map(|ann| self.resolve_type_expr(ann))
-                        .unwrap_or_else(Type::new_var);
+                        .unwrap_or_else(|| self.fresh_var());
                     param_types.push(p_ty);
                 }
 
@@ -184,11 +184,14 @@ impl TypeChecker {
                 for (i, (param, mut p_ty)) in params.iter().zip(param_types).enumerate() {
                     if i == 0 && self.current_struct.is_some() && param.name == "self" {
                         let struct_name = self.current_struct.clone().unwrap();
-                        let struct_ty = self.lookup_type(&struct_name).unwrap();
-                        if let Type::Struct(_, args) = struct_ty {
-                            p_ty = Type::Struct(struct_name, args);
+                        if let Some(struct_ty) = self.lookup_type(&struct_name) {
+                            if let Type::Struct(_, args) = struct_ty {
+                                p_ty = Type::Struct(struct_name, args);
+                            } else {
+                                p_ty = Type::Struct(struct_name, Vec::new());
+                            }
                         } else {
-                            p_ty = Type::Struct(struct_name, Vec::new());
+                            p_ty = Type::Any;
                         }
                     }
                     self.define_type(&param.name, p_ty, param.is_mut);
@@ -475,28 +478,36 @@ impl TypeChecker {
                     .collect::<Vec<_>>();
                 self.define_type(name, Type::Enum(name.clone(), abstract_args.clone()), false);
 
+                // We need a temporary scope to resolve variant types
                 self.enter_scope();
                 for tp in type_params {
                     self.define_type(tp, Type::Param(tp.clone()), false);
                 }
 
-                let mut variant_names = Vec::new();
+                let mut variant_data = Vec::new();
                 for variant in variants {
-                    variant_names.push(variant.name.clone());
                     let mut param_types = Vec::new();
                     for ty_expr in &variant.types {
                         param_types.push(self.resolve_type_expr(ty_expr));
                     }
+                    variant_data.push((variant.name.clone(), param_types));
+                }
+                self.leave_scope();
+
+                // Now define variants in the OUTER scope
+                let mut variant_names = Vec::new();
+                for (v_name, p_types) in variant_data {
+                    variant_names.push(v_name.clone());
                     let fn_ty = Type::Fn(
-                        param_types,
+                        p_types,
                         Box::new(Type::Enum(name.clone(), abstract_args.clone())),
                         abstract_args.clone(),
                     );
-                    let variant_mangled = format!("{}::{}", name, variant.name);
-                    self.define_type(&variant_mangled, fn_ty, false);
+                    let variant_mangled = format!("{}::{}", name, v_name);
+                    self.define_type(&variant_mangled, fn_ty.clone(), false);
+                    self.define_type(&v_name, fn_ty, false);
                 }
                 self.enum_variants.insert(name.clone(), variant_names);
-                self.leave_scope();
             }
         }
     }

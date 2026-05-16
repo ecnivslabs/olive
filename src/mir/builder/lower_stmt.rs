@@ -360,6 +360,7 @@ impl<'a> MirBuilder<'a> {
                 for (i, variant) in variants.iter().enumerate() {
                     let mangled = format!("{}::{}", name, variant.name);
                     self.enum_variants.insert(mangled, (name.clone(), i));
+                    self.enum_variants.insert(variant.name.clone(), (name.clone(), i));
                 }
             }
         }

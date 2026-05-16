@@ -115,6 +115,7 @@ impl Resolver {
                     for variant in variants {
                         let mangled = format!("{}::{}", name, variant.name);
                         self.define_sym(&mangled, SymbolKind::Function, stmt.span);
+                        self.define_sym(&variant.name, SymbolKind::Function, stmt.span);
                     }
                 }
                 _ => {}

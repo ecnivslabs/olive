@@ -196,7 +196,7 @@ impl<'a> MirBuilder<'a> {
 
             ExprKind::Identifier(name) => {
                 if let Some(local) = self.lookup_var(name) {
-                    Operand::Copy(local)
+                    self.operand_for_local(local)
                 } else if let Some(global_op) = self.globals.get(name) {
                     global_op.clone()
                 } else {
@@ -205,8 +205,36 @@ impl<'a> MirBuilder<'a> {
             }
 
             ExprKind::BinOp { left, op, right } => {
-                let l = self.lower_expr(left);
-                let r = self.lower_expr(right);
+                let l = if matches!(
+                    op,
+                    crate::parser::BinOp::Eq
+                        | crate::parser::BinOp::NotEq
+                        | crate::parser::BinOp::Lt
+                        | crate::parser::BinOp::LtEq
+                        | crate::parser::BinOp::Gt
+                        | crate::parser::BinOp::GtEq
+                        | crate::parser::BinOp::In
+                        | crate::parser::BinOp::NotIn
+                ) {
+                    self.lower_expr_as_copy(left)
+                } else {
+                    self.lower_expr(left)
+                };
+                let r = if matches!(
+                    op,
+                    crate::parser::BinOp::Eq
+                        | crate::parser::BinOp::NotEq
+                        | crate::parser::BinOp::Lt
+                        | crate::parser::BinOp::LtEq
+                        | crate::parser::BinOp::Gt
+                        | crate::parser::BinOp::GtEq
+                        | crate::parser::BinOp::In
+                        | crate::parser::BinOp::NotIn
+                ) {
+                    self.lower_expr_as_copy(right)
+                } else {
+                    self.lower_expr(right)
+                };
                 let tmp = self.new_tmp_for_expr(expr);
                 self.push_statement(
                     StatementKind::Assign(tmp, Rvalue::BinaryOp(op.clone(), l, r)),
@@ -244,11 +272,51 @@ impl<'a> MirBuilder<'a> {
                             arg_kw_names.push(None);
                         }
                         CallArg::Positional(e) | CallArg::Splat(e) | CallArg::KwSplat(e) => {
-                            arg_ops.push(self.lower_expr(e));
+                            let is_readonly_builtin = if let ExprKind::Identifier(name) = &callee.kind {
+                                matches!(
+                                    name.as_str(),
+                                    "len"
+                                        | "print"
+                                        | "str"
+                                        | "int"
+                                        | "float"
+                                        | "type"
+                                        | "range"
+                                        | "slice"
+                                )
+                            } else {
+                                false
+                            };
+
+                            if is_readonly_builtin {
+                                arg_ops.push(self.lower_expr_as_copy(e));
+                            } else {
+                                arg_ops.push(self.lower_expr(e));
+                            }
                             arg_kw_names.push(None);
                         }
                         CallArg::Keyword(name, e) => {
-                            arg_ops.push(self.lower_expr(e));
+                            let is_readonly_builtin = if let ExprKind::Identifier(n) = &callee.kind {
+                                matches!(
+                                    n.as_str(),
+                                    "len"
+                                        | "print"
+                                        | "str"
+                                        | "int"
+                                        | "float"
+                                        | "type"
+                                        | "range"
+                                        | "slice"
+                                )
+                            } else {
+                                false
+                            };
+
+                            if is_readonly_builtin {
+                                arg_ops.push(self.lower_expr_as_copy(e));
+                            } else {
+                                arg_ops.push(self.lower_expr(e));
+                            }
                             arg_kw_names.push(Some(name.clone()));
                         }
                     }
@@ -286,7 +354,7 @@ impl<'a> MirBuilder<'a> {
                     }
 
                     if current_arg_ty == Type::Str {
-                        let arg_op = self.lower_expr(arg_expr);
+                        let arg_op = self.lower_expr_as_copy(arg_expr);
                         let tmp = self.new_local(Type::Int, None, false);
                         self.push_statement(
                             StatementKind::Assign(
@@ -309,7 +377,7 @@ impl<'a> MirBuilder<'a> {
                             | Type::Dict(_, _)
                             | Type::Any
                     ) {
-                        let arg_op = self.lower_expr(arg_expr);
+                        let arg_op = self.lower_expr_as_copy(arg_expr);
                         let tmp = self.new_local(Type::Int, None, false);
                         self.push_statement(
                             StatementKind::Assign(

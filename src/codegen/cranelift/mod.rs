@@ -1,6 +1,8 @@
 mod async_sm;
 mod imports;
 mod setup;
+#[cfg(test)]
+mod tests;
 mod translate;
 mod translate_rvalue;
 
@@ -147,8 +149,8 @@ pub(super) struct FfiFnEntry {
     pub(super) use_sret: bool,
 }
 
-pub struct CraneliftCodegen<'a, M: Module> {
-    pub(super) functions: &'a [MirFunction],
+pub struct CraneliftCodegen<M: Module> {
+    pub(super) functions: Vec<MirFunction>,
     pub(super) module: M,
     pub(super) func_ids: HashMap<String, FuncId>,
     pub(super) string_ids: HashMap<String, DataId>,
@@ -295,9 +297,9 @@ pub(super) fn ffi_cl_type(name: &str) -> cranelift::prelude::Type {
     }
 }
 
-impl<'a> CraneliftCodegen<'a, JITModule> {
+impl CraneliftCodegen<JITModule> {
     pub fn new_jit(
-        functions: &'a [MirFunction],
+        functions: Vec<MirFunction>,
         struct_fields: HashMap<String, Vec<String>>,
         native_lib_paths: &[(
             String,
@@ -326,7 +328,7 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
 
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
 
-        let needed = imports::collect_needed_imports(functions);
+        let needed = imports::collect_needed_imports(&functions);
         let has_async = functions.iter().any(|f| f.is_async);
 
         let mut libs: Vec<libloading::Library> = Vec::new();
@@ -442,7 +444,7 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
                 }
                 if ffi_sigs.is_empty() {
                     let prefix = format!("{}::", alias);
-                    for func in functions {
+                    for func in &functions {
                         for bb in &func.basic_blocks {
                             for stmt in &bb.statements {
                                 if let crate::mir::StatementKind::Assign(
@@ -547,9 +549,9 @@ impl<'a> CraneliftCodegen<'a, JITModule> {
     }
 }
 
-impl<'a> CraneliftCodegen<'a, ObjectModule> {
+impl CraneliftCodegen<ObjectModule> {
     pub fn new_aot(
-        functions: &'a [MirFunction],
+        functions: Vec<MirFunction>,
         struct_fields: HashMap<String, Vec<String>>,
         native_lib_paths: &[(
             String,
@@ -663,4 +665,4 @@ impl<'a> CraneliftCodegen<'a, ObjectModule> {
     }
 }
 
-impl<'a, M: Module> CraneliftCodegen<'a, M> {}
+impl<M: Module> CraneliftCodegen<M> {}

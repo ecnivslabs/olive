@@ -17,6 +17,8 @@ impl TypeChecker {
             (Type::Any, _) | (_, Type::Any) => {}
             (Type::Never, _) | (_, Type::Never) => {}
 
+            (Type::Ptr(a), Type::Ptr(b)) => self.unify(a, b, span),
+
             (Type::Var(id), other) | (other, Type::Var(id)) => {
                 if self.occurs_check(*id, other) {
                     self.errors.push(SemanticError::Custom {
@@ -142,7 +144,7 @@ impl TypeChecker {
                 }
                 false
             }
-            Type::List(inner) | Type::Set(inner) => self.occurs_check(id, inner),
+            Type::List(inner) | Type::Set(inner) | Type::Ptr(inner) => self.occurs_check(id, inner),
             Type::Dict(k, v) => self.occurs_check(id, k) || self.occurs_check(id, v),
             Type::Tuple(elems) => elems.iter().any(|e| self.occurs_check(id, e)),
             Type::Fn(params, ret, args) => {
@@ -151,7 +153,7 @@ impl TypeChecker {
                     || args.iter().any(|a| self.occurs_check(id, a))
             }
             Type::Ref(inner) | Type::MutRef(inner) | Type::Future(inner) => {
-                self.occurs_check(id, inner)
+                self.occurs_check(id, &*inner)
             }
             Type::Struct(_, args) | Type::Enum(_, args) => {
                 args.iter().any(|arg| self.occurs_check(id, arg))
@@ -174,6 +176,7 @@ impl TypeChecker {
             }
             Type::List(inner) => Type::List(Box::new(self.apply_subst(*inner))),
             Type::Set(inner) => Type::Set(Box::new(self.apply_subst(*inner))),
+            Type::Ptr(inner) => Type::Ptr(Box::new(self.apply_subst(*inner))),
             Type::Dict(k, v) => Type::Dict(
                 Box::new(self.apply_subst(*k)),
                 Box::new(self.apply_subst(*v)),
@@ -220,8 +223,8 @@ impl TypeChecker {
                 "str" => Type::Str,
                 "bool" => Type::Bool,
                 "None" => Type::Null,
-                "Any" => Type::Any,
                 "Never" => Type::Never,
+                "Any" => Type::Any,
                 _ => {
                     if let Some(t) = self.lookup_type(name) {
                         t
@@ -269,6 +272,7 @@ impl TypeChecker {
             ),
             TypeExprKind::Ref(inner) => Type::Ref(Box::new(self.resolve_type_expr(inner))),
             TypeExprKind::MutRef(inner) => Type::MutRef(Box::new(self.resolve_type_expr(inner))),
+            TypeExprKind::Ptr(inner) => Type::Ptr(Box::new(self.resolve_type_expr(inner))),
             TypeExprKind::Union(a, b) => {
                 let ta = self.resolve_type_expr(a);
                 let tb = self.resolve_type_expr(b);
@@ -285,7 +289,6 @@ impl TypeChecker {
                 }
                 Type::Union(vars)
             }
-            TypeExprKind::Ptr(_) => Type::Int,
             TypeExprKind::FixedArray(_, _) => Type::Int,
         }
     }

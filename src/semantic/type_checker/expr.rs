@@ -52,7 +52,10 @@ impl TypeChecker {
                 }
                 Type::MutRef(Box::new(inner_ty))
             }
-            ExprKind::Identifier(name) => self.lookup_type(name).unwrap_or_else(Type::new_var),
+            ExprKind::Identifier(name) => match self.lookup_type(name) {
+                Some(t) => t,
+                None => self.fresh_var(),
+            },
 
             ExprKind::BinOp { left, op, right } => {
                 let l_ty = self.check_expr(left);
@@ -69,7 +72,7 @@ impl TypeChecker {
             }
 
             ExprKind::List(elems) => {
-                let elem_ty = Type::new_var();
+                let elem_ty = self.fresh_var();
                 for e in elems {
                     let e_ty = self.check_expr(e);
                     self.unify(&elem_ty, &e_ty, expr.span);
@@ -83,7 +86,7 @@ impl TypeChecker {
             }
 
             ExprKind::Set(elems) => {
-                let elem_ty = Type::new_var();
+                let elem_ty = self.fresh_var();
                 for e in elems {
                     let e_ty = self.check_expr(e);
                     self.unify(&elem_ty, &e_ty, expr.span);
@@ -92,8 +95,8 @@ impl TypeChecker {
             }
 
             ExprKind::Dict(pairs) => {
-                let k_ty = Type::new_var();
-                let v_ty = Type::new_var();
+                let k_ty = self.fresh_var();
+                let v_ty = self.fresh_var();
                 for (k, v) in pairs {
                     let kt = self.check_expr(k);
                     let vt = self.check_expr(v);
@@ -239,15 +242,15 @@ impl TypeChecker {
                     _ => false,
                 };
                 if is_vararg {
-                    let ret_ty = Type::new_var();
+                    let ret_ty = self.fresh_var();
                     if let Type::Fn(_, fn_ret, _) = self.apply_subst(final_callee_ty) {
                         self.unify(&ret_ty, &fn_ret, expr.span);
                     }
                     self.apply_subst(ret_ty)
                 } else {
-                    let ret_ty = Type::new_var();
+                    let ret_ty = self.fresh_var();
                     let expected_args = if let Type::Fn(_, _, callee_args) = &resolved_callee {
-                        callee_args.iter().map(|_| Type::new_var()).collect()
+                        callee_args.iter().map(|_| self.fresh_var()).collect()
                     } else {
                         Vec::new()
                     };
@@ -278,7 +281,7 @@ impl TypeChecker {
                         self.unify(&Type::Int, &idx_ty, expr.span);
                         Type::Str
                     }
-                    _ => Type::new_var(),
+                    _ => self.fresh_var(),
                 }
             }
 
@@ -343,7 +346,7 @@ impl TypeChecker {
                     return Type::Fn(vec![], Box::new(Type::Bool), Vec::new());
                 }
 
-                Type::new_var()
+                self.fresh_var()
             }
 
             ExprKind::ListComp { elt, clauses } => {
@@ -377,7 +380,7 @@ impl TypeChecker {
 
             ExprKind::Match { expr, cases } => {
                 let match_ty = self.check_expr(expr);
-                let mut return_ty = Type::new_var();
+                let return_ty = self.fresh_var();
 
                 let mut matched_variants = std::collections::HashSet::new();
                 let mut has_wildcard = false;
@@ -401,12 +404,15 @@ impl TypeChecker {
                         for stmt in &case.body {
                             self.check_stmt(stmt);
                             if let crate::parser::StmtKind::ExprStmt(e) = &stmt.kind {
-                                case_ty = self.infer_expr(e);
+                                case_ty = self.check_expr(e);
                             }
                         }
                     }
-                    self.unify(&return_ty, &case_ty, expr.span);
-                    return_ty = case_ty;
+
+                    let branch_returns = case.body.iter().any(|s| matches!(s.kind, crate::parser::StmtKind::Return(_)));
+                    if !branch_returns {
+                        self.unify(&return_ty, &case_ty, expr.span);
+                    }
 
                     self.leave_scope();
                 }

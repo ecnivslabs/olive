@@ -599,7 +599,7 @@ pub(super) fn is_list_op(func_mir: &MirFunction, op: &Operand) -> bool {
 
 pub(super) fn cl_type(ty: &OliveType) -> cranelift::prelude::Type {
     match ty {
-        OliveType::Int | OliveType::Bool => types::I64,
+        OliveType::Int | OliveType::Bool | OliveType::Ptr(_) => types::I64,
         OliveType::Float => types::F64,
         OliveType::Vector(inner, width) => match &**inner {
             OliveType::Int => types::I64.by(*width as u32).expect("invalid vector width"),

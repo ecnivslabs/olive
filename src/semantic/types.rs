@@ -1,7 +1,4 @@
 use std::fmt;
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-static TYPE_VAR_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
@@ -29,6 +26,7 @@ pub enum Type {
     Set(Box<Type>),
     Ref(Box<Type>),
     MutRef(Box<Type>),
+    Ptr(Box<Type>),
     Var(usize),
     Any,
     Never,
@@ -37,11 +35,6 @@ pub enum Type {
 }
 
 impl Type {
-    pub fn new_var() -> Self {
-        let id = TYPE_VAR_COUNTER.fetch_add(1, Ordering::Relaxed);
-        Type::Var(id)
-    }
-
     pub fn is_move_type(&self) -> bool {
         !matches!(
             self,
@@ -62,11 +55,14 @@ impl Type {
                 | Type::Str
                 | Type::Ref(_)
                 | Type::MutRef(_)
+                | Type::Ptr(_)
                 | Type::Vector(_, _)
                 | Type::Future(_)
                 | Type::Param(_)
         )
     }
+
+
 }
 
 impl fmt::Display for Type {
@@ -147,6 +143,7 @@ impl fmt::Display for Type {
             Type::Set(t) => write!(f, "{{{}}}", t),
             Type::Ref(t) => write!(f, "&{}", t),
             Type::MutRef(t) => write!(f, "&mut {}", t),
+            Type::Ptr(t) => write!(f, "*{}", t),
             Type::Var(id) => write!(f, "?T{}", id),
             Type::Any => write!(f, "Any"),
             Type::Never => write!(f, "Never"),

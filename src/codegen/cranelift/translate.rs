@@ -66,7 +66,7 @@ pub(super) fn attr_symbol(
     }
 }
 
-impl<'a, M: Module> CraneliftCodegen<'a, M> {
+impl<M: Module> CraneliftCodegen<M> {
     pub(super) fn translate_function(&mut self, func: &MirFunction) {
         let mut ctx = self.module.make_context();
 

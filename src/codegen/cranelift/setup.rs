@@ -5,9 +5,9 @@ use cranelift::codegen::ir::ArgumentPurpose;
 use cranelift::prelude::*;
 use cranelift_module::{DataDescription, Linkage, Module};
 
-impl<'a, M: Module> CraneliftCodegen<'a, M> {
+impl<M: Module> CraneliftCodegen<M> {
     pub fn generate(&mut self) {
-        let needed = imports::collect_needed_imports(self.functions);
+        let needed = imports::collect_needed_imports(&self.functions);
 
         let mk_sig = |params: &[cranelift::prelude::Type], returns: &[cranelift::prelude::Type]| {
             let mut sig = self.module.make_signature();
@@ -29,6 +29,7 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
         let sig_f64_void = mk_sig(&[types::F64], &[]);
         let sig_i64_void = mk_sig(&[types::I64], &[]);
         let sig_i64_i64_i64 = mk_sig(&[types::I64, types::I64], &[types::I64]);
+        let sig_3i64_i64 = mk_sig(&[types::I64, types::I64, types::I64], &[types::I64]);
         let sig_i64_i64_void = mk_sig(&[types::I64, types::I64], &[]);
         let sig_f64_f64_f64 = mk_sig(&[types::F64, types::F64], &[types::F64]);
 
@@ -73,10 +74,10 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
             ("__olive_cache_has_tuple", &sig_i64_i64_i64),
             ("__olive_cache_get_tuple", &sig_i64_i64_i64),
             ("__olive_list_set", &sig_i64_i64_i64_void),
-            ("__olive_obj_set", &sig_i64_i64_i64),
+            ("__olive_obj_set", &sig_3i64_i64),
             ("__olive_set_index_any", &sig_i64_i64_i64_void),
-            ("__olive_cache_set", &sig_i64_i64_i64),
-            ("__olive_cache_set_tuple", &sig_i64_i64_i64),
+            ("__olive_cache_set", &sig_3i64_i64),
+            ("__olive_cache_set_tuple", &sig_3i64_i64),
             ("__olive_free", &sig_i64_void),
             ("__olive_free_str", &sig_i64_void),
             ("__olive_free_list", &sig_i64_void),
@@ -94,14 +95,14 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
             ("__olive_has_next", &sig_i64_i64),
             ("__olive_time_now", &sig_void_f64),
             ("__olive_time_sleep", &sig_f64_void),
-            ("__olive_enum_new", &sig_i64_i64_i64),
+            ("__olive_enum_new", &sig_3i64_i64),
             ("__olive_enum_tag", &sig_i64_i64),
             ("__olive_enum_type_id", &sig_i64_i64),
             ("__olive_enum_get", &sig_i64_i64_i64),
             ("__olive_enum_set", &sig_i64_i64_i64_void),
             ("__olive_free_enum", &sig_i64_void),
             ("__olive_str_char", &sig_i64_i64_i64),
-            ("__olive_str_slice", &sig_i64_i64_i64),
+            ("__olive_str_slice", &sig_3i64_i64),
             ("__olive_obj_len", &sig_i64_i64),
             ("__olive_make_future", &sig_i64_i64),
             ("__olive_await", &sig_i64_i64),
@@ -223,7 +224,7 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
         }
 
         if !self.native_aliases.is_empty() {
-            for func in self.functions {
+            for func in &self.functions {
                 for bb in &func.basic_blocks {
                     for stmt in &bb.statements {
                         if let StatementKind::Assign(
@@ -265,7 +266,7 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
             }
         }
 
-        for func in self.functions {
+        for func in &self.functions {
             let mut sig = self.module.make_signature();
             for i in 0..func.arg_count {
                 let ty = &func.locals[i + 1].ty;
@@ -275,7 +276,7 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
             sig.returns.push(AbiParam::new(imports::cl_type(ret_ty)));
 
             if func.is_async {
-                let can_sm = Self::analyze_async_sm(func).is_some();
+                let can_sm = Self::analyze_async_sm(&func).is_some();
                 if can_sm {
                     let poll_name = format!("{}__sm_poll", func.name);
                     let mut poll_sig = self.module.make_signature();
@@ -308,7 +309,8 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
             }
         }
 
-        for func in self.functions {
+        let funcs_for_strings = self.functions.clone();
+        for func in &funcs_for_strings {
             self.collect_strings(func);
         }
 

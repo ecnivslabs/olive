@@ -16,14 +16,14 @@ impl TypeChecker {
                 if elems.is_empty() {
                     Type::Any
                 } else {
-                    let common = Type::new_var();
+                    let common = self.fresh_var();
                     for e in &elems {
                         self.unify(&common, e, span);
                     }
                     self.apply_subst(common)
                 }
             }
-            _ => Type::new_var(),
+            _ => self.fresh_var(),
         };
 
         match target {
@@ -38,7 +38,8 @@ impl TypeChecker {
                 }
                 _ => {
                     for (name, _) in names {
-                        self.define_type(name, Type::new_var(), false);
+                        let var = self.fresh_var();
+                        self.define_type(name, var, false);
                     }
                 }
             },

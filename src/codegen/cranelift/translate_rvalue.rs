@@ -58,7 +58,7 @@ fn load_and_extend(
     }
 }
 
-impl<'a, M: Module> CraneliftCodegen<'a, M> {
+impl<M: Module> CraneliftCodegen<M> {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn translate_rvalue(
         func_mir: &MirFunction,

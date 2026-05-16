@@ -97,8 +97,8 @@ impl<'a> BorrowChecker<'a> {
         let liveness = Liveness::compute(func);
         Self {
             func,
-            errors: Vec::new(),
             liveness,
+            errors: Vec::new(),
             provenance: HashMap::default(),
         }
     }
@@ -139,8 +139,7 @@ impl<'a> BorrowChecker<'a> {
 
             for (stmt_idx, stmt) in bb.statements.iter().enumerate() {
                 self.transfer_stmt(stmt, &mut state);
-
-                let live_after = &self.liveness.live_after[bb_idx][stmt_idx];
+                let live_after = &self.liveness.live_after[bb_idx][stmt_idx + 1];
                 self.release_dead_borrows(&mut state, live_after);
             }
 
@@ -385,8 +384,16 @@ impl<'a> BorrowChecker<'a> {
                     });
                 }
                 LocalState::Initialized => {
-                    if let Operand::Move(_) = op {
-                        let _ = state.set(*local, LocalState::Moved);
+                    if let Operand::Move(local) = op {
+                        if self.is_move_type(&self.func.locals[local.0].ty) {
+                            if let Err(msg) = state.set(*local, LocalState::Moved) {
+                                let name = self.local_name(*local);
+                                self.errors.push(SemanticError::Custom {
+                                    msg: format!("{} `{}`", msg, name),
+                                    span,
+                                });
+                            }
+                        }
                     }
                 }
             },
@@ -397,7 +404,7 @@ impl<'a> BorrowChecker<'a> {
     fn release_dead_borrows(&self, state: &mut FlowState, live_locals: &HashSet<Local>) {
         let mut still_borrowed = HashSet::default();
         for (ref_var, &pointed_var) in &self.provenance {
-            if live_locals.contains(ref_var) {
+            if live_locals.contains(ref_var) || self.func.locals[ref_var.0].name.is_some() {
                 still_borrowed.insert(pointed_var);
             }
         }
@@ -421,6 +428,10 @@ impl<'a> BorrowChecker<'a> {
             .and_then(|decl| decl.name.as_ref())
             .cloned()
             .unwrap_or_else(|| format!("_{}", local.0))
+    }
+
+    fn is_move_type(&self, ty: &crate::semantic::types::Type) -> bool {
+        ty.is_move_type()
     }
 }
 
@@ -499,6 +510,78 @@ mod tests {
     fn nested_calls_no_errors() {
         let errors = borrow_check(
             "fn double(x: i64) -> i64:\n    return x * 2\n\nfn quad(x: i64) -> i64:\n    return double(double(x))\n",
+        );
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    }
+
+    #[test]
+    fn struct_field_access_no_errors() {
+        let errors = borrow_check(
+            "struct Point:\n    x: i64\n    y: i64\n\nfn dist(p: Point) -> i64:\n    return p.x + p.y\n",
+        );
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    }
+
+    #[test]
+    fn list_operations_no_errors() {
+        let errors = borrow_check(
+            "fn sum(xs: [i64]) -> i64:\n    let s = 0\n    for x in xs:\n        s = s + x\n    return s\n",
+        );
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    }
+
+    #[test]
+    fn recursive_function_no_errors() {
+        let errors = borrow_check(
+            "fn fib(n: i64) -> i64:\n    if n <= 1:\n        return n\n    return fib(n - 1) + fib(n - 2)\n",
+        );
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    }
+
+    #[test]
+    fn ref_borrow_no_errors() {
+        let errors = borrow_check(
+            "fn inspect(r: &i64) -> i64:\n    return 0\n\nfn caller() -> i64:\n    let x = 42\n    inspect(&x)\n    return x\n",
+        );
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    }
+
+    #[test]
+    fn move_into_function_no_errors() {
+        let errors = borrow_check(
+            "fn consume(xs: [i64]) -> i64:\n    return 0\n\nfn caller() -> i64:\n    let xs = [1, 2, 3]\n    consume(xs)\n    return 0\n",
+        );
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    }
+
+    #[test]
+    fn borrow_prevents_move() {
+        let errors = borrow_check(
+            "fn consume(xs: [i64]) -> i64:\n    return 0\n\nfn read(r: &[i64]) -> i64:\n    return 0\n\nfn caller() -> i64:\n    let mut xs = [1, 2]\n    let r = &xs\n    consume(xs)\n    return 0\n",
+        );
+        assert!(!errors.is_empty(), "should report move-while-borrowed");
+    }
+
+    #[test]
+    fn match_arm_bindings_no_errors() {
+        let errors = borrow_check(
+            "enum Opt:\n    Some(i64)\n    None\n\nfn unwrap_or(o: Opt, default: i64) -> i64:\n    match o:\n        case Some(v):\n            return v\n        case None:\n            return default\n",
+        );
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    }
+
+    #[test]
+    fn multiple_return_paths_no_errors() {
+        let errors = borrow_check(
+            "fn clamp(x: i64, lo: i64, hi: i64) -> i64:\n    if x < lo:\n        return lo\n    if x > hi:\n        return hi\n    return x\n",
+        );
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    }
+
+    #[test]
+    fn deeply_nested_loops_no_errors() {
+        let errors = borrow_check(
+            "fn mat_sum(n: i64) -> i64:\n    let s = 0\n    let i = 0\n    while i < n:\n        let j = 0\n        while j < n:\n            s = s + i * j\n            j = j + 1\n        i = i + 1\n    return s\n",
         );
         assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
     }

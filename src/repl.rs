@@ -110,7 +110,7 @@ pub fn repl_compile_run(
     }
 
     let mut codegen = CraneliftCodegen::new_jit(
-        &mir_builder.functions,
+        mir_builder.functions,
         mir_builder.struct_fields.clone(),
         &[],
     );

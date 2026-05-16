@@ -26,6 +26,7 @@ pub struct TypeChecker {
     pub(super) c_ffi_structs: HashSet<String>,
     pub(super) unsafe_depth: usize,
     pub(super) ffi_fns: HashSet<String>,
+    pub(super) var_counter: usize,
 }
 
 impl TypeChecker {
@@ -261,7 +262,14 @@ impl TypeChecker {
             c_ffi_structs: HashSet::default(),
             unsafe_depth: 0,
             ffi_fns: HashSet::default(),
+            var_counter: 0,
         }
+    }
+
+    pub(super) fn fresh_var(&mut self) -> Type {
+        let id = self.var_counter;
+        self.var_counter += 1;
+        Type::Var(id)
     }
 
     pub(super) fn enter_scope(&mut self) {
@@ -341,7 +349,7 @@ impl TypeChecker {
                 let mut fresh_args = Vec::new();
                 for arg in &args {
                     if let Type::Param(name) = arg {
-                        let var = Type::new_var();
+                        let var = self.fresh_var();
                         subst.insert(name.clone(), var.clone());
                         fresh_args.push(var);
                     } else {
@@ -361,7 +369,7 @@ impl TypeChecker {
                 let mut fresh_args = Vec::new();
                 for arg in args {
                     if let Type::Param(_) = arg {
-                        fresh_args.push(Type::new_var());
+                        fresh_args.push(self.fresh_var());
                     } else {
                         fresh_args.push(arg);
                     }
@@ -372,7 +380,7 @@ impl TypeChecker {
                 let mut fresh_args = Vec::new();
                 for arg in args {
                     if let Type::Param(_) = arg {
-                        fresh_args.push(Type::new_var());
+                        fresh_args.push(self.fresh_var());
                     } else {
                         fresh_args.push(arg);
                     }
@@ -412,6 +420,7 @@ impl TypeChecker {
             Type::MutRef(inner) => {
                 Type::MutRef(Box::new(self.replace_params_with_vars(*inner, subst)))
             }
+            Type::Ptr(inner) => Type::Ptr(Box::new(self.replace_params_with_vars(*inner, subst))),
             Type::Future(inner) => {
                 Type::Future(Box::new(self.replace_params_with_vars(*inner, subst)))
             }
@@ -558,5 +567,188 @@ mod tests {
     fn if_else_expression_ok() {
         let tc = pipeline("let x = 5\nif x > 3:\n    let y = 1\n");
         assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn wrong_arg_count_reported() {
+        let tc = pipeline("fn f(a: i64, b: i64) -> i64:\n    return a + b\n\nf(1)\n");
+        assert!(!tc.errors.is_empty());
+    }
+
+    #[test]
+    fn recursive_function_ok() {
+        let tc = pipeline(
+            "fn fact(n: i64) -> i64:\n    if n <= 1:\n        return 1\n    return n * fact(n - 1)\n",
+        );
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn enum_variant_construction_ok() {
+        let tc =
+            pipeline("enum Shape:\n    Circle(i64)\n    Rect(i64, i64)\n\nlet c = Circle(5)\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn union_type_ok() {
+        let tc = pipeline("fn f(x: i64 | str) -> i64:\n    return 0\n\nf(42)\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn list_homogeneity_inferred() {
+        let tc = pipeline("let xs = [1, 2, 3]\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn dict_type_inferred() {
+        let tc = pipeline("let d = {\"a\": 1, \"b\": 2}\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn tuple_type_inferred() {
+        let tc = pipeline("let t = (1, \"hello\", True)\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn while_loop_ok() {
+        let tc = pipeline("let mut i = 0\nwhile i < 10:\n    i = i + 1\n");
+        assert!(tc.errors.is_empty(), "errors: {:?}", tc.errors);
+    }
+
+    #[test]
+    fn for_loop_ok() {
+        let tc = pipeline("for x in [1, 2, 3]:\n    let y = x + 1\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn method_call_on_struct_ok() {
+        let tc = pipeline(
+            "struct Counter:\n    val: i64\n\nimpl Counter:\n    fn inc(self) -> i64:\n        return self.val + 1\n\nlet c = Counter(0)\nlet v = c.inc()\n",
+        );
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn generic_struct_ok() {
+        let tc = pipeline(
+            "struct Pair[A, B]:\n    first: A\n    second: B\n\nlet p = Pair(1, \"two\")\n",
+        );
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn return_type_mismatch_in_branch_reported() {
+        let tc = pipeline(
+            "fn f(x: i64) -> i64:\n    if x > 0:\n        return \"wrong\"\n    return 0\n",
+        );
+        assert!(!tc.errors.is_empty());
+    }
+
+    #[test]
+    fn mutable_let_reassignment_ok() {
+        let tc = pipeline("let mut x = 0\nx = 42\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn immutable_reassignment_reported() {
+        let tc = pipeline("let x = 0\nx = 42\n");
+        assert!(!tc.errors.is_empty());
+    }
+
+    #[test]
+    fn const_declaration_ok() {
+        let tc = pipeline("const PI = 3\nlet r = PI * 2\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn ptr_type_annotation_ok() {
+        let tc = pipeline("fn deref(p: *i64) -> i64:\n    return 0\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn ptr_ptr_type_ok() {
+        let tc = pipeline("fn f(p: *(*i64)) -> i64:\n    return 0\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn match_exhaustive_ok() {
+        let tc = pipeline(
+            "enum Color:\n    Red(i64)\n    Green(i64)\n    Blue(i64)\n\nlet c = Red(0)\nmatch c:\n    case Red(v):\n        let x = v\n    case _:\n        let x = 0\n",
+        );
+        assert!(tc.errors.is_empty(), "errors: {:?}", tc.errors);
+    }
+
+    #[test]
+    fn trait_method_defined_ok() {
+        let tc = pipeline(
+            "trait Printable:\n    fn display(self) -> str:\n        return \"\"\n\nstruct Pt:\n    x: i64\n\nimpl Printable for Pt:\n    fn display(self) -> str:\n        return str(self.x)\n",
+        );
+        assert!(tc.errors.is_empty(), "errors: {:?}", tc.errors);
+    }
+
+    #[test]
+    fn nested_generics_ok() {
+        let tc = pipeline("fn wrap[T](x: T) -> [T]:\n    return [x]\n\nlet r = wrap(42)\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn float_arithmetic_ok() {
+        let tc = pipeline("let x = 1.5 + 2.5\nlet y = x * 2.0\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn bool_operations_ok() {
+        let tc = pipeline("let a = True\nlet b = False\nlet c = a and b\nlet d = a or b\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn string_concat_ok() {
+        let tc = pipeline("let s = \"hello\" + \" world\"\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn list_indexing_ok() {
+        let tc = pipeline("let xs = [10, 20, 30]\nlet v = xs[1]\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn nested_struct_field_access_ok() {
+        let tc = pipeline(
+            "struct Inner:\n    v: i64\nstruct Outer:\n    inner: Inner\nlet o = Outer(Inner(5))\nlet v = o.inner.v\n",
+        );
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn higher_order_function_ok() {
+        let tc = pipeline("fn apply(f: fn(i64) -> i64, x: i64) -> i64:\n    return f(x)\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn var_counter_isolated_between_instances() {
+        let tc1 = pipeline("let x = [1]\n");
+        let tc2 = pipeline("let y = [2]\n");
+        assert!(tc1.errors.is_empty());
+        assert!(tc2.errors.is_empty());
+        assert_eq!(
+            tc1.var_counter, tc2.var_counter,
+            "each TypeChecker instance must use its own counter"
+        );
     }
 }
