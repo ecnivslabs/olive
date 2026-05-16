@@ -9,7 +9,9 @@ pub struct Parser {
 }
 
 mod base;
+mod decls;
 mod expr;
+mod ffi;
 mod stmt;
 mod tests;
 mod types;

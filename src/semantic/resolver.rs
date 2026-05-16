@@ -593,7 +593,11 @@ mod tests {
     #[test]
     fn variable_not_visible_before_let() {
         let r = resolve("print(x)\nlet x = 1\n");
-        assert!(r.errors.iter().any(|e| matches!(e, SemanticError::UndefinedName { .. })));
+        assert!(
+            r.errors
+                .iter()
+                .any(|e| matches!(e, SemanticError::UndefinedName { .. }))
+        );
     }
 
     #[test]
@@ -607,13 +611,21 @@ mod tests {
     #[test]
     fn duplicate_param_reported() {
         let r = resolve("fn bad(x: i64, x: i64):\n    pass\n");
-        assert!(r.errors.iter().any(|e| matches!(e, SemanticError::DuplicateParam { .. })));
+        assert!(
+            r.errors
+                .iter()
+                .any(|e| matches!(e, SemanticError::DuplicateParam { .. }))
+        );
     }
 
     #[test]
     fn assign_to_undefined_reported() {
         let r = resolve("x = 99\n");
-        assert!(r.errors.iter().any(|e| matches!(e, SemanticError::AssignToUndefined { .. })));
+        assert!(
+            r.errors
+                .iter()
+                .any(|e| matches!(e, SemanticError::AssignToUndefined { .. }))
+        );
     }
 
     #[test]
@@ -644,9 +656,7 @@ mod tests {
 
     #[test]
     fn native_import_alias_defined() {
-        let r = resolve(
-            "import \"/usr/lib/libc.so.6\" as libc:\n    fn puts(s: str) -> i64\n",
-        );
+        let r = resolve("import \"/usr/lib/libc.so.6\" as libc:\n    fn puts(s: str) -> i64\n");
         assert!(r.errors.is_empty());
     }
 }

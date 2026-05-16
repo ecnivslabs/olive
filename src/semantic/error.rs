@@ -48,4 +48,3 @@ impl std::fmt::Display for SemanticError {
 }
 
 impl std::error::Error for SemanticError {}
-

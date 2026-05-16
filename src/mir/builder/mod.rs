@@ -1,5 +1,7 @@
+mod generics;
 mod lower_control;
 mod lower_expr;
+mod lower_pattern;
 mod lower_stmt;
 
 use super::ir::*;
@@ -449,17 +451,17 @@ mod tests {
 
     #[test]
     fn if_statement_creates_multiple_blocks() {
-        let (fns, _) = build(
-            "fn foo(x: i64) -> i64:\n    if x > 0:\n        return 1\n    return 0\n",
-        );
+        let (fns, _) =
+            build("fn foo(x: i64) -> i64:\n    if x > 0:\n        return 1\n    return 0\n");
         let f = fns.iter().find(|f| f.name == "foo").unwrap();
         assert!(f.basic_blocks.len() >= 2);
     }
 
     #[test]
     fn while_loop_creates_backedge() {
-        let (fns, _) =
-            build("fn count(n: i64) -> i64:\n    let i = 0\n    while i < n:\n        i = i + 1\n    return i\n");
+        let (fns, _) = build(
+            "fn count(n: i64) -> i64:\n    let i = 0\n    while i < n:\n        i = i + 1\n    return i\n",
+        );
         let f = fns.iter().find(|f| f.name == "count").unwrap();
         let has_goto = f.basic_blocks.iter().any(|bb| {
             bb.terminator
@@ -471,8 +473,7 @@ mod tests {
 
     #[test]
     fn struct_fields_registered() {
-        let (_, struct_fields) =
-            build("struct Vec2:\n    x: i64\n    y: i64\n");
+        let (_, struct_fields) = build("struct Vec2:\n    x: i64\n    y: i64\n");
         assert!(struct_fields.contains_key("Vec2"));
         let fields = &struct_fields["Vec2"];
         assert!(fields.contains(&"x".to_string()));
@@ -481,9 +482,7 @@ mod tests {
 
     #[test]
     fn generic_fn_monomorphized_on_call() {
-        let (fns, _) = build(
-            "fn id[T](x: T) -> T:\n    return x\n\nlet r = id(5)\n",
-        );
+        let (fns, _) = build("fn id[T](x: T) -> T:\n    return x\n\nlet r = id(5)\n");
         assert!(fns.iter().any(|f| f.name.starts_with("id")));
     }
 

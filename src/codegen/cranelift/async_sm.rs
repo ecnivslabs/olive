@@ -420,5 +420,4 @@ impl<'a, M: Module> CraneliftCodegen<'a, M> {
         let wrapper_id = *self.func_ids.get(&func.name).unwrap();
         self.module.define_function(wrapper_id, &mut ctx).unwrap();
     }
-
 }

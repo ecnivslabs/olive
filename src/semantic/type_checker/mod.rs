@@ -503,25 +503,20 @@ mod tests {
 
     #[test]
     fn struct_instantiation_ok() {
-        let tc = pipeline(
-            "struct Point:\n    x: i64\n    y: i64\n\nlet p = Point(1, 2)\n",
-        );
+        let tc = pipeline("struct Point:\n    x: i64\n    y: i64\n\nlet p = Point(1, 2)\n");
         assert!(tc.errors.is_empty());
     }
 
     #[test]
     fn struct_field_access_ok() {
-        let tc = pipeline(
-            "struct Point:\n    x: i64\n    y: i64\n\nlet p = Point(3, 4)\nlet v = p.x\n",
-        );
+        let tc =
+            pipeline("struct Point:\n    x: i64\n    y: i64\n\nlet p = Point(3, 4)\nlet v = p.x\n");
         assert!(tc.errors.is_empty());
     }
 
     #[test]
     fn generic_function_monomorphizes() {
-        let tc = pipeline(
-            "fn identity[T](x: T) -> T:\n    return x\n\nlet y = identity(10)\n",
-        );
+        let tc = pipeline("fn identity[T](x: T) -> T:\n    return x\n\nlet y = identity(10)\n");
         assert!(tc.errors.is_empty());
     }
 
@@ -553,7 +548,9 @@ mod tests {
 
     #[test]
     fn nested_function_calls_ok() {
-        let tc = pipeline("fn add(a: i64, b: i64) -> i64:\n    return a + b\n\nlet r = add(add(1, 2), 3)\n");
+        let tc = pipeline(
+            "fn add(a: i64, b: i64) -> i64:\n    return a + b\n\nlet r = add(add(1, 2), 3)\n",
+        );
         assert!(tc.errors.is_empty());
     }
 
