@@ -272,21 +272,22 @@ impl<'a> MirBuilder<'a> {
                             arg_kw_names.push(None);
                         }
                         CallArg::Positional(e) | CallArg::Splat(e) | CallArg::KwSplat(e) => {
-                            let is_readonly_builtin = if let ExprKind::Identifier(name) = &callee.kind {
-                                matches!(
-                                    name.as_str(),
-                                    "len"
-                                        | "print"
-                                        | "str"
-                                        | "int"
-                                        | "float"
-                                        | "type"
-                                        | "range"
-                                        | "slice"
-                                )
-                            } else {
-                                false
-                            };
+                            let is_readonly_builtin =
+                                if let ExprKind::Identifier(name) = &callee.kind {
+                                    matches!(
+                                        name.as_str(),
+                                        "len"
+                                            | "print"
+                                            | "str"
+                                            | "int"
+                                            | "float"
+                                            | "type"
+                                            | "range"
+                                            | "slice"
+                                    )
+                                } else {
+                                    false
+                                };
 
                             if is_readonly_builtin {
                                 arg_ops.push(self.lower_expr_as_copy(e));
@@ -296,7 +297,8 @@ impl<'a> MirBuilder<'a> {
                             arg_kw_names.push(None);
                         }
                         CallArg::Keyword(name, e) => {
-                            let is_readonly_builtin = if let ExprKind::Identifier(n) = &callee.kind {
+                            let is_readonly_builtin = if let ExprKind::Identifier(n) = &callee.kind
+                            {
                                 matches!(
                                     n.as_str(),
                                     "len"

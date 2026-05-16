@@ -104,7 +104,7 @@ impl Inliner {
             terminator: caller.basic_blocks[bb_idx].terminator.take(),
         };
 
-        let block_offset = caller.basic_blocks.len() + 1; // +1 because we'll add the tail later
+        let block_offset = caller.basic_blocks.len() + 1;
         let mut callee_bb_map = HashMap::default();
         for (i, _) in callee.basic_blocks.iter().enumerate() {
             callee_bb_map.insert(BasicBlockId(i), BasicBlockId(block_offset + i));

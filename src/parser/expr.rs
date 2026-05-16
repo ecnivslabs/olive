@@ -427,7 +427,7 @@ impl Parser {
                 && self.peek_at(1).kind == TokenKind::Equal
             {
                 let name = self.advance().value;
-                self.advance(); // =
+                self.advance();
                 CallArg::Keyword(name, self.parse_expr()?)
             } else {
                 CallArg::Positional(self.parse_expr()?)

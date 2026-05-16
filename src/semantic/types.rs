@@ -61,8 +61,6 @@ impl Type {
                 | Type::Param(_)
         )
     }
-
-
 }
 
 impl fmt::Display for Type {

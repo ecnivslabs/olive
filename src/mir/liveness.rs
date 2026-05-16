@@ -73,7 +73,7 @@ impl Liveness {
     fn update_stmt_liveness(live: &mut HashSet<Local>, stmt: &Statement) {
         match &stmt.kind {
             StatementKind::Assign(local, rvalue) => {
-                live.remove(local); // def kills
+                live.remove(local);
                 Self::use_rvalue(live, rvalue);
             }
             StatementKind::SetAttr(obj, _, val) => {

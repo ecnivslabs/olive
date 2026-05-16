@@ -3,8 +3,6 @@ mod linker;
 mod loader;
 mod pipeline;
 
-
-
 use crate::codegen::cranelift::CraneliftCodegen;
 use crate::parser;
 use linker::{compute_source_hash, ensure_dir, exec_binary, link_object};

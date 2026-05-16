@@ -597,8 +597,6 @@ mod tests {
         assert!(has_getattr);
     }
 
-
-
     #[test]
     fn multiple_generic_instantiations_distinct() {
         let (fns, _) =

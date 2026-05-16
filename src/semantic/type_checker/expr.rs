@@ -409,7 +409,10 @@ impl TypeChecker {
                         }
                     }
 
-                    let branch_returns = case.body.iter().any(|s| matches!(s.kind, crate::parser::StmtKind::Return(_)));
+                    let branch_returns = case
+                        .body
+                        .iter()
+                        .any(|s| matches!(s.kind, crate::parser::StmtKind::Return(_)));
                     if !branch_returns {
                         self.unify(&return_ty, &case_ty, expr.span);
                     }
