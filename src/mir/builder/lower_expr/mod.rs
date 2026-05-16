@@ -393,6 +393,23 @@ impl<'a> MirBuilder<'a> {
 
         let callee_ty = self.get_type(callee.id);
 
+        if let ExprKind::Attr { obj, attr } = &callee.kind
+            && let ExprKind::Identifier(name) = &obj.kind
+            && self.has_native_module_fn(name, attr)
+        {
+            return self.lower_attr_method_call_section(
+                callee,
+                obj,
+                attr,
+                args,
+                arg_ops,
+                arg_kw_names,
+                arg_tys,
+                expr.span,
+                expr.id,
+            );
+        }
+
         if callee_ty.is_py_value() {
             let callee_op = self.lower_expr_as_copy(callee);
             let py_result =
