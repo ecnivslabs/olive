@@ -78,6 +78,7 @@ pit run
 - [Generics](docs/generics.md): Writing reusable code.
 - [Native Interop](docs/ffi.md): Calling C code and using `unsafe`.
 - [Standard Library](docs/modules.md): What's in the box.
+- [Full Index](docs/index.md): Everything in one place.
 
 ## Contributing
 
