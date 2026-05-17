@@ -8,10 +8,14 @@ fn main():
     let res = math.cos(2)
     print("result:")
     print(res)
+    print("result as float:")
+    print(float(res))
 
     let parsed = json.loads("{\"hello\": \"world\", \"val\": 42}")
     let hw = parsed.get("hello")
     print("HW:")
     print(hw)
+    print("HW as str:")
+    print(str(hw))
 
 main()

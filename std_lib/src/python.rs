@@ -8,30 +8,30 @@ static INITIALIZED: AtomicBool = AtomicBool::new(false);
 static mut LIBPYTHON: *mut c_void = std::ptr::null_mut();
 
 // Function pointers
-static mut Py_Initialize: unsafe extern "C" fn() = noop_initialize;
-static mut Py_Finalize: unsafe extern "C" fn() = noop_finalize;
-static mut PyImport_ImportModule: unsafe extern "C" fn(*const c_char) -> PyObject = noop_import;
-static mut PyObject_GetAttrString: unsafe extern "C" fn(PyObject, *const c_char) -> PyObject = noop_getattr;
-static mut PyObject_CallObject: unsafe extern "C" fn(PyObject, PyObject) -> PyObject = noop_call;
-static mut PyObject_Call: unsafe extern "C" fn(PyObject, PyObject, PyObject) -> PyObject = noop_call_kw;
-static mut Py_DecRef: unsafe extern "C" fn(PyObject) = noop_decref;
-static mut PyLong_AsLong: unsafe extern "C" fn(PyObject) -> c_long = noop_as_long;
-static mut PyFloat_AsDouble: unsafe extern "C" fn(PyObject) -> c_double = noop_as_double;
-static mut PyUnicode_AsUTF8: unsafe extern "C" fn(PyObject) -> *const c_char = noop_as_utf8;
-static mut PyLong_FromLong: unsafe extern "C" fn(c_long) -> PyObject = noop_from_long;
-static mut PyFloat_FromDouble: unsafe extern "C" fn(c_double) -> PyObject = noop_from_double;
-static mut PyUnicode_FromString: unsafe extern "C" fn(*const c_char) -> PyObject = noop_from_string;
-static mut PyList_New: unsafe extern "C" fn(isize) -> PyObject = noop_list_new;
-static mut PyList_SetItem: unsafe extern "C" fn(PyObject, isize, PyObject) -> c_int = noop_list_setitem;
-static mut PyObject_GetItem: unsafe extern "C" fn(PyObject, PyObject) -> PyObject = noop_getitem;
-static mut PyObject_SetItem: unsafe extern "C" fn(PyObject, PyObject, PyObject) -> c_int = noop_setitem;
-static mut PyObject_Length: unsafe extern "C" fn(PyObject) -> isize = noop_length;
-static mut PyGILState_Ensure: unsafe extern "C" fn() -> c_int = noop_gil_ensure;
-static mut PyGILState_Release: unsafe extern "C" fn(c_int) = noop_gil_release;
-static mut PyTuple_New: unsafe extern "C" fn(isize) -> PyObject = noop_tuple_new;
-static mut PyTuple_SetItem: unsafe extern "C" fn(PyObject, isize, PyObject) -> c_int = noop_tuple_setitem;
+static mut PY_INITIALIZE: unsafe extern "C" fn() = noop_initialize;
+static mut PY_FINALIZE: unsafe extern "C" fn() = noop_finalize;
+static mut PY_IMPORT_IMPORT_MODULE: unsafe extern "C" fn(*const c_char) -> PyObject = noop_import;
+static mut PY_OBJECT_GET_ATTR_STRING: unsafe extern "C" fn(PyObject, *const c_char) -> PyObject = noop_getattr;
+static mut PY_OBJECT_CALL_OBJECT: unsafe extern "C" fn(PyObject, PyObject) -> PyObject = noop_call;
+static mut PY_OBJECT_CALL: unsafe extern "C" fn(PyObject, PyObject, PyObject) -> PyObject = noop_call_kw;
+static mut PY_DEC_REF: unsafe extern "C" fn(PyObject) = noop_decref;
+static mut PY_LONG_AS_LONG: unsafe extern "C" fn(PyObject) -> c_long = noop_as_long;
+static mut PY_FLOAT_AS_DOUBLE: unsafe extern "C" fn(PyObject) -> c_double = noop_as_double;
+static mut PY_UNICODE_AS_UTF8: unsafe extern "C" fn(PyObject) -> *const c_char = noop_as_utf8;
+static mut PY_LONG_FROM_LONG: unsafe extern "C" fn(c_long) -> PyObject = noop_from_long;
+static mut PY_FLOAT_FROM_DOUBLE: unsafe extern "C" fn(c_double) -> PyObject = noop_from_double;
+static mut PY_UNICODE_FROM_STRING: unsafe extern "C" fn(*const c_char) -> PyObject = noop_from_string;
+static mut PY_LIST_NEW: unsafe extern "C" fn(isize) -> PyObject = noop_list_new;
+static mut PY_LIST_SET_ITEM: unsafe extern "C" fn(PyObject, isize, PyObject) -> c_int = noop_list_setitem;
+static mut PY_OBJECT_GET_ITEM: unsafe extern "C" fn(PyObject, PyObject) -> PyObject = noop_getitem;
+static mut PY_OBJECT_SET_ITEM: unsafe extern "C" fn(PyObject, PyObject, PyObject) -> c_int = noop_setitem;
+static mut PY_OBJECT_LENGTH: unsafe extern "C" fn(PyObject) -> isize = noop_length;
+static mut PY_GILSTATE_ENSURE: unsafe extern "C" fn() -> c_int = noop_gil_ensure;
+static mut PY_GILSTATE_RELEASE: unsafe extern "C" fn(c_int) = noop_gil_release;
+static mut PY_TUPLE_NEW: unsafe extern "C" fn(isize) -> PyObject = noop_tuple_new;
+static mut PY_TUPLE_SET_ITEM: unsafe extern "C" fn(PyObject, isize, PyObject) -> c_int = noop_tuple_setitem;
 
-static mut _Py_NoneStruct: *mut c_void = std::ptr::null_mut();
+static mut _PY_NONE_STRUCT: *mut c_void = std::ptr::null_mut();
 static mut PY_ERR_PRINT: unsafe extern "C" fn() = noop_err_print;
 
 unsafe extern "C" fn noop_err_print() {}
@@ -58,11 +58,11 @@ unsafe extern "C" fn noop_gil_release(_: c_int) {}
 unsafe extern "C" fn noop_tuple_new(_: isize) -> PyObject { std::ptr::null_mut() }
 unsafe extern "C" fn noop_tuple_setitem(_: PyObject, _: isize, _: PyObject) -> c_int { -1 }
 
-unsafe fn load_sym<T>(handle: *mut c_void, name: &str) -> T {
+unsafe fn load_sym<T>(handle: *mut c_void, name: &str) -> T { unsafe {
     let cname = CString::new(name).unwrap();
     let sym = libc::dlsym(handle, cname.as_ptr());
     std::mem::transmute_copy(&sym)
-}
+}}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_initialize() {
@@ -83,33 +83,33 @@ pub extern "C" fn olive_py_initialize() {
         }
         LIBPYTHON = handle;
 
-        Py_Initialize = load_sym(handle, "Py_Initialize");
-        Py_Finalize = load_sym(handle, "Py_Finalize");
-        PyImport_ImportModule = load_sym(handle, "PyImport_ImportModule");
-        PyObject_GetAttrString = load_sym(handle, "PyObject_GetAttrString");
-        PyObject_CallObject = load_sym(handle, "PyObject_CallObject");
-        PyObject_Call = load_sym(handle, "PyObject_Call");
-        Py_DecRef = load_sym(handle, "Py_DecRef");
-        PyLong_AsLong = load_sym(handle, "PyLong_AsLong");
-        PyFloat_AsDouble = load_sym(handle, "PyFloat_AsDouble");
-        PyUnicode_AsUTF8 = load_sym(handle, "PyUnicode_AsUTF8");
-        PyLong_FromLong = load_sym(handle, "PyLong_FromLong");
-        PyFloat_FromDouble = load_sym(handle, "PyFloat_FromDouble");
-        PyUnicode_FromString = load_sym(handle, "PyUnicode_FromString");
-        PyList_New = load_sym(handle, "PyList_New");
-        PyList_SetItem = load_sym(handle, "PyList_SetItem");
-        PyObject_GetItem = load_sym(handle, "PyObject_GetItem");
-        PyObject_SetItem = load_sym(handle, "PyObject_SetItem");
-        PyObject_Length = load_sym(handle, "PyObject_Length");
-        PyGILState_Ensure = load_sym(handle, "PyGILState_Ensure");
-        PyGILState_Release = load_sym(handle, "PyGILState_Release");
-        PyTuple_New = load_sym(handle, "PyTuple_New");
-        PyTuple_SetItem = load_sym(handle, "PyTuple_SetItem");
+        PY_INITIALIZE = load_sym(handle, "Py_Initialize");
+        PY_FINALIZE = load_sym(handle, "Py_Finalize");
+        PY_IMPORT_IMPORT_MODULE = load_sym(handle, "PyImport_ImportModule");
+        PY_OBJECT_GET_ATTR_STRING = load_sym(handle, "PyObject_GetAttrString");
+        PY_OBJECT_CALL_OBJECT = load_sym(handle, "PyObject_CallObject");
+        PY_OBJECT_CALL = load_sym(handle, "PyObject_Call");
+        PY_DEC_REF = load_sym(handle, "Py_DecRef");
+        PY_LONG_AS_LONG = load_sym(handle, "PyLong_AsLong");
+        PY_FLOAT_AS_DOUBLE = load_sym(handle, "PyFloat_AsDouble");
+        PY_UNICODE_AS_UTF8 = load_sym(handle, "PyUnicode_AsUTF8");
+        PY_LONG_FROM_LONG = load_sym(handle, "PyLong_FromLong");
+        PY_FLOAT_FROM_DOUBLE = load_sym(handle, "PyFloat_FromDouble");
+        PY_UNICODE_FROM_STRING = load_sym(handle, "PyUnicode_FromString");
+        PY_LIST_NEW = load_sym(handle, "PyList_New");
+        PY_LIST_SET_ITEM = load_sym(handle, "PyList_SetItem");
+        PY_OBJECT_GET_ITEM = load_sym(handle, "PyObject_GetItem");
+        PY_OBJECT_SET_ITEM = load_sym(handle, "PyObject_SetItem");
+        PY_OBJECT_LENGTH = load_sym(handle, "PyObject_Length");
+        PY_GILSTATE_ENSURE = load_sym(handle, "PyGILState_Ensure");
+        PY_GILSTATE_RELEASE = load_sym(handle, "PyGILState_Release");
+        PY_TUPLE_NEW = load_sym(handle, "PyTuple_New");
+        PY_TUPLE_SET_ITEM = load_sym(handle, "PyTuple_SetItem");
         PY_ERR_PRINT = load_sym(handle, "PyErr_Print");
 
-        _Py_NoneStruct = libc::dlsym(handle, b"_Py_NoneStruct\0".as_ptr() as _) as *mut c_void;
+        _PY_NONE_STRUCT = libc::dlsym(handle, b"_Py_NoneStruct\0".as_ptr() as _) as *mut c_void;
 
-        Py_Initialize();
+        PY_INITIALIZE();
         println!("Python loaded!");
     }
 }
@@ -117,7 +117,7 @@ pub extern "C" fn olive_py_initialize() {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_finalize() {
     unsafe {
-        Py_Finalize();
+        PY_FINALIZE();
     }
 }
 
@@ -125,10 +125,10 @@ pub extern "C" fn olive_py_finalize() {
 pub extern "C" fn olive_py_import(name: i64) -> PyObject {
     olive_py_initialize();
     unsafe {
-        let gil = PyGILState_Ensure();
-        let m = PyImport_ImportModule((name & !1) as *const c_char);
+        let gil = PY_GILSTATE_ENSURE();
+        let m = PY_IMPORT_IMPORT_MODULE((name & !1) as *const c_char);
         if m.is_null() { PY_ERR_PRINT(); }
-        PyGILState_Release(gil);
+        PY_GILSTATE_RELEASE(gil);
         m
     }
 }
@@ -137,10 +137,10 @@ pub extern "C" fn olive_py_import(name: i64) -> PyObject {
 pub extern "C" fn olive_py_getattr(obj: PyObject, attr: i64) -> PyObject {
     if obj.is_null() { return std::ptr::null_mut(); }
     unsafe {
-        let gil = PyGILState_Ensure();
-        let a = PyObject_GetAttrString(obj, (attr & !1) as *const c_char);
+        let gil = PY_GILSTATE_ENSURE();
+        let a = PY_OBJECT_GET_ATTR_STRING(obj, (attr & !1) as *const c_char);
         if a.is_null() { PY_ERR_PRINT(); }
-        PyGILState_Release(gil);
+        PY_GILSTATE_RELEASE(gil);
         a
     }
 }
@@ -151,11 +151,11 @@ fn olive_to_py(val: i64) -> PyObject {
     if val & 1 != 0 {
         let s = crate::olive_str_from_ptr(val);
         let c = CString::new(s).unwrap();
-        unsafe { PyUnicode_FromString(c.as_ptr()) }
+        unsafe { PY_UNICODE_FROM_STRING(c.as_ptr()) }
     } else if val == 0 {
-        unsafe { _Py_NoneStruct }
+        unsafe { _PY_NONE_STRUCT }
     } else {
-        unsafe { PyLong_FromLong(val as c_long) }
+        unsafe { PY_LONG_FROM_LONG(val as c_long) }
     }
 }
 
@@ -163,27 +163,27 @@ fn olive_to_py(val: i64) -> PyObject {
 pub extern "C" fn olive_py_call(func: PyObject, args_list: i64) -> PyObject {
     if func.is_null() { return std::ptr::null_mut(); }
     unsafe {
-        let gil = PyGILState_Ensure();
+        let gil = PY_GILSTATE_ENSURE();
         
         let mut py_args = std::ptr::null_mut();
         if args_list != 0 {
             let sv = &*(args_list as *const crate::StableVec);
-            py_args = PyTuple_New(sv.len as isize);
+            py_args = PY_TUPLE_NEW(sv.len as isize);
             for i in 0..sv.len {
                 let v = *sv.ptr.add(i);
                 let py_v = olive_to_py(v);
-                PyTuple_SetItem(py_args, i as isize, py_v);
+                PY_TUPLE_SET_ITEM(py_args, i as isize, py_v);
             }
         }
         
-        let res = PyObject_CallObject(func, py_args);
+        let res = PY_OBJECT_CALL_OBJECT(func, py_args);
         if res.is_null() {
             PY_ERR_PRINT();
         }
         if !py_args.is_null() {
-            Py_DecRef(py_args);
+            PY_DEC_REF(py_args);
         }
-        PyGILState_Release(gil);
+        PY_GILSTATE_RELEASE(gil);
         res
     }
 }
@@ -197,9 +197,9 @@ pub extern "C" fn olive_py_call_kw(func: PyObject, args_list: i64, _kwargs: i64)
 pub extern "C" fn olive_py_decref(obj: PyObject) {
     if !obj.is_null() {
         unsafe {
-            let gil = PyGILState_Ensure();
-            Py_DecRef(obj);
-            PyGILState_Release(gil);
+            let gil = PY_GILSTATE_ENSURE();
+            PY_DEC_REF(obj);
+            PY_GILSTATE_RELEASE(gil);
         }
     }
 }
@@ -208,9 +208,9 @@ pub extern "C" fn olive_py_decref(obj: PyObject) {
 pub extern "C" fn olive_py_to_int(obj: PyObject) -> i64 {
     if obj.is_null() { return 0; }
     unsafe {
-        let gil = PyGILState_Ensure();
-        let v = PyLong_AsLong(obj) as i64;
-        PyGILState_Release(gil);
+        let gil = PY_GILSTATE_ENSURE();
+        let v = PY_LONG_AS_LONG(obj) as i64;
+        PY_GILSTATE_RELEASE(gil);
         v
     }
 }
@@ -219,9 +219,9 @@ pub extern "C" fn olive_py_to_int(obj: PyObject) -> i64 {
 pub extern "C" fn olive_py_to_float(obj: PyObject) -> f64 {
     if obj.is_null() { return 0.0; }
     unsafe {
-        let gil = PyGILState_Ensure();
-        let v = PyFloat_AsDouble(obj) as f64;
-        PyGILState_Release(gil);
+        let gil = PY_GILSTATE_ENSURE();
+        let v = PY_FLOAT_AS_DOUBLE(obj) as f64;
+        PY_GILSTATE_RELEASE(gil);
         v
     }
 }
@@ -230,15 +230,15 @@ pub extern "C" fn olive_py_to_float(obj: PyObject) -> f64 {
 pub extern "C" fn olive_py_to_str(obj: PyObject) -> i64 {
     if obj.is_null() { return 0; }
     unsafe {
-        let gil = PyGILState_Ensure();
-        let s = PyUnicode_AsUTF8(obj);
+        let gil = PY_GILSTATE_ENSURE();
+        let s = PY_UNICODE_AS_UTF8(obj);
         let res = if !s.is_null() {
             let r_str = CStr::from_ptr(s).to_string_lossy();
             crate::olive_str_internal(&r_str)
         } else {
             0
         };
-        PyGILState_Release(gil);
+        PY_GILSTATE_RELEASE(gil);
         res
     }
 }
@@ -246,9 +246,9 @@ pub extern "C" fn olive_py_to_str(obj: PyObject) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_from_int(v: i64) -> PyObject {
     unsafe {
-        let gil = PyGILState_Ensure();
-        let r = PyLong_FromLong(v as c_long);
-        PyGILState_Release(gil);
+        let gil = PY_GILSTATE_ENSURE();
+        let r = PY_LONG_FROM_LONG(v as c_long);
+        PY_GILSTATE_RELEASE(gil);
         r
     }
 }
@@ -256,9 +256,9 @@ pub extern "C" fn olive_py_from_int(v: i64) -> PyObject {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_from_float(v: f64) -> PyObject {
     unsafe {
-        let gil = PyGILState_Ensure();
-        let r = PyFloat_FromDouble(v as c_double);
-        PyGILState_Release(gil);
+        let gil = PY_GILSTATE_ENSURE();
+        let r = PY_FLOAT_FROM_DOUBLE(v as c_double);
+        PY_GILSTATE_RELEASE(gil);
         r
     }
 }
@@ -268,9 +268,9 @@ pub extern "C" fn olive_py_from_str(s: i64) -> PyObject {
     let r_str = crate::olive_str_from_ptr(s);
     let c = CString::new(r_str).unwrap();
     unsafe {
-        let gil = PyGILState_Ensure();
-        let r = PyUnicode_FromString(c.as_ptr());
-        PyGILState_Release(gil);
+        let gil = PY_GILSTATE_ENSURE();
+        let r = PY_UNICODE_FROM_STRING(c.as_ptr());
+        PY_GILSTATE_RELEASE(gil);
         r
     }
 }
@@ -280,14 +280,14 @@ pub extern "C" fn olive_py_from_list(s: i64) -> PyObject {
     if s == 0 { return std::ptr::null_mut(); }
     unsafe {
         let sv = &*(s as *const crate::StableVec);
-        let gil = PyGILState_Ensure();
-        let pyl = PyList_New(sv.len as isize);
+        let gil = PY_GILSTATE_ENSURE();
+        let pyl = PY_LIST_NEW(sv.len as isize);
         for i in 0..sv.len {
             let v = *sv.ptr.add(i);
             let py_v = olive_to_py(v);
-            PyList_SetItem(pyl, i as isize, py_v);
+            PY_LIST_SET_ITEM(pyl, i as isize, py_v);
         }
-        PyGILState_Release(gil);
+        PY_GILSTATE_RELEASE(gil);
         pyl
     }
 }
@@ -296,9 +296,9 @@ pub extern "C" fn olive_py_from_list(s: i64) -> PyObject {
 pub extern "C" fn olive_py_getitem(obj: PyObject, key: PyObject) -> PyObject {
     if obj.is_null() || key.is_null() { return std::ptr::null_mut(); }
     unsafe {
-        let gil = PyGILState_Ensure();
-        let r = PyObject_GetItem(obj, key);
-        PyGILState_Release(gil);
+        let gil = PY_GILSTATE_ENSURE();
+        let r = PY_OBJECT_GET_ITEM(obj, key);
+        PY_GILSTATE_RELEASE(gil);
         r
     }
 }
@@ -307,9 +307,9 @@ pub extern "C" fn olive_py_getitem(obj: PyObject, key: PyObject) -> PyObject {
 pub extern "C" fn olive_py_setitem(obj: PyObject, key: PyObject, val: PyObject) {
     if obj.is_null() || key.is_null() || val.is_null() { return; }
     unsafe {
-        let gil = PyGILState_Ensure();
-        PyObject_SetItem(obj, key, val);
-        PyGILState_Release(gil);
+        let gil = PY_GILSTATE_ENSURE();
+        PY_OBJECT_SET_ITEM(obj, key, val);
+        PY_GILSTATE_RELEASE(gil);
     }
 }
 
@@ -317,9 +317,9 @@ pub extern "C" fn olive_py_setitem(obj: PyObject, key: PyObject, val: PyObject) 
 pub extern "C" fn olive_py_len(obj: PyObject) -> i64 {
     if obj.is_null() { return 0; }
     unsafe {
-        let gil = PyGILState_Ensure();
-        let r = PyObject_Length(obj) as i64;
-        PyGILState_Release(gil);
+        let gil = PY_GILSTATE_ENSURE();
+        let r = PY_OBJECT_LENGTH(obj) as i64;
+        PY_GILSTATE_RELEASE(gil);
         r
     }
 }
@@ -327,11 +327,11 @@ pub extern "C" fn olive_py_len(obj: PyObject) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_none() -> PyObject {
     olive_py_initialize();
-    unsafe { _Py_NoneStruct }
+    unsafe { _PY_NONE_STRUCT }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_is_none(obj: PyObject) -> i64 {
     olive_py_initialize();
-    if obj == unsafe { _Py_NoneStruct } { 1 } else { 0 }
+    if obj == unsafe { _PY_NONE_STRUCT } { 1 } else { 0 }
 }

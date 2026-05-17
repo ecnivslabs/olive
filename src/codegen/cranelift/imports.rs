@@ -554,17 +554,20 @@ pub(super) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
         "str" => match current_ty {
             OliveType::Str => Some("__olive_copy"),
             OliveType::Float => Some("__olive_float_to_str"),
+            OliveType::PyObject => Some("__olive_py_to_str"),
             _ => Some("__olive_str"),
         },
         "int" => match current_ty {
             OliveType::Float => Some("__olive_float_to_int"),
             OliveType::Str => Some("__olive_str_to_int"),
+            OliveType::PyObject => Some("__olive_py_to_int"),
             _ => Some("__olive_int"),
         },
         "float" => match current_ty {
             OliveType::Float => Some("__olive_copy_float"),
             OliveType::Int => Some("__olive_int_to_float"),
             OliveType::Str => Some("__olive_str_to_float"),
+            OliveType::PyObject => Some("__olive_py_to_float"),
             _ => Some("__olive_float"),
         },
         "bool" => {
