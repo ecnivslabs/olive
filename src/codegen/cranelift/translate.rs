@@ -8,11 +8,13 @@ use cranelift::prelude::*;
 use cranelift_module::{DataId, FuncId, Module};
 use rustc_hash::FxHashMap as HashMap;
 
+pub(super) type FieldInfo<'a> = (i32, &'a str, Option<(u8, u8)>);
+
 pub(super) fn c_struct_field_info<'a>(
-    c_struct_offsets: &'a HashMap<String, Vec<(String, i32, String, Option<(u8, u8)>)>>,
+    c_struct_offsets: &'a HashMap<String, Vec<super::FfiStructFieldLayout>>,
     struct_name: &str,
     attr: &str,
-) -> Option<(i32, &'a str, Option<(u8, u8)>)> {
+) -> Option<FieldInfo<'a>> {
     c_struct_offsets
         .get(struct_name)
         .and_then(|fields| fields.iter().find(|(n, _, _, _)| n == attr))
@@ -220,7 +222,7 @@ impl<M: Module> CraneliftCodegen<M> {
         func_ids: &HashMap<String, FuncId>,
         string_ids: &HashMap<String, DataId>,
         struct_fields: &HashMap<String, Vec<String>>,
-        c_struct_offsets: &HashMap<String, Vec<(String, i32, String, Option<(u8, u8)>)>>,
+        c_struct_offsets: &HashMap<String, Vec<super::FfiStructFieldLayout>>,
         c_struct_names: &std::collections::HashSet<String>,
         c_struct_sizes: &HashMap<String, i64>,
         c_struct_destructors: &HashMap<String, String>,
@@ -308,8 +310,8 @@ impl<M: Module> CraneliftCodegen<M> {
                         }
                         return;
                     }
-                    if let Some(fields) = struct_fields.get(struct_name.as_str()) {
-                        if let Some(idx) = fields.iter().position(|f| f == attr) {
+                    if let Some(fields) = struct_fields.get(struct_name.as_str())
+                        && let Some(idx) = fields.iter().position(|f| f == attr) {
                             let offset = 8 + (idx as i32) * 8;
                             let o = Self::translate_operand(
                                 builder, obj, vars, string_ids, module, func_ids,
@@ -325,7 +327,6 @@ impl<M: Module> CraneliftCodegen<M> {
                             builder.ins().store(MemFlags::trusted(), v, o, offset);
                             return;
                         }
-                    }
                 }
                 let o = Self::translate_operand(builder, obj, vars, string_ids, module, func_ids);
                 let v =
@@ -339,7 +340,13 @@ impl<M: Module> CraneliftCodegen<M> {
                     v
                 };
 
-                let set_id = func_ids.get("__olive_obj_set").unwrap();
+                let is_py = *obj_ty == OliveType::PyObject;
+                let func_name = if is_py {
+                    "__olive_py_setattr"
+                } else {
+                    "__olive_obj_set"
+                };
+                let set_id = func_ids.get(func_name).unwrap();
                 let local_func = module.declare_func_in_func(*set_id, builder.func);
                 builder.ins().call(local_func, &[o, attr_val, v]);
             }
@@ -362,6 +369,11 @@ impl<M: Module> CraneliftCodegen<M> {
                 };
 
                 match ty {
+                    OliveType::PyObject => {
+                        let set_id = func_ids.get("__olive_py_setitem").unwrap();
+                        let local_func = module.declare_func_in_func(*set_id, builder.func);
+                        builder.ins().call(local_func, &[o, i, v]);
+                    }
                     OliveType::Dict(_, _) | OliveType::Struct(_, _) => {
                         let set_id = func_ids.get("__olive_obj_set").unwrap();
                         let local_func = module.declare_func_in_func(*set_id, builder.func);

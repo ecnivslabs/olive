@@ -7,10 +7,12 @@ pub struct OliveBytes {
 }
 
 fn new_buf(data: Vec<u8>) -> i64 {
-    Box::into_raw(Box::new(OliveBytes {
+    let res = Box::into_raw(Box::new(OliveBytes {
         kind: KIND_BYTES,
         data,
-    })) as i64
+    })) as i64;
+    crate::register_object(res);
+    res
 }
 
 #[unsafe(no_mangle)]
@@ -120,6 +122,7 @@ pub extern "C" fn olive_buf_slice(buf: i64, start: i64, end: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_buf_free(buf: i64) {
     if buf != 0 {
+        crate::unregister_object(buf);
         unsafe { drop(Box::from_raw(buf as *mut OliveBytes)) };
     }
 }

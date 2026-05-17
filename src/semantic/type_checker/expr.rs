@@ -215,19 +215,19 @@ impl TypeChecker {
                                 span: expr.span,
                             });
                     }
-                } else if let ExprKind::Attr { obj, attr } = &callee.kind {
-                    if let ExprKind::Identifier(alias) = &obj.kind {
-                        let mangled = format!("{}::{}", alias, attr);
-                        if self.ffi_fns.contains(&mangled) && self.unsafe_depth == 0 {
-                            self.errors
-                                .push(super::super::error::SemanticError::Custom {
-                                    msg: format!(
-                                        "call to unsafe FFI function `{}` requires unsafe block",
-                                        mangled
-                                    ),
-                                    span: expr.span,
-                                });
-                        }
+                } else if let ExprKind::Attr { obj, attr } = &callee.kind
+                    && let ExprKind::Identifier(alias) = &obj.kind
+                {
+                    let mangled = format!("{}::{}", alias, attr);
+                    if self.ffi_fns.contains(&mangled) && self.unsafe_depth == 0 {
+                        self.errors
+                            .push(super::super::error::SemanticError::Custom {
+                                msg: format!(
+                                    "call to unsafe FFI function `{}` requires unsafe block",
+                                    mangled
+                                ),
+                                span: expr.span,
+                            });
                     }
                 }
 

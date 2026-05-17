@@ -324,6 +324,75 @@ impl<'a> MirBuilder<'a> {
                     }
                 }
 
+                let callee_ty = self.get_type(callee.id);
+                if callee_ty == Type::PyObject {
+                    let callee_op = self.lower_expr_as_copy(callee);
+                    let mut pos_ops = Vec::new();
+                    let mut kw_ops = Vec::new();
+                    for (op, kw_name) in arg_ops.into_iter().zip(arg_kw_names.into_iter()) {
+                        if let Some(name) = kw_name {
+                            kw_ops.push(Operand::Constant(Constant::Str(name)));
+                            kw_ops.push(op);
+                        } else {
+                            pos_ops.push(op);
+                        }
+                    }
+
+                    let args_list = self.new_local(Type::List(Box::new(Type::Any)), None, true);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            args_list,
+                            Rvalue::Aggregate(AggregateKind::List, pos_ops),
+                        ),
+                        expr.span,
+                    );
+
+                    if kw_ops.is_empty() {
+                        let result = self.new_local(Type::PyObject, None, true);
+                        self.push_statement(
+                            StatementKind::Assign(
+                                result,
+                                Rvalue::Call {
+                                    func: Operand::Constant(Constant::Function(
+                                        "__olive_py_call".to_string(),
+                                    )),
+                                    args: vec![callee_op, Operand::Copy(args_list)],
+                                },
+                            ),
+                            expr.span,
+                        );
+                        return self.operand_for_local(result);
+                    } else {
+                        let kwargs_list =
+                            self.new_local(Type::List(Box::new(Type::Any)), None, true);
+                        self.push_statement(
+                            StatementKind::Assign(
+                                kwargs_list,
+                                Rvalue::Aggregate(AggregateKind::List, kw_ops),
+                            ),
+                            expr.span,
+                        );
+                        let result = self.new_local(Type::PyObject, None, true);
+                        self.push_statement(
+                            StatementKind::Assign(
+                                result,
+                                Rvalue::Call {
+                                    func: Operand::Constant(Constant::Function(
+                                        "__olive_py_call_kw".to_string(),
+                                    )),
+                                    args: vec![
+                                        callee_op,
+                                        Operand::Copy(args_list),
+                                        Operand::Copy(kwargs_list),
+                                    ],
+                                },
+                            ),
+                            expr.span,
+                        );
+                        return self.operand_for_local(result);
+                    }
+                }
+
                 if let ExprKind::Identifier(name) = &callee.kind
                     && name == "type"
                     && !args.is_empty()
@@ -459,32 +528,73 @@ impl<'a> MirBuilder<'a> {
                             ),
                             expr.span,
                         );
-                        // pack positional args into a list for __olive_py_call
+                        let mut pos_ops = Vec::new();
+                        let mut kw_ops = Vec::new();
+                        for (op, kw_name) in arg_ops.into_iter().zip(arg_kw_names.into_iter()) {
+                            if let Some(name) = kw_name {
+                                kw_ops.push(Operand::Constant(Constant::Str(name)));
+                                kw_ops.push(op);
+                            } else {
+                                pos_ops.push(op);
+                            }
+                        }
+
                         let args_list = self.new_local(Type::List(Box::new(Type::Any)), None, true);
                         self.push_statement(
                             StatementKind::Assign(
                                 args_list,
-                                Rvalue::Aggregate(AggregateKind::List, arg_ops),
+                                Rvalue::Aggregate(AggregateKind::List, pos_ops),
                             ),
                             expr.span,
                         );
-                        let result = self.new_local(Type::PyObject, None, true);
-                        self.push_statement(
-                            StatementKind::Assign(
-                                result,
-                                Rvalue::Call {
-                                    func: Operand::Constant(Constant::Function(
-                                        "__olive_py_call".to_string(),
-                                    )),
-                                    args: vec![
-                                        Operand::Copy(attr_local),
-                                        Operand::Copy(args_list),
-                                    ],
-                                },
-                            ),
-                            expr.span,
-                        );
-                        return self.operand_for_local(result);
+
+                        if kw_ops.is_empty() {
+                            let result = self.new_local(Type::PyObject, None, true);
+                            self.push_statement(
+                                StatementKind::Assign(
+                                    result,
+                                    Rvalue::Call {
+                                        func: Operand::Constant(Constant::Function(
+                                            "__olive_py_call".to_string(),
+                                        )),
+                                        args: vec![
+                                            Operand::Copy(attr_local),
+                                            Operand::Copy(args_list),
+                                        ],
+                                    },
+                                ),
+                                expr.span,
+                            );
+                            return self.operand_for_local(result);
+                        } else {
+                            let kwargs_list =
+                                self.new_local(Type::List(Box::new(Type::Any)), None, true);
+                            self.push_statement(
+                                StatementKind::Assign(
+                                    kwargs_list,
+                                    Rvalue::Aggregate(AggregateKind::List, kw_ops),
+                                ),
+                                expr.span,
+                            );
+                            let result = self.new_local(Type::PyObject, None, true);
+                            self.push_statement(
+                                StatementKind::Assign(
+                                    result,
+                                    Rvalue::Call {
+                                        func: Operand::Constant(Constant::Function(
+                                            "__olive_py_call_kw".to_string(),
+                                        )),
+                                        args: vec![
+                                            Operand::Copy(attr_local),
+                                            Operand::Copy(args_list),
+                                            Operand::Copy(kwargs_list),
+                                        ],
+                                    },
+                                ),
+                                expr.span,
+                            );
+                            return self.operand_for_local(result);
+                        }
                     }
 
                     if let ExprKind::Identifier(name) = &obj.kind {
@@ -706,7 +816,7 @@ impl<'a> MirBuilder<'a> {
                     let obj_ty = self.get_type(obj.id);
                     let is_struct_or_self = matches!(obj_ty, Type::Struct(_, _) | Type::Any)
                         && self.lookup_var(name).is_some();
-                    if !is_struct_or_self {
+                    if !is_struct_or_self && obj_ty != Type::PyObject {
                         let mangled = format!("{}::{}", name, attr);
                         if let Some(local) = self.lookup_var(&mangled) {
                             let ty = self.current_locals[local.0].ty.clone();
@@ -735,10 +845,7 @@ impl<'a> MirBuilder<'a> {
                                 func: Operand::Constant(Constant::Function(
                                     "__olive_py_getattr".to_string(),
                                 )),
-                                args: vec![
-                                    obj_op,
-                                    Operand::Constant(Constant::Str(attr.clone())),
-                                ],
+                                args: vec![obj_op, Operand::Constant(Constant::Str(attr.clone()))],
                             },
                         ),
                         expr.span,

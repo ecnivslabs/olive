@@ -6,6 +6,14 @@ use std::{
     process,
 };
 
+pub type FfiLibInfo = (
+    String,
+    String,
+    Vec<crate::parser::ast::FfiFnSig>,
+    Vec<crate::parser::ast::FfiStructDef>,
+    Vec<crate::parser::ast::FfiVarDef>,
+);
+
 pub fn exec_binary(path: &str) -> i32 {
     std::process::Command::new(path)
         .status()
@@ -59,13 +67,7 @@ pub fn find_library_dir() -> Option<PathBuf> {
 pub fn link_object(
     obj_path: &str,
     out: &str,
-    native_libs: &[(
-        String,
-        String,
-        Vec<crate::parser::ast::FfiFnSig>,
-        Vec<crate::parser::ast::FfiStructDef>,
-        Vec<crate::parser::ast::FfiVarDef>,
-    )],
+    native_libs: &[FfiLibInfo],
 ) {
     let lib_dir = find_library_dir();
     let mut cmd = std::process::Command::new("cc");
@@ -126,13 +128,7 @@ pub fn ensure_dir(path: &str) {
 
 pub fn collect_native_libs(
     program: &crate::parser::Program,
-) -> Vec<(
-    String,
-    String,
-    Vec<crate::parser::ast::FfiFnSig>,
-    Vec<crate::parser::ast::FfiStructDef>,
-    Vec<crate::parser::ast::FfiVarDef>,
-)> {
+) -> Vec<FfiLibInfo> {
     program
         .stmts
         .iter()

@@ -98,10 +98,9 @@ impl LoopVectorizer {
             for stmt in &func.basic_blocks[bb_id.0].statements {
                 if let StatementKind::Assign(dest, Rvalue::GetIndex(obj, Operand::Copy(idx))) =
                     &stmt.kind
+                    && *idx == i
                 {
-                    if *idx == i {
-                        loads.push((*dest, obj.clone()));
-                    }
+                    loads.push((*dest, obj.clone()));
                 }
             }
         }

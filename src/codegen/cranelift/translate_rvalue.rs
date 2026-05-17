@@ -66,7 +66,7 @@ impl<M: Module> CraneliftCodegen<M> {
         func_ids: &HashMap<String, FuncId>,
         string_ids: &HashMap<String, DataId>,
         struct_fields: &HashMap<String, Vec<String>>,
-        c_struct_offsets: &HashMap<String, Vec<(String, i32, String, Option<(u8, u8)>)>>,
+        c_struct_offsets: &HashMap<String, Vec<super::FfiStructFieldLayout>>,
         c_struct_sizes: &HashMap<String, i64>,
         ffi_vararg_ptrs: &HashMap<String, *const u8>,
         ffi_vararg_ids: &std::collections::HashSet<String>,
@@ -148,8 +148,8 @@ impl<M: Module> CraneliftCodegen<M> {
                             || resolved_name == "__olive_copy_float";
                         let ffi_entry = ffi_entries.iter().find(|e| e.jit_name == resolved_name);
 
-                        if let Some(entry) = ffi_entry {
-                            if entry.use_sret {
+                        if let Some(entry) = ffi_entry
+                            && entry.use_sret {
                                 let ret_name = entry.ret.as_ref().unwrap();
                                 let size = *c_struct_sizes.get(ret_name).unwrap();
                                 let slot = builder.create_sized_stack_slot(StackSlotData::new(
@@ -164,7 +164,6 @@ impl<M: Module> CraneliftCodegen<M> {
                                 final_args.push(ptr);
                                 sret_ptr = Some(ptr);
                             }
-                        }
 
                         for (i, &arg) in call_args.iter().enumerate() {
                             let is_str_arg = args.get(i).is_some_and(|op| match op {
@@ -175,9 +174,9 @@ impl<M: Module> CraneliftCodegen<M> {
                                 _ => false,
                             });
 
-                            if is_ffi {
-                                if let Some(entry) = ffi_entry {
-                                    if i < entry.params.len() {
+                            if is_ffi
+                                && let Some(entry) = ffi_entry
+                                    && i < entry.params.len() {
                                         let p_type = &entry.params[i];
                                         if let Some(layout) = c_struct_offsets.get(p_type) {
                                             for (_, offset, ty_name, bits) in layout {
@@ -196,8 +195,6 @@ impl<M: Module> CraneliftCodegen<M> {
                                             continue;
                                         }
                                     }
-                                }
-                            }
 
                             if (is_ffi || is_aot_vararg) && is_str_arg {
                                 final_args.push(builder.ins().band_imm(arg, -2));
@@ -240,15 +237,12 @@ impl<M: Module> CraneliftCodegen<M> {
                             }
                         };
 
-                        if is_ffi {
-                            if let Some(entry) = ffi_entry {
-                                if let Some(ref r) = entry.ret {
-                                    if r == "str" {
+                        if is_ffi
+                            && let Some(entry) = ffi_entry
+                                && let Some(ref r) = entry.ret
+                                    && r == "str" {
                                         ret_val = builder.ins().bor_imm(ret_val, 1);
                                     }
-                                }
-                            }
-                        }
                         return ret_val;
                     }
 
@@ -279,15 +273,14 @@ impl<M: Module> CraneliftCodegen<M> {
                             } else {
                                 arg_val
                             };
-                            if i < n_fixed {
-                                if let Some(e) = entry {
+                            if i < n_fixed
+                                && let Some(e) = entry {
                                     let declared_ty = super::ffi_cl_type(&e.params[i]);
                                     let cooked = truncate_for_store(builder, cooked, &e.params[i]);
                                     sig.params.push(AbiParam::new(declared_ty));
                                     vararg_args.push(cooked);
                                     continue;
                                 }
-                            }
 
                             sig.params
                                 .push(AbiParam::new(builder.func.dfg.value_type(cooked)));
@@ -295,11 +288,10 @@ impl<M: Module> CraneliftCodegen<M> {
                         }
 
                         if let Some(e) = entry {
-                            if let Some(ref r) = e.ret {
-                                if r != "void" {
+                            if let Some(ref r) = e.ret
+                                && r != "void" {
                                     sig.returns.push(AbiParam::new(super::ffi_cl_type(r)));
                                 }
-                            }
                         } else {
                             sig.returns.push(AbiParam::new(types::I64));
                         }
@@ -315,11 +307,10 @@ impl<M: Module> CraneliftCodegen<M> {
                         } else {
                             results[0]
                         };
-                        if let Some(e) = entry {
-                            if e.ret.as_deref() == Some("str") {
+                        if let Some(e) = entry
+                            && e.ret.as_deref() == Some("str") {
                                 ret_val = builder.ins().bor_imm(ret_val, 1);
                             }
-                        }
                         return ret_val;
                     }
                 }
@@ -547,8 +538,8 @@ impl<M: Module> CraneliftCodegen<M> {
                             );
                             return load_and_extend(builder, o, offset, ty_name, bits);
                         }
-                        if let Some(fields) = struct_fields.get(struct_name.as_str()) {
-                            if let Some(idx) = fields.iter().position(|f| f == attr) {
+                        if let Some(fields) = struct_fields.get(struct_name.as_str())
+                            && let Some(idx) = fields.iter().position(|f| f == attr) {
                                 let offset = 8 + (idx as i32) * 8;
                                 let o = Self::translate_operand(
                                     builder, obj, vars, string_ids, module, func_ids,
@@ -560,7 +551,6 @@ impl<M: Module> CraneliftCodegen<M> {
                                     offset,
                                 );
                             }
-                        }
                     }
                 }
                 let o = Self::translate_operand(builder, obj, vars, string_ids, module, func_ids);
@@ -596,6 +586,12 @@ impl<M: Module> CraneliftCodegen<M> {
                 let i = Self::translate_operand(builder, idx, vars, string_ids, module, func_ids);
 
                 match ty {
+                    OliveType::PyObject => {
+                        let get_id = func_ids.get("__olive_py_getitem").unwrap();
+                        let local_func = module.declare_func_in_func(*get_id, builder.func);
+                        let inst = builder.ins().call(local_func, &[o, i]);
+                        builder.inst_results(inst)[0]
+                    }
                     OliveType::Enum(_, _) => {
                         let get_id = func_ids.get("__olive_enum_get").unwrap();
                         let local_func = module.declare_func_in_func(*get_id, builder.func);
@@ -693,7 +689,7 @@ impl<M: Module> CraneliftCodegen<M> {
                             let key = Self::translate_operand(
                                 builder, &ops[i], vars, string_ids, module, func_ids,
                             );
-                            let val = Self::translate_operand(
+                            let mut val = Self::translate_operand(
                                 builder,
                                 &ops[i + 1],
                                 vars,
@@ -701,6 +697,9 @@ impl<M: Module> CraneliftCodegen<M> {
                                 module,
                                 func_ids,
                             );
+                            if builder.func.dfg.value_type(val) == types::F64 {
+                                val = builder.ins().bitcast(types::I64, MemFlags::new(), val);
+                            }
                             builder.ins().call(set_func, &[dict_ptr, key, val]);
                         }
                         dict_ptr
@@ -742,9 +741,12 @@ impl<M: Module> CraneliftCodegen<M> {
                         let add_func = module.declare_func_in_func(*add_id, builder.func);
 
                         for op in ops {
-                            let val = Self::translate_operand(
+                            let mut val = Self::translate_operand(
                                 builder, op, vars, string_ids, module, func_ids,
                             );
+                            if builder.func.dfg.value_type(val) == types::F64 {
+                                val = builder.ins().bitcast(types::I64, MemFlags::new(), val);
+                            }
                             builder.ins().call(add_func, &[set_ptr, val]);
                         }
                         set_ptr

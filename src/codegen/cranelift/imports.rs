@@ -485,9 +485,13 @@ pub(super) fn resolve_builtin_import(
             "__olive_pool_run_sync" => Some("__olive_pool_run_sync"),
             // Python interop
             "__olive_py_import" => Some("__olive_py_import"),
+            "__olive_py_import_safe" => Some("__olive_py_import_safe"),
             "__olive_py_getattr" => Some("__olive_py_getattr"),
+            "__olive_py_getattr_safe" => Some("__olive_py_getattr_safe"),
             "__olive_py_call" => Some("__olive_py_call"),
+            "__olive_py_call_safe" => Some("__olive_py_call_safe"),
             "__olive_py_call_kw" => Some("__olive_py_call_kw"),
+            "__olive_py_call_kw_safe" => Some("__olive_py_call_kw_safe"),
             "__olive_py_decref" => Some("__olive_py_decref"),
             "__olive_py_to_int" => Some("__olive_py_to_int"),
             "__olive_py_to_float" => Some("__olive_py_to_float"),
@@ -497,12 +501,18 @@ pub(super) fn resolve_builtin_import(
             "__olive_py_from_str" => Some("__olive_py_from_str"),
             "__olive_py_from_list" => Some("__olive_py_from_list"),
             "__olive_py_getitem" => Some("__olive_py_getitem"),
+            "__olive_py_getitem_safe" => Some("__olive_py_getitem_safe"),
             "__olive_py_setitem" => Some("__olive_py_setitem"),
+            "__olive_py_setitem_safe" => Some("__olive_py_setitem_safe"),
             "__olive_py_len" => Some("__olive_py_len"),
             "__olive_py_is_none" => Some("__olive_py_is_none"),
             "__olive_py_none" => Some("__olive_py_none"),
             "__olive_py_initialize" => Some("__olive_py_initialize"),
             "__olive_py_finalize" => Some("__olive_py_finalize"),
+            "__olive_py_to_list" => Some("__olive_py_to_list"),
+            "__olive_py_to_dict" => Some("__olive_py_to_dict"),
+            "__olive_py_setattr" => Some("__olive_py_setattr"),
+            "__olive_py_setattr_safe" => Some("__olive_py_setattr_safe"),
             _ => None,
         };
     }
@@ -511,7 +521,7 @@ pub(super) fn resolve_builtin_import(
     }
     match name {
         "print" | "str" | "int" | "float" | "bool" | "iter" | "next" | "has_next" | "len"
-        | "slice"
+        | "slice" | "list" | "dict"
             if !args.is_empty() =>
         {
             let arg_type = match &args[0] {
@@ -581,6 +591,14 @@ pub(super) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
         "next" => Some("__olive_next"),
         "has_next" => Some("__olive_has_next"),
         "slice" => Some("__olive_str_slice"),
+        "list" => match current_ty {
+            OliveType::PyObject => Some("__olive_py_to_list"),
+            _ => None,
+        },
+        "dict" => match current_ty {
+            OliveType::PyObject => Some("__olive_py_to_dict"),
+            _ => None,
+        },
         _ => None,
     }
 }

@@ -16,6 +16,15 @@ use std::process;
 
 pub(super) const KIND_SM_FUTURE: i64 = 5;
 
+pub(super) type FfiStructFieldLayout = (String, i32, String, Option<(u8, u8)>);
+pub(super) type FfiLibInfo = (
+    String,
+    String,
+    Vec<crate::parser::ast::FfiFnSig>,
+    Vec<crate::parser::ast::FfiStructDef>,
+    Vec<crate::parser::ast::FfiVarDef>,
+);
+
 pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_time_now", b"olive_time_now\0"),
     ("__olive_time_monotonic", b"olive_time_monotonic\0"),
@@ -121,9 +130,13 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_ffi_errno", b"olive_ffi_errno\0"),
     // Python interop
     ("__olive_py_import", b"olive_py_import\0"),
+    ("__olive_py_import_safe", b"olive_py_import_safe\0"),
     ("__olive_py_getattr", b"olive_py_getattr\0"),
+    ("__olive_py_getattr_safe", b"olive_py_getattr_safe\0"),
     ("__olive_py_call", b"olive_py_call\0"),
+    ("__olive_py_call_safe", b"olive_py_call_safe\0"),
     ("__olive_py_call_kw", b"olive_py_call_kw\0"),
+    ("__olive_py_call_kw_safe", b"olive_py_call_kw_safe\0"),
     ("__olive_py_decref", b"olive_py_decref\0"),
     ("__olive_py_to_int", b"olive_py_to_int\0"),
     ("__olive_py_to_float", b"olive_py_to_float\0"),
@@ -133,7 +146,9 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_py_from_str", b"olive_py_from_str\0"),
     ("__olive_py_from_list", b"olive_py_from_list\0"),
     ("__olive_py_getitem", b"olive_py_getitem\0"),
+    ("__olive_py_getitem_safe", b"olive_py_getitem_safe\0"),
     ("__olive_py_setitem", b"olive_py_setitem\0"),
+    ("__olive_py_setitem_safe", b"olive_py_setitem_safe\0"),
     ("__olive_py_len", b"olive_py_len\0"),
     ("__olive_py_is_none", b"olive_py_is_none\0"),
     ("__olive_py_none", b"olive_py_none\0"),
@@ -153,9 +168,13 @@ const ASYNC_RUNTIME_SYMS: &[&str] = &[
 
 const PY_INTEROP_SYMS: &[&str] = &[
     "__olive_py_import",
+    "__olive_py_import_safe",
     "__olive_py_getattr",
+    "__olive_py_getattr_safe",
     "__olive_py_call",
+    "__olive_py_call_safe",
     "__olive_py_call_kw",
+    "__olive_py_call_kw_safe",
     "__olive_py_decref",
     "__olive_py_to_int",
     "__olive_py_to_float",
@@ -165,7 +184,9 @@ const PY_INTEROP_SYMS: &[&str] = &[
     "__olive_py_from_str",
     "__olive_py_from_list",
     "__olive_py_getitem",
+    "__olive_py_getitem_safe",
     "__olive_py_setitem",
+    "__olive_py_setitem_safe",
     "__olive_py_len",
     "__olive_py_is_none",
     "__olive_py_none",
@@ -202,7 +223,7 @@ pub struct CraneliftCodegen<M: Module> {
     pub(super) ffi_entries: Vec<FfiFnEntry>,
     pub(super) ffi_vararg_ptrs: HashMap<String, *const u8>,
     pub(super) ffi_vararg_ids: std::collections::HashSet<String>,
-    pub(super) c_struct_offsets: HashMap<String, Vec<(String, i32, String, Option<(u8, u8)>)>>,
+    pub(super) c_struct_offsets: HashMap<String, Vec<FfiStructFieldLayout>>,
     pub(super) c_struct_sizes: HashMap<String, i64>,
     pub(super) c_struct_names: std::collections::HashSet<String>,
     pub(super) c_struct_destructors: HashMap<String, String>,
@@ -233,7 +254,7 @@ fn c_prim_layout(ty: &str) -> (i32, i32) {
 fn c_abi_layout(
     fields: &[crate::parser::ast::FfiStructField],
     is_union: bool,
-) -> (Vec<(String, i32, String, Option<(u8, u8)>)>, i64) {
+) -> (Vec<FfiStructFieldLayout>, i64) {
     if is_union {
         let mut max_size = 0i32;
         let mut max_align = 1i32;
@@ -343,13 +364,7 @@ impl CraneliftCodegen<JITModule> {
     pub fn new_jit(
         functions: Vec<MirFunction>,
         struct_fields: HashMap<String, Vec<String>>,
-        native_lib_paths: &[(
-            String,
-            String,
-            Vec<crate::parser::ast::FfiFnSig>,
-            Vec<crate::parser::ast::FfiStructDef>,
-            Vec<crate::parser::ast::FfiVarDef>,
-        )],
+        native_lib_paths: &[FfiLibInfo],
     ) -> Self {
         let mut flag_builder = settings::builder();
         flag_builder.set("use_colocated_libcalls", "false").unwrap();
@@ -377,7 +392,7 @@ impl CraneliftCodegen<JITModule> {
         let mut native_aliases = std::collections::HashSet::new();
         let mut ffi_entries: Vec<FfiFnEntry> = Vec::new();
         let mut ffi_vararg_ptrs: HashMap<String, *const u8> = HashMap::default();
-        let mut c_struct_offsets: HashMap<String, Vec<(String, i32, String, Option<(u8, u8)>)>> =
+        let mut c_struct_offsets: HashMap<String, Vec<FfiStructFieldLayout>> =
             HashMap::default();
         let mut c_struct_sizes: HashMap<String, i64> = HashMap::default();
         let mut c_struct_names: std::collections::HashSet<String> =
@@ -540,10 +555,8 @@ impl CraneliftCodegen<JITModule> {
                         let mut use_sret = false;
                         if let Some(ret_type) = &sig.ret {
                             let ret_name = type_expr_to_name(ret_type);
-                            if let Some(&size) = c_struct_sizes.get(&ret_name) {
-                                if size > 16 {
-                                    use_sret = true;
-                                }
+                            if c_struct_sizes.get(&ret_name).is_some_and(|&size| size > 16) {
+                                use_sret = true;
                             }
                         }
                         ffi_entries.push(FfiFnEntry {
@@ -607,13 +620,7 @@ impl CraneliftCodegen<ObjectModule> {
     pub fn new_aot(
         functions: Vec<MirFunction>,
         struct_fields: HashMap<String, Vec<String>>,
-        native_lib_paths: &[(
-            String,
-            String,
-            Vec<crate::parser::ast::FfiFnSig>,
-            Vec<crate::parser::ast::FfiStructDef>,
-            Vec<crate::parser::ast::FfiVarDef>,
-        )],
+        native_lib_paths: &[FfiLibInfo],
     ) -> Self {
         let mut flag_builder = settings::builder();
         flag_builder.set("use_colocated_libcalls", "false").unwrap();
@@ -641,7 +648,7 @@ impl CraneliftCodegen<ObjectModule> {
         let module = ObjectModule::new(obj_builder);
 
         let mut ffi_entries: Vec<FfiFnEntry> = Vec::new();
-        let mut c_struct_offsets: HashMap<String, Vec<(String, i32, String, Option<(u8, u8)>)>> =
+        let mut c_struct_offsets: HashMap<String, Vec<FfiStructFieldLayout>> =
             HashMap::default();
         let mut c_struct_sizes: HashMap<String, i64> = HashMap::default();
         let mut c_struct_names: std::collections::HashSet<String> =
@@ -671,10 +678,8 @@ impl CraneliftCodegen<ObjectModule> {
                 let mut use_sret = false;
                 if let Some(ret_name) = &sig.ret {
                     let ret_ty_name = type_expr_to_name(ret_name);
-                    if let Some(&size) = c_struct_sizes.get(&ret_ty_name) {
-                        if size > 16 {
-                            use_sret = true;
-                        }
+                    if c_struct_sizes.get(&ret_ty_name).is_some_and(|&size| size > 16) {
+                        use_sret = true;
                     }
                 }
                 ffi_entries.push(FfiFnEntry {

@@ -21,6 +21,7 @@ pub mod logging;
 pub mod math;
 pub mod net;
 pub mod os;
+pub mod python;
 pub mod random;
 pub mod regex;
 pub mod requests;
@@ -29,13 +30,56 @@ pub mod sys;
 pub mod uuid;
 pub mod websocket;
 pub mod yaml;
-pub mod python;
 
 pub(crate) const KIND_LIST: i64 = 1;
 pub(crate) const KIND_OBJ: i64 = 2;
 pub(crate) const KIND_ENUM: i64 = 3;
 pub(crate) const KIND_SET: i64 = 4;
 pub(crate) const KIND_BYTES: i64 = 6;
+pub(crate) const KIND_PYOBJECT: i64 = 7;
+
+const SHARDS: usize = 16;
+static ACTIVE_OBJECTS: OnceLock<[std::sync::RwLock<FxHashSet<i64>>; SHARDS]> = OnceLock::new();
+
+#[inline]
+fn get_shard(ptr: i64) -> usize {
+    (ptr as usize >> 4) % SHARDS
+}
+
+pub fn register_object(ptr: i64) {
+    if ptr != 0 {
+        let shards = ACTIVE_OBJECTS
+            .get_or_init(|| std::array::from_fn(|_| std::sync::RwLock::new(FxHashSet::default())));
+        shards[get_shard(ptr)].write().unwrap().insert(ptr);
+    }
+}
+
+pub fn unregister_object(ptr: i64) {
+    if ptr != 0 {
+        if let Some(shards) = ACTIVE_OBJECTS.get() {
+            shards[get_shard(ptr)].write().unwrap().remove(&ptr);
+        }
+    }
+}
+
+pub fn is_active_object(ptr: i64) -> bool {
+    if ptr == 0 {
+        return false;
+    }
+    if let Some(shards) = ACTIVE_OBJECTS.get() {
+        shards[get_shard(ptr)].read().unwrap().contains(&ptr)
+    } else {
+        false
+    }
+}
+
+pub fn active_objects_count() -> usize {
+    if let Some(shards) = ACTIVE_OBJECTS.get() {
+        shards.iter().map(|shard| shard.read().unwrap().len()).sum()
+    } else {
+        0
+    }
+}
 
 #[repr(C)]
 pub struct StableVec {
@@ -307,7 +351,9 @@ pub extern "C" fn olive_list_new(len: i64) -> i64 {
         s.cap = n;
         s.len = n;
     }
-    raw as i64
+    let res = raw as i64;
+    register_object(res);
+    res
 }
 
 #[unsafe(no_mangle)]
@@ -341,7 +387,16 @@ pub extern "C" fn olive_list_len(ptr: i64) -> i64 {
     if ptr == 0 {
         return 0;
     }
-    unsafe { (*(ptr as *const StableVec)).len as i64 }
+    unsafe {
+        let raw_ptr = ptr as *const libc::c_void;
+        if python::is_readable_ptr(raw_ptr) {
+            let kind = *(ptr as *const i64);
+            if kind == KIND_PYOBJECT {
+                return python::olive_py_len(ptr as *mut libc::c_void);
+            }
+        }
+        (*(ptr as *const StableVec)).len as i64
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -424,13 +479,15 @@ pub extern "C" fn olive_set_new(capacity: i64) -> i64 {
     let v_cap = v.capacity();
     std::mem::forget(v);
     let inner = Box::into_raw(Box::new(FxHashSet::<i64>::default()));
-    Box::into_raw(Box::new(OliveHashSet {
+    let res = Box::into_raw(Box::new(OliveHashSet {
         kind: KIND_SET,
         ptr,
         cap: v_cap,
         len: 0,
         inner,
-    })) as i64
+    })) as i64;
+    register_object(res);
+    res
 }
 
 #[unsafe(no_mangle)]
@@ -454,10 +511,12 @@ pub extern "C" fn olive_set_add(set_ptr: i64, val: i64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_new() -> i64 {
-    Box::into_raw(Box::new(OliveObj {
+    let res = Box::into_raw(Box::new(OliveObj {
         kind: KIND_OBJ,
         fields: HashMap::default(),
-    })) as i64
+    })) as i64;
+    register_object(res);
+    res
 }
 
 #[unsafe(no_mangle)]
@@ -508,6 +567,7 @@ pub extern "C" fn olive_struct_alloc(n_fields: i64) -> i64 {
     let layout = std::alloc::Layout::from_size_align(total as usize, 8).unwrap();
     let ptr = unsafe { std::alloc::alloc(layout) } as i64;
     unsafe { *(ptr as *mut i64) = n_fields };
+    register_object(ptr);
     ptr
 }
 
@@ -516,6 +576,7 @@ pub extern "C" fn olive_free_struct(ptr: i64) {
     if ptr == 0 {
         return;
     }
+    unregister_object(ptr);
     unsafe {
         let n_fields = *(ptr as *const i64);
         let total = ((n_fields + 1) * 8) as usize;
@@ -536,8 +597,15 @@ pub extern "C" fn olive_free_str(ptr: i64) {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_free_list(ptr: i64) {
     if ptr != 0 {
+        unregister_object(ptr);
         unsafe {
             let s = &*(ptr as *const StableVec);
+            for i in 0..s.len {
+                let elem = *s.ptr.add(i);
+                if is_active_object(elem) {
+                    olive_free_any(elem);
+                }
+            }
             let inline_data = (ptr as *mut i64).add(4);
             if s.ptr == inline_data {
                 let total = (4 + s.len) * 8;
@@ -556,8 +624,14 @@ pub extern "C" fn olive_free_list(ptr: i64) {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_free_obj(ptr: i64) {
     if ptr != 0 {
+        unregister_object(ptr);
         unsafe {
-            let _ = Box::from_raw(ptr as *mut OliveObj);
+            let obj = Box::from_raw(ptr as *mut OliveObj);
+            for &val in obj.fields.values() {
+                if is_active_object(val) {
+                    olive_free_any(val);
+                }
+            }
         }
     }
 }
@@ -601,13 +675,15 @@ pub extern "C" fn olive_enum_new(type_id: i64, tag: i64, arg_count: i64) -> i64 
     let payload_ptr = payload.as_mut_ptr();
     let payload_len = payload.len();
     std::mem::forget(payload);
-    Box::into_raw(Box::new(OliveEnum {
+    let res = Box::into_raw(Box::new(OliveEnum {
         kind: KIND_ENUM,
         type_id,
         tag,
         payload_ptr,
         payload_len,
-    })) as i64
+    })) as i64;
+    register_object(res);
+    res
 }
 
 #[unsafe(no_mangle)]
@@ -655,6 +731,7 @@ pub extern "C" fn olive_enum_set(ptr: i64, index: i64, val: i64) {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_free_enum(ptr: i64) {
     if ptr != 0 {
+        unregister_object(ptr);
         unsafe {
             let e = Box::from_raw(ptr as *mut OliveEnum);
             let _ = Vec::from_raw_parts(e.payload_ptr, e.payload_len, e.payload_len);
@@ -781,6 +858,18 @@ pub extern "C" fn olive_get_index_any(obj: i64, index: i64) -> i64 {
         KIND_LIST => olive_list_get(obj, index),
         KIND_OBJ => olive_obj_get(obj, index),
         KIND_ENUM => olive_enum_get(obj, index),
+        KIND_PYOBJECT => {
+            let key_obj = if index & 1 != 0 {
+                python::olive_py_from_str(index)
+            } else {
+                python::olive_py_from_int(index)
+            };
+            let py_res = python::olive_py_getitem(obj as *mut std::ffi::c_void, key_obj);
+            python::olive_py_decref(key_obj);
+            let olive_res = python::olive_py_conv_to_olive(py_res);
+            python::olive_py_decref(py_res);
+            olive_res
+        }
         _ => 0,
     }
 }
@@ -795,6 +884,17 @@ pub extern "C" fn olive_set_index_any(obj: i64, index: i64, val: i64) {
         KIND_LIST => olive_list_set(obj, index, val),
         KIND_OBJ => {
             olive_obj_set(obj, index, val);
+        }
+        KIND_PYOBJECT => {
+            let key_obj = if index & 1 != 0 {
+                python::olive_py_from_str(index)
+            } else {
+                python::olive_py_from_int(index)
+            };
+            let py_val = python::olive_py_conv_to_py(val);
+            python::olive_py_setitem(obj as *mut std::ffi::c_void, key_obj, py_val);
+            python::olive_py_decref(key_obj);
+            python::olive_py_decref(py_val);
         }
         _ => {}
     }
@@ -829,6 +929,7 @@ pub extern "C" fn olive_free_any(ptr: i64) {
         KIND_SET => olive_free_set(ptr),
         KIND_OBJ => olive_free_obj(ptr),
         KIND_ENUM => olive_free_enum(ptr),
+        KIND_PYOBJECT => python::olive_py_decref(ptr as *mut std::os::raw::c_void),
         _ => {}
     }
 }

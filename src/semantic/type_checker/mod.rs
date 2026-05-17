@@ -119,6 +119,22 @@ impl TypeChecker {
                 ),
             ),
             (
+                "list",
+                Type::Fn(
+                    vec![Type::Any],
+                    Box::new(Type::List(Box::new(Type::Any))),
+                    Vec::new(),
+                ),
+            ),
+            (
+                "dict",
+                Type::Fn(
+                    vec![Type::Any],
+                    Box::new(Type::Dict(Box::new(Type::Str), Box::new(Type::Any))),
+                    Vec::new(),
+                ),
+            ),
+            (
                 "__olive_async_file_read",
                 Type::Fn(
                     vec![Type::Str],

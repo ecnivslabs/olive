@@ -370,7 +370,8 @@ impl Parser {
     pub(crate) fn parse_import(&mut self) -> ParseResult<Stmt> {
         let start = self.peek().clone();
         self.expect(TokenKind::Import)?;
-        if self.peek().kind == TokenKind::Identifier && self.peek().value == "py"
+        if self.peek().kind == TokenKind::Identifier
+            && self.peek().value == "py"
             && self.peek_at(1).kind == TokenKind::String
         {
             self.advance(); // consume `py`

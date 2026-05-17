@@ -153,7 +153,7 @@ impl TypeChecker {
                     || args.iter().any(|a| self.occurs_check(id, a))
             }
             Type::Ref(inner) | Type::MutRef(inner) | Type::Future(inner) => {
-                self.occurs_check(id, &*inner)
+                self.occurs_check(id, inner.as_ref())
             }
             Type::Struct(_, args) | Type::Enum(_, args) => {
                 args.iter().any(|arg| self.occurs_check(id, arg))

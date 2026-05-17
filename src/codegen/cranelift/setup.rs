@@ -141,9 +141,13 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_ffi_errno", &sig_void_i64),
             // Python interop
             ("__olive_py_import", &sig_i64_i64),
+            ("__olive_py_import_safe", &sig_i64_i64),
             ("__olive_py_getattr", &sig_i64_i64_i64),
+            ("__olive_py_getattr_safe", &sig_i64_i64_i64),
             ("__olive_py_call", &sig_i64_i64_i64),
+            ("__olive_py_call_safe", &sig_i64_i64_i64),
             ("__olive_py_call_kw", &sig_3i64_i64),
+            ("__olive_py_call_kw_safe", &sig_3i64_i64),
             ("__olive_py_decref", &sig_i64_void),
             ("__olive_py_to_int", &sig_i64_i64),
             ("__olive_py_to_float", &sig_i64_f64),
@@ -153,12 +157,16 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_py_from_str", &sig_i64_i64),
             ("__olive_py_from_list", &sig_i64_i64),
             ("__olive_py_getitem", &sig_i64_i64_i64),
+            ("__olive_py_getitem_safe", &sig_i64_i64_i64),
             ("__olive_py_setitem", &sig_i64_i64_i64_void),
+            ("__olive_py_setitem_safe", &sig_3i64_i64),
             ("__olive_py_len", &sig_i64_i64),
             ("__olive_py_is_none", &sig_i64_i64),
             ("__olive_py_none", &sig_void_i64),
             ("__olive_py_initialize", &sig_void_i64),
             ("__olive_py_finalize", &sig_void_i64),
+            ("__olive_py_setattr", &sig_3i64_i64),
+            ("__olive_py_setattr_safe", &sig_3i64_i64),
         ];
 
         let has_async = self.functions.iter().any(|f| f.is_async);
@@ -296,7 +304,7 @@ impl<M: Module> CraneliftCodegen<M> {
             sig.returns.push(AbiParam::new(imports::cl_type(ret_ty)));
 
             if func.is_async {
-                let can_sm = Self::analyze_async_sm(&func).is_some();
+                let can_sm = Self::analyze_async_sm(func).is_some();
                 if can_sm {
                     let poll_name = format!("{}__sm_poll", func.name);
                     let mut poll_sig = self.module.make_signature();
@@ -499,7 +507,7 @@ impl<M: Module> CraneliftCodegen<M> {
         let mut data_ctx = DataDescription::new();
         let mut bytes = attr.as_bytes().to_vec();
         bytes.push(0);
-        if bytes.len() % 2 != 0 {
+        if !bytes.len().is_multiple_of(2) {
             bytes.push(0);
         }
         data_ctx.define(bytes.into_boxed_slice());
