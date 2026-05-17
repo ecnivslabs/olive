@@ -1,28 +1,45 @@
-use crate::{OliveObj, olive_panic, olive_str_from_ptr, olive_str_internal};
-use rustc_hash::FxHashMap as HashMap;
+use crate::{olive_panic, olive_str_from_ptr, olive_str_internal};
 
-fn make_result(ok: bool, val: i64, err: i64) -> i64 {
-    let mut fields = HashMap::default();
-    fields.insert("ok".to_string(), if ok { 1 } else { 0 });
-    if ok {
-        fields.insert("val".to_string(), val);
-    } else {
-        fields.insert("err".to_string(), err);
+pub(crate) const KIND_RESULT: i64 = 8;
+
+#[repr(C)]
+pub struct OliveResult {
+    pub kind: i64,
+    pub tag: i64, // 1 for Ok, 0 for Err
+    pub payload: i64,
+}
+
+fn make_result(ok: bool, payload: i64) -> i64 {
+    let res = Box::into_raw(Box::new(OliveResult {
+        kind: KIND_RESULT,
+        tag: if ok { 1 } else { 0 },
+        payload,
+    })) as i64;
+    crate::register_object(res);
+    res
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_free_result(ptr: i64) {
+    if ptr != 0 {
+        crate::unregister_object(ptr);
+        unsafe {
+            let res = Box::from_raw(ptr as *mut OliveResult);
+            if crate::is_active_object(res.payload) {
+                crate::olive_free_any(res.payload);
+            }
+        }
     }
-    Box::into_raw(Box::new(OliveObj {
-        kind: crate::KIND_OBJ,
-        fields,
-    })) as i64
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_result_ok(val: i64) -> i64 {
-    make_result(true, val, 0)
+    make_result(true, val)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_result_err(msg: i64) -> i64 {
-    make_result(false, 0, msg)
+    make_result(false, msg)
 }
 
 #[unsafe(no_mangle)]
@@ -30,8 +47,8 @@ pub extern "C" fn olive_result_is_ok(r: i64) -> i64 {
     if r == 0 {
         return 0;
     }
-    let obj = unsafe { &*(r as *const OliveObj) };
-    *obj.fields.get("ok").unwrap_or(&0)
+    let obj = unsafe { &*(r as *const OliveResult) };
+    obj.tag
 }
 
 #[unsafe(no_mangle)]
@@ -39,12 +56,8 @@ pub extern "C" fn olive_result_is_err(r: i64) -> i64 {
     if r == 0 {
         return 1;
     }
-    let obj = unsafe { &*(r as *const OliveObj) };
-    if *obj.fields.get("ok").unwrap_or(&0) == 1 {
-        0
-    } else {
-        1
-    }
+    let obj = unsafe { &*(r as *const OliveResult) };
+    if obj.tag == 1 { 0 } else { 1 }
 }
 
 #[unsafe(no_mangle)]
@@ -52,9 +65,9 @@ pub extern "C" fn olive_result_unwrap(r: i64) -> i64 {
     if r == 0 {
         olive_panic(olive_str_internal("unwrap called on null result"));
     }
-    let obj = unsafe { &*(r as *const OliveObj) };
-    if *obj.fields.get("ok").unwrap_or(&0) != 1 {
-        let err = *obj.fields.get("err").unwrap_or(&0);
+    let obj = unsafe { &*(r as *const OliveResult) };
+    if obj.tag != 1 {
+        let err = obj.payload;
         let msg = if err == 0 {
             olive_str_internal("unwrap called on Err result")
         } else {
@@ -63,7 +76,7 @@ pub extern "C" fn olive_result_unwrap(r: i64) -> i64 {
         };
         olive_panic(msg);
     }
-    *obj.fields.get("val").unwrap_or(&0)
+    obj.payload
 }
 
 #[unsafe(no_mangle)]
@@ -71,11 +84,11 @@ pub extern "C" fn olive_result_unwrap_err(r: i64) -> i64 {
     if r == 0 {
         olive_panic(olive_str_internal("unwrap_err called on null result"));
     }
-    let obj = unsafe { &*(r as *const OliveObj) };
-    if *obj.fields.get("ok").unwrap_or(&0) == 1 {
+    let obj = unsafe { &*(r as *const OliveResult) };
+    if obj.tag == 1 {
         olive_panic(olive_str_internal("unwrap_err called on Ok result"));
     }
-    *obj.fields.get("err").unwrap_or(&0)
+    obj.payload
 }
 
 #[unsafe(no_mangle)]
@@ -83,9 +96,9 @@ pub extern "C" fn olive_result_unwrap_or(r: i64, default: i64) -> i64 {
     if r == 0 {
         return default;
     }
-    let obj = unsafe { &*(r as *const OliveObj) };
-    if *obj.fields.get("ok").unwrap_or(&0) == 1 {
-        *obj.fields.get("val").unwrap_or(&default)
+    let obj = unsafe { &*(r as *const OliveResult) };
+    if obj.tag == 1 {
+        obj.payload
     } else {
         default
     }
@@ -96,8 +109,8 @@ pub extern "C" fn olive_result_err_msg(r: i64) -> i64 {
     if r == 0 {
         return olive_str_internal("");
     }
-    let obj = unsafe { &*(r as *const OliveObj) };
-    *obj.fields.get("err").unwrap_or(&0)
+    let obj = unsafe { &*(r as *const OliveResult) };
+    if obj.tag == 0 { obj.payload } else { 0 }
 }
 
 #[cfg(test)]

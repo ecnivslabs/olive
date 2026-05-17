@@ -6,7 +6,7 @@ use crate::mir::{self, MirBuilder, MirFunction, Rvalue, StatementKind};
 use crate::parser::{self, ast::FfiFnSig, ast::FfiStructDef, ast::FfiVarDef};
 use crate::semantic::{self, Resolver, TypeChecker};
 use rustc_hash::FxHashMap as HashMap;
-use std::{collections::HashSet, process, time::Duration};
+use std::{collections::HashSet, time::Duration};
 
 pub type NativeLib = (
     String,
@@ -33,7 +33,7 @@ pub struct PipelineOutput {
     pub timings: PipelineTimings,
 }
 
-pub fn run_pipeline(filename: &str) -> PipelineOutput {
+pub fn run_pipeline(filename: &str) -> Result<PipelineOutput, ()> {
     let t0 = std::time::Instant::now();
     let mut loaded = HashSet::new();
     loaded.insert(filename.to_string());
@@ -59,7 +59,7 @@ pub fn run_pipeline(filename: &str) -> PipelineOutput {
         for e in &resolver.errors {
             report_error(&sources, &format!("{}", e), e.span());
         }
-        process::exit(1);
+        return Err(());
     }
     let resolve_duration = resolve_start.elapsed();
 
@@ -70,7 +70,7 @@ pub fn run_pipeline(filename: &str) -> PipelineOutput {
         for e in &type_checker.errors {
             report_error(&sources, &format!("{}", e), e.span());
         }
-        process::exit(1);
+        return Err(());
     }
     let typecheck_duration = typecheck_start.elapsed();
 
@@ -89,6 +89,7 @@ pub fn run_pipeline(filename: &str) -> PipelineOutput {
     let opt_duration = opt_start.elapsed();
 
     let borrow_start = std::time::Instant::now();
+    let mut borrow_failed = false;
     for func in &mir_builder.functions {
         let needs_check = func.locals.iter().any(|l| l.ty.is_move_type())
             || func.basic_blocks.iter().any(|bb| {
@@ -105,6 +106,7 @@ pub fn run_pipeline(filename: &str) -> PipelineOutput {
         let mut checker = BorrowChecker::new(func);
         checker.check();
         if !checker.errors.is_empty() {
+            borrow_failed = true;
             for e in &checker.errors {
                 match e {
                     semantic::SemanticError::Custom { msg, span } => {
@@ -121,14 +123,16 @@ pub fn run_pipeline(filename: &str) -> PipelineOutput {
                     ),
                 }
             }
-            process::exit(1);
         }
+    }
+    if borrow_failed {
+        return Err(());
     }
     let borrow_duration = borrow_start.elapsed();
 
     let native_libs = collect_native_libs(&program);
 
-    PipelineOutput {
+    Ok(PipelineOutput {
         functions: mir_builder.functions,
         struct_fields: mir_builder.struct_fields,
         native_libs,
@@ -141,5 +145,5 @@ pub fn run_pipeline(filename: &str) -> PipelineOutput {
             optimize: opt_duration,
             borrow_check: borrow_duration,
         },
-    }
+    })
 }

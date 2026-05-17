@@ -1,3 +1,19 @@
+pub mod struct_obj;
+pub mod enum_obj;
+pub mod set;
+pub mod list;
+pub mod obj;
+pub mod time;
+pub mod string;
+
+pub use struct_obj::*;
+pub use enum_obj::*;
+pub use set::*;
+pub use list::*;
+pub use obj::*;
+pub use time::*;
+pub use string::*;
+
 use mimalloc::MiMalloc;
 
 #[global_allocator]
@@ -6,8 +22,6 @@ static GLOBAL: MiMalloc = MiMalloc;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet};
 extern crate libc;
 use std::sync::{Mutex, OnceLock};
-use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub mod aio;
 pub mod bytes;
@@ -41,6 +55,12 @@ pub(crate) const KIND_PYOBJECT: i64 = 7;
 const SHARDS: usize = 16;
 static ACTIVE_OBJECTS: OnceLock<[std::sync::RwLock<FxHashSet<i64>>; SHARDS]> = OnceLock::new();
 
+use std::cell::RefCell;
+
+thread_local! {
+    static LOCAL_ACTIVE_OBJECTS: RefCell<FxHashSet<i64>> = RefCell::new(FxHashSet::default());
+}
+
 #[inline]
 fn get_shard(ptr: i64) -> usize {
     (ptr as usize >> 4) % SHARDS
@@ -48,6 +68,7 @@ fn get_shard(ptr: i64) -> usize {
 
 pub fn register_object(ptr: i64) {
     if ptr != 0 {
+        LOCAL_ACTIVE_OBJECTS.with(|cache| cache.borrow_mut().insert(ptr));
         let shards = ACTIVE_OBJECTS
             .get_or_init(|| std::array::from_fn(|_| std::sync::RwLock::new(FxHashSet::default())));
         shards[get_shard(ptr)].write().unwrap().insert(ptr);
@@ -56,6 +77,7 @@ pub fn register_object(ptr: i64) {
 
 pub fn unregister_object(ptr: i64) {
     if ptr != 0 {
+        LOCAL_ACTIVE_OBJECTS.with(|cache| cache.borrow_mut().remove(&ptr));
         if let Some(shards) = ACTIVE_OBJECTS.get() {
             shards[get_shard(ptr)].write().unwrap().remove(&ptr);
         }
@@ -66,6 +88,14 @@ pub fn is_active_object(ptr: i64) -> bool {
     if ptr == 0 {
         return false;
     }
+    
+    // Fast path: Check thread-local cache first
+    let in_local = LOCAL_ACTIVE_OBJECTS.with(|cache| cache.borrow().contains(&ptr));
+    if in_local {
+        return true;
+    }
+
+    // Slow path: Check global shards (for cross-thread objects)
     if let Some(shards) = ACTIVE_OBJECTS.get() {
         shards[get_shard(ptr)].read().unwrap().contains(&ptr)
     } else {
@@ -345,71 +375,6 @@ pub extern "C" fn olive_copy_float(val: f64) -> f64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn olive_list_new(len: i64) -> i64 {
-    let n = len as usize;
-    let total = 4 + n; // StableVec header = 4 × i64; data follows
-    let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(total * 8, 8) };
-    let raw = unsafe { std::alloc::alloc(layout) as *mut i64 };
-    if raw.is_null() {
-        std::alloc::handle_alloc_error(layout);
-    }
-    let data_ptr = unsafe { raw.add(4) };
-    unsafe {
-        let s = &mut *(raw as *mut StableVec);
-        s.kind = KIND_LIST;
-        s.ptr = data_ptr;
-        s.cap = n;
-        s.len = n;
-    }
-    let res = raw as i64;
-    register_object(res);
-    res
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_list_set(list_ptr: i64, idx: i64, val: i64) {
-    if list_ptr == 0 {
-        return;
-    }
-    let s = unsafe { &mut *(list_ptr as *mut StableVec) };
-    if (idx as usize) < s.len {
-        unsafe {
-            *s.ptr.add(idx as usize) = val;
-        }
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_list_get(list_ptr: i64, idx: i64) -> i64 {
-    if list_ptr == 0 {
-        return 0;
-    }
-    let s = unsafe { &*(list_ptr as *const StableVec) };
-    if (idx as usize) < s.len {
-        unsafe { *s.ptr.add(idx as usize) }
-    } else {
-        0
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_list_len(ptr: i64) -> i64 {
-    if ptr == 0 {
-        return 0;
-    }
-    unsafe {
-        let raw_ptr = ptr as *const libc::c_void;
-        if python::is_readable_ptr(raw_ptr) {
-            let kind = *(ptr as *const i64);
-            if kind == KIND_PYOBJECT {
-                return python::olive_py_len(ptr as *mut libc::c_void);
-            }
-        }
-        (*(ptr as *const StableVec)).len as i64
-    }
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn olive_list_append(list_ptr: i64, val: i64) {
     if list_ptr == 0 {
         return;
@@ -430,87 +395,6 @@ pub extern "C" fn olive_list_append(list_ptr: i64, val: i64) {
         s.len = v.len();
         std::mem::forget(v);
     }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_list_insert(list_ptr: i64, idx: i64, val: i64) {
-    if list_ptr == 0 {
-        return;
-    }
-    unsafe {
-        let s = &mut *(list_ptr as *mut StableVec);
-        let idx = idx as usize;
-        let inline_data = (list_ptr as *mut i64).add(4);
-        let mut v = if s.ptr == inline_data {
-            let mut owned = Vec::with_capacity(s.len + 1);
-            owned.extend_from_slice(std::slice::from_raw_parts(s.ptr, s.len));
-            owned
-        } else {
-            Vec::from_raw_parts(s.ptr, s.len, s.cap)
-        };
-        if idx <= v.len() {
-            v.insert(idx, val);
-        }
-        s.ptr = v.as_mut_ptr();
-        s.cap = v.capacity();
-        s.len = v.len();
-        std::mem::forget(v);
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_list_remove(list_ptr: i64, idx: i64) -> i64 {
-    if list_ptr == 0 {
-        return 0;
-    }
-    unsafe {
-        let s = &mut *(list_ptr as *mut StableVec);
-        let idx = idx as usize;
-        if idx >= s.len {
-            return 0;
-        }
-        let inline_data = (list_ptr as *mut i64).add(4);
-        let mut v = if s.ptr == inline_data {
-            let mut owned = Vec::with_capacity(s.len);
-            owned.extend_from_slice(std::slice::from_raw_parts(s.ptr, s.len));
-            owned
-        } else {
-            Vec::from_raw_parts(s.ptr, s.len, s.cap)
-        };
-        let val = v.remove(idx);
-        s.ptr = v.as_mut_ptr();
-        s.cap = v.capacity();
-        s.len = v.len();
-        std::mem::forget(v);
-        val
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_list_concat(l: i64, r: i64) -> i64 {
-    if l == 0 {
-        return r;
-    }
-    if r == 0 {
-        return l;
-    }
-    let sl = unsafe { &*(l as *const StableVec) };
-    let sr = unsafe { &*(r as *const StableVec) };
-    let mut v = Vec::with_capacity(sl.len + sr.len);
-    unsafe {
-        v.extend_from_slice(std::slice::from_raw_parts(sl.ptr, sl.len));
-        v.extend_from_slice(std::slice::from_raw_parts(sr.ptr, sr.len));
-    }
-    let ptr = v.as_mut_ptr();
-    let cap = v.capacity();
-    let len = v.len();
-    std::mem::forget(v);
-    Box::into_raw(Box::new(StableVec {
-        kind: KIND_LIST,
-        ptr,
-        cap,
-        len,
-    })) as i64
 }
 
 #[unsafe(no_mangle)]
@@ -536,201 +420,12 @@ pub extern "C" fn olive_in_list(val: i64, list_ptr: i64) -> i64 {
     0
 }
 #[unsafe(no_mangle)]
-pub extern "C" fn olive_set_new(capacity: i64) -> i64 {
-    let cap = capacity as usize;
-    let mut v: Vec<i64> = Vec::with_capacity(cap);
-    let ptr = v.as_mut_ptr();
-    let v_cap = v.capacity();
-    std::mem::forget(v);
-    let inner = Box::into_raw(Box::new(FxHashSet::<i64>::default()));
-    let res = Box::into_raw(Box::new(OliveHashSet {
-        kind: KIND_SET,
-        ptr,
-        cap: v_cap,
-        len: 0,
-        inner,
-    })) as i64;
-    register_object(res);
-    res
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_set_add(set_ptr: i64, val: i64) {
-    if set_ptr == 0 {
-        return;
-    }
-    unsafe {
-        let s = &mut *(set_ptr as *mut OliveHashSet);
-        let hs = &mut *s.inner;
-        if hs.insert(val) {
-            let mut v = Vec::from_raw_parts(s.ptr, s.len, s.cap);
-            v.push(val);
-            s.ptr = v.as_mut_ptr();
-            s.cap = v.capacity();
-            s.len = v.len();
-            std::mem::forget(v);
-        }
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_obj_new() -> i64 {
-    let res = Box::into_raw(Box::new(OliveObj {
-        kind: KIND_OBJ,
-        fields: HashMap::default(),
-    })) as i64;
-    register_object(res);
-    res
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_obj_set(obj_ptr: i64, attr: i64, val: i64) -> i64 {
-    if obj_ptr == 0 || attr == 0 {
-        return obj_ptr;
-    }
-    let attr_str = olive_str_from_ptr(attr);
-    let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
-    m.fields.insert(attr_str, val);
-    obj_ptr
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_obj_get(obj_ptr: i64, attr: i64) -> i64 {
-    if obj_ptr == 0 || attr == 0 {
-        return 0;
-    }
-    let attr_str = olive_str_from_ptr(attr);
-    let m = unsafe { &*(obj_ptr as *const OliveObj) };
-    *m.fields.get(&attr_str).unwrap_or(&0)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_obj_remove(obj_ptr: i64, attr: i64) -> i64 {
-    if obj_ptr == 0 || attr == 0 {
-        return 0;
-    }
-    let attr_str = olive_str_from_ptr(attr);
-    let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
-    m.fields.remove(&attr_str).unwrap_or(0)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_in_obj(key: i64, obj_ptr: i64) -> i64 {
-    if obj_ptr == 0 || key == 0 {
-        return 0;
-    }
-    let m = unsafe { &*(obj_ptr as *const OliveObj) };
-    if m.fields.contains_key(&olive_str_from_ptr(key)) {
-        1
-    } else {
-        0
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_obj_len(obj_ptr: i64) -> i64 {
-    if obj_ptr == 0 {
-        return 0;
-    }
-    unsafe { (*(obj_ptr as *const OliveObj)).fields.len() as i64 }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_struct_alloc(n_fields: i64) -> i64 {
-    let total = (n_fields + 1) * 8;
-    let layout = std::alloc::Layout::from_size_align(total as usize, 8).unwrap();
-    let ptr = unsafe { std::alloc::alloc(layout) } as i64;
-    unsafe { *(ptr as *mut i64) = n_fields };
-    register_object(ptr);
-    ptr
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_free_struct(ptr: i64) {
-    if ptr == 0 {
-        return;
-    }
-    unregister_object(ptr);
-    unsafe {
-        let n_fields = *(ptr as *const i64);
-        let total = ((n_fields + 1) * 8) as usize;
-        let layout = std::alloc::Layout::from_size_align_unchecked(total, 8);
-        std::alloc::dealloc(ptr as *mut u8, layout);
-    }
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn olive_free_str(ptr: i64) {
     if ptr != 0 && (ptr & 1) == 0 {
         unsafe {
             let _ = std::ffi::CString::from_raw(ptr as *mut std::ffi::c_char);
         }
     }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_free_list(ptr: i64) {
-    if ptr != 0 {
-        unregister_object(ptr);
-        unsafe {
-            let s = &*(ptr as *const StableVec);
-            for i in 0..s.len {
-                let elem = *s.ptr.add(i);
-                if is_active_object(elem) {
-                    olive_free_any(elem);
-                }
-            }
-            let inline_data = (ptr as *mut i64).add(4);
-            if s.ptr == inline_data {
-                let total = (4 + s.len) * 8;
-                let layout = std::alloc::Layout::from_size_align_unchecked(total, 8);
-                std::alloc::dealloc(ptr as *mut u8, layout);
-            } else {
-                let s = Box::from_raw(ptr as *mut StableVec);
-                if !s.ptr.is_null() {
-                    let _ = Vec::from_raw_parts(s.ptr, s.len, s.cap);
-                }
-            }
-        }
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_free_obj(ptr: i64) {
-    if ptr != 0 {
-        unregister_object(ptr);
-        unsafe {
-            let obj = Box::from_raw(ptr as *mut OliveObj);
-            for &val in obj.fields.values() {
-                if is_active_object(val) {
-                    olive_free_any(val);
-                }
-            }
-        }
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_time_now() -> f64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs_f64()
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_time_monotonic() -> f64 {
-    static START: OnceLock<SystemTime> = OnceLock::new();
-    let start = START.get_or_init(SystemTime::now);
-    SystemTime::now()
-        .duration_since(*start)
-        .unwrap()
-        .as_secs_f64()
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_time_sleep(secs: f64) {
-    thread::sleep(Duration::from_secs_f64(secs));
 }
 
 #[unsafe(no_mangle)]
@@ -741,182 +436,6 @@ pub extern "C" fn olive_pow(base: i64, exp: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_pow_float(base: f64, exp: f64) -> f64 {
     base.powf(exp)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_enum_new(type_id: i64, tag: i64, arg_count: i64) -> i64 {
-    let mut payload = vec![0i64; arg_count as usize];
-    let payload_ptr = payload.as_mut_ptr();
-    let payload_len = payload.len();
-    std::mem::forget(payload);
-    let res = Box::into_raw(Box::new(OliveEnum {
-        kind: KIND_ENUM,
-        type_id,
-        tag,
-        payload_ptr,
-        payload_len,
-    })) as i64;
-    register_object(res);
-    res
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_enum_type_id(ptr: i64) -> i64 {
-    if ptr == 0 {
-        return -1;
-    }
-    unsafe { (*(ptr as *const OliveEnum)).type_id }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_enum_tag(ptr: i64) -> i64 {
-    if ptr == 0 {
-        return -1;
-    }
-    unsafe { (*(ptr as *const OliveEnum)).tag }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_enum_get(ptr: i64, index: i64) -> i64 {
-    if ptr == 0 {
-        return 0;
-    }
-    let e = unsafe { &*(ptr as *const OliveEnum) };
-    if (index as usize) < e.payload_len {
-        unsafe { *e.payload_ptr.add(index as usize) }
-    } else {
-        0
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_enum_set(ptr: i64, index: i64, val: i64) {
-    if ptr == 0 {
-        return;
-    }
-    let e = unsafe { &mut *(ptr as *mut OliveEnum) };
-    if (index as usize) < e.payload_len {
-        unsafe {
-            *e.payload_ptr.add(index as usize) = val;
-        }
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_free_enum(ptr: i64) {
-    if ptr != 0 {
-        unregister_object(ptr);
-        unsafe {
-            let e = Box::from_raw(ptr as *mut OliveEnum);
-            let _ = Vec::from_raw_parts(e.payload_ptr, e.payload_len, e.payload_len);
-        }
-    }
-}
-
-struct OliveIter {
-    list_ptr: i64,
-    index: usize,
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_iter(list_ptr: i64) -> i64 {
-    Box::into_raw(Box::new(OliveIter { list_ptr, index: 0 })) as i64
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_has_next(iter_ptr: i64) -> i64 {
-    if iter_ptr == 0 {
-        return 0;
-    }
-    let it = unsafe { &*(iter_ptr as *const OliveIter) };
-    if it.list_ptr == 0 {
-        return 0;
-    }
-    let s = unsafe { &*(it.list_ptr as *const StableVec) };
-    if it.index < s.len { 1 } else { 0 }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_next(iter_ptr: i64) -> i64 {
-    if iter_ptr == 0 {
-        return 0;
-    }
-    let it = unsafe { &mut *(iter_ptr as *mut OliveIter) };
-    if it.list_ptr == 0 {
-        return 0;
-    }
-    let s = unsafe { &*(it.list_ptr as *const StableVec) };
-    if it.index < s.len {
-        let val = unsafe { *s.ptr.add(it.index) };
-        it.index += 1;
-        val
-    } else {
-        0
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_str_len(s: i64) -> i64 {
-    if s == 0 {
-        return 0;
-    }
-    unsafe {
-        std::ffi::CStr::from_ptr((s & !1) as *const std::ffi::c_char)
-            .to_bytes()
-            .len() as i64
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_str_get(s: i64, i: i64) -> i64 {
-    if s == 0 {
-        return 0;
-    }
-    let ptr = (s & !1) as *const u8;
-    let byte = unsafe { *ptr.add(i as usize) };
-    if byte == 0 {
-        return 0;
-    }
-    let buf = [byte, 0u8];
-    let c_str = unsafe { std::ffi::CString::from_vec_unchecked(buf.to_vec()) };
-    c_str.into_raw() as i64 | 1
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_str_char(s: i64, i: i64) -> i64 {
-    olive_str_get(s, i)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_str_slice(s: i64, start: i64, end: i64) -> i64 {
-    let text = olive_str_from_ptr(s);
-    let start = start as usize;
-    let end = end as usize;
-    if start <= end && end <= text.len() {
-        olive_str_internal(&text[start..end])
-    } else {
-        0
-    }
-}
-
-pub fn olive_str_internal(s: &str) -> i64 {
-    let c_str = std::ffi::CString::new(s).unwrap_or_else(|_| {
-        let safe: String = s.chars().filter(|&c| c != '\0').collect();
-        std::ffi::CString::new(safe).unwrap()
-    });
-    c_str.into_raw() as i64 | 1
-}
-
-pub fn olive_str_from_ptr(ptr: i64) -> String {
-    if ptr == 0 {
-        return String::new();
-    }
-    let p = ptr & !1;
-    unsafe {
-        std::ffi::CStr::from_ptr(p as *const std::ffi::c_char)
-            .to_string_lossy()
-            .into_owned()
-    }
 }
 
 #[unsafe(no_mangle)]
@@ -1003,246 +522,10 @@ pub extern "C" fn olive_free_any(ptr: i64) {
         KIND_SET => olive_free_set(ptr),
         KIND_OBJ => olive_free_obj(ptr),
         KIND_ENUM => olive_free_enum(ptr),
+        crate::result::KIND_RESULT => crate::result::olive_free_result(ptr),
         KIND_PYOBJECT => python::olive_py_decref(ptr as *mut std::os::raw::c_void),
         _ => {}
     }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_str_trim(s: i64) -> i64 {
-    if s == 0 {
-        return 0;
-    }
-    olive_str_internal(olive_str_from_ptr(s).trim())
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_str_trim_start(s: i64) -> i64 {
-    if s == 0 {
-        return 0;
-    }
-    olive_str_internal(olive_str_from_ptr(s).trim_start())
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_str_trim_end(s: i64) -> i64 {
-    if s == 0 {
-        return 0;
-    }
-    olive_str_internal(olive_str_from_ptr(s).trim_end())
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_str_upper(s: i64) -> i64 {
-    if s == 0 {
-        return 0;
-    }
-    olive_str_internal(&olive_str_from_ptr(s).to_uppercase())
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_str_lower(s: i64) -> i64 {
-    if s == 0 {
-        return 0;
-    }
-    olive_str_internal(&olive_str_from_ptr(s).to_lowercase())
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_str_replace(s: i64, from: i64, to: i64) -> i64 {
-    if s == 0 {
-        return 0;
-    }
-    let text = olive_str_from_ptr(s);
-    let from_str = olive_str_from_ptr(from);
-    let to_str = olive_str_from_ptr(to);
-    olive_str_internal(&text.replace(&from_str, &to_str))
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_str_find(s: i64, needle: i64) -> i64 {
-    if s == 0 || needle == 0 {
-        return -1;
-    }
-    let text = olive_str_from_ptr(s);
-    let pat = olive_str_from_ptr(needle);
-    match text.find(&pat) {
-        Some(i) => i as i64,
-        None => -1,
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_str_contains(s: i64, needle: i64) -> i64 {
-    if s == 0 || needle == 0 {
-        return 0;
-    }
-    if olive_str_from_ptr(s).contains(&olive_str_from_ptr(needle)) {
-        1
-    } else {
-        0
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_str_starts_with(s: i64, prefix: i64) -> i64 {
-    if s == 0 || prefix == 0 {
-        return 0;
-    }
-    if olive_str_from_ptr(s).starts_with(&olive_str_from_ptr(prefix)) {
-        1
-    } else {
-        0
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_str_ends_with(s: i64, suffix: i64) -> i64 {
-    if s == 0 || suffix == 0 {
-        return 0;
-    }
-    if olive_str_from_ptr(s).ends_with(&olive_str_from_ptr(suffix)) {
-        1
-    } else {
-        0
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_str_repeat(s: i64, n: i64) -> i64 {
-    if s == 0 || n <= 0 {
-        return olive_str_internal("");
-    }
-    olive_str_internal(&olive_str_from_ptr(s).repeat(n as usize))
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_str_split(s: i64, sep: i64) -> i64 {
-    let text = if s == 0 {
-        String::new()
-    } else {
-        olive_str_from_ptr(s)
-    };
-    let parts: Vec<i64> = if sep == 0 {
-        text.split_whitespace().map(olive_str_internal).collect()
-    } else {
-        let sep_str = olive_str_from_ptr(sep);
-        text.split(&sep_str).map(olive_str_internal).collect()
-    };
-    let mut v = parts;
-    let ptr = v.as_mut_ptr();
-    let cap = v.capacity();
-    let len = v.len();
-    std::mem::forget(v);
-    Box::into_raw(Box::new(StableVec {
-        kind: KIND_LIST,
-        ptr,
-        cap,
-        len,
-    })) as i64
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_str_join(list_ptr: i64, sep: i64) -> i64 {
-    if list_ptr == 0 {
-        return olive_str_internal("");
-    }
-    let s = unsafe { &*(list_ptr as *const StableVec) };
-    let sep_str = if sep == 0 {
-        String::new()
-    } else {
-        olive_str_from_ptr(sep)
-    };
-    let parts: Vec<String> = (0..s.len)
-        .map(|i| olive_str_from_ptr(unsafe { *s.ptr.add(i) }))
-        .collect();
-    olive_str_internal(&parts.join(&sep_str))
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_str_fmt(template: i64, args: i64) -> i64 {
-    if template == 0 {
-        return olive_str_internal("");
-    }
-    let tmpl = olive_str_from_ptr(template);
-    let arg_strs: Vec<String> = if args == 0 {
-        vec![]
-    } else {
-        let sv = unsafe { &*(args as *const StableVec) };
-        (0..sv.len)
-            .map(|i| olive_str_from_ptr(unsafe { *sv.ptr.add(i) }))
-            .collect()
-    };
-    let mut result = String::with_capacity(tmpl.len());
-    let mut arg_idx = 0;
-    let mut chars = tmpl.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '{' && chars.peek() == Some(&'}') {
-            chars.next();
-            if arg_idx < arg_strs.len() {
-                result.push_str(&arg_strs[arg_idx]);
-                arg_idx += 1;
-            }
-        } else {
-            result.push(c);
-        }
-    }
-    olive_str_internal(&result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_str_char_count(s: i64) -> i64 {
-    if s == 0 {
-        return 0;
-    }
-    olive_str_from_ptr(s).chars().count() as i64
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_str_is_ascii(s: i64) -> i64 {
-    if s == 0 {
-        return 1;
-    }
-    if olive_str_from_ptr(s).is_ascii() {
-        1
-    } else {
-        0
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_str_grapheme_count(s: i64) -> i64 {
-    use unicode_segmentation::UnicodeSegmentation;
-    if s == 0 {
-        return 0;
-    }
-    olive_str_from_ptr(s).graphemes(true).count() as i64
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_str_graphemes(s: i64) -> i64 {
-    use unicode_segmentation::UnicodeSegmentation;
-    if s == 0 {
-        let v = Box::new(StableVec {
-            kind: KIND_LIST,
-            ptr: std::ptr::null_mut(),
-            cap: 0,
-            len: 0,
-        });
-        return Box::into_raw(v) as i64;
-    }
-    let text = olive_str_from_ptr(s);
-    let mut ptrs: Vec<i64> = text.graphemes(true).map(olive_str_internal).collect();
-    let ptr = ptrs.as_mut_ptr();
-    let cap = ptrs.capacity();
-    let len = ptrs.len();
-    std::mem::forget(ptrs);
-    Box::into_raw(Box::new(StableVec {
-        kind: KIND_LIST,
-        ptr,
-        cap,
-        len,
-    })) as i64
 }
 
 #[unsafe(no_mangle)]
@@ -1298,24 +581,6 @@ pub extern "C" fn olive_is_str(val: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn olive_is_list(val: i64) -> i64 {
-    if val == 0 || (val & 1) != 0 {
-        return 0;
-    }
-    let kind = unsafe { *(val as *const i64) };
-    if kind == KIND_LIST { 1 } else { 0 }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_is_obj(val: i64) -> i64 {
-    if val == 0 || (val & 1) != 0 {
-        return 0;
-    }
-    let kind = unsafe { *(val as *const i64) };
-    if kind == KIND_OBJ { 1 } else { 0 }
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn olive_is_bytes(val: i64) -> i64 {
     if val == 0 || (val & 1) != 0 {
         return 0;
@@ -1342,78 +607,6 @@ pub extern "C" fn olive_typeof_str(val: i64) -> i64 {
         _ => "int",
     };
     olive_str_internal(name)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_obj_keys(obj_ptr: i64) -> i64 {
-    if obj_ptr == 0 {
-        let v = Box::new(StableVec {
-            kind: KIND_LIST,
-            ptr: std::ptr::null_mut(),
-            cap: 0,
-            len: 0,
-        });
-        return Box::into_raw(v) as i64;
-    }
-    let m = unsafe { &*(obj_ptr as *const OliveObj) };
-    let mut ptrs: Vec<i64> = m.fields.keys().map(|k| olive_str_internal(k)).collect();
-    let ptr = ptrs.as_mut_ptr();
-    let cap = ptrs.capacity();
-    let len = ptrs.len();
-    std::mem::forget(ptrs);
-    Box::into_raw(Box::new(StableVec {
-        kind: KIND_LIST,
-        ptr,
-        cap,
-        len,
-    })) as i64
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_obj_values(obj_ptr: i64) -> i64 {
-    if obj_ptr == 0 {
-        let v = Box::new(StableVec {
-            kind: KIND_LIST,
-            ptr: std::ptr::null_mut(),
-            cap: 0,
-            len: 0,
-        });
-        return Box::into_raw(v) as i64;
-    }
-    let m = unsafe { &*(obj_ptr as *const OliveObj) };
-    let mut vals: Vec<i64> = m.fields.values().copied().collect();
-    let ptr = vals.as_mut_ptr();
-    let cap = vals.capacity();
-    let len = vals.len();
-    std::mem::forget(vals);
-    Box::into_raw(Box::new(StableVec {
-        kind: KIND_LIST,
-        ptr,
-        cap,
-        len,
-    })) as i64
-}
-
-pub fn unix_to_ymd_hms(ts: i64) -> (i64, i64, i64, i64, i64, i64) {
-    let mut d = ts / 86400;
-    let sec = ts.rem_euclid(86400);
-    let h = sec / 3600;
-    let m = (sec % 3600) / 60;
-    let s = sec % 60;
-    if ts < 0 && (ts % 86400) != 0 {
-        d -= 1;
-    }
-    d += 719468;
-    let era = if d >= 0 { d } else { d - 146096 } / 146097;
-    let doe = d - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if month <= 2 { y + 1 } else { y };
-    (year, month, day, h, m, s)
 }
 
 #[unsafe(no_mangle)]

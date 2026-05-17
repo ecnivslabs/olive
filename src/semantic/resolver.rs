@@ -13,24 +13,17 @@ pub struct Resolver {
 impl Resolver {
     pub fn new() -> Self {
         let mut table = SymbolTable::new();
-        table.define(Symbol {
-            name: "print".to_string(),
-            kind: SymbolKind::Function,
-            span: Span::default(),
-            is_private: false,
-        });
-        table.define(Symbol {
-            name: "str".to_string(),
-            kind: SymbolKind::Function,
-            span: Span::default(),
-            is_private: false,
-        });
-        table.define(Symbol {
-            name: "int".to_string(),
-            kind: SymbolKind::Function,
-            span: Span::default(),
-            is_private: false,
-        });
+        let builtin_fns = [
+            "print", "str", "int", "type", "len", "list_new", "list", "dict", "slice", "ffi_errno",
+        ];
+        for name in builtin_fns {
+            table.define(Symbol {
+                name: name.to_string(),
+                kind: SymbolKind::Function,
+                span: Span::default(),
+                is_private: false,
+            });
+        }
         for ty_name in [
             "i64", "i32", "i16", "i8", "u64", "u32", "u16", "u8", "float", "f64", "f32", "bool",
         ] {
@@ -41,48 +34,6 @@ impl Resolver {
                 is_private: false,
             });
         }
-        table.define(Symbol {
-            name: "type".to_string(),
-            kind: SymbolKind::Function,
-            span: Span::default(),
-            is_private: false,
-        });
-        table.define(Symbol {
-            name: "len".to_string(),
-            kind: SymbolKind::Function,
-            span: Span::default(),
-            is_private: false,
-        });
-        table.define(Symbol {
-            name: "list_new".to_string(),
-            kind: SymbolKind::Function,
-            span: Span::default(),
-            is_private: false,
-        });
-        table.define(Symbol {
-            name: "list".to_string(),
-            kind: SymbolKind::Function,
-            span: Span::default(),
-            is_private: false,
-        });
-        table.define(Symbol {
-            name: "dict".to_string(),
-            kind: SymbolKind::Function,
-            span: Span::default(),
-            is_private: false,
-        });
-        table.define(Symbol {
-            name: "slice".to_string(),
-            kind: SymbolKind::Function,
-            span: Span::default(),
-            is_private: false,
-        });
-        table.define(Symbol {
-            name: "ffi_errno".to_string(),
-            kind: SymbolKind::Function,
-            span: Span::default(),
-            is_private: false,
-        });
         table.define(Symbol {
             name: "None".to_string(),
             kind: SymbolKind::Variable,

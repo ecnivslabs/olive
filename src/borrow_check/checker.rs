@@ -402,7 +402,7 @@ impl<'a> BorrowChecker<'a> {
     fn release_dead_borrows(&self, state: &mut FlowState, live_locals: &HashSet<Local>) {
         let mut still_borrowed = HashSet::default();
         for (ref_var, &pointed_var) in &self.provenance {
-            if live_locals.contains(ref_var) || self.func.locals[ref_var.0].name.is_some() {
+            if live_locals.contains(ref_var) {
                 still_borrowed.insert(pointed_var);
             }
         }
@@ -555,7 +555,7 @@ mod tests {
     #[test]
     fn borrow_prevents_move() {
         let errors = borrow_check(
-            "fn consume(xs: [i64]) -> i64:\n    return 0\n\nfn read(r: &[i64]) -> i64:\n    return 0\n\nfn caller() -> i64:\n    let mut xs = [1, 2]\n    let r = &xs\n    consume(xs)\n    return 0\n",
+            "fn consume(xs: [i64]) -> i64:\n    return 0\n\nfn read(r: &[i64]) -> i64:\n    return 0\n\nfn caller() -> i64:\n    let mut xs = [1, 2]\n    let r = &xs\n    consume(xs)\n    read(r)\n    return 0\n",
         );
         assert!(!errors.is_empty(), "should report move-while-borrowed");
     }
@@ -580,6 +580,14 @@ mod tests {
     fn deeply_nested_loops_no_errors() {
         let errors = borrow_check(
             "fn mat_sum(n: i64) -> i64:\n    let s = 0\n    let i = 0\n    while i < n:\n        let j = 0\n        while j < n:\n            s = s + i * j\n            j = j + 1\n        i = i + 1\n    return s\n",
+        );
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    }
+
+    #[test]
+    fn nll_named_reference_releases_borrow() {
+        let errors = borrow_check(
+            "fn consume(xs: [i64]) -> i64:\n    return 0\n\nfn read(r: &[i64]) -> i64:\n    return 0\n\nfn caller() -> i64:\n    let mut xs = [1, 2]\n    let r = &xs\n    read(r)\n    consume(xs)\n    return 0\n",
         );
         assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
     }

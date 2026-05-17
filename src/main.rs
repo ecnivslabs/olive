@@ -6,23 +6,19 @@ mod lexer;
 mod mangle;
 mod mir;
 mod parser;
-mod pods;
-mod publish;
-mod registry;
-mod repl;
 mod semantic;
 mod span;
-mod upgrade;
+mod tooling;
 
 use clap::{Parser as ClapParser, Subcommand};
 use compile::{
     compile_and_emit, compile_and_run, compile_and_run_aot, compile_and_test, compile_hybrid,
 };
 use fmt::{format_file, walk_and_format};
-use repl::run_shell;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::{fs, path::Path, process};
+use tooling::repl::run_shell;
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 struct Config {
@@ -125,7 +121,7 @@ fn maybe_install_deps(deps: &HashMap<String, String>) {
     if deps.is_empty() {
         return;
     }
-    if let Err(e) = pods::ensure_deps_installed(deps) {
+    if let Err(e) = tooling::pods::ensure_deps_installed(deps) {
         eprintln!("error: {}", e);
         process::exit(1);
     }
@@ -236,12 +232,12 @@ fn main() {
                 (pod.clone(), "latest".to_string())
             };
 
-            let versions = registry::fetch_versions(&name).unwrap_or_else(|e| {
+            let versions = tooling::registry::fetch_versions(&name).unwrap_or_else(|e| {
                 eprintln!("error: {}", e);
                 process::exit(1);
             });
 
-            let pkg = registry::resolve_version(&versions, &version_req).unwrap_or_else(|| {
+            let pkg = tooling::registry::resolve_version(&versions, &version_req).unwrap_or_else(|| {
                 eprintln!("error: no matching version for '{}@{}'", name, version_req);
                 process::exit(1);
             });
@@ -249,7 +245,7 @@ fn main() {
             let resolved_version = pkg.vers.clone();
             let pkg = pkg.clone();
 
-            if let Err(e) = pods::download_and_install(&pkg) {
+            if let Err(e) = tooling::pods::download_and_install(&pkg) {
                 eprintln!("error: {}", e);
                 process::exit(1);
             }
@@ -279,7 +275,7 @@ fn main() {
                 println!("No dependencies to install.");
                 return;
             }
-            if let Err(e) = pods::install_all_deps(&config.dependencies) {
+            if let Err(e) = tooling::pods::install_all_deps(&config.dependencies) {
                 eprintln!("error: {}", e);
                 process::exit(1);
             }
@@ -306,11 +302,11 @@ fn main() {
             let mut updated = 0;
             for name in &targets {
                 let current = config.dependencies[name].clone();
-                let versions = registry::fetch_versions(name).unwrap_or_else(|e| {
+                let versions = tooling::registry::fetch_versions(name).unwrap_or_else(|e| {
                     eprintln!("error: {}", e);
                     process::exit(1);
                 });
-                let latest = match registry::resolve_version(&versions, "latest") {
+                let latest = match tooling::registry::resolve_version(&versions, "latest") {
                     Some(v) => v.clone(),
                     None => {
                         eprintln!("warning: no available version for '{}'", name);
@@ -321,7 +317,7 @@ fn main() {
                     println!("  {} already at {}", name, current);
                     continue;
                 }
-                if let Err(e) = pods::download_and_install(&latest) {
+                if let Err(e) = tooling::pods::download_and_install(&latest) {
                     eprintln!("error: {}", e);
                     process::exit(1);
                 }
@@ -340,7 +336,7 @@ fn main() {
 
         Commands::Publish => {
             let config = load_config();
-            if let Err(e) = publish::publish(&config.pod.name, &config.pod.version) {
+            if let Err(e) = tooling::publish::publish(&config.pod.name, &config.pod.version) {
                 eprintln!("error: {}", e);
                 process::exit(1);
             }
@@ -358,7 +354,7 @@ fn main() {
         }
 
         Commands::Upgrade => {
-            if let Err(e) = upgrade::upgrade() {
+            if let Err(e) = tooling::upgrade::upgrade() {
                 eprintln!("error: {}", e);
                 process::exit(1);
             }

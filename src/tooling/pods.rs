@@ -1,4 +1,4 @@
-use crate::registry::{self, PodVersion};
+use crate::tooling::registry::{self, PodVersion};
 use std::collections::HashMap;
 use std::fs;
 use std::io::Read;

@@ -11,7 +11,10 @@ use pipeline::run_pipeline;
 use std::{collections::HashSet, fs, path::Path, process};
 
 pub fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: bool, emit_mir: bool) {
-    let out = run_pipeline(filename);
+    let out = match run_pipeline(filename) {
+        Ok(o) => o,
+        Err(_) => std::process::exit(1),
+    };
 
     if emit_ast {
         println!("{:#?}", out.program);
@@ -54,7 +57,10 @@ pub fn compile_and_run(filename: &str, run: bool, show_time: bool, emit_ast: boo
 }
 
 pub fn compile_and_emit(filename: &str, output: &str, show_time: bool) {
-    let out = run_pipeline(filename);
+    let out = match run_pipeline(filename) {
+        Ok(o) => o,
+        Err(_) => std::process::exit(1),
+    };
 
     let cg_start = std::time::Instant::now();
     let mut codegen =
@@ -139,7 +145,10 @@ pub fn compile_and_run_aot(filename: &str, show_time: bool) {
 }
 
 pub fn compile_and_test(filename: &str, _show_time: bool) {
-    let out = run_pipeline(filename);
+    let out = match run_pipeline(filename) {
+        Ok(o) => o,
+        Err(_) => std::process::exit(1),
+    };
 
     let mut codegen =
         CraneliftCodegen::new_jit(out.functions, out.struct_fields.clone(), &out.native_libs);

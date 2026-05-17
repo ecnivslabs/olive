@@ -5,6 +5,9 @@ mod setup;
 mod tests;
 mod translate;
 mod translate_rvalue;
+mod translate_call;
+mod translate_binop;
+mod translate_aggregate;
 
 use crate::mir::{Local, MirFunction};
 use cranelift::prelude::*;

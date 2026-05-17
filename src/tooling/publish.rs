@@ -1,4 +1,4 @@
-use crate::registry::PodVersion;
+use crate::tooling::registry::PodVersion;
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use serde_json::{Value, json};
 use std::fs;

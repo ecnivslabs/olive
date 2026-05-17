@@ -1,3 +1,17 @@
+pub mod python_lifecycle;
+pub mod python_error;
+pub mod python_noop;
+pub mod python_compat;
+pub mod python_coerce;
+pub mod python_call;
+
+pub use python_lifecycle::*;
+pub use python_error::*;
+pub use python_noop::*;
+pub use python_compat::*;
+pub use python_coerce::*;
+pub use python_call::*;
+
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_double, c_int, c_long, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -72,145 +86,26 @@ static mut PY_BYTES_AS_STRING: unsafe extern "C" fn(PyObject) -> *const c_char =
     noop_bytes_as_string;
 static mut PY_BYTES_SIZE: unsafe extern "C" fn(PyObject) -> isize = noop_bytes_size;
 
-unsafe extern "C" fn noop_set_add(_: PyObject, _: PyObject) -> c_int {
-    -1
-}
-unsafe extern "C" fn noop_bytes_from_string(_: *const u8, _: isize) -> PyObject {
-    std::ptr::null_mut()
-}
-unsafe extern "C" fn noop_bytes_as_string(_: PyObject) -> *const c_char {
-    std::ptr::null()
-}
-unsafe extern "C" fn noop_bytes_size(_: PyObject) -> isize {
-    0
-}
+pub static mut PY_BOOL_TYPE: PyObject = std::ptr::null_mut();
+pub static mut PY_LONG_TYPE: PyObject = std::ptr::null_mut();
+pub static mut PY_FLOAT_TYPE: PyObject = std::ptr::null_mut();
+pub static mut PY_UNICODE_TYPE: PyObject = std::ptr::null_mut();
+pub static mut PY_LIST_TYPE: PyObject = std::ptr::null_mut();
+pub static mut PY_DICT_TYPE: PyObject = std::ptr::null_mut();
+pub static mut PY_SET_TYPE: PyObject = std::ptr::null_mut();
+pub static mut PY_BYTES_TYPE: PyObject = std::ptr::null_mut();
 
-static mut PY_BOOL_TYPE: PyObject = std::ptr::null_mut();
-static mut PY_LONG_TYPE: PyObject = std::ptr::null_mut();
-static mut PY_FLOAT_TYPE: PyObject = std::ptr::null_mut();
-static mut PY_UNICODE_TYPE: PyObject = std::ptr::null_mut();
-static mut PY_LIST_TYPE: PyObject = std::ptr::null_mut();
-static mut PY_DICT_TYPE: PyObject = std::ptr::null_mut();
-static mut PY_SET_TYPE: PyObject = std::ptr::null_mut();
-static mut PY_BYTES_TYPE: PyObject = std::ptr::null_mut();
+pub static mut _PY_NONE_STRUCT: *mut c_void = std::ptr::null_mut();
+pub static mut PY_ERR_PRINT: unsafe extern "C" fn() = noop_err_print;
 
-static mut _PY_NONE_STRUCT: *mut c_void = std::ptr::null_mut();
-static mut PY_ERR_PRINT: unsafe extern "C" fn() = noop_err_print;
+pub static mut PY_TYPE_IS_SUBTYPE: unsafe extern "C" fn(PyObject, PyObject) -> c_int = noop_is_subtype;
+pub static mut PY_EVAL_SAVE_THREAD: unsafe extern "C" fn() -> *mut c_void = noop_save_thread;
+pub static mut PY_EVAL_RESTORE_THREAD: unsafe extern "C" fn(*mut c_void) = noop_restore_thread;
+pub static mut PY_EVAL_INIT_THREADS: unsafe extern "C" fn() = noop_initialize;
 
-static mut PY_TYPE_IS_SUBTYPE: unsafe extern "C" fn(PyObject, PyObject) -> c_int = noop_is_subtype;
-static mut PY_EVAL_SAVE_THREAD: unsafe extern "C" fn() -> *mut c_void = noop_save_thread;
-static mut PY_EVAL_RESTORE_THREAD: unsafe extern "C" fn(*mut c_void) = noop_restore_thread;
-static mut PY_EVAL_INIT_THREADS: unsafe extern "C" fn() = noop_initialize;
+pub static mut MAIN_THREAD_STATE: *mut c_void = std::ptr::null_mut();
 
-static mut MAIN_THREAD_STATE: *mut c_void = std::ptr::null_mut();
-
-static mut PY_SYS_GET_OBJECT: unsafe extern "C" fn(*const c_char) -> PyObject = noop_import;
-
-
-unsafe extern "C" fn noop_is_subtype(_: PyObject, _: PyObject) -> c_int {
-    0
-}
-unsafe extern "C" fn noop_dict_setitem_del(_: PyObject, _: PyObject) -> c_int {
-    -1
-}
-unsafe extern "C" fn noop_setitem(_: PyObject, _: PyObject, _: PyObject) -> c_int {
-    -1
-}
-unsafe extern "C" fn noop_save_thread() -> *mut c_void {
-    std::ptr::null_mut()
-}
-unsafe extern "C" fn noop_restore_thread(_: *mut c_void) {}
-unsafe extern "C" fn noop_err_print() {}
-unsafe extern "C" fn noop_initialize() {}
-unsafe extern "C" fn noop_finalize() {}
-unsafe extern "C" fn noop_import(_: *const c_char) -> PyObject {
-    std::ptr::null_mut()
-}
-unsafe extern "C" fn noop_getattr(_: PyObject, _: *const c_char) -> PyObject {
-    std::ptr::null_mut()
-}
-unsafe extern "C" fn noop_setattr(_: PyObject, _: *const c_char, _: PyObject) -> c_int {
-    -1
-}
-unsafe extern "C" fn noop_run_simple_string(_: *const c_char) -> c_int {
-    -1
-}
-unsafe extern "C" fn noop_call(_: PyObject, _: PyObject) -> PyObject {
-    std::ptr::null_mut()
-}
-unsafe extern "C" fn noop_call_1(_: PyObject) -> PyObject {
-    std::ptr::null_mut()
-}
-unsafe extern "C" fn noop_call_kw(_: PyObject, _: PyObject, _: PyObject) -> PyObject {
-    std::ptr::null_mut()
-}
-unsafe extern "C" fn noop_decref(_: PyObject) {}
-unsafe extern "C" fn noop_incref(_: PyObject) {}
-unsafe extern "C" fn noop_as_long(_: PyObject) -> c_long {
-    0
-}
-unsafe extern "C" fn noop_as_double(_: PyObject) -> c_double {
-    0.0
-}
-unsafe extern "C" fn noop_as_utf8(_: PyObject) -> *const c_char {
-    b"\0".as_ptr() as _
-}
-unsafe extern "C" fn noop_from_long(_: c_long) -> PyObject {
-    std::ptr::null_mut()
-}
-unsafe extern "C" fn noop_from_double(_: c_double) -> PyObject {
-    std::ptr::null_mut()
-}
-unsafe extern "C" fn noop_from_string(_: *const c_char) -> PyObject {
-    std::ptr::null_mut()
-}
-unsafe extern "C" fn noop_list_new(_: isize) -> PyObject {
-    std::ptr::null_mut()
-}
-unsafe extern "C" fn noop_list_setitem(_: PyObject, _: isize, _: PyObject) -> c_int {
-    -1
-}
-unsafe extern "C" fn noop_getitem(_: PyObject, _: PyObject) -> PyObject {
-    std::ptr::null_mut()
-}
-unsafe extern "C" fn noop_length(_: PyObject) -> isize {
-    0
-}
-unsafe extern "C" fn noop_gil_ensure() -> c_int {
-    0
-}
-unsafe extern "C" fn noop_gil_release(_: c_int) {}
-unsafe extern "C" fn noop_tuple_new(_: isize) -> PyObject {
-    std::ptr::null_mut()
-}
-unsafe extern "C" fn noop_tuple_setitem(_: PyObject, _: isize, _: PyObject) -> c_int {
-    -1
-}
-unsafe extern "C" fn noop_dict_new() -> PyObject {
-    std::ptr::null_mut()
-}
-unsafe extern "C" fn noop_dict_setitemstring(_: PyObject, _: *const c_char, _: PyObject) -> c_int {
-    -1
-}
-unsafe extern "C" fn noop_err_fetch(_: *mut PyObject, _: *mut PyObject, _: *mut PyObject) {}
-
-#[cfg(target_os = "windows")]
-unsafe extern "system" {
-    fn LoadLibraryA(lpLibFileName: *const u8) -> *mut c_void;
-    fn GetProcAddress(hModule: *mut c_void, lpProcName: *const u8) -> *mut c_void;
-}
-
-unsafe fn compat_dlopen(name: &str) -> *mut c_void { unsafe {
-    let cname = CString::new(name).unwrap();
-    #[cfg(target_os = "windows")]
-    {
-        LoadLibraryA(cname.as_ptr() as *const u8)
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        libc::dlopen(cname.as_ptr(), libc::RTLD_NOW | libc::RTLD_GLOBAL)
-    }
-}}
+pub static mut PY_SYS_GET_OBJECT: unsafe extern "C" fn(*const c_char) -> PyObject = noop_import;
 
 unsafe fn compat_dlsym<T>(handle: *mut c_void, name: &str) -> T { unsafe {
     let cname = CString::new(name).unwrap();
@@ -221,227 +116,6 @@ unsafe fn compat_dlsym<T>(handle: *mut c_void, name: &str) -> T { unsafe {
     std::mem::transmute_copy(&sym)
 }}
 
-fn find_libpython_via_cmd(cmd: &str) -> Option<String> {
-    let py_script = r#"
-import sysconfig, os, sys
-def find():
-    ld = sysconfig.get_config_var('LDLIBRARY') or sysconfig.get_config_var('DLLLIBRARY')
-    if not ld: return ''
-    bases = []
-    for var in ['LIBDIR', 'prefix', 'exec_prefix']:
-        val = sysconfig.get_config_var(var)
-        if val: bases.append(val)
-    for attr in ['base_prefix', 'base_exec_prefix', 'prefix', 'exec_prefix']:
-        val = getattr(sys, attr, None)
-        if val: bases.append(val)
-    seen = set()
-    unique_bases = [b for b in bases if not (b in seen or seen.add(b))]
-    for base in unique_bases:
-        for sub in ['', 'lib', 'bin', 'libs']:
-            path = os.path.join(base, sub, ld)
-            if os.path.exists(path) and os.path.isfile(path):
-                return os.path.abspath(path)
-    return ld
-print(find())
-"#;
-    let output = std::process::Command::new(cmd)
-        .args(&["-c", py_script])
-        .output()
-        .ok()?;
-    if output.status.success() {
-        let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !s.is_empty() {
-            return Some(s);
-        }
-    }
-    None
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_py_initialize() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| unsafe {
-        let mut handle = std::ptr::null_mut();
-
-        if let Ok(env_path) = std::env::var("PYTHON_LIBRARY") {
-            handle = compat_dlopen(&env_path);
-        }
-
-        if handle.is_null() {
-            if let Some(path) = find_libpython_via_cmd("python3") {
-                handle = compat_dlopen(&path);
-            }
-        }
-
-        if handle.is_null() {
-            if let Some(path) = find_libpython_via_cmd("python") {
-                handle = compat_dlopen(&path);
-            }
-        }
-
-        if handle.is_null() {
-            #[cfg(target_os = "windows")]
-            {
-                for name in &[
-                    "python3.dll", "python312.dll", "python311.dll", 
-                    "python310.dll", "python39.dll"
-                ] {
-                    handle = compat_dlopen(name);
-                    if !handle.is_null() { break; }
-                }
-            }
-            #[cfg(target_os = "macos")]
-            {
-                for name in &[
-                    "libpython3.dylib", "libpython3.12.dylib", "libpython3.11.dylib", 
-                    "libpython3.10.dylib", "libpython3.9.dylib",
-                    "/opt/homebrew/lib/libpython3.11.dylib", "/opt/homebrew/lib/libpython3.12.dylib"
-                ] {
-                    handle = compat_dlopen(name);
-                    if !handle.is_null() { break; }
-                }
-            }
-            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-            {
-                for name in &[
-                    "libpython3.so", "libpython3.12.so", "libpython3.11.so", 
-                    "libpython3.10.so", "libpython3.9.so"
-                ] {
-                    handle = compat_dlopen(name);
-                    if !handle.is_null() { break; }
-                }
-            }
-        }
-
-        if handle.is_null() {
-            eprintln!("Warning: could not load libpython3. Python interop will not work.");
-            return;
-        }
-        LIBPYTHON = handle;
-
-        PY_INITIALIZE = compat_dlsym(handle, "Py_Initialize");
-        PY_FINALIZE = compat_dlsym(handle, "Py_Finalize");
-        PY_IMPORT_IMPORT_MODULE = compat_dlsym(handle, "PyImport_ImportModule");
-        PY_OBJECT_GET_ATTR_STRING = compat_dlsym(handle, "PyObject_GetAttrString");
-        PY_OBJECT_SET_ATTR_STRING = compat_dlsym(handle, "PyObject_SetAttrString");
-        PY_OBJECT_CALL_OBJECT = compat_dlsym(handle, "PyObject_CallObject");
-        PY_OBJECT_CALL = compat_dlsym(handle, "PyObject_Call");
-        PY_DEC_REF = compat_dlsym(handle, "Py_DecRef");
-        PY_INC_REF = compat_dlsym(handle, "Py_IncRef");
-        PY_LONG_AS_LONG = compat_dlsym(handle, "PyLong_AsLong");
-        PY_FLOAT_AS_DOUBLE = compat_dlsym(handle, "PyFloat_AsDouble");
-        PY_UNICODE_AS_UTF8 = compat_dlsym(handle, "PyUnicode_AsUTF8");
-        PY_LONG_FROM_LONG = compat_dlsym(handle, "PyLong_FromLong");
-        PY_FLOAT_FROM_DOUBLE = compat_dlsym(handle, "PyFloat_FromDouble");
-        PY_UNICODE_FROM_STRING = compat_dlsym(handle, "PyUnicode_FromString");
-        PY_LIST_NEW = compat_dlsym(handle, "PyList_New");
-        PY_OBJECT_SET_ITEM = compat_dlsym(handle, "PyObject_SetItem");
-        PY_OBJECT_DEL_ITEM = compat_dlsym(handle, "PyObject_DelItem");
-        PY_OBJECT_LENGTH = compat_dlsym(handle, "PyObject_Length");
-        PY_GILSTATE_ENSURE = compat_dlsym(handle, "PyGILState_Ensure");
-        PY_GILSTATE_RELEASE = compat_dlsym(handle, "PyGILState_Release");
-        PY_TUPLE_NEW = compat_dlsym(handle, "PyTuple_New");
-        PY_TUPLE_SET_ITEM = compat_dlsym(handle, "PyTuple_SetItem");
-        PY_DICT_NEW = compat_dlsym(handle, "PyDict_New");
-        PY_DICT_SET_ITEM_STRING = compat_dlsym(handle, "PyDict_SetItemString");
-        PY_SET_NEW = compat_dlsym(handle, "PySet_New");
-        PY_SET_ADD = compat_dlsym(handle, "PySet_Add");
-        PY_BYTES_FROM_STRING_AND_SIZE = compat_dlsym(handle, "PyBytes_FromStringAndSize");
-        PY_SEQUENCE_LIST = compat_dlsym(handle, "PySequence_List");
-        PY_BYTES_AS_STRING = compat_dlsym(handle, "PyBytes_AsString");
-        PY_BYTES_SIZE = compat_dlsym(handle, "PyBytes_Size");
-        PY_DICT_KEYS = compat_dlsym(handle, "PyDict_Keys");
-        PY_OBJECT_TYPE = compat_dlsym(handle, "PyObject_Type");
-        PY_OBJECT_STR = compat_dlsym(handle, "PyObject_Str");
-        PY_ERR_OCCURRED = compat_dlsym(handle, "PyErr_Occurred");
-        PY_ERR_FETCH = compat_dlsym(handle, "PyErr_Fetch");
-        PY_ERR_NORMALIZE_EXCEPTION = compat_dlsym(handle, "PyErr_NormalizeException");
-        PY_ERR_CLEAR = compat_dlsym(handle, "PyErr_Clear");
-        PY_ERR_PRINT = compat_dlsym(handle, "PyErr_Print");
-        PY_RUN_SIMPLE_STRING = compat_dlsym(handle, "PyRun_SimpleString");
-
-        PY_BOOL_TYPE = compat_dlsym(handle, "PyBool_Type");
-        PY_LONG_TYPE = compat_dlsym(handle, "PyLong_Type");
-        PY_FLOAT_TYPE = compat_dlsym(handle, "PyFloat_Type");
-        PY_UNICODE_TYPE = compat_dlsym(handle, "PyUnicode_Type");
-        PY_LIST_TYPE = compat_dlsym(handle, "PyList_Type");
-        PY_DICT_TYPE = compat_dlsym(handle, "PyDict_Type");
-        PY_SET_TYPE = compat_dlsym(handle, "PySet_Type");
-        PY_BYTES_TYPE = compat_dlsym(handle, "PyBytes_Type");
-        PY_TYPE_IS_SUBTYPE = compat_dlsym(handle, "PyType_IsSubtype");
-        PY_EVAL_SAVE_THREAD = compat_dlsym(handle, "PyEval_SaveThread");
-        PY_EVAL_RESTORE_THREAD = compat_dlsym(handle, "PyEval_RestoreThread");
-        PY_EVAL_INIT_THREADS = compat_dlsym(handle, "PyEval_InitThreads");
-        PY_SYS_GET_OBJECT = compat_dlsym(handle, "PySys_GetObject");
-
-        _PY_NONE_STRUCT = compat_dlsym(handle, "_Py_NoneStruct");
-
-        PY_INITIALIZE();
-
-        let init_ptr: *const () = std::mem::transmute(PY_EVAL_INIT_THREADS);
-        if !init_ptr.is_null() && init_ptr != (noop_initialize as *const ()) {
-            PY_EVAL_INIT_THREADS();
-        }
-
-        // Verify Python major version is 3. Python 2 shares the same ABI symbols
-        // but has incompatible semantics — catch it early.
-        {
-            let ver_obj = PY_SYS_GET_OBJECT(b"version_info\0".as_ptr() as *const c_char);
-            if !ver_obj.is_null() {
-                let major_key = CString::new("major").unwrap();
-                let major_attr = PY_OBJECT_GET_ATTR_STRING(ver_obj, major_key.as_ptr());
-                if !major_attr.is_null() {
-                    let major = PY_LONG_AS_LONG(major_attr) as i64;
-                    PY_DEC_REF(major_attr);
-                    if major < 3 {
-                        eprintln!(
-                            "Warning: Python {major} detected — Python interop requires Python 3. \
-                             Olive Python interop will not function correctly."
-                        );
-                    }
-                }
-            }
-        }
-
-        crate::python_proxy::setup_native_proxies(handle, compat_dlsym);
-
-        let save_ptr: *const () = std::mem::transmute(PY_EVAL_SAVE_THREAD);
-        if !save_ptr.is_null() && save_ptr != (noop_save_thread as *const ()) {
-            MAIN_THREAD_STATE = PY_EVAL_SAVE_THREAD();
-        }
-        INITIALIZED.store(true, Ordering::SeqCst);
-    });
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_py_finalize() {
-    unsafe {
-        if INITIALIZED.load(Ordering::SeqCst) {
-            let restore_ptr: *const () = std::mem::transmute(PY_EVAL_RESTORE_THREAD);
-            if !restore_ptr.is_null()
-                && restore_ptr != (noop_restore_thread as *const ())
-                && !MAIN_THREAD_STATE.is_null()
-            {
-                PY_EVAL_RESTORE_THREAD(MAIN_THREAD_STATE);
-                MAIN_THREAD_STATE = std::ptr::null_mut();
-            } else {
-                let _gil = PY_GILSTATE_ENSURE();
-            }
-            PY_FINALIZE();
-            INITIALIZED.store(false, Ordering::SeqCst);
-        }
-    }
-}
-
-
-
-pub(crate) fn is_readable_ptr(ptr: *const c_void) -> bool {
-    crate::is_active_object(ptr as i64)
-}
-
-/// Called from ctypes proxy `_check_alive`. Returns 1 if `ptr` still points to
-/// a live Olive object, 0 if it has been freed. This prevents use-after-free
-/// when Python holds a proxy to an Olive list/dict that was subsequently freed.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_is_valid_proxy(ptr: i64) -> i64 {
     if crate::is_active_object(ptr) { 1 } else { 0 }
@@ -451,87 +125,6 @@ pub extern "C" fn olive_py_is_valid_proxy(ptr: i64) -> i64 {
 /// normalises it, formats it via `traceback.format_exception`, and returns the
 /// resulting string. Clears the Python error state on exit.
 /// SAFETY: must be called with the GIL held.
-unsafe fn fetch_py_traceback() -> String { unsafe {
-    if PY_ERR_OCCURRED().is_null() {
-        return String::new();
-    }
-    let mut ptype = std::ptr::null_mut();
-    let mut pvalue = std::ptr::null_mut();
-    let mut ptraceback = std::ptr::null_mut();
-    PY_ERR_FETCH(&mut ptype, &mut pvalue, &mut ptraceback);
-    PY_ERR_NORMALIZE_EXCEPTION(&mut ptype, &mut pvalue, &mut ptraceback);
-
-    let mut tb_msg = String::new();
-
-    if !ptraceback.is_null() {
-        let tb_mod = PY_IMPORT_IMPORT_MODULE(b"traceback\0".as_ptr() as *const c_char);
-        if !tb_mod.is_null() {
-            let fmt_func =
-                PY_OBJECT_GET_ATTR_STRING(tb_mod, b"format_exception\0".as_ptr() as *const c_char);
-            if !fmt_func.is_null() {
-                let py_args = PY_TUPLE_NEW(3);
-                PY_TUPLE_SET_ITEM(py_args, 0, ptype);
-                PY_TUPLE_SET_ITEM(py_args, 1, pvalue);
-                PY_TUPLE_SET_ITEM(py_args, 2, ptraceback);
-                ptype = std::ptr::null_mut();
-                pvalue = std::ptr::null_mut();
-                ptraceback = std::ptr::null_mut();
-                PY_ERR_CLEAR();
-                let py_list = PY_OBJECT_CALL_OBJECT(fmt_func, py_args);
-                if !py_list.is_null() {
-                    let len = PY_OBJECT_LENGTH(py_list) as usize;
-                    for i in 0..len {
-                        let idx_obj = PY_LONG_FROM_LONG(i as c_long);
-                        let py_item = PY_OBJECT_GET_ITEM(py_list, idx_obj);
-                        if !py_item.is_null() {
-                            let s = PY_UNICODE_AS_UTF8(py_item);
-                            if !s.is_null() {
-                                tb_msg.push_str(&CStr::from_ptr(s).to_string_lossy());
-                            }
-                            PY_DEC_REF(py_item);
-                        }
-                        PY_DEC_REF(idx_obj);
-                    }
-                    PY_DEC_REF(py_list);
-                }
-                PY_DEC_REF(py_args);
-                PY_DEC_REF(fmt_func);
-            }
-            PY_DEC_REF(tb_mod);
-        }
-    }
-
-    if tb_msg.is_empty() {
-        let mut err_msg = "Unknown Python Exception".to_string();
-        if !pvalue.is_null() {
-            let str_obj = PY_OBJECT_STR(pvalue);
-            if !str_obj.is_null() {
-                let utf8_ptr = PY_UNICODE_AS_UTF8(str_obj);
-                if !utf8_ptr.is_null() {
-                    err_msg = CStr::from_ptr(utf8_ptr).to_string_lossy().into_owned();
-                }
-                PY_DEC_REF(str_obj);
-            }
-        }
-        tb_msg = format!("Python Exception: {}", err_msg);
-    }
-
-    PY_ERR_CLEAR();
-    if !ptype.is_null() { PY_DEC_REF(ptype); }
-    if !pvalue.is_null() { PY_DEC_REF(pvalue); }
-    if !ptraceback.is_null() { PY_DEC_REF(ptraceback); }
-    tb_msg
-}}
-
-unsafe fn handle_py_error() { unsafe {
-    let tb_msg = fetch_py_traceback();
-    if tb_msg.is_empty() {
-        return;
-    }
-    let ptr = crate::olive_str_internal(&tb_msg);
-    crate::olive_panic(ptr);
-}}
-
 fn is_python_available() -> bool {
     if !INITIALIZED.load(Ordering::Relaxed) {
         olive_py_initialize();
@@ -674,95 +267,6 @@ pub extern "C" fn olive_py_from_float_bits(val: i64) -> PyObject {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn olive_py_call(func: PyObject, args_list: i64) -> PyObject {
-    check_python_loaded();
-    let unwrapped_func = unsafe { olive_py_unwrap(func) };
-    if unwrapped_func.is_null() {
-        return std::ptr::null_mut();
-    }
-    unsafe {
-        let gil = PY_GILSTATE_ENSURE();
-
-        let mut py_args = std::ptr::null_mut();
-        if args_list != 0 {
-            let sv = &*(args_list as *const crate::StableVec);
-            py_args = PY_TUPLE_NEW(sv.len as isize);
-            for i in 0..sv.len {
-                let v = *sv.ptr.add(i);
-                let py_v = olive_to_py(v);
-                PY_TUPLE_SET_ITEM(py_args, i as isize, py_v);
-            }
-        }
-
-        let res = PY_OBJECT_CALL_OBJECT(unwrapped_func, py_args);
-        if res.is_null() {
-            handle_py_error();
-        }
-        if !py_args.is_null() {
-            PY_DEC_REF(py_args);
-        }
-        PY_GILSTATE_RELEASE(gil);
-        olive_py_wrap_owned(res)
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_py_call_kw(func: PyObject, args_list: i64, kwargs_dict: i64) -> PyObject {
-    check_python_loaded();
-    let unwrapped_func = unsafe { olive_py_unwrap(func) };
-    if unwrapped_func.is_null() {
-        return std::ptr::null_mut();
-    }
-    unsafe {
-        let gil = PY_GILSTATE_ENSURE();
-
-        let py_args = if args_list != 0 {
-            let sv = &*(args_list as *const crate::StableVec);
-            let args = PY_TUPLE_NEW(sv.len as isize);
-            for i in 0..sv.len {
-                let v = *sv.ptr.add(i);
-                let py_v = olive_to_py(v);
-                PY_TUPLE_SET_ITEM(args, i as isize, py_v);
-            }
-            args
-        } else {
-            PY_TUPLE_NEW(0)
-        };
-
-        let mut py_kwargs = std::ptr::null_mut();
-        if kwargs_dict != 0 {
-            let sv = &*(kwargs_dict as *const crate::StableVec);
-            py_kwargs = PY_DICT_NEW();
-            for i in (0..sv.len).step_by(2) {
-                let k_ptr = *sv.ptr.add(i);
-                let v = *sv.ptr.add(i + 1);
-
-                let k_str = crate::olive_str_from_ptr(k_ptr);
-                let k_cstr = CString::new(k_str).unwrap();
-                let py_v = olive_to_py(v);
-
-                PY_DICT_SET_ITEM_STRING(py_kwargs, k_cstr.as_ptr(), py_v);
-            }
-        }
-
-        let res = PY_OBJECT_CALL(unwrapped_func, py_args, py_kwargs);
-        if res.is_null() {
-            handle_py_error();
-        }
-
-        if !py_args.is_null() {
-            PY_DEC_REF(py_args);
-        }
-        if !py_kwargs.is_null() {
-            PY_DEC_REF(py_kwargs);
-        }
-
-        PY_GILSTATE_RELEASE(gil);
-        olive_py_wrap_owned(res)
-    }
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn olive_py_decref(obj: PyObject) {
     if !obj.is_null() {
         crate::unregister_object(obj as i64);
@@ -833,41 +337,6 @@ pub extern "C" fn olive_py_to_str(obj: PyObject) -> i64 {
         };
         PY_GILSTATE_RELEASE(gil);
         res
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_py_from_int(v: i64) -> PyObject {
-    check_python_loaded();
-    unsafe {
-        let gil = PY_GILSTATE_ENSURE();
-        let r = PY_LONG_FROM_LONG(v as c_long);
-        PY_GILSTATE_RELEASE(gil);
-        olive_py_wrap_owned(r)
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_py_from_float(v: f64) -> PyObject {
-    check_python_loaded();
-    unsafe {
-        let gil = PY_GILSTATE_ENSURE();
-        let r = PY_FLOAT_FROM_DOUBLE(v as c_double);
-        PY_GILSTATE_RELEASE(gil);
-        olive_py_wrap_owned(r)
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_py_from_str(s: i64) -> PyObject {
-    check_python_loaded();
-    let r_str = crate::olive_str_from_ptr(s);
-    let c = CString::new(r_str).unwrap();
-    unsafe {
-        let gil = PY_GILSTATE_ENSURE();
-        let r = PY_UNICODE_FROM_STRING(c.as_ptr());
-        PY_GILSTATE_RELEASE(gil);
-        olive_py_wrap_owned(r)
     }
 }
 
@@ -1215,49 +684,6 @@ pub extern "C" fn olive_dict_keys_ffi(obj_ptr: i64) -> i64 {
         list_ptr
     }
 }
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_py_conv_to_py(val: i64) -> PyObject {
-    check_python_loaded();
-    unsafe {
-        let gil = PY_GILSTATE_ENSURE();
-        let r = olive_to_py(val);
-        PY_GILSTATE_RELEASE(gil);
-        r
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_py_conv_to_olive(py_val: PyObject) -> i64 {
-    check_python_loaded();
-    unsafe {
-        let gil = PY_GILSTATE_ENSURE();
-        let r = py_to_olive_internal(py_val);
-        PY_GILSTATE_RELEASE(gil);
-        r
-    }
-}
-
-unsafe fn olive_py_create_list_proxy(ptr: i64) -> PyObject { unsafe {
-    let obj = crate::python_proxy::PY_TYPE_GENERIC_ALLOC(crate::python_proxy::OLIVE_LIST_PROXY_TYPE, 0);
-    if !obj.is_null() {
-        (*(obj as *mut crate::python_proxy::NativeProxy)).ptr = ptr;
-    }
-    obj
-}}
-
-unsafe fn olive_py_create_dict_proxy(ptr: i64) -> PyObject { unsafe {
-    let obj = crate::python_proxy::PY_TYPE_GENERIC_ALLOC(crate::python_proxy::OLIVE_DICT_PROXY_TYPE, 0);
-    if !obj.is_null() {
-        (*(obj as *mut crate::python_proxy::NativeProxy)).ptr = ptr;
-    }
-    obj
-}}
-
-unsafe fn catch_py_exception_msg() -> Option<String> { unsafe {
-    let msg = fetch_py_traceback();
-    if msg.is_empty() { None } else { Some(msg) }
-}}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_import_safe(name: i64) -> i64 {
