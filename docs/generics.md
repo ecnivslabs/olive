@@ -1,6 +1,6 @@
 # Generics
 
-Generics allow the creation of code that is flexible and reusable across different types without sacrificing type safety or performance. Instead of writing separate functions for `int`, `str`, and custom structs, a single generic function can be used instead.
+Generics enable code reuse across multiple data types while maintaining compile-time type safety. The compiler monomorphizes generic definitions, generating specialized machine instructions for each concrete type to ensure zero-cost runtime performance.
 
 ## Type Parameters
 

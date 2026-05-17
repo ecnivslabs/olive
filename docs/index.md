@@ -1,6 +1,6 @@
 # Olive Documentation
 
-Welcome! This is the official guide to the Olive general-purpose systems language. Whether you're a seasoned systems programmer or just getting started, you'll find everything you need here.
+This is the technical reference and user guide for the Olive systems programming language.
 
 ## Where to Start?
 
@@ -22,6 +22,7 @@ Welcome! This is the official guide to the Olive general-purpose systems languag
 
 - [**Modules**](modules.md): Organizing your code and using the standard library.
 - [**Native Interop (FFI)**](ffi.md): Calling C/C++ code and using `unsafe` blocks.
+- [**Python Interoperability**](python.md): High-performance zero-copy Python integration.
 - [**Optimizations**](optimizations.md): How code is optimized for performance.
 - [**Compiler Internals**](internals.md): A look under the hood at how Olive works.
 

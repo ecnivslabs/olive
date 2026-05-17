@@ -1,10 +1,10 @@
 # Native Interop (FFI)
 
-Olive is designed to be a "good citizen" in the systems ecosystem. It can interface with libraries written in C, C++, or Rust, provided they expose a C-compatible ABI. This allows for the high-performance reuse of existing systems code within the Olive environment.
+Olive interfaces directly with external libraries written in C, C++, or Rust, provided they expose a C-compatible ABI. This allows you to call native shared libraries with zero runtime overhead.
 
 ## Native Imports
 
-The `import` statement can load shared libraries (`.so`, `.dll`, or `.dylib`) and define their interface directly in Olive.
+Use the `import` statement to load shared libraries (`.so`, `.dll`, or `.dylib`) and declare their signatures:
 
 ```python
 import "libc.so.6" as libc:
@@ -13,15 +13,15 @@ import "libc.so.6" as libc:
     fn free(ptr: *void)
 ```
 
-Within a native import block, the signatures of the functions to be used are described. Olive handles the data conversion behind the scenes.
+Olive matches the declared signatures to direct foreign function calls at compile-time.
 
 ### C-Strings (`cstr`)
 
-Since Olive strings are UTF-8 and C strings are null-terminated byte arrays, Olive provides the `cstr` type for FFI. The compiler automatically converts Olive strings to `cstr` when passing them to native functions.
+Olive strings are UTF-8 sequences. To interface with null-terminated C strings, use the `cstr` type. The compiler handles the null-termination conversions automatically when passing Olive string literals or variables to a parameter typed as `cstr`.
 
 ## Structs and Unions
 
-You can define the layout of native structs and unions within the import block. This ensures that Olive and the native library agree on how data is structured in memory.
+Define the layout of native structs and unions inside the import block to match the C memory layouts:
 
 ```python
 import "libgit2.so" as git:
@@ -37,7 +37,7 @@ import "libgit2.so" as git:
 
 ### Bitfields
 
-For low-level C structs that use bitfields, you can specify the bit width using the `@` symbol:
+Specify low-level C struct bitfield widths using the `@` symbol:
 
 ```python
 struct Flags:
@@ -48,7 +48,7 @@ struct Flags:
 
 ## Calling Conventions
 
-By default, Olive uses the standard C calling convention. If you need to use a specific convention (common on Windows), you can use directives:
+The standard C calling convention is the default. If you need to specify a different calling convention (common on Windows), apply convention directives:
 
 ```python
 import "user32.dll" as win:
@@ -56,11 +56,11 @@ import "user32.dll" as win:
     fn MessageBoxA(hWnd: *void, text: cstr, caption: cstr, type: int) -> int
 ```
 
-Supported conventions include `@cdecl`, `@stdcall`, and `@fastcall`.
+Supported annotations include `@cdecl`, `@stdcall`, and `@fastcall`.
 
-## The `unsafe` Block
+## Unsafe Blocks
 
-Interacting with native libraries often involves pointers and manual memory management, which the Olive borrow checker cannot validate. To perform these operations, you must use an `unsafe:` block.
+Because the borrow checker cannot analyze memory safety across FFI boundaries or raw pointer access, FFI calls and pointer dereferences must occur inside an `unsafe:` block.
 
 ```python
 import "libc.so.6" as libc:
@@ -70,17 +70,14 @@ import "libc.so.6" as libc:
 fn allocate_example():
     unsafe:
         let ptr = libc.malloc(1024)
-        # ... do something with raw memory ...
+        # Raw pointer operations
         libc.free(ptr)
 ```
 
-The `unsafe` block tells the compiler (and other developers) that you are taking responsibility for memory safety within that scope. It's best practice to keep `unsafe` blocks as small as possible and wrap them in safe Olive functions.
+Keep `unsafe` scopes minimal and encapsulate pointer operations inside safe public interfaces.
 
 ## Pointers vs References
 
-In regular Olive code, you use **references** (`&T` and `&mut T`), which are tracked and validated by the borrow checker. 
+* **References** (`&T` and `&mut T`): Safe, tracked, and validated by the compiler.
+* **Raw Pointers** (`*T` and `*void`): Unchecked addresses. These can only be dereferenced inside `unsafe` blocks.
 
-In FFI, you often deal with **raw pointers** (`*T` or `*void`). These are not checked by the compiler and can only be used inside `unsafe` blocks.
-
-- `&T`: Safe, checked reference.
-- `*T`: Unsafe, unchecked raw pointer.

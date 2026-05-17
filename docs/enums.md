@@ -1,6 +1,6 @@
 # Enums and Pattern Matching
 
-Sometimes data can be one of several different things. In Olive, `enums` are used for this. They are ideal for representing a set of options, such as the status of a web request or different types of messages.
+Enums (enumerations) represent data that can be one of several distinct variants. Variants can be simple flags or carry structured associated values.
 
 ## Defining Enums
 
@@ -66,7 +66,7 @@ fn log_status(status: int):
 
 Here, `code` matches any value and makes it available as a variable inside that branch.
 
-Enums and `match` work well together because the compiler knows all possible variants. If you forget to handle one, the compiler can catch it before the code runs.
+The compiler enforces exhaustive pattern matching. Failing to match a variant triggers a compile-time error.
 
 ## Union Types and Discrimination
 
@@ -114,4 +114,4 @@ match find_item(1):
     None: print("Not found")
 ```
 
-The `Option` and `Result` enums are so useful that they are built into the language, but you can define your own generic enums whenever you need a type that can hold a variety of different types.
+The `Option` and `Result` enums are built into the prelude, but you can define custom generic enums for arbitrary multi-type scenarios.

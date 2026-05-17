@@ -1,26 +1,26 @@
-# Basic Syntax and Types
+# Syntax and Basic Types
 
-Olive's syntax is clean and structured. It's statically typed, but the compiler is smart enough to infer most types for you.
+Olive is statically typed with a clean, indentation-based syntax. Type annotations are optional in most cases because the compiler infers them.
 
 ## Variables and Mutability
 
-You declare variables with `let`. By default, variables are **immutable**; once a value is assigned, it cannot be changed. This simplifies reasoning about the program's state.
+Declare variables using the `let` keyword. Variables are immutable by default:
 
 ```python
 let name = "Olive"
-# name = "New Name"  <-- This would be an error
+# name = "New Name"  # Compile-time error
 ```
 
-To allow a variable to change, use `let mut`:
+To define a mutable variable, use `let mut`:
 
 ```python
 let mut count = 0
-count = 1  # This is fine!
+count = 1
 ```
 
 ### Constants
 
-For values that are known at compile-time and never change, use `const`. These are often optimized away entirely by the compiler.
+Use `const` for values that must be evaluated at compile-time:
 
 ```python
 const MAX_RETRIES = 5
@@ -30,26 +30,26 @@ const MAX_RETRIES = 5
 
 ### Primitive Types
 
-- `int`: Whole numbers (64-bit by default).
-- `float`: Double-precision floating point numbers.
-- `str`: UTF-8 encoded text.
-- `bool`: `True` or `False`.
-- `None`: Represents the absence of a value.
+* `int`: 64-bit signed integer.
+* `float`: 64-bit floating-point number.
+* `str`: UTF-8 encoded string.
+* `bool`: Boolean (`True` or `False`).
+* `None`: Represents the absence of a value.
 
 ### Union Types
 
-Sometimes a value could be one of several types. You can represent this using the pipe (`|`) symbol:
+You can allow a variable or parameter to accept one of multiple specified types using a union (`|`):
 
 ```python
 let mut result: int | str = 10
-result = "Error"  # This is valid because result can be an int or a str
+result = "Error"
 ```
 
-Union types are particularly powerful when combined with pattern matching.
+Union types are commonly resolved using pattern matching.
 
-### String Formatting (F-Strings)
+### String Formatting
 
-F-strings are the preferred way to build strings from variables. Just prefix the string with `f`:
+Format strings by prefixing them with `f` and enclosing expressions in curly braces:
 
 ```python
 let name = "Olive"
@@ -57,13 +57,11 @@ let version = 1.0
 print(f"Welcome to {name} v{version:.2f}")
 ```
 
-You can even include basic expressions inside the braces.
-
 ## Collections
 
 ### Lists
 
-Ordered, growable sequences of a single type.
+Ordered, growable sequences of a single type:
 
 ```python
 let mut numbers = [1, 2, 3]
@@ -73,7 +71,7 @@ let first = numbers[0]
 
 ### Dictionaries
 
-Key-value pairs for fast lookups.
+Hash-map key-value collections:
 
 ```python
 let scores = {"Alice": 95, "Bob": 88}
@@ -82,24 +80,33 @@ print(scores["Alice"])
 
 ### Tuples
 
-Fixed-size groups of potentially different types.
+Fixed-size, heterogeneous collections:
 
 ```python
 let pair: (int, str) = (1, "Active")
-let (id, status) = pair  # Destructuring
+let (id, status) = pair  # Destructuring assignment
 ```
 
 ## Control Flow
 
 ### If Statements
 
-{{ ... }}
+Conditional branches use `if`, `elif`, and `else`:
+
+```python
+if score >= 90:
+    print("A")
+elif score >= 80:
+    print("B")
+else:
+    print("C")
+```
 
 ### Loops
 
 #### For Loops
 
-Used to iterate over collections or ranges.
+Iterate over collections, iterators, or ranges:
 
 ```python
 for item in ["apple", "banana", "cherry"]:
@@ -120,17 +127,18 @@ while i < 5:
 
 ## Comprehensions
 
-A concise way to create new collections from existing ones:
+Generate lists or dictionaries from iterables:
 
 ```python
 let numbers = [1, 2, 3, 4]
-let squares = [x * x for x in numbers if x % 2 == 0]  # [4, 16]
+let squares = [x * x for x in numbers if x % 2 == 0]  # Evaluates to [4, 16]
 ```
 
 ## Built-in Functions
 
-- `print(...)`: Outputs values to the console.
-- `len(obj)`: Returns the length of a collection.
-- `type(obj)`: Returns the type of the value as a string.
-- `range(stop)` / `range(start, stop)`: Generates a sequence of integers.
-- `assert(condition, message)`: Stops the program if the condition is false.
+* `print(...)`: Writes output to standard out.
+* `len(obj)`: Returns the number of elements in a collection.
+* `type(obj)`: Returns the type name as a string.
+* `range(stop)` / `range(start, stop)`: Generates an integer range iterator.
+* `assert(condition, message)`: Aborts execution with a message if the condition is false.
+

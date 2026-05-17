@@ -1,6 +1,6 @@
 # Traits
 
-A **trait** is a set of rules that a type can choose to follow. Think of it as a contract: if a type implements a trait, it's promising to provide certain functions. This lets you write generic code that can work with any type, as long as it follows the rules.
+A **trait** defines shared interface behavior that types can implement. It functions as a compile-time contract: any type implementing a trait must provide implementations for its declared methods. This allows writing generic functions constrained by specific trait bounds.
 
 ## Defining a Trait
 
@@ -65,9 +65,9 @@ impl Logger for SimpleApp:
     pass
 ```
 
-## Shared Behavior
+## Polymorphism and Shared Behavior
 
-By using traits, you can write functions that accept any type that implements a specific trait. This is the key to writing flexible and reusable Olive code.
+Traits allow functions to accept any type that satisfies a specific interface, enabling polymorphic dispatch:
 
 ```python
 fn render_all(items: [Drawable]):

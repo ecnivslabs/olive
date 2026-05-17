@@ -1,6 +1,6 @@
 # Structs and Objects
 
-Structs are the primary way to define custom data structures in Olive. They enable the grouping of related data and the definition of behavior that operates on that data.
+Structs define custom, compound data structures in Olive. They group related fields and declare implementation methods.
 
 ## Defining a Struct
 
@@ -63,7 +63,7 @@ let str_box = Box("item")  # T is str
 
 ## Composition
 
-Olive encourages composition over inheritance. To reuse the data or behavior of another struct, it can be included as a field.
+Olive uses composition rather than object-oriented inheritance. Structs can nest other structs to reuse fields or behavior.
 
 ```python
 struct Admin:

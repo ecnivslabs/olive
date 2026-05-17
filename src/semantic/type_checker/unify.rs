@@ -14,11 +14,6 @@ impl TypeChecker {
         }
 
         match (&t1, &t2) {
-            (Type::Any, _) | (_, Type::Any) => {}
-            (Type::Never, _) | (_, Type::Never) => {}
-
-            (Type::Ptr(a), Type::Ptr(b)) => self.unify(a, b, span),
-
             (Type::Var(id), other) | (other, Type::Var(id)) => {
                 if self.occurs_check(*id, other) {
                     self.errors.push(SemanticError::Custom {
@@ -29,6 +24,11 @@ impl TypeChecker {
                     self.substitutions.insert(*id, other.clone());
                 }
             }
+
+            (Type::Any, _) | (_, Type::Any) => {}
+            (Type::Never, _) | (_, Type::Never) => {}
+
+            (Type::Ptr(a), Type::Ptr(b)) => self.unify(a, b, span),
 
             (Type::List(a), Type::List(b)) => self.unify(a, b, span),
             (Type::Set(a), Type::Set(b)) => self.unify(a, b, span),

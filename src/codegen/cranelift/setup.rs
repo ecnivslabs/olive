@@ -165,6 +165,8 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_py_none", &sig_void_i64),
             ("__olive_py_initialize", &sig_void_i64),
             ("__olive_py_finalize", &sig_void_i64),
+            ("__olive_py_from_float_bits", &sig_i64_i64),
+            ("__olive_py_is_valid_proxy", &sig_i64_i64),
             ("__olive_py_setattr", &sig_3i64_i64),
             ("__olive_py_setattr_safe", &sig_3i64_i64),
         ];

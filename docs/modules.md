@@ -37,7 +37,7 @@ import "physics.so" as physics
 let result = physics.compute_gravity(10.0, 5.0)
 ```
 
-Olive will load the library and let you call its functions just like regular Olive code.
+The compiler manages symbol resolution and calling convention compliance.
 
 ## Visibility and Privacy
 
@@ -78,7 +78,7 @@ import utils.network
 
 ## Standard Library
 
-Olive ships with a standard library loaded dynamically at runtime. These modules are available without any additional setup.
+The standard library is resolved dynamically at runtime and exposed via built-in namespaces.
 
 ### `math`
 

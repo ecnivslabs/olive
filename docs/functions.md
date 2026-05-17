@@ -1,10 +1,10 @@
 # Functions
 
-Functions are the primary way to organize logic in Olive. They are first-class, meaning they can be passed as arguments, returned from other functions, and stored in variables.
+Olive functions are first-class values. They can be assigned to variables, passed as arguments, and returned from other functions.
 
 ## Defining Functions
 
-Use the `fn` keyword to define a function. While Olive can often infer types, explicitly provided types make code easier to read and allow errors to be caught earlier.
+Functions are defined using the `fn` keyword. Parameters and return types can be explicitly annotated for clarity and compile-time boundary checks:
 
 ```python
 fn greet(name: str) -> str:

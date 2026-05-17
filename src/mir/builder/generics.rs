@@ -23,6 +23,7 @@ impl<'a> MirBuilder<'a> {
                 "bool" => Type::Bool,
                 "None" => Type::Null,
                 "Never" => Type::Never,
+                "Any" => Type::Any,
                 _ => {
                     if let Some(Type::Enum(e, args)) = self.global_types.get(name) {
                         Type::Enum(e.clone(), args.clone())

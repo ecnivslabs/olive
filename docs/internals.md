@@ -1,6 +1,6 @@
 # Compiler Internals
 
-The Olive compiler (`olivc`) transforms source code into optimized native machine code through a sequence of representations. Each stage is designed to run fast. The target from `pit run` to execution is milliseconds, not seconds.
+The Olive compiler (`olivc`) transforms source code into optimized native machine code through a sequence of representations. The compiler architecture prioritizes low compilation latency; the entire pipeline from invocation to execution typically completes in milliseconds.
 
 ## 1. Lexical Analysis (`lexer/`)
 

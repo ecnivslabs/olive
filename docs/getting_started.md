@@ -1,12 +1,12 @@
 # Getting Started
 
-Welcome! Olive is designed to be easy to pick up and fast to run. Here's how to get everything set up on your machine.
+This guide covers installing Olive and running your first program.
 
 ## Installation
 
 ### Linux and macOS
 
-The easiest way to install Olive is with the install script. It downloads the latest `pit` binary (an all-in-one tool) and adds it to the path.
+Install the `pit` toolchain (the all-in-one compiler and package manager) using the installer script:
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/olive-language/olive/master/install.sh | sh
@@ -14,44 +14,44 @@ curl -sSL https://raw.githubusercontent.com/olive-language/olive/master/install.
 
 ### Windows
 
-Head over to the [releases page](https://github.com/olive-language/olive/releases/latest) and download the `pit-windows-x86_64.exe` binary. Rename it to `pit.exe` and add the folder it's in to your system PATH.
+1. Download `pit-windows-x86_64.exe` from the [releases page](https://github.com/olive-language/olive/releases/latest).
+2. Rename the binary to `pit.exe`.
+3. Add the directory containing the binary to your system `PATH`.
 
-### Verify the Install
+### Verify Installation
 
-Open a new terminal and run:
+Verify that the toolchain is accessible from your shell:
 
 ```bash
 pit --version
 ```
 
-If you see a version number, you're ready to go!
+## Creating a Project
 
-## Your First Project
-
-`pit` is used to manage everything from creating projects to running tests. To start a new project, run:
+`pit` manages project creation, compilation, testing, and dependency resolution. To scaffold a new project:
 
 ```bash
 pit new my_app
 cd my_app
 ```
 
-This creates a simple project structure for you:
-- `src/main.liv`: Where your code lives.
-- `pit.toml`: Your project's configuration and dependencies.
+This generates a minimal project structure:
+- `src/main.liv`: The primary source file.
+- `pit.toml`: The project configuration and dependency manifest.
 
-## Running Your Code
+## Running the Code
 
-To run your program, just type:
+To compile and run your application:
 
 ```bash
 pit run
 ```
 
-Olive is designed for speed. The first time you run a project, it compiles your code and caches it. The second time you run it, it starts almost instantly.
+The compiler builds your source code, caching the intermediate build artifacts. Subsequent runs load the cached executable, starting instantly.
 
 ## Hello, World!
 
-Open `src/main.liv` in your favorite editor. You'll see a simple hello world:
+Open `src/main.liv`. It contains a basic entry point:
 
 ```python
 fn main():
@@ -60,31 +60,30 @@ fn main():
 main()
 ```
 
-Try changing the message and running `pit run` again.
+Modify the string and execute `pit run` to see the changes.
 
-## The Interactive Shell
+## Interactive Shell (REPL)
 
-If you just want to test a quick snippet of code without creating a project, use the interactive shell:
+To evaluate expressions or test snippets without creating a project:
 
 ```bash
 pit shell
 ```
 
-It's a great way to explore the language and the standard library.
+## Upgrading the Toolchain
 
-## Updating Olive
-
-Olive is constantly being improved. To get the latest features and bug fixes, run:
+To update to the latest compiler and standard library release:
 
 ```bash
 pit upgrade
 ```
 
-## Pods (Package Management)
+## Package Management (Pods)
 
-Olive uses "pods" for dependencies. You can add them to your project easily:
+Olive packages are called **pods**. You declare them in your project manifest:
 
-- `pit add pod_name`: Adds a dependency to your `pit.toml`.
-- `pit install`: Downloads all dependencies listed in your `pit.toml`.
+* `pit add pod_name`: Adds the specified pod to `pit.toml`.
+* `pit install`: Downloads and installs all dependencies.
 
-All your dependencies are stored locally in the `.pit_pods/` folder, keeping your project self-contained.
+All dependencies are resolved and stored in the local `.pit_pods/` directory, ensuring builds are self-contained.
+

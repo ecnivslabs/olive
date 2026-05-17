@@ -1,37 +1,35 @@
 # Ownership and Memory Safety
 
-One of the most powerful features of Olive is how it handles memory. Usually, you have to choose: you either manage memory yourself (which is fast but error-prone) or use a garbage collector (which is safe but adds overhead).
+Olive manages memory using a compile-time tracking system called **Ownership**. Instead of using a garbage collector or requiring manual deallocation, the compiler tracks when data is no longer needed and drops it automatically. This yields native execution speeds with complete memory safety.
 
-Olive uses a system called **Ownership**. It gives you the speed of manual management with the safety of a garbage collector. The compiler tracks who is using what and automatically cleans up data the moment it's no longer needed.
+## The Rules of Ownership
 
-## The Three Rules
+The compiler strictly enforces three rules:
 
-Ownership follows three simple rules that the compiler enforces strictly:
-
-1. **Every value has a variable called its owner.**
+1. **Every value has a single owner (a variable).**
 2. **There can only be one owner at a time.**
-3. **When the owner goes out of scope, the value is dropped (deleted).**
+3. **When the owner goes out of scope, the value is dropped.**
 
-## Moving Data
+## Moves
 
-When you assign a variable to another, or pass it to a function, the ownership **moves**. The original variable becomes invalid because it no longer "owns" that memory.
+Assigning a variable to another or passing it to a function transfers ownership (a **move**). Once ownership is transferred, the original variable becomes invalid.
 
 ```python
 let list1 = [1, 2, 3]
-let list2 = list1  # list2 now owns the data. list1 is empty/invalid.
+let list2 = list1  # list2 now owns the data. list1 is invalid.
 
-# print(list1)     # This would be a compile-time error!
+# print(list1)     # Compile-time error
 ```
 
-This prevents "double-free" errors because the compiler knows exactly who is responsible for cleaning up the data. Simple types like `int` and `bool` are copied instead of moved because they are cheap to duplicate.
+Moves prevent double-free errors. Simple types like `int` and `bool` implement copy semantics rather than move semantics because they are cheap to duplicate in registers.
 
-## Borrowing
+## Borrowing (References)
 
-If you just need to access some data without taking ownership, you can **borrow** it using the `&` symbol. Think of this as taking a reference to the data.
+To access data without taking ownership, you can **borrow** it using references (`&`):
 
-### Immutable Borrows (`&`)
+### Immutable References (`&`)
 
-You can have as many people reading the data as you want.
+Multiple parts of a program can borrow a resource concurrently for read access.
 
 ```python
 let list = [1, 2, 3]
@@ -41,27 +39,28 @@ let r2 = &list
 print(r1[0])  # OK
 ```
 
-### Mutable Borrows (`&mut`)
+### Mutable References (`&mut`)
 
-If you need to change the data, you can borrow it with `&mut`. However, while a mutable borrow is active, nobody else can access the data, not even for reading. This prevents **data races**, where one part of your code reads data while another is halfway through changing it.
+To modify borrowed data, use `&mut`. To prevent data races and use-after-free bugs, a mutable reference enforces exclusive access. While a mutable reference is active, no other references (immutable or mutable) can exist.
 
 ```python
 let mut list = [1, 2, 3]
 let r = &mut list
 r[0] = 10     # OK
 
-# let r2 = &list # Error: cannot borrow as immutable while mutably borrowed.
+# let r2 = &list # Compile-time error: cannot borrow as immutable while mutably borrowed.
 ```
 
-## The Golden Rule
+### Aliasing Rules
 
-You can have **many readers** OR **one writer**, but never both at the same time.
+You can have **many readers** OR **one writer**, but never both simultaneously.
 
 ## Move Elision
 
-The Olive optimizer is smart enough to see through many moves. If it detects that a value is moved into a function and then immediately returned, it can "elide" the move entirely, passing a pointer instead of copying the data structure. This ensures that Olive's safety features don't come at a performance cost.
+The compiler optimizes unnecessary moves. When a value is moved into a function and immediately returned, the optimizer performs move elision, passing pointers rather than copying data blocks.
 
 ## Lifetimes
 
-You don't have to manually annotate "lifetimes" in Olive. The compiler looks at where you last use a variable to determine when a borrow ends. This allows you to write natural, readable code while the compiler handles the complex safety analysis behind the scenes.
+Olive determines the lifetime of a borrow based on its last actual usage point (Non-Lexical Lifetimes). You do not need to manually write lifetime annotations; the compiler tracks the scopes automatically to verify safety.
+
 

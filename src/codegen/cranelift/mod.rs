@@ -154,6 +154,8 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_py_none", b"olive_py_none\0"),
     ("__olive_py_initialize", b"olive_py_initialize\0"),
     ("__olive_py_finalize", b"olive_py_finalize\0"),
+    ("__olive_py_from_float_bits", b"olive_py_from_float_bits\0"),
+    ("__olive_py_is_valid_proxy", b"olive_py_is_valid_proxy\0"),
 ];
 pub(super) const POLL_PENDING: i64 = i64::MIN;
 

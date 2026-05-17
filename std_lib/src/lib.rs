@@ -284,12 +284,22 @@ pub extern "C" fn olive_int_to_float(val: i64) -> f64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_to_int(ptr: i64) -> i64 {
-    olive_str_from_ptr(ptr).parse::<i64>().unwrap_or(0)
+    let s = olive_str_from_ptr(ptr);
+    s.trim().parse::<i64>().unwrap_or_else(|_| {
+        let msg = olive_str_internal(&format!("int() argument must be an integer, got '{}'", s));
+        olive_panic(msg)
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_to_float(ptr: i64) -> f64 {
-    olive_str_from_ptr(ptr).parse::<f64>().unwrap_or(0.0)
+    let s = olive_str_from_ptr(ptr);
+    s.trim().parse::<f64>().unwrap_or_else(|_| {
+        let msg = olive_str_internal(&format!("float() argument must be a number, got '{}'", s));
+        olive_panic(msg);
+        #[allow(unreachable_code)]
+        0.0
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -1786,3 +1796,4 @@ mod tests {
         assert_eq!(olive_str_char_count(0), 0);
     }
 }
+pub mod python_proxy;

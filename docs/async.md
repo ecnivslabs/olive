@@ -1,40 +1,40 @@
 # Async and Concurrency
 
-Olive is designed for the modern web, where thousands of concurrent tasks are often handled simultaneously. Instead of heavy threads that consume significant memory, Olive uses a lightweight `async` system for writing concurrent code that remains as readable as a standard script.
+Olive uses a lightweight, cooperative concurrency model instead of OS-level threads. This allows you to run thousands of concurrent tasks with minimal memory overhead while using a sequential, highly readable syntax.
 
-## The `async` Function
+## Asynchronous Functions
 
-To make a function asynchronous, just add the `async` keyword. Inside these functions, you can `await` tasks that take time (like network requests or file I/O).
+Declare asynchronous functions with the `async` keyword. Use the `await` keyword within these functions to yield execution during I/O operations (such as network or file access):
 
 ```python
 async fn fetch_user(id: int) -> User:
-    # This pauses the function, but not the program
+    # Yields control back to the executor while the request is in flight
     let raw = await http.get(f"https://api.example.com/users/{id}")
     return User.parse(raw)
 ```
 
-When you call an `async` function, it doesn't run immediately. It returns a **Future** - a promise that the work will happen. The work only begins when you `await` the future.
+Calling an `async` function returns a **Future** (an un-evaluated task definition). Execution only starts when the future is `await`ed or passed to the runtime executor.
 
 ## Async Blocks
 
-Sometimes you want to run a small piece of code asynchronously without defining a whole new function. You can use an `async:` block for this.
+To execute a block of code asynchronously without defining a separate function, use `async:`:
 
 ```python
 fn main():
     let data = [1, 2, 3]
 
-    # This starts a task in the background
+    # Starts task execution concurrently in the background
     async:
         process_data(data)
 
     print("This runs while data is processing!")
 ```
 
-## Running Tasks in Parallel
+## Task Parallelism
 
-### `gather`: All at once
+### Waiting on Multiple Tasks (`gather`)
 
-If you have multiple tasks and want to wait for all of them to finish, use `gather`. It runs them in parallel and returns all their results as a list.
+To execute multiple futures concurrently and block until all have completed, use `gather`:
 
 ```python
 let [site1, site2] = await gather([
@@ -43,17 +43,16 @@ let [site1, site2] = await gather([
 ])
 ```
 
-### `select`: The first to finish
+### Racing Tasks (`select`)
 
-If you're racing multiple tasks and only care about the winner, use `select`. It returns the result of the first task that completes and cancels the others.
+To execute multiple tasks concurrently and resolve as soon as the first one completes (canceling the remaining tasks), use `select`:
 
 ```python
 let winner = await select([task_a(), task_b()])
 ```
 
-## Why it's different
+## Concurrency Runtime Characteristics
 
-- **Zero-Cost Pauses**: Most languages use extra memory to save the "state" of a task when it pauses. Olive's compiler calculates this state at compile-time, making pauses almost free.
-- **True Parallelism**: Olive automatically spreads your tasks across every core of your CPU. You don't have to manage a thread pool; the language handles it for you.
-- **Safety**: The borrow checker applies to async code just like synchronous code. You can't have two tasks changing the same data at once, preventing data races by design.
-
+* **Zero-Overhead State Machines**: Olive's compiler generates structural state machines for async functions at compile-time. This avoids high dynamic heap allocation costs when pausing tasks.
+* **Work-Stealing Executor**: The runtime automatically schedules active tasks across all available CPU cores using a work-stealing thread pool.
+* **Thread Safety**: The compiler's borrow checker enforces ownership rules on references passed across async boundaries, eliminating data races at compile-time.
