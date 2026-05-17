@@ -556,6 +556,15 @@ fn regression_py_coerce_to_str_compiles() {
 }
 
 #[test]
+fn regression_py_coerce_to_bytes_compiles() {
+    // Raw handle used to land in the bytes slot, reaching calls as a corrupted int after inlining.
+    let _cg = compile("fn f(p: PyObject) -> bytes:\n    let b: bytes = p\n    return b\n");
+    let _cg = compile(
+        "fn takes(b: bytes) -> i64:\n    return len(b)\nfn f(p: PyObject) -> i64:\n    return takes(p)\n",
+    );
+}
+
+#[test]
 fn regression_py_coerce_return_and_arg_compiles() {
     let _cg = compile(
         "fn takes(x: f64) -> f64:\n    return x + x\nfn f(p: PyObject) -> f64:\n    return takes(p)\n",

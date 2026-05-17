@@ -40,20 +40,20 @@ impl<'a> MirBuilder<'a> {
         span: Span,
         expr_id: usize,
     ) -> Operand {
-        if let ExprKind::Identifier(name) = &obj.kind {
-            if self.has_native_module_fn(name, attr) {
-                let mangled = format!("{}::{}", name, attr);
-                let func_op = Operand::Constant(Constant::Function(mangled));
-                return self.lower_general_call_path(
-                    callee,
-                    func_op,
-                    arg_ops,
-                    arg_kw_names,
-                    arg_tys,
-                    span,
-                    expr_id,
-                );
-            }
+        if let ExprKind::Identifier(name) = &obj.kind
+            && self.has_native_module_fn(name, attr)
+        {
+            let mangled = format!("{}::{}", name, attr);
+            let func_op = Operand::Constant(Constant::Function(mangled));
+            return self.lower_general_call_path(
+                callee,
+                func_op,
+                arg_ops,
+                arg_kw_names,
+                arg_tys,
+                span,
+                expr_id,
+            );
         }
 
         let obj_ty = self.get_type(obj.id);
@@ -510,6 +510,10 @@ impl<'a> MirBuilder<'a> {
         let runtime = match attr {
             "append" => "__olive_list_append",
             "insert" => "__olive_list_insert",
+            // Heap-element source keeps its elements; target needs independent copies.
+            "extend" if matches!(&recv_ty, Type::List(e) if Self::list_elem_needs_copy(e)) => {
+                "__olive_list_extend_typed"
+            }
             "extend" => "__olive_list_extend",
             "remove" => "__olive_list_remove",
             "pop" => "__olive_list_pop",

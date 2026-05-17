@@ -15,7 +15,7 @@
 
 use crate::boxed::TAG_MASK;
 use crate::format::{
-    D_ANY, D_BACKREF, D_DICT, D_ENUM, D_LIST, D_SET, D_STR, D_STRUCT, D_TUPLE, byte, skip,
+    D_ANY, D_BACKREF, D_BYTES, D_DICT, D_ENUM, D_LIST, D_SET, D_STR, D_STRUCT, D_TUPLE, byte, skip,
 };
 use crate::slab::slot_is_live;
 use crate::{
@@ -42,6 +42,88 @@ pub extern "C" fn olive_copy_typed(val: i64, desc: i64) -> i64 {
     res
 }
 
+/// Concat for heap-element lists; deep-copies elements via `desc` (`[D_LIST, <elem>...]`) so operand drops can't double-free.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_concat_typed(l: i64, r: i64, desc: i64) -> i64 {
+    let read = |v: i64| -> Option<(i64, *const i64, usize)> {
+        if v == 0 || !slot_is_live(v) {
+            return None;
+        }
+        let s = unsafe { &*(v as *const StableVec) };
+        Some((s.kind, s.ptr, s.len))
+    };
+    let ls = read(l);
+    let rs = read(r);
+    if ls.is_none() && rs.is_none() {
+        return 0;
+    }
+    let total = ls.map_or(0, |s| s.2) + rs.map_or(0, |s| s.2);
+    let kind = ls.or(rs).map_or(KIND_LIST, |s| s.0);
+    let new = crate::list::olive_list_new(total as i64);
+    COPY_VISITED.with(|v| v.borrow_mut().clear());
+    let mut out = 0i64;
+    for (_, eptr, elen) in [ls, rs].into_iter().flatten() {
+        for i in 0..elen {
+            let mut pos = 1usize;
+            let c = copy_val(unsafe { *eptr.add(i) }, desc as *const u8, &mut pos);
+            crate::list::olive_list_set(new, out, c);
+            out += 1;
+        }
+    }
+    COPY_VISITED.with(|v| v.borrow_mut().clear());
+    unsafe { (*(new as *mut StableVec)).kind = kind };
+    new
+}
+
+/// Slice for heap-element lists (see `olive_list_concat_typed`); preserves kind so `[Any]` stays self-describing.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_getslice_typed(
+    ptr: i64,
+    start: i64,
+    stop: i64,
+    step: i64,
+    flags: i64,
+    desc: i64,
+) -> i64 {
+    if ptr == 0 || !slot_is_live(ptr) {
+        return crate::list::olive_list_new(0);
+    }
+    let (kind, eptr, elen) = unsafe {
+        let s = &*(ptr as *const StableVec);
+        (s.kind, s.ptr, s.len)
+    };
+    let idxs = crate::list::slice_indices(elen as i64, start, stop, step, flags);
+    let new = crate::list::olive_list_new(idxs.len() as i64);
+    COPY_VISITED.with(|v| v.borrow_mut().clear());
+    for (j, &i) in idxs.iter().enumerate() {
+        let mut pos = 1usize;
+        let c = copy_val(unsafe { *eptr.add(i) }, desc as *const u8, &mut pos);
+        crate::list::olive_list_set(new, j as i64, c);
+    }
+    COPY_VISITED.with(|v| v.borrow_mut().clear());
+    unsafe { (*(new as *mut StableVec)).kind = kind };
+    new
+}
+
+/// Extend for heap-element lists; source keeps its elements, target appends copies.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_extend_typed(target: i64, source: i64, desc: i64) {
+    if target == 0 || source == 0 || !slot_is_live(source) {
+        return;
+    }
+    let (eptr, elen) = unsafe {
+        let s = &*(source as *const StableVec);
+        (s.ptr, s.len)
+    };
+    COPY_VISITED.with(|v| v.borrow_mut().clear());
+    for i in 0..elen {
+        let mut pos = 1usize;
+        let c = copy_val(unsafe { *eptr.add(i) }, desc as *const u8, &mut pos);
+        crate::olive_list_append(target, c);
+    }
+    COPY_VISITED.with(|v| v.borrow_mut().clear());
+}
+
 /// Skips a length-prefixed name; length byte is biased by 13.
 fn skip_lp(desc: *const u8, pos: &mut usize) {
     let len = unsafe { byte(desc, *pos) } as usize - 13;
@@ -62,7 +144,7 @@ fn copy_val(val: i64, desc: *const u8, pos: &mut usize) -> i64 {
     *pos += 1;
     match tag {
         D_STR => copy_str(val),
-        D_ANY => copy_any(val, 0),
+        D_ANY | D_BYTES => copy_any(val, 0),
         D_LIST => copy_list_like(val, desc, pos),
         D_SET => copy_set(val, desc, pos),
         D_TUPLE => copy_tuple(val, desc, pos),
@@ -328,10 +410,10 @@ fn copy_any(val: i64, depth: u32) -> i64 {
             let bytes = unsafe { &*(val as *const crate::bytes::OliveBytes) };
             crate::bytes::new_buf(bytes.as_slice().to_vec())
         }
-        // A Python handle is refcounted; an owning copy is a fresh reference.
+        // Wrap a fresh handle rather than incref in place; that would clobber the kind field (CPython's ob_refcnt slot).
         KIND_PYOBJECT => {
-            unsafe { crate::python::PY_INC_REF(val as *mut std::ffi::c_void) };
-            val
+            let py_ptr = unsafe { (*(val as *const crate::python::OlivePyObject)).py_ptr };
+            unsafe { crate::python::olive_py_wrap_borrowed(py_ptr) as i64 }
         }
         _ => val,
     }
@@ -563,5 +645,89 @@ mod tests {
         olive_free_typed(node1, d);
         assert_eq!(read(unsafe { *((cp + 8) as *const i64) }), "cyclic");
         olive_free_typed(cp, d);
+    }
+
+    #[test]
+    fn concat_typed_survives_operand_free() {
+        let d = desc(&[D_LIST, D_STR]);
+        let a = list_from_vec(vec![s("left0")]);
+        let b = list_from_vec(vec![s("right0"), s("right1")]);
+        let cat = olive_list_concat_typed(a, b, d);
+        olive_free_typed(a, d);
+        olive_free_typed(b, d);
+        assert_eq!(read(olive_list_get(cat, 0)), "left0");
+        assert_eq!(read(olive_list_get(cat, 1)), "right0");
+        assert_eq!(read(olive_list_get(cat, 2)), "right1");
+        olive_free_typed(cat, d);
+    }
+
+    #[test]
+    fn concat_typed_null_side() {
+        let d = desc(&[D_LIST, D_STR]);
+        let b = list_from_vec(vec![s("only")]);
+        let cat = olive_list_concat_typed(0, b, d);
+        olive_free_typed(b, d);
+        assert_eq!(read(olive_list_get(cat, 0)), "only");
+        olive_free_typed(cat, d);
+        assert_eq!(olive_list_concat_typed(0, 0, d), 0);
+    }
+
+    #[test]
+    fn getslice_typed_survives_source_free() {
+        let d = desc(&[D_LIST, D_STR]);
+        let src = list_from_vec(vec![s("a"), s("b"), s("c")]);
+        // [1:] with start flag only
+        let sub = olive_list_getslice_typed(src, 1, 0, 0, 1, d);
+        olive_free_typed(src, d);
+        assert_eq!(read(olive_list_get(sub, 0)), "b");
+        assert_eq!(read(olive_list_get(sub, 1)), "c");
+        olive_free_typed(sub, d);
+    }
+
+    #[test]
+    fn getslice_typed_preserves_kind() {
+        let d = desc(&[D_LIST, D_ANY]);
+        let src = list_from_vec(vec![crate::boxed::olive_box_int(1)]);
+        unsafe { (*(src as *mut StableVec)).kind = KIND_ANY_LIST };
+        let sub = olive_list_getslice_typed(src, 0, 0, 0, 0, d);
+        assert_eq!(unsafe { (*(sub as *const StableVec)).kind }, KIND_ANY_LIST);
+        olive_free_typed(src, d);
+        olive_free_typed(sub, d);
+    }
+
+    #[test]
+    fn extend_typed_survives_source_free() {
+        let d = desc(&[D_LIST, D_STR]);
+        let target = list_from_vec(vec![s("t0")]);
+        let source = list_from_vec(vec![s("s0"), s("s1")]);
+        olive_list_extend_typed(target, source, d);
+        olive_free_typed(source, d);
+        assert_eq!(read(olive_list_get(target, 0)), "t0");
+        assert_eq!(read(olive_list_get(target, 1)), "s0");
+        assert_eq!(read(olive_list_get(target, 2)), "s1");
+        olive_free_typed(target, d);
+    }
+
+    #[test]
+    fn bytes_desc_deep_copies_buffer() {
+        let src = crate::bytes::new_buf(vec![1, 2, 3]);
+        let d = desc(&[D_BYTES]);
+        let cp = olive_copy_typed(src, d);
+        assert_ne!(cp, src, "buffer is a fresh slot");
+        olive_free_typed(src, d);
+        assert_eq!(crate::bytes::olive_buf_len(cp), 3);
+        assert_eq!(crate::bytes::olive_buf_get(cp, 1), 2);
+        olive_free_typed(cp, d);
+    }
+
+    #[test]
+    fn py_handle_copy_keeps_handle_kind_intact() {
+        // Old path ran Py_IncRef on the handle itself, silently rewriting KIND_PYOBJECT.
+        let fake_py = Box::leak(Box::new([0i64; 4])) as *mut _ as *mut std::ffi::c_void;
+        let h = unsafe { crate::python::olive_py_wrap_owned(fake_py) } as i64;
+        let cp = olive_copy_typed(h, desc(&[D_ANY]));
+        assert_eq!(unsafe { *(h as *const i64) }, KIND_PYOBJECT);
+        assert_ne!(cp, h, "copy is a fresh handle");
+        assert_eq!(unsafe { *(cp as *const i64) }, KIND_PYOBJECT);
     }
 }

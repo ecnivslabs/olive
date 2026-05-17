@@ -162,7 +162,7 @@ impl<'a> MirBuilder<'a> {
                 | Type::Bool => Some("__olive_py_from_int"),
                 Type::Float | Type::F32 => Some("__olive_py_from_float"),
                 Type::Str => Some("__olive_py_from_str"),
-                Type::Any => Some("__olive_to_pyobject"),
+                Type::Bytes | Type::Any => Some("__olive_to_pyobject"),
                 _ => None,
             };
             if let Some(conv) = conv {
@@ -190,6 +190,24 @@ impl<'a> MirBuilder<'a> {
                         Rvalue::Call {
                             func: Operand::Constant(Constant::Function(
                                 "__olive_py_to_str".to_string(),
+                            )),
+                            args: vec![op],
+                        },
+                    ),
+                    span,
+                );
+                return Operand::Copy(tmp);
+            }
+            // Python bytes-like values materialize into a native buffer; else raises at call site.
+            if matches!(to_ty, Type::Bytes) {
+                self.emit_py_set_loc(span);
+                let tmp = self.new_local(Type::Bytes, None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        tmp,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(
+                                "__olive_py_to_bytes".to_string(),
                             )),
                             args: vec![op],
                         },

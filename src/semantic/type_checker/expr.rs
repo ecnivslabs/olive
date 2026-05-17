@@ -681,26 +681,24 @@ impl TypeChecker {
                         .get(name)
                         .map(|fns| fns.contains_key(attr))
                         .unwrap_or(false);
-                    if !is_py_stub {
-                        if let Some(ty) = self.lookup_type(&mangled) {
-                            let instantiated = self.instantiate(ty);
-                            if let Type::Fn(params, _, _) = &instantiated
-                                && !params.is_empty()
-                            {
-                                let mut auto_ref_obj = resolved_obj.clone();
-                                if let Type::MutRef(inner) = &params[0] {
-                                    if auto_ref_obj == **inner {
-                                        auto_ref_obj = Type::MutRef(Box::new(auto_ref_obj));
-                                    }
-                                } else if let Type::Ref(inner) = &params[0]
-                                    && auto_ref_obj == **inner
-                                {
-                                    auto_ref_obj = Type::Ref(Box::new(auto_ref_obj));
+                    if !is_py_stub && let Some(ty) = self.lookup_type(&mangled) {
+                        let instantiated = self.instantiate(ty);
+                        if let Type::Fn(params, _, _) = &instantiated
+                            && !params.is_empty()
+                        {
+                            let mut auto_ref_obj = resolved_obj.clone();
+                            if let Type::MutRef(inner) = &params[0] {
+                                if auto_ref_obj == **inner {
+                                    auto_ref_obj = Type::MutRef(Box::new(auto_ref_obj));
                                 }
-                                self.unify(&params[0], &auto_ref_obj, expr.span);
+                            } else if let Type::Ref(inner) = &params[0]
+                                && auto_ref_obj == **inner
+                            {
+                                auto_ref_obj = Type::Ref(Box::new(auto_ref_obj));
                             }
-                            return instantiated;
+                            self.unify(&params[0], &auto_ref_obj, expr.span);
                         }
+                        return instantiated;
                     }
                 }
 

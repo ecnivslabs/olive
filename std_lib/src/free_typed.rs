@@ -13,7 +13,7 @@
 
 use crate::boxed::TAG_MASK;
 use crate::format::{
-    D_ANY, D_BACKREF, D_DICT, D_ENUM, D_LIST, D_SET, D_STR, D_STRUCT, D_TUPLE, byte, skip,
+    D_ANY, D_BACKREF, D_BYTES, D_DICT, D_ENUM, D_LIST, D_SET, D_STR, D_STRUCT, D_TUPLE, byte, skip,
 };
 use crate::slab::slot_is_live;
 use crate::{OliveEnum, OliveHashSet, OliveObj, StableVec};
@@ -36,6 +36,7 @@ fn free_val(val: i64, desc: *const u8, pos: &mut usize) {
     match tag {
         D_ANY => free_any_elem(val),
         D_STR => crate::olive_free_str(val),
+        D_BYTES => crate::bytes::olive_buf_free(val),
         D_LIST => free_list_like(val, desc, pos),
         D_SET => free_set(val, desc, pos),
         D_TUPLE => free_tuple(val, desc, pos),
@@ -99,6 +100,11 @@ fn free_elems(eptr: *const i64, elen: usize, desc: *const u8, inner_start: usize
         D_STR => {
             for i in 0..elen {
                 crate::olive_free_str(unsafe { *eptr.add(i) });
+            }
+        }
+        D_BYTES => {
+            for i in 0..elen {
+                crate::bytes::olive_buf_free(unsafe { *eptr.add(i) });
             }
         }
         D_LIST | D_SET | D_TUPLE | D_DICT | D_STRUCT | D_ENUM => {
@@ -232,7 +238,7 @@ fn free_enum(val: i64, desc: *const u8, pos: &mut usize) {
 fn elem_owns(desc: *const u8, pos: usize) -> bool {
     matches!(
         unsafe { byte(desc, pos) },
-        D_ANY | D_BACKREF | D_LIST | D_SET | D_TUPLE | D_DICT | D_STRUCT | D_ENUM
+        D_ANY | D_BACKREF | D_BYTES | D_LIST | D_SET | D_TUPLE | D_DICT | D_STRUCT | D_ENUM
     )
 }
 

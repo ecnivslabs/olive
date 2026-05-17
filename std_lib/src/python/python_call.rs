@@ -21,6 +21,9 @@ pub extern "C" fn olive_py_call(func: PyObject, args_list: i64) -> PyObject {
                 if py_v.is_null() {
                     py_v = olive_to_py(v);
                 }
+                if py_v.is_null() || !PY_ERR_OCCURRED().is_null() {
+                    handle_py_error();
+                }
                 PY_TUPLE_SET_ITEM(py_args, i as isize, py_v);
             }
         }
@@ -29,6 +32,9 @@ pub extern "C" fn olive_py_call(func: PyObject, args_list: i64) -> PyObject {
 
         if res.is_null() {
             handle_py_error();
+        } else if !PY_ERR_OCCURRED().is_null() {
+            // Some libraries handle exceptions internally yet leave the indicator set.
+            PY_ERR_CLEAR();
         }
 
         if !py_args.is_null() {
@@ -58,6 +64,9 @@ pub extern "C" fn olive_py_call_kw(func: PyObject, args_list: i64, kwargs_dict: 
                 if py_v.is_null() {
                     py_v = olive_to_py(v);
                 }
+                if py_v.is_null() || !PY_ERR_OCCURRED().is_null() {
+                    handle_py_error();
+                }
                 PY_TUPLE_SET_ITEM(args, i as isize, py_v);
             }
             args
@@ -79,14 +88,21 @@ pub extern "C" fn olive_py_call_kw(func: PyObject, args_list: i64, kwargs_dict: 
                 if py_v.is_null() {
                     py_v = olive_to_py(v);
                 }
+                if py_v.is_null() || !PY_ERR_OCCURRED().is_null() {
+                    handle_py_error();
+                }
 
                 PY_DICT_SET_ITEM_STRING(py_kwargs, k_cstr.as_ptr(), py_v);
+                PY_DEC_REF(py_v);
             }
         }
 
         let res = PY_OBJECT_CALL(unwrapped_func, py_args, py_kwargs);
         if res.is_null() {
             handle_py_error();
+        } else if !PY_ERR_OCCURRED().is_null() {
+            // Some libraries handle exceptions internally yet leave the indicator set.
+            PY_ERR_CLEAR();
         }
 
         if !py_args.is_null() {

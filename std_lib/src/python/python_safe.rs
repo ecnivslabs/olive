@@ -2,6 +2,13 @@ use crate::python::*;
 use std::ffi::CString;
 use std::os::raw::c_char;
 
+/// Err result for a failed olive-to-Python argument conversion.
+unsafe fn conversion_err() -> i64 {
+    let msg = unsafe { catch_py_exception_msg() }
+        .unwrap_or_else(|| "argument conversion failed".to_string());
+    crate::result::olive_result_err(crate::olive_str_internal(&msg))
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_import_safe(name: i64) -> i64 {
     if !is_python_available() {
@@ -42,6 +49,13 @@ pub extern "C" fn olive_py_call_safe(func: PyObject, args_list: i64) -> i64 {
             for i in 0..sv.len {
                 let v = *sv.ptr.add(i);
                 let py_v = olive_to_py(v);
+                if py_v.is_null() || !PY_ERR_OCCURRED().is_null() {
+                    if !py_v.is_null() {
+                        PY_DEC_REF(py_v);
+                    }
+                    PY_DEC_REF(py_args);
+                    return conversion_err();
+                }
                 PY_TUPLE_SET_ITEM(py_args, i as isize, py_v);
             }
         }
@@ -90,6 +104,13 @@ pub extern "C" fn olive_py_call_kw_safe(func: PyObject, args_list: i64, kwargs_d
             for i in 0..sv.len {
                 let v = *sv.ptr.add(i);
                 let py_v = olive_to_py(v);
+                if py_v.is_null() || !PY_ERR_OCCURRED().is_null() {
+                    if !py_v.is_null() {
+                        PY_DEC_REF(py_v);
+                    }
+                    PY_DEC_REF(py_args);
+                    return conversion_err();
+                }
                 PY_TUPLE_SET_ITEM(py_args, i as isize, py_v);
             }
         }
@@ -105,6 +126,16 @@ pub extern "C" fn olive_py_call_kw_safe(func: PyObject, args_list: i64, kwargs_d
                 let k_str = crate::olive_str_from_ptr(key);
                 let k_cstr = CString::new(k_str).unwrap();
                 let py_v = olive_to_py(val);
+                if py_v.is_null() || !PY_ERR_OCCURRED().is_null() {
+                    if !py_v.is_null() {
+                        PY_DEC_REF(py_v);
+                    }
+                    if !py_args.is_null() {
+                        PY_DEC_REF(py_args);
+                    }
+                    PY_DEC_REF(py_kwargs);
+                    return conversion_err();
+                }
                 PY_DICT_SET_ITEM_STRING(py_kwargs, k_cstr.as_ptr(), py_v);
                 PY_DEC_REF(py_v);
                 i += 2;
@@ -177,6 +208,12 @@ pub extern "C" fn olive_py_setattr_safe(obj: PyObject, attr: i64, val: i64) -> i
     }
     with_gil(|| unsafe {
         let py_val = olive_to_py(val);
+        if py_val.is_null() || !PY_ERR_OCCURRED().is_null() {
+            if !py_val.is_null() {
+                PY_DEC_REF(py_val);
+            }
+            return conversion_err();
+        }
         let res = PY_OBJECT_SET_ATTR_STRING(unwrapped_obj, (attr & !1) as *const c_char, py_val);
         PY_DEC_REF(py_val);
         if res == -1
@@ -239,4 +276,43 @@ pub extern "C" fn olive_py_setitem_safe(obj: PyObject, key: PyObject, val: PyObj
         }
         crate::result::olive_result_ok(obj as i64)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn call_safe_rejects_bad_utf8_arg_and_clears_error() {
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        let bad = crate::string_slab::str_alloc(&[0xe0]);
+        let args = crate::olive_list_new(0);
+        crate::olive_list_append(args, bad);
+        let func = with_gil(|| unsafe {
+            let builtins = PY_IMPORT_IMPORT_MODULE(b"builtins\0".as_ptr() as *const _);
+            let f = PY_OBJECT_GET_ATTR_STRING(builtins, b"len\0".as_ptr() as *const _);
+            PY_DEC_REF(builtins);
+            olive_py_wrap_owned(f)
+        });
+        let res = olive_py_call_safe(func, args);
+        assert_eq!(
+            crate::result::olive_result_is_err(res),
+            1,
+            "corrupt argument must fail the call"
+        );
+        let msg = crate::olive_str_from_ptr(crate::result::olive_result_err_msg(res));
+        assert!(
+            msg.contains("UnicodeDecodeError") || msg.contains("utf-8"),
+            "error names the decode failure: {msg}"
+        );
+        with_gil(|| unsafe {
+            assert!(
+                PY_ERR_OCCURRED().is_null(),
+                "no exception may stay pending to poison later calls"
+            );
+        });
+    }
 }

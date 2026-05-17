@@ -246,6 +246,32 @@ pub extern "C" fn olive_buf_set(buf: i64, idx: i64, val: i64) {
     }
 }
 
+/// Python-style repr of a byte buffer: printable ASCII inline, rest escaped.
+pub(crate) fn format_bytes(buf: i64) -> String {
+    if buf == 0 || !crate::slab::slot_is_live(buf) {
+        return "b''".to_string();
+    }
+    let b = unsafe { &*(buf as *const OliveBytes) };
+    let mut out = String::with_capacity(b.len as usize + 3);
+    out.push_str("b'");
+    for &c in b.as_slice() {
+        match c {
+            b'\\' => out.push_str("\\\\"),
+            b'\'' => out.push_str("\\'"),
+            b'\t' => out.push_str("\\t"),
+            b'\n' => out.push_str("\\n"),
+            b'\r' => out.push_str("\\r"),
+            0x20..=0x7e => out.push(c as char),
+            _ => {
+                use std::fmt::Write;
+                let _ = write!(out, "\\x{c:02x}");
+            }
+        }
+    }
+    out.push('\'');
+    out
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_buf_to_str(buf: i64) -> i64 {
     if buf == 0 {
