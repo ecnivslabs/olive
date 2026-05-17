@@ -3,21 +3,24 @@ use crate::*;
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_list_new(len: i64) -> i64 {
     let n = len as usize;
-    let total = 4 + n; // StableVec header = 4 × i64; data follows
-    let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(total * 8, 8) };
-    let raw = unsafe { std::alloc::alloc(layout) as *mut i64 };
-    if raw.is_null() {
-        std::alloc::handle_alloc_error(layout);
-    }
-    let data_ptr = unsafe { raw.add(4) };
+    let mut v = Vec::with_capacity(n);
     unsafe {
-        let s = &mut *(raw as *mut StableVec);
-        s.kind = KIND_LIST;
-        s.ptr = data_ptr;
-        s.cap = n;
-        s.len = n;
+        v.set_len(n);
     }
-    let res = raw as i64;
+    for i in 0..n {
+        v[i] = 0;
+    }
+    let ptr = v.as_mut_ptr();
+    let cap = v.capacity();
+    let len = v.len();
+    std::mem::forget(v);
+
+    let res = Box::into_raw(Box::new(StableVec {
+        kind: KIND_LIST,
+        ptr,
+        cap,
+        len,
+    })) as i64;
     register_object(res);
     res
 }
@@ -73,14 +76,7 @@ pub extern "C" fn olive_list_insert(list_ptr: i64, idx: i64, val: i64) {
     unsafe {
         let s = &mut *(list_ptr as *mut StableVec);
         let idx = idx as usize;
-        let inline_data = (list_ptr as *mut i64).add(4);
-        let mut v = if s.ptr == inline_data {
-            let mut owned = Vec::with_capacity(s.len + 1);
-            owned.extend_from_slice(std::slice::from_raw_parts(s.ptr, s.len));
-            owned
-        } else {
-            Vec::from_raw_parts(s.ptr, s.len, s.cap)
-        };
+        let mut v = Vec::from_raw_parts(s.ptr, s.len, s.cap);
         if idx <= v.len() {
             v.insert(idx, val);
         }
@@ -102,14 +98,7 @@ pub extern "C" fn olive_list_remove(list_ptr: i64, idx: i64) -> i64 {
         if idx >= s.len {
             return 0;
         }
-        let inline_data = (list_ptr as *mut i64).add(4);
-        let mut v = if s.ptr == inline_data {
-            let mut owned = Vec::with_capacity(s.len);
-            owned.extend_from_slice(std::slice::from_raw_parts(s.ptr, s.len));
-            owned
-        } else {
-            Vec::from_raw_parts(s.ptr, s.len, s.cap)
-        };
+        let mut v = Vec::from_raw_parts(s.ptr, s.len, s.cap);
         let val = v.remove(idx);
         s.ptr = v.as_mut_ptr();
         s.cap = v.capacity();
@@ -151,23 +140,15 @@ pub extern "C" fn olive_free_list(ptr: i64) {
     if ptr != 0 {
         unregister_object(ptr);
         unsafe {
-            let s = &*(ptr as *const StableVec);
+            let s = Box::from_raw(ptr as *mut StableVec);
             for i in 0..s.len {
                 let elem = *s.ptr.add(i);
                 if is_active_object(elem) {
                     olive_free_any(elem);
                 }
             }
-            let inline_data = (ptr as *mut i64).add(4);
-            if s.ptr == inline_data {
-                let total = (4 + s.len) * 8;
-                let layout = std::alloc::Layout::from_size_align_unchecked(total, 8);
-                std::alloc::dealloc(ptr as *mut u8, layout);
-            } else {
-                let s = Box::from_raw(ptr as *mut StableVec);
-                if !s.ptr.is_null() {
-                    let _ = Vec::from_raw_parts(s.ptr, s.len, s.cap);
-                }
+            if !s.ptr.is_null() {
+                let _ = Vec::from_raw_parts(s.ptr, s.len, s.cap);
             }
         }
     }

@@ -64,6 +64,17 @@ pub fn olive_str_from_ptr(ptr: i64) -> String {
     }
 }
 
+pub fn olive_str_as_str<'a>(ptr: i64) -> Option<&'a str> {
+    if ptr == 0 {
+        return None;
+    }
+    let p = ptr & !1;
+    unsafe {
+        let c_str = std::ffi::CStr::from_ptr(p as *const std::ffi::c_char);
+        c_str.to_str().ok()
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_trim(s: i64) -> i64 {
     if s == 0 {

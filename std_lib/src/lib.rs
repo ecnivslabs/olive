@@ -56,6 +56,24 @@ const SHARDS: usize = 16;
 static ACTIVE_OBJECTS: OnceLock<[std::sync::RwLock<FxHashSet<i64>>; SHARDS]> = OnceLock::new();
 
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static IS_MULTITHREADED: AtomicBool = AtomicBool::new(false);
+static MAIN_THREAD_ID: OnceLock<std::thread::ThreadId> = OnceLock::new();
+
+#[inline]
+fn check_multithreaded() -> bool {
+    if IS_MULTITHREADED.load(Ordering::Relaxed) {
+        return true;
+    }
+    let main_id = MAIN_THREAD_ID.get_or_init(|| std::thread::current().id());
+    if std::thread::current().id() != *main_id {
+        IS_MULTITHREADED.store(true, Ordering::Relaxed);
+        true
+    } else {
+        false
+    }
+}
 
 thread_local! {
     static LOCAL_ACTIVE_OBJECTS: RefCell<FxHashSet<i64>> = RefCell::new(FxHashSet::default());
@@ -69,17 +87,21 @@ fn get_shard(ptr: i64) -> usize {
 pub fn register_object(ptr: i64) {
     if ptr != 0 {
         LOCAL_ACTIVE_OBJECTS.with(|cache| cache.borrow_mut().insert(ptr));
-        let shards = ACTIVE_OBJECTS
-            .get_or_init(|| std::array::from_fn(|_| std::sync::RwLock::new(FxHashSet::default())));
-        shards[get_shard(ptr)].write().unwrap().insert(ptr);
+        if check_multithreaded() {
+            let shards = ACTIVE_OBJECTS
+                .get_or_init(|| std::array::from_fn(|_| std::sync::RwLock::new(FxHashSet::default())));
+            shards[get_shard(ptr)].write().unwrap().insert(ptr);
+        }
     }
 }
 
 pub fn unregister_object(ptr: i64) {
     if ptr != 0 {
         LOCAL_ACTIVE_OBJECTS.with(|cache| cache.borrow_mut().remove(&ptr));
-        if let Some(shards) = ACTIVE_OBJECTS.get() {
-            shards[get_shard(ptr)].write().unwrap().remove(&ptr);
+        if check_multithreaded() {
+            if let Some(shards) = ACTIVE_OBJECTS.get() {
+                shards[get_shard(ptr)].write().unwrap().remove(&ptr);
+            }
         }
     }
 }
@@ -95,19 +117,27 @@ pub fn is_active_object(ptr: i64) -> bool {
         return true;
     }
 
-    // Slow path: Check global shards (for cross-thread objects)
-    if let Some(shards) = ACTIVE_OBJECTS.get() {
-        shards[get_shard(ptr)].read().unwrap().contains(&ptr)
+    // Slow path: Check global shards (only if multithreaded)
+    if check_multithreaded() {
+        if let Some(shards) = ACTIVE_OBJECTS.get() {
+            shards[get_shard(ptr)].read().unwrap().contains(&ptr)
+        } else {
+            false
+        }
     } else {
         false
     }
 }
 
 pub fn active_objects_count() -> usize {
-    if let Some(shards) = ACTIVE_OBJECTS.get() {
-        shards.iter().map(|shard| shard.read().unwrap().len()).sum()
+    if check_multithreaded() {
+        if let Some(shards) = ACTIVE_OBJECTS.get() {
+            shards.iter().map(|shard| shard.read().unwrap().len()).sum()
+        } else {
+            0
+        }
     } else {
-        0
+        LOCAL_ACTIVE_OBJECTS.with(|cache| cache.borrow().len())
     }
 }
 
@@ -381,14 +411,7 @@ pub extern "C" fn olive_list_append(list_ptr: i64, val: i64) {
     }
     unsafe {
         let s = &mut *(list_ptr as *mut StableVec);
-        let inline_data = (list_ptr as *mut i64).add(4);
-        let mut v = if s.ptr == inline_data {
-            let mut owned = Vec::with_capacity(s.len + 1);
-            owned.extend_from_slice(std::slice::from_raw_parts(s.ptr, s.len));
-            owned
-        } else {
-            Vec::from_raw_parts(s.ptr, s.len, s.cap)
-        };
+        let mut v = Vec::from_raw_parts(s.ptr, s.len, s.cap);
         v.push(val);
         s.ptr = v.as_mut_ptr();
         s.cap = v.capacity();

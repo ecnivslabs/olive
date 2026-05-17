@@ -15,9 +15,14 @@ pub extern "C" fn olive_obj_set(obj_ptr: i64, attr: i64, val: i64) -> i64 {
     if obj_ptr == 0 || attr == 0 {
         return obj_ptr;
     }
-    let attr_str = olive_str_from_ptr(attr);
     let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
-    m.fields.insert(attr_str, val);
+    if let Some(attr_str) = olive_str_as_str(attr) {
+        if let Some(val_ref) = m.fields.get_mut(attr_str) {
+            *val_ref = val;
+        } else {
+            m.fields.insert(attr_str.to_string(), val);
+        }
+    }
     obj_ptr
 }
 
@@ -26,9 +31,12 @@ pub extern "C" fn olive_obj_get(obj_ptr: i64, attr: i64) -> i64 {
     if obj_ptr == 0 || attr == 0 {
         return 0;
     }
-    let attr_str = olive_str_from_ptr(attr);
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
-    *m.fields.get(&attr_str).unwrap_or(&0)
+    if let Some(attr_str) = olive_str_as_str(attr) {
+        *m.fields.get(attr_str).unwrap_or(&0)
+    } else {
+        0
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -36,9 +44,12 @@ pub extern "C" fn olive_obj_remove(obj_ptr: i64, attr: i64) -> i64 {
     if obj_ptr == 0 || attr == 0 {
         return 0;
     }
-    let attr_str = olive_str_from_ptr(attr);
     let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
-    m.fields.remove(&attr_str).unwrap_or(0)
+    if let Some(attr_str) = olive_str_as_str(attr) {
+        m.fields.remove(attr_str).unwrap_or(0)
+    } else {
+        0
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -47,8 +58,12 @@ pub extern "C" fn olive_in_obj(key: i64, obj_ptr: i64) -> i64 {
         return 0;
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
-    if m.fields.contains_key(&olive_str_from_ptr(key)) {
-        1
+    if let Some(key_str) = olive_str_as_str(key) {
+        if m.fields.contains_key(key_str) {
+            1
+        } else {
+            0
+        }
     } else {
         0
     }
