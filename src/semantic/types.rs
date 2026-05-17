@@ -32,6 +32,7 @@ pub enum Type {
     Never,
     Vector(Box<Type>, usize),
     Future(Box<Type>),
+    PyObject,
 }
 
 impl Type {
@@ -147,6 +148,7 @@ impl fmt::Display for Type {
             Type::Never => write!(f, "Never"),
             Type::Vector(t, w) => write!(f, "{}x{}", t, w),
             Type::Future(t) => write!(f, "Future[{}]", t),
+            Type::PyObject => write!(f, "PyObject"),
         }
     }
 }

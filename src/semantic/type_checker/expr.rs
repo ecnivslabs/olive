@@ -112,6 +112,20 @@ impl TypeChecker {
             ExprKind::Call { callee, args } => {
                 let callee_ty = self.check_expr(callee);
                 let applied = self.apply_subst(callee_ty.clone());
+
+                // PyObject calls: dynamic, all args accepted, result is PyObject
+                if applied == Type::PyObject {
+                    for arg in args {
+                        self.check_expr(match arg {
+                            CallArg::Positional(e)
+                            | CallArg::Keyword(_, e)
+                            | CallArg::Splat(e)
+                            | CallArg::KwSplat(e) => e,
+                        });
+                    }
+                    return Type::PyObject;
+                }
+
                 let resolved_callee = self.instantiate(applied);
                 self.expr_types.insert(callee.id, resolved_callee.clone());
 
@@ -281,6 +295,7 @@ impl TypeChecker {
                         self.unify(&Type::Int, &idx_ty, expr.span);
                         Type::Str
                     }
+                    Type::PyObject => Type::PyObject,
                     _ => self.fresh_var(),
                 }
             }
@@ -288,6 +303,11 @@ impl TypeChecker {
             ExprKind::Attr { obj, attr } => {
                 let obj_ty = self.check_expr(obj);
                 let resolved_obj = self.apply_subst(obj_ty);
+
+                // PyObject attr access — dynamic, always returns PyObject
+                if resolved_obj == Type::PyObject {
+                    return Type::PyObject;
+                }
 
                 if let ExprKind::Identifier(name) = &obj.kind {
                     let mangled = format!("{}::{}", name, attr);

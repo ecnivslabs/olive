@@ -434,6 +434,7 @@ impl<M: Module> CraneliftCodegen<M> {
                     OliveType::Enum(_, _) => "__olive_free_enum",
                     OliveType::Any => "__olive_free_any",
                     OliveType::Union(_) => "__olive_free_any",
+                    OliveType::PyObject => "__olive_py_decref",
                     _ => "__olive_free",
                 };
 

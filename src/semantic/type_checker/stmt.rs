@@ -466,6 +466,10 @@ impl TypeChecker {
             | StmtKind::Import { .. }
             | StmtKind::FromImport { .. } => {}
 
+            StmtKind::PyImport { alias, .. } => {
+                self.define_type(alias, Type::PyObject, false);
+            }
+
             StmtKind::Enum {
                 name,
                 type_params,

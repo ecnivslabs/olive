@@ -29,6 +29,7 @@ pub mod sys;
 pub mod uuid;
 pub mod websocket;
 pub mod yaml;
+pub mod python;
 
 pub(crate) const KIND_LIST: i64 = 1;
 pub(crate) const KIND_OBJ: i64 = 2;

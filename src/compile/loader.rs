@@ -159,6 +159,10 @@ pub fn load_and_parse(
             parser::StmtKind::NativeImport { .. } => {
                 all_stmts.push(stmt.clone());
             }
+            parser::StmtKind::PyImport { .. } => {
+                // Python imports are resolved at runtime via the C API, not at compile time.
+                all_stmts.push(stmt.clone());
+            }
             parser::StmtKind::FromImport { module, names } => {
                 let mod_name = module.join("/");
                 let mut mod_path = parent_dir.join(format!("{}.liv", mod_name));

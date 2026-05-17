@@ -11,6 +11,7 @@ pub enum SymbolKind {
     LoopVar,
     Import,
     NativeImport,
+    PyImport,
 }
 
 #[derive(Debug, Clone)]

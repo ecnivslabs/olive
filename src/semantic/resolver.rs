@@ -303,6 +303,10 @@ impl Resolver {
                 }
             }
 
+            StmtKind::PyImport { alias, .. } => {
+                self.define_sym(alias, SymbolKind::PyImport, stmt.span);
+            }
+
             StmtKind::ExprStmt(expr) => self.resolve_expr(expr),
 
             StmtKind::UnsafeBlock(body) => {
@@ -438,6 +442,9 @@ impl Resolver {
                     && let Some(sym) = self.table.lookup(name)
                 {
                     if sym.kind == SymbolKind::NativeImport {
+                        return;
+                    }
+                    if sym.kind == SymbolKind::PyImport {
                         return;
                     }
                     if sym.kind == SymbolKind::Import {

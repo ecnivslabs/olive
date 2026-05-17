@@ -350,6 +350,25 @@ impl<'a> MirBuilder<'a> {
             | StmtKind::FromImport { .. }
             | StmtKind::NativeImport { .. } => {}
 
+            StmtKind::PyImport { module, alias } => {
+                // import py "module" as alias
+                // → let alias: PyObject = __olive_py_import("module")
+                let module_op = Operand::Constant(Constant::Str(module.clone()));
+                let local = self.declare_var(alias.clone(), Type::PyObject, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        local,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(
+                                "__olive_py_import".to_string(),
+                            )),
+                            args: vec![module_op],
+                        },
+                    ),
+                    stmt.span,
+                );
+            }
+
             StmtKind::UnsafeBlock(body) => {
                 for s in body {
                     self.lower_stmt(s);

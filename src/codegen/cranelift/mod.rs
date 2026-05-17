@@ -119,6 +119,26 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_str_slice", b"olive_str_slice\0"),
     ("__olive_list_concat", b"olive_list_concat\0"),
     ("__olive_ffi_errno", b"olive_ffi_errno\0"),
+    // Python interop
+    ("__olive_py_import", b"olive_py_import\0"),
+    ("__olive_py_getattr", b"olive_py_getattr\0"),
+    ("__olive_py_call", b"olive_py_call\0"),
+    ("__olive_py_call_kw", b"olive_py_call_kw\0"),
+    ("__olive_py_decref", b"olive_py_decref\0"),
+    ("__olive_py_to_int", b"olive_py_to_int\0"),
+    ("__olive_py_to_float", b"olive_py_to_float\0"),
+    ("__olive_py_to_str", b"olive_py_to_str\0"),
+    ("__olive_py_from_int", b"olive_py_from_int\0"),
+    ("__olive_py_from_float", b"olive_py_from_float\0"),
+    ("__olive_py_from_str", b"olive_py_from_str\0"),
+    ("__olive_py_from_list", b"olive_py_from_list\0"),
+    ("__olive_py_getitem", b"olive_py_getitem\0"),
+    ("__olive_py_setitem", b"olive_py_setitem\0"),
+    ("__olive_py_len", b"olive_py_len\0"),
+    ("__olive_py_is_none", b"olive_py_is_none\0"),
+    ("__olive_py_none", b"olive_py_none\0"),
+    ("__olive_py_initialize", b"olive_py_initialize\0"),
+    ("__olive_py_finalize", b"olive_py_finalize\0"),
 ];
 pub(super) const POLL_PENDING: i64 = i64::MIN;
 
@@ -129,6 +149,28 @@ const ASYNC_RUNTIME_SYMS: &[&str] = &[
     "__olive_alloc",
     "__olive_free_future",
     "__olive_sm_poll",
+];
+
+const PY_INTEROP_SYMS: &[&str] = &[
+    "__olive_py_import",
+    "__olive_py_getattr",
+    "__olive_py_call",
+    "__olive_py_call_kw",
+    "__olive_py_decref",
+    "__olive_py_to_int",
+    "__olive_py_to_float",
+    "__olive_py_to_str",
+    "__olive_py_from_int",
+    "__olive_py_from_float",
+    "__olive_py_from_str",
+    "__olive_py_from_list",
+    "__olive_py_getitem",
+    "__olive_py_setitem",
+    "__olive_py_len",
+    "__olive_py_is_none",
+    "__olive_py_none",
+    "__olive_py_initialize",
+    "__olive_py_finalize",
 ];
 
 pub(super) struct SmAwaitPoint {
@@ -415,6 +457,18 @@ impl CraneliftCodegen<JITModule> {
                 }
             }
             libs.push(lib);
+        }
+
+        // If any Python interop functions are needed, load libpython via olive_std shims.
+        // olive_std's python_interop.c uses dlopen("libpython3.so") internally at
+        // olive_py_initialize time, so we only need to register the olive_std symbols here.
+        // The needed set already contains them if __olive_py_* calls were emitted.
+        let has_py_interop = PY_INTEROP_SYMS.iter().any(|s| needed.contains(s));
+        if has_py_interop {
+            // olive_std shims are already loaded above; symbols registered via SYMBOL_MAP.
+            // Nothing extra needed here — all olive_py_* symbols are in SYMBOL_MAP and
+            // will have been registered above when needed.contains() matched.
+            let _ = has_py_interop; // silence unused warning in non-py builds
         }
 
         for (alias, path, ffi_sigs, ffi_structs, ffi_vars) in native_lib_paths {

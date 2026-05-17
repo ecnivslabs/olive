@@ -370,6 +370,17 @@ impl Parser {
     pub(crate) fn parse_import(&mut self) -> ParseResult<Stmt> {
         let start = self.peek().clone();
         self.expect(TokenKind::Import)?;
+        if self.peek().kind == TokenKind::Identifier && self.peek().value == "py"
+            && self.peek_at(1).kind == TokenKind::String
+        {
+            self.advance(); // consume `py`
+            let module = self.advance().value.clone();
+            self.expect(TokenKind::As)?;
+            let alias = self.expect(TokenKind::Identifier)?.value;
+            self.eat_stmt_end()?;
+            let span = self.span_from(&start);
+            return Ok(Stmt::new(StmtKind::PyImport { module, alias }, span));
+        }
         if self.peek().kind == TokenKind::String {
             let path = self.advance().value.clone();
             self.expect(TokenKind::As)?;

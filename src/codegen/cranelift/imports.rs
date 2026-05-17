@@ -39,6 +39,9 @@ pub(super) fn collect_needed_imports(
                                 OliveType::Enum(_, _) => {
                                     needed.insert("__olive_free_enum");
                                 }
+                                OliveType::PyObject => {
+                                    needed.insert("__olive_py_decref");
+                                }
                                 _ => {
                                     needed.insert("__olive_free");
                                 }
@@ -480,6 +483,26 @@ pub(super) fn resolve_builtin_import(
             "__olive_pool_size" => Some("__olive_pool_size"),
             "__olive_pool_run" => Some("__olive_pool_run"),
             "__olive_pool_run_sync" => Some("__olive_pool_run_sync"),
+            // Python interop
+            "__olive_py_import" => Some("__olive_py_import"),
+            "__olive_py_getattr" => Some("__olive_py_getattr"),
+            "__olive_py_call" => Some("__olive_py_call"),
+            "__olive_py_call_kw" => Some("__olive_py_call_kw"),
+            "__olive_py_decref" => Some("__olive_py_decref"),
+            "__olive_py_to_int" => Some("__olive_py_to_int"),
+            "__olive_py_to_float" => Some("__olive_py_to_float"),
+            "__olive_py_to_str" => Some("__olive_py_to_str"),
+            "__olive_py_from_int" => Some("__olive_py_from_int"),
+            "__olive_py_from_float" => Some("__olive_py_from_float"),
+            "__olive_py_from_str" => Some("__olive_py_from_str"),
+            "__olive_py_from_list" => Some("__olive_py_from_list"),
+            "__olive_py_getitem" => Some("__olive_py_getitem"),
+            "__olive_py_setitem" => Some("__olive_py_setitem"),
+            "__olive_py_len" => Some("__olive_py_len"),
+            "__olive_py_is_none" => Some("__olive_py_is_none"),
+            "__olive_py_none" => Some("__olive_py_none"),
+            "__olive_py_initialize" => Some("__olive_py_initialize"),
+            "__olive_py_finalize" => Some("__olive_py_finalize"),
             _ => None,
         };
     }

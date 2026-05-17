@@ -139,6 +139,26 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_free_c_struct", &sig_i64_i64_void),
             ("__olive_vararg_call", &sig_i64_5_i64),
             ("__olive_ffi_errno", &sig_void_i64),
+            // Python interop
+            ("__olive_py_import", &sig_i64_i64),
+            ("__olive_py_getattr", &sig_i64_i64_i64),
+            ("__olive_py_call", &sig_i64_i64_i64),
+            ("__olive_py_call_kw", &sig_3i64_i64),
+            ("__olive_py_decref", &sig_i64_void),
+            ("__olive_py_to_int", &sig_i64_i64),
+            ("__olive_py_to_float", &sig_i64_f64),
+            ("__olive_py_to_str", &sig_i64_i64),
+            ("__olive_py_from_int", &sig_i64_i64),
+            ("__olive_py_from_float", &sig_f64_i64),
+            ("__olive_py_from_str", &sig_i64_i64),
+            ("__olive_py_from_list", &sig_i64_i64),
+            ("__olive_py_getitem", &sig_i64_i64_i64),
+            ("__olive_py_setitem", &sig_i64_i64_i64_void),
+            ("__olive_py_len", &sig_i64_i64),
+            ("__olive_py_is_none", &sig_i64_i64),
+            ("__olive_py_none", &sig_void_i64),
+            ("__olive_py_initialize", &sig_void_i64),
+            ("__olive_py_finalize", &sig_void_i64),
         ];
 
         let has_async = self.functions.iter().any(|f| f.is_async);

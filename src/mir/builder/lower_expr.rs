@@ -439,6 +439,54 @@ impl<'a> MirBuilder<'a> {
                 }
 
                 if let ExprKind::Attr { obj, attr } = &callee.kind {
+                    // PyObject method call: np.array(args) → getattr + call
+                    let obj_ty = self.get_type(obj.id);
+                    if obj_ty == Type::PyObject {
+                        let obj_op = self.lower_expr_as_copy(obj);
+                        let attr_local = self.new_local(Type::PyObject, None, true);
+                        self.push_statement(
+                            StatementKind::Assign(
+                                attr_local,
+                                Rvalue::Call {
+                                    func: Operand::Constant(Constant::Function(
+                                        "__olive_py_getattr".to_string(),
+                                    )),
+                                    args: vec![
+                                        obj_op,
+                                        Operand::Constant(Constant::Str(attr.clone())),
+                                    ],
+                                },
+                            ),
+                            expr.span,
+                        );
+                        // pack positional args into a list for __olive_py_call
+                        let args_list = self.new_local(Type::List(Box::new(Type::Any)), None, true);
+                        self.push_statement(
+                            StatementKind::Assign(
+                                args_list,
+                                Rvalue::Aggregate(AggregateKind::List, arg_ops),
+                            ),
+                            expr.span,
+                        );
+                        let result = self.new_local(Type::PyObject, None, true);
+                        self.push_statement(
+                            StatementKind::Assign(
+                                result,
+                                Rvalue::Call {
+                                    func: Operand::Constant(Constant::Function(
+                                        "__olive_py_call".to_string(),
+                                    )),
+                                    args: vec![
+                                        Operand::Copy(attr_local),
+                                        Operand::Copy(args_list),
+                                    ],
+                                },
+                            ),
+                            expr.span,
+                        );
+                        return self.operand_for_local(result);
+                    }
+
                     if let ExprKind::Identifier(name) = &obj.kind {
                         let obj_ty = self.get_type(obj.id);
                         let is_struct_var = matches!(obj_ty, Type::Struct(_, _) | Type::Any)
@@ -674,6 +722,30 @@ impl<'a> MirBuilder<'a> {
                         return Operand::Constant(Constant::Function(mangled));
                     }
                 }
+
+                // PyObject attribute read: emit __olive_py_getattr
+                let obj_ty = self.get_type(obj.id);
+                if obj_ty == Type::PyObject {
+                    let obj_op = self.lower_expr_as_copy(obj);
+                    let tmp = self.new_local(Type::PyObject, None, true);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            tmp,
+                            Rvalue::Call {
+                                func: Operand::Constant(Constant::Function(
+                                    "__olive_py_getattr".to_string(),
+                                )),
+                                args: vec![
+                                    obj_op,
+                                    Operand::Constant(Constant::Str(attr.clone())),
+                                ],
+                            },
+                        ),
+                        expr.span,
+                    );
+                    return self.operand_for_local(tmp);
+                }
+
                 let o = self.lower_expr_as_copy(obj);
                 let tmp = self.new_tmp_for_expr(expr);
                 self.push_statement(

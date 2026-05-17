@@ -353,6 +353,10 @@ pub enum StmtKind {
         module: Vec<String>,
         names: Vec<(String, Option<String>)>,
     },
+    PyImport {
+        module: String,
+        alias: String,
+    },
     Let {
         name: String,
         type_ann: Option<TypeExpr>,
