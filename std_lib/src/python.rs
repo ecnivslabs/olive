@@ -195,7 +195,7 @@ unsafe extern "C" fn noop_dict_setitemstring(_: PyObject, _: *const c_char, _: P
 unsafe extern "C" fn noop_err_fetch(_: *mut PyObject, _: *mut PyObject, _: *mut PyObject) {}
 
 #[cfg(target_os = "windows")]
-extern "system" {
+unsafe extern "system" {
     fn LoadLibraryA(lpLibFileName: *const u8) -> *mut c_void;
     fn GetProcAddress(hModule: *mut c_void, lpProcName: *const u8) -> *mut c_void;
 }
