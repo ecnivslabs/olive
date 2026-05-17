@@ -304,7 +304,6 @@ impl TypeChecker {
                 let obj_ty = self.check_expr(obj);
                 let resolved_obj = self.apply_subst(obj_ty);
 
-                // PyObject attr access — dynamic, always returns PyObject
                 if resolved_obj == Type::PyObject {
                     return Type::PyObject;
                 }

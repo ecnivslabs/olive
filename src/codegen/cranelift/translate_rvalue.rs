@@ -177,24 +177,83 @@ impl<M: Module> CraneliftCodegen<M> {
                             if is_ffi
                                 && let Some(entry) = ffi_entry
                                     && i < entry.params.len() {
-                                        let p_type = &entry.params[i];
-                                        if let Some(layout) = c_struct_offsets.get(p_type) {
-                                            for (_, offset, ty_name, bits) in layout {
-                                                if bits.is_some() {
-                                                    continue;
-                                                }
-                                                let cl_ty = super::ffi_cl_type(ty_name);
-                                                let val = builder.ins().load(
-                                                    cl_ty,
-                                                    MemFlags::trusted(),
-                                                    arg,
-                                                    *offset,
-                                                );
-                                                final_args.push(val);
-                                            }
-                                            continue;
-                                        }
-                                    }
+                                         let p_type = &entry.params[i];
+                                         if let Some(layout) = c_struct_offsets.get(p_type) {
+                                             let size = *c_struct_sizes.get(p_type).unwrap_or(&8);
+                                             let is_windows = cfg!(target_os = "windows");
+                                             if is_windows {
+                                                 if size == 1 || size == 2 || size == 4 || size == 8 {
+                                                     let ty = match size {
+                                                         1 => types::I8,
+                                                         2 => types::I16,
+                                                         4 => types::I32,
+                                                         _ => types::I64,
+                                                     };
+                                                     let val = builder.ins().load(ty, MemFlags::trusted(), arg, 0);
+                                                     final_args.push(val);
+                                                 } else {
+                                                     let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                                                         StackSlotKind::ExplicitSlot,
+                                                         size as u32,
+                                                         3,
+                                                     ));
+                                                     let stack_ptr = builder.ins().stack_addr(module.isa().pointer_type(), slot, 0);
+                                                     for (_, offset, ty_name, bits) in layout {
+                                                         if bits.is_some() { continue; }
+                                                         let cl_ty = super::ffi_cl_type(ty_name);
+                                                         let val = builder.ins().load(cl_ty, MemFlags::trusted(), arg, *offset);
+                                                         builder.ins().store(MemFlags::trusted(), val, stack_ptr, *offset);
+                                                     }
+                                                     final_args.push(stack_ptr);
+                                                 }
+                                             } else {
+                                                 if size <= 8 {
+                                                     let has_float = layout.iter().any(|(_, _, ty_name, _)| ty_name == "float" || ty_name == "f32" || ty_name == "f64");
+                                                     let ty = if has_float {
+                                                         if size <= 4 { types::F32 } else { types::F64 }
+                                                     } else {
+                                                         if size <= 1 {
+                                                             types::I8
+                                                         } else if size <= 2 {
+                                                             types::I16
+                                                         } else if size <= 4 {
+                                                             types::I32
+                                                         } else {
+                                                             types::I64
+                                                         }
+                                                     };
+                                                     let val = builder.ins().load(ty, MemFlags::trusted(), arg, 0);
+                                                     final_args.push(val);
+                                                 } else if size <= 16 {
+                                                     let first_has_float = layout.iter().any(|(_, offset, ty_name, _)| *offset < 8 && (ty_name == "float" || ty_name == "f32" || ty_name == "f64"));
+                                                     let second_has_float = layout.iter().any(|(_, offset, ty_name, _)| *offset >= 8 && (ty_name == "float" || ty_name == "f32" || ty_name == "f64"));
+                                                     
+                                                     let first_ty = if first_has_float { types::F64 } else { types::I64 };
+                                                     let second_ty = if second_has_float { types::F64 } else { types::I64 };
+                                                     
+                                                     let val1 = builder.ins().load(first_ty, MemFlags::trusted(), arg, 0);
+                                                     let val2 = builder.ins().load(second_ty, MemFlags::trusted(), arg, 8);
+                                                     
+                                                     final_args.push(val1);
+                                                     final_args.push(val2);
+                                                 } else {
+                                                     let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                                                         StackSlotKind::ExplicitSlot,
+                                                         size as u32,
+                                                         3,
+                                                     ));
+                                                     let stack_ptr = builder.ins().stack_addr(module.isa().pointer_type(), slot, 0);
+                                                     for (_, offset, ty_name, bits) in layout {
+                                                         if bits.is_some() { continue; }
+                                                         let cl_ty = super::ffi_cl_type(ty_name);
+                                                         let val = builder.ins().load(cl_ty, MemFlags::trusted(), arg, *offset);
+                                                         builder.ins().store(MemFlags::trusted(), val, stack_ptr, *offset);
+                                                     }
+                                                     final_args.push(stack_ptr);
+                                                 }
+                                             }
+                                             continue;
+                                         }}
 
                             if (is_ffi || is_aot_vararg) && is_str_arg {
                                 final_args.push(builder.ins().band_imm(arg, -2));
@@ -229,11 +288,32 @@ impl<M: Module> CraneliftCodegen<M> {
                         let mut ret_val = if let Some(ptr) = sret_ptr {
                             ptr
                         } else {
-                            let results = builder.inst_results(inst);
-                            if results.is_empty() {
-                                builder.ins().iconst(types::I64, 0)
+                            let results = builder.inst_results(inst).to_vec();
+                            if is_ffi
+                                && let Some(entry) = ffi_entry
+                                && let Some(ref r) = entry.ret
+                                && c_struct_sizes.contains_key(r)
+                            {
+                                let size = *c_struct_sizes.get(r).unwrap_or(&8);
+                                let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                                    StackSlotKind::ExplicitSlot,
+                                    size as u32,
+                                    3,
+                                ));
+                                let stack_ptr = builder.ins().stack_addr(module.isa().pointer_type(), slot, 0);
+                                if results.len() == 1 {
+                                    builder.ins().store(MemFlags::trusted(), results[0], stack_ptr, 0);
+                                } else if results.len() == 2 {
+                                    builder.ins().store(MemFlags::trusted(), results[0], stack_ptr, 0);
+                                    builder.ins().store(MemFlags::trusted(), results[1], stack_ptr, 8);
+                                }
+                                stack_ptr
                             } else {
-                                results[0]
+                                if results.is_empty() {
+                                    builder.ins().iconst(types::I64, 0)
+                                } else {
+                                    results[0]
+                                }
                             }
                         };
 

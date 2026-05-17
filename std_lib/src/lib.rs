@@ -423,6 +423,60 @@ pub extern "C" fn olive_list_append(list_ptr: i64, val: i64) {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn olive_list_insert(list_ptr: i64, idx: i64, val: i64) {
+    if list_ptr == 0 {
+        return;
+    }
+    unsafe {
+        let s = &mut *(list_ptr as *mut StableVec);
+        let idx = idx as usize;
+        let inline_data = (list_ptr as *mut i64).add(4);
+        let mut v = if s.ptr == inline_data {
+            let mut owned = Vec::with_capacity(s.len + 1);
+            owned.extend_from_slice(std::slice::from_raw_parts(s.ptr, s.len));
+            owned
+        } else {
+            Vec::from_raw_parts(s.ptr, s.len, s.cap)
+        };
+        if idx <= v.len() {
+            v.insert(idx, val);
+        }
+        s.ptr = v.as_mut_ptr();
+        s.cap = v.capacity();
+        s.len = v.len();
+        std::mem::forget(v);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_remove(list_ptr: i64, idx: i64) -> i64 {
+    if list_ptr == 0 {
+        return 0;
+    }
+    unsafe {
+        let s = &mut *(list_ptr as *mut StableVec);
+        let idx = idx as usize;
+        if idx >= s.len {
+            return 0;
+        }
+        let inline_data = (list_ptr as *mut i64).add(4);
+        let mut v = if s.ptr == inline_data {
+            let mut owned = Vec::with_capacity(s.len);
+            owned.extend_from_slice(std::slice::from_raw_parts(s.ptr, s.len));
+            owned
+        } else {
+            Vec::from_raw_parts(s.ptr, s.len, s.cap)
+        };
+        let val = v.remove(idx);
+        s.ptr = v.as_mut_ptr();
+        s.cap = v.capacity();
+        s.len = v.len();
+        std::mem::forget(v);
+        val
+    }
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn olive_list_concat(l: i64, r: i64) -> i64 {
     if l == 0 {
         return r;
@@ -538,6 +592,16 @@ pub extern "C" fn olive_obj_get(obj_ptr: i64, attr: i64) -> i64 {
     let attr_str = olive_str_from_ptr(attr);
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
     *m.fields.get(&attr_str).unwrap_or(&0)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_obj_remove(obj_ptr: i64, attr: i64) -> i64 {
+    if obj_ptr == 0 || attr == 0 {
+        return 0;
+    }
+    let attr_str = olive_str_from_ptr(attr);
+    let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
+    m.fields.remove(&attr_str).unwrap_or(0)
 }
 
 #[unsafe(no_mangle)]
