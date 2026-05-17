@@ -48,7 +48,7 @@ pub(crate) fn olive_to_json(val: i64) -> serde_json::Value {
     if val == 0 {
         return serde_json::Value::Null;
     }
-    // Values below MIN_HEAP_PTR can't be valid pointers  -  treat as integers.
+    // Values below MIN_HEAP_PTR are not valid pointers and are treated as integers.
     if val > 0 && val < MIN_HEAP_PTR {
         return serde_json::Value::Number(val.into());
     }

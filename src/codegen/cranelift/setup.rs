@@ -207,12 +207,58 @@ impl<M: Module> CraneliftCodegen<M> {
                 Some("stdcall") | Some("fastcall") => {
                     cranelift::prelude::isa::CallConv::WindowsFastcall
                 }
+                #[cfg(not(target_os = "windows"))]
+                Some("stdcall") | Some("fastcall") => {
+                    eprintln!("Warning: calling convention '{}' ignored on non-Windows target", entry.call_conv.as_deref().unwrap());
+                    self.module.isa().default_call_conv()
+                }
                 _ => self.module.isa().default_call_conv(),
             };
+            let is_windows = cfg!(target_os = "windows");
             for param_name in &entry.params {
                 if let Some(layout) = self.c_struct_offsets.get(param_name) {
-                    for (_, _, ty_name, _) in layout {
-                        sig.params.push(AbiParam::new(super::ffi_cl_type(ty_name)));
+                    let size = self.c_struct_sizes.get(param_name).cloned().unwrap_or(8);
+                    if is_windows {
+                        if size == 1 || size == 2 || size == 4 || size == 8 {
+                            let ty = match size {
+                                1 => types::I8,
+                                2 => types::I16,
+                                4 => types::I32,
+                                _ => types::I64,
+                            };
+                            sig.params.push(AbiParam::new(ty));
+                        } else {
+                            sig.params.push(AbiParam::new(self.module.isa().pointer_type()));
+                        }
+                    } else {
+                        if size <= 8 {
+                            let has_float = layout.iter().any(|(_, _, ty_name, _)| ty_name == "float" || ty_name == "f32" || ty_name == "f64");
+                            let ty = if has_float {
+                                if size <= 4 { types::F32 } else { types::F64 }
+                            } else {
+                                if size <= 1 {
+                                    types::I8
+                                } else if size <= 2 {
+                                    types::I16
+                                } else if size <= 4 {
+                                    types::I32
+                                } else {
+                                    types::I64
+                                }
+                            };
+                            sig.params.push(AbiParam::new(ty));
+                        } else if size <= 16 {
+                            let first_has_float = layout.iter().any(|(_, offset, ty_name, _)| *offset < 8 && (ty_name == "float" || ty_name == "f32" || ty_name == "f64"));
+                            let second_has_float = layout.iter().any(|(_, offset, ty_name, _)| *offset >= 8 && (ty_name == "float" || ty_name == "f32" || ty_name == "f64"));
+                            
+                            let first_ty = if first_has_float { types::F64 } else { types::I64 };
+                            let second_ty = if second_has_float { types::F64 } else { types::I64 };
+                            
+                            sig.params.push(AbiParam::new(first_ty));
+                            sig.params.push(AbiParam::new(second_ty));
+                        } else {
+                            sig.params.push(AbiParam::new(self.module.isa().pointer_type()));
+                        }
                     }
                 } else {
                     sig.params
@@ -229,8 +275,54 @@ impl<M: Module> CraneliftCodegen<M> {
                 );
             } else if let Some(ret_name) = &entry.ret {
                 if ret_name != "void" {
-                    sig.returns
-                        .push(AbiParam::new(super::ffi_cl_type(ret_name)));
+                    if let Some(layout) = self.c_struct_offsets.get(ret_name) {
+                        let size = self.c_struct_sizes.get(ret_name).cloned().unwrap_or(8);
+                        if is_windows {
+                            if size == 1 || size == 2 || size == 4 || size == 8 {
+                                let ty = match size {
+                                    1 => types::I8,
+                                    2 => types::I16,
+                                    4 => types::I32,
+                                    _ => types::I64,
+                                };
+                                sig.returns.push(AbiParam::new(ty));
+                            } else {
+                                sig.returns.push(AbiParam::new(types::I64));
+                            }
+                        } else {
+                            if size <= 8 {
+                                let has_float = layout.iter().any(|(_, _, ty_name, _)| ty_name == "float" || ty_name == "f32" || ty_name == "f64");
+                                let ty = if has_float {
+                                    if size <= 4 { types::F32 } else { types::F64 }
+                                } else {
+                                    if size <= 1 {
+                                        types::I8
+                                    } else if size <= 2 {
+                                        types::I16
+                                    } else if size <= 4 {
+                                        types::I32
+                                    } else {
+                                        types::I64
+                                    }
+                                };
+                                sig.returns.push(AbiParam::new(ty));
+                            } else if size <= 16 {
+                                let first_has_float = layout.iter().any(|(_, offset, ty_name, _)| *offset < 8 && (ty_name == "float" || ty_name == "f32" || ty_name == "f64"));
+                                let second_has_float = layout.iter().any(|(_, offset, ty_name, _)| *offset >= 8 && (ty_name == "float" || ty_name == "f32" || ty_name == "f64"));
+                                
+                                let first_ty = if first_has_float { types::F64 } else { types::I64 };
+                                let second_ty = if second_has_float { types::F64 } else { types::I64 };
+                                
+                                sig.returns.push(AbiParam::new(first_ty));
+                                sig.returns.push(AbiParam::new(second_ty));
+                            } else {
+                                sig.returns.push(AbiParam::new(types::I64));
+                            }
+                        }
+                    } else {
+                        sig.returns
+                            .push(AbiParam::new(super::ffi_cl_type(ret_name)));
+                    }
                 }
             } else {
                 sig.returns.push(AbiParam::new(types::I64));

@@ -166,33 +166,6 @@ const ASYNC_RUNTIME_SYMS: &[&str] = &[
     "__olive_sm_poll",
 ];
 
-const PY_INTEROP_SYMS: &[&str] = &[
-    "__olive_py_import",
-    "__olive_py_import_safe",
-    "__olive_py_getattr",
-    "__olive_py_getattr_safe",
-    "__olive_py_call",
-    "__olive_py_call_safe",
-    "__olive_py_call_kw",
-    "__olive_py_call_kw_safe",
-    "__olive_py_decref",
-    "__olive_py_to_int",
-    "__olive_py_to_float",
-    "__olive_py_to_str",
-    "__olive_py_from_int",
-    "__olive_py_from_float",
-    "__olive_py_from_str",
-    "__olive_py_from_list",
-    "__olive_py_getitem",
-    "__olive_py_getitem_safe",
-    "__olive_py_setitem",
-    "__olive_py_setitem_safe",
-    "__olive_py_len",
-    "__olive_py_is_none",
-    "__olive_py_none",
-    "__olive_py_initialize",
-    "__olive_py_finalize",
-];
 
 pub(super) struct SmAwaitPoint {
     pub(super) bb_idx: usize,
@@ -474,17 +447,8 @@ impl CraneliftCodegen<JITModule> {
             libs.push(lib);
         }
 
-        // If any Python interop functions are needed, load libpython via olive_std shims.
-        // olive_std's python_interop.c uses dlopen("libpython3.so") internally at
-        // olive_py_initialize time, so we only need to register the olive_std symbols here.
-        // The needed set already contains them if __olive_py_* calls were emitted.
-        let has_py_interop = PY_INTEROP_SYMS.iter().any(|s| needed.contains(s));
-        if has_py_interop {
-            // olive_std shims are already loaded above; symbols registered via SYMBOL_MAP.
-            // Nothing extra needed here — all olive_py_* symbols are in SYMBOL_MAP and
-            // will have been registered above when needed.contains() matched.
-            let _ = has_py_interop; // silence unused warning in non-py builds
-        }
+        // Python interop functions in SYMBOL_MAP are registered automatically if needed.
+        // olive_std's python_interop.c handles dlopen("libpython3.so") at runtime.
 
         for (alias, path, ffi_sigs, ffi_structs, ffi_vars) in native_lib_paths {
             for ffi_struct in ffi_structs {

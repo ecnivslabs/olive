@@ -7,7 +7,6 @@ type PyObject = *mut c_void;
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 static mut LIBPYTHON: *mut c_void = std::ptr::null_mut();
 
-// Function pointers
 static mut PY_INITIALIZE: unsafe extern "C" fn() = noop_initialize;
 static mut PY_FINALIZE: unsafe extern "C" fn() = noop_finalize;
 static mut PY_IMPORT_IMPORT_MODULE: unsafe extern "C" fn(*const c_char) -> PyObject = noop_import;
@@ -256,26 +255,22 @@ pub extern "C" fn olive_py_initialize() {
     ONCE.call_once(|| unsafe {
         let mut handle = std::ptr::null_mut();
 
-        // 1. Try env var
         if let Ok(env_path) = std::env::var("PYTHON_LIBRARY") {
             handle = compat_dlopen(&env_path);
         }
 
-        // 2. Try python3 config query
         if handle.is_null() {
             if let Some(path) = find_libpython_via_cmd("python3") {
                 handle = compat_dlopen(&path);
             }
         }
 
-        // 3. Try python config query
         if handle.is_null() {
             if let Some(path) = find_libpython_via_cmd("python") {
                 handle = compat_dlopen(&path);
             }
         }
 
-        // 4. Try standard hardcoded paths
         if handle.is_null() {
             #[cfg(target_os = "windows")]
             {
@@ -380,7 +375,6 @@ pub extern "C" fn olive_py_initialize() {
             PY_EVAL_INIT_THREADS();
         }
 
-        // Run the Python setup script!
         let py_setup_code = format!(r#"
 import collections.abc
 import ctypes
@@ -396,6 +390,8 @@ class OliveListProxy(collections.abc.MutableSequence):
         self._set = ctypes.CFUNCTYPE(None, ctypes.c_int64, ctypes.c_int64, ctypes.c_int64)({set_fn})
         self._len = ctypes.CFUNCTYPE(ctypes.c_int64, ctypes.c_int64)({len_fn})
         self._append = ctypes.CFUNCTYPE(None, ctypes.c_int64, ctypes.c_int64)({append_fn})
+        self._insert = ctypes.CFUNCTYPE(None, ctypes.c_int64, ctypes.c_int64, ctypes.c_int64)({insert_fn})
+        self._remove = ctypes.CFUNCTYPE(ctypes.c_int64, ctypes.c_int64, ctypes.c_int64)({remove_fn})
 
     def __len__(self):
         return self._len(self._ptr)
@@ -420,13 +416,23 @@ class OliveListProxy(collections.abc.MutableSequence):
         self._set(self._ptr, index, _conv_to_olive(value))
 
     def __delitem__(self, index):
-        raise NotImplementedError("Olive collections do not support item deletion")
+        length = len(self)
+        if index < 0:
+            index += length
+        if index < 0 or index >= length:
+            raise IndexError("list index out of range")
+        self._remove(self._ptr, index)
 
     def insert(self, index, value):
-        if index == len(self):
+        length = len(self)
+        if index < 0:
+            index += length
+        if index < 0:
+            index = 0
+        if index >= length:
             self._append(self._ptr, _conv_to_olive(value))
         else:
-            raise NotImplementedError("Olive collections only support append/push operations")
+            self._insert(self._ptr, index, _conv_to_olive(value))
 
     def append(self, value):
         self._append(self._ptr, _conv_to_olive(value))
@@ -438,6 +444,7 @@ class OliveDictProxy(collections.abc.MutableMapping):
         self._set = ctypes.CFUNCTYPE(ctypes.c_int64, ctypes.c_int64, ctypes.c_int64, ctypes.c_int64)({obj_set_fn})
         self._len = ctypes.CFUNCTYPE(ctypes.c_int64, ctypes.c_int64)({obj_len_fn})
         self._keys = ctypes.CFUNCTYPE(ctypes.c_int64, ctypes.c_int64)({obj_keys_fn})
+        self._remove = ctypes.CFUNCTYPE(ctypes.c_int64, ctypes.c_int64, ctypes.c_int64)({obj_remove_fn})
 
     def __len__(self):
         return self._len(self._ptr)
@@ -465,7 +472,13 @@ class OliveDictProxy(collections.abc.MutableMapping):
         self._set(self._ptr, key_ptr | 1, _conv_to_olive(value))
 
     def __delitem__(self, key):
-        raise NotImplementedError("Olive dictionaries do not support deletion")
+        if not isinstance(key, str):
+            raise KeyError(key)
+        key_bytes = key.encode('utf-8')
+        key_ptr = ctypes.cast(ctypes.c_char_p(key_bytes), ctypes.c_void_p).value
+        res = self._remove(self._ptr, key_ptr | 1)
+        if res == 0:
+            raise KeyError(key)
 
 _decref = ctypes.pythonapi.Py_DecRef
 _decref.argtypes = [ctypes.py_object]
@@ -489,10 +502,13 @@ sys.modules['olive_proxies'] = type('Module', (), {{
             set_fn = crate::olive_list_set as *const () as usize,
             len_fn = crate::olive_list_len as *const () as usize,
             append_fn = crate::olive_list_append as *const () as usize,
+            insert_fn = crate::olive_list_insert as *const () as usize,
+            remove_fn = crate::olive_list_remove as *const () as usize,
             obj_get_fn = crate::olive_obj_get as *const () as usize,
             obj_set_fn = crate::olive_obj_set as *const () as usize,
             obj_len_fn = crate::olive_obj_len as *const () as usize,
             obj_keys_fn = olive_dict_keys_ffi as *const () as usize,
+            obj_remove_fn = crate::olive_obj_remove as *const () as usize,
             conv_to_py_fn = olive_py_conv_to_py as *const () as usize,
             conv_to_olive_fn = olive_py_conv_to_olive as *const () as usize,
         );
@@ -557,7 +573,7 @@ unsafe fn handle_py_error() { unsafe {
                 PY_TUPLE_SET_ITEM(py_args, 1, pvalue);
                 PY_TUPLE_SET_ITEM(py_args, 2, ptraceback);
 
-                // Set pointers to null since PY_TUPLE_SET_ITEM stole the references
+                // References stolen by PyTuple_SetItem.
                 ptype = std::ptr::null_mut();
                 pvalue = std::ptr::null_mut();
                 ptraceback = std::ptr::null_mut();
@@ -620,7 +636,9 @@ unsafe fn handle_py_error() { unsafe {
 }}
 
 fn is_python_available() -> bool {
-    olive_py_initialize();
+    if !INITIALIZED.load(Ordering::Relaxed) {
+        olive_py_initialize();
+    }
     INITIALIZED.load(Ordering::SeqCst)
 }
 
@@ -1688,15 +1706,12 @@ mod tests {
 
     #[test]
     fn test_zero_copy_proxy_and_safe_boundaries() {
-        // Initialize
         olive_py_initialize();
 
-        // 1. Test standard string/int wrappers
         let py_num = olive_py_from_int(42);
         assert_eq!(olive_py_to_int(py_num), 42);
         olive_py_decref(py_num);
 
-        // 2. Test safe exception catching error boundary
         let err_res = olive_py_import_safe(crate::olive_str_internal("non_existent_module_xyz"));
         assert_eq!(crate::result::olive_result_is_err(err_res), 1);
 
@@ -1705,7 +1720,6 @@ mod tests {
         assert!(err_msg.contains("No module named 'non_existent_module_xyz'"));
         crate::olive_free_any(err_res);
 
-        // 3. Test dynamic list proxy zero-copy
         unsafe {
             let list_ptr = crate::olive_list_new(2);
             let sv = &mut *(list_ptr as *mut crate::StableVec);
@@ -1716,11 +1730,9 @@ mod tests {
             let py_proxy = olive_to_py(list_ptr);
             assert!(!py_proxy.is_null());
 
-            // Get standard python sys module to evaluate length/elements
             let sys_mod = PY_IMPORT_IMPORT_MODULE(b"sys\0".as_ptr() as *const c_char);
             assert!(!sys_mod.is_null());
 
-            // Verify using proxy interface in python
             let len_fn =
                 PY_OBJECT_GET_ATTR_STRING(py_proxy, b"__len__\0".as_ptr() as *const c_char);
             let py_len = PY_OBJECT_CALL_OBJECT(len_fn, std::ptr::null_mut());
@@ -1730,7 +1742,6 @@ mod tests {
 
             let hello_ptr = crate::olive_list_get(list_ptr, 0);
 
-            // Mutate index 0 of the list from Python side
             let idx_0 = PY_LONG_FROM_LONG(0);
             let val_0 = PY_UNICODE_FROM_STRING(b"world\0".as_ptr() as *const c_char);
             let setitem_res = PY_OBJECT_SET_ITEM(py_proxy, idx_0, val_0);
@@ -1738,15 +1749,69 @@ mod tests {
             PY_DEC_REF(idx_0);
             PY_DEC_REF(val_0);
 
-            // Verify mutation is reflected in Olive's list natively without any copies!
             let olive_val_0 = crate::olive_list_get(list_ptr, 0);
             assert_eq!(crate::olive_str_from_ptr(olive_val_0), "world");
+
+            let idx_1 = PY_LONG_FROM_LONG(1);
+            let val_insert = PY_UNICODE_FROM_STRING(b"inserted\0".as_ptr() as *const c_char);
+            
+            let insert_fn = PY_OBJECT_GET_ATTR_STRING(py_proxy, b"insert\0".as_ptr() as *const c_char);
+            let args_tuple = PY_TUPLE_NEW(2);
+            PY_TUPLE_SET_ITEM(args_tuple, 0, idx_1);
+            PY_TUPLE_SET_ITEM(args_tuple, 1, val_insert);
+            let insert_res = PY_OBJECT_CALL_OBJECT(insert_fn, args_tuple);
+            assert!(!insert_res.is_null());
+            PY_DEC_REF(insert_res);
+            PY_DEC_REF(insert_fn);
+            PY_DEC_REF(args_tuple);
+
+            assert_eq!(crate::olive_list_len(list_ptr), 3);
+            let val_at_1 = crate::olive_list_get(list_ptr, 1);
+            assert_eq!(crate::olive_str_from_ptr(val_at_1), "inserted");
+
+            let del_fn = PY_OBJECT_GET_ATTR_STRING(py_proxy, b"__delitem__\0".as_ptr() as *const c_char);
+            let del_args = PY_TUPLE_NEW(1);
+            let idx_to_del = PY_LONG_FROM_LONG(1);
+            PY_TUPLE_SET_ITEM(del_args, 0, idx_to_del);
+            let del_res = PY_OBJECT_CALL_OBJECT(del_fn, del_args);
+            assert!(!del_res.is_null());
+            PY_DEC_REF(del_res);
+            PY_DEC_REF(del_fn);
+            PY_DEC_REF(del_args);
+
+            assert_eq!(crate::olive_list_len(list_ptr), 2);
+            assert_ne!(crate::olive_str_from_ptr(crate::olive_list_get(list_ptr, 1)), "inserted");
+
+            let dict_ptr = crate::olive_obj_new();
+            let py_dict = olive_to_py(dict_ptr);
+            
+            let dict_key = PY_UNICODE_FROM_STRING(b"testkey\0".as_ptr() as *const c_char);
+            let dict_val = PY_LONG_FROM_LONG(9876);
+            assert_ne!(PY_OBJECT_SET_ITEM(py_dict, dict_key, dict_val), -1);
+            PY_DEC_REF(dict_key);
+            PY_DEC_REF(dict_val);
+            
+            assert_eq!(crate::olive_obj_get(dict_ptr, crate::olive_str_internal("testkey")), 9876);
+
+            let dict_del_fn = PY_OBJECT_GET_ATTR_STRING(py_dict, b"__delitem__\0".as_ptr() as *const c_char);
+            let dict_del_args = PY_TUPLE_NEW(1);
+            let dict_del_key = PY_UNICODE_FROM_STRING(b"testkey\0".as_ptr() as *const c_char);
+            PY_TUPLE_SET_ITEM(dict_del_args, 0, dict_del_key);
+            let dict_del_res = PY_OBJECT_CALL_OBJECT(dict_del_fn, dict_del_args);
+            assert!(!dict_del_res.is_null());
+            PY_DEC_REF(dict_del_res);
+            PY_DEC_REF(dict_del_fn);
+            PY_DEC_REF(dict_del_args);
+
+            assert_eq!(crate::olive_obj_get(dict_ptr, crate::olive_str_internal("testkey")), 0);
+            
+            PY_DEC_REF(py_dict);
+            crate::olive_free_obj(dict_ptr);
 
             PY_DEC_REF(sys_mod);
             PY_DEC_REF(py_proxy);
             PY_GILSTATE_RELEASE(gil);
 
-            // Clean up test allocations
             crate::olive_free_any(hello_ptr);
             crate::olive_free_list(list_ptr);
         }

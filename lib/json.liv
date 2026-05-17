@@ -8,7 +8,6 @@ fn _skip_whitespace(s: str, mut i: int) -> int:
     return i
 
 fn _parse_string(s: str, mut i: int):
-    # s[i] == '"'
     i = i + 1
     let n = len(s)
     let mut result = ""
@@ -59,7 +58,6 @@ fn _parse_number(s: str, mut i: int):
     return [int(val_str), i]
 
 fn _parse_array(s: str, mut i: int):
-    # s[i] == '['
     i = i + 1
     let mut arr = []
     let n = len(s)
@@ -76,11 +74,10 @@ fn _parse_array(s: str, mut i: int):
         if c == ",":
             i = i + 1
         else:
-            break # error
+            break
     return [arr, i]
 
 fn _parse_object(s: str, mut i: int):
-    # s[i] == '{'
     i = i + 1
     let mut obj = {}
     let n = len(s)
@@ -92,7 +89,6 @@ fn _parse_object(s: str, mut i: int):
         let parsed_key = _parse_string(s, i)
         let key = parsed_key[0]
         i = _skip_whitespace(s, parsed_key[1])
-        # expect ':'
         i = i + 1
         let parsed_val = _parse_value(s, i)
         obj[key] = parsed_val[0]
@@ -116,9 +112,9 @@ fn _parse_value(s: str, mut i: int):
     if c == "{":
         return _parse_object(s, i)
     if c == "t":
-        return [true, i + 4] # true
+        return [true, i + 4]
     if c == "f":
-        return [false, i + 5] # false
+        return [false, i + 5]
     if c == "n":
         return [null, i + 4]
     return _parse_number(s, i)
