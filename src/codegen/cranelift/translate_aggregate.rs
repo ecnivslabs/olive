@@ -1,6 +1,6 @@
 use super::CraneliftCodegen;
-use crate::mir::{Local, Operand};
 use crate::mir::ir::AggregateKind;
+use crate::mir::{Local, Operand};
 use cranelift::prelude::*;
 use cranelift_module::{DataId, FuncId, Module};
 use rustc_hash::FxHashMap as HashMap;
@@ -58,9 +58,8 @@ impl<M: Module> CraneliftCodegen<M> {
 
                 for (i, op) in ops.iter().enumerate() {
                     let idx = builder.ins().iconst(types::I64, i as i64);
-                    let val = Self::translate_operand(
-                        builder, op, vars, string_ids, module, func_ids,
-                    );
+                    let val =
+                        Self::translate_operand(builder, op, vars, string_ids, module, func_ids);
                     let val = if builder.func.dfg.value_type(val) == types::F64 {
                         builder.ins().bitcast(types::I64, MemFlags::new(), val)
                     } else {
@@ -81,9 +80,8 @@ impl<M: Module> CraneliftCodegen<M> {
                 let add_func = module.declare_func_in_func(*add_id, builder.func);
 
                 for op in ops {
-                    let mut val = Self::translate_operand(
-                        builder, op, vars, string_ids, module, func_ids,
-                    );
+                    let mut val =
+                        Self::translate_operand(builder, op, vars, string_ids, module, func_ids);
                     if builder.func.dfg.value_type(val) == types::F64 {
                         val = builder.ins().bitcast(types::I64, MemFlags::new(), val);
                     }
@@ -99,11 +97,15 @@ impl<M: Module> CraneliftCodegen<M> {
                 let inst = builder.ins().call(new_func, &[n_val]);
                 let list_ptr = builder.inst_results(inst)[0];
 
-                let data_ptr = builder.ins().iadd_imm(list_ptr, 32);
+                let data_ptr = builder
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), list_ptr, 8);
                 for (i, op) in ops.iter().enumerate() {
-                    let val = Self::translate_operand(
-                        builder, op, vars, string_ids, module, func_ids,
-                    );
+                    let mut val =
+                        Self::translate_operand(builder, op, vars, string_ids, module, func_ids);
+                    if builder.func.dfg.value_type(val) == types::F64 {
+                        val = builder.ins().bitcast(types::I64, MemFlags::new(), val);
+                    }
                     builder
                         .ins()
                         .store(MemFlags::trusted(), val, data_ptr, (i * 8) as i32);

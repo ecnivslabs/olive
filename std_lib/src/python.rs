@@ -1,16 +1,16 @@
-pub mod python_lifecycle;
-pub mod python_error;
-pub mod python_noop;
-pub mod python_compat;
-pub mod python_coerce;
 pub mod python_call;
+pub mod python_coerce;
+pub mod python_compat;
+pub mod python_error;
+pub mod python_lifecycle;
+pub mod python_noop;
 
-pub use python_lifecycle::*;
-pub use python_error::*;
-pub use python_noop::*;
-pub use python_compat::*;
-pub use python_coerce::*;
 pub use python_call::*;
+pub use python_coerce::*;
+pub use python_compat::*;
+pub use python_error::*;
+pub use python_lifecycle::*;
+pub use python_noop::*;
 
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_double, c_int, c_long, c_void};
@@ -51,7 +51,8 @@ static mut PY_LIST_SET_ITEM: unsafe extern "C" fn(PyObject, isize, PyObject) -> 
 static mut PY_OBJECT_GET_ITEM: unsafe extern "C" fn(PyObject, PyObject) -> PyObject = noop_getitem;
 static mut PY_OBJECT_SET_ITEM: unsafe extern "C" fn(PyObject, PyObject, PyObject) -> c_int =
     noop_setitem;
-static mut PY_OBJECT_DEL_ITEM: unsafe extern "C" fn(PyObject, PyObject) -> c_int = noop_dict_setitem_del;
+static mut PY_OBJECT_DEL_ITEM: unsafe extern "C" fn(PyObject, PyObject) -> c_int =
+    noop_dict_setitem_del;
 static mut PY_OBJECT_LENGTH: unsafe extern "C" fn(PyObject) -> isize = noop_length;
 static mut PY_GILSTATE_ENSURE: unsafe extern "C" fn() -> c_int = noop_gil_ensure;
 static mut PY_GILSTATE_RELEASE: unsafe extern "C" fn(c_int) = noop_gil_release;
@@ -98,7 +99,8 @@ pub static mut PY_BYTES_TYPE: PyObject = std::ptr::null_mut();
 pub static mut _PY_NONE_STRUCT: *mut c_void = std::ptr::null_mut();
 pub static mut PY_ERR_PRINT: unsafe extern "C" fn() = noop_err_print;
 
-pub static mut PY_TYPE_IS_SUBTYPE: unsafe extern "C" fn(PyObject, PyObject) -> c_int = noop_is_subtype;
+pub static mut PY_TYPE_IS_SUBTYPE: unsafe extern "C" fn(PyObject, PyObject) -> c_int =
+    noop_is_subtype;
 pub static mut PY_EVAL_SAVE_THREAD: unsafe extern "C" fn() -> *mut c_void = noop_save_thread;
 pub static mut PY_EVAL_RESTORE_THREAD: unsafe extern "C" fn(*mut c_void) = noop_restore_thread;
 pub static mut PY_EVAL_INIT_THREADS: unsafe extern "C" fn() = noop_initialize;
@@ -107,14 +109,16 @@ pub static mut MAIN_THREAD_STATE: *mut c_void = std::ptr::null_mut();
 
 pub static mut PY_SYS_GET_OBJECT: unsafe extern "C" fn(*const c_char) -> PyObject = noop_import;
 
-unsafe fn compat_dlsym<T>(handle: *mut c_void, name: &str) -> T { unsafe {
-    let cname = CString::new(name).unwrap();
-    #[cfg(target_os = "windows")]
-    let sym = { GetProcAddress(handle, cname.as_ptr() as *const u8) };
-    #[cfg(not(target_os = "windows"))]
-    let sym = { libc::dlsym(handle, cname.as_ptr()) };
-    std::mem::transmute_copy(&sym)
-}}
+unsafe fn compat_dlsym<T>(handle: *mut c_void, name: &str) -> T {
+    unsafe {
+        let cname = CString::new(name).unwrap();
+        #[cfg(target_os = "windows")]
+        let sym = { GetProcAddress(handle, cname.as_ptr() as *const u8) };
+        #[cfg(not(target_os = "windows"))]
+        let sym = { libc::dlsym(handle, cname.as_ptr()) };
+        std::mem::transmute_copy(&sym)
+    }
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_is_valid_proxy(ptr: i64) -> i64 {
@@ -192,6 +196,15 @@ pub extern "C" fn olive_py_setattr(obj: PyObject, attr: i64, val: i64) -> PyObje
     }
 }
 
+fn looks_like_float(val: i64) -> bool {
+    let f = f64::from_bits(val as u64);
+    if f.is_nan() || f.is_infinite() || f.is_subnormal() {
+        return false;
+    }
+    let abs_f = f.abs();
+    abs_f > 1e-100 && abs_f < 1e100
+}
+
 fn olive_to_py(val: i64) -> PyObject {
     if val & 1 != 0 {
         let s = crate::olive_str_from_ptr(val);
@@ -236,17 +249,25 @@ fn olive_to_py(val: i64) -> PyObject {
                         raw
                     }
                     _ => {
-                        // Unknown heap object kind: treat as opaque integer.
-                        // Callers that know the value is a float must use
-                        // olive_py_from_float_bits() instead of olive_to_py().
-                        PY_LONG_FROM_LONG(val as c_long)
+                        if looks_like_float(val) {
+                            let f = f64::from_bits(val as u64);
+                            PY_FLOAT_FROM_DOUBLE(f as c_double)
+                        } else {
+                            PY_LONG_FROM_LONG(val as c_long)
+                        }
                     }
                 }
             }
         } else {
-            // Non-heap, non-string i64: treat as integer.
-            // Floats MUST be routed through olive_py_from_float_bits().
-            unsafe { PY_LONG_FROM_LONG(val as c_long) }
+            // Non-heap, non-string i64: treat as integer or float.
+            unsafe {
+                if looks_like_float(val) {
+                    let f = f64::from_bits(val as u64);
+                    PY_FLOAT_FROM_DOUBLE(f as c_double)
+                } else {
+                    PY_LONG_FROM_LONG(val as c_long)
+                }
+            }
         }
     }
 }
@@ -360,85 +381,166 @@ pub extern "C" fn olive_py_from_list(s: i64) -> PyObject {
     }
 }
 
-unsafe fn py_to_olive_internal(py_val: PyObject) -> i64 { unsafe {
-    if py_val.is_null() || py_val == _PY_NONE_STRUCT {
-        return 0;
-    }
+unsafe fn py_to_olive_internal(py_val: PyObject) -> i64 {
+    unsafe {
+        if py_val.is_null() || py_val == _PY_NONE_STRUCT {
+            return 0;
+        }
 
-    let ty = PY_OBJECT_TYPE(py_val);
-    if ty.is_null() {
-        return 0;
-    }
+        let ty = PY_OBJECT_TYPE(py_val);
+        if ty.is_null() {
+            return 0;
+        }
 
-    let name_attr = PY_OBJECT_GET_ATTR_STRING(ty, b"__name__\0".as_ptr() as *const c_char);
-    if !name_attr.is_null() {
-        let s = PY_UNICODE_AS_UTF8(name_attr);
-        if !s.is_null() {
-            let type_name = CStr::from_ptr(s).to_string_lossy();
-            if type_name == "OliveListProxy" || type_name == "OliveDictProxy" {
-                let ptr_attr =
-                    PY_OBJECT_GET_ATTR_STRING(py_val, b"_ptr\0".as_ptr() as *const c_char);
-                if !ptr_attr.is_null() {
-                    let raw_ptr = PY_LONG_AS_LONG(ptr_attr) as i64;
-                    PY_DEC_REF(ptr_attr);
-                    PY_DEC_REF(name_attr);
-                    PY_DEC_REF(ty);
-                    return raw_ptr;
+        let name_attr = PY_OBJECT_GET_ATTR_STRING(ty, b"__name__\0".as_ptr() as *const c_char);
+        if !name_attr.is_null() {
+            let s = PY_UNICODE_AS_UTF8(name_attr);
+            if !s.is_null() {
+                let type_name = CStr::from_ptr(s).to_string_lossy();
+                if type_name == "OliveListProxy" || type_name == "OliveDictProxy" {
+                    let ptr_attr =
+                        PY_OBJECT_GET_ATTR_STRING(py_val, b"_ptr\0".as_ptr() as *const c_char);
+                    if !ptr_attr.is_null() {
+                        let raw_ptr = PY_LONG_AS_LONG(ptr_attr) as i64;
+                        PY_DEC_REF(ptr_attr);
+                        PY_DEC_REF(name_attr);
+                        PY_DEC_REF(ty);
+                        return raw_ptr;
+                    }
+                }
+            }
+            PY_DEC_REF(name_attr);
+        }
+
+        let is_subtype = |expected: PyObject| {
+            if expected.is_null() {
+                false
+            } else {
+                PY_TYPE_IS_SUBTYPE(ty, expected) != 0
+            }
+        };
+
+        let result = if is_subtype(PY_BOOL_TYPE) {
+            if PY_LONG_AS_LONG(py_val) != 0 { 1 } else { 0 }
+        } else if is_subtype(PY_LONG_TYPE) {
+            PY_LONG_AS_LONG(py_val) as i64
+        } else if is_subtype(PY_FLOAT_TYPE) {
+            let f = PY_FLOAT_AS_DOUBLE(py_val) as f64;
+            f.to_bits() as i64
+        } else if is_subtype(PY_UNICODE_TYPE) {
+            let s = PY_UNICODE_AS_UTF8(py_val);
+            if !s.is_null() {
+                let r_str = CStr::from_ptr(s).to_string_lossy();
+                crate::olive_str_internal(&r_str)
+            } else {
+                0
+            }
+        } else if is_subtype(PY_LIST_TYPE) {
+            olive_py_to_list_internal(py_val)
+        } else if is_subtype(PY_DICT_TYPE) {
+            olive_py_to_dict_internal(py_val)
+        } else if is_subtype(PY_SET_TYPE) {
+            olive_py_to_set_internal(py_val)
+        } else if is_subtype(PY_BYTES_TYPE) {
+            olive_py_to_bytes_internal(py_val)
+        } else {
+            // Fallback: if the object has a finite length and supports __getitem__,
+            // treat it as a sequence (e.g. numpy.ndarray row) and coerce to Olive list.
+            let seq_len = PY_OBJECT_LENGTH(py_val);
+            if seq_len >= 0 {
+                olive_py_to_list_internal(py_val)
+            } else {
+                // Clear any TypeError raised by PyObject_Length on non-sequences
+                PY_ERR_CLEAR();
+                olive_py_wrap(py_val) as i64
+            }
+        };
+
+        PY_DEC_REF(ty);
+        result
+    }
+}
+
+unsafe fn olive_py_to_list_internal(obj: PyObject) -> i64 {
+    unsafe {
+        let len = PY_OBJECT_LENGTH(obj);
+
+        let len = len as usize;
+        let list_ptr = crate::olive_list_new(len as i64);
+        if len > 0 {
+            let sv = &mut *(list_ptr as *mut crate::StableVec);
+            for i in 0..len {
+                let index_obj = PY_LONG_FROM_LONG(i as c_long);
+                let py_item = PY_OBJECT_GET_ITEM(obj, index_obj);
+                let olive_val = py_to_olive_internal(py_item);
+
+                *sv.ptr.add(i) = olive_val;
+                if !py_item.is_null() {
+                    PY_DEC_REF(py_item);
+                }
+                if !index_obj.is_null() {
+                    PY_DEC_REF(index_obj);
                 }
             }
         }
-        PY_DEC_REF(name_attr);
+        list_ptr
     }
+}
 
-    let is_subtype = |expected: PyObject| {
-        if expected.is_null() {
-            false
-        } else {
-            PY_TYPE_IS_SUBTYPE(ty, expected) != 0
+unsafe fn olive_py_to_dict_internal(obj: PyObject) -> i64 {
+    unsafe {
+        let keys_list = PY_DICT_KEYS(obj);
+        let olive_obj = crate::olive_obj_new();
+        if !keys_list.is_null() {
+            let len = PY_OBJECT_LENGTH(keys_list) as usize;
+            for i in 0..len {
+                let index_obj = PY_LONG_FROM_LONG(i as c_long);
+                let key_obj = PY_OBJECT_GET_ITEM(keys_list, index_obj);
+                if !key_obj.is_null() {
+                    let val_obj = PY_OBJECT_GET_ITEM(obj, key_obj);
+
+                    let key_str_obj = PY_OBJECT_STR(key_obj);
+                    let key_utf8 = PY_UNICODE_AS_UTF8(key_str_obj);
+                    if !key_utf8.is_null() {
+                        let key_str = CStr::from_ptr(key_utf8).to_string_lossy();
+                        let key_ptr = crate::olive_str_internal(&key_str);
+
+                        let olive_val = py_to_olive_internal(val_obj);
+
+                        crate::olive_obj_set(olive_obj, key_ptr, olive_val);
+                    }
+
+                    if !key_str_obj.is_null() {
+                        PY_DEC_REF(key_str_obj);
+                    }
+                    if !val_obj.is_null() {
+                        PY_DEC_REF(val_obj);
+                    }
+                    PY_DEC_REF(key_obj);
+                }
+                if !index_obj.is_null() {
+                    PY_DEC_REF(index_obj);
+                }
+            }
+            PY_DEC_REF(keys_list);
         }
-    };
+        olive_obj
+    }
+}
 
-    let result = if is_subtype(PY_BOOL_TYPE) {
-        if PY_LONG_AS_LONG(py_val) != 0 { 1 } else { 0 }
-    } else if is_subtype(PY_LONG_TYPE) {
-        PY_LONG_AS_LONG(py_val) as i64
-    } else if is_subtype(PY_FLOAT_TYPE) {
-        let f = PY_FLOAT_AS_DOUBLE(py_val) as f64;
-        f.to_bits() as i64
-    } else if is_subtype(PY_UNICODE_TYPE) {
-        let s = PY_UNICODE_AS_UTF8(py_val);
-        if !s.is_null() {
-            let r_str = CStr::from_ptr(s).to_string_lossy();
-            crate::olive_str_internal(&r_str)
-        } else {
-            0
+unsafe fn olive_py_to_set_internal(obj: PyObject) -> i64 {
+    unsafe {
+        let py_list = PY_SEQUENCE_LIST(obj);
+        if py_list.is_null() {
+            return crate::olive_set_new(0);
         }
-    } else if is_subtype(PY_LIST_TYPE) {
-        olive_py_to_list_internal(py_val)
-    } else if is_subtype(PY_DICT_TYPE) {
-        olive_py_to_dict_internal(py_val)
-    } else if is_subtype(PY_SET_TYPE) {
-        olive_py_to_set_internal(py_val)
-    } else if is_subtype(PY_BYTES_TYPE) {
-        olive_py_to_bytes_internal(py_val)
-    } else {
-        olive_py_wrap(py_val) as i64
-    };
-
-    PY_DEC_REF(ty);
-    result
-}}
-
-unsafe fn olive_py_to_list_internal(obj: PyObject) -> i64 { unsafe {
-    let len = PY_OBJECT_LENGTH(obj) as usize;
-    let list_ptr = crate::olive_list_new(len as i64);
-    if len > 0 {
-        let sv = &mut *(list_ptr as *mut crate::StableVec);
+        let len = PY_OBJECT_LENGTH(py_list) as usize;
+        let set_ptr = crate::olive_set_new(len as i64);
         for i in 0..len {
             let index_obj = PY_LONG_FROM_LONG(i as c_long);
-            let py_item = PY_OBJECT_GET_ITEM(obj, index_obj);
+            let py_item = PY_OBJECT_GET_ITEM(py_list, index_obj);
             let olive_val = py_to_olive_internal(py_item);
-            *sv.ptr.add(i) = olive_val;
+            crate::olive_set_add(set_ptr, olive_val);
             if !py_item.is_null() {
                 PY_DEC_REF(py_item);
             }
@@ -446,84 +548,25 @@ unsafe fn olive_py_to_list_internal(obj: PyObject) -> i64 { unsafe {
                 PY_DEC_REF(index_obj);
             }
         }
+        PY_DEC_REF(py_list);
+        set_ptr
     }
-    list_ptr
-}}
+}
 
-unsafe fn olive_py_to_dict_internal(obj: PyObject) -> i64 { unsafe {
-    let keys_list = PY_DICT_KEYS(obj);
-    let olive_obj = crate::olive_obj_new();
-    if !keys_list.is_null() {
-        let len = PY_OBJECT_LENGTH(keys_list) as usize;
-        for i in 0..len {
-            let index_obj = PY_LONG_FROM_LONG(i as c_long);
-            let key_obj = PY_OBJECT_GET_ITEM(keys_list, index_obj);
-            if !key_obj.is_null() {
-                let val_obj = PY_OBJECT_GET_ITEM(obj, key_obj);
-
-                let key_str_obj = PY_OBJECT_STR(key_obj);
-                let key_utf8 = PY_UNICODE_AS_UTF8(key_str_obj);
-                if !key_utf8.is_null() {
-                    let key_str = CStr::from_ptr(key_utf8).to_string_lossy();
-                    let key_ptr = crate::olive_str_internal(&key_str);
-
-                    let olive_val = py_to_olive_internal(val_obj);
-
-                    crate::olive_obj_set(olive_obj, key_ptr, olive_val);
-                }
-
-                if !key_str_obj.is_null() {
-                    PY_DEC_REF(key_str_obj);
-                }
-                if !val_obj.is_null() {
-                    PY_DEC_REF(val_obj);
-                }
-                PY_DEC_REF(key_obj);
-            }
-            if !index_obj.is_null() {
-                PY_DEC_REF(index_obj);
-            }
+unsafe fn olive_py_to_bytes_internal(obj: PyObject) -> i64 {
+    unsafe {
+        let size = PY_BYTES_SIZE(obj) as usize;
+        let buf_ptr = PY_BYTES_AS_STRING(obj);
+        let bytes_ptr = crate::bytes::olive_buf_new(size as i64);
+        if size > 0 && !buf_ptr.is_null() {
+            let b = &mut *(bytes_ptr as *mut crate::bytes::OliveBytes);
+            b.data.reserve(size);
+            std::ptr::copy_nonoverlapping(buf_ptr as *const u8, b.data.as_mut_ptr(), size);
+            b.data.set_len(size);
         }
-        PY_DEC_REF(keys_list);
+        bytes_ptr
     }
-    olive_obj
-}}
-
-unsafe fn olive_py_to_set_internal(obj: PyObject) -> i64 { unsafe {
-    let py_list = PY_SEQUENCE_LIST(obj);
-    if py_list.is_null() {
-        return crate::olive_set_new(0);
-    }
-    let len = PY_OBJECT_LENGTH(py_list) as usize;
-    let set_ptr = crate::olive_set_new(len as i64);
-    for i in 0..len {
-        let index_obj = PY_LONG_FROM_LONG(i as c_long);
-        let py_item = PY_OBJECT_GET_ITEM(py_list, index_obj);
-        let olive_val = py_to_olive_internal(py_item);
-        crate::olive_set_add(set_ptr, olive_val);
-        if !py_item.is_null() {
-            PY_DEC_REF(py_item);
-        }
-        if !index_obj.is_null() {
-            PY_DEC_REF(index_obj);
-        }
-    }
-    PY_DEC_REF(py_list);
-    set_ptr
-}}
-
-unsafe fn olive_py_to_bytes_internal(obj: PyObject) -> i64 { unsafe {
-    let size = PY_BYTES_SIZE(obj) as usize;
-    let buf_ptr = PY_BYTES_AS_STRING(obj);
-    let bytes_ptr = crate::bytes::olive_buf_new(size as i64);
-    if size > 0 && !buf_ptr.is_null() {
-        let b = &mut *(bytes_ptr as *mut crate::bytes::OliveBytes);
-        b.data.reserve(size);
-        std::ptr::copy_nonoverlapping(buf_ptr as *const u8, b.data.as_mut_ptr(), size);
-        b.data.set_len(size);
-    }
-    bytes_ptr
-}}
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_to_list(obj: PyObject) -> i64 {
@@ -644,30 +687,34 @@ unsafe fn olive_py_wrap_owned(py_ptr: PyObject) -> PyObject {
     ptr
 }
 
-unsafe fn olive_py_wrap_borrowed(py_ptr: PyObject) -> PyObject { unsafe {
-    if py_ptr.is_null() {
-        return std::ptr::null_mut();
+unsafe fn olive_py_wrap_borrowed(py_ptr: PyObject) -> PyObject {
+    unsafe {
+        if py_ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+        PY_INC_REF(py_ptr);
+        olive_py_wrap_owned(py_ptr)
     }
-    PY_INC_REF(py_ptr);
-    olive_py_wrap_owned(py_ptr)
-}}
+}
 
-unsafe fn olive_py_wrap(py_ptr: PyObject) -> PyObject { unsafe {
-    olive_py_wrap_borrowed(py_ptr)
-}}
+unsafe fn olive_py_wrap(py_ptr: PyObject) -> PyObject {
+    unsafe { olive_py_wrap_borrowed(py_ptr) }
+}
 
-unsafe fn olive_py_unwrap(val: PyObject) -> PyObject { unsafe {
-    if val.is_null() {
-        return std::ptr::null_mut();
+unsafe fn olive_py_unwrap(val: PyObject) -> PyObject {
+    unsafe {
+        if val.is_null() {
+            return std::ptr::null_mut();
+        }
+        let ptr = val as *const c_void;
+        if is_readable_ptr(ptr) && *(ptr as *const i64) == crate::KIND_PYOBJECT {
+            let py_obj = &*(ptr as *const OlivePyObject);
+            py_obj.py_ptr
+        } else {
+            val
+        }
     }
-    let ptr = val as *const c_void;
-    if is_readable_ptr(ptr) && *(ptr as *const i64) == crate::KIND_PYOBJECT {
-        let py_obj = &*(ptr as *const OlivePyObject);
-        py_obj.py_ptr
-    } else {
-        val
-    }
-}}
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_dict_keys_ffi(obj_ptr: i64) -> i64 {
@@ -932,7 +979,6 @@ pub extern "C" fn olive_py_setitem_safe(obj: PyObject, key: PyObject, val: PyObj
 mod tests {
     use super::*;
 
-
     #[test]
     fn test_zero_copy_proxy_and_safe_boundaries() {
         olive_py_initialize();
@@ -1006,26 +1052,35 @@ mod tests {
             PY_DEC_REF(idx_to_del);
 
             assert_eq!(crate::olive_list_len(list_ptr), 2);
-            assert_ne!(crate::olive_str_from_ptr(crate::olive_list_get(list_ptr, 1)), "inserted");
+            assert_ne!(
+                crate::olive_str_from_ptr(crate::olive_list_get(list_ptr, 1)),
+                "inserted"
+            );
 
             let dict_ptr = crate::olive_obj_new();
             let py_dict = olive_to_py(dict_ptr);
-            
+
             let dict_key = PY_UNICODE_FROM_STRING(b"testkey\0".as_ptr() as *const c_char);
             let dict_val = PY_LONG_FROM_LONG(9876);
             assert_ne!(PY_OBJECT_SET_ITEM(py_dict, dict_key, dict_val), -1);
             PY_DEC_REF(dict_key);
             PY_DEC_REF(dict_val);
-            
-            assert_eq!(crate::olive_obj_get(dict_ptr, crate::olive_str_internal("testkey")), 9876);
+
+            assert_eq!(
+                crate::olive_obj_get(dict_ptr, crate::olive_str_internal("testkey")),
+                9876
+            );
 
             let dict_del_key = PY_UNICODE_FROM_STRING(b"testkey\0".as_ptr() as *const c_char);
             let dict_del_res = PY_OBJECT_DEL_ITEM(py_dict, dict_del_key);
             assert_ne!(dict_del_res, -1);
             PY_DEC_REF(dict_del_key);
 
-            assert_eq!(crate::olive_obj_get(dict_ptr, crate::olive_str_internal("testkey")), 0);
-            
+            assert_eq!(
+                crate::olive_obj_get(dict_ptr, crate::olive_str_internal("testkey")),
+                0
+            );
+
             PY_DEC_REF(py_dict);
             crate::olive_free_obj(dict_ptr);
 

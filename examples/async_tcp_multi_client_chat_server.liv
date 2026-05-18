@@ -1,0 +1,41 @@
+import net
+
+async fn handle_client(conn: int):
+    let peer = net.tcp_peer_addr(conn)
+    print(f"Client connected: {peer}")
+    
+    net.tcp_send(conn, "Welcome to Olive Async Chat Server!\n")
+    
+    while True:
+        let data = net.tcp_recv(conn, 1024)
+        if len(data) == 0:
+            break
+            
+        print(f"[{peer}] Received {len(data)} bytes")
+        net.tcp_send(conn, f"Echo: {data}")
+    
+    print(f"Client disconnected: {peer}")
+    net.tcp_close(conn)
+
+async fn server_loop():
+    let bind_addr = "127.0.0.1:8080"
+    let server = net.tcp_listen(bind_addr)
+    
+    if server <= 0:
+        print(f"Failed to bind TCP server on {bind_addr}")
+        return
+        
+    print(f"Async chat server listening heavily on {net.tcp_listener_addr(server)}")
+    
+    while True:
+        let conn = net.tcp_accept(server)
+        if conn > 0:
+            // Spawn lightweight concurrent task for each connected client
+            async:
+                await handle_client(conn)
+
+fn main():
+    async:
+        await server_loop()
+
+main()

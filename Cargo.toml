@@ -11,6 +11,8 @@ license = "MIT"
 repository = "https://github.com/olive-language/olive"
 keywords = ["compiler", "language", "olive"]
 categories = ["compilers"]
+autoexamples = false
+
 
 
 [dependencies]

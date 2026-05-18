@@ -1,0 +1,19 @@
+fn main():
+    import py "numpy" as np
+    print("Initializing Olive matrices...")
+    let mut matrix_a = [[1.0, 2.0], [3.0, 4.0]]
+    let mut matrix_b = [[5.0, 6.0], [7.0, 8.0]]
+    
+    print("Computing matrix dot product via Python NumPy...")
+    
+    // Olive lists are automatically wrapped in zero-copy proxies when passed to Python.
+    // No serialization overhead occurs across the boundary.
+    let result_py = np.dot(matrix_a, matrix_b)
+    
+    print("NumPy computation complete. Coercing dynamic PyObject back to Olive list.")
+    let result = list(result_py)
+    
+    print("Resulting matrix:")
+    print(result)
+
+main()

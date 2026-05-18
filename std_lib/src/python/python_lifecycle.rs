@@ -1,7 +1,7 @@
-use crate::python::*;
 use crate::python::python_compat::*;
-use std::os::raw::{c_char, c_void};
+use crate::python::*;
 use std::ffi::CString;
+use std::os::raw::{c_char, c_void};
 use std::sync::atomic::Ordering;
 
 #[unsafe(no_mangle)]
@@ -10,7 +10,9 @@ pub extern "C" fn olive_py_initialize() {
     ONCE.call_once(|| unsafe {
         let mut handle: *mut c_void = std::ptr::null_mut();
 
-        if let Ok(env_path) = std::env::var("OLIVE_PYTHON_PATH").or_else(|_| std::env::var("PYTHON_LIBRARY")) {
+        if let Ok(env_path) =
+            std::env::var("OLIVE_PYTHON_PATH").or_else(|_| std::env::var("PYTHON_LIBRARY"))
+        {
             handle = compat_dlopen(&env_path);
         }
 
@@ -18,32 +20,48 @@ pub extern "C" fn olive_py_initialize() {
             #[cfg(target_os = "windows")]
             {
                 for name in &[
-                    "python3.dll", "python312.dll", "python311.dll", 
-                    "python310.dll", "python39.dll"
+                    "python3.dll",
+                    "python312.dll",
+                    "python311.dll",
+                    "python310.dll",
+                    "python39.dll",
                 ] {
                     handle = compat_dlopen(name);
-                    if !handle.is_null() { break; }
+                    if !handle.is_null() {
+                        break;
+                    }
                 }
             }
             #[cfg(target_os = "macos")]
             {
                 for name in &[
-                    "libpython3.dylib", "libpython3.12.dylib", "libpython3.11.dylib", 
-                    "libpython3.10.dylib", "libpython3.9.dylib",
-                    "/opt/homebrew/lib/libpython3.11.dylib", "/opt/homebrew/lib/libpython3.12.dylib"
+                    "libpython3.dylib",
+                    "libpython3.12.dylib",
+                    "libpython3.11.dylib",
+                    "libpython3.10.dylib",
+                    "libpython3.9.dylib",
+                    "/opt/homebrew/lib/libpython3.11.dylib",
+                    "/opt/homebrew/lib/libpython3.12.dylib",
                 ] {
                     handle = compat_dlopen(name);
-                    if !handle.is_null() { break; }
+                    if !handle.is_null() {
+                        break;
+                    }
                 }
             }
             #[cfg(not(any(target_os = "windows", target_os = "macos")))]
             {
                 for name in &[
-                    "libpython3.so", "libpython3.12.so", "libpython3.11.so", 
-                    "libpython3.10.so", "libpython3.9.so"
+                    "libpython3.so",
+                    "libpython3.12.so",
+                    "libpython3.11.so",
+                    "libpython3.10.so",
+                    "libpython3.9.so",
                 ] {
                     handle = compat_dlopen(name);
-                    if !handle.is_null() { break; }
+                    if !handle.is_null() {
+                        break;
+                    }
                 }
             }
         }
@@ -70,6 +88,8 @@ pub extern "C" fn olive_py_initialize() {
         PY_FLOAT_FROM_DOUBLE = compat_dlsym(handle, "PyFloat_FromDouble");
         PY_UNICODE_FROM_STRING = compat_dlsym(handle, "PyUnicode_FromString");
         PY_LIST_NEW = compat_dlsym(handle, "PyList_New");
+        PY_LIST_SET_ITEM = compat_dlsym(handle, "PyList_SetItem");
+        PY_OBJECT_GET_ITEM = compat_dlsym(handle, "PyObject_GetItem");
         PY_OBJECT_SET_ITEM = compat_dlsym(handle, "PyObject_SetItem");
         PY_OBJECT_DEL_ITEM = compat_dlsym(handle, "PyObject_DelItem");
         PY_OBJECT_LENGTH = compat_dlsym(handle, "PyObject_Length");
@@ -167,8 +187,6 @@ pub extern "C" fn olive_py_finalize() {
         }
     }
 }
-
-
 
 pub fn is_readable_ptr(ptr: *const c_void) -> bool {
     crate::is_active_object(ptr as i64)

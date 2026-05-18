@@ -38,4 +38,3 @@ pub extern "C" fn olive_set_add(set_ptr: i64, val: i64) {
         }
     }
 }
-

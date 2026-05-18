@@ -96,7 +96,11 @@ pub unsafe extern "C" fn noop_tuple_setitem(_: PyObject, _: isize, _: PyObject) 
 pub unsafe extern "C" fn noop_dict_new() -> PyObject {
     std::ptr::null_mut()
 }
-pub unsafe extern "C" fn noop_dict_setitemstring(_: PyObject, _: *const c_char, _: PyObject) -> c_int {
+pub unsafe extern "C" fn noop_dict_setitemstring(
+    _: PyObject,
+    _: *const c_char,
+    _: PyObject,
+) -> c_int {
     -1
 }
 pub unsafe extern "C" fn noop_err_fetch(_: *mut PyObject, _: *mut PyObject, _: *mut PyObject) {}
@@ -106,4 +110,3 @@ unsafe extern "system" {
     fn LoadLibraryA(lpLibFileName: *const u8) -> *mut c_void;
     fn GetProcAddress(hModule: *mut c_void, lpProcName: *const u8) -> *mut c_void;
 }
-

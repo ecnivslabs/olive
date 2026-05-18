@@ -70,7 +70,10 @@ pub fn compile_and_emit(filename: &str, output: &str, show_time: bool) {
     let cg_duration = cg_start.elapsed();
 
     let link_start = std::time::Instant::now();
-    if let Some(parent) = Path::new(output).parent().filter(|p| !p.as_os_str().is_empty()) {
+    if let Some(parent) = Path::new(output)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+    {
         fs::create_dir_all(parent).unwrap_or_else(|e| {
             eprintln!(
                 "error: could not create output directory {}: {e}",

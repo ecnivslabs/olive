@@ -164,6 +164,7 @@ pub(super) fn resolve_builtin_import(
             "__olive_print_str" => Some("__olive_print_str"),
             "__olive_print_float" => Some("__olive_print_float"),
             "__olive_print_list" => Some("__olive_print_list"),
+            "__olive_print_list_float" => Some("__olive_print_list_float"),
             "__olive_print_obj" => Some("__olive_print_obj"),
             "__olive_str" => Some("__olive_str"),
             "__olive_int" => Some("__olive_int"),
@@ -554,7 +555,12 @@ pub(super) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
         },
         "print" => match current_ty {
             OliveType::Str => Some("__olive_print_str"),
-            OliveType::Float => Some("__olive_print_float"),
+            OliveType::Float | OliveType::F32 => Some("__olive_print_float"),
+            OliveType::List(inner)
+                if matches!(inner.as_ref(), OliveType::Float | OliveType::F32) =>
+            {
+                Some("__olive_print_list_float")
+            }
             OliveType::List(_) | OliveType::Tuple(_) | OliveType::Set(_) => {
                 Some("__olive_print_list")
             }

@@ -26,9 +26,7 @@ impl<M: Module> CraneliftCodegen<M> {
     ) -> Value {
         let call_args: Vec<Value> = args
             .iter()
-            .map(|a| {
-                Self::translate_operand(builder, a, vars, string_ids, module, func_ids)
-            })
+            .map(|a| Self::translate_operand(builder, a, vars, string_ids, module, func_ids))
             .collect();
 
         if let Operand::Constant(Constant::Function(name)) = func {
@@ -51,7 +49,9 @@ impl<M: Module> CraneliftCodegen<M> {
                 || name == "next"
                 || name == "has_next"
                 || name == "slice"
-                || name == "len")
+                || name == "len"
+                || name == "list"
+                || name == "dict")
                 && !args.is_empty()
             {
                 let arg_type = match &args[0] {
@@ -74,16 +74,14 @@ impl<M: Module> CraneliftCodegen<M> {
                 return call_args[0];
             }
 
-            let is_ffi =
-                resolved_name.contains("::") && !resolved_name.starts_with("__olive");
+            let is_ffi = resolved_name.contains("::") && !resolved_name.starts_with("__olive");
 
             if let Some(&func_id) = func_ids.get(resolved_name) {
                 let is_aot_vararg = ffi_vararg_ids.contains(resolved_name);
                 let local_func = module.declare_func_in_func(func_id, builder.func);
                 let mut final_args = Vec::new();
                 let mut sret_ptr = None;
-                let is_builtin =
-                    resolved_name.starts_with("__olive") || resolved_name == "print";
+                let is_builtin = resolved_name.starts_with("__olive") || resolved_name == "print";
                 let accepts_float = resolved_name == "__olive_print_float"
                     || resolved_name == "__olive_float_to_str"
                     || resolved_name == "__olive_float_to_int"
@@ -93,21 +91,21 @@ impl<M: Module> CraneliftCodegen<M> {
                 let ffi_entry = ffi_entries.iter().find(|e| e.jit_name == resolved_name);
 
                 if let Some(entry) = ffi_entry
-                    && entry.use_sret {
-                        let ret_name = entry.ret.as_ref().unwrap();
-                        let size = *c_struct_sizes.get(ret_name).unwrap();
-                        let slot = builder.create_sized_stack_slot(StackSlotData::new(
-                            StackSlotKind::ExplicitSlot,
-                            size as u32,
-                            3,
-                        ));
-                        let ptr =
-                            builder
-                                .ins()
-                                .stack_addr(module.isa().pointer_type(), slot, 0);
-                        final_args.push(ptr);
-                        sret_ptr = Some(ptr);
-                    }
+                    && entry.use_sret
+                {
+                    let ret_name = entry.ret.as_ref().unwrap();
+                    let size = *c_struct_sizes.get(ret_name).unwrap();
+                    let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        size as u32,
+                        3,
+                    ));
+                    let ptr = builder
+                        .ins()
+                        .stack_addr(module.isa().pointer_type(), slot, 0);
+                    final_args.push(ptr);
+                    sret_ptr = Some(ptr);
+                }
 
                 for (i, &arg) in call_args.iter().enumerate() {
                     let is_str_arg = args.get(i).is_some_and(|op| match op {
@@ -120,84 +118,142 @@ impl<M: Module> CraneliftCodegen<M> {
 
                     if is_ffi
                         && let Some(entry) = ffi_entry
-                            && i < entry.params.len() {
-                                 let p_type = &entry.params[i];
-                                 if let Some(layout) = c_struct_offsets.get(p_type) {
-                                     let size = *c_struct_sizes.get(p_type).unwrap_or(&8);
-                                     let is_windows = cfg!(target_os = "windows");
-                                     if is_windows {
-                                         if size == 1 || size == 2 || size == 4 || size == 8 {
-                                             let ty = match size {
-                                                 1 => types::I8,
-                                                 2 => types::I16,
-                                                 4 => types::I32,
-                                                 _ => types::I64,
-                                             };
-                                             let val = builder.ins().load(ty, MemFlags::trusted(), arg, 0);
-                                             final_args.push(val);
-                                         } else {
-                                             let slot = builder.create_sized_stack_slot(StackSlotData::new(
-                                                 StackSlotKind::ExplicitSlot,
-                                                 size as u32,
-                                                 3,
-                                             ));
-                                             let stack_ptr = builder.ins().stack_addr(module.isa().pointer_type(), slot, 0);
-                                             for (_, offset, ty_name, bits) in layout {
-                                                 if bits.is_some() { continue; }
-                                                 let cl_ty = super::ffi_cl_type(ty_name);
-                                                 let val = builder.ins().load(cl_ty, MemFlags::trusted(), arg, *offset);
-                                                 builder.ins().store(MemFlags::trusted(), val, stack_ptr, *offset);
-                                             }
-                                             final_args.push(stack_ptr);
-                                         }
-                                     } else {
-                                         if size <= 8 {
-                                             let has_float = layout.iter().any(|(_, _, ty_name, _)| ty_name == "float" || ty_name == "f32" || ty_name == "f64");
-                                             let ty = if has_float {
-                                                 if size <= 4 { types::F32 } else { types::F64 }
-                                             } else {
-                                                 if size <= 1 {
-                                                     types::I8
-                                                 } else if size <= 2 {
-                                                     types::I16
-                                                 } else if size <= 4 {
-                                                     types::I32
-                                                 } else {
-                                                     types::I64
-                                                 }
-                                             };
-                                             let val = builder.ins().load(ty, MemFlags::trusted(), arg, 0);
-                                             final_args.push(val);
-                                         } else if size <= 16 {
-                                             let first_has_float = layout.iter().any(|(_, offset, ty_name, _)| *offset < 8 && (ty_name == "float" || ty_name == "f32" || ty_name == "f64"));
-                                             let second_has_float = layout.iter().any(|(_, offset, ty_name, _)| *offset >= 8 && (ty_name == "float" || ty_name == "f32" || ty_name == "f64"));
-                                             
-                                             let first_ty = if first_has_float { types::F64 } else { types::I64 };
-                                             let second_ty = if second_has_float { types::F64 } else { types::I64 };
-                                             
-                                             let val1 = builder.ins().load(first_ty, MemFlags::trusted(), arg, 0);
-                                             let val2 = builder.ins().load(second_ty, MemFlags::trusted(), arg, 8);
-                                             
-                                             final_args.push(val1);
-                                             final_args.push(val2);
-                                         } else {
-                                             let slot = builder.create_sized_stack_slot(StackSlotData::new(
-                                                 StackSlotKind::ExplicitSlot,
-                                                 size as u32,
-                                                 3,
-                                             ));
-                                             let stack_ptr = builder.ins().stack_addr(module.isa().pointer_type(), slot, 0);
-                                             for (_, offset, ty_name, bits) in layout {
-                                                 if bits.is_some() { continue; }
-                                                 let cl_ty = super::ffi_cl_type(ty_name);
-                                                 let val = builder.ins().load(cl_ty, MemFlags::trusted(), arg, *offset);
-                                                 builder.ins().store(MemFlags::trusted(), val, stack_ptr, *offset);
-                                             }
-                                             final_args.push(stack_ptr);
-                                         }
-                                     }
-                                     continue;
-                                 }}
+                        && i < entry.params.len()
+                    {
+                        let p_type = &entry.params[i];
+                        if let Some(layout) = c_struct_offsets.get(p_type) {
+                            let size = *c_struct_sizes.get(p_type).unwrap_or(&8);
+                            let is_windows = cfg!(target_os = "windows");
+                            if is_windows {
+                                if size == 1 || size == 2 || size == 4 || size == 8 {
+                                    let ty = match size {
+                                        1 => types::I8,
+                                        2 => types::I16,
+                                        4 => types::I32,
+                                        _ => types::I64,
+                                    };
+                                    let val = builder.ins().load(ty, MemFlags::trusted(), arg, 0);
+                                    final_args.push(val);
+                                } else {
+                                    let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                                        StackSlotKind::ExplicitSlot,
+                                        size as u32,
+                                        3,
+                                    ));
+                                    let stack_ptr = builder.ins().stack_addr(
+                                        module.isa().pointer_type(),
+                                        slot,
+                                        0,
+                                    );
+                                    for (_, offset, ty_name, bits) in layout {
+                                        if bits.is_some() {
+                                            continue;
+                                        }
+                                        let cl_ty = super::ffi_cl_type(ty_name);
+                                        let val = builder.ins().load(
+                                            cl_ty,
+                                            MemFlags::trusted(),
+                                            arg,
+                                            *offset,
+                                        );
+                                        builder.ins().store(
+                                            MemFlags::trusted(),
+                                            val,
+                                            stack_ptr,
+                                            *offset,
+                                        );
+                                    }
+                                    final_args.push(stack_ptr);
+                                }
+                            } else {
+                                if size <= 8 {
+                                    let has_float = layout.iter().any(|(_, _, ty_name, _)| {
+                                        ty_name == "float" || ty_name == "f32" || ty_name == "f64"
+                                    });
+                                    let ty = if has_float {
+                                        if size <= 4 { types::F32 } else { types::F64 }
+                                    } else {
+                                        if size <= 1 {
+                                            types::I8
+                                        } else if size <= 2 {
+                                            types::I16
+                                        } else if size <= 4 {
+                                            types::I32
+                                        } else {
+                                            types::I64
+                                        }
+                                    };
+                                    let val = builder.ins().load(ty, MemFlags::trusted(), arg, 0);
+                                    final_args.push(val);
+                                } else if size <= 16 {
+                                    let first_has_float =
+                                        layout.iter().any(|(_, offset, ty_name, _)| {
+                                            *offset < 8
+                                                && (ty_name == "float"
+                                                    || ty_name == "f32"
+                                                    || ty_name == "f64")
+                                        });
+                                    let second_has_float =
+                                        layout.iter().any(|(_, offset, ty_name, _)| {
+                                            *offset >= 8
+                                                && (ty_name == "float"
+                                                    || ty_name == "f32"
+                                                    || ty_name == "f64")
+                                        });
+
+                                    let first_ty = if first_has_float {
+                                        types::F64
+                                    } else {
+                                        types::I64
+                                    };
+                                    let second_ty = if second_has_float {
+                                        types::F64
+                                    } else {
+                                        types::I64
+                                    };
+
+                                    let val1 =
+                                        builder.ins().load(first_ty, MemFlags::trusted(), arg, 0);
+                                    let val2 =
+                                        builder.ins().load(second_ty, MemFlags::trusted(), arg, 8);
+
+                                    final_args.push(val1);
+                                    final_args.push(val2);
+                                } else {
+                                    let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                                        StackSlotKind::ExplicitSlot,
+                                        size as u32,
+                                        3,
+                                    ));
+                                    let stack_ptr = builder.ins().stack_addr(
+                                        module.isa().pointer_type(),
+                                        slot,
+                                        0,
+                                    );
+                                    for (_, offset, ty_name, bits) in layout {
+                                        if bits.is_some() {
+                                            continue;
+                                        }
+                                        let cl_ty = super::ffi_cl_type(ty_name);
+                                        let val = builder.ins().load(
+                                            cl_ty,
+                                            MemFlags::trusted(),
+                                            arg,
+                                            *offset,
+                                        );
+                                        builder.ins().store(
+                                            MemFlags::trusted(),
+                                            val,
+                                            stack_ptr,
+                                            *offset,
+                                        );
+                                    }
+                                    final_args.push(stack_ptr);
+                                }
+                            }
+                            continue;
+                        }
+                    }
 
                     if (is_ffi || is_aot_vararg) && is_str_arg {
                         final_args.push(builder.ins().band_imm(arg, -2));
@@ -205,11 +261,7 @@ impl<M: Module> CraneliftCodegen<M> {
                         && !accepts_float
                         && builder.func.dfg.value_type(arg) == types::F64
                     {
-                        final_args.push(builder.ins().bitcast(
-                            types::I64,
-                            MemFlags::new(),
-                            arg,
-                        ));
+                        final_args.push(builder.ins().bitcast(types::I64, MemFlags::new(), arg));
                     } else {
                         final_args.push(arg);
                     }
@@ -244,12 +296,21 @@ impl<M: Module> CraneliftCodegen<M> {
                             size as u32,
                             3,
                         ));
-                        let stack_ptr = builder.ins().stack_addr(module.isa().pointer_type(), slot, 0);
+                        let stack_ptr =
+                            builder
+                                .ins()
+                                .stack_addr(module.isa().pointer_type(), slot, 0);
                         if results.len() == 1 {
-                            builder.ins().store(MemFlags::trusted(), results[0], stack_ptr, 0);
+                            builder
+                                .ins()
+                                .store(MemFlags::trusted(), results[0], stack_ptr, 0);
                         } else if results.len() == 2 {
-                            builder.ins().store(MemFlags::trusted(), results[0], stack_ptr, 0);
-                            builder.ins().store(MemFlags::trusted(), results[1], stack_ptr, 8);
+                            builder
+                                .ins()
+                                .store(MemFlags::trusted(), results[0], stack_ptr, 0);
+                            builder
+                                .ins()
+                                .store(MemFlags::trusted(), results[1], stack_ptr, 8);
                         }
                         stack_ptr
                     } else {
@@ -263,10 +324,11 @@ impl<M: Module> CraneliftCodegen<M> {
 
                 if is_ffi
                     && let Some(entry) = ffi_entry
-                        && let Some(ref r) = entry.ret
-                            && r == "str" {
-                                ret_val = builder.ins().bor_imm(ret_val, 1);
-                            }
+                    && let Some(ref r) = entry.ret
+                    && r == "str"
+                {
+                    ret_val = builder.ins().bor_imm(ret_val, 1);
+                }
                 return ret_val;
             }
 
@@ -298,13 +360,14 @@ impl<M: Module> CraneliftCodegen<M> {
                         arg_val
                     };
                     if i < n_fixed
-                        && let Some(e) = entry {
-                            let declared_ty = super::ffi_cl_type(&e.params[i]);
-                            let cooked = truncate_for_store(builder, cooked, &e.params[i]);
-                            sig.params.push(AbiParam::new(declared_ty));
-                            vararg_args.push(cooked);
-                            continue;
-                        }
+                        && let Some(e) = entry
+                    {
+                        let declared_ty = super::ffi_cl_type(&e.params[i]);
+                        let cooked = truncate_for_store(builder, cooked, &e.params[i]);
+                        sig.params.push(AbiParam::new(declared_ty));
+                        vararg_args.push(cooked);
+                        continue;
+                    }
 
                     sig.params
                         .push(AbiParam::new(builder.func.dfg.value_type(cooked)));
@@ -313,9 +376,10 @@ impl<M: Module> CraneliftCodegen<M> {
 
                 if let Some(e) = entry {
                     if let Some(ref r) = e.ret
-                        && r != "void" {
-                            sig.returns.push(AbiParam::new(super::ffi_cl_type(r)));
-                        }
+                        && r != "void"
+                    {
+                        sig.returns.push(AbiParam::new(super::ffi_cl_type(r)));
+                    }
                 } else {
                     sig.returns.push(AbiParam::new(types::I64));
                 }
@@ -332,9 +396,10 @@ impl<M: Module> CraneliftCodegen<M> {
                     results[0]
                 };
                 if let Some(e) = entry
-                    && e.ret.as_deref() == Some("str") {
-                        ret_val = builder.ins().bor_imm(ret_val, 1);
-                    }
+                    && e.ret.as_deref() == Some("str")
+                {
+                    ret_val = builder.ins().bor_imm(ret_val, 1);
+                }
                 return ret_val;
             }
         }

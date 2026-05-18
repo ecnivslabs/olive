@@ -311,22 +311,23 @@ impl<M: Module> CraneliftCodegen<M> {
                         return;
                     }
                     if let Some(fields) = struct_fields.get(struct_name.as_str())
-                        && let Some(idx) = fields.iter().position(|f| f == attr) {
-                            let offset = 8 + (idx as i32) * 8;
-                            let o = Self::translate_operand(
-                                builder, obj, vars, string_ids, module, func_ids,
-                            );
-                            let v = Self::translate_operand(
-                                builder, val_op, vars, string_ids, module, func_ids,
-                            );
-                            let v = if builder.func.dfg.value_type(v) == types::F64 {
-                                builder.ins().bitcast(types::I64, MemFlags::new(), v)
-                            } else {
-                                v
-                            };
-                            builder.ins().store(MemFlags::trusted(), v, o, offset);
-                            return;
-                        }
+                        && let Some(idx) = fields.iter().position(|f| f == attr)
+                    {
+                        let offset = 8 + (idx as i32) * 8;
+                        let o = Self::translate_operand(
+                            builder, obj, vars, string_ids, module, func_ids,
+                        );
+                        let v = Self::translate_operand(
+                            builder, val_op, vars, string_ids, module, func_ids,
+                        );
+                        let v = if builder.func.dfg.value_type(v) == types::F64 {
+                            builder.ins().bitcast(types::I64, MemFlags::new(), v)
+                        } else {
+                            v
+                        };
+                        builder.ins().store(MemFlags::trusted(), v, o, offset);
+                        return;
+                    }
                 }
                 let o = Self::translate_operand(builder, obj, vars, string_ids, module, func_ids);
                 let v =

@@ -386,13 +386,14 @@ impl<'a> BorrowChecker<'a> {
                 LocalState::Initialized => {
                     if let Operand::Move(local) = op
                         && self.is_move_type(&self.func.locals[local.0].ty)
-                            && let Err(msg) = state.set(*local, LocalState::Moved) {
-                                let name = self.local_name(*local);
-                                self.errors.push(SemanticError::Custom {
-                                    msg: format!("{} `{}`", msg, name),
-                                    span,
-                                });
-                            }
+                        && let Err(msg) = state.set(*local, LocalState::Moved)
+                    {
+                        let name = self.local_name(*local);
+                        self.errors.push(SemanticError::Custom {
+                            msg: format!("{} `{}`", msg, name),
+                            span,
+                        });
+                    }
                 }
             },
             Operand::Constant(_) => {}

@@ -23,4 +23,3 @@ pub extern "C" fn olive_free_struct(ptr: i64) {
         std::alloc::dealloc(ptr as *mut u8, layout);
     }
 }
-

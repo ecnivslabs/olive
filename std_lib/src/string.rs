@@ -311,4 +311,3 @@ pub extern "C" fn olive_str_graphemes(s: i64) -> i64 {
         len,
     })) as i64
 }
-

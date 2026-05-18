@@ -204,4 +204,3 @@ pub extern "C" fn olive_is_list(val: i64) -> i64 {
     let kind = unsafe { *(val as *const i64) };
     if kind == KIND_LIST { 1 } else { 0 }
 }
-

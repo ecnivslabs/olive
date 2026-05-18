@@ -2,8 +2,8 @@ use super::errors::report_error;
 use crate::lexer::Lexer;
 use crate::mangle::mangle_statements;
 use crate::parser::{self, Parser};
-use crate::tooling::pods::find_pod_path;
 use crate::span;
+use crate::tooling::pods::find_pod_path;
 use rustc_hash::FxHashMap as HashMap;
 use std::{
     collections::HashSet,

@@ -64,11 +64,7 @@ pub fn find_library_dir() -> Option<PathBuf> {
     None
 }
 
-pub fn link_object(
-    obj_path: &str,
-    out: &str,
-    native_libs: &[FfiLibInfo],
-) {
+pub fn link_object(obj_path: &str, out: &str, native_libs: &[FfiLibInfo]) {
     let lib_dir = find_library_dir();
     let mut cmd = std::process::Command::new("cc");
 
@@ -126,9 +122,7 @@ pub fn ensure_dir(path: &str) {
     });
 }
 
-pub fn collect_native_libs(
-    program: &crate::parser::Program,
-) -> Vec<FfiLibInfo> {
+pub fn collect_native_libs(program: &crate::parser::Program) -> Vec<FfiLibInfo> {
     program
         .stmts
         .iter()

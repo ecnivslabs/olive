@@ -1,18 +1,18 @@
-pub mod struct_obj;
 pub mod enum_obj;
-pub mod set;
 pub mod list;
 pub mod obj;
-pub mod time;
+pub mod set;
 pub mod string;
+pub mod struct_obj;
+pub mod time;
 
-pub use struct_obj::*;
 pub use enum_obj::*;
-pub use set::*;
 pub use list::*;
 pub use obj::*;
-pub use time::*;
+pub use set::*;
 pub use string::*;
+pub use struct_obj::*;
+pub use time::*;
 
 use mimalloc::MiMalloc;
 
@@ -88,8 +88,9 @@ pub fn register_object(ptr: i64) {
     if ptr != 0 {
         LOCAL_ACTIVE_OBJECTS.with(|cache| cache.borrow_mut().insert(ptr));
         if check_multithreaded() {
-            let shards = ACTIVE_OBJECTS
-                .get_or_init(|| std::array::from_fn(|_| std::sync::RwLock::new(FxHashSet::default())));
+            let shards = ACTIVE_OBJECTS.get_or_init(|| {
+                std::array::from_fn(|_| std::sync::RwLock::new(FxHashSet::default()))
+            });
             shards[get_shard(ptr)].write().unwrap().insert(ptr);
         }
     }
@@ -110,7 +111,7 @@ pub fn is_active_object(ptr: i64) -> bool {
     if ptr == 0 {
         return false;
     }
-    
+
     // Fast path: Check thread-local cache first
     let in_local = LOCAL_ACTIVE_OBJECTS.with(|cache| cache.borrow().contains(&ptr));
     if in_local {
@@ -267,21 +268,54 @@ pub extern "C" fn olive_print_str(val: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_print_list(ptr: i64) -> i64 {
+    println!("{}", format_list(ptr));
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_print_list_float(ptr: i64) -> i64 {
     if ptr == 0 {
         println!("[]");
         return 0;
     }
     let v = unsafe { &*(ptr as *const StableVec) };
-    print!("[");
-    for i in 0..v.len {
-        if i > 0 {
-            print!(", ");
-        }
-        let elem = unsafe { *v.ptr.add(i) };
-        print!("{}", elem);
-    }
-    println!("]");
+    let parts: Vec<String> = (0..v.len)
+        .map(|i| {
+            let bits = unsafe { *v.ptr.add(i) };
+            format!("{}", f64::from_bits(bits as u64))
+        })
+        .collect();
+    println!("[{}]", parts.join(", "));
     0
+}
+
+fn format_list(ptr: i64) -> String {
+    if ptr == 0 {
+        return "[]".to_string();
+    }
+    let v = unsafe { &*(ptr as *const StableVec) };
+    let mut parts = Vec::with_capacity(v.len);
+    for i in 0..v.len {
+        let elem = unsafe { *v.ptr.add(i) };
+        parts.push(format_list_elem(elem));
+    }
+    format!("[{}]", parts.join(", "))
+}
+
+fn format_list_elem(val: i64) -> String {
+    // Olive strings are tagged with LSB = 1
+    if val & 1 == 1 {
+        let untagged = val & !1;
+        if untagged != 0 {
+            return format!("\"{}\"", olive_str_from_ptr(val));
+        }
+    }
+    // Nested list: val is a valid live Olive heap object
+    if is_active_object(val) {
+        return format_list(val);
+    }
+    // Plain integer
+    format!("{}", val)
 }
 
 #[unsafe(no_mangle)]

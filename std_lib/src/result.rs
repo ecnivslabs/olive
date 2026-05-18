@@ -97,11 +97,7 @@ pub extern "C" fn olive_result_unwrap_or(r: i64, default: i64) -> i64 {
         return default;
     }
     let obj = unsafe { &*(r as *const OliveResult) };
-    if obj.tag == 1 {
-        obj.payload
-    } else {
-        default
-    }
+    if obj.tag == 1 { obj.payload } else { default }
 }
 
 #[unsafe(no_mangle)]

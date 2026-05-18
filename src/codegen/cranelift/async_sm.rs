@@ -123,7 +123,9 @@ impl<M: Module> CraneliftCodegen<M> {
             builder.def_var(vars[&Local(i)], z);
         }
         builder.def_var(frame_var, frame_ptr);
+        builder.ins().jump(dispatch_blk, &[]);
         builder.switch_to_block(dispatch_blk);
+        builder.seal_block(dispatch_blk);
 
         let frame_d = builder.use_var(frame_var);
         let state_val = builder.ins().load(types::I64, mf, frame_d, 0);

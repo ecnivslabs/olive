@@ -59,11 +59,7 @@ pub extern "C" fn olive_in_obj(key: i64, obj_ptr: i64) -> i64 {
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
     if let Some(key_str) = olive_str_as_str(key) {
-        if m.fields.contains_key(key_str) {
-            1
-        } else {
-            0
-        }
+        if m.fields.contains_key(key_str) { 1 } else { 0 }
     } else {
         0
     }
@@ -150,4 +146,3 @@ pub extern "C" fn olive_obj_values(obj_ptr: i64) -> i64 {
         len,
     })) as i64
 }
-

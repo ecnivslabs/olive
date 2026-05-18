@@ -237,10 +237,11 @@ fn main() {
                 process::exit(1);
             });
 
-            let pkg = tooling::registry::resolve_version(&versions, &version_req).unwrap_or_else(|| {
-                eprintln!("error: no matching version for '{}@{}'", name, version_req);
-                process::exit(1);
-            });
+            let pkg =
+                tooling::registry::resolve_version(&versions, &version_req).unwrap_or_else(|| {
+                    eprintln!("error: no matching version for '{}@{}'", name, version_req);
+                    process::exit(1);
+                });
 
             let resolved_version = pkg.vers.clone();
             let pkg = pkg.clone();

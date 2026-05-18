@@ -78,46 +78,26 @@ impl<M: Module> CraneliftCodegen<M> {
             Rvalue::Use(op) => {
                 Self::translate_operand(builder, op, vars, string_ids, module, func_ids)
             }
-            Rvalue::Call { func, args } => {
-                Self::translate_call(
-                    func_mir,
-                    module,
-                    func_ids,
-                    string_ids,
-                    c_struct_offsets,
-                    c_struct_sizes,
-                    ffi_vararg_ptrs,
-                    ffi_vararg_ids,
-                    ffi_entries,
-                    builder,
-                    vars,
-                    func,
-                    args,
-                )
-            }
-            Rvalue::BinaryOp(op, lhs, rhs) => {
-                Self::translate_binop(
-                    func_mir,
-                    module,
-                    func_ids,
-                    string_ids,
-                    builder,
-                    vars,
-                    op,
-                    lhs,
-                    rhs,
-                )
-            }
+            Rvalue::Call { func, args } => Self::translate_call(
+                func_mir,
+                module,
+                func_ids,
+                string_ids,
+                c_struct_offsets,
+                c_struct_sizes,
+                ffi_vararg_ptrs,
+                ffi_vararg_ids,
+                ffi_entries,
+                builder,
+                vars,
+                func,
+                args,
+            ),
+            Rvalue::BinaryOp(op, lhs, rhs) => Self::translate_binop(
+                func_mir, module, func_ids, string_ids, builder, vars, op, lhs, rhs,
+            ),
             Rvalue::UnaryOp(op, operand) => {
-                Self::translate_unaryop(
-                    builder,
-                    vars,
-                    string_ids,
-                    module,
-                    func_ids,
-                    op,
-                    operand,
-                )
+                Self::translate_unaryop(builder, vars, string_ids, module, func_ids, op, operand)
             }
             Rvalue::Ref(local) | Rvalue::MutRef(local) => {
                 let var = vars.get(local).unwrap();
@@ -136,18 +116,16 @@ impl<M: Module> CraneliftCodegen<M> {
                             return load_and_extend(builder, o, offset, ty_name, bits);
                         }
                         if let Some(fields) = struct_fields.get(struct_name.as_str())
-                            && let Some(idx) = fields.iter().position(|f| f == attr) {
-                                let offset = 8 + (idx as i32) * 8;
-                                let o = Self::translate_operand(
-                                    builder, obj, vars, string_ids, module, func_ids,
-                                );
-                                return builder.ins().load(
-                                    types::I64,
-                                    MemFlags::trusted(),
-                                    o,
-                                    offset,
-                                );
-                            }
+                            && let Some(idx) = fields.iter().position(|f| f == attr)
+                        {
+                            let offset = 8 + (idx as i32) * 8;
+                            let o = Self::translate_operand(
+                                builder, obj, vars, string_ids, module, func_ids,
+                            );
+                            return builder
+                                .ins()
+                                .load(types::I64, MemFlags::trusted(), o, offset);
+                        }
                     }
                 }
                 let o = Self::translate_operand(builder, obj, vars, string_ids, module, func_ids);
@@ -271,15 +249,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 }
             }
             Rvalue::Aggregate(kind, ops) => {
-                Self::translate_aggregate(
-                    builder,
-                    vars,
-                    string_ids,
-                    module,
-                    func_ids,
-                    kind,
-                    ops,
-                )
+                Self::translate_aggregate(builder, vars, string_ids, module, func_ids, kind, ops)
             }
             Rvalue::PtrLoad(ptr_op) => {
                 let ptr =

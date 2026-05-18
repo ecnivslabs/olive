@@ -1,6 +1,6 @@
-use std::time::{SystemTime, UNIX_EPOCH, Duration};
 use std::sync::OnceLock;
 use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_time_now() -> f64 {
@@ -46,4 +46,3 @@ pub fn unix_to_ymd_hms(ts: i64) -> (i64, i64, i64, i64, i64, i64) {
     let year = if month <= 2 { y + 1 } else { y };
     (year, month, day, h, m, s)
 }
-

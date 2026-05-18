@@ -14,7 +14,16 @@ impl Resolver {
     pub fn new() -> Self {
         let mut table = SymbolTable::new();
         let builtin_fns = [
-            "print", "str", "int", "type", "len", "list_new", "list", "dict", "slice", "ffi_errno",
+            "print",
+            "str",
+            "int",
+            "type",
+            "len",
+            "list_new",
+            "list",
+            "dict",
+            "slice",
+            "ffi_errno",
         ];
         for name in builtin_fns {
             table.define(Symbol {

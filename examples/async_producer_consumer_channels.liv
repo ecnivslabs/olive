@@ -1,0 +1,46 @@
+import aio
+
+async fn producer(chan: int, count: int):
+    print(f"Producer starting. Channel pointer: {chan}")
+    let mut i = 0
+    while i < count:
+        aio.chan_send(chan, i)
+        i += 1
+        
+    // Send sentinel to signal completion
+    aio.chan_send(chan, -1)
+    print("Producer finished.")
+
+async fn consumer(chan: int, id: int):
+    print(f"Consumer {id} starting. Channel pointer: {chan}")
+    while True:
+        let val = aio.chan_recv(chan)
+        if val == -1:
+            // Propagate sentinel for remaining consumers
+            aio.chan_send(chan, -1)
+            break
+            
+        print(f"Consumer {id} processed task payload: {val}")
+        
+    print(f"Consumer {id} terminating cleanly.")
+
+fn main():
+    // Create thread-safe channel for task communication
+    let chan = aio.chan_new()
+    print(f"Created channel pointer in main: {chan}")
+    let payload_count = 10
+    
+    let p = producer(chan, payload_count)
+    let c1 = consumer(chan, 1)
+    let c2 = consumer(chan, 2)
+    
+    let fut = async:
+        print("Gathering async task execution pool...")
+
+        await aio.gather([p, c1, c2])
+        
+    aio.run(fut)
+    aio.chan_free(chan)
+    print("Task coordination execution complete.")
+
+main()
