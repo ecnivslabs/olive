@@ -374,7 +374,9 @@ impl<'a> MirBuilder<'a> {
         let o = self.lower_expr_as_copy(obj);
         let i_raw = self.lower_expr(index);
         let ty = self.get_type(expr_id);
-        let tmp = self.new_local_with_owning(ty, None, true, false);
+        // A py subscript returns a fresh owned handle; a container read is a view.
+        let owning = current_obj_ty.is_py_value();
+        let tmp = self.new_local_with_owning(ty, None, true, owning);
         if current_obj_ty.is_py_value() {
             let idx_ty = self.get_type(index.id).clone();
             let func_name = if Self::is_int_ty(&idx_ty) {

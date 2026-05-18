@@ -99,9 +99,6 @@ fn compile_with(
     );
     builder.build_program(&prog);
     opt.run(&mut builder.functions);
-    for f in &builder.functions {
-        println!("MIR FUNCTION: {}\n{:#?}", f.name, f);
-    }
     let mut cg = CraneliftCodegen::new_jit(
         builder.functions,
         builder.struct_fields,

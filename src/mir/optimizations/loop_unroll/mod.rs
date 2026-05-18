@@ -439,6 +439,16 @@ fn full_unroll(
         }
     }
 
+    // Code after the loop may still read the induction local; give it the
+    // value the final guard evaluation would have observed.
+    stmts.push(Statement {
+        kind: StatementKind::Assign(
+            plan.induction,
+            Rvalue::Use(Operand::Constant(Constant::Int(start + trip * plan.step))),
+        ),
+        span: Span::default(),
+    });
+
     let unrolled = BasicBlockId(func.basic_blocks.len());
     func.basic_blocks.push(BasicBlock {
         statements: stmts,

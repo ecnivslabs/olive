@@ -7,7 +7,7 @@ pub extern "C" fn olive_py_from_int(v: i64) -> PyObject {
     check_python_loaded();
     with_gil(|| unsafe {
         let r = PY_LONG_FROM_LONG(v as c_long);
-        olive_py_wrap_borrowed(r)
+        olive_py_wrap_owned(r)
     })
 }
 
@@ -16,7 +16,7 @@ pub extern "C" fn olive_py_from_float(v: f64) -> PyObject {
     check_python_loaded();
     with_gil(|| unsafe {
         let r = PY_FLOAT_FROM_DOUBLE(v as c_double);
-        olive_py_wrap_borrowed(r)
+        olive_py_wrap_owned(r)
     })
 }
 
@@ -28,7 +28,7 @@ pub extern "C" fn olive_py_from_str(s: i64) -> PyObject {
         if r.is_null() {
             handle_py_error();
         }
-        olive_py_wrap_borrowed(r)
+        olive_py_wrap_owned(r)
     })
 }
 
@@ -101,7 +101,7 @@ pub extern "C" fn olive_py_from_float_bits(val: i64) -> PyObject {
         let f = f64::from_bits(val as u64);
         with_gil(|| {
             let r = PY_FLOAT_FROM_DOUBLE(f as c_double);
-            olive_py_wrap_borrowed(r)
+            olive_py_wrap_owned(r)
         })
     }
 }
@@ -322,7 +322,7 @@ pub extern "C" fn olive_py_getitem(obj: PyObject, key: PyObject) -> PyObject {
         if r.is_null() {
             handle_py_error();
         }
-        olive_py_wrap_borrowed(r)
+        olive_py_wrap_owned(r)
     })
 }
 
@@ -404,7 +404,7 @@ pub extern "C" fn olive_py_getitem_int(obj: PyObject, key: i64) -> PyObject {
         if r.is_null() {
             handle_py_error();
         }
-        olive_py_wrap_borrowed(r)
+        olive_py_wrap_owned(r)
     })
 }
 

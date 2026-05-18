@@ -628,3 +628,31 @@ fn regression_list_new_kind_any_list() {
     let val = call_i64(&mut cg, "f");
     assert_eq!(val, (99 << 3) | 2);
 }
+
+#[test]
+fn regression_full_unroll_induction_exit_value() {
+    // Full unroll deleted the induction update without materializing the
+    // exit value, so code after the loop read the initial constant.
+    let mut cg = compile(
+        "fn f() -> i64:\n    let mut i = 0\n    while i < 5:\n        i += 1\n    return i\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 5);
+}
+
+#[test]
+fn regression_full_unroll_exit_value_with_body() {
+    let mut cg = compile(
+        "fn f() -> i64:\n    let mut i = 0\n    let mut s = 0\n    while i < 5:\n        s += i\n        i += 1\n    return i * 100 + s\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 510);
+}
+
+#[test]
+fn regression_scalarized_field_overwrite() {
+    // Scalarize rewrote SetAttr into a plain slot assign, leaking the old
+    // heap value; the slot must free it like a real field overwrite does.
+    let mut cg = compile(
+        "struct S:\n    v: str\n\nfn f() -> i64:\n    let mut s = S('a')\n    let mut i = 0\n    while i < 100:\n        s.v = 'xy' + str(i)\n        i += 1\n    return len(s.v)\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 4);
+}

@@ -15,7 +15,6 @@ pub mod tooling;
 #[cfg(test)]
 pub mod olive_tests;
 #[cfg(test)]
-#[cfg(test)]
 pub mod regression_tests;
 #[cfg(test)]
 pub mod speculation_tests;
