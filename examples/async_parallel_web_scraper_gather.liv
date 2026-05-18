@@ -1,0 +1,35 @@
+import aio
+import requests
+
+async fn fetch_target(url: str) -> str:
+    print(f"Initiating HTTP fetch for {url} ...")
+    let response = requests.get(url)
+    print(f"Completed HTTP fetch for {url}. Payload size: {len(response)} bytes.")
+    return response
+
+fn main():
+    let fut = async:
+        let targets = [
+            "https://example.com",
+            "https://httpbin.org/get",
+            "https://jsonplaceholder.typicode.com/todos/1"
+        ]
+        print("Dispatching parallel HTTP fetches...")
+        // Gather executes all futures concurrently and resolves when all are complete
+        let payloads = await aio.gather([
+            fetch_target(targets[0]),
+            fetch_target(targets[1]),
+            fetch_target(targets[2])
+        ])
+        
+        print("All asynchronous fetches resolved successfully.")
+        
+        let mut i = 0
+        for payload in payloads:
+            let content_str = str(payload)
+            print(f"Target {i} payload signature: {len(content_str)} bytes received.")
+            i += 1
+            
+    aio.run(fut)
+
+main()

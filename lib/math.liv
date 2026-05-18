@@ -9,7 +9,7 @@ fn log(x: float) -> float: return __olive_math_log(x)
 fn log10(x: float) -> float: return __olive_math_log10(x)
 fn exp(x: float) -> float: return __olive_math_exp(x)
 
-# math algorithms in pure olive
+// math algorithms in pure olive
 
 const PI = 3.141592653589793
 const E  = 2.718281828459045
@@ -54,7 +54,7 @@ fn isclose(a: float, b: float) -> bool:
 
 
 fn sqrt(x: float) -> float:
-    # newton-raphson
+    // newton-raphson
     if x < 0.0:
         return 0.0 / 0.0
     if x == 0.0:
@@ -204,7 +204,7 @@ fn radians(x: float) -> float:
 
 
 fn erf(x: float) -> float:
-    # horner-form
+    // horner-form
     let t = 1.0 / (1.0 + 0.3275911 * abs(x))
     let poly = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))))
     let result = 1.0 - poly * exp(-x * x)

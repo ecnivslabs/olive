@@ -128,13 +128,17 @@ impl<'a> MirBuilder<'a> {
                 let tmp = self.new_local(Type::Any, None, false);
                 self.enter_scope();
                 let mut last_op = Operand::Constant(Constant::None);
-                for s in body {
-                    self.lower_stmt(s);
-                    if let StmtKind::ExprStmt(e) = &s.kind {
-                        last_op = self.lower_expr(e);
+                for (i, s) in body.iter().enumerate() {
+                    if i == body.len() - 1 {
+                        if let StmtKind::ExprStmt(e) = &s.kind {
+                            last_op = self.lower_expr(e);
+                        } else {
+                            self.lower_stmt(s);
+                        }
+                    } else {
+                        self.lower_stmt(s);
                     }
                 }
-                self.leave_scope();
                 self.push_statement(
                     StatementKind::Assign(
                         tmp,
@@ -147,6 +151,7 @@ impl<'a> MirBuilder<'a> {
                     ),
                     expr.span,
                 );
+                self.leave_scope();
                 Operand::Copy(tmp)
             }
 

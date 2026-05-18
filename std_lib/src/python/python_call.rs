@@ -23,9 +23,23 @@ pub extern "C" fn olive_py_call(func: PyObject, args_list: i64) -> PyObject {
         }
 
         let res = PY_OBJECT_CALL_OBJECT(unwrapped_func, py_args);
-        if res.is_null() {
+
+        use std::ffi::CStr;
+        if !res.is_null() {
+            let str_obj = PY_OBJECT_STR(res);
+            if !str_obj.is_null() {
+                let utf8_ptr = PY_UNICODE_AS_UTF8(str_obj);
+                if !utf8_ptr.is_null() {
+                    let s = CStr::from_ptr(utf8_ptr).to_string_lossy();
+                    println!("DEBUG JIT: olive_py_call returned: {}", s);
+                }
+                PY_DEC_REF(str_obj);
+            }
+        } else {
+            println!("DEBUG JIT: olive_py_call returned NULL!");
             handle_py_error();
         }
+
         if !py_args.is_null() {
             PY_DEC_REF(py_args);
         }
@@ -89,4 +103,3 @@ pub extern "C" fn olive_py_call_kw(func: PyObject, args_list: i64, kwargs_dict: 
         olive_py_wrap_owned(res)
     }
 }
-

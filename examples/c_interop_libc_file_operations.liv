@@ -1,0 +1,34 @@
+import "libc.so.6" as libc:
+    fn malloc(size: int) -> *void
+    fn free(ptr: *void)
+    fn printf(fmt: str, *args) -> int
+    fn open(path: str, flags: int, mode: int) -> int
+    fn write(fd: int, buf: str, count: int) -> int
+    fn close(fd: int) -> int
+
+fn main():
+    // File flags mapping for Linux (O_CREAT | O_WRONLY | O_TRUNC)
+    let flags = 64 + 1 + 512
+    let mode = 420  // 0644 in octal
+    let filepath = "ffi_output_test.txt"
+    let message = "Written directly via libc.so.6 FFI from Olive!\n"
+
+    unsafe:
+        libc.printf("Allocating buffer via malloc...\n")
+        let ptr = libc.malloc(1024)
+        
+        if int(ptr) != 0:
+            libc.printf("Buffer allocated successfully at address. Freeing...\n")
+            libc.free(ptr)
+        
+        libc.printf("Opening file descriptor directly via C ABI...\n")
+        let fd = libc.open(filepath, flags, mode)
+        
+        if fd >= 0:
+            libc.write(fd, message, len(message))
+            libc.close(fd)
+            libc.printf("File written and closed safely.\n")
+        else:
+            libc.printf("Failed to open file descriptor.\n")
+
+main()

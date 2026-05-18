@@ -30,14 +30,12 @@ impl<M: Module> CraneliftCodegen<M> {
 
                 if is_str {
                     let concat_func_id = func_ids.get("__olive_str_concat").unwrap();
-                    let local_func =
-                        module.declare_func_in_func(*concat_func_id, builder.func);
+                    let local_func = module.declare_func_in_func(*concat_func_id, builder.func);
                     let inst = builder.ins().call(local_func, &[l, r]);
                     builder.inst_results(inst)[0]
                 } else if is_list {
                     let concat_func_id = func_ids.get("__olive_list_concat").unwrap();
-                    let local_func =
-                        module.declare_func_in_func(*concat_func_id, builder.func);
+                    let local_func = module.declare_func_in_func(*concat_func_id, builder.func);
                     let inst = builder.ins().call(local_func, &[l, r]);
                     builder.inst_results(inst)[0]
                 } else if is_float {

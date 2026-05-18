@@ -69,5 +69,3 @@ pub extern "C" fn olive_free_enum(ptr: i64) {
         }
     }
 }
-
-

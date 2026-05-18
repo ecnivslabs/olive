@@ -1,4 +1,4 @@
-# async io
+// async io
 
 fn run(future):
     return await future
@@ -21,7 +21,7 @@ fn cancel(future):
 fn free_future(future):
     __olive_free_future(future)
 
-# channels
+// channels
 
 fn chan_new() -> int:
     return __olive_chan_new()
@@ -44,7 +44,7 @@ fn chan_close(chan: int):
 fn chan_free(chan: int):
     __olive_chan_free(chan)
 
-# mutex
+// mutex
 
 fn mutex_new(val) -> int:
     return __olive_mutex_new(val)
@@ -58,7 +58,7 @@ fn mutex_unlock(m: int, new_val):
 fn mutex_free(m: int):
     __olive_mutex_free(m)
 
-# atomics
+// atomics
 
 fn atomic_new(val: int) -> int:
     return __olive_atomic_new(val)
@@ -78,7 +78,7 @@ fn atomic_cas(ptr: int, expected: int, new_val: int) -> bool:
 fn atomic_free(ptr: int):
     __olive_atomic_free(ptr)
 
-# worker pool
+// worker pool
 
 fn pool_size() -> int:
     return __olive_pool_size()

@@ -1,6 +1,6 @@
 use crate::python::*;
-use std::os::raw::{c_double, c_long};
 use std::ffi::CString;
+use std::os::raw::{c_double, c_long};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_from_int(v: i64) -> PyObject {
@@ -59,19 +59,28 @@ pub extern "C" fn olive_py_conv_to_olive(py_val: PyObject) -> i64 {
     }
 }
 
-pub unsafe fn olive_py_create_list_proxy(ptr: i64) -> PyObject { unsafe {
-    let obj = crate::python_proxy::PY_TYPE_GENERIC_ALLOC(crate::python_proxy::OLIVE_LIST_PROXY_TYPE, 0);
-    if !obj.is_null() {
-        (*(obj as *mut crate::python_proxy::NativeProxy)).ptr = ptr;
+pub unsafe fn olive_py_create_list_proxy(ptr: i64) -> PyObject {
+    unsafe {
+        let obj = crate::python_proxy::PY_TYPE_GENERIC_ALLOC(
+            crate::python_proxy::OLIVE_LIST_PROXY_TYPE,
+            0,
+        );
+        if !obj.is_null() {
+            (*(obj as *mut crate::python_proxy::NativeProxy)).ptr = ptr;
+        }
+        obj
     }
-    obj
-}}
+}
 
-pub unsafe fn olive_py_create_dict_proxy(ptr: i64) -> PyObject { unsafe {
-    let obj = crate::python_proxy::PY_TYPE_GENERIC_ALLOC(crate::python_proxy::OLIVE_DICT_PROXY_TYPE, 0);
-    if !obj.is_null() {
-        (*(obj as *mut crate::python_proxy::NativeProxy)).ptr = ptr;
+pub unsafe fn olive_py_create_dict_proxy(ptr: i64) -> PyObject {
+    unsafe {
+        let obj = crate::python_proxy::PY_TYPE_GENERIC_ALLOC(
+            crate::python_proxy::OLIVE_DICT_PROXY_TYPE,
+            0,
+        );
+        if !obj.is_null() {
+            (*(obj as *mut crate::python_proxy::NativeProxy)).ptr = ptr;
+        }
+        obj
     }
-    obj
-}}
-
+}

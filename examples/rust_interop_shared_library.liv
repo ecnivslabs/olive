@@ -1,0 +1,27 @@
+// To run this example, first compile the Rust backend:
+//
+// // rust_math.rs
+// // Compile with: rustc --crate-type cdylib rust_math.rs
+// #[no_mangle]
+// pub extern "C" fn compute_fast_hash(input: i64) -> i64 {
+//     (input ^ 0xDEADBEEF).wrapping_mul(0x1337)
+// }
+
+import "./librust_math.so" as rust:
+    @cdecl
+    fn compute_fast_hash(input: int) -> int
+
+fn process_data(data: [int]):
+    print(f"Processing {len(data)} items through Rust backend...")
+    
+    for item in data:
+        unsafe:
+            // Calling the Rust C-ABI function directly with zero overhead
+            let hashed = rust.compute_fast_hash(item)
+            print(f"Input: {item} -> Hash: {hashed}")
+
+fn main():
+    let dataset = [10, 20, 42, 100, 999]
+    process_data(dataset)
+
+main()
