@@ -17,24 +17,52 @@ fn exec_lock() -> MutexGuard<'static, ()> {
         .unwrap_or_else(|e| e.into_inner())
 }
 
-pub fn compile(src: &str) -> CraneliftCodegen<JITModule> {
+/// Owns a JIT codegen instance and unmaps its executable memory on drop.
+/// cranelift leaks JITModule mappings unless `free_memory` runs; per-case
+/// compiles in proptest suites exhaust commit space without this (Windows CI).
+pub struct JitInstance(Option<CraneliftCodegen<JITModule>>);
+
+impl std::ops::Deref for JitInstance {
+    type Target = CraneliftCodegen<JITModule>;
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().unwrap()
+    }
+}
+
+impl std::ops::DerefMut for JitInstance {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.as_mut().unwrap()
+    }
+}
+
+impl Drop for JitInstance {
+    fn drop(&mut self) {
+        if let Some(cg) = self.0.take() {
+            // Safety: every pointer into this module dies with the instance;
+            // tests never leave threads or handlers holding its code.
+            unsafe { cg.into_module().free_memory() }
+        }
+    }
+}
+
+pub fn compile(src: &str) -> JitInstance {
     compile_with(src, Optimizer::new(), true, false)
 }
 
 /// Lean `pit run` pipeline; full opt can scalarize/inline a bug away.
-pub fn compile_minimal(src: &str) -> CraneliftCodegen<JITModule> {
+pub fn compile_minimal(src: &str) -> JitInstance {
     compile_with(src, Optimizer::minimal(), true, false)
 }
 
 /// Same JIT pipeline as `compile`, with call-count profiling disabled. Lets
 /// tests and benchmarks isolate the cost of the profiling instrumentation itself.
-pub fn compile_unprofiled(src: &str) -> CraneliftCodegen<JITModule> {
+pub fn compile_unprofiled(src: &str) -> JitInstance {
     compile_with(src, Optimizer::new(), false, false)
 }
 
 /// `compile_minimal` with profiling off -- avoids the inliner folding the
 /// callee away, unlike `compile`/`compile_unprofiled`.
-pub fn compile_minimal_unprofiled(src: &str) -> CraneliftCodegen<JITModule> {
+pub fn compile_minimal_unprofiled(src: &str) -> JitInstance {
     compile_with(src, Optimizer::minimal(), false, false)
 }
 
@@ -73,12 +101,7 @@ pub fn compile_minimal_aot(src: &str) -> CraneliftCodegen<ObjectModule> {
     )
 }
 
-fn compile_with(
-    src: &str,
-    opt: Optimizer,
-    profile: bool,
-    release_backend: bool,
-) -> CraneliftCodegen<JITModule> {
+fn compile_with(src: &str, opt: Optimizer, profile: bool, release_backend: bool) -> JitInstance {
     let tokens = Lexer::new(src, 0).tokenise().unwrap();
     let mut prog = Parser::new(tokens).parse_program().unwrap();
     crate::semantic::desugar::desugar_trait_defaults(&mut prog);
@@ -113,7 +136,7 @@ fn compile_with(
     cg.profile = profile;
     cg.generate();
     cg.finalize();
-    cg
+    JitInstance(Some(cg))
 }
 
 pub fn call_i64(cg: &mut CraneliftCodegen<JITModule>, name: &str) -> i64 {
@@ -122,10 +145,7 @@ pub fn call_i64(cg: &mut CraneliftCodegen<JITModule>, name: &str) -> i64 {
         .unwrap_or_else(|| panic!("function '{}' not found", name));
     let f: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
     let _guard = exec_lock();
-    println!("DEBUG CALL JIT FUNCTION START: {}", name);
-    let res = f();
-    println!("DEBUG CALL JIT FUNCTION END: {} -> {}", name, res);
-    res
+    f()
 }
 
 pub fn call_i64_1(cg: &mut CraneliftCodegen<JITModule>, name: &str, a: i64) -> i64 {
