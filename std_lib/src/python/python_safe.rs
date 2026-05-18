@@ -284,6 +284,7 @@ mod tests {
 
     #[test]
     fn call_safe_rejects_bad_utf8_arg_and_clears_error() {
+        let _guard = crate::python::python_coerce::arena_test_lock();
         if !is_python_available() {
             eprintln!("Python not available, skipping test");
             return;

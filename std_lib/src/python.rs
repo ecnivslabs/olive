@@ -75,6 +75,7 @@ mod tests {
 
     #[test]
     fn test_any_to_py_unboxes_but_raw_passes_through() {
+        let _guard = crate::python::python_coerce::arena_test_lock();
         if !is_python_available() {
             eprintln!("Python not available, skipping test");
             return;
@@ -95,6 +96,7 @@ mod tests {
 
     #[test]
     fn test_dict_get_default_on_pyobject() {
+        let _guard = crate::python::python_coerce::arena_test_lock();
         if !is_python_available() {
             eprintln!("Python not available, skipping test");
             return;
@@ -151,6 +153,7 @@ mod tests {
 
     #[test]
     fn test_unbox_float_int_on_pyobject_in_any() {
+        let _guard = crate::python::python_coerce::arena_test_lock();
         if !is_python_available() {
             eprintln!("Python not available, skipping test");
             return;
@@ -167,6 +170,7 @@ mod tests {
 
     #[test]
     fn test_get_index_any_on_pyobject_nested_list() {
+        let _guard = crate::python::python_coerce::arena_test_lock();
         if !is_python_available() {
             eprintln!("Python not available, skipping test");
             return;
@@ -204,6 +208,7 @@ mod tests {
 
     #[test]
     fn test_realize_makes_real_dict() {
+        let _guard = crate::python::python_coerce::arena_test_lock();
         if !is_python_available() {
             eprintln!("Python not available, skipping test");
             return;
@@ -232,6 +237,7 @@ mod tests {
 
     #[test]
     fn test_zero_copy_proxy_and_safe_boundaries() {
+        let _guard = crate::python::python_coerce::arena_test_lock();
         if !is_python_available() {
             eprintln!("Python not available, skipping test");
             return;
@@ -342,6 +348,7 @@ mod tests {
 
     #[test]
     fn test_interop_leak_prevention() {
+        let _guard = crate::python::python_coerce::arena_test_lock();
         if !is_python_available() {
             eprintln!("Python not available, skipping test");
             return;

@@ -4,9 +4,7 @@ use crate::semantic::types::Type as OliveType;
 
 fn is_pyobj_op(local_types: &[OliveType], op: &Operand) -> bool {
     match op {
-        Operand::Copy(l) | Operand::Move(l) => {
-            matches!(local_types[l.0], OliveType::PyObject)
-        }
+        Operand::Copy(l) | Operand::Move(l) => local_types[l.0].is_py_value(),
         _ => false,
     }
 }

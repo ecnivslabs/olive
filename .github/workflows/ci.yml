@@ -40,3 +40,8 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace
+        env:
+          # cranelift's ISLE-generated lowering is deeply nested and mostly
+          # uninlined in debug builds; MSVC debug frames are large enough
+          # that Windows' 1MiB default thread stack isn't enough headroom.
+          RUST_MIN_STACK: "16777216"

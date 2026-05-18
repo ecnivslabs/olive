@@ -19,7 +19,7 @@ impl<M: Module> CraneliftCodegen<M> {
     ) -> Value {
         let val = Self::translate_operand(builder, op, vars, string_ids, module, func_ids);
         if let Operand::Copy(src) = op
-            && matches!(func_mir.locals[src.0].ty, OliveType::PyObject)
+            && func_mir.locals[src.0].ty.is_py_value()
         {
             let copy_ref_id = func_ids
                 .get("__olive_py_copy_ref")

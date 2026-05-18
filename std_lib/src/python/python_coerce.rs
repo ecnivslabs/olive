@@ -134,6 +134,14 @@ impl Arena {
 
 static ARENA: std::sync::OnceLock<RwLock<Arena>> = std::sync::OnceLock::new();
 
+/// Serializes arena-liveness tests: cargo runs test fns on separate threads,
+/// and a freed slot can be reallocated by another test between free and check.
+#[cfg(test)]
+pub(crate) fn arena_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 unsafe impl Send for OlivePyObject {}
 unsafe impl Sync for OlivePyObject {}
 
