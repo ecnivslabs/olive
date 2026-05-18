@@ -97,6 +97,8 @@ impl Licm {
                         && func.locals[local.0].name.is_none()
                         && assign_counts.get(local) == Some(&1)
                         && !invariant_locals.contains(local)
+                        // Hoisting a move-type value past its Drop would free it early.
+                        && !func.locals[local.0].ty.is_move_type()
                         && self.is_invariant(rval, &defined_in_loop, &invariant_locals)
                         && self.is_safe_to_hoist(rval)
                     {

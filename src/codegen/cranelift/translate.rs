@@ -493,7 +493,7 @@ impl<M: Module> CraneliftCodegen<M> {
                         // harmless null.
                         if let Some(field_ty) =
                             field_types.get(&(struct_name.clone(), attr.clone()))
-                            && matches!(field_ty, OliveType::PyObject)
+                            && matches!(field_ty, OliveType::PyObject | OliveType::PyNamed(_, _))
                         {
                             let decref_id = func_ids
                                 .get("__olive_py_decref")
