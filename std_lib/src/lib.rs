@@ -51,6 +51,7 @@ pub(crate) const KIND_ENUM: i64 = 3;
 pub(crate) const KIND_SET: i64 = 4;
 pub(crate) const KIND_BYTES: i64 = 6;
 pub(crate) const KIND_PYOBJECT: i64 = 7;
+pub(crate) const KIND_ITER: i64 = 8;
 
 const SHARDS: usize = 16;
 static ACTIVE_OBJECTS: OnceLock<[std::sync::RwLock<FxHashSet<i64>>; SHARDS]> = OnceLock::new();
@@ -61,13 +62,26 @@ use std::sync::atomic::{AtomicBool, Ordering};
 static IS_MULTITHREADED: AtomicBool = AtomicBool::new(false);
 static MAIN_THREAD_ID: OnceLock<std::thread::ThreadId> = OnceLock::new();
 
+thread_local! {
+    static IS_MAIN_THREAD: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
 #[inline]
 fn check_multithreaded() -> bool {
     if IS_MULTITHREADED.load(Ordering::Relaxed) {
         return true;
     }
-    let main_id = MAIN_THREAD_ID.get_or_init(|| std::thread::current().id());
-    if std::thread::current().id() != *main_id {
+    let is_main = IS_MAIN_THREAD.with(|c| {
+        if let Some(v) = c.get() {
+            v
+        } else {
+            let main_id = MAIN_THREAD_ID.get_or_init(|| std::thread::current().id());
+            let v = std::thread::current().id() == *main_id;
+            c.set(Some(v));
+            v
+        }
+    });
+    if !is_main {
         IS_MULTITHREADED.store(true, Ordering::Relaxed);
         true
     } else {
@@ -75,7 +89,13 @@ fn check_multithreaded() -> bool {
     }
 }
 
+static GLOBAL_MIN_PTR: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(i64::MAX);
+static GLOBAL_MAX_PTR: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+const CACHE_SIZE: usize = 4096;
+
 thread_local! {
+    static ACTIVE_CACHE: std::cell::UnsafeCell<[i64; CACHE_SIZE]> = const { std::cell::UnsafeCell::new([0; CACHE_SIZE]) };
     static LOCAL_ACTIVE_OBJECTS: RefCell<FxHashSet<i64>> = RefCell::new(FxHashSet::default());
 }
 
@@ -86,6 +106,37 @@ fn get_shard(ptr: i64) -> usize {
 
 pub fn register_object(ptr: i64) {
     if ptr != 0 {
+        let mut current_min = GLOBAL_MIN_PTR.load(Ordering::Relaxed);
+        while ptr < current_min {
+            match GLOBAL_MIN_PTR.compare_exchange_weak(
+                current_min,
+                ptr,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current_min = actual,
+            }
+        }
+        let mut current_max = GLOBAL_MAX_PTR.load(Ordering::Relaxed);
+        while ptr > current_max {
+            match GLOBAL_MAX_PTR.compare_exchange_weak(
+                current_max,
+                ptr,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current_max = actual,
+            }
+        }
+
+        ACTIVE_CACHE.with(|c| {
+            let cache = unsafe { &mut *c.get() };
+            let idx = (ptr as usize >> 3) & (CACHE_SIZE - 1);
+            cache[idx] = ptr;
+        });
+
         LOCAL_ACTIVE_OBJECTS.with(|cache| cache.borrow_mut().insert(ptr));
         if check_multithreaded() {
             let shards = ACTIVE_OBJECTS.get_or_init(|| {
@@ -98,6 +149,14 @@ pub fn register_object(ptr: i64) {
 
 pub fn unregister_object(ptr: i64) {
     if ptr != 0 {
+        ACTIVE_CACHE.with(|c| {
+            let cache = unsafe { &mut *c.get() };
+            let idx = (ptr as usize >> 3) & (CACHE_SIZE - 1);
+            if cache[idx] == ptr {
+                cache[idx] = 0;
+            }
+        });
+
         LOCAL_ACTIVE_OBJECTS.with(|cache| cache.borrow_mut().remove(&ptr));
         if check_multithreaded() {
             if let Some(shards) = ACTIVE_OBJECTS.get() {
@@ -111,23 +170,46 @@ pub fn is_active_object(ptr: i64) -> bool {
     if ptr == 0 {
         return false;
     }
+    if (ptr & 7) != 0 {
+        return false;
+    }
+    if ptr < GLOBAL_MIN_PTR.load(Ordering::Relaxed) || ptr > GLOBAL_MAX_PTR.load(Ordering::Relaxed) {
+        return false;
+    }
 
-    // Fast path: Check thread-local cache first
-    let in_local = LOCAL_ACTIVE_OBJECTS.with(|cache| cache.borrow().contains(&ptr));
-    if in_local {
+    let cache_hit = ACTIVE_CACHE.with(|c| {
+        let cache = unsafe { &*c.get() };
+        let idx = (ptr as usize >> 3) & (CACHE_SIZE - 1);
+        cache[idx] == ptr
+    });
+    if cache_hit {
         return true;
     }
 
-    // Slow path: Check global shards (only if multithreaded)
+    let in_local = LOCAL_ACTIVE_OBJECTS.with(|cache| cache.borrow().contains(&ptr));
+    if in_local {
+        ACTIVE_CACHE.with(|c| {
+            let cache = unsafe { &mut *c.get() };
+            let idx = (ptr as usize >> 3) & (CACHE_SIZE - 1);
+            cache[idx] = ptr;
+        });
+        return true;
+    }
+
     if check_multithreaded() {
         if let Some(shards) = ACTIVE_OBJECTS.get() {
-            shards[get_shard(ptr)].read().unwrap().contains(&ptr)
-        } else {
-            false
+            let in_global = shards[get_shard(ptr)].read().unwrap().contains(&ptr);
+            if in_global {
+                ACTIVE_CACHE.with(|c| {
+                    let cache = unsafe { &mut *c.get() };
+                    let idx = (ptr as usize >> 3) & (CACHE_SIZE - 1);
+                    cache[idx] = ptr;
+                });
+                return true;
+            }
         }
-    } else {
-        false
     }
+    false
 }
 
 pub fn active_objects_count() -> usize {
@@ -150,10 +232,30 @@ pub struct StableVec {
     pub len: usize,
 }
 
+#[derive(Clone, Copy)]
+pub struct OliveStringKey(pub i64);
+
+impl PartialEq for OliveStringKey {
+    fn eq(&self, other: &Self) -> bool {
+        if self.0 == other.0 { return true; }
+        let s1 = olive_str_as_str(self.0).unwrap_or("");
+        let s2 = olive_str_as_str(other.0).unwrap_or("");
+        s1 == s2
+    }
+}
+impl Eq for OliveStringKey {}
+impl std::hash::Hash for OliveStringKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        if let Some(s) = olive_str_as_str(self.0) {
+            s.hash(state);
+        }
+    }
+}
+
 #[repr(C)]
 pub struct OliveObj {
     pub kind: i64,
-    pub fields: HashMap<String, i64>,
+    pub fields: HashMap<OliveStringKey, i64>,
 }
 
 #[repr(C)]
@@ -312,14 +414,12 @@ fn looks_like_float(val: i64) -> bool {
 }
 
 fn format_list_elem(val: i64) -> String {
-    // Olive strings are tagged with LSB = 1
     if val & 1 == 1 {
         let untagged = val & !1;
         if untagged != 0 {
             return format!("\"{}\"", olive_str_from_ptr(val));
         }
     }
-    // Nested active heap objects
     if is_active_object(val) {
         let kind = unsafe { *(val as *const i64) };
         match kind {
@@ -328,7 +428,8 @@ fn format_list_elem(val: i64) -> String {
                 let m = unsafe { &*(val as *const OliveObj) };
                 let mut parts = Vec::with_capacity(m.fields.len());
                 for (k, &v) in &m.fields {
-                    parts.push(format!("'{}': {}", k, format_list_elem(v)));
+                    let k_str = olive_str_as_str(k.0).unwrap_or("");
+                    parts.push(format!("'{}': {}", k_str, format_list_elem(v)));
                 }
                 return format!("{{{}}}", parts.join(", "));
             }
@@ -344,7 +445,6 @@ fn format_list_elem(val: i64) -> String {
             _ => {}
         }
     }
-    // Plain integer or float bits
     if looks_like_float(val) {
         format!("{}", f64::from_bits(val as u64))
     } else {
@@ -364,7 +464,8 @@ pub extern "C" fn olive_print_obj(ptr: i64) -> i64 {
         if i > 0 {
             print!(", ");
         }
-        print!("'{}': {}", k, v);
+        let k_str = olive_str_as_str(k.0).unwrap_or("");
+        print!("'{}': {}", k_str, v);
     }
     println!("}}");
     0
@@ -615,6 +716,7 @@ pub extern "C" fn olive_free_any(ptr: i64) {
         KIND_ENUM => olive_free_enum(ptr),
         crate::result::KIND_RESULT => crate::result::olive_free_result(ptr),
         KIND_PYOBJECT => python::olive_py_decref(ptr as *mut std::os::raw::c_void),
+        KIND_ITER => olive_free_iter(ptr),
         _ => {}
     }
 }

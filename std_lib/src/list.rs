@@ -1,8 +1,64 @@
 use crate::*;
+use std::cell::UnsafeCell;
+
+const LIST_POOL_CAP: usize = 131072;
+
+struct ListPool {
+    entries: [*mut StableVec; LIST_POOL_CAP],
+    count: usize,
+}
+
+unsafe impl Send for ListPool {}
+
+impl ListPool {
+    const fn new() -> Self {
+        Self {
+            entries: [std::ptr::null_mut(); LIST_POOL_CAP],
+            count: 0,
+        }
+    }
+}
+
+thread_local! {
+    static LIST_POOL: UnsafeCell<ListPool> = UnsafeCell::new(ListPool::new());
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_list_new(len: i64) -> i64 {
     let n = len as usize;
+
+    if n <= 4 {
+        let pooled = LIST_POOL.with(|p| {
+            let p = unsafe { &mut *p.get() };
+            if p.count > 0 {
+                p.count -= 1;
+                p.entries[p.count]
+            } else {
+                std::ptr::null_mut()
+            }
+        });
+
+        if !pooled.is_null() {
+            unsafe {
+                let s = &mut *pooled;
+                if s.cap < n {
+                    let mut v = Vec::from_raw_parts(s.ptr, 0, s.cap);
+                    v.reserve(n);
+                    s.ptr = v.as_mut_ptr();
+                    s.cap = v.capacity();
+                    std::mem::forget(v);
+                }
+                
+                for i in 0..n {
+                    *s.ptr.add(i) = 0;
+                }
+                s.len = n;
+            }
+            let res = pooled as i64;
+            return res;
+        }
+    }
+
     let mut v = Vec::with_capacity(n);
     unsafe {
         v.set_len(n);
@@ -121,47 +177,79 @@ pub extern "C" fn olive_list_concat(l: i64, r: i64) -> i64 {
     let mut v = Vec::with_capacity(sl.len + sr.len);
     unsafe {
         v.extend_from_slice(std::slice::from_raw_parts(sl.ptr, sl.len));
-        v.extend_from_slice(std::slice::from_raw_parts(sr.ptr, sr.len));
     }
     let ptr = v.as_mut_ptr();
     let cap = v.capacity();
     let len = v.len();
     std::mem::forget(v);
-    Box::into_raw(Box::new(StableVec {
+    let res = Box::into_raw(Box::new(StableVec {
         kind: KIND_LIST,
         ptr,
         cap,
         len,
-    })) as i64
+    })) as i64;
+    register_object(res);
+    res
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_free_list(ptr: i64) {
-    if ptr != 0 {
-        unregister_object(ptr);
-        unsafe {
-            let s = Box::from_raw(ptr as *mut StableVec);
-            for i in 0..s.len {
-                let elem = *s.ptr.add(i);
-                if is_active_object(elem) {
-                    olive_free_any(elem);
-                }
+    if ptr == 0 {
+        return;
+    }
+    unsafe {
+        let s = &mut *(ptr as *mut StableVec);
+        for i in 0..s.len {
+            let elem = *s.ptr.add(i);
+            if is_active_object(elem) {
+                olive_free_any(elem);
             }
+        }
+        
+        let returned = LIST_POOL.with(|p| {
+            let p = &mut *p.get();
+            if p.count < LIST_POOL_CAP && s.cap <= 4 {
+                s.len = 0; 
+                p.entries[p.count] = ptr as *mut StableVec;
+                p.count += 1;
+                true
+            } else {
+                false
+            }
+        });
+
+        if !returned {
+            unregister_object(ptr);
             if !s.ptr.is_null() {
                 let _ = Vec::from_raw_parts(s.ptr, s.len, s.cap);
             }
+            let _ = Box::from_raw(ptr as *mut StableVec);
         }
     }
 }
 
-struct OliveIter {
-    list_ptr: i64,
-    index: usize,
+#[repr(C)]
+pub struct OliveIter {
+    pub kind: i64,
+    pub list_ptr: i64,
+    pub index: usize,
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_iter(list_ptr: i64) -> i64 {
-    Box::into_raw(Box::new(OliveIter { list_ptr, index: 0 })) as i64
+    let res = Box::into_raw(Box::new(OliveIter { kind: KIND_ITER, list_ptr, index: 0 })) as i64;
+    register_object(res);
+    res
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_free_iter(ptr: i64) {
+    if ptr != 0 {
+        unregister_object(ptr);
+        unsafe {
+            let _ = Box::from_raw(ptr as *mut OliveIter);
+        }
+    }
 }
 
 #[unsafe(no_mangle)]

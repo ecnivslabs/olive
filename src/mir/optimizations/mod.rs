@@ -14,6 +14,7 @@ pub mod move_elision;
 pub mod peephole;
 pub mod simplify_cfg;
 pub mod strength_reduction;
+pub mod scalarize;
 pub mod tail_call;
 pub mod vectorize;
 

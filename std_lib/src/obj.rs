@@ -1,7 +1,45 @@
 use crate::*;
+use std::cell::UnsafeCell;
+
+const OBJ_POOL_CAP: usize = 131072;
+
+struct ObjPool {
+    entries: [*mut OliveObj; OBJ_POOL_CAP],
+    count: usize,
+}
+
+unsafe impl Send for ObjPool {}
+
+impl ObjPool {
+    const fn new() -> Self {
+        Self {
+            entries: [std::ptr::null_mut(); OBJ_POOL_CAP],
+            count: 0,
+        }
+    }
+}
+
+thread_local! {
+    static OBJ_POOL: UnsafeCell<ObjPool> = UnsafeCell::new(ObjPool::new());
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_new() -> i64 {
+    let pooled = OBJ_POOL.with(|p| {
+        let p = unsafe { &mut *p.get() };
+        if p.count > 0 {
+            p.count -= 1;
+            p.entries[p.count]
+        } else {
+            std::ptr::null_mut()
+        }
+    });
+
+    if !pooled.is_null() {
+        let res = pooled as i64;
+        return res;
+    }
+
     let res = Box::into_raw(Box::new(OliveObj {
         kind: KIND_OBJ,
         fields: HashMap::default(),
@@ -20,13 +58,7 @@ pub extern "C" fn olive_obj_set(obj_ptr: i64, attr: i64, val: i64) -> i64 {
         return python::olive_py_setattr(obj_ptr as *mut std::ffi::c_void, attr, val) as i64;
     }
     let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
-    if let Some(attr_str) = olive_str_as_str(attr) {
-        if let Some(val_ref) = m.fields.get_mut(attr_str) {
-            *val_ref = val;
-        } else {
-            m.fields.insert(attr_str.to_string(), val);
-        }
-    }
+    m.fields.insert(OliveStringKey(attr), val);
     obj_ptr
 }
 
@@ -40,11 +72,7 @@ pub extern "C" fn olive_obj_get(obj_ptr: i64, attr: i64) -> i64 {
         return python::olive_py_getattr(obj_ptr as *mut std::ffi::c_void, attr) as i64;
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
-    if let Some(attr_str) = olive_str_as_str(attr) {
-        *m.fields.get(attr_str).unwrap_or(&0)
-    } else {
-        0
-    }
+    *m.fields.get(&OliveStringKey(attr)).unwrap_or(&0)
 }
 
 #[unsafe(no_mangle)]
@@ -53,11 +81,7 @@ pub extern "C" fn olive_obj_remove(obj_ptr: i64, attr: i64) -> i64 {
         return 0;
     }
     let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
-    if let Some(attr_str) = olive_str_as_str(attr) {
-        m.fields.remove(attr_str).unwrap_or(0)
-    } else {
-        0
-    }
+    m.fields.remove(&OliveStringKey(attr)).unwrap_or(0)
 }
 
 #[unsafe(no_mangle)]
@@ -66,11 +90,7 @@ pub extern "C" fn olive_in_obj(key: i64, obj_ptr: i64) -> i64 {
         return 0;
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
-    if let Some(key_str) = olive_str_as_str(key) {
-        if m.fields.contains_key(key_str) { 1 } else { 0 }
-    } else {
-        0
-    }
+    if m.fields.contains_key(&OliveStringKey(key)) { 1 } else { 0 }
 }
 
 #[unsafe(no_mangle)]
@@ -83,15 +103,32 @@ pub extern "C" fn olive_obj_len(obj_ptr: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_free_obj(ptr: i64) {
-    if ptr != 0 {
+    if ptr == 0 {
+        return;
+    }
+    let obj = unsafe { &mut *(ptr as *mut OliveObj) };
+    for &val in obj.fields.values() {
+        if is_active_object(val) {
+            olive_free_any(val);
+        }
+    }
+    obj.fields.clear();
+
+    let returned = OBJ_POOL.with(|p| {
+        let p = unsafe { &mut *p.get() };
+        if p.count < OBJ_POOL_CAP {
+            p.entries[p.count] = ptr as *mut OliveObj;
+            p.count += 1;
+            true
+        } else {
+            false
+        }
+    });
+
+    if !returned {
         unregister_object(ptr);
         unsafe {
-            let obj = Box::from_raw(ptr as *mut OliveObj);
-            for &val in obj.fields.values() {
-                if is_active_object(val) {
-                    olive_free_any(val);
-                }
-            }
+            let _ = Box::from_raw(ptr as *mut OliveObj);
         }
     }
 }
@@ -108,38 +145,42 @@ pub extern "C" fn olive_is_obj(val: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_keys(obj_ptr: i64) -> i64 {
     if obj_ptr == 0 {
-        let v = Box::new(StableVec {
+        let res = Box::into_raw(Box::new(StableVec {
             kind: KIND_LIST,
             ptr: std::ptr::null_mut(),
             cap: 0,
             len: 0,
-        });
-        return Box::into_raw(v) as i64;
+        })) as i64;
+        register_object(res);
+        return res;
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
-    let mut ptrs: Vec<i64> = m.fields.keys().map(|k| olive_str_internal(k)).collect();
+    let mut ptrs: Vec<i64> = m.fields.keys().map(|k| k.0).collect();
     let ptr = ptrs.as_mut_ptr();
     let cap = ptrs.capacity();
     let len = ptrs.len();
     std::mem::forget(ptrs);
-    Box::into_raw(Box::new(StableVec {
+    let res = Box::into_raw(Box::new(StableVec {
         kind: KIND_LIST,
         ptr,
         cap,
         len,
-    })) as i64
+    })) as i64;
+    register_object(res);
+    res
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_values(obj_ptr: i64) -> i64 {
     if obj_ptr == 0 {
-        let v = Box::new(StableVec {
+        let res = Box::into_raw(Box::new(StableVec {
             kind: KIND_LIST,
             ptr: std::ptr::null_mut(),
             cap: 0,
             len: 0,
-        });
-        return Box::into_raw(v) as i64;
+        })) as i64;
+        register_object(res);
+        return res;
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
     let mut vals: Vec<i64> = m.fields.values().copied().collect();
@@ -147,10 +188,12 @@ pub extern "C" fn olive_obj_values(obj_ptr: i64) -> i64 {
     let cap = vals.capacity();
     let len = vals.len();
     std::mem::forget(vals);
-    Box::into_raw(Box::new(StableVec {
+    let res = Box::into_raw(Box::new(StableVec {
         kind: KIND_LIST,
         ptr,
         cap,
         len,
-    })) as i64
+    })) as i64;
+    register_object(res);
+    res
 }

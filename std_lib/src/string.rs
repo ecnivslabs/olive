@@ -201,12 +201,14 @@ pub extern "C" fn olive_str_split(s: i64, sep: i64) -> i64 {
     let cap = v.capacity();
     let len = v.len();
     std::mem::forget(v);
-    Box::into_raw(Box::new(StableVec {
+    let res = Box::into_raw(Box::new(StableVec {
         kind: KIND_LIST,
         ptr,
         cap,
         len,
-    })) as i64
+    })) as i64;
+    register_object(res);
+    res
 }
 
 #[unsafe(no_mangle)]
@@ -290,13 +292,14 @@ pub extern "C" fn olive_str_grapheme_count(s: i64) -> i64 {
 pub extern "C" fn olive_str_graphemes(s: i64) -> i64 {
     use unicode_segmentation::UnicodeSegmentation;
     if s == 0 {
-        let v = Box::new(StableVec {
+        let res = Box::into_raw(Box::new(StableVec {
             kind: KIND_LIST,
             ptr: std::ptr::null_mut(),
             cap: 0,
             len: 0,
-        });
-        return Box::into_raw(v) as i64;
+        })) as i64;
+        register_object(res);
+        return res;
     }
     let text = olive_str_from_ptr(s);
     let mut ptrs: Vec<i64> = text.graphemes(true).map(olive_str_internal).collect();
@@ -304,10 +307,12 @@ pub extern "C" fn olive_str_graphemes(s: i64) -> i64 {
     let cap = ptrs.capacity();
     let len = ptrs.len();
     std::mem::forget(ptrs);
-    Box::into_raw(Box::new(StableVec {
+    let res = Box::into_raw(Box::new(StableVec {
         kind: KIND_LIST,
         ptr,
         cap,
         len,
-    })) as i64
+    })) as i64;
+    register_object(res);
+    res
 }

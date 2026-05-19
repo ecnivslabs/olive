@@ -72,20 +72,19 @@ pub unsafe fn setup_native_proxies(
         PY_EXC_KEYERROR = *(exc_ke as *mut PyObject);
     }
 
-    // Setup List Proxy
     let mut list_slots = vec![
         PyType_Slot {
             slot: 45,
             pfunc: list_proxy_len as *mut c_void,
-        }, // Py_sq_length
+        },
         PyType_Slot {
             slot: 44,
             pfunc: list_proxy_getitem as *mut c_void,
-        }, // Py_sq_item
+        },
         PyType_Slot {
             slot: 39,
             pfunc: list_proxy_setitem as *mut c_void,
-        }, // Py_sq_ass_item
+        },
         PyType_Slot {
             slot: 0,
             pfunc: std::ptr::null_mut(),
@@ -96,26 +95,24 @@ pub unsafe fn setup_native_proxies(
         name: list_name.as_ptr(),
         basicsize: std::mem::size_of::<NativeProxy>() as c_int,
         itemsize: 0,
-        // Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE
         flags: (1 << 0) | (1 << 10),
         slots: list_slots.as_mut_ptr(),
     };
     OLIVE_LIST_PROXY_TYPE = PY_TYPE_FROM_SPEC(&mut list_spec);
 
-    // Setup Dict Proxy
     let mut dict_slots = vec![
         PyType_Slot {
             slot: 4,
             pfunc: dict_proxy_len as *mut c_void,
-        }, // Py_mp_length
+        },
         PyType_Slot {
             slot: 5,
             pfunc: dict_proxy_getitem as *mut c_void,
-        }, // Py_mp_subscript
+        },
         PyType_Slot {
             slot: 3,
             pfunc: dict_proxy_setitem as *mut c_void,
-        }, // Py_mp_ass_subscript
+        },
         PyType_Slot {
             slot: 0,
             pfunc: std::ptr::null_mut(),
@@ -126,7 +123,6 @@ pub unsafe fn setup_native_proxies(
         name: dict_name.as_ptr(),
         basicsize: std::mem::size_of::<NativeProxy>() as c_int,
         itemsize: 0,
-        // Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE
         flags: (1 << 0) | (1 << 10),
         slots: dict_slots.as_mut_ptr(),
     };

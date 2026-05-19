@@ -6,8 +6,8 @@ use crate::mir::optimizations::{
     const_prop::ConstantPropagation, copy_prop::CopyPropagation,
     cse::CommonSubexpressionElimination, dce::DeadCodeElimination, gvn::GlobalValueNumbering,
     inliner::Inliner, licm::Licm, loop_unroll::LoopUnroll, move_elision::MoveElision,
-    peephole::PeepholeOptimize, simplify_cfg::SimplifyCfg, strength_reduction::StrengthReduction,
-    tail_call::TailCallOpt, vectorize::LoopVectorizer,
+    peephole::PeepholeOptimize, scalarize::ScalarizeStructs, simplify_cfg::SimplifyCfg,
+    strength_reduction::StrengthReduction, tail_call::TailCallOpt, vectorize::LoopVectorizer,
 };
 
 pub struct Optimizer {
@@ -93,6 +93,8 @@ impl Optimizer {
                     }
                 }
             }
+
+            ScalarizeStructs.run(func);
 
             for pass in &self.late_passes {
                 pass.run(func);
