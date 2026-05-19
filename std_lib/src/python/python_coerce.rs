@@ -106,7 +106,6 @@ impl Arena {
 
 static ARENA: std::sync::OnceLock<RwLock<Arena>> = std::sync::OnceLock::new();
 
-// SAFETY: All PyObject access is serialized by the GIL. Raw pointers are opaque handles.
 unsafe impl Send for OlivePyObject {}
 unsafe impl Sync for OlivePyObject {}
 
@@ -165,7 +164,6 @@ pub unsafe fn olive_py_unwrap(val: PyObject) -> PyObject {
     }
 }
 
-// Read ob_type directly from object layout to avoid calling PY_OBJECT_TYPE
 #[inline]
 unsafe fn raw_ob_type(obj: PyObject) -> PyObject {
     unsafe {
@@ -705,7 +703,7 @@ pub extern "C" fn olive_dict_keys_ffi(obj_ptr: i64) -> i64 {
         let list_ptr = crate::olive_list_new(obj.fields.len() as i64);
         let sv = &mut *(list_ptr as *mut crate::StableVec);
         for (i, k) in obj.fields.keys().enumerate() {
-            *sv.ptr.add(i) = crate::olive_str_internal(k);
+            *sv.ptr.add(i) = k.0;
         }
         list_ptr
     }

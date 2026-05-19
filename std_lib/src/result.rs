@@ -1,11 +1,11 @@
 use crate::{olive_panic, olive_str_from_ptr, olive_str_internal};
 
-pub(crate) const KIND_RESULT: i64 = 8;
+pub(crate) const KIND_RESULT: i64 = 9;
 
 #[repr(C)]
 pub struct OliveResult {
     pub kind: i64,
-    pub tag: i64, // 1 for Ok, 0 for Err
+    pub tag: i64,
     pub payload: i64,
 }
 

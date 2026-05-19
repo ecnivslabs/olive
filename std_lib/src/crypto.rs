@@ -146,8 +146,8 @@ pub extern "C" fn olive_crypto_rsa_keygen() -> i64 {
     let priv_b64 = STANDARD.encode(priv_der.as_bytes());
     let pub_b64 = STANDARD.encode(pub_der.as_bytes());
     let mut fields = HashMap::default();
-    fields.insert("pub".to_string(), olive_str_internal(&pub_b64));
-    fields.insert("priv".to_string(), olive_str_internal(&priv_b64));
+    fields.insert(crate::OliveStringKey(olive_str_internal("pub")), olive_str_internal(&pub_b64));
+    fields.insert(crate::OliveStringKey(olive_str_internal("priv")), olive_str_internal(&priv_b64));
     Box::into_raw(Box::new(OliveObj {
         kind: crate::KIND_OBJ,
         fields,
@@ -313,10 +313,10 @@ mod tests {
         let obj_ptr = olive_crypto_rsa_keygen();
         assert_ne!(obj_ptr, 0);
         let obj = unsafe { &*(obj_ptr as *const OliveObj) };
-        assert!(obj.fields.contains_key("pub"));
-        assert!(obj.fields.contains_key("priv"));
-        let pub_val = *obj.fields.get("pub").unwrap();
-        let priv_val = *obj.fields.get("priv").unwrap();
+        assert!(obj.fields.contains_key(&crate::OliveStringKey(olive_str_internal("pub"))));
+        assert!(obj.fields.contains_key(&crate::OliveStringKey(olive_str_internal("priv"))));
+        let pub_val = *obj.fields.get(&crate::OliveStringKey(olive_str_internal("pub"))).unwrap();
+        let priv_val = *obj.fields.get(&crate::OliveStringKey(olive_str_internal("priv"))).unwrap();
         assert_ne!(pub_val, 0);
         assert_ne!(priv_val, 0);
     }
@@ -325,8 +325,8 @@ mod tests {
     fn rsa_encrypt_decrypt_roundtrip() {
         let obj_ptr = olive_crypto_rsa_keygen();
         let obj = unsafe { &*(obj_ptr as *const OliveObj) };
-        let pub_key = *obj.fields.get("pub").unwrap();
-        let priv_key = *obj.fields.get("priv").unwrap();
+        let pub_key = *obj.fields.get(&crate::OliveStringKey(olive_str_internal("pub"))).unwrap();
+        let priv_key = *obj.fields.get(&crate::OliveStringKey(olive_str_internal("priv"))).unwrap();
         let plaintext = s("secret message");
         let ciphertext = olive_crypto_rsa_encrypt(pub_key, plaintext);
         assert_ne!(ciphertext, 0);

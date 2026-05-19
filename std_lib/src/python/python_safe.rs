@@ -92,7 +92,8 @@ pub extern "C" fn olive_py_call_kw_safe(func: PyObject, args_list: i64, kwargs_d
             let obj = &*(kwargs_dict as *const crate::OliveObj);
             py_kwargs = PY_DICT_NEW();
             for (k, &v) in &obj.fields {
-                let k_cstr = CString::new(k.clone()).unwrap();
+                let k_str = crate::olive_str_from_ptr(k.0);
+                let k_cstr = CString::new(k_str).unwrap();
                 let py_v = olive_to_py(v);
                 PY_DICT_SET_ITEM_STRING(py_kwargs, k_cstr.as_ptr(), py_v);
                 PY_DEC_REF(py_v);

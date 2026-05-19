@@ -97,16 +97,13 @@ pub static mut MAIN_THREAD_STATE: *mut c_void = std::ptr::null_mut();
 
 pub static mut PY_SYS_GET_OBJECT: unsafe extern "C" fn(*const c_char) -> PyObject = noop_import;
 
-// Iterator & coroutine FFI
 pub static mut PY_OBJECT_GET_ITER: unsafe extern "C" fn(PyObject) -> PyObject = noop_get_iter;
 pub static mut PY_ITER_NEXT: unsafe extern "C" fn(PyObject) -> PyObject = noop_iter_next;
 pub static mut PY_CORO_CHECK_EXACT: unsafe extern "C" fn(PyObject) -> c_int = noop_check_int;
 pub static mut PY_ITER_CHECK: unsafe extern "C" fn(PyObject) -> c_int = noop_check_int;
 
-// Preloaded traceback formatter
 pub static mut PY_TRACEBACK_FORMAT_EXCEPTION: PyObject = std::ptr::null_mut();
 
-// Internal helper bindings
 pub static mut PY_DICT_NEXT: unsafe extern "C" fn(
     PyObject,
     *mut isize,

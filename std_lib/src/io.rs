@@ -141,11 +141,17 @@ pub extern "C" fn olive_file_stat(path: i64) -> i64 {
         Err(_) => return 0,
     };
     let mut fields = HashMap::default();
-    fields.insert("size".to_string(), meta.len() as i64);
-    fields.insert("is_file".to_string(), if meta.is_file() { 1 } else { 0 });
-    fields.insert("is_dir".to_string(), if meta.is_dir() { 1 } else { 0 });
+    fields.insert(crate::OliveStringKey(olive_str_internal("size")), meta.len() as i64);
     fields.insert(
-        "modified".to_string(),
+        crate::OliveStringKey(olive_str_internal("is_dir")),
+        if meta.is_dir() { 1 } else { 0 },
+    );
+    fields.insert(
+        crate::OliveStringKey(olive_str_internal("is_file")),
+        if meta.is_file() { 1 } else { 0 },
+    );
+    fields.insert(
+        crate::OliveStringKey(olive_str_internal("modified")),
         meta.modified()
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
@@ -598,9 +604,9 @@ mod tests {
         let obj_ptr = olive_file_stat(path);
         assert_ne!(obj_ptr, 0);
         let obj = unsafe { &*(obj_ptr as *const OliveObj) };
-        assert_eq!(*obj.fields.get("is_file").unwrap(), 1);
-        assert_eq!(*obj.fields.get("is_dir").unwrap(), 0);
-        assert_eq!(*obj.fields.get("size").unwrap(), 4);
+        assert_eq!(*obj.fields.get(&crate::OliveStringKey(olive_str_internal("is_file"))).unwrap(), 1);
+        assert_eq!(*obj.fields.get(&crate::OliveStringKey(olive_str_internal("is_dir"))).unwrap(), 0);
+        assert_eq!(*obj.fields.get(&crate::OliveStringKey(olive_str_internal("size"))).unwrap(), 4);
         olive_file_delete(path);
     }
 

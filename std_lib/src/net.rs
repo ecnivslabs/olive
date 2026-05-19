@@ -159,9 +159,9 @@ pub extern "C" fn olive_net_udp_recv(sock_ptr: i64, max_len: i64) -> i64 {
             buf.truncate(n);
             let data_str = String::from_utf8_lossy(&buf).into_owned();
             let mut fields = HashMap::default();
-            fields.insert("data".to_string(), olive_str_internal(&data_str));
+            fields.insert(crate::OliveStringKey(olive_str_internal("data")), olive_str_internal(&data_str));
             fields.insert(
-                "addr".to_string(),
+                crate::OliveStringKey(olive_str_internal("addr")),
                 olive_str_internal(&src_addr.to_string()),
             );
             Box::into_raw(Box::new(OliveObj {
@@ -307,7 +307,7 @@ mod tests {
         let result = olive_net_udp_recv(server, 64);
         assert_ne!(result, 0);
         let obj = unsafe { &*(result as *const OliveObj) };
-        let data = from_ptr(*obj.fields.get("data").unwrap());
+        let data = from_ptr(*obj.fields.get(&crate::OliveStringKey(olive_str_internal("data"))).unwrap());
         assert_eq!(data, "ping");
 
         olive_net_udp_close(client);

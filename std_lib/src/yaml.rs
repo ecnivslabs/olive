@@ -63,7 +63,7 @@ mod tests {
         assert_ne!(obj_ptr, 0);
         let obj = unsafe { &*(obj_ptr as *const OliveObj) };
         assert_eq!(obj.kind, KIND_OBJ);
-        let name = *obj.fields.get("name").unwrap();
+        let name = *obj.fields.get(&crate::OliveStringKey(olive_str_internal("name"))).unwrap();
         assert_eq!(from_ptr(name), "alice");
     }
 
@@ -93,9 +93,9 @@ mod tests {
         let ptr = olive_toml_parse(t);
         assert_ne!(ptr, 0);
         let obj = unsafe { &*(ptr as *const OliveObj) };
-        let server_ptr = *obj.fields.get("server").unwrap();
+        let server_ptr = *obj.fields.get(&crate::OliveStringKey(olive_str_internal("server"))).unwrap();
         let server = unsafe { &*(server_ptr as *const OliveObj) };
-        assert_eq!(from_ptr(*server.fields.get("host").unwrap()), "localhost");
+        assert_eq!(from_ptr(*server.fields.get(&crate::OliveStringKey(olive_str_internal("host"))).unwrap()), "localhost");
     }
 
     #[test]

@@ -29,9 +29,9 @@ pub(crate) fn json_to_olive(val: &serde_json::Value) -> i64 {
             })) as i64
         }
         serde_json::Value::Object(map) => {
-            let mut fields: HashMap<String, i64> = HashMap::default();
+            let mut fields = HashMap::default();
             for (k, v) in map {
-                fields.insert(k.clone(), json_to_olive(v));
+                fields.insert(crate::OliveStringKey(olive_str_internal(k)), json_to_olive(v));
             }
             Box::into_raw(Box::new(OliveObj {
                 kind: KIND_OBJ,
@@ -71,7 +71,7 @@ pub(crate) fn olive_to_json(val: i64) -> serde_json::Value {
             let obj = unsafe { &*(val as *const OliveObj) };
             let mut map = serde_json::Map::new();
             for (k, &v) in &obj.fields {
-                map.insert(k.clone(), olive_to_json(v));
+                map.insert(olive_str_from_ptr(k.0), olive_to_json(v));
             }
             serde_json::Value::Object(map)
         }
@@ -164,8 +164,8 @@ mod tests {
         assert_ne!(ptr, 0);
         let obj = unsafe { &*(ptr as *const OliveObj) };
         assert_eq!(obj.kind, KIND_OBJ);
-        assert_eq!(*obj.fields.get("x").unwrap(), 10);
-        assert_eq!(*obj.fields.get("y").unwrap(), 20);
+        assert_eq!(*obj.fields.get(&crate::OliveStringKey(olive_str_internal("x"))).unwrap(), 10);
+        assert_eq!(*obj.fields.get(&crate::OliveStringKey(olive_str_internal("y"))).unwrap(), 20);
     }
 
     #[test]
@@ -211,8 +211,8 @@ mod tests {
         let json_in = r#"{"a":{"b":99}}"#;
         let parsed = olive_json_parse(s(json_in));
         let obj = unsafe { &*(parsed as *const OliveObj) };
-        let inner_ptr = *obj.fields.get("a").unwrap();
+        let inner_ptr = *obj.fields.get(&crate::OliveStringKey(olive_str_internal("a"))).unwrap();
         let inner = unsafe { &*(inner_ptr as *const OliveObj) };
-        assert_eq!(*inner.fields.get("b").unwrap(), 99);
+        assert_eq!(*inner.fields.get(&crate::OliveStringKey(olive_str_internal("b"))).unwrap(), 99);
     }
 }
