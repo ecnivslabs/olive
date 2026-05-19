@@ -53,7 +53,13 @@ mod speculation_proptests {
             .run(&strategy, |(start, iterations)| {
                 let expected = call_i64_2(&mut baseline.borrow_mut(), "driver", start, iterations);
                 let actual = call_i64_2(&mut tiered.borrow_mut(), "driver", start, iterations);
-                prop_assert_eq!(actual, expected, "start={} iterations={}", start, iterations);
+                prop_assert_eq!(
+                    actual,
+                    expected,
+                    "start={} iterations={}",
+                    start,
+                    iterations
+                );
                 Ok(())
             })
             .unwrap();
@@ -121,11 +127,7 @@ mod any_binop_specialization_proptests {
     /// Both instances compile once per test; each proptest case is two calls.
     /// Per-case compilation would build (and until freed, leak) hundreds of
     /// JIT modules per test, which is what exhausted Windows CI's commit limit.
-    fn run_binop_cases(
-        expr: &str,
-        cases: u32,
-        strategy: impl Strategy<Value = (i64, i64)>,
-    ) {
+    fn run_binop_cases(expr: &str, cases: u32, strategy: impl Strategy<Value = (i64, i64)>) {
         let (baseline, tiered) = prepare(expr);
         let baseline = RefCell::new(baseline);
         let tiered = RefCell::new(tiered);

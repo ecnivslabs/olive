@@ -1,7 +1,7 @@
-//! Generational slab allocator for runtime object headers.
-//! Generational slab allocator. Each slot has a u64 generation at `body - 8`,
-//! odd when live, even when free, increments on every transition. Stale
-//! pointer's generation never matches recycled slot. Chunks never freed.
+//! Generational slab allocator for runtime object headers. Each slot has a
+//! u64 generation at `body - 8`, odd when live, even when free, increments
+//! on every transition. Stale pointer's generation never matches recycled
+//! slot. Chunks never freed.
 
 use std::alloc::Layout;
 use std::sync::Mutex;
