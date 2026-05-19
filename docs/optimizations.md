@@ -1,66 +1,83 @@
 # The Optimization Pipeline
 
-The Olive compiler uses a multi-stage optimization pipeline that operates on the Middle Intermediate Representation (MIR). These passes are iterative and compositional; one pass often reveals opportunities for the next.
+The Olive compiler optimizes on the Middle Intermediate Representation (MIR). Passes are iterative and compositional; one pass often reveals opportunities for the next.
+
+Two pipelines exist. Debug builds (`pit run`, `pit build` without `--release`) run only ownership inference, CFG cleanup, dead code elimination, and move elision, keeping compiles fast. Release builds (`--release`) run everything below. Ownership inference and generation checks run in both, because drops and safety checks are semantics, not optimizations.
+
+## Ownership Inference
+
+Runs first in every pipeline. Classifies each heap local as owner or view, promotes last-use copies to moves, deep-copies values stored into containers while still live elsewhere, and frees reassigned owners. Details in [Ownership](ownership.md) and [Internals](internals.md).
 
 ## Scalar Transformations
 
-These passes run in a tight loop until the MIR reaches a "fixed point" (meaning no more changes can be made).
+These run in a loop until the MIR reaches a fixed point.
 
-### 1. Constant Propagation & Folding
-The compiler tracks values that are known at compile-time and evaluates operations on them immediately.
+### Copy Propagation
+Replaces uses of a copied variable with the original, exposing more work to the passes below.
+
+### Constant Propagation & Folding
+Values known at compile time are substituted and evaluated immediately.
 ```rust
 let x = 10
-let y = x + 5  // Becomes 15 at compile-time
+let y = x + 5  // becomes 15 at compile time
 ```
 
-### 2. Algebraic Simplification
-Uses mathematical identities to simplify expressions.
-- `x + 0` → `x`
-- `x * 1` → `x`
-- `x - x` → `0`
-- `(a + b) - a` → `b`
+### Algebraic Simplification & Strength Reduction
+Mathematical identities simplify expressions, and expensive operations become cheaper equivalents.
+- `x + 0` becomes `x`
+- `x * 1` becomes `x`
+- `x - x` becomes `0`
+- `x * 8` becomes `x << 3`
 
-### 3. Global Value Numbering (GVN)
-GVN assigns a unique ID to every distinct computation. It detects when the same value is computed multiple times, even across different branches, and eliminates the redundancy. Unlike simple CSE, GVN understands commutativity (`x + y` is the same as `y + x`).
+### Common Subexpression Elimination & Global Value Numbering
+Both detect repeated computations and reuse the first result. GVN assigns an ID to every distinct computation and understands commutativity (`x + y` equals `y + x`), so it also catches redundancy across branches.
 
-### 4. Move Elision
-In a borrow-checked language, "moving" data is a common operation. Move elision identifies when a move is unnecessary (for example, when a value is moved into a function and then immediately returned) and replaces the move with a simple pointer pass or avoids the copy entirely.
+### Peephole Optimization
+Local pattern rewrites over short instruction windows.
 
-### 5. Dead Code Elimination (DCE)
-Instructions whose results are never used are pruned. This includes removing entire code paths that the compiler can prove are unreachable.
+### Simplify CFG
+Merges blocks that always follow each other, removes empty blocks, and turns conditional branches into direct jumps when the condition is known.
+
+### Dead Code Elimination
+Instructions whose results are never used are pruned, including entire unreachable paths.
+
+### Move Elision
+Identifies unnecessary moves (a value moved into a function and immediately returned, for example) and passes a pointer instead.
 
 ## Structural Transformations
 
-Once the scalar logic is clean, Olive applies transformations that change the structure of the program.
-
 ### Inlining
-Replaces a function call with the actual body of the function. This removes the overhead of the call and allows scalar optimizations to work across the former function boundary. Olive uses an "effort-based" heuristic: small, frequently called functions are always inlined, while large functions are left alone to avoid code bloat.
+Replaces a call with the callee's body, removing call overhead and letting scalar passes work across the former boundary. Small, frequently called functions are inlined; large ones are left alone to avoid code bloat. Profile data (from the JIT or PGO) biases the decision toward hot callees.
 
-### Loop-Invariant Code Motion (LICM)
-Computations that produce the same result on every iteration of a loop are moved (hoisted) outside the loop.
-```rust
-for i in 0..1000:
-    let val = x * y  // This is moved before the 'for' starts
-    print(i + val)
-```
+### Tuple and Struct Scalarization
+Non-escaping tuples and structs are broken into their individual fields, which then live in registers instead of memory.
 
-### Simplify CFG
-Cleans up the Control Flow Graph by:
-- Merging blocks that always follow each other.
-- Removing empty blocks.
-- Turning conditional branches into direct jumps when the condition is known.
+### Tail-Call Optimization
+A function whose final action is a call becomes a jump, so recursive algorithms run with the memory profile of a loop.
 
-## Late-Stage & Hardware Optimizations
-
-### Tail-Call Optimization (TCO)
-When a function's final action is calling itself (or another function), Olive transforms the call into a jump. This allows recursive algorithms to run with the performance and memory profile of a simple loop.
+### Loop-Invariant Code Motion
+Computations that produce the same result on every iteration are hoisted out of the loop.
 
 ### SIMD Vectorization
-The compiler identifies patterns of data-parallel work and emits SIMD instructions (like AVX2 or NEON). This can result in a 4x-8x speedup for mathematical loops.
+Data-parallel loop patterns are rewritten to SIMD instructions (AVX2, NEON) where the target supports them.
+
+### Loop Unrolling
+Short counted loops are fully unrolled (up to 32 iterations); longer ones are partially unrolled by a factor of 4 to cut branch overhead and expose more scalar optimization.
+
+## Late Passes
+
+### Bounds-Check Elimination
+Runs last among the optimizations, so no later pass can move an access it has already proven safe. An index proven in range by loop analysis drops its runtime check.
+
+### Generation-Check Insertion
+Runs after everything, in both pipelines. Inserts the runtime staleness checks that back ownership inference (see [Internals](internals.md)); a forward analysis elides every check it can prove unnecessary.
+
+## Runtime Tiering
+
+`pit run` also optimizes while the program executes: hot functions are recompiled at a higher tier, and `Any`-typed arithmetic sites that only ever see ints graduate to guarded inline integer ops. See [Internals](internals.md) for the mechanics.
 
 ## Inspecting the Pipeline
 
-You can use the `pit` toolchain to see what the optimizer is doing to your code:
-
-- `pit run --emit-mir`: Prints the MIR after all optimizations.
-- `pit build --emit-mir`: Prints the MIR after all optimizations.
+- `pit run --emit-mir`: prints the MIR after all optimizations.
+- `pit build --emit-mir`: same, for the AOT pipeline.
+- `pit run -t`: prints per-stage compile timings.

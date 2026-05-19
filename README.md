@@ -22,7 +22,7 @@ Olive was built for when you want the speed of a low-level language without the 
 ## Why Olive?
 
 - **Clean Syntax**: No braces, no semicolons. Indentation defines the structure, keeping your code readable and consistent.
-- **Fearless Safety**: A borrow checker catches memory errors and data races at compile time. No null pointers, no double-frees.
+- **Memory Safety, No Annotations**: The compiler infers ownership and frees values deterministically; references are borrow-checked, and a generation-checked allocator turns anything the analysis can't prove into a precise runtime fault instead of corruption. No garbage collector, no lifetime syntax.
 - **Blazing Fast**: Optimized to native code via the Cranelift backend. It's designed to run close to the metal with zero-cost abstractions.
 - **Modern Concurrency**: True async/await that's easy to use and extremely efficient.
 - **C / Rust Interop**: Interface with C or Rust libraries through a C-compatible ABI with built-in FFI support.

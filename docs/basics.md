@@ -115,6 +115,20 @@ let last = numbers.pop()  // removes and returns 4
 
 Lists also support `insert(index, value)`, `remove(index)`, `extend(other)`, `sort()`, and `reverse()`. Two lists join with `+`.
 
+### Slicing
+
+Lists and strings slice with `[start:stop:step]`. Any part can be omitted, and
+negative steps walk backwards:
+
+```rust
+let xs = [1, 2, 3, 4, 5]
+print(xs[1:4])     // [2, 3, 4]
+print(xs[::-1])    // [5, 4, 3, 2, 1]
+print("hello"[1:3])  // el
+```
+
+A slice is a new value; mutating it does not touch the original.
+
 ### Fixed Arrays
 
 Fixed-size arrays with a known length at compile time. The length is structural; to actually allocate a fixed-size buffer, use `bytes_new(n)` or a list with `list_new(n)`.
@@ -189,6 +203,14 @@ elif score >= 80:
     print("B")
 else:
     print("C")
+```
+
+### Conditional Expressions
+
+An `if` can be used inline as an expression:
+
+```rust
+let grade = "pass" if score >= 50 else "fail"
 ```
 
 ### Loops

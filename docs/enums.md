@@ -66,6 +66,21 @@ fn log_status(status: int):
 
 Here, `code` matches any value and makes it available as a variable inside that branch.
 
+### Match Guards
+
+A pattern can carry an `if` condition. The arm only matches when the guard
+holds, and later arms are tried otherwise:
+
+```rust
+match status:
+    200:
+        print("OK")
+    code if code >= 500:
+        print("server error")
+    code:
+        print(f"other {code}")
+```
+
 The compiler enforces exhaustive pattern matching. Failing to match a variant triggers a compile-time error.
 
 ## Union Types and Discrimination
