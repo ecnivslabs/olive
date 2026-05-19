@@ -87,10 +87,6 @@ pub unsafe fn setup_native_proxies(
             pfunc: list_proxy_setitem as *mut c_void,
         }, // Py_sq_ass_item
         PyType_Slot {
-            slot: 52,
-            pfunc: proxy_dealloc as *mut c_void,
-        }, // Py_tp_dealloc
-        PyType_Slot {
             slot: 0,
             pfunc: std::ptr::null_mut(),
         },
@@ -120,10 +116,6 @@ pub unsafe fn setup_native_proxies(
             pfunc: dict_proxy_setitem as *mut c_void,
         }, // Py_mp_ass_subscript
         PyType_Slot {
-            slot: 52,
-            pfunc: proxy_dealloc as *mut c_void,
-        }, // Py_tp_dealloc
-        PyType_Slot {
             slot: 0,
             pfunc: std::ptr::null_mut(),
         },
@@ -137,16 +129,6 @@ pub unsafe fn setup_native_proxies(
         slots: dict_slots.as_mut_ptr(),
     };
     OLIVE_DICT_PROXY_TYPE = PY_TYPE_FROM_SPEC(&mut dict_spec);
-}
-
-unsafe extern "C" fn proxy_dealloc(_self_ptr: PyObject) {
-    // We do not decrement Olive refcounts here because Olive proxies are weak references!
-    // Python GC frees the object memory, but we need to tell Python to actually free it.
-    // However, PyType_FromSpec automatically adds generic dealloc behavior in limited API.
-    // If we override tp_dealloc, we must call the base type's dealloc, or PyObject_Free.
-    // Actually, we can just omit tp_dealloc if we don't need custom cleanup!
-    // But let's leave it as a no-op just in case. Wait, if we override it and don't free, memory leaks!
-    // It's safer to OMIT tp_dealloc slot and let PyType_FromSpec handle it.
 }
 
 unsafe fn check_alive(ptr: i64) -> bool {

@@ -341,12 +341,7 @@ impl<M: Module> CraneliftCodegen<M> {
                     v
                 };
 
-                let is_py = *obj_ty == OliveType::PyObject;
-                let func_name = if is_py {
-                    "__olive_py_setattr"
-                } else {
-                    "__olive_obj_set"
-                };
+                let func_name = "__olive_obj_set";
                 let set_id = func_ids.get(func_name).unwrap();
                 let local_func = module.declare_func_in_func(*set_id, builder.func);
                 builder.ins().call(local_func, &[o, attr_val, v]);
@@ -370,12 +365,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 };
 
                 match ty {
-                    OliveType::PyObject => {
-                        let set_id = func_ids.get("__olive_py_setitem").unwrap();
-                        let local_func = module.declare_func_in_func(*set_id, builder.func);
-                        builder.ins().call(local_func, &[o, i, v]);
-                    }
-                    OliveType::Dict(_, _) | OliveType::Struct(_, _) => {
+                    OliveType::Dict(_, _) | OliveType::Struct(_, _) | OliveType::PyObject => {
                         let set_id = func_ids.get("__olive_obj_set").unwrap();
                         let local_func = module.declare_func_in_func(*set_id, builder.func);
                         builder.ins().call(local_func, &[o, i, v]);

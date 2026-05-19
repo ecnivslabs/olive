@@ -402,16 +402,58 @@ impl<'a> MirBuilder<'a> {
                 }
             }
             ExprKind::Attr { obj, attr } => {
+                let obj_ty = self.get_type(obj.id).clone();
                 let obj_op = self.lower_expr_as_copy(obj);
-                self.push_statement(
-                    StatementKind::SetAttr(obj_op, attr.clone(), rval),
-                    target.span,
-                );
+                if obj_ty == Type::PyObject {
+                    let rval_ty = self.get_type(value.id).clone();
+                    let py_rval = self.emit_to_py_arg(rval, &rval_ty, target.span);
+                    let dummy = self.new_local(Type::Any, None, false);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            dummy,
+                            Rvalue::Call {
+                                func: Operand::Constant(Constant::Function(
+                                    "__olive_py_setattr".to_string(),
+                                )),
+                                args: vec![
+                                    obj_op,
+                                    Operand::Constant(Constant::Str(attr.clone())),
+                                    py_rval,
+                                ],
+                            },
+                        ),
+                        target.span,
+                    );
+                } else {
+                    self.push_statement(
+                        StatementKind::SetAttr(obj_op, attr.clone(), rval),
+                        target.span,
+                    );
+                }
             }
             ExprKind::Index { obj, index } => {
+                let obj_ty = self.get_type(obj.id).clone();
                 let obj_op = self.lower_expr_as_copy(obj);
                 let idx_op = self.lower_expr(index);
-                self.push_statement(StatementKind::SetIndex(obj_op, idx_op, rval), target.span);
+                if obj_ty == Type::PyObject {
+                    let rval_ty = self.get_type(value.id).clone();
+                    let py_rval = self.emit_to_py_arg(rval, &rval_ty, target.span);
+                    let dummy = self.new_local(Type::Any, None, false);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            dummy,
+                            Rvalue::Call {
+                                func: Operand::Constant(Constant::Function(
+                                    "__olive_py_setitem".to_string(),
+                                )),
+                                args: vec![obj_op, idx_op, py_rval],
+                            },
+                        ),
+                        target.span,
+                    );
+                } else {
+                    self.push_statement(StatementKind::SetIndex(obj_op, idx_op, rval), target.span);
+                }
             }
             ExprKind::Deref(ptr_expr) => {
                 let ptr_op = self.lower_expr(ptr_expr);

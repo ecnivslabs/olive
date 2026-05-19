@@ -15,6 +15,10 @@ pub extern "C" fn olive_obj_set(obj_ptr: i64, attr: i64, val: i64) -> i64 {
     if obj_ptr == 0 || attr == 0 {
         return obj_ptr;
     }
+    let kind = unsafe { *(obj_ptr as *const i64) };
+    if kind == KIND_PYOBJECT {
+        return python::olive_py_setattr(obj_ptr as *mut std::ffi::c_void, attr, val) as i64;
+    }
     let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
     if let Some(attr_str) = olive_str_as_str(attr) {
         if let Some(val_ref) = m.fields.get_mut(attr_str) {
@@ -30,6 +34,10 @@ pub extern "C" fn olive_obj_set(obj_ptr: i64, attr: i64, val: i64) -> i64 {
 pub extern "C" fn olive_obj_get(obj_ptr: i64, attr: i64) -> i64 {
     if obj_ptr == 0 || attr == 0 {
         return 0;
+    }
+    let kind = unsafe { *(obj_ptr as *const i64) };
+    if kind == KIND_PYOBJECT {
+        return python::olive_py_getattr(obj_ptr as *mut std::ffi::c_void, attr) as i64;
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
     if let Some(attr_str) = olive_str_as_str(attr) {

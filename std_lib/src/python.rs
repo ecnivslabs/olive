@@ -196,15 +196,6 @@ pub extern "C" fn olive_py_setattr(obj: PyObject, attr: i64, val: i64) -> PyObje
     }
 }
 
-fn looks_like_float(val: i64) -> bool {
-    let f = f64::from_bits(val as u64);
-    if f.is_nan() || f.is_infinite() || f.is_subnormal() {
-        return false;
-    }
-    let abs_f = f.abs();
-    abs_f > 1e-100 && abs_f < 1e100
-}
-
 fn olive_to_py(val: i64) -> PyObject {
     if val & 1 != 0 {
         let s = crate::olive_str_from_ptr(val);
@@ -248,26 +239,12 @@ fn olive_to_py(val: i64) -> PyObject {
                         PY_INC_REF(raw);
                         raw
                     }
-                    _ => {
-                        if looks_like_float(val) {
-                            let f = f64::from_bits(val as u64);
-                            PY_FLOAT_FROM_DOUBLE(f as c_double)
-                        } else {
-                            PY_LONG_FROM_LONG(val as c_long)
-                        }
-                    }
+                    _ => PY_LONG_FROM_LONG(val as c_long),
                 }
             }
         } else {
-            // Non-heap, non-string i64: treat as integer or float.
-            unsafe {
-                if looks_like_float(val) {
-                    let f = f64::from_bits(val as u64);
-                    PY_FLOAT_FROM_DOUBLE(f as c_double)
-                } else {
-                    PY_LONG_FROM_LONG(val as c_long)
-                }
-            }
+            // Non-heap, non-string i64: treat as integer.
+            unsafe { PY_LONG_FROM_LONG(val as c_long) }
         }
     }
 }
@@ -392,24 +369,13 @@ unsafe fn py_to_olive_internal(py_val: PyObject) -> i64 {
             return 0;
         }
 
-        let name_attr = PY_OBJECT_GET_ATTR_STRING(ty, b"__name__\0".as_ptr() as *const c_char);
-        if !name_attr.is_null() {
-            let s = PY_UNICODE_AS_UTF8(name_attr);
-            if !s.is_null() {
-                let type_name = CStr::from_ptr(s).to_string_lossy();
-                if type_name == "OliveListProxy" || type_name == "OliveDictProxy" {
-                    let ptr_attr =
-                        PY_OBJECT_GET_ATTR_STRING(py_val, b"_ptr\0".as_ptr() as *const c_char);
-                    if !ptr_attr.is_null() {
-                        let raw_ptr = PY_LONG_AS_LONG(ptr_attr) as i64;
-                        PY_DEC_REF(ptr_attr);
-                        PY_DEC_REF(name_attr);
-                        PY_DEC_REF(ty);
-                        return raw_ptr;
-                    }
-                }
-            }
-            PY_DEC_REF(name_attr);
+        // Fast type-pointer comparison for Olive proxies — no attribute lookup or string allocation.
+        let list_type = crate::python_proxy::OLIVE_LIST_PROXY_TYPE;
+        let dict_type = crate::python_proxy::OLIVE_DICT_PROXY_TYPE;
+        if (!list_type.is_null() && ty == list_type) || (!dict_type.is_null() && ty == dict_type) {
+            let proxy = &*(py_val as *const crate::python_proxy::NativeProxy);
+            PY_DEC_REF(ty);
+            return proxy.ptr;
         }
 
         let is_subtype = |expected: PyObject| {
