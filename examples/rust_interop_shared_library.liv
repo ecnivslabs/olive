@@ -23,5 +23,3 @@ fn process_data(data: [int]):
 fn main():
     let dataset = [10, 20, 42, 100, 999]
     process_data(dataset)
-
-main()

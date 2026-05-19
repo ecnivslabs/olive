@@ -31,7 +31,7 @@ Olive was built for when you want the speed of a low-level language without the 
 ## A Taste of Olive
 
 ```python
-# A generic function to calculate average
+// A generic function to calculate average
 fn average[T: Numeric](numbers: [T]) -> float:
     let mut total = 0.0
     for n in numbers:
@@ -45,11 +45,9 @@ async fn process_data(data: [int]):
 
 fn main():
     let data = [10, 20, 30, 40, 50]
-    # Spawning an async task
+    // Spawning an async task
     async:
         await process_data(data)
-
-main()
 ```
 
 ## Getting Started

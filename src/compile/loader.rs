@@ -65,6 +65,33 @@ pub fn load_and_parse(
         }
     };
 
+    if !is_main {
+        for stmt in &program.stmts {
+            match &stmt.kind {
+                parser::StmtKind::Fn { .. }
+                | parser::StmtKind::Struct { .. }
+                | parser::StmtKind::Impl { .. }
+                | parser::StmtKind::Trait { .. }
+                | parser::StmtKind::Enum { .. }
+                | parser::StmtKind::Let { .. }
+                | parser::StmtKind::Const { .. }
+                | parser::StmtKind::Import { .. }
+                | parser::StmtKind::NativeImport { .. }
+                | parser::StmtKind::FromImport { .. }
+                | parser::StmtKind::PyImport { .. }
+                | parser::StmtKind::Pass => {}
+                _ => {
+                    report_error(
+                        sources,
+                        "top-level execution statements are not allowed in imported modules",
+                        stmt.span,
+                    );
+                    process::exit(1);
+                }
+            }
+        }
+    }
+
     let mut all_stmts = Vec::new();
     let mod_name = if is_main {
         "__main__".to_string()
@@ -288,4 +315,35 @@ pub fn find_std_lib_src_dir() -> PathBuf {
         }
     }
     PathBuf::from("lib")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_valid_module_imports_declarations_only() {
+        let temp_dir = std::env::temp_dir().join("olive_test_valid");
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let mod_path = temp_dir.join("my_module.liv");
+        fs::write(&mod_path, "fn add(a: int, b: int) -> int:\n    return a + b\n\nstruct Point:\n    x: int\n    y: int\n").unwrap();
+
+        let mut loaded = HashSet::new();
+        let mut file_id_counter = 0;
+        let mut sources = HashMap::default();
+
+        // This should run without process::exit because it is valid
+        let stmts = load_and_parse(
+            &mod_path.to_string_lossy(),
+            false,
+            &mut loaded,
+            &mut file_id_counter,
+            &mut sources,
+        );
+        assert!(!stmts.is_empty());
+
+        fs::remove_dir_all(&temp_dir).ok();
+    }
 }

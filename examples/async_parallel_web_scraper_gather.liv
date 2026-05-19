@@ -32,4 +32,3 @@ fn main():
             
     aio.run(fut)
 
-main()

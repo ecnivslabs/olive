@@ -114,6 +114,39 @@ impl<'a> MirBuilder<'a> {
             }
         }
 
+        let has_main_fn = program
+            .stmts
+            .iter()
+            .any(|s| matches!(&s.kind, StmtKind::Fn { name, .. } if name == "main"));
+
+        let already_calls_main = program.stmts.iter().any(|s| {
+            if let StmtKind::ExprStmt(expr) = &s.kind {
+                if let crate::parser::ExprKind::Call { callee, .. } = &expr.kind {
+                    if let crate::parser::ExprKind::Identifier(name) = &callee.kind {
+                        return name == "main";
+                    }
+                }
+            }
+            false
+        });
+
+        if has_main_fn && !already_calls_main {
+            let main_call_stmt = crate::parser::Stmt::new(
+                crate::parser::StmtKind::ExprStmt(crate::parser::Expr::new(
+                    crate::parser::ExprKind::Call {
+                        callee: Box::new(crate::parser::Expr::new(
+                            crate::parser::ExprKind::Identifier("main".to_string()),
+                            Span::default(),
+                        )),
+                        args: vec![],
+                    },
+                    Span::default(),
+                )),
+                Span::default(),
+            );
+            self.lower_stmt(&main_call_stmt);
+        }
+
         if let Some(bb) = self.current_block {
             self.terminate_block(bb, TerminatorKind::Return, Span::default());
         }
@@ -620,5 +653,21 @@ mod tests {
                 .is_some_and(|t| matches!(t.kind, crate::mir::ir::TerminatorKind::SwitchInt { .. }))
         });
         assert!(has_switch);
+    }
+
+    #[test]
+    fn auto_main_appends_call() {
+        let (fns, _) = build("fn main():\n    let x = 1\n");
+        let main = fns.iter().find(|f| f.name == "__main__").unwrap();
+        let has_main_call = main.basic_blocks.iter().any(|bb| {
+            bb.statements.iter().any(|s| {
+                if let StatementKind::Assign(_, Rvalue::Call { func, .. }) = &s.kind {
+                    matches!(func, crate::mir::Operand::Constant(crate::mir::Constant::Function(name)) if name == "main")
+                } else {
+                    false
+                }
+            })
+        });
+        assert!(has_main_call);
     }
 }

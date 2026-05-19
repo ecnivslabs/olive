@@ -8,7 +8,7 @@ Declare asynchronous functions with the `async` keyword. Use the `await` keyword
 
 ```python
 async fn fetch_user(id: int) -> User:
-    # Yields control back to the executor while the request is in flight
+    // Yields control back to the executor while the request is in flight
     let raw = await http.get(f"https://api.example.com/users/{id}")
     return User.parse(raw)
 ```
@@ -23,7 +23,7 @@ To execute a block of code asynchronously without defining a separate function, 
 fn main():
     let data = [1, 2, 3]
 
-    # Starts task execution concurrently in the background
+    // Starts task execution concurrently in the background
     async:
         process_data(data)
 

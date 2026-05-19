@@ -43,4 +43,3 @@ fn main():
     aio.chan_free(chan)
     print("Task coordination execution complete.")
 
-main()

@@ -38,4 +38,3 @@ fn main():
     async:
         await server_loop()
 
-main()

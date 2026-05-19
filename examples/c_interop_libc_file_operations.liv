@@ -31,4 +31,3 @@ fn main():
         else:
             libc.printf("Failed to open file descriptor.\n")
 
-main()

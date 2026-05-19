@@ -56,8 +56,6 @@ Open `src/main.liv`. It contains a basic entry point:
 ```python
 fn main():
     print("Hello from Olive!")
-
-main()
 ```
 
 Modify the string and execute `pit run` to see the changes.
