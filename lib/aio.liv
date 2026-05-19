@@ -1,6 +1,6 @@
 // async io
 
-fn run(future):
+fn run[T](future: Future[T]) -> T:
     return await future
 
 fn read_file(path: str):
@@ -9,10 +9,10 @@ fn read_file(path: str):
 fn write_file(path: str, data: str):
     return __olive_async_file_write(path, data)
 
-fn gather(futures):
+fn gather[T](futures: [Future[T]]) -> Future[[T]]:
     return __olive_gather(futures)
 
-fn select(futures):
+fn select[T](futures: [Future[T]]) -> Future[T]:
     return __olive_select(futures)
 
 fn cancel(future):

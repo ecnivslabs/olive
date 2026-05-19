@@ -245,17 +245,23 @@ impl TypeChecker {
             (
                 "__olive_gather",
                 Type::Fn(
-                    vec![Type::Any],
-                    Box::new(Type::Future(Box::new(Type::List(Box::new(Type::Any))))),
-                    Vec::new(),
+                    vec![Type::List(Box::new(Type::Future(Box::new(Type::Param(
+                        "T".into(),
+                    )))))],
+                    Box::new(Type::Future(Box::new(Type::List(Box::new(Type::Param(
+                        "T".into(),
+                    )))))),
+                    vec![Type::Param("T".into())],
                 ),
             ),
             (
                 "__olive_select",
                 Type::Fn(
-                    vec![Type::Any],
-                    Box::new(Type::Future(Box::new(Type::List(Box::new(Type::Any))))),
-                    Vec::new(),
+                    vec![Type::List(Box::new(Type::Future(Box::new(Type::Param(
+                        "T".into(),
+                    )))))],
+                    Box::new(Type::Future(Box::new(Type::Param("T".into())))),
+                    vec![Type::Param("T".into())],
                 ),
             ),
             (

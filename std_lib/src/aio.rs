@@ -528,7 +528,7 @@ pub extern "C" fn olive_select_poll(frame: i64) -> i64 {
         let fut = unsafe { *list.ptr.add(i) };
         let r = olive_sm_poll(fut);
         if r != POLL_PENDING {
-            return crate::list::list_from_vec(vec![i as i64, r]);
+            return r;
         }
     }
     f.awaiting_list = f.futures_list;
