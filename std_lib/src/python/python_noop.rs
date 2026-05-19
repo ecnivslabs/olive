@@ -104,6 +104,26 @@ pub unsafe extern "C" fn noop_dict_setitemstring(
     -1
 }
 pub unsafe extern "C" fn noop_err_fetch(_: *mut PyObject, _: *mut PyObject, _: *mut PyObject) {}
+pub unsafe extern "C" fn noop_dict_next(
+    _: PyObject,
+    _: *mut isize,
+    _: *mut PyObject,
+    _: *mut PyObject,
+) -> c_int {
+    0
+}
+pub unsafe extern "C" fn noop_getitem_idx(_: PyObject, _: isize) -> PyObject {
+    std::ptr::null_mut()
+}
+pub unsafe extern "C" fn noop_iter_next(_: PyObject) -> PyObject {
+    std::ptr::null_mut()
+}
+pub unsafe extern "C" fn noop_get_iter(_: PyObject) -> PyObject {
+    std::ptr::null_mut()
+}
+pub unsafe extern "C" fn noop_check_int(_: PyObject) -> c_int {
+    0
+}
 
 #[cfg(target_os = "windows")]
 unsafe extern "system" {

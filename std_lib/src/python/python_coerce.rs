@@ -1,61 +1,243 @@
 use crate::python::*;
-use std::ffi::CString;
-use std::os::raw::{c_double, c_long};
+use std::ffi::CStr;
+use std::os::raw::{c_char, c_double, c_long, c_void};
+use std::sync::RwLock;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_py_from_int(v: i64) -> PyObject {
-    check_python_loaded();
-    unsafe {
-        let gil = PY_GILSTATE_ENSURE();
-        let r = PY_LONG_FROM_LONG(v as c_long);
-        PY_GILSTATE_RELEASE(gil);
-        olive_py_wrap_owned(r)
+const CHUNK_CAP: usize = 512;
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct OlivePyObject {
+    pub kind: i64,
+    pub py_ptr: PyObject,
+}
+
+struct Chunk {
+    data: Box<[std::mem::MaybeUninit<OlivePyObject>; CHUNK_CAP]>,
+    free: Vec<usize>,
+    used: usize,
+}
+
+impl Chunk {
+    fn new() -> Self {
+        Chunk {
+            data: Box::new(unsafe { std::mem::MaybeUninit::uninit().assume_init() }),
+            free: Vec::new(),
+            used: 0,
+        }
+    }
+
+    fn alloc(&mut self, obj: OlivePyObject) -> *mut OlivePyObject {
+        let idx = if let Some(i) = self.free.pop() {
+            i
+        } else if self.used < CHUNK_CAP {
+            let i = self.used;
+            self.used += 1;
+            i
+        } else {
+            return std::ptr::null_mut();
+        };
+        unsafe {
+            let slot = self.data[idx].as_mut_ptr();
+            slot.write(obj);
+            slot
+        }
+    }
+
+    fn free_slot(&mut self, ptr: *mut OlivePyObject) {
+        let base = self.data.as_ptr() as usize;
+        let end = base + CHUNK_CAP * std::mem::size_of::<OlivePyObject>();
+        let addr = ptr as usize;
+        if addr >= base && addr < end {
+            let idx = (addr - base) / std::mem::size_of::<OlivePyObject>();
+            self.free.push(idx);
+        }
+    }
+
+    fn contains(&self, ptr: usize) -> bool {
+        let base = self.data.as_ptr() as usize;
+        let end = base + CHUNK_CAP * std::mem::size_of::<OlivePyObject>();
+        ptr >= base && ptr < end
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_py_from_float(v: f64) -> PyObject {
-    check_python_loaded();
-    unsafe {
-        let gil = PY_GILSTATE_ENSURE();
-        let r = PY_FLOAT_FROM_DOUBLE(v as c_double);
-        PY_GILSTATE_RELEASE(gil);
-        olive_py_wrap_owned(r)
+struct Arena {
+    chunks: Vec<Chunk>,
+}
+
+impl Arena {
+    fn new() -> Self {
+        Arena {
+            chunks: vec![Chunk::new()],
+        }
+    }
+
+    fn alloc(&mut self, obj: OlivePyObject) -> *mut OlivePyObject {
+        for chunk in self.chunks.iter_mut() {
+            let ptr = chunk.alloc(obj);
+            if !ptr.is_null() {
+                return ptr;
+            }
+        }
+        let mut chunk = Chunk::new();
+        let ptr = chunk.alloc(obj);
+        self.chunks.push(chunk);
+        ptr
+    }
+
+    fn free(&mut self, ptr: *mut OlivePyObject) {
+        for chunk in self.chunks.iter_mut() {
+            if chunk.contains(ptr as usize) {
+                chunk.free_slot(ptr);
+                return;
+            }
+        }
+    }
+
+    fn contains(&self, ptr: usize) -> bool {
+        for chunk in &self.chunks {
+            if chunk.contains(ptr) {
+                return true;
+            }
+        }
+        false
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_py_from_str(s: i64) -> PyObject {
-    check_python_loaded();
-    let r_str = crate::olive_str_from_ptr(s);
-    let c = CString::new(r_str).unwrap();
-    unsafe {
-        let gil = PY_GILSTATE_ENSURE();
-        let r = PY_UNICODE_FROM_STRING(c.as_ptr());
-        PY_GILSTATE_RELEASE(gil);
-        olive_py_wrap_owned(r)
+static ARENA: std::sync::OnceLock<RwLock<Arena>> = std::sync::OnceLock::new();
+
+// SAFETY: All PyObject access is serialized by the GIL. Raw pointers are opaque handles.
+unsafe impl Send for OlivePyObject {}
+unsafe impl Sync for OlivePyObject {}
+
+fn arena() -> &'static RwLock<Arena> {
+    ARENA.get_or_init(|| RwLock::new(Arena::new()))
+}
+
+#[inline]
+fn is_arena_ptr(ptr: usize) -> bool {
+    if let Ok(a) = arena().read() {
+        a.contains(ptr)
+    } else {
+        false
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_py_conv_to_py(val: i64) -> PyObject {
-    check_python_loaded();
+pub unsafe fn olive_py_wrap_owned(py_ptr: PyObject) -> PyObject {
+    if py_ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    let obj = OlivePyObject {
+        kind: crate::KIND_PYOBJECT,
+        py_ptr,
+    };
+    let raw = arena().write().unwrap().alloc(obj);
+    crate::register_object(raw as i64);
+    raw as PyObject
+}
+
+pub unsafe fn olive_py_wrap_borrowed(py_ptr: PyObject) -> PyObject {
     unsafe {
-        let gil = PY_GILSTATE_ENSURE();
-        let r = olive_to_py(val);
-        PY_GILSTATE_RELEASE(gil);
-        r
+        if py_ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+        with_gil(|| {
+            PY_INC_REF(py_ptr);
+        });
+        olive_py_wrap_owned(py_ptr)
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_py_conv_to_olive(py_val: PyObject) -> i64 {
-    check_python_loaded();
+pub unsafe fn olive_py_wrap(py_ptr: PyObject) -> PyObject {
+    unsafe { olive_py_wrap_borrowed(py_ptr) }
+}
+
+pub unsafe fn olive_py_unwrap(val: PyObject) -> PyObject {
     unsafe {
-        let gil = PY_GILSTATE_ENSURE();
-        let r = py_to_olive_internal(py_val);
-        PY_GILSTATE_RELEASE(gil);
-        r
+        if val.is_null() {
+            return std::ptr::null_mut();
+        }
+        if is_arena_ptr(val as usize) {
+            let obj = &*(val as *const OlivePyObject);
+            return obj.py_ptr;
+        }
+        val
+    }
+}
+
+// Read ob_type directly from object layout to avoid calling PY_OBJECT_TYPE
+#[inline]
+unsafe fn raw_ob_type(obj: PyObject) -> PyObject {
+    unsafe {
+        if obj.is_null() {
+            return std::ptr::null_mut();
+        }
+        *((obj as *const usize).add(1)) as PyObject
+    }
+}
+
+fn looks_like_float(val: i64) -> bool {
+    let f = f64::from_bits(val as u64);
+    if f.is_nan() || f.is_infinite() || f.is_subnormal() {
+        return false;
+    }
+    let abs_f = f.abs();
+    abs_f > 1e-100 && abs_f < 1e100
+}
+
+pub fn olive_to_py(val: i64) -> PyObject {
+    if val & 1 != 0 {
+        unsafe { PY_UNICODE_FROM_STRING((val & !1) as *const c_char) }
+    } else if val == 0 {
+        unsafe { _PY_NONE_STRUCT }
+    } else {
+        let ptr = val as *const c_void;
+        if crate::is_active_object(val) {
+            unsafe {
+                let kind = *(ptr as *const i64);
+                match kind {
+                    crate::KIND_LIST => olive_py_create_list_proxy(val),
+                    crate::KIND_OBJ => olive_py_create_dict_proxy(val),
+                    crate::KIND_SET => {
+                        let hs = &*(ptr as *const crate::OliveHashSet);
+                        let pys = PY_SET_NEW(std::ptr::null_mut());
+                        for i in 0..hs.len {
+                            let v = *hs.ptr.add(i);
+                            let py_v = olive_to_py(v);
+                            PY_SET_ADD(pys, py_v);
+                            PY_DEC_REF(py_v);
+                        }
+                        pys
+                    }
+                    crate::KIND_BYTES => {
+                        let b = &*(ptr as *const crate::bytes::OliveBytes);
+                        PY_BYTES_FROM_STRING_AND_SIZE(b.data.as_ptr(), b.data.len() as isize)
+                    }
+                    crate::KIND_PYOBJECT => {
+                        let py_obj = &*(ptr as *const OlivePyObject);
+                        PY_INC_REF(py_obj.py_ptr);
+                        py_obj.py_ptr
+                    }
+                    _ => {
+                        if looks_like_float(val) {
+                            let f = f64::from_bits(val as u64);
+                            PY_FLOAT_FROM_DOUBLE(f as c_double)
+                        } else {
+                            PY_LONG_FROM_LONG(val as c_long)
+                        }
+                    }
+                }
+            }
+        } else {
+            unsafe {
+                if looks_like_float(val) {
+                    let f = f64::from_bits(val as u64);
+                    PY_FLOAT_FROM_DOUBLE(f as c_double)
+                } else {
+                    PY_LONG_FROM_LONG(val as c_long)
+                }
+            }
+        }
     }
 }
 
@@ -83,4 +265,499 @@ pub unsafe fn olive_py_create_dict_proxy(ptr: i64) -> PyObject {
         }
         obj
     }
+}
+
+pub unsafe fn py_to_olive_internal(py_val: PyObject) -> i64 {
+    unsafe {
+        if py_val.is_null() || py_val == _PY_NONE_STRUCT {
+            return 0;
+        }
+
+        let ty = raw_ob_type(py_val);
+        if ty.is_null() {
+            return 0;
+        }
+
+        let list_type = crate::python_proxy::OLIVE_LIST_PROXY_TYPE;
+        let dict_type = crate::python_proxy::OLIVE_DICT_PROXY_TYPE;
+        if (!list_type.is_null() && ty == list_type) || (!dict_type.is_null() && ty == dict_type) {
+            let proxy = &*(py_val as *const crate::python_proxy::NativeProxy);
+            return proxy.ptr;
+        }
+
+        let is_subtype = |expected: PyObject| {
+            if expected.is_null() {
+                false
+            } else {
+                PY_TYPE_IS_SUBTYPE(ty, expected) != 0
+            }
+        };
+
+        if is_subtype(PY_BOOL_TYPE) {
+            if PY_LONG_AS_LONG(py_val) != 0 { 1 } else { 0 }
+        } else if is_subtype(PY_LONG_TYPE) || {
+            let ty_name_attr =
+                PY_OBJECT_GET_ATTR_STRING(ty, b"__name__\0".as_ptr() as *const c_char);
+            let mut is_int_like = false;
+            if !ty_name_attr.is_null() {
+                let s = PY_UNICODE_AS_UTF8(ty_name_attr);
+                if !s.is_null() {
+                    let name = CStr::from_ptr(s).to_string_lossy();
+                    if name.contains("int") {
+                        is_int_like = true;
+                    }
+                }
+                PY_DEC_REF(ty_name_attr);
+            }
+            is_int_like
+        } {
+            PY_LONG_AS_LONG(py_val) as i64
+        } else if is_subtype(PY_FLOAT_TYPE) || {
+            let ty_name_attr =
+                PY_OBJECT_GET_ATTR_STRING(ty, b"__name__\0".as_ptr() as *const c_char);
+            let mut is_float_like = false;
+            if !ty_name_attr.is_null() {
+                let s = PY_UNICODE_AS_UTF8(ty_name_attr);
+                if !s.is_null() {
+                    let name = CStr::from_ptr(s).to_string_lossy();
+                    if name.contains("float") {
+                        is_float_like = true;
+                    }
+                }
+                PY_DEC_REF(ty_name_attr);
+            }
+            is_float_like
+        } {
+            let f = PY_FLOAT_AS_DOUBLE(py_val) as f64;
+            f.to_bits() as i64
+        } else if is_subtype(PY_UNICODE_TYPE) {
+            let s = PY_UNICODE_AS_UTF8(py_val);
+            if !s.is_null() {
+                let r_str = CStr::from_ptr(s).to_string_lossy();
+                crate::olive_str_internal(&r_str)
+            } else {
+                0
+            }
+        } else if is_subtype(PY_LIST_TYPE) {
+            olive_py_to_list_internal(py_val)
+        } else if is_subtype(PY_DICT_TYPE) {
+            olive_py_to_dict_internal(py_val)
+        } else if is_subtype(PY_SET_TYPE) {
+            olive_py_to_set_internal(py_val)
+        } else if is_subtype(PY_BYTES_TYPE) {
+            olive_py_to_bytes_internal(py_val)
+        } else {
+            let seq_len = PY_OBJECT_LENGTH(py_val);
+            if seq_len >= 0 {
+                olive_py_to_list_internal(py_val)
+            } else {
+                PY_ERR_CLEAR();
+                olive_py_wrap(py_val) as i64
+            }
+        }
+    }
+}
+
+pub unsafe fn olive_py_to_list_internal(obj: PyObject) -> i64 {
+    unsafe {
+        let len = PY_OBJECT_LENGTH(obj) as usize;
+        let list_ptr = crate::olive_list_new(len as i64);
+        if len > 0 {
+            let sv = &mut *(list_ptr as *mut crate::StableVec);
+            let ty = raw_ob_type(obj);
+            let is_list = !ty.is_null()
+                && !PY_LIST_TYPE.is_null()
+                && (ty == PY_LIST_TYPE || PY_TYPE_IS_SUBTYPE(ty, PY_LIST_TYPE) != 0);
+            let is_tuple = !ty.is_null()
+                && !PY_TUPLE_TYPE.is_null()
+                && (ty == PY_TUPLE_TYPE || PY_TYPE_IS_SUBTYPE(ty, PY_TUPLE_TYPE) != 0);
+
+            for i in 0..len {
+                let py_item = if is_list {
+                    let item = PY_LIST_GET_ITEM(obj, i as isize);
+                    if !item.is_null() {
+                        PY_INC_REF(item);
+                    }
+                    item
+                } else if is_tuple {
+                    let item = PY_TUPLE_GET_ITEM(obj, i as isize);
+                    if !item.is_null() {
+                        PY_INC_REF(item);
+                    }
+                    item
+                } else {
+                    let index_obj = PY_LONG_FROM_LONG(i as c_long);
+                    let item = PY_OBJECT_GET_ITEM(obj, index_obj);
+                    if !index_obj.is_null() {
+                        PY_DEC_REF(index_obj);
+                    }
+                    item
+                };
+                *sv.ptr.add(i) = py_to_olive_internal(py_item);
+                if !py_item.is_null() {
+                    PY_DEC_REF(py_item);
+                }
+            }
+        }
+        list_ptr
+    }
+}
+
+pub unsafe fn olive_py_to_dict_internal(obj: PyObject) -> i64 {
+    unsafe {
+        let olive_obj = crate::olive_obj_new();
+        let mut pos: isize = 0;
+        let mut key_obj: PyObject = std::ptr::null_mut();
+        let mut val_obj: PyObject = std::ptr::null_mut();
+
+        while PY_DICT_NEXT(obj, &mut pos, &mut key_obj, &mut val_obj) != 0 {
+            if !key_obj.is_null() {
+                let key_ty = raw_ob_type(key_obj);
+                let is_unicode = !key_ty.is_null()
+                    && !PY_UNICODE_TYPE.is_null()
+                    && (key_ty == PY_UNICODE_TYPE
+                        || PY_TYPE_IS_SUBTYPE(key_ty, PY_UNICODE_TYPE) != 0);
+
+                let key_utf8 = if is_unicode {
+                    PY_UNICODE_AS_UTF8(key_obj)
+                } else {
+                    let str_obj = PY_OBJECT_STR(key_obj);
+                    if str_obj.is_null() {
+                        continue;
+                    }
+                    let utf8 = PY_UNICODE_AS_UTF8(str_obj);
+                    PY_DEC_REF(str_obj);
+                    utf8
+                };
+
+                if !key_utf8.is_null() {
+                    let key_str = CStr::from_ptr(key_utf8).to_string_lossy();
+                    let key_ptr = crate::olive_str_internal(&key_str);
+                    let olive_val = py_to_olive_internal(val_obj);
+                    crate::olive_obj_set(olive_obj, key_ptr, olive_val);
+                }
+            }
+        }
+        olive_obj
+    }
+}
+
+pub unsafe fn olive_py_to_set_internal(obj: PyObject) -> i64 {
+    unsafe {
+        let iter = PY_OBJECT_GET_ITER(obj);
+        if iter.is_null() {
+            PY_ERR_CLEAR();
+            return crate::olive_set_new(0);
+        }
+        let size_hint = PY_OBJECT_LENGTH(obj).max(0) as i64;
+        let set_ptr = crate::olive_set_new(size_hint);
+        loop {
+            let item = PY_ITER_NEXT(iter);
+            if item.is_null() {
+                PY_ERR_CLEAR();
+                break;
+            }
+            let olive_val = py_to_olive_internal(item);
+            crate::olive_set_add(set_ptr, olive_val);
+            PY_DEC_REF(item);
+        }
+        PY_DEC_REF(iter);
+        set_ptr
+    }
+}
+
+pub unsafe fn olive_py_to_bytes_internal(obj: PyObject) -> i64 {
+    unsafe {
+        let size = PY_BYTES_SIZE(obj) as usize;
+        let buf_ptr = PY_BYTES_AS_STRING(obj);
+        let bytes_ptr = crate::bytes::olive_buf_new(size as i64);
+        if size > 0 && !buf_ptr.is_null() {
+            let b = &mut *(bytes_ptr as *mut crate::bytes::OliveBytes);
+            b.data.reserve(size);
+            std::ptr::copy_nonoverlapping(buf_ptr as *const u8, b.data.as_mut_ptr(), size);
+            b.data.set_len(size);
+        }
+        bytes_ptr
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_from_int(v: i64) -> PyObject {
+    check_python_loaded();
+    with_gil(|| unsafe {
+        let r = PY_LONG_FROM_LONG(v as c_long);
+        olive_py_wrap_owned(r)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_from_float(v: f64) -> PyObject {
+    check_python_loaded();
+    with_gil(|| unsafe {
+        let r = PY_FLOAT_FROM_DOUBLE(v as c_double);
+        olive_py_wrap_owned(r)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_from_str(s: i64) -> PyObject {
+    check_python_loaded();
+    with_gil(|| unsafe {
+        let r = PY_UNICODE_FROM_STRING((s & !1) as *const c_char);
+        olive_py_wrap_owned(r)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_conv_to_py(val: i64) -> PyObject {
+    check_python_loaded();
+    with_gil(|| olive_to_py(val))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_conv_to_olive(py_val: PyObject) -> i64 {
+    check_python_loaded();
+    with_gil(|| unsafe { py_to_olive_internal(py_val) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_from_float_bits(val: i64) -> PyObject {
+    check_python_loaded();
+    unsafe {
+        let f = f64::from_bits(val as u64);
+        with_gil(|| {
+            let r = PY_FLOAT_FROM_DOUBLE(f as c_double);
+            olive_py_wrap_owned(r)
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_decref(obj: PyObject) {
+    if obj.is_null() {
+        return;
+    }
+    crate::unregister_object(obj as i64);
+    if is_arena_ptr(obj as usize) {
+        let raw = obj as *mut OlivePyObject;
+        let py_ptr = unsafe { (*raw).py_ptr };
+        if !py_ptr.is_null() {
+            with_gil(|| unsafe {
+                PY_DEC_REF(py_ptr);
+            });
+        }
+        arena().write().unwrap().free(raw);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_to_int(obj: PyObject) -> i64 {
+    check_python_loaded();
+    let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
+    if unwrapped_obj.is_null() {
+        return 0;
+    }
+    with_gil(|| unsafe { PY_LONG_AS_LONG(unwrapped_obj) as i64 })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_to_float(obj: PyObject) -> f64 {
+    check_python_loaded();
+    let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
+    if unwrapped_obj.is_null() {
+        return 0.0;
+    }
+    with_gil(|| unsafe { PY_FLOAT_AS_DOUBLE(unwrapped_obj) as f64 })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_to_str(obj: PyObject) -> i64 {
+    check_python_loaded();
+    let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
+    if unwrapped_obj.is_null() {
+        return 0;
+    }
+    with_gil(|| unsafe {
+        let str_obj = PY_OBJECT_STR(unwrapped_obj);
+        let res = if !str_obj.is_null() {
+            let s = PY_UNICODE_AS_UTF8(str_obj);
+            let r = if !s.is_null() {
+                let r_str = CStr::from_ptr(s).to_string_lossy();
+                crate::olive_str_internal(&r_str)
+            } else {
+                0
+            };
+            PY_DEC_REF(str_obj);
+            r
+        } else {
+            0
+        };
+        res
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_from_list(s: i64) -> PyObject {
+    check_python_loaded();
+    if s == 0 {
+        return std::ptr::null_mut();
+    }
+    with_gil(|| unsafe {
+        let sv = &*(s as *const crate::StableVec);
+        let pyl = PY_LIST_NEW(sv.len as isize);
+        for i in 0..sv.len {
+            let v = *sv.ptr.add(i);
+            let py_v = olive_to_py(v);
+            PY_LIST_SET_ITEM(pyl, i as isize, py_v);
+        }
+        olive_py_wrap_owned(pyl)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_to_list(obj: PyObject) -> i64 {
+    check_python_loaded();
+    let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
+    if unwrapped_obj.is_null() {
+        return 0;
+    }
+    with_gil(|| unsafe { olive_py_to_list_internal(unwrapped_obj) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_to_dict(obj: PyObject) -> i64 {
+    check_python_loaded();
+    let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
+    if unwrapped_obj.is_null() {
+        return 0;
+    }
+    with_gil(|| unsafe { olive_py_to_dict_internal(unwrapped_obj) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_getitem(obj: PyObject, key: PyObject) -> PyObject {
+    check_python_loaded();
+    let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
+    let unwrapped_key = unsafe { olive_py_unwrap(key) };
+    if unwrapped_obj.is_null() || unwrapped_key.is_null() {
+        return std::ptr::null_mut();
+    }
+    with_gil(|| unsafe {
+        let r = PY_OBJECT_GET_ITEM(unwrapped_obj, unwrapped_key);
+        if r.is_null() {
+            handle_py_error();
+        }
+        olive_py_wrap_owned(r)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_setitem(obj: PyObject, key: PyObject, val: PyObject) {
+    check_python_loaded();
+    let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
+    let unwrapped_key = unsafe { olive_py_unwrap(key) };
+    let unwrapped_val = unsafe { olive_py_unwrap(val) };
+    if unwrapped_obj.is_null() || unwrapped_key.is_null() || unwrapped_val.is_null() {
+        return;
+    }
+    with_gil(|| unsafe {
+        let res = PY_OBJECT_SET_ITEM(unwrapped_obj, unwrapped_key, unwrapped_val);
+        if res == -1 {
+            handle_py_error();
+        }
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_len(obj: PyObject) -> i64 {
+    check_python_loaded();
+    let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
+    if unwrapped_obj.is_null() {
+        return 0;
+    }
+    with_gil(|| unsafe { PY_OBJECT_LENGTH(unwrapped_obj) as i64 })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_none() -> PyObject {
+    check_python_loaded();
+    unsafe { olive_py_wrap_borrowed(_PY_NONE_STRUCT) }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_is_none(obj: PyObject) -> i64 {
+    check_python_loaded();
+    let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
+    if unwrapped_obj == unsafe { _PY_NONE_STRUCT } {
+        1
+    } else {
+        0
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_dict_keys_ffi(obj_ptr: i64) -> i64 {
+    if obj_ptr == 0 {
+        return 0;
+    }
+    unsafe {
+        let obj = &*(obj_ptr as *const crate::OliveObj);
+        let list_ptr = crate::olive_list_new(obj.fields.len() as i64);
+        let sv = &mut *(list_ptr as *mut crate::StableVec);
+        for (i, k) in obj.fields.keys().enumerate() {
+            *sv.ptr.add(i) = crate::olive_str_internal(k);
+        }
+        list_ptr
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_is_valid_proxy(ptr: i64) -> i64 {
+    if crate::is_active_object(ptr) { 1 } else { 0 }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_import(name: i64) -> PyObject {
+    check_python_loaded();
+    with_gil(|| unsafe {
+        let m = PY_IMPORT_IMPORT_MODULE((name & !1) as *const c_char);
+        if m.is_null() {
+            handle_py_error();
+        }
+        olive_py_wrap_owned(m)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_getattr(obj: PyObject, attr: i64) -> PyObject {
+    check_python_loaded();
+    let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
+    if unwrapped_obj.is_null() {
+        return std::ptr::null_mut();
+    }
+    with_gil(|| unsafe {
+        let a = PY_OBJECT_GET_ATTR_STRING(unwrapped_obj, (attr & !1) as *const c_char);
+        if a.is_null() {
+            handle_py_error();
+        }
+        olive_py_wrap_owned(a)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_setattr(obj: PyObject, attr: i64, val: i64) -> PyObject {
+    check_python_loaded();
+    let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
+    if unwrapped_obj.is_null() {
+        return obj;
+    }
+    with_gil(|| unsafe {
+        let py_val = olive_to_py(val);
+        let res = PY_OBJECT_SET_ATTR_STRING(unwrapped_obj, (attr & !1) as *const c_char, py_val);
+        if res == -1 {
+            handle_py_error();
+        }
+        PY_DEC_REF(py_val);
+        obj
+    })
 }

@@ -302,6 +302,15 @@ fn format_list(ptr: i64) -> String {
     format!("[{}]", parts.join(", "))
 }
 
+fn looks_like_float(val: i64) -> bool {
+    let f = f64::from_bits(val as u64);
+    if f.is_nan() || f.is_infinite() || f.is_subnormal() {
+        return false;
+    }
+    let abs_f = f.abs();
+    abs_f > 1e-100 && abs_f < 1e100
+}
+
 fn format_list_elem(val: i64) -> String {
     // Olive strings are tagged with LSB = 1
     if val & 1 == 1 {
@@ -310,12 +319,37 @@ fn format_list_elem(val: i64) -> String {
             return format!("\"{}\"", olive_str_from_ptr(val));
         }
     }
-    // Nested list: val is a valid live Olive heap object
+    // Nested active heap objects
     if is_active_object(val) {
-        return format_list(val);
+        let kind = unsafe { *(val as *const i64) };
+        match kind {
+            KIND_LIST => return format_list(val),
+            KIND_OBJ => {
+                let m = unsafe { &*(val as *const OliveObj) };
+                let mut parts = Vec::with_capacity(m.fields.len());
+                for (k, &v) in &m.fields {
+                    parts.push(format!("'{}': {}", k, format_list_elem(v)));
+                }
+                return format!("{{{}}}", parts.join(", "));
+            }
+            KIND_PYOBJECT => {
+                let str_ptr = python::olive_py_to_str(val as python::PyObject);
+                if str_ptr != 0 {
+                    let s = olive_str_from_ptr(str_ptr);
+                    olive_free_str(str_ptr);
+                    return s;
+                }
+                return "<PyObject>".to_string();
+            }
+            _ => {}
+        }
     }
-    // Plain integer
-    format!("{}", val)
+    // Plain integer or float bits
+    if looks_like_float(val) {
+        format!("{}", f64::from_bits(val as u64))
+    } else {
+        format!("{}", val)
+    }
 }
 
 #[unsafe(no_mangle)]

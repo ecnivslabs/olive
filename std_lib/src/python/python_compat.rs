@@ -15,3 +15,14 @@ pub unsafe fn compat_dlopen(name: &str) -> *mut c_void {
         }
     }
 }
+
+pub unsafe fn compat_dlsym<T>(handle: *mut c_void, name: &str) -> T {
+    unsafe {
+        let cname = CString::new(name).unwrap();
+        #[cfg(target_os = "windows")]
+        let sym = { super::GetProcAddress(handle, cname.as_ptr() as *const u8) };
+        #[cfg(not(target_os = "windows"))]
+        let sym = { libc::dlsym(handle, cname.as_ptr()) };
+        std::mem::transmute_copy(&sym)
+    }
+}

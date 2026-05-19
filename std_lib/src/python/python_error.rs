@@ -1,6 +1,6 @@
 use crate::python::*;
 use std::ffi::CStr;
-use std::os::raw::{c_char, c_long};
+use std::os::raw::c_long;
 
 pub unsafe fn fetch_py_traceback() -> String {
     unsafe {
@@ -16,42 +16,34 @@ pub unsafe fn fetch_py_traceback() -> String {
         let mut tb_msg = String::new();
 
         if !ptraceback.is_null() {
-            let tb_mod = PY_IMPORT_IMPORT_MODULE(b"traceback\0".as_ptr() as *const c_char);
-            if !tb_mod.is_null() {
-                let fmt_func = PY_OBJECT_GET_ATTR_STRING(
-                    tb_mod,
-                    b"format_exception\0".as_ptr() as *const c_char,
-                );
-                if !fmt_func.is_null() {
-                    let py_args = PY_TUPLE_NEW(3);
-                    PY_TUPLE_SET_ITEM(py_args, 0, ptype);
-                    PY_TUPLE_SET_ITEM(py_args, 1, pvalue);
-                    PY_TUPLE_SET_ITEM(py_args, 2, ptraceback);
-                    ptype = std::ptr::null_mut();
-                    pvalue = std::ptr::null_mut();
-                    ptraceback = std::ptr::null_mut();
-                    PY_ERR_CLEAR();
-                    let py_list = PY_OBJECT_CALL_OBJECT(fmt_func, py_args);
-                    if !py_list.is_null() {
-                        let len = PY_OBJECT_LENGTH(py_list) as usize;
-                        for i in 0..len {
-                            let idx_obj = PY_LONG_FROM_LONG(i as c_long);
-                            let py_item = PY_OBJECT_GET_ITEM(py_list, idx_obj);
-                            if !py_item.is_null() {
-                                let s = PY_UNICODE_AS_UTF8(py_item);
-                                if !s.is_null() {
-                                    tb_msg.push_str(&CStr::from_ptr(s).to_string_lossy());
-                                }
-                                PY_DEC_REF(py_item);
+            let fmt_func = PY_TRACEBACK_FORMAT_EXCEPTION;
+            if !fmt_func.is_null() {
+                let py_args = PY_TUPLE_NEW(3);
+                PY_TUPLE_SET_ITEM(py_args, 0, ptype);
+                PY_TUPLE_SET_ITEM(py_args, 1, pvalue);
+                PY_TUPLE_SET_ITEM(py_args, 2, ptraceback);
+                ptype = std::ptr::null_mut();
+                pvalue = std::ptr::null_mut();
+                ptraceback = std::ptr::null_mut();
+                PY_ERR_CLEAR();
+                let py_list = PY_OBJECT_CALL_OBJECT(fmt_func, py_args);
+                if !py_list.is_null() {
+                    let len = PY_OBJECT_LENGTH(py_list) as usize;
+                    for i in 0..len {
+                        let idx_obj = PY_LONG_FROM_LONG(i as c_long);
+                        let py_item = PY_OBJECT_GET_ITEM(py_list, idx_obj);
+                        if !py_item.is_null() {
+                            let s = PY_UNICODE_AS_UTF8(py_item);
+                            if !s.is_null() {
+                                tb_msg.push_str(&CStr::from_ptr(s).to_string_lossy());
                             }
-                            PY_DEC_REF(idx_obj);
+                            PY_DEC_REF(py_item);
                         }
-                        PY_DEC_REF(py_list);
+                        PY_DEC_REF(idx_obj);
                     }
-                    PY_DEC_REF(py_args);
-                    PY_DEC_REF(fmt_func);
+                    PY_DEC_REF(py_list);
                 }
-                PY_DEC_REF(tb_mod);
+                PY_DEC_REF(py_args);
             }
         }
 

@@ -4,6 +4,30 @@ use std::ffi::CString;
 use std::os::raw::{c_char, c_void};
 use std::sync::atomic::Ordering;
 
+fn find_active_python_library() -> Option<String> {
+    for cmd in &["python3", "python"] {
+        if let Ok(output) = std::process::Command::new(cmd)
+            .args([
+                "-c",
+                "import sys, os, sysconfig; \
+                 libdir = sysconfig.get_config_var('LIBDIR'); \
+                 ldlibrary = sysconfig.get_config_var('LDLIBRARY'); \
+                 path = os.path.join(libdir or '', ldlibrary or '') if libdir and ldlibrary else ''; \
+                 print(path if os.path.exists(path) else (ldlibrary or ''))",
+            ])
+            .output()
+        {
+            if output.status.success() {
+                let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !path_str.is_empty() {
+                    return Some(path_str);
+                }
+            }
+        }
+    }
+    None
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_initialize() {
     static ONCE: std::sync::Once = std::sync::Once::new();
@@ -14,6 +38,12 @@ pub extern "C" fn olive_py_initialize() {
             std::env::var("OLIVE_PYTHON_PATH").or_else(|_| std::env::var("PYTHON_LIBRARY"))
         {
             handle = compat_dlopen(&env_path);
+        }
+
+        if handle.is_null() {
+            if let Some(detected_path) = find_active_python_library() {
+                handle = compat_dlopen(&detected_path);
+            }
         }
 
         if handle.is_null() {
@@ -129,6 +159,15 @@ pub extern "C" fn olive_py_initialize() {
         PY_EVAL_INIT_THREADS = compat_dlsym(handle, "PyEval_InitThreads");
         PY_SYS_GET_OBJECT = compat_dlsym(handle, "PySys_GetObject");
 
+        PY_DICT_NEXT = compat_dlsym(handle, "PyDict_Next");
+        PY_LIST_GET_ITEM = compat_dlsym(handle, "PyList_GetItem");
+        PY_TUPLE_GET_ITEM = compat_dlsym(handle, "PyTuple_GetItem");
+        PY_TUPLE_TYPE = compat_dlsym(handle, "PyTuple_Type");
+        PY_OBJECT_GET_ITER = compat_dlsym(handle, "PyObject_GetIter");
+        PY_ITER_NEXT = compat_dlsym(handle, "PyIter_Next");
+        PY_CORO_CHECK_EXACT = compat_dlsym(handle, "PyCoro_CheckExact");
+        PY_ITER_CHECK = compat_dlsym(handle, "PyIter_Check");
+
         _PY_NONE_STRUCT = compat_dlsym(handle, "_Py_NoneStruct");
 
         PY_INITIALIZE();
@@ -138,8 +177,7 @@ pub extern "C" fn olive_py_initialize() {
             PY_EVAL_INIT_THREADS();
         }
 
-        // Verify Python major version is 3. Python 2 shares the same ABI symbols
-        // but has incompatible semantics — catch it early.
+        // Check Python major version is 3
         {
             let ver_obj = PY_SYS_GET_OBJECT(b"version_info\0".as_ptr() as *const c_char);
             if !ver_obj.is_null() {
@@ -150,7 +188,7 @@ pub extern "C" fn olive_py_initialize() {
                     PY_DEC_REF(major_attr);
                     if major < 3 {
                         eprintln!(
-                            "Warning: Python {major} detected — Python interop requires Python 3. \
+                            "Warning: Python {major} detected - Python interop requires Python 3. \
                              Olive Python interop will not function correctly."
                         );
                     }
@@ -159,6 +197,17 @@ pub extern "C" fn olive_py_initialize() {
         }
 
         crate::python_proxy::setup_native_proxies(handle, compat_dlsym);
+
+        // Preload traceback formatter
+        let tb_mod = PY_IMPORT_IMPORT_MODULE(b"traceback\0".as_ptr() as *const c_char);
+        if !tb_mod.is_null() {
+            let fmt_fn =
+                PY_OBJECT_GET_ATTR_STRING(tb_mod, b"format_exception\0".as_ptr() as *const c_char);
+            if !fmt_fn.is_null() {
+                PY_TRACEBACK_FORMAT_EXCEPTION = fmt_fn;
+            }
+            PY_DEC_REF(tb_mod);
+        }
 
         let save_ptr: *const () = std::mem::transmute(PY_EVAL_SAVE_THREAD);
         if !save_ptr.is_null() && save_ptr != (noop_save_thread as *const ()) {
@@ -182,7 +231,12 @@ pub extern "C" fn olive_py_finalize() {
             } else {
                 let _gil = PY_GILSTATE_ENSURE();
             }
+            if !PY_TRACEBACK_FORMAT_EXCEPTION.is_null() {
+                PY_DEC_REF(PY_TRACEBACK_FORMAT_EXCEPTION);
+                PY_TRACEBACK_FORMAT_EXCEPTION = std::ptr::null_mut();
+            }
             PY_FINALIZE();
+
             INITIALIZED.store(false, Ordering::SeqCst);
         }
     }

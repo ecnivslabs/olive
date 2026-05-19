@@ -96,7 +96,8 @@ pub unsafe fn setup_native_proxies(
         name: list_name.as_ptr(),
         basicsize: std::mem::size_of::<NativeProxy>() as c_int,
         itemsize: 0,
-        flags: 0, // Py_TPFLAGS_DEFAULT = 0 roughly in limited API without specific bits
+        // Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE
+        flags: (1 << 0) | (1 << 10),
         slots: list_slots.as_mut_ptr(),
     };
     OLIVE_LIST_PROXY_TYPE = PY_TYPE_FROM_SPEC(&mut list_spec);
@@ -125,7 +126,8 @@ pub unsafe fn setup_native_proxies(
         name: dict_name.as_ptr(),
         basicsize: std::mem::size_of::<NativeProxy>() as c_int,
         itemsize: 0,
-        flags: 0,
+        // Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE
+        flags: (1 << 0) | (1 << 10),
         slots: dict_slots.as_mut_ptr(),
     };
     OLIVE_DICT_PROXY_TYPE = PY_TYPE_FROM_SPEC(&mut dict_spec);

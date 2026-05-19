@@ -15,6 +15,14 @@ let g = gravity.G
 
 By default, `import math` looks for `math.liv` in the same directory as the current file.
 
+### Top-Level Execution and Imported Modules
+
+Olive separates imported modules from executable main scripts by placing strict restrictions on top-level execution:
+
+* **Entry Point Only**: Only the file executed directly by the `pit run` command is treated as the "main" script. The compiler automatically executes its top-level statements and calls its `main()` function (if defined).
+* **Imported Modules**: When a module is imported by another file, its top-level statements (such as prints, loops, or direct function calls) are **not** executed. The compiler only processes variable declarations, constants, structures, and function definitions. 
+* **Safe, Side-Effect-Free Imports**: This design ensures that importing a file never produces unexpected side effects (like initiating network calls, print outputs, or database connections). It makes modules completely safe, predictable, and modular.
+
 ## From-Imports
 
 If you only need specific names from a module, use `from ... import`:
