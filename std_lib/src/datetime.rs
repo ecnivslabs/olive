@@ -21,7 +21,6 @@ fn is_leap(year: i64) -> bool {
 }
 
 fn ymd_to_unix(year: i64, month: i64, day: i64, h: i64, min: i64, sec: i64) -> i64 {
-    // Gregorian proleptic calendar
     let m = if month <= 2 { month + 9 } else { month - 3 };
     let y = if month <= 2 { year - 1 } else { year };
     let era = if y >= 0 { y } else { y - 399 } / 400;
@@ -200,14 +199,14 @@ pub extern "C" fn olive_datetime_parts(ts: f64) -> i64 {
     let (year, month, day, h, min, sec) = unix_to_parts(ts as i64);
     let dow = day_of_week(ts as i64);
     let mut fields = HashMap::default();
-    fields.insert("year".to_string(), year);
-    fields.insert("month".to_string(), month);
-    fields.insert("day".to_string(), day);
-    fields.insert("hour".to_string(), h);
-    fields.insert("minute".to_string(), min);
-    fields.insert("second".to_string(), sec);
-    fields.insert("weekday".to_string(), dow); // 0=Mon
-    fields.insert("timestamp".to_string(), ts as i64);
+    fields.insert(crate::OliveStringKey(olive_str_internal("year")), year);
+    fields.insert(crate::OliveStringKey(olive_str_internal("month")), month);
+    fields.insert(crate::OliveStringKey(olive_str_internal("day")), day);
+    fields.insert(crate::OliveStringKey(olive_str_internal("hour")), h);
+    fields.insert(crate::OliveStringKey(olive_str_internal("minute")), min);
+    fields.insert(crate::OliveStringKey(olive_str_internal("second")), sec);
+    fields.insert(crate::OliveStringKey(olive_str_internal("weekday")), dow); // 0=Mon
+    fields.insert(crate::OliveStringKey(olive_str_internal("timestamp")), ts as i64);
     Box::into_raw(Box::new(OliveObj {
         kind: crate::KIND_OBJ,
         fields,
@@ -488,12 +487,12 @@ mod tests {
         let parts_ptr = olive_datetime_parts(ts);
         assert_ne!(parts_ptr, 0);
         let obj = unsafe { &*(parts_ptr as *const OliveObj) };
-        assert_eq!(*obj.fields.get("year").unwrap(), 2024);
-        assert_eq!(*obj.fields.get("month").unwrap(), 1);
-        assert_eq!(*obj.fields.get("day").unwrap(), 15);
-        assert_eq!(*obj.fields.get("hour").unwrap(), 11);
-        assert_eq!(*obj.fields.get("minute").unwrap(), 50);
-        assert_eq!(*obj.fields.get("second").unwrap(), 45);
+        assert_eq!(*obj.fields.get(&crate::OliveStringKey(olive_str_internal("year"))).unwrap(), 2024);
+        assert_eq!(*obj.fields.get(&crate::OliveStringKey(olive_str_internal("month"))).unwrap(), 1);
+        assert_eq!(*obj.fields.get(&crate::OliveStringKey(olive_str_internal("day"))).unwrap(), 15);
+        assert_eq!(*obj.fields.get(&crate::OliveStringKey(olive_str_internal("hour"))).unwrap(), 11);
+        assert_eq!(*obj.fields.get(&crate::OliveStringKey(olive_str_internal("minute"))).unwrap(), 50);
+        assert_eq!(*obj.fields.get(&crate::OliveStringKey(olive_str_internal("second"))).unwrap(), 45);
     }
 
     #[test]
@@ -508,7 +507,7 @@ mod tests {
         let next = olive_datetime_add_days(ts, 1);
         let parts_ptr = olive_datetime_parts(next);
         let obj = unsafe { &*(parts_ptr as *const OliveObj) };
-        assert_eq!(*obj.fields.get("day").unwrap(), 16);
+        assert_eq!(*obj.fields.get(&crate::OliveStringKey(olive_str_internal("day"))).unwrap(), 16);
     }
 
     #[test]
@@ -517,8 +516,8 @@ mod tests {
         let next = olive_datetime_add_months(ts, 1);
         let parts_ptr = olive_datetime_parts(next);
         let obj = unsafe { &*(parts_ptr as *const OliveObj) };
-        assert_eq!(*obj.fields.get("month").unwrap(), 2);
-        assert_eq!(*obj.fields.get("day").unwrap(), 29); // 2024 is a leap year
+        assert_eq!(*obj.fields.get(&crate::OliveStringKey(olive_str_internal("month"))).unwrap(), 2);
+        assert_eq!(*obj.fields.get(&crate::OliveStringKey(olive_str_internal("day"))).unwrap(), 29); // 2024 is a leap year
     }
 
     #[test]
@@ -563,9 +562,9 @@ mod tests {
         let eod = olive_datetime_end_of_day(ts);
         let sod_parts = unsafe { &*(olive_datetime_parts(sod) as *const OliveObj) };
         let eod_parts = unsafe { &*(olive_datetime_parts(eod) as *const OliveObj) };
-        assert_eq!(*sod_parts.fields.get("hour").unwrap(), 0);
-        assert_eq!(*eod_parts.fields.get("hour").unwrap(), 23);
-        assert_eq!(*eod_parts.fields.get("second").unwrap(), 59);
+        assert_eq!(*sod_parts.fields.get(&crate::OliveStringKey(olive_str_internal("hour"))).unwrap(), 0);
+        assert_eq!(*eod_parts.fields.get(&crate::OliveStringKey(olive_str_internal("hour"))).unwrap(), 23);
+        assert_eq!(*eod_parts.fields.get(&crate::OliveStringKey(olive_str_internal("second"))).unwrap(), 59);
     }
 
     #[test]

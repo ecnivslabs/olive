@@ -123,7 +123,9 @@ pub extern "C" fn olive_http_get_with_headers(url_ptr: i64, headers_ptr: i64) ->
         let obj = unsafe { &*(headers_ptr as *const OliveObj) };
         for (k, &v) in &obj.fields {
             let val = crate::olive_str_from_ptr(v);
-            req = req.set(k, &val);
+            if let Some(key_str) = crate::olive_str_as_str(k.0) {
+                req = req.set(key_str, &val);
+            }
         }
     }
     match req.call() {
