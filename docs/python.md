@@ -23,7 +23,7 @@ import py "math" as py_math
 fn calculate_hypotenuse(a: float, b: float) -> float:
     # Arguments are automatically converted to Python objects
     let result_py = py_math.hypot(a, b)
-    
+
     # Cast the dynamic PyObject back to an Olive float
     return float(result_py)
 ```
@@ -71,11 +71,20 @@ let val_list = list(py_val)     # Coerces PyObject to Olive list
 let val_dict = dict(py_val)     # Coerces PyObject to Olive dict
 ```
 
-## Runtime Environment
+## Runtime Environment and Library Discovery
 
-Under the hood, Olive dynamically locates and links `libpython` on your system. If you need to specify a particular Python installation or environment, set the `PYTHON_LIBRARY` environment variable:
+Under the hood, Olive dynamically locates and loads the active Python shared library (`libpython3`) on your system using a robust three-tier fallback resolution mechanism:
+
+1. **Explicit Environment Variables**: Olive checks `OLIVE_PYTHON_PATH` and `PYTHON_LIBRARY` first. If either is set to the absolute path of a Python shared library, it is loaded immediately.
+2. **Subprocess Active Lookup (Recommended)**: If no environment variable is set, Olive spawns a `python3` (or `python`) subprocess and queries its active configuration variables (`sysconfig`'s `LIBDIR` and `LDLIBRARY`). This ensures seamless, automatic loading of the exact active Python library in your virtual environment (e.g. `venv`, `pyenv`, `conda`), supporting Python versions up to 3.13 and 3.14 without hardcoding paths.
+3. **Hardcoded Search Arrays**: If subprocess execution fails or does not yield a valid library, Olive falls back to search lists of common OS-specific names and paths (e.g., `libpython3.so` on Linux, `/opt/homebrew/lib/libpython3.12.dylib` on macOS, or `python3.dll` on Windows).
+
+### Example Configuration
+
+To force Olive to use a specific Python installation or virtual environment library:
 
 ```bash
-export PYTHON_LIBRARY="/usr/lib/libpython3.11.so"
+# Using an absolute path to a specific Python library
+export OLIVE_PYTHON_PATH="/usr/lib/libpython3.14.so"
 ./your_olive_binary
 ```
