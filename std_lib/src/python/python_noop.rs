@@ -107,6 +107,6 @@ pub unsafe extern "C" fn noop_err_fetch(_: *mut PyObject, _: *mut PyObject, _: *
 
 #[cfg(target_os = "windows")]
 unsafe extern "system" {
-    fn LoadLibraryA(lpLibFileName: *const u8) -> *mut c_void;
-    fn GetProcAddress(hModule: *mut c_void, lpProcName: *const u8) -> *mut c_void;
+    pub fn LoadLibraryA(lpLibFileName: *const u8) -> *mut c_void;
+    pub fn GetProcAddress(hModule: *mut c_void, lpProcName: *const u8) -> *mut c_void;
 }
