@@ -18,7 +18,8 @@ Code is read more often than it is written. Olive strips syntactic noise: no sem
 - **Ownership and Borrowing**: Olive tracks memory statically. The compiler knows exactly when a resource goes out of scope and frees it immediately, avoiding garbage collection overhead.
 - **The Pit Toolchain**: Built to be fast. `pit` manages dependency resolution, builds, testing, and benchmarking, with compile times measured in milliseconds.
 - **Structured Concurrency**: Writing high-performance, concurrent applications should be straightforward. Olive provides built-in `async`/`await` primitives that behave exactly like synchronous code.
-- **Native Interop**: Olive integrates with the existing system ecosystem. You can import C and C++ libraries directly with no translation layers or foreign function wrappers.
+- **C / Rust Interop (FFI)**: Olive integrates with the existing system ecosystem. You can import C and C++ libraries directly with no translation layers or foreign function wrappers.
+- **Python Interoperability**: Call any Python library (like NumPy or PyTorch) dynamically with bidirectional, zero-copy collection sharing.
 
 ## Compilation Pipeline
 

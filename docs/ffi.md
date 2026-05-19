@@ -1,4 +1,4 @@
-# Native Interop (FFI)
+# C / Rust Interop (FFI)
 
 Olive interfaces directly with external libraries written in C, C++, or Rust, provided they expose a C-compatible ABI. This allows you to call native shared libraries with zero runtime overhead.
 

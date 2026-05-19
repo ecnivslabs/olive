@@ -25,7 +25,8 @@ Olive was built for when you want the speed of a low-level language without the 
 - **Fearless Safety**: A borrow checker catches memory errors and data races at compile time. No null pointers, no double-frees.
 - **Blazing Fast**: Optimized to native code via the Cranelift backend. It's designed to run close to the metal with zero-cost abstractions.
 - **Modern Concurrency**: True async/await that's easy to use and extremely efficient.
-- **Native Interop**: Interface with C or Rust libraries through a C-compatible ABI with built-in FFI support.
+- **C / Rust Interop**: Interface with C or Rust libraries through a C-compatible ABI with built-in FFI support.
+- **Python Interop**: Import any Python module directly and pass native collections with zero-copy bidirectional proxies.
 - **Friendly Errors**: When things go wrong, the compiler tells you exactly where and why, with suggestions on how to fix it.
 
 ## A Taste of Olive
@@ -74,7 +75,7 @@ pit run
 - [Basics](docs/basics.md): Variables, types, and control flow.
 - [Ownership](docs/ownership.md): How memory safety works.
 - [Generics](docs/generics.md): Writing reusable code.
-- [Native Interop](docs/ffi.md): Calling C code and using `unsafe`.
+- [C / Rust Interop (FFI)](docs/ffi.md): Calling C or Rust code and using `unsafe`.
 - [Python Interop](docs/python.md): High-performance zero-copy Python integration.
 - [Standard Library](docs/modules.md): What's in the box.
 - [Full Index](docs/index.md): Everything in one place.
