@@ -88,10 +88,12 @@ pub unsafe fn handle_py_error() {
     unsafe {
         let tb_msg = fetch_py_traceback();
         if tb_msg.is_empty() {
-            return;
+            let ptr = crate::olive_str_internal("Python Exception: <unknown>");
+            crate::olive_panic(ptr);
+        } else {
+            let ptr = crate::olive_str_internal(&tb_msg);
+            crate::olive_panic(ptr);
         }
-        let ptr = crate::olive_str_internal(&tb_msg);
-        crate::olive_panic(ptr);
     }
 }
 

@@ -334,12 +334,26 @@ impl<'a> MirBuilder<'a> {
                     let callee_op = self.lower_expr_as_copy(callee);
                     let mut pos_ops = Vec::new();
                     let mut kw_ops = Vec::new();
-                    for (op, kw_name) in arg_ops.into_iter().zip(arg_kw_names.into_iter()) {
+                    for (i, (op, kw_name)) in arg_ops
+                        .into_iter()
+                        .zip(arg_kw_names.into_iter())
+                        .enumerate()
+                    {
+                        let arg_ty = args
+                            .get(i)
+                            .map(|a| match a {
+                                CallArg::Positional(e)
+                                | CallArg::Splat(e)
+                                | CallArg::KwSplat(e)
+                                | CallArg::Keyword(_, e) => self.get_type(e.id),
+                            })
+                            .unwrap_or(Type::Any);
                         if let Some(name) = kw_name {
+                            let py_op = self.emit_to_py_arg(op, &arg_ty, expr.span);
                             kw_ops.push(Operand::Constant(Constant::Str(name)));
-                            kw_ops.push(op);
+                            kw_ops.push(py_op);
                         } else {
-                            pos_ops.push(op);
+                            pos_ops.push(self.emit_to_py_arg(op, &arg_ty, expr.span));
                         }
                     }
 
@@ -535,12 +549,26 @@ impl<'a> MirBuilder<'a> {
                         );
                         let mut pos_ops = Vec::new();
                         let mut kw_ops = Vec::new();
-                        for (op, kw_name) in arg_ops.into_iter().zip(arg_kw_names.into_iter()) {
+                        for (i, (op, kw_name)) in arg_ops
+                            .into_iter()
+                            .zip(arg_kw_names.into_iter())
+                            .enumerate()
+                        {
+                            let arg_ty = args
+                                .get(i)
+                                .map(|a| match a {
+                                    CallArg::Positional(e)
+                                    | CallArg::Splat(e)
+                                    | CallArg::KwSplat(e)
+                                    | CallArg::Keyword(_, e) => self.get_type(e.id),
+                                })
+                                .unwrap_or(Type::Any);
                             if let Some(name) = kw_name {
+                                let py_op = self.emit_to_py_arg(op, &arg_ty, expr.span);
                                 kw_ops.push(Operand::Constant(Constant::Str(name)));
-                                kw_ops.push(op);
+                                kw_ops.push(py_op);
                             } else {
-                                pos_ops.push(op);
+                                pos_ops.push(self.emit_to_py_arg(op, &arg_ty, expr.span));
                             }
                         }
 
@@ -1035,5 +1063,31 @@ impl<'a> MirBuilder<'a> {
             Operand::Move(l) => Operand::Copy(l),
             _ => op,
         }
+    }
+
+    pub(super) fn emit_to_py_arg(
+        &mut self,
+        op: Operand,
+        ty: &Type,
+        span: crate::span::Span,
+    ) -> Operand {
+        if *ty != Type::Float {
+            return op;
+        }
+
+        let tmp = self.new_local(Type::PyObject, None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                tmp,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(
+                        "__olive_py_from_float".to_string(),
+                    )),
+                    args: vec![op],
+                },
+            ),
+            span,
+        );
+        self.operand_for_local(tmp)
     }
 }

@@ -336,6 +336,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_py_call_kw", b"olive_py_call_kw\0"),
     ("__olive_py_call_kw_safe", b"olive_py_call_kw_safe\0"),
     ("__olive_py_call_safe", b"olive_py_call_safe\0"),
+    ("__olive_py_conv_to_py", b"olive_py_conv_to_py\0"),
     ("__olive_py_decref", b"olive_py_decref\0"),
     ("__olive_py_finalize", b"olive_py_finalize\0"),
     ("__olive_py_from_float", b"olive_py_from_float\0"),
@@ -667,7 +668,6 @@ impl CraneliftCodegen<JITModule> {
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
 
         let needed = imports::collect_needed_imports(&functions);
-        println!("DEBUG JIT needed symbols: {:?}", needed);
         let has_async = functions.iter().any(|f| f.is_async);
 
         let mut libs: Vec<libloading::Library> = Vec::new();
@@ -700,13 +700,7 @@ impl CraneliftCodegen<JITModule> {
                 if needed.contains(jit_name) || is_async_needed || needed_for_c {
                     let ptr = unsafe { dlsym(std::ptr::null_mut(), c_name.as_ptr() as *const _) };
                     if !ptr.is_null() {
-                        println!("DEBUG JIT: Loaded static symbol {} via dlsym", jit_name);
                         builder.symbol(jit_name, ptr as *const u8);
-                    } else {
-                        println!(
-                            "DEBUG JIT: FAILED to load static symbol {} via dlsym",
-                            jit_name
-                        );
                     }
                 }
             }
@@ -754,11 +748,13 @@ impl CraneliftCodegen<JITModule> {
                     if needed.contains(jit_name) || is_async_needed || needed_for_c {
                         match lib.get::<unsafe extern "C" fn()>(c_name) {
                             Ok(f) => {
-                                println!("DEBUG JIT: Loaded symbol {} from stdlib", jit_name);
                                 builder.symbol(jit_name, *f as *const u8);
                             }
                             Err(e) => {
-                                println!("DEBUG JIT: FAILED to load symbol {} ({:?})", jit_name, e);
+                                eprintln!(
+                                    "warning: could not load runtime symbol '{}': {:?}",
+                                    jit_name, e
+                                );
                             }
                         }
                     }
