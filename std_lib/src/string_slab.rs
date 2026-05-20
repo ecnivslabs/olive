@@ -5,6 +5,7 @@
 
 use crate::slab::{GenSlab, ptr_in_slab_span};
 use std::cell::UnsafeCell;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Byte capacity class for `need` content-plus-nul bytes, one machine word min.
 #[inline]
@@ -122,7 +123,7 @@ pub extern "C" fn olive_str_gen_of(ptr: i64) -> i64 {
     if body == 0 || !ptr_in_slab_span(body) {
         return 0;
     }
-    unsafe { *((body - 8) as *const i64) }
+    unsafe { (*((body - 8) as *const AtomicU64)).load(Ordering::Relaxed) as i64 }
 }
 
 /// Whether a heap string borrow captured at generation `gen` is now stale. A
@@ -134,7 +135,7 @@ pub extern "C" fn olive_str_gen_stale(ptr: i64, generation: i64) -> i64 {
     if body == 0 || generation == 0 || !ptr_in_slab_span(body) {
         return 0;
     }
-    let cur = unsafe { *((body - 8) as *const i64) };
+    let cur = unsafe { (*((body - 8) as *const AtomicU64)).load(Ordering::Relaxed) as i64 };
     (((cur ^ generation) << 1) != 0 || cur & 1 == 0) as i64
 }
 

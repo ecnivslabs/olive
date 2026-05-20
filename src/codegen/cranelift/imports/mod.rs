@@ -112,6 +112,18 @@ pub(super) fn collect_needed_imports(
             }
         }
     }
+    for func in functions {
+        if func.is_async
+            && func
+                .locals
+                .iter()
+                .skip(1)
+                .take(func.arg_count)
+                .any(|l| l.ty.is_move_type())
+        {
+            needed.insert("__olive_copy_typed");
+        }
+    }
     needed
 }
 

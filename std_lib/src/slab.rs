@@ -108,8 +108,9 @@ impl GenSlab {
             unsafe {
                 let body = (head as *mut u8).add(16);
                 self.free_head = *(body as *const *mut u64);
-                let gen_ptr = head.add(1);
-                *gen_ptr += 1;
+                let gen_ptr = head.add(1) as *mut AtomicU64;
+                let g = (*gen_ptr).load(Ordering::Relaxed) + 1;
+                (*gen_ptr).store(g, Ordering::Release);
                 return (body, false);
             }
         }
@@ -117,9 +118,9 @@ impl GenSlab {
             self.grow();
         }
         unsafe {
-            let gen_ptr = self.bump.add(8) as *mut u64;
+            let gen_ptr = self.bump.add(8) as *mut AtomicU64;
             self.bump = self.bump.add(self.slot_bytes);
-            *gen_ptr = 1;
+            (*gen_ptr).store(1, Ordering::Release);
             ((gen_ptr as *mut u8).add(8), true)
         }
     }
@@ -141,12 +142,12 @@ impl GenSlab {
     #[inline]
     pub fn free(&mut self, body: *mut u8) -> bool {
         unsafe {
-            let gen_ptr = (body as *mut u64).sub(1);
-            let generation = *gen_ptr;
+            let gen_ptr = (body as *mut AtomicU64).sub(1);
+            let generation = (*gen_ptr).load(Ordering::Relaxed);
             if generation & 1 == 0 {
                 return false;
             }
-            *gen_ptr = generation + 1;
+            (*gen_ptr).store(generation + 1, Ordering::Release);
             *(body as *mut *mut u64) = self.free_head;
             self.free_head = (body as *mut u64).sub(2);
             true
@@ -158,13 +159,13 @@ impl GenSlab {
 /// a `GenSlab`; the caller guarantees provenance.
 #[inline]
 pub fn slot_is_live(body: i64) -> bool {
-    unsafe { *((body as *const u64).sub(1)) & 1 == 1 }
+    unsafe { (*((body as *const AtomicU64).sub(1))).load(Ordering::Relaxed) & 1 == 1 }
 }
 
 /// Current generation word of a slab slot.
 #[inline]
 pub fn slot_generation(body: i64) -> u64 {
-    unsafe { *((body as *const u64).sub(1)) }
+    unsafe { (*((body as *const AtomicU64).sub(1))).load(Ordering::Relaxed) }
 }
 
 #[cfg(test)]
@@ -290,5 +291,56 @@ mod tests {
         let (p2, fresh2) = s.alloc();
         assert_eq!(p, p2);
         assert!(!fresh2);
+    }
+
+    #[test]
+    fn threaded_alloc_free_stress() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let slab = Arc::new(std::sync::Mutex::new(GenSlab::new(32)));
+        let alloc_count = Arc::new(AtomicUsize::new(0));
+        let free_count = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let s = slab.clone();
+            let ac = alloc_count.clone();
+            let fc = free_count.clone();
+            handles.push(std::thread::spawn(move || {
+                let mut local_ptrs = Vec::new();
+                for _ in 0..500 {
+                    let (p, fresh) = s.lock().unwrap().alloc();
+                    assert!(slot_is_live(p as i64), "slot live after alloc");
+                    if !fresh {
+                        assert!(slot_generation(p as i64) & 1 == 1, "recycled gen odd");
+                    }
+                    ac.fetch_add(1, Ordering::Relaxed);
+                    local_ptrs.push(p);
+                    if local_ptrs.len() > 10 {
+                        let victim = local_ptrs.pop().unwrap();
+                        {
+                            let mut guard = s.lock().unwrap();
+                            assert!(guard.free(victim), "free of live slot");
+                            assert!(!slot_is_live(victim as i64), "slot dead after free");
+                        }
+                        fc.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                for p in local_ptrs {
+                    {
+                        let mut guard = s.lock().unwrap();
+                        assert!(guard.free(p), "free remaining slot");
+                        assert!(!slot_is_live(p as i64), "slot dead after free");
+                    }
+                    fc.fetch_add(1, Ordering::Relaxed);
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(
+            alloc_count.load(Ordering::Relaxed),
+            free_count.load(Ordering::Relaxed)
+        );
     }
 }

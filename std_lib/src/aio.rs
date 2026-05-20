@@ -321,6 +321,7 @@ pub extern "C" fn olive_await_future(future: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_spawn_task(callback: i64) -> i64 {
+    // Callback blob carries copied heap args. Spawning thread keeps originals.
     let cb = callback as *const i64;
     let fn_ptr = unsafe { *cb } as usize;
     let nargs = unsafe { *cb.add(1) } as usize;
@@ -336,6 +337,7 @@ pub extern "C" fn olive_spawn_task(callback: i64) -> i64 {
     });
     let shared2 = shared.clone();
 
+    // Result handoff via Mutex/Condvar.
     std::thread::spawn(move || {
         let result = call_jit_fn(fn_ptr, &args);
         let mut state = shared2.state.lock().unwrap();
@@ -377,6 +379,7 @@ pub extern "C" fn olive_async_file_read(path: i64) -> i64 {
     });
     let shared2 = shared.clone();
 
+    // Result handoff via Mutex/Condvar.
     std::thread::spawn(move || {
         let result = match std::fs::read_to_string(&path_str) {
             Ok(content) => {
@@ -424,6 +427,7 @@ pub extern "C" fn olive_async_file_write(path: i64, data: i64) -> i64 {
     });
     let shared2 = shared.clone();
 
+    // Result handoff via Mutex/Condvar.
     std::thread::spawn(move || {
         let result = match std::fs::write(&path_str, data_str.as_bytes()) {
             Ok(_) => 0i64,
@@ -761,6 +765,7 @@ pub extern "C" fn olive_pool_run(fn_ptr: i64, arg: i64) -> i64 {
         cvar: Condvar::new(),
     });
     let shared2 = shared.clone();
+    // arg deep-copied before thread boundary.
     std::thread::spawn(move || {
         let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(fn_ptr as usize) };
         let result = f(arg);
@@ -784,6 +789,7 @@ pub extern "C" fn olive_pool_run_sync(fn_ptr: i64, arg: i64) -> i64 {
         cvar: Condvar::new(),
     });
     let shared2 = shared.clone();
+    // arg deep-copied before thread boundary.
     std::thread::spawn(move || {
         let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(fn_ptr as usize) };
         let result = f(arg);
@@ -937,5 +943,60 @@ mod tests {
     fn pool_run_sync_executes() {
         let result = olive_pool_run_sync(add_one as *const () as i64, 41);
         assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn spawn_n_tasks_stress() {
+        let mut handles = Vec::new();
+        for i in 0..10i64 {
+            let shared = Arc::new(FutureShared {
+                state: Mutex::new(FutureState::Pending),
+                cvar: Condvar::new(),
+            });
+            let shared2 = shared.clone();
+            handles.push(std::thread::spawn(move || {
+                let result = i * i;
+                let mut state = shared2.state.lock().unwrap();
+                *state = FutureState::Ready(result);
+                shared2.cvar.notify_all();
+            }));
+            let mut state = shared.state.lock().unwrap();
+            loop {
+                if let FutureState::Ready(v) = *state {
+                    assert_eq!(v, i * i);
+                    break;
+                }
+                state = shared.cvar.wait(state).unwrap();
+            }
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn threaded_chan_send_list_copy() {
+        let ch = olive_chan_new();
+        let val = crate::olive_str_internal("from_main");
+        assert_eq!(olive_chan_send(ch, val), 1);
+        let got = olive_chan_recv(ch);
+        assert_eq!(crate::olive_str_from_ptr(got), "from_main");
+        assert_eq!(crate::olive_str_from_ptr(val), "from_main");
+        olive_chan_free(ch);
+    }
+
+    #[test]
+    fn threaded_mutex_roundtrip() {
+        let m = olive_mutex_new(42);
+        let handle = std::thread::spawn(move || {
+            let v = olive_mutex_lock(m);
+            assert_eq!(v, 42);
+            olive_mutex_unlock(m, 99);
+        });
+        handle.join().unwrap();
+        let v = olive_mutex_lock(m);
+        assert_eq!(v, 99);
+        olive_mutex_unlock(m, 0);
+        olive_mutex_free(m);
     }
 }
