@@ -43,8 +43,8 @@ thread_local! {
 }
 
 /// Allocates a heap string from `bytes`, which must not contain an interior
-/// nul: the terminator marks the end, and the free path strlens to recover the
-/// size class. Returns the body pointer tagged with the low string bit.
+/// nul. Stores capacity class at body-16 for O(1) free. Returns the body
+/// pointer tagged with the low string bit.
 pub fn str_alloc(bytes: &[u8]) -> i64 {
     let cap = class_bytes(bytes.len() + 1);
     STR_SLABS.with(|s| {
@@ -53,36 +53,28 @@ pub fn str_alloc(bytes: &[u8]) -> i64 {
         unsafe {
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), body, bytes.len());
             *body.add(bytes.len()) = 0;
+            *(body as *mut usize).sub(2) = cap;
         }
         body as i64 | 1
     })
 }
 
-#[inline]
-fn body_len(body: i64) -> usize {
-    unsafe {
-        std::ffi::CStr::from_ptr(body as *const std::ffi::c_char)
-            .to_bytes()
-            .len()
-    }
-}
-
-/// Frees a tagged string pointer. A literal (not in any chunk) and an already
-/// free slot are no-ops, so a double free through a stale alias cannot corrupt.
+/// Frees a tagged string pointer. O(1) — capacity read from header at body-16.
+/// A literal (not in any chunk) and an already free slot are no-ops.
 pub fn str_free(ptr: i64) {
     let body = ptr & !1;
     if body == 0 || !ptr_in_slab_span(body) {
         return;
     }
-    let cap = class_bytes(body_len(body) + 1);
+    let cap = unsafe { *(body as *const usize).sub(2) };
     STR_SLABS.with(|s| {
         let s = unsafe { &mut *s.get() };
         s.slab(cap).free(body as *mut u8);
     });
 }
 
-/// Optimizes concatenation in-place when the buffer fits. No sharing exists
-/// (all escapes deep-copy), so unique ownership is guaranteed.
+/// Optimizes concatenation in-place when the buffer fits. Capacity read from
+/// header at body-16; no strlen. No sharing exists (all escapes deep-copy).
 pub fn str_concat_inplace(l: i64, l_bytes: &[u8], r_bytes: &[u8]) -> Option<i64> {
     let body = l & !1;
     if body == 0 || !ptr_in_slab_span(body) {
@@ -91,7 +83,7 @@ pub fn str_concat_inplace(l: i64, l_bytes: &[u8], r_bytes: &[u8]) -> Option<i64>
     let l_len = l_bytes.len();
     let r_len = r_bytes.len();
     let new_len = l_len + r_len;
-    let old_cap = class_bytes(l_len + 1);
+    let old_cap = unsafe { *(body as *const usize).sub(2) };
     let new_cap = class_bytes(new_len + 1);
     if new_cap <= old_cap {
         unsafe {
@@ -107,6 +99,7 @@ pub fn str_concat_inplace(l: i64, l_bytes: &[u8], r_bytes: &[u8]) -> Option<i64>
                 std::ptr::copy_nonoverlapping(l_bytes.as_ptr(), new_body, l_len);
                 std::ptr::copy_nonoverlapping(r_bytes.as_ptr(), new_body.add(l_len), r_len);
                 *new_body.add(new_len) = 0;
+                *(new_body as *mut usize).sub(2) = new_cap;
             }
             s.slab(old_cap).free(body as *mut u8);
             Some(new_body as i64 | 1)
@@ -238,7 +231,7 @@ mod tests {
     fn large_string_class() {
         let big = vec![b'z'; 5000];
         let p = str_alloc(&big);
-        assert_eq!(body_len(p & !1), 5000);
+        assert_eq!(crate::string::olive_str_from_ptr(p).len(), 5000);
         str_free(p);
     }
 
@@ -247,7 +240,7 @@ mod tests {
         let a = str_alloc(b"abc");
         let res = str_concat_inplace(a, b"abc", b"def").unwrap();
         assert_eq!(a, res, "must mutate in-place when capacity fits");
-        assert_eq!(body_len(res & !1), 6);
+        assert_eq!(crate::string::olive_str_from_ptr(res).len(), 6);
         unsafe {
             let s = std::ffi::CStr::from_ptr((res & !1) as *const std::ffi::c_char).to_bytes();
             assert_eq!(s, b"abcdef");
@@ -260,11 +253,44 @@ mod tests {
         let a = str_alloc(b"abc");
         let res = str_concat_inplace(a, b"abc", b"defghi").unwrap();
         assert_ne!(a, res, "must reallocate when new capacity exceeds old");
-        assert_eq!(body_len(res & !1), 9);
+        assert_eq!(crate::string::olive_str_from_ptr(res).len(), 9);
         unsafe {
             let s = std::ffi::CStr::from_ptr((res & !1) as *const std::ffi::c_char).to_bytes();
             assert_eq!(s, b"abcdefghi");
         }
+        str_free(res);
+    }
+
+    #[test]
+    fn realloc_cross_class_header_tracking() {
+        let a = str_alloc(b"a");
+        let b = str_alloc(b"b");
+        let big = vec![b'x'; 200];
+        let p = str_alloc(&big);
+        let p2 = str_alloc(b"tiny");
+        str_free(a);
+        str_free(b);
+        str_free(p);
+        str_free(p2);
+    }
+
+    #[test]
+    fn huge_string_free() {
+        let big = vec![b'H'; 1_000_000];
+        let p = str_alloc(&big);
+        assert_eq!(crate::string::olive_str_from_ptr(p).len(), 1_000_000);
+        str_free(p);
+    }
+
+    #[test]
+    fn header_word_tracks_after_realloc() {
+        let a = str_alloc(b"hello");
+        let res = str_concat_inplace(a, b"hello", b" world this is a long tail").unwrap();
+        assert_ne!(a, res, "must realloc across class boundary");
+        assert_eq!(
+            crate::string::olive_str_from_ptr(res),
+            "hello world this is a long tail"
+        );
         str_free(res);
     }
 }
