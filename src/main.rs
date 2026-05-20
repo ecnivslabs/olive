@@ -100,16 +100,27 @@ enum Commands {
 }
 
 fn load_config() -> Config {
-    let config_path = Path::new("pit.toml");
-    if !config_path.exists() {
-        eprintln!("error: could not find `pit.toml` in current directory");
-        process::exit(1);
+    let mut current_dir = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
+    loop {
+        let config_path = current_dir.join("pit.toml");
+        if config_path.exists() {
+            if std::env::set_current_dir(&current_dir).is_err() {
+                eprintln!("error: could not set working directory to {}", current_dir.display());
+                process::exit(1);
+            }
+            let content = fs::read_to_string("pit.toml").unwrap();
+            return toml::from_str(&content).unwrap_or_else(|e| {
+                eprintln!("error: invalid pit.toml: {}", e);
+                process::exit(1);
+            });
+        }
+        if let Some(parent) = current_dir.parent() {
+            current_dir = parent.to_path_buf();
+        } else {
+            eprintln!("error: could not find `pit.toml` in this directory or any parent directory");
+            process::exit(1);
+        }
     }
-    let content = fs::read_to_string(config_path).unwrap();
-    toml::from_str(&content).unwrap_or_else(|e| {
-        eprintln!("error: invalid pit.toml: {}", e);
-        process::exit(1);
-    })
 }
 
 fn save_config(config: &Config) {
@@ -152,7 +163,7 @@ fn main() {
             fs::write(path.join("pit.toml"), toml::to_string(&config).unwrap()).unwrap();
             fs::write(
                 path.join("src/main.liv"),
-                "fn main():\n    print(\"Hello from Olive!\")\n\nmain()\n",
+                "fn main():\n    print(\"Hello from Olive!\")\n",
             )
             .unwrap();
             fs::write(path.join(".gitignore"), ".env\n.env.*\n*.secret\ngrove/\n").unwrap();
@@ -205,13 +216,8 @@ fn main() {
                     format_file(&f);
                 }
             } else {
-                let config_path = Path::new("pit.toml");
-                if config_path.exists() {
-                    walk_and_format(Path::new("."));
-                } else {
-                    eprintln!("error: no file specified and no `pit.toml` found");
-                    process::exit(1);
-                }
+                let _config = load_config();
+                walk_and_format(Path::new("."));
             }
         }
 
