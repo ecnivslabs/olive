@@ -282,6 +282,7 @@ pub(super) fn resolve_builtin_import(
             "__olive_str_join" => Some("__olive_str_join"),
             "__olive_obj_keys" => Some("__olive_obj_keys"),
             "__olive_obj_values" => Some("__olive_obj_values"),
+            "__olive_obj_remove" => Some("__olive_obj_remove"),
             "__olive_json_parse" => Some("__olive_json_parse"),
             "__olive_json_stringify" => Some("__olive_json_stringify"),
             "__olive_json_stringify_pretty" => Some("__olive_json_stringify_pretty"),
@@ -605,6 +606,9 @@ pub(super) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
             OliveType::PyObject => Some("__olive_py_to_dict"),
             _ => None,
         },
+        "keys" => Some("__olive_obj_keys"),
+        "values" => Some("__olive_obj_values"),
+        "remove" => Some("__olive_obj_remove"),
         _ => None,
     }
 }

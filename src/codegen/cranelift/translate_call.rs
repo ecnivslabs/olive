@@ -51,7 +51,10 @@ impl<M: Module> CraneliftCodegen<M> {
                 || name == "slice"
                 || name == "len"
                 || name == "list"
-                || name == "dict")
+                || name == "dict"
+                || name == "keys"
+                || name == "values"
+                || name == "remove")
                 && !args.is_empty()
             {
                 let arg_type = match &args[0] {

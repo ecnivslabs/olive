@@ -917,6 +917,11 @@ impl<M: Module> CraneliftCodegen<M> {
                         self.intern_attr_string(attr);
                         self.collect_strings_in_operand(val_op);
                     }
+                    StatementKind::SetIndex(obj_op, idx_op, val_op) => {
+                        self.collect_strings_in_operand(obj_op);
+                        self.collect_strings_in_operand(idx_op);
+                        self.collect_strings_in_operand(val_op);
+                    }
                     _ => {}
                 }
             }
