@@ -4,11 +4,11 @@ default-members = [".", "std_lib"]
 
 [package]
 name = "pit"
-version = "0.6.8"
+version = "0.6.9"
 edition = "2024"
 authors = ["vinceswu"]
 description = "The Olive programming language compiler"
-license = "MIT"
+license = "Apache-2.0"
 repository = "https://github.com/ecnivslabs/olive"
 keywords = ["compiler", "language", "olive"]
 categories = ["compilers"]
