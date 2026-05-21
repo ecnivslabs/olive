@@ -128,10 +128,9 @@ fn owning_roots(
 
 /// At a view's return: alias deletes the root's drop, interior copies out first, else guard by pointer compare.
 ///
-/// Invariant: the MIR builder places every root drop in the same basic block
-/// as its `_return = value` assignment, so this pass only scans the current
-/// block. Cross-block drops cannot be produced by the builder; if that ever
-/// changes, process_return_sites must follow the drop into successor blocks.
+/// The MIR builder places every root drop in the same basic block as its
+/// `_return = value` assignment or in a direct Goto successor. Both paths
+/// are handled: same-block scanning first, then successor scanning.
 pub(super) fn process_return_sites(
     func: &mut MirFunction,
     classes: &[LocalClass],
@@ -141,6 +140,15 @@ pub(super) fn process_return_sites(
     let mut changed = false;
     let mut guards: Vec<(usize, usize)> = Vec::new();
     let mut copies: Vec<(usize, usize, Local)> = Vec::new();
+    let mut remove_drops: Vec<(usize, usize)> = Vec::new();
+
+    struct RetSite {
+        roots: HashSet<Local>,
+        single_pure: bool,
+        interior: bool,
+        assign_idx: usize,
+    }
+    let mut ret_sites: Vec<(usize, RetSite)> = Vec::new();
 
     for bb_idx in 0..func.basic_blocks.len() {
         let mut ret_local: Option<Local> = None;
@@ -162,28 +170,113 @@ pub(super) fn process_return_sites(
         if roots.is_empty() {
             continue;
         }
+        let single_pure = roots.len() == 1 && classes[v.0] == LocalClass::View;
+        ret_sites.push((
+            bb_idx,
+            RetSite {
+                roots,
+                single_pure,
+                interior,
+                assign_idx,
+            },
+        ));
+
         if interior {
             copies.push((bb_idx, assign_idx, v));
             continue;
         }
-        let single_pure = roots.len() == 1 && classes[v.0] == LocalClass::View;
 
+        // Scan same block after return assignment for root drops.
         let mut idx = assign_idx + 1;
         while idx < func.basic_blocks[bb_idx].statements.len() {
             let is_root_drop = matches!(
                 &func.basic_blocks[bb_idx].statements[idx].kind,
-                StatementKind::Drop(r) if roots.contains(r)
+                StatementKind::Drop(r) if ret_sites.last().unwrap().1.roots.contains(r)
             );
             if is_root_drop {
                 if single_pure {
-                    func.basic_blocks[bb_idx].statements.remove(idx);
-                    changed = true;
-                    continue;
+                    remove_drops.push((bb_idx, idx));
+                } else {
+                    guards.push((bb_idx, idx));
                 }
-                guards.push((bb_idx, idx));
             }
             idx += 1;
         }
+    }
+
+    // Scan direct Goto successors for root drops not found in the same block.
+    for &(bb_idx, ref site) in &ret_sites {
+        if site.interior {
+            continue;
+        }
+        if let Some(Terminator {
+            kind: TerminatorKind::Goto { target },
+            ..
+        }) = func.basic_blocks[bb_idx].terminator.clone()
+        {
+            for (succ_idx, stmt) in func.basic_blocks[target.0].statements.iter().enumerate() {
+                if let StatementKind::Drop(r) = &stmt.kind
+                    && site.roots.contains(r)
+                {
+                    if site.single_pure {
+                        remove_drops.push((target.0, succ_idx));
+                    } else {
+                        guards.push((target.0, succ_idx));
+                    }
+                }
+            }
+        }
+    }
+
+    debug_assert!(
+        {
+            // Verify the builder never places root drops outside the
+            // return-assignment block or its direct Goto successor.
+            let mut ok = true;
+            for &(bb_idx, ref site) in &ret_sites {
+                if site.interior {
+                    continue;
+                }
+                let mut found = false;
+                let mut idx = site.assign_idx + 1;
+                while idx < func.basic_blocks[bb_idx].statements.len() {
+                    if matches!(&func.basic_blocks[bb_idx].statements[idx].kind,
+                        StatementKind::Drop(r) if site.roots.contains(r))
+                    {
+                        found = true;
+                        break;
+                    }
+                    idx += 1;
+                }
+                if !found {
+                    if let Some(Terminator {
+                        kind: TerminatorKind::Goto { target },
+                        ..
+                    }) = &func.basic_blocks[bb_idx].terminator
+                    {
+                        for stmt in &func.basic_blocks[target.0].statements {
+                            if matches!(&stmt.kind,
+                                StatementKind::Drop(r) if site.roots.contains(r))
+                            {
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if !found {
+                    ok = false;
+                }
+            }
+            ok
+        },
+        "root drop must be in the same block as _return = or a direct Goto successor"
+    );
+
+    remove_drops.sort_unstable_by(|a, b| b.cmp(a));
+    for (bb, idx) in remove_drops {
+        func.basic_blocks[bb].statements.remove(idx);
+        changed = true;
     }
 
     // Splitting appends blocks and truncates the split block, so handling
