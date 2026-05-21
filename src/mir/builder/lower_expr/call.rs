@@ -236,7 +236,7 @@ impl<'a> MirBuilder<'a> {
         name: &str,
         args: &[CallArg],
         span: Span,
-        _expr_id: usize,
+        expr_id: usize,
     ) -> Option<Operand> {
         if args.len() != 2 {
             return None;
@@ -256,7 +256,7 @@ impl<'a> MirBuilder<'a> {
 
         let a_op = self.lower_expr_as_copy(a_expr);
         let b_op = self.lower_expr_as_copy(b_expr);
-        let result_ty = self.get_type(a_expr.id);
+        let result_ty = self.get_type(expr_id);
 
         let cmp_op = if name == "max" {
             crate::parser::BinOp::Gt
@@ -334,6 +334,7 @@ impl<'a> MirBuilder<'a> {
         &mut self,
         args: &[CallArg],
         span: Span,
+        expr_id: usize,
     ) -> Option<Operand> {
         if args.is_empty() {
             return None;
@@ -345,7 +346,8 @@ impl<'a> MirBuilder<'a> {
             | CallArg::KwSplat(e) => e,
         };
         let arg_op = self.lower_expr(arg_expr);
-        let tmp = self.new_local(Type::List(Box::new(Type::Any)), None, false);
+        let result_ty = self.get_type(expr_id);
+        let tmp = self.new_local(result_ty, None, false);
         self.push_statement(
             StatementKind::Assign(
                 tmp,

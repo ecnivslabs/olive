@@ -253,6 +253,26 @@ impl TypeChecker {
                     }
                     return Type::Int;
                 }
+                if let ExprKind::Identifier(name) = &callee.kind
+                    && matches!(name.as_str(), "min" | "max")
+                    && args.len() == 2
+                    && self.lookup_type(name).is_none()
+                {
+                    fn arg_expr(a: &CallArg) -> &Expr {
+                        match a {
+                            CallArg::Positional(e)
+                            | CallArg::Keyword(_, e)
+                            | CallArg::Splat(e)
+                            | CallArg::KwSplat(e) => e,
+                        }
+                    }
+                    let a = arg_expr(&args[0]);
+                    let b = arg_expr(&args[1]);
+                    let ta = self.check_expr(a);
+                    let tb = self.check_expr(b);
+                    self.unify(&ta, &tb, expr.span);
+                    return self.apply_subst(ta);
+                }
                 if let ExprKind::Attr { obj, attr } = &callee.kind
                     && let Some(ret) = self.builtin_collection_method(obj, attr, args)
                 {
