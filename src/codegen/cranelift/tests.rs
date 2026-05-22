@@ -32,6 +32,7 @@ mod codegen_tests {
             builder.struct_fields,
             builder.vtables.clone(),
             &[],
+            false,
         );
         cg.generate();
         cg.finalize();

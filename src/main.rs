@@ -1,5 +1,6 @@
 mod borrow_check;
 mod codegen;
+mod commands;
 mod compile;
 mod fmt;
 mod lexer;
@@ -11,33 +12,6 @@ mod span;
 mod tooling;
 
 use clap::{Parser as ClapParser, Subcommand};
-use compile::{
-    compile_and_emit, compile_and_run, compile_and_run_aot, compile_and_test, compile_hybrid,
-};
-use fmt::{format_file, walk_and_format};
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::{fs, path::Path, process};
-use tooling::repl::run_shell;
-
-#[derive(Serialize, Deserialize, Debug, Default)]
-struct Config {
-    pod: Pod,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    dependencies: HashMap<String, String>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Default)]
-struct Pod {
-    name: String,
-    version: String,
-    #[serde(default = "default_entry")]
-    entry: String,
-}
-
-fn default_entry() -> String {
-    "src/main.liv".to_string()
-}
 
 #[derive(ClapParser, Debug)]
 #[command(name = "pit", version, about = "The Olive programming language toolchain", long_about = None)]
@@ -54,6 +28,8 @@ enum Commands {
     Build {
         #[arg(short, long)]
         time: bool,
+        #[arg(long)]
+        release: bool,
     },
     Run {
         file: Option<String>,
@@ -69,6 +45,8 @@ enum Commands {
         aot: bool,
         #[arg(long)]
         hybrid: bool,
+        #[arg(long)]
+        release: bool,
     },
     Fmt {
         file: Option<String>,
@@ -76,6 +54,8 @@ enum Commands {
     Test {
         #[arg(short, long)]
         time: bool,
+        #[arg(long)]
+        release: bool,
     },
     Shell,
     Add {
@@ -95,95 +75,18 @@ enum Commands {
         output: Option<String>,
         #[arg(short, long)]
         time: bool,
+        #[arg(long)]
+        release: bool,
     },
     Upgrade,
-}
-
-fn load_config() -> Config {
-    let mut current_dir = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
-    loop {
-        let config_path = current_dir.join("pit.toml");
-        if config_path.exists() {
-            if std::env::set_current_dir(&current_dir).is_err() {
-                eprintln!(
-                    "error: could not set working directory to {}",
-                    current_dir.display()
-                );
-                process::exit(1);
-            }
-            let content = fs::read_to_string("pit.toml").unwrap();
-            return toml::from_str(&content).unwrap_or_else(|e| {
-                eprintln!("error: invalid pit.toml: {}", e);
-                process::exit(1);
-            });
-        }
-        if let Some(parent) = current_dir.parent() {
-            current_dir = parent.to_path_buf();
-        } else {
-            eprintln!("error: could not find `pit.toml` in this directory or any parent directory");
-            process::exit(1);
-        }
-    }
-}
-
-fn save_config(config: &Config) {
-    let content = toml::to_string(config).unwrap();
-    fs::write("pit.toml", content).unwrap();
-}
-
-fn maybe_install_deps(deps: &HashMap<String, String>) {
-    if deps.is_empty() {
-        return;
-    }
-    if let Err(e) = tooling::pods::ensure_deps_installed(deps) {
-        eprintln!("error: {}", e);
-        process::exit(1);
-    }
 }
 
 fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::New { name } => {
-            let path = Path::new(&name);
-            if path.exists() {
-                eprintln!("error: directory `{}` already exists", name);
-                process::exit(1);
-            }
-
-            fs::create_dir_all(path.join("src")).unwrap();
-
-            let config = Config {
-                pod: Pod {
-                    name: name.clone(),
-                    version: "0.1.0".to_string(),
-                    entry: "src/main.liv".to_string(),
-                },
-                dependencies: HashMap::new(),
-            };
-
-            fs::write(path.join("pit.toml"), toml::to_string(&config).unwrap()).unwrap();
-            fs::write(
-                path.join("src/main.liv"),
-                "fn main():\n    print(\"Hello from Olive!\")\n",
-            )
-            .unwrap();
-            fs::write(path.join(".gitignore"), ".env\n.env.*\n*.secret\ngrove/\n").unwrap();
-
-            println!(
-                "\x1b[1;32mCreated\x1b[0m binary (application) `{}` pod",
-                name
-            );
-        }
-
-        Commands::Build { time } => {
-            let config = load_config();
-            maybe_install_deps(&config.dependencies);
-            let out = format!("grove/{}", config.pod.name);
-            compile_and_emit(&config.pod.entry, &out, time);
-        }
-
+        Commands::New { name } => commands::project::execute_new(&name),
+        Commands::Build { time, release } => commands::build::execute_build(time, release),
         Commands::Run {
             file,
             time,
@@ -192,182 +95,31 @@ fn main() {
             jit,
             aot,
             hybrid,
-        } => {
-            let (entry, is_project) = if let Some(f) = file {
-                (f, false)
-            } else {
-                let config = load_config();
-                maybe_install_deps(&config.dependencies);
-                (config.pod.entry, true)
-            };
-
-            if jit || emit_ast || emit_mir || (!is_project && !aot && !hybrid) {
-                compile_and_run(&entry, true, time, emit_ast, emit_mir);
-            } else if aot {
-                compile_and_run_aot(&entry, time);
-            } else {
-                compile_hybrid(&entry, time);
-            }
-        }
-
-        Commands::Fmt { file } => {
-            if let Some(f) = file {
-                let path = Path::new(&f);
-                if path.is_dir() {
-                    walk_and_format(path);
-                } else {
-                    format_file(&f);
-                }
-            } else {
-                let _config = load_config();
-                walk_and_format(Path::new("."));
-            }
-        }
-
-        Commands::Test { time } => {
-            let config = load_config();
-            maybe_install_deps(&config.dependencies);
-            compile_and_test(&config.pod.entry, time);
-        }
-
-        Commands::Shell => {
-            run_shell();
-        }
-
-        Commands::Add { pod } => {
-            let (name, version_req) = if let Some((n, v)) = pod.split_once('@') {
-                (n.to_string(), v.to_string())
-            } else {
-                (pod.clone(), "latest".to_string())
-            };
-
-            let versions = tooling::registry::fetch_versions(&name).unwrap_or_else(|e| {
-                eprintln!("error: {}", e);
-                process::exit(1);
-            });
-
-            let pkg =
-                tooling::registry::resolve_version(&versions, &version_req).unwrap_or_else(|| {
-                    eprintln!("error: no matching version for '{}@{}'", name, version_req);
-                    process::exit(1);
-                });
-
-            let resolved_version = pkg.vers.clone();
-            let pkg = pkg.clone();
-
-            if let Err(e) = tooling::pods::download_and_install(&pkg) {
-                eprintln!("error: {}", e);
-                process::exit(1);
-            }
-
-            let mut config = load_config();
-            config
-                .dependencies
-                .insert(name.clone(), resolved_version.clone());
-            save_config(&config);
-
-            println!("\x1b[1;32m    Added\x1b[0m {}@{}", name, resolved_version);
-        }
-
-        Commands::Remove { pod } => {
-            let mut config = load_config();
-            if config.dependencies.remove(&pod).is_none() {
-                eprintln!("error: '{}' is not a dependency", pod);
-                process::exit(1);
-            }
-            save_config(&config);
-            println!("\x1b[1;32m  Removed\x1b[0m {}", pod);
-        }
-
-        Commands::Install => {
-            let config = load_config();
-            if config.dependencies.is_empty() {
-                println!("No dependencies to install.");
-                return;
-            }
-            if let Err(e) = tooling::pods::install_all_deps(&config.dependencies) {
-                eprintln!("error: {}", e);
-                process::exit(1);
-            }
-            println!("\x1b[1;32m   Installed\x1b[0m all dependencies");
-        }
-
-        Commands::Update { pod } => {
-            let mut config = load_config();
-            if config.dependencies.is_empty() {
-                println!("No dependencies to update.");
-                return;
-            }
-
-            let targets: Vec<String> = if let Some(name) = pod {
-                if !config.dependencies.contains_key(&name) {
-                    eprintln!("error: '{}' is not a dependency", name);
-                    process::exit(1);
-                }
-                vec![name]
-            } else {
-                config.dependencies.keys().cloned().collect()
-            };
-
-            let mut updated = 0;
-            for name in &targets {
-                let current = config.dependencies[name].clone();
-                let versions = tooling::registry::fetch_versions(name).unwrap_or_else(|e| {
-                    eprintln!("error: {}", e);
-                    process::exit(1);
-                });
-                let latest = match tooling::registry::resolve_version(&versions, "latest") {
-                    Some(v) => v.clone(),
-                    None => {
-                        eprintln!("warning: no available version for '{}'", name);
-                        continue;
-                    }
-                };
-                if latest.vers == current {
-                    println!("  {} already at {}", name, current);
-                    continue;
-                }
-                if let Err(e) = tooling::pods::download_and_install(&latest) {
-                    eprintln!("error: {}", e);
-                    process::exit(1);
-                }
-                println!(
-                    "\x1b[1;32m  Updated\x1b[0m {} {} → {}",
-                    name, current, latest.vers
-                );
-                config.dependencies.insert(name.clone(), latest.vers);
-                updated += 1;
-            }
-
-            if updated > 0 {
-                save_config(&config);
-            }
-        }
-
-        Commands::Publish => {
-            let config = load_config();
-            if let Err(e) = tooling::publish::publish(&config.pod.name, &config.pod.version) {
-                eprintln!("error: {}", e);
-                process::exit(1);
-            }
-        }
-
-        Commands::Compile { file, output, time } => {
-            let out = output.unwrap_or_else(|| {
-                Path::new(&file)
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string()
-            });
-            compile_and_emit(&file, &out, time);
-        }
-
-        Commands::Upgrade => {
-            if let Err(e) = tooling::upgrade::upgrade() {
-                eprintln!("error: {}", e);
-                process::exit(1);
-            }
-        }
+            release,
+        } => commands::run::execute_run(
+            file.as_ref(),
+            time,
+            emit_ast,
+            emit_mir,
+            jit,
+            aot,
+            hybrid,
+            release,
+        ),
+        Commands::Fmt { file } => commands::project::execute_fmt(file.as_ref()),
+        Commands::Test { time, release } => commands::build::execute_test(time, release),
+        Commands::Shell => commands::project::execute_shell(),
+        Commands::Add { pod } => commands::deps::execute_add(&pod),
+        Commands::Remove { pod } => commands::deps::execute_remove(&pod),
+        Commands::Install => commands::deps::execute_install(),
+        Commands::Update { pod } => commands::deps::execute_update(pod.as_ref()),
+        Commands::Publish => commands::project::execute_publish(),
+        Commands::Compile {
+            file,
+            output,
+            time,
+            release,
+        } => commands::build::execute_compile(&file, output.as_ref(), time, release),
+        Commands::Upgrade => commands::project::execute_upgrade(),
     }
 }

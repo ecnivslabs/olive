@@ -10,32 +10,39 @@ const REGISTRY_REPO: &str = "olive-language/pit-registry";
 
 struct GhClient {
     token: String,
+    client: reqwest::blocking::Client,
 }
 
 impl GhClient {
     fn new(token: String) -> Self {
-        Self { token }
+        Self {
+            token,
+            client: reqwest::blocking::Client::new(),
+        }
     }
 
-    fn get(&self, url: &str) -> ureq::Request {
-        ureq::get(url)
-            .set("Authorization", &format!("token {}", self.token))
-            .set("User-Agent", "pit/0.1.0")
-            .set("Accept", "application/vnd.github.v3+json")
+    fn get(&self, url: &str) -> reqwest::blocking::RequestBuilder {
+        self.client
+            .get(url)
+            .header("Authorization", format!("token {}", self.token))
+            .header("User-Agent", "pit/0.1.0")
+            .header("Accept", "application/vnd.github.v3+json")
     }
 
-    fn post(&self, url: &str) -> ureq::Request {
-        ureq::post(url)
-            .set("Authorization", &format!("token {}", self.token))
-            .set("User-Agent", "pit/0.1.0")
-            .set("Accept", "application/vnd.github.v3+json")
+    fn post(&self, url: &str) -> reqwest::blocking::RequestBuilder {
+        self.client
+            .post(url)
+            .header("Authorization", format!("token {}", self.token))
+            .header("User-Agent", "pit/0.1.0")
+            .header("Accept", "application/vnd.github.v3+json")
     }
 
-    fn put(&self, url: &str) -> ureq::Request {
-        ureq::put(url)
-            .set("Authorization", &format!("token {}", self.token))
-            .set("User-Agent", "pit/0.1.0")
-            .set("Accept", "application/vnd.github.v3+json")
+    fn put(&self, url: &str) -> reqwest::blocking::RequestBuilder {
+        self.client
+            .put(url)
+            .header("Authorization", format!("token {}", self.token))
+            .header("User-Agent", "pit/0.1.0")
+            .header("Accept", "application/vnd.github.v3+json")
     }
 }
 
@@ -116,9 +123,9 @@ fn git_origin_url() -> Option<String> {
 fn get_current_user(gh: &GhClient) -> Result<String, String> {
     let resp: Value = gh
         .get("https://api.github.com/user")
-        .call()
+        .send()
         .map_err(|e| format!("auth failed: {}", e))?
-        .into_json()
+        .json()
         .map_err(|e| e.to_string())?;
 
     resp["login"]
@@ -186,14 +193,15 @@ fn create_release(gh: &GhClient, repo: &str, name: &str, version: &str) -> Resul
 
     let resp: Value = gh
         .post(&url)
-        .send_json(json!({
+        .json(&json!({
             "tag_name": tag,
             "name": format!("{} v{}", name, version),
             "draft": false,
             "prerelease": false,
         }))
+        .send()
         .map_err(|e| format!("create release failed: {}", e))?
-        .into_json()
+        .json()
         .map_err(|e| e.to_string())?;
 
     resp["id"]
@@ -214,13 +222,16 @@ fn upload_asset(
         repo, release_id, asset_name
     );
 
-    let resp: Value = ureq::post(&url)
-        .set("Authorization", &format!("token {}", gh.token))
-        .set("User-Agent", "pit/0.1.0")
-        .set("Content-Type", "application/octet-stream")
-        .send_bytes(&bytes)
+    let resp: Value = gh
+        .client
+        .post(&url)
+        .header("Authorization", format!("token {}", gh.token))
+        .header("User-Agent", "pit/0.1.0")
+        .header("Content-Type", "application/octet-stream")
+        .body(bytes)
+        .send()
         .map_err(|e| format!("asset upload failed: {}", e))?
-        .into_json()
+        .json()
         .map_err(|e| e.to_string())?;
 
     resp["browser_download_url"]
@@ -234,8 +245,9 @@ fn ensure_fork(gh: &GhClient, user: &str) -> Result<String, String> {
 
     if gh
         .get(&format!("https://api.github.com/repos/{}", fork_repo))
-        .call()
-        .is_ok()
+        .send()
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
     {
         return Ok(fork_repo);
     }
@@ -249,15 +261,16 @@ fn ensure_fork(gh: &GhClient, user: &str) -> Result<String, String> {
         "https://api.github.com/repos/{}/forks",
         REGISTRY_REPO
     ))
-    .call()
+    .send()
     .map_err(|e| format!("fork failed: {}", e))?;
 
     for _ in 0..15 {
         thread::sleep(Duration::from_secs(2));
         if gh
             .get(&format!("https://api.github.com/repos/{}", fork_repo))
-            .call()
-            .is_ok()
+            .send()
+            .map(|r| r.status().is_success())
+            .unwrap_or(false)
         {
             return Ok(fork_repo);
         }
@@ -282,21 +295,25 @@ fn create_registry_pr(gh: &GhClient, pod: &PodVersion) -> Result<String, String>
             "https://api.github.com/repos/{}/contents/{}",
             fork_repo, file_path
         ))
-        .call()
+        .send()
     {
         Ok(resp) => {
-            let val: Value = resp.into_json().map_err(|e| e.to_string())?;
-            let sha = val["sha"].as_str().unwrap_or("").to_string();
-            let content = val["content"]
-                .as_str()
-                .map(|c| {
-                    let cleaned = c.replace('\n', "");
-                    String::from_utf8(B64.decode(cleaned).unwrap_or_default()).unwrap_or_default()
-                })
-                .unwrap_or_default();
-            (Some(sha), content)
+            if resp.status() == reqwest::StatusCode::NOT_FOUND {
+                (None, String::new())
+            } else {
+                let val: Value = resp.json().map_err(|e| e.to_string())?;
+                let sha = val["sha"].as_str().unwrap_or("").to_string();
+                let content = val["content"]
+                    .as_str()
+                    .map(|c| {
+                        let cleaned = c.replace('\n', "");
+                        String::from_utf8(B64.decode(cleaned).unwrap_or_default())
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_default();
+                (Some(sha), content)
+            }
         }
-        Err(ureq::Error::Status(404, _)) => (None, String::new()),
         Err(e) => return Err(format!("registry read failed: {}", e)),
     };
 
@@ -312,9 +329,9 @@ fn create_registry_pr(gh: &GhClient, pod: &PodVersion) -> Result<String, String>
             "https://api.github.com/repos/{}/git/refs/heads/main",
             fork_repo
         ))
-        .call()
+        .send()
         .map_err(|e| format!("get fork main failed: {}", e))?
-        .into_json()
+        .json()
         .map_err(|e| e.to_string())?;
 
     let base_sha = fork_main["object"]["sha"]
@@ -325,10 +342,11 @@ fn create_registry_pr(gh: &GhClient, pod: &PodVersion) -> Result<String, String>
         "https://api.github.com/repos/{}/git/refs",
         fork_repo
     ))
-    .send_json(json!({
+    .json(&json!({
         "ref": format!("refs/heads/{}", branch),
         "sha": base_sha,
     }))
+    .send()
     .map_err(|e| format!("create branch failed: {}", e))?;
 
     let fork_file_url = format!(
@@ -346,7 +364,8 @@ fn create_registry_pr(gh: &GhClient, pod: &PodVersion) -> Result<String, String>
     }
 
     gh.put(&fork_file_url)
-        .send_json(update_body)
+        .json(&update_body)
+        .send()
         .map_err(|e| format!("registry update failed: {}", e))?;
 
     let pr_resp: Value = gh
@@ -354,7 +373,7 @@ fn create_registry_pr(gh: &GhClient, pod: &PodVersion) -> Result<String, String>
             "https://api.github.com/repos/{}/pulls",
             REGISTRY_REPO
         ))
-        .send_json(json!({
+        .json(&json!({
             "title": format!("Add {}@{}", pod.name, pod.vers),
             "body": format!(
                 "New pod: **{}** version `{}`\n\nPublished via `pit publish`.",
@@ -363,8 +382,9 @@ fn create_registry_pr(gh: &GhClient, pod: &PodVersion) -> Result<String, String>
             "head": format!("{}:{}", user, branch),
             "base": "main",
         }))
+        .send()
         .map_err(|e| format!("create PR failed: {}", e))?
-        .into_json()
+        .json()
         .map_err(|e| e.to_string())?;
 
     pr_resp["html_url"]

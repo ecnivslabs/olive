@@ -36,12 +36,20 @@ fn cache_path(name: &str) -> PathBuf {
         .join(name)
 }
 
-pub fn fetch_versions(name: &str) -> Result<Vec<PodVersion>, String> {
+pub async fn fetch_versions(name: &str) -> Result<Vec<PodVersion>, String> {
     let url = registry_url(name);
-    let body = match ureq::get(&url).set("User-Agent", "pit/0.1.0").call() {
-        Ok(resp) => resp.into_string().map_err(|e| e.to_string())?,
-        Err(ureq::Error::Status(404, _)) => {
-            return Err(format!("pod '{}' not found in registry", name));
+    let client = reqwest::Client::new();
+    let body = match client
+        .get(&url)
+        .header("User-Agent", "pit/0.1.0")
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            if resp.status() == 404 {
+                return Err(format!("pod '{}' not found in registry", name));
+            }
+            resp.text().await.map_err(|e| e.to_string())?
         }
         Err(e) => return Err(format!("registry fetch failed: {}", e)),
     };

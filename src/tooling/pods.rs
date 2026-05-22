@@ -1,7 +1,6 @@
 use crate::tooling::registry::{self, PodVersion};
 use std::collections::HashMap;
 use std::fs;
-use std::io::Read;
 use std::path::PathBuf;
 
 pub fn pods_dir() -> PathBuf {
@@ -15,7 +14,7 @@ fn installed_path(name: &str, version: &str) -> PathBuf {
     pods_dir().join(name).join(version)
 }
 
-pub fn download_and_install(pod: &PodVersion) -> Result<(), String> {
+pub async fn download_and_install(pod: &PodVersion) -> Result<(), String> {
     let install_dir = installed_path(&pod.name, &pod.vers);
 
     if install_dir.exists() {
@@ -24,14 +23,14 @@ pub fn download_and_install(pod: &PodVersion) -> Result<(), String> {
 
     println!("\x1b[1;32m  Downloading\x1b[0m {}@{}", pod.name, pod.vers);
 
-    let bytes = match ureq::get(&pod.dl).set("User-Agent", "pit/0.1.0").call() {
-        Ok(resp) => {
-            let mut buf = Vec::new();
-            resp.into_reader()
-                .read_to_end(&mut buf)
-                .map_err(|e| e.to_string())?;
-            buf
-        }
+    let client = reqwest::Client::new();
+    let bytes = match client
+        .get(&pod.dl)
+        .header("User-Agent", "pit/0.1.0")
+        .send()
+        .await
+    {
+        Ok(resp) => resp.bytes().await.map_err(|e| e.to_string())?.to_vec(),
         Err(e) => return Err(format!("download failed: {}", e)),
     };
 
@@ -69,31 +68,119 @@ pub fn download_and_install(pod: &PodVersion) -> Result<(), String> {
     Ok(())
 }
 
-pub fn ensure_deps_installed(deps: &HashMap<String, String>) -> Result<(), String> {
+use crate::tooling::lockfile::{LockedPod, Lockfile, load_lockfile, save_lockfile};
+use std::path::Path;
+
+lazy_static::lazy_static! {
+    static ref INSTALL_LOCKS: Arc<Mutex<HashMap<String, ()>>> = Arc::new(Mutex::new(HashMap::new()));
+    static ref LOCKED_PODS: Arc<Mutex<Vec<LockedPod>>> = Arc::new(Mutex::new(Vec::new()));
+}
+
+pub async fn ensure_deps_installed(deps: &HashMap<String, String>) -> Result<(), String> {
+    let mut futures = Vec::new();
+
+    let lockfile = load_lockfile(Path::new("pit.lock"));
+    let mut use_lockfile = false;
+    if let Some(ref _lk) = lockfile {
+        use_lockfile = true;
+    }
+
     for (name, version_req) in deps {
-        let install_dir = installed_path(name, version_req);
-        if install_dir.exists() {
-            continue;
+        let mut pinned_version = version_req.clone();
+        if use_lockfile {
+            if let Some(lk) = &lockfile {
+                if let Some(lp) = lk.pods.iter().find(|p| &p.name == name) {
+                    pinned_version = lp.version.clone();
+                }
+            }
         }
-        install_one(name, version_req)?;
+
+        let install_dir = installed_path(name, &pinned_version);
+        if install_dir.exists() {
+            // Still need to track it for the final lockfile if we are regenerating it.
+        }
+        futures.push(install_one(
+            name.clone(),
+            pinned_version.clone(),
+            lockfile.clone(),
+        ));
     }
+    for res in futures::future::join_all(futures).await {
+        res?;
+    }
+
+    // Save lockfile
+    let mut locked_pods = LOCKED_PODS.lock().await;
+    locked_pods.sort_by(|a, b| a.name.cmp(&b.name));
+    let new_lockfile = Lockfile {
+        version: 1,
+        pods: locked_pods.clone(),
+    };
+    save_lockfile(Path::new("pit.lock"), &new_lockfile)?;
+
     Ok(())
 }
 
-pub fn install_all_deps(deps: &HashMap<String, String>) -> Result<(), String> {
+pub async fn install_all_deps(deps: &HashMap<String, String>) -> Result<(), String> {
+    let mut futures = Vec::new();
+    let lockfile = load_lockfile(Path::new("pit.lock"));
     for (name, version_req) in deps {
-        install_one(name, version_req)?;
+        futures.push(install_one(
+            name.clone(),
+            version_req.clone(),
+            lockfile.clone(),
+        ));
+    }
+    for res in futures::future::join_all(futures).await {
+        res?;
     }
     Ok(())
 }
 
-fn install_one(name: &str, version_req: &str) -> Result<(), String> {
-    let versions = registry::fetch_versions(name)?;
-    let pod = registry::resolve_version(&versions, version_req)
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+async fn install_one(
+    name: String,
+    version_req: String,
+    lockfile: Option<Lockfile>,
+) -> Result<(), String> {
+    let lock_key = format!("{}@{}", name, version_req);
+    {
+        let mut locks = INSTALL_LOCKS.lock().await;
+        if locks.contains_key(&lock_key) {
+            return Ok(());
+        }
+        locks.insert(lock_key.clone(), ());
+    }
+
+    let versions = registry::fetch_versions(&name).await?;
+    let pod = registry::resolve_version(&versions, &version_req)
         .ok_or_else(|| format!("no matching version for '{}@{}'", name, version_req))?
         .clone();
 
-    download_and_install(&pod)?;
+    download_and_install(&pod).await?;
+
+    let locked_pod = LockedPod {
+        name: pod.name.clone(),
+        version: pod.vers.clone(),
+        cksum: pod.cksum.clone(),
+        dependencies: pod
+            .deps
+            .iter()
+            .map(|d| format!("{} {}", d.name, d.req))
+            .collect(),
+    };
+
+    {
+        let mut locked_pods = LOCKED_PODS.lock().await;
+        if !locked_pods
+            .iter()
+            .any(|p| p.name == locked_pod.name && p.version == locked_pod.version)
+        {
+            locked_pods.push(locked_pod);
+        }
+    }
 
     if !pod.deps.is_empty() {
         let sub_deps: HashMap<String, String> = pod
@@ -101,7 +188,13 @@ fn install_one(name: &str, version_req: &str) -> Result<(), String> {
             .iter()
             .map(|d| (d.name.clone(), d.req.clone()))
             .collect();
-        install_all_deps(&sub_deps)?;
+        let mut sub_futures = Vec::new();
+        for (sub_name, sub_req) in sub_deps {
+            sub_futures.push(Box::pin(install_one(sub_name, sub_req, lockfile.clone())));
+        }
+        for res in futures::future::join_all(sub_futures).await {
+            res?;
+        }
     }
     Ok(())
 }

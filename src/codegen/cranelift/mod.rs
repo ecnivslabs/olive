@@ -653,11 +653,16 @@ impl CraneliftCodegen<JITModule> {
         struct_fields: HashMap<String, Vec<String>>,
         vtables: HashMap<String, Vec<String>>,
         native_lib_paths: &[FfiLibInfo],
+        release: bool,
     ) -> Self {
         let mut flag_builder = settings::builder();
         flag_builder.set("use_colocated_libcalls", "false").unwrap();
         flag_builder.set("is_pic", "false").unwrap();
-        flag_builder.set("opt_level", "speed").unwrap();
+        if release {
+            flag_builder.set("opt_level", "speed").unwrap();
+        } else {
+            flag_builder.set("opt_level", "none").unwrap();
+        }
         flag_builder.set("enable_alias_analysis", "true").unwrap();
         flag_builder.set("enable_verifier", "false").unwrap();
         let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {
@@ -837,11 +842,16 @@ impl CraneliftCodegen<ObjectModule> {
         struct_fields: HashMap<String, Vec<String>>,
         vtables: HashMap<String, Vec<String>>,
         native_lib_paths: &[FfiLibInfo],
+        release: bool,
     ) -> Self {
         let mut flag_builder = settings::builder();
         flag_builder.set("use_colocated_libcalls", "false").unwrap();
         flag_builder.set("is_pic", "true").unwrap();
-        flag_builder.set("opt_level", "speed").unwrap();
+        if release {
+            flag_builder.set("opt_level", "speed").unwrap();
+        } else {
+            flag_builder.set("opt_level", "none").unwrap();
+        }
         flag_builder.set("enable_alias_analysis", "true").unwrap();
         flag_builder.set("enable_verifier", "false").unwrap();
         let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {

@@ -3,7 +3,7 @@ members = ["std_lib"]
 
 [package]
 name = "pit"
-version = "0.1.13"
+version = "0.1.14"
 edition = "2024"
 authors = ["ecnivs"]
 description = "The Olive programming language compiler"
@@ -31,7 +31,10 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.149"
 toml = "0.8"
 rustyline = { version = "14.0", default-features = false }
-ureq = { version = "2", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+tokio = { version = "1.36", features = ["full"] }
+futures = "0.3"
+lazy_static = "1.4"
 openssl = { version = "0.10", features = ["vendored"] }
 blake3 = "1"
 tar = "0.4"
@@ -39,6 +42,7 @@ zstd = "0.13"
 dirs = "5"
 base64 = "0.22"
 smol_str = "0.3.6"
+semver = "1.0"
 
 [dev-dependencies]
 olive_std = { path = "std_lib" }

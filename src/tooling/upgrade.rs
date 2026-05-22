@@ -1,6 +1,5 @@
 use std::env;
 use std::fs;
-use std::io::Read;
 
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const REPO: &str = "olive-language/olive";
@@ -23,13 +22,15 @@ fn target_triple() -> Option<&'static str> {
 
 fn fetch_latest_tag() -> Result<String, String> {
     let url = format!("https://api.github.com/repos/{}/releases/latest", REPO);
-    let resp = ureq::get(&url)
-        .set("User-Agent", &format!("pit/{}", CURRENT_VERSION))
-        .call()
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .get(&url)
+        .header("User-Agent", format!("pit/{}", CURRENT_VERSION))
+        .send()
         .map_err(|e| format!("could not reach GitHub API: {}", e))?;
 
     let json: serde_json::Value = resp
-        .into_json()
+        .json()
         .map_err(|e| format!("invalid API response: {}", e))?;
 
     json["tag_name"]
@@ -57,14 +58,15 @@ pub fn upgrade() -> Result<(), String> {
         REPO, latest, artifact
     );
 
-    let mut buf = Vec::new();
-    ureq::get(&url)
-        .set("User-Agent", &format!("pit/{}", CURRENT_VERSION))
-        .call()
+    let client = reqwest::blocking::Client::new();
+    let buf = client
+        .get(&url)
+        .header("User-Agent", format!("pit/{}", CURRENT_VERSION))
+        .send()
         .map_err(|e| format!("download failed: {}", e))?
-        .into_reader()
-        .read_to_end(&mut buf)
-        .map_err(|e| format!("read failed: {}", e))?;
+        .bytes()
+        .map_err(|e| format!("read failed: {}", e))?
+        .to_vec();
 
     let current_exe =
         env::current_exe().map_err(|e| format!("could not find current executable: {}", e))?;

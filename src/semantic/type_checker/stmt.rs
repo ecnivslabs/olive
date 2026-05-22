@@ -303,14 +303,20 @@ impl TypeChecker {
                             break;
                         }
                     }
-                    if !has_return && expected != Type::Null && expected != Type::Any {
-                        self.errors.push(SemanticError::Custom {
-                            msg: format!(
-                                "type mismatch: expected `{}`, found `no return statement`",
-                                expected
-                            ),
-                            span: stmt.span,
-                        });
+                    if !has_return {
+                        let resolved_expected = self.apply_subst(expected.clone());
+                        if let Type::Var(_) = resolved_expected {
+                            self.unify(&expected, &Type::Null, stmt.span);
+                        } else if resolved_expected != Type::Null && resolved_expected != Type::Any
+                        {
+                            self.errors.push(SemanticError::Custom {
+                                msg: format!(
+                                    "type mismatch: expected `{}`, found `no return statement`",
+                                    resolved_expected
+                                ),
+                                span: stmt.span,
+                            });
+                        }
                     }
                 }
 
