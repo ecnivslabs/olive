@@ -13,8 +13,8 @@ impl TypeChecker {
 
     pub(super) fn infer_expr(&mut self, expr: &Expr) -> Type {
         match &expr.kind {
-            ExprKind::Integer(_) => Type::Int,
-            ExprKind::Float(_) => Type::Float,
+            ExprKind::Integer(_) => Type::IntegerLiteral(self.fresh_var_id()),
+            ExprKind::Float(_) => Type::FloatLiteral(self.fresh_var_id()),
             ExprKind::Str(_) => Type::Str,
             ExprKind::FStr(exprs) => {
                 for e in exprs {
@@ -507,11 +507,9 @@ impl TypeChecker {
                     self.check_pattern(&case.pattern, &match_ty, expr.span);
 
                     let mut case_ty = Type::Null;
-                    if case.body.is_empty() {
-                        case_ty = Type::Null;
-                    } else {
-                        for stmt in &case.body {
-                            self.check_stmt(stmt);
+                    for (i, stmt) in case.body.iter().enumerate() {
+                        self.check_stmt(stmt);
+                        if i == case.body.len() - 1 {
                             if let crate::parser::StmtKind::ExprStmt(e) = &stmt.kind {
                                 case_ty = self.check_expr(e);
                             }

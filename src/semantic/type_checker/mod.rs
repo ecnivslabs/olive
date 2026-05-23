@@ -333,10 +333,14 @@ impl TypeChecker {
         }
     }
 
-    pub(super) fn fresh_var(&mut self) -> Type {
+    pub(super) fn fresh_var_id(&mut self) -> usize {
         let id = self.var_counter;
         self.var_counter += 1;
-        Type::Var(id)
+        id
+    }
+
+    pub(super) fn fresh_var(&mut self) -> Type {
+        Type::Var(self.fresh_var_id())
     }
 
     pub(super) fn enter_scope(&mut self) {

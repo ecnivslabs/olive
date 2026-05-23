@@ -35,6 +35,8 @@ pub enum Type {
     Vector(Box<Type>, usize),
     Future(Box<Type>),
     PyObject,
+    IntegerLiteral(usize),
+    FloatLiteral(usize),
 }
 
 impl Type {
@@ -63,6 +65,8 @@ impl Type {
                 | Type::Vector(_, _)
                 | Type::Future(_)
                 | Type::Param(_)
+                | Type::IntegerLiteral(_)
+                | Type::FloatLiteral(_)
         )
     }
 }
@@ -153,6 +157,8 @@ impl fmt::Display for Type {
             Type::Vector(t, w) => write!(f, "{}x{}", t, w),
             Type::Future(t) => write!(f, "Future[{}]", t),
             Type::PyObject => write!(f, "PyObject"),
+            Type::IntegerLiteral(_) => write!(f, "{{integer}}"),
+            Type::FloatLiteral(_) => write!(f, "{{float}}"),
         }
     }
 }

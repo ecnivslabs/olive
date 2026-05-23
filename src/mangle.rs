@@ -38,6 +38,16 @@ pub fn mangle_stmt(stmt: &mut Stmt, prefix: &str, names: &HashSet<String>) {
             }
         }
         StmtKind::Trait { .. } => {}
+        StmtKind::Enum { name, variants, .. } => {
+            if names.contains(name) {
+                *name = format!("{}::{}", prefix, name);
+            }
+            for variant in variants {
+                if names.contains(&variant.name) {
+                    variant.name = format!("{}::{}", prefix, variant.name);
+                }
+            }
+        }
         StmtKind::If {
             then_body,
             elif_clauses,
@@ -97,6 +107,23 @@ pub fn mangle_stmt(stmt: &mut Stmt, prefix: &str, names: &HashSet<String>) {
             }
             mangle_expr(value, prefix, names);
         }
+        StmtKind::MultiLet {
+            names: var_names,
+            value,
+            ..
+        }
+        | StmtKind::MultiConst {
+            names: var_names,
+            value,
+            ..
+        } => {
+            for name in var_names {
+                if names.contains(name) {
+                    *name = format!("{}::{}", prefix, name);
+                }
+            }
+            mangle_expr(value, prefix, names);
+        }
         StmtKind::Assign { target, value } | StmtKind::AugAssign { target, value, .. } => {
             mangle_expr(target, prefix, names);
             mangle_expr(value, prefix, names);
@@ -104,7 +131,30 @@ pub fn mangle_stmt(stmt: &mut Stmt, prefix: &str, names: &HashSet<String>) {
         StmtKind::Return(Some(e)) | StmtKind::ExprStmt(e) => {
             mangle_expr(e, prefix, names);
         }
-        StmtKind::NativeImport { .. } => {}
+        StmtKind::Import { module, alias } => {
+            let name = alias
+                .as_deref()
+                .unwrap_or_else(|| module.last().unwrap().as_str());
+            if names.contains(name) {
+                *alias = Some(format!("{}::{}", prefix, name));
+            }
+        }
+        StmtKind::PyImport { alias, .. } | StmtKind::NativeImport { alias, .. } => {
+            if names.contains(alias) {
+                *alias = format!("{}::{}", prefix, alias);
+            }
+        }
+        StmtKind::FromImport {
+            names: import_names,
+            ..
+        } => {
+            for (name, alias) in import_names {
+                let bound = alias.as_deref().unwrap_or(name.as_str());
+                if names.contains(bound) {
+                    *alias = Some(format!("{}::{}", prefix, bound));
+                }
+            }
+        }
         _ => {}
     }
 }

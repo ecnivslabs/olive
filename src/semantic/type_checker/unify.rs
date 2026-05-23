@@ -25,6 +25,104 @@ impl TypeChecker {
                 }
             }
 
+            (Type::IntegerLiteral(id), other) | (other, Type::IntegerLiteral(id)) => match other {
+                Type::Any => {}
+                Type::Int
+                | Type::I8
+                | Type::I16
+                | Type::I32
+                | Type::U8
+                | Type::U16
+                | Type::U32
+                | Type::U64
+                | Type::Usize
+                | Type::Float
+                | Type::F32
+                | Type::IntegerLiteral(_) => {
+                    self.substitutions.insert(*id, other.clone());
+                }
+                Type::Var(var_id) => {
+                    self.substitutions
+                        .insert(*var_id, Type::IntegerLiteral(*id));
+                }
+                Type::Union(members) => {
+                    let mut matched = false;
+                    for m in members {
+                        match m {
+                            Type::Int
+                            | Type::I8
+                            | Type::I16
+                            | Type::I32
+                            | Type::U8
+                            | Type::U16
+                            | Type::U32
+                            | Type::U64
+                            | Type::Usize
+                            | Type::Float
+                            | Type::F32 => {
+                                self.substitutions.insert(*id, m.clone());
+                                matched = true;
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                    if !matched {
+                        self.errors.push(SemanticError::Custom {
+                            msg: format!(
+                                "type mismatch: expected `{}`, found integer literal",
+                                other
+                            ),
+                            span,
+                        });
+                    }
+                }
+                _ => {
+                    self.errors.push(SemanticError::Custom {
+                        msg: format!("type mismatch: expected `{}`, found integer literal", other),
+                        span,
+                    });
+                }
+            },
+
+            (Type::FloatLiteral(id), other) | (other, Type::FloatLiteral(id)) => match other {
+                Type::Any => {}
+                Type::Float | Type::F32 | Type::FloatLiteral(_) => {
+                    self.substitutions.insert(*id, other.clone());
+                }
+                Type::Var(var_id) => {
+                    self.substitutions.insert(*var_id, Type::FloatLiteral(*id));
+                }
+                Type::Union(members) => {
+                    let mut matched = false;
+                    for m in members {
+                        match m {
+                            Type::Float | Type::F32 => {
+                                self.substitutions.insert(*id, m.clone());
+                                matched = true;
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                    if !matched {
+                        self.errors.push(SemanticError::Custom {
+                            msg: format!(
+                                "type mismatch: expected `{}`, found float literal",
+                                other
+                            ),
+                            span,
+                        });
+                    }
+                }
+                _ => {
+                    self.errors.push(SemanticError::Custom {
+                        msg: format!("type mismatch: expected `{}`, found float literal", other),
+                        span,
+                    });
+                }
+            },
+
             (Type::Any, _) | (_, Type::Any) => {}
             (Type::Never, _) | (_, Type::Never) => {}
 
@@ -73,8 +171,6 @@ impl TypeChecker {
                 }
             }
 
-            // U64 and Int have same bit width; allow unification
-            // Semantics enforced at codegen
             (Type::U64, Type::Int) | (Type::Int, Type::U64) => {}
 
             (Type::Struct(name, _), Type::Int) | (Type::Int, Type::Struct(name, _))
@@ -161,7 +257,7 @@ impl TypeChecker {
 
     pub(super) fn occurs_check(&self, id: usize, ty: &Type) -> bool {
         match ty {
-            Type::Var(other_id) => {
+            Type::Var(other_id) | Type::IntegerLiteral(other_id) | Type::FloatLiteral(other_id) => {
                 if id == *other_id {
                     return true;
                 }
@@ -198,6 +294,24 @@ impl TypeChecker {
                     resolved
                 } else {
                     Type::Var(id)
+                }
+            }
+            Type::IntegerLiteral(id) => {
+                if let Some(t) = self.substitutions.get(&id).cloned() {
+                    let resolved = self.apply_subst(t);
+                    self.substitutions.insert(id, resolved.clone());
+                    resolved
+                } else {
+                    Type::Int
+                }
+            }
+            Type::FloatLiteral(id) => {
+                if let Some(t) = self.substitutions.get(&id).cloned() {
+                    let resolved = self.apply_subst(t);
+                    self.substitutions.insert(id, resolved.clone());
+                    resolved
+                } else {
+                    Type::Float
                 }
             }
             Type::List(inner) => Type::List(Box::new(self.apply_subst(*inner))),
