@@ -38,6 +38,7 @@ pub fn compile_and_run(
         out.functions,
         out.struct_fields.clone(),
         out.vtables.clone(),
+        out.global_vars.clone(),
         &out.native_libs,
         release,
     );
@@ -79,6 +80,7 @@ pub fn compile_and_emit(filename: &str, output: &str, show_time: bool, release: 
         out.functions,
         out.struct_fields.clone(),
         out.vtables.clone(),
+        out.global_vars.clone(),
         &out.native_libs,
         release,
     );
@@ -174,6 +176,7 @@ pub fn compile_and_test(filename: &str, _show_time: bool, release: bool) {
         out.functions,
         out.struct_fields.clone(),
         out.vtables.clone(),
+        out.global_vars.clone(),
         &out.native_libs,
         release,
     );

@@ -182,10 +182,13 @@ pub fn load_and_parse(
                             parser::StmtKind::NativeImport { alias, .. } => {
                                 defined_names.insert(alias.clone());
                             }
-                            parser::StmtKind::FromImport { names, .. } => {
-                                for (name, alias) in names {
-                                    let bound = alias.as_deref().unwrap_or(name.as_str());
-                                    defined_names.insert(bound.to_string());
+                            parser::StmtKind::FromImport { names, is_star, .. } => {
+                                if *is_star {
+                                } else {
+                                    for (name, alias) in names {
+                                        let bound = alias.as_deref().unwrap_or(name.as_str());
+                                        defined_names.insert(bound.to_string());
+                                    }
                                 }
                             }
                             _ => {}
@@ -221,10 +224,13 @@ pub fn load_and_parse(
                 all_stmts.push(stmt.clone());
             }
             parser::StmtKind::PyImport { .. } => {
-                // Python imports are resolved at runtime via the C API, not at compile time.
                 all_stmts.push(stmt.clone());
             }
-            parser::StmtKind::FromImport { module, names } => {
+            parser::StmtKind::FromImport {
+                module,
+                names,
+                is_star,
+            } => {
                 let mod_name = module.join("/");
                 let mut mod_path = parent_dir.join(format!("{}.liv", mod_name));
 
@@ -254,27 +260,47 @@ pub fn load_and_parse(
                     let mut imported_stmts =
                         load_and_parse(&path_str, false, loaded, file_id_counter, sources);
 
-                    imported_stmts.retain(|s| match &s.kind {
-                        parser::StmtKind::Fn { name, .. }
-                        | parser::StmtKind::Struct { name, .. }
-                        | parser::StmtKind::Enum { name, .. }
-                        | parser::StmtKind::Let { name, .. }
-                        | parser::StmtKind::Const { name, .. } => {
-                            names.iter().any(|(n, _)| n == name)
-                        }
-                        parser::StmtKind::MultiLet {
-                            names: var_names, ..
-                        }
-                        | parser::StmtKind::MultiConst {
-                            names: var_names, ..
-                        } => var_names
-                            .iter()
-                            .any(|var_name| names.iter().any(|(n, _)| n == var_name)),
-                        parser::StmtKind::Impl { type_name, .. } => {
-                            names.iter().any(|(n, _)| n == &type_name.to_string())
-                        }
-                        _ => false,
-                    });
+                    if *is_star {
+                        imported_stmts.retain(|s| match &s.kind {
+                            parser::StmtKind::Fn { name, .. }
+                            | parser::StmtKind::Struct { name, .. }
+                            | parser::StmtKind::Enum { name, .. }
+                            | parser::StmtKind::Let { name, .. }
+                            | parser::StmtKind::Const { name, .. } => !name.starts_with('_'),
+                            parser::StmtKind::MultiLet {
+                                names: var_names, ..
+                            }
+                            | parser::StmtKind::MultiConst {
+                                names: var_names, ..
+                            } => var_names.iter().any(|n| !n.starts_with('_')),
+                            parser::StmtKind::Impl { type_name, .. } => {
+                                !type_name.to_string().starts_with('_')
+                            }
+                            _ => false,
+                        });
+                    } else {
+                        imported_stmts.retain(|s| match &s.kind {
+                            parser::StmtKind::Fn { name, .. }
+                            | parser::StmtKind::Struct { name, .. }
+                            | parser::StmtKind::Enum { name, .. }
+                            | parser::StmtKind::Let { name, .. }
+                            | parser::StmtKind::Const { name, .. } => {
+                                names.iter().any(|(n, _)| n == name)
+                            }
+                            parser::StmtKind::MultiLet {
+                                names: var_names, ..
+                            }
+                            | parser::StmtKind::MultiConst {
+                                names: var_names, ..
+                            } => var_names
+                                .iter()
+                                .any(|var_name| names.iter().any(|(n, _)| n == var_name)),
+                            parser::StmtKind::Impl { type_name, .. } => {
+                                names.iter().any(|(n, _)| n == &type_name.to_string())
+                            }
+                            _ => false,
+                        });
+                    }
                     all_stmts.extend(imported_stmts);
                 }
                 all_stmts.push(stmt.clone());

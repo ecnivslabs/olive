@@ -31,17 +31,54 @@ impl Transform for Licm {
 impl Licm {
     fn optimize_loop(&self, func: &mut MirFunction, lp: &loop_utils::Loop) -> bool {
         let mut assign_counts = rustc_hash::FxHashMap::default();
-        for &bb_id in &lp.body {
-            for stmt in &func.basic_blocks[bb_id.0].statements {
+        for bb in &func.basic_blocks {
+            for stmt in &bb.statements {
                 if let StatementKind::Assign(local, _) = &stmt.kind {
                     *assign_counts.entry(*local).or_insert(0) += 1;
+                } else if let StatementKind::SetAttr(obj, _, _) = &stmt.kind {
+                    if let Operand::Copy(l) | Operand::Move(l) = obj {
+                        *assign_counts.entry(*l).or_insert(0) += 1;
+                    }
+                } else if let StatementKind::SetIndex(obj, _, _) = &stmt.kind {
+                    if let Operand::Copy(l) | Operand::Move(l) = obj {
+                        *assign_counts.entry(*l).or_insert(0) += 1;
+                    }
+                } else if let StatementKind::VectorStore(obj, _, _) = &stmt.kind {
+                    if let Operand::Copy(l) | Operand::Move(l) = obj {
+                        *assign_counts.entry(*l).or_insert(0) += 1;
+                    }
+                } else if let StatementKind::PtrStore(ptr, _) = &stmt.kind {
+                    if let Operand::Copy(l) | Operand::Move(l) = ptr {
+                        *assign_counts.entry(*l).or_insert(0) += 1;
+                    }
                 }
             }
         }
 
         let mut defined_in_loop = HashSet::default();
-        for local in assign_counts.keys() {
-            defined_in_loop.insert(*local);
+        for &bb_id in &lp.body {
+            let bb = &func.basic_blocks[bb_id.0];
+            for stmt in &bb.statements {
+                if let StatementKind::Assign(local, _) = &stmt.kind {
+                    defined_in_loop.insert(*local);
+                } else if let StatementKind::SetAttr(obj, _, _) = &stmt.kind {
+                    if let Operand::Copy(l) | Operand::Move(l) = obj {
+                        defined_in_loop.insert(*l);
+                    }
+                } else if let StatementKind::SetIndex(obj, _, _) = &stmt.kind {
+                    if let Operand::Copy(l) | Operand::Move(l) = obj {
+                        defined_in_loop.insert(*l);
+                    }
+                } else if let StatementKind::VectorStore(obj, _, _) = &stmt.kind {
+                    if let Operand::Copy(l) | Operand::Move(l) = obj {
+                        defined_in_loop.insert(*l);
+                    }
+                } else if let StatementKind::PtrStore(ptr, _) = &stmt.kind {
+                    if let Operand::Copy(l) | Operand::Move(l) = ptr {
+                        defined_in_loop.insert(*l);
+                    }
+                }
+            }
         }
 
         let mut sorted_body: Vec<BasicBlockId> = lp.body.iter().copied().collect();

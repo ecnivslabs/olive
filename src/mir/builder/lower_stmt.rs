@@ -77,9 +77,17 @@ impl<'a> MirBuilder<'a> {
                 if let Operand::Constant(_) = &rval {
                     self.globals.insert(name.clone(), rval);
                 } else {
-                    let ty = self.get_type(value.id);
-                    let local = self.declare_var(name.clone(), ty, false);
+                    let global_name = name.clone();
+                    self.global_vars.push(global_name.clone());
+                    let global_op = Operand::Constant(Constant::GlobalData(global_name));
+                    self.globals.insert(name.clone(), global_op.clone());
+
+                    let local = self.new_tmp_for_expr(value);
                     self.push_statement(StatementKind::Assign(local, Rvalue::Use(rval)), stmt.span);
+                    self.push_statement(
+                        StatementKind::PtrStore(global_op, Operand::Copy(local)),
+                        stmt.span,
+                    );
                 }
             }
 
@@ -100,9 +108,14 @@ impl<'a> MirBuilder<'a> {
                         ),
                         value.span,
                     );
-                    let local = self.declare_var(name.clone(), Type::Any, false);
+
+                    let global_name = name.clone();
+                    self.global_vars.push(global_name.clone());
+                    let global_op = Operand::Constant(Constant::GlobalData(global_name));
+                    self.globals.insert(name.clone(), global_op.clone());
+
                     self.push_statement(
-                        StatementKind::Assign(local, Rvalue::Use(Operand::Copy(elem_tmp))),
+                        StatementKind::PtrStore(global_op, Operand::Copy(elem_tmp)),
                         stmt.span,
                     );
                 }
@@ -141,6 +154,9 @@ impl<'a> MirBuilder<'a> {
                     crate::parser::AugOp::Pow => crate::parser::BinOp::Pow,
                     crate::parser::AugOp::Shl => crate::parser::BinOp::Shl,
                     crate::parser::AugOp::Shr => crate::parser::BinOp::Shr,
+                    crate::parser::AugOp::BitOr => crate::parser::BinOp::BitOr,
+                    crate::parser::AugOp::BitAnd => crate::parser::BinOp::BitAnd,
+                    crate::parser::AugOp::BitXor => crate::parser::BinOp::BitXor,
                 };
                 let lhs_op = self.lower_expr(target);
                 let rhs_op = self.lower_expr(value);
@@ -423,6 +439,7 @@ impl<'a> MirBuilder<'a> {
                         Some("self".to_string()),
                         false,
                     );
+                    self.current_locals[self_local.0].is_owning = false;
                     let mut field_locals = Vec::new();
                     for field in fields {
                         let field_ty = field
@@ -431,6 +448,7 @@ impl<'a> MirBuilder<'a> {
                             .map(|ann| self.resolve_type_expr(ann))
                             .unwrap_or(Type::Any);
                         let fl = self.new_local(field_ty, Some(field.name.clone()), false);
+                        self.current_locals[fl.0].is_owning = false;
                         field_locals.push((field.name.clone(), fl));
                     }
 
@@ -492,22 +510,49 @@ impl<'a> MirBuilder<'a> {
             | StmtKind::NativeImport { .. } => {}
 
             StmtKind::PyImport { module, alias } => {
-                // import py "module" as alias
-                // → let alias: PyObject = __olive_py_import("module")
                 let module_op = Operand::Constant(Constant::Str(module.clone()));
-                let local = self.declare_var(alias.clone(), Type::PyObject, false);
-                self.push_statement(
-                    StatementKind::Assign(
-                        local,
-                        Rvalue::Call {
-                            func: Operand::Constant(Constant::Function(
-                                "__olive_py_import".to_string(),
-                            )),
-                            args: vec![module_op],
-                        },
-                    ),
-                    stmt.span,
-                );
+                if self.current_name == "__main__" {
+                    self.global_vars.push(alias.clone());
+                    let global_name = alias.clone();
+                    self.globals.insert(
+                        alias.clone(),
+                        Operand::Constant(Constant::GlobalData(global_name.clone())),
+                    );
+                    let local = self.new_local(Type::PyObject, None, false);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            local,
+                            Rvalue::Call {
+                                func: Operand::Constant(Constant::Function(
+                                    "__olive_py_import".to_string(),
+                                )),
+                                args: vec![module_op],
+                            },
+                        ),
+                        stmt.span,
+                    );
+                    self.push_statement(
+                        StatementKind::PtrStore(
+                            Operand::Constant(Constant::GlobalData(global_name)),
+                            Operand::Copy(local),
+                        ),
+                        stmt.span,
+                    );
+                } else {
+                    let local = self.declare_var(alias.clone(), Type::PyObject, false);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            local,
+                            Rvalue::Call {
+                                func: Operand::Constant(Constant::Function(
+                                    "__olive_py_import".to_string(),
+                                )),
+                                args: vec![module_op],
+                            },
+                        ),
+                        stmt.span,
+                    );
+                }
             }
 
             StmtKind::UnsafeBlock(body) => {
@@ -695,6 +740,7 @@ impl<'a> MirBuilder<'a> {
                     ty
                 };
                 let local = self.declare_var(param.name.clone(), ty, param.is_mut);
+                self.current_locals[local.0].is_owning = false;
                 param_locals.push(local);
             }
 

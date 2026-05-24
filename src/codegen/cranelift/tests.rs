@@ -31,6 +31,7 @@ mod codegen_tests {
             builder.functions,
             builder.struct_fields,
             builder.vtables.clone(),
+            builder.global_vars,
             &[],
             false,
         );

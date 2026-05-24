@@ -184,7 +184,7 @@ fn looks_like_float(val: i64) -> bool {
 }
 
 pub fn olive_to_py(val: i64) -> PyObject {
-    if val & 1 != 0 {
+    if val > 0x10000 && val & 1 != 0 {
         unsafe { PY_UNICODE_FROM_STRING((val & !1) as *const c_char) }
     } else if val == 0 {
         unsafe { _PY_NONE_STRUCT }
@@ -546,6 +546,26 @@ pub extern "C" fn olive_py_decref(obj: PyObject) {
         }
         arena().write().unwrap().free(raw);
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_eq(l: PyObject, r: PyObject) -> i64 {
+    check_python_loaded();
+    let un_l = unsafe { olive_py_unwrap(l) };
+    let un_r = unsafe { olive_py_unwrap(r) };
+    if un_l.is_null() || un_r.is_null() {
+        return 0;
+    }
+    with_gil(|| unsafe {
+        let res = PY_OBJECT_RICHCOMPAREBOOL(un_l, un_r, 2); // Py_EQ is 2
+        // println!("__olive_py_eq returned {}", res);
+        if res == -1 {
+            PY_ERR_CLEAR();
+            0
+        } else {
+            res as i64
+        }
+    })
 }
 
 #[unsafe(no_mangle)]

@@ -115,3 +115,5 @@ pub static mut PY_LIST_GET_ITEM: unsafe extern "C" fn(PyObject, isize) -> PyObje
 pub static mut PY_TUPLE_GET_ITEM: unsafe extern "C" fn(PyObject, isize) -> PyObject =
     noop_getitem_idx;
 pub static mut PY_TUPLE_TYPE: PyObject = std::ptr::null_mut();
+pub static mut PY_OBJECT_RICHCOMPAREBOOL: unsafe extern "C" fn(PyObject, PyObject, c_int) -> c_int =
+    crate::python::python_noop::noop_richcomparebool;

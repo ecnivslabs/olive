@@ -72,7 +72,7 @@ impl TypeChecker {
                 let o_ty = self.check_expr(operand);
                 match op {
                     UnaryOp::Not => Type::Bool,
-                    UnaryOp::Neg | UnaryOp::Pos => o_ty,
+                    UnaryOp::Neg | UnaryOp::Pos | UnaryOp::BitNot => o_ty,
                 }
             }
 
@@ -677,7 +677,10 @@ impl TypeChecker {
             | BinOp::Mod
             | BinOp::Pow
             | BinOp::Shl
-            | BinOp::Shr => {
+            | BinOp::Shr
+            | BinOp::BitOr
+            | BinOp::BitAnd
+            | BinOp::BitXor => {
                 self.unify(l, r, span);
                 self.apply_subst(l.clone())
             }

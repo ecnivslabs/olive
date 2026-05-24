@@ -118,6 +118,7 @@ pub fn repl_compile_run(
         mir_builder.functions,
         mir_builder.struct_fields,
         mir_builder.vtables.clone(),
+        mir_builder.global_vars,
         &[],
         false,
     );

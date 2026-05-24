@@ -67,6 +67,11 @@ pub enum TokenKind {
     ShrEqual,
     Ampersand,
     Pipe,
+    Caret,
+    Tilde,
+    AmpersandEqual,
+    PipeEqual,
+    CaretEqual,
 
     LParen,
     RParen,

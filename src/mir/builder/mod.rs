@@ -49,6 +49,7 @@ pub struct MirBuilder<'a> {
     pub(super) defer_stack: Vec<crate::parser::Expr>,
     pub c_ffi_fns: HashSet<String>,
     pub vtables: HashMap<String, Vec<String>>,
+    pub global_vars: Vec<String>,
 }
 
 impl<'a> MirBuilder<'a> {
@@ -84,6 +85,7 @@ impl<'a> MirBuilder<'a> {
             defer_stack: Vec::new(),
             c_ffi_fns,
             vtables: HashMap::default(),
+            global_vars: Vec::new(),
         }
     }
 

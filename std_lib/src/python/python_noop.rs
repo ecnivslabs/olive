@@ -124,6 +124,9 @@ pub unsafe extern "C" fn noop_get_iter(_: PyObject) -> PyObject {
 pub unsafe extern "C" fn noop_check_int(_: PyObject) -> c_int {
     0
 }
+pub unsafe extern "C" fn noop_richcomparebool(_: PyObject, _: PyObject, _: c_int) -> c_int {
+    -1
+}
 
 #[cfg(target_os = "windows")]
 unsafe extern "system" {

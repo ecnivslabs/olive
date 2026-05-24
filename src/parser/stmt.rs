@@ -481,24 +481,37 @@ impl Parser {
         }
         self.expect(TokenKind::Import)?;
         let mut names = Vec::new();
-        loop {
-            let name = self.expect(TokenKind::Identifier)?.value;
-            let alias = if self.peek().kind == TokenKind::As {
-                self.advance();
-                Some(self.expect(TokenKind::Identifier)?.value)
-            } else {
-                None
-            };
-            names.push((name, alias));
-            if self.peek().kind == TokenKind::Comma {
-                self.advance();
-            } else {
-                break;
+        let mut is_star = false;
+        if self.peek().kind == TokenKind::Star {
+            self.advance();
+            is_star = true;
+        } else {
+            loop {
+                let name = self.expect(TokenKind::Identifier)?.value;
+                let alias = if self.peek().kind == TokenKind::As {
+                    self.advance();
+                    Some(self.expect(TokenKind::Identifier)?.value)
+                } else {
+                    None
+                };
+                names.push((name, alias));
+                if self.peek().kind == TokenKind::Comma {
+                    self.advance();
+                } else {
+                    break;
+                }
             }
         }
         self.eat_stmt_end()?;
         let span = self.span_from(&start);
-        Ok(Stmt::new(StmtKind::FromImport { module, names }, span))
+        Ok(Stmt::new(
+            StmtKind::FromImport {
+                module,
+                names,
+                is_star,
+            },
+            span,
+        ))
     }
 
     pub(crate) fn parse_let(&mut self) -> ParseResult<Stmt> {
@@ -628,7 +641,10 @@ impl Parser {
             | TokenKind::ShlEqual
             | TokenKind::ShrEqual
             | TokenKind::PercentEqual
-            | TokenKind::DoubleStarEqual) => {
+            | TokenKind::DoubleStarEqual
+            | TokenKind::PipeEqual
+            | TokenKind::AmpersandEqual
+            | TokenKind::CaretEqual) => {
                 if !Self::is_valid_assign_target(&lhs) {
                     return Err(ParseError {
                         message: "invalid augmented assignment target".into(),
@@ -650,6 +666,9 @@ impl Parser {
                     TokenKind::DoubleStarEqual => AugOp::Pow,
                     TokenKind::ShlEqual => AugOp::Shl,
                     TokenKind::ShrEqual => AugOp::Shr,
+                    TokenKind::PipeEqual => AugOp::BitOr,
+                    TokenKind::AmpersandEqual => AugOp::BitAnd,
+                    TokenKind::CaretEqual => AugOp::BitXor,
                     _ => unreachable!(),
                 };
                 let span = self.span_from(&start);

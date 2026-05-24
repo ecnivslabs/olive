@@ -78,6 +78,13 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
 
+    if !matches!(cli.command, Commands::Shell) {
+        ctrlc::set_handler(move || {
+            std::process::exit(130);
+        })
+        .expect("Error setting Ctrl-C handler");
+    }
+
     match cli.command {
         Commands::New { name } => commands::project::execute_new(&name),
         Commands::Build {
