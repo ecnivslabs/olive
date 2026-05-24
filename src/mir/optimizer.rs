@@ -1,3 +1,4 @@
+use crate::compile::errors::Diagnostic;
 use crate::mir::*;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -76,7 +77,7 @@ impl Optimizer {
         }
     }
 
-    pub fn run(&self, functions: &mut [MirFunction]) {
+    pub fn run(&self, functions: &mut [MirFunction]) -> Vec<Diagnostic> {
         // Ownership inference is semantic (not optional): drops must agree
         // with the inferred owner in every pipeline.
         let ownership = OwnershipInference {
@@ -95,8 +96,7 @@ impl Optimizer {
                 DeadCodeElimination.run(func);
                 MoveElision.run(func);
             }
-            self.insert_gen_checks(functions, ownership);
-            return;
+            return self.insert_gen_checks(functions, ownership);
         }
 
         let fn_map: HashMap<String, MirFunction> = functions
@@ -153,18 +153,24 @@ impl Optimizer {
             BoundsCheckElim.run(func);
         }
 
-        self.insert_gen_checks(functions, ownership);
+        self.insert_gen_checks(functions, ownership)
     }
 
     /// Runs after every other pass in both pipelines: checks must sit exactly
     /// where the analysis proved them necessary on the final statement order.
-    fn insert_gen_checks(&self, functions: &mut [MirFunction], ownership: OwnershipInference) {
+    fn insert_gen_checks(
+        &self,
+        functions: &mut [MirFunction],
+        ownership: OwnershipInference,
+    ) -> Vec<Diagnostic> {
         let gencheck = GenCheckInsertion {
             borrowed_returns: ownership.borrowed_returns,
             param_escapes: ownership.param_escapes,
+            diagnostics: Default::default(),
         };
         for func in functions.iter_mut() {
             gencheck.run(func);
         }
+        gencheck.diagnostics.into_inner()
     }
 }

@@ -74,12 +74,27 @@ pub(super) const ENTRIES: &[Explanation] = &[
         title: "stale reference",
         summary: "A borrowed value outlived its owner. The generation check caught the \
                   access before the freed memory was read, so the program stops with \
-                  this fault instead of corrupting the heap.",
-        wrong: "fn sink(v):\n    let tmp = [v]\n\nfn main():\n    let a = [1, 2]\n    sink(a)\n    print(a[0])",
-        fixed: "fn sink(v):\n    let tmp = [v]\n\nfn main():\n    let a = [1, 2]\n    print(a[0])\n    sink(a)",
+                  this fault instead of corrupting the heap. Whether a given borrow \
+                  outlives its owner can depend on which branch runs, so this is only \
+                  ever knowable at runtime.",
+        wrong: "fn main():\n    let mut outer = [[1, 2, 3]]\n    let inner = outer[0]\n    outer[0] = [9]\n    print(inner[0])",
+        fixed: "fn main():\n    let mut outer = [[1, 2, 3]]\n    let inner = outer[0]\n    print(inner[0])\n    outer[0] = [9]",
         notes: &[
             "Once a value is stored somewhere else, that place owns it: finish reading \
              through the old name first, or store a copy instead.",
+        ],
+    },
+    Explanation {
+        code: "E0708",
+        title: "use of a value after it was given away",
+        summary: "The compiler proved a borrow outlives its owner on every possible \
+                  path, not just some of them, so it rejects the program outright \
+                  instead of leaving it to fault at runtime.",
+        wrong: "fn sink(v):\n    let _tmp = [v]\n\nfn main():\n    let a = [1, 2]\n    sink(a)\n    print(a[0])",
+        fixed: "fn sink(v):\n    let _tmp = [v]\n\nfn main():\n    let a = [1, 2]\n    print(a[0])\n    sink(a)",
+        notes: &[
+            "Read through the old name before handing the value away, or keep a copy \
+             for yourself instead of just a reference.",
         ],
     },
 ];
