@@ -1,4 +1,4 @@
-use crate::parser::{CallArg, Expr, ExprKind, Stmt, StmtKind};
+use crate::parser::{CallArg, Expr, ExprKind, Stmt, StmtKind, TypeExpr, TypeExprKind};
 use std::collections::HashSet;
 
 pub fn mangle_statements(stmts: &mut [Stmt], prefix: &str, names: &HashSet<String>) {
@@ -9,17 +9,40 @@ pub fn mangle_statements(stmts: &mut [Stmt], prefix: &str, names: &HashSet<Strin
 
 pub fn mangle_stmt(stmt: &mut Stmt, prefix: &str, names: &HashSet<String>) {
     match &mut stmt.kind {
-        StmtKind::Fn { name, body, .. } => {
+        StmtKind::Fn {
+            name,
+            body,
+            params,
+            return_type,
+            ..
+        } => {
             if names.contains(name) {
+                println!("mangling const: {}", name);
                 *name = format!("{}::{}", prefix, name);
+            }
+            for p in params {
+                if let Some(ty) = &mut p.type_ann {
+                    mangle_type_expr(ty, prefix, names);
+                }
+            }
+            if let Some(ty) = return_type {
+                mangle_type_expr(ty, prefix, names);
             }
             for s in body {
                 mangle_stmt(s, prefix, names);
             }
         }
-        StmtKind::Struct { name, body, .. } => {
+        StmtKind::Struct {
+            name, body, fields, ..
+        } => {
             if names.contains(name) {
+                println!("mangling const: {}", name);
                 *name = format!("{}::{}", prefix, name);
+            }
+            for f in fields {
+                if let Some(ty) = &mut f.type_ann {
+                    mangle_type_expr(ty, prefix, names);
+                }
             }
             for s in body {
                 mangle_stmt(s, prefix, names);
@@ -40,11 +63,15 @@ pub fn mangle_stmt(stmt: &mut Stmt, prefix: &str, names: &HashSet<String>) {
         StmtKind::Trait { .. } => {}
         StmtKind::Enum { name, variants, .. } => {
             if names.contains(name) {
+                println!("mangling const: {}", name);
                 *name = format!("{}::{}", prefix, name);
             }
             for variant in variants {
                 if names.contains(&variant.name) {
                     variant.name = format!("{}::{}", prefix, variant.name);
+                }
+                for ty in &mut variant.types {
+                    mangle_type_expr(ty, prefix, names);
                 }
             }
         }
@@ -101,26 +128,48 @@ pub fn mangle_stmt(stmt: &mut Stmt, prefix: &str, names: &HashSet<String>) {
                 }
             }
         }
-        StmtKind::Let { name, value, .. } | StmtKind::Const { name, value, .. } => {
+        StmtKind::Let {
+            name,
+            value,
+            type_ann,
+            ..
+        }
+        | StmtKind::Const {
+            name,
+            value,
+            type_ann,
+            ..
+        } => {
+            println!("mangle check const: {}", name);
             if names.contains(name) {
+                println!("mangling const: {}", name);
                 *name = format!("{}::{}", prefix, name);
+            }
+            if let Some(ty) = type_ann {
+                mangle_type_expr(ty, prefix, names);
             }
             mangle_expr(value, prefix, names);
         }
         StmtKind::MultiLet {
             names: var_names,
             value,
+            type_ann,
             ..
         }
         | StmtKind::MultiConst {
             names: var_names,
             value,
+            type_ann,
             ..
         } => {
             for name in var_names {
                 if names.contains(name) {
+                    println!("mangling const: {}", name);
                     *name = format!("{}::{}", prefix, name);
                 }
+            }
+            if let Some(ty) = type_ann {
+                mangle_type_expr(ty, prefix, names);
             }
             mangle_expr(value, prefix, names);
         }
@@ -150,6 +199,7 @@ pub fn mangle_stmt(stmt: &mut Stmt, prefix: &str, names: &HashSet<String>) {
                 .as_deref()
                 .unwrap_or_else(|| module.last().unwrap().as_str());
             if names.contains(name) {
+                println!("mangling const: {}", name);
                 *alias = Some(format!("{}::{}", prefix, name));
             }
         }
@@ -177,6 +227,7 @@ pub fn mangle_expr(expr: &mut Expr, prefix: &str, names: &HashSet<String>) {
     match &mut expr.kind {
         ExprKind::Identifier(name) => {
             if names.contains(name) {
+                println!("mangling const: {}", name);
                 *name = format!("{}::{}", prefix, name);
             }
         }
@@ -266,5 +317,49 @@ pub fn mangle_expr(expr: &mut Expr, prefix: &str, names: &HashSet<String>) {
             }
         }
         _ => {}
+    }
+}
+
+pub fn mangle_type_expr(ty: &mut TypeExpr, prefix: &str, names: &HashSet<String>) {
+    match &mut ty.kind {
+        TypeExprKind::Name(name) => {
+            if names.contains(name) {
+                println!("mangling const: {}", name);
+                *name = format!("{}::{}", prefix, name);
+            }
+        }
+        TypeExprKind::Generic(name, args) => {
+            if names.contains(name) {
+                println!("mangling const: {}", name);
+                *name = format!("{}::{}", prefix, name);
+            }
+            for arg in args {
+                mangle_type_expr(arg, prefix, names);
+            }
+        }
+        TypeExprKind::Tuple(args) => {
+            for arg in args {
+                mangle_type_expr(arg, prefix, names);
+            }
+        }
+        TypeExprKind::List(inner)
+        | TypeExprKind::Ref(inner)
+        | TypeExprKind::MutRef(inner)
+        | TypeExprKind::Ptr(inner) => {
+            mangle_type_expr(inner, prefix, names);
+        }
+        TypeExprKind::Dict(k, v) | TypeExprKind::Union(k, v) => {
+            mangle_type_expr(k, prefix, names);
+            mangle_type_expr(v, prefix, names);
+        }
+        TypeExprKind::Fn { params, ret } => {
+            for param in params {
+                mangle_type_expr(param, prefix, names);
+            }
+            mangle_type_expr(ret, prefix, names);
+        }
+        TypeExprKind::FixedArray(inner, _) => {
+            mangle_type_expr(inner, prefix, names);
+        }
     }
 }

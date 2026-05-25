@@ -272,15 +272,17 @@ impl TypeChecker {
 
                 for (i, (param, mut p_ty)) in params.iter().zip(param_types).enumerate() {
                     if i == 0 && self.current_struct.is_some() && param.name == "self" {
-                        let struct_name = self.current_struct.clone().unwrap();
-                        if let Some(struct_ty) = self.lookup_type(&struct_name) {
-                            if let Type::Struct(_, args) = struct_ty {
-                                p_ty = Type::Struct(struct_name, args);
+                        if param.type_ann.is_none() {
+                            let struct_name = self.current_struct.clone().unwrap();
+                            if let Some(struct_ty) = self.lookup_type(&struct_name) {
+                                if let Type::Struct(_, args) = struct_ty {
+                                    p_ty = Type::Struct(struct_name, args);
+                                } else {
+                                    p_ty = Type::Struct(struct_name, Vec::new());
+                                }
                             } else {
-                                p_ty = Type::Struct(struct_name, Vec::new());
+                                p_ty = Type::Any;
                             }
-                        } else {
-                            p_ty = Type::Any;
                         }
                     }
                     self.define_type(&param.name, p_ty, param.is_mut);

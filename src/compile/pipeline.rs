@@ -49,6 +49,10 @@ pub fn run_pipeline(filename: &str) -> Result<PipelineOutput, ()> {
         &mut file_id_counter,
         &mut sources,
     );
+    println!("AST length: {}", combined_stmts.len());
+    for s in &combined_stmts {
+        println!("AST item: {:?}", s.kind);
+    }
     let program = parser::Program {
         stmts: combined_stmts,
     };

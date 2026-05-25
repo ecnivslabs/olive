@@ -380,7 +380,44 @@ impl TypeChecker {
         false
     }
 
+    pub fn hoist_types(&mut self, stmts: &[Stmt]) {
+        for stmt in stmts {
+            match &stmt.kind {
+                crate::parser::StmtKind::Struct {
+                    name, type_params, ..
+                } => {
+                    let abstract_args = type_params
+                        .iter()
+                        .map(|p| Type::Param(p.clone()))
+                        .collect::<Vec<_>>();
+                    self.define_type(name, Type::Struct(name.clone(), abstract_args), false);
+                }
+                crate::parser::StmtKind::Enum {
+                    name, type_params, ..
+                } => {
+                    let abstract_args = type_params
+                        .iter()
+                        .map(|p| Type::Param(p.clone()))
+                        .collect::<Vec<_>>();
+                    self.define_type(name, Type::Enum(name.clone(), abstract_args), false);
+                }
+                crate::parser::StmtKind::Trait {
+                    name, type_params, ..
+                } => {
+                    let abstract_args = type_params
+                        .iter()
+                        .map(|p| Type::Param(p.clone()))
+                        .collect::<Vec<_>>();
+                    self.define_type(name, Type::TraitObject(name.clone(), abstract_args), false);
+                }
+                _ => {}
+            }
+        }
+    }
+
     pub fn check_program(&mut self, program: &Program) {
+        self.hoist_types(&program.stmts);
+
         for stmt in &program.stmts {
             self.check_stmt(stmt);
         }

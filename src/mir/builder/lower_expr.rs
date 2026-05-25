@@ -60,7 +60,7 @@ impl<'a> MirBuilder<'a> {
                 let mut current_res: Option<Operand> = None;
 
                 for e in exprs {
-                    let op = self.lower_expr(e);
+                    let op = self.lower_expr_as_copy(e);
                     let ty = self.get_type(e.id);
 
                     let str_op = if ty == Type::Str {

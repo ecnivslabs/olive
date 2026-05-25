@@ -276,6 +276,10 @@ pub fn load_and_parse(
                             parser::StmtKind::Impl { type_name, .. } => {
                                 !type_name.to_string().starts_with('_')
                             }
+                            parser::StmtKind::Import { .. }
+                            | parser::StmtKind::NativeImport { .. }
+                            | parser::StmtKind::PyImport { .. }
+                            | parser::StmtKind::FromImport { .. } => true,
                             _ => false,
                         });
                     } else {
@@ -285,19 +289,24 @@ pub fn load_and_parse(
                             | parser::StmtKind::Enum { name, .. }
                             | parser::StmtKind::Let { name, .. }
                             | parser::StmtKind::Const { name, .. } => {
-                                names.iter().any(|(n, _)| n == name)
+                                name.contains("::") || names.iter().any(|(n, _)| n == name)
                             }
                             parser::StmtKind::MultiLet {
                                 names: var_names, ..
                             }
                             | parser::StmtKind::MultiConst {
                                 names: var_names, ..
-                            } => var_names
-                                .iter()
-                                .any(|var_name| names.iter().any(|(n, _)| n == var_name)),
+                            } => var_names.iter().any(|var_name| {
+                                var_name.contains("::") || names.iter().any(|(n, _)| n == var_name)
+                            }),
                             parser::StmtKind::Impl { type_name, .. } => {
-                                names.iter().any(|(n, _)| n == &type_name.to_string())
+                                type_name.to_string().contains("::")
+                                    || names.iter().any(|(n, _)| n == &type_name.to_string())
                             }
+                            parser::StmtKind::Import { .. }
+                            | parser::StmtKind::NativeImport { .. }
+                            | parser::StmtKind::PyImport { .. }
+                            | parser::StmtKind::FromImport { .. } => true,
                             _ => false,
                         });
                     }
@@ -376,6 +385,12 @@ pub fn find_std_lib_src_dir() -> PathBuf {
             let std_lib = parent.join("lib").join("olive");
             if std_lib.exists() {
                 return std_lib;
+            }
+            if let Some(grandparent) = parent.parent() {
+                let dev_lib = grandparent.join("lib");
+                if dev_lib.exists() {
+                    return dev_lib;
+                }
             }
         }
     }
