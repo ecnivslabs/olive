@@ -350,6 +350,9 @@ impl<'a> MirBuilder<'a> {
             _ => Type::Any,
         };
         let iter_op = self.lower_expr(&clause.iter);
+        let iter_type = self.get_type(clause.iter.id);
+        let iter_copy = self.new_local(iter_type, None, true);
+        self.push_statement(StatementKind::Assign(iter_copy, Rvalue::Use(iter_op)), span);
         let cond_bb = self.new_block();
         let body_bb = self.new_block();
         let next_clause_bb = self.new_block();
@@ -361,7 +364,7 @@ impl<'a> MirBuilder<'a> {
                 iter_local,
                 Rvalue::Call {
                     func: Operand::Constant(Constant::Function("iter".to_string())),
-                    args: vec![iter_op],
+                    args: vec![Operand::Copy(iter_copy)],
                 },
             ),
             span,

@@ -100,3 +100,10 @@ When a value is passed into a function and consumed there, or returned
 straight through, the compiler passes a pointer instead of copying. The
 optimizer promotes copies to moves wherever liveness allows, so most of the
 copies rule 3 describes never happen in compiled code.
+
+## Iteration
+
+For-loops and comprehensions borrow the iterable by default — the collection
+stays usable after the loop. When the iterable has no live uses after the
+loop, the optimizer promotes the implicit copy back to a move, so hot loops
+incur no allocation overhead.

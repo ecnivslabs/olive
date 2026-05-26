@@ -90,6 +90,14 @@ fn regression_for_loop_list() {
 }
 
 #[test]
+fn regression_iteration_borrows_by_default() {
+    let mut cg = compile(
+        "fn f() -> i64:\n    let xs = [1, 2, 3]\n    let mut s = 0\n    for x in xs:\n        s = s + x\n    return s + len(xs)\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 9);
+}
+
+#[test]
 fn regression_enum_single_variant() {
     let mut cg = compile(
         "enum Wrap:\n    Val(i64)\n\nfn f(n: i64) -> i64:\n    let w = Val(n)\n    match w:\n        case Val(v):\n            return v\n",
