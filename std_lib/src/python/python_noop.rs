@@ -7,6 +7,13 @@ pub unsafe extern "C" fn noop_set_add(_: PyObject, _: PyObject) -> c_int {
 pub unsafe extern "C" fn noop_pynumber(_: *mut c_void, _: *mut c_void) -> *mut c_void {
     std::ptr::null_mut()
 }
+pub unsafe extern "C" fn noop_pynumber_power(
+    _: *mut c_void,
+    _: *mut c_void,
+    _: *mut c_void,
+) -> *mut c_void {
+    std::ptr::null_mut()
+}
 pub unsafe extern "C" fn noop_bytes_from_string(_: *const u8, _: isize) -> PyObject {
     std::ptr::null_mut()
 }

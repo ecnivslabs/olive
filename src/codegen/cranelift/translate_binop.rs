@@ -1,5 +1,5 @@
 use super::CraneliftCodegen;
-use super::imports::{is_float_op, is_list_op, is_str_op, is_u64_op};
+use super::imports::{is_float_op, is_list_op, is_pyobj_op, is_str_op, is_u64_op};
 use crate::mir::{Constant, Local, MirFunction, Operand};
 use crate::semantic::types::Type as OliveType;
 use cranelift::prelude::*;
@@ -22,6 +22,52 @@ impl<M: Module> CraneliftCodegen<M> {
         let l = Self::translate_operand(builder, lhs, vars, string_ids, module, func_ids);
         let r = Self::translate_operand(builder, rhs, vars, string_ids, module, func_ids);
         use crate::parser::BinOp::*;
+
+        let is_py = is_pyobj_op(func_mir, lhs) || is_pyobj_op(func_mir, rhs);
+        if is_py && matches!(op, Add | Sub | Mul | Div | Mod | Pow) {
+            let l_val = if is_float_op(func_mir, lhs) {
+                let func_id = func_ids.get("__olive_py_from_float").unwrap();
+                let local_func = module.declare_func_in_func(*func_id, builder.func);
+                let inst = builder.ins().call(local_func, &[l]);
+                builder.inst_results(inst)[0]
+            } else if !is_pyobj_op(func_mir, lhs) {
+                let func_id = func_ids.get("__olive_py_from_int").unwrap();
+                let local_func = module.declare_func_in_func(*func_id, builder.func);
+                let inst = builder.ins().call(local_func, &[l]);
+                builder.inst_results(inst)[0]
+            } else {
+                l
+            };
+
+            let r_val = if is_float_op(func_mir, rhs) {
+                let func_id = func_ids.get("__olive_py_from_float").unwrap();
+                let local_func = module.declare_func_in_func(*func_id, builder.func);
+                let inst = builder.ins().call(local_func, &[r]);
+                builder.inst_results(inst)[0]
+            } else if !is_pyobj_op(func_mir, rhs) {
+                let func_id = func_ids.get("__olive_py_from_int").unwrap();
+                let local_func = module.declare_func_in_func(*func_id, builder.func);
+                let inst = builder.ins().call(local_func, &[r]);
+                builder.inst_results(inst)[0]
+            } else {
+                r
+            };
+
+            let fn_name = match op {
+                Add => "__olive_py_add",
+                Sub => "__olive_py_sub",
+                Mul => "__olive_py_mul",
+                Div => "__olive_py_div",
+                Mod => "__olive_py_mod",
+                Pow => "__olive_py_pow",
+                _ => unreachable!(),
+            };
+            let func_id = func_ids.get(fn_name).unwrap();
+            let local_func = module.declare_func_in_func(*func_id, builder.func);
+            let inst = builder.ins().call(local_func, &[l_val, r_val]);
+            return builder.inst_results(inst)[0];
+        }
+
         match op {
             Add => {
                 let is_str = is_str_op(func_mir, lhs);

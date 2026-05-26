@@ -6,6 +6,7 @@ pub mod python_compat;
 pub mod python_error;
 pub mod python_iter;
 pub mod python_lifecycle;
+pub mod python_math;
 pub mod python_noop;
 pub mod python_safe;
 
@@ -17,6 +18,7 @@ pub use python_compat::*;
 pub use python_error::*;
 pub use python_iter::*;
 pub use python_lifecycle::*;
+pub use python_math::*;
 pub use python_noop::*;
 pub use python_safe::*;
 

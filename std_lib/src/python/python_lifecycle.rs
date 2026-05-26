@@ -103,10 +103,13 @@ pub extern "C" fn olive_py_initialize() {
         LIBPYTHON = handle;
 
         PY_INITIALIZE = compat_dlsym(handle, "Py_Initialize");
-        PY_NUMBER_OR = std::mem::transmute(libc::dlsym(
-            handle,
-            b"PyNumber_Or\0".as_ptr() as *const _,
-        ));
+        PY_NUMBER_OR = std::mem::transmute(libc::dlsym(handle, b"PyNumber_Or\0".as_ptr() as *const _));
+        PY_NUMBER_ADD = std::mem::transmute(libc::dlsym(handle, b"PyNumber_Add\0".as_ptr() as *const _));
+        PY_NUMBER_SUBTRACT = std::mem::transmute(libc::dlsym(handle, b"PyNumber_Subtract\0".as_ptr() as *const _));
+        PY_NUMBER_MULTIPLY = std::mem::transmute(libc::dlsym(handle, b"PyNumber_Multiply\0".as_ptr() as *const _));
+        PY_NUMBER_TRUEDIVIDE = std::mem::transmute(libc::dlsym(handle, b"PyNumber_TrueDivide\0".as_ptr() as *const _));
+        PY_NUMBER_REMAINDER = std::mem::transmute(libc::dlsym(handle, b"PyNumber_Remainder\0".as_ptr() as *const _));
+        PY_NUMBER_POWER = std::mem::transmute(libc::dlsym(handle, b"PyNumber_Power\0".as_ptr() as *const _));
         PY_FINALIZE = compat_dlsym(handle, "Py_Finalize");
         PY_IMPORT_IMPORT_MODULE = compat_dlsym(handle, "PyImport_ImportModule");
         PY_OBJECT_GET_ATTR_STRING = compat_dlsym(handle, "PyObject_GetAttrString");
@@ -204,6 +207,12 @@ pub extern "C" fn olive_py_initialize() {
             LIBPYTHON = std::ptr::null_mut();
             PY_INITIALIZE = noop_initialize;
             PY_NUMBER_OR = noop_pynumber;
+            PY_NUMBER_ADD = noop_pynumber;
+            PY_NUMBER_SUBTRACT = noop_pynumber;
+            PY_NUMBER_MULTIPLY = noop_pynumber;
+            PY_NUMBER_TRUEDIVIDE = noop_pynumber;
+            PY_NUMBER_REMAINDER = noop_pynumber;
+            PY_NUMBER_POWER = noop_pynumber_power;
             PY_FINALIZE = noop_finalize;
             PY_IMPORT_IMPORT_MODULE = noop_import;
             PY_OBJECT_GET_ATTR_STRING = noop_getattr;

@@ -8,6 +8,21 @@ pub static mut PY_INITIALIZE: unsafe extern "C" fn() = noop_initialize;
 pub static mut PY_FINALIZE: unsafe extern "C" fn() = noop_finalize;
 pub static mut PY_NUMBER_OR: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
     noop_pynumber;
+pub static mut PY_NUMBER_ADD: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
+    noop_pynumber;
+pub static mut PY_NUMBER_SUBTRACT: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
+    noop_pynumber;
+pub static mut PY_NUMBER_MULTIPLY: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
+    noop_pynumber;
+pub static mut PY_NUMBER_TRUEDIVIDE: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
+    noop_pynumber;
+pub static mut PY_NUMBER_REMAINDER: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
+    noop_pynumber;
+pub static mut PY_NUMBER_POWER: unsafe extern "C" fn(
+    *mut c_void,
+    *mut c_void,
+    *mut c_void,
+) -> *mut c_void = noop_pynumber_power;
 pub static mut PY_IMPORT_IMPORT_MODULE: unsafe extern "C" fn(*const c_char) -> PyObject =
     noop_import;
 pub static mut PY_OBJECT_GET_ATTR_STRING: unsafe extern "C" fn(
