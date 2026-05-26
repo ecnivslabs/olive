@@ -525,7 +525,26 @@ impl TypeChecker {
 
                         for (method_name, required_ty) in &trait_def.methods {
                             if let Some(provided_ty) = provided.get(method_name) {
-                                self.unify(required_ty, provided_ty, stmt.span);
+                                let mut expected_ty = required_ty.clone();
+                                if let Type::Fn(params, ret, args) = expected_ty {
+                                    let mut new_params = params.clone();
+                                    if !new_params.is_empty() {
+                                        let first_name = match &new_params[0] {
+                                            Type::TraitObject(n, _) => Some(n.clone()),
+                                            Type::Struct(n, _) => Some(n.clone()),
+                                            _ => None,
+                                        };
+                                        if first_name == Some(tr.to_string()) {
+                                            if let Some(impl_ty) =
+                                                self.lookup_type(&type_name.to_string())
+                                            {
+                                                new_params[0] = impl_ty;
+                                            }
+                                        }
+                                    }
+                                    expected_ty = Type::Fn(new_params, ret, args);
+                                }
+                                self.unify(&expected_ty, provided_ty, stmt.span);
                             } else {
                                 self.errors.push(SemanticError::Custom {
                                     msg: format!(
