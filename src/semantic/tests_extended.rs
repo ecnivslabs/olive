@@ -121,6 +121,44 @@ mod semantic_tests_extended {
     }
 
     #[test]
+    fn list_new_infers_concrete_element_type() {
+        // Param-generic list_new infers [int] from usage.
+        let tc = typeck(
+            "fn f(n: i64) -> [i64]:\n    let mut xs = list_new(n)\n    let mut i = 0\n    while i < n:\n        xs[i] = i * 2\n        i = i + 1\n    return xs\n",
+        );
+        assert!(tc.errors.is_empty(), "errors: {:?}", tc.errors);
+    }
+
+    #[test]
+    fn list_new_unconstrained_defaults_to_any() {
+        // Unconstrained list_new defaults to [Any].
+        let tc = typeck("fn f(n: i64) -> [Any]:\n    let xs = list_new(n)\n    return xs\n");
+        assert!(tc.errors.is_empty(), "errors: {:?}", tc.errors);
+    }
+
+    #[test]
+    fn concrete_list_into_any_param_is_type_error() {
+        // Scalar list cannot alias [Any] list (boxing mismatch).
+        let tc = typeck(
+            "fn f() -> [Any]:\n    let xs: [i64] = [1, 2, 3]\n    let ys: [Any] = xs\n    return ys\n",
+        );
+        assert!(
+            err_codes(&tc).contains(&"E0425".to_string()),
+            "errors: {:?}",
+            tc.errors
+        );
+    }
+
+    #[test]
+    fn any_annotated_at_creation_is_not_an_error() {
+        // [Any] annotation at creation avoids E0425.
+        let tc = typeck(
+            "fn f() -> [Any]:\n    let mut xs: [Any] = list_new(2)\n    xs[0] = 1\n    return xs\n",
+        );
+        assert!(tc.errors.is_empty(), "errors: {:?}", tc.errors);
+    }
+
+    #[test]
     fn return_type_missing_in_branch_reported() {
         let tc = typeck("fn f(x: i64) -> i64:\n    if x > 0:\n        return x\n");
         assert!(

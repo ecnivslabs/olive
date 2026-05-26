@@ -190,8 +190,8 @@ impl TypeChecker {
                 "list_new",
                 Type::Fn(
                     vec![Type::Int],
-                    Box::new(Type::List(Box::new(Type::Any))),
-                    Vec::new(),
+                    Box::new(Type::List(Box::new(Type::Param("T".to_string())))),
+                    vec![Type::Param("T".to_string())],
                 ),
             ),
             (
@@ -827,6 +827,7 @@ impl TypeChecker {
     pub fn check_program(&mut self, program: &Program) {
         self.hoist_types(&program.stmts);
         self.hoist_struct_fields(&program.stmts);
+        self.hoist_fn_signatures(None, &program.stmts);
 
         for stmt in &program.stmts {
             self.check_stmt(stmt);

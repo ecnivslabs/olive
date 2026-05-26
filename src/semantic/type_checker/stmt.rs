@@ -14,8 +14,13 @@ fn ffi_type(t: Type) -> Type {
 }
 
 impl TypeChecker {
-    /// Pre-registers all method signatures so forward calls within the same impl resolve correctly.
-    fn register_impl_method_signatures(&mut self, struct_name: &str, body: &[Stmt]) {
+    /// Pre-registers function signatures so a forward call resolves to the
+    /// real parameter/return types instead of a type variable that the later,
+    /// real check of the callee never reconnects to (which finalizes to `Any`
+    /// and desyncs from the callee's actual, unboxed return representation).
+    /// `struct_name` mangles impl-method names and supplies the implicit
+    /// `self` type; `None` pre-registers top-level functions.
+    pub(super) fn hoist_fn_signatures(&mut self, struct_name: Option<&str>, body: &[Stmt]) {
         for s in body {
             let StmtKind::Fn {
                 name,
@@ -43,9 +48,13 @@ impl TypeChecker {
             };
             let mut param_types = Vec::with_capacity(params.len());
             for (i, param) in params.iter().enumerate() {
-                if i == 0 && param.name == "self" && param.type_ann.is_none() {
-                    param_types.push(self.lookup_type(struct_name).unwrap_or(Type::Struct(
-                        struct_name.to_string(),
+                if i == 0
+                    && param.name == "self"
+                    && param.type_ann.is_none()
+                    && let Some(sn) = struct_name
+                {
+                    param_types.push(self.lookup_type(sn).unwrap_or(Type::Struct(
+                        sn.to_string(),
                         vec![],
                         false,
                     )));
@@ -63,16 +72,22 @@ impl TypeChecker {
 
             let mut all_type_params: Vec<Type> =
                 type_params.iter().map(|p| Type::Param(p.clone())).collect();
-            if let Some(Type::Struct(_, struct_args, _)) = self.lookup_type(struct_name) {
+            if let Some(sn) = struct_name
+                && let Some(Type::Struct(_, struct_args, _)) = self.lookup_type(sn)
+            {
                 for arg in struct_args {
                     if !all_type_params.contains(&arg) {
                         all_type_params.push(arg);
                     }
                 }
             }
-            let mangled = format!("{}::{}", struct_name, name);
+            let key = if let Some(sn) = struct_name {
+                format!("{}::{}", sn, name)
+            } else {
+                name.clone()
+            };
             let fn_ty = Type::Fn(param_types, Box::new(ret_ty), all_type_params);
-            self.type_env[0].insert(mangled, fn_ty);
+            self.type_env[0].insert(key, fn_ty);
         }
     }
 
@@ -311,10 +326,26 @@ impl TypeChecker {
                     self.define_type(tp, Type::Param(tp.clone()), false);
                 }
 
-                let inner_ret_ty = return_type
-                    .as_ref()
-                    .map(|ann| self.resolve_type_expr(ann))
-                    .unwrap_or_else(|| self.fresh_var());
+                let final_name = if let Some(struct_name) = &self.current_struct {
+                    format!("{}::{}", struct_name, name)
+                } else {
+                    name.clone()
+                };
+
+                // An unannotated return type reuses the var `hoist_fn_signatures`
+                // already put in scope for forward callers, instead of minting an
+                // unconnected one that they'd finalize to `Any` while this body
+                // resolves it concretely (or vice versa) - see `unify_elem`.
+                let inner_ret_ty = match return_type {
+                    Some(ann) => self.resolve_type_expr(ann),
+                    None => match self.type_env[0].get(&final_name).cloned() {
+                        Some(Type::Fn(_, existing_ret, _)) => match *existing_ret {
+                            Type::Future(inner) if *is_async => *inner,
+                            other => other,
+                        },
+                        _ => self.fresh_var(),
+                    },
+                };
                 let ret_ty = if *is_async {
                     Type::Future(Box::new(inner_ret_ty.clone()))
                 } else {
@@ -352,12 +383,6 @@ impl TypeChecker {
 
                     param_types.push(p_ty);
                 }
-
-                let final_name = if let Some(struct_name) = &self.current_struct {
-                    format!("{}::{}", struct_name, name)
-                } else {
-                    name.clone()
-                };
 
                 let mut all_type_params: Vec<Type> =
                     type_params.iter().map(|p| Type::Param(p.clone())).collect();
@@ -690,7 +715,7 @@ impl TypeChecker {
                 };
                 self.current_struct = Some(base_type_name.clone());
                 self.enter_scope();
-                self.register_impl_method_signatures(&base_type_name, body);
+                self.hoist_fn_signatures(Some(&base_type_name), body);
                 for s in body {
                     self.check_stmt(s);
                 }

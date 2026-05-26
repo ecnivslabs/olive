@@ -168,13 +168,13 @@ impl TypeChecker {
             // &mut T satisfies &T (but not the reverse).
             (Type::Ref(a), Type::MutRef(b)) => self.unify(a, b, span),
 
-            (Type::List(a), Type::List(b)) => self.unify(a, b, span),
-            (Type::Set(a), Type::Set(b)) => self.unify(a, b, span),
+            (Type::List(a), Type::List(b)) => self.unify_elem(a, b, span),
+            (Type::Set(a), Type::Set(b)) => self.unify_elem(a, b, span),
             (Type::Future(a), Type::Future(b)) => self.unify(a, b, span),
 
             (Type::Dict(k1, v1), Type::Dict(k2, v2)) => {
-                self.unify(k1, k2, span);
-                self.unify(v1, v2, span);
+                self.unify_elem(k1, k2, span);
+                self.unify_elem(v1, v2, span);
             }
 
             (Type::Tuple(a), Type::Tuple(b)) => {
@@ -346,6 +346,57 @@ impl TypeChecker {
         }
     }
 
+    /// Types whose representation differs inside an `Any` slot.
+    fn needs_any_boxing(ty: &Type) -> bool {
+        matches!(
+            ty,
+            Type::Int
+                | Type::I8
+                | Type::I16
+                | Type::I32
+                | Type::U8
+                | Type::U16
+                | Type::U32
+                | Type::U64
+                | Type::Usize
+                | Type::Float
+                | Type::F32
+                | Type::Bool
+                | Type::Null
+                | Type::PyObject
+                | Type::PyNamed(_, _)
+                | Type::IntegerLiteral(_)
+                | Type::FloatLiteral(_)
+        )
+    }
+
+    /// Unifies container element types, erroring if a scalar aliases `Any`.
+    pub(super) fn unify_elem(&mut self, a: &Type, b: &Type, span: Span) {
+        let ra = self.apply_subst(a.clone());
+        let rb = self.apply_subst(b.clone());
+        let boxing_side = match (&ra, &rb) {
+            (Type::Any, other) if Self::needs_any_boxing(other) => Some(other.clone()),
+            (other, Type::Any) if Self::needs_any_boxing(other) => Some(other.clone()),
+            _ => None,
+        };
+        if let Some(concrete) = boxing_side {
+            self.errors.push(SemanticError::rich(
+                crate::compile::errors::Diagnostic::error(
+                    "E0425",
+                    "element type cannot alias an `Any` container",
+                    span,
+                )
+                .label(format!(
+                    "this element is `{concrete}` here, but the container is also used as \
+                     `Any` elsewhere; an `Any` element is stored boxed, a `{concrete}` is not"
+                ))
+                .help("annotate the container `Any`-typed at the point it is created"),
+            ));
+            return;
+        }
+        self.unify(a, b, span);
+    }
+
     pub(super) fn occurs_check(&self, id: usize, ty: &Type) -> bool {
         match ty {
             Type::Var(other_id) | Type::IntegerLiteral(other_id) | Type::FloatLiteral(other_id) => {
@@ -391,6 +442,8 @@ impl TypeChecker {
                     let resolved = self.apply_subst_impl(t, finalize);
                     self.substitutions.insert(id, resolved.clone());
                     resolved
+                } else if finalize {
+                    Type::Any
                 } else {
                     Type::Var(id)
                 }
