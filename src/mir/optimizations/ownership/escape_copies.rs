@@ -1,7 +1,7 @@
 use super::summaries::runtime_escape;
 use super::{LocalClass, push_local};
 use crate::mir::*;
-use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// (bb, idx) -> copies to prepend: which operand, its source, its owning temp.
 type CopyPlan = HashMap<(usize, usize), Vec<(CopySlot, Local, Local)>>;
@@ -27,6 +27,7 @@ pub(super) fn insert_escape_copies(
     builder_owning: &[bool],
     heap: &[bool],
     param_escapes: &HashMap<String, Vec<bool>>,
+    _reassign: &HashSet<Local>,
 ) -> bool {
     let needs_copy = |l: Local| -> bool {
         l.0 != 0
