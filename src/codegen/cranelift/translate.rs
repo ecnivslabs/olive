@@ -289,11 +289,14 @@ impl<M: Module> CraneliftCodegen<M> {
                 builder.def_var(*var, val);
             }
             StatementKind::SetAttr(obj, attr, val_op) => {
-                let obj_ty = if let Operand::Copy(loc) | Operand::Move(loc) = obj {
+                let mut obj_ty = if let Operand::Copy(loc) | Operand::Move(loc) = obj {
                     &func_mir.locals[loc.0].ty
                 } else {
                     &OliveType::Any
                 };
+                while let OliveType::Ref(inner) | OliveType::MutRef(inner) = obj_ty {
+                    obj_ty = inner;
+                }
                 if let OliveType::Struct(struct_name, _) = obj_ty {
                     if let Some((offset, ty_name, bits)) =
                         c_struct_field_info(c_struct_offsets, struct_name, attr)
@@ -373,11 +376,14 @@ impl<M: Module> CraneliftCodegen<M> {
                 builder.ins().call(local_func, &[o, attr_val, v]);
             }
             StatementKind::SetIndex(obj, idx, val_op) => {
-                let ty = if let Operand::Copy(loc) | Operand::Move(loc) = obj {
+                let mut ty = if let Operand::Copy(loc) | Operand::Move(loc) = obj {
                     &func_mir.locals[loc.0].ty
                 } else {
                     &OliveType::Any
                 };
+                while let OliveType::Ref(inner) | OliveType::MutRef(inner) = ty {
+                    ty = inner;
+                }
 
                 let o = Self::translate_operand(builder, obj, vars, string_ids, module, func_ids);
                 let i = Self::translate_operand(builder, idx, vars, string_ids, module, func_ids);

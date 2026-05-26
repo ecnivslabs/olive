@@ -105,7 +105,10 @@ impl<M: Module> CraneliftCodegen<M> {
             }
             Rvalue::GetAttr(obj, attr) => {
                 if let Operand::Copy(loc) | Operand::Move(loc) = obj {
-                    let obj_ty = &func_mir.locals[loc.0].ty;
+                    let mut obj_ty = &func_mir.locals[loc.0].ty;
+                    while let OliveType::Ref(inner) | OliveType::MutRef(inner) = obj_ty {
+                        obj_ty = inner;
+                    }
                     if let OliveType::Struct(struct_name, _) = obj_ty {
                         if let Some((offset, ty_name, bits)) =
                             c_struct_field_info(c_struct_offsets, struct_name, attr)
@@ -151,11 +154,14 @@ impl<M: Module> CraneliftCodegen<M> {
                 builder.inst_results(inst)[0]
             }
             Rvalue::GetIndex(obj, idx) => {
-                let ty = match obj {
+                let mut ty = match obj {
                     Operand::Copy(loc) | Operand::Move(loc) => &func_mir.locals[loc.0].ty,
                     Operand::Constant(Constant::Str(_)) => &OliveType::Str,
                     _ => &OliveType::Any,
                 };
+                while let OliveType::Ref(inner) | OliveType::MutRef(inner) = ty {
+                    ty = inner;
+                }
 
                 let o = Self::translate_operand(builder, obj, vars, string_ids, module, func_ids);
                 let i = Self::translate_operand(builder, idx, vars, string_ids, module, func_ids);
@@ -262,7 +268,6 @@ impl<M: Module> CraneliftCodegen<M> {
                 } else if current_ty == types::I64 && target_cl_ty == types::F64 {
                     builder.ins().fcvt_from_sint(types::F64, val)
                 } else if current_ty == types::F64 && target_cl_ty == types::I64 {
-                    // Check if it's unsigned target for float -> int cast, simplified to signed
                     builder.ins().fcvt_to_sint(types::I64, val)
                 } else if current_ty == types::F64 && target_cl_ty == types::F32 {
                     builder.ins().fdemote(types::F32, val)

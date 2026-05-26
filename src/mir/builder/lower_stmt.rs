@@ -824,7 +824,8 @@ impl<'a> MirBuilder<'a> {
                     .map(|ann| self.resolve_type_expr(ann))
                     .unwrap_or(Type::Any);
                 let ty = if param.name == "self" && name.contains("::") {
-                    let struct_name = name.split("::").next().unwrap_or("");
+                    let last_idx = name.rfind("::").unwrap();
+                    let struct_name = &name[..last_idx];
                     if self.struct_fields.contains_key(struct_name) {
                         Type::Struct(struct_name.to_string(), Vec::new())
                     } else {

@@ -371,7 +371,7 @@ pub extern "C" fn olive_file_close(handle: i64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_file_read_n(handle: i64, n: i64) -> i64 {
-    if handle == 0 {
+    if handle == 0 || n <= 0 {
         return olive_str_internal("");
     }
     let file = unsafe { &mut *(handle as *mut std::fs::File) };

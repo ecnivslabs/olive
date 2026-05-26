@@ -210,11 +210,20 @@ impl TypeChecker {
                 };
                 let mut param_types = Vec::with_capacity(params.len());
                 for param in params {
-                    let p_ty = param
+                    let mut p_ty = param
                         .type_ann
                         .as_ref()
                         .map(|ann| self.resolve_type_expr(ann))
                         .unwrap_or_else(|| self.fresh_var());
+
+                    if param.name == "self" && param.type_ann.is_none() {
+                        if let Some(struct_name) = &self.current_struct {
+                            if let Some(s_ty) = self.lookup_type(struct_name) {
+                                p_ty = s_ty;
+                            }
+                        }
+                    }
+
                     param_types.push(p_ty);
                 }
 
@@ -403,7 +412,10 @@ impl TypeChecker {
                                 self.expr_types.insert(alias_expr.id, enter_ret_ty);
                             }
                         }
-                    } else if resolved_ctx != Type::Any && resolved_ctx != Type::Null {
+                    } else if resolved_ctx != Type::Any
+                        && resolved_ctx != Type::Null
+                        && resolved_ctx != Type::PyObject
+                    {
                         self.errors
                             .push(crate::semantic::error::SemanticError::Custom {
                                 msg: format!(
@@ -418,6 +430,15 @@ impl TypeChecker {
                             {
                                 self.define_type(alias_name, Type::Any, false);
                                 self.expr_types.insert(alias_expr.id, Type::Any);
+                            }
+                        }
+                    } else if resolved_ctx == Type::PyObject {
+                        if let Some(alias_expr) = &item.alias {
+                            if let crate::parser::ExprKind::Identifier(alias_name) =
+                                &alias_expr.kind
+                            {
+                                self.define_type(alias_name, Type::PyObject, false);
+                                self.expr_types.insert(alias_expr.id, Type::PyObject);
                             }
                         }
                     }
