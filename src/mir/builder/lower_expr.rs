@@ -1320,17 +1320,43 @@ impl<'a> MirBuilder<'a> {
                         );
                         return self.operand_for_local(tmp);
                     } else {
-                        let method_name = format!("{:?}::{}", obj_ty, attr);
-                        self.push_statement(
-                            StatementKind::Assign(
-                                tmp,
-                                Rvalue::Call {
-                                    func: Operand::Constant(Constant::Function(method_name)),
-                                    args: method_args,
-                                },
-                            ),
-                            expr.span,
-                        );
+                        let mut inner_ty = obj_ty.clone();
+                        loop {
+                            match inner_ty {
+                                Type::Ref(inner) | Type::MutRef(inner) => inner_ty = *inner,
+                                _ => break,
+                            }
+                        }
+                        if let Type::Struct(struct_name, type_args) = &inner_ty {
+                            let base_method_name = format!("{}::{}", struct_name, attr);
+                            let method_name = if !type_args.is_empty() {
+                                self.monomorphize(&base_method_name, type_args)
+                            } else {
+                                base_method_name
+                            };
+                            self.push_statement(
+                                StatementKind::Assign(
+                                    tmp,
+                                    Rvalue::Call {
+                                        func: Operand::Constant(Constant::Function(method_name)),
+                                        args: method_args,
+                                    },
+                                ),
+                                expr.span,
+                            );
+                        } else {
+                            let method_name = format!("{:?}::{}", obj_ty, attr);
+                            self.push_statement(
+                                StatementKind::Assign(
+                                    tmp,
+                                    Rvalue::Call {
+                                        func: Operand::Constant(Constant::Function(method_name)),
+                                        args: method_args,
+                                    },
+                                ),
+                                expr.span,
+                            );
+                        }
                         return self.operand_for_local(tmp);
                     }
                 }

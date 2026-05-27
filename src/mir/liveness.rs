@@ -127,10 +127,9 @@ impl Liveness {
                 Self::use_op(live, i);
             }
             Rvalue::GetTag(o) | Rvalue::GetTypeId(o) | Rvalue::Cast(o, _) => Self::use_op(live, o),
-            Rvalue::Ref(l) => {
+            Rvalue::Ref(l) | Rvalue::MutRef(l) => {
                 live.insert(*l);
             }
-            Rvalue::MutRef(_) => {}
             Rvalue::PtrLoad(op) => Self::use_op(live, op),
             Rvalue::VTableLoad { vtable, .. } => Self::use_op(live, vtable),
             Rvalue::VectorSplat(op, _) => Self::use_op(live, op),

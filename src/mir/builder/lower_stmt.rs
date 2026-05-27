@@ -16,6 +16,38 @@ impl<'a> MirBuilder<'a> {
             self.lower_expr(expr);
         }
         self.defer_stack = defers;
+
+        let py_defers = std::mem::take(&mut self.py_exit_stack);
+        for (exit_local, span) in py_defers.iter().rev() {
+            self.emit_py_exit_call(*exit_local, *span);
+        }
+        self.py_exit_stack = py_defers;
+    }
+
+    fn emit_py_exit_call(&mut self, exit_method: Local, span: Span) {
+        let none = Operand::Constant(Constant::None);
+        let args_list = self.new_local(Type::List(Box::new(Type::Any)), None, true);
+        self.push_statement(
+            StatementKind::Assign(
+                args_list,
+                Rvalue::Aggregate(
+                    AggregateKind::List,
+                    vec![none.clone(), none.clone(), none.clone()],
+                ),
+            ),
+            span,
+        );
+        let tmp = self.new_local(Type::PyObject, None, true);
+        self.push_statement(
+            StatementKind::Assign(
+                tmp,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("__olive_py_call".to_string())),
+                    args: vec![Operand::Copy(exit_method), Operand::Copy(args_list)],
+                },
+            ),
+            span,
+        );
     }
 
     pub(super) fn lower_stmt_with_tail(&mut self, stmt: &Stmt, is_tail: bool) {
@@ -162,6 +194,7 @@ impl<'a> MirBuilder<'a> {
                     crate::parser::AugOp::BitAnd => crate::parser::BinOp::BitAnd,
                     crate::parser::AugOp::BitXor => crate::parser::BinOp::BitXor,
                 };
+                let target_ty = self.get_type(target.id).clone();
                 let lhs_op = self.lower_expr(target);
                 let rhs_op = self.lower_expr(value);
                 let tmp = self.new_local(Type::Any, None, true);
@@ -170,13 +203,80 @@ impl<'a> MirBuilder<'a> {
                     stmt.span,
                 );
 
-                if let ExprKind::Identifier(name) = &target.kind
-                    && let Some(local) = self.lookup_var(name)
-                {
-                    self.push_statement(
-                        StatementKind::Assign(local, Rvalue::Use(Operand::Copy(tmp))),
-                        stmt.span,
-                    );
+                match &target.kind {
+                    ExprKind::Identifier(name) => {
+                        if let Some(local) = self.lookup_var(name) {
+                            self.push_statement(
+                                StatementKind::Assign(local, Rvalue::Use(Operand::Copy(tmp))),
+                                stmt.span,
+                            );
+                        }
+                    }
+                    ExprKind::Attr { obj, attr } => {
+                        let obj_ty = self.get_type(obj.id).clone();
+                        let obj_op = self.lower_expr_as_copy(obj);
+                        if obj_ty == Type::PyObject {
+                            let rval =
+                                self.emit_to_py_arg(Operand::Copy(tmp), &target_ty, stmt.span);
+                            let dummy = self.new_local(Type::Any, None, false);
+                            self.push_statement(
+                                StatementKind::Assign(
+                                    dummy,
+                                    Rvalue::Call {
+                                        func: Operand::Constant(Constant::Function(
+                                            "__olive_py_setattr".to_string(),
+                                        )),
+                                        args: vec![
+                                            obj_op,
+                                            Operand::Constant(Constant::Str(attr.clone())),
+                                            rval,
+                                        ],
+                                    },
+                                ),
+                                stmt.span,
+                            );
+                        } else {
+                            self.push_statement(
+                                StatementKind::SetAttr(obj_op, attr.clone(), Operand::Copy(tmp)),
+                                stmt.span,
+                            );
+                        }
+                    }
+                    ExprKind::Index { obj, index } => {
+                        let obj_ty = self.get_type(obj.id).clone();
+                        let obj_op = self.lower_expr_as_copy(obj);
+                        let idx_op = self.lower_expr(index);
+                        if obj_ty == Type::PyObject {
+                            let rval =
+                                self.emit_to_py_arg(Operand::Copy(tmp), &target_ty, stmt.span);
+                            let dummy = self.new_local(Type::Any, None, false);
+                            self.push_statement(
+                                StatementKind::Assign(
+                                    dummy,
+                                    Rvalue::Call {
+                                        func: Operand::Constant(Constant::Function(
+                                            "__olive_py_setitem".to_string(),
+                                        )),
+                                        args: vec![obj_op, idx_op, rval],
+                                    },
+                                ),
+                                stmt.span,
+                            );
+                        } else {
+                            self.push_statement(
+                                StatementKind::SetIndex(obj_op, idx_op, Operand::Copy(tmp)),
+                                stmt.span,
+                            );
+                        }
+                    }
+                    ExprKind::Deref(ptr_expr) => {
+                        let ptr_op = self.lower_expr(ptr_expr);
+                        self.push_statement(
+                            StatementKind::PtrStore(ptr_op, Operand::Copy(tmp)),
+                            stmt.span,
+                        );
+                    }
+                    _ => {}
                 }
             }
 
@@ -252,6 +352,7 @@ impl<'a> MirBuilder<'a> {
 
             StmtKind::With { items, body } => {
                 let mut exit_calls = Vec::new();
+                let py_exit_start = self.py_exit_stack.len();
 
                 for (i, item) in items.iter().enumerate() {
                     let ctx_op = self.lower_expr(&item.context_expr);
@@ -316,6 +417,101 @@ impl<'a> MirBuilder<'a> {
                         };
 
                         exit_calls.push((ctx_tmp, call_expr, ctx_name));
+                    } else if ctx_ty == Type::PyObject {
+                        let ctx_tmp = self.new_tmp_for_expr(&item.context_expr);
+                        self.push_statement(
+                            StatementKind::Assign(ctx_tmp, Rvalue::Use(ctx_op.clone())),
+                            item.context_expr.span,
+                        );
+
+                        let enter_method = self.new_local(Type::PyObject, None, true);
+                        self.push_statement(
+                            StatementKind::Assign(
+                                enter_method,
+                                Rvalue::Call {
+                                    func: Operand::Constant(Constant::Function(
+                                        "__olive_py_getattr".to_string(),
+                                    )),
+                                    args: vec![
+                                        Operand::Copy(ctx_tmp),
+                                        Operand::Constant(Constant::Str("__enter__".to_string())),
+                                    ],
+                                },
+                            ),
+                            item.context_expr.span,
+                        );
+
+                        let empty_list =
+                            self.new_local(Type::List(Box::new(Type::Any)), None, true);
+                        self.push_statement(
+                            StatementKind::Assign(
+                                empty_list,
+                                Rvalue::Aggregate(AggregateKind::List, vec![]),
+                            ),
+                            item.context_expr.span,
+                        );
+
+                        let enter_result = self.new_local(Type::PyObject, None, true);
+                        self.push_statement(
+                            StatementKind::Assign(
+                                enter_result,
+                                Rvalue::Call {
+                                    func: Operand::Constant(Constant::Function(
+                                        "__olive_py_call".to_string(),
+                                    )),
+                                    args: vec![
+                                        Operand::Copy(enter_method),
+                                        Operand::Copy(empty_list),
+                                    ],
+                                },
+                            ),
+                            item.context_expr.span,
+                        );
+
+                        if let Some(alias_expr) = &item.alias {
+                            if let crate::parser::ExprKind::Identifier(alias_name) =
+                                &alias_expr.kind
+                            {
+                                let alias_ty = self.get_type(alias_expr.id).clone();
+                                let local = self.declare_var(alias_name.clone(), alias_ty, false);
+                                self.push_statement(
+                                    StatementKind::Assign(
+                                        local,
+                                        Rvalue::Use(Operand::Copy(enter_result)),
+                                    ),
+                                    item.context_expr.span,
+                                );
+                            }
+                        } else {
+                            let tmp = self.new_local(Type::Any, None, false);
+                            self.push_statement(
+                                StatementKind::Assign(
+                                    tmp,
+                                    Rvalue::Use(Operand::Copy(enter_result)),
+                                ),
+                                item.context_expr.span,
+                            );
+                        }
+
+                        let exit_method = self.new_local(Type::PyObject, None, true);
+                        self.push_statement(
+                            StatementKind::Assign(
+                                exit_method,
+                                Rvalue::Call {
+                                    func: Operand::Constant(Constant::Function(
+                                        "__olive_py_getattr".to_string(),
+                                    )),
+                                    args: vec![
+                                        Operand::Copy(ctx_tmp),
+                                        Operand::Constant(Constant::Str("__exit__".to_string())),
+                                    ],
+                                },
+                            ),
+                            item.context_expr.span,
+                        );
+
+                        self.py_exit_stack
+                            .push((exit_method, item.context_expr.span));
                     }
                 }
 
@@ -334,6 +530,12 @@ impl<'a> MirBuilder<'a> {
                 for _ in 0..exit_calls.len() {
                     if let Some(expr) = self.defer_stack.pop() {
                         self.lower_expr(&expr);
+                    }
+                }
+
+                while self.py_exit_stack.len() > py_exit_start {
+                    if let Some((exit_method, span)) = self.py_exit_stack.pop() {
+                        self.emit_py_exit_call(exit_method, span);
                     }
                 }
             }
