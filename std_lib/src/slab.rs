@@ -5,7 +5,7 @@
 
 use std::alloc::Layout;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 const CHUNK_TARGET: usize = 1 << 16;
 
@@ -14,12 +14,16 @@ struct ChunkSpan {
     start: usize,
     end: usize,
     slot_bytes: usize,
+    live_count: *const AtomicUsize,
 }
+
+unsafe impl Send for ChunkSpan {}
+unsafe impl Sync for ChunkSpan {}
 
 static CHUNK_TABLE: AtomicPtr<Vec<ChunkSpan>> = AtomicPtr::new(std::ptr::null_mut());
 static CHUNK_WRITER: Mutex<()> = Mutex::new(());
 
-fn register_chunk(start: usize, end: usize, slot_bytes: usize) {
+fn register_chunk(start: usize, end: usize, slot_bytes: usize, live_count: *const AtomicUsize) {
     let _guard = CHUNK_WRITER.lock().unwrap();
     let cur = CHUNK_TABLE.load(Ordering::Acquire);
     let mut next = if cur.is_null() {
@@ -34,10 +38,63 @@ fn register_chunk(start: usize, end: usize, slot_bytes: usize) {
             start,
             end,
             slot_bytes,
+            live_count,
         },
     );
     // Old tables leak on purpose: lock-free readers may still hold them.
     CHUNK_TABLE.store(Box::into_raw(Box::new(next)), Ordering::Release);
+}
+
+fn find_chunk_for_addr(addr: usize) -> Option<ChunkSpan> {
+    let table = CHUNK_TABLE.load(Ordering::Acquire);
+    if table.is_null() {
+        return None;
+    }
+    let chunks = unsafe { &*table };
+    let i = chunks.partition_point(|c| c.start <= addr);
+    if i == 0 {
+        return None;
+    }
+    let c = chunks[i - 1];
+    if addr >= c.start && addr < c.end {
+        Some(c)
+    } else {
+        None
+    }
+}
+
+fn reclaim_pages(addr: usize, len: usize) {
+    #[cfg(unix)]
+    unsafe {
+        let page_size = libc::sysconf(libc::_SC_PAGESIZE) as usize;
+        if page_size > 0 {
+            let start = (addr + page_size - 1) & !(page_size - 1);
+            let end = (addr + len) & !(page_size - 1);
+            if end > start {
+                libc::madvise(start as *mut libc::c_void, end - start, libc::MADV_DONTNEED);
+            }
+        }
+    }
+    #[cfg(windows)]
+    unsafe {
+        let page_size = 4096;
+        let start = (addr + page_size - 1) & !(page_size - 1);
+        let end = (addr + len) & !(page_size - 1);
+        if end > start {
+            extern "system" {
+                fn VirtualAlloc(
+                    lpAddress: *mut std::ffi::c_void,
+                    dwSize: usize,
+                    flAllocationType: u32,
+                    flProtect: u32,
+                ) -> *mut std::ffi::c_void;
+                fn VirtualUnlock(lpAddress: *mut std::ffi::c_void, dwSize: usize) -> i32;
+            }
+            const MEM_RESET: u32 = 0x80000;
+            VirtualAlloc(start as *mut std::ffi::c_void, end - start, MEM_RESET, 0);
+            VirtualUnlock(start as *mut std::ffi::c_void, end - start);
+        }
+    }
 }
 
 /// Whether `val` is the live body of some slab slot. Sound for arbitrary
@@ -84,6 +141,7 @@ pub struct GenSlab {
     bump: *mut u8,
     bump_end: *mut u8,
     slot_bytes: usize,
+    active_live_count: *const AtomicUsize,
 }
 
 unsafe impl Send for GenSlab {}
@@ -96,6 +154,7 @@ impl GenSlab {
             bump: std::ptr::null_mut(),
             bump_end: std::ptr::null_mut(),
             slot_bytes: 16 + body,
+            active_live_count: std::ptr::null(),
         }
     }
 
@@ -111,6 +170,9 @@ impl GenSlab {
                 let gen_ptr = head.add(1) as *mut AtomicU64;
                 let g = (*gen_ptr).load(Ordering::Relaxed) + 1;
                 (*gen_ptr).store(g, Ordering::Release);
+                if let Some(chunk) = find_chunk_for_addr(body as usize) {
+                    (*chunk.live_count).fetch_add(1, Ordering::Relaxed);
+                }
                 return (body, false);
             }
         }
@@ -121,7 +183,11 @@ impl GenSlab {
             let gen_ptr = self.bump.add(8) as *mut AtomicU64;
             self.bump = self.bump.add(self.slot_bytes);
             (*gen_ptr).store(1, Ordering::Release);
-            ((gen_ptr as *mut u8).add(8), true)
+            let body = (gen_ptr as *mut u8).add(8);
+            if !self.active_live_count.is_null() {
+                (*self.active_live_count).fetch_add(1, Ordering::Relaxed);
+            }
+            (body, true)
         }
     }
 
@@ -132,9 +198,50 @@ impl GenSlab {
         // Zeroed so un-bumped slots read generation 0, even, dead.
         let chunk = unsafe { std::alloc::alloc_zeroed(layout) };
         assert!(!chunk.is_null(), "olive: slab chunk allocation failed");
-        register_chunk(chunk as usize, chunk as usize + bytes, self.slot_bytes);
+        let live_count = Box::into_raw(Box::new(AtomicUsize::new(0)));
+        register_chunk(
+            chunk as usize,
+            chunk as usize + bytes,
+            self.slot_bytes,
+            live_count,
+        );
         self.bump = chunk;
         self.bump_end = unsafe { chunk.add(bytes) };
+        self.active_live_count = live_count;
+    }
+
+    fn count_chunk_slots(&self, start: usize, end: usize) -> usize {
+        unsafe {
+            let mut count = 0;
+            let mut curr = self.free_head;
+            while !curr.is_null() {
+                let addr = curr as usize;
+                if addr >= start && addr < end {
+                    count += 1;
+                }
+                let body = (curr as *mut u8).add(16);
+                curr = *(body as *const *mut u64);
+            }
+            count
+        }
+    }
+
+    fn unlink_chunk_slots(&mut self, start: usize, end: usize) {
+        unsafe {
+            let mut prev_next_ptr: *mut *mut u64 = &mut self.free_head;
+            let mut curr = self.free_head;
+            while !curr.is_null() {
+                let addr = curr as usize;
+                let body = (curr as *mut u8).add(16);
+                let next = *(body as *const *mut u64);
+                if addr >= start && addr < end {
+                    *prev_next_ptr = next;
+                } else {
+                    prev_next_ptr = body as *mut *mut u64;
+                }
+                curr = next;
+            }
+        }
     }
 
     /// Frees a slot. Returns `false` if the slot was already free, so a
@@ -155,6 +262,21 @@ impl GenSlab {
                 let body_size = self.slot_bytes - 16;
                 if body_size > 8 {
                     std::ptr::write_bytes(body.add(8), 0x5a, body_size - 8);
+                }
+            }
+            if let Some(chunk) = find_chunk_for_addr(body as usize) {
+                let prev = (*chunk.live_count).fetch_sub(1, Ordering::Release);
+                if prev == 1 {
+                    let is_active =
+                        self.bump as usize >= chunk.start && (self.bump as usize) < chunk.end;
+                    if !is_active {
+                        let total_slots = (chunk.end - chunk.start) / chunk.slot_bytes;
+                        let count = self.count_chunk_slots(chunk.start, chunk.end);
+                        if count == total_slots {
+                            self.unlink_chunk_slots(chunk.start, chunk.end);
+                            reclaim_pages(chunk.start, chunk.end - chunk.start);
+                        }
+                    }
                 }
             }
             true
@@ -315,9 +437,10 @@ mod tests {
         assert!(fresh);
         unsafe { *p.add(CHUNK_TARGET * 2 - 1) = 7 };
         assert!(s.free(p));
+        // Reclaimed since single-slot chunk hits zero live count.
         let (p2, fresh2) = s.alloc();
-        assert_eq!(p, p2);
-        assert!(!fresh2);
+        assert_ne!(p, p2);
+        assert!(fresh2);
     }
 
     #[test]
@@ -369,5 +492,51 @@ mod tests {
             alloc_count.load(Ordering::Relaxed),
             free_count.load(Ordering::Relaxed)
         );
+    }
+
+    fn get_vm_rss() -> Option<usize> {
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+                for line in status.lines() {
+                    if line.starts_with("VmRSS:") {
+                        let parts: Vec<&str> = line.split_whitespace().collect();
+                        if parts.len() >= 2 {
+                            let kb = parts[1].parse::<usize>().ok()?;
+                            return Some(kb * 1024);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    #[ignore]
+    fn test_memory_reclamation_rss() {
+        let mut s = GenSlab::new(1024);
+        let mut ptrs = Vec::new();
+        for _ in 0..100 {
+            ptrs.push(s.alloc().0);
+        }
+        for p in ptrs.drain(..) {
+            s.free(p);
+        }
+        let baseline = get_vm_rss().unwrap_or(0);
+        for _ in 0..40000 {
+            ptrs.push(s.alloc().0);
+        }
+        let spiked = get_vm_rss().unwrap_or(0);
+        if spiked > 0 && baseline > 0 {
+            assert!(spiked > baseline);
+        }
+        for p in ptrs.drain(..) {
+            s.free(p);
+        }
+        let post_free = get_vm_rss().unwrap_or(0);
+        if post_free > 0 && spiked > 0 {
+            assert!(post_free < spiked);
+        }
     }
 }
