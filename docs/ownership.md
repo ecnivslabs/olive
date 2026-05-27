@@ -101,6 +101,9 @@ straight through, the compiler passes a pointer instead of copying. The
 optimizer promotes copies to moves wherever liveness allows, so most of the
 copies rule 3 describes never happen in compiled code.
 
+Pass `--explain-copies` to `pit run` or `pit build` to see each remaining
+copy site, its type, and why it was needed.
+
 ## Iteration
 
 For-loops and comprehensions borrow the iterable by default — the collection

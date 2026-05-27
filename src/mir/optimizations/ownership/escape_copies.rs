@@ -1,7 +1,28 @@
 use super::summaries::runtime_escape;
 use super::{LocalClass, push_local};
 use crate::mir::*;
+use crate::span::Span;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::cell::RefCell;
+
+/// Why a compiler-inserted copy was needed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[allow(dead_code)]
+pub enum CopyReason {
+    EscapeBorrow,
+    InteriorReturn,
+    TaskBoundary,
+    SpawnCapture,
+}
+
+/// One compiler-inserted copy site.
+#[derive(Clone, Debug)]
+pub struct CopySite {
+    pub span: Span,
+    pub copied_type: String,
+    pub reason: CopyReason,
+    pub function: String,
+}
 
 /// (bb, idx) -> copies to prepend: which operand, its source, its owning temp.
 type CopyPlan = HashMap<(usize, usize), Vec<(CopySlot, Local, Local)>>;
@@ -21,6 +42,8 @@ enum CopySlot {
 /// owns an independent copy. No value is ever shared between two owners: an
 /// owning path transfers by move, a non-owning path deep-copies. Eliminates
 /// alias marks (no SHARED_BIT, no RC) and the quarantine leak with them.
+/// When `explain_copies` is true, records each copy site into `sites`.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn insert_escape_copies(
     func: &mut MirFunction,
     classes: &[LocalClass],
@@ -28,6 +51,8 @@ pub(super) fn insert_escape_copies(
     heap: &[bool],
     param_escapes: &HashMap<String, Vec<bool>>,
     _reassign: &HashSet<Local>,
+    explain_copies: bool,
+    sites: &RefCell<Vec<CopySite>>,
 ) -> bool {
     let needs_copy = |l: Local| -> bool {
         l.0 != 0
@@ -92,6 +117,14 @@ pub(super) fn insert_escape_copies(
     let mut plan: CopyPlan = HashMap::default();
     for (bb_idx, idx, slot, l) in hits {
         let tmp = push_local(func, func.locals[l.0].ty.clone());
+        if explain_copies {
+            sites.borrow_mut().push(CopySite {
+                span: func.basic_blocks[bb_idx].statements[idx].span,
+                copied_type: format!("{}", func.locals[l.0].ty),
+                reason: CopyReason::EscapeBorrow,
+                function: func.name.clone(),
+            });
+        }
         plan.entry((bb_idx, idx)).or_default().push((slot, l, tmp));
     }
 

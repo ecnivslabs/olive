@@ -28,8 +28,9 @@ fn run_jit_to_exit_code(
     emit_mir: bool,
     release: bool,
     write_profile: bool,
+    explain_copies: bool,
 ) -> i32 {
-    let out = match run_pipeline_opt(filename, release, None) {
+    let out = match run_pipeline_opt(filename, release, None, explain_copies) {
         Ok(o) => o,
         Err(_) => return 1,
     };
@@ -113,8 +114,17 @@ pub fn compile_and_run(
     emit_ast: bool,
     emit_mir: bool,
     release: bool,
+    explain_copies: bool,
 ) {
-    let code = run_jit_to_exit_code(filename, show_time, emit_ast, emit_mir, release, true);
+    let code = run_jit_to_exit_code(
+        filename,
+        show_time,
+        emit_ast,
+        emit_mir,
+        release,
+        true,
+        explain_copies,
+    );
     std::process::exit(code);
 }
 
@@ -122,7 +132,7 @@ pub fn compile_and_run(
 /// without terminating the process, so the caller can continue afterward.
 /// No PGO write -- a build script isn't the program `--pgo` is meant to capture.
 pub fn run_script(filename: &str, show_time: bool, release: bool) -> i32 {
-    run_jit_to_exit_code(filename, show_time, false, false, release, false)
+    run_jit_to_exit_code(filename, show_time, false, false, release, false, false)
 }
 
 /// Calls `olive_py_finalize` via `dlsym(RTLD_DEFAULT)`, working whether
@@ -150,6 +160,7 @@ pub fn compile_and_emit(
     show_time: bool,
     release: bool,
     pgo: Option<&str>,
+    explain_copies: bool,
 ) {
     // Loaded early: feeds both the inliner's hot-function threshold below
     // and `apply_profile` later, one file read for both.
@@ -162,7 +173,7 @@ pub fn compile_and_emit(
     });
     let hot_functions = profile.as_ref().map(pgo::hot_functions);
 
-    let out = match run_pipeline_opt(filename, release, hot_functions) {
+    let out = match run_pipeline_opt(filename, release, hot_functions, explain_copies) {
         Ok(o) => o,
         Err(_) => std::process::exit(1),
     };
@@ -218,7 +229,7 @@ pub fn compile_and_emit(
     }
 }
 
-pub fn compile_hybrid(filename: &str, show_time: bool, release: bool) {
+pub fn compile_hybrid(filename: &str, show_time: bool, release: bool, explain_copies: bool) {
     let (target, py_files) = cache::prepare(filename, release);
 
     if cache::is_fresh(&target) {
@@ -240,6 +251,7 @@ pub fn compile_hybrid(filename: &str, show_time: bool, release: bool) {
         show_time,
         release,
         pgo_arg.as_deref(),
+        explain_copies,
     );
     cache::record(&target);
 
@@ -270,21 +282,28 @@ fn invalidate_pyc(py_path: &str) {
     }
 }
 
-pub fn compile_and_run_aot(filename: &str, show_time: bool, release: bool) {
+pub fn compile_and_run_aot(filename: &str, show_time: bool, release: bool, explain_copies: bool) {
     let binary_path = if cfg!(target_os = "windows") {
         "grove/cache/aot_run.exe"
     } else {
         "grove/cache/aot_run"
     };
     ensure_dir("grove/cache");
-    compile_and_emit(filename, binary_path, show_time, release, None);
+    compile_and_emit(
+        filename,
+        binary_path,
+        show_time,
+        release,
+        None,
+        explain_copies,
+    );
     let code = exec_binary(binary_path);
     fs::remove_file(binary_path).ok();
     process::exit(code);
 }
 
-pub fn compile_and_test(filename: &str, _show_time: bool, release: bool) {
-    let out = match run_pipeline_opt(filename, release, None) {
+pub fn compile_and_test(filename: &str, _show_time: bool, release: bool, _explain_copies: bool) {
+    let out = match run_pipeline_opt(filename, release, None, _explain_copies) {
         Ok(o) => o,
         Err(_) => std::process::exit(1),
     };

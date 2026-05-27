@@ -859,7 +859,7 @@ mod tests {
     fn constant_folding_reduces_ops() {
         let (mut fns, _) = build("fn f() -> i64:\n    return 2 + 3\n");
         let opt = crate::mir::Optimizer::new();
-        opt.run(&mut fns);
+        let (_diags, _copy_sites) = opt.run(&mut fns);
         let f = fns.iter().find(|f| f.name == "f").unwrap();
         let has_const5 = f.basic_blocks.iter().any(|bb| {
             bb.statements.iter().any(|s| {

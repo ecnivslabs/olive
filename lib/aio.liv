@@ -26,13 +26,13 @@ fn free_future(future):
 fn chan_new() -> int:
     return __olive_chan_new()
 
-fn chan_send(chan: int, val) -> bool:
+fn chan_send[T](chan: int, val: T) -> bool:
     return __olive_chan_send(chan, val) == 1
 
-fn chan_recv(chan: int):
+fn chan_recv[T](chan: int) -> T:
     return __olive_chan_recv(chan)
 
-fn chan_try_recv(chan: int):
+fn chan_try_recv[T](chan: int) -> T:
     return __olive_chan_try_recv(chan)
 
 fn chan_len(chan: int) -> int:
@@ -46,13 +46,13 @@ fn chan_free(chan: int):
 
 // mutex
 
-fn mutex_new(val) -> int:
+fn mutex_new[T](val: T) -> int:
     return __olive_mutex_new(val)
 
-fn mutex_lock(m: int):
+fn mutex_lock[T](m: int) -> T:
     return __olive_mutex_lock(m)
 
-fn mutex_unlock(m: int, new_val):
+fn mutex_unlock[T](m: int, new_val: T):
     __olive_mutex_unlock(m, new_val)
 
 fn mutex_free(m: int):

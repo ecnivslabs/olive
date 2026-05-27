@@ -8,13 +8,14 @@ pub fn execute_build(
     time: bool,
     release: bool,
     pgo: Option<&str>,
+    explain_copies: bool,
 ) {
     let original_dir = std::env::current_dir().unwrap();
     if let Some(p) = path {
         let path_obj = Path::new(p);
         if path_obj.is_file() || p.ends_with(".liv") {
             match output {
-                Some(o) => compile_and_emit(p, o, time, release, pgo),
+                Some(o) => compile_and_emit(p, o, time, release, pgo, explain_copies),
                 None => {
                     let (target, _) = cache::prepare(p, release);
                     if cache::is_fresh(&target) {
@@ -32,6 +33,7 @@ pub fn execute_build(
                             time,
                             release,
                             effective_pgo.as_deref(),
+                            explain_copies,
                         );
                         cache::record(&target);
                     }
@@ -79,6 +81,7 @@ pub fn execute_build(
                         time,
                         release,
                         effective_pgo.as_deref(),
+                        explain_copies,
                     );
                     cache::record(&target);
                 }
@@ -107,6 +110,7 @@ pub fn execute_build(
                 time,
                 release,
                 effective_pgo.as_deref(),
+                explain_copies,
             );
             cache::record(&target);
         }
@@ -117,7 +121,7 @@ pub fn execute_build(
     let _ = std::env::set_current_dir(original_dir);
 }
 
-pub fn execute_test(time: bool, release: bool) {
+pub fn execute_test(time: bool, release: bool, _explain_copies: bool) {
     let original_dir = std::env::current_dir().unwrap();
     let config = load_config();
     let all_deps = super::utils::aggregate_deps(&config);
@@ -138,7 +142,7 @@ pub fn execute_test(time: bool, release: bool) {
                 });
                 run_build_script(time, release);
                 println!("\x1b[1;34mTesting\x1b[0m {}", pod.name);
-                compile_and_test(&pod.entry, time, release);
+                compile_and_test(&pod.entry, time, release, _explain_copies);
             }
         }
     } else if let Some(pod) = config.pod {
@@ -148,7 +152,7 @@ pub fn execute_test(time: bool, release: bool) {
             author: pod.author.clone().unwrap_or_default(),
         });
         run_build_script(time, release);
-        compile_and_test(&pod.entry, time, release);
+        compile_and_test(&pod.entry, time, release, _explain_copies);
     } else {
         eprintln!("error: no pod or workspace defined in pit.toml");
         std::process::exit(1);

@@ -1,6 +1,8 @@
 use crate::compile::errors::Diagnostic;
+use crate::mir::optimizations::ownership::CopySite;
 use crate::mir::*;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::cell::RefCell;
 
 use crate::mir::optimizations::{
     Transform, algebraic::AlgebraicSimplification, bounds_check_elim::BoundsCheckElim,
@@ -17,6 +19,7 @@ pub struct Optimizer {
     late_passes: Vec<Box<dyn Transform>>,
     inliner: Inliner,
     release: bool,
+    explain_copies: bool,
 }
 
 impl Default for Optimizer {
@@ -74,10 +77,15 @@ impl Optimizer {
             ],
             inliner: Inliner::with_hot_functions(hot_functions),
             release,
+            explain_copies: false,
         }
     }
 
-    pub fn run(&self, functions: &mut [MirFunction]) -> Vec<Diagnostic> {
+    pub fn set_explain_copies(&mut self, val: bool) {
+        self.explain_copies = val;
+    }
+
+    pub fn run(&self, functions: &mut [MirFunction]) -> (Vec<Diagnostic>, Vec<CopySite>) {
         // Ownership inference is semantic (not optional): drops must agree
         // with the inferred owner in every pipeline.
         let ownership = OwnershipInference {
@@ -85,10 +93,13 @@ impl Optimizer {
                 functions,
             ),
             param_escapes: crate::mir::optimizations::ownership::compute_param_escapes(functions),
+            explain_copies: self.explain_copies,
+            copy_sites: RefCell::new(Vec::new()),
         };
         for func in functions.iter_mut() {
             ownership.run(func);
         }
+        let copy_sites = ownership.copy_sites.replace(Vec::new());
 
         if !self.release {
             for func in functions.iter_mut() {
@@ -96,7 +107,8 @@ impl Optimizer {
                 DeadCodeElimination.run(func);
                 MoveElision.run(func);
             }
-            return self.insert_gen_checks(functions, ownership);
+            let diags = self.insert_gen_checks(functions, ownership);
+            return (diags, copy_sites);
         }
 
         let fn_map: HashMap<String, MirFunction> = functions
@@ -153,7 +165,8 @@ impl Optimizer {
             BoundsCheckElim.run(func);
         }
 
-        self.insert_gen_checks(functions, ownership)
+        let diags = self.insert_gen_checks(functions, ownership);
+        (diags, copy_sites)
     }
 
     /// Runs after every other pass in both pipelines: checks must sit exactly

@@ -25,7 +25,7 @@ mod optimization_tests {
         );
         builder.build_program(&prog);
         let opt = Optimizer::new();
-        opt.run(&mut builder.functions);
+        let (_diags, _copy_sites) = opt.run(&mut builder.functions);
         builder.functions
     }
 

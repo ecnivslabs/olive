@@ -66,7 +66,7 @@ pub(super) fn first_party_files(entry: &str, sources: &super::errors::Sources) -
 /// harness so every optimizer pass stays exercised.
 #[cfg(test)]
 pub fn run_pipeline(filename: &str) -> Result<PipelineOutput, ()> {
-    run_pipeline_opt(filename, true, None)
+    run_pipeline_opt(filename, true, None, false)
 }
 
 /// Compiles `filename`, running the full optimizer when `release` is set and the
@@ -76,6 +76,7 @@ pub fn run_pipeline_opt(
     filename: &str,
     release: bool,
     hot_functions: Option<std::collections::HashSet<String>>,
+    explain_copies: bool,
 ) -> Result<PipelineOutput, ()> {
     let t0 = std::time::Instant::now();
     let mut loaded = HashSet::new();
@@ -200,12 +201,35 @@ pub fn run_pipeline_opt(
     let borrow_duration = borrow_start.elapsed();
 
     let opt_start = std::time::Instant::now();
-    let optimizer = match (release, hot_functions) {
+    let mut optimizer = match (release, hot_functions) {
         (true, Some(hot)) => mir::Optimizer::new_with_hot_functions(hot.into_iter().collect()),
         (true, None) => mir::Optimizer::new(),
         (false, _) => mir::Optimizer::minimal(),
     };
-    let gencheck_errors = optimizer.run(&mut mir_builder.functions);
+    optimizer.set_explain_copies(explain_copies);
+    let (gencheck_errors, copy_sites) = optimizer.run(&mut mir_builder.functions);
+    if explain_copies && !copy_sites.is_empty() {
+        println!("\nexplain-copies:");
+        for site in &copy_sites {
+            let path = sources
+                .get(&site.span.file_id)
+                .map(|(p, _)| p.as_str())
+                .unwrap_or("?");
+            let reason = match site.reason {
+                crate::mir::optimizations::ownership::CopyReason::EscapeBorrow => "escaped borrow",
+                crate::mir::optimizations::ownership::CopyReason::InteriorReturn => {
+                    "interior return"
+                }
+                crate::mir::optimizations::ownership::CopyReason::TaskBoundary => "task boundary",
+                crate::mir::optimizations::ownership::CopyReason::SpawnCapture => "spawn capture",
+            };
+            println!(
+                "  {}:{}:{} in `{}` - copy of {} ({})",
+                path, site.span.line, site.span.col, site.function, site.copied_type, reason,
+            );
+        }
+        println!();
+    }
     let opt_duration = opt_start.elapsed();
     if !gencheck_errors.is_empty() {
         for d in &gencheck_errors {
