@@ -1106,6 +1106,26 @@ impl TypeChecker {
                 self.async_depth -= 1;
                 Type::Future(Box::new(last_ty))
             }
+
+            ExprKind::Lambda {
+                params: l_params,
+                body: l_body,
+            } => {
+                self.enter_scope();
+                let mut param_types = Vec::with_capacity(l_params.len());
+                for p in l_params {
+                    let p_ty = p
+                        .type_ann
+                        .as_ref()
+                        .map(|ann| self.resolve_type_expr(ann))
+                        .unwrap_or_else(|| self.fresh_var());
+                    param_types.push(p_ty.clone());
+                    self.define_type(&p.name, p_ty, p.is_mut);
+                }
+                let body_ty = self.check_expr(l_body);
+                self.leave_scope();
+                Type::Fn(param_types, Box::new(body_ty), vec![])
+            }
         }
     }
 

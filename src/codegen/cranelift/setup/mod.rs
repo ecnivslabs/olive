@@ -55,6 +55,9 @@ impl<M: Module> CraneliftCodegen<M> {
         let sig_void_i64 = mk_sig(&[], &[types::I64]);
         let sig_void_void = mk_sig(&[], &[]);
         let import_table: &[(&str, &cranelift::prelude::Signature)] = &[
+            ("__olive_write_any", &sig_i64_i64),
+            ("__olive_write_char", &sig_i64_i64),
+            ("__olive_write_nl", &sig_void_i64),
             ("__olive_alloc", &sig_i64_i64),
             ("__olive_box_int", &sig_i64_i64),
             ("__olive_box_float", &sig_f64_i64),

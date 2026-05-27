@@ -87,6 +87,8 @@ pub struct MirBuilder<'a> {
     /// Guards against re-entrant call-site tagging while emitting the
     /// `__olive_py_set_loc` statements themselves.
     pub(super) in_py_loc_emit: bool,
+    /// Counter for generating unique lambda function names.
+    pub(super) lambda_counter: usize,
 }
 
 impl<'a> MirBuilder<'a> {
@@ -135,6 +137,7 @@ impl<'a> MirBuilder<'a> {
             global_vars: Vec::new(),
             file_names: HashMap::default(),
             in_py_loc_emit: false,
+            lambda_counter: 0,
         }
     }
 

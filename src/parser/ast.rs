@@ -342,6 +342,10 @@ pub enum ExprKind {
         then: Box<Expr>,
         otherwise: Box<Expr>,
     },
+    Lambda {
+        params: Vec<Param>,
+        body: Box<Expr>,
+    },
 }
 
 #[derive(Debug, Clone)]

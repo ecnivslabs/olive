@@ -500,6 +500,14 @@ fn collect_refs_expr(expr: &Expr, out: &mut FxHashSet<String>) {
                 collect_refs(&case.body, out);
             }
         }
+        ExprKind::Lambda { params, body } => {
+            for p in params {
+                if let Some(d) = &p.default {
+                    collect_refs_expr(d, out);
+                }
+            }
+            collect_refs_expr(body, out);
+        }
     }
 }
 

@@ -478,6 +478,24 @@ pub extern "C" fn olive_print_any(val: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn olive_write_any(val: i64) -> i64 {
+    print!("{}", format_list_elem(val));
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_write_char(c: i64) -> i64 {
+    print!("{}", char::from_u32(c as u32).unwrap_or('?'));
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_write_nl() -> i64 {
+    println!();
+    0
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn olive_print_obj(ptr: i64) -> i64 {
     if ptr == 0 {
         println!("{{}}");

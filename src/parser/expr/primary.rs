@@ -470,11 +470,41 @@ impl Parser {
                 }
             }
 
+            TokenKind::Lambda => {
+                self.advance();
+                self.parse_lambda(tok)
+            }
+
             _ => Err(self.err_at(
                 &tok,
                 format!("unexpected token {:?} {:?}", tok.kind, tok.value),
             )),
         }
+    }
+
+    pub(crate) fn parse_lambda(&mut self, start_tok: Token) -> ParseResult<Expr> {
+        let start = Span {
+            file_id: start_tok.file_id,
+            line: start_tok.line,
+            col: start_tok.col,
+            start: start_tok.span.0,
+            end: start_tok.span.1,
+        };
+        let params = if self.peek().kind == TokenKind::Colon {
+            Vec::new()
+        } else {
+            self.parse_params()?
+        };
+        self.expect(TokenKind::Colon)?;
+        let body = self.parse_expr()?;
+        let end = body.span.end;
+        Ok(Expr::new(
+            ExprKind::Lambda {
+                params,
+                body: Box::new(body),
+            },
+            Span { end, ..start },
+        ))
     }
 }
 
