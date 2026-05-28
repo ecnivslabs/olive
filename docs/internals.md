@@ -56,7 +56,7 @@ Olive has no garbage collector. The builder lowers every use of a heap value as 
 
 ## 7. Generation Checks (`mir/optimizations/gencheck/`)
 
-The runtime backstop for what inference cannot prove. Heap objects live in generational slab allocators (`std_lib`): every slot carries a generation counter that increments on allocation and free. This pass runs after all other optimizations and inserts checks on suspect borrows: the generation is captured at borrow time and re-validated before uses a free could precede. A failed check aborts with `E0707` and a source caret. Checks are elided when a forward analysis proves no free can intervene, so well-typed hot paths pay nothing.
+The runtime backstop for what inference cannot prove. Heap objects live in generational slab allocators (`std_lib`): every slot carries a generation counter that increments on allocation and free. This pass runs after all other optimizations and inserts checks on suspect borrows: the generation is captured at borrow time and re-validated before uses a free could precede. A failed check aborts with `E0707` and a source caret. Checks are elided when a forward analysis proves no free can intervene, so well-typed hot paths pay nothing. When a must-free lattice proves staleness is certain on every path through the function, the site is promoted to a compile-time error (`E0708`) instead of a runtime check.
 
 ## 8. Codegen (`codegen/`)
 
