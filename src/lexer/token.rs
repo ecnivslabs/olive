@@ -92,6 +92,7 @@ pub enum TokenKind {
     Underscore,
     DoubleColon,
     Question,
+    QuestionQuestion,
     Hash,
 
     Newline,

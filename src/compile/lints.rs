@@ -30,7 +30,8 @@ pub fn check_const_index_bounds(funcs: &[MirFunction], sources: &Sources) -> boo
                 let Operand::Constant(Constant::Int(i)) = idx else {
                     continue;
                 };
-                if *i >= 0 && (*i as usize) < len {
+                let effective = if *i < 0 { len as i64 + *i } else { *i };
+                if effective >= 0 && (effective as usize) < len {
                     continue;
                 }
                 had_error = true;
@@ -222,8 +223,14 @@ mod tests {
     }
 
     #[test]
-    fn negative_index_is_an_error() {
+    fn negative_index_wraps() {
         let f = func_with(vec![list_assign(0, 3), index_assign(1, 0, -1)]);
+        assert!(!check_const_index_bounds(&[f], &Sources::default()));
+    }
+
+    #[test]
+    fn negative_index_too_small_is_error() {
+        let f = func_with(vec![list_assign(0, 3), index_assign(1, 0, -4)]);
         assert!(check_const_index_bounds(&[f], &Sources::default()));
     }
 

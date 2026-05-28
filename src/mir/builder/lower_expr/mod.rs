@@ -309,7 +309,7 @@ impl<'a> MirBuilder<'a> {
     pub(super) fn lower_expr(&mut self, expr: &Expr) -> Operand {
         match &expr.kind {
             ExprKind::Integer(i) => Operand::Constant(Constant::Int(*i)),
-            ExprKind::Null => Operand::Constant(Constant::Int(0)),
+            ExprKind::Null => Operand::Constant(Constant::None),
             ExprKind::Range {
                 start,
                 end,

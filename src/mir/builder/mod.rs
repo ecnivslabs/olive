@@ -191,13 +191,13 @@ impl<'a> MirBuilder<'a> {
                             .insert(mangled, Operand::Constant(Constant::Int(c.value)));
                     }
                 }
-                StmtKind::Struct { name, fields, .. } => {
-                    if fields.iter().any(|f| f.default.is_some()) {
-                        self.struct_field_defaults.insert(
-                            name.clone(),
-                            fields.iter().map(|f| f.default.clone()).collect(),
-                        );
-                    }
+                StmtKind::Struct { name, fields, .. }
+                    if fields.iter().any(|f| f.default.is_some()) =>
+                {
+                    self.struct_field_defaults.insert(
+                        name.clone(),
+                        fields.iter().map(|f| f.default.clone()).collect(),
+                    );
                 }
                 _ => {}
             }

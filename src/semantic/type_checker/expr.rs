@@ -42,10 +42,16 @@ impl TypeChecker {
                     .get(&obj.id)
                     .cloned()
                     .map(|t| self.apply_subst(t));
-                if let Some(Type::Struct(sname, _, _)) = obj_ty {
-                    let method = format!("{}::{}", sname, attr);
-                    if matches!(self.lookup_type(&method), Some(Type::Fn(..))) {
-                        return (Some(method), true);
+                if let Some(ref ty) = obj_ty {
+                    let mut current = ty.clone();
+                    while let Type::Ref(inner) | Type::MutRef(inner) = &current {
+                        current = *inner.clone();
+                    }
+                    if let Type::Struct(sname, _, _) = &current {
+                        let method = format!("{}::{}", sname, attr);
+                        if matches!(self.lookup_type(&method), Some(Type::Fn(..))) {
+                            return (Some(method), true);
+                        }
                     }
                 }
                 if let ExprKind::Identifier(alias) = &obj.kind {
@@ -158,8 +164,36 @@ impl TypeChecker {
             },
 
             ExprKind::Cast(operand, type_expr) => {
-                self.check_expr(operand);
-                self.resolve_type_expr(type_expr)
+                let op_ty = self.check_expr(operand);
+                let target_ty = self.resolve_type_expr(type_expr);
+                let op_resolved = self.apply_subst(op_ty);
+                let target_resolved = self.apply_subst(target_ty.clone());
+                use crate::semantic::types::cast_kind;
+                if cast_kind(&op_resolved, &target_resolved)
+                    == crate::semantic::types::CastKind::Invalid
+                {
+                    if op_resolved == Type::Str {
+                        self.errors.push(super::super::error::SemanticError::rich(
+                            crate::compile::errors::Diagnostic::error(
+                                "E0404",
+                                format!("cannot cast `str` to `{target_resolved}`"),
+                                expr.span,
+                            )
+                            .label("invalid cast")
+                            .help("use `.to_int()` or `.to_float()` for fallible parsing"),
+                        ));
+                    } else {
+                        self.errors.push(super::super::error::SemanticError::rich(
+                            crate::compile::errors::Diagnostic::error(
+                                "E0404",
+                                format!("cannot cast `{op_resolved}` to `{target_resolved}`"),
+                                expr.span,
+                            )
+                            .label("invalid cast"),
+                        ));
+                    }
+                }
+                target_ty
             }
 
             ExprKind::BinOp { left, op, right } => {
@@ -171,7 +205,16 @@ impl TypeChecker {
             ExprKind::UnaryOp { op, operand } => {
                 let o_ty = self.check_expr(operand);
                 match op {
-                    UnaryOp::Not => Type::Bool,
+                    UnaryOp::Not => {
+                        let resolved = self.apply_subst(o_ty.clone());
+                        if resolved != Type::Bool
+                            && resolved != Type::Any
+                            && !resolved.is_py_value()
+                        {
+                            self.unify(&o_ty, &Type::Bool, operand.span);
+                        }
+                        Type::Bool
+                    }
                     UnaryOp::Neg | UnaryOp::Pos | UnaryOp::BitNot => o_ty,
                 }
             }
@@ -864,7 +907,8 @@ impl TypeChecker {
                 then,
                 otherwise,
             } => {
-                self.check_expr(cond);
+                let cond_ty = self.check_expr(cond);
+                self.expect_truthy(&cond_ty, cond, cond.span);
                 let then_ty = self.check_expr(then);
                 let else_ty = self.check_expr(otherwise);
                 let result = self.fresh_var();
@@ -911,7 +955,8 @@ impl TypeChecker {
                     };
                     self.check_pattern(&case.pattern, &pat_ty, case.span);
                     if let Some(guard) = &case.guard {
-                        self.check_expr(guard);
+                        let guard_ty = self.check_expr(guard);
+                        self.expect_truthy(&guard_ty, guard, guard.span);
                     }
 
                     let mut case_ty = Type::Null;
@@ -1361,6 +1406,11 @@ impl TypeChecker {
             | BinOp::BitOr
             | BinOp::BitAnd
             | BinOp::BitXor => {
+                // Set algebra: | & - ^ on Set types return a Set with unified element type.
+                if matches!(&l_resolved, Type::Set(_)) && matches!(&r_resolved, Type::Set(_)) {
+                    self.unify(l, r, span);
+                    return self.apply_subst(l.clone());
+                }
                 if is_py {
                     let dunder = Self::binop_dunder(op);
                     if !dunder.is_empty() {
@@ -1394,17 +1444,47 @@ impl TypeChecker {
                 if l_resolved == Type::Any || r_resolved == Type::Any {
                     return Type::Any;
                 }
+                // Union operands must be narrowed before arithmetic/bitwise
+                // operations.
+                fn is_non_null_union(t: &Type) -> bool {
+                    matches!(t, Type::Union(members) if !members.iter().any(|m| *m == Type::Null))
+                }
+                if is_non_null_union(&l_resolved) || is_non_null_union(&r_resolved) {
+                    self.errors.push(super::super::error::SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0404",
+                            "cannot use union type in this operation, narrow the union first",
+                            span,
+                        )
+                        .label("use a `match` or `x != None` check before operating on a union"),
+                    ));
+                    return self.apply_subst(l.clone());
+                }
                 self.unify(l, r, span);
                 self.apply_subst(l.clone())
             }
-            BinOp::Eq
-            | BinOp::NotEq
-            | BinOp::Lt
-            | BinOp::LtEq
-            | BinOp::Gt
-            | BinOp::GtEq
-            | BinOp::In
-            | BinOp::NotIn => Type::Bool,
+            BinOp::Eq | BinOp::NotEq => {
+                // Comparing a struct with None is a null check (allowed);
+                // comparing two structs or a struct with a non-null value is structural (rejected).
+                let l_is_struct = matches!(&l_resolved, Type::Struct(..));
+                let r_is_struct = matches!(&r_resolved, Type::Struct(..));
+                let l_is_null = matches!(&l_resolved, Type::Null);
+                let r_is_null = matches!(&r_resolved, Type::Null);
+                if (l_is_struct && !r_is_null) || (r_is_struct && !l_is_null) {
+                    self.errors.push(super::super::error::SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0404",
+                            "cannot compare structs with `==` yet",
+                            span,
+                        )
+                        .label("structural equality is planned for a future phase"),
+                    ));
+                }
+                Type::Bool
+            }
+            BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq | BinOp::In | BinOp::NotIn => {
+                Type::Bool
+            }
             BinOp::And | BinOp::Or => {
                 if is_py {
                     return Type::PyObject;
@@ -1412,8 +1492,44 @@ impl TypeChecker {
                 if l_resolved == Type::Any || r_resolved == Type::Any {
                     return Type::Any;
                 }
-                self.unify(l, r, span);
-                self.apply_subst(l.clone())
+                self.unify(l, &Type::Bool, span);
+                self.unify(r, &Type::Bool, span);
+                Type::Bool
+            }
+            BinOp::Coalesce => {
+                // `a ?? b`: result is union of left's non-null type and right's type.
+                // If both are same type after removing Null from left, return that type.
+                let l_resolved = self.apply_subst_final(l.clone());
+                let r_resolved = self.apply_subst_final(r.clone());
+                if is_py {
+                    return Type::PyObject;
+                }
+                if l_resolved == Type::Any || r_resolved == Type::Any {
+                    return Type::Any;
+                }
+                let non_null_l = match &l_resolved {
+                    Type::Union(members) => {
+                        let filtered: Vec<Type> = members
+                            .iter()
+                            .filter(|m| **m != Type::Null)
+                            .cloned()
+                            .collect();
+                        if filtered.len() == 1 {
+                            filtered.into_iter().next().unwrap()
+                        } else if filtered.is_empty() {
+                            r_resolved.clone()
+                        } else {
+                            Type::Union(filtered)
+                        }
+                    }
+                    Type::Null => return r_resolved.clone(),
+                    other => other.clone(),
+                };
+                if non_null_l == r_resolved {
+                    non_null_l
+                } else {
+                    Type::Union(vec![non_null_l, r_resolved])
+                }
             }
         }
     }
@@ -1434,9 +1550,11 @@ impl TypeChecker {
         self.apply_subst(target.clone())
     }
 
-    pub(super) fn expect_truthy(&mut self, ty: &Type, span: Span) {
+    pub(super) fn expect_truthy(&mut self, ty: &Type, expr: &Expr, span: Span) {
         let resolved = self.apply_subst(ty.clone());
         match resolved {
+            Type::Bool => {}
+            Type::Any => {}
             Type::Null | Type::Never => {
                 self.errors.push(super::super::error::SemanticError::rich(
                     crate::compile::errors::Diagnostic::error(
@@ -1470,7 +1588,94 @@ impl TypeChecker {
                     .help("await it first: `await value`"),
                 ));
             }
-            _ => {}
+            Type::List(_) | Type::Str | Type::Dict(_, _) | Type::Set(_) | Type::Bytes => {
+                let mut d = crate::compile::errors::Diagnostic::error(
+                    "E0404",
+                    format!("`{resolved}` cannot be used as a condition, use `len(x) > 0`"),
+                    span,
+                )
+                .label("expected a `bool` here")
+                .help("use `len(x) > 0` to check if the collection is non-empty");
+                if let ExprKind::Identifier(name) = &expr.kind {
+                    d = d.fix(
+                        span,
+                        format!("len({name}) > 0"),
+                        "replace with `len(x) > 0`",
+                    );
+                }
+                self.errors
+                    .push(super::super::error::SemanticError::rich(d));
+            }
+            Type::Tuple(_) => {
+                let mut d = crate::compile::errors::Diagnostic::error(
+                    "E0404",
+                    format!("`{resolved}` cannot be used as a condition, use `len(x) > 0`"),
+                    span,
+                )
+                .label("expected a `bool` here")
+                .help("use `len(x) > 0` to check if the tuple is non-empty");
+                if let ExprKind::Identifier(name) = &expr.kind {
+                    d = d.fix(
+                        span,
+                        format!("len({name}) > 0"),
+                        "replace with `len(x) > 0`",
+                    );
+                }
+                self.errors
+                    .push(super::super::error::SemanticError::rich(d));
+            }
+            Type::Int
+            | Type::I8
+            | Type::I16
+            | Type::I32
+            | Type::U8
+            | Type::U16
+            | Type::U32
+            | Type::U64
+            | Type::Usize
+            | Type::Float
+            | Type::F32 => {
+                let mut d = crate::compile::errors::Diagnostic::error(
+                    "E0404",
+                    format!("`{resolved}` cannot be used as a condition, use `x != 0`"),
+                    span,
+                )
+                .label("expected a `bool` here")
+                .help("compare against zero explicitly: `n != 0`");
+                if let ExprKind::Identifier(name) = &expr.kind {
+                    d = d.fix(span, format!("{name} != 0"), "replace with `x != 0`");
+                }
+                self.errors
+                    .push(super::super::error::SemanticError::rich(d));
+            }
+            Type::Union(ref members) if members.contains(&Type::Null) => {
+                let mut d = crate::compile::errors::Diagnostic::error(
+                    "E0404",
+                    format!("`{resolved}` cannot be used as a condition"),
+                    span,
+                )
+                .label("expected a `bool` here")
+                .help("compare against `None` explicitly: `x != None`");
+                if let ExprKind::Identifier(name) = &expr.kind {
+                    d = d.fix(span, format!("{name} != None"), "replace with `x != None`");
+                }
+                self.errors
+                    .push(super::super::error::SemanticError::rich(d));
+            }
+            Type::Var(_) => {
+                // Unresolved type variable: could become Bool after further inference.
+            }
+            _ => {
+                self.errors.push(super::super::error::SemanticError::rich(
+                    crate::compile::errors::Diagnostic::error(
+                        "E0404",
+                        format!("`{resolved}` cannot be used as a condition"),
+                        span,
+                    )
+                    .label("expected a `bool` here")
+                    .help("the condition must be a `bool` value"),
+                ));
+            }
         }
     }
 }

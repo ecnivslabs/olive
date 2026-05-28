@@ -486,6 +486,9 @@ impl<M: Module> CraneliftCodegen<M> {
                     res
                 }
             }
+            Coalesce => {
+                unreachable!("Coalesce is lowered to MIR blocks, not Rvalue::BinaryOp")
+            }
         }
     }
 

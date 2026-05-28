@@ -92,9 +92,9 @@ mod codegen_tests_extended {
     #[test]
     fn not_operator() {
         let mut cg =
-            compile("fn f(x: i64) -> i64:\n    if not x:\n        return 1\n    return 0\n");
+            compile("fn f(x: bool) -> i64:\n    if not x:\n        return 1\n    return 0\n");
         assert_eq!(call_i64_1(&mut cg, "f", 0), 1);
-        assert_eq!(call_i64_1(&mut cg, "f", 42), 0);
+        assert_eq!(call_i64_1(&mut cg, "f", 1), 0);
     }
 
     #[test]

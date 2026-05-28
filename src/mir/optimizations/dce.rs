@@ -33,10 +33,10 @@ impl Transform for DeadCodeElimination {
                     }
                     // A drop reads the owned pointer; the assignment feeding
                     // an owner must not be eliminated out from under it.
-                    StatementKind::Drop(l) => {
-                        if func.locals.get(l.0).is_some_and(|d| d.ty.is_move_type()) {
-                            used.insert(*l);
-                        }
+                    StatementKind::Drop(l)
+                        if func.locals.get(l.0).is_some_and(|d| d.ty.is_move_type()) =>
+                    {
+                        used.insert(*l);
                     }
                     StatementKind::GenCheck { value, generation } => {
                         used.insert(*value);

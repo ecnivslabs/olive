@@ -859,7 +859,14 @@ impl Lexer {
                     }
                 }
                 '~' => self.make_tok(TokenKind::Tilde, "~", line, col, start),
-                '?' => self.make_tok(TokenKind::Question, "?", line, col, start),
+                '?' => {
+                    if self.peek() == Some('?') {
+                        self.advance();
+                        self.make_tok(TokenKind::QuestionQuestion, "??", line, col, start)
+                    } else {
+                        self.make_tok(TokenKind::Question, "?", line, col, start)
+                    }
+                }
                 '#' => self.make_tok(TokenKind::Hash, "#", line, col, start),
 
                 other => return Err(self.err(format!("unexpected character {:?}", other))),

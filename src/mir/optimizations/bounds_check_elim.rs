@@ -282,19 +282,18 @@ fn mutated_in_loop(func: &MirFunction, lp: &loop_utils::Loop, obj: usize) -> boo
                     }
                     match rval {
                         // The length accessor only reads the header.
-                        Rvalue::Call { func, args } if !is_len_call(func) => {
-                            if args.iter().any(|a| operand_local(a) == Some(obj)) {
-                                return true;
-                            }
+                        Rvalue::Call { func, args }
+                            if !is_len_call(func)
+                                && args.iter().any(|a| operand_local(a) == Some(obj)) =>
+                        {
+                            return true;
                         }
                         Rvalue::Ref(l) | Rvalue::MutRef(l) if l.0 == obj => return true,
                         _ => {}
                     }
                 }
-                StatementKind::SetAttr(o, _, _) => {
-                    if operand_local(o) == Some(obj) {
-                        return true;
-                    }
+                StatementKind::SetAttr(o, _, _) if operand_local(o) == Some(obj) => {
+                    return true;
                 }
                 _ => {}
             }

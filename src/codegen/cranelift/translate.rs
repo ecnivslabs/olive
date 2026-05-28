@@ -678,16 +678,18 @@ impl<M: Module> CraneliftCodegen<M> {
                             o,
                             16,
                         );
-                        if !unchecked {
-                            emit_bounds_check(builder, module, func_ids, i, len, loc);
-                        }
+                        let idx = if !unchecked {
+                            emit_bounds_check(builder, module, func_ids, i, len, loc)
+                        } else {
+                            i
+                        };
                         let data_ptr = builder.ins().load(
                             types::I64,
                             MemFlags::trusted().with_readonly(),
                             o,
                             8,
                         );
-                        let addr = builder.ins().iadd(data_ptr, i);
+                        let addr = builder.ins().iadd(data_ptr, idx);
                         let byte = builder.ins().ireduce(types::I8, v);
                         builder.ins().store(MemFlags::trusted(), byte, addr, 0);
                     }
@@ -699,16 +701,18 @@ impl<M: Module> CraneliftCodegen<M> {
                             o,
                             24,
                         );
-                        if !unchecked {
-                            emit_bounds_check(builder, module, func_ids, i, len, loc);
-                        }
+                        let idx = if !unchecked {
+                            emit_bounds_check(builder, module, func_ids, i, len, loc)
+                        } else {
+                            i
+                        };
                         let data_ptr = builder.ins().load(
                             types::I64,
                             MemFlags::trusted().with_readonly(),
                             o,
                             8,
                         );
-                        let offset = builder.ins().imul_imm(i, 8);
+                        let offset = builder.ins().imul_imm(idx, 8);
                         let addr = builder.ins().iadd(data_ptr, offset);
                         builder.ins().store(MemFlags::trusted(), v, addr, 0);
                     }

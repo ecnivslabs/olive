@@ -56,7 +56,8 @@ impl TypeChecker {
             let iter_ty = self.check_expr(&clause.iter);
             self.bind_for_target(&clause.target, &iter_ty, span);
             if let Some(cond) = &clause.condition {
-                self.check_expr(cond);
+                let cond_ty = self.check_expr(cond);
+                self.expect_truthy(&cond_ty, cond, cond.span);
             }
         }
     }

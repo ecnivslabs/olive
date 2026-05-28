@@ -4,11 +4,15 @@ use crate::parser::ast::{
     CallArg, CompClause, Expr, ExprKind, ForTarget, MatchPattern, Param, Program, Stmt, StmtKind,
 };
 use crate::span::Span;
+use rustc_hash::FxHashMap as HashMap;
 
 pub struct Resolver {
     pub table: SymbolTable,
     pub errors: Vec<SemanticError>,
     pub warnings: Vec<SemanticError>,
+    /// Maps a bare variant name to the list of enum names that define it.
+    /// When >1 entry, the variant is ambiguous without qualification.
+    enum_variant_origins: HashMap<String, Vec<String>>,
 }
 
 impl Default for Resolver {
@@ -68,6 +72,7 @@ impl Resolver {
             table,
             errors: Vec::new(),
             warnings: Vec::new(),
+            enum_variant_origins: HashMap::default(),
         }
     }
 
@@ -110,6 +115,11 @@ impl Resolver {
                     for variant in variants {
                         let mangled = format!("{}::{}", name, variant.name);
                         self.define_sym(&mangled, SymbolKind::Function, stmt.span);
+                        // Track bare variant name origins for collision detection.
+                        self.enum_variant_origins
+                            .entry(variant.name.clone())
+                            .or_default()
+                            .push(name.clone());
                         self.define_sym(&variant.name, SymbolKind::Function, stmt.span);
                     }
                 }
@@ -521,6 +531,23 @@ impl Resolver {
                             name: name.clone(),
                             span: expr.span,
                         });
+                    }
+                    // Check for ambiguous bare enum variant names.
+                    if let Some(origins) = self.enum_variant_origins.get(name)
+                        && origins.len() > 1
+                    {
+                        let qualifiers: Vec<String> =
+                            origins.iter().map(|e| format!("`{e}::{name}`")).collect();
+                        self.errors.push(SemanticError::rich(
+                            crate::compile::errors::Diagnostic::error(
+                                "E0427",
+                                format!("ambiguous variant `{name}`"),
+                                expr.span,
+                            )
+                            .label("variant name is defined by multiple enums")
+                            .help(format!("qualify the variant: {}", qualifiers.join(" or "))),
+                        ));
+                        return;
                     }
                     self.table.mark_used(name);
                 } else {

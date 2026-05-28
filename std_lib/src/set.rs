@@ -182,6 +182,91 @@ pub extern "C" fn olive_set_remove(set_ptr: i64, val: i64) -> i64 {
     val
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_set_union(a: i64, b: i64) -> i64 {
+    if a == 0 {
+        return olive_set_items(b);
+    }
+    if b == 0 {
+        return olive_set_items(a);
+    }
+    let sa = unsafe { &*(a as *const OliveHashSet) };
+    let sb = unsafe { &*(b as *const OliveHashSet) };
+    let result = olive_set_new((sa.len + sb.len) as i64);
+    for i in 0..sa.len {
+        let val = unsafe { *sa.ptr.add(i) };
+        olive_set_add(result, val);
+    }
+    for i in 0..sb.len {
+        let val = unsafe { *sb.ptr.add(i) };
+        olive_set_add(result, val);
+    }
+    result
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_set_intersection(a: i64, b: i64) -> i64 {
+    if a == 0 || b == 0 {
+        return olive_set_new(0);
+    }
+    let sa = unsafe { &*(a as *const OliveHashSet) };
+    let sb = unsafe { &*(b as *const OliveHashSet) };
+    let result = olive_set_new(sa.len.min(sb.len) as i64);
+    for i in 0..sa.len {
+        let val = unsafe { *sa.ptr.add(i) };
+        if unsafe { (*sb.inner).contains(&val) } {
+            olive_set_add(result, val);
+        }
+    }
+    result
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_set_diff(a: i64, b: i64) -> i64 {
+    if a == 0 {
+        return olive_set_new(0);
+    }
+    if b == 0 {
+        return olive_set_items(a);
+    }
+    let sa = unsafe { &*(a as *const OliveHashSet) };
+    let sb = unsafe { &*(b as *const OliveHashSet) };
+    let result = olive_set_new(sa.len as i64);
+    for i in 0..sa.len {
+        let val = unsafe { *sa.ptr.add(i) };
+        if !unsafe { (*sb.inner).contains(&val) } {
+            olive_set_add(result, val);
+        }
+    }
+    result
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_set_sym_diff(a: i64, b: i64) -> i64 {
+    if a == 0 {
+        return olive_set_items(b);
+    }
+    if b == 0 {
+        return olive_set_items(a);
+    }
+    let sa = unsafe { &*(a as *const OliveHashSet) };
+    let sb = unsafe { &*(b as *const OliveHashSet) };
+    let result = olive_set_new((sa.len + sb.len) as i64);
+    for i in 0..sa.len {
+        let val = unsafe { *sa.ptr.add(i) };
+        if !unsafe { (*sb.inner).contains(&val) } {
+            olive_set_add(result, val);
+        }
+    }
+    for i in 0..sb.len {
+        let val = unsafe { *sb.ptr.add(i) };
+        if !unsafe { (*sa.inner).contains(&val) } {
+            olive_set_add(result, val);
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
