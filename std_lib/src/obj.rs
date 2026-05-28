@@ -9,8 +9,7 @@ thread_local! {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_new() -> i64 {
-    OBJ_SLAB.with(|sl| {
-        let sl = unsafe { &mut *sl.get() };
+    let slab_alloc = |sl: &mut GenSlab| {
         let (body, fresh) = sl.alloc();
         let o = body as *mut OliveObj;
         unsafe {
@@ -23,12 +22,19 @@ pub extern "C" fn olive_obj_new() -> i64 {
                     },
                 );
             } else {
-                // Recycled slot: the cleared field map survived the free.
                 (*o).kind = KIND_OBJ;
             }
         }
         body as i64
-    })
+    };
+    unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null() {
+            slab_alloc(&mut (*active).obj)
+        } else {
+            OBJ_SLAB.with(|sl| slab_alloc(&mut *sl.get()))
+        }
+    }
 }
 
 /// Builds a dict object around an already-populated field map.
@@ -161,9 +167,31 @@ pub extern "C" fn olive_free_obj(ptr: i64) {
 }
 
 pub(crate) fn free_obj_slot_raw(ptr: i64) {
-    OBJ_SLAB.with(|sl| {
-        unsafe { &mut *sl.get() }.free(ptr as *mut u8);
-    });
+    unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null() {
+            (*active).obj.free(ptr as *mut u8);
+        } else {
+            OBJ_SLAB.with(|sl| {
+                (&mut *sl.get()).free(ptr as *mut u8);
+            });
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_dict_new_reuse(old_ptr: i64, bump: i64) -> i64 {
+    if old_ptr == 0 {
+        return olive_obj_new();
+    }
+    if bump != 0 {
+        unsafe {
+            let gen_ptr = (old_ptr as *mut std::sync::atomic::AtomicU64).sub(1);
+            let g = (*gen_ptr).load(std::sync::atomic::Ordering::Relaxed) + 2;
+            (*gen_ptr).store(g, std::sync::atomic::Ordering::Release);
+        }
+    }
+    old_ptr
 }
 
 #[unsafe(no_mangle)]

@@ -13,8 +13,7 @@ pub extern "C" fn olive_enum_new(type_id: i64, tag: i64, arg_count: i64) -> i64 
     let payload_ptr = payload.as_mut_ptr();
     let payload_len = payload.len();
     std::mem::forget(payload);
-    ENUM_SLAB.with(|sl| {
-        let sl = unsafe { &mut *sl.get() };
+    let slab_alloc = |sl: &mut GenSlab| {
         let (body, _) = sl.alloc();
         unsafe {
             std::ptr::write(
@@ -29,7 +28,15 @@ pub extern "C" fn olive_enum_new(type_id: i64, tag: i64, arg_count: i64) -> i64 
             );
         }
         body as i64
-    })
+    };
+    unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null() {
+            slab_alloc(&mut (*active).enum_slab)
+        } else {
+            ENUM_SLAB.with(|sl| slab_alloc(&mut *sl.get()))
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -99,9 +106,55 @@ pub extern "C" fn olive_free_enum(ptr: i64) {
 }
 
 pub(crate) fn free_enum_slot_raw(ptr: i64) {
-    ENUM_SLAB.with(|sl| {
-        unsafe { &mut *sl.get() }.free(ptr as *mut u8);
-    });
+    unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null() {
+            (*active).enum_slab.free(ptr as *mut u8);
+        } else {
+            ENUM_SLAB.with(|sl| {
+                (&mut *sl.get()).free(ptr as *mut u8);
+            });
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_enum_new_reuse(
+    old_ptr: i64,
+    type_id: i64,
+    tag: i64,
+    arg_count: i64,
+    bump: i64,
+) -> i64 {
+    if old_ptr == 0 {
+        return olive_enum_new(type_id, tag, arg_count);
+    }
+    if bump != 0 {
+        unsafe {
+            let gen_ptr = (old_ptr as *mut std::sync::atomic::AtomicU64).sub(1);
+            let g = (*gen_ptr).load(std::sync::atomic::Ordering::Relaxed) + 2;
+            (*gen_ptr).store(g, std::sync::atomic::Ordering::Release);
+        }
+    }
+    let n = arg_count as usize;
+    let e = unsafe { &mut *(old_ptr as *mut OliveEnum) };
+    unsafe {
+        if e.payload_ptr.is_null() || e.payload_len < n {
+            if !e.payload_ptr.is_null() {
+                let _ = Vec::from_raw_parts(e.payload_ptr, e.payload_len, e.payload_len);
+            }
+            let mut payload = vec![0i64; n];
+            e.payload_ptr = payload.as_mut_ptr();
+            e.payload_len = payload.len();
+            std::mem::forget(payload);
+        } else {
+            std::ptr::write_bytes(e.payload_ptr, 0, n);
+            e.payload_len = n;
+        }
+        e.type_id = type_id;
+        e.tag = tag;
+    }
+    old_ptr
 }
 
 #[unsafe(no_mangle)]

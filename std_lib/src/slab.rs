@@ -41,7 +41,22 @@ fn register_chunk(start: usize, end: usize, slot_bytes: usize, live_count: *cons
             live_count,
         },
     );
-    // Old tables leak on purpose: lock-free readers may still hold them.
+    CHUNK_TABLE.store(Box::into_raw(Box::new(next)), Ordering::Release);
+}
+
+fn unregister_chunk(start: usize) {
+    let _guard = CHUNK_WRITER.lock().unwrap();
+    let cur = CHUNK_TABLE.load(Ordering::Acquire);
+    if cur.is_null() {
+        return;
+    }
+    let mut next = unsafe { (*cur).clone() };
+    if let Some(pos) = next.iter().position(|c| c.start == start) {
+        let chunk = next.remove(pos);
+        unsafe {
+            let _ = Box::from_raw(chunk.live_count as *mut AtomicUsize);
+        }
+    }
     CHUNK_TABLE.store(Box::into_raw(Box::new(next)), Ordering::Release);
 }
 
@@ -144,9 +159,21 @@ pub struct GenSlab {
     bump_end: *mut u8,
     slot_bytes: usize,
     active_live_count: *const AtomicUsize,
+    chunks: Vec<(*mut u8, Layout)>,
 }
 
 unsafe impl Send for GenSlab {}
+
+impl Drop for GenSlab {
+    fn drop(&mut self) {
+        for &(chunk, layout) in &self.chunks {
+            unregister_chunk(chunk as usize);
+            unsafe {
+                std::alloc::dealloc(chunk, layout);
+            }
+        }
+    }
+}
 
 impl GenSlab {
     pub const fn new(body_bytes: usize) -> Self {
@@ -157,6 +184,7 @@ impl GenSlab {
             bump_end: std::ptr::null_mut(),
             slot_bytes: 16 + body,
             active_live_count: std::ptr::null(),
+            chunks: Vec::new(),
         }
     }
 
@@ -221,6 +249,7 @@ impl GenSlab {
         self.bump = chunk;
         self.bump_end = unsafe { chunk.add(bytes) };
         self.active_live_count = live_count;
+        self.chunks.push((chunk, layout));
     }
 
     fn count_chunk_slots(&self, start: usize, end: usize) -> usize {
@@ -550,6 +579,34 @@ mod tests {
         let post_free = get_vm_rss().unwrap_or(0);
         if post_free > 0 && spiked > 0 {
             assert!(post_free < spiked);
+        }
+    }
+}
+
+thread_local! {
+    pub(crate) static ACTIVE_SLABS: std::cell::Cell<*mut SlabSet> = const { std::cell::Cell::new(std::ptr::null_mut()) };
+}
+
+pub struct SlabSet {
+    pub list: GenSlab,
+    pub obj: GenSlab,
+    pub set: GenSlab,
+    pub enum_slab: GenSlab,
+    pub str_slabs: [Option<GenSlab>; 32],
+}
+
+impl SlabSet {
+    pub fn new() -> Self {
+        Self {
+            list: GenSlab::new(std::mem::size_of::<crate::StableVec>()),
+            obj: GenSlab::new(std::mem::size_of::<crate::OliveObj>()),
+            set: GenSlab::new(std::mem::size_of::<crate::OliveHashSet>()),
+            enum_slab: GenSlab::new(std::mem::size_of::<crate::OliveEnum>()),
+            str_slabs: [
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None,
+            ],
         }
     }
 }

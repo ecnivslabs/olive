@@ -124,6 +124,11 @@ pub(super) fn collect_needed_imports(
             needed.insert("__olive_copy_typed");
         }
     }
+    needed.insert("__olive_clear_typed");
+    needed.insert("__olive_list_new_reuse");
+    needed.insert("__olive_dict_new_reuse");
+    needed.insert("__olive_set_new_reuse");
+    needed.insert("__olive_enum_new_reuse");
     needed
 }
 

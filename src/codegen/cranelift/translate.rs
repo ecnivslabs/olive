@@ -184,7 +184,72 @@ impl<M: Module> CraneliftCodegen<M> {
                 }
             }
 
-            for stmt in &bb.statements {
+            let mut s_idx = 0;
+            let mut reuse_state: Option<(Local, Value, bool)> = None;
+            while s_idx < bb.statements.len() {
+                let stmt = &bb.statements[s_idx];
+                if let StatementKind::Drop(local) = &stmt.kind {
+                    let has_borrow = crate::mir::optimizations::ownership::REASSIGN_LIVE_BORROWS
+                        .with(|map| {
+                            map.borrow()
+                                .get(&func.name)
+                                .and_then(|m| m.get(local))
+                                .copied()
+                        });
+                    if let Some(has_borrow) = has_borrow {
+                        let mut next_assign_idx = None;
+                        for next_j in (s_idx + 1)..bb.statements.len() {
+                            let next_stmt = &bb.statements[next_j];
+                            match &next_stmt.kind {
+                                StatementKind::Assign(dst, _) if dst == local => {
+                                    next_assign_idx = Some(next_j);
+                                    break;
+                                }
+                                StatementKind::StorageLive(_) | StatementKind::StorageDead(_) => {
+                                    continue;
+                                }
+                                _ => break,
+                            }
+                        }
+                        if next_assign_idx.is_some() {
+                            let var = vars.get(local).unwrap();
+                            let val = builder.use_var(*var);
+                            if let Some(desc_ty) = super::imports::drop_descriptor_type(
+                                &func.locals[local.0].ty,
+                                &self.struct_fields,
+                            ) {
+                                let desc = super::imports::type_descriptor(
+                                    desc_ty,
+                                    &self.struct_fields,
+                                    &self.field_types,
+                                    &self.enum_defs,
+                                );
+                                let data_id = *self
+                                    .string_ids
+                                    .get(&desc)
+                                    .expect("drop descriptor not interned");
+                                let local_data =
+                                    self.module.declare_data_in_func(data_id, builder.func);
+                                let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                                let clear_id = self.func_ids["__olive_clear_typed"];
+                                let local_func =
+                                    self.module.declare_func_in_func(clear_id, builder.func);
+                                builder.ins().call(local_func, &[val, desc_ptr]);
+                                reuse_state = Some((*local, val, has_borrow));
+                                s_idx += 1;
+                                continue;
+                            }
+                        }
+                    }
+                }
+                let reuse_arg = if let StatementKind::Assign(local, _) = &stmt.kind
+                    && let Some((reuse_local, reuse_val, has_borrow)) = reuse_state
+                    && reuse_local == *local
+                {
+                    Some((reuse_local, reuse_val, has_borrow))
+                } else {
+                    None
+                };
                 Self::translate_statement(
                     func,
                     &mut self.module,
@@ -208,7 +273,12 @@ impl<M: Module> CraneliftCodegen<M> {
                     stmt,
                     &vars,
                     &self.loc_ids,
+                    reuse_arg,
                 );
+                if reuse_arg.is_some() {
+                    reuse_state = None;
+                }
+                s_idx += 1;
             }
 
             if let Some(term) = &bb.terminator {
@@ -297,6 +367,7 @@ impl<M: Module> CraneliftCodegen<M> {
         stmt: &Statement,
         vars: &HashMap<Local, Variable>,
         loc_ids: &HashMap<Span, DataId>,
+        reuse_target: Option<(Local, Value, bool)>,
     ) {
         let loc_id = loc_ids.get(&stmt.span).copied();
         match &stmt.kind {
@@ -322,6 +393,7 @@ impl<M: Module> CraneliftCodegen<M> {
                     rval,
                     vars,
                     loc_id,
+                    reuse_target,
                 );
                 let var = vars.get(local).unwrap();
 

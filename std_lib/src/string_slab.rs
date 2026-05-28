@@ -54,18 +54,33 @@ thread_local! {
 pub fn str_alloc(bytes: &[u8]) -> i64 {
     let len = bytes.len();
     let cap = class_bytes(len + 1);
-    STR_SLABS.with(|s| {
-        let s = unsafe { &mut *s.get() };
-        let (body, _) = s.slab(cap).alloc();
+    let slab_alloc = |slab: &mut GenSlab| {
+        let (body, _) = slab.alloc();
         unsafe {
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), body, len);
             *body.add(len) = 0;
             let cap_idx = cap.trailing_zeros() as usize;
             let header_val = len | (cap_idx << 48);
             *(body as *mut usize).sub(2) = header_val;
+            body as i64 | 1
         }
-        body as i64 | 1
-    })
+    };
+    unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null() {
+            let idx = class_index(cap);
+            assert!(idx < 32, "olive: string size class limit exceeded");
+            if (*active).str_slabs[idx].is_none() {
+                (*active).str_slabs[idx] = Some(GenSlab::new(cap));
+            }
+            slab_alloc((*active).str_slabs[idx].as_mut().unwrap_unchecked())
+        } else {
+            STR_SLABS.with(|s| {
+                let s = &mut *s.get();
+                slab_alloc(s.slab(cap))
+            })
+        }
+    }
 }
 
 /// Frees a tagged string pointer. O(1) — capacity read from header at body-16.
@@ -77,14 +92,25 @@ pub fn str_free(ptr: i64) {
     }
     let header_val = unsafe { *(body as *const usize).sub(2) };
     let cap_idx = header_val >> 48;
-    STR_SLABS.with(|s| {
-        let s = unsafe { &mut *s.get() };
-        if cap_idx < 32
-            && let Some(ref mut slab) = s.classes[cap_idx]
-        {
-            slab.free(body as *mut u8);
+    unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null() {
+            if cap_idx < 32
+                && let Some(ref mut slab) = (*active).str_slabs[cap_idx]
+            {
+                slab.free(body as *mut u8);
+            }
+        } else {
+            STR_SLABS.with(|s| {
+                let s = &mut *s.get();
+                if cap_idx < 32
+                    && let Some(ref mut slab) = s.classes[cap_idx]
+                {
+                    slab.free(body as *mut u8);
+                }
+            });
         }
-    });
+    }
 }
 
 /// Optimizes concatenation in-place when the buffer fits. Capacity and length
