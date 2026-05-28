@@ -61,14 +61,7 @@ impl<M: Module> CraneliftCodegen<M> {
             }
 
             let arg_type = if !args.is_empty() {
-                match &args[0] {
-                    Operand::Constant(Constant::Str(_)) => OliveType::Str,
-                    Operand::Constant(Constant::Float(_)) => OliveType::Float,
-                    Operand::Constant(Constant::Bool(_)) => OliveType::Bool,
-                    Operand::Constant(Constant::None) => OliveType::Null,
-                    Operand::Copy(l) | Operand::Move(l) => func_mir.locals[l.0].ty.clone(),
-                    _ => OliveType::Int,
-                }
+                super::imports::operand_static_type(&args[0], func_mir)
             } else {
                 OliveType::Int
             };
@@ -129,11 +122,43 @@ impl<M: Module> CraneliftCodegen<M> {
                 return builder.inst_results(inst)[0];
             }
 
+            // Derived structural `==`: descriptor comes from the left
+            // operand's static type -- the checker already required both
+            // sides to match before emitting this call.
+            if name == "__olive_eq_typed" && call_args.len() == 2 {
+                let desc = super::imports::type_descriptor(
+                    &arg_type,
+                    struct_fields,
+                    field_types,
+                    enum_defs,
+                );
+                let data_id = *string_ids
+                    .get(&desc)
+                    .expect("eq descriptor not interned during collection");
+                let local_data = module.declare_data_in_func(data_id, builder.func);
+                let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                let func_id = func_ids["__olive_eq_typed"];
+                let local_func = module.declare_func_in_func(func_id, builder.func);
+                let inst = builder
+                    .ins()
+                    .call(local_func, &[call_args[0], call_args[1], desc_ptr]);
+                return builder.inst_results(inst)[0];
+            }
+
             // Descriptor comes from the list arg's static type; needed to deep-copy elements.
             let desc_arg = match name.as_str() {
                 "__olive_list_concat_typed" if call_args.len() == 2 => Some(0usize),
                 "__olive_list_getslice_typed" if call_args.len() == 5 => Some(0usize),
                 "__olive_list_extend_typed" if call_args.len() == 2 => Some(1usize),
+                "__olive_set_add_typed"
+                | "__olive_set_remove_typed"
+                | "__olive_set_contains_typed"
+                | "__olive_obj_get_typed"
+                    if call_args.len() == 2 =>
+                {
+                    Some(1usize)
+                }
+                "__olive_obj_get_default_typed" if call_args.len() == 3 => Some(1usize),
                 _ => None,
             };
             if let Some(pos) = desc_arg {

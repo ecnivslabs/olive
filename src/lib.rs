@@ -13,10 +13,24 @@ pub mod span;
 pub mod tooling;
 
 #[cfg(test)]
+pub mod eq_tests;
+#[cfg(test)]
+pub mod hash_tests;
+#[cfg(test)]
+pub mod narrow_tests;
+#[cfg(test)]
+pub mod numeric_underscore_tests;
+#[cfg(test)]
 pub mod olive_tests;
 #[cfg(test)]
+pub mod opt_attr_tests;
+#[cfg(test)]
 pub mod regression_tests;
+#[cfg(test)]
+pub mod scalar_attr_tests;
 #[cfg(test)]
 pub mod speculation_tests;
 #[cfg(test)]
 pub mod test_utils;
+#[cfg(test)]
+pub mod type_alias_tests;

@@ -82,10 +82,27 @@ impl<'a> MirBuilder<'a> {
         if let Some(local) = self.lookup_var(name) {
             let ty = self.current_locals[local.0].ty.clone();
             if matches!(ty, Type::PyObject) {
-                Operand::Copy(local)
-            } else {
-                self.operand_for_local(local)
+                return Operand::Copy(local);
             }
+            // A flow-narrowed read: the checker resolved this occurrence to a
+            // concrete member of the local's declared union. Codegen's binop
+            // dispatch (`is_str_op` and kin) reads a Local's own declared
+            // type, not the checked expression type, so retag the value via
+            // a non-owning view local -- same bits, narrower static type, no
+            // second owner to double-free. `Cast`, not `Use`: copy-prop
+            // treats `Use` as a pure value alias and freely erases the view,
+            // undoing the retag once anything downstream (e.g. inlining)
+            // gives it a second reference to fold through.
+            let narrowed = self.get_type(expr_id);
+            if matches!(ty, Type::Union(_)) && narrowed != ty {
+                let view = self.new_local_with_owning(narrowed.clone(), None, false, false);
+                self.push_statement(
+                    StatementKind::Assign(view, Rvalue::Cast(Operand::Copy(local), narrowed)),
+                    Span::default(),
+                );
+                return Operand::Copy(view);
+            }
+            self.operand_for_local(local)
         } else if let Some(global_op) = self.globals.get(name).cloned() {
             if let Operand::Constant(Constant::GlobalData(_)) = &global_op {
                 let ty = self.get_type(expr_id);
@@ -314,6 +331,125 @@ impl<'a> MirBuilder<'a> {
         self.operand_for_local(tmp)
     }
 
+    /// `obj?.attr`: null-tests `obj`, skipping the field read entirely (no
+    /// heap value touched) when it's `None`. Same block shape as `??`.
+    /// Field reads never transfer ownership (plain `.attr` is a borrow, via
+    /// `lower_attr_expr` above); the merged result stays non-owning too.
+    pub(super) fn lower_opt_attr_expr(
+        &mut self,
+        obj: &Expr,
+        attr: &str,
+        span: Span,
+        expr_id: usize,
+    ) -> Operand {
+        let result_ty = self.get_type(expr_id);
+        let tmp = self.new_local_with_owning(result_ty.clone(), None, false, false);
+        self.push_statement(
+            StatementKind::Assign(tmp, Rvalue::Use(Operand::Constant(Constant::None))),
+            span,
+        );
+
+        let obj_op = self.lower_expr(obj);
+        let obj_ty = self.get_type(obj.id);
+        let is_null = if matches!(obj_ty, Type::Any) {
+            let is_null = self.new_local(Type::Bool, None, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    is_null,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function(
+                            "__olive_any_is_null".to_string(),
+                        )),
+                        args: vec![obj_op.clone()],
+                    },
+                ),
+                span,
+            );
+            is_null
+        } else {
+            let raw = self.new_local(Type::Int, None, false);
+            self.push_statement(
+                StatementKind::Assign(raw, Rvalue::Use(obj_op.clone())),
+                span,
+            );
+            let is_zero = self.new_local(Type::Bool, None, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    is_zero,
+                    Rvalue::BinaryOp(
+                        crate::parser::BinOp::Eq,
+                        Operand::Copy(raw),
+                        Operand::Constant(Constant::Int(0)),
+                    ),
+                ),
+                span,
+            );
+            is_zero
+        };
+
+        let some_bb = self.new_block();
+        let merge_bb = self.new_block();
+        if let Some(bb) = self.current_block {
+            self.terminate_block(
+                bb,
+                TerminatorKind::SwitchInt {
+                    discr: Operand::Copy(is_null),
+                    targets: vec![(1, merge_bb)],
+                    otherwise: some_bb,
+                },
+                span,
+            );
+        }
+
+        self.current_block = Some(some_bb);
+        // `obj` is provably non-null here; retag it to its narrowed member
+        // type so `GetAttr` (and any codegen dispatch keyed off the operand
+        // local's own declared type) sees the concrete type, not the union.
+        let narrowed_ty = non_null_ty(&obj_ty);
+        let struct_name = match &narrowed_ty {
+            Type::Struct(name, ..) => Some(name.clone()),
+            _ => None,
+        };
+        let narrowed_obj = if narrowed_ty != obj_ty {
+            // `Cast`, not `Use`: see the identical retag in
+            // `lower_identifier_expr` for why `Use` doesn't survive copy-prop.
+            let view = self.new_local_with_owning(narrowed_ty.clone(), None, false, false);
+            self.push_statement(
+                StatementKind::Assign(view, Rvalue::Cast(obj_op, narrowed_ty)),
+                span,
+            );
+            Operand::Copy(view)
+        } else {
+            obj_op
+        };
+        // The field's own declared type, not the `?.` expression's overall
+        // (possibly `None`-wrapped) result type -- a field that is itself
+        // already nullable (`inner: Inner | None`) must keep its own Null,
+        // not have it stripped by the receiver's narrowing.
+        let field_ty = struct_name
+            .and_then(|sn| {
+                self.struct_field_types
+                    .get(&(sn, attr.to_string()))
+                    .cloned()
+            })
+            .unwrap_or_else(|| non_null_ty(&result_ty));
+        let field_tmp = self.new_local_with_owning(field_ty, None, true, false);
+        self.push_statement(
+            StatementKind::Assign(field_tmp, Rvalue::GetAttr(narrowed_obj, attr.to_string())),
+            span,
+        );
+        self.push_statement(
+            StatementKind::Assign(tmp, Rvalue::Use(Operand::Copy(field_tmp))),
+            span,
+        );
+        if let Some(bb) = self.current_block {
+            self.terminate_block(bb, TerminatorKind::Goto { target: merge_bb }, span);
+        }
+
+        self.current_block = Some(merge_bb);
+        self.operand_for_local(tmp)
+    }
+
     pub(super) fn lower_index_expr(
         &mut self,
         obj: &Expr,
@@ -493,5 +629,26 @@ impl<'a> MirBuilder<'a> {
             span,
             ty,
         )
+    }
+}
+
+/// `T | None` with `Null` removed, collapsing to the sole remaining member.
+/// Mirrors `TypeChecker::non_null_member`; `ty` itself when there is nothing
+/// to narrow (already checked to be a real member of the union).
+fn non_null_ty(ty: &Type) -> Type {
+    match ty {
+        Type::Union(members) => {
+            let filtered: Vec<Type> = members
+                .iter()
+                .filter(|m| **m != Type::Null)
+                .cloned()
+                .collect();
+            match filtered.len() {
+                1 => filtered.into_iter().next().unwrap(),
+                0 => ty.clone(),
+                _ => Type::Union(filtered),
+            }
+        }
+        other => other.clone(),
     }
 }

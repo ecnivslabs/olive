@@ -649,6 +649,24 @@ impl<M: Module> CraneliftCodegen<M> {
                 let loc = loc_value(builder, module, loc_id);
 
                 match ty {
+                    OliveType::Dict(k, _) if super::imports::needs_structural_key(k) => {
+                        let desc = super::imports::type_descriptor(
+                            k,
+                            struct_fields,
+                            field_types,
+                            enum_defs,
+                        );
+                        let data_id = *string_ids
+                            .get(&desc)
+                            .expect("dict key descriptor not interned during collection");
+                        let local_data = module.declare_data_in_func(data_id, builder.func);
+                        let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                        let set_id = func_ids
+                            .get("__olive_obj_set_typed")
+                            .expect("missing __olive_obj_set_typed");
+                        let local_func = module.declare_func_in_func(*set_id, builder.func);
+                        builder.ins().call(local_func, &[o, i, v, desc_ptr]);
+                    }
                     OliveType::Dict(_, _) | OliveType::Struct(_, _, _) | OliveType::PyObject => {
                         let set_id = func_ids
                             .get("__olive_obj_set")

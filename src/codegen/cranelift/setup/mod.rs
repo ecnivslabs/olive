@@ -49,6 +49,10 @@ impl<M: Module> CraneliftCodegen<M> {
         let sig_i64_i64_i64 = mk_sig(&[types::I64, types::I64], &[types::I64]);
         let sig_i64_i64_i64_void = mk_sig(&[types::I64, types::I64, types::I64], &[]);
         let sig_4i64_void = mk_sig(&[types::I64, types::I64, types::I64, types::I64], &[]);
+        let sig_4i64_i64 = mk_sig(
+            &[types::I64, types::I64, types::I64, types::I64],
+            &[types::I64],
+        );
         let sig_i64_i64_void = mk_sig(&[types::I64, types::I64], &[]);
         let sig_i64_void = mk_sig(&[types::I64], &[]);
         let sig_void_f64 = mk_sig(&[], &[types::F64]);
@@ -219,6 +223,16 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_set_new_reuse", &sig_3i64_i64),
             ("__olive_enum_new_reuse", &sig_i64_5_i64),
             ("__olive_copy_typed", &sig_i64_i64_i64),
+            ("__olive_eq_typed", &sig_3i64_i64),
+            ("__olive_obj_set_typed", &sig_4i64_i64),
+            ("__olive_obj_get_typed", &sig_3i64_i64),
+            ("__olive_obj_get_checked_typed", &sig_4i64_i64),
+            ("__olive_obj_get_default_typed", &sig_4i64_i64),
+            ("__olive_set_add_typed", &sig_i64_i64_i64_void),
+            ("__olive_set_contains_typed", &sig_3i64_i64),
+            ("__olive_set_remove_typed", &sig_3i64_i64),
+            ("__olive_in_obj_typed", &sig_3i64_i64),
+            ("__olive_in_list_typed", &sig_3i64_i64),
             ("__olive_stale_ref_fail", &sig_i64_i64_i64),
             ("__olive_str_gen_of", &sig_i64_i64),
             ("__olive_str_gen_stale", &sig_i64_i64_i64),

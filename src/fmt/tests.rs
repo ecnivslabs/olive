@@ -187,6 +187,50 @@ fn ast_is_preserved_on_complex_expr() {
     assert_eq!(canonical(src), canonical(&fmt(src)));
 }
 
+#[test]
+fn opt_chain_round_trips() {
+    let src = "struct User:\n    name: str\n\nfn f(u: User | None) -> str:\n    return u?.name ?? \"anon\"\n";
+    let out = fmt(src);
+    assert_eq!(out, src, "?. should print unchanged");
+    assert_eq!(canonical(src), canonical(&out));
+    assert_eq!(fmt(&out), out, "not idempotent");
+}
+
+#[test]
+fn opt_chain_chained() {
+    let src = "z = a?.b?.c\n";
+    let out = fmt(src);
+    assert_eq!(canonical(src), canonical(&out));
+    assert_eq!(fmt(&out), out, "not idempotent");
+}
+
+#[test]
+fn type_alias_round_trips() {
+    let src = "type IntList = [int]\n";
+    let out = fmt(src);
+    assert_eq!(canonical(src), canonical(&out));
+    assert_eq!(fmt(&out), out, "not idempotent");
+}
+
+#[test]
+fn type_alias_union_round_trips() {
+    let src = "type ParseResult = int | ParseError\n";
+    let out = fmt(src);
+    assert_eq!(canonical(src), canonical(&out));
+    assert_eq!(fmt(&out), out, "not idempotent");
+}
+
+#[test]
+fn numeric_underscore_literal_round_trips() {
+    // fmt re-slices the original lexeme, so the separators themselves --
+    // not just the numeric value -- must survive formatting unchanged.
+    let src = "z = 1_000_000 + 0xFF_FF\n";
+    let out = fmt(src);
+    assert_eq!(out, src);
+    assert_eq!(canonical(src), canonical(&out));
+    assert_eq!(fmt(&out), out, "not idempotent");
+}
+
 /// The core guarantee, exercised over every shipped `.liv` file: formatting must
 /// preserve the AST, be idempotent, and drop no comments.
 #[test]

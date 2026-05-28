@@ -101,6 +101,7 @@ impl<M: Module> CraneliftCodegen<M> {
                         self.collect_strings_in_operand(obj_op);
                         self.collect_strings_in_operand(idx_op);
                         self.collect_strings_in_operand(val_op);
+                        self.collect_dict_key_descriptor(func, obj_op);
                     }
                     StatementKind::Drop(local) => {
                         use super::super::imports::{drop_descriptor_type, type_descriptor};
@@ -123,9 +124,81 @@ impl<M: Module> CraneliftCodegen<M> {
         }
     }
 
+    /// Interns a `Dict`-typed operand's key descriptor when the key type
+    /// needs structural hash+eq. Shared by `SetIndex` (`collect_strings`)
+    /// and `GetIndex` (`collect_type_descriptor` below).
+    fn collect_dict_key_descriptor(&mut self, func: &MirFunction, obj_op: &crate::mir::Operand) {
+        use super::super::imports::{needs_structural_key, operand_static_type, type_descriptor};
+        let mut ty = operand_static_type(obj_op, func);
+        while let crate::semantic::types::Type::Ref(inner)
+        | crate::semantic::types::Type::MutRef(inner) = ty
+        {
+            ty = *inner;
+        }
+        if let crate::semantic::types::Type::Dict(k, _) = &ty
+            && needs_structural_key(k)
+        {
+            let desc = type_descriptor(k, &self.struct_fields, &self.field_types, &self.enum_defs);
+            self.intern_attr_string(&desc);
+        }
+    }
+
     fn collect_type_descriptor(&mut self, func: &MirFunction, rval: &crate::mir::Rvalue) {
-        use super::super::imports::{needs_type_descriptor, type_descriptor};
+        use super::super::imports::{
+            needs_structural_key, needs_type_descriptor, operand_static_type, type_descriptor,
+        };
         use crate::mir::{Constant, Operand, Rvalue};
+        if let Rvalue::GetIndex(obj_op, _, _) = rval {
+            self.collect_dict_key_descriptor(func, obj_op);
+            return;
+        }
+        if let Rvalue::BinaryOp(op, _lhs, rhs) = rval
+            && matches!(op, crate::parser::BinOp::In | crate::parser::BinOp::NotIn)
+        {
+            let mut ty = operand_static_type(rhs, func);
+            while let crate::semantic::types::Type::Ref(inner)
+            | crate::semantic::types::Type::MutRef(inner) = ty
+            {
+                ty = *inner;
+            }
+            let key_ty = match &ty {
+                crate::semantic::types::Type::Dict(k, _) => Some(k.as_ref()),
+                crate::semantic::types::Type::Set(e) => Some(e.as_ref()),
+                _ => None,
+            };
+            if let Some(k) = key_ty
+                && needs_structural_key(k)
+            {
+                let desc =
+                    type_descriptor(k, &self.struct_fields, &self.field_types, &self.enum_defs);
+                self.intern_attr_string(&desc);
+            }
+            return;
+        }
+        if let Rvalue::Aggregate(kind, ops) = rval {
+            use crate::mir::ir::AggregateKind;
+            // Dict key is `ops[0]` (key, value, key, value, ...); set
+            // element is `ops[0]` directly. Every literal shares one static
+            // type, so the first operand alone decides it.
+            let key_pos = match kind {
+                AggregateKind::Dict => ops.first(),
+                AggregateKind::Set => ops.first(),
+                _ => None,
+            };
+            if let Some(op) = key_pos {
+                let ty = operand_static_type(op, func);
+                if needs_structural_key(&ty) {
+                    let desc = type_descriptor(
+                        &ty,
+                        &self.struct_fields,
+                        &self.field_types,
+                        &self.enum_defs,
+                    );
+                    self.intern_attr_string(&desc);
+                }
+            }
+            return;
+        }
         let Rvalue::Call { func: callee, args } = rval else {
             return;
         };
@@ -136,19 +209,33 @@ impl<M: Module> CraneliftCodegen<M> {
             "__olive_list_concat_typed" if args.len() == 2 => Some(0usize),
             "__olive_list_getslice_typed" if args.len() == 5 => Some(0usize),
             "__olive_list_extend_typed" if args.len() == 2 => Some(1usize),
+            "__olive_set_add_typed"
+            | "__olive_set_remove_typed"
+            | "__olive_set_contains_typed"
+            | "__olive_obj_get_typed"
+                if args.len() == 2 =>
+            {
+                Some(1usize)
+            }
+            "__olive_obj_get_default_typed" if args.len() == 3 => Some(1usize),
             _ => None,
         };
         if let Some(pos) = typed_list_arg {
-            let mut ty = match &args[pos] {
-                Operand::Copy(l) | Operand::Move(l) => &func.locals[l.0].ty,
-                _ => return,
-            };
+            let mut ty = operand_static_type(&args[pos], func);
             while let crate::semantic::types::Type::Ref(inner)
             | crate::semantic::types::Type::MutRef(inner) = ty
             {
-                ty = inner;
+                ty = *inner;
             }
-            let desc = type_descriptor(ty, &self.struct_fields, &self.field_types, &self.enum_defs);
+            let desc =
+                type_descriptor(&ty, &self.struct_fields, &self.field_types, &self.enum_defs);
+            self.intern_attr_string(&desc);
+            return;
+        }
+        if name == "__olive_eq_typed" && args.len() == 2 {
+            let ty = operand_static_type(&args[0], func);
+            let desc =
+                type_descriptor(&ty, &self.struct_fields, &self.field_types, &self.enum_defs);
             self.intern_attr_string(&desc);
             return;
         }
@@ -158,14 +245,14 @@ impl<M: Module> CraneliftCodegen<M> {
         if args.len() != 1 {
             return;
         }
-        let ty = match &args[0] {
-            Operand::Copy(l) | Operand::Move(l) => &func.locals[l.0].ty,
-            _ => return,
-        };
-        // A copy-on-escape always needs its descriptor, even for a bare string
-        // whose print/format path would not.
-        if name == "__olive_copy_typed" || needs_type_descriptor(ty) {
-            let desc = type_descriptor(ty, &self.struct_fields, &self.field_types, &self.enum_defs);
+        // Operand shape must match `translate_call`'s own `arg_type` derivation
+        // exactly (`operand_static_type`) -- collection ran ahead of a
+        // constant-propagated `Copy(local)` here once and silently skipped
+        // interning a folded `Constant` argument, crashing codegen later.
+        let ty = operand_static_type(&args[0], func);
+        if name == "__olive_copy_typed" || needs_type_descriptor(&ty) {
+            let desc =
+                type_descriptor(&ty, &self.struct_fields, &self.field_types, &self.enum_defs);
             self.intern_attr_string(&desc);
         }
     }

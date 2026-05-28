@@ -278,6 +278,9 @@ impl<M: Module> CraneliftCodegen<M> {
                 module,
                 func_ids,
                 string_ids,
+                struct_fields,
+                field_types,
+                enum_defs,
                 any_add_site_ids,
                 any_add_site_cursor,
                 specialize_sites,
@@ -409,6 +412,25 @@ impl<M: Module> CraneliftCodegen<M> {
                             .expect("missing __olive_enum_get");
                         let local_func = module.declare_func_in_func(*get_id, builder.func);
                         let inst = builder.ins().call(local_func, &[o, i]);
+                        builder.inst_results(inst)[0]
+                    }
+                    OliveType::Dict(k, _) if super::imports::needs_structural_key(k) => {
+                        let desc = super::imports::type_descriptor(
+                            k,
+                            struct_fields,
+                            field_types,
+                            enum_defs,
+                        );
+                        let data_id = *string_ids
+                            .get(&desc)
+                            .expect("dict key descriptor not interned during collection");
+                        let local_data = module.declare_data_in_func(data_id, builder.func);
+                        let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                        let get_id = func_ids
+                            .get("__olive_obj_get_checked_typed")
+                            .expect("missing __olive_obj_get_checked_typed");
+                        let local_func = module.declare_func_in_func(*get_id, builder.func);
+                        let inst = builder.ins().call(local_func, &[o, i, loc, desc_ptr]);
                         builder.inst_results(inst)[0]
                     }
                     OliveType::Dict(_, _) | OliveType::Struct(_, _, _) => {
@@ -682,6 +704,9 @@ impl<M: Module> CraneliftCodegen<M> {
                 string_ids,
                 module,
                 func_ids,
+                struct_fields,
+                field_types,
+                enum_defs,
                 kind,
                 ops,
                 reuse_target,

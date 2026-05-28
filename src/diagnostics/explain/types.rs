@@ -276,4 +276,17 @@ pub(super) const ENTRIES: &[Explanation] = &[
              scalars change representation inside `Any`.",
         ],
     },
+    Explanation {
+        code: "E0426",
+        title: "type alias refers to itself",
+        summary: "A `type Name = ...` alias's target refers back to `Name`, directly \
+                  or through another alias. Aliases are pure substitution with no \
+                  runtime identity, so there is no indirection to break the cycle.",
+        wrong: "type A = B\ntype B = A",
+        fixed: "type A = int\ntype B = A | None",
+        notes: &[
+            "A struct or enum can be self-referential (it has a runtime layout); \
+             an alias cannot, since resolving it is just text substitution.",
+        ],
+    },
 ];

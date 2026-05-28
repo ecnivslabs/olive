@@ -22,6 +22,9 @@ impl<M: Module> CraneliftCodegen<M> {
         module: &mut M,
         func_ids: &HashMap<String, FuncId>,
         string_ids: &HashMap<String, DataId>,
+        struct_fields: &HashMap<String, Vec<String>>,
+        field_types: &HashMap<(String, String), OliveType>,
+        enum_defs: &HashMap<String, Vec<(String, Vec<OliveType>)>>,
         any_add_site_ids: &[DataId],
         any_add_site_cursor: &mut usize,
         specialize_sites: &HashSet<usize>,
@@ -446,15 +449,25 @@ impl<M: Module> CraneliftCodegen<M> {
             In | NotIn => {
                 let mut is_obj = false;
                 let mut is_str = false;
+                let mut structural_key: Option<&OliveType> = None;
                 if let Operand::Copy(loc) | Operand::Move(loc) = rhs {
                     let mut ty = &func_mir.locals[loc.0].ty;
                     while let OliveType::Ref(inner) | OliveType::MutRef(inner) = ty {
                         ty = inner;
                     }
-                    if matches!(ty, OliveType::Dict(_, _) | OliveType::Struct(_, _, _)) {
+                    if let OliveType::Dict(k, _) = ty {
+                        is_obj = true;
+                        if super::imports::needs_structural_key(k) {
+                            structural_key = Some(k);
+                        }
+                    } else if matches!(ty, OliveType::Struct(_, _, _)) {
                         is_obj = true;
                     } else if matches!(ty, OliveType::Str) {
                         is_str = true;
+                    } else if let OliveType::Set(e) = ty
+                        && super::imports::needs_structural_key(e)
+                    {
+                        structural_key = Some(e);
                     }
                 } else if let Operand::Constant(Constant::Str(_)) = rhs {
                     is_str = true;
@@ -463,7 +476,13 @@ impl<M: Module> CraneliftCodegen<M> {
                 let func_name = if is_str {
                     "__olive_str_contains"
                 } else if is_obj {
-                    "__olive_in_obj"
+                    if structural_key.is_some() {
+                        "__olive_in_obj_typed"
+                    } else {
+                        "__olive_in_obj"
+                    }
+                } else if structural_key.is_some() {
+                    "__olive_in_list_typed"
                 } else {
                     "__olive_in_list"
                 };
@@ -474,6 +493,19 @@ impl<M: Module> CraneliftCodegen<M> {
 
                 let inst = if is_str {
                     builder.ins().call(local_func, &[r, l])
+                } else if let Some(key_ty) = structural_key {
+                    let desc = super::imports::type_descriptor(
+                        key_ty,
+                        struct_fields,
+                        field_types,
+                        enum_defs,
+                    );
+                    let data_id = *string_ids
+                        .get(&desc)
+                        .expect("in-operator key descriptor not interned during collection");
+                    let local_data = module.declare_data_in_func(data_id, builder.func);
+                    let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                    builder.ins().call(local_func, &[l, r, desc_ptr])
                 } else {
                     builder.ins().call(local_func, &[l, r])
                 };

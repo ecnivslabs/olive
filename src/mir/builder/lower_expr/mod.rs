@@ -362,6 +362,9 @@ impl<'a> MirBuilder<'a> {
             ExprKind::Set(elems) => self.lower_set_expr(elems, expr.span, expr.id),
             ExprKind::Dict(pairs) => self.lower_dict_expr(pairs, expr.span, expr.id),
             ExprKind::Attr { obj, attr } => self.lower_attr_expr(obj, attr, expr.span, expr.id),
+            ExprKind::OptAttr { obj, attr } => {
+                self.lower_opt_attr_expr(obj, attr, expr.span, expr.id)
+            }
             ExprKind::Index { obj, index } => self.lower_index_expr(obj, index, expr.span, expr.id),
             ExprKind::Slice { .. } => {
                 panic!(

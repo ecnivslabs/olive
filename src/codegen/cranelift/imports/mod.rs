@@ -32,6 +32,7 @@ pub(super) fn collect_needed_imports(
                     StatementKind::SetIndex(_, _, val_op, _) => {
                         needed.insert("__olive_list_set");
                         needed.insert("__olive_obj_set");
+                        needed.insert("__olive_obj_set_typed");
                         needed.insert("__olive_set_index_any");
                         needed.insert("__olive_bounds_fail");
                         needed.insert("__olive_nil_index_fail");
@@ -162,6 +163,9 @@ pub(super) fn scan_rvalue_imports(
             if name == "__olive_copy_typed" {
                 needed.insert("__olive_copy_typed");
             }
+            if name == "__olive_eq_typed" {
+                needed.insert("__olive_eq_typed");
+            }
             if name == "__olive_list_concat_typed" {
                 needed.insert("__olive_list_concat_typed");
             }
@@ -170,6 +174,21 @@ pub(super) fn scan_rvalue_imports(
             }
             if name == "__olive_list_extend_typed" {
                 needed.insert("__olive_list_extend_typed");
+            }
+            if name == "__olive_set_add_typed" {
+                needed.insert("__olive_set_add_typed");
+            }
+            if name == "__olive_set_remove_typed" {
+                needed.insert("__olive_set_remove_typed");
+            }
+            if name == "__olive_set_contains_typed" {
+                needed.insert("__olive_set_contains_typed");
+            }
+            if name == "__olive_obj_get_typed" {
+                needed.insert("__olive_obj_get_typed");
+            }
+            if name == "__olive_obj_get_default_typed" {
+                needed.insert("__olive_obj_get_default_typed");
             }
         }
         Rvalue::Call { .. } => {}
@@ -375,10 +394,14 @@ pub(super) fn scan_rvalue_imports(
                 In => {
                     needed.insert("__olive_in_list");
                     needed.insert("__olive_in_obj");
+                    needed.insert("__olive_in_list_typed");
+                    needed.insert("__olive_in_obj_typed");
                 }
                 NotIn => {
                     needed.insert("__olive_in_list");
                     needed.insert("__olive_in_obj");
+                    needed.insert("__olive_in_list_typed");
+                    needed.insert("__olive_in_obj_typed");
                 }
                 _ => {}
             }
@@ -396,6 +419,7 @@ pub(super) fn scan_rvalue_imports(
         Rvalue::GetIndex(obj, _, _) => {
             needed.insert("__olive_list_get");
             needed.insert("__olive_obj_get_checked");
+            needed.insert("__olive_obj_get_checked_typed");
             needed.insert("__olive_get_index_any");
             needed.insert("__olive_bounds_fail");
             needed.insert("__olive_nil_index_fail");
@@ -417,10 +441,12 @@ pub(super) fn scan_rvalue_imports(
                 AggregateKind::Dict => {
                     needed.insert("__olive_obj_new");
                     needed.insert("__olive_obj_set");
+                    needed.insert("__olive_obj_set_typed");
                 }
                 AggregateKind::Set => {
                     needed.insert("__olive_list_new");
                     needed.insert("__olive_set_add");
+                    needed.insert("__olive_set_add_typed");
                     needed.insert("__olive_set_new");
                 }
                 AggregateKind::EnumVariant(_, _) => {
@@ -477,6 +503,6 @@ mod tests;
 
 pub(super) use builtins::{
     cl_type, drop_descriptor_type, is_any_op, is_float_op, is_list_op, is_pyobj_op, is_str_op,
-    is_u64_op, map_builtin_to_runtime, needs_type_descriptor, resolve_builtin_import,
-    type_descriptor, typed_zero,
+    is_u64_op, map_builtin_to_runtime, needs_structural_key, needs_type_descriptor,
+    operand_static_type, resolve_builtin_import, type_descriptor, typed_zero,
 };

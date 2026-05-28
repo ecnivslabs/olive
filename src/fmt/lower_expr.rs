@@ -76,6 +76,9 @@ impl Lowerer<'_> {
             ExprKind::Attr { obj, attr } => {
                 concat_all([self.postfix_operand(obj), text("."), text(attr.clone())])
             }
+            ExprKind::OptAttr { obj, attr } => {
+                concat_all([self.postfix_operand(obj), text("?."), text(attr.clone())])
+            }
 
             ExprKind::List(items) => {
                 let docs: Vec<Doc> = items.iter().map(|x| self.expr(x)).collect();

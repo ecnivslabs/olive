@@ -16,7 +16,7 @@ pub extern "C" fn olive_set_new(capacity: i64) -> i64 {
     let ptr = v.as_mut_ptr();
     let v_cap = v.capacity();
     std::mem::forget(v);
-    let inner = Box::into_raw(Box::new(FxHashSet::<i64>::default()));
+    let inner = Box::into_raw(Box::new(FxHashSet::<OliveStringKey>::default()));
     let slab_alloc = |sl: &mut GenSlab| {
         let (body, _) = sl.alloc();
         unsafe {
@@ -109,7 +109,7 @@ pub extern "C" fn olive_set_new_reuse(old_ptr: i64, capacity: i64, bump: i64) ->
             std::mem::forget(v);
         }
         if s.inner.is_null() {
-            s.inner = Box::into_raw(Box::new(FxHashSet::<i64>::default()));
+            s.inner = Box::into_raw(Box::new(FxHashSet::<OliveStringKey>::default()));
         }
         s.len = 0;
     }
@@ -139,7 +139,7 @@ pub extern "C" fn olive_set_add(set_ptr: i64, val: i64) {
     unsafe {
         let s = &mut *(set_ptr as *mut OliveHashSet);
         let hs = &mut *s.inner;
-        if hs.insert(val) {
+        if hs.insert(OliveStringKey(val)) {
             let mut v = Vec::from_raw_parts(s.ptr, s.len, s.cap);
             v.push(val);
             s.ptr = v.as_mut_ptr();
@@ -157,7 +157,7 @@ pub extern "C" fn olive_set_contains(set_ptr: i64, val: i64) -> i64 {
     }
     let s = unsafe { &*(set_ptr as *const OliveHashSet) };
     let hs = unsafe { &*s.inner };
-    hs.contains(&val) as i64
+    hs.contains(&OliveStringKey(val)) as i64
 }
 
 #[unsafe(no_mangle)]
@@ -168,9 +168,15 @@ pub extern "C" fn olive_set_remove(set_ptr: i64, val: i64) -> i64 {
     unsafe {
         let s = &mut *(set_ptr as *mut OliveHashSet);
         let hs = &mut *s.inner;
-        if hs.remove(&val) {
+        if hs.remove(&OliveStringKey(val)) {
             let mut v = Vec::from_raw_parts(s.ptr, s.len, s.cap);
-            if let Some(pos) = v.iter().position(|&x| x == val) {
+            // Structural removal (a distinct-but-equal pointer) must find
+            // the same element here that `hs.remove` just found, not its
+            // own raw-pointer match -- see `OliveStringKey`'s `PartialEq`.
+            if let Some(pos) = v
+                .iter()
+                .position(|&x| OliveStringKey(x) == OliveStringKey(val))
+            {
                 v.remove(pos);
             }
             s.ptr = v.as_mut_ptr();
@@ -214,7 +220,7 @@ pub extern "C" fn olive_set_intersection(a: i64, b: i64) -> i64 {
     let result = olive_set_new(sa.len.min(sb.len) as i64);
     for i in 0..sa.len {
         let val = unsafe { *sa.ptr.add(i) };
-        if unsafe { (*sb.inner).contains(&val) } {
+        if unsafe { (*sb.inner).contains(&OliveStringKey(val)) } {
             olive_set_add(result, val);
         }
     }
@@ -234,7 +240,7 @@ pub extern "C" fn olive_set_diff(a: i64, b: i64) -> i64 {
     let result = olive_set_new(sa.len as i64);
     for i in 0..sa.len {
         let val = unsafe { *sa.ptr.add(i) };
-        if !unsafe { (*sb.inner).contains(&val) } {
+        if !unsafe { (*sb.inner).contains(&OliveStringKey(val)) } {
             olive_set_add(result, val);
         }
     }
@@ -254,13 +260,13 @@ pub extern "C" fn olive_set_sym_diff(a: i64, b: i64) -> i64 {
     let result = olive_set_new((sa.len + sb.len) as i64);
     for i in 0..sa.len {
         let val = unsafe { *sa.ptr.add(i) };
-        if !unsafe { (*sb.inner).contains(&val) } {
+        if !unsafe { (*sb.inner).contains(&OliveStringKey(val)) } {
             olive_set_add(result, val);
         }
     }
     for i in 0..sb.len {
         let val = unsafe { *sb.ptr.add(i) };
-        if !unsafe { (*sa.inner).contains(&val) } {
+        if !unsafe { (*sa.inner).contains(&OliveStringKey(val)) } {
             olive_set_add(result, val);
         }
     }
@@ -289,7 +295,7 @@ mod tests {
         olive_set_add(ptr, 42);
         let s = unsafe { &*(ptr as *const OliveHashSet) };
         assert_eq!(s.len, 1);
-        assert!(unsafe { (*s.inner).contains(&42) });
+        assert!(unsafe { (*s.inner).contains(&OliveStringKey(42)) });
     }
 
     #[test]
@@ -310,7 +316,7 @@ mod tests {
         let s = unsafe { &*(ptr as *const OliveHashSet) };
         assert_eq!(s.len, 10);
         for i in 0..10 {
-            assert!(unsafe { (*s.inner).contains(&i) });
+            assert!(unsafe { (*s.inner).contains(&OliveStringKey(i)) });
         }
     }
 

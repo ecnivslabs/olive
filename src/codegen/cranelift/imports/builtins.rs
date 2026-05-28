@@ -46,6 +46,39 @@ pub(crate) fn needs_type_descriptor(ty: &OliveType) -> bool {
     )
 }
 
+/// Whether a dict key / set element needs the structural hash+eq derived
+/// `==` uses, instead of the fast raw-word path `classify_key` already
+/// handles for scalars and strings.
+pub(crate) fn needs_structural_key(ty: &OliveType) -> bool {
+    matches!(
+        ty,
+        OliveType::Struct(..)
+            | OliveType::Enum(..)
+            | OliveType::Tuple(_)
+            | OliveType::List(_)
+            | OliveType::Set(_)
+            | OliveType::Dict(_, _)
+    )
+}
+
+/// An operand's static type for descriptor purposes: a `Copy`/`Move` reads
+/// its local's declared type; a `Constant` infers the literal's own type.
+/// Shared by codegen's call translation and the pre-pass that interns every
+/// descriptor string it will need -- the two must agree on every operand
+/// shape or a descriptor goes missing (a constant-propagated `None` arg to
+/// `__olive_copy_typed` is exactly this: the collector used to only look at
+/// `Copy`/`Move`, silently skipping a folded `Constant` arg).
+pub(crate) fn operand_static_type(op: &Operand, func_mir: &MirFunction) -> OliveType {
+    match op {
+        Operand::Constant(Constant::Str(_)) => OliveType::Str,
+        Operand::Constant(Constant::Float(_)) => OliveType::Float,
+        Operand::Constant(Constant::Bool(_)) => OliveType::Bool,
+        Operand::Constant(Constant::None) => OliveType::Null,
+        Operand::Copy(l) | Operand::Move(l) => func_mir.locals[l.0].ty.clone(),
+        _ => OliveType::Int,
+    }
+}
+
 type StructFields = HashMap<String, Vec<String>>;
 type FieldTypes = HashMap<(String, String), OliveType>;
 type EnumDefs = HashMap<String, Vec<(String, Vec<OliveType>)>>;
@@ -130,9 +163,23 @@ fn encode_descriptor(
         OliveType::Str => out.push(4),
         OliveType::Null => out.push(5),
         OliveType::Bytes => out.push(15),
-        OliveType::Any | OliveType::Union(_) | OliveType::PyObject | OliveType::PyNamed(_, _) => {
-            out.push(6)
+        // `T | None` is not a boxed, kind-tagged `Any`: it stores `T`'s own
+        // raw representation with `0` as the `None` sentinel (see
+        // translate.rs). Descriptor-wise that means encoding `T` directly;
+        // every `copy_typed`/`free_typed` leaf already treats a `0` operand
+        // as a no-op, so the sentinel needs no descriptor bits of its own.
+        // A union with more than one non-null member has no single raw
+        // representation to fall back on, so it stays boxed-`Any`-style.
+        OliveType::Union(members) => {
+            let non_null: Vec<&OliveType> =
+                members.iter().filter(|m| **m != OliveType::Null).collect();
+            if non_null.len() == 1 {
+                enc(non_null[0], out, visiting);
+            } else {
+                out.push(6)
+            }
         }
+        OliveType::Any | OliveType::PyObject | OliveType::PyNamed(_, _) => out.push(6),
         OliveType::List(inner) | OliveType::Vector(inner, _) => {
             out.push(7);
             enc(inner, out, visiting);

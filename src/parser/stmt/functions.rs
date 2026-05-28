@@ -243,6 +243,25 @@ impl Parser {
         Ok(PyFnSig { name, params, ret })
     }
 
+    pub(crate) fn parse_type_alias(&mut self) -> ParseResult<Stmt> {
+        let start = self.peek().clone();
+        self.advance(); // `type`
+        let name_tok = self.expect(TokenKind::Identifier)?;
+        let name_span = Self::tok_span(&name_tok);
+        self.expect(TokenKind::Equal)?;
+        let target = self.parse_type_expr()?;
+        self.eat_stmt_end()?;
+        let span = self.span_from(&start);
+        Ok(Stmt::new(
+            StmtKind::TypeAlias {
+                name: name_tok.value,
+                name_span,
+                target,
+            },
+            span,
+        ))
+    }
+
     pub(crate) fn parse_let(&mut self) -> ParseResult<Stmt> {
         let start = self.peek().clone();
         self.expect(TokenKind::Let)?;

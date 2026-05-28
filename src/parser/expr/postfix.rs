@@ -45,6 +45,25 @@ impl Parser {
                         );
                     }
                 }
+                TokenKind::QuestionDot => {
+                    self.advance();
+                    let attr = self.expect(TokenKind::Identifier)?.value;
+                    let span = self.span_from(&Token {
+                        kind: TokenKind::Identifier,
+                        value: String::new(),
+                        line: expr.span.line,
+                        col: expr.span.col,
+                        span: (expr.span.start, expr.span.end),
+                        file_id: expr.span.file_id,
+                    });
+                    expr = Expr::new(
+                        ExprKind::OptAttr {
+                            obj: Box::new(expr),
+                            attr,
+                        },
+                        span,
+                    );
+                }
                 TokenKind::LBracket => {
                     self.advance();
                     let span_tok = Token {

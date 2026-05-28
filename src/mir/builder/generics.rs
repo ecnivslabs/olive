@@ -35,6 +35,12 @@ impl<'a> MirBuilder<'a> {
                         Type::Enum(e.clone(), args.clone())
                     } else if self.traits.contains_key(name) {
                         Type::TraitObject(name.clone(), Vec::new())
+                    } else if let Some(resolved) = self.global_types.get(name)
+                        && !matches!(resolved, Type::Struct(n, _, _) if n == name)
+                    {
+                        // A type alias: its global_types entry is the type it stands
+                        // for, not a nominal struct named after itself.
+                        resolved.clone()
                     } else {
                         let is_ffi =
                             matches!(self.global_types.get(name), Some(Type::Struct(_, _, true)));

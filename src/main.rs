@@ -3,18 +3,32 @@ mod codegen;
 mod commands;
 mod compile;
 mod diagnostics;
+#[cfg(test)]
+mod eq_tests;
 mod fmt;
+#[cfg(test)]
+mod hash_tests;
 mod lexer;
 mod mangle;
 mod mir;
+#[cfg(test)]
+mod narrow_tests;
+#[cfg(test)]
+mod numeric_underscore_tests;
+#[cfg(test)]
+mod opt_attr_tests;
 mod parser;
 #[cfg(test)]
 mod regression_tests;
+#[cfg(test)]
+mod scalar_attr_tests;
 mod semantic;
 mod span;
 #[cfg(test)]
 mod test_utils;
 mod tooling;
+#[cfg(test)]
+mod type_alias_tests;
 
 use clap::{Parser as ClapParser, Subcommand};
 

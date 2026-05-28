@@ -253,25 +253,33 @@ impl TypeChecker {
             StmtKind::Assign { target, value } => {
                 let val_ty = self.check_expr(value);
                 // Reject global writes from inside functions.
-                if let crate::parser::ExprKind::Identifier(name) = &target.kind {
-                    if self.current_return_type.is_some() && self.type_env.len() > 1 {
-                        for (scope_idx, scope) in self.type_env.iter().enumerate().rev() {
-                            if scope.contains_key(name.as_str()) {
-                                if scope_idx == 0 {
-                                    self.errors.push(SemanticError::rich(
-                                        crate::compile::errors::Diagnostic::error(
-                                            "E0426",
-                                            format!("cannot assign to module-level binding `{name}` from inside a function"),
-                                            target.span,
-                                        )
-                                        .label("global writes are not allowed")
-                                        .help("pass it as a parameter and return the new value"),
-                                    ));
-                                }
-                                break;
+                if let crate::parser::ExprKind::Identifier(name) = &target.kind
+                    && self.current_return_type.is_some()
+                    && self.type_env.len() > 1
+                {
+                    for (scope_idx, scope) in self.type_env.iter().enumerate().rev() {
+                        if scope.contains_key(name.as_str()) {
+                            if scope_idx == 0 {
+                                self.errors.push(SemanticError::rich(
+                                    crate::compile::errors::Diagnostic::error(
+                                        "E0426",
+                                        format!("cannot assign to module-level binding `{name}` from inside a function"),
+                                        target.span,
+                                    )
+                                    .label("global writes are not allowed")
+                                    .help("pass it as a parameter and return the new value"),
+                                ));
                             }
+                            break;
                         }
                     }
+                }
+                // A write to a narrowed binding may reintroduce `None`; the
+                // fact must die before `target` is type-checked below, or
+                // this assignment would type-check against the narrowed
+                // type instead of the binding's real declared type.
+                if let crate::parser::ExprKind::Identifier(name) = &target.kind {
+                    self.kill_narrow(name);
                 }
                 let target_ty = self.check_expr(target);
                 self.unify(&target_ty, &val_ty, stmt.span);
@@ -322,14 +330,36 @@ impl TypeChecker {
             } => {
                 let cond_ty = self.check_expr(condition);
                 self.expect_truthy(&cond_ty, condition, stmt.span);
-                self.check_block(then_body);
+                let (true_facts, false_facts) = self.narrow_facts(condition);
+                self.check_block_narrowed(then_body, &true_facts);
                 for (cond, body) in elif_clauses {
                     let c_ty = self.check_expr(cond);
                     self.expect_truthy(&c_ty, cond, cond.span);
                     self.check_block(body);
                 }
                 if let Some(body) = else_body {
-                    self.check_block(body);
+                    self.check_block_narrowed(body, &false_facts);
+                }
+                // Guard form: a two-way `if` where exactly one side always
+                // diverges narrows the other side's facts for the rest of
+                // the enclosing scope. `elif` chains are out of v1 scope.
+                if elif_clauses.is_empty() {
+                    match else_body {
+                        None => {
+                            if self.always_diverges(then_body) {
+                                self.apply_narrow_facts(&false_facts);
+                            }
+                        }
+                        Some(eb) => {
+                            let then_diverges = self.always_diverges(then_body);
+                            let else_diverges = self.always_diverges(eb);
+                            if then_diverges && !else_diverges {
+                                self.apply_narrow_facts(&false_facts);
+                            } else if else_diverges && !then_diverges {
+                                self.apply_narrow_facts(&true_facts);
+                            }
+                        }
+                    }
                 }
             }
 
@@ -1012,7 +1042,8 @@ impl TypeChecker {
             | StmtKind::Break
             | StmtKind::Continue
             | StmtKind::Import { .. }
-            | StmtKind::FromImport { .. } => {}
+            | StmtKind::FromImport { .. }
+            | StmtKind::TypeAlias { .. } => {}
 
             StmtKind::Defer(expr) => {
                 self.check_expr(expr);
