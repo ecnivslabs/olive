@@ -482,14 +482,12 @@ impl<M: Module> CraneliftCodegen<M> {
                 builder.def_var(*var, val);
             }
             StatementKind::SetAttr(obj, attr, val_op) => {
-                let mut obj_ty = if let Operand::Copy(loc) | Operand::Move(loc) = obj {
+                let obj_ty = if let Operand::Copy(loc) | Operand::Move(loc) = obj {
                     &func_mir.locals[loc.0].ty
                 } else {
                     &OliveType::Any
                 };
-                while let OliveType::Ref(inner) | OliveType::MutRef(inner) = obj_ty {
-                    obj_ty = inner;
-                }
+                let obj_ty = super::imports::concrete_ty(obj_ty);
                 if let OliveType::Struct(struct_name, _, _) = obj_ty {
                     if let Some((offset, ty_name, bits)) =
                         c_struct_field_info(c_struct_offsets, struct_name, attr)
@@ -594,11 +592,10 @@ impl<M: Module> CraneliftCodegen<M> {
                 };
 
                 let obj_is_pyobj = if let Operand::Copy(loc) | Operand::Move(loc) = obj {
-                    let mut oty = &func_mir.locals[loc.0].ty;
-                    while let OliveType::Ref(inner) | OliveType::MutRef(inner) = oty {
-                        oty = inner;
-                    }
-                    matches!(oty, OliveType::PyObject)
+                    matches!(
+                        super::imports::concrete_ty(&func_mir.locals[loc.0].ty),
+                        OliveType::PyObject
+                    )
                 } else {
                     false
                 };
@@ -616,14 +613,12 @@ impl<M: Module> CraneliftCodegen<M> {
             }
             StatementKind::SetIndex(obj, idx, val_op, unchecked) => {
                 let unchecked = *unchecked;
-                let mut ty = if let Operand::Copy(loc) | Operand::Move(loc) = obj {
+                let ty = if let Operand::Copy(loc) | Operand::Move(loc) = obj {
                     &func_mir.locals[loc.0].ty
                 } else {
                     &OliveType::Any
                 };
-                while let OliveType::Ref(inner) | OliveType::MutRef(inner) = ty {
-                    ty = inner;
-                }
+                let ty = super::imports::concrete_ty(ty);
 
                 let o = Self::translate_operand(builder, obj, vars, string_ids, module, func_ids);
                 let i = Self::translate_operand(builder, idx, vars, string_ids, module, func_ids);

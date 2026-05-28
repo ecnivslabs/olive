@@ -696,11 +696,40 @@ impl TypeChecker {
                         _ => Type::List(Box::new(Type::Any)),
                     };
                 }
-                match current_obj_ty {
+                // `T | None` must be narrowed (or accessed via `?.`) before it
+                // can be indexed: silently reducing to `T` here would let
+                // `x[i]` compile against an un-narrowed nullable and read
+                // garbage at runtime, since the value may really be `None`.
+                let indexed_ty = match &current_obj_ty {
+                    Type::Union(members) => {
+                        let non_null: Vec<Type> = members
+                            .iter()
+                            .filter(|m| **m != Type::Null)
+                            .cloned()
+                            .collect();
+                        match non_null.as_slice() {
+                            [single] => {
+                                self.errors.push(super::super::error::SemanticError::rich(
+                                    crate::compile::errors::Diagnostic::error(
+                                        "E0428",
+                                        format!("indexing a possibly-`None` value of type `{current_obj_ty}`"),
+                                        expr.span,
+                                    )
+                                    .label("this may be `None` here")
+                                    .help("narrow it first (`if x != None:`) before indexing"),
+                                ));
+                                single.clone()
+                            }
+                            _ => current_obj_ty.clone(),
+                        }
+                    }
+                    _ => current_obj_ty.clone(),
+                };
+                match indexed_ty {
                     // `f[int](..)` indexes a function by a type: this is an
                     // explicit type argument, which inference already handles, so
                     // the result is just the function itself.
-                    Type::Fn(_, _, _) => current_obj_ty,
+                    Type::Fn(_, _, _) => indexed_ty,
                     Type::List(inner) => {
                         self.unify(&Type::Int, &idx_ty, expr.span);
                         *inner
@@ -735,7 +764,38 @@ impl TypeChecker {
 
             ExprKind::Attr { obj, attr } => {
                 let obj_ty = self.check_expr(obj);
-                let resolved_obj = self.apply_subst(obj_ty);
+                let checked_obj = self.apply_subst(obj_ty);
+                // `T | None` must be narrowed (or accessed via `?.`) before a
+                // field/method access: silently reducing to `T` here would let
+                // `x.attr` compile against an un-narrowed nullable and read
+                // garbage at runtime, since the value may really be `None`.
+                let resolved_obj = match &checked_obj {
+                    Type::Union(members) => {
+                        let non_null: Vec<Type> = members
+                            .iter()
+                            .filter(|m| **m != Type::Null)
+                            .cloned()
+                            .collect();
+                        match non_null.as_slice() {
+                            [single] => {
+                                self.errors.push(super::super::error::SemanticError::rich(
+                                    crate::compile::errors::Diagnostic::error(
+                                        "E0428",
+                                        format!(
+                                            "accessing `{attr}` on a possibly-`None` value of type `{checked_obj}`"
+                                        ),
+                                        expr.span,
+                                    )
+                                    .label("this may be `None` here")
+                                    .help("narrow it first (`if x != None:`) or use `x?.attr`"),
+                                ));
+                                single.clone()
+                            }
+                            _ => checked_obj.clone(),
+                        }
+                    }
+                    _ => checked_obj.clone(),
+                };
 
                 if let ExprKind::Identifier(name) = &obj.kind {
                     let mangled = format!("{}::{}", name, attr);
@@ -1302,6 +1362,15 @@ impl TypeChecker {
         let exp_elem = match expected {
             Some(Type::List(e)) if kind == Collection::List => Some((**e).clone()),
             Some(Type::Set(e)) if kind == Collection::Set => Some((**e).clone()),
+            // A union annotation (e.g. `[int] | None`) widens the same way a
+            // bare container annotation does: take the first member of the
+            // matching container kind, mirroring the scalar-literal-vs-union
+            // widening above in unify().
+            Some(Type::Union(members)) => members.iter().find_map(|m| match m {
+                Type::List(e) if kind == Collection::List => Some((**e).clone()),
+                Type::Set(e) if kind == Collection::Set => Some((**e).clone()),
+                _ => None,
+            }),
             _ => None,
         };
         let elem_ty = if let Some(exp) = exp_elem {

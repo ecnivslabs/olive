@@ -451,10 +451,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 let mut is_str = false;
                 let mut structural_key: Option<&OliveType> = None;
                 if let Operand::Copy(loc) | Operand::Move(loc) = rhs {
-                    let mut ty = &func_mir.locals[loc.0].ty;
-                    while let OliveType::Ref(inner) | OliveType::MutRef(inner) = ty {
-                        ty = inner;
-                    }
+                    let ty = super::imports::concrete_ty(&func_mir.locals[loc.0].ty);
                     if let OliveType::Dict(k, _) = ty {
                         is_obj = true;
                         if super::imports::needs_structural_key(k) {

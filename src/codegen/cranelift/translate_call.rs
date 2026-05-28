@@ -162,13 +162,11 @@ impl<M: Module> CraneliftCodegen<M> {
                 _ => None,
             };
             if let Some(pos) = desc_arg {
-                let mut list_ty = match &args[pos] {
+                let list_ty = match &args[pos] {
                     Operand::Copy(l) | Operand::Move(l) => &func_mir.locals[l.0].ty,
                     _ => &arg_type,
                 };
-                while let OliveType::Ref(inner) | OliveType::MutRef(inner) = list_ty {
-                    list_ty = inner;
-                }
+                let list_ty = super::imports::concrete_ty(list_ty);
                 let desc =
                     super::imports::type_descriptor(list_ty, struct_fields, field_types, enum_defs);
                 let data_id = *string_ids
