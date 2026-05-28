@@ -19,22 +19,28 @@ fn class_index(cap: usize) -> usize {
 }
 
 struct StrSlabs {
-    classes: Vec<Option<GenSlab>>,
+    classes: [Option<GenSlab>; 32],
 }
 
 impl StrSlabs {
     const fn new() -> Self {
         Self {
-            classes: Vec::new(),
+            classes: [
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None,
+            ],
         }
     }
 
+    #[inline]
     fn slab(&mut self, cap: usize) -> &mut GenSlab {
         let idx = class_index(cap);
-        if idx >= self.classes.len() {
-            self.classes.resize_with(idx + 1, || None);
+        assert!(idx < 32, "olive: string size class limit exceeded");
+        if self.classes[idx].is_none() {
+            self.classes[idx] = Some(GenSlab::new(cap));
         }
-        self.classes[idx].get_or_insert_with(|| GenSlab::new(cap))
+        unsafe { self.classes[idx].as_mut().unwrap_unchecked() }
     }
 }
 
@@ -43,17 +49,20 @@ thread_local! {
 }
 
 /// Allocates a heap string from `bytes`, which must not contain an interior
-/// nul. Stores capacity class at body-16 for O(1) free. Returns the body
-/// pointer tagged with the low string bit.
+/// nul. Stores capacity class and length at body-16 for O(1) free. Returns the
+/// body pointer tagged with the low string bit.
 pub fn str_alloc(bytes: &[u8]) -> i64 {
-    let cap = class_bytes(bytes.len() + 1);
+    let len = bytes.len();
+    let cap = class_bytes(len + 1);
     STR_SLABS.with(|s| {
         let s = unsafe { &mut *s.get() };
         let (body, _) = s.slab(cap).alloc();
         unsafe {
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), body, bytes.len());
-            *body.add(bytes.len()) = 0;
-            *(body as *mut usize).sub(2) = cap;
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), body, len);
+            *body.add(len) = 0;
+            let cap_idx = cap.trailing_zeros() as usize;
+            let header_val = len | (cap_idx << 48);
+            *(body as *mut usize).sub(2) = header_val;
         }
         body as i64 | 1
     })
@@ -66,15 +75,20 @@ pub fn str_free(ptr: i64) {
     if body == 0 || !ptr_in_slab_span(body) {
         return;
     }
-    let cap = unsafe { *(body as *const usize).sub(2) };
+    let header_val = unsafe { *(body as *const usize).sub(2) };
+    let cap_idx = header_val >> 48;
     STR_SLABS.with(|s| {
         let s = unsafe { &mut *s.get() };
-        s.slab(cap).free(body as *mut u8);
+        if cap_idx < 32
+            && let Some(ref mut slab) = s.classes[cap_idx]
+        {
+            slab.free(body as *mut u8);
+        }
     });
 }
 
-/// Optimizes concatenation in-place when the buffer fits. Capacity read from
-/// header at body-16; no strlen. No sharing exists (all escapes deep-copy).
+/// Optimizes concatenation in-place when the buffer fits. Capacity and length
+/// read from header at body-16; no strlen. No sharing exists (all escapes deep-copy).
 pub fn str_concat_inplace(l: i64, l_bytes: &[u8], r_bytes: &[u8]) -> Option<i64> {
     let body = l & !1;
     if body == 0 || !ptr_in_slab_span(body) {
@@ -83,12 +97,16 @@ pub fn str_concat_inplace(l: i64, l_bytes: &[u8], r_bytes: &[u8]) -> Option<i64>
     let l_len = l_bytes.len();
     let r_len = r_bytes.len();
     let new_len = l_len + r_len;
-    let old_cap = unsafe { *(body as *const usize).sub(2) };
+    let header_val = unsafe { *(body as *const usize).sub(2) };
+    let cap_idx = header_val >> 48;
+    let old_cap = 1usize << cap_idx;
     let new_cap = class_bytes(new_len + 1);
     if new_cap <= old_cap {
         unsafe {
             std::ptr::copy_nonoverlapping(r_bytes.as_ptr(), (body as *mut u8).add(l_len), r_len);
             *(body as *mut u8).add(new_len) = 0;
+            let new_header = new_len | (cap_idx << 48);
+            *(body as *mut usize).sub(2) = new_header;
         }
         Some(l)
     } else {
@@ -99,9 +117,15 @@ pub fn str_concat_inplace(l: i64, l_bytes: &[u8], r_bytes: &[u8]) -> Option<i64>
                 std::ptr::copy_nonoverlapping(l_bytes.as_ptr(), new_body, l_len);
                 std::ptr::copy_nonoverlapping(r_bytes.as_ptr(), new_body.add(l_len), r_len);
                 *new_body.add(new_len) = 0;
-                *(new_body as *mut usize).sub(2) = new_cap;
+                let new_cap_idx = new_cap.trailing_zeros() as usize;
+                let new_header = new_len | (new_cap_idx << 48);
+                *(new_body as *mut usize).sub(2) = new_header;
             }
-            s.slab(old_cap).free(body as *mut u8);
+            if cap_idx < 32
+                && let Some(ref mut slab) = s.classes[cap_idx]
+            {
+                slab.free(body as *mut u8);
+            }
             Some(new_body as i64 | 1)
         })
     }

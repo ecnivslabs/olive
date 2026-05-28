@@ -45,7 +45,17 @@ fn register_chunk(start: usize, end: usize, slot_bytes: usize, live_count: *cons
     CHUNK_TABLE.store(Box::into_raw(Box::new(next)), Ordering::Release);
 }
 
+thread_local! {
+    static LAST_CHUNK: std::cell::Cell<Option<ChunkSpan>> = const { std::cell::Cell::new(None) };
+}
+
 fn find_chunk_for_addr(addr: usize) -> Option<ChunkSpan> {
+    if let Some(c) = LAST_CHUNK.with(|cache| cache.get())
+        && addr >= c.start
+        && addr < c.end
+    {
+        return Some(c);
+    }
     let table = CHUNK_TABLE.load(Ordering::Acquire);
     if table.is_null() {
         return None;
@@ -57,6 +67,7 @@ fn find_chunk_for_addr(addr: usize) -> Option<ChunkSpan> {
     }
     let c = chunks[i - 1];
     if addr >= c.start && addr < c.end {
+        LAST_CHUNK.with(|cache| cache.set(Some(c)));
         Some(c)
     } else {
         None
@@ -81,7 +92,7 @@ fn reclaim_pages(addr: usize, len: usize) {
         let start = (addr + page_size - 1) & !(page_size - 1);
         let end = (addr + len) & !(page_size - 1);
         if end > start {
-            extern "system" {
+            unsafe extern "system" {
                 fn VirtualAlloc(
                     lpAddress: *mut std::ffi::c_void,
                     dwSize: usize,
@@ -119,18 +130,9 @@ fn slab_header_of(val: i64) -> Option<*const AtomicU64> {
     if val <= 0 || val & 7 != 0 {
         return None;
     }
-    let table = CHUNK_TABLE.load(Ordering::Acquire);
-    if table.is_null() {
-        return None;
-    }
     let addr = val as usize;
-    let chunks = unsafe { &*table };
-    let i = chunks.partition_point(|c| c.start <= addr);
-    if i == 0 {
-        return None;
-    }
-    let c = chunks[i - 1];
-    if addr >= c.end || (addr - c.start) % c.slot_bytes != 16 {
+    let c = find_chunk_for_addr(addr)?;
+    if (addr - c.start) % c.slot_bytes != 16 {
         return None;
     }
     Some((addr - 8) as *const AtomicU64)
@@ -195,9 +197,20 @@ impl GenSlab {
         let slots = (CHUNK_TARGET / self.slot_bytes).max(1);
         let bytes = slots * self.slot_bytes;
         let layout = Layout::from_size_align(bytes, 8).unwrap();
-        // Zeroed so un-bumped slots read generation 0, even, dead.
-        let chunk = unsafe { std::alloc::alloc_zeroed(layout) };
+        // Allocate without zeroing, manually zeroing only the generation words.
+        let chunk = unsafe { std::alloc::alloc(layout) };
         assert!(!chunk.is_null(), "olive: slab chunk allocation failed");
+
+        // Zero only the generation word (body - 8) of each slot so un-bumped slots read as dead.
+        let mut ptr = chunk;
+        for _ in 0..slots {
+            unsafe {
+                let gen_ptr = ptr.add(8) as *mut AtomicU64;
+                (*gen_ptr).store(0, Ordering::Relaxed);
+                ptr = ptr.add(self.slot_bytes);
+            }
+        }
+
         let live_count = Box::into_raw(Box::new(AtomicUsize::new(0)));
         register_chunk(
             chunk as usize,
