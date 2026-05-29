@@ -501,6 +501,38 @@ pub extern "C" fn olive_write_nl() -> i64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn olive_write_int(val: i64) -> i64 {
+    print!("{}", val);
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_write_bool(val: i64) -> i64 {
+    if val == 0 {
+        print!("False");
+    } else {
+        print!("True");
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_write_float(val: f64) -> i64 {
+    print!("{}", fmt_float(val));
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_write_str(val: i64) -> i64 {
+    if val == 0 {
+        print!("None");
+    } else {
+        print!("{}", olive_str_from_ptr(val));
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn olive_print_obj(ptr: i64) -> i64 {
     if ptr == 0 {
         println!("{{}}");

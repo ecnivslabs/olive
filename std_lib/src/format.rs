@@ -462,3 +462,10 @@ pub extern "C" fn olive_print_typed(val: i64, desc: i64) -> i64 {
     println!("{}", fmt(val, desc as *const u8, &mut pos));
     0
 }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_write_typed(val: i64, desc: i64) -> i64 {
+    let mut pos = 0usize;
+    print!("{}", fmt(val, desc as *const u8, &mut pos));
+    0
+}
