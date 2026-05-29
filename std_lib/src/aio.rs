@@ -609,7 +609,8 @@ pub extern "C" fn olive_chan_send(chan: i64, val: i64) -> i64 {
     if ch.closed.load(Ordering::SeqCst) {
         return 0;
     }
-    ch.queue.lock().unwrap().push_back(val);
+    let relocated = crate::copy_typed::relocate_across_boundary(val);
+    ch.queue.lock().unwrap().push_back(relocated);
     ch.cvar.notify_one();
     1
 }
@@ -674,8 +675,9 @@ struct OliveMutex {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_mutex_new(val: i64) -> i64 {
+    let relocated = crate::copy_typed::relocate_across_boundary(val);
     Box::into_raw(Box::new(OliveMutex {
-        inner: Mutex::new((false, val)),
+        inner: Mutex::new((false, relocated)),
         cvar: Condvar::new(),
     })) as i64
 }
@@ -699,10 +701,11 @@ pub extern "C" fn olive_mutex_unlock(m: i64, new_val: i64) {
     if m == 0 {
         return;
     }
+    let relocated = crate::copy_typed::relocate_across_boundary(new_val);
     let mx = unsafe { &*(m as *const OliveMutex) };
     let mut guard = mx.inner.lock().unwrap();
     guard.0 = false;
-    guard.1 = new_val;
+    guard.1 = relocated;
     mx.cvar.notify_one();
 }
 
@@ -780,10 +783,11 @@ pub extern "C" fn olive_pool_run(fn_ptr: i64, arg: i64) -> i64 {
         cvar: Condvar::new(),
     });
     let shared2 = shared.clone();
-    // arg deep-copied before thread boundary.
+    let arg = crate::copy_typed::relocate_across_boundary(arg);
     std::thread::spawn(move || {
         let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(fn_ptr as usize) };
         let result = f(arg);
+        let result = crate::copy_typed::relocate_across_boundary(result);
         let mut state = shared2.state.lock().unwrap();
         *state = FutureState::Ready(result);
         shared2.cvar.notify_all();
@@ -804,10 +808,11 @@ pub extern "C" fn olive_pool_run_sync(fn_ptr: i64, arg: i64) -> i64 {
         cvar: Condvar::new(),
     });
     let shared2 = shared.clone();
-    // arg deep-copied before thread boundary.
+    let arg = crate::copy_typed::relocate_across_boundary(arg);
     std::thread::spawn(move || {
         let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(fn_ptr as usize) };
         let result = f(arg);
+        let result = crate::copy_typed::relocate_across_boundary(result);
         let mut state = shared2.state.lock().unwrap();
         *state = FutureState::Ready(result);
         shared2.cvar.notify_all();

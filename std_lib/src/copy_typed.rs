@@ -1,19 +1,5 @@
-//! Descriptor-driven deep copy, the mirror of `free_typed`. The compiler passes
-//! the static type of an escaping value as the same byte descriptor
-//! `olive_format_typed` and `olive_free_typed` consume, so a borrowed element
-//! stored into a longer-lived container becomes an independent value the
-//! container owns outright.
-//!
-//! Copy is bounded by the descriptor, not the data: a recursive field is cut to
-//! `D_OBJ` at emit time, so `copy_val` returns the shared word there and never
-//! recurses forever on a data cycle. The untyped `D_ANY` walk has no descriptor
-//! to bound it, so it copies via an explicit heap-allocated worklist instead of
-//! native recursion, with no depth limit; a cycle resolves through the same
-//! `COPY_VISITED` map the typed walk uses.
-//!
-//! A stored string is cloned through `olive_copy`, which lifts a literal or a
-//! heap string into a fresh heap string; an interned attribute symbol (untagged)
-//! is immortal and shared as-is so dict and struct keys keep their identity.
+//! Descriptor-driven deep copy, the mirror of `free_typed`.
+//! D_ANY has no descriptor to bound it, so it copies via a worklist, cycles resolved by `COPY_VISITED`.
 
 use crate::boxed::TAG_MASK;
 use crate::format::{
@@ -391,11 +377,20 @@ enum AnyDest {
 /// children are queued, so a cycle resolves to the already-allocated shell
 /// exactly as the recursive form did, but the walk is bounded by heap, not
 /// by call-stack depth.
-fn copy_any(val: i64, visited: &mut FxHashMap<i64, i64>) -> i64 {
+pub(crate) fn copy_any(val: i64, visited: &mut FxHashMap<i64, i64>) -> i64 {
+    copy_any_impl(val, visited, false)
+}
+
+/// Native ints can be odd too; gate string check on slab membership.
+fn copy_boundary(val: i64, visited: &mut FxHashMap<i64, i64>) -> i64 {
+    copy_any_impl(val, visited, true)
+}
+
+fn copy_any_impl(val: i64, visited: &mut FxHashMap<i64, i64>, boundary: bool) -> i64 {
     let mut root = 0i64;
     let mut stack: Vec<(i64, AnyDest)> = vec![(val, AnyDest::Root)];
     while let Some((src, dest)) = stack.pop() {
-        let copied = copy_any_node(src, &mut stack, visited);
+        let copied = copy_any_node(src, &mut stack, visited, boundary);
         match dest {
             AnyDest::Root => root = copied,
             AnyDest::List(list, i) => crate::list::olive_list_set(list, i, copied),
@@ -411,6 +406,11 @@ fn copy_any(val: i64, visited: &mut FxHashMap<i64, i64>) -> i64 {
     root
 }
 
+/// Copies val into GLOBAL_SLABS before it crosses; copy semantics, original untouched.
+pub(crate) fn relocate_across_boundary(val: i64) -> i64 {
+    crate::slab::with_escape_arena(|| copy_boundary(val, &mut FxHashMap::default()))
+}
+
 /// Copies one `D_ANY` node. Leaves resolve immediately; a container
 /// allocates its shell, marks it visited, and pushes `(child, dest)` work
 /// for each element so the caller's stack keeps walking instead of recursing.
@@ -418,12 +418,19 @@ fn copy_any_node(
     val: i64,
     stack: &mut Vec<(i64, AnyDest)>,
     visited: &mut FxHashMap<i64, i64>,
+    boundary: bool,
 ) -> i64 {
-    if val == 0 || val & TAG_MASK != 0 {
+    if val == 0 {
         return val;
     }
     if val & 1 != 0 {
+        if boundary && !crate::slab::ptr_in_slab_span(val & !1) {
+            return val;
+        }
         return crate::olive_copy(val);
+    }
+    if val & TAG_MASK != 0 {
+        return val;
     }
     if !crate::is_active_object(val) {
         return val;

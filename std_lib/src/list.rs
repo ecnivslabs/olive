@@ -481,6 +481,14 @@ pub(crate) unsafe fn settle_list_buffer(ptr: i64) {
 }
 
 pub(crate) fn free_list_slot_raw(ptr: i64) {
+    if crate::slab::chunk_is_global(ptr as usize) {
+        crate::slab::with_escape_arena(|| free_list_slot_raw_local(ptr));
+    } else {
+        free_list_slot_raw_local(ptr);
+    }
+}
+
+fn free_list_slot_raw_local(ptr: i64) {
     unsafe {
         let active = crate::slab::ACTIVE_SLABS.get();
         if !active.is_null() {

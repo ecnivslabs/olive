@@ -15,6 +15,7 @@ struct ChunkSpan {
     end: usize,
     slot_bytes: usize,
     live_count: *const AtomicUsize,
+    is_global: bool,
 }
 
 unsafe impl Send for ChunkSpan {}
@@ -23,7 +24,13 @@ unsafe impl Sync for ChunkSpan {}
 static CHUNK_TABLE: AtomicPtr<Vec<ChunkSpan>> = AtomicPtr::new(std::ptr::null_mut());
 static CHUNK_WRITER: Mutex<()> = Mutex::new(());
 
-fn register_chunk(start: usize, end: usize, slot_bytes: usize, live_count: *const AtomicUsize) {
+fn register_chunk(
+    start: usize,
+    end: usize,
+    slot_bytes: usize,
+    live_count: *const AtomicUsize,
+    is_global: bool,
+) {
     let _guard = CHUNK_WRITER.lock().unwrap();
     let cur = CHUNK_TABLE.load(Ordering::Acquire);
     let mut next = if cur.is_null() {
@@ -39,6 +46,7 @@ fn register_chunk(start: usize, end: usize, slot_bytes: usize, live_count: *cons
             end,
             slot_bytes,
             live_count,
+            is_global,
         },
     );
     CHUNK_TABLE.store(Box::into_raw(Box::new(next)), Ordering::Release);
@@ -240,11 +248,13 @@ impl GenSlab {
         }
 
         let live_count = Box::into_raw(Box::new(AtomicUsize::new(0)));
+        let is_global = is_within_global_slabs(self as *const GenSlab as usize);
         register_chunk(
             chunk as usize,
             chunk as usize + bytes,
             self.slot_bytes,
             live_count,
+            is_global,
         );
         self.bump = chunk;
         self.bump_end = unsafe { chunk.add(bytes) };
@@ -595,8 +605,14 @@ pub struct SlabSet {
     pub str_slabs: [Option<GenSlab>; 32],
 }
 
+impl Default for SlabSet {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SlabSet {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             list: GenSlab::new(std::mem::size_of::<crate::StableVec>()),
             obj: GenSlab::new(std::mem::size_of::<crate::OliveObj>()),
@@ -609,4 +625,31 @@ impl SlabSet {
             ],
         }
     }
+}
+
+/// Process-lifetime arena for values crossing a task/thread boundary; never torn down.
+static GLOBAL_SLABS: Mutex<SlabSet> = Mutex::new(SlabSet::new());
+
+fn is_within_global_slabs(addr: usize) -> bool {
+    let base = (&GLOBAL_SLABS as *const Mutex<SlabSet>) as usize;
+    let end = base + std::mem::size_of::<Mutex<SlabSet>>();
+    addr >= base && addr < end
+}
+
+/// Whether addr's chunk is GLOBAL_SLABS; its frees must route through that lock.
+pub fn chunk_is_global(addr: usize) -> bool {
+    find_chunk_for_addr(addr)
+        .map(|c| c.is_global)
+        .unwrap_or(false)
+}
+
+/// Redirects ACTIVE_SLABS to the locked global arena for the duration of `f`.
+pub fn with_escape_arena<T>(f: impl FnOnce() -> T) -> T {
+    let mut guard = GLOBAL_SLABS.lock().unwrap();
+    let slabs_ptr = &mut *guard as *mut SlabSet;
+    let old = ACTIVE_SLABS.get();
+    ACTIVE_SLABS.set(slabs_ptr);
+    let result = f();
+    ACTIVE_SLABS.set(old);
+    result
 }
