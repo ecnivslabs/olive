@@ -13,6 +13,7 @@ pub mod span;
 pub mod tooling;
 
 #[cfg(test)]
+pub mod builtin_tests;
 pub mod eq_tests;
 #[cfg(test)]
 pub mod hash_tests;

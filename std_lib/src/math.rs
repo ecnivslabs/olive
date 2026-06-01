@@ -48,6 +48,31 @@ pub extern "C" fn olive_math_exp(x: f64) -> f64 {
     x.exp()
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_math_abs(x: f64) -> f64 {
+    x.abs()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_int_abs(x: i64) -> i64 {
+    x.abs()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_math_round_to_int(x: f64) -> i64 {
+    x.round() as i64
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_math_round_with_digits(x: f64, ndigits: i64) -> f64 {
+    if ndigits == 0 {
+        x.round()
+    } else {
+        let factor = 10f64.powi(ndigits as i32);
+        (x * factor).round() / factor
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

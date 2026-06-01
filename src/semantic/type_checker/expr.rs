@@ -316,6 +316,128 @@ impl TypeChecker {
                     self.unify(&ta, &tb, expr.span);
                     return self.apply_subst(ta);
                 }
+                if let ExprKind::Identifier(name) = &callee.kind
+                    && name == "abs"
+                    && args.len() == 1
+                    && self.lookup_type(name).is_none()
+                    && let CallArg::Positional(arg) = &args[0]
+                {
+                    let raw = self.check_expr(arg);
+                    let arg_ty = self.apply_subst(raw);
+                    match &arg_ty {
+                        Type::Int | Type::IntegerLiteral(_) => return Type::Int,
+                        Type::Float | Type::F32 | Type::FloatLiteral(_) => return Type::Float,
+                        Type::Any => return Type::Any,
+                        _ => {
+                            self.errors.push(super::super::error::SemanticError::rich(
+                                crate::compile::errors::Diagnostic::error(
+                                    "E0404",
+                                    format!("`abs` requires a numeric argument, got `{arg_ty}`"),
+                                    arg.span,
+                                )
+                                .label("expected int or float"),
+                            ));
+                            return arg_ty;
+                        }
+                    }
+                }
+                if let ExprKind::Identifier(name) = &callee.kind
+                    && name == "round"
+                    && args.len() == 1
+                    && self.lookup_type(name).is_none()
+                    && let CallArg::Positional(arg) = &args[0]
+                {
+                    let raw = self.check_expr(arg);
+                    let arg_ty = self.apply_subst(raw);
+                    if !matches!(
+                        &arg_ty,
+                        Type::Float | Type::F32 | Type::FloatLiteral(_) | Type::Any
+                    ) {
+                        self.errors.push(super::super::error::SemanticError::rich(
+                            crate::compile::errors::Diagnostic::error(
+                                "E0404",
+                                format!("`round` requires a float argument, got `{arg_ty}`"),
+                                arg.span,
+                            )
+                            .label("expected float"),
+                        ));
+                    }
+                    return Type::Int;
+                }
+                if let ExprKind::Identifier(name) = &callee.kind
+                    && name == "round"
+                    && args.len() == 2
+                    && self.lookup_type(name).is_none()
+                {
+                    fn arg_expr(a: &CallArg) -> &Expr {
+                        match a {
+                            CallArg::Positional(e)
+                            | CallArg::Keyword(_, e)
+                            | CallArg::Splat(e)
+                            | CallArg::KwSplat(e) => e,
+                        }
+                    }
+                    let a = arg_expr(&args[0]);
+                    let b = arg_expr(&args[1]);
+                    let ta = self.check_expr(a);
+                    let tb = self.check_expr(b);
+                    let a_ty = self.apply_subst(ta);
+                    let b_ty = self.apply_subst(tb);
+                    if !matches!(
+                        &a_ty,
+                        Type::Float | Type::F32 | Type::FloatLiteral(_) | Type::Any
+                    ) {
+                        self.errors.push(super::super::error::SemanticError::rich(
+                            crate::compile::errors::Diagnostic::error(
+                                "E0404",
+                                format!("first argument of `round` must be float, got `{a_ty}`"),
+                                a.span,
+                            )
+                            .label("expected float"),
+                        ));
+                    }
+                    if !matches!(&b_ty, Type::Int | Type::IntegerLiteral(_) | Type::Any) {
+                        self.errors.push(super::super::error::SemanticError::rich(
+                            crate::compile::errors::Diagnostic::error(
+                                "E0404",
+                                format!("ndigits must be int, got `{b_ty}`"),
+                                b.span,
+                            )
+                            .label("expected int"),
+                        ));
+                    }
+                    return Type::Float;
+                }
+                if let ExprKind::Identifier(name) = &callee.kind
+                    && name == "input"
+                    && (args.is_empty() || args.len() == 1)
+                    && self.lookup_type(name).is_none()
+                {
+                    if args.len() == 1 {
+                        fn arg_expr(a: &CallArg) -> &Expr {
+                            match a {
+                                CallArg::Positional(e)
+                                | CallArg::Keyword(_, e)
+                                | CallArg::Splat(e)
+                                | CallArg::KwSplat(e) => e,
+                            }
+                        }
+                        let arg = arg_expr(&args[0]);
+                        let raw = self.check_expr(arg);
+                        let arg_ty = self.apply_subst(raw);
+                        if !matches!(&arg_ty, Type::Str | Type::Any) {
+                            self.errors.push(super::super::error::SemanticError::rich(
+                                crate::compile::errors::Diagnostic::error(
+                                    "E0404",
+                                    format!("`input` prompt must be a string, got `{arg_ty}`"),
+                                    arg.span,
+                                )
+                                .label("expected str"),
+                            ));
+                        }
+                    }
+                    return Type::Str;
+                }
                 if let ExprKind::Attr { obj, attr } = &callee.kind
                     && let Some(ret) = self.builtin_collection_method(obj, attr, args)
                 {

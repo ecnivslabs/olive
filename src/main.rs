@@ -1,9 +1,10 @@
 mod borrow_check;
+#[cfg(test)]
+mod builtin_tests;
 mod codegen;
 mod commands;
 mod compile;
 mod diagnostics;
-#[cfg(test)]
 mod eq_tests;
 mod fmt;
 #[cfg(test)]

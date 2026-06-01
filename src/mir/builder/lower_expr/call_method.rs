@@ -23,6 +23,9 @@ fn is_type_dispatched_builtin(name: &str) -> bool {
             | "slice"
             | "list"
             | "dict"
+            | "abs"
+            | "round"
+            | "input"
     )
 }
 

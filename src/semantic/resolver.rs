@@ -47,6 +47,9 @@ impl Resolver {
             "Error::Error",
             "enumerate",
             "zip",
+            "abs",
+            "round",
+            "input",
         ];
         for name in builtin_fns {
             table.define(Symbol {
