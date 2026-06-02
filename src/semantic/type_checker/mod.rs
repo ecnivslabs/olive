@@ -1,8 +1,11 @@
+mod builtins;
+mod collection_methods;
 mod eq;
 mod expr;
 mod narrow;
 mod patterns;
 mod stmt;
+mod string_methods;
 mod unify;
 
 use super::error::SemanticError;

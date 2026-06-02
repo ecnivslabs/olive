@@ -92,6 +92,54 @@ pub extern "C" fn olive_set_remove_typed(set_ptr: i64, val: i64, key_desc: i64) 
     with_key_descriptor(key_desc, || crate::set::olive_set_remove(set_ptr, val))
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_set_remove_checked_typed(
+    set_ptr: i64,
+    val: i64,
+    loc: i64,
+    key_desc: i64,
+) -> i64 {
+    with_key_descriptor(key_desc, || {
+        crate::set::olive_set_remove_checked(set_ptr, val, loc)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_obj_pop_checked_typed(
+    obj_ptr: i64,
+    attr: i64,
+    loc: i64,
+    key_desc: i64,
+) -> i64 {
+    with_key_descriptor(key_desc, || {
+        crate::obj::olive_obj_pop_checked(obj_ptr, attr, loc)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_obj_pop_default_typed(
+    obj_ptr: i64,
+    attr: i64,
+    default: i64,
+    key_desc: i64,
+) -> i64 {
+    with_key_descriptor(key_desc, || {
+        crate::obj::olive_obj_pop_default(obj_ptr, attr, default)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_obj_setdefault_typed(
+    obj_ptr: i64,
+    attr: i64,
+    default: i64,
+    key_desc: i64,
+) -> i64 {
+    with_key_descriptor(key_desc, || {
+        crate::obj::olive_obj_setdefault(obj_ptr, attr, default)
+    })
+}
+
 /// `key in dict`.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_in_obj_typed(key: i64, obj_ptr: i64, key_desc: i64) -> i64 {

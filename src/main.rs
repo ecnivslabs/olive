@@ -2,6 +2,8 @@ mod borrow_check;
 #[cfg(test)]
 mod builtin_tests;
 mod codegen;
+#[cfg(test)]
+mod collection_method_tests;
 mod commands;
 mod compile;
 mod diagnostics;
@@ -20,11 +22,19 @@ mod numeric_underscore_tests;
 mod opt_attr_tests;
 mod parser;
 #[cfg(test)]
+mod power_tests;
+#[cfg(test)]
 mod regression_tests;
+#[cfg(test)]
+mod repeat_tests;
 #[cfg(test)]
 mod scalar_attr_tests;
 mod semantic;
+#[cfg(test)]
+mod small_reflex_tests;
 mod span;
+#[cfg(test)]
+mod string_method_tests;
 #[cfg(test)]
 mod test_utils;
 mod tooling;

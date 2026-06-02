@@ -62,6 +62,19 @@ fn narrow_and_chain() {
 }
 
 #[test]
+fn narrow_and_chain_same_var_field() {
+    // Right side of `and` must see left side's narrow facts so field
+    // access on the narrowed type compiles without E0428/E0404.
+    let codes = check_codes(
+        "struct Foo:\n    val: int\nfn f(x: Foo | None) -> int:\n    if x != None and int(x.val) == 0:\n        return 1\n    return -1\n",
+    );
+    assert!(
+        !codes.contains(&"E0428".to_string()),
+        "expected no E0428 (access on None), got {codes:?}"
+    );
+}
+
+#[test]
 fn narrow_not_wrap() {
     let mut cg = compile(
         "fn f(x: int | None) -> int:\n    if not (x == None):\n        return x + 1\n    return -1\n",

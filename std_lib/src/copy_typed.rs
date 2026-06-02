@@ -109,6 +109,73 @@ pub extern "C" fn olive_list_getslice_typed(
     new
 }
 
+/// `xs * n` for heap-element lists; every repetition gets its own deep copy
+/// of each element, so `[[1]] * 3` yields three independent rows.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_repeat_typed(ptr: i64, n: i64, desc: i64) -> i64 {
+    if n <= 0 || ptr == 0 || !slot_is_live(ptr) {
+        return crate::list::olive_list_new(0);
+    }
+    let (kind, eptr, elen) = unsafe {
+        let s = &*(ptr as *const StableVec);
+        (s.kind, s.ptr, s.len)
+    };
+    let new = crate::list::olive_list_new(elen as i64 * n);
+    COPY_VISITED.with(|v| {
+        let mut visited = v.borrow_mut();
+        let mut out = 0i64;
+        for _ in 0..n {
+            // Cleared per repetition, not per element: aliasing within one
+            // tile stays intact (matches concat/getslice), but tile N+1 must
+            // not reuse tile N's copies, or all tiles alias one row.
+            visited.clear();
+            for i in 0..elen {
+                let mut pos = 1usize;
+                let c = copy_val(
+                    unsafe { *eptr.add(i) },
+                    desc as *const u8,
+                    &mut pos,
+                    &mut visited,
+                );
+                crate::list::olive_list_set(new, out, c);
+                out += 1;
+            }
+        }
+        visited.clear();
+    });
+    unsafe { (*(new as *mut StableVec)).kind = kind };
+    new
+}
+
+/// `d.update(other)` for heap-owning values: `other` keeps its own entries,
+/// `d` gets independent copies. `desc` is `other`'s own `Dict(K, V)`
+/// descriptor (`[D_DICT, <key-desc>, <value-desc>]`); the key descriptor is
+/// skipped to find the value descriptor's start, mirroring `copy_dict`.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_obj_update_typed(obj_ptr: i64, other_ptr: i64, desc: i64) -> i64 {
+    if obj_ptr == 0 || other_ptr == 0 || !slot_is_live(other_ptr) {
+        return obj_ptr;
+    }
+    let entries: Vec<(i64, i64)> = {
+        let om = unsafe { &*(other_ptr as *const OliveObj) };
+        om.fields.iter().map(|(k, &v)| (k.0, v)).collect()
+    };
+    let mut key_pos = 1usize;
+    crate::format::skip(desc as *const u8, &mut key_pos);
+    let val_start = key_pos;
+    COPY_VISITED.with(|v| {
+        let mut visited = v.borrow_mut();
+        visited.clear();
+        for (k, v) in entries {
+            let mut vp = val_start;
+            let vc = copy_val(v, desc as *const u8, &mut vp, &mut visited);
+            crate::obj::olive_obj_set(obj_ptr, k, vc);
+        }
+        visited.clear();
+    });
+    obj_ptr
+}
+
 /// Extend for heap-element lists; source keeps its elements, target appends copies.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_list_extend_typed(target: i64, source: i64, desc: i64) {

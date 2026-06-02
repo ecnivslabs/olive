@@ -48,6 +48,31 @@ let price = 19_99.99
 let mask = 0xFF_FF_00_00
 ```
 
+### Arithmetic Operators
+
+`+ - * /` work as expected, with one deliberate divergence from Python:
+integer `/` truncates toward zero (Rust semantics) rather than flooring.
+`**` is exponentiation, right-associative, binding tighter than unary minus
+so `-2 ** 2` is `-4`, not `4`:
+
+```rust
+print(2 ** 10)     // 1024
+print(-2 ** 2)     // -4
+print(2 ** 3 ** 2) // 512, ** groups right: 2 ** (3 ** 2)
+print(2.0 ** 0.5)  // 1.4142135623730951
+```
+
+`/`'s truncation means `-7 / 2` is `-3`, not Python's `-4`. Reach for
+`math.floordiv` (int) or `math.ffloordiv` (float) when you want the floor
+instead:
+
+```rust
+import math
+
+print(-7 / 2)               // -3, truncated
+print(math.floordiv(-7, 2)) // -4, floored
+```
+
 ### Union Types
 
 You can allow a variable or parameter to accept one of multiple specified types using a union (`|`):
@@ -108,6 +133,16 @@ let version = 1.0
 print(f"Welcome to {name} v{version:.2f}")
 ```
 
+A trailing `=` inside the braces is the debug form: it prints the source
+text of the expression, an `=`, and its value, useful for quick print
+debugging. A format spec still applies after the `=`:
+
+```rust
+let x = 5
+print(f"{x=}")       // x=5
+print(f"{x=:04d}")   // x=0005
+```
+
 ### String Methods
 
 Strings carry the common text operations:
@@ -121,7 +156,19 @@ print(",".join(["x", "y", "z"]))   // x,y,z
 print("hello".replace("l", "L"))   // heLLo
 print("hello".find("ll"))          // 2
 print("hello".startswith("he"))    // True
+print("ab" * 3)                     // ababab
 ```
+
+The full method set: `upper`, `lower`, `strip`/`lstrip`/`rstrip` (optionally
+`strip(chars)` to trim a specific character set instead of whitespace),
+`split()` (no argument splits on whitespace runs) / `split(sep)`, `join`,
+`replace`, `find` / `rfind` (search from the end) / `count`, `contains`,
+`startswith` / `endswith`, `removeprefix` / `removesuffix`, `repeat(n)`
+(same as `s * n`), `splitlines`, `title` / `capitalize`, `zfill(width)`,
+`ljust(width, fillchar=" ")` / `rjust(width, fillchar=" ")` /
+`center(width, fillchar=" ")`, `partition(sep)` (returns a
+`(before, sep, after)` tuple), and the `isdigit` / `isalpha` / `isspace` /
+`isupper` / `islower` family.
 
 Iterate a string by character:
 
@@ -143,7 +190,11 @@ let first = numbers[0]
 let last = numbers.pop()  // removes and returns 4
 ```
 
-Lists also support `insert(index, value)`, `remove(index)`, `extend(other)`, `sort()`, and `reverse()`. Two lists join with `+`.
+Lists also support `insert(index, value)`, `remove(index)`, `extend(other)`,
+`sort()`, `reverse()`, `count(x)`, `index(x)` (faults if `x` is absent; pair
+it with `in` to check first), and `clear()`. Two lists join with `+`;
+`xs * n` repeats a list `n` times (`n <= 0` gives an empty list), deep-copying
+elements so each repetition is independent.
 
 ### Slicing
 
@@ -193,7 +244,12 @@ print(scores.get("Bob"))
 
 Dicts and sets are hash-backed, so iteration order is unspecified and may differ from insertion order. Do not rely on it; sort the keys if you need a stable order.
 
-A dict supports `get(key)`, `keys()`, `values()`, `items()`, and `remove(key)`. Iterate the keys directly, or the key-value pairs with `items()`:
+A dict supports `get(key)` / `get(key, default)`, `keys()`, `values()`,
+`items()`, `remove(key)`, `pop(key)` (faults if absent) / `pop(key, default)`,
+`setdefault(key, default)` (returns the existing value, or inserts and
+returns `default`), `update(other)` (merges `other` in, overwriting on a key
+conflict; `other` itself is untouched), and `clear()`. Iterate the keys
+directly, or the key-value pairs with `items()`:
 
 ```rust
 for name in scores:
@@ -210,6 +266,11 @@ Unordered collections of unique elements:
 ```rust
 let valid_ids = {101, 102, 103}
 ```
+
+A set supports `add(x)`, `contains(x)`, `remove(x)` (faults if `x` is
+absent), `discard(x)` (never faults), and `clear()`. The algebra operators
+work directly on two sets: `&` intersection, `|` union, `-` difference, `^`
+symmetric difference.
 
 ### Tuples
 
@@ -260,6 +321,15 @@ for i in 1..=5:       // 1, 2, 3, 4, 5
     print(i)
 ```
 
+A range also works directly as the right side of `in`/`not in`, testing
+membership without building a loop:
+
+```rust
+let n = 5
+print(n in 0..10)     // True
+print(15 not in 0..10) // True
+```
+
 Iteration borrows the collection, not consumes. The iterable stays usable after the loop:
 
 ```rust
@@ -296,9 +366,16 @@ The optimizer converts the implicit copy to a move when it is not used again.
 
 ## Built-in Functions
 
-* `print(...)`: Writes output to standard out.
+* `print(a, b, ...)`: Writes any number of values to standard out, space-separated.
 * `len(obj)`: Returns the number of elements in a collection.
 * `type(obj)`: Returns the type name as a string.
 * `assert(condition, message)`: Aborts execution with a message if the condition is false.
+* `abs(n)`: Absolute value; works on `int` and `float`.
+* `round(x)` / `round(x, ndigits)`: Rounds a float, to the nearest int or to `ndigits` decimal places.
+* `input(prompt: str = "")`: Writes `prompt` with no trailing newline, reads and returns one line from stdin.
+* `sum(xs)`, `min(xs)`, `max(xs)`: Reduce a list; `min`/`max` also take two plain arguments, `min(a, b)`.
+* `sorted(xs)`: Returns a new sorted list; the source list is untouched.
+* `reversed(xs)`: Returns a new list in reverse order; the source list is untouched.
+* `any(xs)` / `all(xs)`: Whether any/all elements of a `[bool]` (or `[Any]` holding bools) are true.
 
-Integer ranges are written with the `..` and `..=` operators rather than a function, for example `0..n` or `1..=n`.
+Integer ranges are written with the `..` and `..=` operators rather than a function, for example `0..n` or `1..=n`. A range also works directly on the right of `in`/`not in`: `x in 0..10`.
