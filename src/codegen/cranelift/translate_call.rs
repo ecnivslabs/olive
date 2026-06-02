@@ -3,6 +3,7 @@ use super::imports::map_builtin_to_runtime;
 use super::translate::truncate_for_store;
 use crate::mir::{Constant, Local, MirFunction, Operand};
 use crate::semantic::types::Type as OliveType;
+use cranelift::codegen::ir::BlockArg;
 use cranelift::prelude::*;
 use cranelift_module::{DataId, FuncId, Module};
 use rustc_hash::FxHashMap as HashMap;
@@ -106,9 +107,49 @@ impl<M: Module> CraneliftCodegen<M> {
             }
 
             // Copy-on-escape: deep-copy a borrowed value so the container it
-            // enters owns an independent one. The descriptor comes from the
-            // argument's static type, like the typed print/free paths.
-            if name == "__olive_copy_typed" && call_args.len() == 1 {
+            // enters owns an independent one. `__olive_relocate_typed`
+            // (E5.6) is the same shape one level up: the same descriptor,
+            // wrapped in the shared escape arena so the copy survives the
+            // sending task completing. The descriptor comes from the
+            // argument's static type, like the typed print/free paths --
+            // except a closure record, whose descriptor is per-instance, not
+            // per-type (see the `Drop` arm in translate.rs for why); it's
+            // loaded back from the record itself at runtime instead.
+            let is_copy_intrinsic =
+                name == "__olive_copy_typed" || name == "__olive_relocate_typed";
+            if is_copy_intrinsic
+                && call_args.len() == 1
+                && let OliveType::Fn(..) = super::imports::concrete_ty(&arg_type)
+            {
+                let val = call_args[0];
+                let nz_bb = builder.create_block();
+                let done_bb = builder.create_block();
+                builder.append_block_param(done_bb, types::I64);
+                let nonnull = builder.ins().icmp_imm(IntCC::NotEqual, val, 0);
+                builder
+                    .ins()
+                    .brif(nonnull, nz_bb, &[], done_bb, &[BlockArg::Value(val)]);
+
+                builder.seal_block(nz_bb);
+                builder.switch_to_block(nz_bb);
+                // See the analogous strip in translate.rs's `Drop` arm: the
+                // record's `__desc` field is tagged like any other
+                // `Constant::Str`, and must be untagged before use as a raw
+                // descriptor pointer.
+                let desc_tagged = builder.ins().load(types::I64, MemFlags::trusted(), val, 16);
+                let desc_ptr = builder.ins().band_imm(desc_tagged, -2);
+                let func_id = func_ids[name.as_str()];
+                let local_func = module.declare_func_in_func(func_id, builder.func);
+                let inst = builder.ins().call(local_func, &[val, desc_ptr]);
+                let copied = builder.inst_results(inst)[0];
+                builder.ins().jump(done_bb, &[BlockArg::Value(copied)]);
+
+                builder.seal_block(done_bb);
+                builder.switch_to_block(done_bb);
+                return builder.block_params(done_bb)[0];
+            }
+
+            if is_copy_intrinsic && call_args.len() == 1 {
                 let desc = super::imports::type_descriptor(
                     &arg_type,
                     struct_fields,
@@ -120,7 +161,7 @@ impl<M: Module> CraneliftCodegen<M> {
                     .expect("copy descriptor not interned during collection");
                 let local_data = module.declare_data_in_func(data_id, builder.func);
                 let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
-                let func_id = func_ids["__olive_copy_typed"];
+                let func_id = func_ids[name.as_str()];
                 let local_func = module.declare_func_in_func(func_id, builder.func);
                 let inst = builder.ins().call(local_func, &[call_args[0], desc_ptr]);
                 return builder.inst_results(inst)[0];
@@ -663,6 +704,51 @@ impl<M: Module> CraneliftCodegen<M> {
                 "internal error: call to unregistered runtime function `{resolved_name}` \
                  (no matching builtin, FFI entry, or compiled function). This is a compiler bug."
             );
+        } else if let OliveType::Fn(_, ret_ty, _) =
+            super::imports::concrete_ty(&super::imports::operand_static_type(func, func_mir))
+        {
+            // A closure value is always the record pointer built by
+            // `closures.rs::build_closure_value`: word 1 is the calling
+            // thunk, which takes the call's own args plus the record itself
+            // as a trailing hidden env argument (uniform across capturing
+            // and non-capturing closures alike, so every indirect call site
+            // has exactly one shape -- see the E5.2/E5.3 design note). A
+            // direct call by name never reaches this branch at all. Other
+            // indirect-call shapes (trait-object vtable dispatch, a raw
+            // FFI function pointer) are plain code addresses, not records --
+            // the `else` arm below keeps calling those exactly as before.
+            let record_ptr =
+                Self::translate_operand(builder, func, vars, string_ids, module, func_ids);
+            let thunk_ptr = builder
+                .ins()
+                .load(types::I64, MemFlags::trusted(), record_ptr, 8);
+
+            let mut sig = module.make_signature();
+            sig.call_conv = module.isa().default_call_conv();
+
+            for &a in &call_args {
+                sig.params
+                    .push(AbiParam::new(builder.func.dfg.value_type(a)));
+            }
+            sig.params.push(AbiParam::new(types::I64));
+            // The real return type, not a hardcoded I64: SysV passes a float
+            // return in XMM0, an int return in RAX, so a mismatched
+            // signature here reads whichever register the callee didn't
+            // actually use.
+            sig.returns
+                .push(AbiParam::new(super::imports::cl_type(ret_ty)));
+
+            let sig_ref = builder.import_signature(sig);
+            let mut full_args = call_args.clone();
+            full_args.push(record_ptr);
+            let inst = builder.ins().call_indirect(sig_ref, thunk_ptr, &full_args);
+            let results = builder.inst_results(inst);
+
+            if results.is_empty() {
+                builder.ins().iconst(types::I64, 0)
+            } else {
+                results[0]
+            }
         } else {
             let fn_ptr_val =
                 Self::translate_operand(builder, func, vars, string_ids, module, func_ids);

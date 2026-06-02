@@ -85,7 +85,9 @@ pub fn compile_minimal_aot(src: &str) -> CraneliftCodegen<ObjectModule> {
         tc.struct_fields.clone(),
         &tc.traits,
         HashSet::default(),
+        tc.enum_defs.clone(),
     );
+    builder.struct_field_types = tc.field_types.clone();
     builder.build_program(&prog);
     let (_diags, _copy_sites) = Optimizer::minimal().run(&mut builder.functions);
     CraneliftCodegen::new_aot(
@@ -119,7 +121,9 @@ fn compile_with(src: &str, opt: Optimizer, profile: bool, release_backend: bool)
         tc.struct_fields.clone(),
         &tc.traits,
         HashSet::default(),
+        tc.enum_defs.clone(),
     );
+    builder.struct_field_types = tc.field_types.clone();
     builder.build_program(&prog);
     let (_diags, _copy_sites) = opt.run(&mut builder.functions);
     let mut cg = CraneliftCodegen::new_jit(
@@ -197,7 +201,9 @@ pub fn build_mir(src: &str) -> Vec<crate::mir::ir::MirFunction> {
         tc.struct_fields.clone(),
         &tc.traits,
         HashSet::default(),
+        tc.enum_defs.clone(),
     );
+    builder.struct_field_types = tc.field_types.clone();
     builder.build_program(&prog);
     builder.functions
 }
@@ -224,7 +230,9 @@ pub fn check_borrow_codes(src: &str) -> Vec<String> {
         tc.struct_fields.clone(),
         &tc.traits,
         HashSet::default(),
+        tc.enum_defs.clone(),
     );
+    builder.struct_field_types = tc.field_types.clone();
     builder.build_program(&prog);
     let mut codes = Vec::new();
     for func in &builder.functions {

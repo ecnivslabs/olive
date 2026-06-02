@@ -543,6 +543,26 @@ fn non_ffi_struct_is_checked() {
 }
 
 #[test]
+fn fn_value_is_checked() {
+    // A closure record (E5.2) is struct-slab-backed, same as a user struct:
+    // only one branch drops the owner, so the join is a real runtime check.
+    let fn_ty = Type::Fn(vec![], Box::new(Type::Int), vec![]);
+    let mut f = branching_func(
+        vec![decl(Type::Int), decl(fn_ty.clone()), decl(fn_ty)],
+        vec![
+            assign(1, Rvalue::Use(Operand::Constant(Constant::Int(0)))),
+            assign(2, Rvalue::Use(Operand::Copy(Local(1)))),
+        ],
+        vec![drop_stmt(1)],
+        vec![use_stmt(2)],
+    );
+    let p = pass();
+    assert!(p.run(&mut f));
+    assert!(p.diagnostics.borrow().is_empty());
+    assert_eq!(count_checks(&f), 1, "an escaped closure value gets a check");
+}
+
+#[test]
 fn ffi_struct_is_not_checked() {
     let mut f = func_of(
         vec![

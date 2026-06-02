@@ -4,13 +4,13 @@ use std::cell::UnsafeCell;
 // Body words = field count word + n_fields; sizes above this use pow2 classes.
 const FIXED_MAX_WORDS: usize = 17;
 
-struct StructSlabs {
+pub struct StructSlabs {
     fixed: Vec<GenSlab>,
     large: Vec<(usize, GenSlab)>,
 }
 
 impl StructSlabs {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             fixed: (0..=FIXED_MAX_WORDS).map(|w| GenSlab::new(w * 8)).collect(),
             large: Vec::new(),
@@ -30,19 +30,33 @@ impl StructSlabs {
     }
 }
 
+impl Default for StructSlabs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 thread_local! {
     static STRUCT_SLABS: UnsafeCell<StructSlabs> = UnsafeCell::new(StructSlabs::new());
 }
 
+/// A value crossing a task boundary (E5.6) is relocated into the shared
+/// escape arena (`with_escape_arena`), which redirects `ACTIVE_SLABS` --
+/// struct allocation must consult it the same way `list`/`obj`/`set`/`enum`
+/// already do (`alloc_list_header` et al.), or a "relocated" struct or
+/// closure record still lands in the sending thread's own thread-local
+/// pool and dangles once that thread/task tears its pool down.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_struct_alloc(n_fields: i64) -> i64 {
     let words = n_fields as usize + 1;
-    STRUCT_SLABS.with(|s| {
-        let s = unsafe { &mut *s.get() };
-        let (body, _) = s.class_for(words).alloc();
-        unsafe { *(body as *mut i64) = n_fields };
-        body as i64
-    })
+    let active = crate::slab::ACTIVE_SLABS.get();
+    let body = if !active.is_null() {
+        unsafe { (*active).struct_slabs.class_for(words).alloc().0 }
+    } else {
+        STRUCT_SLABS.with(|s| unsafe { (&mut *s.get()).class_for(words).alloc().0 })
+    };
+    unsafe { *(body as *mut i64) = n_fields };
+    body as i64
 }
 
 #[unsafe(no_mangle)]
@@ -55,11 +69,24 @@ pub extern "C" fn olive_free_struct(ptr: i64) {
 }
 
 pub(crate) fn free_struct_slot_raw(ptr: i64, n_fields: i64) {
+    if crate::slab::chunk_is_global(ptr as usize) {
+        crate::slab::with_escape_arena(|| free_struct_slot_raw_local(ptr, n_fields));
+    } else {
+        free_struct_slot_raw_local(ptr, n_fields);
+    }
+}
+
+fn free_struct_slot_raw_local(ptr: i64, n_fields: i64) {
     let words = n_fields as usize + 1;
-    STRUCT_SLABS.with(|s| {
-        let s = unsafe { &mut *s.get() };
-        s.class_for(words).free(ptr as *mut u8);
-    });
+    let active = crate::slab::ACTIVE_SLABS.get();
+    if !active.is_null() {
+        unsafe { (*active).struct_slabs.class_for(words).free(ptr as *mut u8) };
+    } else {
+        STRUCT_SLABS.with(|s| {
+            let s = unsafe { &mut *s.get() };
+            s.class_for(words).free(ptr as *mut u8);
+        });
+    }
 }
 
 #[unsafe(no_mangle)]

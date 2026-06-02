@@ -22,6 +22,7 @@ mod optimization_tests {
             tc.struct_fields.clone(),
             &tc.traits,
             HashSet::default(),
+            tc.enum_defs.clone(),
         );
         builder.build_program(&prog);
         let opt = Optimizer::new();

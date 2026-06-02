@@ -1,4 +1,4 @@
-use super::super::MirBuilder;
+use super::super::{MirBuilder, NestedFnInfo};
 use crate::mir::AggregateKind;
 use crate::mir::ir::*;
 use crate::parser::{Expr, ExprKind};
@@ -71,13 +71,16 @@ impl<'a> MirBuilder<'a> {
     }
 
     pub(super) fn lower_identifier_expr(&mut self, name: &str, expr_id: usize) -> Operand {
-        // A non-capturing nested fn as a value is its lifted code pointer;
-        // capturing ones are rejected as escapes by the resolver before here.
+        // A named nested fn read as a plain value (not the callee of a
+        // direct call -- that path is `lower_nested_fn_call`) builds an
+        // escaping closure record (E5.2), whether or not it captures
+        // anything: every `Type::Fn` value is uniformly a record pointer, so
+        // generic drop/copy/indirect-call codegen has exactly one shape to
+        // handle instead of two.
         if self.lookup_var(name).is_none()
             && let Some(info) = self.lookup_nested_fn(name)
-            && self.resolve_captures(&info.raw_captures).is_empty()
         {
-            return Operand::Constant(Constant::Function(info.mangled));
+            return self.build_closure_value(&info, expr_id, Span::default());
         }
         if let Some(local) = self.lookup_var(name) {
             let ty = self.current_locals[local.0].ty.clone();
@@ -120,7 +123,15 @@ impl<'a> MirBuilder<'a> {
                 global_op
             }
         } else {
-            Operand::Constant(Constant::Function(name.to_string()))
+            // A plain top-level function read as a value (e.g. `apply(square,
+            // 5)`): module-level fns never capture, but still build the
+            // uniform record -- see the nested-fn case above.
+            let info = NestedFnInfo {
+                mangled: name.to_string(),
+                raw_captures: Vec::new(),
+                param_tys: Vec::new(),
+            };
+            self.build_closure_value(&info, expr_id, Span::default())
         }
     }
 
@@ -297,6 +308,19 @@ impl<'a> MirBuilder<'a> {
                 }
                 if let Some(global_op) = self.globals.get(&mangled) {
                     return global_op.clone();
+                }
+                // A namespaced function read as a value (e.g. an unbound
+                // method or native-module fn passed as a callback) builds
+                // the uniform closure record; any other namespaced symbol
+                // reaching here (a module constant with no `globals` entry)
+                // keeps the bare reference.
+                if matches!(self.get_type(expr_id), Type::Fn(_, _, _)) {
+                    let info = NestedFnInfo {
+                        mangled,
+                        raw_captures: Vec::new(),
+                        param_tys: Vec::new(),
+                    };
+                    return self.build_closure_value(&info, expr_id, span);
                 }
                 return Operand::Constant(Constant::Function(mangled));
             }

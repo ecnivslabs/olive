@@ -9,6 +9,7 @@ mod resolver;
 pub(crate) mod suggest;
 mod symbol_table;
 pub mod type_checker;
+pub(crate) mod type_descriptor;
 pub mod types;
 
 #[cfg(test)]

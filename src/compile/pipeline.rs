@@ -150,6 +150,7 @@ pub fn run_pipeline_opt(
         type_checker.struct_fields.clone(),
         &type_checker.traits,
         type_checker.c_ffi_fns.clone(),
+        type_checker.enum_defs.clone(),
     );
     mir_builder.file_names = sources
         .iter()

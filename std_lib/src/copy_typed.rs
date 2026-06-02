@@ -30,6 +30,23 @@ pub extern "C" fn olive_copy_typed(val: i64, desc: i64) -> i64 {
     })
 }
 
+/// A value crossing a task boundary (`chan_send`/`mutex_new`/`mutex_unlock`,
+/// `lib/aio.liv`'s generic wrappers, driven by the compiler the same way
+/// `__olive_copy_typed` is): the descriptor-driven deep copy above, run
+/// inside `with_escape_arena` so the copy lands in the shared arena instead
+/// of whatever task-local slab set happens to be active on the sending
+/// side. A plain compile-time-typed copy is not enough on its own -- the
+/// sending task's own slab set is torn down when that task completes
+/// (`executor_drive`), which would use-after-free a copy left behind in it.
+/// `D_ANY`'s own arm inside `copy_val` already falls back to runtime
+/// kind-dispatch for a genuinely type-erased value, so this one function
+/// covers both the typed and the `Any` case correctly -- no separate
+/// kind-guessing path needed.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_relocate_typed(val: i64, desc: i64) -> i64 {
+    crate::slab::with_escape_arena(|| olive_copy_typed(val, desc))
+}
+
 /// Concat for heap-element lists; deep-copies elements via `desc` (`[D_LIST, <elem>...]`) so operand drops can't double-free.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_list_concat_typed(l: i64, r: i64, desc: i64) -> i64 {
