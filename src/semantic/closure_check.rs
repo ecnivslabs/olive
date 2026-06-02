@@ -1,5 +1,5 @@
 use super::error::SemanticError;
-use super::free_vars::free_variables;
+use super::free_vars::{free_variables, free_variables_expr};
 use crate::compile::errors::Diagnostic;
 use crate::parser::ast::{
     CallArg, CompClause, Expr, ExprKind, ForTarget, Param, Program, Stmt, StmtKind,
@@ -163,6 +163,45 @@ impl Checker {
         }
     }
 
+    /// A capturing lambda bound directly to `name` (`let g = lambda: ...`,
+    /// `g = lambda: ...`) is registered like a named nested fn: calling `g`
+    /// later in a scope that still has its captures is fine, any other use
+    /// of `g` is E0423/E0424 via the normal `use_ident` path. A
+    /// non-capturing lambda, or any other value, is walked normally.
+    fn bind_or_visit(&mut self, name: &str, value: &Expr) {
+        if let ExprKind::Lambda { params, body } = &value.kind {
+            let caps = self.lambda_captures(params, body);
+            if !caps.is_empty() {
+                self.frames
+                    .last_mut()
+                    .unwrap()
+                    .closures
+                    .insert(name.to_string(), caps);
+            }
+            self.visit_lambda_body(params, body);
+        } else {
+            self.expr(value);
+        }
+    }
+
+    fn lambda_captures(&self, params: &[Param], body: &Expr) -> Vec<String> {
+        free_variables_expr(params, body)
+            .into_iter()
+            .filter(|n| self.any_frame_has_local(n))
+            .collect()
+    }
+
+    fn visit_lambda_body(&mut self, params: &[Param], body: &Expr) {
+        let locals: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+        self.frames.push(Frame {
+            locals,
+            captured: HashSet::default(),
+            closures: HashMap::default(),
+        });
+        self.expr(body);
+        self.frames.pop();
+    }
+
     fn block(&mut self, stmts: &[Stmt]) {
         for s in stmts {
             self.stmt(s);
@@ -179,13 +218,19 @@ impl Checker {
             } if type_params.is_empty() => {
                 self.enter_function(params, body);
             }
-            StmtKind::Let { value, .. } | StmtKind::Const { value, .. } => self.expr(value),
+            StmtKind::Let { name, value, .. } | StmtKind::Const { name, value, .. } => {
+                self.bind_or_visit(name, value);
+            }
             StmtKind::MultiLet { value, .. } | StmtKind::MultiConst { value, .. } => {
                 self.expr(value)
             }
             StmtKind::Assign { target, value } => {
-                self.expr(value);
-                self.expr(target);
+                if let ExprKind::Identifier(name) = &target.kind {
+                    self.bind_or_visit(name, value);
+                } else {
+                    self.expr(value);
+                    self.expr(target);
+                }
             }
             StmtKind::AugAssign { target, value, .. } => {
                 self.expr(value);
@@ -254,6 +299,10 @@ impl Checker {
             ExprKind::Call { callee, args } => {
                 if let ExprKind::Identifier(name) = &callee.kind {
                     self.use_ident(name, callee.span, true);
+                } else if let ExprKind::Lambda { params, body } = &callee.kind {
+                    // Immediately-invoked lambda: capturing is fine, nothing
+                    // escapes (`(lambda x: x + n)(5)`).
+                    self.visit_lambda_body(params, body);
                 } else {
                     self.expr(callee);
                 }
@@ -346,14 +395,33 @@ impl Checker {
             | ExprKind::Bool(_)
             | ExprKind::Null => {}
             ExprKind::Lambda { params, body } => {
-                let locals: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
-                self.frames.push(Frame {
-                    locals,
-                    captured: HashSet::default(),
-                    closures: HashMap::default(),
-                });
-                self.expr(body);
-                self.frames.pop();
+                // Reached for any lambda that isn't the direct callee of its
+                // own call (`bind_or_visit` and the IIFE arm above intercept
+                // those cases first): returned, stored, passed as an
+                // argument, or similar. A capturing lambda cannot escape its
+                // defining scope this way (E5.2 lifts this restriction).
+                let caps = self.lambda_captures(params, body);
+                if !caps.is_empty() {
+                    self.errors.push(SemanticError::rich(
+                        Diagnostic::error(
+                            "E0423",
+                            "capturing closure cannot be used as a value",
+                            expr.span,
+                        )
+                        .label("used as a value here")
+                        .note(format!(
+                            "this lambda reads `{}` from its enclosing function, so it has no \
+                             standalone value to pass around or return",
+                            caps.join("`, `")
+                        ))
+                        .help(
+                            "call it directly, bind it to a name and call that name in the \
+                             same scope, or rewrite it as a top-level function that takes the \
+                             captured values as parameters",
+                        ),
+                    ));
+                }
+                self.visit_lambda_body(params, body);
             }
         }
     }

@@ -16,6 +16,17 @@ pub fn free_variables(params: &[Param], body: &[Stmt]) -> Vec<String> {
     fv.free
 }
 
+/// Same as [`free_variables`], for a lambda's single-expression body.
+pub fn free_variables_expr(params: &[Param], body: &Expr) -> Vec<String> {
+    let mut fv = FreeVars::default();
+    fv.scopes.push(HashSet::default());
+    for p in params {
+        fv.bind(&p.name);
+    }
+    fv.expr(body);
+    fv.free
+}
+
 #[derive(Default)]
 struct FreeVars {
     scopes: Vec<HashSet<String>>,

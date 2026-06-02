@@ -505,10 +505,19 @@ impl Parser {
             start: start_tok.span.0,
             end: start_tok.span.1,
         };
+        // `lambda x, y: expr` (bare names, unannotated) reads naturally up to
+        // the body-separating `:`. A type annotation would itself use `:`
+        // and collide with that separator, so an annotated param list must
+        // be parenthesized: `lambda (x: int, y: int): expr`.
         let params = if self.peek().kind == TokenKind::Colon {
             Vec::new()
+        } else if self.peek().kind == TokenKind::LParen {
+            self.advance();
+            let params = self.parse_params()?;
+            self.expect(TokenKind::RParen)?;
+            params
         } else {
-            self.parse_params()?
+            self.parse_bare_lambda_params()?
         };
         self.expect(TokenKind::Colon)?;
         let body = self.parse_expr()?;
@@ -520,6 +529,28 @@ impl Parser {
             },
             Span { end, ..start },
         ))
+    }
+
+    fn parse_bare_lambda_params(&mut self) -> ParseResult<Vec<Param>> {
+        let mut params = Vec::new();
+        loop {
+            let tok = self.expect(TokenKind::Identifier)?;
+            let span = self.span_from(&tok);
+            params.push(Param {
+                name: tok.value,
+                type_ann: None,
+                default: None,
+                kind: ParamKind::Regular,
+                is_mut: false,
+                span,
+            });
+            if self.peek().kind == TokenKind::Comma {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        Ok(params)
     }
 }
 

@@ -936,7 +936,15 @@ impl<'a> MirBuilder<'a> {
         span: Span,
         expr_id: usize,
     ) -> Operand {
-        let mut call_fn_name = if let ExprKind::Identifier(name) = &callee.kind {
+        // A local (a fn-typed param/var, e.g. `apply(f: fn(int) -> int, ...)`)
+        // must never be treated as a global fn name here: nothing stops it
+        // from sharing a name with an unrelated global of a different
+        // shape, and `fn_meta`/`pack_fn_call_args` below is keyed globally
+        // by name, not scope. Reached only when `lower_call_expr`'s own
+        // `nested_fns`/`bound_lambdas` lookups (also local-aware) missed.
+        let mut call_fn_name = if let ExprKind::Identifier(name) = &callee.kind
+            && self.lookup_var(name).is_none()
+        {
             Some(name.clone())
         } else if let ExprKind::Attr { obj, attr } = &callee.kind {
             if let ExprKind::Identifier(obj_name) = &obj.kind {
