@@ -100,6 +100,64 @@ impl Account:
         return self._balance
 ```
 
+## Operator and Formatting Protocol
+
+A struct opts into operators and formatting by defining specific dunder
+methods in its `impl` block. The supported set is exact; any other
+`__`-prefixed method (besides `__init__`) is a compile error.
+
+**Arithmetic** — `__add__`, `__sub__`, `__mul__`, `__truediv__`, `__mod__`.
+Both operands must be the struct's own type; there is no reflected form
+(no `__radd__`). The method consumes both operands, the same as Rust's
+`Add`:
+
+```rust
+struct Vec2:
+    x: float
+    y: float
+
+impl Vec2:
+    fn __add__(self, other: Vec2) -> Vec2:
+        return Vec2(self.x + other.x, self.y + other.y)
+
+let v = Vec2(1.0, 2.0) + Vec2(3.0, 4.0)  // Vec2(4.0, 6.0)
+```
+
+**Equality and ordering** — `__eq__` and `__lt__`. Unlike arithmetic, these
+take `self`/`other` **by reference** (`self: &Vec2, other: &Vec2`): the
+compiler may call them many times on the same values (a `sort`, a
+container lookup), and a by-value `self` would be freed after the first
+call. `!=`, `>`, `<=`, `>=` all derive from these two — defining one of
+those four directly is a compile error, matching name it derives from:
+
+```rust
+impl Vec2:
+    fn __eq__(self: &Vec2, other: &Vec2) -> bool:
+        return self.x == other.x and self.y == other.y
+
+    fn __lt__(self: &Vec2, other: &Vec2) -> bool:
+        let a = self.x * self.x + self.y * self.y
+        let b = other.x * other.x + other.y * other.y
+        return a < b
+```
+
+`__eq__` overrides the derived structural `==` for that type outright,
+even where every field would already support it. `sort`/`sorted` with no
+`key=` argument on a list of structs use `__lt__` for ordering; sorting a
+struct list without one is a compile error naming the missing method.
+
+**String conversion** — `__str__`, `fn(self) -> str`. Wires into `print`,
+`str()`, and f-string interpolation; a struct without one falls back to an
+automatic field-by-field representation:
+
+```rust
+impl Vec2:
+    fn __str__(self) -> str:
+        return f"({self.x}, {self.y})"
+
+print(Vec2(1.0, 2.0))       // (1.0, 2.0)
+```
+
 ## Implementing Traits
 
 A struct can implement a trait to gain a shared set of methods. See [Traits](traits.md) for the full picture:

@@ -487,6 +487,8 @@ impl<'a> MirBuilder<'a> {
             "isupper" => Some("__olive_str_isupper"),
             "islower" => Some("__olive_str_islower"),
             "partition" => Some("__olive_str_partition"),
+            "to_int" => Some("__olive_str_to_int_opt"),
+            "to_float" => Some("__olive_str_to_float_opt"),
             _ => None,
         };
         // Optional-argument methods: the no-arg form uses the whitespace/plain
@@ -609,6 +611,17 @@ impl<'a> MirBuilder<'a> {
             };
             let obj_op = self.lower_expr_as_copy(obj);
             return Some(self.lower_sort_by_key(obj_op, elem, key_op, &key_ret_ty, span));
+        }
+
+        // E6.3: `.sort()` with no key on a struct element list uses the
+        // struct's own `__lt__` (checker already required it) instead of
+        // falling into the integer-ordering default below.
+        if attr == "sort"
+            && let Type::Struct(struct_name, ..) = elem
+            && self.fn_meta.contains_key(&format!("{struct_name}::__lt__"))
+        {
+            let obj_op = self.lower_expr_as_copy(obj);
+            return Some(self.lower_sort_by_lt(obj_op, elem, span));
         }
 
         let runtime = match attr {

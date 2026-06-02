@@ -7,6 +7,13 @@ use crate::span::Span;
 
 impl<'a> MirBuilder<'a> {
     fn write_func_name(ty: &Type) -> &'static str {
+        // `T | None` for a scalar `T` has no boxed/tagged representation
+        // (the design decision is a raw sentinel, not an `Any`-style box --
+        // see `narrow_tests.rs`), so it must dispatch on `T` here the same
+        // as a bare `T` would; falling through to `__olive_write_any` below
+        // misreads the raw bits (a real bug this call site had: printing a
+        // `float | None` read its bit pattern as if boxed).
+        let ty = crate::semantic::type_descriptor::concrete_ty(ty);
         match ty {
             Type::Str | Type::Null => "__olive_write_str",
             Type::Bool => "__olive_write_bool",
@@ -465,14 +472,18 @@ impl<'a> MirBuilder<'a> {
                 );
             }
             let arg_ty = arg_tys.get(i).cloned().unwrap_or(Type::Any);
-            let func_name = Self::write_func_name(&arg_ty);
+            let (write_arg, func_name) =
+                match self.lower_struct_str_call(arg_op.clone(), &arg_ty, span) {
+                    Some(str_op) => (str_op, "__olive_write_str"),
+                    None => (arg_op.clone(), Self::write_func_name(&arg_ty)),
+                };
             let write = self.new_local(Type::Int, None, false);
             self.push_statement(
                 StatementKind::Assign(
                     write,
                     Rvalue::Call {
                         func: Operand::Constant(Constant::Function(func_name.to_string())),
-                        args: vec![arg_op.clone()],
+                        args: vec![write_arg],
                     },
                 ),
                 span,
@@ -587,6 +598,15 @@ impl<'a> MirBuilder<'a> {
             };
             let key_op = self.lower_expr(key_expr);
             return Some(self.lower_sort_by_key(copy_op, &elem_ty, key_op, &key_ret_ty, span));
+        }
+
+        // E6.3: `sorted(xs)` with no key on a struct element list uses the
+        // struct's own `__lt__` (checker already required it).
+        if name == "sorted"
+            && let Type::Struct(struct_name, ..) = &elem_ty
+            && self.fn_meta.contains_key(&format!("{struct_name}::__lt__"))
+        {
+            return Some(self.lower_sort_by_lt(copy_op, &elem_ty, span));
         }
 
         let apply_fn = if name == "sorted" {
