@@ -658,7 +658,10 @@ impl Resolver {
                 self.pop_scope();
             }
 
-            ExprKind::Borrow(inner) | ExprKind::MutBorrow(inner) | ExprKind::Deref(inner) => {
+            ExprKind::Borrow(inner)
+            | ExprKind::MutBorrow(inner)
+            | ExprKind::Deref(inner)
+            | ExprKind::Starred(inner) => {
                 self.resolve_expr(inner);
             }
 

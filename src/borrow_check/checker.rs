@@ -5,6 +5,47 @@ use rustc_hash::FxHashMap as HashMap;
 use rustc_hash::FxHashSet as HashSet;
 use std::collections::VecDeque;
 
+/// Runtime calls that mutate a container in place, keyed to the receiver's
+/// position in the lowered call. Every stdlib method that mutates its
+/// receiver (`append`, `insert`, `remove`, `sort`, `add`, `discard`, `pop`,
+/// `setdefault`, `update`, `clear`, ...; see `call_method.rs`) must be
+/// listed here, mirroring the ownership pass's `RUNTIME_ESCAPES` table --
+/// otherwise the checker cannot see the mutation and a live borrow (an
+/// explicit `&x`, or the implicit borrow a `for`/comprehension takes over
+/// its iterable) will silently race it at runtime instead of failing to
+/// compile.
+const MUTATES_RECEIVER: &[(&str, usize)] = &[
+    ("__olive_list_append", 0),
+    ("__olive_list_insert", 0),
+    ("__olive_list_extend", 0),
+    ("__olive_list_extend_typed", 0),
+    ("__olive_list_remove", 0),
+    ("__olive_list_pop", 0),
+    ("__olive_list_reverse", 0),
+    ("__olive_list_sort_int", 0),
+    ("__olive_list_sort_float", 0),
+    ("__olive_list_sort_str", 0),
+    ("__olive_list_clear", 0),
+    ("__olive_set_add", 0),
+    ("__olive_set_add_typed", 0),
+    ("__olive_set_remove", 0),
+    ("__olive_set_remove_typed", 0),
+    ("__olive_set_remove_checked", 0),
+    ("__olive_set_remove_checked_typed", 0),
+    ("__olive_set_clear", 0),
+    ("__olive_obj_set", 0),
+    ("__olive_obj_remove", 0),
+    ("__olive_obj_clear", 0),
+    ("__olive_obj_pop_default", 0),
+    ("__olive_obj_pop_default_typed", 0),
+    ("__olive_obj_pop_checked", 0),
+    ("__olive_obj_pop_checked_typed", 0),
+    ("__olive_obj_setdefault", 0),
+    ("__olive_obj_setdefault_typed", 0),
+    ("__olive_obj_update", 0),
+    ("__olive_obj_update_typed", 0),
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LocalState {
     Initialized,
@@ -198,6 +239,24 @@ impl<'a> BorrowChecker<'a> {
                     Rvalue::Use(Operand::Copy(rhs)) | Rvalue::Use(Operand::Move(rhs)) => {
                         if let Some(prov) = self.provenance.get(rhs).cloned() {
                             self.provenance.insert(*lhs, prov);
+                        } else {
+                            self.provenance.remove(lhs);
+                        }
+                    }
+                    Rvalue::Call { func, args } if Self::is_borrow_passthrough(func) => {
+                        let carried = args.first().and_then(|a| match a {
+                            Operand::Copy(rhs) | Operand::Move(rhs) => {
+                                self.provenance.get(rhs).cloned()
+                            }
+                            Operand::Constant(_) => None,
+                        });
+                        match carried {
+                            Some(prov) => {
+                                self.provenance.insert(*lhs, prov);
+                            }
+                            None => {
+                                self.provenance.remove(lhs);
+                            }
                         }
                     }
                     _ => {
@@ -323,6 +382,12 @@ impl<'a> BorrowChecker<'a> {
             Rvalue::UnaryOp(_, op) => self.check_operand(op, state, span),
             Rvalue::Call { func, args } => {
                 self.check_operand(func, state, span);
+                if let Operand::Constant(Constant::Function(name)) = func
+                    && let Some(&(_, pos)) = MUTATES_RECEIVER.iter().find(|&&(n, _)| n == name)
+                    && let Some(receiver) = args.get(pos)
+                {
+                    self.check_mutation(receiver, state, span);
+                }
                 for arg in args {
                     self.check_operand(arg, state, span);
                 }
@@ -517,6 +582,21 @@ impl<'a> BorrowChecker<'a> {
 
     fn is_move_type(&self, ty: &crate::semantic::types::Type) -> bool {
         ty.is_move_type()
+    }
+
+    /// Runtime calls whose result keeps aliasing their first argument, so a
+    /// borrow of that argument must stay alive for as long as the result is
+    /// used, not just until the call. `__olive_iter`/`iter` (comprehension
+    /// desugar's alias for the same symbol) build a cursor into the source
+    /// container; classify any future function of this shape here or the
+    /// checker will release the borrow too early and let a reassignment of
+    /// the source race the still-live cursor.
+    fn is_borrow_passthrough(func: &Operand) -> bool {
+        matches!(
+            func,
+            Operand::Constant(Constant::Function(name))
+                if name == "__olive_iter" || name == "iter"
+        )
     }
 
     /// Build a borrow-check diagnostic anchored at `span`. Centralizes the

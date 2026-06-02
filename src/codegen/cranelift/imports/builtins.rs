@@ -424,6 +424,8 @@ pub(crate) fn resolve_builtin_import(
             "__olive_cache_set_tuple" => Some("__olive_cache_set_tuple"),
             "__olive_memo_get" => Some("__olive_memo_get"),
             "__olive_iter" => Some("__olive_iter"),
+            "__olive_check_nonzero_step" => Some("__olive_check_nonzero_step"),
+            "__olive_check_list_min_len" => Some("__olive_check_list_min_len"),
             "__olive_next" => Some("__olive_next"),
             "__olive_has_next" => Some("__olive_has_next"),
             "__olive_time_now" => Some("__olive_time_now"),

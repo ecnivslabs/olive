@@ -227,10 +227,19 @@ impl<'a> MirBuilder<'a> {
             start,
             end,
             inclusive,
+            step,
         } = &iter.kind
             && let ForTarget::Name(name, _) = target
         {
-            self.lower_for_range(name, start, end, *inclusive, body, else_body);
+            self.lower_for_range(
+                name,
+                start,
+                end,
+                *inclusive,
+                step.as_deref(),
+                body,
+                else_body,
+            );
             return;
         }
 
@@ -255,27 +264,30 @@ impl<'a> MirBuilder<'a> {
                 | CallArg::Splat(e)
                 | CallArg::KwSplat(e) => e,
             };
-            let inner_op = self.lower_expr(inner_expr);
-            let inner_ty = self.get_type(inner_expr.id);
-            let inner_copy = self.new_local(inner_ty, None, true);
-            self.push_statement(
-                StatementKind::Assign(inner_copy, Rvalue::Use(inner_op)),
-                iter.span,
-            );
+            let (inner_ref, _) = self.borrow_iterable(inner_expr);
             let iter_local = self.new_local(Type::Any, Some("_iter".to_string()), true);
             self.push_statement(
                 StatementKind::Assign(
                     iter_local,
                     Rvalue::Call {
                         func: Operand::Constant(Constant::Function("__olive_iter".to_string())),
-                        args: vec![Operand::Copy(inner_copy)],
+                        args: vec![Operand::Copy(inner_ref)],
                     },
                 ),
                 iter.span,
             );
             let counter = self.new_local(Type::Int, Some("_count".to_string()), true);
+            let start_op = match args.get(1) {
+                Some(
+                    CallArg::Positional(e)
+                    | CallArg::Keyword(_, e)
+                    | CallArg::Splat(e)
+                    | CallArg::KwSplat(e),
+                ) => self.lower_expr(e),
+                None => Operand::Constant(Constant::Int(0)),
+            };
             self.push_statement(
-                StatementKind::Assign(counter, Rvalue::Use(Operand::Constant(Constant::Int(0)))),
+                StatementKind::Assign(counter, Rvalue::Use(start_op)),
                 iter.span,
             );
             let header_bb = self.new_block();
@@ -334,7 +346,7 @@ impl<'a> MirBuilder<'a> {
                 Type::Dict(k, _) => *k,
                 _ => Type::Any,
             };
-            let next_val = self.new_local_with_owning(elem_ty, None, false, next_is_owning);
+            let next_val = self.new_local_with_owning(elem_ty.clone(), None, false, next_is_owning);
             self.push_statement(
                 StatementKind::Assign(
                     next_val,
@@ -356,29 +368,22 @@ impl<'a> MirBuilder<'a> {
                         );
                     }
                     if let Some((x_name, _)) = names.get(1) {
-                        let view_local = self.declare_var_view(x_name.clone(), Type::Any, true);
-                        let elem_copy = self.new_local_with_owning(Type::Any, None, false, false);
+                        // `x`'s static type matches the iterable's real
+                        // element type (the checker's `check_for_iter`
+                        // reads it the same way), so the raw `next_val`
+                        // carries over as-is: no widening to `Any`, no box.
+                        let view_local =
+                            self.declare_var_view(x_name.clone(), elem_ty.clone(), true);
                         self.push_statement(
-                            StatementKind::Assign(elem_copy, Rvalue::Use(Operand::Copy(next_val))),
-                            iter.span,
-                        );
-                        self.push_statement(
-                            StatementKind::Assign(
-                                view_local,
-                                Rvalue::Use(Operand::Copy(elem_copy)),
-                            ),
+                            StatementKind::Assign(view_local, Rvalue::Use(Operand::Copy(next_val))),
                             iter.span,
                         );
                     }
                 }
                 ForTarget::Name(name, _) => {
-                    let local = self.declare_var(
-                        name.clone(),
-                        Type::Tuple(vec![Type::Int, Type::Any]),
-                        true,
-                    );
-                    let tuple_local =
-                        self.new_local(Type::Tuple(vec![Type::Int, Type::Any]), None, false);
+                    let pair_ty = Type::Tuple(vec![Type::Int, elem_ty.clone()]);
+                    let local = self.declare_var(name.clone(), pair_ty.clone(), true);
+                    let tuple_local = self.new_local(pair_ty, None, false);
                     self.push_statement(
                         StatementKind::Assign(
                             tuple_local,
@@ -469,15 +474,10 @@ impl<'a> MirBuilder<'a> {
                 | CallArg::KwSplat(e) => e,
             };
 
-            let a_op = self.lower_expr(a_expr);
             let a_ty = self.get_type(a_expr.id);
-            let b_op = self.lower_expr(b_expr);
             let b_ty = self.get_type(b_expr.id);
-
-            let copy_a = self.new_local(a_ty.clone(), None, true);
-            self.push_statement(StatementKind::Assign(copy_a, Rvalue::Use(a_op)), iter.span);
-            let copy_b = self.new_local(b_ty.clone(), None, true);
-            self.push_statement(StatementKind::Assign(copy_b, Rvalue::Use(b_op)), iter.span);
+            let (copy_a, _) = self.borrow_iterable(a_expr);
+            let (copy_b, _) = self.borrow_iterable(b_expr);
 
             let len_a_fn = MirBuilder::<'a>::len_runtime_fn(&a_ty);
             let len_b_fn = MirBuilder::<'a>::len_runtime_fn(&b_ty);
@@ -515,6 +515,7 @@ impl<'a> MirBuilder<'a> {
 
             let min_bb = self.new_block();
             let max_bb = self.new_block();
+            let preheader_bb = self.new_block();
             let header_bb = self.new_block();
             let body_bb = self.new_block();
             let exit_bb = self.new_block();
@@ -539,7 +540,9 @@ impl<'a> MirBuilder<'a> {
             );
             self.terminate_block(
                 min_bb,
-                TerminatorKind::Goto { target: header_bb },
+                TerminatorKind::Goto {
+                    target: preheader_bb,
+                },
                 Span::default(),
             );
 
@@ -550,16 +553,28 @@ impl<'a> MirBuilder<'a> {
             );
             self.terminate_block(
                 max_bb,
-                TerminatorKind::Goto { target: header_bb },
+                TerminatorKind::Goto {
+                    target: preheader_bb,
+                },
                 Span::default(),
             );
 
-            self.current_block = Some(header_bb);
+            // `index`'s init must run once, not on every loop re-entry: a
+            // preheader distinct from the header (the back-edge target)
+            // keeps it from resetting to 0 each iteration.
+            self.current_block = Some(preheader_bb);
             let index = self.new_local(Type::Int, Some("_i".to_string()), true);
             self.push_statement(
                 StatementKind::Assign(index, Rvalue::Use(Operand::Constant(Constant::Int(0)))),
                 iter.span,
             );
+            self.terminate_block(
+                preheader_bb,
+                TerminatorKind::Goto { target: header_bb },
+                Span::default(),
+            );
+
+            self.current_block = Some(header_bb);
             let cond = self.new_local(Type::Bool, None, false);
             self.push_statement(
                 StatementKind::Assign(
@@ -631,13 +646,9 @@ impl<'a> MirBuilder<'a> {
                     }
                 }
                 ForTarget::Name(name, _) => {
-                    let local = self.declare_var(
-                        name.clone(),
-                        Type::Tuple(vec![a_elem_ty, b_elem_ty]),
-                        true,
-                    );
-                    let tuple_local =
-                        self.new_local(Type::Tuple(vec![Type::Any, Type::Any]), None, false);
+                    let pair_ty = Type::Tuple(vec![a_elem_ty, b_elem_ty]);
+                    let local = self.declare_var(name.clone(), pair_ty.clone(), true);
+                    let tuple_local = self.new_local(pair_ty, None, false);
                     self.push_statement(
                         StatementKind::Assign(
                             tuple_local,
@@ -696,13 +707,7 @@ impl<'a> MirBuilder<'a> {
             return;
         }
 
-        let iter_expr_op = self.lower_expr(iter);
-        let iter_ty = self.get_type(iter.id);
-        let iter_copy = self.new_local(iter_ty, None, true);
-        self.push_statement(
-            StatementKind::Assign(iter_copy, Rvalue::Use(iter_expr_op)),
-            iter.span,
-        );
+        let (iter_ref, _) = self.borrow_iterable(iter);
         let iter_local = self.new_local(Type::Any, Some("_iter_obj".to_string()), true);
 
         self.push_statement(
@@ -710,7 +715,7 @@ impl<'a> MirBuilder<'a> {
                 iter_local,
                 Rvalue::Call {
                     func: Operand::Constant(Constant::Function("__olive_iter".to_string())),
-                    args: vec![Operand::Copy(iter_copy)],
+                    args: vec![Operand::Copy(iter_ref)],
                 },
             ),
             iter.span,
@@ -864,14 +869,18 @@ impl<'a> MirBuilder<'a> {
         self.emit_iter_free(iter_local);
     }
 
-    /// Lowers `for name in start..end` to a counted loop, avoiding any iterator
-    /// allocation. `continue` lands on the latch so the counter still advances.
+    /// Lowers `for name in start..end` (optionally `by step`) to a counted
+    /// loop, avoiding any iterator allocation. `continue` lands on the latch
+    /// so the counter still advances. No-step callers get the exact MIR
+    /// shape this had before `by` existed -- zero cost when unused.
+    #[allow(clippy::too_many_arguments)]
     fn lower_for_range(
         &mut self,
         name: &str,
         start: &Expr,
         end: &Expr,
         inclusive: bool,
+        step: Option<&Expr>,
         body: &[Stmt],
         else_body: &Option<Vec<Stmt>>,
     ) {
@@ -882,6 +891,29 @@ impl<'a> MirBuilder<'a> {
             StatementKind::Assign(end_local, Rvalue::Use(end_op)),
             end.span,
         );
+
+        let step_local = step.map(|step_expr| {
+            let step_op = self.lower_expr(step_expr);
+            let raw = self.new_local(Type::Int, None, false);
+            self.push_statement(
+                StatementKind::Assign(raw, Rvalue::Use(step_op)),
+                step_expr.span,
+            );
+            let checked = self.new_local(Type::Int, None, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    checked,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function(
+                            "__olive_check_nonzero_step".to_string(),
+                        )),
+                        args: vec![Operand::Copy(raw), self.index_loc_operand(step_expr.span)],
+                    },
+                ),
+                step_expr.span,
+            );
+            checked
+        });
 
         self.enter_scope();
         let i_local = self.declare_var(name.to_string(), Type::Int, true);
@@ -900,26 +932,94 @@ impl<'a> MirBuilder<'a> {
         }
 
         self.current_block = Some(cond_bb);
-        let cond = self.new_local(Type::Bool, None, false);
         let cmp = if inclusive {
             crate::parser::BinOp::LtEq
         } else {
             crate::parser::BinOp::Lt
         };
-        self.push_statement(
-            StatementKind::Assign(
-                cond,
-                Rvalue::BinaryOp(cmp, Operand::Copy(i_local), Operand::Copy(end_local)),
-            ),
-            start.span,
-        );
+        let cond = match step_local {
+            None => {
+                let cond = self.new_local(Type::Bool, None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        cond,
+                        Rvalue::BinaryOp(cmp, Operand::Copy(i_local), Operand::Copy(end_local)),
+                    ),
+                    start.span,
+                );
+                cond
+            }
+            // A step whose sign isn't known until runtime (`by n` on a
+            // param) needs the comparison direction picked dynamically:
+            // ascending while `step > 0`, descending otherwise.
+            Some(step_local) => {
+                let rcmp = if inclusive {
+                    crate::parser::BinOp::GtEq
+                } else {
+                    crate::parser::BinOp::Gt
+                };
+                let step_pos = self.new_local(Type::Bool, None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        step_pos,
+                        Rvalue::BinaryOp(
+                            crate::parser::BinOp::Gt,
+                            Operand::Copy(step_local),
+                            Operand::Constant(Constant::Int(0)),
+                        ),
+                    ),
+                    start.span,
+                );
+                let fwd_bb = self.new_block();
+                let bwd_bb = self.new_block();
+                let merge_bb = self.new_block();
+                self.terminate_block(
+                    cond_bb,
+                    TerminatorKind::SwitchInt {
+                        discr: Operand::Copy(step_pos),
+                        targets: vec![(1, fwd_bb)],
+                        otherwise: bwd_bb,
+                    },
+                    start.span,
+                );
+                let cond = self.new_local(Type::Bool, None, false);
+                self.current_block = Some(fwd_bb);
+                self.push_statement(
+                    StatementKind::Assign(
+                        cond,
+                        Rvalue::BinaryOp(cmp, Operand::Copy(i_local), Operand::Copy(end_local)),
+                    ),
+                    start.span,
+                );
+                self.terminate_block(
+                    fwd_bb,
+                    TerminatorKind::Goto { target: merge_bb },
+                    Span::default(),
+                );
+                self.current_block = Some(bwd_bb);
+                self.push_statement(
+                    StatementKind::Assign(
+                        cond,
+                        Rvalue::BinaryOp(rcmp, Operand::Copy(i_local), Operand::Copy(end_local)),
+                    ),
+                    start.span,
+                );
+                self.terminate_block(
+                    bwd_bb,
+                    TerminatorKind::Goto { target: merge_bb },
+                    Span::default(),
+                );
+                self.current_block = Some(merge_bb);
+                cond
+            }
+        };
         let after_bb = if else_body.is_some() {
             self.new_block()
         } else {
             exit_bb
         };
         self.terminate_block(
-            cond_bb,
+            self.current_block.unwrap(),
             TerminatorKind::SwitchInt {
                 discr: Operand::Copy(cond),
                 targets: vec![(1, body_bb)],
@@ -949,14 +1049,14 @@ impl<'a> MirBuilder<'a> {
         }
 
         self.current_block = Some(latch_bb);
+        let increment = match step_local {
+            Some(step_local) => Operand::Copy(step_local),
+            None => Operand::Constant(Constant::Int(1)),
+        };
         self.push_statement(
             StatementKind::Assign(
                 i_local,
-                Rvalue::BinaryOp(
-                    crate::parser::BinOp::Add,
-                    Operand::Copy(i_local),
-                    Operand::Constant(Constant::Int(1)),
-                ),
+                Rvalue::BinaryOp(crate::parser::BinOp::Add, Operand::Copy(i_local), increment),
             ),
             Span::default(),
         );

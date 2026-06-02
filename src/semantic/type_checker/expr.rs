@@ -80,6 +80,23 @@ impl TypeChecker {
     pub(super) fn infer_expr(&mut self, expr: &Expr) -> Type {
         let expected = self.expected.take();
         match &expr.kind {
+            // `Assign`/`MultiLet` consume a `*name` target directly from
+            // their own target list before any child expression reaches the
+            // generic checker; reaching this arm means `*` was written
+            // somewhere else entirely (a call argument, a plain value, ...).
+            ExprKind::Starred(inner) => {
+                self.check_expr(inner);
+                self.errors.push(super::super::error::SemanticError::rich(
+                    crate::compile::errors::Diagnostic::error(
+                        "E0432",
+                        "`*` is only valid in an assignment target",
+                        expr.span,
+                    )
+                    .label("not a valid position for `*name`")
+                    .help("use `*name` only as one element of a `let`/assignment target list"),
+                ));
+                Type::Any
+            }
             ExprKind::Integer(_) => Type::IntegerLiteral(self.fresh_var_id()),
             ExprKind::Float(_) => Type::FloatLiteral(self.fresh_var_id()),
             ExprKind::Str(_) => Type::Str,
@@ -92,11 +109,28 @@ impl TypeChecker {
             ExprKind::Bool(_) => Type::Bool,
             ExprKind::Null => Type::Null,
 
-            ExprKind::Range { start, end, .. } => {
+            ExprKind::Range {
+                start, end, step, ..
+            } => {
                 let s_ty = self.check_expr(start);
                 let e_ty = self.check_expr(end);
                 self.unify(&Type::Int, &s_ty, start.span);
                 self.unify(&Type::Int, &e_ty, end.span);
+                if let Some(step_expr) = step {
+                    let st_ty = self.check_expr(step_expr);
+                    self.unify(&Type::Int, &st_ty, step_expr.span);
+                    if matches!(step_expr.kind, ExprKind::Integer(0)) {
+                        self.errors.push(super::super::error::SemanticError::rich(
+                            crate::compile::errors::Diagnostic::error(
+                                "E0430",
+                                "range step cannot be a literal `0`",
+                                step_expr.span,
+                            )
+                            .label("this step never advances")
+                            .help("use a nonzero step, or omit `by` for the default step of 1"),
+                        ));
+                    }
+                }
                 Type::List(Box::new(Type::Int))
             }
 
@@ -332,6 +366,24 @@ impl TypeChecker {
                     && let Some(ty) = self.check_sequence_builtin_call(name, args, expr.span)
                 {
                     return ty;
+                }
+                // `enumerate`/`zip` resolve only through `check_for_iter`
+                // (a `for`-head/comprehension-clause iterable); reaching
+                // here means neither position handled this call.
+                if let ExprKind::Identifier(name) = &callee.kind
+                    && matches!(name.as_str(), "enumerate" | "zip")
+                    && self.lookup_type(name).is_none()
+                {
+                    self.errors.push(super::super::error::SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0429",
+                            format!("`{name}` can only be used directly in a `for` loop head"),
+                            expr.span,
+                        )
+                        .label("not a `for ... in ...:` or comprehension clause iterable")
+                        .help(format!("write `for i, x in {name}(...):`")),
+                    ));
+                    return Type::Any;
                 }
                 if let ExprKind::Identifier(name) = &callee.kind
                     && name == "abs"

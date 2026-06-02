@@ -118,10 +118,12 @@ copy site, its type, and why it was needed.
 
 ## Iteration
 
-For-loops and comprehensions borrow the iterable by default. The collection
-stays usable after the loop. When the iterable has no live uses after the
-loop, the optimizer promotes the implicit copy back to a move, so hot loops
-incur no allocation overhead.
+For-loops and comprehensions borrow the iterable, the same `Rvalue::Ref` an
+explicit `&x` produces: never a copy, so hot loops incur no allocation
+overhead regardless of whether the collection is used again afterward.
+`enumerate`/`zip` borrow every iterable they're given the same way. Mutating
+or reassigning the iterable while the loop still holds the borrow is a
+compile error (E0500/E0504), exactly as it would be for an explicit `&x`.
 
 ## Task boundaries
 

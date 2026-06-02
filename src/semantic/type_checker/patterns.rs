@@ -53,7 +53,7 @@ impl TypeChecker {
 
     pub(super) fn check_comp_clauses(&mut self, clauses: &[CompClause], span: Span) {
         for clause in clauses {
-            let iter_ty = self.check_expr(&clause.iter);
+            let iter_ty = self.check_for_iter(&clause.iter);
             self.bind_for_target(&clause.target, &iter_ty, span);
             if let Some(cond) = &clause.condition {
                 let cond_ty = self.check_expr(cond);

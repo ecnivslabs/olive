@@ -304,4 +304,56 @@ pub(super) const ENTRIES: &[Explanation] = &[
             "Narrowing a plain identifier (`if x != None:`) is enough; no cast is needed.",
         ],
     },
+    Explanation {
+        code: "E0429",
+        title: "`enumerate`/`zip` used outside a `for` loop head",
+        summary: "`enumerate(...)` and `zip(...)` are `for`-loop desugars, not real \
+                  calls: they only exist written directly as a loop's or \
+                  comprehension clause's iterable. Assigning one to a variable, \
+                  passing it to a function, or using it in any other expression \
+                  position has no runtime implementation.",
+        wrong: "fn f(xs: [int]):\n    let pairs = enumerate(xs)\n    print(pairs)",
+        fixed: "fn f(xs: [int]):\n    for i, x in enumerate(xs):\n        print(i, x)",
+        notes: &[
+            "The same restriction applies to `zip(a, b)`.",
+            "Nest a comprehension's own `for` clause the same way: \
+             `[i for i, x in enumerate(xs)]`.",
+        ],
+    },
+    Explanation {
+        code: "E0430",
+        title: "range step is a literal `0`",
+        summary: "A range's `by` step was written as the literal `0`. Such a range \
+                  would never advance, so it is rejected at compile time rather \
+                  than looping forever (or faulting) at runtime.",
+        wrong: "fn f():\n    for i in 0..10 by 0:\n        print(i)",
+        fixed: "fn f():\n    for i in 0..10 by 2:\n        print(i)",
+        notes: &[
+            "A step computed at runtime (not a literal) is checked when the loop \
+             starts and faults with E0709 if it comes out to 0.",
+        ],
+    },
+    Explanation {
+        code: "E0431",
+        title: "stepped range used with `in`",
+        summary: "`x in a..b by s` was rejected: membership on a stepped range needs \
+                  step-aware arithmetic this check does not perform. `in` only \
+                  accepts a plain (unstepped) range.",
+        wrong: "fn f(x: int) -> bool:\n    return x in 0..10 by 2",
+        fixed: "fn f(x: int) -> bool:\n    return x in 0..10 and x % 2 == 0",
+        notes: &[
+            "A stepped range still works everywhere else: as a `for`-loop head, \
+             in a comprehension, or assigned directly (`let xs = 0..10 by 2`).",
+        ],
+    },
+    Explanation {
+        code: "E0432",
+        title: "`*` used outside an assignment target",
+        summary: "`*name` only means anything as one element of a `let` or plain \
+                  assignment's target list (`a, *rest = xs`). Written anywhere else, \
+                  there is nothing for it to gather into.",
+        wrong: "fn f(xs: [int]):\n    print(*xs)",
+        fixed: "fn f(xs: [int]):\n    let first, *rest = xs\n    print(first, rest)",
+        notes: &["At most one `*name` is allowed per target list."],
+    },
 ];

@@ -97,4 +97,27 @@ pub(super) const ENTRIES: &[Explanation] = &[
              for yourself instead of just a reference.",
         ],
     },
+    Explanation {
+        code: "E0709",
+        title: "range step is 0",
+        summary: "A range's `by` step evaluated to 0 at runtime. A literal `by 0` is \
+                  already rejected at compile time (E0430); this covers a step \
+                  computed from a variable or expression.",
+        wrong: "fn f(step: int):\n    for i in 0..10 by step:\n        print(i)",
+        fixed: "fn f(step: int):\n    if step == 0:\n        return\n    for i in 0..10 by step:\n        print(i)",
+        notes: &["Guard the step so it is non-zero before the loop runs."],
+    },
+    Explanation {
+        code: "E0710",
+        title: "starred destructure ran out of elements",
+        summary: "`a, *rest = xs` (or a `let` of the same shape) needs at least as many \
+                  elements in `xs` as there are plain names; the list was shorter at \
+                  runtime.",
+        wrong: "fn f(xs: [int]):\n    let a, *rest = xs\n    print(a)",
+        fixed: "fn f(xs: [int]):\n    if len(xs) >= 1:\n        let a, *rest = xs\n        print(a)",
+        notes: &[
+            "The list's own length is never known statically, so this is a runtime \
+             fault (like an out-of-bounds index) rather than a compile error.",
+        ],
+    },
 ];
