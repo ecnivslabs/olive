@@ -356,8 +356,17 @@ impl<'a> MirBuilder<'a> {
             Span::default(),
         );
         if let Some(bb) = self.current_block {
+            // Mirrors ordinary `return expr` lowering (lower_stmt/mod.rs):
+            // drop the unpacked-capture temps still owning a value, then
+            // terminate and hand `finish_function`'s trailing `leave_scope`
+            // a fresh, predecessor-less block. Without this, that
+            // `leave_scope` drops `_return` (Local(0)) in this SAME live
+            // block, freeing and zeroing the value being returned before
+            // the `Return` terminator reads it.
+            self.emit_open_scope_drops(0, None);
             self.terminate_block(bb, TerminatorKind::Return, Span::default());
         }
+        self.current_block = Some(self.new_block());
         self.finish_function();
 
         self.current_name = saved_name;
