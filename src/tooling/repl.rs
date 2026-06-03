@@ -97,6 +97,7 @@ pub fn repl_compile_run(
     );
     mir_builder.struct_field_types = type_checker.field_types.clone();
     mir_builder.build_program(&program);
+    mir_builder.monomorphize_drop_fns();
 
     let optimizer = mir::Optimizer::new();
     let (gencheck_errors, _) = optimizer.run(&mut mir_builder.functions);

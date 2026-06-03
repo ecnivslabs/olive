@@ -437,6 +437,7 @@ impl TypeChecker {
                     } else if name != "__init__"
                         && name != "__enter__"
                         && name != "__exit__"
+                        && name != "__drop__"
                         && !PROTOCOL_DUNDERS.contains(&name.as_str())
                     {
                         self.errors.push(SemanticError::rich(
@@ -559,6 +560,22 @@ impl TypeChecker {
                                     stmt.span,
                                 )
                                 .label(format!("expected `fn(self) -> str`, in `{struct_name}`")),
+                            ));
+                        }
+                    }
+                    // E8.1: `__drop__` must be `fn(self)` with no other params.
+                    // Called at the owner's free site, before slab free.
+                    if name == "__drop__" {
+                        let shape_ok = param_types.len() == 1
+                            && matches!(&param_types[0], Type::Struct(n, ..) if *n == struct_name);
+                        if !shape_ok {
+                            self.errors.push(SemanticError::rich(
+                                crate::compile::errors::Diagnostic::error(
+                                    "E0404",
+                                    "`__drop__` has the wrong signature".to_string(),
+                                    stmt.span,
+                                )
+                                .label(format!("expected `fn(self)`, in `{struct_name}`")),
                             ));
                         }
                     }
@@ -731,45 +748,52 @@ impl TypeChecker {
                     if let Type::Struct(name, _, _) = &resolved_ctx {
                         let enter_mangled = format!("{}::__enter__", name);
                         let exit_mangled = format!("{}::__exit__", name);
+                        let close_mangled = format!("{}::close", name);
+                        let drop_mangled = format!("{}::__drop__", name);
 
-                        let enter_ret_ty = if let Some(enter_fn) = self.lookup_type(&enter_mangled)
-                        {
-                            if let Type::Fn(_, ret, _) = enter_fn {
+                        let has_enter_exit = self.lookup_type(&enter_mangled).is_some()
+                            && self.lookup_type(&exit_mangled).is_some();
+
+                        if has_enter_exit {
+                            let enter_ret_ty = if let Some(Type::Fn(_, ret, _)) =
+                                self.lookup_type(&enter_mangled)
+                            {
                                 *ret
                             } else {
                                 Type::Any
+                            };
+
+                            if let Some(alias_expr) = &item.alias
+                                && let crate::parser::ExprKind::Identifier(alias_name) =
+                                    &alias_expr.kind
+                            {
+                                self.define_type(alias_name, enter_ret_ty.clone(), false);
+                                self.expr_types.insert(alias_expr.id, enter_ret_ty);
+                            }
+                        } else if self.lookup_type(&close_mangled).is_some()
+                            || self.lookup_type(&drop_mangled).is_some()
+                        {
+                            if let Some(alias_expr) = &item.alias
+                                && let crate::parser::ExprKind::Identifier(alias_name) =
+                                    &alias_expr.kind
+                            {
+                                self.define_type(alias_name, resolved_ctx.clone(), false);
+                                self.expr_types.insert(alias_expr.id, resolved_ctx.clone());
                             }
                         } else {
-                            self.errors.push(crate::semantic::error::SemanticError::rich(
-                                crate::compile::errors::Diagnostic::error(
-                                    "E0407",
-                                    format!("`{name}` is not a context manager"),
-                                    item.context_expr.span,
-                                )
-                                .label("missing `__enter__` method")
-                                .help(format!("implement `fn __enter__(self)` on `{name}` to use it in a `with`")),
-                            ));
-                            Type::Any
-                        };
-
-                        if self.lookup_type(&exit_mangled).is_none() {
-                            self.errors.push(crate::semantic::error::SemanticError::rich(
-                                crate::compile::errors::Diagnostic::error(
-                                    "E0407",
-                                    format!("`{name}` is not a context manager"),
-                                    item.context_expr.span,
-                                )
-                                .label("missing `__exit__` method")
-                                .help(format!("implement `fn __exit__(self)` on `{name}` to use it in a `with`")),
-                            ));
-                        }
-
-                        if let Some(alias_expr) = &item.alias
-                            && let crate::parser::ExprKind::Identifier(alias_name) =
-                                &alias_expr.kind
-                        {
-                            self.define_type(alias_name, enter_ret_ty.clone(), false);
-                            self.expr_types.insert(alias_expr.id, enter_ret_ty);
+                            self.errors.push(
+                                crate::semantic::error::SemanticError::rich(
+                                    crate::compile::errors::Diagnostic::error(
+                                        "E0407",
+                                        format!("`{name}` is not a context manager"),
+                                        item.context_expr.span,
+                                    )
+                                    .label("missing `__enter__` method")
+                                    .help(format!(
+                                        "implement `fn __enter__(self)` on `{name}` or use a type with `close()`"
+                                    )),
+                                ),
+                            );
                         }
                     } else if resolved_ctx != Type::Any
                         && resolved_ctx != Type::Null
@@ -784,7 +808,7 @@ impl TypeChecker {
                                 )
                                 .label("not usable in a `with` statement")
                                 .note(
-                                    "a context manager must define both `__enter__` and `__exit__`",
+                                    "a context manager must define both `__enter__` and `__exit__`, or have a `close()` or `__drop__`",
                                 ),
                             ));
                         if let Some(alias_expr) = &item.alias

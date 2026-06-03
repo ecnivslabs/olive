@@ -1,37 +1,38 @@
 import net
 
-async fn handle_client(conn: int):
-    let peer = net.tcp_peer_addr(conn)
+async fn handle_client(conn: net.TcpConn):
+    let peer = conn.peer_addr()
     print(f"Client connected: {peer}")
 
-    net.tcp_send(conn, "Welcome to Olive Async Chat Server!\n")
+    conn.send("Welcome to Olive Async Chat Server!\n")
 
     while True:
-        let data = net.tcp_recv(conn, 1024)
+        let data = conn.recv(1024)
         if len(data) == 0:
             break
 
         print(f"[{peer}] Received {len(data)} bytes")
-        net.tcp_send(conn, f"Echo: {data}")
+        conn.send(f"Echo: {data}")
 
     print(f"Client disconnected: {peer}")
-    net.tcp_close(conn)
 
 async fn server_loop():
     let bind_addr = "127.0.0.1:8080"
-    let server = net.tcp_listen(bind_addr)
+    let listen_result = net.listen(bind_addr)
+    match listen_result:
+        server: net.TcpListener:
+            print(f"Async chat server listening on {server.addr()}")
 
-    if server <= 0:
-        print(f"Failed to bind TCP server on {bind_addr}")
-        return
-
-    print(f"Async chat server listening heavily on {net.tcp_listener_addr(server)}")
-
-    while True:
-        let conn = net.tcp_accept(server)
-        if conn > 0:
-            async:
-                await handle_client(conn)
+            while True:
+                let accept_result = server.accept()
+                match accept_result:
+                    conn: net.TcpConn:
+                        async:
+                            await handle_client(conn)
+                    _:
+                        print("accept failed")
+        _:
+            print(f"Failed to bind TCP server on {bind_addr}")
 
 fn main():
     async:

@@ -64,6 +64,34 @@ fn read_stdin() -> str:
 fn read_line() -> str:
     return __olive_stdin_read_line()
 
+// Private buffered reader handle helpers
+fn _bufread_open(path: str) -> int:
+    return __olive_bufread_open(path)
+
+fn _bufread_line(br: int) -> str:
+    let result = __olive_bufread_line(br)
+    if result == 0:
+        return ""
+    return result
+
+fn _bufread_close(br: int):
+    __olive_bufread_close(br)
+
+// Private buffered writer handle helpers
+fn _bufwrite_open(path: str) -> int:
+    return __olive_bufwrite_open(path)
+
+fn _bufwrite_write(bw: int, data: str) -> bool:
+    return __olive_bufwrite_write(bw, data) == 1
+
+fn _bufwrite_flush(bw: int) -> bool:
+    return __olive_bufwrite_flush(bw) == 1
+
+fn _bufwrite_close(bw: int):
+    __olive_bufwrite_close(bw)
+
+// Public struct APIs
+
 struct File:
     handle: int
 
@@ -74,10 +102,15 @@ struct File:
         return self
 
     fn __exit__(self):
-        __olive_file_close(self.handle)
+        if self.handle != 0:
+            __olive_file_close(self.handle)
+            self.handle = 0
+
+    fn __drop__(self):
+        if self.handle != 0:
+            __olive_file_close(self.handle)
 
     fn read(self) -> str:
-        // seek to end, get size, seek to start, read_n
         let size = __olive_file_seek(self.handle, 0, 2)
         __olive_file_seek(self.handle, 0, 0)
         return __olive_file_read_n(self.handle, size)
@@ -90,11 +123,57 @@ struct File:
         return __olive_file_write_str(self.handle, data) == 1
 
     fn close(self):
-        __olive_file_close(self.handle)
+        if self.handle != 0:
+            __olive_file_close(self.handle)
+            self.handle = 0
 
+struct BufReader:
+    handle: int
+
+    fn __init__(self, handle: int):
+        self.handle = handle
+
+    fn __drop__(self):
+        if self.handle != 0:
+            _bufread_close(self.handle)
+
+    fn read_line(self) -> str:
+        return _bufread_line(self.handle)
+
+struct BufWriter:
+    handle: int
+
+    fn __init__(self, handle: int):
+        self.handle = handle
+
+    fn __drop__(self):
+        if self.handle != 0:
+            _bufwrite_flush(self.handle)
+            _bufwrite_close(self.handle)
+
+    fn write(self, data: str) -> bool:
+        return _bufwrite_write(self.handle, data)
+
+    fn flush(self) -> bool:
+        return _bufwrite_flush(self.handle)
+
+// Constructor functions
 fn open(path: str, mode: str = "r") -> File:
     return File(__olive_file_open(path, mode))
 
+fn bufread(path: str) -> BufReader | int:
+    let h = _bufread_open(path)
+    if h == 0:
+        return 0
+    return BufReader(h)
+
+fn bufwrite(path: str) -> BufWriter | int:
+    let h = _bufwrite_open(path)
+    if h == 0:
+        return 0
+    return BufWriter(h)
+
+// Legacy free functions for backward compat
 fn close(handle: int):
     __olive_file_close(handle)
 
@@ -112,30 +191,6 @@ fn tell(handle: int) -> int:
 
 fn read_lines(path: str) -> list:
     return __olive_file_read_lines(path)
-
-fn bufread_open(path: str) -> int:
-    return __olive_bufread_open(path)
-
-fn bufread_line(br: int) -> str:
-    let result = __olive_bufread_line(br)
-    if result == 0:
-        return ""
-    return result
-
-fn bufread_close(br: int):
-    __olive_bufread_close(br)
-
-fn bufwrite_open(path: str) -> int:
-    return __olive_bufwrite_open(path)
-
-fn bufwrite_write(bw: int, data: str) -> bool:
-    return __olive_bufwrite_write(bw, data) == 1
-
-fn bufwrite_flush(bw: int) -> bool:
-    return __olive_bufwrite_flush(bw) == 1
-
-fn bufwrite_close(bw: int):
-    __olive_bufwrite_close(bw)
 
 fn print_line(msg: str):
     print(msg)

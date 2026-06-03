@@ -442,8 +442,17 @@ impl<'a> MirBuilder<'a> {
                     let ctx_ty = self.get_type(item.context_expr.id).clone();
 
                     if let Type::Struct(name, _, _) = ctx_ty {
+                        let has_drop = self
+                            .functions
+                            .iter()
+                            .any(|f| f.name == format!("{}::__drop__", name))
+                            || self
+                                .generic_fns
+                                .contains_key(&format!("{}::__drop__", name));
+
                         let enter_mangled = format!("{}::__enter__", name);
-                        let exit_mangled = format!("{}::__exit__", name);
+                        let has_enter = self.functions.iter().any(|f| f.name == *enter_mangled)
+                            || self.generic_fns.contains_key(&enter_mangled);
 
                         let ctx_tmp = self.new_tmp_for_expr(&item.context_expr);
                         self.push_statement(
@@ -451,55 +460,115 @@ impl<'a> MirBuilder<'a> {
                             item.context_expr.span,
                         );
 
-                        let enter_func = Operand::Constant(Constant::Function(enter_mangled));
-                        let enter_rval = Rvalue::Call {
-                            func: enter_func,
-                            args: vec![Operand::Copy(ctx_tmp)],
-                        };
+                        if has_enter {
+                            let exit_mangled = format!("{}::__exit__", name);
 
-                        if let Some(alias_expr) = &item.alias {
-                            if let crate::parser::ExprKind::Identifier(alias_name) =
-                                &alias_expr.kind
+                            let enter_func = Operand::Constant(Constant::Function(enter_mangled));
+                            let enter_rval = Rvalue::Call {
+                                func: enter_func,
+                                args: vec![Operand::Copy(ctx_tmp)],
+                            };
+
+                            if let Some(alias_expr) = &item.alias
+                                && let crate::parser::ExprKind::Identifier(alias_name) =
+                                    &alias_expr.kind
                             {
                                 let alias_ty = self.get_type(alias_expr.id).clone();
                                 let local = self.declare_var(alias_name.clone(), alias_ty, false);
+                                if has_drop {
+                                    self.current_locals[local.0].is_owning = false;
+                                }
                                 self.push_statement(
                                     StatementKind::Assign(local, enter_rval),
                                     item.context_expr.span,
                                 );
+                            } else {
+                                let tmp = self.new_local(Type::Any, None, false);
+                                self.push_statement(
+                                    StatementKind::Assign(tmp, enter_rval),
+                                    item.context_expr.span,
+                                );
                             }
+
+                            let dummy_ident = crate::parser::Expr {
+                                id: 0,
+                                kind: crate::parser::ExprKind::Identifier(exit_mangled),
+                                span: item.context_expr.span,
+                            };
+
+                            let ctx_name = format!("$ctx_{}", i);
+
+                            let call_expr = crate::parser::Expr {
+                                id: 0,
+                                kind: crate::parser::ExprKind::Call {
+                                    callee: Box::new(dummy_ident),
+                                    args: vec![crate::parser::CallArg::Positional(
+                                        crate::parser::Expr {
+                                            id: item.context_expr.id,
+                                            kind: crate::parser::ExprKind::Identifier(
+                                                ctx_name.clone(),
+                                            ),
+                                            span: item.context_expr.span,
+                                        },
+                                    )],
+                                },
+                                span: item.context_expr.span,
+                            };
+
+                            exit_calls.push((ctx_tmp, call_expr, ctx_name, has_drop));
                         } else {
-                            let tmp = self.new_local(Type::Any, None, false);
-                            self.push_statement(
-                                StatementKind::Assign(tmp, enter_rval),
-                                item.context_expr.span,
-                            );
-                        }
+                            // No __enter__: bind alias directly, defer close() if available
+                            let close_mangled = format!("{}::close", name);
+                            let has_close = self.functions.iter().any(|f| f.name == *close_mangled);
 
-                        let dummy_ident = crate::parser::Expr {
-                            id: 0,
-                            kind: crate::parser::ExprKind::Identifier(exit_mangled),
-                            span: item.context_expr.span,
-                        };
+                            if let Some(alias_expr) = &item.alias
+                                && let crate::parser::ExprKind::Identifier(alias_name) =
+                                    &alias_expr.kind
+                            {
+                                let alias_ty = self.get_type(alias_expr.id).clone();
+                                let local = self.declare_var(alias_name.clone(), alias_ty, false);
+                                if has_drop {
+                                    self.current_locals[local.0].is_owning = false;
+                                }
+                                self.push_statement(
+                                    StatementKind::Assign(
+                                        local,
+                                        Rvalue::Use(Operand::Copy(ctx_tmp)),
+                                    ),
+                                    item.context_expr.span,
+                                );
+                            }
 
-                        let ctx_name = format!("$$ctx_{}", i);
-
-                        let call_expr = crate::parser::Expr {
-                            id: 0,
-                            kind: crate::parser::ExprKind::Call {
-                                callee: Box::new(dummy_ident),
-                                args: vec![crate::parser::CallArg::Positional(
-                                    crate::parser::Expr {
-                                        id: item.context_expr.id,
-                                        kind: crate::parser::ExprKind::Identifier(ctx_name.clone()),
-                                        span: item.context_expr.span,
+                            if has_close {
+                                let ctx_name = format!("$ctx_{}", i);
+                                let close_ident = crate::parser::Expr {
+                                    id: 0,
+                                    kind: crate::parser::ExprKind::Identifier(close_mangled),
+                                    span: item.context_expr.span,
+                                };
+                                let close_call = crate::parser::Expr {
+                                    id: 0,
+                                    kind: crate::parser::ExprKind::Call {
+                                        callee: Box::new(close_ident),
+                                        args: vec![crate::parser::CallArg::Positional(
+                                            crate::parser::Expr {
+                                                id: item.context_expr.id,
+                                                kind: crate::parser::ExprKind::Identifier(
+                                                    ctx_name.clone(),
+                                                ),
+                                                span: item.context_expr.span,
+                                            },
+                                        )],
                                     },
-                                )],
-                            },
-                            span: item.context_expr.span,
-                        };
-
-                        exit_calls.push((ctx_tmp, call_expr, ctx_name));
+                                    span: item.context_expr.span,
+                                };
+                                self.var_map
+                                    .last_mut()
+                                    .unwrap()
+                                    .insert(ctx_name.clone(), ctx_tmp);
+                                self.defer_stack.push(close_call);
+                            }
+                        }
                     } else if ctx_ty.is_py_value() {
                         let ctx_tmp = self.new_tmp_for_expr(&item.context_expr);
                         self.push_statement(
@@ -598,7 +667,7 @@ impl<'a> MirBuilder<'a> {
                     }
                 }
 
-                for (ctx_tmp, call_expr, ctx_name) in &exit_calls {
+                for (ctx_tmp, call_expr, ctx_name, _) in &exit_calls {
                     self.var_map
                         .last_mut()
                         .unwrap()
@@ -613,6 +682,12 @@ impl<'a> MirBuilder<'a> {
                 for _ in 0..exit_calls.len() {
                     if let Some(expr) = self.defer_stack.pop() {
                         self.lower_expr(&expr);
+                    }
+                }
+
+                for (ctx_tmp, _, _, has_drop) in &exit_calls {
+                    if *has_drop {
+                        self.current_locals[ctx_tmp.0].is_owning = false;
                     }
                 }
 
