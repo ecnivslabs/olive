@@ -1,0 +1,31 @@
+enum Shape:
+    Circle(float)
+    Square(float)
+    Rectangle(float, float)
+
+impl Shape:
+    fn area(self) -> float:
+        match self:
+            Circle(r):
+                return 3.14159 * r * r
+            Square(s):
+                return s * s
+            Rectangle(w, h):
+                return w * h
+
+    fn describe(self) -> str:
+        match self:
+            Circle(r):
+                return "circle r=" + str(r)
+            _:
+                return "other shape"
+
+fn main():
+    let c = Circle(2.0)
+    let s = Square(3.0)
+    let r = Rectangle(4.0, 5.0)
+    print(c.area())
+    print(s.area())
+    print(r.area())
+    print(c.describe())
+    print(s.describe())

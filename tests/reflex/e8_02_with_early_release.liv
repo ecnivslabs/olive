@@ -1,0 +1,10 @@
+struct Guard:
+    name: str
+
+    fn close(self):
+        print("closed " + self.name)
+
+fn main():
+    with Guard("g") as g:
+        print(g.name)
+    print("outside")

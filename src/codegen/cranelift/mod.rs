@@ -249,6 +249,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_float_to_str", b"olive_float_to_str\0"),
     ("__olive_free", b"olive_free_any\0"),
     ("__olive_free_any", b"olive_free_any\0"),
+    ("__olive_free_union_member", b"olive_free_union_member\0"),
     ("__olive_free_c_struct", b"olive_free_c_struct\0"),
     ("__olive_free_enum", b"olive_free_enum\0"),
     ("__olive_free_future", b"olive_free_future\0"),

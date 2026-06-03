@@ -1,0 +1,4 @@
+fn main():
+    let n = 42
+    let s = n as str
+    print(s + "!")

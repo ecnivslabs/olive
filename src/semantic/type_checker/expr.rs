@@ -9,6 +9,38 @@ enum Collection {
     Set,
 }
 
+/// Every enum variant name a pattern would match, recursing into
+/// or-pattern alternatives -- `A | B` covers both `A` and `B`, not
+/// neither, for exhaustiveness purposes.
+fn collect_matched_variants(
+    pattern: &crate::parser::ast::MatchPattern,
+    out: &mut std::collections::HashSet<String>,
+) {
+    match pattern {
+        crate::parser::ast::MatchPattern::Variant(v_name, _) => {
+            out.insert(v_name.clone());
+        }
+        crate::parser::ast::MatchPattern::Or(alts) => {
+            for alt in alts {
+                collect_matched_variants(alt, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Whether a pattern matches the `None`/`null` case, recursing into
+/// or-pattern alternatives the same way `collect_matched_variants` does.
+fn pattern_matches_null(pattern: &crate::parser::ast::MatchPattern) -> bool {
+    match pattern {
+        crate::parser::ast::MatchPattern::Literal(e) => {
+            matches!(e.kind, crate::parser::ast::ExprKind::Null)
+        }
+        crate::parser::ast::MatchPattern::Or(alts) => alts.iter().any(pattern_matches_null),
+        _ => false,
+    }
+}
+
 impl TypeChecker {
     pub(super) fn check_expr(&mut self, expr: &Expr) -> Type {
         let ty = self.infer_expr(expr);
@@ -47,8 +79,13 @@ impl TypeChecker {
                     while let Type::Ref(inner) | Type::MutRef(inner) = &current {
                         current = *inner.clone();
                     }
-                    if let Type::Struct(sname, _, _) = &current {
-                        let method = format!("{}::{}", sname, attr);
+                    let type_name = match &current {
+                        Type::Struct(sname, _, _) => Some(sname.as_str()),
+                        Type::Enum(ename, _) => Some(ename.as_str()),
+                        _ => None,
+                    };
+                    if let Some(type_name) = type_name {
+                        let method = format!("{}::{}", type_name, attr);
                         if matches!(self.lookup_type(&method), Some(Type::Fn(..))) {
                             return (Some(method), true);
                         }
@@ -1060,6 +1097,29 @@ impl TypeChecker {
                     }
                 }
 
+                if let Type::Enum(ref enum_name, _) = inner_obj {
+                    let mangled = format!("{}::{}", enum_name, attr);
+                    if let Some(ty) = self.lookup_type(&mangled) {
+                        let instantiated = self.instantiate(ty);
+                        if let Type::Fn(params, _, _) = &instantiated
+                            && !params.is_empty()
+                        {
+                            let mut auto_ref_obj = resolved_obj.clone();
+                            if let Type::MutRef(inner) = &params[0] {
+                                if auto_ref_obj == **inner {
+                                    auto_ref_obj = Type::MutRef(Box::new(auto_ref_obj));
+                                }
+                            } else if let Type::Ref(inner) = &params[0]
+                                && auto_ref_obj == **inner
+                            {
+                                auto_ref_obj = Type::Ref(Box::new(auto_ref_obj));
+                            }
+                            self.unify(&params[0], &auto_ref_obj, expr.span);
+                        }
+                        return instantiated;
+                    }
+                }
+
                 // A trait-object receiver resolves its method from the trait
                 // definition, not a concrete impl: the implementing type
                 // isn't known statically (that's the point of dynamic
@@ -1278,12 +1338,16 @@ impl TypeChecker {
                 self.apply_subst(result)
             }
             ExprKind::Match { expr, cases } => {
-                let match_ty = self.check_expr(expr);
+                let mut match_ty = self.check_expr(expr);
+                while let Type::Ref(inner) | Type::MutRef(inner) = match_ty {
+                    match_ty = *inner;
+                }
                 let return_ty = self.fresh_var();
 
                 let mut matched_variants = std::collections::HashSet::new();
                 let mut matched_null = false;
                 let mut has_wildcard = false;
+                let mut unguarded_patterns = Vec::new();
 
                 for case in cases {
                     self.enter_scope();
@@ -1291,16 +1355,19 @@ impl TypeChecker {
                     // A guarded arm may not run even when its pattern fits, so it
                     // never makes the match exhaustive on its own.
                     if case.guard.is_none() {
-                        if let crate::parser::ast::MatchPattern::Variant(v_name, _) = &case.pattern
-                        {
-                            matched_variants.insert(v_name.clone());
-                        }
-                        if let crate::parser::ast::MatchPattern::Wildcard = &case.pattern {
+                        unguarded_patterns.push(&case.pattern);
+                        collect_matched_variants(&case.pattern, &mut matched_variants);
+                        // A bare binding (`case n:`, not `_`) matches any
+                        // remaining value exactly like a wildcard does --
+                        // that's the whole point of a catch-all arm.
+                        if matches!(
+                            &case.pattern,
+                            crate::parser::ast::MatchPattern::Wildcard
+                                | crate::parser::ast::MatchPattern::Identifier(..)
+                        ) {
                             has_wildcard = true;
                         }
-                        if let crate::parser::ast::MatchPattern::Literal(e) = &case.pattern
-                            && matches!(e.kind, crate::parser::ast::ExprKind::Null)
-                        {
+                        if pattern_matches_null(&case.pattern) {
                             matched_null = true;
                         }
                     }
@@ -1392,6 +1459,20 @@ impl TypeChecker {
                             }
                         }
                         _ => {}
+                    }
+                    if let Some(gap) =
+                        self.check_new_form_exhaustiveness(&match_ty, &unguarded_patterns)
+                    {
+                        self.errors.push(super::super::error::SemanticError::rich(
+                            crate::compile::errors::Diagnostic::error(
+                                "E0414",
+                                "non-exhaustive patterns",
+                                expr.span,
+                            )
+                            .label(gap.label)
+                            .note("a `match` must handle every possible value")
+                            .help(gap.help),
+                        ));
                     }
                 }
 
@@ -1657,16 +1738,10 @@ impl TypeChecker {
             })
             .cloned()
             .collect();
-        // Only collapse to a lone pointer-shaped member (PyObject/trait object); structs carry tags.
+        // Exactly one member survives the filter: no ambiguity left, so the
+        // catch-all binds that member's own type directly, scalar or not.
         match remaining.as_slice() {
-            [only]
-                if matches!(
-                    only,
-                    Type::PyObject | Type::PyNamed(_, _) | Type::TraitObject(_, _)
-                ) =>
-            {
-                only.clone()
-            }
+            [only] => only.clone(),
             _ => ty.clone(),
         }
     }

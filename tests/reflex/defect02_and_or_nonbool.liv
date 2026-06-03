@@ -1,0 +1,7 @@
+fn find(k: int) -> int | None:
+    if k == 1:
+        return 5
+    return None
+
+fn main():
+    print(find(1) or 42)

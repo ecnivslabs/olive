@@ -11,6 +11,35 @@ mod functions;
 mod tests;
 
 impl<'a> MirBuilder<'a> {
+    /// Same `GlobalData`+`PtrStore` shape `const` uses, so reads resolve via
+    /// `self.globals` instead of falling through to a bogus call-by-name.
+    fn store_module_global(
+        &mut self,
+        name: &str,
+        rval: Operand,
+        ty: Type,
+        is_mut: bool,
+        span: Span,
+    ) {
+        if !is_mut && matches!(rval, Operand::Constant(_)) {
+            self.globals.insert(name.to_string(), rval);
+            return;
+        }
+        let global_name = name.to_string();
+        if !self.global_vars.contains(&global_name) {
+            self.global_vars.push(global_name.clone());
+        }
+        let global_op = Operand::Constant(Constant::GlobalData(global_name));
+        self.globals.insert(name.to_string(), global_op.clone());
+
+        let local = self.new_local(ty, None, false);
+        self.push_statement(StatementKind::Assign(local, Rvalue::Use(rval)), span);
+        self.push_statement(
+            StatementKind::PtrStore(global_op, Operand::Copy(local)),
+            span,
+        );
+    }
+
     /// True if expr is a single-element index into a list/tuple/set (yields a non-owning view).
     fn is_collection_index(&self, expr: &crate::parser::Expr) -> bool {
         let ExprKind::Index { obj, index } = &expr.kind else {
@@ -91,6 +120,12 @@ impl<'a> MirBuilder<'a> {
                     val_ty.clone()
                 };
                 rval = self.coerce(rval, &val_ty, &ty, value.span);
+
+                if self.at_module_scope() {
+                    self.store_module_global(name, rval, ty, *is_mut, stmt.span);
+                    return;
+                }
+
                 let local = self.declare_var(name.clone(), ty, *is_mut);
                 // Collection index yields a non-owning view; taking ownership drops a live element.
                 if self.is_collection_index(value) {
@@ -125,6 +160,10 @@ impl<'a> MirBuilder<'a> {
                         } else {
                             elem_ty.clone()
                         };
+                        if self.at_module_scope() {
+                            self.store_module_global(name, op, bind_ty, *is_mut, stmt.span);
+                            continue;
+                        }
                         let local = self.declare_var(name.clone(), bind_ty, *is_mut);
                         self.push_statement(
                             StatementKind::Assign(local, Rvalue::Use(op)),
@@ -156,6 +195,16 @@ impl<'a> MirBuilder<'a> {
                         ),
                         value.span,
                     );
+                    if self.at_module_scope() {
+                        self.store_module_global(
+                            name,
+                            Operand::Copy(elem_tmp),
+                            elem_ty,
+                            *is_mut,
+                            stmt.span,
+                        );
+                        continue;
+                    }
                     let local = self.declare_var(name.clone(), elem_ty, *is_mut);
                     self.push_statement(
                         StatementKind::Assign(local, Rvalue::Use(Operand::Copy(elem_tmp))),
@@ -283,6 +332,16 @@ impl<'a> MirBuilder<'a> {
                         if let Some(local) = self.lookup_var(name) {
                             self.push_statement(
                                 StatementKind::Assign(local, Rvalue::Use(Operand::Copy(tmp))),
+                                stmt.span,
+                            );
+                        } else if let Some(Operand::Constant(Constant::GlobalData(_))) =
+                            self.globals.get(name)
+                        {
+                            self.store_module_global(
+                                name,
+                                Operand::Copy(tmp),
+                                target_ty.clone(),
+                                true,
                                 stmt.span,
                             );
                         }
@@ -562,11 +621,13 @@ impl<'a> MirBuilder<'a> {
                                     },
                                     span: item.context_expr.span,
                                 };
-                                self.var_map
-                                    .last_mut()
-                                    .unwrap()
-                                    .insert(ctx_name.clone(), ctx_tmp);
-                                self.defer_stack.push(close_call);
+                                // Flushed at the `with` block's own end below,
+                                // same as the `__enter__` path -- pushing onto
+                                // `self.defer_stack` directly here would instead
+                                // wait for the *function's* return (that stack
+                                // backs `defer` statements), so `close()` would
+                                // run too late whenever code follows the block.
+                                exit_calls.push((ctx_tmp, close_call, ctx_name, has_drop));
                             }
                         }
                     } else if ctx_ty.is_py_value() {

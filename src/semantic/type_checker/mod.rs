@@ -1,6 +1,7 @@
 mod builtins;
 mod collection_methods;
 mod eq;
+mod exhaustiveness;
 mod expr;
 mod narrow;
 mod patterns;

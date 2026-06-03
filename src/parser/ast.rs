@@ -383,6 +383,23 @@ pub enum MatchPattern {
     Identifier(String, Span),
     Literal(Expr),
     Wildcard,
+    /// `(x, y)`, nests by ordinary recursion (`((a, b), c)`).
+    Tuple(Vec<MatchPattern>),
+    /// `Point(x=0, y=n)`: struct fields matched by name, not position.
+    StructFields(String, Vec<(String, MatchPattern)>, Span),
+    /// `[a, b, *mid, z]`. `rest` is `Some((name, span))` for at most one
+    /// `*name` slot, splitting the match into `before`/`after`; `None`
+    /// means an exact-length match against `before` alone.
+    List {
+        before: Vec<MatchPattern>,
+        rest: Option<(String, Span)>,
+        after: Vec<MatchPattern>,
+    },
+    /// `200..=299` / `0..10` on an int scrutinee.
+    Range(Expr, Expr, bool),
+    /// `"GET" | "HEAD"`: pattern-position alternation, not expression bitor.
+    /// Every alternative must bind the same names at the same types.
+    Or(Vec<MatchPattern>),
 }
 
 #[derive(Debug, Clone)]

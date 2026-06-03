@@ -1,0 +1,26 @@
+enum ParseError:
+    Empty
+    Invalid(str)
+
+type ParseResult = int | ParseError
+
+fn parse(s: str) -> ParseResult:
+    if len(s) == 0:
+        return Empty()
+    if s == "42":
+        return 42
+    return Invalid(s)
+
+fn report(s: str):
+    match parse(s):
+        Empty:
+            print("empty")
+        Invalid(bad):
+            print("invalid: " + bad)
+        n:
+            print(n)
+
+fn main():
+    report("42")
+    report("")
+    report("nope")

@@ -212,6 +212,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_float_to_str", &sig_f64_i64),
             ("__olive_free", &sig_i64_void),
             ("__olive_free_any", &sig_i64_void),
+            ("__olive_free_union_member", &sig_i64_void),
             ("__olive_free_c_struct", &sig_i64_i64_void),
             ("__olive_free_enum", &sig_i64_void),
             ("__olive_free_future", &sig_i64_i64),

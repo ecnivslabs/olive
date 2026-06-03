@@ -233,6 +233,25 @@ fn walk_pattern<'a>(
         }
         MatchPattern::Literal(e) => walk_expr(e, file_id, offset, best),
         MatchPattern::Identifier(..) | MatchPattern::Wildcard => {}
+        MatchPattern::Tuple(items) | MatchPattern::Or(items) => {
+            for p in items {
+                walk_pattern(p, file_id, offset, best);
+            }
+        }
+        MatchPattern::StructFields(_, fields, _) => {
+            for (_, p) in fields {
+                walk_pattern(p, file_id, offset, best);
+            }
+        }
+        MatchPattern::List { before, after, .. } => {
+            for p in before.iter().chain(after) {
+                walk_pattern(p, file_id, offset, best);
+            }
+        }
+        MatchPattern::Range(start, end, _) => {
+            walk_expr(start, file_id, offset, best);
+            walk_expr(end, file_id, offset, best);
+        }
     }
 }
 

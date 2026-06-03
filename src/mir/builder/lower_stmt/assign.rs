@@ -177,10 +177,18 @@ impl<'a> MirBuilder<'a> {
                 } else {
                     elem
                 };
-                if let ExprKind::Identifier(name) = &name_expr.kind
-                    && let Some(local) = self.lookup_var(name)
-                {
-                    self.push_statement(StatementKind::Assign(local, Rvalue::Use(op)), elem.span);
+                if let ExprKind::Identifier(name) = &name_expr.kind {
+                    if let Some(local) = self.lookup_var(name) {
+                        self.push_statement(
+                            StatementKind::Assign(local, Rvalue::Use(op)),
+                            elem.span,
+                        );
+                    } else if let Some(Operand::Constant(Constant::GlobalData(_))) =
+                        self.globals.get(name)
+                    {
+                        let ty = self.get_type(name_expr.id).clone();
+                        self.store_module_global(name, op, ty, true, elem.span);
+                    }
                 }
             }
             return;
@@ -195,6 +203,18 @@ impl<'a> MirBuilder<'a> {
                 if let Some(local) = self.lookup_var(name) {
                     self.push_statement(
                         StatementKind::Assign(local, Rvalue::Use(rval)),
+                        target.span,
+                    );
+                } else if let Some(Operand::Constant(Constant::GlobalData(_))) =
+                    self.globals.get(name)
+                {
+                    // Module-scope reassignment of a `let mut` global; writes
+                    // from inside a function are already rejected earlier (E0434).
+                    let global_op = self.globals[name].clone();
+                    let tmp = self.new_local(target_ty, None, false);
+                    self.push_statement(StatementKind::Assign(tmp, Rvalue::Use(rval)), target.span);
+                    self.push_statement(
+                        StatementKind::PtrStore(global_op, Operand::Copy(tmp)),
                         target.span,
                     );
                 }
@@ -282,13 +302,24 @@ impl<'a> MirBuilder<'a> {
                         ),
                         elem.span,
                     );
-                    if let ExprKind::Identifier(name) = &elem.kind
-                        && let Some(local) = self.lookup_var(name)
-                    {
-                        self.push_statement(
-                            StatementKind::Assign(local, Rvalue::Use(Operand::Copy(elem_tmp))),
-                            elem.span,
-                        );
+                    if let ExprKind::Identifier(name) = &elem.kind {
+                        if let Some(local) = self.lookup_var(name) {
+                            self.push_statement(
+                                StatementKind::Assign(local, Rvalue::Use(Operand::Copy(elem_tmp))),
+                                elem.span,
+                            );
+                        } else if let Some(Operand::Constant(Constant::GlobalData(_))) =
+                            self.globals.get(name)
+                        {
+                            let ty = self.get_type(elem.id).clone();
+                            self.store_module_global(
+                                name,
+                                Operand::Copy(elem_tmp),
+                                ty,
+                                true,
+                                elem.span,
+                            );
+                        }
                     }
                 }
             }

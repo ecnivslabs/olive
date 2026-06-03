@@ -1,0 +1,13 @@
+enum A:
+    Ok
+    Err(str)
+
+enum B:
+    Ok
+    Pending
+
+fn make() -> A:
+    return A::Ok
+
+fn main():
+    print(make())

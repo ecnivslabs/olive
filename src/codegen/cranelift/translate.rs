@@ -38,8 +38,12 @@ pub(super) fn free_func_name_for_type(
         // `T | None` stores the raw `T` with `None` as a zero sentinel (no
         // Any-box with kind tag).  `__olive_free_any` would misinterpret T's
         // header word as a kind tag; dispatch to T's concrete free function
-        // instead, falling back to generic kind-dispatch only for multi-type
-        // unions.
+        // instead. A multi-member union (no `Any` involved) is the same raw
+        // representation, just with more than one possible non-null shape --
+        // `__olive_free_union_member` gates on the allocator's live-object
+        // table rather than `__olive_free_any`'s inline-tag bit heuristics,
+        // which a plain scalar member's untagged bits can coincidentally
+        // satisfy (see the runtime doc comment).
         OliveType::Union(members) => {
             let non_null: Vec<&OliveType> = members
                 .iter()
@@ -47,7 +51,8 @@ pub(super) fn free_func_name_for_type(
                 .collect();
             match non_null.as_slice() {
                 [single] => free_func_name_for_type(single, struct_fields),
-                _ => "__olive_free_any",
+                _ if members.contains(&OliveType::Any) => "__olive_free_any",
+                _ => "__olive_free_union_member",
             }
         }
         OliveType::PyObject | OliveType::PyNamed(_, _) => "__olive_py_decref",

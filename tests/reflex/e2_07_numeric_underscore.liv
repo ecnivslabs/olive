@@ -1,0 +1,5 @@
+fn main():
+    let big = 1_000_000
+    let pi = 3.14_159
+    print(big)
+    print(pi)

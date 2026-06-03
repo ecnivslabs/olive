@@ -9,6 +9,23 @@ fn is_pyobj_op(local_types: &[OliveType], op: &Operand) -> bool {
     }
 }
 
+/// Shift/mask division and modulo by a power of two are floor-division
+/// identities: `x >> k` rounds toward negative infinity, and `x & (c-1)`
+/// always returns a non-negative remainder. Olive's `/` and `%` truncate
+/// toward zero (Rust/C semantics), which agrees with shift/mask only when
+/// `x` can never be negative -- true for an unsigned operand, never
+/// provable in general for a signed one without range analysis this pass
+/// doesn't do.
+fn is_unsigned_op(local_types: &[OliveType], op: &Operand) -> bool {
+    match op {
+        Operand::Copy(l) | Operand::Move(l) => matches!(
+            local_types[l.0],
+            OliveType::U8 | OliveType::U16 | OliveType::U32 | OliveType::U64 | OliveType::Usize
+        ),
+        _ => false,
+    }
+}
+
 pub struct StrengthReduction;
 
 impl Transform for StrengthReduction {
@@ -36,7 +53,8 @@ impl Transform for StrengthReduction {
                         Rvalue::BinaryOp(Div, op, Operand::Constant(Constant::Int(c)))
                             if *c > 1
                                 && (*c as u64).is_power_of_two()
-                                && !is_pyobj_op(&local_types, op) =>
+                                && !is_pyobj_op(&local_types, op)
+                                && is_unsigned_op(&local_types, op) =>
                         {
                             let shift = (*c as u64).trailing_zeros() as i64;
                             Some(Rvalue::BinaryOp(
@@ -48,7 +66,8 @@ impl Transform for StrengthReduction {
                         Rvalue::BinaryOp(Mod, op, Operand::Constant(Constant::Int(c)))
                             if *c > 1
                                 && (*c as u64).is_power_of_two()
-                                && !is_pyobj_op(&local_types, op) =>
+                                && !is_pyobj_op(&local_types, op)
+                                && is_unsigned_op(&local_types, op) =>
                         {
                             let mask = *c - 1;
                             Some(Rvalue::BinaryOp(
@@ -146,7 +165,7 @@ mod tests {
     #[test]
     fn div_power_of_two_to_shift() {
         let mut f = func(
-            vec![local_decl(crate::semantic::types::Type::Int)],
+            vec![local_decl(crate::semantic::types::Type::Usize)],
             vec![assign(
                 0,
                 Rvalue::BinaryOp(
@@ -166,10 +185,53 @@ mod tests {
         }
     }
 
+    // `-7 / 2` truncates to `-3` (Rust/C semantics); `-7 >> 1` is `-4`
+    // (floor). Shift-based division is only sound for an operand that can
+    // never be negative, so a signed `int` must not strength-reduce.
+    #[test]
+    fn signed_div_power_of_two_not_reduced() {
+        let mut f = func(
+            vec![local_decl(crate::semantic::types::Type::Int)],
+            vec![assign(
+                0,
+                Rvalue::BinaryOp(
+                    crate::parser::BinOp::Div,
+                    Operand::Copy(Local(0)),
+                    Operand::Constant(Constant::Int(16)),
+                ),
+            )],
+        );
+        assert!(!StrengthReduction.run(&mut f));
+        match &f.basic_blocks[0].statements[0].kind {
+            StatementKind::Assign(_, Rvalue::BinaryOp(crate::parser::BinOp::Div, ..)) => {}
+            _ => panic!("expected Div to survive unreduced"),
+        }
+    }
+
+    #[test]
+    fn signed_mod_power_of_two_not_reduced() {
+        let mut f = func(
+            vec![local_decl(crate::semantic::types::Type::Int)],
+            vec![assign(
+                0,
+                Rvalue::BinaryOp(
+                    crate::parser::BinOp::Mod,
+                    Operand::Copy(Local(0)),
+                    Operand::Constant(Constant::Int(8)),
+                ),
+            )],
+        );
+        assert!(!StrengthReduction.run(&mut f));
+        match &f.basic_blocks[0].statements[0].kind {
+            StatementKind::Assign(_, Rvalue::BinaryOp(crate::parser::BinOp::Mod, ..)) => {}
+            _ => panic!("expected Mod to survive unreduced"),
+        }
+    }
+
     #[test]
     fn mod_power_of_two_to_and() {
         let mut f = func(
-            vec![local_decl(crate::semantic::types::Type::Int)],
+            vec![local_decl(crate::semantic::types::Type::Usize)],
             vec![assign(
                 0,
                 Rvalue::BinaryOp(

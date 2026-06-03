@@ -1,0 +1,13 @@
+struct Vec2:
+    x: int
+    y: int
+
+    fn __add__(self, other: Vec2) -> Vec2:
+        return Vec2(self.x + other.x, self.y + other.y)
+
+fn main():
+    let a = Vec2(1, 2)
+    let b = Vec2(3, 4)
+    let c = a + b
+    print(c.x)
+    print(c.y)

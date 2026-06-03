@@ -39,6 +39,13 @@ impl Gen {
         let closure_add = self.range(1, 20);
         let opt_pick_a = self.range(-10, 10);
         let opt_pick_b = self.range(-10, 10);
+        let leaf_n = self.range(-6, 16);
+        let pair_a = self.range(-3, 9);
+        let pair_b = self.range(-3, 9);
+        let trio_a = self.range(-5, 5);
+        let trio_b = self.range(-5, 5);
+        let trio_c = self.range(-5, 5);
+        let list_pat_n = self.range(0, 12);
 
         let list_lit = (0..list_len)
             .map(|i| (base + i).to_string())
@@ -144,6 +151,46 @@ fn opt_items_len(b: Box | None) -> int:
     let items = b?.items ?? []
     return len(items)
 
+enum Node:
+    Leaf(int)
+    Pair(int, int)
+    Trio(int, int, int)
+
+fn classify(n: Node) -> str:
+    // Nested range/wildcard/or/guard patterns inside variant payloads.
+    match n:
+        Leaf(0):
+            return "leaf-zero"
+        Leaf(x) if x < 0:
+            return "leaf-neg"
+        Leaf(1..10):
+            return "leaf-small"
+        Pair(0, 0) | Pair(0, _) | Pair(_, 0):
+            return "pair-has-zero"
+        Pair(a, b) if a == b:
+            return "pair-equal"
+        Trio(a, b, c):
+            return "trio:" + str(a + b + c)
+        _:
+            return "other"
+
+fn nested_list_pattern(xs: [(int, int)]) -> int:
+    // List-with-rest whose elements are themselves tuple patterns.
+    match xs:
+        []:
+            return 0
+        [(a, b)]:
+            return a + b
+        [(a, b), *rest]:
+            return a - b + len(rest)
+
+fn pattern_playground(n: int, pa: int, pb: int, ta: int, tb: int, tc: int, ln: int) -> str:
+    let leaf = classify(Leaf(n))
+    let pair = classify(Pair(pa, pb))
+    let trio = classify(Trio(ta, tb, tc))
+    let listed = nested_list_pattern([(ln, ln + 1), (ln + 2, ln + 3), (ln + 4, ln + 5)])
+    return leaf + "," + pair + "," + trio + "," + str(listed)
+
 fn main():
     print(moves_and_borrows())
     print(struct_escape())
@@ -154,6 +201,7 @@ fn main():
     print(branch_pick({branch_pick}))
     print(opt_items_len(maybe_box({opt_pick_a})))
     print(guard_len(maybe_list({opt_pick_b})))
+    print(pattern_playground({leaf_n}, {pair_a}, {pair_b}, {trio_a}, {trio_b}, {trio_c}, {list_pat_n}))
 "#,
             list_lit = list_lit,
             struct_val = struct_val,
@@ -163,6 +211,13 @@ fn main():
             branch_pick = branch_pick,
             opt_pick_a = opt_pick_a,
             opt_pick_b = opt_pick_b,
+            leaf_n = leaf_n,
+            pair_a = pair_a,
+            pair_b = pair_b,
+            trio_a = trio_a,
+            trio_b = trio_b,
+            trio_c = trio_c,
+            list_pat_n = list_pat_n,
         )
     }
 }
@@ -258,6 +313,215 @@ fn check_seed(seed: u64) {
         jit_code, 0,
         "seed {seed} program crashed (both pipelines agree, but nonzero exit): {jit_out}"
     );
+}
+
+/// Roadmap E10.1: `tests/reflex/*.liv` is the executable definition of "the
+/// reflexes work" -- one probe per landed defect/feature, run through both
+/// pipelines and diffed against a pinned golden. Each `.liv` needs exactly
+/// one sibling: `.stdout` (must compile and run clean, output pinned),
+/// `.error` (must fail to compile on both pipelines, stderr has the code),
+/// or `.fault` (compiles, faults at runtime on both pipelines, stderr has
+/// the code). An optional `.stdin` feeds captured input.
+mod reflex_corpus {
+    use super::{Command, UNIQUE, pit_bin};
+    use std::fs;
+    use std::io::Write;
+    use std::path::{Path, PathBuf};
+
+    fn corpus_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/reflex")
+    }
+
+    fn spawn_capture(cmd: &mut Command, stdin: Option<&[u8]>) -> (String, String, i32) {
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        let mut child = cmd.spawn().expect("spawn process");
+        if let Some(bytes) = stdin {
+            child
+                .stdin
+                .take()
+                .expect("child stdin")
+                .write_all(bytes)
+                .expect("write stdin");
+        } else {
+            drop(child.stdin.take());
+        }
+        let out = child.wait_with_output().expect("wait for process");
+        (
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+            out.status.code().unwrap_or(-1),
+        )
+    }
+
+    fn run_jit(path: &Path, stdin: Option<&[u8]>) -> (String, String, i32) {
+        spawn_capture(Command::new(pit_bin()).arg("run").arg(path), stdin)
+    }
+
+    fn build_aot(path: &Path, out_bin: &Path) -> (bool, String) {
+        let build = Command::new(pit_bin())
+            .arg("build")
+            .arg("--release")
+            .arg("-o")
+            .arg(out_bin)
+            .arg(path)
+            .output()
+            .expect("spawn pit build");
+        (
+            build.status.success(),
+            String::from_utf8_lossy(&build.stderr).into_owned(),
+        )
+    }
+
+    fn run_bin(out_bin: &Path, stdin: Option<&[u8]>) -> (String, String, i32) {
+        let r = spawn_capture(&mut Command::new(out_bin), stdin);
+        fs::remove_file(out_bin).ok();
+        r
+    }
+
+    fn unique_bin(stem: &str) -> PathBuf {
+        let n = UNIQUE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::env::temp_dir().join(format!("olive_reflex_{}_{stem}_{n}", std::process::id()))
+    }
+
+    fn read_stdin_fixture(liv: &Path) -> Option<Vec<u8>> {
+        fs::read(liv.with_extension("stdin")).ok()
+    }
+
+    fn check_clean(liv: &Path, expected: &str) {
+        let stdin = read_stdin_fixture(liv);
+        let (jit_out, jit_err, jit_code) = run_jit(liv, stdin.as_deref());
+        assert_eq!(
+            jit_code,
+            0,
+            "{}: JIT exited {jit_code}: {jit_err}",
+            liv.display()
+        );
+        assert_eq!(jit_out, expected, "{}: JIT stdout mismatch", liv.display());
+
+        let out_bin = unique_bin(liv.file_stem().unwrap().to_str().unwrap());
+        let (built, build_err) = build_aot(liv, &out_bin);
+        assert!(built, "{}: AOT build failed: {build_err}", liv.display());
+        let (aot_out, aot_err, aot_code) = run_bin(&out_bin, stdin.as_deref());
+        assert_eq!(
+            aot_code,
+            0,
+            "{}: AOT exited {aot_code}: {aot_err}",
+            liv.display()
+        );
+        assert_eq!(aot_out, expected, "{}: AOT stdout mismatch", liv.display());
+        assert_eq!(jit_out, aot_out, "{}: pipelines diverge", liv.display());
+    }
+
+    fn check_error(liv: &Path, code: &str) {
+        let marker = format!("[{code}]");
+        let (_, jit_err, jit_code) = run_jit(liv, None);
+        assert_ne!(
+            jit_code,
+            0,
+            "{}: JIT accepted a program it should reject",
+            liv.display()
+        );
+        assert!(
+            jit_err.contains(&marker),
+            "{}: JIT stderr missing {marker}: {jit_err}",
+            liv.display()
+        );
+
+        let out_bin = unique_bin(liv.file_stem().unwrap().to_str().unwrap());
+        let (built, build_err) = build_aot(liv, &out_bin);
+        assert!(
+            !built,
+            "{}: AOT accepted a program it should reject",
+            liv.display()
+        );
+        assert!(
+            build_err.contains(&marker),
+            "{}: AOT stderr missing {marker}: {build_err}",
+            liv.display()
+        );
+    }
+
+    fn check_fault(liv: &Path, code: &str) {
+        let marker = format!("[{code}]");
+        let stdin = read_stdin_fixture(liv);
+        let (jit_out, jit_err, jit_code) = run_jit(liv, stdin.as_deref());
+        assert_ne!(jit_code, 0, "{}: JIT should have faulted", liv.display());
+        assert!(
+            jit_err.contains(&marker),
+            "{}: JIT stderr missing {marker}: {jit_err}",
+            liv.display()
+        );
+
+        let out_bin = unique_bin(liv.file_stem().unwrap().to_str().unwrap());
+        let (built, build_err) = build_aot(liv, &out_bin);
+        assert!(built, "{}: AOT build failed: {build_err}", liv.display());
+        let (aot_out, aot_err, aot_code) = run_bin(&out_bin, stdin.as_deref());
+        assert_ne!(aot_code, 0, "{}: AOT should have faulted", liv.display());
+        assert!(
+            aot_err.contains(&marker),
+            "{}: AOT stderr missing {marker}: {aot_err}",
+            liv.display()
+        );
+        assert_eq!(
+            jit_out,
+            aot_out,
+            "{}: pipelines diverge before fault",
+            liv.display()
+        );
+    }
+
+    /// One test per corpus file, so a single bad probe fails by name instead
+    /// of sinking the whole lane.
+    #[test]
+    fn corpus_is_conformant() {
+        if cfg!(all(target_os = "windows", target_env = "msvc")) {
+            return;
+        }
+        let dir = corpus_dir();
+        let mut entries: Vec<PathBuf> = fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("liv"))
+            .collect();
+        entries.sort();
+        assert!(!entries.is_empty(), "tests/reflex is empty");
+
+        let mut failures = Vec::new();
+        for liv in &entries {
+            let stdout_p = liv.with_extension("stdout");
+            let error_p = liv.with_extension("error");
+            let fault_p = liv.with_extension("fault");
+            let present = [stdout_p.exists(), error_p.exists(), fault_p.exists()];
+            let count = present.iter().filter(|b| **b).count();
+            assert_eq!(
+                count,
+                1,
+                "{}: needs exactly one of .stdout/.error/.fault, found {count}",
+                liv.display()
+            );
+
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if stdout_p.exists() {
+                    check_clean(liv, &fs::read_to_string(&stdout_p).unwrap());
+                } else if error_p.exists() {
+                    check_error(liv, fs::read_to_string(&error_p).unwrap().trim());
+                } else {
+                    check_fault(liv, fs::read_to_string(&fault_p).unwrap().trim());
+                }
+            }));
+            if let Err(e) = result {
+                let msg = e
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+                    .unwrap_or_else(|| "panic".to_string());
+                failures.push(format!("{}: {msg}", liv.display()));
+            }
+        }
+        assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+    }
 }
 
 /// Single test, sequential: avoids cross-test contention on the AOT output path.

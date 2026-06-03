@@ -1,0 +1,24 @@
+fn main():
+    let mut xs = [1, 2, 3, 2]
+    print(xs.count(2))
+    print(xs.index(3))
+    xs.clear()
+    print(len(xs))
+
+    let mut d: {str: int} = {"a": 1}
+    d.update({"b": 2})
+    print(d["b"])
+    print(d.pop("a"))
+    print(d.pop("z", -1))
+    d.setdefault("c", 3)
+    print(d["c"])
+    d.clear()
+    print(len(d))
+
+    let mut s = {1, 2, 3}
+    s.remove(2)
+    print(2 in s)
+    s.discard(99)
+    print(len(s))
+    s.clear()
+    print(len(s))

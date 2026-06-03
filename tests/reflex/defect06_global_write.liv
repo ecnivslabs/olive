@@ -1,0 +1,8 @@
+let mut counter = 0
+
+fn bump():
+    counter = counter + 1
+
+fn main():
+    bump()
+    print(counter)

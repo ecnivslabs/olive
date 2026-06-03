@@ -12,6 +12,7 @@ The `pit` toolchain is the unified compiler, package manager, and project manage
   * `-o, --output <path>`: Specify the output executable path (only applicable for single file builds).
   * `-t, --time`: Emit performance timings during compilation.
   * `--release`: Compile with optimizations enabled.
+  * `--pgo <path>`: Use the profile at `<path>` for profile-guided inlining instead of auto-detecting one captured by an earlier `pit run`.
   * `--explain-copies`: Print every compiler-inserted deep-copy site with file:line, type, and reason.
 
 * `pit run [file]`

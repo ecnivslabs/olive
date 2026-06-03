@@ -46,7 +46,7 @@ pub(crate) fn new_obj_from_map(fields: HashMap<OliveStringKey, i64>) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_set(obj_ptr: i64, attr: i64, val: i64) -> i64 {
-    if obj_ptr == 0 || attr == 0 {
+    if obj_ptr == 0 {
         panic!("Null pointer dereference: attempted to set attribute on a null object");
     }
     let kind = unsafe { *(obj_ptr as *const i64) };
@@ -57,7 +57,7 @@ pub extern "C" fn olive_obj_set(obj_ptr: i64, attr: i64, val: i64) -> i64 {
     // A tagged string key is a caller value that will be freed at its scope
     // exit; the dict keeps a private copy so its stored key never dangles.
     // Untagged attribute names are read-only interned symbols, kept as-is.
-    if attr & 1 != 0 && !m.fields.contains_key(&OliveStringKey(attr)) {
+    if crate::is_tagged_str_key(attr) && !m.fields.contains_key(&OliveStringKey(attr)) {
         let bytes =
             unsafe { std::ffi::CStr::from_ptr((attr & !1) as *const std::ffi::c_char).to_bytes() };
         let owned = crate::string_slab::str_alloc(bytes);
@@ -70,10 +70,8 @@ pub extern "C" fn olive_obj_set(obj_ptr: i64, attr: i64, val: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_get(obj_ptr: i64, attr: i64) -> i64 {
-    if obj_ptr == 0 || attr == 0 {
-        panic!(
-            "Null pointer dereference: attempted to get attribute from a null object or invalid attribute string"
-        );
+    if obj_ptr == 0 {
+        panic!("Null pointer dereference: attempted to get attribute from a null object");
     }
     let kind = unsafe { *(obj_ptr as *const i64) };
     if kind == KIND_PYOBJECT {
@@ -85,7 +83,7 @@ pub extern "C" fn olive_obj_get(obj_ptr: i64, attr: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_get_checked(obj_ptr: i64, attr: i64, loc: i64) -> i64 {
-    if obj_ptr == 0 || attr == 0 {
+    if obj_ptr == 0 {
         crate::panic::olive_nil_index_fail(loc);
     }
     let kind = unsafe { *(obj_ptr as *const i64) };
@@ -96,17 +94,15 @@ pub extern "C" fn olive_obj_get_checked(obj_ptr: i64, attr: i64, loc: i64) -> i6
     if let Some(&val) = m.fields.get(&OliveStringKey(attr)) {
         val
     } else {
-        crate::panic::olive_bounds_fail(0, m.fields.len() as i64, loc);
+        crate::panic::olive_key_fail(attr, loc);
         0
     }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_get_default(obj_ptr: i64, attr: i64, default: i64) -> i64 {
-    if obj_ptr == 0 || attr == 0 {
-        panic!(
-            "Null pointer dereference: attempted to get attribute from a null object or invalid attribute string"
-        );
+    if obj_ptr == 0 {
+        panic!("Null pointer dereference: attempted to get attribute from a null object");
     }
     let kind = unsafe { *(obj_ptr as *const i64) };
     if kind == KIND_PYOBJECT {
@@ -120,13 +116,13 @@ pub extern "C" fn olive_obj_get_default(obj_ptr: i64, attr: i64, default: i64) -
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_remove(obj_ptr: i64, attr: i64) -> i64 {
-    if obj_ptr == 0 || attr == 0 {
+    if obj_ptr == 0 {
         panic!("Null pointer dereference: attempted to remove attribute from a null object");
     }
     let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
     match m.fields.remove_entry(&OliveStringKey(attr)) {
         Some((k, v)) => {
-            if k.0 & 1 != 0 {
+            if crate::is_tagged_str_key(k.0) {
                 crate::olive_free_str(k.0);
             }
             v
@@ -138,13 +134,13 @@ pub extern "C" fn olive_obj_remove(obj_ptr: i64, attr: i64) -> i64 {
 /// `d.pop(k)`: removes and returns the value, faulting if `k` is absent.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_pop_checked(obj_ptr: i64, attr: i64, loc: i64) -> i64 {
-    if obj_ptr == 0 || attr == 0 {
+    if obj_ptr == 0 {
         crate::panic::olive_nil_index_fail(loc);
     }
     let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
     match m.fields.remove_entry(&OliveStringKey(attr)) {
         Some((k, v)) => {
-            if k.0 & 1 != 0 {
+            if crate::is_tagged_str_key(k.0) {
                 crate::olive_free_str(k.0);
             }
             v
@@ -159,13 +155,13 @@ pub extern "C" fn olive_obj_pop_checked(obj_ptr: i64, attr: i64, loc: i64) -> i6
 /// `d.pop(k, default)`: non-faulting, returns `default` when `k` is absent.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_pop_default(obj_ptr: i64, attr: i64, default: i64) -> i64 {
-    if obj_ptr == 0 || attr == 0 {
+    if obj_ptr == 0 {
         return default;
     }
     let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
     match m.fields.remove_entry(&OliveStringKey(attr)) {
         Some((k, v)) => {
-            if k.0 & 1 != 0 {
+            if crate::is_tagged_str_key(k.0) {
                 crate::olive_free_str(k.0);
             }
             v
@@ -177,7 +173,7 @@ pub extern "C" fn olive_obj_pop_default(obj_ptr: i64, attr: i64, default: i64) -
 /// `d.setdefault(k, v)`: returns the existing value, or inserts and returns `v`.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_setdefault(obj_ptr: i64, attr: i64, default: i64) -> i64 {
-    if obj_ptr == 0 || attr == 0 {
+    if obj_ptr == 0 {
         panic!("Null pointer dereference: attempted to use setdefault on a null object");
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
@@ -220,7 +216,7 @@ pub extern "C" fn olive_obj_clear(obj_ptr: i64) -> i64 {
         }
     }
     for k in m.fields.keys() {
-        if k.0 & 1 != 0 {
+        if crate::is_tagged_str_key(k.0) {
             crate::olive_free_str(k.0);
         }
     }
@@ -230,7 +226,7 @@ pub extern "C" fn olive_obj_clear(obj_ptr: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_in_obj(key: i64, obj_ptr: i64) -> i64 {
-    if obj_ptr == 0 || key == 0 {
+    if obj_ptr == 0 {
         panic!("Null pointer dereference: attempted to check 'in' on a null object");
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
@@ -265,7 +261,7 @@ pub extern "C" fn olive_free_obj(ptr: i64) {
             // Tagged keys are dict-owned string copies; free them so the map's own
             // keys do not outlive it. Untagged attribute names are interned symbols.
             for k in obj.fields.keys() {
-                if k.0 & 1 != 0 {
+                if crate::is_tagged_str_key(k.0) {
                     crate::olive_free_str(k.0);
                 }
             }

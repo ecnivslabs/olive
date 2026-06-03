@@ -1,0 +1,8 @@
+fn describe(x: int | None) -> str:
+    if x != None:
+        return "have " + str(x + 1)
+    return "none"
+
+fn main():
+    print(describe(5))
+    print(describe(None))

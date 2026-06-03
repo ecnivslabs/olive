@@ -207,7 +207,7 @@ impl<'a> MirBuilder<'a> {
             }
             let is_struct_var = matches!(
                 current_obj_ty,
-                Type::Struct(_, _, _) | Type::TraitObject(_, _) | Type::Any
+                Type::Struct(_, _, _) | Type::Enum(_, _) | Type::TraitObject(_, _) | Type::Any
             ) && self.lookup_var(name).is_some();
             if !is_struct_var {
                 let mangled = format!("{}::{}", name, attr);
@@ -336,6 +336,25 @@ impl<'a> MirBuilder<'a> {
                 span,
             );
             self.operand_for_local(tmp)
+        } else if let Type::Enum(enum_name, type_args) = &obj_ty {
+            let base_method_name = format!("{}::{}", enum_name, attr);
+            let method_name = if !type_args.is_empty() {
+                self.monomorphize(&base_method_name, type_args)
+            } else {
+                base_method_name
+            };
+            self.fill_trailing_defaults(&method_name, &mut method_args, callee.id, span);
+            self.push_statement(
+                StatementKind::Assign(
+                    tmp,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function(method_name)),
+                        args: method_args,
+                    },
+                ),
+                span,
+            );
+            self.operand_for_local(tmp)
         } else if let Type::TraitObject(trait_name, _) = &obj_ty {
             let method_idx = if let Some(t_def) = self.traits.get(trait_name) {
                 t_def
@@ -385,6 +404,24 @@ impl<'a> MirBuilder<'a> {
             }
             if let Type::Struct(struct_name, type_args, _) = &inner_ty {
                 let base_method_name = format!("{}::{}", struct_name, attr);
+                let method_name = if !type_args.is_empty() {
+                    self.monomorphize(&base_method_name, type_args)
+                } else {
+                    base_method_name
+                };
+                self.fill_trailing_defaults(&method_name, &mut method_args, callee.id, span);
+                self.push_statement(
+                    StatementKind::Assign(
+                        tmp,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(method_name)),
+                            args: method_args,
+                        },
+                    ),
+                    span,
+                );
+            } else if let Type::Enum(enum_name, type_args) = &inner_ty {
+                let base_method_name = format!("{}::{}", enum_name, attr);
                 let method_name = if !type_args.is_empty() {
                     self.monomorphize(&base_method_name, type_args)
                 } else {
@@ -1006,8 +1043,14 @@ impl<'a> MirBuilder<'a> {
         // shape, and `fn_meta`/`pack_fn_call_args` below is keyed globally
         // by name, not scope. Reached only when `lower_call_expr`'s own
         // `nested_fns`/`bound_lambdas` lookups (also local-aware) missed.
+        // Same exception as a local: a module-scope `let` (`self.globals`)
+        // is never a real function symbol under its own bare name either --
+        // `func` already carries the correctly-resolved callable operand for
+        // that case (see the `Constant::Function` fallback just below, or an
+        // indirect call through a loaded closure record).
         let mut call_fn_name = if let ExprKind::Identifier(name) = &callee.kind
             && self.lookup_var(name).is_none()
+            && !self.globals.contains_key(name)
         {
             Some(name.clone())
         } else if let ExprKind::Attr { obj, attr } = &callee.kind {

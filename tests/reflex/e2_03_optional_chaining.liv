@@ -1,0 +1,11 @@
+struct User:
+    name: str
+
+fn find(id: int) -> User | None:
+    if id == 1:
+        return User("ada")
+    return None
+
+fn main():
+    print(find(1)?.name ?? "anon")
+    print(find(2)?.name ?? "anon")

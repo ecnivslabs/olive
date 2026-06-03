@@ -1,0 +1,5 @@
+fn main():
+    print(abs(-5))
+    print(abs(-2.5))
+    print(round(2.7))
+    print(round(3.14159, 2))

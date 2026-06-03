@@ -6,6 +6,39 @@ use crate::semantic::types::Type;
 use crate::span::Span;
 
 impl<'a> MirBuilder<'a> {
+    /// Mirrors `TypeChecker::narrow_match_ty`: drops union members the
+    /// earlier arms already fully accounted for, collapsing to the sole
+    /// survivor when exactly one remains.
+    fn narrow_match_ty(
+        &self,
+        ty: &Type,
+        matched: &std::collections::HashSet<String>,
+        matched_null: bool,
+    ) -> Type {
+        let Type::Union(members) = ty else {
+            return ty.clone();
+        };
+        let remaining: Vec<Type> = members
+            .iter()
+            .filter(|m| {
+                if matched_null && matches!(m, Type::Null) {
+                    return false;
+                }
+                if let Type::Enum(en, _) = m
+                    && let Some(variants) = self.enum_defs.get(en)
+                {
+                    return !variants.iter().all(|(v, _)| matched.contains(v));
+                }
+                true
+            })
+            .cloned()
+            .collect();
+        match remaining.as_slice() {
+            [only] => only.clone(),
+            _ => ty.clone(),
+        }
+    }
+
     pub(super) fn lower_ternary_expr(
         &mut self,
         cond: &Expr,
@@ -313,11 +346,37 @@ impl<'a> MirBuilder<'a> {
         let result_ty = self.get_type(expr_id);
         let result_tmp = self.new_local(result_ty, None, false);
 
+        let mut matched_variants = std::collections::HashSet::new();
+        let mut matched_null = false;
+
+        let mut scrutinee_ty = self.get_type(match_expr.id);
+        while let Type::Ref(inner) | Type::MutRef(inner) = scrutinee_ty {
+            scrutinee_ty = *inner;
+        }
+
         for case in cases {
             let success_bb = self.new_block();
             let failure_bb = self.new_block();
 
-            let match_ty = self.get_type(match_expr.id);
+            // Mirrors the checker's own arm-by-arm narrowing (`narrow_match_ty`):
+            // a catch-all binding only sees whatever the earlier arms did not
+            // already carve out, so its runtime type must match what the
+            // checker already promised the arm's body.
+            let match_ty = if matches!(case.pattern, crate::parser::MatchPattern::Identifier(..)) {
+                self.narrow_match_ty(&scrutinee_ty, &matched_variants, matched_null)
+            } else {
+                scrutinee_ty.clone()
+            };
+            if case.guard.is_none() {
+                if let crate::parser::MatchPattern::Variant(v_name, _) = &case.pattern {
+                    matched_variants.insert(v_name.clone());
+                }
+                if let crate::parser::MatchPattern::Literal(e) = &case.pattern
+                    && matches!(e.kind, crate::parser::ExprKind::Null)
+                {
+                    matched_null = true;
+                }
+            }
             self.lower_pattern(
                 &case.pattern,
                 discr_local,

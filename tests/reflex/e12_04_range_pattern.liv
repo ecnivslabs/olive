@@ -1,0 +1,15 @@
+fn classify(n: int) -> str:
+    match n:
+        0..10:
+            return "small"
+        10..=20:
+            return "medium"
+        n:
+            return "other: " + str(n)
+
+fn main():
+    print(classify(5))
+    print(classify(15))
+    print(classify(20))
+    print(classify(21))
+    print(classify(-1))

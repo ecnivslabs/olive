@@ -1,0 +1,11 @@
+enum Color:
+    Red
+    Green
+    Blue
+
+fn main():
+    let mut d: {Color: str} = {}
+    d[Color::Red] = "stop"
+    d[Color::Green] = "go"
+    print(d[Color::Red])
+    print(Color::Blue in d)

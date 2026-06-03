@@ -1,0 +1,4 @@
+fn main():
+    let words = "a b  c".split()
+    print(words)
+    print(len(words))

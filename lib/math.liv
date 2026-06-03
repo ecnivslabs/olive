@@ -112,7 +112,7 @@ fn ipow(base: int, exponent: int) -> int:
 fn floordiv(a: int, b: int) -> int:
     let q = a / b
     let r = a % b
-    if r != 0 and (r < 0) != (b < 0):
+    if r != 0 and r < 0 != (b < 0):
         return q - 1
     return q
 

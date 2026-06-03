@@ -99,8 +99,16 @@ enum KeyClass {
     Raw(i64),
 }
 
+/// A dict/set/obj key or attr word is a tagged interned-string pointer only
+/// if its low bit is set AND it is far above any raw scalar value in
+/// practice -- a small odd int (a real `1`, `5`, ...) also has the low bit
+/// set, so the magnitude guard is what tells the two apart.
+pub(crate) fn is_tagged_str_key(v: i64) -> bool {
+    v & 1 == 1 && (v & !1) > 0x10000
+}
+
 fn classify_key(v: i64) -> KeyClass {
-    if v & 1 == 1 && (v & !1) > 0x10000 {
+    if is_tagged_str_key(v) {
         return KeyClass::Str(olive_str_as_str(v).unwrap_or(""));
     }
     if is_active_object(v) {
@@ -944,8 +952,11 @@ pub extern "C" fn olive_in_list(val: i64, list_ptr: i64) -> i64 {
         };
     }
     let s = unsafe { &*(list_ptr as *const StableVec) };
+    let needle = OliveStringKey(val);
     for i in 0..s.len {
-        if unsafe { *s.ptr.add(i) } == val {
+        // Content equality, not pointer equality: a copied element and the
+        // needle can be distinct string allocations holding the same text.
+        if OliveStringKey(unsafe { *s.ptr.add(i) }) == needle {
             return 1;
         }
     }
@@ -1069,6 +1080,37 @@ pub extern "C" fn olive_free_any(ptr: i64) {
         return;
     }
     if ptr < 0x1000 {
+        return;
+    }
+    let kind = unsafe { *(ptr as *const i64) };
+    match kind {
+        KIND_LIST | KIND_ANY_LIST => olive_free_list(ptr),
+        KIND_SET => set::olive_free_set(ptr),
+        KIND_OBJ => olive_free_obj(ptr),
+        KIND_ENUM => olive_free_enum(ptr),
+        KIND_BYTES => bytes::olive_buf_free(ptr),
+        KIND_FLOAT | KIND_INT => boxed::olive_free_boxed(ptr),
+        crate::result::KIND_RESULT => crate::result::olive_free_result(ptr),
+        KIND_PYOBJECT => python::olive_py_decref(ptr as *mut std::os::raw::c_void),
+        KIND_ITER => olive_free_iter(ptr),
+        _ => {}
+    }
+}
+
+/// Drop for a raw-sentinel union with 2+ non-`None` members (`int |
+/// SomeStruct`, no `Any` involved): unlike a real `Any`, the scalar member's
+/// bits are never tagged, so `olive_free_any`'s inline-tag heuristic can
+/// mistake a plain value for a pointer (e.g. `255 * 65536` is 8-aligned and
+/// above the guard threshold) and dereference garbage. Gate on the
+/// allocator's own live-object table (and the same magnitude-guarded string
+/// check `is_tagged_str_key` uses elsewhere) instead of bit-pattern guessing.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_free_union_member(ptr: i64) {
+    if is_tagged_str_key(ptr) {
+        olive_free_str(ptr);
+        return;
+    }
+    if !is_active_object(ptr) {
         return;
     }
     let kind = unsafe { *(ptr as *const i64) };

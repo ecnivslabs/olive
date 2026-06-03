@@ -1,0 +1,9 @@
+fn main():
+    let xs = [3, 1, 2]
+    let ys = sorted(xs)
+    print(ys)
+    print(xs)
+    print(reversed([1, 2, 3]))
+    print(any([False, True]))
+    print(all([True, True]))
+    print(all([True, False]))

@@ -465,9 +465,11 @@ impl TypeChecker {
                 let crate::parser::ExprKind::Starred(inner) = &target.kind else {
                     continue;
                 };
+                self.reject_global_write(&inner.kind, span);
                 let inner_ty = self.check_expr(inner);
                 self.unify(&inner_ty, &Type::List(Box::new(elem_ty.clone())), span);
             } else {
+                self.reject_global_write(&target.kind, span);
                 let target_ty = self.check_expr(target);
                 self.unify(&target_ty, &elem_ty, span);
             }

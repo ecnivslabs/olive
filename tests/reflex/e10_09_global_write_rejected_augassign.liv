@@ -1,0 +1,4 @@
+let mut counter = 0
+
+fn increment():
+    counter += 1

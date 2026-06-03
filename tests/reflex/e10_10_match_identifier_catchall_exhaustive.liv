@@ -1,0 +1,16 @@
+enum Status:
+    Ok
+    Pending
+    Failed
+
+fn describe(s: Status) -> str:
+    match s:
+        Ok:
+            return "ok"
+        n:
+            return "other: " + str(n)
+
+fn main():
+    print(describe(Ok))
+    print(describe(Pending))
+    print(describe(Failed))

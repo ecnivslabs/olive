@@ -19,11 +19,11 @@ When Olive can determine the type of a Python value from stubs, it tracks it as 
 ```olive
 import py "glm" as glm
 
-let v = glm.vec3(1.0, 0.0, 0.0)   # type: glm.vec3
-let n = glm.normalize(v)            # type: glm.vec3
-let x = v.x                         # type: float
-let w = v + n                        # type: glm.vec3
-let proj = glm.perspective(fov, ar, near, far)  # type: glm.mat4
+let v = glm.vec3(1.0, 0.0, 0.0)   // type: glm.vec3
+let n = glm.normalize(v)            // type: glm.vec3
+let x = v.x                         // type: float
+let w = v + n                        // type: glm.vec3
+let proj = glm.perspective(fov, ar, near, far)  // type: glm.mat4
 ```
 
 The type checker resolves:

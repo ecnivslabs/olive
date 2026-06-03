@@ -770,6 +770,32 @@ impl Resolver {
             MatchPattern::Literal(expr) => {
                 self.resolve_expr(expr);
             }
+            MatchPattern::Tuple(items) | MatchPattern::Or(items) => {
+                for p in items {
+                    self.resolve_pattern(p);
+                }
+            }
+            MatchPattern::StructFields(_, fields, _) => {
+                for (_, p) in fields {
+                    self.resolve_pattern(p);
+                }
+            }
+            MatchPattern::List {
+                before,
+                rest,
+                after,
+            } => {
+                for p in before.iter().chain(after) {
+                    self.resolve_pattern(p);
+                }
+                if let Some((name, span)) = rest {
+                    self.define_sym(name, SymbolKind::Variable, *span);
+                }
+            }
+            MatchPattern::Range(start, end, _) => {
+                self.resolve_expr(start);
+                self.resolve_expr(end);
+            }
         }
     }
 

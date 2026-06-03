@@ -1,0 +1,16 @@
+fn main():
+    let a = {1, 2, 3}
+    let b = {2, 3, 4}
+    let inter = a & b
+    let uni = a | b
+    let diff = a - b
+    let symdiff = a ^ b
+    print(len(inter))
+    print(2 in inter)
+    print(3 in inter)
+    print(len(uni))
+    print(len(diff))
+    print(1 in diff)
+    print(len(symdiff))
+    print(1 in symdiff)
+    print(4 in symdiff)
