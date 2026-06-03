@@ -1,5 +1,6 @@
 use super::Transform;
 use crate::mir::*;
+use crate::semantic::types::Type;
 use rustc_hash::FxHashMap as HashMap;
 
 pub struct ConstantPropagation;
@@ -23,7 +24,14 @@ impl Transform for ConstantPropagation {
             for stmt in &bb.statements {
                 if let StatementKind::Assign(dest, rval) = &stmt.kind {
                     *assign_counts.entry(*dest).or_insert(0) += if in_loop { 2 } else { 1 };
-                    if let Rvalue::Use(Operand::Constant(c)) = rval {
+                    // A `T | None` union has no boxed form -- its declared type and its
+                    // narrowed payload's type diverge (e.g. `float | None` vs `float`),
+                    // so a constant of the payload's type isn't interchangeable with the
+                    // union's own raw-word representation (the `== None` sentinel check
+                    // needs the latter). Propagating one for the other miscompiles.
+                    if let Rvalue::Use(Operand::Constant(c)) = rval
+                        && !matches!(func.locals[dest.0].ty, Type::Union(_))
+                    {
                         constant_assignments.insert(*dest, c.clone());
                     }
                 } else if let StatementKind::SetAttr(obj, _, _) = &stmt.kind {
@@ -89,7 +97,9 @@ impl Transform for ConstantPropagation {
                 if let StatementKind::Assign(dest, rval) = &mut stmt.kind {
                     changed |= self.propagate_constants_in_rvalue(rval, &local_consts);
 
-                    if let Rvalue::Use(Operand::Constant(c)) = rval {
+                    if let Rvalue::Use(Operand::Constant(c)) = rval
+                        && !matches!(func.locals[dest.0].ty, Type::Union(_))
+                    {
                         local_consts.insert(*dest, c.clone());
                     } else {
                         local_consts.remove(dest);
