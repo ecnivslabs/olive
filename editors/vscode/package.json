@@ -1,0 +1,45 @@
+{
+  "name": "olive-lang",
+  "displayName": "Olive",
+  "description": "Language support for Olive: diagnostics as you type, hover, go-to-definition, completion, and formatting via pit lsp.",
+  "version": "0.1.0",
+  "publisher": "olive-lang",
+  "license": "Apache-2.0",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:olive"
+  ],
+  "main": "./src/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "olive",
+        "aliases": [
+          "Olive"
+        ],
+        "extensions": [
+          ".liv"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "configuration": {
+      "title": "Olive",
+      "properties": {
+        "olive.serverPath": {
+          "type": "string",
+          "default": "pit",
+          "description": "Path to the pit executable used to launch the language server (`pit lsp`)."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  }
+}

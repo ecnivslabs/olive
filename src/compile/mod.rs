@@ -1,4 +1,5 @@
 pub(crate) mod cache;
+pub(crate) mod diagnose;
 pub(crate) mod errors;
 pub(crate) mod fix;
 pub(crate) mod laws;

@@ -14,6 +14,40 @@ use std::{
 std::thread_local! {
     static PROJECT_ROOT: std::cell::RefCell<PathBuf> = const { std::cell::RefCell::new(PathBuf::new()) };
     static POD_META: std::cell::RefCell<Option<PodMeta>> = const { std::cell::RefCell::new(None) };
+    static SOURCE_OVERLAY: std::cell::RefCell<HashMap<String, String>> = std::cell::RefCell::new(HashMap::default());
+}
+
+fn overlay_key(path: &str) -> String {
+    fs::canonicalize(path)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| path.to_string())
+}
+
+/// Registers in-memory text for `path` that `load_and_parse`/`load_and_parse_collecting`
+/// read instead of the file on disk. For the language server: an editor's
+/// unsaved buffer, so diagnostics reflect what's on screen rather than what
+/// was last saved. Imports resolve normally through the filesystem; only a
+/// path with an active overlay is redirected.
+pub fn set_source_overlay(path: &str, content: String) {
+    let key = overlay_key(path);
+    SOURCE_OVERLAY.with(|o| o.borrow_mut().insert(key, content));
+}
+
+/// Removes an overlay so `path` reads from disk again (the editor closed the
+/// buffer or it now matches the saved file).
+pub fn clear_source_overlay(path: &str) {
+    let key = overlay_key(path);
+    SOURCE_OVERLAY.with(|o| {
+        o.borrow_mut().remove(&key);
+    });
+}
+
+fn read_source(filename: &str) -> std::io::Result<String> {
+    let key = overlay_key(filename);
+    if let Some(content) = SOURCE_OVERLAY.with(|o| o.borrow().get(&key).cloned()) {
+        return Ok(content);
+    }
+    fs::read_to_string(filename)
 }
 
 pub struct PodMeta {
@@ -73,13 +107,19 @@ fn lex_span(file_id: usize, line: usize, col: usize, start: usize, end: usize) -
     }
 }
 
-pub fn load_and_parse(
+/// Loads and parses `filename`, recursively pulling in its imports, exactly
+/// like `load_and_parse` but returning the failing `Diagnostic` instead of
+/// printing it to stderr. `load_and_parse` is a thin wrapper over this that
+/// preserves the original print-and-swallow behavior for the compiler's own
+/// pipeline; this entry point is for callers that render diagnostics
+/// themselves (the language server).
+pub fn load_and_parse_collecting(
     filename: &str,
     is_main: bool,
     loaded: &mut HashSet<String>,
     file_id_counter: &mut usize,
     sources: &mut HashMap<usize, (String, String)>,
-) -> Result<Vec<parser::Stmt>, ()> {
+) -> Result<Vec<parser::Stmt>, Box<Diagnostic>> {
     struct ResetRoot;
     impl Drop for ResetRoot {
         fn drop(&mut self) {
@@ -98,8 +138,12 @@ pub fn load_and_parse(
     let current_file_id = *file_id_counter;
     *file_id_counter += 1;
 
-    let source = fs::read_to_string(filename).map_err(|e| {
-        eprintln!("error reading {}: {e}", filename);
+    let source = read_source(filename).map_err(|e| {
+        Box::new(Diagnostic::error(
+            "",
+            format!("error reading {filename}: {e}"),
+            span::Span::default(),
+        ))
     })?;
 
     sources.insert(current_file_id, (filename.to_string(), source.clone()));
@@ -107,28 +151,28 @@ pub fn load_and_parse(
     let tokens = match Lexer::new(&source, current_file_id).tokenise() {
         Ok(t) => t,
         Err(e) => {
-            Diagnostic::error(
-                "E0100",
-                "invalid token",
-                lex_span(current_file_id, e.line, e.col, e.start, e.end),
-            )
-            .label(e.message)
-            .emit(sources);
-            return Err(());
+            return Err(Box::new(
+                Diagnostic::error(
+                    "E0100",
+                    "invalid token",
+                    lex_span(current_file_id, e.line, e.col, e.start, e.end),
+                )
+                .label(e.message),
+            ));
         }
     };
 
     let program = match Parser::new(tokens).parse_program() {
         Ok(p) => p,
         Err(e) => {
-            Diagnostic::error(
-                "E0200",
-                "syntax error",
-                lex_span(current_file_id, e.line, e.col, e.start, e.end),
-            )
-            .label(e.message)
-            .emit(sources);
-            return Err(());
+            return Err(Box::new(
+                Diagnostic::error(
+                    "E0200",
+                    "syntax error",
+                    lex_span(current_file_id, e.line, e.col, e.start, e.end),
+                )
+                .label(e.message),
+            ));
         }
     };
 
@@ -150,16 +194,16 @@ pub fn load_and_parse(
                 | parser::StmtKind::PyImport { .. }
                 | parser::StmtKind::Pass => {}
                 _ => {
-                    Diagnostic::error(
-                        "E0301",
-                        "executable statement at module top level",
-                        stmt.span,
-                    )
-                    .label("not allowed in an imported module")
-                    .note("imported modules may only declare items (fn, struct, impl, trait, enum, let, const, import)")
-                    .help("move this statement into a function, or run the file directly instead of importing it")
-                    .emit(sources);
-                    return Err(());
+                    return Err(Box::new(
+                        Diagnostic::error(
+                            "E0301",
+                            "executable statement at module top level",
+                            stmt.span,
+                        )
+                        .label("not allowed in an imported module")
+                        .note("imported modules may only declare items (fn, struct, impl, trait, enum, let, const, import)")
+                        .help("move this statement into a function, or run the file directly instead of importing it"),
+                    ));
                 }
             }
         }
@@ -235,20 +279,25 @@ pub fn load_and_parse(
                         all_stmts.push(super::laws::make_laws_stmt(stmt.span));
                         continue;
                     }
-                    Diagnostic::error("E0300", format!("module `{mod_name}` not found"), stmt.span)
-                        .label("imported here")
-                        .note("searched the project directory, the standard library, and installed pods")
-                        .help(format!("create `{mod_name}.liv` next to this file, or install the pod that provides it"))
-                        .emit(sources);
-                    return Err(());
+                    return Err(Box::new(
+                        Diagnostic::error("E0300", format!("module `{mod_name}` not found"), stmt.span)
+                            .label("imported here")
+                            .note("searched the project directory, the standard library, and installed pods")
+                            .help(format!("create `{mod_name}.liv` next to this file, or install the pod that provides it")),
+                    ));
                 }
 
                 let path_str = mod_path.to_string_lossy().to_string();
 
                 if !loaded.contains(&path_str) {
                     loaded.insert(path_str.clone());
-                    let mut imported_stmts =
-                        load_and_parse(&path_str, false, loaded, file_id_counter, sources)?;
+                    let mut imported_stmts = load_and_parse_collecting(
+                        &path_str,
+                        false,
+                        loaded,
+                        file_id_counter,
+                        sources,
+                    )?;
 
                     let mod_prefix = alias
                         .as_deref()
@@ -361,20 +410,25 @@ pub fn load_and_parse(
                 }
 
                 if !mod_path.exists() {
-                    Diagnostic::error("E0300", format!("module `{mod_name}` not found"), stmt.span)
-                        .label("imported here")
-                        .note("searched the project directory, the standard library, and installed pods")
-                        .help(format!("create `{mod_name}.liv` next to this file, or install the pod that provides it"))
-                        .emit(sources);
-                    return Err(());
+                    return Err(Box::new(
+                        Diagnostic::error("E0300", format!("module `{mod_name}` not found"), stmt.span)
+                            .label("imported here")
+                            .note("searched the project directory, the standard library, and installed pods")
+                            .help(format!("create `{mod_name}.liv` next to this file, or install the pod that provides it")),
+                    ));
                 }
 
                 let path_str = mod_path.to_string_lossy().to_string();
 
                 if !loaded.contains(&path_str) {
                     loaded.insert(path_str.clone());
-                    let imported_stmts =
-                        load_and_parse(&path_str, false, loaded, file_id_counter, sources)?;
+                    let imported_stmts = load_and_parse_collecting(
+                        &path_str,
+                        false,
+                        loaded,
+                        file_id_counter,
+                        sources,
+                    )?;
 
                     all_stmts.extend(imported_stmts);
                 }
@@ -385,6 +439,21 @@ pub fn load_and_parse(
     }
 
     Ok(all_stmts)
+}
+
+/// Loads and parses `filename`, recursively pulling in its imports. Prints
+/// the first diagnostic hit to stderr and returns `Err(())`; see
+/// `load_and_parse_collecting` for a variant that hands the diagnostic back
+/// instead of printing it.
+pub fn load_and_parse(
+    filename: &str,
+    is_main: bool,
+    loaded: &mut HashSet<String>,
+    file_id_counter: &mut usize,
+    sources: &mut HashMap<usize, (String, String)>,
+) -> Result<Vec<parser::Stmt>, ()> {
+    load_and_parse_collecting(filename, is_main, loaded, file_id_counter, sources)
+        .map_err(|diag| diag.emit(sources))
 }
 
 pub fn collect_source_files(

@@ -71,6 +71,23 @@ To evaluate expressions or test snippets without creating a project:
 pit shell
 ```
 
+## Editor Support
+
+`pit lsp` is a Language Server Protocol server: diagnostics as you type,
+hover, go-to-definition, completion, and formatting, all backed by the same
+compiler that builds your project.
+
+For VSCode, the client lives in-repo at `editors/vscode/`:
+
+```bash
+cd editors/vscode
+npm install
+code --extensionDevelopmentPath=. .
+```
+
+Any editor that speaks LSP works the same way: point it at `pit lsp`, which
+communicates over stdio.
+
 ## Upgrading the Toolchain
 
 To update to the latest compiler and standard library release:

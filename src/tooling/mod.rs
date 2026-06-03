@@ -1,5 +1,6 @@
 pub mod installer;
 pub mod lockfile;
+pub mod lsp;
 pub mod pods;
 pub mod publish;
 pub mod registry;
