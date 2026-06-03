@@ -1,3 +1,5 @@
+pub mod doc_blocks;
+pub mod doc_comments;
 pub mod installer;
 pub mod lockfile;
 pub mod lsp;

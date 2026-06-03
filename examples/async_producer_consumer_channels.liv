@@ -23,20 +23,16 @@ async fn consumer(c: aio.Chan[int], id: int):
     print(f"Consumer {id} terminating.")
 
 fn main():
-    let result = aio.chan[int]()
-    match result:
-        c: aio.Chan[int]:
-            let payload_count = 10
+    let c = aio.chan[int]()
+    let payload_count = 10
 
-            let p = producer(c, payload_count)
-            let c1 = consumer(c, 1)
-            let c2 = consumer(c, 2)
+    let p = producer(c, payload_count)
+    let c1 = consumer(c, 1)
+    let c2 = consumer(c, 2)
 
-            let fut = async:
-                print("Gathering async tasks...")
-                await aio.gather([p, c1, c2])
+    let fut = async:
+        print("Gathering async tasks...")
+        await aio.gather([p, c1, c2])
 
-            aio.run(fut)
-            print("Task coordination complete.")
-        _:
-            print("Failed to create channel")
+    aio.run(fut)
+    print("Task coordination complete.")

@@ -108,7 +108,14 @@ Assertions catch invariant violations that represent bugs, not recoverable condi
 assert len(items) > 0, "cannot process an empty list"
 ```
 
-A failed assertion aborts execution immediately and prints the failing location.
+A failed assertion aborts execution immediately and prints the failing location. When the asserted expression is a top-level comparison (`==`, `!=`, `<`, `<=`, `>`, `>=`), the fault also reports the actual `left`/`right` values, not just the source text:
+
+```rust
+assert xs == ys
+// [E0712] panic: assertion failed (left: [1, 2, 3], right: [1, 2, 4])
+```
+
+Under `pit run` (the debug pipeline), a fault also prints the call chain that led to it, innermost frame first -- which function called which, and from where. AOT release builds (`pit build --release`) skip this: it costs nothing there, but also shows nothing beyond the caret at the fault site itself. Reach for `pit run` when you need to see how execution got somewhere, not just where it ended up.
 
 ## Diagnostic Codes
 

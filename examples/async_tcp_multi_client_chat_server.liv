@@ -18,21 +18,13 @@ async fn handle_client(conn: net.TcpConn):
 
 async fn server_loop():
     let bind_addr = "127.0.0.1:8080"
-    let listen_result = net.listen(bind_addr)
-    match listen_result:
-        server: net.TcpListener:
-            print(f"Async chat server listening on {server.addr()}")
+    let server = net.listen(bind_addr)
+    print(f"Async chat server listening on {server.addr()}")
 
-            while True:
-                let accept_result = server.accept()
-                match accept_result:
-                    conn: net.TcpConn:
-                        async:
-                            await handle_client(conn)
-                    _:
-                        print("accept failed")
-        _:
-            print(f"Failed to bind TCP server on {bind_addr}")
+    while True:
+        let conn = server.accept()
+        async:
+            await handle_client(conn)
 
 fn main():
     async:

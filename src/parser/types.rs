@@ -23,14 +23,10 @@ impl Parser {
             }
             TokenKind::Identifier => {
                 let name = self.advance().value;
-                if self.peek().kind == TokenKind::Dot {
-                    let mut parts = vec![name];
-                    while self.peek().kind == TokenKind::Dot {
-                        self.advance();
-                        parts.push(self.expect(TokenKind::Identifier)?.value);
-                    }
-                    let span = self.span_from(&start);
-                    return Ok(TypeExpr::new(TypeExprKind::Qualified(parts), span));
+                let mut parts = vec![name];
+                while self.peek().kind == TokenKind::Dot {
+                    self.advance();
+                    parts.push(self.expect(TokenKind::Identifier)?.value);
                 }
                 if self.peek().kind == TokenKind::LBracket {
                     self.advance();
@@ -45,10 +41,16 @@ impl Parser {
                     }
                     self.expect(TokenKind::RBracket)?;
                     let span = self.span_from(&start);
-                    Ok(TypeExpr::new(TypeExprKind::Generic(name, args), span))
+                    Ok(TypeExpr::new(
+                        TypeExprKind::Generic(parts.join("."), args),
+                        span,
+                    ))
+                } else if parts.len() > 1 {
+                    let span = self.span_from(&start);
+                    Ok(TypeExpr::new(TypeExprKind::Qualified(parts), span))
                 } else {
                     let span = self.span_from(&start);
-                    Ok(TypeExpr::new(TypeExprKind::Name(name), span))
+                    Ok(TypeExpr::new(TypeExprKind::Name(parts.remove(0)), span))
                 }
             }
             TokenKind::LParen => {

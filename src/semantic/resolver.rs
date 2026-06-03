@@ -148,7 +148,7 @@ impl Resolver {
     /// unrecognized name is silently dropped by codegen, so flag it rather than
     /// let it look effective.
     fn check_decorators(&mut self, decorators: &[crate::parser::ast::Decorator]) {
-        const KNOWN: &[&str] = &["memo", "test", "safe"];
+        const KNOWN: &[&str] = &["memo", "test", "bench", "safe"];
         for d in decorators {
             if !KNOWN.contains(&d.name.as_str()) {
                 self.warnings.push(SemanticError::rich(
@@ -159,7 +159,7 @@ impl Resolver {
                     )
                     .into_warning()
                     .label("not a recognized decorator")
-                    .note("Olive decorators are `@memo`, `#[test]`, and `@safe`; this one has no effect"),
+                    .note("Olive decorators are `@memo`, `#[test]`, `#[bench]`, and `@safe`; this one has no effect"),
                 ));
             }
         }

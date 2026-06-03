@@ -99,6 +99,14 @@ pub struct MirBuilder<'a> {
     /// the bound name is always a local var (the `nested_fns` lookup
     /// deliberately skips names shadowed by a local).
     pub(super) bound_lambdas: Vec<HashMap<String, NestedFnInfo>>,
+    /// Scratch output of the most recent [`Self::lower_binop_expr`] comparison
+    /// (`==`/`!=`/`</<=`/`>`/`>=`): the two operand values it compared, in
+    /// source order, whatever representation (struct ref, boxed `Any`, raw
+    /// scalar) that branch settled on. Set immediately before every
+    /// comparison return in `lower_expr/ops.rs`, consumed once by assert
+    /// lowering (`StmtKind::Assert`) to build the `left: X, right: Y` fault
+    /// message without re-evaluating either operand.
+    pub(super) last_cmp_operands: Option<(Operand, Operand)>,
 }
 
 impl<'a> MirBuilder<'a> {
@@ -151,6 +159,7 @@ impl<'a> MirBuilder<'a> {
             file_names: HashMap::default(),
             in_py_loc_emit: false,
             bound_lambdas: Vec::new(),
+            last_cmp_operands: None,
         }
     }
 

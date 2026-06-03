@@ -187,3 +187,25 @@ fn test_math_logic():
 
 When you run `pit test`, it identifies all functions tagged with `#[test]` and executes them.
 
+`#[bench]` marks a function for `pit bench` instead:
+
+```rust
+#[bench]
+fn fib_bench() -> int:
+    return fib(20)
+```
+
+`pit bench` runs each `#[bench]` function through a fixed warmup, then samples a fixed number of timed calls, always at release optimization, and reports the mean, standard deviation, and minimum -- no more eyeballing timings. `pit bench --json` emits the same numbers as a JSON array for scripting.
+
+### Doc Comments (///)
+
+A `///` comment directly above a `fn`, `struct`, or `enum` documents it. A run of consecutive `///` lines is one doc comment; a decorator (`#[test]`, `@memo`) between the comment and the item doesn't break the association.
+
+```rust
+/// Adds two numbers.
+fn add(a: int, b: int) -> int:
+    return a + b
+```
+
+`pit doc [file]` renders a module's documented signatures as markdown into `target/doc/<module>.md`. Hovering a name in an editor shows the same doc text alongside its type.
+
