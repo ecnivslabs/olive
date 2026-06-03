@@ -519,14 +519,17 @@ impl<M: Module> CraneliftCodegen<M> {
                             let expected = params.get(param_idx).map(|p| p.value_type);
                             if expected == Some(types::I64) {
                                 if arg_ty == types::F64 {
-                                    final_args.push(builder.ins().bitcast(
+                                    final_args.push(super::translate::bitcast_via_stack(
+                                        builder,
                                         types::I64,
-                                        MemFlags::new(),
                                         arg,
                                     ));
                                 } else {
-                                    let i32_val =
-                                        builder.ins().bitcast(types::I32, MemFlags::new(), arg);
+                                    let i32_val = super::translate::bitcast_via_stack(
+                                        builder,
+                                        types::I32,
+                                        arg,
+                                    );
                                     final_args.push(builder.ins().uextend(types::I64, i32_val));
                                 }
                             } else {
@@ -582,16 +585,16 @@ impl<M: Module> CraneliftCodegen<M> {
                             let param_idx = final_args.len();
                             let expected = params.get(param_idx).map(|p| p.value_type);
                             if expected == Some(types::F64) {
-                                final_args.push(builder.ins().bitcast(
+                                final_args.push(super::translate::bitcast_via_stack(
+                                    builder,
                                     types::F64,
-                                    MemFlags::new(),
                                     arg,
                                 ));
                             } else if expected == Some(types::F32) {
                                 let low = builder.ins().ireduce(types::I32, arg);
-                                final_args.push(builder.ins().bitcast(
+                                final_args.push(super::translate::bitcast_via_stack(
+                                    builder,
                                     types::F32,
-                                    MemFlags::new(),
                                     low,
                                 ));
                             } else {

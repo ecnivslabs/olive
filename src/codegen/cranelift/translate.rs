@@ -55,6 +55,27 @@ pub(super) fn free_func_name_for_type(
     }
 }
 
+/// Reinterprets `val`'s bits as `target_ty` via a memory round-trip instead
+/// of the register `bitcast` opcode. A scalar `T | None` union carries its
+/// payload as a raw word with no boxed form, so narrowing it back to a float
+/// member needs a same-width int<->float bit copy at every union boundary
+/// (read, and argument passing into a union-typed parameter); routing that
+/// through `store`/`load` avoids relying on any one backend's int<->float
+/// register-move lowering for the reinterpret.
+pub(super) fn bitcast_via_stack(
+    builder: &mut FunctionBuilder,
+    target_ty: Type,
+    val: Value,
+) -> Value {
+    let src_ty = builder.func.dfg.value_type(val);
+    let size = src_ty.bytes().max(target_ty.bytes());
+    let slot =
+        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, 0));
+    let addr = builder.ins().stack_addr(types::I64, slot, 0);
+    builder.ins().store(MemFlags::trusted(), val, addr, 0);
+    builder.ins().load(target_ty, MemFlags::trusted(), addr, 0)
+}
+
 pub(super) fn truncate_for_store(
     builder: &mut FunctionBuilder,
     val: Value,
