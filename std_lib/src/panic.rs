@@ -85,6 +85,11 @@ const ASSERT_FAILED: Fault = Fault {
     help: Some("check the operands, or fix the logic that produces them"),
     note: None,
 };
+const OVERFLOW: Fault = Fault {
+    code: "E0713",
+    help: Some("use a wider type, or guard the operands so the result stays in range"),
+    note: Some("i64 arithmetic that would silently wrap instead faults here"),
+};
 
 /// Aborts when a Python value cannot be converted to the required native scalar.
 pub fn abort_py_coerce(msg: &str) -> ! {
@@ -364,6 +369,36 @@ pub extern "C" fn olive_assert_fail(msg: i64, loc: i64) -> i64 {
     let loc = (loc != 0).then(|| olive_str_from_ptr(loc));
     let msg = olive_str_from_ptr(msg);
     abort_with(&ASSERT_FAILED, &msg, loc.as_deref())
+}
+
+/// Raised when `i64` arithmetic overflows: `+`/`-`/`*` on signed or unsigned
+/// operands (`kind` 0-5), or the two `i64::MIN / -1` / `i64::MIN % -1`
+/// corners (`kind` 6/7), which trap in hardware rather than wrapping so they
+/// get their own kinds despite not going through the checked-op codegen path.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_overflow_fail(kind: i64, lhs: i64, rhs: i64, loc: i64) -> i64 {
+    let loc = (loc != 0).then(|| olive_str_from_ptr(loc));
+    let msg = match kind {
+        0 => format!("integer overflow: {lhs} + {rhs} does not fit in i64"),
+        1 => format!("integer overflow: {lhs} - {rhs} does not fit in i64"),
+        2 => format!("integer overflow: {lhs} * {rhs} does not fit in i64"),
+        3 => format!(
+            "integer overflow: {} + {} does not fit in u64",
+            lhs as u64, rhs as u64
+        ),
+        4 => format!(
+            "integer overflow: {} - {} does not fit in u64",
+            lhs as u64, rhs as u64
+        ),
+        5 => format!(
+            "integer overflow: {} * {} does not fit in u64",
+            lhs as u64, rhs as u64
+        ),
+        6 => format!("integer overflow: {lhs} / {rhs} does not fit in i64"),
+        7 => format!("integer overflow: {lhs} % {rhs} does not fit in i64"),
+        _ => unreachable!("olive_overflow_fail: unknown kind {kind}"),
+    };
+    abort_with(&OVERFLOW, &msg, loc.as_deref())
 }
 
 #[cfg(test)]

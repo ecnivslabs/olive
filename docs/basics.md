@@ -73,6 +73,20 @@ print(-7 / 2)               // -3, truncated
 print(math.floordiv(-7, 2)) // -4, floored
 ```
 
+`i64`/`u64` arithmetic that overflows never silently wraps under `pit run`
+(the debug/JIT pipeline): `+`, `-`, and `*` fault `E0713` with both operands
+shown, and `i64::MIN / -1` / `i64::MIN % -1` -- the one division corner that
+otherwise traps in hardware with no diagnostic -- faults the same way in
+**both** pipelines. Under `pit build --release`, `+`/`-`/`*` overflow wraps
+silently instead: measured overhead for the checked form ran 30-50% on
+arithmetic-heavy code (`benchmark/scripts/compare.sh`, matrix multiply, list
+indexing, closure-call loops), far past a defensible cost for a release
+binary, so release keeps the fast wrapping path for those three operators.
+Only the `/ -1`/`% -1` corner is checked unconditionally in release too --
+that check is one branch on the divisor, not a check on every arithmetic op,
+so it costs nothing on the hot paths that made checked `+`/`-`/`*` too
+expensive to keep.
+
 ### Union Types
 
 You can allow a variable or parameter to accept one of multiple specified types using a union (`|`):

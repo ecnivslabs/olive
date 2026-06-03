@@ -279,6 +279,7 @@ impl<M: Module> CraneliftCodegen<M> {
                     &vars,
                     &self.loc_ids,
                     reuse_arg,
+                    !self.aot,
                 );
                 if reuse_arg.is_some() {
                     reuse_state = None;
@@ -373,6 +374,7 @@ impl<M: Module> CraneliftCodegen<M> {
         vars: &HashMap<Local, Variable>,
         loc_ids: &HashMap<Span, DataId>,
         reuse_target: Option<(Local, Value, bool)>,
+        checked: bool,
     ) {
         let loc_id = loc_ids.get(&stmt.span).copied();
         match &stmt.kind {
@@ -400,6 +402,7 @@ impl<M: Module> CraneliftCodegen<M> {
                     loc_id,
                     reuse_target,
                     &func_mir.locals[local.0].ty,
+                    checked,
                 );
                 let var = vars.get(local).unwrap();
 

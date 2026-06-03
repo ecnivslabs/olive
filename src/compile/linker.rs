@@ -77,13 +77,9 @@ fn find_library_named(lib_name: &str) -> Option<PathBuf> {
             return Some(fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()));
         }
     }
-    for dir in &["/usr/local/lib", "/usr/lib", "/lib"] {
-        let path = Path::new(dir);
-        if path.join(lib_name).exists() {
-            return Some(path.to_path_buf());
-        }
-    }
-    None
+    system_library_dirs()
+        .into_iter()
+        .find(|dir| dir.join(lib_name).exists())
 }
 
 pub fn find_library_dir() -> Option<PathBuf> {
@@ -98,14 +94,82 @@ pub fn find_static_library_dir() -> Option<PathBuf> {
     find_library_named(&static_library_filename())
 }
 
-/// Link arg for an imported native lib: bare stem `m` -> `-lm`, but a full
-/// `.so` name (e.g. versioned `libc.so.6`) needs `-l:` exact-name linking,
-/// since the stem form would seek the nonexistent `liblibc.so.6.so`.
+/// Standard system library directories, plus Homebrew's prefix on macOS
+/// (SIP locks `/usr/lib` down to Apple-shipped dylibs, so third-party and
+/// even some open-source libs land under Homebrew instead).
+fn system_library_dirs() -> Vec<PathBuf> {
+    let dirs = vec![
+        PathBuf::from("/usr/local/lib"),
+        PathBuf::from("/usr/lib"),
+        PathBuf::from("/lib"),
+    ];
+    #[cfg(target_os = "macos")]
+    let dirs = {
+        let mut dirs = dirs;
+        if let Ok(output) = process::Command::new("brew").arg("--prefix").output()
+            && output.status.success()
+        {
+            let prefix = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !prefix.is_empty() {
+                dirs.push(PathBuf::from(prefix).join("lib"));
+            }
+        }
+        dirs.push(PathBuf::from("/opt/homebrew/lib"));
+        dirs
+    };
+    dirs
+}
+
+fn is_standard_lib_dir(dir: &Path) -> bool {
+    matches!(
+        dir.to_str().unwrap_or(""),
+        "/lib" | "/usr/lib" | "/usr/local/lib"
+    )
+}
+
+/// Resolves a bare library filename (not a stem) to the directory containing
+/// it, so an exact versioned name (`libc.so.6`) links without needing a
+/// `-dev` symlink installed. Linux additionally consults `ldconfig`'s cache,
+/// the authoritative soname -> path map, which covers multiarch subdirectories
+/// `system_library_dirs` doesn't scan directly.
+fn resolve_exact_library(name: &str) -> Option<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(output) = process::Command::new("ldconfig").arg("-p").output()
+            && output.status.success()
+        {
+            let text = String::from_utf8_lossy(&output.stdout);
+            for line in text.lines() {
+                if let Some((soname, rest)) = line.trim().split_once(" => ")
+                    && soname.trim() == name
+                    && let Some(dir) = Path::new(rest.trim()).parent()
+                {
+                    return Some(dir.to_path_buf());
+                }
+            }
+        }
+    }
+    system_library_dirs()
+        .into_iter()
+        .find(|dir| dir.join(name).exists())
+}
+
+/// Strips a `lib` prefix and a shared-library suffix (`.so[.N...]`,
+/// `.dylib`, `.dll`) to recover the stem `-l` expects, e.g. `libm.so` -> `m`.
+fn library_stem(name: &str) -> Option<&str> {
+    let base = name.strip_prefix("lib").unwrap_or(name);
+    [".so", ".dylib", ".dll"]
+        .iter()
+        .find_map(|ext| base.find(ext).map(|i| &base[..i]))
+}
+
+/// Link arg for a bare (no path separator) imported native lib name whose
+/// exact file couldn't be located: falls back to plain `-l<stem>` linking,
+/// which every platform's linker resolves via its own default search path.
 fn lib_link_arg(name: &str) -> String {
-    if name.contains(".so") {
-        format!("-l:{}", name)
-    } else {
-        format!("-l{}", name)
+    match library_stem(name) {
+        Some(stem) if !stem.is_empty() => format!("-l{stem}"),
+        _ => format!("-l{name}"),
     }
 }
 
@@ -173,16 +237,27 @@ pub fn link_object(obj_path: &str, out: &str, native_libs: &[FfiLibInfo]) {
                     .unwrap_or_else(|_| lib_path.to_path_buf())
             };
             cmd.arg(&resolved);
-            if let Some(dir) = resolved.parent() {
-                let standard = matches!(
-                    dir.to_str().unwrap_or(""),
-                    "/lib" | "/usr/lib" | "/usr/local/lib"
-                );
-                if !standard {
-                    #[cfg(not(target_os = "windows"))]
-                    cmd.arg(format!("-Wl,-rpath,{}", dir.display()));
-                }
+            if let Some(dir) = resolved.parent()
+                && !is_standard_lib_dir(dir)
+            {
+                #[cfg(not(target_os = "windows"))]
+                cmd.arg(format!("-Wl,-rpath,{}", dir.display()));
             }
+        } else if let Some(dir) = resolve_exact_library(path) {
+            cmd.arg(dir.join(path));
+            if !is_standard_lib_dir(&dir) {
+                #[cfg(not(target_os = "windows"))]
+                cmd.arg(format!("-Wl,-rpath,{}", dir.display()));
+            }
+        } else if cfg!(target_os = "macos") {
+            // ld64 has no equivalent to GNU ld's `-l:exact-name` linking; the
+            // stem fallback is the only portable option left once the file
+            // search above comes up empty.
+            cmd.arg(lib_link_arg(path));
+        } else if path.contains(".so") {
+            // GNU ld / MinGW ld's exact-name linking as a last resort for a
+            // versioned soname neither `ldconfig` nor the search dirs found.
+            cmd.arg(format!("-l:{path}"));
         } else {
             cmd.arg(lib_link_arg(path));
         }
@@ -328,9 +403,18 @@ mod tests {
     }
 
     #[test]
-    fn lib_link_arg_versioned_so() {
-        assert_eq!(lib_link_arg("libc.so.6"), "-l:libc.so.6");
-        assert_eq!(lib_link_arg("libfoo.so"), "-l:libfoo.so");
+    fn lib_link_arg_strips_shared_lib_suffix() {
+        assert_eq!(lib_link_arg("libc.so.6"), "-lc");
+        assert_eq!(lib_link_arg("libfoo.so"), "-lfoo");
+        assert_eq!(lib_link_arg("libfoo.dylib"), "-lfoo");
+    }
+
+    #[test]
+    fn library_stem_extracts_name() {
+        assert_eq!(library_stem("libm.so"), Some("m"));
+        assert_eq!(library_stem("libc.so.6"), Some("c"));
+        assert_eq!(library_stem("libfoo.dylib"), Some("foo"));
+        assert_eq!(library_stem("z"), None);
     }
 
     #[test]

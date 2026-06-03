@@ -150,4 +150,19 @@ pub(super) const ENTRIES: &[Explanation] = &[
              more complex condition in one, or add a custom message, for the same detail.",
         ],
     },
+    Explanation {
+        code: "E0713",
+        title: "integer overflow",
+        summary: "An `i64`/`u64` `+`, `-`, or `*` produced a result that does not fit \
+                  back in the type, or a signed `/` or `%` hit the one combination \
+                  that overflows instead of trapping cleanly (`i64::MIN / -1`). The \
+                  fault reports both operands. `+`/`-`/`*` are only checked under \
+                  `pit run`: checking them in a release build cost 30-50% on \
+                  arithmetic-heavy code, so `pit build --release` wraps those three \
+                  silently instead. The `/ -1`/`% -1` corner is cheap to check (one \
+                  branch on the divisor) and faults in both pipelines.",
+        wrong: "fn main():\n    let max: i64 = 9223372036854775807\n    let one: i64 = 1\n    print(max + one)",
+        fixed: "fn main():\n    let max: i64 = 9223372036854775807\n    let one: i64 = 1\n    if max <= 9223372036854775807 - one:\n        print(max + one)\n    else:\n        print(max)",
+        notes: &["Guard the operands so the result stays in range, or use a wider type."],
+    },
 ];

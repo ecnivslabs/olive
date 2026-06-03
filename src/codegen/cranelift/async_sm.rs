@@ -244,6 +244,7 @@ impl<M: Module> CraneliftCodegen<M> {
                         &vars,
                         &self.loc_ids,
                         None,
+                        !self.aot,
                     );
                 }
 
