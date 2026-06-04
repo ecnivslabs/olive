@@ -66,6 +66,9 @@ pub unsafe extern "C" fn noop_incref(_: PyObject) {}
 pub unsafe extern "C" fn noop_as_long(_: PyObject) -> c_long {
     0
 }
+pub unsafe extern "C" fn noop_number_long(_: PyObject) -> PyObject {
+    std::ptr::null_mut()
+}
 pub unsafe extern "C" fn noop_as_double(_: PyObject) -> c_double {
     0.0
 }
@@ -136,6 +139,9 @@ pub unsafe extern "C" fn noop_check_int(_: PyObject) -> c_int {
 }
 pub unsafe extern "C" fn noop_richcomparebool(_: PyObject, _: PyObject, _: c_int) -> c_int {
     -1
+}
+pub unsafe extern "C" fn noop_slice_new(_: PyObject, _: PyObject, _: PyObject) -> PyObject {
+    std::ptr::null_mut()
 }
 
 #[cfg(target_os = "windows")]

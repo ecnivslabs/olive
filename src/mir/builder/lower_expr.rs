@@ -5,6 +5,10 @@ use crate::parser::{CallArg, Expr, ExprKind, StmtKind};
 use crate::semantic::types::Type;
 use crate::span::Span;
 
+const SLICE_HAS_START: i64 = 1;
+const SLICE_HAS_STOP: i64 = 2;
+const SLICE_HAS_STEP: i64 = 4;
+
 impl<'a> MirBuilder<'a> {
     pub(super) fn coerce(
         &mut self,
@@ -382,7 +386,12 @@ impl<'a> MirBuilder<'a> {
 
             ExprKind::Identifier(name) => {
                 if let Some(local) = self.lookup_var(name) {
-                    self.operand_for_local(local)
+                    let ty = self.current_locals[local.0].ty.clone();
+                    if matches!(ty, Type::PyObject) {
+                        Operand::Copy(local)
+                    } else {
+                        self.operand_for_local(local)
+                    }
                 } else if let Some(global_op) = self.globals.get(name).cloned() {
                     if let Operand::Constant(Constant::GlobalData(_)) = &global_op {
                         let ty = self.get_type(expr.id);
@@ -572,7 +581,8 @@ impl<'a> MirBuilder<'a> {
                             arg_tys.push(crate::semantic::types::Type::Int);
                         }
                         CallArg::Positional(e) | CallArg::Splat(e) | CallArg::KwSplat(e) => {
-                            let is_readonly_builtin =
+                            let arg_ty = self.get_type(e.id);
+                            let is_copy_arg = matches!(arg_ty, Type::PyObject | Type::Any) || {
                                 if let ExprKind::Identifier(name) = &callee.kind {
                                     matches!(
                                         name.as_str(),
@@ -587,41 +597,42 @@ impl<'a> MirBuilder<'a> {
                                     )
                                 } else {
                                     false
-                                };
-
-                            if is_readonly_builtin {
+                                }
+                            };
+                            if is_copy_arg {
                                 arg_ops.push(self.lower_expr_as_copy(e));
                             } else {
                                 arg_ops.push(self.lower_expr(e));
                             }
                             arg_kw_names.push(None);
-                            arg_tys.push(self.get_type(e.id).clone());
+                            arg_tys.push(arg_ty);
                         }
                         CallArg::Keyword(name, e) => {
-                            let is_readonly_builtin = if let ExprKind::Identifier(n) = &callee.kind
-                            {
-                                matches!(
-                                    n.as_str(),
-                                    "len"
-                                        | "print"
-                                        | "str"
-                                        | "int"
-                                        | "float"
-                                        | "type"
-                                        | "range"
-                                        | "slice"
-                                )
-                            } else {
-                                false
+                            let arg_ty = self.get_type(e.id);
+                            let is_copy_arg = matches!(arg_ty, Type::PyObject | Type::Any) || {
+                                if let ExprKind::Identifier(n) = &callee.kind {
+                                    matches!(
+                                        n.as_str(),
+                                        "len"
+                                            | "print"
+                                            | "str"
+                                            | "int"
+                                            | "float"
+                                            | "type"
+                                            | "range"
+                                            | "slice"
+                                    )
+                                } else {
+                                    false
+                                }
                             };
-
-                            if is_readonly_builtin {
+                            if is_copy_arg {
                                 arg_ops.push(self.lower_expr_as_copy(e));
                             } else {
                                 arg_ops.push(self.lower_expr(e));
                             }
                             arg_kw_names.push(Some(name.clone()));
-                            arg_tys.push(self.get_type(e.id).clone());
+                            arg_tys.push(arg_ty);
                         }
                     }
                 }
@@ -830,7 +841,6 @@ impl<'a> MirBuilder<'a> {
                     let b_op = self.lower_expr_as_copy(b_expr);
                     let result_ty = self.get_type(a_expr.id);
 
-                    // cond = (a > b) for max, (a < b) for min
                     let cmp_op = if name == "max" {
                         crate::parser::BinOp::Gt
                     } else {
@@ -845,7 +855,7 @@ impl<'a> MirBuilder<'a> {
                         expr.span,
                     );
 
-                    let result_local = self.new_local(result_ty, None, false);
+                    let result_local = self.new_local(result_ty.clone(), None, false);
                     let true_bb = self.new_block();
                     let false_bb = self.new_block();
                     let exit_bb = self.new_block();
@@ -874,6 +884,12 @@ impl<'a> MirBuilder<'a> {
                     );
 
                     self.current_block = Some(false_bb);
+                    let b_ty = self.get_type(b_expr.id);
+                    let b_op = if result_ty == Type::PyObject && b_ty != Type::PyObject {
+                        self.emit_to_py_arg(b_op, &b_ty, expr.span)
+                    } else {
+                        b_op
+                    };
                     self.push_statement(
                         StatementKind::Assign(result_local, Rvalue::Use(b_op)),
                         expr.span,
@@ -931,7 +947,6 @@ impl<'a> MirBuilder<'a> {
                 }
 
                 if let ExprKind::Attr { obj, attr } = &callee.kind {
-                    // PyObject method call: np.array(args) → getattr + call
                     let obj_ty = self.get_type(obj.id);
                     if obj_ty == Type::PyObject {
                         let obj_op = self.lower_expr_as_copy(obj);
@@ -1607,24 +1622,80 @@ impl<'a> MirBuilder<'a> {
                 self.operand_for_local(call_result_local)
             }
 
-            ExprKind::List(elems) => {
-                let ops: Vec<Operand> = elems.iter().map(|e| self.lower_expr(e)).collect();
-                let tmp = self.new_tmp_for_expr(expr);
-                self.push_statement(
-                    StatementKind::Assign(tmp, Rvalue::Aggregate(AggregateKind::List, ops)),
-                    expr.span,
-                );
-                self.operand_for_local(tmp)
-            }
-
-            ExprKind::Tuple(elems) => {
-                let ops: Vec<Operand> = elems.iter().map(|e| self.lower_expr(e)).collect();
-                let tmp = self.new_tmp_for_expr(expr);
-                self.push_statement(
-                    StatementKind::Assign(tmp, Rvalue::Aggregate(AggregateKind::Tuple, ops)),
-                    expr.span,
-                );
-                self.operand_for_local(tmp)
+            ExprKind::List(elems) | ExprKind::Tuple(elems) => {
+                let is_tuple = matches!(expr.kind, ExprKind::Tuple(_));
+                let has_splat = elems.iter().any(|e| {
+                    if let ExprKind::Deref(inner) = &e.kind {
+                        !matches!(self.get_type(inner.id), Type::Ptr(_) | Type::Int)
+                    } else {
+                        false
+                    }
+                });
+                if has_splat {
+                    let zero = Operand::Constant(Constant::Int(0));
+                    let tmp = self.new_tmp_for_expr(expr);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            tmp,
+                            Rvalue::Call {
+                                func: Operand::Constant(Constant::Function(
+                                    "__olive_list_new".to_string(),
+                                )),
+                                args: vec![zero],
+                            },
+                        ),
+                        expr.span,
+                    );
+                    let void_dummy = self.new_local(Type::Null, None, false);
+                    for elem in elems {
+                        if let ExprKind::Deref(inner) = &elem.kind {
+                            let inner_ty = self.get_type(inner.id);
+                            if !matches!(inner_ty, Type::Ptr(_) | Type::Int) {
+                                let source = self.lower_expr(inner);
+                                self.push_statement(
+                                    StatementKind::Assign(
+                                        void_dummy,
+                                        Rvalue::Call {
+                                            func: Operand::Constant(Constant::Function(
+                                                "__olive_list_extend".to_string(),
+                                            )),
+                                            args: vec![Operand::Copy(tmp), source],
+                                        },
+                                    ),
+                                    expr.span,
+                                );
+                                continue;
+                            }
+                        }
+                        let val = self.lower_expr(elem);
+                        self.push_statement(
+                            StatementKind::Assign(
+                                void_dummy,
+                                Rvalue::Call {
+                                    func: Operand::Constant(Constant::Function(
+                                        "__olive_list_append".to_string(),
+                                    )),
+                                    args: vec![Operand::Copy(tmp), val],
+                                },
+                            ),
+                            expr.span,
+                        );
+                    }
+                    self.operand_for_local(tmp)
+                } else {
+                    let ops: Vec<Operand> = elems.iter().map(|e| self.lower_expr(e)).collect();
+                    let tmp = self.new_tmp_for_expr(expr);
+                    let kind = if is_tuple {
+                        AggregateKind::Tuple
+                    } else {
+                        AggregateKind::List
+                    };
+                    self.push_statement(
+                        StatementKind::Assign(tmp, Rvalue::Aggregate(kind, ops)),
+                        expr.span,
+                    );
+                    self.operand_for_local(tmp)
+                }
             }
 
             ExprKind::Set(elems) => {
@@ -1717,6 +1788,46 @@ impl<'a> MirBuilder<'a> {
                     current_obj_ty = *inner;
                 }
 
+                if let ExprKind::Slice { start, stop, step } = &index.kind {
+                    if current_obj_ty == Type::PyObject || current_obj_ty == Type::Any {
+                        let o = self.lower_expr_as_copy(obj);
+                        let mut flags: i64 = 0;
+                        let start_op = if let Some(e) = start {
+                            flags |= SLICE_HAS_START;
+                            self.lower_expr(e)
+                        } else {
+                            Operand::Constant(crate::mir::Constant::Int(0))
+                        };
+                        let stop_op = if let Some(e) = stop {
+                            flags |= SLICE_HAS_STOP;
+                            self.lower_expr(e)
+                        } else {
+                            Operand::Constant(crate::mir::Constant::Int(0))
+                        };
+                        let step_op = if let Some(e) = step {
+                            flags |= SLICE_HAS_STEP;
+                            self.lower_expr(e)
+                        } else {
+                            Operand::Constant(crate::mir::Constant::Int(0))
+                        };
+                        let flags_op = Operand::Constant(crate::mir::Constant::Int(flags));
+                        let tmp = self.new_tmp_for_expr_with_owning(expr, true);
+                        self.push_statement(
+                            StatementKind::Assign(
+                                tmp,
+                                Rvalue::Call {
+                                    func: Operand::Constant(Constant::Function(
+                                        "__olive_py_getslice".to_string(),
+                                    )),
+                                    args: vec![o, start_op, stop_op, step_op, flags_op],
+                                },
+                            ),
+                            expr.span,
+                        );
+                        return self.operand_for_local(tmp);
+                    }
+                }
+
                 if current_obj_ty == Type::Str {
                     let o = self.lower_expr_as_copy(obj);
                     let i = self.lower_expr(index);
@@ -1736,13 +1847,39 @@ impl<'a> MirBuilder<'a> {
                     return self.operand_for_local(tmp);
                 }
                 let o = self.lower_expr_as_copy(obj);
-                let i = self.lower_expr(index);
+                let i_raw = self.lower_expr(index);
                 let tmp = self.new_tmp_for_expr_with_owning(expr, false);
-                self.push_statement(
-                    StatementKind::Assign(tmp, Rvalue::GetIndex(o, i)),
-                    expr.span,
-                );
+                if current_obj_ty == Type::PyObject {
+                    let idx_ty = self.get_type(index.id).clone();
+                    let func_name = if Self::is_int_ty(&idx_ty) {
+                        "__olive_py_getitem_int"
+                    } else {
+                        "__olive_py_getitem"
+                    };
+                    self.push_statement(
+                        StatementKind::Assign(
+                            tmp,
+                            Rvalue::Call {
+                                func: Operand::Constant(Constant::Function(func_name.to_string())),
+                                args: vec![o, i_raw],
+                            },
+                        ),
+                        expr.span,
+                    );
+                } else {
+                    self.push_statement(
+                        StatementKind::Assign(tmp, Rvalue::GetIndex(o, i_raw)),
+                        expr.span,
+                    );
+                }
                 self.operand_for_local(tmp)
+            }
+
+            ExprKind::Slice { .. } => {
+                panic!(
+                    "standalone slice expression not supported at expr.span={:?}",
+                    expr.span
+                );
             }
 
             ExprKind::ListComp { elt, clauses } => {
@@ -1913,6 +2050,21 @@ impl<'a> MirBuilder<'a> {
         self.operand_for_local(tmp)
     }
 
+    pub(super) fn is_int_ty(ty: &Type) -> bool {
+        matches!(
+            ty,
+            Type::Int
+                | Type::I8
+                | Type::I16
+                | Type::I32
+                | Type::U8
+                | Type::U16
+                | Type::U32
+                | Type::U64
+                | Type::Usize
+        )
+    }
+
     fn is_py_call(&self, expr: &Expr) -> bool {
         if let ExprKind::Call { callee, .. } = &expr.kind {
             let callee_ty = self.get_type(callee.id);
@@ -1946,7 +2098,6 @@ impl<'a> MirBuilder<'a> {
             }
         }
 
-        // Emit py-arg coercions
         let zipped: Vec<(Operand, Option<String>, usize)> = arg_ops
             .into_iter()
             .zip(arg_kw_names.into_iter())

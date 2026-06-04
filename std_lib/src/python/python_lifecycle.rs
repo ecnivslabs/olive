@@ -119,6 +119,7 @@ pub extern "C" fn olive_py_initialize() {
         PY_DEC_REF = compat_dlsym(handle, "Py_DecRef");
         PY_INC_REF = compat_dlsym(handle, "Py_IncRef");
         PY_LONG_AS_LONG = compat_dlsym(handle, "PyLong_AsLong");
+        PY_NUMBER_LONG = compat_dlsym(handle, "PyNumber_Long");
         PY_FLOAT_AS_DOUBLE = compat_dlsym(handle, "PyFloat_AsDouble");
         PY_UNICODE_AS_UTF8 = compat_dlsym(handle, "PyUnicode_AsUTF8");
         PY_LONG_FROM_LONG = compat_dlsym(handle, "PyLong_FromLong");
@@ -173,6 +174,7 @@ pub extern "C" fn olive_py_initialize() {
         PY_OBJECT_GET_ITER = compat_dlsym(handle, "PyObject_GetIter");
         PY_ITER_NEXT = compat_dlsym(handle, "PyIter_Next");
         PY_OBJECT_RICHCOMPAREBOOL = compat_dlsym(handle, "PyObject_RichCompareBool");
+        PY_SLICE_NEW = compat_dlsym(handle, "PySlice_New");
         PY_CORO_CHECK_EXACT = compat_dlsym(handle, "PyCoro_CheckExact");
         PY_ITER_CHECK = compat_dlsym(handle, "PyIter_Check");
 
@@ -222,6 +224,7 @@ pub extern "C" fn olive_py_initialize() {
             PY_DEC_REF = noop_decref;
             PY_INC_REF = noop_incref;
             PY_LONG_AS_LONG = noop_as_long;
+            PY_NUMBER_LONG = noop_number_long;
             PY_FLOAT_AS_DOUBLE = noop_as_double;
             PY_UNICODE_AS_UTF8 = noop_as_utf8;
             PY_LONG_FROM_LONG = noop_from_long;
@@ -266,17 +269,22 @@ pub extern "C" fn olive_py_initialize() {
             PY_LIST_GET_ITEM = noop_getitem_idx;
             PY_TUPLE_GET_ITEM = noop_getitem_idx;
             PY_ERR_PRINT = noop_err_print;
+            PY_SLICE_NEW = crate::python::python_noop::noop_slice_new;
             return;
         }
 
         PY_INITIALIZE();
+
+        // Prepend '' (cwd) to sys.path so project-local Python modules take
+        // priority over any same-named files in site-packages. Embedded Python
+        // does not add '' automatically unlike interactive/script mode.
+        PY_RUN_SIMPLE_STRING(b"import sys; sys.path.insert(0, '')\0".as_ptr() as *const c_char);
 
         let init_ptr: *const () = std::mem::transmute(PY_EVAL_INIT_THREADS);
         if !init_ptr.is_null() && init_ptr != (noop_initialize as *const ()) {
             PY_EVAL_INIT_THREADS();
         }
 
-        // Check Python major version is 3
         {
             let ver_obj = PY_SYS_GET_OBJECT(b"version_info\0".as_ptr() as *const c_char);
             if !ver_obj.is_null() {

@@ -25,15 +25,32 @@ impl TypeChecker {
             ExprKind::Bool(_) => Type::Bool,
 
             ExprKind::Deref(inner) => {
-                self.check_expr(inner);
-                if self.unsafe_depth == 0 {
-                    self.errors
-                        .push(super::super::error::SemanticError::Custom {
-                            msg: "pointer dereference requires unsafe block".into(),
-                            span: expr.span,
-                        });
+                let inner_ty = self.check_expr(inner);
+                let resolved = self.apply_subst(inner_ty.clone());
+                match resolved {
+                    Type::Ptr(_) => {
+                        if self.unsafe_depth == 0 {
+                            self.errors
+                                .push(super::super::error::SemanticError::Custom {
+                                    msg: "pointer dereference requires unsafe block".into(),
+                                    span: expr.span,
+                                });
+                        }
+                        Type::Int
+                    }
+                    Type::List(elem_ty) => *elem_ty,
+                    Type::PyObject | Type::Any | Type::Tuple(_) => Type::Any,
+                    _ => {
+                        if self.unsafe_depth == 0 {
+                            self.errors
+                                .push(super::super::error::SemanticError::Custom {
+                                    msg: "pointer dereference requires unsafe block".into(),
+                                    span: expr.span,
+                                });
+                        }
+                        Type::Int
+                    }
                 }
-                Type::Int
             }
             ExprKind::Borrow(inner) => {
                 let inner_ty = self.check_expr(inner);
@@ -118,7 +135,6 @@ impl TypeChecker {
                 let callee_ty = self.check_expr(callee);
                 let applied = self.apply_subst(callee_ty.clone());
 
-                // PyObject calls: dynamic, all args accepted, result is PyObject
                 if applied == Type::PyObject {
                     for arg in args {
                         self.check_expr(match arg {
@@ -671,6 +687,19 @@ impl TypeChecker {
                         Type::Any
                     }
                 }
+            }
+
+            ExprKind::Slice { start, stop, step } => {
+                if let Some(e) = start {
+                    self.check_expr(e);
+                }
+                if let Some(e) = stop {
+                    self.check_expr(e);
+                }
+                if let Some(e) = step {
+                    self.check_expr(e);
+                }
+                Type::Any
             }
 
             ExprKind::AsyncBlock(body) => {

@@ -89,14 +89,18 @@ pub extern "C" fn olive_py_call_kw_safe(func: PyObject, args_list: i64, kwargs_d
 
         let mut py_kwargs = std::ptr::null_mut();
         if kwargs_dict != 0 {
-            let obj = &*(kwargs_dict as *const crate::OliveObj);
+            let sv = &*(kwargs_dict as *const crate::StableVec);
             py_kwargs = PY_DICT_NEW();
-            for (k, &v) in &obj.fields {
-                let k_str = crate::olive_str_from_ptr(k.0);
+            let mut i = 0;
+            while i + 1 < sv.len {
+                let key = *sv.ptr.add(i);
+                let val = *sv.ptr.add(i + 1);
+                let k_str = crate::olive_str_from_ptr(key);
                 let k_cstr = CString::new(k_str).unwrap();
-                let py_v = olive_to_py(v);
+                let py_v = olive_to_py(val);
                 PY_DICT_SET_ITEM_STRING(py_kwargs, k_cstr.as_ptr(), py_v);
                 PY_DEC_REF(py_v);
+                i += 2;
             }
         }
 

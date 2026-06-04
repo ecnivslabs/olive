@@ -10,9 +10,24 @@ pub(super) fn collect_needed_imports(
         for bb in &func.basic_blocks {
             for stmt in &bb.statements {
                 match &stmt.kind {
-                    StatementKind::Assign(_, rval) => scan_rvalue_imports(func, rval, &mut needed),
-                    StatementKind::SetAttr(..) => {
+                    StatementKind::Assign(local, rval) => {
+                        scan_rvalue_imports(func, rval, &mut needed);
+                        if matches!(func.locals[local.0].ty, OliveType::Float | OliveType::F32) {
+                            if let Rvalue::Use(Operand::Copy(src) | Operand::Move(src)) = rval {
+                                if matches!(func.locals[src.0].ty, OliveType::PyObject) {
+                                    needed.insert("__olive_py_to_float");
+                                }
+                            }
+                        }
+                    }
+                    StatementKind::SetAttr(_, _, val_op) => {
                         needed.insert("__olive_obj_set");
+                        needed.insert("__olive_py_setattr");
+                        if let Operand::Copy(src) = val_op {
+                            if matches!(func.locals[src.0].ty, OliveType::PyObject) {
+                                needed.insert("__olive_py_copy_ref");
+                            }
+                        }
                     }
                     StatementKind::SetIndex(..) => {
                         needed.insert("__olive_list_set");
@@ -156,6 +171,31 @@ pub(super) fn scan_rvalue_imports(
                         needed.insert("__olive_py_eq");
                     }
                 }
+                Lt | LtEq | Gt | GtEq | NotEq => {
+                    let is_pyobj = is_pyobj_op(func_mir, lhs) || is_pyobj_op(func_mir, rhs);
+                    if is_pyobj {
+                        needed.insert("__olive_py_from_float");
+                        needed.insert("__olive_py_from_int");
+                        match op {
+                            crate::parser::BinOp::Lt => {
+                                needed.insert("__olive_py_lt");
+                            }
+                            crate::parser::BinOp::LtEq => {
+                                needed.insert("__olive_py_le");
+                            }
+                            crate::parser::BinOp::Gt => {
+                                needed.insert("__olive_py_gt");
+                            }
+                            crate::parser::BinOp::GtEq => {
+                                needed.insert("__olive_py_ge");
+                            }
+                            crate::parser::BinOp::NotEq => {
+                                needed.insert("__olive_py_ne");
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 BitOr => {
                     let mut is_pyobj = false;
                     let mut check_op = |op: &Operand| match op {
@@ -207,6 +247,7 @@ pub(super) fn scan_rvalue_imports(
         }
         Rvalue::GetAttr(..) => {
             needed.insert("__olive_obj_get");
+            needed.insert("__olive_py_getattr");
         }
         Rvalue::GetTag(..) => {
             needed.insert("__olive_enum_tag");
@@ -224,6 +265,8 @@ pub(super) fn scan_rvalue_imports(
                     needed.insert("__olive_str_get");
                 } else if matches!(ty, OliveType::Enum(_, _) | OliveType::Union(_)) {
                     needed.insert("__olive_enum_get");
+                } else if matches!(ty, OliveType::PyObject) {
+                    needed.insert("__olive_py_getitem");
                 }
             }
         }
@@ -247,6 +290,33 @@ pub(super) fn scan_rvalue_imports(
                     needed.insert("__olive_list_new");
                     needed.insert("__olive_list_append");
                     needed.insert("__olive_set_index_any");
+                }
+            }
+        }
+        Rvalue::UnaryOp(op, operand) => {
+            use crate::parser::UnaryOp::*;
+            if matches!(op, Neg | Not) {
+                if let Operand::Copy(src) | Operand::Move(src) = operand {
+                    if matches!(func_mir.locals[src.0].ty, OliveType::PyObject) {
+                        needed.insert("__olive_py_to_int");
+                        if matches!(op, Neg) {
+                            needed.insert("__olive_py_from_int");
+                        }
+                    }
+                }
+            }
+        }
+        Rvalue::Cast(op, target_ty) => {
+            if let Operand::Copy(src) | Operand::Move(src) = op {
+                if matches!(func_mir.locals[src.0].ty, OliveType::PyObject) {
+                    if matches!(target_ty, OliveType::Float | OliveType::F32) {
+                        needed.insert("__olive_py_to_float");
+                    } else if !matches!(
+                        target_ty,
+                        OliveType::PyObject | OliveType::Float | OliveType::F32
+                    ) {
+                        needed.insert("__olive_py_to_int");
+                    }
                 }
             }
         }
@@ -285,6 +355,7 @@ pub(super) fn resolve_builtin_import(
             "__olive_list_get" => Some("__olive_list_get"),
             "__olive_list_set" => Some("__olive_list_set"),
             "__olive_list_append" => Some("__olive_list_append"),
+            "__olive_list_extend" => Some("__olive_list_extend"),
             "__olive_str_len" => Some("__olive_str_len"),
             "__olive_list_len" => Some("__olive_list_len"),
             "__olive_get_index_any" => Some("__olive_get_index_any"),
@@ -588,7 +659,6 @@ pub(super) fn resolve_builtin_import(
             "__olive_pool_size" => Some("__olive_pool_size"),
             "__olive_pool_run" => Some("__olive_pool_run"),
             "__olive_pool_run_sync" => Some("__olive_pool_run_sync"),
-            // Python interop
             "__olive_py_import" => Some("__olive_py_import"),
             "__olive_py_import_safe" => Some("__olive_py_import_safe"),
             "__olive_py_getattr" => Some("__olive_py_getattr"),
@@ -606,8 +676,11 @@ pub(super) fn resolve_builtin_import(
             "__olive_py_from_str" => Some("__olive_py_from_str"),
             "__olive_py_from_list" => Some("__olive_py_from_list"),
             "__olive_py_getitem" => Some("__olive_py_getitem"),
+            "__olive_py_getitem_int" => Some("__olive_py_getitem_int"),
+            "__olive_py_getslice" => Some("__olive_py_getslice"),
             "__olive_py_getitem_safe" => Some("__olive_py_getitem_safe"),
             "__olive_py_setitem" => Some("__olive_py_setitem"),
+            "__olive_py_setitem_int" => Some("__olive_py_setitem_int"),
             "__olive_py_setitem_safe" => Some("__olive_py_setitem_safe"),
             "__olive_py_len" => Some("__olive_py_len"),
             "__olive_py_is_none" => Some("__olive_py_is_none"),

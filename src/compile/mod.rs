@@ -119,9 +119,14 @@ pub fn compile_and_emit(filename: &str, output: &str, show_time: bool, release: 
 
 pub fn compile_hybrid(filename: &str, show_time: bool, release: bool) {
     let mut collected = Vec::new();
+    let mut py_files = Vec::new();
     let mut visited = HashSet::new();
-    collect_source_files(filename, &mut collected, &mut visited);
-    let hash = compute_source_hash(&collected);
+    collect_source_files(filename, &mut collected, &mut py_files, &mut visited);
+
+    // Include Python files in hash so changes to import py "..." modules trigger rebuild
+    let mut all_files = collected.clone();
+    all_files.extend(py_files.iter().cloned());
+    let hash = compute_source_hash(&all_files);
 
     ensure_dir("grove/.cache");
 
@@ -144,6 +149,12 @@ pub fn compile_hybrid(filename: &str, show_time: bool, release: bool) {
         process::exit(code);
     }
 
+    // Invalidate stale .pyc bytecode for all referenced Python modules so
+    // Python always recompiles from the current source on the next run.
+    for py_path in &py_files {
+        invalidate_pyc(py_path);
+    }
+
     compile_and_emit(filename, binary_path, show_time, release);
 
     let manifest = serde_json::json!({ "hash": hash });
@@ -151,6 +162,29 @@ pub fn compile_hybrid(filename: &str, show_time: bool, release: bool) {
 
     let code = exec_binary(binary_path);
     process::exit(code);
+}
+
+/// Delete the Python bytecode cache (.pyc) for a given .py source file so
+/// Python is forced to recompile from source on next import.
+fn invalidate_pyc(py_path: &str) {
+    use std::path::Path;
+    let p = Path::new(py_path);
+    let stem = match p.file_stem().and_then(|s| s.to_str()) {
+        Some(s) => s,
+        None => return,
+    };
+    let parent = p.parent().unwrap_or(Path::new("."));
+    // Python stores .pyc files in __pycache__/<stem>.cpython-<ver>.pyc
+    let pycache = parent.join("__pycache__");
+    if let Ok(entries) = fs::read_dir(&pycache) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with(stem) && name_str.ends_with(".pyc") {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
 }
 
 pub fn compile_and_run_aot(filename: &str, show_time: bool, release: bool) {

@@ -75,7 +75,7 @@ impl<M: Module> CraneliftCodegen<M> {
         await_points: &[SmAwaitPoint],
     ) {
         let poll_name = format!("{}__sm_poll", func.name);
-        let poll_id = *self.func_ids.get(&poll_name).unwrap();
+        let poll_id = *self.func_ids.get(&poll_name).expect("missing func");
         let num_locals = func.locals.len();
         let n_awaits = await_points.len();
         let n_bbs = func.basic_blocks.len();
@@ -169,7 +169,10 @@ impl<M: Module> CraneliftCodegen<M> {
                     builder.def_var(vars[&local], val);
                 }
                 let sub_future = builder.ins().load(types::I64, mf, frame_s, 8);
-                let sm_poll_id = *self.func_ids.get("__olive_sm_poll").unwrap();
+                let sm_poll_id = *self
+                    .func_ids
+                    .get("__olive_sm_poll")
+                    .expect("missing __olive_sm_poll");
                 let sm_poll_ref = self.module.declare_func_in_func(sm_poll_id, builder.func);
                 let poll_call = builder.ins().call(sm_poll_ref, &[sub_future]);
                 let poll_result = builder.inst_results(poll_call)[0];
@@ -317,7 +320,7 @@ impl<M: Module> CraneliftCodegen<M> {
 
     pub(super) fn generate_sm_wrapper(&mut self, func: &MirFunction) {
         let poll_name = format!("{}__sm_poll", func.name);
-        let poll_fn_id = *self.func_ids.get(&poll_name).unwrap();
+        let poll_fn_id = *self.func_ids.get(&poll_name).expect("missing func");
         let num_locals = func.locals.len();
         let frame_size = ((num_locals + 2) * 8) as i64;
 
@@ -337,7 +340,10 @@ impl<M: Module> CraneliftCodegen<M> {
         let params: Vec<Value> = builder.block_params(entry).to_vec();
 
         let mf = MemFlags::trusted();
-        let alloc_id = *self.func_ids.get("__olive_alloc").unwrap();
+        let alloc_id = *self
+            .func_ids
+            .get("__olive_alloc")
+            .expect("missing __olive_alloc");
         let alloc_ref = self.module.declare_func_in_func(alloc_id, builder.func);
 
         let fsz = builder.ins().iconst(types::I64, frame_size);
@@ -367,13 +373,13 @@ impl<M: Module> CraneliftCodegen<M> {
         builder.ins().return_(&[fut_ptr]);
         builder.finalize();
 
-        let wrapper_id = *self.func_ids.get(&func.name).unwrap();
+        let wrapper_id = *self.func_ids.get(&func.name).expect("missing func");
         self.module.define_function(wrapper_id, &mut ctx).unwrap();
     }
 
     pub(super) fn generate_async_wrapper(&mut self, func: &MirFunction) {
         let body_name = format!("{}__async_body", func.name);
-        let body_func_id = *self.func_ids.get(&body_name).unwrap();
+        let body_func_id = *self.func_ids.get(&body_name).expect("missing func");
 
         let mut ctx = self.module.make_context();
         for i in 0..func.arg_count {
@@ -393,7 +399,10 @@ impl<M: Module> CraneliftCodegen<M> {
 
         let callback_size = 8i64 * (2 + func.arg_count as i64);
 
-        let alloc_id = *self.func_ids.get("__olive_alloc").unwrap();
+        let alloc_id = *self
+            .func_ids
+            .get("__olive_alloc")
+            .expect("missing __olive_alloc");
         let alloc_ref = self.module.declare_func_in_func(alloc_id, builder.func);
         let size_val = builder.ins().iconst(types::I64, callback_size);
         let call = builder.ins().call(alloc_ref, &[size_val]);
@@ -411,7 +420,10 @@ impl<M: Module> CraneliftCodegen<M> {
             builder.ins().store(mf, arg, cb_ptr, 8 * (2 + i) as i32);
         }
 
-        let spawn_id = *self.func_ids.get("__olive_spawn_task").unwrap();
+        let spawn_id = *self
+            .func_ids
+            .get("__olive_spawn_task")
+            .expect("missing __olive_spawn_task");
         let spawn_ref = self.module.declare_func_in_func(spawn_id, builder.func);
         let call = builder.ins().call(spawn_ref, &[cb_ptr]);
         let future_ptr = builder.inst_results(call)[0];
@@ -419,7 +431,7 @@ impl<M: Module> CraneliftCodegen<M> {
         builder.ins().return_(&[future_ptr]);
         builder.finalize();
 
-        let wrapper_id = *self.func_ids.get(&func.name).unwrap();
+        let wrapper_id = *self.func_ids.get(&func.name).expect("missing func");
         self.module.define_function(wrapper_id, &mut ctx).unwrap();
     }
 }

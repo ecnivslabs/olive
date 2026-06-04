@@ -17,12 +17,16 @@ impl<M: Module> CraneliftCodegen<M> {
     ) -> Value {
         match kind {
             AggregateKind::Dict => {
-                let new_id = func_ids.get("__olive_obj_new").unwrap();
+                let new_id = func_ids
+                    .get("__olive_obj_new")
+                    .expect("missing __olive_obj_new");
                 let new_func = module.declare_func_in_func(*new_id, builder.func);
                 let inst = builder.ins().call(new_func, &[]);
                 let dict_ptr = builder.inst_results(inst)[0];
 
-                let set_id = func_ids.get("__olive_obj_set").unwrap();
+                let set_id = func_ids
+                    .get("__olive_obj_set")
+                    .expect("missing __olive_obj_set");
                 let set_func = module.declare_func_in_func(*set_id, builder.func);
 
                 for i in (0..ops.len()).step_by(2) {
@@ -48,12 +52,16 @@ impl<M: Module> CraneliftCodegen<M> {
                 let type_id_val = builder.ins().iconst(types::I64, *type_id);
                 let tag_val = builder.ins().iconst(types::I64, *tag as i64);
                 let count = builder.ins().iconst(types::I64, ops.len() as i64);
-                let new_id = func_ids.get("__olive_enum_new").unwrap();
+                let new_id = func_ids
+                    .get("__olive_enum_new")
+                    .expect("missing __olive_enum_new");
                 let new_func = module.declare_func_in_func(*new_id, builder.func);
                 let inst = builder.ins().call(new_func, &[type_id_val, tag_val, count]);
                 let enum_ptr = builder.inst_results(inst)[0];
 
-                let set_id = func_ids.get("__olive_enum_set").unwrap();
+                let set_id = func_ids
+                    .get("__olive_enum_set")
+                    .expect("missing __olive_enum_set");
                 let set_func = module.declare_func_in_func(*set_id, builder.func);
 
                 for (i, op) in ops.iter().enumerate() {
@@ -71,12 +79,16 @@ impl<M: Module> CraneliftCodegen<M> {
             }
             AggregateKind::Set => {
                 let count = builder.ins().iconst(types::I64, ops.len() as i64);
-                let new_id = func_ids.get("__olive_set_new").unwrap();
+                let new_id = func_ids
+                    .get("__olive_set_new")
+                    .expect("missing __olive_set_new");
                 let new_func = module.declare_func_in_func(*new_id, builder.func);
                 let inst = builder.ins().call(new_func, &[count]);
                 let set_ptr = builder.inst_results(inst)[0];
 
-                let add_id = func_ids.get("__olive_set_add").unwrap();
+                let add_id = func_ids
+                    .get("__olive_set_add")
+                    .expect("missing __olive_set_add");
                 let add_func = module.declare_func_in_func(*add_id, builder.func);
 
                 for op in ops {
@@ -90,7 +102,9 @@ impl<M: Module> CraneliftCodegen<M> {
                 set_ptr
             }
             AggregateKind::FatPtr => {
-                let alloc_id = func_ids.get("__olive_alloc").unwrap();
+                let alloc_id = func_ids
+                    .get("__olive_alloc")
+                    .expect("missing __olive_alloc");
                 let alloc_func = module.declare_func_in_func(*alloc_id, builder.func);
                 let size = builder.ins().iconst(types::I64, 16);
                 let inst = builder.ins().call(alloc_func, &[size]);
@@ -108,7 +122,9 @@ impl<M: Module> CraneliftCodegen<M> {
             _ => {
                 let n = ops.len() as i64;
                 let n_val = builder.ins().iconst(types::I64, n);
-                let new_id = func_ids.get("__olive_list_new").unwrap();
+                let new_id = func_ids
+                    .get("__olive_list_new")
+                    .expect("missing __olive_list_new");
                 let new_func = module.declare_func_in_func(*new_id, builder.func);
                 let inst = builder.ins().call(new_func, &[n_val]);
                 let list_ptr = builder.inst_results(inst)[0];

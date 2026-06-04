@@ -40,7 +40,6 @@ impl Transform for CommonSubexpressionElimination {
                         | StatementKind::SetAttr(..)
                         | StatementKind::VectorStore(..)
                 ) {
-                    // Invalidate all heap-based expressions.
                     available_expressions.retain(|(expr, _)| {
                         !matches!(expr, Rvalue::GetIndex(..) | Rvalue::GetAttr(..))
                     });

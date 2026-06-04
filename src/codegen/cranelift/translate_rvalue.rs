@@ -97,7 +97,22 @@ impl<M: Module> CraneliftCodegen<M> {
                 func_mir, module, func_ids, string_ids, builder, vars, op, lhs, rhs,
             ),
             Rvalue::UnaryOp(op, operand) => {
-                Self::translate_unaryop(builder, vars, string_ids, module, func_ids, op, operand)
+                let operand_ty = match operand {
+                    crate::mir::Operand::Copy(l) | crate::mir::Operand::Move(l) => {
+                        func_mir.locals[l.0].ty.clone()
+                    }
+                    _ => crate::semantic::types::Type::Any,
+                };
+                Self::translate_unaryop(
+                    builder,
+                    vars,
+                    string_ids,
+                    module,
+                    func_ids,
+                    op,
+                    operand,
+                    &operand_ty,
+                )
             }
             Rvalue::Ref(local) | Rvalue::MutRef(local) => {
                 let var = vars.get(local).unwrap();
@@ -130,25 +145,43 @@ impl<M: Module> CraneliftCodegen<M> {
                                 .load(types::I64, MemFlags::trusted(), o, offset);
                         }
                     }
+                    if matches!(obj_ty, OliveType::PyObject) {
+                        let o = Self::translate_operand(
+                            builder, obj, vars, string_ids, module, func_ids,
+                        );
+                        let attr_val = attr_symbol(builder, module, string_ids, attr);
+                        let get_id = func_ids
+                            .get("__olive_py_getattr")
+                            .expect("missing __olive_py_getattr");
+                        let local_func = module.declare_func_in_func(*get_id, builder.func);
+                        let inst = builder.ins().call(local_func, &[o, attr_val]);
+                        return builder.inst_results(inst)[0];
+                    }
                 }
                 let o = Self::translate_operand(builder, obj, vars, string_ids, module, func_ids);
                 let attr_val = attr_symbol(builder, module, string_ids, attr);
 
-                let get_id = func_ids.get("__olive_obj_get").unwrap();
+                let get_id = func_ids
+                    .get("__olive_obj_get")
+                    .expect("missing __olive_obj_get");
                 let local_func = module.declare_func_in_func(*get_id, builder.func);
                 let inst = builder.ins().call(local_func, &[o, attr_val]);
                 builder.inst_results(inst)[0]
             }
             Rvalue::GetTag(obj) => {
                 let o = Self::translate_operand(builder, obj, vars, string_ids, module, func_ids);
-                let tag_id = func_ids.get("__olive_enum_tag").unwrap();
+                let tag_id = func_ids
+                    .get("__olive_enum_tag")
+                    .expect("missing __olive_enum_tag");
                 let local_func = module.declare_func_in_func(*tag_id, builder.func);
                 let inst = builder.ins().call(local_func, &[o]);
                 builder.inst_results(inst)[0]
             }
             Rvalue::GetTypeId(obj) => {
                 let o = Self::translate_operand(builder, obj, vars, string_ids, module, func_ids);
-                let fn_id = func_ids.get("__olive_enum_type_id").unwrap();
+                let fn_id = func_ids
+                    .get("__olive_enum_type_id")
+                    .expect("missing __olive_enum_type_id");
                 let local_func = module.declare_func_in_func(*fn_id, builder.func);
                 let inst = builder.ins().call(local_func, &[o]);
                 builder.inst_results(inst)[0]
@@ -168,19 +201,25 @@ impl<M: Module> CraneliftCodegen<M> {
 
                 match ty {
                     OliveType::PyObject => {
-                        let get_id = func_ids.get("__olive_py_getitem").unwrap();
+                        let get_id = func_ids
+                            .get("__olive_py_getitem")
+                            .expect("missing __olive_py_getitem");
                         let local_func = module.declare_func_in_func(*get_id, builder.func);
                         let inst = builder.ins().call(local_func, &[o, i]);
                         builder.inst_results(inst)[0]
                     }
                     OliveType::Enum(_, _) => {
-                        let get_id = func_ids.get("__olive_enum_get").unwrap();
+                        let get_id = func_ids
+                            .get("__olive_enum_get")
+                            .expect("missing __olive_enum_get");
                         let local_func = module.declare_func_in_func(*get_id, builder.func);
                         let inst = builder.ins().call(local_func, &[o, i]);
                         builder.inst_results(inst)[0]
                     }
                     OliveType::Dict(_, _) | OliveType::Struct(_, _) => {
-                        let get_id = func_ids.get("__olive_obj_get").unwrap();
+                        let get_id = func_ids
+                            .get("__olive_obj_get")
+                            .expect("missing __olive_obj_get");
                         let local_func = module.declare_func_in_func(*get_id, builder.func);
                         let inst = builder.ins().call(local_func, &[o, i]);
                         builder.inst_results(inst)[0]
@@ -218,7 +257,9 @@ impl<M: Module> CraneliftCodegen<M> {
 
                         builder.seal_block(slow_block);
                         builder.switch_to_block(slow_block);
-                        let get_id = func_ids.get("__olive_get_index_any").unwrap();
+                        let get_id = func_ids
+                            .get("__olive_get_index_any")
+                            .expect("missing __olive_get_index_any");
                         let local_func = module.declare_func_in_func(*get_id, builder.func);
                         let inst = builder.ins().call(local_func, &[o, i]);
                         let slow_val = builder.inst_results(inst)[0];
@@ -230,7 +271,9 @@ impl<M: Module> CraneliftCodegen<M> {
                         builder.use_var(result_var)
                     }
                     OliveType::Str => {
-                        let get_id = func_ids.get("__olive_str_get").unwrap();
+                        let get_id = func_ids
+                            .get("__olive_str_get")
+                            .expect("missing __olive_str_get");
                         let local_func = module.declare_func_in_func(*get_id, builder.func);
                         let inst = builder.ins().call(local_func, &[o, i]);
                         builder.inst_results(inst)[0]
@@ -247,7 +290,9 @@ impl<M: Module> CraneliftCodegen<M> {
                         builder.ins().load(types::I64, MemFlags::trusted(), addr, 0)
                     }
                     _ => {
-                        let get_id = func_ids.get("__olive_get_index_any").unwrap();
+                        let get_id = func_ids
+                            .get("__olive_get_index_any")
+                            .expect("missing __olive_get_index_any");
                         let local_func = module.declare_func_in_func(*get_id, builder.func);
                         let inst = builder.ins().call(local_func, &[o, i]);
                         builder.inst_results(inst)[0]
@@ -263,7 +308,24 @@ impl<M: Module> CraneliftCodegen<M> {
                     _ => types::I64,
                 };
 
-                if current_ty == target_cl_ty {
+                let src_is_pyobj = match op {
+                    crate::mir::Operand::Copy(l) | crate::mir::Operand::Move(l) => {
+                        matches!(func_mir.locals[l.0].ty, OliveType::PyObject)
+                    }
+                    _ => false,
+                };
+
+                if src_is_pyobj
+                    && target_cl_ty == types::I64
+                    && !matches!(ty, OliveType::PyObject | OliveType::Float | OliveType::F32)
+                {
+                    let to_int_id = func_ids
+                        .get("__olive_py_to_int")
+                        .expect("missing __olive_py_to_int");
+                    let local_func = module.declare_func_in_func(*to_int_id, builder.func);
+                    let inst = builder.ins().call(local_func, &[val]);
+                    builder.inst_results(inst)[0]
+                } else if current_ty == target_cl_ty {
                     val
                 } else if current_ty.is_float() && target_cl_ty.is_float() {
                     if current_ty == types::F64 {
@@ -272,9 +334,46 @@ impl<M: Module> CraneliftCodegen<M> {
                         builder.ins().fpromote(target_cl_ty, val)
                     }
                 } else if current_ty.is_int() && target_cl_ty.is_float() {
-                    builder.ins().fcvt_from_sint(target_cl_ty, val)
+                    if src_is_pyobj {
+                        let float_id = func_ids
+                            .get("__olive_py_to_float")
+                            .expect("missing __olive_py_to_float");
+                        let local_func = module.declare_func_in_func(*float_id, builder.func);
+                        let inst = builder.ins().call(local_func, &[val]);
+                        let f64_val = builder.inst_results(inst)[0];
+                        if target_cl_ty == types::F32 {
+                            builder.ins().fdemote(types::F32, f64_val)
+                        } else {
+                            f64_val
+                        }
+                    } else {
+                        builder.ins().fcvt_from_sint(target_cl_ty, val)
+                    }
                 } else if current_ty.is_float() && target_cl_ty.is_int() {
                     builder.ins().fcvt_to_sint(target_cl_ty, val)
+                } else if current_ty.is_int() && target_cl_ty.is_int() {
+                    if current_ty.bits() < target_cl_ty.bits() {
+                        let src_signed = match op {
+                            crate::mir::Operand::Copy(l) | crate::mir::Operand::Move(l) => {
+                                matches!(
+                                    func_mir.locals[l.0].ty,
+                                    OliveType::Int
+                                        | OliveType::I32
+                                        | OliveType::I16
+                                        | OliveType::I8
+                                )
+                            }
+                            crate::mir::Operand::Constant(crate::mir::Constant::Int(_)) => true,
+                            _ => true,
+                        };
+                        if src_signed {
+                            builder.ins().sextend(target_cl_ty, val)
+                        } else {
+                            builder.ins().uextend(target_cl_ty, val)
+                        }
+                    } else {
+                        builder.ins().ireduce(target_cl_ty, val)
+                    }
                 } else {
                     val
                 }

@@ -57,15 +57,17 @@ impl<'a> MirBuilder<'a> {
             let elif_then = self.new_block();
             let elif_next = self.new_block();
 
-            self.terminate_block(
-                current_next,
-                TerminatorKind::SwitchInt {
-                    discr: elif_op,
-                    targets: vec![(1, elif_then)],
-                    otherwise: elif_next,
-                },
-                elif_cond.span,
-            );
+            if let Some(bb) = self.current_block {
+                self.terminate_block(
+                    bb,
+                    TerminatorKind::SwitchInt {
+                        discr: elif_op,
+                        targets: vec![(1, elif_then)],
+                        otherwise: elif_next,
+                    },
+                    elif_cond.span,
+                );
+            }
 
             self.current_block = Some(elif_then);
             self.enter_scope();
@@ -135,15 +137,17 @@ impl<'a> MirBuilder<'a> {
             exit_bb
         };
 
-        self.terminate_block(
-            header_bb,
-            TerminatorKind::SwitchInt {
-                discr: cond_op,
-                targets: vec![(1, body_bb)],
-                otherwise: else_bb,
-            },
-            condition.span,
-        );
+        if let Some(bb) = self.current_block {
+            self.terminate_block(
+                bb,
+                TerminatorKind::SwitchInt {
+                    discr: cond_op,
+                    targets: vec![(1, body_bb)],
+                    otherwise: else_bb,
+                },
+                condition.span,
+            );
+        }
 
         self.loop_stack.push(LoopContext {
             header: header_bb,

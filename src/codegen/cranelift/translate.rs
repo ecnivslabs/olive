@@ -165,6 +165,7 @@ impl<M: Module> CraneliftCodegen<M> {
             if let Some(term) = &bb.terminator {
                 Self::translate_terminator(
                     &mut builder,
+                    func,
                     term,
                     &blocks,
                     &vars,
@@ -216,7 +217,10 @@ impl<M: Module> CraneliftCodegen<M> {
 
         builder.finalize();
 
-        let func_id = self.func_ids.get(&func.name).unwrap();
+        let func_id = self
+            .func_ids
+            .get(&func.name)
+            .expect("func not declared in func_ids");
         self.module.define_function(*func_id, &mut ctx).unwrap();
     }
 
@@ -259,8 +263,29 @@ impl<M: Module> CraneliftCodegen<M> {
 
                 let val_ty = builder.func.dfg.value_type(val);
                 let decl_ty = cl_type(&func_mir.locals[local.0].ty);
+                let rval_is_pyobj = match rval {
+                    crate::mir::ir::Rvalue::Use(
+                        crate::mir::ir::Operand::Copy(l) | crate::mir::ir::Operand::Move(l),
+                    ) => matches!(func_mir.locals[l.0].ty, OliveType::PyObject),
+                    _ => false,
+                };
                 let val = if val_ty != decl_ty {
-                    if val_ty == types::F64 && decl_ty == types::F32 {
+                    if rval_is_pyobj && decl_ty == types::F64 {
+                        let float_id = func_ids
+                            .get("__olive_py_to_float")
+                            .expect("missing __olive_py_to_float");
+                        let local_func = module.declare_func_in_func(*float_id, builder.func);
+                        let inst = builder.ins().call(local_func, &[val]);
+                        builder.inst_results(inst)[0]
+                    } else if rval_is_pyobj && decl_ty == types::F32 {
+                        let float_id = func_ids
+                            .get("__olive_py_to_float")
+                            .expect("missing __olive_py_to_float");
+                        let local_func = module.declare_func_in_func(*float_id, builder.func);
+                        let inst = builder.ins().call(local_func, &[val]);
+                        let f64_val = builder.inst_results(inst)[0];
+                        builder.ins().fdemote(types::F32, f64_val)
+                    } else if val_ty == types::F64 && decl_ty == types::F32 {
                         builder.ins().fdemote(types::F32, val)
                     } else if val_ty == types::F32 && decl_ty == types::F64 {
                         builder.ins().fpromote(types::F64, val)
@@ -358,7 +383,17 @@ impl<M: Module> CraneliftCodegen<M> {
                         let v = Self::translate_operand(
                             builder, val_op, vars, string_ids, module, func_ids,
                         );
-                        let v = if builder.func.dfg.value_type(v) == types::F64 {
+                        let v = if let Operand::Copy(src) = val_op
+                            && matches!(func_mir.locals[src.0].ty, OliveType::PyObject)
+                        {
+                            let copy_ref_id = func_ids
+                                .get("__olive_py_copy_ref")
+                                .expect("missing __olive_py_copy_ref");
+                            let local_func =
+                                module.declare_func_in_func(*copy_ref_id, builder.func);
+                            let inst = builder.ins().call(local_func, &[v]);
+                            builder.inst_results(inst)[0]
+                        } else if builder.func.dfg.value_type(v) == types::F64 {
                             builder.ins().bitcast(types::I64, MemFlags::new(), v)
                         } else {
                             v
@@ -379,8 +414,24 @@ impl<M: Module> CraneliftCodegen<M> {
                     v
                 };
 
-                let func_name = "__olive_obj_set";
-                let set_id = func_ids.get(func_name).unwrap();
+                let obj_is_pyobj = if let Operand::Copy(loc) | Operand::Move(loc) = obj {
+                    let mut oty = &func_mir.locals[loc.0].ty;
+                    while let OliveType::Ref(inner) | OliveType::MutRef(inner) = oty {
+                        oty = inner;
+                    }
+                    matches!(oty, OliveType::PyObject)
+                } else {
+                    false
+                };
+
+                let func_name = if obj_is_pyobj {
+                    "__olive_py_setattr"
+                } else {
+                    "__olive_obj_set"
+                };
+                let set_id = func_ids
+                    .get(func_name)
+                    .expect("missing obj_set or py_setattr");
                 let local_func = module.declare_func_in_func(*set_id, builder.func);
                 builder.ins().call(local_func, &[o, attr_val, v]);
             }
@@ -407,17 +458,23 @@ impl<M: Module> CraneliftCodegen<M> {
 
                 match ty {
                     OliveType::Dict(_, _) | OliveType::Struct(_, _) | OliveType::PyObject => {
-                        let set_id = func_ids.get("__olive_obj_set").unwrap();
+                        let set_id = func_ids
+                            .get("__olive_obj_set")
+                            .expect("missing __olive_obj_set");
                         let local_func = module.declare_func_in_func(*set_id, builder.func);
                         builder.ins().call(local_func, &[o, i, v]);
                     }
                     OliveType::Any => {
-                        let set_id = func_ids.get("__olive_set_index_any").unwrap();
+                        let set_id = func_ids
+                            .get("__olive_set_index_any")
+                            .expect("missing __olive_set_index_any");
                         let local_func = module.declare_func_in_func(*set_id, builder.func);
                         builder.ins().call(local_func, &[o, i, v]);
                     }
                     OliveType::Enum(_, _) => {
-                        let set_id = func_ids.get("__olive_enum_set").unwrap();
+                        let set_id = func_ids
+                            .get("__olive_enum_set")
+                            .expect("missing __olive_enum_set");
                         let local_func = module.declare_func_in_func(*set_id, builder.func);
                         builder.ins().call(local_func, &[o, i, v]);
                     }
@@ -453,7 +510,9 @@ impl<M: Module> CraneliftCodegen<M> {
                     } else {
                         let size = c_struct_sizes.get(name.as_str()).unwrap();
                         let size_val = builder.ins().iconst(types::I64, *size);
-                        let free_id = func_ids.get("__olive_free_c_struct").unwrap();
+                        let free_id = func_ids
+                            .get("__olive_free_c_struct")
+                            .expect("missing __olive_free_c_struct");
                         let local_func = module.declare_func_in_func(*free_id, builder.func);
                         builder.ins().call(local_func, &[val, size_val]);
                     }
@@ -482,7 +541,9 @@ impl<M: Module> CraneliftCodegen<M> {
                     _ => "__olive_free",
                 };
 
-                let free_id = func_ids.get(free_func_name).unwrap();
+                let free_id = func_ids
+                    .get(free_func_name)
+                    .unwrap_or_else(|| panic!("missing runtime function: {}", free_func_name));
                 let local_func = module.declare_func_in_func(*free_id, builder.func);
                 builder.ins().call(local_func, &[val]);
 
@@ -589,6 +650,7 @@ impl<M: Module> CraneliftCodegen<M> {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn translate_terminator(
         builder: &mut FunctionBuilder,
+        func_mir: &MirFunction,
         term: &Terminator,
         blocks: &[Block],
         vars: &HashMap<Local, Variable>,
@@ -609,24 +671,47 @@ impl<M: Module> CraneliftCodegen<M> {
             } => {
                 let val =
                     Self::translate_operand(builder, discr, vars, string_ids, module, func_ids);
-                if targets.len() == 1 && targets[0].0 == 1 {
+                let is_pyobj = matches!(discr,
+                    Operand::Copy(loc) | Operand::Move(loc)
+                    if matches!(func_mir.locals[loc.0].ty, OliveType::PyObject)
+                );
+                let cond_val = if is_pyobj {
+                    let to_int_id = func_ids
+                        .get("__olive_py_to_int")
+                        .expect("missing __olive_py_to_int");
+                    let local_func = module.declare_func_in_func(*to_int_id, builder.func);
+                    let inst = builder.ins().call(local_func, &[val]);
+                    builder.inst_results(inst)[0]
+                } else {
+                    val
+                };
+                if is_pyobj && targets.len() == 1 {
+                    let target_val = targets[0].0;
                     let target_block = blocks[targets[0].1.0];
                     let else_block = blocks[otherwise.0];
-                    let cond = builder.ins().icmp_imm(IntCC::NotEqual, val, 0);
+                    let cond = if target_val == 0 {
+                        builder.ins().icmp_imm(IntCC::Equal, cond_val, 0)
+                    } else {
+                        builder
+                            .ins()
+                            .icmp_imm(IntCC::NotEqual, cond_val, target_val)
+                    };
                     builder.ins().brif(cond, target_block, &[], else_block, &[]);
                 } else {
                     let mut switch = cranelift::frontend::Switch::new();
                     for (v, target_bb) in targets {
                         switch.set_entry(*v as u128, blocks[target_bb.0]);
                     }
-                    switch.emit(builder, val, blocks[otherwise.0]);
+                    switch.emit(builder, cond_val, blocks[otherwise.0]);
                 }
             }
             TerminatorKind::Return => {
                 let var = vars.get(&Local(0)).unwrap();
                 let ret_val = builder.use_var(*var);
                 if is_async {
-                    let make_future_id = func_ids.get("__olive_make_future").unwrap();
+                    let make_future_id = func_ids
+                        .get("__olive_make_future")
+                        .expect("missing __olive_make_future");
                     let local_func = module.declare_func_in_func(*make_future_id, builder.func);
                     let call = builder.ins().call(local_func, &[ret_val]);
                     let future_val = builder.inst_results(call)[0];

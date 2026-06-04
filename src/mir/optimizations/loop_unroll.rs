@@ -155,7 +155,6 @@ impl LoopUnroll {
             }
         }
 
-        // Add original latch statements (which now does += unroll_factor).
         new_stmts.extend(existing);
         latch.statements = new_stmts;
 

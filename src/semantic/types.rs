@@ -58,6 +58,7 @@ impl Type {
                 | Type::Null
                 | Type::Never
                 | Type::Any
+                | Type::PyObject
                 | Type::Str
                 | Type::Ref(_)
                 | Type::MutRef(_)

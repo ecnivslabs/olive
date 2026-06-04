@@ -26,12 +26,16 @@ impl<M: Module> CraneliftCodegen<M> {
         let is_py = is_pyobj_op(func_mir, lhs) || is_pyobj_op(func_mir, rhs);
         if is_py && matches!(op, Add | Sub | Mul | Div | Mod | Pow) {
             let l_val = if is_float_op(func_mir, lhs) {
-                let func_id = func_ids.get("__olive_py_from_float").unwrap();
+                let func_id = func_ids
+                    .get("__olive_py_from_float")
+                    .expect("missing __olive_py_from_float");
                 let local_func = module.declare_func_in_func(*func_id, builder.func);
                 let inst = builder.ins().call(local_func, &[l]);
                 builder.inst_results(inst)[0]
             } else if !is_pyobj_op(func_mir, lhs) {
-                let func_id = func_ids.get("__olive_py_from_int").unwrap();
+                let func_id = func_ids
+                    .get("__olive_py_from_int")
+                    .expect("missing __olive_py_from_int");
                 let local_func = module.declare_func_in_func(*func_id, builder.func);
                 let inst = builder.ins().call(local_func, &[l]);
                 builder.inst_results(inst)[0]
@@ -40,12 +44,16 @@ impl<M: Module> CraneliftCodegen<M> {
             };
 
             let r_val = if is_float_op(func_mir, rhs) {
-                let func_id = func_ids.get("__olive_py_from_float").unwrap();
+                let func_id = func_ids
+                    .get("__olive_py_from_float")
+                    .expect("missing __olive_py_from_float");
                 let local_func = module.declare_func_in_func(*func_id, builder.func);
                 let inst = builder.ins().call(local_func, &[r]);
                 builder.inst_results(inst)[0]
             } else if !is_pyobj_op(func_mir, rhs) {
-                let func_id = func_ids.get("__olive_py_from_int").unwrap();
+                let func_id = func_ids
+                    .get("__olive_py_from_int")
+                    .expect("missing __olive_py_from_int");
                 let local_func = module.declare_func_in_func(*func_id, builder.func);
                 let inst = builder.ins().call(local_func, &[r]);
                 builder.inst_results(inst)[0]
@@ -62,7 +70,9 @@ impl<M: Module> CraneliftCodegen<M> {
                 Pow => "__olive_py_pow",
                 _ => unreachable!(),
             };
-            let func_id = func_ids.get(fn_name).unwrap();
+            let func_id = func_ids
+                .get(fn_name)
+                .unwrap_or_else(|| panic!("missing py_arith fn: {}", fn_name));
             let local_func = module.declare_func_in_func(*func_id, builder.func);
             let inst = builder.ins().call(local_func, &[l_val, r_val]);
             return builder.inst_results(inst)[0];
@@ -75,12 +85,16 @@ impl<M: Module> CraneliftCodegen<M> {
                 let is_list = is_list_op(func_mir, lhs);
 
                 if is_str {
-                    let concat_func_id = func_ids.get("__olive_str_concat").unwrap();
+                    let concat_func_id = func_ids
+                        .get("__olive_str_concat")
+                        .expect("missing __olive_str_concat");
                     let local_func = module.declare_func_in_func(*concat_func_id, builder.func);
                     let inst = builder.ins().call(local_func, &[l, r]);
                     builder.inst_results(inst)[0]
                 } else if is_list {
-                    let concat_func_id = func_ids.get("__olive_list_concat").unwrap();
+                    let concat_func_id = func_ids
+                        .get("__olive_list_concat")
+                        .expect("missing __olive_list_concat");
                     let local_func = module.declare_func_in_func(*concat_func_id, builder.func);
                     let inst = builder.ins().call(local_func, &[l, r]);
                     builder.inst_results(inst)[0]
@@ -147,15 +161,40 @@ impl<M: Module> CraneliftCodegen<M> {
                 check_op(rhs);
 
                 if is_str {
-                    let eq_func_id = func_ids.get("__olive_str_eq").unwrap();
+                    let eq_func_id = func_ids
+                        .get("__olive_str_eq")
+                        .expect("missing __olive_str_eq");
                     let local_func = module.declare_func_in_func(*eq_func_id, builder.func);
                     let call = builder.ins().call(local_func, &[l, r]);
                     let results = builder.inst_results(call);
                     results[0]
                 } else if is_pyobj {
-                    let eq_func_id = func_ids.get("__olive_py_eq").unwrap();
+                    let mut to_pyobj = |val: Value, op: &Operand| -> Value {
+                        if is_float_op(func_mir, op) {
+                            let fid = func_ids
+                                .get("__olive_py_from_float")
+                                .expect("missing __olive_py_from_float");
+                            let lf = module.declare_func_in_func(*fid, builder.func);
+                            let inst = builder.ins().call(lf, &[val]);
+                            builder.inst_results(inst)[0]
+                        } else if !is_pyobj_op(func_mir, op) {
+                            let fid = func_ids
+                                .get("__olive_py_from_int")
+                                .expect("missing __olive_py_from_int");
+                            let lf = module.declare_func_in_func(*fid, builder.func);
+                            let inst = builder.ins().call(lf, &[val]);
+                            builder.inst_results(inst)[0]
+                        } else {
+                            val
+                        }
+                    };
+                    let l_val = to_pyobj(l, lhs);
+                    let r_val = to_pyobj(r, rhs);
+                    let eq_func_id = func_ids
+                        .get("__olive_py_eq")
+                        .expect("missing __olive_py_eq");
                     let local_func = module.declare_func_in_func(*eq_func_id, builder.func);
-                    let call = builder.ins().call(local_func, &[l, r]);
+                    let call = builder.ins().call(local_func, &[l_val, r_val]);
                     let results = builder.inst_results(call);
                     results[0]
                 } else if is_float {
@@ -168,6 +207,45 @@ impl<M: Module> CraneliftCodegen<M> {
             }
 
             Lt | LtEq | Gt | GtEq | NotEq => {
+                let is_py = is_pyobj_op(func_mir, lhs) || is_pyobj_op(func_mir, rhs);
+                if is_py {
+                    let mut to_pyobj = |val: Value, op: &Operand| -> Value {
+                        if is_float_op(func_mir, op) {
+                            let fid = func_ids
+                                .get("__olive_py_from_float")
+                                .expect("missing __olive_py_from_float");
+                            let lf = module.declare_func_in_func(*fid, builder.func);
+                            let inst = builder.ins().call(lf, &[val]);
+                            builder.inst_results(inst)[0]
+                        } else if !is_pyobj_op(func_mir, op) {
+                            let fid = func_ids
+                                .get("__olive_py_from_int")
+                                .expect("missing __olive_py_from_int");
+                            let lf = module.declare_func_in_func(*fid, builder.func);
+                            let inst = builder.ins().call(lf, &[val]);
+                            builder.inst_results(inst)[0]
+                        } else {
+                            val
+                        }
+                    };
+                    let l_val = to_pyobj(l, lhs);
+                    let r_val = to_pyobj(r, rhs);
+                    let fn_name = match op {
+                        Lt => "__olive_py_lt",
+                        LtEq => "__olive_py_le",
+                        Gt => "__olive_py_gt",
+                        GtEq => "__olive_py_ge",
+                        NotEq => "__olive_py_ne",
+                        _ => unreachable!(),
+                    };
+                    let fid = func_ids
+                        .get(fn_name)
+                        .unwrap_or_else(|| panic!("missing py_cmp fn: {}", fn_name));
+                    let lf = module.declare_func_in_func(*fid, builder.func);
+                    let inst = builder.ins().call(lf, &[l_val, r_val]);
+                    return builder.inst_results(inst)[0];
+                }
+
                 let mut is_float = false;
                 if let Operand::Copy(loc) | Operand::Move(loc) = lhs {
                     if func_mir.locals[loc.0].ty == OliveType::Float {
@@ -238,7 +316,9 @@ impl<M: Module> CraneliftCodegen<M> {
                 check_op(lhs);
                 check_op(rhs);
                 if is_pyobj {
-                    let bitor_id = func_ids.get("__olive_py_bitor").unwrap();
+                    let bitor_id = func_ids
+                        .get("__olive_py_bitor")
+                        .expect("missing __olive_py_bitor");
                     let local_func = module.declare_func_in_func(*bitor_id, builder.func);
                     let inst = builder.ins().call(local_func, &[l, r]);
                     builder.inst_results(inst)[0]
@@ -254,7 +334,9 @@ impl<M: Module> CraneliftCodegen<M> {
                 } else {
                     "__olive_pow"
                 };
-                let pow_id = func_ids.get(func_name).unwrap();
+                let pow_id = func_ids
+                    .get(func_name)
+                    .unwrap_or_else(|| panic!("missing pow fn: {}", func_name));
                 let local_func = module.declare_func_in_func(*pow_id, builder.func);
                 let inst = builder.ins().call(local_func, &[l, r]);
                 builder.inst_results(inst)[0]
@@ -283,7 +365,9 @@ impl<M: Module> CraneliftCodegen<M> {
                 } else {
                     "__olive_in_list"
                 };
-                let in_id = func_ids.get(func_name).unwrap();
+                let in_id = func_ids
+                    .get(func_name)
+                    .unwrap_or_else(|| panic!("missing in fn: {}", func_name));
                 let local_func = module.declare_func_in_func(*in_id, builder.func);
 
                 let inst = if is_str {
@@ -311,6 +395,7 @@ impl<M: Module> CraneliftCodegen<M> {
         func_ids: &HashMap<String, FuncId>,
         op: &crate::parser::UnaryOp,
         operand: &Operand,
+        operand_ty: &crate::semantic::types::Type,
     ) -> Value {
         let o = Self::translate_operand(builder, operand, vars, string_ids, module, func_ids);
         use crate::parser::UnaryOp::*;
@@ -319,13 +404,38 @@ impl<M: Module> CraneliftCodegen<M> {
                 let is_float = builder.func.dfg.value_type(o) == types::F64;
                 if is_float {
                     builder.ins().fneg(o)
+                } else if *operand_ty == OliveType::PyObject {
+                    let to_int_id = func_ids
+                        .get("__olive_py_to_int")
+                        .expect("missing __olive_py_to_int");
+                    let local_func = module.declare_func_in_func(*to_int_id, builder.func);
+                    let inst = builder.ins().call(local_func, &[o]);
+                    let int_val = builder.inst_results(inst)[0];
+                    let negated = builder.ins().ineg(int_val);
+                    let from_int_id = func_ids
+                        .get("__olive_py_from_int")
+                        .expect("missing __olive_py_from_int");
+                    let local_func = module.declare_func_in_func(*from_int_id, builder.func);
+                    let inst = builder.ins().call(local_func, &[negated]);
+                    builder.inst_results(inst)[0]
                 } else {
                     builder.ins().ineg(o)
                 }
             }
             Not => {
-                let res = builder.ins().icmp_imm(IntCC::Equal, o, 0);
-                builder.ins().uextend(types::I64, res)
+                if *operand_ty == crate::semantic::types::Type::PyObject {
+                    let to_int_id = func_ids
+                        .get("__olive_py_to_int")
+                        .expect("missing __olive_py_to_int");
+                    let local_func = module.declare_func_in_func(*to_int_id, builder.func);
+                    let inst = builder.ins().call(local_func, &[o]);
+                    let int_val = builder.inst_results(inst)[0];
+                    let res = builder.ins().icmp_imm(IntCC::Equal, int_val, 0);
+                    builder.ins().uextend(types::I64, res)
+                } else {
+                    let res = builder.ins().icmp_imm(IntCC::Equal, o, 0);
+                    builder.ins().uextend(types::I64, res)
+                }
             }
             BitNot => builder.ins().bnot(o),
             Pos => o,

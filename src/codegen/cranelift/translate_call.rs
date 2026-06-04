@@ -40,6 +40,18 @@ impl<M: Module> CraneliftCodegen<M> {
                 return builder.ins().iconst(types::I64, 0);
             }
 
+            let arg_type = if !args.is_empty() {
+                match &args[0] {
+                    Operand::Constant(Constant::Str(_)) => OliveType::Str,
+                    Operand::Constant(Constant::Float(_)) => OliveType::Float,
+                    Operand::Constant(Constant::Bool(_)) => OliveType::Bool,
+                    Operand::Copy(l) | Operand::Move(l) => func_mir.locals[l.0].ty.clone(),
+                    _ => OliveType::Int,
+                }
+            } else {
+                OliveType::Int
+            };
+
             let resolved_name = if (name == "print"
                 || name == "str"
                 || name == "int"
@@ -57,14 +69,6 @@ impl<M: Module> CraneliftCodegen<M> {
                 || name == "remove")
                 && !args.is_empty()
             {
-                let arg_type = match &args[0] {
-                    Operand::Constant(Constant::Str(_)) => OliveType::Str,
-                    Operand::Constant(Constant::Float(_)) => OliveType::Float,
-                    Operand::Constant(Constant::Bool(_)) => OliveType::Bool,
-                    Operand::Copy(l) | Operand::Move(l) => func_mir.locals[l.0].ty.clone(),
-                    _ => OliveType::Int,
-                };
-
                 map_builtin_to_runtime(name, &arg_type).unwrap_or(name.as_str())
             } else if name == "ffi_errno" {
                 "__olive_ffi_errno"
@@ -72,7 +76,9 @@ impl<M: Module> CraneliftCodegen<M> {
                 name.as_str()
             };
 
-            if (resolved_name == "__olive_int" || resolved_name == "__olive_copy_float")
+            if ((resolved_name == "__olive_int" && arg_type == OliveType::Int)
+                || (resolved_name == "__olive_copy_float"
+                    && (arg_type == OliveType::Float || arg_type == OliveType::F32)))
                 && !call_args.is_empty()
             {
                 return call_args[0];
@@ -270,7 +276,7 @@ impl<M: Module> CraneliftCodegen<M> {
                         }
                     }
 
-                    if (is_ffi || is_aot_vararg) && is_str_arg {
+                    if (ffi_entry.is_some() || is_aot_vararg) && is_str_arg {
                         final_args.push(builder.ins().band_imm(arg, -2));
                     } else if is_builtin && builder.func.dfg.value_type(arg) == types::F64 {
                         let expects_float = if let Some(entry) = ffi_entry {

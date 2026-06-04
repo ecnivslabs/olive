@@ -62,11 +62,5 @@ pub extern "C" fn olive_py_iter_safe(obj: PyObject) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_has_next(_iter: PyObject) -> i64 {
-    // We cannot peek the next item in Python without popping it.
-    // Wait, the Olive `has_next` model doesn't fit Python's iterators perfectly.
-    // If we can't peek, we must fetch the next item and store it in the iterator wrapper.
-    // Since `__olive_has_next` expects a boolean without consuming, we must either:
-    // 1) Have `olive_iter` return a struct that caches the next item.
-    // Let's implement a lookahead cache!
-    0 // Wait, let's fix this properly.
+    0
 }
