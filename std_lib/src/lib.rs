@@ -68,10 +68,11 @@ pub(crate) const KIND_ITER: i64 = 8;
 pub(crate) const KIND_FLOAT: i64 = 11;
 pub(crate) const KIND_INT: i64 = 14;
 
-/// Whether `val` points at a live runtime object: a slab body or a
-/// Python arena handle. Sound for arbitrary words.
+/// Whether `val` points at a live runtime object, including a PyObject
+/// handle: every kind, pyobjects included, lives in a `GenSlab` now. Sound
+/// for arbitrary words.
 pub fn is_active_object(val: i64) -> bool {
-    slab::ptr_is_slab_body(val) || python::python_coerce::arena_slot_live(val as usize)
+    slab::ptr_is_slab_body(val)
 }
 
 #[repr(C)]

@@ -604,6 +604,10 @@ pub struct SlabSet {
     pub enum_slab: GenSlab,
     pub str_slabs: [Option<GenSlab>; 32],
     pub struct_slabs: crate::struct_obj::StructSlabs,
+    /// PyObject handles: always allocated in `GLOBAL_SLABS` via
+    /// `with_escape_arena`, never task-local -- a Python object is reachable
+    /// from any thread holding the GIL, not just the task that wrapped it.
+    pub pyobject: GenSlab,
 }
 
 impl Default for SlabSet {
@@ -625,6 +629,7 @@ impl SlabSet {
                 None, None, None, None,
             ],
             struct_slabs: crate::struct_obj::StructSlabs::new(),
+            pyobject: GenSlab::new(std::mem::size_of::<crate::python::OlivePyObject>()),
         }
     }
 }
