@@ -282,6 +282,12 @@ pub fn upgrade() -> Result<(), String> {
     let _ = fs::remove_dir_all(&old_stdlib_dir);
     let _ = fs::remove_file(&old_lib_path);
 
+    // Clean up legacy/shadowing library in bin directory if present
+    let bin_lib_path = install_dir.join(lib_file);
+    if bin_lib_path.exists() && bin_lib_path != lib_path {
+        let _ = fs::remove_file(&bin_lib_path);
+    }
+
     println!("Updated to {}.", latest_ver);
     Ok(())
 }
