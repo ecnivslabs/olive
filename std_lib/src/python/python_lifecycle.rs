@@ -242,6 +242,8 @@ pub extern "C" fn olive_py_initialize() {
         PY_SLICE_NEW = compat_dlsym(handle, "PySlice_New");
         PY_CORO_CHECK_EXACT = compat_dlsym(handle, "PyCoro_CheckExact");
         PY_ITER_CHECK = compat_dlsym(handle, "PyIter_Check");
+        PY_VECTORCALL = compat_dlsym(handle, "PyObject_Vectorcall");
+        PY_VECTORCALL_METHOD = compat_dlsym(handle, "PyObject_VectorcallMethod");
 
         _PY_NONE_STRUCT = compat_dlsym(handle, "_Py_NoneStruct");
 
@@ -337,8 +339,22 @@ pub extern "C" fn olive_py_initialize() {
             PY_TUPLE_SIZE = noop_tuple_size;
             PY_ERR_PRINT = noop_err_print;
             PY_SLICE_NEW = crate::python::python_noop::noop_slice_new;
+            PY_VECTORCALL = noop_vectorcall;
+            PY_VECTORCALL_METHOD = noop_vectorcall;
+            HAS_VECTORCALL.store(false, Ordering::SeqCst);
             return;
         }
+
+        // Missing on pre-3.9 or exotic builds; a test-only override lets the
+        // suite exercise the tuple-call fallback on a build that does have it.
+        let vectorcall_present = !std::mem::transmute::<_, *const ()>(PY_VECTORCALL).is_null()
+            && !std::mem::transmute::<_, *const ()>(PY_VECTORCALL_METHOD).is_null();
+        let vectorcall_disabled_for_test =
+            std::env::var("OLIVE_PY_NO_VECTORCALL").as_deref() == Ok("1");
+        HAS_VECTORCALL.store(
+            vectorcall_present && !vectorcall_disabled_for_test,
+            Ordering::SeqCst,
+        );
 
         PY_INITIALIZE();
 

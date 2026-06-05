@@ -146,6 +146,14 @@ pub unsafe extern "C" fn noop_richcomparebool(_: PyObject, _: PyObject, _: c_int
 pub unsafe extern "C" fn noop_slice_new(_: PyObject, _: PyObject, _: PyObject) -> PyObject {
     std::ptr::null_mut()
 }
+pub unsafe extern "C" fn noop_vectorcall(
+    _: PyObject,
+    _: *const PyObject,
+    _: usize,
+    _: PyObject,
+) -> PyObject {
+    std::ptr::null_mut()
+}
 
 #[cfg(target_os = "windows")]
 unsafe extern "system" {
