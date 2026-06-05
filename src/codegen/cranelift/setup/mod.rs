@@ -31,6 +31,7 @@ impl<M: Module> CraneliftCodegen<M> {
 
         let sig_3i64_i64 = mk_sig(&[types::I64, types::I64, types::I64], &[types::I64]);
         let sig_6i64_i64 = mk_sig(&[types::I64; 6], &[types::I64]);
+        let sig_7i64_i64 = mk_sig(&[types::I64; 7], &[types::I64]);
         let sig_6i64_f64 = mk_sig(&[types::I64; 6], &[types::I64]);
         let sig_f64_f64 = mk_sig(&[types::F64], &[types::F64]);
         let sig_f64_f64_f64 = mk_sig(&[types::F64, types::F64], &[types::F64]);
@@ -428,6 +429,10 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_py_call_kw", &sig_i64_5_i64),
             ("__olive_py_call_kw_safe", &sig_i64_5_i64),
             ("__olive_py_call_safe", &sig_3i64_i64),
+            ("__olive_py_call_t", &sig_4i64_i64),
+            ("__olive_py_call_t_safe", &sig_4i64_i64),
+            ("__olive_py_call_kw_t", &sig_7i64_i64),
+            ("__olive_py_call_kw_t_safe", &sig_7i64_i64),
             ("__olive_py_check_alive", &sig_i64_i64),
             ("__olive_py_conv_to_olive", &sig_i64_i64),
             ("__olive_py_conv_to_py", &sig_i64_i64),
@@ -447,7 +452,6 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_py_pow", &sig_i64_i64_i64),
             ("__olive_py_finalize", &sig_void_void),
             ("__olive_py_from_float", &sig_f64_i64),
-            ("__olive_py_from_float_bits", &sig_i64_i64),
             ("__olive_py_from_int", &sig_i64_i64),
             ("__olive_py_from_list", &sig_i64_i64),
             ("__olive_py_from_str", &sig_i64_i64),

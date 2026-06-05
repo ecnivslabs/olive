@@ -42,28 +42,62 @@ enum CopySlot {
     UseVal,
 }
 
-/// Runtime entry points whose `args`/`kwargs` `[Any]` aggregate is consumed
-/// then handed back to the caller's own allocation, never retained: a
-/// collection argument tagged for copy-out (a non-zero nibble in the packed
-/// tag word) must reach the runtime as the caller's own pointer, not a
-/// defensive copy, or `sync_back` mutates a throwaway clone instead of the
-/// value the caller keeps using. See `python_writeback.rs`'s tag vocabulary.
-const PY_CALL_FNS: &[&str] = &[
-    "__olive_py_call",
-    "__olive_py_call_safe",
-    "__olive_py_call_kw",
-    "__olive_py_call_kw_safe",
-];
-
 /// The `args_list` aggregate holds one slot per positional argument, so its
 /// packed tag word indexes 1:1 with the aggregate's element positions. The
 /// `kwargs_list` aggregate instead alternates a constant name string and a
 /// value per keyword argument, so its tag word (one nibble per *keyword*,
-/// per `pack_coll_tags` on the compiler side) indexes the value at ops
+/// per `pack_tags` on the compiler side) indexes the value at ops
 /// position `2*n + 1`, not position `n`.
 pub(super) enum PyCallTagSource {
     Args(i64),
     Kwargs(i64),
+}
+
+/// Operand positions of one `__olive_py_call*` entry point's `args_list` and
+/// packed collection-tag constant, plus (for a kwargs-taking variant) the
+/// same pair for `kwargs_list`.
+struct PyCallShape {
+    args_list_pos: usize,
+    coll_tags_pos: usize,
+    kwargs: Option<(usize, usize)>,
+}
+
+/// Every `__olive_py_call*` runtime entry point this file must recognize,
+/// with its exact operand positions. R5 added a tagged-fast-path shape
+/// (`__olive_py_call_t*`/`__olive_py_call_kw_t*`) with an extra `arg_tags`
+/// word ahead of `kwargs_list`, shifting its positions relative to the
+/// legacy shape -- an exact per-name lookup, not a positional heuristic,
+/// is what keeps a future signature change from silently desyncing this
+/// analysis from the real call.
+///
+/// `args`/`kwargs` `[Any]` aggregates these functions consume are handed
+/// back to the caller's own allocation, never retained: a collection
+/// argument tagged for copy-out (a non-zero nibble in the packed tag word)
+/// must reach the runtime as the caller's own pointer, not a defensive
+/// copy, or `sync_back` mutates a throwaway clone instead of the value the
+/// caller keeps using. See `python_writeback.rs`'s tag vocabulary.
+fn py_call_shape(name: &str) -> Option<PyCallShape> {
+    match name {
+        "__olive_py_call"
+        | "__olive_py_call_safe"
+        | "__olive_py_call_t"
+        | "__olive_py_call_t_safe" => Some(PyCallShape {
+            args_list_pos: 1,
+            coll_tags_pos: 2,
+            kwargs: None,
+        }),
+        "__olive_py_call_kw" | "__olive_py_call_kw_safe" => Some(PyCallShape {
+            args_list_pos: 1,
+            coll_tags_pos: 2,
+            kwargs: Some((3, 4)),
+        }),
+        "__olive_py_call_kw_t" | "__olive_py_call_kw_t_safe" => Some(PyCallShape {
+            args_list_pos: 1,
+            coll_tags_pos: 2,
+            kwargs: Some((4, 5)),
+        }),
+        _ => None,
+    }
 }
 
 /// If `stmts[idx]` builds the `[Any]` aggregate `dst` that a later
@@ -92,18 +126,19 @@ pub(super) fn py_call_coll_tags(
         else {
             continue;
         };
-        if !PY_CALL_FNS.contains(&name.as_str()) {
+        let Some(shape) = py_call_shape(name) else {
             continue;
-        }
-        if args.len() > 2
-            && is_dst(&args[1])
-            && let Operand::Constant(Constant::Int(tags)) = &args[2]
+        };
+        if args.len() > shape.coll_tags_pos
+            && is_dst(&args[shape.args_list_pos])
+            && let Operand::Constant(Constant::Int(tags)) = &args[shape.coll_tags_pos]
         {
             return Some(PyCallTagSource::Args(*tags));
         }
-        if args.len() > 4
-            && is_dst(&args[3])
-            && let Operand::Constant(Constant::Int(tags)) = &args[4]
+        if let Some((kw_list_pos, kw_coll_pos)) = shape.kwargs
+            && args.len() > kw_coll_pos
+            && is_dst(&args[kw_list_pos])
+            && let Operand::Constant(Constant::Int(tags)) = &args[kw_coll_pos]
         {
             return Some(PyCallTagSource::Kwargs(*tags));
         }

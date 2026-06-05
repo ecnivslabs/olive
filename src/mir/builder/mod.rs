@@ -176,6 +176,8 @@ impl<'a> MirBuilder<'a> {
             name,
             "__olive_py_call"
                 | "__olive_py_call_kw"
+                | "__olive_py_call_t"
+                | "__olive_py_call_kw_t"
                 | "__olive_py_getattr"
                 | "__olive_py_getitem"
                 | "__olive_py_getitem_int"
