@@ -93,7 +93,11 @@ impl<'a> MirBuilder<'a> {
                 tmp,
                 Rvalue::Call {
                     func: Operand::Constant(Constant::Function("__olive_py_call".to_string())),
-                    args: vec![Operand::Copy(exit_method), Operand::Copy(args_list)],
+                    args: vec![
+                        Operand::Copy(exit_method),
+                        Operand::Copy(args_list),
+                        Operand::Constant(Constant::Int(0)),
+                    ],
                 },
             ),
             span,
@@ -676,6 +680,7 @@ impl<'a> MirBuilder<'a> {
                                     args: vec![
                                         Operand::Copy(enter_method),
                                         Operand::Copy(empty_list),
+                                        Operand::Constant(Constant::Int(0)),
                                     ],
                                 },
                             ),

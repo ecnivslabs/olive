@@ -10,6 +10,7 @@ pub mod python_lifecycle;
 pub mod python_math;
 pub mod python_noop;
 pub mod python_safe;
+pub mod python_writeback;
 
 pub use python_async::*;
 pub use python_bindings::*;
@@ -23,6 +24,7 @@ pub use python_lifecycle::*;
 pub use python_math::*;
 pub use python_noop::*;
 pub use python_safe::*;
+pub(crate) use python_writeback::*;
 
 use std::os::raw::c_void;
 

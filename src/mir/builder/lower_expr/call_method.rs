@@ -108,8 +108,13 @@ impl<'a> MirBuilder<'a> {
                 ),
                 span,
             );
+            let has_splat = args
+                .iter()
+                .any(|a| matches!(a, CallArg::Splat(_) | CallArg::KwSplat(_)));
             let mut pos_ops = Vec::new();
             let mut kw_ops = Vec::new();
+            let mut pos_tags: Vec<i64> = Vec::new();
+            let mut kw_tags: Vec<i64> = Vec::new();
             for (i, (op, kw_name)) in arg_ops.into_iter().zip(arg_kw_names).enumerate() {
                 let arg_ty = args
                     .get(i)
@@ -124,10 +129,22 @@ impl<'a> MirBuilder<'a> {
                     let py_op = self.emit_to_py_arg(op, &arg_ty, span);
                     kw_ops.push(Operand::Constant(Constant::Str(name)));
                     kw_ops.push(py_op);
+                    kw_tags.push(Self::py_collection_tag(&arg_ty));
                 } else {
                     pos_ops.push(self.emit_to_py_arg(op, &arg_ty, span));
+                    pos_tags.push(Self::py_collection_tag(&arg_ty));
                 }
             }
+            let coll_tags = if has_splat {
+                0
+            } else {
+                Self::pack_coll_tags(&pos_tags)
+            };
+            let kw_coll_tags = if has_splat {
+                0
+            } else {
+                Self::pack_coll_tags(&kw_tags)
+            };
 
             let args_list = self.new_local(Type::List(Box::new(Type::Any)), None, true);
             self.push_statement(
@@ -144,7 +161,11 @@ impl<'a> MirBuilder<'a> {
                             func: Operand::Constant(Constant::Function(
                                 "__olive_py_call".to_string(),
                             )),
-                            args: vec![Operand::Copy(attr_local), Operand::Copy(args_list)],
+                            args: vec![
+                                Operand::Copy(attr_local),
+                                Operand::Copy(args_list),
+                                Operand::Constant(Constant::Int(coll_tags)),
+                            ],
                         },
                     ),
                     span,
@@ -171,7 +192,9 @@ impl<'a> MirBuilder<'a> {
                             args: vec![
                                 Operand::Copy(attr_local),
                                 Operand::Copy(args_list),
+                                Operand::Constant(Constant::Int(coll_tags)),
                                 Operand::Copy(kwargs_list),
+                                Operand::Constant(Constant::Int(kw_coll_tags)),
                             ],
                         },
                     ),

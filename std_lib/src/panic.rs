@@ -90,10 +90,21 @@ const OVERFLOW: Fault = Fault {
     help: Some("use a wider type, or guard the operands so the result stays in range"),
     note: Some("i64/u64 arithmetic that would silently wrap instead faults here"),
 };
+const WRITEBACK_TYPE: Fault = Fault {
+    code: "E0714",
+    help: Some("make the Python callee assign a compatible type, or widen the list's element type"),
+    note: Some("a Python call mutated a passed list with an element of the wrong type for it"),
+};
 
 /// Aborts when a Python value cannot be converted to the required native scalar.
 pub fn abort_py_coerce(msg: &str) -> ! {
     abort_with(&PY_COERCE, msg, None)
+}
+
+/// Aborts when copy-out sync finds a Python-assigned list element whose type
+/// doesn't match the list's declared element type.
+pub fn abort_py_writeback_type(msg: &str, loc: Option<&str>) -> ! {
+    abort_with(&WRITEBACK_TYPE, msg, loc)
 }
 
 /// A parsed `file:line:col` (or `line:col`) source location.
