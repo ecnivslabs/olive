@@ -288,6 +288,7 @@ pub extern "C" fn olive_py_from_list(s: i64) -> PyObject {
     })
 }
 
+/// `[T]` target with a concrete native `T`: elements land as raw native words.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_to_list(obj: PyObject) -> i64 {
     check_python_loaded();
@@ -295,9 +296,22 @@ pub extern "C" fn olive_py_to_list(obj: PyObject) -> i64 {
     if unwrapped_obj.is_null() {
         return 0;
     }
-    with_gil(|| unsafe { olive_py_to_list_internal(unwrapped_obj) })
+    with_gil(|| unsafe { olive_py_to_list_internal(unwrapped_obj, false) })
 }
 
+/// `[Any]` target: elements are boxed so a nested float/int/bool/null reads
+/// back correctly instead of colliding with the Any tag bits.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_to_any_list(obj: PyObject) -> i64 {
+    check_python_loaded();
+    let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
+    if unwrapped_obj.is_null() {
+        return 0;
+    }
+    with_gil(|| unsafe { olive_py_to_list_internal(unwrapped_obj, true) })
+}
+
+/// `{str: T}` target with a concrete native `T`: values land as raw native words.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_to_dict(obj: PyObject) -> i64 {
     check_python_loaded();
@@ -305,7 +319,19 @@ pub extern "C" fn olive_py_to_dict(obj: PyObject) -> i64 {
     if unwrapped_obj.is_null() {
         return 0;
     }
-    with_gil(|| unsafe { olive_py_to_dict_internal(unwrapped_obj) })
+    with_gil(|| unsafe { olive_py_to_dict_internal(unwrapped_obj, false) })
+}
+
+/// `{str: Any}` target: values are boxed so a nested float/int/bool/null reads
+/// back correctly instead of colliding with the Any tag bits.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_to_any_dict(obj: PyObject) -> i64 {
+    check_python_loaded();
+    let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
+    if unwrapped_obj.is_null() {
+        return 0;
+    }
+    with_gil(|| unsafe { olive_py_to_dict_internal(unwrapped_obj, true) })
 }
 
 #[unsafe(no_mangle)]
@@ -454,6 +480,21 @@ pub extern "C" fn olive_py_is_none(obj: PyObject) -> i64 {
     }
     let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
     if unwrapped_obj.is_null() || unwrapped_obj == unsafe { _PY_NONE_STRUCT } {
+        1
+    } else {
+        0
+    }
+}
+
+/// Whether `val` is a live Python arena handle. Lets codegen dispatch a
+/// mixed py/native union to the realize path only when the value really
+/// is a Python object.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_is_handle(val: i64) -> i64 {
+    if val == 0 {
+        return 0;
+    }
+    if crate::python::python_coerce::is_arena_ptr(val as usize) {
         1
     } else {
         0

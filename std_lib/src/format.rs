@@ -361,6 +361,33 @@ fn fmt_spec_int(v: i64, spec: &Spec) -> String {
     pad(digits, sign_str(neg, spec), prefix, spec)
 }
 
+/// Same as `fmt_spec_int`, but for `u64`: the top bit is data, not a sign,
+/// so magnitude comes straight from `v` instead of `v.unsigned_abs()`.
+fn fmt_spec_uint(v: u64, spec: &Spec) -> String {
+    let mag = v as u128;
+    let (mut digits, prefix, group_size) = match spec.ty {
+        Some('b') => (format!("{mag:b}"), if spec.alt { "0b" } else { "" }, 4),
+        Some('o') => (format!("{mag:o}"), if spec.alt { "0o" } else { "" }, 4),
+        Some('x') => (format!("{mag:x}"), if spec.alt { "0x" } else { "" }, 4),
+        Some('X') => (format!("{mag:X}"), if spec.alt { "0X" } else { "" }, 4),
+        Some('c') => {
+            return pad(
+                char::from_u32(v as u32)
+                    .map(String::from)
+                    .unwrap_or_default(),
+                "",
+                "",
+                spec,
+            );
+        }
+        _ => (format!("{mag}"), "", 3),
+    };
+    if let Some(sep) = spec.grouping {
+        digits = group_digits(&digits, sep, group_size);
+    }
+    pad(digits, sign_str(false, spec), prefix, spec)
+}
+
 fn fmt_spec_float(v: f64, spec: &Spec) -> String {
     let neg = v.is_sign_negative() && (v != 0.0 || spec.sign != '-');
     let mag = v.abs();
@@ -408,6 +435,14 @@ fn fmt_spec_str(s: &str, spec: &Spec) -> String {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_format_int(val: i64, spec: i64) -> i64 {
     olive_str_internal(&fmt_spec_int(val, &Spec::parse(&olive_str_from_ptr(spec))))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_format_u64(val: i64, spec: i64) -> i64 {
+    olive_str_internal(&fmt_spec_uint(
+        val as u64,
+        &Spec::parse(&olive_str_from_ptr(spec)),
+    ))
 }
 
 #[unsafe(no_mangle)]

@@ -150,7 +150,7 @@ fn arena() -> &'static RwLock<Arena> {
 }
 
 #[inline]
-fn is_arena_ptr(ptr: usize) -> bool {
+pub(crate) fn is_arena_ptr(ptr: usize) -> bool {
     if let Ok(a) = arena().read() {
         a.contains(ptr)
     } else {
@@ -436,11 +436,11 @@ pub unsafe fn py_to_olive_internal(py_val: PyObject) -> i64 {
                 0
             }
         } else if is_subtype(PY_LIST_TYPE) {
-            olive_py_to_list_internal(py_val)
+            olive_py_to_list_internal(py_val, false)
         } else if is_subtype(PY_DICT_TYPE) {
-            olive_py_to_dict_internal(py_val)
+            olive_py_to_dict_internal(py_val, false)
         } else if is_subtype(PY_SET_TYPE) {
-            olive_py_to_set_internal(py_val)
+            olive_py_to_set_internal(py_val, false)
         } else if is_subtype(PY_BYTES_TYPE) {
             olive_py_to_bytes_internal(py_val)
         } else {
@@ -454,8 +454,11 @@ pub unsafe fn py_to_olive_internal(py_val: PyObject) -> i64 {
 }
 
 /// Converts a Python value to an Any-compatible Olive value. Scalars are boxed
-/// so float/int/truthiness read correctly; strings, lists, dicts stay in Olive
-/// form. Use when the result lands in an Any slot.
+/// so float/int/truthiness read correctly; strings stay in Olive form since a
+/// heap string pointer is already a valid Any word. Containers recurse with
+/// `boxed = true` so a float/int nested at any depth still lands boxed --
+/// e.g. a dict value that's itself a list of floats needs every leaf boxed,
+/// not just the top one. Use when the result lands in an Any slot.
 pub unsafe fn py_to_any_internal(py_val: PyObject) -> i64 {
     unsafe {
         if py_val.is_null() || py_val == _PY_NONE_STRUCT {
@@ -482,12 +485,21 @@ pub unsafe fn py_to_any_internal(py_val: PyObject) -> i64 {
             if is_sub(PY_FLOAT_TYPE) {
                 return crate::boxed::olive_box_float(PY_FLOAT_AS_DOUBLE(py_val));
             }
+            if is_sub(PY_LIST_TYPE) || is_sub(PY_TUPLE_TYPE) {
+                return olive_py_to_list_internal(py_val, true);
+            }
+            if is_sub(PY_DICT_TYPE) {
+                return olive_py_to_dict_internal(py_val, true);
+            }
+            if is_sub(PY_SET_TYPE) {
+                return olive_py_to_set_internal(py_val, true);
+            }
         }
         py_to_olive_internal(py_val)
     }
 }
 
-pub unsafe fn olive_py_to_list_internal(obj: PyObject) -> i64 {
+pub unsafe fn olive_py_to_list_internal(obj: PyObject, boxed: bool) -> i64 {
     unsafe {
         let ty = raw_ob_type(obj);
         let is_list = !ty.is_null()
@@ -533,7 +545,11 @@ pub unsafe fn olive_py_to_list_internal(obj: PyObject) -> i64 {
                     }
                     item
                 };
-                *sv.ptr.add(i) = py_to_olive_internal(py_item);
+                *sv.ptr.add(i) = if boxed {
+                    py_to_any_internal(py_item)
+                } else {
+                    py_to_olive_internal(py_item)
+                };
                 if !py_item.is_null() {
                     PY_DEC_REF(py_item);
                 }
@@ -546,7 +562,7 @@ pub unsafe fn olive_py_to_list_internal(obj: PyObject) -> i64 {
     }
 }
 
-pub unsafe fn olive_py_to_dict_internal(obj: PyObject) -> i64 {
+pub unsafe fn olive_py_to_dict_internal(obj: PyObject, boxed: bool) -> i64 {
     unsafe {
         let olive_obj = crate::olive_obj_new();
         let mut pos: isize = 0;
@@ -576,7 +592,11 @@ pub unsafe fn olive_py_to_dict_internal(obj: PyObject) -> i64 {
                 if !key_utf8.is_null() {
                     let key_str = CStr::from_ptr(key_utf8).to_string_lossy();
                     let key_ptr = crate::olive_str_internal(&key_str);
-                    let olive_val = py_to_olive_internal(val_obj);
+                    let olive_val = if boxed {
+                        py_to_any_internal(val_obj)
+                    } else {
+                        py_to_olive_internal(val_obj)
+                    };
                     crate::olive_obj_set(olive_obj, key_ptr, olive_val);
                 }
             }
@@ -585,7 +605,7 @@ pub unsafe fn olive_py_to_dict_internal(obj: PyObject) -> i64 {
     }
 }
 
-pub unsafe fn olive_py_to_set_internal(obj: PyObject) -> i64 {
+pub unsafe fn olive_py_to_set_internal(obj: PyObject, boxed: bool) -> i64 {
     unsafe {
         let iter = PY_OBJECT_GET_ITER(obj);
         if iter.is_null() {
@@ -600,7 +620,11 @@ pub unsafe fn olive_py_to_set_internal(obj: PyObject) -> i64 {
                 PY_ERR_CLEAR();
                 break;
             }
-            let olive_val = py_to_olive_internal(item);
+            let olive_val = if boxed {
+                py_to_any_internal(item)
+            } else {
+                py_to_olive_internal(item)
+            };
             crate::olive_set_add(set_ptr, olive_val);
             PY_DEC_REF(item);
         }

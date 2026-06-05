@@ -227,62 +227,21 @@ impl<'a> MirBuilder<'a> {
             }
         }
 
-        if from_ty.is_py_value() {
-            if matches!(to_ty, Type::Str) {
-                let tmp = self.new_local(Type::Str, None, false);
-                self.push_statement(
-                    StatementKind::Assign(
-                        tmp,
-                        Rvalue::Call {
-                            func: Operand::Constant(Constant::Function(
-                                "__olive_py_to_str".to_string(),
-                            )),
-                            args: vec![op],
-                        },
-                    ),
-                    span,
-                );
-                return Operand::Copy(tmp);
+        // A Python value landing in a native-typed slot must realize into that
+        // type's own representation: a raw handle under a native static type
+        // reads as garbage on any typed access (indexing, drops, formatting).
+        if from_ty.is_py_value()
+            && let Some((target, nullable)) = py_realize_target(to_ty)
+        {
+            // A mixed union source (e.g. `PyObject | Error`) may hold a
+            // native member at runtime; realize only actual handles.
+            if union_mixes_py(from_ty) {
+                return self.realize_py_guarded(op, &target, to_ty, nullable, span);
             }
-            // Python bytes-like values materialize into a native buffer; else raises at call site.
-            if matches!(to_ty, Type::Bytes) {
-                self.emit_py_set_loc(span);
-                let tmp = self.new_local(Type::Bytes, None, false);
-                self.push_statement(
-                    StatementKind::Assign(
-                        tmp,
-                        Rvalue::Call {
-                            func: Operand::Constant(Constant::Function(
-                                "__olive_py_to_bytes".to_string(),
-                            )),
-                            args: vec![op],
-                        },
-                    ),
-                    span,
-                );
-                return Operand::Copy(tmp);
+            if nullable {
+                return self.realize_py_nullable(op, &target, to_ty, span);
             }
-            let native_ty = match to_ty {
-                Type::Float
-                | Type::F32
-                | Type::Int
-                | Type::I8
-                | Type::I16
-                | Type::I32
-                | Type::U8
-                | Type::U16
-                | Type::U32
-                | Type::U64
-                | Type::Usize
-                | Type::Bool => Some(to_ty.clone()),
-                _ => None,
-            };
-            if let Some(cast_ty) = native_ty {
-                self.emit_set_fault_loc(span);
-                let tmp = self.new_local(cast_ty.clone(), None, false);
-                self.push_statement(StatementKind::Assign(tmp, Rvalue::Cast(op, cast_ty)), span);
-                return Operand::Copy(tmp);
-            }
+            return self.realize_py_value(op, &target, span);
         }
 
         // A scalar widening into `Any` is boxed so the slot stays
@@ -300,6 +259,232 @@ impl<'a> MirBuilder<'a> {
         }
 
         op
+    }
+
+    /// Converts a Python value into the Olive representation of `target`.
+    fn realize_py_value(&mut self, op: Operand, target: &Type, span: Span) -> Operand {
+        match target {
+            Type::Str => {
+                let tmp = self.new_unscoped_local(Type::Str);
+                self.push_statement(
+                    StatementKind::Assign(
+                        tmp,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(
+                                "__olive_py_to_str".to_string(),
+                            )),
+                            args: vec![op],
+                        },
+                    ),
+                    span,
+                );
+                Operand::Move(tmp)
+            }
+            // Python bytes-like values materialize into a native buffer; else raises at call site.
+            Type::Bytes => {
+                self.emit_py_set_loc(span);
+                let tmp = self.new_unscoped_local(Type::Bytes);
+                self.push_statement(
+                    StatementKind::Assign(
+                        tmp,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(
+                                "__olive_py_to_bytes".to_string(),
+                            )),
+                            args: vec![op],
+                        },
+                    ),
+                    span,
+                );
+                Operand::Move(tmp)
+            }
+            // Element-wise: each member keeps its own declared type, so a
+            // `PyNamed` member stays a handle while natives convert.
+            Type::Tuple(members) => {
+                self.emit_py_set_loc(span);
+                let mut elems = Vec::with_capacity(members.len());
+                for (i, member) in members.iter().enumerate() {
+                    let item = self.new_unscoped_local(Type::PyObject);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            item,
+                            Rvalue::Call {
+                                func: Operand::Constant(Constant::Function(
+                                    "__olive_py_getitem_int".to_string(),
+                                )),
+                                args: vec![op.clone(), Operand::Constant(Constant::Int(i as i64))],
+                            },
+                        ),
+                        span,
+                    );
+                    let coerced = self.coerce(Operand::Copy(item), &Type::PyObject, member, span);
+                    elems.push(match coerced {
+                        Operand::Copy(l) => Operand::Move(l),
+                        other => other,
+                    });
+                }
+                let tup = self.new_unscoped_local(target.clone());
+                self.push_statement(
+                    StatementKind::Assign(tup, Rvalue::Aggregate(AggregateKind::Tuple, elems)),
+                    span,
+                );
+                Operand::Move(tup)
+            }
+            // `[Any]` needs boxed elements (a raw native word collides with
+            // the Any inline tag bits); a concrete native element type wants
+            // the raw form, matching that type's own runtime representation.
+            Type::List(elem) => {
+                let func = if elem.as_ref() == &Type::Any {
+                    "__olive_py_to_any_list"
+                } else {
+                    "__olive_py_to_list"
+                };
+                let tmp = self.new_unscoped_local(target.clone());
+                self.push_statement(
+                    StatementKind::Assign(
+                        tmp,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(func.to_string())),
+                            args: vec![op],
+                        },
+                    ),
+                    span,
+                );
+                Operand::Move(tmp)
+            }
+            Type::Dict(_, val) => {
+                let func = if val.as_ref() == &Type::Any {
+                    "__olive_py_to_any_dict"
+                } else {
+                    "__olive_py_to_dict"
+                };
+                let tmp = self.new_unscoped_local(target.clone());
+                self.push_statement(
+                    StatementKind::Assign(
+                        tmp,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(func.to_string())),
+                            args: vec![op],
+                        },
+                    ),
+                    span,
+                );
+                Operand::Move(tmp)
+            }
+            _ => {
+                self.emit_set_fault_loc(span);
+                let tmp = self.new_local(target.clone(), None, false);
+                self.push_statement(
+                    StatementKind::Assign(tmp, Rvalue::Cast(op, target.clone())),
+                    span,
+                );
+                Operand::Move(tmp)
+            }
+        }
+    }
+
+    /// Mixed py/native union source: branch on a live-handle test so only
+    /// actual Python values realize; native members pass through raw.
+    fn realize_py_guarded(
+        &mut self,
+        op: Operand,
+        target: &Type,
+        to_ty: &Type,
+        nullable: bool,
+        span: Span,
+    ) -> Operand {
+        let result = self.new_unscoped_local(to_ty.clone());
+        let is_handle = self.new_local(Type::Int, None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                is_handle,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("__olive_py_is_handle".to_string())),
+                    args: vec![op.clone()],
+                },
+            ),
+            span,
+        );
+        let py_bb = self.new_block();
+        let pass_bb = self.new_block();
+        let merge_bb = self.new_block();
+        if let Some(bb) = self.current_block {
+            self.terminate_block(
+                bb,
+                TerminatorKind::SwitchInt {
+                    discr: Operand::Copy(is_handle),
+                    targets: vec![(1, py_bb)],
+                    otherwise: pass_bb,
+                },
+                span,
+            );
+        }
+        self.current_block = Some(py_bb);
+        let converted = if nullable {
+            self.realize_py_nullable(op.clone(), target, to_ty, span)
+        } else {
+            self.realize_py_value(op.clone(), target, span)
+        };
+        self.push_statement(StatementKind::Assign(result, Rvalue::Use(converted)), span);
+        if let Some(bb) = self.current_block {
+            self.terminate_block(bb, TerminatorKind::Goto { target: merge_bb }, span);
+        }
+        self.current_block = Some(pass_bb);
+        self.push_statement(StatementKind::Assign(result, Rvalue::Use(op)), span);
+        self.terminate_block(pass_bb, TerminatorKind::Goto { target: merge_bb }, span);
+        self.current_block = Some(merge_bb);
+        Operand::Move(result)
+    }
+
+    /// `T | None` target: a Python `None` realizes to the 0 sentinel,
+    /// anything else to `T`'s own representation.
+    fn realize_py_nullable(
+        &mut self,
+        op: Operand,
+        target: &Type,
+        union_ty: &Type,
+        span: Span,
+    ) -> Operand {
+        let result = self.new_unscoped_local(union_ty.clone());
+        let is_none = self.new_local(Type::Int, None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                is_none,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("__olive_py_is_none".to_string())),
+                    args: vec![op.clone()],
+                },
+            ),
+            span,
+        );
+        let none_bb = self.new_block();
+        let conv_bb = self.new_block();
+        let merge_bb = self.new_block();
+        if let Some(bb) = self.current_block {
+            self.terminate_block(
+                bb,
+                TerminatorKind::SwitchInt {
+                    discr: Operand::Copy(is_none),
+                    targets: vec![(1, none_bb)],
+                    otherwise: conv_bb,
+                },
+                span,
+            );
+        }
+        self.current_block = Some(none_bb);
+        self.push_statement(
+            StatementKind::Assign(result, Rvalue::Use(Operand::Constant(Constant::Int(0)))),
+            span,
+        );
+        self.terminate_block(none_bb, TerminatorKind::Goto { target: merge_bb }, span);
+        self.current_block = Some(conv_bb);
+        let converted = self.realize_py_value(op, target, span);
+        self.push_statement(StatementKind::Assign(result, Rvalue::Use(converted)), span);
+        if let Some(bb) = self.current_block {
+            self.terminate_block(bb, TerminatorKind::Goto { target: merge_bb }, span);
+        }
+        self.current_block = Some(merge_bb);
+        Operand::Move(result)
     }
 
     /// Synthesizes (or reuses) `<Struct>::__drop_shim(v: Struct) -> None`, a
@@ -632,6 +817,28 @@ impl<'a> MirBuilder<'a> {
                     self.lower_struct_str_call(arg_ops[0].clone(), &arg_tys[0].clone(), expr.span)
             {
                 return op;
+            }
+
+            // `str(x)` on a `u64` must name `__olive_str_u64` here, at
+            // build time: codegen's generic dispatch re-derives the arg's
+            // type from the MIR operand, and a release-only constant fold
+            // can replace a `Copy(local)` with a bare `Constant::Int` that
+            // carries no u64 tag, silently falling back to signed `str`.
+            if name == "str" && arg_tys.first() == Some(&Type::U64) {
+                let tmp = self.new_local(Type::Str, None, true);
+                self.push_statement(
+                    StatementKind::Assign(
+                        tmp,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(
+                                "__olive_str_u64".to_string(),
+                            )),
+                            args: vec![arg_ops[0].clone()],
+                        },
+                    ),
+                    expr.span,
+                );
+                return self.operand_for_local(tmp);
             }
 
             if name == "type"
@@ -1191,6 +1398,64 @@ impl<'a> MirBuilder<'a> {
         self.current_is_async = saved_is_async;
 
         Operand::Constant(Constant::Function(lambda_name))
+    }
+}
+
+/// Whether a union carries both Python-typed and native members, so its
+/// runtime value needs a handle test before any realize.
+fn union_mixes_py(ty: &Type) -> bool {
+    matches!(ty, Type::Union(members)
+        if members.iter().any(|m| m.is_py_value())
+            && members
+                .iter()
+                .any(|m| !m.is_py_value() && !matches!(m, Type::Null)))
+}
+
+/// The single Olive-native type a Python value can realize into for `to_ty`,
+/// plus whether the target union also admits `None` (0 sentinel). `Error`ish
+/// members only arise from Olive's own error paths, never a Python payload,
+/// so a `T | Error` target realizes to `T`.
+fn py_realize_target(to_ty: &Type) -> Option<(Type, bool)> {
+    let realizable = |t: &Type| {
+        matches!(
+            t,
+            Type::Str
+                | Type::Bytes
+                | Type::Tuple(_)
+                | Type::List(_)
+                | Type::Dict(_, _)
+                | Type::Float
+                | Type::F32
+                | Type::Int
+                | Type::I8
+                | Type::I16
+                | Type::I32
+                | Type::U8
+                | Type::U16
+                | Type::U32
+                | Type::U64
+                | Type::Usize
+                | Type::Bool
+        )
+    };
+    match to_ty {
+        Type::Union(members) => {
+            let is_error = |t: &Type| {
+                matches!(t, Type::Struct(n, _, _) | Type::Enum(n, _)
+                    if n == "Error" || n.ends_with("Error"))
+            };
+            let nullable = members.iter().any(|m| matches!(m, Type::Null));
+            let candidates: Vec<&Type> = members
+                .iter()
+                .filter(|m| !matches!(m, Type::Null) && !m.is_py_value() && !is_error(m))
+                .collect();
+            match candidates.as_slice() {
+                [single] if realizable(single) => Some(((*single).clone(), nullable)),
+                _ => None,
+            }
+        }
+        t if realizable(t) => Some((t.clone(), false)),
+        _ => None,
     }
 }
 

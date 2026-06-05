@@ -24,9 +24,13 @@ impl<'a> MirBuilder<'a> {
             | Type::U8
             | Type::U16
             | Type::U32
-            | Type::U64
             | Type::Usize
             | Type::IntegerLiteral(_) => "__olive_write_int",
+            // Only U64 needs a distinct unsigned formatter: the other
+            // narrower unsigned types never set bit 63 once zero-extended
+            // into the 64-bit register, so signed decimal printing is
+            // already correct for them.
+            Type::U64 => "__olive_write_u64",
             Type::Float | Type::F32 | Type::FloatLiteral(_) => "__olive_write_float",
             _ => "__olive_write_any",
         }

@@ -103,6 +103,7 @@ pub(crate) fn resolve_builtin_import(
     if name.starts_with("__olive_") {
         return match name {
             "__olive_print_int" => Some("__olive_print_int"),
+            "__olive_print_u64" => Some("__olive_print_u64"),
             "__olive_print_str" => Some("__olive_print_str"),
             "__olive_print_py" => Some("__olive_print_py"),
             "__olive_box_int" => Some("__olive_box_int"),
@@ -117,6 +118,7 @@ pub(crate) fn resolve_builtin_import(
             "__olive_none_to_str" => Some("__olive_none_to_str"),
             "__olive_bool_to_str" => Some("__olive_bool_to_str"),
             "__olive_format_int" => Some("__olive_format_int"),
+            "__olive_format_u64" => Some("__olive_format_u64"),
             "__olive_format_float" => Some("__olive_format_float"),
             "__olive_format_str" => Some("__olive_format_str"),
             "__olive_format_bool" => Some("__olive_format_bool"),
@@ -129,6 +131,7 @@ pub(crate) fn resolve_builtin_import(
             "__olive_print_any" => Some("__olive_print_any"),
             "__olive_write_any" => Some("__olive_write_any"),
             "__olive_write_int" => Some("__olive_write_int"),
+            "__olive_write_u64" => Some("__olive_write_u64"),
             "__olive_write_bool" => Some("__olive_write_bool"),
             "__olive_write_float" => Some("__olive_write_float"),
             "__olive_write_str" => Some("__olive_write_str"),
@@ -136,6 +139,7 @@ pub(crate) fn resolve_builtin_import(
             "__olive_write_char" => Some("__olive_write_char"),
             "__olive_write_nl" => Some("__olive_write_nl"),
             "__olive_str" => Some("__olive_str"),
+            "__olive_str_u64" => Some("__olive_str_u64"),
             "__olive_int" => Some("__olive_int"),
             "__olive_bool" => Some("__olive_bool"),
             "__olive_float" => Some("__olive_float"),
@@ -575,11 +579,14 @@ pub(crate) fn resolve_builtin_import(
             "__olive_py_setitem_safe" => Some("__olive_py_setitem_safe"),
             "__olive_py_len" => Some("__olive_py_len"),
             "__olive_py_is_none" => Some("__olive_py_is_none"),
+            "__olive_py_is_handle" => Some("__olive_py_is_handle"),
             "__olive_py_none" => Some("__olive_py_none"),
             "__olive_py_initialize" => Some("__olive_py_initialize"),
             "__olive_py_finalize" => Some("__olive_py_finalize"),
             "__olive_py_to_list" => Some("__olive_py_to_list"),
             "__olive_py_to_dict" => Some("__olive_py_to_dict"),
+            "__olive_py_to_any_list" => Some("__olive_py_to_any_list"),
+            "__olive_py_to_any_dict" => Some("__olive_py_to_any_dict"),
             "__olive_py_set_loc" => Some("__olive_py_set_loc"),
             "__olive_set_fault_loc" => Some("__olive_set_fault_loc"),
             "__olive_assert_fail" => Some("__olive_assert_fail"),
@@ -687,6 +694,7 @@ pub(crate) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
             }
             OliveType::Enum(_, _) => Some("__olive_print_enum"),
             OliveType::Bool => Some("__olive_print_bool"),
+            OliveType::U64 => Some("__olive_print_u64"),
             OliveType::PyObject | OliveType::PyNamed(_, _) => Some("__olive_print_py"),
             OliveType::Union(_) | OliveType::Any => Some("__olive_print_any"),
             OliveType::Dict(_, _) | OliveType::Struct(_, _, _) => Some("__olive_print_obj"),
@@ -700,6 +708,7 @@ pub(crate) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
             OliveType::Any => Some("__olive_any_to_str"),
             OliveType::Null => Some("__olive_none_to_str"),
             OliveType::Bool => Some("__olive_bool_to_str"),
+            OliveType::U64 => Some("__olive_str_u64"),
             _ => Some("__olive_str"),
         },
         "int" => match current_ty {
@@ -728,16 +737,19 @@ pub(crate) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
         "next" => Some("__olive_next"),
         "has_next" => Some("__olive_has_next"),
         "slice" => Some("__olive_str_slice"),
+        // `list(pyobj)`/`dict(pyobj)` infer to `[Any]`/`{str: Any}` (unify.rs),
+        // so elements must land boxed -- a raw native word here is bit-identical
+        // to a small inline Any tag and gets misdecoded by any Any-aware reader.
         "list" => {
             if current_ty.is_py_value() {
-                Some("__olive_py_to_list")
+                Some("__olive_py_to_any_list")
             } else {
                 None
             }
         }
         "dict" => {
             if current_ty.is_py_value() {
-                Some("__olive_py_to_dict")
+                Some("__olive_py_to_any_dict")
             } else {
                 None
             }

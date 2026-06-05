@@ -312,6 +312,30 @@ impl TypeChecker {
             // indistinguishable.
             (Type::Null, other) | (other, Type::Null) if Self::is_nullable_target(other) => {}
 
+            // Two unions fit when one side's members each fit somewhere in
+            // the other: same set in a different order, or an inferred subset
+            // (e.g. `PyObject | Error` against a declared `T | Error`).
+            (Type::Union(a_ms), Type::Union(b_ms)) => {
+                let a_fits = a_ms
+                    .iter()
+                    .all(|m| b_ms.iter().any(|y| self.probe_compatible(m, y)));
+                let b_fits = b_ms
+                    .iter()
+                    .all(|m| a_ms.iter().any(|y| self.probe_compatible(m, y)));
+                if !a_fits && !b_fits {
+                    self.errors.push(SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0400",
+                            "mismatched types",
+                            span,
+                        )
+                        .label(format!("`{t1}` is not compatible with `{t2}`"))
+                        .note(format!("expected `{t1}`"))
+                        .note(format!("   found `{t2}`")),
+                    ));
+                }
+            }
+
             (other, Type::Union(members)) | (Type::Union(members), other) => {
                 // Struct satisfies union if it implements one of the union's trait-object members.
                 let implements_member = if let Type::Struct(sname, _, _) = other {
@@ -343,6 +367,81 @@ impl TypeChecker {
                     t2.to_string(),
                 ));
             }
+        }
+    }
+
+    /// Non-binding compatibility probe: whether `unify` would accept the pair
+    /// without an error. Conservative on structured types (exact equality),
+    /// so a `false` keeps the old diagnostic.
+    fn probe_compatible(&mut self, a: &Type, b: &Type) -> bool {
+        let a = self.apply_subst(a.clone());
+        let b = self.apply_subst(b.clone());
+        if a == b {
+            return true;
+        }
+        match (&a, &b) {
+            (Type::Any, _)
+            | (_, Type::Any)
+            | (Type::PyObject, _)
+            | (_, Type::PyObject)
+            | (Type::Never, _)
+            | (_, Type::Never)
+            | (Type::Var(_), _)
+            | (_, Type::Var(_)) => true,
+            (Type::Null, other) | (other, Type::Null) => Self::is_nullable_target(other),
+            (Type::Union(ms), other) | (other, Type::Union(ms)) => {
+                ms.iter().any(|m| self.probe_compatible(m, other))
+            }
+            _ => false,
+        }
+    }
+
+    /// Join of two branch types (`match` arms, ternary branches). Python and
+    /// native values don't share a runtime representation, so when only one
+    /// side is Python-typed the join is their union; `unify`'s `PyObject`
+    /// wildcard would silently drop one side's repr and mistype the slot.
+    pub(super) fn join_branch_ty(&mut self, acc: Type, next: Type, span: Span) -> Type {
+        let acc = self.apply_subst(acc);
+        let next = self.apply_subst(next);
+        if acc == next {
+            return acc;
+        }
+        if matches!(acc, Type::Never) {
+            return next;
+        }
+        if matches!(next, Type::Never) {
+            return acc;
+        }
+        let is_join_transparent = |t: &Type| matches!(t, Type::Any | Type::Var(_));
+        if acc.is_py_value() != next.is_py_value()
+            && !is_join_transparent(&acc)
+            && !is_join_transparent(&next)
+        {
+            let mut members: Vec<Type> = Vec::new();
+            for t in [acc, next] {
+                match t {
+                    Type::Union(ms) => {
+                        for m in ms {
+                            if !members.contains(&m) {
+                                members.push(m);
+                            }
+                        }
+                    }
+                    other => {
+                        if !members.contains(&other) {
+                            members.push(other);
+                        }
+                    }
+                }
+            }
+            return Type::Union(members);
+        }
+        self.unify(&acc, &next, span);
+        let resolved = self.apply_subst(acc);
+        if matches!(resolved, Type::Var(_)) {
+            self.apply_subst(next)
+        } else {
+            resolved
         }
     }
 

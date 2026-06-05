@@ -237,10 +237,15 @@ impl Inliner {
                             new_bb.statements.retain(|s| {
                                 !matches!(&s.kind, StatementKind::StorageDead(l) if l.0 == local_offset)
                             });
+                            // Move, not Copy: this is the callee's `_return` slot handing
+                            // its value to the caller exactly once. A Copy of an owning
+                            // heap type (Tuple/List/Str/PyObject) would alias the same
+                            // buffer between callee and caller locals with no refcount
+                            // bump, so both later drop it and double-free.
                             new_bb.statements.push(Statement {
                                 kind: StatementKind::Assign(
                                     dest,
-                                    Rvalue::Use(Operand::Copy(Local(local_offset))),
+                                    Rvalue::Use(Operand::Move(Local(local_offset))),
                                 ),
                                 span: term.span,
                             });

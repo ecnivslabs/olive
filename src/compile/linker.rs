@@ -278,7 +278,7 @@ pub fn link_object(obj_path: &str, out: &str, native_libs: &[FfiLibInfo]) {
         process::exit(1);
     }
 
-    if used_static_link {
+    if used_static_link && std::env::var_os("OLIVE_KEEP_DEBUGINFO").is_none() {
         strip_debuginfo(out);
     }
 }
