@@ -47,7 +47,6 @@ impl Resolver {
             "bytes_push",
             "bytes_push_u16_le",
             "bytes_push_u32_le",
-            "realize",
             "Error",
             "Error::Error",
             "enumerate",

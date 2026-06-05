@@ -370,8 +370,6 @@ pub extern "C" fn olive_py_initialize() {
             }
         }
 
-        crate::python_proxy::setup_native_proxies(handle, compat_dlsym);
-
         let tb_mod = PY_IMPORT_IMPORT_MODULE(b"traceback\0".as_ptr() as *const c_char);
         if !tb_mod.is_null() {
             let fmt_fn =

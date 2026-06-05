@@ -67,10 +67,15 @@ Going the other direction, Olive primitives are automatically converted when pas
 | `int` / `i64` | `int` | Coerces via `c_long` |
 | `float` / `f64` | `float` | Coerces via `c_double` |
 | `str` | `str` | UTF-8 |
-| `list` | `OliveListProxy` | Zero-copy wrapper, mutations propagate both ways |
-| `dict` | `OliveDictProxy` | Zero-copy wrapper, mutations propagate both ways; supports `get`, `setdefault`, `pop`, `keys`, `values`, `items`, `in` |
+| `bytes` | `bytes` | Copied |
+| `list` | `list` | Real `list`; `isinstance(x, list)` is `True`; copied in on each crossing |
+| `dict` | `dict` | Real `dict`; `isinstance(x, dict)` is `True`; copied in on each crossing |
+| `set` | `set` | Real `set`; copied in on each crossing |
 | `None` | `None` | `Py_None` |
 | `glm.vec3` etc. | native Python object | Tracked type; erased to `PyObject` at runtime boundary |
+| opaque Python object | live handle | `KIND_PYOBJECT`; passed through, never copied |
+
+Python-side mutation of a passed collection during the call is not yet observed back in Olive in this release; see the changelog for when copy-out lands.
 
 When an Olive value is assigned to a native-typed slot (`i64`, `f64`, `str`, struct field, collection element), the compiler inserts the correct runtime unboxer automatically. No manual coercion call needed. The reverse (native to PyObject) is also automatic when passing native values to Python functions.
 
@@ -87,20 +92,6 @@ import py "mymodule" as mm:
 ```
 
 Manual stub blocks take priority over auto-introspection. `PyObject` in a stub declaration is the explicit escape hatch for return types you don't want to track.
-
-## Deep Conversion with `realize`
-
-Olive collections (lists, dicts) passed to Python are wrapped in `OliveListProxy` / `OliveDictProxy` by default. These are zero-copy wrappers: mutations in either language propagate to the other. Some Python libraries call `isinstance(x, dict)` and reject proxies. Use `realize(val)` to deep-convert an Olive value into a real Python object:
-
-```olive
-import py "json" as json
-
-let data = {"key": [1, 2, 3]}
-let real = realize(data)      # deep-converts to a real Python dict
-json.dumps(real)               # works because isinstance(real, dict) is True
-```
-
-`realize` is the inverse of the automatic coercion path. Native Olive values (int, float, str, None) pass through unchanged. Collections are recursively converted to real Python objects on the Python heap.
 
 ## Runtime Library Discovery
 

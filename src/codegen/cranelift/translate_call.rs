@@ -278,8 +278,6 @@ impl<M: Module> CraneliftCodegen<M> {
                 "__olive_stdin_read_line"
             } else if name == "ffi_errno" {
                 "__olive_ffi_errno"
-            } else if name == "realize" {
-                "__olive_py_realize"
             } else {
                 name.as_str()
             };

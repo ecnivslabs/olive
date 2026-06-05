@@ -36,6 +36,18 @@ mod semantic_tests_extended {
     }
 
     #[test]
+    fn realize_is_unknown_name() {
+        // R2a removed the `realize()` builtin: the proxy model it worked
+        // around no longer exists, so the boundary always realizes real
+        // Python objects and there is nothing left for `realize` to do.
+        let r = resolve("let d = dict()\nlet x = realize(d)\n");
+        assert!(
+            !r.errors.is_empty(),
+            "realize() must be reported as an unknown name, not silently accepted"
+        );
+    }
+
+    #[test]
     fn ffi_list_param_is_not_abi_safe() {
         let tc =
             typeck("import \"/usr/lib/libc.so.6\" as libc:\n    fn bad(x: list[i64]) -> i64\n");

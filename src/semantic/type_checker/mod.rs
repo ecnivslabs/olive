@@ -333,14 +333,6 @@ impl TypeChecker {
                 Type::Fn(vec![Type::Any], Box::new(Type::Int), Vec::new()),
             ),
             (
-                "__olive_py_realize",
-                Type::Fn(vec![Type::Any], Box::new(Type::PyObject), Vec::new()),
-            ),
-            (
-                "realize",
-                Type::Fn(vec![Type::Any], Box::new(Type::PyObject), Vec::new()),
-            ),
-            (
                 "__olive_math_sin",
                 Type::Fn(vec![Type::Float], Box::new(Type::Float), Vec::new()),
             ),
