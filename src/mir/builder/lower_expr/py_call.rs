@@ -1,5 +1,5 @@
 //! Lowering for calls into Python: building the argument list(s), picking
-//! the right `__olive_py_call*` entry point, and (R5) choosing between the
+//! the right `__olive_py_call*` entry point, and choosing between the
 //! tagged fast path and the legacy pre-converting fallback.
 
 use super::super::MirBuilder;
@@ -9,7 +9,7 @@ use crate::parser::{CallArg, Expr, ExprKind};
 use crate::semantic::types::Type;
 use crate::span::Span;
 
-/// R5 argument-encoding tag: how a raw call-argument word decodes on the
+/// Argument-encoding tag: how a raw call-argument word decodes on the
 /// Python side, chosen from the argument's static type. Mirrors
 /// `python_writeback::ARG_*` in the runtime crate exactly -- the two crates
 /// share no dependency, so keep this enumeration in lockstep by hand if
@@ -126,7 +126,7 @@ impl<'a> MirBuilder<'a> {
             .fold(0i64, |acc, (i, &t)| acc | (t << (i * 4)))
     }
 
-    /// The R5 encode tag for a non-collection argument's static type: how its
+    /// The encode tag for a non-collection argument's static type: how its
     /// raw, unconverted word decodes inside the call's single GIL region.
     /// A `Type::Null` argument gets its own tag rather than falling into
     /// `ARG_ANY`: a bare `None` local's raw representation is the plain
@@ -263,6 +263,22 @@ impl<'a> MirBuilder<'a> {
             fast_path,
         } = call_args;
 
+        // A positional-only, tagged-fast-path call with 0-4 arguments skips
+        // the `args_list` aggregate entirely -- each argument goes straight
+        // into a call register through a dedicated arity-specialized entry
+        // point, so this call site allocates nothing. Arity 5-16 and any
+        // kwargs call keep the list-based path below.
+        if kw_ops.is_empty() && fast_path && pos_ops.len() <= 4 {
+            return self.emit_py_call_arity(
+                callee_op,
+                pos_ops,
+                (coll_tags, arg_tags),
+                flavor,
+                result_ty,
+                span,
+            );
+        }
+
         let args_list = self.new_local(Type::List(Box::new(Type::Any)), None, true);
         self.push_statement(
             StatementKind::Assign(args_list, Rvalue::Aggregate(AggregateKind::List, pos_ops)),
@@ -303,6 +319,56 @@ impl<'a> MirBuilder<'a> {
                 (false, PyCallFlavor::Unsafe) => "__olive_py_call_kw",
             }
         };
+
+        let result = self.new_local(result_ty, None, true);
+        self.push_statement(
+            StatementKind::Assign(
+                result,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(name.to_string())),
+                    args: call_operands,
+                },
+            ),
+            span,
+        );
+        self.operand_for_local(result)
+    }
+
+    /// Emits a call through `__olive_py_call{0..4}(_safe)`, `pos_ops`
+    /// passed straight as call registers -- no `args_list` aggregate, so no
+    /// list allocation for this call site at all. `olive_py_call0` takes no
+    /// tag words (there is nothing to tag); every other arity takes the same
+    /// `coll_tags`/`arg_tags` pair `olive_py_call_t` does.
+    fn emit_py_call_arity(
+        &mut self,
+        callee_op: Operand,
+        pos_ops: Vec<Operand>,
+        tags: (i64, i64),
+        flavor: PyCallFlavor,
+        result_ty: Type,
+        span: Span,
+    ) -> Operand {
+        let (coll_tags, arg_tags) = tags;
+        let name = match (pos_ops.len(), &flavor) {
+            (0, PyCallFlavor::Unsafe) => "__olive_py_call0",
+            (0, PyCallFlavor::Safe) => "__olive_py_call0_safe",
+            (1, PyCallFlavor::Unsafe) => "__olive_py_call1",
+            (1, PyCallFlavor::Safe) => "__olive_py_call1_safe",
+            (2, PyCallFlavor::Unsafe) => "__olive_py_call2",
+            (2, PyCallFlavor::Safe) => "__olive_py_call2_safe",
+            (3, PyCallFlavor::Unsafe) => "__olive_py_call3",
+            (3, PyCallFlavor::Safe) => "__olive_py_call3_safe",
+            (4, PyCallFlavor::Unsafe) => "__olive_py_call4",
+            (4, PyCallFlavor::Safe) => "__olive_py_call4_safe",
+            (n, _) => unreachable!("emit_py_call_arity: arity {n} out of range"),
+        };
+
+        let mut call_operands = vec![callee_op];
+        if !pos_ops.is_empty() {
+            call_operands.push(Operand::Constant(Constant::Int(coll_tags)));
+            call_operands.push(Operand::Constant(Constant::Int(arg_tags)));
+            call_operands.extend(pos_ops);
+        }
 
         let result = self.new_local(result_ty, None, true);
         self.push_statement(
@@ -374,5 +440,118 @@ impl<'a> MirBuilder<'a> {
         };
 
         self.emit_py_call(func_op, call_args, PyCallFlavor::Safe, Type::Any, expr.span)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::MirBuilder;
+    use crate::lexer::Lexer;
+    use crate::mir::ir::{AggregateKind, Constant, Operand, Rvalue, StatementKind};
+    use crate::parser::Parser;
+    use crate::semantic::{Resolver, TypeChecker};
+    use rustc_hash::FxHashSet;
+
+    fn build(src: &str) -> Vec<super::super::super::super::ir::MirFunction> {
+        let tokens = Lexer::new(src, 0).tokenise().unwrap();
+        let prog = Parser::new(tokens).parse_program().unwrap();
+        let mut r = Resolver::new();
+        r.resolve_program(&prog);
+        let mut tc = TypeChecker::new();
+        tc.check_program(&prog);
+        let mut builder = MirBuilder::new(
+            &tc.expr_types,
+            &tc.expr_kwarg_maps,
+            &tc.type_env[0],
+            tc.struct_fields.clone(),
+            &tc.traits,
+            FxHashSet::default(),
+            tc.enum_defs.clone(),
+        );
+        builder.build_program(&prog);
+        builder.functions
+    }
+
+    fn has_list_aggregate(f: &crate::mir::ir::MirFunction) -> bool {
+        f.basic_blocks.iter().any(|bb| {
+            bb.statements.iter().any(|s| {
+                matches!(
+                    &s.kind,
+                    StatementKind::Assign(_, Rvalue::Aggregate(AggregateKind::List, _))
+                )
+            })
+        })
+    }
+
+    fn call_target(f: &crate::mir::ir::MirFunction) -> Option<String> {
+        f.basic_blocks.iter().find_map(|bb| {
+            bb.statements.iter().find_map(|s| match &s.kind {
+                StatementKind::Assign(
+                    _,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function(name)),
+                        ..
+                    },
+                ) if name.starts_with("__olive_py_call") => Some(name.clone()),
+                _ => None,
+            })
+        })
+    }
+
+    /// A positional call with 0-4 args must emit no `[Any]` list aggregate
+    /// at all -- the arguments go straight into the arity-specialized entry
+    /// point's call registers.
+    #[test]
+    fn arity_0_to_4_positional_calls_emit_no_list_aggregate() {
+        let cases: &[(&str, &str)] = &[
+            ("math.f()", "__olive_py_call0"),
+            ("math.f(1)", "__olive_py_call1"),
+            ("math.f(1, 2)", "__olive_py_call2"),
+            ("math.f(1, 2, 3)", "__olive_py_call3"),
+            ("math.f(1, 2, 3, 4)", "__olive_py_call4"),
+        ];
+        for (call, want_symbol) in cases {
+            let src = format!("import py \"math\" as math\n\nfn f():\n    {call}\n\nf()\n");
+            let fns = build(&src);
+            let f = fns.iter().find(|f| f.name == "f").unwrap();
+            assert!(
+                !has_list_aggregate(f),
+                "{call} unexpectedly built a list aggregate"
+            );
+            assert_eq!(
+                call_target(f).as_deref(),
+                Some(*want_symbol),
+                "{call} dispatched to the wrong entry point"
+            );
+        }
+    }
+
+    /// Arity 5 and up has no fixed-register entry point, so it must keep
+    /// building the `args_list` aggregate and calling the tagged list path.
+    #[test]
+    fn arity_5_positional_call_falls_back_to_list_path() {
+        let src = "import py \"math\" as math\n\nfn f():\n    math.f(1, 2, 3, 4, 5)\n\nf()\n";
+        let fns = build(src);
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        assert!(
+            has_list_aggregate(f),
+            "arity-5 call must still build the args_list aggregate"
+        );
+        assert_eq!(call_target(f).as_deref(), Some("__olive_py_call_t"));
+    }
+
+    /// A call with any keyword argument keeps the kwargs list path
+    /// regardless of its positional arity -- only the positional-only,
+    /// kwargs-free shape gets specialized.
+    #[test]
+    fn kwargs_call_keeps_list_path_regardless_of_positional_arity() {
+        let src = "import py \"math\" as math\n\nfn f():\n    math.f(1, x=2)\n\nf()\n";
+        let fns = build(src);
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        assert!(
+            has_list_aggregate(f),
+            "a kwargs call must still build a list aggregate"
+        );
+        assert_eq!(call_target(f).as_deref(), Some("__olive_py_call_kw_t"));
     }
 }

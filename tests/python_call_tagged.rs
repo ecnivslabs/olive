@@ -1,10 +1,11 @@
-//! R5: a py-call argument with a statically known scalar type crosses the
-//! boundary via the tagged fast path (`__olive_py_call_t`/`_kw_t` and their
-//! `_safe` twins) -- one C-API call per scalar, no pre-conversion, no
-//! pre-call handle allocation. This file proves the tag scheme decodes every
-//! case correctly, including two cases the old raw-word heuristic
-//! (`olive_to_py`'s `looks_like_float`) could not: `bool` vs `int`, and a
-//! bare `None` vs integer `0`. Both pipelines (JIT `pit run`, AOT release).
+//! A py-call argument with a statically known scalar type crosses the
+//! boundary via the tagged fast path (`__olive_py_call_t`/`_kw_t`, their
+//! arity-specialized `__olive_py_call0..4` siblings, and their `_safe`
+//! twins) -- one C-API call per scalar, no pre-conversion, no pre-call
+//! handle allocation. This file proves the tag scheme decodes every case
+//! correctly, including two cases the old raw-word heuristic (`olive_to_py`'s
+//! `looks_like_float`) could not: `bool` vs `int`, and a bare `None` vs
+//! integer `0`. Both pipelines (JIT `pit run`, AOT release).
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -313,7 +314,7 @@ main()
         "fast-path scalar args must not go through the legacy per-arg conversion calls:\n{mir}"
     );
     assert!(
-        mir.contains("__olive_py_call_t"),
+        mir.contains("__olive_py_call1"),
         "expected the tagged fast-path entry point in the emitted MIR:\n{mir}"
     );
     std::fs::remove_dir_all(&dir).ok();
