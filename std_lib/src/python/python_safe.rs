@@ -294,8 +294,11 @@ pub(crate) unsafe fn call_with_raw_args_safe(
 }
 
 /// Wraps a `call_with_raw_args_safe` outcome into the `Result<PyObject, ()>`
-/// wire encoding every `_safe` py-call entry point returns.
-pub(crate) unsafe fn finish_call_safe(outcome: Result<PyObject, i64>) -> i64 {
+/// wire encoding every `_safe` py-call entry point returns. `ret_tag` fuses
+/// the `Ok` payload exactly like the non-`_safe` twin: `RET_HANDLE` wraps a
+/// handle as before, anything else converts and decrefs the raw result
+/// before it's packed into the `Ok` slot.
+pub(crate) unsafe fn finish_call_safe(outcome: Result<PyObject, i64>, ret_tag: i64) -> i64 {
     unsafe {
         let res = match outcome {
             Ok(res) => res,
@@ -313,8 +316,12 @@ pub(crate) unsafe fn finish_call_safe(outcome: Result<PyObject, i64>) -> i64 {
         if !PY_ERR_OCCURRED().is_null() {
             PY_ERR_CLEAR();
         }
-        let wrapped = olive_py_wrap_owned(res);
-        crate::result::olive_result_ok(wrapped as i64)
+        if ret_tag == RET_HANDLE {
+            let wrapped = olive_py_wrap_owned(res);
+            crate::result::olive_result_ok(wrapped as i64)
+        } else {
+            crate::result::olive_result_ok(finish_ret(res, ret_tag))
+        }
     }
 }
 
@@ -346,13 +353,15 @@ pub extern "C" fn olive_py_call_t_safe(
         } else {
             call_with_raw_args_safe(unwrapped_func, coll_tags, arg_tags, &mut [])
         };
-        finish_call_safe(outcome)
+        finish_call_safe(outcome, RET_HANDLE)
     })
 }
 
 /// `Result`-returning arity-specialized shells; see `olive_py_call0..4`.
+/// `arg_tags`'s top 4 bits carry `ret_tag`, exactly like the non-`_safe`
+/// twin; `olive_py_call0_safe` takes the word purely to carry it.
 #[unsafe(no_mangle)]
-pub extern "C" fn olive_py_call0_safe(func: PyObject) -> i64 {
+pub extern "C" fn olive_py_call0_safe(func: PyObject, arg_tags: i64) -> i64 {
     if !is_python_available() {
         let err_str_ptr =
             crate::olive_str_internal("Python interop unavailable: libpython3 could not be loaded");
@@ -365,7 +374,7 @@ pub extern "C" fn olive_py_call0_safe(func: PyObject) -> i64 {
     }
     with_gil(|| unsafe {
         let outcome = call_with_raw_args_safe(unwrapped_func, 0, 0, &mut []);
-        finish_call_safe(outcome)
+        finish_call_safe(outcome, ret_tag_of(arg_tags))
     })
 }
 
@@ -389,7 +398,7 @@ pub extern "C" fn olive_py_call1_safe(
     with_gil(|| unsafe {
         let mut args = [a0];
         let outcome = call_with_raw_args_safe(unwrapped_func, coll_tags, arg_tags, &mut args);
-        finish_call_safe(outcome)
+        finish_call_safe(outcome, ret_tag_of(arg_tags))
     })
 }
 
@@ -414,7 +423,7 @@ pub extern "C" fn olive_py_call2_safe(
     with_gil(|| unsafe {
         let mut args = [a0, a1];
         let outcome = call_with_raw_args_safe(unwrapped_func, coll_tags, arg_tags, &mut args);
-        finish_call_safe(outcome)
+        finish_call_safe(outcome, ret_tag_of(arg_tags))
     })
 }
 
@@ -440,7 +449,7 @@ pub extern "C" fn olive_py_call3_safe(
     with_gil(|| unsafe {
         let mut args = [a0, a1, a2];
         let outcome = call_with_raw_args_safe(unwrapped_func, coll_tags, arg_tags, &mut args);
-        finish_call_safe(outcome)
+        finish_call_safe(outcome, ret_tag_of(arg_tags))
     })
 }
 
@@ -467,7 +476,7 @@ pub extern "C" fn olive_py_call4_safe(
     with_gil(|| unsafe {
         let mut args = [a0, a1, a2, a3];
         let outcome = call_with_raw_args_safe(unwrapped_func, coll_tags, arg_tags, &mut args);
-        finish_call_safe(outcome)
+        finish_call_safe(outcome, ret_tag_of(arg_tags))
     })
 }
 
@@ -783,7 +792,7 @@ mod tests {
                 (olive_py_wrap_owned(f0), olive_py_wrap_owned(f2))
             });
 
-            let r0 = olive_py_call0_safe(h0);
+            let r0 = olive_py_call0_safe(h0, 0);
             assert_eq!(crate::result::olive_result_is_err(r0), 0);
             let ok0 = crate::result::olive_result_unwrap(r0);
             assert_eq!(

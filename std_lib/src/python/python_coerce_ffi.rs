@@ -119,6 +119,27 @@ pub extern "C" fn olive_py_copy_ref(arena_ptr: PyObject) -> PyObject {
     unsafe { olive_py_wrap_borrowed(raw_py) }
 }
 
+/// Converts an already-unwrapped, live Python object into an `i64`, the
+/// inner logic `olive_py_to_int` wraps with the unwrap/GIL boundary. Shared
+/// with the fused call-result path (`python_ret.rs`), which already holds
+/// the GIL and a raw (never-wrapped) object when it needs this conversion.
+pub(crate) unsafe fn raw_py_to_int(raw: PyObject) -> i64 {
+    unsafe {
+        let int_obj = PY_NUMBER_LONG(raw);
+        if int_obj.is_null() {
+            PY_ERR_CLEAR();
+            crate::panic::abort_py_coerce("cannot convert this Python value to an integer");
+        }
+        let result = PY_LONG_AS_LONG(int_obj);
+        PY_DEC_REF(int_obj);
+        if !PY_ERR_OCCURRED().is_null() {
+            PY_ERR_CLEAR();
+            crate::panic::abort_py_coerce("cannot convert this Python value to an integer");
+        }
+        result
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_to_int(obj: PyObject) -> i64 {
     check_python_loaded();
@@ -126,20 +147,19 @@ pub extern "C" fn olive_py_to_int(obj: PyObject) -> i64 {
     if unwrapped_obj.is_null() {
         return 0;
     }
-    with_gil(|| unsafe {
-        let int_obj = PY_NUMBER_LONG(unwrapped_obj);
-        if int_obj.is_null() {
+    with_gil(|| unsafe { raw_py_to_int(unwrapped_obj) })
+}
+
+/// See `raw_py_to_int`; the float counterpart `olive_py_to_float` wraps.
+pub(crate) unsafe fn raw_py_to_float(raw: PyObject) -> f64 {
+    unsafe {
+        let result = PY_FLOAT_AS_DOUBLE(raw);
+        if result == -1.0 && !PY_ERR_OCCURRED().is_null() {
             PY_ERR_CLEAR();
-            crate::panic::abort_py_coerce("cannot convert this Python value to an integer");
-        }
-        let result = PY_LONG_AS_LONG(int_obj) as i64;
-        PY_DEC_REF(int_obj);
-        if !PY_ERR_OCCURRED().is_null() {
-            PY_ERR_CLEAR();
-            crate::panic::abort_py_coerce("cannot convert this Python value to an integer");
+            crate::panic::abort_py_coerce("cannot convert this Python value to a float");
         }
         result
-    })
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -149,25 +169,13 @@ pub extern "C" fn olive_py_to_float(obj: PyObject) -> f64 {
     if unwrapped_obj.is_null() {
         return 0.0;
     }
-    with_gil(|| unsafe {
-        let result = PY_FLOAT_AS_DOUBLE(unwrapped_obj);
-        if result == -1.0 && !PY_ERR_OCCURRED().is_null() {
-            PY_ERR_CLEAR();
-            crate::panic::abort_py_coerce("cannot convert this Python value to a float");
-        }
-        result as f64
-    })
+    with_gil(|| unsafe { raw_py_to_float(unwrapped_obj) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_py_to_str(obj: PyObject) -> i64 {
-    check_python_loaded();
-    let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
-    if unwrapped_obj.is_null() {
-        return 0;
-    }
-    with_gil(|| unsafe {
-        let str_obj = PY_OBJECT_STR(unwrapped_obj);
+/// See `raw_py_to_int`; the string counterpart `olive_py_to_str` wraps.
+pub(crate) unsafe fn raw_py_to_str(raw: PyObject) -> i64 {
+    unsafe {
+        let str_obj = PY_OBJECT_STR(raw);
         if str_obj.is_null() {
             handle_py_error();
         }
@@ -180,7 +188,17 @@ pub extern "C" fn olive_py_to_str(obj: PyObject) -> i64 {
         let r = crate::olive_str_internal(&r_str);
         PY_DEC_REF(str_obj);
         r
-    })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_to_str(obj: PyObject) -> i64 {
+    check_python_loaded();
+    let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
+    if unwrapped_obj.is_null() {
+        return 0;
+    }
+    with_gil(|| unsafe { raw_py_to_str(unwrapped_obj) })
 }
 
 /// Materializes a Python bytes-like object into a native buffer; non-bytes-like raises.

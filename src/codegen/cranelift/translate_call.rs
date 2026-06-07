@@ -683,6 +683,23 @@ impl<M: Module> CraneliftCodegen<M> {
                 {
                     ret_val = builder.ins().bor_imm(ret_val, 1);
                 }
+
+                // A fused py-call `f32` result (R10) carries its bits home as
+                // an `I64`, the same as every other scalar the tagged fast
+                // path returns -- CPython floats are always `f64`, so
+                // `finish_ret` always hands back a full 64-bit pattern. The
+                // generic post-call fixup one layer up (`translate.rs`'s
+                // `Assign` handler) already bit-reinterprets a same-width
+                // `I64` result into `float` correctly, but a narrower `f32`
+                // target falls into its int-to-float *numeric* conversion
+                // path instead, reading the bit pattern as if it were an
+                // integer count. Demote through `f64` here so that fixup
+                // sees the `f64 -> f32` case it already handles correctly.
+                if *dest_ty == OliveType::F32 && builder.func.dfg.value_type(ret_val) == types::I64
+                {
+                    let bits64 = builder.ins().bitcast(types::F64, MemFlags::new(), ret_val);
+                    ret_val = builder.ins().fdemote(types::F32, bits64);
+                }
                 return ret_val;
             }
 

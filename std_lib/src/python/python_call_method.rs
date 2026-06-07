@@ -84,10 +84,13 @@ pub(crate) unsafe fn call_method_with_raw_args(
 /// these for `obj.attr(...)` with 0-4 positional arguments and no keywords,
 /// the shape covering nearly every real method call. Thin shells over
 /// `call_method_with_raw_args`; no logic lives here beyond assembling the
-/// fixed-size local array. Arity 5+ and any kwargs call keep the original
-/// separate getattr-then-call path.
+/// fixed-size local array and finishing the result per `ret_tag` (packed
+/// into `arg_tags`'s top 4 bits, mirroring `olive_py_call0..4` exactly --
+/// `olive_py_call_method0` takes the word purely to carry it, having no real
+/// argument tags of its own). Arity 5+ and any kwargs call keep the original
+/// separate getattr-then-call path, always unfused.
 #[unsafe(no_mangle)]
-pub extern "C" fn olive_py_call_method0(obj: PyObject, name: i64) -> PyObject {
+pub extern "C" fn olive_py_call_method0(obj: PyObject, name: i64, arg_tags: i64) -> PyObject {
     check_python_loaded();
     let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
     if unwrapped_obj.is_null() {
@@ -97,8 +100,14 @@ pub extern "C" fn olive_py_call_method0(obj: PyObject, name: i64) -> PyObject {
     unsafe {
         let gil = PY_GILSTATE_ENSURE();
         let res = call_method_with_raw_args(unwrapped_obj, attr_ptr, 0, 0, &mut []);
+        let ret_tag = ret_tag_of(arg_tags);
+        if ret_tag == RET_HANDLE {
+            PY_GILSTATE_RELEASE(gil);
+            return olive_py_wrap_owned(res);
+        }
+        let out = finish_ret(res, ret_tag);
         PY_GILSTATE_RELEASE(gil);
-        olive_py_wrap_owned(res)
+        out as PyObject
     }
 }
 
@@ -121,8 +130,14 @@ pub extern "C" fn olive_py_call_method1(
         let mut args = [a0];
         let res =
             call_method_with_raw_args(unwrapped_obj, attr_ptr, coll_tags, arg_tags, &mut args);
+        let ret_tag = ret_tag_of(arg_tags);
+        if ret_tag == RET_HANDLE {
+            PY_GILSTATE_RELEASE(gil);
+            return olive_py_wrap_owned(res);
+        }
+        let out = finish_ret(res, ret_tag);
         PY_GILSTATE_RELEASE(gil);
-        olive_py_wrap_owned(res)
+        out as PyObject
     }
 }
 
@@ -146,8 +161,14 @@ pub extern "C" fn olive_py_call_method2(
         let mut args = [a0, a1];
         let res =
             call_method_with_raw_args(unwrapped_obj, attr_ptr, coll_tags, arg_tags, &mut args);
+        let ret_tag = ret_tag_of(arg_tags);
+        if ret_tag == RET_HANDLE {
+            PY_GILSTATE_RELEASE(gil);
+            return olive_py_wrap_owned(res);
+        }
+        let out = finish_ret(res, ret_tag);
         PY_GILSTATE_RELEASE(gil);
-        olive_py_wrap_owned(res)
+        out as PyObject
     }
 }
 
@@ -172,8 +193,14 @@ pub extern "C" fn olive_py_call_method3(
         let mut args = [a0, a1, a2];
         let res =
             call_method_with_raw_args(unwrapped_obj, attr_ptr, coll_tags, arg_tags, &mut args);
+        let ret_tag = ret_tag_of(arg_tags);
+        if ret_tag == RET_HANDLE {
+            PY_GILSTATE_RELEASE(gil);
+            return olive_py_wrap_owned(res);
+        }
+        let out = finish_ret(res, ret_tag);
         PY_GILSTATE_RELEASE(gil);
-        olive_py_wrap_owned(res)
+        out as PyObject
     }
 }
 
@@ -199,8 +226,14 @@ pub extern "C" fn olive_py_call_method4(
         let mut args = [a0, a1, a2, a3];
         let res =
             call_method_with_raw_args(unwrapped_obj, attr_ptr, coll_tags, arg_tags, &mut args);
+        let ret_tag = ret_tag_of(arg_tags);
+        if ret_tag == RET_HANDLE {
+            PY_GILSTATE_RELEASE(gil);
+            return olive_py_wrap_owned(res);
+        }
+        let out = finish_ret(res, ret_tag);
         PY_GILSTATE_RELEASE(gil);
-        olive_py_wrap_owned(res)
+        out as PyObject
     }
 }
 
@@ -249,7 +282,7 @@ mod tests {
                 });
 
                 let n0 = crate::olive_str_internal("m0") | 1;
-                let r0 = olive_py_call_method0(obj, n0);
+                let r0 = olive_py_call_method0(obj, n0, 0);
                 assert_eq!(with_gil(|| PY_LONG_AS_LONG(olive_py_unwrap(r0))), 111);
                 olive_py_decref(r0);
 
@@ -352,5 +385,39 @@ mod tests {
 
             olive_py_decref(obj);
         });
+    }
+
+    /// R10 result fusion through the fused method-call path: `arg_tags`'s
+    /// top 4 bits carry `ret_tag` here exactly as they do for the plain
+    /// arity shells, on both the vectorcall-method and the getattr-fallback
+    /// branch of `call_method_with_raw_args`.
+    #[test]
+    fn method_call_ret_tag_fusion_converts_correctly_both_fusion_states() {
+        let _guard = pyobject_slab_test_lock();
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        for &(vc, intern) in &[(true, true), (false, false)] {
+            with_forced_fusion(vc, intern, || unsafe {
+                let obj = with_gil(|| {
+                    eval_main_obj(
+                        "class __TMCRet:\n    def r0(self):\n        return 111\n    def area(self, w, h):\n        return w * h * 1.0\n__tmc_ret_obj = __TMCRet()\n",
+                        "__tmc_ret_obj",
+                    )
+                });
+
+                let n0 = crate::olive_str_internal("r0") | 1;
+                let r0 = olive_py_call_method0(obj, n0, RET_INT << 60);
+                assert_eq!(r0 as i64, 111);
+
+                let n_area = crate::olive_str_internal("area") | 1;
+                let tags2 = ARG_INT | (ARG_INT << 4) | (RET_FLOAT << 60);
+                let area = olive_py_call_method2(obj, n_area, 0, tags2, 3, 4);
+                assert_eq!(f64::from_bits(area as u64), 12.0);
+
+                olive_py_decref(obj);
+            });
+        }
     }
 }

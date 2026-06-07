@@ -822,8 +822,14 @@ impl<'a> MirBuilder<'a> {
 
         if callee_ty.is_py_value() {
             let callee_op = self.lower_expr_as_copy(callee);
-            let py_result =
-                self.lower_pyobject_call(callee_op, args, arg_ops, arg_kw_names, expr.span);
+            let py_result = self.lower_pyobject_call(
+                callee_op,
+                args,
+                arg_ops,
+                arg_kw_names,
+                expr.span,
+                expr.id,
+            );
             return self.coerce_pyobj_if_needed(py_result, expr.id, expr.span);
         }
 
@@ -1062,6 +1068,14 @@ impl<'a> MirBuilder<'a> {
         span: crate::span::Span,
     ) -> Operand {
         let declared_ty = self.get_type(expr_id);
+        // Already the declared type -- an R10-fused scalar result, say --
+        // so there is nothing left to convert; inserting a Cast here would
+        // be a pure no-op the codegen has to notice and elide on its own.
+        if let Operand::Copy(l) | Operand::Move(l) = &op
+            && self.current_locals[l.0].ty == declared_ty
+        {
+            return op;
+        }
         match &declared_ty {
             Type::Float
             | Type::F32

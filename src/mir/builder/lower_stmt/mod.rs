@@ -298,6 +298,11 @@ impl<'a> MirBuilder<'a> {
                         self.terminate_block(bb, TerminatorKind::Return, expr.span);
                     }
                     self.current_block = Some(self.new_block());
+                } else if self.is_py_call(expr) {
+                    // Discarded in statement position: force `RET_NONE` so the
+                    // runtime decrefs the result immediately instead of this
+                    // call building a handle nothing will ever read.
+                    self.lower_py_call_discard(expr);
                 } else {
                     let rval = self.lower_expr(expr);
                     let tmp = self.new_local(Type::Any, None, true);

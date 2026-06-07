@@ -77,8 +77,9 @@ unsafe fn call_method_with_raw_args_safe(
 }
 
 /// `Result`-returning arity-specialized shells; see `olive_py_call_method0..4`.
+/// `arg_tags`'s top 4 bits carry `ret_tag`, mirroring the non-`_safe` twin.
 #[unsafe(no_mangle)]
-pub extern "C" fn olive_py_call_method0_safe(obj: PyObject, name: i64) -> i64 {
+pub extern "C" fn olive_py_call_method0_safe(obj: PyObject, name: i64, arg_tags: i64) -> i64 {
     if !is_python_available() {
         let err_str_ptr =
             crate::olive_str_internal("Python interop unavailable: libpython3 could not be loaded");
@@ -92,7 +93,7 @@ pub extern "C" fn olive_py_call_method0_safe(obj: PyObject, name: i64) -> i64 {
     let attr_ptr = (name & !1) as *const c_char;
     with_gil(|| unsafe {
         let outcome = call_method_with_raw_args_safe(unwrapped_obj, attr_ptr, 0, 0, &mut []);
-        finish_call_safe(outcome)
+        finish_call_safe(outcome, ret_tag_of(arg_tags))
     })
 }
 
@@ -119,7 +120,7 @@ pub extern "C" fn olive_py_call_method1_safe(
         let mut args = [a0];
         let outcome =
             call_method_with_raw_args_safe(unwrapped_obj, attr_ptr, coll_tags, arg_tags, &mut args);
-        finish_call_safe(outcome)
+        finish_call_safe(outcome, ret_tag_of(arg_tags))
     })
 }
 
@@ -147,7 +148,7 @@ pub extern "C" fn olive_py_call_method2_safe(
         let mut args = [a0, a1];
         let outcome =
             call_method_with_raw_args_safe(unwrapped_obj, attr_ptr, coll_tags, arg_tags, &mut args);
-        finish_call_safe(outcome)
+        finish_call_safe(outcome, ret_tag_of(arg_tags))
     })
 }
 
@@ -176,7 +177,7 @@ pub extern "C" fn olive_py_call_method3_safe(
         let mut args = [a0, a1, a2];
         let outcome =
             call_method_with_raw_args_safe(unwrapped_obj, attr_ptr, coll_tags, arg_tags, &mut args);
-        finish_call_safe(outcome)
+        finish_call_safe(outcome, ret_tag_of(arg_tags))
     })
 }
 
@@ -206,7 +207,7 @@ pub extern "C" fn olive_py_call_method4_safe(
         let mut args = [a0, a1, a2, a3];
         let outcome =
             call_method_with_raw_args_safe(unwrapped_obj, attr_ptr, coll_tags, arg_tags, &mut args);
-        finish_call_safe(outcome)
+        finish_call_safe(outcome, ret_tag_of(arg_tags))
     })
 }
 
@@ -255,7 +256,7 @@ mod tests {
                 });
 
                 let n0 = crate::olive_str_internal("m0") | 1;
-                let r0 = olive_py_call_method0_safe(obj, n0);
+                let r0 = olive_py_call_method0_safe(obj, n0, 0);
                 assert_eq!(crate::result::olive_result_is_err(r0), 0);
                 let ok0 = crate::result::olive_result_unwrap(r0);
                 assert_eq!(
@@ -331,7 +332,7 @@ mod tests {
             with_forced_fusion(vc, intern, || unsafe {
                 let obj = with_gil(|| olive_py_wrap_owned(PY_DICT_NEW()));
                 let name = crate::olive_str_internal("__no_such_method_xyz") | 1;
-                let res = olive_py_call_method0_safe(obj, name);
+                let res = olive_py_call_method0_safe(obj, name, 0);
                 assert_eq!(crate::result::olive_result_is_err(res), 1);
                 let msg = crate::olive_str_from_ptr(crate::result::olive_result_err_msg(res));
                 assert!(
