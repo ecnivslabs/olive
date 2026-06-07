@@ -384,6 +384,102 @@ impl<'a> MirBuilder<'a> {
         self.operand_for_local(result)
     }
 
+    /// Emits `obj.attr(args...)`. A positional-only, tagged-fast-path call
+    /// with 0-4 arguments fuses the getattr into the call itself via
+    /// `__olive_py_call_method{0..4}` -- no separate getattr call, no
+    /// bound-method handle ever created at this level (the runtime may still
+    /// build one internally as a fallback if vectorcall-method or interning
+    /// isn't available). Any other shape (kwargs, arity 5+, splat) keeps the
+    /// original two-step getattr-then-call path, unchanged.
+    pub(super) fn emit_py_method_call(
+        &mut self,
+        obj_op: Operand,
+        attr: String,
+        call_args: PyCallArgs,
+        flavor: PyCallFlavor,
+        result_ty: Type,
+        span: Span,
+    ) -> Operand {
+        if call_args.kw_ops.is_empty() && call_args.fast_path && call_args.pos_ops.len() <= 4 {
+            return self
+                .emit_py_call_method_arity(obj_op, attr, call_args, flavor, result_ty, span);
+        }
+
+        let attr_local = self.new_local(Type::PyObject, None, true);
+        self.push_statement(
+            StatementKind::Assign(
+                attr_local,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("__olive_py_getattr".to_string())),
+                    args: vec![obj_op, Operand::Constant(Constant::Str(attr))],
+                },
+            ),
+            span,
+        );
+        self.emit_py_call(
+            Operand::Copy(attr_local),
+            call_args,
+            flavor,
+            result_ty,
+            span,
+        )
+    }
+
+    /// Emits a call through `__olive_py_call_method{0..4}(_safe)`: `obj` and
+    /// `attr` go straight in as call registers alongside `pos_ops`, no
+    /// `args_list` aggregate and no separate getattr call. Mirrors
+    /// `emit_py_call_arity`'s shape exactly, with the receiver and attribute
+    /// name as two extra leading operands.
+    fn emit_py_call_method_arity(
+        &mut self,
+        obj_op: Operand,
+        attr: String,
+        call_args: PyCallArgs,
+        flavor: PyCallFlavor,
+        result_ty: Type,
+        span: Span,
+    ) -> Operand {
+        let PyCallArgs {
+            pos_ops,
+            coll_tags,
+            arg_tags,
+            ..
+        } = call_args;
+        let name = match (pos_ops.len(), &flavor) {
+            (0, PyCallFlavor::Unsafe) => "__olive_py_call_method0",
+            (0, PyCallFlavor::Safe) => "__olive_py_call_method0_safe",
+            (1, PyCallFlavor::Unsafe) => "__olive_py_call_method1",
+            (1, PyCallFlavor::Safe) => "__olive_py_call_method1_safe",
+            (2, PyCallFlavor::Unsafe) => "__olive_py_call_method2",
+            (2, PyCallFlavor::Safe) => "__olive_py_call_method2_safe",
+            (3, PyCallFlavor::Unsafe) => "__olive_py_call_method3",
+            (3, PyCallFlavor::Safe) => "__olive_py_call_method3_safe",
+            (4, PyCallFlavor::Unsafe) => "__olive_py_call_method4",
+            (4, PyCallFlavor::Safe) => "__olive_py_call_method4_safe",
+            (n, _) => unreachable!("emit_py_call_method_arity: arity {n} out of range"),
+        };
+
+        let mut call_operands = vec![obj_op, Operand::Constant(Constant::Str(attr))];
+        if !pos_ops.is_empty() {
+            call_operands.push(Operand::Constant(Constant::Int(coll_tags)));
+            call_operands.push(Operand::Constant(Constant::Int(arg_tags)));
+            call_operands.extend(pos_ops);
+        }
+
+        let result = self.new_local(result_ty, None, true);
+        self.push_statement(
+            StatementKind::Assign(
+                result,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(name.to_string())),
+                    args: call_operands,
+                },
+            ),
+            span,
+        );
+        self.operand_for_local(result)
+    }
+
     pub(super) fn is_py_call(&self, expr: &Expr) -> bool {
         if let ExprKind::Call { callee, .. } = &expr.kind {
             let callee_ty = self.get_type(callee.id);
@@ -419,26 +515,19 @@ impl<'a> MirBuilder<'a> {
 
         let call_args = self.build_py_call_args(args, arg_ops, arg_kw_names, expr.span);
 
-        let func_op = if let ExprKind::Attr { obj, attr } = &callee.kind {
+        if let ExprKind::Attr { obj, attr } = &callee.kind {
             let obj_op = self.lower_expr_as_copy(obj);
-            let attr_local = self.new_local(Type::PyObject, None, true);
-            self.push_statement(
-                StatementKind::Assign(
-                    attr_local,
-                    Rvalue::Call {
-                        func: Operand::Constant(Constant::Function(
-                            "__olive_py_getattr".to_string(),
-                        )),
-                        args: vec![obj_op, Operand::Constant(Constant::Str(attr.clone()))],
-                    },
-                ),
+            return self.emit_py_method_call(
+                obj_op,
+                attr.clone(),
+                call_args,
+                PyCallFlavor::Safe,
+                Type::Any,
                 expr.span,
             );
-            self.operand_for_local(attr_local)
-        } else {
-            self.lower_expr_as_copy(callee)
-        };
+        }
 
+        let func_op = self.lower_expr_as_copy(callee);
         self.emit_py_call(func_op, call_args, PyCallFlavor::Safe, Type::Any, expr.span)
     }
 }
@@ -500,15 +589,21 @@ mod tests {
 
     /// A positional call with 0-4 args must emit no `[Any]` list aggregate
     /// at all -- the arguments go straight into the arity-specialized entry
-    /// point's call registers.
+    /// point's call registers. `math.f(...)`'s callee is `Attr{obj: math,
+    /// attr: f}` with `math` itself a raw Python value, so this call shape
+    /// dispatches through the fused method-call entry points (R9): fusion
+    /// applies uniformly to any `obj.attr(...)` on a Python value, whether
+    /// `obj` is a module or a class instance -- `PyObject_VectorcallMethod`'s
+    /// own semantics (getattr the first arg, call the result with the rest)
+    /// make this correct either way.
     #[test]
     fn arity_0_to_4_positional_calls_emit_no_list_aggregate() {
         let cases: &[(&str, &str)] = &[
-            ("math.f()", "__olive_py_call0"),
-            ("math.f(1)", "__olive_py_call1"),
-            ("math.f(1, 2)", "__olive_py_call2"),
-            ("math.f(1, 2, 3)", "__olive_py_call3"),
-            ("math.f(1, 2, 3, 4)", "__olive_py_call4"),
+            ("math.f()", "__olive_py_call_method0"),
+            ("math.f(1)", "__olive_py_call_method1"),
+            ("math.f(1, 2)", "__olive_py_call_method2"),
+            ("math.f(1, 2, 3)", "__olive_py_call_method3"),
+            ("math.f(1, 2, 3, 4)", "__olive_py_call_method4"),
         ];
         for (call, want_symbol) in cases {
             let src = format!("import py \"math\" as math\n\nfn f():\n    {call}\n\nf()\n");

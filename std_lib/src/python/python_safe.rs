@@ -211,7 +211,7 @@ pub extern "C" fn olive_py_call_kw_safe(
 /// before the Python call ever ran: every partially-converted slot has
 /// already been released and `pairs` abandoned, so the caller need only
 /// propagate the encoded error.
-unsafe fn call_with_raw_args_safe(
+pub(crate) unsafe fn call_with_raw_args_safe(
     unwrapped_func: PyObject,
     coll_tags: i64,
     arg_tags: i64,
@@ -295,7 +295,7 @@ unsafe fn call_with_raw_args_safe(
 
 /// Wraps a `call_with_raw_args_safe` outcome into the `Result<PyObject, ()>`
 /// wire encoding every `_safe` py-call entry point returns.
-unsafe fn finish_call_safe(outcome: Result<PyObject, i64>) -> i64 {
+pub(crate) unsafe fn finish_call_safe(outcome: Result<PyObject, i64>) -> i64 {
     unsafe {
         let res = match outcome {
             Ok(res) => res,
@@ -595,8 +595,18 @@ pub extern "C" fn olive_py_getattr_safe(obj: PyObject, attr: i64) -> i64 {
         let err_str_ptr = crate::olive_str_internal("Null object pointer");
         return crate::result::olive_result_err(err_str_ptr);
     }
+    let attr_ptr = (attr & !1) as *const c_char;
     with_gil(|| unsafe {
-        let r = PY_OBJECT_GET_ATTR_STRING(unwrapped_obj, (attr & !1) as *const c_char);
+        let r = if HAS_INTERN.load(Ordering::Relaxed) {
+            let name = interned_attr(attr_ptr);
+            if name.is_null() {
+                std::ptr::null_mut()
+            } else {
+                PY_OBJECT_GET_ATTR(unwrapped_obj, name)
+            }
+        } else {
+            PY_OBJECT_GET_ATTR_STRING(unwrapped_obj, attr_ptr)
+        };
         if r.is_null()
             && let Some(err_msg) = catch_py_exception_msg()
         {
@@ -620,6 +630,7 @@ pub extern "C" fn olive_py_setattr_safe(obj: PyObject, attr: i64, val: i64) -> i
         let err_str_ptr = crate::olive_str_internal("Null object pointer");
         return crate::result::olive_result_err(err_str_ptr);
     }
+    let attr_ptr = (attr & !1) as *const c_char;
     with_gil(|| unsafe {
         let py_val = olive_to_py(val);
         if py_val.is_null() || !PY_ERR_OCCURRED().is_null() {
@@ -628,7 +639,16 @@ pub extern "C" fn olive_py_setattr_safe(obj: PyObject, attr: i64, val: i64) -> i
             }
             return conversion_err();
         }
-        let res = PY_OBJECT_SET_ATTR_STRING(unwrapped_obj, (attr & !1) as *const c_char, py_val);
+        let res = if HAS_INTERN.load(Ordering::Relaxed) {
+            let name = interned_attr(attr_ptr);
+            if name.is_null() {
+                -1
+            } else {
+                PY_OBJECT_SET_ATTR(unwrapped_obj, name, py_val)
+            }
+        } else {
+            PY_OBJECT_SET_ATTR_STRING(unwrapped_obj, attr_ptr, py_val)
+        };
         PY_DEC_REF(py_val);
         if res == -1
             && let Some(err_msg) = catch_py_exception_msg()

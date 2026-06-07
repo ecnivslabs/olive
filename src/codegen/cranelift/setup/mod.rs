@@ -32,6 +32,7 @@ impl<M: Module> CraneliftCodegen<M> {
         let sig_3i64_i64 = mk_sig(&[types::I64, types::I64, types::I64], &[types::I64]);
         let sig_6i64_i64 = mk_sig(&[types::I64; 6], &[types::I64]);
         let sig_7i64_i64 = mk_sig(&[types::I64; 7], &[types::I64]);
+        let sig_8i64_i64 = mk_sig(&[types::I64; 8], &[types::I64]);
         let sig_6i64_f64 = mk_sig(&[types::I64; 6], &[types::I64]);
         let sig_f64_f64 = mk_sig(&[types::F64], &[types::F64]);
         let sig_f64_f64_f64 = mk_sig(&[types::F64, types::F64], &[types::F64]);
@@ -443,6 +444,16 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_py_call3_safe", &sig_6i64_i64),
             ("__olive_py_call4", &sig_7i64_i64),
             ("__olive_py_call4_safe", &sig_7i64_i64),
+            ("__olive_py_call_method0", &sig_i64_i64_i64),
+            ("__olive_py_call_method0_safe", &sig_i64_i64_i64),
+            ("__olive_py_call_method1", &sig_i64_5_i64),
+            ("__olive_py_call_method1_safe", &sig_i64_5_i64),
+            ("__olive_py_call_method2", &sig_6i64_i64),
+            ("__olive_py_call_method2_safe", &sig_6i64_i64),
+            ("__olive_py_call_method3", &sig_7i64_i64),
+            ("__olive_py_call_method3_safe", &sig_7i64_i64),
+            ("__olive_py_call_method4", &sig_8i64_i64),
+            ("__olive_py_call_method4_safe", &sig_8i64_i64),
             ("__olive_py_check_alive", &sig_i64_i64),
             ("__olive_py_conv_to_olive", &sig_i64_i64),
             ("__olive_py_conv_to_py", &sig_i64_i64),

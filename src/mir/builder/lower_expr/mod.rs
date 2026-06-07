@@ -791,6 +791,35 @@ impl<'a> MirBuilder<'a> {
             );
         }
 
+        // `obj.attr(...)` where `obj` itself is a raw Python value: route
+        // through the method-call fusion path before ever lowering `attr`
+        // as a value. The generic `callee_ty.is_py_value()` branch just
+        // below would otherwise win first almost every time (a bound
+        // attribute of a dynamic Python object types as `PyObject`/`Any`
+        // too, same as the callee itself), lowering `callee` as a plain
+        // value first -- which unconditionally emits a separate getattr --
+        // before this method call ever gets a chance to fuse it away.
+        // `PyObject_VectorcallMethod`'s own semantics (getattr the first
+        // arg, then call the result with the rest) make this correct
+        // whether `obj` is a class instance or a plain module: Python's
+        // descriptor protocol binds (or doesn't) at the getattr step
+        // either way.
+        if let ExprKind::Attr { obj, attr } = &callee.kind
+            && self.get_type(obj.id).is_py_value()
+        {
+            return self.lower_attr_method_call_section(
+                callee,
+                obj,
+                attr,
+                args,
+                arg_ops,
+                arg_kw_names,
+                arg_tys,
+                expr.span,
+                expr.id,
+            );
+        }
+
         if callee_ty.is_py_value() {
             let callee_op = self.lower_expr_as_copy(callee);
             let py_result =

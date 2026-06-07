@@ -532,6 +532,31 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_py_call3_safe", b"olive_py_call3_safe\0"),
     ("__olive_py_call4", b"olive_py_call4\0"),
     ("__olive_py_call4_safe", b"olive_py_call4_safe\0"),
+    ("__olive_py_call_method0", b"olive_py_call_method0\0"),
+    (
+        "__olive_py_call_method0_safe",
+        b"olive_py_call_method0_safe\0",
+    ),
+    ("__olive_py_call_method1", b"olive_py_call_method1\0"),
+    (
+        "__olive_py_call_method1_safe",
+        b"olive_py_call_method1_safe\0",
+    ),
+    ("__olive_py_call_method2", b"olive_py_call_method2\0"),
+    (
+        "__olive_py_call_method2_safe",
+        b"olive_py_call_method2_safe\0",
+    ),
+    ("__olive_py_call_method3", b"olive_py_call_method3\0"),
+    (
+        "__olive_py_call_method3_safe",
+        b"olive_py_call_method3_safe\0",
+    ),
+    ("__olive_py_call_method4", b"olive_py_call_method4\0"),
+    (
+        "__olive_py_call_method4_safe",
+        b"olive_py_call_method4_safe\0",
+    ),
     ("__olive_py_conv_to_py", b"olive_py_conv_to_py\0"),
     ("__olive_py_decref", b"olive_py_decref\0"),
     ("__olive_py_eq", b"olive_py_eq\0"),
