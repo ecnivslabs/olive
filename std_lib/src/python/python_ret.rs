@@ -90,22 +90,22 @@ mod tests {
                 )
             });
 
-            let ri = olive_py_call0(f_int, RET_INT << 60);
+            let ri = olive_py_call0(f_int, RET_INT << 60, 0);
             assert_eq!(ri as i64, 42);
 
-            let rf = olive_py_call0(f_float, RET_FLOAT << 60);
+            let rf = olive_py_call0(f_float, RET_FLOAT << 60, 0);
             assert_eq!(f64::from_bits(rf as u64), 3.5);
 
-            let rs = olive_py_call0(f_str, RET_STR << 60);
+            let rs = olive_py_call0(f_str, RET_STR << 60, 0);
             assert_eq!(crate::olive_str_from_ptr(rs as i64), "hi");
 
-            let rb = olive_py_call0(f_bool, RET_BOOL << 60);
+            let rb = olive_py_call0(f_bool, RET_BOOL << 60, 0);
             assert_eq!(rb as i64, 1);
 
-            let ra = olive_py_call0(f_any, RET_ANY << 60);
+            let ra = olive_py_call0(f_any, RET_ANY << 60, 0);
             assert_eq!(ra as i64, crate::boxed::olive_box_int(99));
 
-            let rn = olive_py_call0(f_none, RET_NONE << 60);
+            let rn = olive_py_call0(f_none, RET_NONE << 60, 0);
             assert_eq!(rn as i64, 0);
 
             olive_py_decref(f_int);
@@ -141,7 +141,7 @@ mod tests {
 
             for _ in 0..100_000 {
                 let tags1 = ARG_PYOBJECT | (RET_INT << 60);
-                let r = olive_py_call1(len_fn, 0, tags1, target_handle as i64);
+                let r = olive_py_call1(len_fn, 0, tags1, target_handle as i64, 0);
                 assert_eq!(r as i64, 0);
             }
 

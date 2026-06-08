@@ -34,6 +34,7 @@ impl<M: Module> CraneliftCodegen<M> {
         let sig_7i64_i64 = mk_sig(&[types::I64; 7], &[types::I64]);
         let sig_8i64_i64 = mk_sig(&[types::I64; 8], &[types::I64]);
         let sig_9i64_i64 = mk_sig(&[types::I64; 9], &[types::I64]);
+        let sig_10i64_i64 = mk_sig(&[types::I64; 10], &[types::I64]);
         let sig_6i64_f64 = mk_sig(&[types::I64; 6], &[types::I64]);
         let sig_f64_f64 = mk_sig(&[types::F64], &[types::F64]);
         let sig_f64_f64_f64 = mk_sig(&[types::F64, types::F64], &[types::F64]);
@@ -433,32 +434,36 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_py_call_safe", &sig_3i64_i64),
             ("__olive_py_call_t", &sig_4i64_i64),
             ("__olive_py_call_t_safe", &sig_4i64_i64),
-            ("__olive_py_call_kw_v", &sig_8i64_i64),
+            // R17: the unsafe (raising) forms carry one extra trailing `loc`
+            // arg folded in from `__olive_py_set_loc` -- the `_safe` twins
+            // never raise through the abort path, so their shape is
+            // untouched.
+            ("__olive_py_call_kw_v", &sig_9i64_i64),
             ("__olive_py_call_kw_v_safe", &sig_8i64_i64),
-            ("__olive_py_call_method_kw_v", &sig_9i64_i64),
+            ("__olive_py_call_method_kw_v", &sig_10i64_i64),
             ("__olive_py_call_method_kw_v_safe", &sig_9i64_i64),
-            // `func, arg_tags` -- `arg_tags` carries only `ret_tag` (R10),
-            // no real per-argument tags since there are no arguments.
-            ("__olive_py_call0", &sig_i64_i64_i64),
+            // `func, arg_tags, loc` -- `arg_tags` carries only `ret_tag`
+            // (R10), no real per-argument tags since there are no arguments.
+            ("__olive_py_call0", &sig_3i64_i64),
             ("__olive_py_call0_safe", &sig_i64_i64_i64),
-            ("__olive_py_call1", &sig_4i64_i64),
+            ("__olive_py_call1", &sig_i64_5_i64),
             ("__olive_py_call1_safe", &sig_4i64_i64),
-            ("__olive_py_call2", &sig_i64_5_i64),
+            ("__olive_py_call2", &sig_6i64_i64),
             ("__olive_py_call2_safe", &sig_i64_5_i64),
-            ("__olive_py_call3", &sig_6i64_i64),
+            ("__olive_py_call3", &sig_7i64_i64),
             ("__olive_py_call3_safe", &sig_6i64_i64),
-            ("__olive_py_call4", &sig_7i64_i64),
+            ("__olive_py_call4", &sig_8i64_i64),
             ("__olive_py_call4_safe", &sig_7i64_i64),
-            // `obj, name, arg_tags` -- see `__olive_py_call0` above.
-            ("__olive_py_call_method0", &sig_3i64_i64),
+            // `obj, name, arg_tags, loc` -- see `__olive_py_call0` above.
+            ("__olive_py_call_method0", &sig_4i64_i64),
             ("__olive_py_call_method0_safe", &sig_3i64_i64),
-            ("__olive_py_call_method1", &sig_i64_5_i64),
+            ("__olive_py_call_method1", &sig_6i64_i64),
             ("__olive_py_call_method1_safe", &sig_i64_5_i64),
-            ("__olive_py_call_method2", &sig_6i64_i64),
+            ("__olive_py_call_method2", &sig_7i64_i64),
             ("__olive_py_call_method2_safe", &sig_6i64_i64),
-            ("__olive_py_call_method3", &sig_7i64_i64),
+            ("__olive_py_call_method3", &sig_8i64_i64),
             ("__olive_py_call_method3_safe", &sig_7i64_i64),
-            ("__olive_py_call_method4", &sig_8i64_i64),
+            ("__olive_py_call_method4", &sig_9i64_i64),
             ("__olive_py_call_method4_safe", &sig_8i64_i64),
             ("__olive_py_check_alive", &sig_i64_i64),
             ("__olive_py_conv_to_olive", &sig_i64_i64),

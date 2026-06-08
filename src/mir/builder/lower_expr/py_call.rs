@@ -375,7 +375,14 @@ impl<'a> MirBuilder<'a> {
             call_operands.push(Operand::Constant(Constant::Int(kw_arg_tags)));
             match flavor {
                 PyCallFlavor::Safe => "__olive_py_call_kw_v_safe",
-                PyCallFlavor::Unsafe => "__olive_py_call_kw_v",
+                PyCallFlavor::Unsafe => {
+                    // R17: the location the aborting path needs is folded
+                    // in as a trailing arg instead of a separate
+                    // `__olive_py_set_loc` statement -- the `_safe` twin
+                    // never aborts, so it carries no location at all.
+                    call_operands.push(Operand::Constant(Constant::Str(self.call_loc_str(span))));
+                    "__olive_py_call_kw_v"
+                }
             }
         } else {
             let kwargs_list = self.new_local(Type::List(Box::new(Type::Any)), None, true);
@@ -457,6 +464,12 @@ impl<'a> MirBuilder<'a> {
             call_operands.push(Operand::Constant(Constant::Int(coll_tags)));
             call_operands.push(Operand::Constant(Constant::Int(tagged_arg_tags)));
             call_operands.extend(pos_ops);
+        }
+        // R17: the abort path needs the call site to report an uncaught
+        // exception against; folded in as a trailing arg instead of a
+        // separate `__olive_py_set_loc` statement. `Safe` never aborts.
+        if matches!(flavor, PyCallFlavor::Unsafe) {
+            call_operands.push(Operand::Constant(Constant::Str(self.call_loc_str(span))));
         }
 
         let result = self.new_local(local_ty, None, true);
@@ -559,7 +572,7 @@ impl<'a> MirBuilder<'a> {
             PyCallFlavor::Safe => "__olive_py_call_method_kw_v_safe",
             PyCallFlavor::Unsafe => "__olive_py_call_method_kw_v",
         };
-        let call_operands = vec![
+        let mut call_operands = vec![
             obj_op,
             Operand::Constant(Constant::Str(attr)),
             Operand::Copy(args_list),
@@ -570,6 +583,10 @@ impl<'a> MirBuilder<'a> {
             Operand::Constant(Constant::Int(kw_coll_tags)),
             Operand::Constant(Constant::Int(kw_arg_tags)),
         ];
+        // R17: see `emit_py_call_arity`'s equivalent trailing-arg fold-in.
+        if matches!(flavor, PyCallFlavor::Unsafe) {
+            call_operands.push(Operand::Constant(Constant::Str(self.call_loc_str(span))));
+        }
 
         let result = self.new_local(Type::PyObject, None, true);
         self.push_statement(
@@ -632,6 +649,10 @@ impl<'a> MirBuilder<'a> {
             call_operands.push(Operand::Constant(Constant::Int(coll_tags)));
             call_operands.push(Operand::Constant(Constant::Int(tagged_arg_tags)));
             call_operands.extend(pos_ops);
+        }
+        // R17: see `emit_py_call_arity`'s equivalent trailing-arg fold-in.
+        if matches!(flavor, PyCallFlavor::Unsafe) {
+            call_operands.push(Operand::Constant(Constant::Str(self.call_loc_str(span))));
         }
 
         let result = self.new_local(local_ty, None, true);
@@ -864,6 +885,23 @@ mod tests {
         })
     }
 
+    fn has_set_loc_call(f: &crate::mir::ir::MirFunction) -> bool {
+        f.basic_blocks.iter().any(|bb| {
+            bb.statements.iter().any(|s| {
+                matches!(
+                    &s.kind,
+                    StatementKind::Assign(
+                        _,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(name)),
+                            ..
+                        },
+                    ) if name == "__olive_py_set_loc"
+                )
+            })
+        })
+    }
+
     /// A positional call with 0-4 args must emit no `[Any]` list aggregate
     /// at all -- the arguments go straight into the arity-specialized entry
     /// point's call registers. `math.f(...)`'s callee is `Attr{obj: math,
@@ -929,6 +967,46 @@ mod tests {
         assert_eq!(
             call_target(f).as_deref(),
             Some("__olive_py_call_method_kw_v")
+        );
+    }
+
+    /// R17: every R7/R9/R15 fast-path shape (plain arity 0-4, fused method
+    /// arity 0-4, R15's kwargs vectorcall entry point) folds the call-site
+    /// location into its own trailing argument instead of emitting the
+    /// separate `__olive_py_set_loc` statement pair the legacy path still
+    /// pays -- this is the acceptance criterion's MIR half.
+    #[test]
+    fn fast_path_calls_emit_no_separate_set_loc_statement() {
+        let cases: &[&str] = &[
+            "math.f()",
+            "math.f(1)",
+            "math.f(1, 2)",
+            "math.f(1, 2, 3)",
+            "math.f(1, 2, 3, 4)",
+            "math.f(1, x=2)",
+        ];
+        for call in cases {
+            let src = format!("import py \"math\" as math\n\nfn f():\n    {call}\n\nf()\n");
+            let fns = build(&src);
+            let f = fns.iter().find(|f| f.name == "f").unwrap();
+            assert!(
+                !has_set_loc_call(f),
+                "{call} unexpectedly emitted a separate __olive_py_set_loc call"
+            );
+        }
+    }
+
+    /// The legacy list-based path (arity 5+, no fixed-register entry point)
+    /// is out of R17's scope and must keep the separate `__olive_py_set_loc`
+    /// statement exactly as before.
+    #[test]
+    fn legacy_path_call_still_emits_set_loc_statement() {
+        let src = "import py \"math\" as math\n\nfn f():\n    math.f(1, 2, 3, 4, 5)\n\nf()\n";
+        let fns = build(src);
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        assert!(
+            has_set_loc_call(f),
+            "arity-5 legacy call must still emit __olive_py_set_loc"
         );
     }
 }

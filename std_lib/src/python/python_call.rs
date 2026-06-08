@@ -195,8 +195,14 @@ pub extern "C" fn olive_py_call_t(
 /// carry `ret_tag`). A fused (non-`RET_HANDLE`) result is converted and
 /// decref'd before the GIL releases; `RET_HANDLE` keeps wrapping after
 /// release exactly as before, so the unfused path pays nothing extra.
+///
+/// `loc` (R17) is the call site's `file:line:col` string constant, written
+/// to the error-reporting thread-local as the very first action -- no
+/// separate `__olive_py_set_loc` call or MIR statement pair precedes these
+/// entry points the way it still does for the legacy list-based path.
 #[unsafe(no_mangle)]
-pub extern "C" fn olive_py_call0(func: PyObject, arg_tags: i64) -> PyObject {
+pub extern "C" fn olive_py_call0(func: PyObject, arg_tags: i64, loc: i64) -> PyObject {
+    set_py_call_loc(loc);
     check_python_loaded();
     let unwrapped_func = unsafe { olive_py_unwrap(func) };
     if unwrapped_func.is_null() {
@@ -222,7 +228,9 @@ pub extern "C" fn olive_py_call1(
     coll_tags: i64,
     arg_tags: i64,
     a0: i64,
+    loc: i64,
 ) -> PyObject {
+    set_py_call_loc(loc);
     check_python_loaded();
     let unwrapped_func = unsafe { olive_py_unwrap(func) };
     if unwrapped_func.is_null() {
@@ -250,7 +258,9 @@ pub extern "C" fn olive_py_call2(
     arg_tags: i64,
     a0: i64,
     a1: i64,
+    loc: i64,
 ) -> PyObject {
+    set_py_call_loc(loc);
     check_python_loaded();
     let unwrapped_func = unsafe { olive_py_unwrap(func) };
     if unwrapped_func.is_null() {
@@ -279,7 +289,9 @@ pub extern "C" fn olive_py_call3(
     a0: i64,
     a1: i64,
     a2: i64,
+    loc: i64,
 ) -> PyObject {
+    set_py_call_loc(loc);
     check_python_loaded();
     let unwrapped_func = unsafe { olive_py_unwrap(func) };
     if unwrapped_func.is_null() {
@@ -309,7 +321,9 @@ pub extern "C" fn olive_py_call4(
     a1: i64,
     a2: i64,
     a3: i64,
+    loc: i64,
 ) -> PyObject {
+    set_py_call_loc(loc);
     check_python_loaded();
     let unwrapped_func = unsafe { olive_py_unwrap(func) };
     if unwrapped_func.is_null() {
@@ -574,26 +588,26 @@ mod tests {
                 )
             });
 
-            let r0 = olive_py_call0(h0, 0);
+            let r0 = olive_py_call0(h0, 0, 0);
             assert_eq!(with_gil(|| PY_LONG_AS_LONG(olive_py_unwrap(r0))), 111);
             olive_py_decref(r0);
 
-            let r1 = olive_py_call1(h1, 0, ARG_INT, 41);
+            let r1 = olive_py_call1(h1, 0, ARG_INT, 41, 0);
             assert_eq!(with_gil(|| PY_LONG_AS_LONG(olive_py_unwrap(r1))), 42);
             olive_py_decref(r1);
 
             let tags2 = ARG_INT | (ARG_INT << 4);
-            let r2 = olive_py_call2(h2, 0, tags2, 10, 20);
+            let r2 = olive_py_call2(h2, 0, tags2, 10, 20, 0);
             assert_eq!(with_gil(|| PY_LONG_AS_LONG(olive_py_unwrap(r2))), 30);
             olive_py_decref(r2);
 
             let tags3 = ARG_INT | (ARG_INT << 4) | (ARG_INT << 8);
-            let r3 = olive_py_call3(h3, 0, tags3, 1, 2, 3);
+            let r3 = olive_py_call3(h3, 0, tags3, 1, 2, 3, 0);
             assert_eq!(with_gil(|| PY_LONG_AS_LONG(olive_py_unwrap(r3))), 6);
             olive_py_decref(r3);
 
             let tags4 = ARG_INT | (ARG_INT << 4) | (ARG_INT << 8) | (ARG_INT << 12);
-            let r4 = olive_py_call4(h4, 0, tags4, 1, 2, 3, 4);
+            let r4 = olive_py_call4(h4, 0, tags4, 1, 2, 3, 4, 0);
             assert_eq!(with_gil(|| PY_LONG_AS_LONG(olive_py_unwrap(r4))), 10);
             olive_py_decref(r4);
 
@@ -625,7 +639,7 @@ mod tests {
             crate::olive_list_append(xs, 1i64);
             crate::olive_list_append(xs, 2i64);
 
-            let res = olive_py_call1(sort_fn, TAG_INT_LIST, ARG_PYOBJECT, xs);
+            let res = olive_py_call1(sort_fn, TAG_INT_LIST, ARG_PYOBJECT, xs, 0);
             olive_py_decref(res);
 
             assert_eq!(crate::olive_list_len(xs), 3);
@@ -657,7 +671,7 @@ mod tests {
             let baseline = with_gil(|| raw_refcnt(target_raw));
 
             for _ in 0..100_000 {
-                let res = olive_py_call1(len_fn, 0, ARG_PYOBJECT, target_handle as i64);
+                let res = olive_py_call1(len_fn, 0, ARG_PYOBJECT, target_handle as i64, 0);
                 olive_py_decref(res);
             }
 
