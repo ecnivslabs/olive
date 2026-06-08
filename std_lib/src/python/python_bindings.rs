@@ -170,6 +170,57 @@ pub static mut PY_BUFFER_RELEASE: unsafe extern "C" fn(*mut c_void) = noop_buffe
 pub static mut PY_OBJECT_CHECK_BUFFER: unsafe extern "C" fn(PyObject) -> c_int = noop_check_int;
 pub static HAS_BUFFER: AtomicBool = AtomicBool::new(false);
 
+/// `PyCapsule_New`/`GetPointer`/`IsValid`/`SetName` and `PyType_FromSpec`,
+/// dlsym'd when present (R16). `HAS_CAPSULE`/`HAS_TYPE_FROMSPEC` gate the
+/// zero-copy buffer-protocol/DLPack export mechanism; a missing symbol
+/// leaves it unavailable and callers keep using the existing copy-based
+/// crossing (R2a/R2b/R14).
+#[repr(C)]
+pub struct PyTypeSlot {
+    pub slot: c_int,
+    pub pfunc: *mut c_void,
+}
+
+#[repr(C)]
+pub struct PyTypeSpec {
+    pub name: *const c_char,
+    pub basicsize: c_int,
+    pub itemsize: c_int,
+    pub flags: std::os::raw::c_uint,
+    pub slots: *mut PyTypeSlot,
+}
+
+/// Stable-ABI slot IDs from CPython's `typeslots.h`; frozen across 3.x.
+pub const PY_BF_GETBUFFER: c_int = 1;
+pub const PY_BF_RELEASEBUFFER: c_int = 2;
+pub const PY_TP_DEALLOC: c_int = 52;
+pub const PY_TP_METHODS: c_int = 64;
+pub const PY_TP_NEW: c_int = 65;
+/// `Py_TPFLAGS_DEFAULT` for a normal (non-Stackless) CPython build.
+pub const PY_TPFLAGS_DEFAULT: std::os::raw::c_uint = 0;
+
+pub static mut PY_CAPSULE_NEW: unsafe extern "C" fn(
+    *mut c_void,
+    *const c_char,
+    Option<unsafe extern "C" fn(PyObject)>,
+) -> PyObject = crate::python::python_noop::noop_capsule_new;
+pub static mut PY_CAPSULE_GET_POINTER: unsafe extern "C" fn(
+    PyObject,
+    *const c_char,
+) -> *mut c_void = crate::python::python_noop::noop_capsule_get_pointer;
+pub static mut PY_CAPSULE_IS_VALID: unsafe extern "C" fn(PyObject, *const c_char) -> c_int =
+    crate::python::python_noop::noop_capsule_name_check;
+pub static mut PY_CAPSULE_SET_NAME: unsafe extern "C" fn(PyObject, *const c_char) -> c_int =
+    crate::python::python_noop::noop_capsule_name_check;
+pub static mut PY_TYPE_FROM_SPEC: unsafe extern "C" fn(*mut PyTypeSpec) -> PyObject =
+    crate::python::python_noop::noop_type_from_spec;
+pub static mut PY_TYPE_GENERIC_ALLOC: unsafe extern "C" fn(PyObject, isize) -> PyObject =
+    crate::python::python_noop::noop_type_generic_alloc;
+pub static mut PY_OBJECT_FREE: unsafe extern "C" fn(*mut c_void) =
+    crate::python::python_noop::noop_object_free;
+pub static HAS_CAPSULE: AtomicBool = AtomicBool::new(false);
+pub static HAS_TYPE_FROMSPEC: AtomicBool = AtomicBool::new(false);
+
 /// `PyUnicode_InternFromString`/`PyObject_GetAttr`/`PyObject_SetAttr`, dlsym'd
 /// when present. `HAS_INTERN` gates the interned-name attribute path; a
 /// missing symbol leaves it false and callers keep using

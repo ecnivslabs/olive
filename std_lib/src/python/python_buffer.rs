@@ -15,24 +15,25 @@ use std::sync::atomic::Ordering;
 pub(crate) const BUF_ELEM_INT: i64 = 1;
 pub(crate) const BUF_ELEM_FLOAT: i64 = 2;
 
-const PYBUF_FORMAT: c_int = 0x0004;
-const PYBUF_ND: c_int = 0x0008;
+pub(crate) const PYBUF_FORMAT: c_int = 0x0004;
+pub(crate) const PYBUF_ND: c_int = 0x0008;
+pub(crate) const PYBUF_STRIDES: c_int = 0x0010 | PYBUF_ND;
 
 /// Mirrors CPython's `Py_buffer` (`Include/cpython/object.h`), stable across
 /// every 3.x release this targets.
 #[repr(C)]
-struct PyBuffer {
-    buf: *mut c_void,
-    obj: PyObject,
-    len: isize,
-    itemsize: isize,
-    readonly: c_int,
-    ndim: c_int,
-    format: *mut c_char,
-    shape: *mut isize,
-    strides: *mut isize,
-    suboffsets: *mut isize,
-    internal: *mut c_void,
+pub(crate) struct PyBuffer {
+    pub(crate) buf: *mut c_void,
+    pub(crate) obj: PyObject,
+    pub(crate) len: isize,
+    pub(crate) itemsize: isize,
+    pub(crate) readonly: c_int,
+    pub(crate) ndim: c_int,
+    pub(crate) format: *mut c_char,
+    pub(crate) shape: *mut isize,
+    pub(crate) strides: *mut isize,
+    pub(crate) suboffsets: *mut isize,
+    pub(crate) internal: *mut c_void,
 }
 
 /// Reads `view`'s format code, ignoring an exporter's optional leading

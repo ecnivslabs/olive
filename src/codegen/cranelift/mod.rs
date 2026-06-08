@@ -779,6 +779,16 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
         "__olive_signal_install_sigint",
         b"olive_signal_install_sigint\0",
     ),
+    ("__olive_export_buffer_view", b"olive_export_buffer_view\0"),
+    ("__olive_dlpack_export", b"olive_dlpack_export\0"),
+    ("__olive_dlpack_import", b"olive_dlpack_import\0"),
+    ("__olive_dlpack_data_ptr", b"olive_dlpack_data_ptr\0"),
+    ("__olive_dlpack_ndim", b"olive_dlpack_ndim\0"),
+    ("__olive_dlpack_shape_at", b"olive_dlpack_shape_at\0"),
+    ("__olive_dlpack_dtype_code", b"olive_dlpack_dtype_code\0"),
+    ("__olive_dlpack_bits", b"olive_dlpack_bits\0"),
+    ("__olive_dlpack_device_type", b"olive_dlpack_device_type\0"),
+    ("__olive_dlpack_release", b"olive_dlpack_release\0"),
 ];
 pub(super) const POLL_PENDING: i64 = i64::MIN;
 

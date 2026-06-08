@@ -629,6 +629,16 @@ pub(crate) fn resolve_builtin_import(
             "__olive_py_mod" => Some("__olive_py_mod"),
             "__olive_py_pow" => Some("__olive_py_pow"),
             "__olive_signal_install_sigint" => Some("__olive_signal_install_sigint"),
+            "__olive_export_buffer_view" => Some("__olive_export_buffer_view"),
+            "__olive_dlpack_export" => Some("__olive_dlpack_export"),
+            "__olive_dlpack_import" => Some("__olive_dlpack_import"),
+            "__olive_dlpack_data_ptr" => Some("__olive_dlpack_data_ptr"),
+            "__olive_dlpack_ndim" => Some("__olive_dlpack_ndim"),
+            "__olive_dlpack_shape_at" => Some("__olive_dlpack_shape_at"),
+            "__olive_dlpack_dtype_code" => Some("__olive_dlpack_dtype_code"),
+            "__olive_dlpack_bits" => Some("__olive_dlpack_bits"),
+            "__olive_dlpack_device_type" => Some("__olive_dlpack_device_type"),
+            "__olive_dlpack_release" => Some("__olive_dlpack_release"),
             _ => None,
         };
     }
