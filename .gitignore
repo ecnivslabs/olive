@@ -3,6 +3,7 @@
 
 # Benchmark artifacts
 benchmark/
+parity/bin/
 
 # IDE files
 .idea/
