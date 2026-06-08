@@ -477,7 +477,6 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_py_finalize", &sig_void_void),
             ("__olive_py_from_float", &sig_f64_i64),
             ("__olive_py_from_int", &sig_i64_i64),
-            ("__olive_py_from_list", &sig_i64_i64),
             ("__olive_py_from_str", &sig_i64_i64),
             ("__olive_py_getattr", &sig_i64_i64_i64),
             ("__olive_py_getattr_safe", &sig_i64_i64_i64),

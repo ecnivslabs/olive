@@ -214,7 +214,7 @@ pub extern "C" fn olive_py_call_method4_safe(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::python::python_coerce::pyobject_slab_test_lock;
+    use crate::python::python_coerce::{pyobject_slab_test_lock, static_attr_name};
 
     fn with_forced_fusion<R>(vectorcall: bool, intern: bool, f: impl FnOnce() -> R) -> R {
         let prev_vc = HAS_VECTORCALL.load(Ordering::SeqCst);
@@ -255,7 +255,7 @@ mod tests {
                     )
                 });
 
-                let n0 = crate::olive_str_internal("m0") | 1;
+                let n0 = static_attr_name("m0");
                 let r0 = olive_py_call_method0_safe(obj, n0, 0);
                 assert_eq!(crate::result::olive_result_is_err(r0), 0);
                 let ok0 = crate::result::olive_result_unwrap(r0);
@@ -265,7 +265,7 @@ mod tests {
                 );
                 olive_py_decref(ok0 as PyObject);
 
-                let n2 = crate::olive_str_internal("m2") | 1;
+                let n2 = static_attr_name("m2");
                 let tags2 = ARG_INT | (ARG_INT << 4);
                 let r2 = olive_py_call_method2_safe(obj, n2, 0, tags2, 6, 7);
                 assert_eq!(crate::result::olive_result_is_err(r2), 0);
@@ -297,7 +297,7 @@ mod tests {
                     )
                 });
                 let bad = crate::string_slab::str_alloc(&[0xe0]);
-                let name = crate::olive_str_internal("echo") | 1;
+                let name = static_attr_name("echo");
 
                 let res = olive_py_call_method1_safe(obj, name, 0, ARG_STR, bad);
                 assert_eq!(
@@ -331,7 +331,7 @@ mod tests {
         for &(vc, intern) in &[(true, true), (false, false)] {
             with_forced_fusion(vc, intern, || unsafe {
                 let obj = with_gil(|| olive_py_wrap_owned(PY_DICT_NEW()));
-                let name = crate::olive_str_internal("__no_such_method_xyz") | 1;
+                let name = static_attr_name("__no_such_method_xyz");
                 let res = olive_py_call_method0_safe(obj, name, 0);
                 assert_eq!(crate::result::olive_result_is_err(res), 1);
                 let msg = crate::olive_str_from_ptr(crate::result::olive_result_err_msg(res));

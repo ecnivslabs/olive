@@ -594,6 +594,72 @@ impl<'a> MirBuilder<'a> {
         )
     }
 
+    /// Widens R10's scalar-return fusion beyond stub-typed calls, with no
+    /// new pyffi syntax: when `expr` is directly a Python call the checker
+    /// types as `PyObject` (no stub return, or a dynamically dispatched
+    /// method -- there is no per-class/method stub syntax to give one a
+    /// scalar type instead) but the immediate assignment context (a
+    /// `let`/`return`/plain assignment) already declares a fusable scalar
+    /// `hint`, lowers the call as if it had that scalar type instead of
+    /// paying the wrap-then-coerce round trip. `None` falls back to the
+    /// caller's ordinary `lower_expr` path unchanged: not a directly
+    /// py-call-shaped `Call` node, already non-`PyObject` (already fused, or
+    /// genuinely non-scalar), `hint` isn't one of R10's tags, or the call's
+    /// own shape can't reach the arity-specialized entry points (5+
+    /// positional args, a splat, or any keyword argument all keep the
+    /// list-based path, which never fuses regardless of `result_ty`) --
+    /// that last check runs before lowering anything, so no side effect
+    /// from a call argument ever runs twice.
+    pub(in crate::mir::builder) fn lower_py_call_scalar_hint(
+        &mut self,
+        expr: &Expr,
+        hint: &Type,
+    ) -> Option<Operand> {
+        if self.get_type(expr.id) != Type::PyObject || Self::py_ret_tag(hint).0 == RET_HANDLE {
+            return None;
+        }
+        let ExprKind::Call { callee, args } = &expr.kind else {
+            return None;
+        };
+        let has_splat = args
+            .iter()
+            .any(|a| matches!(a, CallArg::Splat(_) | CallArg::KwSplat(_)));
+        let has_kw = args.iter().any(|a| matches!(a, CallArg::Keyword(_, _)));
+        if has_splat || has_kw || args.len() > 4 {
+            return None;
+        }
+
+        let is_method = matches!(&callee.kind, ExprKind::Attr { obj, .. }
+            if self.get_type(obj.id).is_py_value());
+        if !is_method && !self.get_type(callee.id).is_py_value() {
+            return None;
+        }
+
+        let (arg_ops, arg_kw_names, _arg_tys) = self.lower_call_args(args, callee, expr.span);
+        let call_args = self.build_py_call_args(args, arg_ops, arg_kw_names, expr.span);
+
+        if let ExprKind::Attr { obj, attr } = &callee.kind {
+            let obj_op = self.lower_expr_as_copy(obj);
+            return Some(self.emit_py_method_call(
+                obj_op,
+                attr.clone(),
+                call_args,
+                PyCallFlavor::Unsafe,
+                hint.clone(),
+                expr.span,
+            ));
+        }
+
+        let callee_op = self.lower_expr_as_copy(callee);
+        Some(self.emit_py_call(
+            callee_op,
+            call_args,
+            PyCallFlavor::Unsafe,
+            hint.clone(),
+            expr.span,
+        ))
+    }
+
     pub(super) fn lower_py_call_safe(&mut self, expr: &Expr) -> Operand {
         let ExprKind::Call { callee, args } = &expr.kind else {
             return self.lower_expr(expr);

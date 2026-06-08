@@ -590,7 +590,6 @@ pub(crate) fn resolve_builtin_import(
             "__olive_py_from_int" => Some("__olive_py_from_int"),
             "__olive_py_from_float" => Some("__olive_py_from_float"),
             "__olive_py_from_str" => Some("__olive_py_from_str"),
-            "__olive_py_from_list" => Some("__olive_py_from_list"),
             "__olive_py_getitem" => Some("__olive_py_getitem"),
             "__olive_py_getitem_int" => Some("__olive_py_getitem_int"),
             "__olive_py_getslice" => Some("__olive_py_getslice"),

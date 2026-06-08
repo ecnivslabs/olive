@@ -194,9 +194,11 @@ impl<'a> MirBuilder<'a> {
             return;
         }
 
-        let mut rval = self.lower_expr(value);
         let target_ty = self.get_type(target.id).clone();
-        let value_ty = self.get_type(value.id).clone();
+        let (mut rval, value_ty) = match self.lower_py_call_scalar_hint(value, &target_ty) {
+            Some(op) => (op, target_ty.clone()),
+            None => (self.lower_expr(value), self.get_type(value.id).clone()),
+        };
         rval = self.coerce(rval, &value_ty, &target_ty, value.span);
         match &target.kind {
             ExprKind::Identifier(name) => {

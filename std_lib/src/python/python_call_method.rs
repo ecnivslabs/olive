@@ -240,7 +240,7 @@ pub extern "C" fn olive_py_call_method4(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::python::python_coerce::pyobject_slab_test_lock;
+    use crate::python::python_coerce::{pyobject_slab_test_lock, static_attr_name};
 
     fn with_forced_fusion<R>(vectorcall: bool, intern: bool, f: impl FnOnce() -> R) -> R {
         let prev_vc = HAS_VECTORCALL.load(Ordering::SeqCst);
@@ -281,29 +281,29 @@ mod tests {
                     )
                 });
 
-                let n0 = crate::olive_str_internal("m0") | 1;
+                let n0 = static_attr_name("m0");
                 let r0 = olive_py_call_method0(obj, n0, 0);
                 assert_eq!(with_gil(|| PY_LONG_AS_LONG(olive_py_unwrap(r0))), 111);
                 olive_py_decref(r0);
 
-                let n1 = crate::olive_str_internal("m1") | 1;
+                let n1 = static_attr_name("m1");
                 let r1 = olive_py_call_method1(obj, n1, 0, ARG_INT, 41);
                 assert_eq!(with_gil(|| PY_LONG_AS_LONG(olive_py_unwrap(r1))), 42);
                 olive_py_decref(r1);
 
-                let n2 = crate::olive_str_internal("m2") | 1;
+                let n2 = static_attr_name("m2");
                 let tags2 = ARG_INT | (ARG_INT << 4);
                 let r2 = olive_py_call_method2(obj, n2, 0, tags2, 10, 20);
                 assert_eq!(with_gil(|| PY_LONG_AS_LONG(olive_py_unwrap(r2))), 30);
                 olive_py_decref(r2);
 
-                let n3 = crate::olive_str_internal("m3") | 1;
+                let n3 = static_attr_name("m3");
                 let tags3 = ARG_INT | (ARG_INT << 4) | (ARG_INT << 8);
                 let r3 = olive_py_call_method3(obj, n3, 0, tags3, 1, 2, 3);
                 assert_eq!(with_gil(|| PY_LONG_AS_LONG(olive_py_unwrap(r3))), 6);
                 olive_py_decref(r3);
 
-                let n4 = crate::olive_str_internal("m4") | 1;
+                let n4 = static_attr_name("m4");
                 let tags4 = ARG_INT | (ARG_INT << 4) | (ARG_INT << 8) | (ARG_INT << 12);
                 let r4 = olive_py_call_method4(obj, n4, 0, tags4, 1, 2, 3, 4);
                 assert_eq!(with_gil(|| PY_LONG_AS_LONG(olive_py_unwrap(r4))), 10);
@@ -334,7 +334,7 @@ mod tests {
                 });
 
                 let baseline = with_gil(|| *(target_raw as *const isize));
-                let name = crate::olive_str_internal("echo") | 1;
+                let name = static_attr_name("echo");
 
                 for _ in 0..100_000 {
                     let res =
@@ -374,7 +374,7 @@ mod tests {
             crate::olive_list_append(xs, 1i64);
             crate::olive_list_append(xs, 2i64);
 
-            let name = crate::olive_str_internal("sort_arg") | 1;
+            let name = static_attr_name("sort_arg");
             let res = olive_py_call_method1(obj, name, TAG_INT_LIST, ARG_PYOBJECT, xs);
             olive_py_decref(res);
 
@@ -407,11 +407,11 @@ mod tests {
                     )
                 });
 
-                let n0 = crate::olive_str_internal("r0") | 1;
+                let n0 = static_attr_name("r0");
                 let r0 = olive_py_call_method0(obj, n0, RET_INT << 60);
                 assert_eq!(r0 as i64, 111);
 
-                let n_area = crate::olive_str_internal("area") | 1;
+                let n_area = static_attr_name("area");
                 let tags2 = ARG_INT | (ARG_INT << 4) | (RET_FLOAT << 60);
                 let area = olive_py_call_method2(obj, n_area, 0, tags2, 3, 4);
                 assert_eq!(f64::from_bits(area as u64), 12.0);

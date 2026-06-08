@@ -574,7 +574,6 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_py_finalize", b"olive_py_finalize\0"),
     ("__olive_py_from_float", b"olive_py_from_float\0"),
     ("__olive_py_from_int", b"olive_py_from_int\0"),
-    ("__olive_py_from_list", b"olive_py_from_list\0"),
     ("__olive_py_from_str", b"olive_py_from_str\0"),
     ("__olive_py_getattr", b"olive_py_getattr\0"),
     ("__olive_py_getattr_safe", b"olive_py_getattr_safe\0"),

@@ -94,6 +94,9 @@ unsafe fn convert_collection_arg(val: i64, tag: i64, pairs: &mut Vec<WritebackPa
             return existing.py_obj;
         }
         let py_obj = match tag {
+            TAG_INT_LIST | TAG_FLOAT_LIST | TAG_BOOL_LIST | TAG_STR_LIST => {
+                to_py_typed_list(val, scalar_kind(tag))
+            }
             TAG_INT_DICT | TAG_FLOAT_DICT | TAG_BOOL_DICT | TAG_STR_DICT => {
                 to_py_typed_dict(val, scalar_kind(tag))
             }
@@ -223,6 +226,25 @@ unsafe fn raw_scalar_to_py(val: i64, kind: i64) -> PyObject {
             TAG_STR_LIST => PY_UNICODE_FROM_STRING((val & !1) as *const c_char),
             _ => unreachable!("raw_scalar_to_py: {kind} is not a scalar kind"),
         }
+    }
+}
+
+/// Deep-realizes a concretely-typed list (`[T]`, `T` a scalar) into a real
+/// Python `list`, reading each element raw by `kind` instead of through
+/// `to_py_deep`'s per-element runtime-guessed dispatch (`olive_to_py`'s
+/// `is_active_object` scan plus the `looks_like_float` heuristic) -- the
+/// compiler's own static element type already says which scalar every
+/// element is, so there is nothing left to guess.
+unsafe fn to_py_typed_list(val: i64, kind: i64) -> PyObject {
+    unsafe {
+        let n = crate::olive_list_len(val);
+        let py_list = PY_LIST_NEW(n as isize);
+        for i in 0..n {
+            let elem = crate::olive_list_get(val, i);
+            let py_v = raw_scalar_to_py(elem, kind);
+            PY_LIST_SET_ITEM(py_list, i as isize, py_v);
+        }
+        py_list
     }
 }
 
