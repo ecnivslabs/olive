@@ -8,10 +8,11 @@ use crate::mir::optimizations::{
     Transform, algebraic::AlgebraicSimplification, bounds_check_elim::BoundsCheckElim,
     const_fold::ConstantFolding, const_prop::ConstantPropagation, copy_prop::CopyPropagation,
     cse::CommonSubexpressionElimination, dce::DeadCodeElimination, drop_hooks,
-    gencheck::GenCheckInsertion, gvn::GlobalValueNumbering, inliner::Inliner, licm::Licm,
-    loop_unroll::LoopUnroll, move_elision::MoveElision, ownership::OwnershipInference,
-    peephole::PeepholeOptimize, scalarize::ScalarizeStructs, simplify_cfg::SimplifyCfg,
-    strength_reduction::StrengthReduction, tail_call::TailCallOpt, vectorize::LoopVectorizer,
+    gencheck::GenCheckInsertion, gil_fusion::GilFusion, gvn::GlobalValueNumbering,
+    inliner::Inliner, licm::Licm, loop_unroll::LoopUnroll, move_elision::MoveElision,
+    ownership::OwnershipInference, peephole::PeepholeOptimize, scalarize::ScalarizeStructs,
+    simplify_cfg::SimplifyCfg, strength_reduction::StrengthReduction, tail_call::TailCallOpt,
+    vectorize::LoopVectorizer,
 };
 
 pub struct Optimizer {
@@ -167,6 +168,10 @@ impl Optimizer {
             // Runs last so no later pass can rewrite an access whose bounds
             // check it has already proven redundant.
             BoundsCheckElim.run(func);
+
+            // Runs after everything else settles final statement order, so
+            // the runs it fuses are the ones that actually reach codegen.
+            GilFusion.run(func);
         }
 
         let diags = self.insert_gen_checks(functions, ownership);

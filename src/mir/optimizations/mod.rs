@@ -9,6 +9,7 @@ pub mod cse;
 pub mod dce;
 pub mod drop_hooks;
 pub mod gencheck;
+pub mod gil_fusion;
 pub mod gvn;
 pub mod inliner;
 pub mod licm;

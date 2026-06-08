@@ -335,22 +335,42 @@ impl<'a> MirBuilder<'a> {
             // the Any inline tag bits); a concrete native element type wants
             // the raw form, matching that type's own runtime representation.
             Type::List(elem) => {
-                let func = if elem.as_ref() == &Type::Any {
-                    "__olive_py_to_any_list"
-                } else {
-                    "__olive_py_to_list"
-                };
                 let tmp = self.new_unscoped_local(target.clone());
-                self.push_statement(
-                    StatementKind::Assign(
-                        tmp,
-                        Rvalue::Call {
-                            func: Operand::Constant(Constant::Function(func.to_string())),
-                            args: vec![op],
-                        },
-                    ),
-                    span,
-                );
+                if elem.as_ref() == &Type::Any {
+                    self.push_statement(
+                        StatementKind::Assign(
+                            tmp,
+                            Rvalue::Call {
+                                func: Operand::Constant(Constant::Function(
+                                    "__olive_py_to_any_list".to_string(),
+                                )),
+                                args: vec![op],
+                            },
+                        ),
+                        span,
+                    );
+                } else {
+                    // R14: the buffer ingest fast path needs to know the
+                    // declared element type up front -- must match
+                    // `python_buffer.rs`'s `BUF_ELEM_INT`/`BUF_ELEM_FLOAT`.
+                    let elem_tag = match elem.as_ref() {
+                        Type::Int => 1,
+                        Type::Float => 2,
+                        _ => 0,
+                    };
+                    self.push_statement(
+                        StatementKind::Assign(
+                            tmp,
+                            Rvalue::Call {
+                                func: Operand::Constant(Constant::Function(
+                                    "__olive_py_to_list".to_string(),
+                                )),
+                                args: vec![op, Operand::Constant(Constant::Int(elem_tag))],
+                            },
+                        ),
+                        span,
+                    );
+                }
                 Operand::Move(tmp)
             }
             Type::Dict(_, val) => {

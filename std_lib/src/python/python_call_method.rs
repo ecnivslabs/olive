@@ -98,15 +98,15 @@ pub extern "C" fn olive_py_call_method0(obj: PyObject, name: i64, arg_tags: i64)
     }
     let attr_ptr = (name & !1) as *const c_char;
     unsafe {
-        let gil = PY_GILSTATE_ENSURE();
+        olive_py_gil_begin();
         let res = call_method_with_raw_args(unwrapped_obj, attr_ptr, 0, 0, &mut []);
         let ret_tag = ret_tag_of(arg_tags);
         if ret_tag == RET_HANDLE {
-            PY_GILSTATE_RELEASE(gil);
+            olive_py_gil_end();
             return olive_py_wrap_owned(res);
         }
         let out = finish_ret(res, ret_tag);
-        PY_GILSTATE_RELEASE(gil);
+        olive_py_gil_end();
         out as PyObject
     }
 }
@@ -126,17 +126,17 @@ pub extern "C" fn olive_py_call_method1(
     }
     let attr_ptr = (name & !1) as *const c_char;
     unsafe {
-        let gil = PY_GILSTATE_ENSURE();
+        olive_py_gil_begin();
         let mut args = [a0];
         let res =
             call_method_with_raw_args(unwrapped_obj, attr_ptr, coll_tags, arg_tags, &mut args);
         let ret_tag = ret_tag_of(arg_tags);
         if ret_tag == RET_HANDLE {
-            PY_GILSTATE_RELEASE(gil);
+            olive_py_gil_end();
             return olive_py_wrap_owned(res);
         }
         let out = finish_ret(res, ret_tag);
-        PY_GILSTATE_RELEASE(gil);
+        olive_py_gil_end();
         out as PyObject
     }
 }
@@ -157,17 +157,17 @@ pub extern "C" fn olive_py_call_method2(
     }
     let attr_ptr = (name & !1) as *const c_char;
     unsafe {
-        let gil = PY_GILSTATE_ENSURE();
+        olive_py_gil_begin();
         let mut args = [a0, a1];
         let res =
             call_method_with_raw_args(unwrapped_obj, attr_ptr, coll_tags, arg_tags, &mut args);
         let ret_tag = ret_tag_of(arg_tags);
         if ret_tag == RET_HANDLE {
-            PY_GILSTATE_RELEASE(gil);
+            olive_py_gil_end();
             return olive_py_wrap_owned(res);
         }
         let out = finish_ret(res, ret_tag);
-        PY_GILSTATE_RELEASE(gil);
+        olive_py_gil_end();
         out as PyObject
     }
 }
@@ -189,17 +189,17 @@ pub extern "C" fn olive_py_call_method3(
     }
     let attr_ptr = (name & !1) as *const c_char;
     unsafe {
-        let gil = PY_GILSTATE_ENSURE();
+        olive_py_gil_begin();
         let mut args = [a0, a1, a2];
         let res =
             call_method_with_raw_args(unwrapped_obj, attr_ptr, coll_tags, arg_tags, &mut args);
         let ret_tag = ret_tag_of(arg_tags);
         if ret_tag == RET_HANDLE {
-            PY_GILSTATE_RELEASE(gil);
+            olive_py_gil_end();
             return olive_py_wrap_owned(res);
         }
         let out = finish_ret(res, ret_tag);
-        PY_GILSTATE_RELEASE(gil);
+        olive_py_gil_end();
         out as PyObject
     }
 }
@@ -222,17 +222,17 @@ pub extern "C" fn olive_py_call_method4(
     }
     let attr_ptr = (name & !1) as *const c_char;
     unsafe {
-        let gil = PY_GILSTATE_ENSURE();
+        olive_py_gil_begin();
         let mut args = [a0, a1, a2, a3];
         let res =
             call_method_with_raw_args(unwrapped_obj, attr_ptr, coll_tags, arg_tags, &mut args);
         let ret_tag = ret_tag_of(arg_tags);
         if ret_tag == RET_HANDLE {
-            PY_GILSTATE_RELEASE(gil);
+            olive_py_gil_end();
             return olive_py_wrap_owned(res);
         }
         let out = finish_ret(res, ret_tag);
-        PY_GILSTATE_RELEASE(gil);
+        olive_py_gil_end();
         out as PyObject
     }
 }

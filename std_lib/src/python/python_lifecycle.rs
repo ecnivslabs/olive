@@ -244,6 +244,9 @@ pub extern "C" fn olive_py_initialize() {
         PY_ITER_CHECK = compat_dlsym(handle, "PyIter_Check");
         PY_VECTORCALL = compat_dlsym(handle, "PyObject_Vectorcall");
         PY_VECTORCALL_METHOD = compat_dlsym(handle, "PyObject_VectorcallMethod");
+        PY_OBJECT_GET_BUFFER = compat_dlsym(handle, "PyObject_GetBuffer");
+        PY_BUFFER_RELEASE = compat_dlsym(handle, "PyBuffer_Release");
+        PY_OBJECT_CHECK_BUFFER = compat_dlsym(handle, "PyObject_CheckBuffer");
         PY_UNICODE_INTERN_FROM_STRING = compat_dlsym(handle, "PyUnicode_InternFromString");
         PY_OBJECT_GET_ATTR = compat_dlsym(handle, "PyObject_GetAttr");
         PY_OBJECT_SET_ATTR = compat_dlsym(handle, "PyObject_SetAttr");
@@ -345,6 +348,10 @@ pub extern "C" fn olive_py_initialize() {
             PY_VECTORCALL = noop_vectorcall;
             PY_VECTORCALL_METHOD = noop_vectorcall;
             HAS_VECTORCALL.store(false, Ordering::SeqCst);
+            PY_OBJECT_GET_BUFFER = noop_get_buffer;
+            PY_BUFFER_RELEASE = noop_buffer_release;
+            PY_OBJECT_CHECK_BUFFER = noop_check_int;
+            HAS_BUFFER.store(false, Ordering::SeqCst);
             PY_UNICODE_INTERN_FROM_STRING = noop_from_string;
             PY_OBJECT_GET_ATTR = noop_getitem;
             PY_OBJECT_SET_ATTR = noop_setitem;
@@ -371,6 +378,16 @@ pub extern "C" fn olive_py_initialize() {
                 && !std::mem::transmute::<_, *const ()>(PY_OBJECT_SET_ATTR).is_null();
         let intern_disabled_for_test = std::env::var("OLIVE_PY_NO_INTERN").as_deref() == Ok("1");
         HAS_INTERN.store(intern_present && !intern_disabled_for_test, Ordering::SeqCst);
+
+        // Missing on exotic builds without the buffer protocol compiled in.
+        // A test-only override exercises the per-element fallback on a build
+        // that does have it.
+        let buffer_present =
+            !std::mem::transmute::<_, *const ()>(PY_OBJECT_GET_BUFFER).is_null()
+                && !std::mem::transmute::<_, *const ()>(PY_BUFFER_RELEASE).is_null()
+                && !std::mem::transmute::<_, *const ()>(PY_OBJECT_CHECK_BUFFER).is_null();
+        let buffer_disabled_for_test = std::env::var("OLIVE_PY_NO_BUFFER").as_deref() == Ok("1");
+        HAS_BUFFER.store(buffer_present && !buffer_disabled_for_test, Ordering::SeqCst);
 
         PY_INITIALIZE();
 

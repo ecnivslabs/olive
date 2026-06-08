@@ -55,6 +55,19 @@ pub(super) enum PyCallFlavor {
 pub(super) struct PyCallArgs {
     pos_ops: Vec<Operand>,
     kw_ops: Vec<Operand>,
+    /// R15: keyword *values* only, parallel to `kw_arg_tags`/`kw_coll_tags`
+    /// -- names are compile-time constants, so they never need a runtime
+    /// slot of their own; see `kw_names_packed`. Populated only when
+    /// `fast_path` (a splat/kwsplat call keeps names and values interleaved
+    /// in `kw_ops` for the legacy dict-building path instead).
+    kw_vals: Vec<Operand>,
+    /// R15: every keyword name, comma-joined into one compile-time
+    /// constant (kwarg names are always valid Python identifiers, so a
+    /// comma can never appear inside one) -- the runtime interns and
+    /// tuple-packs this once per unique call site and caches the result
+    /// forever, keyed by this constant's own address. `None` when there
+    /// are no keyword arguments.
+    kw_names_packed: Option<String>,
     arg_tags: i64,
     coll_tags: i64,
     kw_arg_tags: i64,
@@ -204,6 +217,8 @@ impl<'a> MirBuilder<'a> {
 
         let mut pos_ops = Vec::new();
         let mut kw_ops = Vec::new();
+        let mut kw_vals = Vec::new();
+        let mut kw_names = Vec::new();
         let mut pos_coll_tags = Vec::new();
         let mut pos_arg_tags = Vec::new();
         let mut kw_coll_tags = Vec::new();
@@ -236,6 +251,10 @@ impl<'a> MirBuilder<'a> {
                 self.emit_to_py_arg(op, &arg_ty, span)
             };
             if let Some(name) = kw_name {
+                if fast_path {
+                    kw_vals.push(py_op.clone());
+                    kw_names.push(name.clone());
+                }
                 kw_ops.push(Operand::Constant(Constant::Str(name)));
                 kw_ops.push(py_op);
                 kw_coll_tags.push(coll_tag);
@@ -250,6 +269,12 @@ impl<'a> MirBuilder<'a> {
         PyCallArgs {
             pos_ops,
             kw_ops,
+            kw_vals,
+            kw_names_packed: if kw_names.is_empty() {
+                None
+            } else {
+                Some(kw_names.join(","))
+            },
             arg_tags: if fast_path {
                 Self::pack_tags(&pos_arg_tags)
             } else {
@@ -288,6 +313,8 @@ impl<'a> MirBuilder<'a> {
         let PyCallArgs {
             pos_ops,
             kw_ops,
+            kw_vals,
+            kw_names_packed,
             arg_tags,
             coll_tags,
             kw_arg_tags,
@@ -333,6 +360,23 @@ impl<'a> MirBuilder<'a> {
                 (false, PyCallFlavor::Safe) => "__olive_py_call_safe",
                 (false, PyCallFlavor::Unsafe) => "__olive_py_call",
             }
+        } else if fast_path {
+            // R15: names are a packed compile-time constant, not part of
+            // the runtime aggregate -- `kwvals_list` holds values only.
+            let kwvals_list = self.new_local(Type::List(Box::new(Type::Any)), None, true);
+            self.push_statement(
+                StatementKind::Assign(kwvals_list, Rvalue::Aggregate(AggregateKind::List, kw_vals)),
+                span,
+            );
+            let kwnames = kw_names_packed.unwrap_or_default();
+            call_operands.push(Operand::Constant(Constant::Str(kwnames)));
+            call_operands.push(Operand::Copy(kwvals_list));
+            call_operands.push(Operand::Constant(Constant::Int(kw_coll_tags)));
+            call_operands.push(Operand::Constant(Constant::Int(kw_arg_tags)));
+            match flavor {
+                PyCallFlavor::Safe => "__olive_py_call_kw_v_safe",
+                PyCallFlavor::Unsafe => "__olive_py_call_kw_v",
+            }
         } else {
             let kwargs_list = self.new_local(Type::List(Box::new(Type::Any)), None, true);
             self.push_statement(
@@ -341,14 +385,9 @@ impl<'a> MirBuilder<'a> {
             );
             call_operands.push(Operand::Copy(kwargs_list));
             call_operands.push(Operand::Constant(Constant::Int(kw_coll_tags)));
-            if fast_path {
-                call_operands.push(Operand::Constant(Constant::Int(kw_arg_tags)));
-            }
-            match (fast_path, &flavor) {
-                (true, PyCallFlavor::Safe) => "__olive_py_call_kw_t_safe",
-                (true, PyCallFlavor::Unsafe) => "__olive_py_call_kw_t",
-                (false, PyCallFlavor::Safe) => "__olive_py_call_kw_safe",
-                (false, PyCallFlavor::Unsafe) => "__olive_py_call_kw",
+            match flavor {
+                PyCallFlavor::Safe => "__olive_py_call_kw_safe",
+                PyCallFlavor::Unsafe => "__olive_py_call_kw",
             }
         };
 
@@ -454,6 +493,9 @@ impl<'a> MirBuilder<'a> {
             return self
                 .emit_py_call_method_arity(obj_op, attr, call_args, flavor, result_ty, span);
         }
+        if !call_args.kw_ops.is_empty() && call_args.fast_path {
+            return self.emit_py_call_method_kw_v(obj_op, attr, call_args, flavor, span);
+        }
 
         let attr_local = self.new_local(Type::PyObject, None, true);
         self.push_statement(
@@ -473,6 +515,74 @@ impl<'a> MirBuilder<'a> {
             result_ty,
             span,
         )
+    }
+
+    /// R15: `obj.attr(*positional, **keyword)` on the tagged fast path.
+    /// `PyObject_VectorcallMethod` resolves the bound method and calls it in
+    /// one step (falls back to a plain `GetAttr` + the module-level kwargs
+    /// path when vectorcall or interning isn't available), so this skips
+    /// the separate `__olive_py_getattr` call `emit_py_method_call`'s
+    /// general kwargs fallback still pays. Like that fallback, this never
+    /// fuses the result -- only the no-kwargs arity shells do.
+    fn emit_py_call_method_kw_v(
+        &mut self,
+        obj_op: Operand,
+        attr: String,
+        call_args: PyCallArgs,
+        flavor: PyCallFlavor,
+        span: Span,
+    ) -> Operand {
+        let PyCallArgs {
+            pos_ops,
+            kw_vals,
+            kw_names_packed,
+            arg_tags,
+            coll_tags,
+            kw_arg_tags,
+            kw_coll_tags,
+            ..
+        } = call_args;
+
+        let args_list = self.new_local(Type::List(Box::new(Type::Any)), None, true);
+        self.push_statement(
+            StatementKind::Assign(args_list, Rvalue::Aggregate(AggregateKind::List, pos_ops)),
+            span,
+        );
+        let kwvals_list = self.new_local(Type::List(Box::new(Type::Any)), None, true);
+        self.push_statement(
+            StatementKind::Assign(kwvals_list, Rvalue::Aggregate(AggregateKind::List, kw_vals)),
+            span,
+        );
+        let kwnames = kw_names_packed.unwrap_or_default();
+
+        let name = match flavor {
+            PyCallFlavor::Safe => "__olive_py_call_method_kw_v_safe",
+            PyCallFlavor::Unsafe => "__olive_py_call_method_kw_v",
+        };
+        let call_operands = vec![
+            obj_op,
+            Operand::Constant(Constant::Str(attr)),
+            Operand::Copy(args_list),
+            Operand::Constant(Constant::Int(coll_tags)),
+            Operand::Constant(Constant::Int(arg_tags)),
+            Operand::Constant(Constant::Str(kwnames)),
+            Operand::Copy(kwvals_list),
+            Operand::Constant(Constant::Int(kw_coll_tags)),
+            Operand::Constant(Constant::Int(kw_arg_tags)),
+        ];
+
+        let result = self.new_local(Type::PyObject, None, true);
+        self.push_statement(
+            StatementKind::Assign(
+                result,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(name.to_string())),
+                    args: call_operands,
+                },
+            ),
+            span,
+        );
+        self.operand_for_local(result)
     }
 
     /// Emits a call through `__olive_py_call_method{0..4}(_safe)`: `obj` and
@@ -802,9 +912,11 @@ mod tests {
         assert_eq!(call_target(f).as_deref(), Some("__olive_py_call_t"));
     }
 
-    /// A call with any keyword argument keeps the kwargs list path
-    /// regardless of its positional arity -- only the positional-only,
-    /// kwargs-free shape gets specialized.
+    /// A call with any keyword argument keeps a list-based path regardless
+    /// of its positional arity -- only the positional-only, kwargs-free
+    /// shape skips list aggregates entirely. R15: on the tagged fast path
+    /// this is the vectorcall entry point (still one `args_list` and one
+    /// `kwvals_list` aggregate), not the dict-building `_kw_t` path.
     #[test]
     fn kwargs_call_keeps_list_path_regardless_of_positional_arity() {
         let src = "import py \"math\" as math\n\nfn f():\n    math.f(1, x=2)\n\nf()\n";
@@ -814,6 +926,9 @@ mod tests {
             has_list_aggregate(f),
             "a kwargs call must still build a list aggregate"
         );
-        assert_eq!(call_target(f).as_deref(), Some("__olive_py_call_kw_t"));
+        assert_eq!(
+            call_target(f).as_deref(),
+            Some("__olive_py_call_method_kw_v")
+        );
     }
 }
