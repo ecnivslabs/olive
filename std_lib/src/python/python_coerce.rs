@@ -203,9 +203,56 @@ pub fn olive_any_to_py(val: i64) -> PyObject {
     olive_to_py(val)
 }
 
+/// Olive string to Python `str`, single-pass and length-carrying when
+/// `PyUnicode_FromStringAndSize` is available (R18): the slab header already
+/// knows the length, so this skips the strlen `PyUnicode_FromString` would
+/// otherwise do internally. Falls back to the strlen-based call when the
+/// symbol is missing.
+pub(crate) unsafe fn olive_str_to_py(val: i64) -> PyObject {
+    unsafe {
+        if HAS_STR_AND_SIZE.load(Ordering::Relaxed) {
+            let bytes = crate::olive_str_to_bytes(val);
+            PY_UNICODE_FROM_STRING_AND_SIZE(bytes.as_ptr() as *const c_char, bytes.len() as isize)
+        } else {
+            PY_UNICODE_FROM_STRING((val & !1) as *const c_char)
+        }
+    }
+}
+
+/// Python `str` to Olive string, single-pass via `PyUnicode_AsUTF8AndSize`
+/// when available (R18): one call gives pointer and byte length together, so
+/// the slab string allocates at exact size and copies once, with no `strlen`
+/// rescan and no lossy UTF-8 re-validation (CPython already guarantees valid
+/// UTF-8). Embedded NULs copy through intact on this path. Returns `0` on a
+/// decode failure; falls back to the old strlen/lossy-copy path (which still
+/// truncates at an embedded NUL) when the symbol is missing.
+pub(crate) unsafe fn py_str_to_olive(py_str_obj: PyObject) -> i64 {
+    unsafe {
+        if py_str_obj.is_null() {
+            return 0;
+        }
+        if HAS_STR_AND_SIZE.load(Ordering::Relaxed) {
+            let mut len: isize = 0;
+            let ptr = PY_UNICODE_AS_UTF8_AND_SIZE(py_str_obj, &mut len);
+            if ptr.is_null() {
+                return 0;
+            }
+            let bytes = std::slice::from_raw_parts(ptr as *const u8, len as usize);
+            crate::string_slab::str_alloc(bytes)
+        } else {
+            let s = PY_UNICODE_AS_UTF8(py_str_obj);
+            if s.is_null() {
+                return 0;
+            }
+            let r_str = CStr::from_ptr(s).to_string_lossy();
+            crate::olive_str_internal(&r_str)
+        }
+    }
+}
+
 pub fn olive_to_py(val: i64) -> PyObject {
     if val > 0x10000 && val & 1 != 0 {
-        unsafe { PY_UNICODE_FROM_STRING((val & !1) as *const c_char) }
+        unsafe { olive_str_to_py(val) }
     } else {
         let ptr = val as *const c_void;
         if crate::is_active_object(val) {
@@ -364,13 +411,7 @@ pub unsafe fn py_to_olive_internal(py_val: PyObject) -> i64 {
             return PY_FLOAT_AS_DOUBLE(py_val).to_bits() as i64;
         }
         if ty == PY_UNICODE_TYPE {
-            let s = PY_UNICODE_AS_UTF8(py_val);
-            return if !s.is_null() {
-                let r_str = CStr::from_ptr(s).to_string_lossy();
-                crate::olive_str_internal(&r_str)
-            } else {
-                0
-            };
+            return py_str_to_olive(py_val);
         }
         if ty == PY_LIST_TYPE {
             return olive_py_to_list_internal(py_val, false);
@@ -412,13 +453,7 @@ pub unsafe fn py_to_olive_internal(py_val: PyObject) -> i64 {
             return PY_FLOAT_AS_DOUBLE(py_val).to_bits() as i64;
         }
         if is_subtype(PY_UNICODE_TYPE) {
-            let s = PY_UNICODE_AS_UTF8(py_val);
-            return if !s.is_null() {
-                let r_str = CStr::from_ptr(s).to_string_lossy();
-                crate::olive_str_internal(&r_str)
-            } else {
-                0
-            };
+            return py_str_to_olive(py_val);
         }
         if is_subtype(PY_LIST_TYPE) {
             return olive_py_to_list_internal(py_val, false);
@@ -595,21 +630,19 @@ pub unsafe fn olive_py_to_dict_internal(obj: PyObject, boxed: bool) -> i64 {
                     && (key_ty == PY_UNICODE_TYPE
                         || PY_TYPE_IS_SUBTYPE(key_ty, PY_UNICODE_TYPE) != 0);
 
-                let key_utf8 = if is_unicode {
-                    PY_UNICODE_AS_UTF8(key_obj)
+                let key_ptr = if is_unicode {
+                    py_str_to_olive(key_obj)
                 } else {
                     let str_obj = PY_OBJECT_STR(key_obj);
                     if str_obj.is_null() {
                         continue;
                     }
-                    let utf8 = PY_UNICODE_AS_UTF8(str_obj);
+                    let r = py_str_to_olive(str_obj);
                     PY_DEC_REF(str_obj);
-                    utf8
+                    r
                 };
 
-                if !key_utf8.is_null() {
-                    let key_str = CStr::from_ptr(key_utf8).to_string_lossy();
-                    let key_ptr = crate::olive_str_internal(&key_str);
+                if key_ptr != 0 {
                     let olive_val = if boxed {
                         py_to_any_internal(val_obj)
                     } else {

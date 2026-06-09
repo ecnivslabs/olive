@@ -1,5 +1,4 @@
 use crate::python::*;
-use std::ffi::CStr;
 use std::os::raw::{c_char, c_double, c_long};
 use std::sync::atomic::Ordering;
 
@@ -25,7 +24,7 @@ pub extern "C" fn olive_py_from_float(v: f64) -> PyObject {
 pub extern "C" fn olive_py_from_str(s: i64) -> PyObject {
     check_python_loaded();
     with_gil(|| unsafe {
-        let r = PY_UNICODE_FROM_STRING((s & !1) as *const c_char);
+        let r = olive_str_to_py(s);
         if r.is_null() {
             handle_py_error();
         }
@@ -179,14 +178,12 @@ pub(crate) unsafe fn raw_py_to_str(raw: PyObject) -> i64 {
         if str_obj.is_null() {
             handle_py_error();
         }
-        let s = PY_UNICODE_AS_UTF8(str_obj);
-        if s.is_null() {
+        let r = py_str_to_olive(str_obj);
+        PY_DEC_REF(str_obj);
+        if r == 0 {
             PY_ERR_CLEAR();
             crate::panic::abort_py_coerce("cannot encode this Python string as UTF-8");
         }
-        let r_str = CStr::from_ptr(s).to_string_lossy();
-        let r = crate::olive_str_internal(&r_str);
-        PY_DEC_REF(str_obj);
         r
     }
 }
@@ -598,4 +595,192 @@ pub extern "C" fn olive_py_getslice(
         }
         olive_py_wrap_owned(result) as i64
     })
+}
+
+/// R18: `PyUnicode_FromStringAndSize`/`PyUnicode_AsUTF8AndSize` single-pass
+/// string crossing, both directions, and its embedded-NUL fix.
+#[cfg(test)]
+mod str_and_size_tests {
+    use super::*;
+    use crate::python::python_coerce::{olive_str_to_py, py_str_to_olive, pyobject_slab_test_lock};
+
+    fn with_forced_str_and_size<R>(want: bool, f: impl FnOnce() -> R) -> R {
+        let prev = HAS_STR_AND_SIZE.load(Ordering::SeqCst);
+        HAS_STR_AND_SIZE.store(want, Ordering::SeqCst);
+        let r = f();
+        HAS_STR_AND_SIZE.store(prev, Ordering::SeqCst);
+        r
+    }
+
+    #[test]
+    fn multibyte_cjk_and_emoji_round_trip_py_to_olive_to_py() {
+        let _guard = pyobject_slab_test_lock();
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        with_forced_str_and_size(true, || unsafe {
+            let text = "héllo 世界 🎉 — done";
+            let c = std::ffi::CString::new(text).unwrap();
+            let py_str = with_gil(|| PY_UNICODE_FROM_STRING(c.as_ptr()));
+            let olive_str = with_gil(|| py_str_to_olive(py_str));
+            assert_eq!(crate::olive_str_from_ptr(olive_str), text);
+
+            let py_back = with_gil(|| olive_str_to_py(olive_str));
+            let back_len = with_gil(|| PY_OBJECT_LENGTH(py_back));
+            assert_eq!(back_len as usize, text.chars().count());
+
+            let back_olive = with_gil(|| py_str_to_olive(py_back));
+            assert_eq!(crate::olive_str_from_ptr(back_olive), text);
+
+            with_gil(|| {
+                PY_DEC_REF(py_str);
+                PY_DEC_REF(py_back);
+            });
+            crate::string_slab::str_free(olive_str);
+            crate::string_slab::str_free(back_olive);
+        });
+    }
+
+    #[test]
+    fn embedded_nul_copies_through_intact_py_to_olive_to_py() {
+        let _guard = pyobject_slab_test_lock();
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        with_forced_str_and_size(true, || unsafe {
+            let bytes: &[u8] = b"ab\0cd";
+            let py_str = with_gil(|| {
+                PY_UNICODE_FROM_STRING_AND_SIZE(
+                    bytes.as_ptr() as *const c_char,
+                    bytes.len() as isize,
+                )
+            });
+            assert!(
+                !py_str.is_null(),
+                "PyUnicode_FromStringAndSize must be available for this test"
+            );
+
+            let olive_str = with_gil(|| py_str_to_olive(py_str));
+            assert_eq!(
+                crate::olive_str_to_bytes(olive_str),
+                bytes,
+                "embedded NUL must survive py->olive"
+            );
+
+            let py_back = with_gil(|| olive_str_to_py(olive_str));
+            let back_len = with_gil(|| PY_OBJECT_LENGTH(py_back));
+            assert_eq!(
+                back_len, 5,
+                "embedded NUL must not truncate olive->py either"
+            );
+
+            with_gil(|| {
+                PY_DEC_REF(py_str);
+                PY_DEC_REF(py_back);
+            });
+            crate::string_slab::str_free(olive_str);
+        });
+    }
+
+    #[test]
+    fn empty_string_round_trips_both_directions() {
+        let _guard = pyobject_slab_test_lock();
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        with_forced_str_and_size(true, || unsafe {
+            let py_str = with_gil(|| PY_UNICODE_FROM_STRING(b"\0".as_ptr() as *const c_char));
+            let olive_str = with_gil(|| py_str_to_olive(py_str));
+            assert_eq!(crate::olive_str_from_ptr(olive_str), "");
+
+            let empty_olive = crate::olive_str_internal("");
+            let py_back = with_gil(|| olive_str_to_py(empty_olive));
+            let back_len = with_gil(|| PY_OBJECT_LENGTH(py_back));
+            assert_eq!(back_len, 0);
+
+            with_gil(|| {
+                PY_DEC_REF(py_str);
+                PY_DEC_REF(py_back);
+            });
+            crate::string_slab::str_free(olive_str);
+            crate::string_slab::str_free(empty_olive);
+        });
+    }
+
+    /// Missing symbols must keep the old strlen-based path working exactly
+    /// as before (embedded NUL still truncates there -- that limitation is
+    /// unchanged, only the fast path fixes it).
+    #[test]
+    fn fallback_path_still_works_when_str_and_size_forced_off() {
+        let _guard = pyobject_slab_test_lock();
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        with_forced_str_and_size(false, || unsafe {
+            let py_str =
+                with_gil(|| PY_UNICODE_FROM_STRING(b"plain ascii\0".as_ptr() as *const c_char));
+            let olive_str = with_gil(|| py_str_to_olive(py_str));
+            assert_eq!(crate::olive_str_from_ptr(olive_str), "plain ascii");
+
+            let py_back = with_gil(|| olive_str_to_py(olive_str));
+            let back_len = with_gil(|| PY_OBJECT_LENGTH(py_back));
+            assert_eq!(back_len, 11);
+
+            with_gil(|| {
+                PY_DEC_REF(py_str);
+                PY_DEC_REF(py_back);
+            });
+            crate::string_slab::str_free(olive_str);
+        });
+    }
+
+    #[test]
+    fn public_ffi_round_trips_cleanly_100k_times_no_leak() {
+        let _guard = pyobject_slab_test_lock();
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        let s = crate::olive_str_internal("tokenizer-shaped-string");
+        for _ in 0..100_000 {
+            let handle = olive_py_from_str(s);
+            assert!(!handle.is_null());
+            assert!(crate::is_active_object(handle as i64));
+            let back = olive_py_to_str(handle);
+            assert_eq!(crate::olive_str_from_ptr(back), "tokenizer-shaped-string");
+            crate::string_slab::str_free(back);
+            olive_py_decref(handle);
+            assert!(!crate::is_active_object(handle as i64));
+        }
+        crate::string_slab::str_free(s);
+    }
+
+    #[test]
+    fn py_str_to_olive_never_moves_the_source_refcount() {
+        let _guard = pyobject_slab_test_lock();
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        unsafe {
+            let shared = with_gil(|| {
+                PY_UNICODE_FROM_STRING(b"shared-refcount-probe\0".as_ptr() as *const c_char)
+            });
+            let baseline = with_gil(|| *(shared as *const isize));
+            for _ in 0..100_000 {
+                let r = with_gil(|| py_str_to_olive(shared));
+                crate::string_slab::str_free(r);
+            }
+            let after = with_gil(|| *(shared as *const isize));
+            assert_eq!(
+                after, baseline,
+                "py_str_to_olive must be a pure borrow, no refcount drift"
+            );
+            with_gil(|| PY_DEC_REF(shared));
+        }
+    }
 }
