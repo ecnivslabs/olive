@@ -619,6 +619,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_py_to_str", b"olive_py_to_str\0"),
     ("__olive_py_to_any", b"olive_py_to_any\0"),
     ("__olive_to_pyobject", b"olive_to_pyobject\0"),
+    ("__olive_py_make_callable", b"olive_py_make_callable\0"),
     ("__olive_random_get", b"olive_random_get\0"),
     ("__olive_random_int", b"olive_random_int\0"),
     ("__olive_random_seed", b"olive_random_seed\0"),

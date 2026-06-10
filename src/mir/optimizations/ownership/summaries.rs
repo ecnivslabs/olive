@@ -26,6 +26,11 @@ const RUNTIME_ESCAPES: &[(&str, usize)] = &[
     ("__olive_mutex_unlock", 1),
     ("__olive_pool_run", 1),
     ("__olive_pool_run_sync", 1),
+    // R19: the closure record crossing into `olive_py_make_callable`'s
+    // `fn_ptr`/`record_ptr` position is owned by the returned capsule for
+    // the callable's lifetime (freed by its destructor), not by the
+    // caller's frame anymore.
+    ("__olive_py_make_callable", 0),
 ];
 
 pub(crate) fn runtime_escape(name: &str, pos: usize) -> bool {

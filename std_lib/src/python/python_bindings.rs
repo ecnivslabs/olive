@@ -248,3 +248,40 @@ pub static mut PY_UNICODE_AS_UTF8_AND_SIZE: unsafe extern "C" fn(
 ) -> *const c_char = crate::python::python_noop::noop_as_utf8_and_size;
 pub static HAS_STR_AND_SIZE: AtomicBool = AtomicBool::new(false);
 pub static HAS_INTERN: AtomicBool = AtomicBool::new(false);
+
+/// `PyMethodDef`/`PyCFunction_NewEx`/`PyErr_SetString`/`PyExc_TypeError`
+/// (R19): exports an Olive function value as a real `PyCFunction`. Always
+/// present since Python 1.x, so no `HAS_*` gate -- unlike `HAS_VECTORCALL`
+/// et al., there is no older-CPython fallback path for "no callables at
+/// all", only a `METH_VARARGS`/`METH_FASTCALL` choice (`python_callable.rs`
+/// picks the flavor, gated on `HAS_VECTORCALL` as the "modern enough
+/// CPython" signal `METH_FASTCALL`'s calling convention needs).
+#[repr(C)]
+pub struct PyMethodDef {
+    pub ml_name: *const c_char,
+    /// Cast at construction time to whichever of the two calling
+    /// conventions `ml_flags` selects; CPython's own header does the same
+    /// reinterpretation (`PyCFunction` is one fixed signature, `ml_meth`
+    /// is stored through it regardless of the real one).
+    pub ml_meth: *const c_void,
+    pub ml_flags: c_int,
+    pub ml_doc: *const c_char,
+}
+
+/// Every field is either a `'static` string or a fixed function address;
+/// safe to share across threads (only ever read, never mutated after init).
+unsafe impl Send for PyMethodDef {}
+unsafe impl Sync for PyMethodDef {}
+
+/// Frozen CPython ABI values (`methodobject.h`), unchanged since introduction.
+pub const METH_VARARGS: c_int = 0x0001;
+pub const METH_FASTCALL: c_int = 0x0080;
+
+pub static mut PY_CFUNCTION_NEW_EX: unsafe extern "C" fn(
+    *mut PyMethodDef,
+    PyObject,
+    PyObject,
+) -> PyObject = crate::python::python_noop::noop_cfunction_new_ex;
+pub static mut PY_ERR_SET_STRING: unsafe extern "C" fn(PyObject, *const c_char) =
+    crate::python::python_noop::noop_err_set_string;
+pub static mut PY_EXC_TYPE_ERROR: PyObject = std::ptr::null_mut();

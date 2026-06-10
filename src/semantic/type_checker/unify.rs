@@ -29,6 +29,82 @@ impl TypeChecker {
         )
     }
 
+    /// R19: whether `ty` is one of the shapes `olive_py_make_callable`'s
+    /// runtime trampoline can decode/encode across the Python boundary --
+    /// a scalar, `str`, or `PyObject`. Anything else (a list/dict/struct,
+    /// or another `Fn`) has no `ARG_*` tag to pack it as.
+    fn py_callable_tag_ok(ty: &Type) -> bool {
+        matches!(
+            ty,
+            Type::Int
+                | Type::I8
+                | Type::I16
+                | Type::I32
+                | Type::U8
+                | Type::U16
+                | Type::U32
+                | Type::U64
+                | Type::Usize
+                | Type::Float
+                | Type::F32
+                | Type::Bool
+                | Type::Str
+                | Type::PyObject
+                | Type::PyNamed(_, _)
+        )
+    }
+
+    /// R19: a function value crossing into a real Python callable (whether
+    /// through a `PyObject`-typed assignment/return or directly as a
+    /// Python-call argument) must have at most 4 parameters -- the runtime
+    /// trampoline's fixed arity-0..4 dispatch -- and every parameter and
+    /// the return type must be tag-expressible; a `Null` return covers a
+    /// void function. Pushes E0603 for the first violation found rather
+    /// than piling on repeats for the same signature.
+    pub(super) fn check_py_callable_shape(&mut self, params: &[Type], ret: &Type, span: Span) {
+        if params.len() > 4 {
+            self.errors.push(SemanticError::rich(
+                crate::compile::errors::Diagnostic::error(
+                    "E0603",
+                    format!(
+                        "function with {} parameters can't cross into a Python callable (max 4)",
+                        params.len()
+                    ),
+                    span,
+                )
+                .label("the runtime trampoline only supports arity 0-4")
+                .help("wrap it in a smaller adapter function first"),
+            ));
+            return;
+        }
+        for (i, p) in params.iter().enumerate() {
+            if !Self::py_callable_tag_ok(p) {
+                self.errors.push(SemanticError::rich(
+                    crate::compile::errors::Diagnostic::error(
+                        "E0603",
+                        format!(
+                            "parameter {} of type `{p}` can't cross into a Python callable",
+                            i + 1
+                        ),
+                        span,
+                    )
+                    .label("only int, float, bool, str, and PyObject parameters are supported"),
+                ));
+                return;
+            }
+        }
+        if *ret != Type::Null && !Self::py_callable_tag_ok(ret) {
+            self.errors.push(SemanticError::rich(
+                crate::compile::errors::Diagnostic::error(
+                    "E0603",
+                    format!("return type `{ret}` can't cross into a Python callable"),
+                    span,
+                )
+                .label("only int, float, bool, str, PyObject, or no return value are supported"),
+            ));
+        }
+    }
+
     pub(super) fn unify(&mut self, t1: &Type, t2: &Type, span: Span) {
         let t1 = self.apply_subst(t1.clone());
         let t2 = self.apply_subst(t2.clone());
@@ -148,7 +224,11 @@ impl TypeChecker {
             },
 
             (Type::Any, _) | (_, Type::Any) => {}
-            (Type::PyObject, _) | (_, Type::PyObject) => {}
+            (Type::PyObject, other) | (other, Type::PyObject) => {
+                if let Type::Fn(params, ret, _) = other {
+                    self.check_py_callable_shape(params, ret, span);
+                }
+            }
             (Type::PyNamed(m1, n1), Type::PyNamed(m2, n2)) => {
                 if m1 != m2 || n1 != n2 {
                     self.errors.push(SemanticError::type_mismatch(

@@ -5,6 +5,7 @@ pub mod python_call;
 pub mod python_call_kw_v;
 pub mod python_call_method;
 pub mod python_call_method_safe;
+pub mod python_callable;
 pub mod python_coerce;
 pub mod python_coerce_ffi;
 pub mod python_compat;

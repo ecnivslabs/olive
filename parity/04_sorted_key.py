@@ -1,3 +1,6 @@
+def neg(x):
+    return -x
+
 xs = [5, 3, 8, 1, 9, 2]
-xs.sort()
-print(xs)
+ys = sorted(xs, key=neg)
+print(ys)

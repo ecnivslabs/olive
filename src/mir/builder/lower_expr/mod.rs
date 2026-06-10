@@ -196,6 +196,14 @@ impl<'a> MirBuilder<'a> {
         // `PyObject` converts it to a real Python object (`1` -> a Python int),
         // the inverse of reading a `PyObject` into a native slot.
         if matches!(to_ty, Type::PyObject) && !from_ty.is_py_value() {
+            // R19: a function value (`let cb: PyObject = my_fn`, `return
+            // my_fn`, a struct field typed `PyObject`, ...) exports as a
+            // real `PyCFunction` instead of the scalar/str/Any conversions
+            // below -- it needs two call args (the record and its packed
+            // tags), not the uniform one-arg shape those share.
+            if let Type::Fn(params, ret, _) = from_ty {
+                return self.emit_fn_to_py_callable(op, params, ret, span);
+            }
             let conv = match from_ty {
                 Type::Int
                 | Type::I8
