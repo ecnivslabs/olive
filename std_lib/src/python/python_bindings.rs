@@ -303,3 +303,52 @@ pub static mut PY_MODULE_ADD_OBJECT: unsafe extern "C" fn(
 /// `PyModule_Create2` — creates a module def-based module object.
 pub static mut PY_MODULE_CREATE2: unsafe extern "C" fn(*mut c_void, c_int) -> PyObject =
     crate::python::python_noop::noop_module_create2;
+
+/// `PyInterpreterConfig` — subinterpreter creation parameters (R21).
+#[repr(C)]
+pub struct PyInterpreterConfig {
+    pub use_main_obmalloc: c_int,
+    pub allow_fork: c_int,
+    pub allow_exec: c_int,
+    pub allow_threads: c_int,
+    pub allow_daemon_threads: c_int,
+    pub check_multi_interp_extensions: c_int,
+    pub gil: c_int,
+}
+
+pub const PY_INTERPRETER_CONFIG_OWN_GIL: c_int = 2;
+
+/// `PyStatus` — return type for `Py_NewInterpreterFromConfig`.
+#[repr(C)]
+pub struct PyStatus {
+    pub _type: c_int,
+    pub _func: *const c_char,
+    pub _err_msg: *const c_char,
+}
+
+pub const PY_STATUS_OK: c_int = 0;
+
+/// Subinterpreter pool API (R21). dlsym'd when available; noop fallback
+/// otherwise. Following the same pattern as `PY_VECTORCALL` et al.
+pub static mut PY_EVAL_ACQUIRE_THREAD: unsafe extern "C" fn(*mut c_void) =
+    crate::python::python_noop::noop_acquire_thread;
+pub static mut PY_EVAL_RELEASE_THREAD: unsafe extern "C" fn(*mut c_void) =
+    crate::python::python_noop::noop_release_thread;
+pub static mut PY_NEW_INTERPRETER_FROM_CONFIG: unsafe extern "C" fn(
+    *mut *mut c_void,
+    *const PyInterpreterConfig,
+) -> PyStatus = crate::python::python_noop::noop_new_interpreter;
+pub static mut PY_END_INTERPRETER: unsafe extern "C" fn(*mut c_void) =
+    crate::python::python_noop::noop_end_interpreter;
+pub static mut PY_THREAD_STATE_NEW: unsafe extern "C" fn(*mut c_void) -> *mut c_void =
+    crate::python::python_noop::noop_thread_state_new;
+pub static mut PY_THREAD_STATE_CLEAR: unsafe extern "C" fn(*mut c_void) =
+    crate::python::python_noop::noop_thread_state_clear;
+pub static mut PY_THREAD_STATE_DELETE: unsafe extern "C" fn(*mut c_void) =
+    crate::python::python_noop::noop_thread_state_delete;
+pub static mut PY_THREAD_STATE_SWAP: unsafe extern "C" fn(*mut c_void) -> *mut c_void =
+    crate::python::python_noop::noop_thread_state_swap;
+pub static mut PY_INTERPRETER_STATE_GET: unsafe extern "C" fn() -> *mut c_void =
+    crate::python::python_noop::noop_interpreter_state_get;
+pub static mut PY_THREAD_STATE_GET: unsafe extern "C" fn() -> *mut c_void =
+    crate::python::python_noop::noop_thread_state_get;
