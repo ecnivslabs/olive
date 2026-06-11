@@ -82,27 +82,37 @@ fn detect_python_libraries() -> Vec<String> {
 }
 
 fn find_active_python_library() -> Option<String> {
-    // ctypes.util.find_library is the standard, platform-correct way to
-    // resolve an embeddable shared library name (it understands macOS
-    // Framework layouts and the dylib/dyld cache, unlike a raw sysconfig
-    // LIBDIR/LDLIBRARY join, which on Framework builds often names the
-    // *static* .a import lib -- a file that exists on disk but that
-    // dlopen can never load).
+    // sysconfig's LIBDIR/LDLIBRARY join is not enough on its own:
+    //   - on non-Framework builds LDLIBRARY can name the *static* .a
+    //     import lib (exists on disk, but dlopen can never load it), and
+    //   - on macOS Framework builds (e.g. actions/setup-python's images)
+    //     the loadable image isn't a "libpythonX.Y.dylib" at all -- it's
+    //     a bare file named `Python` living at the version prefix root.
+    // Build every candidate this interpreter could plausibly expose and
+    // take the first one that both exists and isn't a static archive.
+    let script = r#"
+import sys, os, sysconfig
+ver = f'{sys.version_info.major}.{sys.version_info.minor}'
+abiflags = sysconfig.get_config_var('ABIFLAGS') or ''
+libdir = sysconfig.get_config_var('LIBDIR') or ''
+ldlibrary = sysconfig.get_config_var('LDLIBRARY') or ''
+ext = '.dylib' if sys.platform == 'darwin' else '.so'
+candidates = []
+if libdir and ldlibrary:
+    candidates.append(os.path.join(libdir, ldlibrary))
+if libdir:
+    candidates.append(os.path.join(libdir, 'libpython' + ver + abiflags + ext))
+    candidates.append(os.path.join(libdir, 'libpython' + ver + ext))
+candidates.append(os.path.join(sys.base_prefix, 'Python'))
+found = ''
+for c in candidates:
+    if c and not c.endswith('.a') and os.path.exists(c):
+        found = c
+        break
+print(found)
+"#;
     for cmd in &["python3", "python"] {
-        if let Ok(output) = std::process::Command::new(cmd)
-            .args([
-                "-c",
-                "import sys, os, sysconfig, ctypes.util; \
-                 ver = f'{sys.version_info.major}.{sys.version_info.minor}'; \
-                 name = ctypes.util.find_library('python' + ver) or ctypes.util.find_library('python3'); \
-                 libdir = sysconfig.get_config_var('LIBDIR') or ''; \
-                 ldlibrary = sysconfig.get_config_var('LDLIBRARY') or ''; \
-                 fallback = os.path.join(libdir, ldlibrary) if libdir and ldlibrary else ''; \
-                 shared_ext = ('.dylib',) if sys.platform == 'darwin' else ('.so',); \
-                 fallback = fallback if fallback.endswith(shared_ext) and os.path.exists(fallback) else ''; \
-                 print(name or fallback)",
-            ])
-            .output()
+        if let Ok(output) = std::process::Command::new(cmd).args(["-c", script]).output()
             && output.status.success() {
                 let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if !path_str.is_empty() {
