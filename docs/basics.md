@@ -80,6 +80,20 @@ Fixed-size arrays with a known length at compile time:
 let mut matrix: [int; 16]
 ```
 
+### Bytes
+
+Mutable, growable byte buffers for binary data. Indexing reads and writes single bytes and compiles to direct memory access. Passing a `bytes` value to Python converts it to a Python `bytes` object:
+
+```rust
+let mut buf = bytes_new(16)        // zero-filled, length 16
+buf[0] = 255
+let first = buf[0]                 // 255
+bytes_push(buf, 7)                 // append one byte
+bytes_push_u16_le(buf, 513)        // append u16, little-endian
+bytes_push_u32_le(buf, 70000)      // append u32, little-endian
+let size = len(buf)
+```
+
 ### Dictionaries
 
 Hash-map key-value collections:

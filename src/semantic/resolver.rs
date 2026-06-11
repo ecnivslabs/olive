@@ -26,6 +26,10 @@ impl Resolver {
             "dict",
             "slice",
             "ffi_errno",
+            "bytes_new",
+            "bytes_push",
+            "bytes_push_u16_le",
+            "bytes_push_u32_le",
         ];
         for name in builtin_fns {
             table.define(Symbol {

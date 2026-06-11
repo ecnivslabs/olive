@@ -696,6 +696,7 @@ pub extern "C" fn olive_get_index_any(obj: i64, index: i64) -> i64 {
         KIND_LIST => olive_list_get(obj, index),
         KIND_OBJ => olive_obj_get(obj, index),
         KIND_ENUM => olive_enum_get(obj, index),
+        KIND_BYTES => bytes::olive_buf_get(obj, index),
         KIND_PYOBJECT => {
             let key_obj = if index > 0x10000 && index & 1 != 0 {
                 python::olive_py_from_str(index)
@@ -720,6 +721,7 @@ pub extern "C" fn olive_set_index_any(obj: i64, index: i64, val: i64) {
     let kind = unsafe { *(obj as *const i64) };
     match kind {
         KIND_LIST => olive_list_set(obj, index, val),
+        KIND_BYTES => bytes::olive_buf_set(obj, index, val),
         KIND_OBJ => {
             olive_obj_set(obj, index, val);
         }
@@ -770,6 +772,7 @@ pub extern "C" fn olive_free_any(ptr: i64) {
         KIND_SET => olive_free_set(ptr),
         KIND_OBJ => olive_free_obj(ptr),
         KIND_ENUM => olive_free_enum(ptr),
+        KIND_BYTES => bytes::olive_buf_free(ptr),
         crate::result::KIND_RESULT => crate::result::olive_free_result(ptr),
         KIND_PYOBJECT => python::olive_py_decref(ptr as *mut std::os::raw::c_void),
         KIND_ITER => olive_free_iter(ptr),

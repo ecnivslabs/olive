@@ -207,7 +207,8 @@ pub fn olive_to_py(val: i64) -> PyObject {
                     }
                     crate::KIND_BYTES => {
                         let b = &*(ptr as *const crate::bytes::OliveBytes);
-                        PY_BYTES_FROM_STRING_AND_SIZE(b.data.as_ptr(), b.data.len() as isize)
+                        let s = b.as_slice();
+                        PY_BYTES_FROM_STRING_AND_SIZE(s.as_ptr(), s.len() as isize)
                     }
                     crate::KIND_PYOBJECT => {
                         let py_obj = &*(ptr as *const OlivePyObject);
@@ -466,14 +467,12 @@ pub unsafe fn olive_py_to_bytes_internal(obj: PyObject) -> i64 {
     unsafe {
         let size = PY_BYTES_SIZE(obj) as usize;
         let buf_ptr = PY_BYTES_AS_STRING(obj);
-        let bytes_ptr = crate::bytes::olive_buf_new(size as i64);
-        if size > 0 && !buf_ptr.is_null() {
-            let b = &mut *(bytes_ptr as *mut crate::bytes::OliveBytes);
-            b.data.reserve(size);
-            std::ptr::copy_nonoverlapping(buf_ptr as *const u8, b.data.as_mut_ptr(), size);
-            b.data.set_len(size);
-        }
-        bytes_ptr
+        let data = if size > 0 && !buf_ptr.is_null() {
+            std::slice::from_raw_parts(buf_ptr as *const u8, size).to_vec()
+        } else {
+            Vec::new()
+        };
+        crate::bytes::new_buf(data)
     }
 }
 

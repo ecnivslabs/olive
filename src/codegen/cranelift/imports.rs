@@ -41,6 +41,9 @@ pub(super) fn collect_needed_imports(
                                 OliveType::Str => {
                                     needed.insert("__olive_free_str");
                                 }
+                                OliveType::Bytes => {
+                                    needed.insert("__olive_buf_free");
+                                }
                                 OliveType::List(_) | OliveType::Tuple(_) | OliveType::Set(_) => {
                                     needed.insert("__olive_free_list");
                                 }
@@ -605,6 +608,9 @@ pub(super) fn resolve_builtin_import(
             "__olive_result_unwrap_or" => Some("__olive_result_unwrap_or"),
             "__olive_result_err_msg" => Some("__olive_result_err_msg"),
             "__olive_buf_new" => Some("__olive_buf_new"),
+            "__olive_buf_new_zeroed" => Some("__olive_buf_new_zeroed"),
+            "__olive_buf_push_u16_le" => Some("__olive_buf_push_u16_le"),
+            "__olive_buf_push_u32_le" => Some("__olive_buf_push_u32_le"),
             "__olive_buf_from_str" => Some("__olive_buf_from_str"),
             "__olive_buf_len" => Some("__olive_buf_len"),
             "__olive_buf_push" => Some("__olive_buf_push"),
