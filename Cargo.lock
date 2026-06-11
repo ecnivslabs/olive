@@ -1783,6 +1783,7 @@ dependencies = [
  "flate2",
  "futures",
  "lazy_static",
+ "libc",
  "libloading",
  "openssl",
  "proptest",
