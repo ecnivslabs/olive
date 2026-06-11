@@ -8,14 +8,34 @@ pub fn execute_build(
     time: bool,
     release: bool,
     pgo: Option<&str>,
+    pymodule: bool,
+    module_name: Option<&str>,
     explain_copies: bool,
 ) {
     let original_dir = std::env::current_dir().unwrap();
     if let Some(p) = path {
         let path_obj = Path::new(p);
         if path_obj.is_file() || p.ends_with(".liv") {
+            let default_module_name = if pymodule {
+                path_obj
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.replace('-', "_"))
+            } else {
+                None
+            };
+            let module_name = module_name.or_else(|| default_module_name.as_deref());
             match output {
-                Some(o) => compile_and_emit(p, o, time, release, pgo, explain_copies),
+                Some(o) => compile_and_emit(
+                    p,
+                    o,
+                    time,
+                    release,
+                    pgo,
+                    pymodule,
+                    module_name,
+                    explain_copies,
+                ),
                 None => {
                     let (target, _) = cache::prepare(p, release);
                     if cache::is_fresh(&target) {
@@ -33,6 +53,8 @@ pub fn execute_build(
                             time,
                             release,
                             effective_pgo.as_deref(),
+                            false,
+                            None,
                             explain_copies,
                         );
                         cache::record(&target);
@@ -81,6 +103,8 @@ pub fn execute_build(
                         time,
                         release,
                         effective_pgo.as_deref(),
+                        false,
+                        None,
                         explain_copies,
                     );
                     cache::record(&target);
@@ -110,6 +134,8 @@ pub fn execute_build(
                 time,
                 release,
                 effective_pgo.as_deref(),
+                false,
+                None,
                 explain_copies,
             );
             cache::record(&target);

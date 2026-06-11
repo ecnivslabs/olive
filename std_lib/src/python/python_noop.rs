@@ -197,6 +197,23 @@ pub unsafe extern "C" fn noop_cfunction_new_ex(
 }
 pub unsafe extern "C" fn noop_err_set_string(_: PyObject, _: *const c_char) {}
 
+pub unsafe extern "C" fn noop_is_initialized() -> c_int {
+    0
+}
+pub unsafe extern "C" fn noop_module_new(_: *const c_char) -> PyObject {
+    std::ptr::null_mut()
+}
+pub unsafe extern "C" fn noop_module_create2(_: *mut c_void, _: c_int) -> PyObject {
+    std::ptr::null_mut()
+}
+pub unsafe extern "C" fn noop_module_add_object(
+    _: PyObject,
+    _: *const c_char,
+    _: PyObject,
+) -> c_int {
+    -1
+}
+
 #[cfg(target_os = "windows")]
 unsafe extern "system" {
     pub fn LoadLibraryA(lpLibFileName: *const u8) -> *mut c_void;

@@ -174,11 +174,23 @@ fn lib_link_arg(name: &str) -> String {
 }
 
 pub fn link_object(obj_path: &str, out: &str, native_libs: &[FfiLibInfo]) {
+    link_object_impl(obj_path, out, native_libs, false)
+}
+
+pub fn link_shared_object(obj_path: &str, out: &str, native_libs: &[FfiLibInfo]) {
+    link_object_impl(obj_path, out, native_libs, true)
+}
+
+fn link_object_impl(obj_path: &str, out: &str, native_libs: &[FfiLibInfo], shared: bool) {
     let static_dir = find_static_library_dir();
     let used_static_link = static_dir.is_some();
     let mut cmd = std::process::Command::new("cc");
 
     cmd.arg(obj_path);
+
+    if shared {
+        cmd.arg("-shared");
+    }
 
     if let Some(dir) = static_dir {
         // rustc builds with function/data sections by default, so the linker can
@@ -199,7 +211,15 @@ pub fn link_object(obj_path: &str, out: &str, native_libs: &[FfiLibInfo]) {
         // system libs Rust's std/deps pull in (libm for f64 intrinsics, threading,
         // dynamic loading, POSIX extensions) need to be named explicitly.
         #[cfg(target_os = "linux")]
-        for sys_lib in ["-lm", "-lpthread", "-ldl", "-lrt", "-lutil"] {
+        for sys_lib in [
+            "-lm",
+            "-lpthread",
+            "-ldl",
+            "-lrt",
+            "-lutil",
+            "-lcrypto",
+            "-lssl",
+        ] {
             cmd.arg(sys_lib);
         }
         #[cfg(target_os = "macos")]

@@ -19,7 +19,8 @@
 mod dispatch;
 
 use crate::python::python_writeback::{
-    ARG_BOOL, ARG_FLOAT, ARG_INT, ARG_PYOBJECT, ARG_STR, decode_scalar_arg,
+    ARG_ANY_LIST, ARG_BOOL, ARG_BOOL_LIST, ARG_FLOAT, ARG_FLOAT_LIST, ARG_INT, ARG_INT_LIST,
+    ARG_PYOBJECT, ARG_STR, ARG_STR_LIST, decode_scalar_arg,
 };
 use crate::python::*;
 use std::os::raw::{c_char, c_void};
@@ -103,7 +104,19 @@ unsafe fn decode_py_arg(obj: PyObject, tag: i64) -> i64 {
                 }
             }
             ARG_PYOBJECT => olive_py_wrap_borrowed(obj) as i64,
-            _ => unreachable!("decode_py_arg: {tag} is not a param tag the E0603 checker allows"),
+            ARG_FLOAT_LIST | ARG_INT_LIST | ARG_STR_LIST | ARG_BOOL_LIST => {
+                // Python `list` → typed Olive `[T]`. `olive_py_to_list_internal`
+                // with `boxed=false` stores each element as a raw word using
+                // `py_to_olive_internal`, which is correct for the known scalar
+                // element type (float bit pattern, int, etc.).
+                crate::python::python_coerce::olive_py_to_list_internal(obj, false)
+            }
+            ARG_ANY_LIST => {
+                // Python `list` → boxed Olive `[Any]`. Each element goes through
+                // `py_to_any_internal` so scalars carry their inline tag bits.
+                crate::python::python_coerce::olive_py_to_list_internal(obj, true)
+            }
+            _ => unreachable!("decode_py_arg: tag {tag} is not a recognised param tag"),
         }
     }
 }
@@ -170,6 +183,9 @@ unsafe fn run_trampoline(
         match ret_tag {
             ARG_PYOBJECT => olive_py_decref(raw_result as PyObject),
             ARG_STR => crate::string_slab::str_free(raw_result),
+            ARG_FLOAT_LIST | ARG_INT_LIST | ARG_STR_LIST | ARG_BOOL_LIST | ARG_ANY_LIST => {
+                crate::olive_free_list(raw_result);
+            }
             _ => {}
         }
         if py_result.is_null() {
@@ -275,6 +291,53 @@ pub extern "C" fn olive_py_make_callable(record_ptr: i64, tags: i64) -> PyObject
         }
         olive_py_wrap_owned(callable)
     })
+}
+
+/// Wraps a top-level compiled function pointer for module export (R20).
+/// Unlike `olive_py_make_callable`, this does not reference a heap-allocated
+/// closure record with captures — the function IS the thunk, and no record
+/// needs freeing on capsule teardown.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_make_export(fn_ptr: i64, tags: i64) -> PyObject {
+    check_python_loaded();
+    with_gil(|| unsafe {
+        if fn_ptr == 0 {
+            return std::ptr::null_mut();
+        }
+        let desc = Box::into_raw(Box::new(CallableDescriptor {
+            record_ptr: fn_ptr,
+            thunk_ptr: fn_ptr,
+            tags,
+        }));
+        let capsule = PY_CAPSULE_NEW(
+            desc as *mut c_void,
+            CAPSULE_NAME.as_ptr() as *const c_char,
+            Some(capsule_deleter_export),
+        );
+        if capsule.is_null() {
+            drop(Box::from_raw(desc));
+            handle_py_error();
+            return std::ptr::null_mut();
+        }
+        let use_fastcall = HAS_VECTORCALL.load(std::sync::atomic::Ordering::Relaxed);
+        let def = methoddef(use_fastcall) as *const PyMethodDef as *mut PyMethodDef;
+        let callable = PY_CFUNCTION_NEW_EX(def, capsule, std::ptr::null_mut());
+        PY_DEC_REF(capsule);
+        if callable.is_null() {
+            handle_py_error();
+        }
+        olive_py_wrap_owned(callable)
+    })
+}
+
+unsafe extern "C" fn capsule_deleter_export(capsule: PyObject) {
+    unsafe {
+        let raw = PY_CAPSULE_GET_POINTER(capsule, CAPSULE_NAME.as_ptr() as *const c_char);
+        if raw.is_null() {
+            return;
+        }
+        drop(Box::from_raw(raw as *mut CallableDescriptor));
+    }
 }
 
 #[cfg(test)]

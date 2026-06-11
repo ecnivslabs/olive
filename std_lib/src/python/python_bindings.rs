@@ -285,3 +285,21 @@ pub static mut PY_CFUNCTION_NEW_EX: unsafe extern "C" fn(
 pub static mut PY_ERR_SET_STRING: unsafe extern "C" fn(PyObject, *const c_char) =
     crate::python::python_noop::noop_err_set_string;
 pub static mut PY_EXC_TYPE_ERROR: PyObject = std::ptr::null_mut();
+
+/// `Py_IsInitialized` — returns non-zero if Python is already running (host
+/// mode for `--pymodule` exports). Present since CPython 1.5.
+pub static mut PY_IS_INITIALIZED: unsafe extern "C" fn() -> c_int =
+    crate::python::python_noop::noop_is_initialized;
+/// `PyModule_New` — creates a new module object by name (R20).
+pub static mut PY_MODULE_NEW: unsafe extern "C" fn(*const c_char) -> PyObject =
+    crate::python::python_noop::noop_module_new;
+/// `PyModule_AddObject` — adds an attribute to a module (R20). Returns 0 on
+/// success, -1 on failure (steals a reference to `obj` on success).
+pub static mut PY_MODULE_ADD_OBJECT: unsafe extern "C" fn(
+    PyObject,
+    *const c_char,
+    PyObject,
+) -> c_int = crate::python::python_noop::noop_module_add_object;
+/// `PyModule_Create2` — creates a module def-based module object.
+pub static mut PY_MODULE_CREATE2: unsafe extern "C" fn(*mut c_void, c_int) -> PyObject =
+    crate::python::python_noop::noop_module_create2;

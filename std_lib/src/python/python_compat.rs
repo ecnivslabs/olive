@@ -1,6 +1,23 @@
 use std::ffi::CString;
 use std::os::raw::c_void;
 
+pub unsafe fn compat_dlopen_current_process() -> *mut c_void {
+    unsafe {
+        #[cfg(target_os = "windows")]
+        {
+            // On Windows, use GetModuleHandle(NULL) for the current process
+            extern "system" {
+                fn GetModuleHandleA(lpModuleName: *const u8) -> *mut c_void;
+            }
+            GetModuleHandleA(std::ptr::null())
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            libc::dlopen(std::ptr::null(), libc::RTLD_NOW | libc::RTLD_LOCAL)
+        }
+    }
+}
+
 pub unsafe fn compat_dlopen(name: &str) -> *mut c_void {
     unsafe {
         let cname = CString::new(name).unwrap();

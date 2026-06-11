@@ -4,7 +4,7 @@
 //! the success and the exception path, so a Python-mutating call behaves like
 //! the equivalent Python code with zero extra syntax on the Olive side.
 
-use crate::python::python_coerce::raw_ob_type;
+use crate::python::python_coerce::{raw_ob_type, to_py_deep};
 use crate::python::*;
 use std::ffi::CStr;
 use std::os::raw::c_char;
@@ -141,6 +141,16 @@ pub(crate) const ARG_BOOL: i64 = 4;
 pub(crate) const ARG_ANY: i64 = 5;
 pub(crate) const ARG_NONE: i64 = 6;
 pub(crate) const ARG_BYTES: i64 = 7;
+/// A typed list crossing (`[float]`, `[int]`, etc.) in the export
+/// direction: the runtime converts the entire collection as one unit
+/// instead of treating the handle as an opaque scalar. Tags 8–12 extend
+/// the ARG_* vocabulary from scalar-only (0-7) to include the common
+/// homogenous collection shapes the compile-time checker knows.
+pub(crate) const ARG_FLOAT_LIST: i64 = 8;
+pub(crate) const ARG_INT_LIST: i64 = 9;
+pub(crate) const ARG_STR_LIST: i64 = 10;
+pub(crate) const ARG_BOOL_LIST: i64 = 11;
+pub(crate) const ARG_ANY_LIST: i64 = 12;
 
 /// Reads arg `i`'s 4-bit encode tag out of a packed word. Mirrors `tag_at`;
 /// a call with more than 16 args never reaches the tagged fast path at all
@@ -180,6 +190,11 @@ pub(crate) unsafe fn decode_scalar_arg(val: i64, tag: i64) -> PyObject {
                 none
             }
             ARG_BYTES => olive_to_py(val),
+            ARG_FLOAT_LIST => to_py_typed_list(val, TAG_FLOAT_LIST),
+            ARG_INT_LIST => to_py_typed_list(val, TAG_INT_LIST),
+            ARG_STR_LIST => to_py_typed_list(val, TAG_STR_LIST),
+            ARG_BOOL_LIST => to_py_typed_list(val, TAG_BOOL_LIST),
+            ARG_ANY_LIST => to_py_deep(val),
             _ => olive_any_to_py_checked(val),
         }
     }
