@@ -1,4 +1,5 @@
 pub mod builder;
+pub mod debug_hooks;
 pub mod ir;
 pub mod liveness;
 pub mod loop_utils;

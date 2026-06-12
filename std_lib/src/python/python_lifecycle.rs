@@ -112,13 +112,16 @@ for c in candidates:
 print(found)
 "#;
     for cmd in &["python3", "python"] {
-        if let Ok(output) = std::process::Command::new(cmd).args(["-c", script]).output()
-            && output.status.success() {
-                let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !path_str.is_empty() {
-                    return Some(path_str);
-                }
+        if let Ok(output) = std::process::Command::new(cmd)
+            .args(["-c", script])
+            .output()
+            && output.status.success()
+        {
+            let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path_str.is_empty() {
+                return Some(path_str);
             }
+        }
     }
     None
 }

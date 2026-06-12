@@ -1070,6 +1070,12 @@ impl CraneliftCodegen<JITModule> {
         // from the runtime lib and panic the relocation (32-bit displacement).
         reserve_jit_arena(&mut builder, JIT_ARENA_SIZE);
 
+        // Debug hooks: registered unconditionally, called only when a debug
+        // session instrumented the MIR, so a plain run pays nothing for them.
+        for (name, ptr) in crate::tooling::dap::hooks::jit_symbols() {
+            builder.symbol(name, ptr);
+        }
+
         let needed = imports::collect_needed_imports(&functions);
         let has_async = functions.iter().any(|f| f.is_async);
 
