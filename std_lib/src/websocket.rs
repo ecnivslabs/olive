@@ -37,7 +37,10 @@ pub extern "C" fn olive_websocket_send_binary(handle: i64, buf: i64) -> i64 {
     }
     let ws = unsafe { &mut *(handle as *mut WsConn) };
     let bytes_obj = unsafe { &*(buf as *const crate::bytes::OliveBytes) };
-    if ws.send(Message::Binary(bytes_obj.as_slice().to_vec())).is_ok() {
+    if ws
+        .send(Message::Binary(bytes_obj.as_slice().to_vec()))
+        .is_ok()
+    {
         1
     } else {
         0
