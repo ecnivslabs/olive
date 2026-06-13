@@ -269,8 +269,12 @@ impl<M: Module> CraneliftCodegen<M> {
                     ) => matches!(func_mir.locals[l.0].ty, OliveType::PyObject),
                     _ => false,
                 };
+                let rval_is_ptr_load = matches!(rval, crate::mir::ir::Rvalue::PtrLoad(_));
                 let val = if val_ty != decl_ty {
-                    if rval_is_pyobj && decl_ty == types::F64 {
+                    if rval_is_ptr_load && val_ty == types::I64 && decl_ty == types::F32 {
+                        let low = builder.ins().ireduce(types::I32, val);
+                        builder.ins().bitcast(types::F32, MemFlags::new(), low)
+                    } else if rval_is_pyobj && decl_ty == types::F64 {
                         let float_id = func_ids
                             .get("__olive_py_to_float")
                             .expect("missing __olive_py_to_float");
