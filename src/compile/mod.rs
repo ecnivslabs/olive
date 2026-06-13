@@ -158,6 +158,7 @@ fn finalize_python_runtime() {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn compile_and_emit(
     filename: &str,
     output: &str,
@@ -467,7 +468,7 @@ fn print_bench_json(stats: &[BenchStats]) {
     println!("{out}");
 }
 
-/// Roadmap E13.3: discovery mirrors `compile_and_test` (`#[bench]` in place
+/// Discovery mirrors `compile_and_test` (`#[bench]` in place
 /// of `#[test]`), always at release optimization -- a debug-pipeline number
 /// would mislead as much as a wall-clock eyeball would. Each bench runs a
 /// fixed warmup then a fixed sample count (`BENCH_WARMUP_ITERS`/

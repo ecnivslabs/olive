@@ -1,7 +1,6 @@
-//! E6.1 regression tests (roadmap.md Phase E6.1): struct arithmetic and
-//! comparison dunders. `a + b` on a struct with `__add__` used to dump core
-//! (E1 step 13); these are the regression tests for that fix plus the new
-//! `__eq__`/`__lt__` derivation.
+//! Regression tests for struct arithmetic and comparison dunders. `a + b`
+//! on a struct with `__add__` used to dump core; these are the regression
+//! tests for that fix plus the new `__eq__`/`__lt__` derivation.
 #[cfg(test)]
 use crate::test_utils::{call_i64, check_codes, compile};
 

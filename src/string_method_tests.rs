@@ -1,4 +1,4 @@
-//! E3.5 string method regression tests (roadmap.md Phase E3.5).
+//! String method regression tests.
 #[cfg(test)]
 use crate::test_utils::{call_i64, compile};
 

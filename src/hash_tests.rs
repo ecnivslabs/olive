@@ -1,4 +1,4 @@
-//! E2 derived structural hashing regression tests (roadmap.md Phase E2, step 6).
+//! Derived structural hashing regression tests.
 #[cfg(test)]
 use crate::test_utils::{call_i64, call_i64_1, compile};
 

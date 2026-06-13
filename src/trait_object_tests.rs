@@ -1,6 +1,5 @@
 //! Regression tests for three dynamic-dispatch bugs found while auditing the
-//! `polymorphism` benchmark (roadmap.md is silent on these; discovered
-//! independently, not tied to a phase).
+//! `polymorphism` benchmark, discovered independently during that work.
 //!
 //! 1. Checker: a trait-object receiver's method call fell through to
 //!    `fresh_var()` (no `TraitObject` arm in `ExprKind::Attr` resolution),

@@ -1,6 +1,6 @@
-//! E2 numeric underscore regression tests (roadmap.md Phase E2, step 9).
-//! Lexer-level tokenisation edge cases live in `src/lexer/tests.rs`; these
-//! exercise the same literals end to end through the full pipeline.
+//! Numeric underscore literal regression tests. Lexer-level tokenisation
+//! edge cases live in `src/lexer/tests.rs`; these exercise the same
+//! literals end to end through the full pipeline.
 #[cfg(test)]
 use crate::test_utils::{call_i64, compile};
 

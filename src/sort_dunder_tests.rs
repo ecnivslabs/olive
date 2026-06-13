@@ -1,7 +1,6 @@
-//! E6.3 regression tests (roadmap.md Phase E6.3): `sort`/`sorted` on struct
-//! elements dispatch through `__lt__` (`lower_sort_by_lt`) instead of the
-//! native int/float/str comparator, which would otherwise silently order by
-//! raw struct pointer.
+//! Regression tests: `sort`/`sorted` on struct elements dispatch through
+//! `__lt__` (`lower_sort_by_lt`) instead of the native int/float/str
+//! comparator, which would otherwise silently order by raw struct pointer.
 #[cfg(test)]
 use crate::test_utils::{call_i64, check_codes, compile};
 

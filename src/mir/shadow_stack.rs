@@ -1,9 +1,9 @@
-//! Roadmap E13.2: JIT-only instrumentation so a runtime fault mid-call-chain
-//! prints every frame between it and `main`, innermost first, not just the
-//! caret at the fault site. Runs once, after optimization, only on the MIR
-//! handed to the debug (`pit run`) JIT pipeline -- AOT release never calls
-//! this, so it stays permanently caret-only at zero cost, exactly as the
-//! roadmap requires; see `std_lib::shadow_stack` for the runtime side.
+//! JIT-only instrumentation so a runtime fault mid-call-chain prints every
+//! frame between it and `main`, innermost first, not just the caret at the
+//! fault site. Runs once, after optimization, only on the MIR handed to the
+//! debug (`pit run`) JIT pipeline -- AOT release never calls this, so it
+//! stays permanently caret-only at zero cost; see `std_lib::shadow_stack`
+//! for the runtime side.
 //!
 //! Every statically-known call to another function in this same program
 //! (`Constant::Function(name)` where `name` is itself one of `functions`) is

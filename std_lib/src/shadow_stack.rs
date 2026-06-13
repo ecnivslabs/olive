@@ -1,4 +1,4 @@
-//! Roadmap E13.2: a call chain for a fault in the debug (`pit run`) pipeline.
+//! A call chain for a fault in the debug (`pit run`) pipeline.
 //! The MIR builder's JIT-only instrumentation pass (`mir::shadow_stack`)
 //! wraps every statically-known Olive-to-Olive call with a push/pop around
 //! it; a fault mid-chain finds the stack still holding every frame between

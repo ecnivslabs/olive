@@ -274,8 +274,7 @@ pub(super) fn insert_escape_copies(
                             // A value crossing a real task boundary
                             // (`chan_send`/`mutex_new`/`mutex_unlock`) needs
                             // the copy to land in the shared escape arena,
-                            // not the sending function's own arena -- see
-                            // the E5.6 write-up in roadmap.md.
+                            // not the sending function's own arena.
                             let copy_fn = if task_boundary_escape(callee, pos) {
                                 "__olive_relocate_typed"
                             } else {

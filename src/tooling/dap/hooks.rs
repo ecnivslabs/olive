@@ -4,45 +4,166 @@
 //! against `DEBUGGEE_ENABLED` must be a single load-and-branch. These are
 //! registered directly into the JIT via `builder.symbol`, never through
 //! `SYMBOL_MAP` or olive_std, so a plain run never links against them.
+//!
+//! Process-global state lives only in this file; `engine`/`launch` reach it
+//! through the `pub(crate)` functions below, never through a bare static.
+//!
+//! `main.rs` doesn't call into this subsystem yet, so most of it is
+//! unreachable from the bin target's `main`; `tests.rs` already exercises
+//! it in full.
+#![cfg_attr(not(test), allow(dead_code))]
 
-use std::cell::Cell;
+use super::engine::EngineShared;
+use rustc_hash::FxHashSet;
+use std::cell::{Cell, RefCell};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock, RwLock};
 
 thread_local! {
     /// Set only on the spawned debuggee thread for the lifetime of a debug
     /// session. Runtime worker threads (thread pools, async executors) never
     /// set it, so hooks on those threads are a load, compare, return.
     static DEBUGGEE_ENABLED: Cell<bool> = const { Cell::new(false) };
+    /// Per-thread call stack. Only the debuggee thread ever pushes to this;
+    /// a snapshot is cloned into the parked engine state on a stop.
+    static FRAMES: RefCell<Vec<Frame>> = const { RefCell::new(Vec::new()) };
 }
 
-// D2 replaces this file with real frame/breakpoint dispatch behind this
-// same guard; the early return looks needless only because nothing follows
-// it yet.
-#[allow(clippy::needless_return)]
-pub extern "C" fn debug_stmt(_packed: i64) {
+/// Raw captured frame: `line` is the packed `(file_id << 32) | line` value
+/// from the most recent `debug_stmt` call in this frame, `cells` holds raw
+/// i64 bits indexed by cell index, decoded later via the cell's MIR `Type`.
+#[derive(Clone)]
+pub(crate) struct Frame {
+    pub(crate) fn_id: u32,
+    pub(crate) line: i64,
+    pub(crate) cells: Vec<i64>,
+}
+
+/// Nonzero whenever any breakpoint is set anywhere in the program; checked
+/// before `FORCE_CHECK` so the overwhelmingly common "no breakpoints, not
+/// stepping" case only pays for one relaxed load.
+static BP_COUNT: AtomicUsize = AtomicUsize::new(0);
+/// True whenever a stop condition doesn't depend on the breakpoint set
+/// (pending stop-on-entry, an active pause request).
+static FORCE_CHECK: AtomicBool = AtomicBool::new(false);
+
+fn session_slot() -> &'static RwLock<Option<Arc<EngineShared>>> {
+    static SESSION: OnceLock<RwLock<Option<Arc<EngineShared>>>> = OnceLock::new();
+    SESSION.get_or_init(|| RwLock::new(None))
+}
+
+fn breakpoint_set() -> &'static RwLock<FxHashSet<i64>> {
+    static SET: OnceLock<RwLock<FxHashSet<i64>>> = OnceLock::new();
+    SET.get_or_init(|| RwLock::new(FxHashSet::default()))
+}
+
+/// Installs the process's one live session. Errors if a session is already
+/// active; resets breakpoint/force-check state so a prior session's leftover
+/// packed keys (file ids are only unique within a single compile) never leak
+/// into the new one.
+pub(crate) fn install_session(shared: Arc<EngineShared>) -> Result<(), ()> {
+    let mut slot = session_slot().write().unwrap();
+    if slot.is_some() {
+        return Err(());
+    }
+    replace_breakpoints(FxHashSet::default());
+    set_force_check(shared.wants_stop_on_entry());
+    *slot = Some(shared);
+    Ok(())
+}
+
+pub(crate) fn clear_session() {
+    *session_slot().write().unwrap() = None;
+    set_force_check(false);
+}
+
+pub(crate) fn is_breakpoint(packed: i64) -> bool {
+    breakpoint_set().read().unwrap().contains(&packed)
+}
+
+pub(crate) fn replace_breakpoints(keys: FxHashSet<i64>) {
+    BP_COUNT.store(keys.len(), Ordering::Relaxed);
+    *breakpoint_set().write().unwrap() = keys;
+}
+
+pub(crate) fn set_force_check(v: bool) {
+    FORCE_CHECK.store(v, Ordering::Relaxed);
+}
+
+pub(crate) fn enable_debuggee() {
+    DEBUGGEE_ENABLED.set(true);
+}
+
+pub(crate) fn disable_debuggee() {
+    DEBUGGEE_ENABLED.set(false);
+}
+
+pub extern "C" fn debug_stmt(packed: i64) {
     if !DEBUGGEE_ENABLED.get() {
         return;
     }
+    if BP_COUNT.load(Ordering::Relaxed) == 0 && !FORCE_CHECK.load(Ordering::Relaxed) {
+        return;
+    }
+    stmt_slow_path(packed);
 }
 
-#[allow(clippy::needless_return)]
-pub extern "C" fn debug_enter(_fn_id: i64) {
+fn stmt_slow_path(packed: i64) {
+    FRAMES.with_borrow_mut(|frames| {
+        if let Some(top) = frames.last_mut() {
+            top.line = packed;
+        }
+    });
+
+    let Some(shared) = session_slot().read().unwrap().clone() else {
+        return;
+    };
+    let Some(reason) = shared.stop_reason_for(packed) else {
+        return;
+    };
+    let snapshot = FRAMES.with_borrow(|frames| frames.clone());
+    shared.park(reason, snapshot);
+}
+
+pub extern "C" fn debug_enter(fn_id: i64) {
     if !DEBUGGEE_ENABLED.get() {
         return;
     }
+    let cell_count = session_slot()
+        .read()
+        .unwrap()
+        .as_ref()
+        .and_then(|s| s.cell_count(fn_id as u32))
+        .unwrap_or(0);
+    FRAMES.with_borrow_mut(|frames| {
+        frames.push(Frame {
+            fn_id: fn_id as u32,
+            line: 0,
+            cells: vec![0; cell_count],
+        });
+    });
 }
 
-#[allow(clippy::needless_return)]
-pub extern "C" fn debug_store(_cell_idx: i64, _value: i64) {
+pub extern "C" fn debug_store(cell_idx: i64, value: i64) {
     if !DEBUGGEE_ENABLED.get() {
         return;
     }
+    FRAMES.with_borrow_mut(|frames| {
+        if let Some(top) = frames.last_mut()
+            && let Some(slot) = top.cells.get_mut(cell_idx as usize)
+        {
+            *slot = value;
+        }
+    });
 }
 
-#[allow(clippy::needless_return)]
 pub extern "C" fn debug_exit() {
     if !DEBUGGEE_ENABLED.get() {
         return;
     }
+    FRAMES.with_borrow_mut(|frames| {
+        frames.pop();
+    });
 }
 
 /// Symbols registered unconditionally into every JIT module. Nothing calls

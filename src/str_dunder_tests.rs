@@ -1,6 +1,5 @@
-//! E6.2 regression tests (roadmap.md Phase E6.2): `__str__` wires into
-//! `str()`, `print`, and f-strings via `lower_struct_str_call`, one path
-//! shared by all three call sites.
+//! Regression tests: `__str__` wires into `str()`, `print`, and f-strings
+//! via `lower_struct_str_call`, one path shared by all three call sites.
 #[cfg(test)]
 use crate::test_utils::{call_i64, check_codes, compile};
 

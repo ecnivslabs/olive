@@ -14,8 +14,8 @@ fn ffi_type(t: Type) -> Type {
 }
 
 impl TypeChecker {
-    /// Writable globals would hole the share-nothing task model (see the
-    /// roadmap's design decision), so any write to a module-level binding
+    /// Writable globals would hole the share-nothing task model, so any
+    /// write to a module-level binding
     /// from inside a function is rejected -- shared by plain `=` and every
     /// compound `+=`-family operator, which is a write to the same target
     /// just as much as a plain assignment is.

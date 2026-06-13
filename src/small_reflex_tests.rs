@@ -1,4 +1,4 @@
-//! E3.9 small reflex regression tests (roadmap.md Phase E3.9).
+//! Small reflex regression tests.
 #[cfg(test)]
 use crate::test_utils::{call_i64, check_codes, compile};
 
