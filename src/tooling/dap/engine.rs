@@ -19,17 +19,19 @@ use std::sync::{Condvar, Mutex};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunMode {
     Continue,
-    #[allow(dead_code)] // stepping isn't wired up yet
+    /// `line` is the packed line active when the step started; a hit on the
+    /// same line at the same or deeper frame isn't a stop.
     StepOver {
         depth: usize,
+        line: i64,
     },
-    #[allow(dead_code)] // stepping isn't wired up yet
-    StepIn,
-    #[allow(dead_code)] // stepping isn't wired up yet
+    StepIn {
+        depth: usize,
+        line: i64,
+    },
     StepOut {
         depth: usize,
     },
-    #[allow(dead_code)] // nothing calls pause() yet
     Pause,
 }
 
@@ -37,7 +39,6 @@ pub enum RunMode {
 pub enum StopReason {
     Entry,
     Breakpoint,
-    #[allow(dead_code)] // stepping isn't wired up yet
     Step,
     Pause,
     #[allow(dead_code)] // fault stops aren't wired up yet
@@ -164,17 +165,36 @@ impl EngineShared {
         hooks::replace_breakpoints(keys);
     }
 
-    pub fn cont(&self) {
+    /// Sets the run mode, bumps the token so a parked debuggee's wait loop
+    /// wakes, and arms `force_check` so the stmt hook takes the slow path
+    /// even with zero breakpoints set.
+    fn resume(&self, mode: RunMode, force_check: bool) {
         let mut ctl = self.control.lock().unwrap();
-        ctl.mode = RunMode::Continue;
+        ctl.mode = mode;
         ctl.run_token = ctl.run_token.wrapping_add(1);
         drop(ctl);
+        hooks::set_force_check(force_check);
+        self.resume_cv.notify_all();
+    }
+
+    /// The depth/line of the frame the debuggee is currently parked in,
+    /// source for every step mode's starting point.
+    fn stopped_depth_line(&self) -> (usize, i64) {
+        let ctl = self.control.lock().unwrap();
+        let depth = ctl.parked_frames.len();
+        let line = ctl.parked_frames.last().map(|f| f.line).unwrap_or(0);
+        (depth, line)
+    }
+
+    pub fn cont(&self) {
         // A pending stop-on-entry must still force the next `debug_stmt`
         // slow path even though we're leaving Pause/the initial barrier;
         // clearing this unconditionally would let entry_pending go unread
         // and the program would run straight past it.
-        hooks::set_force_check(self.entry_pending.load(Ordering::Relaxed));
-        self.resume_cv.notify_all();
+        self.resume(
+            RunMode::Continue,
+            self.entry_pending.load(Ordering::Relaxed),
+        );
     }
 
     /// Blocks the debuggee thread until the first `cont()`, so breakpoints
@@ -189,12 +209,29 @@ impl EngineShared {
         }
     }
 
-    #[allow(dead_code)] // nothing calls pause() yet
     pub fn pause(&self) {
-        let mut ctl = self.control.lock().unwrap();
-        ctl.mode = RunMode::Pause;
-        drop(ctl);
-        hooks::set_force_check(true);
+        self.resume(RunMode::Pause, true);
+    }
+
+    /// Runs to the next stmt hook at the same or a shallower frame on a
+    /// different line: steps over a call without stopping inside it.
+    pub fn next(&self) {
+        let (depth, line) = self.stopped_depth_line();
+        self.resume(RunMode::StepOver { depth, line }, true);
+    }
+
+    /// Runs to the next stmt hook that's either a different line at the
+    /// same depth or any line at a deeper frame: follows into a call.
+    pub fn step_in(&self) {
+        let (depth, line) = self.stopped_depth_line();
+        self.resume(RunMode::StepIn { depth, line }, true);
+    }
+
+    /// Runs until the frame stack drops below the depth it started at:
+    /// finishes the current frame and stops back in the caller.
+    pub fn step_out(&self) {
+        let (depth, _) = self.stopped_depth_line();
+        self.resume(RunMode::StepOut { depth }, true);
     }
 
     /// Valid only while stopped; returns the empty stack otherwise. Index 0
@@ -238,18 +275,29 @@ impl EngineShared {
             .map(|f| f.cells.len())
     }
 
-    pub(crate) fn stop_reason_for(&self, packed: i64) -> Option<StopReason> {
+    /// `depth` is the caller's live frame-stack length (TLS-local, so it has
+    /// to be passed in rather than read here) at the point of this hit.
+    pub(crate) fn stop_reason_for(&self, packed: i64, depth: usize) -> Option<StopReason> {
         if self.entry_pending.swap(false, Ordering::AcqRel) {
             return Some(StopReason::Entry);
         }
-        let is_pause = matches!(self.control.lock().unwrap().mode, RunMode::Pause);
-        if is_pause {
+        let mode = self.control.lock().unwrap().mode;
+        if matches!(mode, RunMode::Pause) {
             return Some(StopReason::Pause);
         }
         if hooks::is_breakpoint(packed) {
             return Some(StopReason::Breakpoint);
         }
-        None
+        match mode {
+            RunMode::StepOver { depth: saved, line } if depth <= saved && packed != line => {
+                Some(StopReason::Step)
+            }
+            RunMode::StepIn { depth: saved, line } if depth > saved || packed != line => {
+                Some(StopReason::Step)
+            }
+            RunMode::StepOut { depth: saved } if depth < saved => Some(StopReason::Step),
+            _ => None,
+        }
     }
 
     /// Called from the debuggee thread on a stop condition. Records the

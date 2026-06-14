@@ -166,6 +166,128 @@ fn stop_on_entry_halts_before_first_statement() {
 }
 
 #[test]
+fn next_over_a_call_lands_on_the_next_line_not_inside_it() {
+    let _guard = exec_lock();
+    let src = "fn helper():\n    print(0)\nfn main():\n    helper()\n    print(1)\n";
+    let path = temp_file(src);
+    let session = launch(path.to_str().unwrap(), false).unwrap();
+
+    let result = session.set_breakpoints(0, &[4]); // `helper()`
+    assert_eq!(result, vec![(4, true)]);
+    session.cont();
+    session.events().recv().unwrap();
+
+    session.next();
+    match session.events().recv().unwrap() {
+        DebugEvent::Stopped { reason, frame } => {
+            assert_eq!(reason, StopReason::Step);
+            assert_eq!(frame.name, "main");
+            assert_eq!(frame.line, 5);
+        }
+        other => panic!("expected Stopped, got {other:?}"),
+    }
+
+    run_to_exit(&session);
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn step_in_lands_on_the_callees_first_line() {
+    let _guard = exec_lock();
+    let src = "fn helper():\n    print(0)\nfn main():\n    helper()\n    print(1)\n";
+    let path = temp_file(src);
+    let session = launch(path.to_str().unwrap(), false).unwrap();
+
+    let result = session.set_breakpoints(0, &[4]); // `helper()`
+    assert_eq!(result, vec![(4, true)]);
+    session.cont();
+    session.events().recv().unwrap();
+
+    session.step_in();
+    match session.events().recv().unwrap() {
+        DebugEvent::Stopped { reason, frame } => {
+            assert_eq!(reason, StopReason::Step);
+            assert_eq!(frame.name, "helper");
+            assert_eq!(frame.line, 2);
+        }
+        other => panic!("expected Stopped, got {other:?}"),
+    }
+
+    run_to_exit(&session);
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn step_out_returns_to_the_callers_line() {
+    let _guard = exec_lock();
+    let src = "fn helper():\n    print(0)\nfn main():\n    helper()\n    print(1)\n";
+    let path = temp_file(src);
+    let session = launch(path.to_str().unwrap(), false).unwrap();
+
+    let result = session.set_breakpoints(0, &[2]); // `let z = 1` inside helper
+    assert_eq!(result, vec![(2, true)]);
+    session.cont();
+    session.events().recv().unwrap();
+
+    session.step_out();
+    match session.events().recv().unwrap() {
+        DebugEvent::Stopped { reason, frame } => {
+            assert_eq!(reason, StopReason::Step);
+            assert_eq!(frame.name, "main");
+            assert_eq!(frame.line, 5);
+        }
+        other => panic!("expected Stopped, got {other:?}"),
+    }
+
+    run_to_exit(&session);
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn stepping_past_the_last_line_of_main_yields_exited() {
+    let _guard = exec_lock();
+    let path = temp_file("fn main():\n    print(1)\n");
+    let session = launch(path.to_str().unwrap(), false).unwrap();
+
+    let result = session.set_breakpoints(0, &[2]);
+    assert_eq!(result, vec![(2, true)]);
+    session.cont();
+    session.events().recv().unwrap();
+
+    session.next();
+    match session.events().recv().unwrap() {
+        DebugEvent::Exited(code) => assert_eq!(code, 0),
+        other => panic!("expected Exited, got {other:?}"),
+    }
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn pause_during_a_long_loop_stops_inside_it() {
+    let _guard = exec_lock();
+    let src = "fn main():\n    let mut i = 0\n    while i < 100000000:\n        i = i + 1\n    print(i)\n";
+    let path = temp_file(src);
+    let session = launch(path.to_str().unwrap(), false).unwrap();
+
+    session.cont();
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    session.pause();
+    match session.events().recv().unwrap() {
+        DebugEvent::Stopped { reason, frame } => {
+            assert_eq!(reason, StopReason::Pause);
+            assert_eq!(frame.name, "main");
+            // Pause stops at whichever stmt hook fires next -- the loop
+            // condition (line 3) or its body (line 4) -- both are inside it.
+            assert!(frame.line == 3 || frame.line == 4);
+        }
+        other => panic!("expected Stopped, got {other:?}"),
+    }
+
+    run_to_exit(&session);
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
 fn relaunch_while_active_errors() {
     let _guard = exec_lock();
     let path = temp_file("fn main():\n    let x = 1\n    print(x)\n");
