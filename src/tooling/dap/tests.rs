@@ -1,5 +1,6 @@
 use super::engine::{DebugEvent, StopReason};
 use super::launch::{DebugSession, launch};
+use super::values::{self, Variable};
 use crate::test_utils::exec_lock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -302,4 +303,178 @@ fn relaunch_while_active_errors() {
     run_to_exit(&session);
     std::fs::remove_file(&path).ok();
     std::fs::remove_file(&path2).ok();
+}
+
+fn var<'a>(vars: &'a [Variable], name: &str) -> &'a Variable {
+    vars.iter()
+        .find(|v| v.name == name)
+        .unwrap_or_else(|| panic!("no variable named {name} in {vars:?}"))
+}
+
+impl std::fmt::Debug for Variable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {} = {}", self.name, self.type_name, self.value)
+    }
+}
+
+const VARS_SRC: &str = "\
+struct Point:
+    x: int
+    y: int
+    fn __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+
+enum Shape:
+    Circle(float)
+    Square(int, int)
+
+fn main():
+    let n = 42
+    let f = 3.5
+    let b = True
+    let s = \"hi\"
+    let xs = [1, 2, 3]
+    let d = {\"a\": 1, \"b\": 2}
+    let p = Point(1, 2)
+    let sh = Circle(2.5)
+    let pts = [Point(1, 2), Point(3, 4)]
+    print(n)
+    print(f)
+    print(b)
+    print(s)
+    print(xs)
+    print(d)
+    print(p)
+    print(sh)
+    print(pts)
+";
+
+#[test]
+fn frame_variables_render_every_scalar_and_collection_kind() {
+    let _guard = exec_lock();
+    let path = temp_file(VARS_SRC);
+    let session = launch(path.to_str().unwrap(), false).unwrap();
+
+    let result = session.set_breakpoints(0, &[22]); // `print(n)`
+    assert_eq!(result, vec![(22, true)]);
+    session.cont();
+    session.events().recv().unwrap();
+
+    let vars = values::frame_variables(&session, 0);
+
+    assert_eq!(var(&vars, "n").value, "42");
+    assert_eq!(var(&vars, "n").type_name, "int");
+    assert_eq!(var(&vars, "n").reference, 0);
+
+    assert_eq!(var(&vars, "f").value, "3.5");
+    assert_eq!(var(&vars, "b").value, "True");
+    assert_eq!(var(&vars, "s").value, "\"hi\"");
+
+    let xs = var(&vars, "xs");
+    assert_eq!(xs.value, "[1, 2, 3]");
+    assert_ne!(xs.reference, 0);
+    let xs_children = values::children(&session, xs.reference);
+    let child_values: Vec<&str> = xs_children.iter().map(|v| v.value.as_str()).collect();
+    assert_eq!(child_values, vec!["1", "2", "3"]);
+    assert_eq!(
+        xs_children
+            .iter()
+            .map(|v| v.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["0", "1", "2"]
+    );
+
+    let d = var(&vars, "d");
+    assert_ne!(d.reference, 0);
+    let d_children = values::children(&session, d.reference);
+    assert_eq!(d_children.len(), 2);
+    assert!(
+        d_children
+            .iter()
+            .any(|v| v.name == "\"a\"" && v.value == "1")
+    );
+    assert!(
+        d_children
+            .iter()
+            .any(|v| v.name == "\"b\"" && v.value == "2")
+    );
+
+    let p = var(&vars, "p");
+    assert_eq!(p.value, "Point(x=1, y=2)");
+    assert_ne!(p.reference, 0);
+    let p_children = values::children(&session, p.reference);
+    assert_eq!(p_children.len(), 2);
+    assert_eq!(var(&p_children, "x").value, "1");
+    assert_eq!(var(&p_children, "y").value, "2");
+
+    let sh = var(&vars, "sh");
+    assert_eq!(sh.value, "Circle(2.5)");
+
+    let pts = var(&vars, "pts");
+    let pts_children = values::children(&session, pts.reference);
+    assert_eq!(pts_children.len(), 2);
+    assert_eq!(pts_children[0].value, "Point(x=1, y=2)");
+    let first_point_fields = values::children(&session, pts_children[0].reference);
+    assert_eq!(var(&first_point_fields, "x").value, "1");
+    assert_eq!(var(&first_point_fields, "y").value, "2");
+
+    run_to_exit(&session);
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn f32_local_renders_correctly_despite_narrow_width() {
+    let _guard = exec_lock();
+    let src = "fn main():\n    let x: f32 = 1.5\n    print(x)\n";
+    let path = temp_file(src);
+    let session = launch(path.to_str().unwrap(), false).unwrap();
+
+    let result = session.set_breakpoints(0, &[3]);
+    assert_eq!(result, vec![(3, true)]);
+    session.cont();
+    session.events().recv().unwrap();
+
+    let vars = values::frame_variables(&session, 0);
+    assert_eq!(var(&vars, "x").value, "1.5");
+
+    run_to_exit(&session);
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn mutating_a_list_element_is_visible_after_a_step() {
+    let _guard = exec_lock();
+    let src = "fn main():\n    let mut xs = [1, 2, 3]\n    xs[0] = 99\n    print(xs)\n";
+    let path = temp_file(src);
+    let session = launch(path.to_str().unwrap(), false).unwrap();
+
+    let result = session.set_breakpoints(0, &[3]); // `xs[0] = 99`, xs already assigned
+    assert_eq!(result, vec![(3, true)]);
+    session.cont();
+    session.events().recv().unwrap();
+
+    let xs = var(&values::frame_variables(&session, 0), "xs").reference;
+    assert_eq!(
+        values::children(&session, xs)
+            .iter()
+            .map(|v| v.value.clone())
+            .collect::<Vec<_>>(),
+        vec!["1", "2", "3"]
+    );
+
+    session.next();
+    session.events().recv().unwrap();
+
+    let xs = var(&values::frame_variables(&session, 0), "xs").reference;
+    assert_eq!(
+        values::children(&session, xs)
+            .iter()
+            .map(|v| v.value.clone())
+            .collect::<Vec<_>>(),
+        vec!["99", "2", "3"]
+    );
+
+    run_to_exit(&session);
+    std::fs::remove_file(&path).ok();
 }

@@ -5,7 +5,9 @@
 //! the host backtrace when debugging the runtime itself.
 
 use crate::{olive_str_from_ptr, run_exit_hooks};
+use std::ffi::CString;
 use std::io::{IsTerminal, Write};
+use std::sync::atomic::{AtomicI64, Ordering};
 
 const RED: &str = "\x1b[31m";
 const BOLD: &str = "\x1b[1m";
@@ -130,6 +132,26 @@ pub extern "C" fn olive_set_fault_loc(ptr: i64) {
     FAULT_LOC.with(|c| c.set(ptr));
 }
 
+/// Debugger fault hook: `extern "C" fn(code_ptr, msg_ptr, loc_ptr)`, all
+/// NUL-terminated C strings valid only for the call. Zero when no debug
+/// session is attached, the overwhelmingly common case, so a plain run pays
+/// one relaxed load and nothing else.
+static DEBUG_FAULT_HOOK: AtomicI64 = AtomicI64::new(0);
+
+/// Installs (or clears, with `0`) the debugger's fault callback. Called once
+/// at debug session launch; never touched by a plain `pit run`/AOT binary.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_debug_set_fault_hook(f: i64) {
+    DEBUG_FAULT_HOOK.store(f, Ordering::Relaxed);
+}
+
+/// A `CString` can't hold an interior NUL; a fault message built from
+/// arbitrary source text could contain one, so strip rather than panic
+/// inside the panic handler itself.
+fn safe_cstring(s: &str) -> CString {
+    CString::new(s.bytes().filter(|&b| b != 0).collect::<Vec<u8>>()).unwrap()
+}
+
 /// Splits a location string from the right so Windows drive prefixes such as
 /// `C:\path\x.liv` survive intact. Returns `None` unless both a line and a
 /// column parse as integers.
@@ -249,6 +271,19 @@ fn render_fault(out: &mut impl Write, fault: &Fault, msg: &str, loc: Option<&str
 
 /// Renders `fault` and terminates the process. Never returns.
 pub fn abort_with(fault: &Fault, msg: &str, loc: Option<&str>) -> ! {
+    let hook = DEBUG_FAULT_HOOK.load(Ordering::Relaxed);
+    if hook != 0 {
+        let code_c = safe_cstring(fault.code);
+        let msg_c = safe_cstring(msg);
+        let loc_c = loc.map(safe_cstring);
+        let f: extern "C" fn(i64, i64, i64) = unsafe { std::mem::transmute(hook as *const ()) };
+        f(
+            code_c.as_ptr() as i64,
+            msg_c.as_ptr() as i64,
+            loc_c.as_ref().map(|c| c.as_ptr() as i64).unwrap_or(0),
+        );
+    }
+
     run_exit_hooks();
 
     let color = use_color();
@@ -415,6 +450,39 @@ pub extern "C" fn olive_overflow_fail(kind: i64, lhs: i64, rhs: i64, loc: i64) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `abort_with` calls `std::process::exit`, so observing that the hook
+    /// fires *and* the process still exits needs a real subprocess -- an
+    /// in-process call would kill the test runner along with the fault.
+    #[test]
+    fn debug_fault_hook_fires_and_abort_with_still_exits() {
+        const CHILD_ENV: &str = "OLIVE_PANIC_HOOK_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            extern "C" fn hook(code: i64, msg: i64, _loc: i64) {
+                let code = unsafe { std::ffi::CStr::from_ptr(code as *const std::os::raw::c_char) };
+                let msg = unsafe { std::ffi::CStr::from_ptr(msg as *const std::os::raw::c_char) };
+                println!("HOOK_CODE={}", code.to_string_lossy());
+                println!("HOOK_MSG={}", msg.to_string_lossy());
+            }
+            olive_debug_set_fault_hook(hook as *const () as i64);
+            abort_with(&PANIC, "boom", None);
+        }
+
+        let exe = std::env::current_exe().unwrap();
+        let out = std::process::Command::new(&exe)
+            .arg("panic::tests::debug_fault_hook_fires_and_abort_with_still_exits")
+            .arg("--exact")
+            .arg("--nocapture")
+            .arg("--test-threads=1")
+            .env(CHILD_ENV, "1")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("spawn self as child");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("HOOK_CODE=E0700"), "stdout: {stdout}");
+        assert!(stdout.contains("HOOK_MSG=boom"), "stdout: {stdout}");
+        assert_eq!(out.status.code(), Some(1));
+    }
 
     #[test]
     fn parses_file_line_col() {

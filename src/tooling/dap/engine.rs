@@ -10,11 +10,19 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 use super::hooks::{self, Frame};
+use super::values::VarStore;
 use crate::mir::debug_hooks::DebugProgramInfo;
+use crate::semantic::type_descriptor::type_descriptor;
+use crate::semantic::types::Type;
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Condvar, Mutex};
+
+type StructFields = FxHashMap<String, Vec<String>>;
+type FieldTypes = FxHashMap<(String, String), Type>;
+type EnumDefs = FxHashMap<String, Vec<(String, Vec<Type>)>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunMode {
@@ -41,11 +49,7 @@ pub enum StopReason {
     Breakpoint,
     Step,
     Pause,
-    #[allow(dead_code)] // fault stops aren't wired up yet
-    Fault {
-        code: String,
-        message: String,
-    },
+    Fault { code: String, message: String },
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +84,13 @@ pub struct EngineShared {
     program: DebugProgramInfo,
     file_names: FxHashMap<usize, String>,
     events_tx: Mutex<Sender<DebugEvent>>,
+    struct_fields: StructFields,
+    field_types: FieldTypes,
+    enum_defs: EnumDefs,
+    /// One descriptor per named cell, built once at launch so `values.rs`
+    /// never re-encodes a top-level cell's type on every variable request.
+    cell_descs: FxHashMap<(u32, usize), CString>,
+    pub(crate) var_store: VarStore,
 }
 
 fn pack(file_id: usize, line: u32) -> i64 {
@@ -87,12 +98,25 @@ fn pack(file_id: usize, line: u32) -> i64 {
 }
 
 impl EngineShared {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         program: DebugProgramInfo,
         file_names: FxHashMap<usize, String>,
         stop_on_entry: bool,
         events_tx: Sender<DebugEvent>,
+        struct_fields: StructFields,
+        field_types: FieldTypes,
+        enum_defs: EnumDefs,
     ) -> std::sync::Arc<Self> {
+        let mut cell_descs = FxHashMap::default();
+        for func in &program.functions {
+            for (cell_idx, cell) in func.cells.iter().enumerate() {
+                let bytes = type_descriptor(&cell.ty, &struct_fields, &field_types, &enum_defs);
+                let desc = CString::new(bytes.into_bytes())
+                    .expect("type descriptor bytes are non-zero by construction");
+                cell_descs.insert((func.fn_id, cell_idx), desc);
+            }
+        }
         std::sync::Arc::new(Self {
             control: Mutex::new(Control {
                 mode: RunMode::Continue,
@@ -106,6 +130,11 @@ impl EngineShared {
             program,
             file_names,
             events_tx: Mutex::new(events_tx),
+            struct_fields,
+            field_types,
+            enum_defs,
+            cell_descs,
+            var_store: VarStore::new(),
         })
     }
 
@@ -174,6 +203,7 @@ impl EngineShared {
         ctl.run_token = ctl.run_token.wrapping_add(1);
         drop(ctl);
         hooks::set_force_check(force_check);
+        self.var_store.clear();
         self.resume_cv.notify_all();
     }
 
@@ -273,6 +303,50 @@ impl EngineShared {
             .iter()
             .find(|f| f.fn_id == fn_id)
             .map(|f| f.cells.len())
+    }
+
+    /// Named cells of `fn_id` in the same order `debug_store`'s `cell_idx`
+    /// indexes into a frame's raw `cells` vector.
+    pub(crate) fn fn_cells(&self, fn_id: u32) -> &[crate::mir::debug_hooks::CellInfo] {
+        self.program
+            .functions
+            .iter()
+            .find(|f| f.fn_id == fn_id)
+            .map(|f| f.cells.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// `(fn_id, raw cell bits)` for the frame at `frame_idx`, `0` being the
+    /// innermost frame -- the same indexing `stack()` returns. `None` while
+    /// not parked or past the bottom of the stack.
+    pub(crate) fn frame_cells(&self, frame_idx: usize) -> Option<(u32, Vec<i64>)> {
+        let ctl = self.control.lock().unwrap();
+        if !ctl.parked {
+            return None;
+        }
+        let n = ctl.parked_frames.len();
+        let f = ctl
+            .parked_frames
+            .get(n.checked_sub(1)?.checked_sub(frame_idx)?)?;
+        Some((f.fn_id, f.cells.clone()))
+    }
+
+    pub(crate) fn cell_desc(&self, fn_id: u32, cell_idx: usize) -> &std::ffi::CStr {
+        self.cell_descs
+            .get(&(fn_id, cell_idx))
+            .expect("cell_desc requested for an uninstrumented cell")
+    }
+
+    pub(crate) fn struct_fields(&self) -> &StructFields {
+        &self.struct_fields
+    }
+
+    pub(crate) fn field_types(&self) -> &FieldTypes {
+        &self.field_types
+    }
+
+    pub(crate) fn enum_defs(&self) -> &EnumDefs {
+        &self.enum_defs
     }
 
     /// `depth` is the caller's live frame-stack length (TLS-local, so it has
