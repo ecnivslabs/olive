@@ -5,7 +5,6 @@
 //! `std_lib/src/debug.rs` rather than duplicating heap layout here. The one
 //! exception is a struct field, whose offset (`8 + idx*8`) is fixed and
 //! already relied on elsewhere in the codebase (`translate.rs:545`).
-#![cfg_attr(not(test), allow(dead_code))]
 
 use super::launch::DebugSession;
 use crate::semantic::type_descriptor::{concrete_ty, type_descriptor};
