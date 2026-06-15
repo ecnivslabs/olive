@@ -4,7 +4,7 @@ default-members = [".", "std_lib"]
 
 [package]
 name = "pit"
-version = "0.34.0"
+version = "0.35.0"
 edition = "2024"
 authors = ["vinceswu"]
 description = "The Olive programming language compiler"
@@ -17,6 +17,10 @@ autoexamples = false
 [lib]
 name = "pit"
 path = "src/lib.rs"
+
+[[bin]]
+name = "dap_bench_drive"
+path = "benchmark/scripts/dap_bench_drive.rs"
 
 [dependencies]
 ariadne = "0.6.0"

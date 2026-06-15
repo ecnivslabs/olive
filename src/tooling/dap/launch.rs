@@ -3,7 +3,7 @@
 //! minus PGO, tier-up, and shadow-stack instrumentation, which the debugger's
 //! own frames and fault-hook support supersede.
 
-use super::engine::{DebugEvent, EngineShared};
+use super::engine::{DebugEvent, DebugVariantTable, EngineShared};
 use super::hooks;
 use crate::codegen::cranelift::CraneliftCodegen;
 use crate::compile::pipeline::run_pipeline_opt;
@@ -93,12 +93,20 @@ impl Drop for DebugSession {
 }
 
 pub fn launch(program: &str, stop_on_entry: bool) -> Result<DebugSession, LaunchError> {
-    let mut out =
-        run_pipeline_opt(program, false, None, false).map_err(|_| LaunchError::Compile)?;
-    let program_info = debug_hooks::instrument(&mut out.functions);
+    let out = run_pipeline_opt(program, false, None, false).map_err(|_| LaunchError::Compile)?;
+
+    // Two bodies per debug-instrumentable function. `clean_functions`
+    // (same per-line safepoints as the full variant, but deferred stores)
+    // is what codegen compiles as the *primary* set -- the default a
+    // session runs with nothing watching it. `debug_functions` (today's
+    // full instrument()) gets compiled separately as each function's
+    // `$debug` variant, wired in but not activated until something needs it.
+    let mut debug_functions = out.functions.clone();
+    let program_info = debug_hooks::instrument(&mut debug_functions);
+    let clean_functions = debug_hooks::instrument_clean(&out.functions);
 
     let mut codegen = CraneliftCodegen::new_jit(
-        out.functions,
+        clean_functions,
         out.struct_fields.clone(),
         out.field_types.clone(),
         out.enum_defs.clone(),
@@ -108,8 +116,25 @@ pub fn launch(program: &str, stop_on_entry: bool) -> Result<DebugSession, Launch
         &out.native_libs,
         false,
     );
+    codegen.debug_dual_variant = true;
     codegen.generate();
     codegen.finalize();
+
+    for func in &debug_functions {
+        codegen.install_debug_variant(func);
+    }
+    codegen.finalize();
+
+    let mut variant_table = DebugVariantTable::new();
+    for info in &program_info.functions {
+        if let (Some(cell_ptr), Some(clean_addr), Some(debug_addr)) = (
+            codegen.dispatch_cell_ptr(&info.name),
+            codegen.clean_variant_addr(&info.name),
+            codegen.debug_variant_addr(&info.name),
+        ) {
+            variant_table.insert(info.fn_id, cell_ptr as *mut i64, clean_addr, debug_addr);
+        }
+    }
 
     let Some(main_ptr) = codegen.get_function("__main__") else {
         return Err(LaunchError::NoMain);
@@ -126,6 +151,7 @@ pub fn launch(program: &str, stop_on_entry: bool) -> Result<DebugSession, Launch
         out.enum_defs.clone(),
     );
     hooks::install_session(shared.clone()).map_err(|_| LaunchError::SessionActive)?;
+    shared.install_variant_table(variant_table);
     shared.install_runtime_symbols(|name| codegen.runtime_symbol(name));
 
     if let Some(setter) = codegen.runtime_symbol("olive_debug_set_fault_hook") {

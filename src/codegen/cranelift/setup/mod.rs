@@ -694,12 +694,32 @@ impl<M: Module> CraneliftCodegen<M> {
 
         let has_async = self.functions.iter().any(|f| f.is_async);
         let has_c_structs = !self.c_struct_sizes.is_empty();
+        // `needed` was scanned against the clean (primary) function set
+        // only. `debug_dual_variant` sessions compile each function's
+        // `$debug` body in a second pass, after this loop -- if that body's
+        // the only place a hook call appears (a leaf fn with no args and no
+        // loop has neither an arg-store nor a safepoint in its clean body),
+        // the scan above would never see it and `func_ids` would be missing
+        // an entry `install_debug_variant`'s `translate_function` needs.
+        const DEBUG_HOOK_SYMS: [&str; 5] = [
+            "__olive_debug_should_check_stmt",
+            "__olive_debug_stmt",
+            "__olive_debug_enter",
+            "__olive_debug_store",
+            "__olive_debug_exit",
+        ];
         for &(name, sig) in import_table {
             let always_needed = super::ASYNC_RUNTIME_SYMS.contains(&name);
             let needed_for_c_or_traits = (name == "__olive_alloc")
                 && (has_c_structs || !self.vtables.is_empty())
                 || (name == "__olive_free_c_struct" && has_c_structs);
-            if !(needed.contains(name) || always_needed && has_async || needed_for_c_or_traits) {
+            let needed_for_debug_dual_variant =
+                self.debug_dual_variant && DEBUG_HOOK_SYMS.contains(&name);
+            if !(needed.contains(name)
+                || always_needed && has_async
+                || needed_for_c_or_traits
+                || needed_for_debug_dual_variant)
+            {
                 continue;
             }
             let decl_name = if self.aot {

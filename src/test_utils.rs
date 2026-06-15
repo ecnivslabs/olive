@@ -229,6 +229,28 @@ pub fn call_i64_3(cg: &mut CraneliftCodegen<JITModule>, name: &str, a: i64, b: i
 /// borrow checker sees. For tests asserting *how* something lowers (e.g. a
 /// `for`-loop borrows its iterable via `Rvalue::Ref` instead of copying it)
 /// rather than what it computes.
+/// Runs already-built MIR (e.g. `debug_hooks::instrument_clean`'s output)
+/// straight through codegen, skipping the frontend entirely. Empty
+/// struct/enum/vtable/global metadata -- only valid for programs with none
+/// of those, which is all `build_mir`'s callers need since it discards them
+/// too.
+pub fn compile_prebuilt(functions: Vec<crate::mir::ir::MirFunction>) -> JitInstance {
+    let mut cg = CraneliftCodegen::new_jit(
+        functions,
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        &[],
+        false,
+    );
+    cg.generate();
+    cg.finalize();
+    JitInstance(Some(cg))
+}
+
 pub fn build_mir(src: &str) -> Vec<crate::mir::ir::MirFunction> {
     let tokens = Lexer::new(src, 0).tokenise().unwrap();
     let mut prog = Parser::new(tokens).parse_program().unwrap();

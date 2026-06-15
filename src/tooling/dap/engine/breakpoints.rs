@@ -142,6 +142,9 @@ impl EngineShared {
     pub(super) fn rebuild_breakpoint_index(&self) {
         let keys: FxHashSet<i64> = self.breakpoints.lock().unwrap().keys().copied().collect();
         hooks::replace_breakpoints(keys);
+        // Only the functions that actually own one of these lines need
+        // their `$debug` variant active; everything else stays clean.
+        self.sync_variants_to_breakpoints();
     }
 
     /// Whether a line already known to carry a breakpoint should actually

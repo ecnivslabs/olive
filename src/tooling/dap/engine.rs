@@ -5,6 +5,7 @@
 //! `hooks` leaking any mutable state outside that file.
 
 mod breakpoints;
+mod variants;
 
 use super::hooks::{self, Frame};
 use super::values::VarStore;
@@ -19,6 +20,7 @@ use std::sync::mpsc::Sender;
 use std::sync::{Condvar, Mutex, OnceLock};
 
 pub use breakpoints::BpSpec;
+pub(crate) use variants::DebugVariantTable;
 
 type StructFields = FxHashMap<String, Vec<String>>;
 type FieldTypes = FxHashMap<(String, String), Type>;
@@ -87,7 +89,7 @@ struct Control {
     detached: bool,
 }
 
-// D13c: Atomic-encoded RunMode variant, checked in `stop_reason_for`
+// Atomic-encoded RunMode variant, checked in `stop_reason_for`
 // before touching the control mutex. The full `Control` struct still holds
 // the authoritative mode + parked_frames for the rare multi-field write.
 const MODE_CONTINUE: u8 = 0;
@@ -99,7 +101,7 @@ const MODE_PAUSE: u8 = 4;
 pub struct EngineShared {
     control: Mutex<Control>,
     resume_cv: Condvar,
-    /// D13c: Atomic-mode fields so `stop_reason_for` reads the mode
+    /// Atomic-mode fields so `stop_reason_for` reads the mode
     /// without acquiring the control mutex on every statement.
     mode_variant: AtomicU8,
     step_depth: AtomicUsize,
@@ -121,6 +123,11 @@ pub struct EngineShared {
     /// values for a condition/logpoint without reaching into the session's
     /// `CraneliftCodegen`, which only `DebugSession` owns.
     runtime_syms: OnceLock<FxHashMap<&'static str, usize>>,
+    /// Dual-variant dispatch cells, set once at launch. `None` when the
+    /// session's codegen didn't compile dual variants (shouldn't happen for
+    /// a real `pit debug` launch, but keeps every call site a graceful no-op
+    /// rather than a panic if it ever does).
+    variant_table: OnceLock<DebugVariantTable>,
 }
 
 /// Names resolved once at launch into `EngineShared::runtime_syms`.
@@ -183,7 +190,56 @@ impl EngineShared {
             cell_descs,
             var_store: VarStore::new(),
             runtime_syms: OnceLock::new(),
+            variant_table: OnceLock::new(),
         })
+    }
+
+    /// Installs the session's dual-variant dispatch table, once, at launch.
+    /// A stop-on-entry session activates every variant immediately: the
+    /// debuggee is still blocked in `wait_for_start`, nothing has run yet
+    /// to narrow down to a "current" breakpoint set, and the entry stop
+    /// itself needs `__main__` on its `$debug` body to have a `debug_stmt`
+    /// call to catch it at all.
+    pub(crate) fn install_variant_table(&self, table: DebugVariantTable) {
+        if self.wants_stop_on_entry() {
+            table.activate_all();
+        }
+        let _ = self.variant_table.set(table);
+    }
+
+    /// Every fn_id with at least one currently-set breakpoint. Empty when
+    /// nothing is set, in which case a plain `continue` should leave every
+    /// function on its clean body.
+    fn bp_owning_fn_ids(&self) -> FxHashSet<u32> {
+        let bps = self.breakpoints.lock().unwrap();
+        bps.keys()
+            .filter_map(|packed| self.program.line_to_fn.get(packed).copied())
+            .collect()
+    }
+
+    /// Reverts every function to "instrumented only if it currently owns a
+    /// breakpoint" -- the steady state a plain `continue` runs under.
+    pub(crate) fn sync_variants_to_breakpoints(&self) {
+        if let Some(table) = self.variant_table.get() {
+            table.sync(&self.bp_owning_fn_ids());
+        }
+    }
+
+    /// Every function instrumented, regardless of breakpoints -- required
+    /// before any step/pause, since either can land anywhere.
+    fn activate_all_variants(&self) {
+        if let Some(table) = self.variant_table.get() {
+            table.activate_all();
+        }
+    }
+
+    /// Every function back to its clean body, ignoring whatever's still in
+    /// `self.breakpoints` -- `detach()`'s "run to completion" no longer
+    /// cares about any of them.
+    fn deactivate_all_variants(&self) {
+        if let Some(table) = self.variant_table.get() {
+            table.sync(&FxHashSet::default());
+        }
     }
 
     pub(crate) fn wants_stop_on_entry(&self) -> bool {
@@ -209,7 +265,7 @@ impl EngineShared {
             .map(|&addr| addr as *const u8)
     }
 
-    /// D13c: Encode `RunMode` into the atomic mode fields so
+    /// Encode `RunMode` into the atomic mode fields so
     /// `stop_reason_for` can read them without locking the control mutex.
     fn set_mode_atomic(&self, mode: &RunMode) {
         match *mode {
@@ -264,10 +320,17 @@ impl EngineShared {
         // slow path even though we're leaving Pause/the initial barrier;
         // clearing this unconditionally would let entry_pending go unread
         // and the program would run straight past it.
-        self.resume(
-            RunMode::Continue,
-            self.entry_pending.load(Ordering::Relaxed),
-        );
+        let entry_pending = self.entry_pending.load(Ordering::Relaxed);
+        // The special first resume of a stop-on-entry session: `launch.rs`
+        // already activated every variant so the entry stop can fire at
+        // all, and nothing has run yet to have accumulated a "current"
+        // breakpoint set worth narrowing down to. Every later `cont()`
+        // (entry_pending now false) is a genuine free-run: only functions
+        // that currently own a breakpoint stay instrumented.
+        if !entry_pending {
+            self.sync_variants_to_breakpoints();
+        }
+        self.resume(RunMode::Continue, entry_pending);
     }
 
     /// Session teardown (`disconnect`/`quit`, `DebugSession::drop`): clears
@@ -281,6 +344,7 @@ impl EngineShared {
         self.step_depth.store(0, Ordering::Relaxed);
         self.step_line.store(0, Ordering::Relaxed);
         hooks::replace_breakpoints(FxHashSet::default());
+        self.deactivate_all_variants();
         let mut ctl = self.control.lock().unwrap();
         ctl.detached = true;
         ctl.mode = RunMode::Continue;
@@ -304,6 +368,7 @@ impl EngineShared {
     }
 
     pub fn pause(&self) {
+        self.activate_all_variants();
         self.resume(RunMode::Pause, true);
     }
 
@@ -316,6 +381,7 @@ impl EngineShared {
     /// Runs to the next stmt hook at the same or a shallower frame on a
     /// different line: steps over a call without stopping inside it.
     pub fn next(&self) {
+        self.activate_all_variants();
         let (depth, line) = self.stopped_depth_line();
         self.resume(RunMode::StepOver { depth, line }, true);
     }
@@ -323,6 +389,7 @@ impl EngineShared {
     /// Runs to the next stmt hook that's either a different line at the
     /// same depth or any line at a deeper frame: follows into a call.
     pub fn step_in(&self) {
+        self.activate_all_variants();
         let (depth, line) = self.stopped_depth_line();
         self.resume(RunMode::StepIn { depth, line }, true);
     }
@@ -330,6 +397,7 @@ impl EngineShared {
     /// Runs until the frame stack drops below the depth it started at:
     /// finishes the current frame and stops back in the caller.
     pub fn step_out(&self) {
+        self.activate_all_variants();
         let (depth, _) = self.stopped_depth_line();
         self.resume(RunMode::StepOut { depth }, true);
     }
@@ -436,7 +504,7 @@ impl EngineShared {
         if self.entry_pending.swap(false, Ordering::AcqRel) {
             return Some(StopReason::Entry);
         }
-        // D13c: Check atomic mode first, avoiding the control mutex on
+        // Check atomic mode first, avoiding the control mutex on
         // every statement. Only fall back to the mutex when the atomic
         // fast path can't decide (step modes need depth/line).
         let variant = self.mode_variant.load(Ordering::Relaxed);
