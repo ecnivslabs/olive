@@ -109,6 +109,21 @@ impl EngineShared {
         }
     }
 
+    /// Every instrumented line in `file_id` within `[start, end]`, for the
+    /// `breakpointLocations` request -- lets a client snap a breakpoint onto
+    /// a line that actually has code before ever calling `setBreakpoints`.
+    pub(crate) fn lines_in_range(&self, file_id: usize, start: u32, end: u32) -> Vec<u32> {
+        self.program
+            .lines
+            .iter()
+            .filter_map(|&packed| {
+                let f = (packed >> 32) as usize;
+                let l = (packed & 0xFFFF_FFFF) as u32;
+                (f == file_id && l >= start && l <= end).then_some(l)
+            })
+            .collect()
+    }
+
     fn resolve_line(&self, file_id: usize, line: u32) -> Option<u32> {
         if self.program.lines.contains(&pack(file_id, line)) {
             return Some(line);

@@ -27,6 +27,9 @@ pub(crate) struct ServerState {
     monitor: Option<JoinHandle<()>>,
     files: FxHashMap<PathBuf, usize>,
     pub(crate) last_exception: Arc<Mutex<Option<(String, String)>>>,
+    /// The arguments a `launch` succeeded with, reused by `restart` when the
+    /// client doesn't resend them.
+    last_launch_args: Value,
 }
 
 pub fn run_dap() {
@@ -43,6 +46,7 @@ pub fn run_dap() {
         monitor: None,
         files: FxHashMap::default(),
         last_exception: Arc::new(Mutex::new(None)),
+        last_launch_args: Value::Null,
     };
 
     let stdin = io::stdin();
@@ -108,14 +112,22 @@ fn handle_message(state: &mut ServerState, msg: Value) -> bool {
                     "supportsConfigurationDoneRequest": true,
                     "supportsEvaluateForHovers": true,
                     "supportsExceptionInfoRequest": true,
+                    "supportsConditionalBreakpoints": true,
+                    "supportsHitConditionalBreakpoints": true,
+                    "supportsLogPoints": true,
+                    "supportsBreakpointLocationsRequest": true,
+                    "supportsTerminateRequest": true,
+                    "supportsRestartRequest": true,
                     "exceptionBreakpointFilters": [
                         {"filter": "faults", "label": "Runtime Faults", "default": true}
                     ],
                 }),
             );
         }
-        "launch" => handle_launch(state, request_seq, &args),
+        "launch" => handle_launch(state, request_seq, command, &args),
+        "restart" => handle_restart(state, request_seq, &args),
         "setBreakpoints" => handle_set_breakpoints(state, request_seq, &args),
+        "breakpointLocations" => handle_breakpoint_locations(state, request_seq, &args),
         "configurationDone" => {
             send_response(state, request_seq, command, json!({}));
             if let Some(session) = &state.session {
@@ -136,6 +148,14 @@ fn handle_message(state: &mut ServerState, msg: Value) -> bool {
         "evaluate" => inspect::handle_evaluate(state, request_seq, &args),
         "exceptionInfo" => inspect::handle_exception_info(state, request_seq),
         "setExceptionBreakpoints" => {
+            let stop_on_faults = args
+                .get("filters")
+                .and_then(Value::as_array)
+                .map(|filters| filters.iter().any(|f| f.as_str() == Some("faults")))
+                .unwrap_or(false);
+            if let Some(session) = &state.session {
+                session.set_stop_on_faults(stop_on_faults);
+            }
             send_response(state, request_seq, command, json!({}));
         }
         "continue" => {
@@ -162,6 +182,14 @@ fn handle_message(state: &mut ServerState, msg: Value) -> bool {
         "pause" => {
             if let Some(session) = &state.session {
                 session.pause();
+                send_response(state, request_seq, command, json!({}));
+            } else {
+                send_error(state, request_seq, command, "no active session");
+            }
+        }
+        "terminate" => {
+            if let Some(session) = &state.session {
+                session.detach();
                 send_response(state, request_seq, command, json!({}));
             } else {
                 send_error(state, request_seq, command, "no active session");
@@ -201,9 +229,24 @@ fn step(state: &ServerState, request_seq: i64, command: &str, run: impl FnOnce(&
     }
 }
 
-fn handle_launch(state: &mut ServerState, request_seq: i64, args: &Value) {
+fn handle_restart(state: &mut ServerState, request_seq: i64, args: &Value) {
+    let relaunch_args = args
+        .get("arguments")
+        .cloned()
+        .filter(|v| !v.is_null())
+        .unwrap_or_else(|| state.last_launch_args.clone());
+    if let Some(session) = state.session.take() {
+        drop(session);
+    }
+    if let Some(m) = state.monitor.take() {
+        let _ = m.join();
+    }
+    handle_launch(state, request_seq, "restart", &relaunch_args);
+}
+
+fn handle_launch(state: &mut ServerState, request_seq: i64, command: &str, args: &Value) {
     let Some(program) = args.get("program").and_then(Value::as_str) else {
-        send_error(state, request_seq, "launch", "missing 'program' argument");
+        send_error(state, request_seq, command, "missing 'program' argument");
         return;
     };
     let stop_on_entry = args
@@ -230,7 +273,7 @@ fn handle_launch(state: &mut ServerState, request_seq: i64, args: &Value) {
             send_error(
                 state,
                 request_seq,
-                "launch",
+                command,
                 &format!("redirect setup failed: {e}"),
             );
             return;
@@ -241,7 +284,7 @@ fn handle_launch(state: &mut ServerState, request_seq: i64, args: &Value) {
         Ok(s) => s,
         Err(e) => {
             redirect.restore();
-            send_error(state, request_seq, "launch", &e.to_string());
+            send_error(state, request_seq, command, &e.to_string());
             return;
         }
     };
@@ -256,7 +299,8 @@ fn handle_launch(state: &mut ServerState, request_seq: i64, args: &Value) {
 
     state.session = Some(session);
     state.monitor = Some(monitor);
-    send_response(state, request_seq, "launch", json!({}));
+    state.last_launch_args = args.clone();
+    send_response(state, request_seq, command, json!({}));
     send_event(state, "initialized", json!({}));
 }
 
@@ -339,6 +383,55 @@ fn bp_spec(bp: &Value) -> Option<BpSpec> {
             .and_then(Value::as_str)
             .map(str::to_string),
     })
+}
+
+fn handle_breakpoint_locations(state: &ServerState, request_seq: i64, args: &Value) {
+    let Some(session) = &state.session else {
+        send_error(
+            state,
+            request_seq,
+            "breakpointLocations",
+            "no active session",
+        );
+        return;
+    };
+    let Some(path) = args
+        .get("source")
+        .and_then(|s| s.get("path"))
+        .and_then(Value::as_str)
+    else {
+        send_error(
+            state,
+            request_seq,
+            "breakpointLocations",
+            "missing source.path",
+        );
+        return;
+    };
+    let Some(line) = args.get("line").and_then(Value::as_u64) else {
+        send_error(state, request_seq, "breakpointLocations", "missing line");
+        return;
+    };
+    let end_line = args.get("endLine").and_then(Value::as_u64).unwrap_or(line);
+
+    let Some(file_id) = file_id_for(state, path) else {
+        send_response(
+            state,
+            request_seq,
+            "breakpointLocations",
+            json!({"breakpoints": []}),
+        );
+        return;
+    };
+    let mut lines = session.lines_in_range(file_id, line as u32, end_line as u32);
+    lines.sort_unstable();
+    let body: Vec<Value> = lines.into_iter().map(|l| json!({"line": l})).collect();
+    send_response(
+        state,
+        request_seq,
+        "breakpointLocations",
+        json!({"breakpoints": body}),
+    );
 }
 
 fn handle_stack_trace(state: &ServerState, request_seq: i64) {

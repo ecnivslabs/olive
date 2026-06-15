@@ -150,7 +150,14 @@ fn handshake(session: &mut Session) {
     let seq = session.request("initialize", json!({}));
     let resp = session.read_response(seq);
     assert_eq!(resp["success"], true);
-    assert_eq!(resp["body"]["supportsConfigurationDoneRequest"], true);
+    let body = &resp["body"];
+    assert_eq!(body["supportsConfigurationDoneRequest"], true);
+    assert_eq!(body["supportsConditionalBreakpoints"], true);
+    assert_eq!(body["supportsHitConditionalBreakpoints"], true);
+    assert_eq!(body["supportsLogPoints"], true);
+    assert_eq!(body["supportsBreakpointLocationsRequest"], true);
+    assert_eq!(body["supportsTerminateRequest"], true);
+    assert_eq!(body["supportsRestartRequest"], true);
 }
 
 fn launch_program(session: &mut Session, path: &Path, stop_on_entry: bool) {
@@ -394,6 +401,126 @@ fn request_while_running_returns_error_not_hang() {
 
     session.request("pause", json!({}));
     session.read_event("stopped");
+    disconnect(&mut session);
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn breakpoint_locations_reports_only_instrumented_lines() {
+    let mut session = Session::start();
+    handshake(&mut session);
+
+    let src = "fn main():\n    let x = 1\n\n    print(x)\n";
+    let path = write_program(src, "bplocs");
+    launch_program(&mut session, &path, false);
+
+    let seq = session.request(
+        "breakpointLocations",
+        json!({"source": {"path": path.to_str().unwrap()}, "line": 2, "endLine": 2}),
+    );
+    let resp = session.read_response(seq);
+    let lines: Vec<i64> = resp["body"]["breakpoints"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["line"].as_i64().unwrap())
+        .collect();
+    assert_eq!(lines, vec![2]);
+
+    let seq = session.request(
+        "breakpointLocations",
+        json!({"source": {"path": path.to_str().unwrap()}, "line": 3, "endLine": 3}),
+    );
+    let resp = session.read_response(seq);
+    assert!(
+        resp["body"]["breakpoints"].as_array().unwrap().is_empty(),
+        "a blank line has no instrumented statement: {resp}"
+    );
+
+    disconnect(&mut session);
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn exception_filter_faults_off_lets_the_fault_exit_without_stopping() {
+    let mut session = Session::start();
+    handshake(&mut session);
+
+    let src = "fn get(xs: [int], i: int) -> int:\n    return xs[i]\nfn main():\n    let xs = [1, 2, 3]\n    print(get(xs, 9))\n";
+    let path = write_program(src, "faultoff");
+    launch_program(&mut session, &path, false);
+
+    let seq = session.request("setExceptionBreakpoints", json!({"filters": []}));
+    let resp = session.read_response(seq);
+    assert_eq!(resp["success"], true);
+
+    configuration_done(&mut session);
+
+    // With the fault filter off, the debuggee never parks, so nothing
+    // resumes it -- if it had stopped, this wait would hang.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        if let Some(status) = session.child.try_wait().expect("poll child") {
+            assert_eq!(status.code(), Some(1), "fault still exits the process");
+            break;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = session.child.kill();
+            let _ = session.child.wait();
+            panic!("fault with the filter off should not have stopped the debuggee");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn terminate_runs_the_debuggee_to_completion_without_disconnecting() {
+    let mut session = Session::start();
+    handshake(&mut session);
+
+    let src =
+        "fn main():\n    let mut i = 0\n    while i < 200000:\n        i = i + 1\n    print(i)\n";
+    let path = write_program(src, "terminate");
+    launch_program(&mut session, &path, false);
+    set_breakpoints(&mut session, &path, &[4]);
+    configuration_done(&mut session);
+    session.read_event("stopped");
+
+    let seq = session.request("terminate", json!({}));
+    let resp = session.read_response(seq);
+    assert_eq!(resp["success"], true);
+
+    let exited = session.read_event("exited");
+    assert_eq!(exited["body"]["exitCode"], 0);
+    session.read_event("terminated");
+
+    disconnect(&mut session);
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn restart_relaunches_a_fresh_session() {
+    let mut session = Session::start();
+    handshake(&mut session);
+
+    let src = "fn main():\n    let x = 1\n    print(x)\n";
+    let path = write_program(src, "restart");
+    launch_program(&mut session, &path, false);
+    set_breakpoints(&mut session, &path, &[3]);
+    configuration_done(&mut session);
+    session.read_event("stopped");
+
+    let seq = session.request("restart", json!({}));
+    let resp = session.read_response(seq);
+    assert_eq!(resp["success"], true, "restart failed: {resp}");
+    session.read_event("initialized");
+
+    set_breakpoints(&mut session, &path, &[3]);
+    configuration_done(&mut session);
+    let stopped = session.read_event("stopped");
+    assert_eq!(stopped["body"]["reason"], "breakpoint");
+
     disconnect(&mut session);
     std::fs::remove_file(&path).ok();
 }
