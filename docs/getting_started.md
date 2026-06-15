@@ -9,12 +9,12 @@ This guide covers installing Olive and running your first program.
 Install the `pit` toolchain (the all-in-one compiler and package manager) using the installer script:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/olive-language/olive/master/install.sh | sh
+curl -sSL https://raw.githubusercontent.com/ecnivs-labs/olive/master/install.sh | sh
 ```
 
 ### Windows
 
-1. Download `pit-windows-x86_64.exe` from the [releases page](https://github.com/olive-language/olive/releases/latest).
+1. Download `pit-windows-x86_64.exe` from the [releases page](https://github.com/ecnivs-labs/olive/releases/latest).
 2. Rename the binary to `pit.exe`.
 3. Add the directory containing the binary to your system `PATH`.
 

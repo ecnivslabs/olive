@@ -185,7 +185,7 @@ pub fn run_shell() {
                 continue;
             }
             "copyright" => {
-                println!("Copyright (c) 2024 ecnivs. MIT License.");
+                println!("Copyright (c) 2024 vinceswu. MIT License.");
                 continue;
             }
             "credits" => {
@@ -193,7 +193,7 @@ pub fn run_shell() {
                 continue;
             }
             "license" => {
-                println!("MIT License: see https://github.com/ecnivs/olive/blob/master/LICENSE");
+                println!("MIT License: see https://github.com/ecnivs-labs/olive/blob/master/LICENSE");
                 continue;
             }
             "clear" => {

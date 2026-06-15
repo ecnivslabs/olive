@@ -6,7 +6,7 @@ use tar::Archive;
 
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 fn get_repo() -> String {
-    env::var("PIT_UPSTREAM_REPO").unwrap_or_else(|_| "olive-language/olive".to_string())
+    env::var("PIT_UPSTREAM_REPO").unwrap_or_else(|_| "ecnivs-labs/olive".to_string())
 }
 
 fn target_triple() -> Option<&'static str> {
