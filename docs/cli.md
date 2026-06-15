@@ -76,5 +76,11 @@ The `pit` toolchain is the unified compiler, package manager, and project manage
 * `pit lsp`
   Starts a Language Server Protocol server over stdio: diagnostics as you type, hover, go-to-definition, completion, and document formatting. Editors talk to it directly; see `editors/vscode/` for an in-repo VSCode client.
 
+* `pit dap`
+  Starts a Debug Adapter Protocol server over stdio for breakpoints, stepping, and variable inspection. VS Code and any other DAP client talk to it directly; see `docs/debugger.md`.
+
+* `pit debug <file>`
+  Starts a debug session for `<file>` over a flat newline-delimited JSON protocol, for AI agents and scripts that don't want the DAP handshake. See `docs/debugger.md`.
+
 * `pit upgrade`
   Upgrades the Olive toolchain (compiler and standard library) to the latest stable release.

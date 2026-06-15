@@ -1,8 +1,8 @@
 //! Scripted end-to-end session against the real `pit dap` binary over its
 //! actual stdio transport, cloned from `tests/lsp_conformance.rs`'s pattern
 //! (a framed-stdio subprocess, request/response matched by sequence number
-//! rather than JSON-RPC id). Covers the D6 request/event subset plus D7's
-//! data requests (scopes, variables, evaluate, exceptionInfo).
+//! rather than JSON-RPC id). Covers launch, breakpoints, stepping, and the
+//! variable inspection requests (scopes, variables, evaluate, exceptionInfo).
 
 use serde_json::{Value, json};
 use std::io::{BufReader, Read, Write};
@@ -343,7 +343,7 @@ fn fault_program_stops_with_exception_then_exception_info() {
 
     // Resuming past a fault means `abort_with` runs to completion and the
     // whole `pit dap` process exits 1 -- no graceful disconnect handshake
-    // here, so just observe the process die (per the D5 contract).
+    // here, so just observe the process die.
     session.request("continue", json!({"threadId": 1}));
     let status = session.child.wait().expect("pit dap exits");
     assert_eq!(status.code(), Some(1));

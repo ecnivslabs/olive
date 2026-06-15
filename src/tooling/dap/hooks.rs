@@ -106,17 +106,20 @@ pub extern "C" fn debug_stmt(packed: i64) {
 }
 
 fn stmt_slow_path(packed: i64) {
-    let depth = FRAMES.with_borrow_mut(|frames| {
+    let (depth, top) = FRAMES.with_borrow_mut(|frames| {
         if let Some(top) = frames.last_mut() {
             top.line = packed;
         }
-        frames.len()
+        (frames.len(), frames.last().cloned())
     });
+    let Some(top) = top else {
+        return;
+    };
 
     let Some(shared) = session_slot().read().unwrap().clone() else {
         return;
     };
-    let Some(reason) = shared.stop_reason_for(packed, depth) else {
+    let Some(reason) = shared.stop_reason_for(packed, depth, &top) else {
         return;
     };
     let snapshot = FRAMES.with_borrow(|frames| frames.clone());

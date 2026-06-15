@@ -6,7 +6,7 @@
 //! `stepIn`/`stepOut`/`pause` are fire-and-forget, their effect observed
 //! through the `stopped`/`exited` events instead).
 
-use super::engine::{DebugEvent, StopReason};
+use super::engine::{BpSpec, DebugEvent, StopReason};
 use super::eval;
 use super::launch::{self, DebugSession};
 use super::redirect::Redirect;
@@ -209,31 +209,51 @@ fn handle_break(state: &mut HeadlessState, id: Option<i64>, args: &Value) {
         err(state, id, "missing 'source'");
         return;
     };
-    let lines: Vec<u32> = args
+    let specs: Vec<BpSpec> = args
         .get("lines")
         .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(Value::as_u64)
-                .map(|l| l as u32)
-                .collect()
-        })
+        .map(|a| a.iter().filter_map(bp_spec).collect())
         .unwrap_or_default();
 
     let Some(file_id) = file_id_for(state, source) else {
-        let body: Vec<Value> = lines
+        let body: Vec<Value> = specs
             .iter()
-            .map(|&l| json!({"line": l, "verified": false}))
+            .map(|s| json!({"line": s.line, "verified": false}))
             .collect();
         ok(state, id, json!({"lines": body}));
         return;
     };
-    let resolved = session.set_breakpoints(file_id, &lines);
+    let resolved = session.set_breakpoints_with(file_id, &specs);
     let body: Vec<Value> = resolved
         .into_iter()
         .map(|(line, verified)| json!({"line": line, "verified": verified}))
         .collect();
     ok(state, id, json!({"lines": body}));
+}
+
+/// A line entry in `break`'s `lines` array: either a bare line number (an
+/// unconditional breakpoint) or `{"line":N,"cond":...,"hits":...,"log":...}`.
+fn bp_spec(entry: &Value) -> Option<BpSpec> {
+    if let Some(line) = entry.as_u64() {
+        return Some(BpSpec {
+            line: line as u32,
+            condition: None,
+            hit_condition: None,
+            log_message: None,
+        });
+    }
+    Some(BpSpec {
+        line: entry.get("line").and_then(Value::as_u64)? as u32,
+        condition: entry
+            .get("cond")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        hit_condition: entry
+            .get("hits")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        log_message: entry.get("log").and_then(Value::as_str).map(str::to_string),
+    })
 }
 
 fn handle_stack(state: &HeadlessState, id: Option<i64>) {
@@ -325,6 +345,12 @@ fn run_monitor(events_rx: Receiver<DebugEvent>, redirect: Redirect, proto: Arc<M
                         }),
                     );
                 }
+            }
+            DebugEvent::Output(text) => {
+                emit(
+                    &proto,
+                    &json!({"event": "output", "category": "console", "text": text}),
+                );
             }
             DebugEvent::Exited(code) => {
                 redirect.restore();

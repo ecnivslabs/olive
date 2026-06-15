@@ -20,6 +20,7 @@ fn run_to_exit(session: &DebugSession) {
         match session.events().recv().unwrap() {
             DebugEvent::Exited(_) => return,
             DebugEvent::Stopped { .. } => session.cont(),
+            DebugEvent::Output(_) => {}
         }
     }
 }

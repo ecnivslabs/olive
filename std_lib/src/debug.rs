@@ -97,3 +97,13 @@ pub extern "C" fn olive_debug_enum_payload(val: i64, idx: i64) -> i64 {
         *e.payload_ptr.add(idx as usize)
     }
 }
+
+/// Raw UTF-8 bytes of a string value: pointer returned, length written
+/// through `out_len`. Delegates to the same decoder every runtime string op
+/// uses, so slab vs. literal layout is never duplicated on the pit side.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_debug_str_bytes(val: i64, out_len: *mut i64) -> i64 {
+    let bytes = crate::string::olive_str_to_bytes(val);
+    unsafe { *out_len = bytes.len() as i64 };
+    bytes.as_ptr() as i64
+}

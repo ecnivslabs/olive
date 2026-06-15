@@ -1,8 +1,9 @@
 //! `xs[1].name`-style path evaluator for the `evaluate` request. Grammar:
 //! `ident ('.' ident | '[' int ']' | '[' quoted_str ']')*`. Resolution
-//! reuses `values::frame_variables`/`values::children` (the D4 traversal)
-//! rather than re-reading heap layout here; errors are messages, never
-//! panics. No arithmetic, no calls: paths only.
+//! reuses `values::frame_variables`/`values::children` rather than
+//! re-reading heap layout here; errors are messages, never panics. No
+//! arithmetic, no calls: paths only. `conditions.rs` reuses this module's
+//! tokenizer for the same grammar inside a boolean expression.
 
 use super::launch::DebugSession;
 use super::values::{self, Variable};
@@ -36,13 +37,15 @@ pub fn evaluate(session: &DebugSession, frame_idx: usize, expr: &str) -> Result<
     Ok(current)
 }
 
-enum Token {
+/// Shared with `conditions.rs`: a condition's path operands use this exact
+/// grammar, tokenized the same way.
+pub(crate) enum Token {
     Ident(String),
     Index(i64),
     Key(String),
 }
 
-fn tokenize(expr: &str) -> Result<Vec<Token>, String> {
+pub(crate) fn tokenize(expr: &str) -> Result<Vec<Token>, String> {
     let chars: Vec<char> = expr.chars().collect();
     let mut i = 0;
     let mut out = Vec::new();
@@ -122,7 +125,7 @@ fn tokenize(expr: &str) -> Result<Vec<Token>, String> {
     Ok(out)
 }
 
-fn is_ident_char(c: char) -> bool {
+pub(crate) fn is_ident_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 

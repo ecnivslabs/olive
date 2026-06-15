@@ -4,16 +4,21 @@
 //! so both sides can reach it without the process-global statics in
 //! `hooks` leaking any mutable state outside that file.
 
+mod breakpoints;
+
 use super::hooks::{self, Frame};
 use super::values::VarStore;
 use crate::mir::debug_hooks::DebugProgramInfo;
 use crate::semantic::type_descriptor::type_descriptor;
 use crate::semantic::types::Type;
+use breakpoints::BpTable;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Condvar, Mutex};
+use std::sync::{Condvar, Mutex, OnceLock};
+
+pub use breakpoints::BpSpec;
 
 type StructFields = FxHashMap<String, Vec<String>>;
 type FieldTypes = FxHashMap<(String, String), Type>;
@@ -65,6 +70,9 @@ pub enum DebugEvent {
         frame: FrameSnapshot,
     },
     Exited(i32),
+    /// A logpoint firing, or a one-time conditional-breakpoint evaluation
+    /// error -- text for an `output` event, never a stop.
+    Output(String),
 }
 
 struct Control {
@@ -72,13 +80,18 @@ struct Control {
     parked: bool,
     parked_frames: Vec<Frame>,
     run_token: u64,
+    /// Set by `detach()` on session teardown so a `park()` call that's
+    /// already past its stop decision, racing the teardown's own resume
+    /// signal, still never blocks: the check happens under the same lock
+    /// `detach()` writes under, so one side or the other always wins cleanly.
+    detached: bool,
 }
 
 pub struct EngineShared {
     control: Mutex<Control>,
     resume_cv: Condvar,
     entry_pending: AtomicBool,
-    breakpoints_by_file: Mutex<FxHashMap<usize, FxHashSet<u32>>>,
+    breakpoints: Mutex<BpTable>,
     program: DebugProgramInfo,
     file_names: FxHashMap<usize, String>,
     events_tx: Mutex<Sender<DebugEvent>>,
@@ -89,7 +102,25 @@ pub struct EngineShared {
     /// never re-encodes a top-level cell's type on every variable request.
     cell_descs: FxHashMap<(u32, usize), CString>,
     pub(crate) var_store: VarStore,
+    /// Runtime function addresses resolved once at launch (`launch.rs`,
+    /// right after the JIT module finalizes) so the stmt hook can decode
+    /// values for a condition/logpoint without reaching into the session's
+    /// `CraneliftCodegen`, which only `DebugSession` owns.
+    runtime_syms: OnceLock<FxHashMap<&'static str, usize>>,
 }
+
+/// Names resolved once at launch into `EngineShared::runtime_syms`.
+const RUNTIME_SYM_NAMES: [&str; 9] = [
+    "olive_format_typed",
+    "olive_debug_seq_len",
+    "olive_debug_seq_get",
+    "olive_debug_dict_len",
+    "olive_debug_dict_key",
+    "olive_debug_dict_val",
+    "olive_debug_enum_tag",
+    "olive_debug_enum_payload",
+    "olive_debug_str_bytes",
+];
 
 fn pack(file_id: usize, line: u32) -> i64 {
     ((file_id as i64) << 32) | (line as i64)
@@ -121,10 +152,11 @@ impl EngineShared {
                 parked: false,
                 parked_frames: Vec::new(),
                 run_token: 0,
+                detached: false,
             }),
             resume_cv: Condvar::new(),
             entry_pending: AtomicBool::new(stop_on_entry),
-            breakpoints_by_file: Mutex::new(FxHashMap::default()),
+            breakpoints: Mutex::new(FxHashMap::default()),
             program,
             file_names,
             events_tx: Mutex::new(events_tx),
@@ -133,6 +165,7 @@ impl EngineShared {
             enum_defs,
             cell_descs,
             var_store: VarStore::new(),
+            runtime_syms: OnceLock::new(),
         })
     }
 
@@ -140,56 +173,23 @@ impl EngineShared {
         self.entry_pending.load(Ordering::Relaxed)
     }
 
-    /// Replaces every breakpoint for `file_id`. Returns, per requested line,
-    /// the actual line used and whether it landed on an instrumented
-    /// statement: exact match is verified as-is; otherwise the nearest
-    /// following instrumented line in the same file is verified; if none
-    /// follows, the original line is returned unverified and nothing is set.
-    pub fn set_breakpoints(&self, file_id: usize, lines: &[u32]) -> Vec<(u32, bool)> {
-        let mut resolved = FxHashSet::default();
-        let mut out = Vec::with_capacity(lines.len());
-        for &line in lines {
-            match self.resolve_line(file_id, line) {
-                Some(snapped) => {
-                    resolved.insert(snapped);
-                    out.push((snapped, true));
-                }
-                None => out.push((line, false)),
-            }
-        }
-        self.breakpoints_by_file
-            .lock()
-            .unwrap()
-            .insert(file_id, resolved);
-        self.rebuild_breakpoint_index();
-        out
-    }
-
-    fn resolve_line(&self, file_id: usize, line: u32) -> Option<u32> {
-        if self.program.lines.contains(&pack(file_id, line)) {
-            return Some(line);
-        }
-        self.program
-            .lines
+    /// Resolves and caches the runtime symbols value decoding needs, once,
+    /// from the session's own `CraneliftCodegen`. Must run before the
+    /// debuggee thread starts: after this, the hook path never touches
+    /// `resolve` again, only the cached addresses.
+    pub(crate) fn install_runtime_symbols(&self, resolve: impl Fn(&str) -> Option<*const u8>) {
+        let map = RUNTIME_SYM_NAMES
             .iter()
-            .filter_map(|&packed| {
-                let f = (packed >> 32) as usize;
-                let l = (packed & 0xFFFF_FFFF) as u32;
-                (f == file_id && l > line).then_some(l)
-            })
-            .min()
+            .filter_map(|&name| resolve(name).map(|p| (name, p as usize)))
+            .collect();
+        let _ = self.runtime_syms.set(map);
     }
 
-    fn rebuild_breakpoint_index(&self) {
-        let by_file = self.breakpoints_by_file.lock().unwrap();
-        let mut keys = FxHashSet::default();
-        for (&file_id, lines) in by_file.iter() {
-            for &line in lines {
-                keys.insert(pack(file_id, line));
-            }
-        }
-        drop(by_file);
-        hooks::replace_breakpoints(keys);
+    pub(crate) fn runtime_symbol(&self, name: &str) -> Option<*const u8> {
+        self.runtime_syms
+            .get()?
+            .get(name)
+            .map(|&addr| addr as *const u8)
     }
 
     /// Sets the run mode, bumps the token so a parked debuggee's wait loop
@@ -223,6 +223,24 @@ impl EngineShared {
             RunMode::Continue,
             self.entry_pending.load(Ordering::Relaxed),
         );
+    }
+
+    /// Session teardown (`disconnect`/`quit`, `DebugSession::drop`): clears
+    /// every stop condition and marks the session detached so the debuggee
+    /// is guaranteed to run to completion, never parking again even if it's
+    /// mid-decision on a stop nobody will resume from once the caller moves
+    /// on to `join()`-ing the debuggee thread.
+    pub(crate) fn detach(&self) {
+        self.entry_pending.store(false, Ordering::Relaxed);
+        hooks::replace_breakpoints(FxHashSet::default());
+        let mut ctl = self.control.lock().unwrap();
+        ctl.detached = true;
+        ctl.mode = RunMode::Continue;
+        ctl.run_token = ctl.run_token.wrapping_add(1);
+        drop(ctl);
+        hooks::set_force_check(false);
+        self.var_store.clear();
+        self.resume_cv.notify_all();
     }
 
     /// Blocks the debuggee thread until the first `cont()`, so breakpoints
@@ -352,8 +370,15 @@ impl EngineShared {
     }
 
     /// `depth` is the caller's live frame-stack length (TLS-local, so it has
-    /// to be passed in rather than read here) at the point of this hit.
-    pub(crate) fn stop_reason_for(&self, packed: i64, depth: usize) -> Option<StopReason> {
+    /// to be passed in rather than read here) at the point of this hit);
+    /// `top` is the frame the hook just captured, the source for any
+    /// condition or logpoint evaluation this line's breakpoint needs.
+    pub(crate) fn stop_reason_for(
+        &self,
+        packed: i64,
+        depth: usize,
+        top: &Frame,
+    ) -> Option<StopReason> {
         if self.entry_pending.swap(false, Ordering::AcqRel) {
             return Some(StopReason::Entry);
         }
@@ -361,7 +386,7 @@ impl EngineShared {
         if matches!(mode, RunMode::Pause) {
             return Some(StopReason::Pause);
         }
-        if hooks::is_breakpoint(packed) {
+        if hooks::is_breakpoint(packed) && self.check_breakpoint(packed, top) {
             return Some(StopReason::Breakpoint);
         }
         match mode {
@@ -378,7 +403,9 @@ impl EngineShared {
 
     /// Called from the debuggee thread on a stop condition. Records the
     /// frame snapshot, emits `Stopped`, then blocks until `cont()`/`pause()`
-    /// bumps the run token.
+    /// bumps the run token. A no-op once `detach()` has run: that call and
+    /// this one's first lock acquisition race on the same mutex, so whichever
+    /// wins, the debuggee never blocks with no one left to resume it.
     pub(crate) fn park(&self, reason: StopReason, frames: Vec<Frame>) {
         let top = frames
             .last()
@@ -391,6 +418,9 @@ impl EngineShared {
             });
 
         let mut ctl = self.control.lock().unwrap();
+        if ctl.detached {
+            return;
+        }
         let token = ctl.run_token;
         ctl.parked = true;
         ctl.parked_frames = frames;

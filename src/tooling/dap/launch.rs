@@ -40,6 +40,10 @@ impl std::error::Error for LaunchError {}
 pub struct DebugSession {
     shared: Arc<EngineShared>,
     events_rx: Option<Receiver<DebugEvent>>,
+    /// Never read again after `launch()` resolves runtime symbols and gets
+    /// `__main__`'s pointer; held only so the JIT module and its libraries
+    /// stay mapped for the session's whole life.
+    #[allow(dead_code)]
     codegen: CraneliftCodegen<JITModule>,
     debuggee: Option<JoinHandle<()>>,
 }
@@ -69,20 +73,18 @@ impl DebugSession {
             .take()
             .expect("events receiver already taken")
     }
-
-    /// Resolves a runtime (`std_lib`) symbol for value rendering and the
-    /// fault hook. Only valid while this session is alive.
-    pub(crate) fn runtime_symbol(&self, name: &str) -> Option<*const u8> {
-        self.codegen.runtime_symbol(name)
-    }
 }
 
 impl Drop for DebugSession {
     fn drop(&mut self) {
-        // Force any parked debuggee to resume and run to completion before
-        // this session's slot frees up for the next `launch()`, so two
-        // sessions never execute JIT'd code concurrently in the same process.
-        self.shared.cont();
+        // Force any parked (or about to park) debuggee to run to completion
+        // before this session's slot frees up for the next `launch()`, so
+        // two sessions never execute JIT'd code concurrently in the same
+        // process. `detach()`, not `cont()`: a plain resume only wakes a
+        // debuggee already parked -- one that hits a fresh stop condition
+        // moments later would park again with nobody left to send the next
+        // `cont()`, hanging `join()` below forever.
+        self.shared.detach();
         if let Some(handle) = self.debuggee.take() {
             let _ = handle.join();
         }
@@ -124,6 +126,7 @@ pub fn launch(program: &str, stop_on_entry: bool) -> Result<DebugSession, Launch
         out.enum_defs.clone(),
     );
     hooks::install_session(shared.clone()).map_err(|_| LaunchError::SessionActive)?;
+    shared.install_runtime_symbols(|name| codegen.runtime_symbol(name));
 
     if let Some(setter) = codegen.runtime_symbol("olive_debug_set_fault_hook") {
         let install: extern "C" fn(i64) = unsafe { std::mem::transmute(setter) };
