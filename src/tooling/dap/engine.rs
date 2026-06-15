@@ -14,7 +14,7 @@ use crate::semantic::types::Type;
 use breakpoints::BpTable;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::ffi::CString;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Condvar, Mutex, OnceLock};
 
@@ -87,9 +87,23 @@ struct Control {
     detached: bool,
 }
 
+// D13c: Atomic-encoded RunMode variant, checked in `stop_reason_for`
+// before touching the control mutex. The full `Control` struct still holds
+// the authoritative mode + parked_frames for the rare multi-field write.
+const MODE_CONTINUE: u8 = 0;
+const MODE_STEP_OVER: u8 = 1;
+const MODE_STEP_IN: u8 = 2;
+const MODE_STEP_OUT: u8 = 3;
+const MODE_PAUSE: u8 = 4;
+
 pub struct EngineShared {
     control: Mutex<Control>,
     resume_cv: Condvar,
+    /// D13c: Atomic-mode fields so `stop_reason_for` reads the mode
+    /// without acquiring the control mutex on every statement.
+    mode_variant: AtomicU8,
+    step_depth: AtomicUsize,
+    step_line: AtomicI64,
     entry_pending: AtomicBool,
     breakpoints: Mutex<BpTable>,
     program: DebugProgramInfo,
@@ -155,6 +169,9 @@ impl EngineShared {
                 detached: false,
             }),
             resume_cv: Condvar::new(),
+            mode_variant: AtomicU8::new(MODE_CONTINUE),
+            step_depth: AtomicUsize::new(0),
+            step_line: AtomicI64::new(0),
             entry_pending: AtomicBool::new(stop_on_entry),
             breakpoints: Mutex::new(FxHashMap::default()),
             program,
@@ -192,10 +209,38 @@ impl EngineShared {
             .map(|&addr| addr as *const u8)
     }
 
+    /// D13c: Encode `RunMode` into the atomic mode fields so
+    /// `stop_reason_for` can read them without locking the control mutex.
+    fn set_mode_atomic(&self, mode: &RunMode) {
+        match *mode {
+            RunMode::Continue => {
+                self.mode_variant.store(MODE_CONTINUE, Ordering::Relaxed);
+            }
+            RunMode::StepOver { depth, line } => {
+                self.mode_variant.store(MODE_STEP_OVER, Ordering::Relaxed);
+                self.step_depth.store(depth, Ordering::Relaxed);
+                self.step_line.store(line, Ordering::Relaxed);
+            }
+            RunMode::StepIn { depth, line } => {
+                self.mode_variant.store(MODE_STEP_IN, Ordering::Relaxed);
+                self.step_depth.store(depth, Ordering::Relaxed);
+                self.step_line.store(line, Ordering::Relaxed);
+            }
+            RunMode::StepOut { depth } => {
+                self.mode_variant.store(MODE_STEP_OUT, Ordering::Relaxed);
+                self.step_depth.store(depth, Ordering::Relaxed);
+            }
+            RunMode::Pause => {
+                self.mode_variant.store(MODE_PAUSE, Ordering::Relaxed);
+            }
+        }
+    }
+
     /// Sets the run mode, bumps the token so a parked debuggee's wait loop
     /// wakes, and arms `force_check` so the stmt hook takes the slow path
     /// even with zero breakpoints set.
     fn resume(&self, mode: RunMode, force_check: bool) {
+        self.set_mode_atomic(&mode);
         let mut ctl = self.control.lock().unwrap();
         ctl.mode = mode;
         ctl.run_token = ctl.run_token.wrapping_add(1);
@@ -232,6 +277,9 @@ impl EngineShared {
     /// on to `join()`-ing the debuggee thread.
     pub(crate) fn detach(&self) {
         self.entry_pending.store(false, Ordering::Relaxed);
+        self.mode_variant.store(MODE_CONTINUE, Ordering::Relaxed);
+        self.step_depth.store(0, Ordering::Relaxed);
+        self.step_line.store(0, Ordering::Relaxed);
         hooks::replace_breakpoints(FxHashSet::default());
         let mut ctl = self.control.lock().unwrap();
         ctl.detached = true;
@@ -388,21 +436,30 @@ impl EngineShared {
         if self.entry_pending.swap(false, Ordering::AcqRel) {
             return Some(StopReason::Entry);
         }
-        let mode = self.control.lock().unwrap().mode;
-        if matches!(mode, RunMode::Pause) {
+        // D13c: Check atomic mode first, avoiding the control mutex on
+        // every statement. Only fall back to the mutex when the atomic
+        // fast path can't decide (step modes need depth/line).
+        let variant = self.mode_variant.load(Ordering::Relaxed);
+        if variant == MODE_PAUSE {
             return Some(StopReason::Pause);
         }
-        if hooks::is_breakpoint(packed) && self.check_breakpoint(packed, top) {
+        if variant == MODE_CONTINUE {
+            // Fast path: no stepping, check breakpoints only.
+            if hooks::contains_breakpoint(packed) && self.check_breakpoint(packed, top) {
+                return Some(StopReason::Breakpoint);
+            }
+            return None;
+        }
+        // Step modes need depth/line from the atomic fields.
+        let step_depth = self.step_depth.load(Ordering::Relaxed);
+        let step_line = self.step_line.load(Ordering::Relaxed);
+        if hooks::contains_breakpoint(packed) && self.check_breakpoint(packed, top) {
             return Some(StopReason::Breakpoint);
         }
-        match mode {
-            RunMode::StepOver { depth: saved, line } if depth <= saved && packed != line => {
-                Some(StopReason::Step)
-            }
-            RunMode::StepIn { depth: saved, line } if depth > saved || packed != line => {
-                Some(StopReason::Step)
-            }
-            RunMode::StepOut { depth: saved } if depth < saved => Some(StopReason::Step),
+        match variant {
+            MODE_STEP_OVER if depth <= step_depth && packed != step_line => Some(StopReason::Step),
+            MODE_STEP_IN if depth > step_depth || packed != step_line => Some(StopReason::Step),
+            MODE_STEP_OUT if depth < step_depth => Some(StopReason::Step),
             _ => None,
         }
     }
