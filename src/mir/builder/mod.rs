@@ -399,7 +399,10 @@ impl<'a> MirBuilder<'a> {
     }
 
     pub(super) fn get_type(&self, expr_id: usize) -> Type {
-        self.expr_types.get(&expr_id).cloned().unwrap_or(Type::Any)
+        match self.expr_types.get(&expr_id).cloned().unwrap_or(Type::Any) {
+            Type::PyNamed(_, _) => Type::PyObject,
+            ty => ty,
+        }
     }
 
     pub(super) fn new_tmp_for_expr(&mut self, expr: &Expr) -> Local {

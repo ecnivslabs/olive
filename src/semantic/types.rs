@@ -36,11 +36,16 @@ pub enum Type {
     Vector(Box<Type>, usize),
     Future(Box<Type>),
     PyObject,
+    PyNamed(String, String),
     IntegerLiteral(usize),
     FloatLiteral(usize),
 }
 
 impl Type {
+    pub fn is_py_value(&self) -> bool {
+        matches!(self, Type::PyObject | Type::PyNamed(_, _))
+    }
+
     pub fn is_move_type(&self) -> bool {
         !matches!(
             self,
@@ -60,6 +65,7 @@ impl Type {
                 | Type::Never
                 | Type::Any
                 | Type::PyObject
+                | Type::PyNamed(_, _)
                 | Type::Str
                 | Type::Ref(_)
                 | Type::MutRef(_)
@@ -160,6 +166,7 @@ impl fmt::Display for Type {
             Type::Vector(t, w) => write!(f, "{}x{}", t, w),
             Type::Future(t) => write!(f, "Future[{}]", t),
             Type::PyObject => write!(f, "PyObject"),
+            Type::PyNamed(module, name) => write!(f, "{}.{}", module, name),
             Type::IntegerLiteral(_) => write!(f, "{{integer}}"),
             Type::FloatLiteral(_) => write!(f, "{{float}}"),
         }

@@ -1,4 +1,5 @@
 mod error;
+pub(crate) mod pyi;
 mod resolver;
 mod symbol_table;
 pub mod type_checker;

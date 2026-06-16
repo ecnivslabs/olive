@@ -125,6 +125,17 @@ impl TypeChecker {
 
             (Type::Any, _) | (_, Type::Any) => {}
             (Type::PyObject, _) | (_, Type::PyObject) => {}
+            (Type::PyNamed(m1, n1), Type::PyNamed(m2, n2)) => {
+                if m1 != m2 || n1 != n2 {
+                    self.errors.push(SemanticError::Custom {
+                        msg: format!(
+                            "type mismatch: expected `{}.{}`, found `{}.{}`",
+                            m1, n1, m2, n2
+                        ),
+                        span,
+                    });
+                }
+            }
             (Type::Never, _) | (_, Type::Never) => {}
 
             (Type::Ptr(a), Type::Ptr(b)) => self.unify(a, b, span),
@@ -395,6 +406,9 @@ impl TypeChecker {
                         if let Some(ty) = type_map.get(type_name) {
                             return ty.clone();
                         }
+                    }
+                    if self.py_aliases.contains(module) {
+                        return Type::PyNamed(module.clone(), type_name.clone());
                     }
                 }
                 Type::PyObject

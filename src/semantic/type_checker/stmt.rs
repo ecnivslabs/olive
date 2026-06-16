@@ -1,4 +1,5 @@
 use super::super::error::SemanticError;
+use super::super::pyi;
 use super::super::types::Type;
 use super::TypeChecker;
 use crate::parser::{ParamKind, Stmt, StmtKind};
@@ -725,17 +726,21 @@ impl TypeChecker {
                 alias,
                 typed_types,
                 typed_fns,
+                module,
                 ..
             } => {
                 self.define_type(alias, Type::PyObject, false);
+                self.py_aliases.insert(alias.clone());
+
+                // Prefer explicit stub block; fall back to .pyi introspection.
                 if !typed_types.is_empty() || !typed_fns.is_empty() {
                     for type_name in typed_types {
+                        let named_ty = Type::PyNamed(alias.clone(), type_name.clone());
                         self.py_module_types
                             .entry(alias.clone())
                             .or_default()
-                            .insert(type_name.clone(), Type::PyObject);
-                        // Register unqualified name so fn sig return types like `-> vec3` resolve.
-                        self.define_type(type_name, Type::PyObject, false);
+                            .insert(type_name.clone(), named_ty.clone());
+                        self.define_type(type_name, named_ty, false);
                     }
                     for sig in typed_fns {
                         let param_tys: Vec<Type> = sig
@@ -754,7 +759,6 @@ impl TypeChecker {
                             .entry(sig.name.clone())
                             .or_default()
                             .push((param_tys.clone(), ret_ty.clone()));
-                        // Register first overload in type env for direct attr lookup.
                         let mangled = format!("{}::{}", alias, sig.name);
                         if self.lookup_type(&mangled).is_none() {
                             self.define_type(
@@ -764,6 +768,8 @@ impl TypeChecker {
                             );
                         }
                     }
+                } else if let Some(info) = pyi::query(module) {
+                    self.register_pyi(alias, info);
                 }
             }
 
