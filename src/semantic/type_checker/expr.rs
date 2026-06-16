@@ -759,6 +759,23 @@ impl TypeChecker {
         }
     }
 
+    fn binop_dunder(op: &BinOp) -> &'static str {
+        match op {
+            BinOp::Add => "__add__",
+            BinOp::Sub => "__sub__",
+            BinOp::Mul => "__mul__",
+            BinOp::Div => "__truediv__",
+            BinOp::Mod => "__mod__",
+            BinOp::Pow => "__pow__",
+            BinOp::BitOr => "__or__",
+            BinOp::BitAnd => "__and__",
+            BinOp::BitXor => "__xor__",
+            BinOp::Shl => "__lshift__",
+            BinOp::Shr => "__rshift__",
+            _ => "",
+        }
+    }
+
     pub(super) fn check_binop(&mut self, op: &BinOp, l: &Type, r: &Type, span: Span) -> Type {
         let l_resolved = self.apply_subst(l.clone());
         let r_resolved = self.apply_subst(r.clone());
@@ -777,6 +794,30 @@ impl TypeChecker {
             | BinOp::BitAnd
             | BinOp::BitXor => {
                 if is_py {
+                    let dunder = Self::binop_dunder(op);
+                    if !dunder.is_empty() {
+                        if let Type::PyNamed(ref m, ref n) = l_resolved {
+                            if let Some(ret) = self.resolve_py_method_overload(
+                                m,
+                                n,
+                                dunder,
+                                &[r_resolved.clone()],
+                            ) {
+                                return ret;
+                            }
+                        }
+                        if let Type::PyNamed(ref m, ref n) = r_resolved {
+                            let rdunder = format!("__r{}", &dunder[2..]);
+                            if let Some(ret) = self.resolve_py_method_overload(
+                                m,
+                                n,
+                                &rdunder,
+                                &[l_resolved.clone()],
+                            ) {
+                                return ret;
+                            }
+                        }
+                    }
                     return Type::PyObject;
                 }
                 self.unify(l, r, span);
