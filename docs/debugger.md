@@ -4,9 +4,9 @@ Olive has one debugging engine with two frontends: `pit dap` speaks the
 Debug Adapter Protocol for VS Code (and any other DAP client), and `pit
 debug <file>` speaks a flatter newline-delimited JSON protocol built for AI
 agents and scripts that don't want the DAP handshake ceremony. Both give you
-breakpoints, stepping, full variable inspection, expression evaluation,
-fault stops with the runtime's own error code at the fault site, conditional
-breakpoints, hit counts, and logpoints.
+breakpoints, stepping, full variable inspection, variable editing,
+expression evaluation, fault stops with the runtime's own error code at the
+fault site, conditional breakpoints, hit counts, and logpoints.
 
 ## Why JIT-only
 
@@ -51,6 +51,34 @@ message fields (right-click a breakpoint in the gutter to set them):
 * **Log Message** -- text with `{expr}` interpolations, printed as an output
   event on every hit; the breakpoint never stops.
 
+## Editing variables
+
+While stopped, `setVariable` (edit a value directly in the Variables panel)
+and `setExpression` (edit via a watch-style expression, e.g. `xs[1]` or
+`p.x`) both work for any scalar -- `int`, `float`, `f32`, `bool`, `str`, or
+`None` -- at any depth: a top-level local, or a field/element/entry inside
+a struct, list, tuple, dict, or enum payload.
+
+The new value is parsed against the target's own type: `true`/`false` for
+`bool`, `None` for a nullable slot, a plain number for `int`/`float`/`f32`,
+and either a quoted `"..."` string (backslash-escaping the next character)
+or the bare text itself for `str`.
+
+Two things are deliberately out of scope, both reported as a normal failed
+request rather than silently accepted:
+
+* **Whole-value replacement of a list, dict, struct, tuple, or enum** --
+  setting `xs` to a brand new `[1, 2, 3]` would need a general expression
+  evaluator and heap allocator this debugger doesn't have. Setting a
+  *scalar inside* one of those, at any depth, works fine.
+* **A local in a frame other than the topmost one.** A struct/list/dict
+  edit is a direct write into shared heap memory, so it's real and
+  immediate regardless of which frame you're editing through. A top-level
+  local's storage isn't memory the debugger can address directly (the JIT
+  is free to keep it in a register); the write instead rides along with
+  that same local's next real read, which only the frame actually parked
+  right now is guaranteed to reach before it matters.
+
 ## `pit debug` for scripts and agents
 
 `pit debug program.liv` starts a session that reads one JSON object per
@@ -80,7 +108,17 @@ Requests:
 * `{"id":5,"cmd":"eval","frame":0,"expr":"xs[1].name"}` -- evaluates a
   path expression (`ident`, `.field`, `[index]`, `["key"]`, chained).
   `{"id":5,"ok":true,"value":"...","type":"...","ref":0}`.
-* `{"id":6,"cmd":"quit"}` -- ends the session; the process exits after
+* `{"id":6,"cmd":"setVar","frame":0,"name":"i","value":"5"}` -- sets a
+  top-level local (`ref` omitted or `0`) or, with a nonzero `ref` from a
+  previous `vars`/`eval` response, a child of that container instead
+  (`{"ref":7,"name":"0","value":"99"}` for a list element, `{"ref":7,
+  "name":"x","value":"99"}` for a struct field). `{"cmd":"setVar","frame":0,
+  "expr":"xs[1]","value":"99"}` does the same through a path instead of a
+  reference. `value` is parsed against the target's own type -- see
+  "Editing variables" above for the grammar and the two things this
+  deliberately doesn't support. Responds with the freshly re-read value,
+  same shape as `vars`/`eval`: `{"id":6,"ok":true,"value":"5","type":"int","ref":0}`.
+* `{"id":7,"cmd":"quit"}` -- ends the session; the process exits after
   responding.
 
 Events:

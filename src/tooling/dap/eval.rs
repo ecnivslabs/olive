@@ -24,17 +24,27 @@ pub fn evaluate(session: &DebugSession, frame_idx: usize, expr: &str) -> Result<
         if current.reference == 0 {
             return Err(format!("{} has no fields or elements", current.name));
         }
-        let key = match &tok {
-            Token::Ident(name) => name.clone(),
-            Token::Index(i) => i.to_string(),
-            Token::Key(s) => format!("\"{s}\""),
-        };
+        let key = token_key(&tok);
         current = values::children(session, current.reference)
             .into_iter()
             .find(|c| c.name == key)
             .ok_or_else(|| format!("no such member: {key}"))?;
     }
     Ok(current)
+}
+
+/// The name a token matches against in `values::children_raw`'s output:
+/// a field name verbatim, a sequence/enum index as its decimal string, or a
+/// dict key rendered the same quoted way `values.rs` renders a string key.
+/// Shared by this module's own descent above, `conditions.rs`'s path
+/// operands, and `setvar.rs`'s lvalue resolution -- all three walk the same
+/// grammar against the same child listing.
+pub(crate) fn token_key(tok: &Token) -> String {
+    match tok {
+        Token::Ident(name) => name.clone(),
+        Token::Index(i) => i.to_string(),
+        Token::Key(s) => format!("\"{s}\""),
+    }
 }
 
 /// Shared with `conditions.rs`: a condition's path operands use this exact

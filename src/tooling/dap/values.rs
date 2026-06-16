@@ -58,6 +58,16 @@ impl VarStore {
     }
 }
 
+/// `(raw value, concrete type)` of a previously returned `Variable.reference`,
+/// for `setvar.rs` to resolve a DAP `setVariable` request's `variablesReference`
+/// back to the container it needs to write a child into.
+pub(crate) fn node_of(session: &EngineShared, reference: i64) -> Option<(i64, Type)> {
+    session
+        .var_store
+        .get(reference)
+        .map(|node| (node.value, node.ty))
+}
+
 /// Named locals of the frame at `frame_idx` (`0` = innermost, matching
 /// `EngineShared::stack()`), in cell order. Empty while not parked.
 pub fn frame_variables(session: &EngineShared, frame_idx: usize) -> Vec<Variable> {
