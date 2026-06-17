@@ -76,7 +76,8 @@ impl<'a> MirBuilder<'a> {
                     ),
                     span,
                 );
-                return self.operand_for_local(result);
+                let raw = self.operand_for_local(result);
+                return self.coerce_pyobj_if_needed(raw, expr_id, span);
             } else {
                 let kwargs_list = self.new_local(Type::List(Box::new(Type::Any)), None, true);
                 self.push_statement(
@@ -103,7 +104,8 @@ impl<'a> MirBuilder<'a> {
                     ),
                     span,
                 );
-                return self.operand_for_local(result);
+                let raw = self.operand_for_local(result);
+                return self.coerce_pyobj_if_needed(raw, expr_id, span);
             }
         }
 
