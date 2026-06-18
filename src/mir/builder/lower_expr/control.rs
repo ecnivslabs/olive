@@ -51,7 +51,7 @@ impl<'a> MirBuilder<'a> {
                 _ => {}
             }
         } else if inner_ty == Type::PyObject {
-            error_type_id = Self::struct_type_id("Error");
+            error_type_id = Self::enum_type_id("Error");
         }
 
         if error_type_id == -1 {
@@ -151,26 +151,24 @@ impl<'a> MirBuilder<'a> {
             span,
         );
 
-        let err_struct_tmp = self.new_local(Type::Struct("Error".to_string(), vec![]), None, false);
+        // Prefix the Python traceback with the Olive call site, then wrap it in
+        // the built-in `Error(msg)` enum variant so the result is matchable as
+        // `case Error(e)` and carries its source location.
+        let located_msg = self.prepend_call_loc(err_msg_tmp, span);
+        let err_tmp = self.new_local(Type::Enum("Error".to_string(), vec![]), None, false);
         self.push_statement(
             StatementKind::Assign(
-                err_struct_tmp,
-                Rvalue::Aggregate(AggregateKind::Dict, vec![]),
+                err_tmp,
+                Rvalue::Aggregate(
+                    AggregateKind::EnumVariant(Self::enum_type_id("Error"), 0),
+                    vec![Operand::Copy(located_msg)],
+                ),
             ),
             span,
         );
 
         self.push_statement(
-            StatementKind::SetAttr(
-                Operand::Copy(err_struct_tmp),
-                "msg".to_string(),
-                Operand::Copy(err_msg_tmp),
-            ),
-            span,
-        );
-
-        self.push_statement(
-            StatementKind::Assign(Local(0), Rvalue::Use(Operand::Copy(err_struct_tmp))),
+            StatementKind::Assign(Local(0), Rvalue::Use(Operand::Copy(err_tmp))),
             span,
         );
         self.emit_defers();

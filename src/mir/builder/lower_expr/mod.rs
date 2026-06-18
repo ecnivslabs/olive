@@ -366,6 +366,36 @@ impl<'a> MirBuilder<'a> {
         );
     }
 
+    /// Prepends `<file>:<line>:<col>: ` to a runtime error-message string local,
+    /// so a `try`-caught Python exception carries the same call-site prefix as an
+    /// uncaught one.
+    pub(super) fn prepend_call_loc(&mut self, msg_local: Local, span: Span) -> Local {
+        let loc = match self.file_names.get(&span.file_id) {
+            Some(file) => format!("{}:{}:{}: ", file, span.line, span.col),
+            None => format!("{}:{}: ", span.line, span.col),
+        };
+        let loc_local = self.new_local(Type::Str, None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                loc_local,
+                Rvalue::Use(Operand::Constant(Constant::Str(loc))),
+            ),
+            span,
+        );
+        let out = self.new_local(Type::Str, None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                out,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("__olive_str_concat".to_string())),
+                    args: vec![Operand::Copy(loc_local), Operand::Copy(msg_local)],
+                },
+            ),
+            span,
+        );
+        out
+    }
+
     fn is_py_call(&self, expr: &Expr) -> bool {
         if let ExprKind::Call { callee, .. } = &expr.kind {
             let callee_ty = self.get_type(callee.id);
