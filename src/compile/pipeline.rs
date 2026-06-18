@@ -1,4 +1,4 @@
-use super::errors::report_error;
+use super::errors::{report_error, report_warning};
 use super::linker::collect_native_libs;
 use super::loader::load_and_parse;
 use crate::borrow_check::BorrowChecker;
@@ -68,6 +68,9 @@ pub fn run_pipeline(filename: &str) -> Result<PipelineOutput, ()> {
     let typecheck_start = std::time::Instant::now();
     let mut type_checker = TypeChecker::new();
     type_checker.check_program(&program);
+    for w in &type_checker.warnings {
+        report_warning(&sources, &format!("{}", w), w.span());
+    }
     if !type_checker.errors.is_empty() {
         for e in &type_checker.errors {
             report_error(&sources, &format!("{}", e), e.span());
@@ -85,6 +88,10 @@ pub fn run_pipeline(filename: &str) -> Result<PipelineOutput, ()> {
         &type_checker.traits,
         type_checker.c_ffi_fns.clone(),
     );
+    mir_builder.file_names = sources
+        .iter()
+        .map(|(id, (name, _))| (*id, name.clone()))
+        .collect();
 
     mir_builder.build_program(&program);
     let mir_duration = mir_start.elapsed();

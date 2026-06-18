@@ -65,6 +65,24 @@ pub fn repl_compile_run(
         }
         return false;
     }
+    for w in &type_checker.warnings {
+        let _ = Report::build(
+            ReportKind::Warning,
+            ("<repl>", w.span().start..w.span().end),
+        )
+        .with_message(format!("{}", w))
+        .with_label(Label::new(("<repl>", w.span().start..w.span().end)))
+        .finish()
+        .print((
+            "<repl>",
+            Source::from(
+                sources
+                    .get(&w.span().file_id)
+                    .map(|(_, s)| s.as_str())
+                    .unwrap_or(""),
+            ),
+        ));
+    }
 
     let mut mir_builder = MirBuilder::new(
         &type_checker.expr_types,

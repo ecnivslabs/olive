@@ -52,6 +52,12 @@ pub struct MirBuilder<'a> {
     pub c_ffi_fns: HashSet<String>,
     pub vtables: HashMap<String, Vec<String>>,
     pub global_vars: Vec<String>,
+    /// file_id → source filename, used to locate runtime FFI errors. Empty when
+    /// the builder is driven directly (e.g. in unit tests).
+    pub file_names: HashMap<usize, String>,
+    /// Guards against re-entrant call-site tagging while emitting the
+    /// `__olive_py_set_loc` statements themselves.
+    pub(super) in_py_loc_emit: bool,
 }
 
 impl<'a> MirBuilder<'a> {
@@ -89,7 +95,30 @@ impl<'a> MirBuilder<'a> {
             c_ffi_fns,
             vtables: HashMap::default(),
             global_vars: Vec::new(),
+            file_names: HashMap::default(),
+            in_py_loc_emit: false,
         }
+    }
+
+    /// True for Python runtime ops that surface an exception via `handle_py_error`,
+    /// so the Olive call site must be recorded before them.
+    pub(super) fn is_raising_py_op(name: &str) -> bool {
+        matches!(
+            name,
+            "__olive_py_call"
+                | "__olive_py_call_kw"
+                | "__olive_py_getattr"
+                | "__olive_py_getitem"
+                | "__olive_py_getitem_int"
+                | "__olive_py_getslice"
+                | "__olive_py_setattr"
+                | "__olive_py_setitem"
+                | "__olive_py_setitem_int"
+                | "__olive_py_bitor"
+                | "__olive_py_iter"
+                | "__olive_py_import"
+                | "__olive_py_run_coroutine"
+        )
     }
 
     pub fn build_program(&mut self, program: &Program) {
@@ -478,6 +507,15 @@ impl<'a> MirBuilder<'a> {
     }
 
     pub(super) fn push_statement(&mut self, kind: StatementKind, span: Span) {
+        if !self.in_py_loc_emit
+            && let StatementKind::Assign(_, Rvalue::Call { func, .. }) = &kind
+            && let Operand::Constant(Constant::Function(name)) = func
+            && Self::is_raising_py_op(name)
+        {
+            self.in_py_loc_emit = true;
+            self.emit_py_set_loc(span);
+            self.in_py_loc_emit = false;
+        }
         if let Some(bb) = self.current_block {
             self.current_blocks[bb.0]
                 .statements

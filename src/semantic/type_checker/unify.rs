@@ -402,10 +402,10 @@ impl TypeChecker {
                 if parts.len() >= 2 {
                     let module = &parts[0];
                     let type_name = &parts[1];
-                    if let Some(type_map) = self.py_module_types.get(module) {
-                        if let Some(ty) = type_map.get(type_name) {
-                            return ty.clone();
-                        }
+                    if let Some(type_map) = self.py_module_types.get(module)
+                        && let Some(ty) = type_map.get(type_name)
+                    {
+                        return ty.clone();
                     }
                     if self.py_aliases.contains(module) {
                         return Type::PyNamed(module.clone(), type_name.clone());

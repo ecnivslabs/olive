@@ -238,3 +238,22 @@ fn str_char_count_unicode() {
 fn str_char_count_null() {
     assert_eq!(olive_str_char_count(0), 0);
 }
+
+#[test]
+fn ffi_errmsg_known_errno() {
+    let msg = from_ptr(olive_ffi_errmsg(s("libc::open"), 2));
+    assert!(msg.starts_with("libc::open: "), "got: {msg}");
+    assert!(msg.contains("os error 2"), "got: {msg}");
+}
+
+#[test]
+fn ffi_errmsg_zero_errno_is_generic() {
+    let msg = from_ptr(olive_ffi_errmsg(s("libc::open"), 0));
+    assert_eq!(msg, "libc::open: call failed");
+}
+
+#[test]
+fn ffi_clear_errno_then_read_is_zero() {
+    olive_ffi_clear_errno();
+    assert_eq!(olive_ffi_errno(), 0);
+}

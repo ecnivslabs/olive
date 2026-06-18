@@ -38,12 +38,9 @@ pub fn compute_source_hash(files: &[String]) -> u64 {
 
 pub fn find_library_dir() -> Option<PathBuf> {
     let lib_name = libloading::library_filename("olive_std");
-    for dir in &["grove/release", "grove/debug"] {
-        let path = Path::new(dir);
-        if path.join(&lib_name).exists() {
-            return Some(fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()));
-        }
-    }
+    // Prefer the std lib sitting next to the running compiler: in a dev build
+    // that is target/<profile>/, which always matches the compiler that just
+    // built it — so adding a runtime symbol can never link against a stale copy.
     if let Ok(exe_path) = std::env::current_exe()
         && let Some(exe_dir) = exe_path.parent()
     {
@@ -55,6 +52,19 @@ pub fn find_library_dir() -> Option<PathBuf> {
             if lib_dir.join(&lib_name).exists() {
                 return Some(lib_dir);
             }
+        }
+    }
+    // Installed layouts: grove/<profile> matching this binary's profile, then
+    // the system library directories.
+    let grove_dirs: &[&str] = if cfg!(debug_assertions) {
+        &["grove/debug", "grove/release"]
+    } else {
+        &["grove/release", "grove/debug"]
+    };
+    for dir in grove_dirs {
+        let path = Path::new(dir);
+        if path.join(&lib_name).exists() {
+            return Some(fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()));
         }
     }
     for dir in &["/usr/local/lib", "/usr/lib", "/lib"] {

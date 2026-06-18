@@ -1,6 +1,12 @@
 import ast, sys, os, json, importlib.util
 from collections import defaultdict, Counter
 
+def module_exists(module_name):
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except (ImportError, ValueError):
+        return False
+
 def find_pyi(module_name):
     parts = module_name.split(".")
     try:
@@ -13,7 +19,7 @@ def find_pyi(module_name):
             ):
                 if os.path.exists(candidate):
                     return candidate
-    except Exception:
+    except (ImportError, ValueError):
         pass
     for path in sys.path:
         candidates = [
@@ -287,12 +293,18 @@ def extract(path):
     for alias, canonical in alias_to_canonical.items():
         aliases[alias] = preferred(canonical)
 
-    return {"types": all_types, "aliases": aliases, "fns": fns,
+    return {"status": "ok", "types": all_types, "aliases": aliases, "fns": fns,
             "fields": fields, "methods": methods}
+
+def empty(status):
+    return {"status": status, "types": [], "aliases": {}, "fns": {},
+            "fields": {}, "methods": {}}
 
 module = os.environ.get("OLIVE_PYI_MODULE", "")
 path = find_pyi(module)
 if path:
     print(json.dumps(extract(path)))
+elif module_exists(module):
+    print(json.dumps(empty("no_stub")))
 else:
-    print(json.dumps({"types": [], "aliases": {}, "fns": {}, "fields": {}, "methods": {}}))
+    print(json.dumps(empty("no_module")))
