@@ -1083,6 +1083,18 @@ impl TypeChecker {
                     .map(|a| self.replace_params_with_vars(a, subst))
                     .collect(),
             ),
+            Type::TraitObject(name, args) => Type::TraitObject(
+                name,
+                args.into_iter()
+                    .map(|a| self.replace_params_with_vars(a, subst))
+                    .collect(),
+            ),
+            Type::Union(members) => Type::Union(
+                members
+                    .into_iter()
+                    .map(|m| self.replace_params_with_vars(m, subst))
+                    .collect(),
+            ),
             _ => ty,
         }
     }
