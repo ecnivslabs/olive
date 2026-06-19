@@ -8,11 +8,59 @@
 //! own `output` event. Restoring the original fds on debuggee exit lets the
 //! process's own `eprintln!` diagnostics behave normally afterward.
 
-use std::fs::File;
-use std::io::{self, Read};
-use std::os::fd::{FromRawFd, RawFd};
+use std::io::{self, Read, Write};
 use std::sync::Arc;
 use std::thread::JoinHandle;
+
+type RawFd = i32;
+
+/// A CRT file descriptor read/written directly through libc, sidestepping
+/// `std::fs::File`'s raw-handle constructor which only exists on Unix (on
+/// Windows `File` wraps a `HANDLE`, not the int fd `libc::pipe`/`dup` hand
+/// back). Same libc calls work on both platforms once construction and
+/// `pipe()`'s signature are the parts that differ per-target.
+pub struct FdFile(RawFd);
+
+impl FdFile {
+    /// # Safety
+    /// `fd` must be an open, owned CRT descriptor; ownership passes to the
+    /// returned `FdFile`, which closes it on drop.
+    pub unsafe fn new(fd: RawFd) -> Self {
+        Self(fd)
+    }
+}
+
+impl Read for FdFile {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = unsafe { libc::read(self.0, buf.as_mut_ptr() as *mut _, buf.len() as _) };
+        if n < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(n as usize)
+        }
+    }
+}
+
+impl Write for FdFile {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let n = unsafe { libc::write(self.0, buf.as_ptr() as *const _, buf.len() as _) };
+        if n < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(n as usize)
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Drop for FdFile {
+    fn drop(&mut self) {
+        unsafe { libc::close(self.0) };
+    }
+}
 
 pub struct Redirect {
     saved_stdout: RawFd,
@@ -72,6 +120,26 @@ fn dup(fd: RawFd) -> io::Result<RawFd> {
     }
 }
 
+#[cfg(unix)]
+fn create_pipe() -> io::Result<[RawFd; 2]> {
+    let mut fds = [0i32; 2];
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(fds)
+}
+
+/// Windows' CRT `_pipe` takes an explicit buffer size and mode; `O_BINARY`
+/// keeps the byte stream untranslated, matching Unix `pipe()` semantics.
+#[cfg(windows)]
+fn create_pipe() -> io::Result<[RawFd; 2]> {
+    let mut fds = [0i32; 2];
+    if unsafe { libc::pipe(fds.as_mut_ptr(), 4096, libc::O_BINARY) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(fds)
+}
+
 /// Creates a pipe, points `target_fd` at its write end, and spawns a thread
 /// that reads the other end, calling `on_chunk(category, text)` per read.
 /// The thread exits once `target_fd` is reassigned elsewhere (`restore`)
@@ -81,11 +149,7 @@ fn spawn_pump(
     category: &'static str,
     on_chunk: Arc<dyn Fn(&'static str, String) + Send + Sync>,
 ) -> io::Result<JoinHandle<()>> {
-    let mut fds = [0i32; 2];
-    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let [read_fd, write_fd] = fds;
+    let [read_fd, write_fd] = create_pipe()?;
     if unsafe { libc::dup2(write_fd, target_fd) } < 0 {
         let err = io::Error::last_os_error();
         unsafe {
@@ -96,7 +160,7 @@ fn spawn_pump(
     }
     unsafe { libc::close(write_fd) };
 
-    let mut read_file = unsafe { File::from_raw_fd(read_fd) };
+    let mut read_file = unsafe { FdFile::new(read_fd) };
     Ok(std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
         loop {

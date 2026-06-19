@@ -9,19 +9,17 @@ mod inspect;
 use super::engine::{BpSpec, DebugEvent, FrameSnapshot, StopReason};
 use super::launch::{self, DebugSession};
 use super::protocol::{Seq, error_response, event, read_message, response, write_message};
-use super::redirect::Redirect;
+use super::redirect::{FdFile, Redirect};
 use rustc_hash::FxHashMap;
 use serde_json::{Value, json};
-use std::fs::File;
 use std::io;
-use std::os::fd::FromRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 pub(crate) struct ServerState {
-    pub(crate) proto: Arc<Mutex<File>>,
+    pub(crate) proto: Arc<Mutex<FdFile>>,
     pub(crate) seq: Arc<Seq>,
     pub(crate) session: Option<DebugSession>,
     monitor: Option<JoinHandle<()>>,
@@ -38,7 +36,7 @@ pub fn run_dap() {
         eprintln!("pit dap: failed to reserve the protocol descriptor");
         std::process::exit(1);
     }
-    let proto = Arc::new(Mutex::new(unsafe { File::from_raw_fd(proto_fd) }));
+    let proto = Arc::new(Mutex::new(unsafe { FdFile::new(proto_fd) }));
     let mut state = ServerState {
         proto,
         seq: Arc::new(Seq::new()),
@@ -493,7 +491,7 @@ fn stopped_body(reason: &StopReason) -> Value {
 fn run_monitor(
     events_rx: Receiver<DebugEvent>,
     redirect: Redirect,
-    proto: Arc<Mutex<File>>,
+    proto: Arc<Mutex<FdFile>>,
     seq: Arc<Seq>,
     last_exception: Arc<Mutex<Option<(String, String)>>>,
 ) {

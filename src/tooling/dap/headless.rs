@@ -9,21 +9,19 @@
 use super::engine::{BpSpec, DebugEvent, StopReason};
 use super::eval;
 use super::launch::{self, DebugSession};
-use super::redirect::Redirect;
+use super::redirect::{FdFile, Redirect};
 use super::setvar;
 use super::values;
 use rustc_hash::FxHashMap;
 use serde_json::{Value, json};
-use std::fs::File;
 use std::io::{self, BufRead, Write};
-use std::os::fd::FromRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 struct HeadlessState {
-    proto: Arc<Mutex<File>>,
+    proto: Arc<Mutex<FdFile>>,
     default_program: String,
     session: Option<DebugSession>,
     monitor: Option<JoinHandle<()>>,
@@ -36,7 +34,7 @@ pub fn run(file: &str) {
         eprintln!("pit debug: failed to reserve the protocol descriptor");
         std::process::exit(1);
     }
-    let proto = Arc::new(Mutex::new(unsafe { File::from_raw_fd(proto_fd) }));
+    let proto = Arc::new(Mutex::new(unsafe { FdFile::new(proto_fd) }));
     let mut state = HeadlessState {
         proto,
         default_program: file.to_string(),
@@ -76,7 +74,7 @@ pub fn run(file: &str) {
     std::process::exit(0);
 }
 
-fn emit(proto: &Arc<Mutex<File>>, v: &Value) {
+fn emit(proto: &Arc<Mutex<FdFile>>, v: &Value) {
     let mut w = proto.lock().unwrap();
     let _ = writeln!(w, "{v}");
     let _ = w.flush();
@@ -383,7 +381,7 @@ fn handle_set_var(state: &HeadlessState, id: Option<i64>, args: &Value) {
 /// Owns the event stream and the fd redirect for one launched session, same
 /// shape as `server::run_monitor`: reads `DebugEvent`s until `Exited`,
 /// translating each into a headless event, then restores fd 1/2.
-fn run_monitor(events_rx: Receiver<DebugEvent>, redirect: Redirect, proto: Arc<Mutex<File>>) {
+fn run_monitor(events_rx: Receiver<DebugEvent>, redirect: Redirect, proto: Arc<Mutex<FdFile>>) {
     for ev in events_rx.iter() {
         match ev {
             DebugEvent::Stopped { reason, frame } => {
