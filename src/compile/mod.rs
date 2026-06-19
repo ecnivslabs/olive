@@ -13,6 +13,7 @@ mod tests;
 
 use crate::codegen::cranelift::CraneliftCodegen;
 use crate::parser;
+use cranelift_jit::JITModule;
 use linker::{ensure_dir, exec_binary, link_object, link_shared_object};
 use pipeline::run_pipeline_opt;
 use std::{fs, path::Path, process};
@@ -98,7 +99,9 @@ fn run_jit_to_exit_code(
     let exec_duration = exec_start.elapsed();
 
     // Finalize the Python interpreter for atexit handlers. No-op if never initialized.
-    finalize_python_runtime();
+    if let Ok(cg) = codegen.lock() {
+        finalize_python_runtime(&cg);
+    }
 
     // Best-effort: a failed write must never affect the program's exit code.
     if let Some(t) = &target
@@ -141,20 +144,17 @@ pub fn run_script(filename: &str, show_time: bool, release: bool) -> i32 {
     run_jit_to_exit_code(filename, show_time, false, false, release, false, false)
 }
 
-/// Calls `olive_py_finalize` via `dlsym(RTLD_DEFAULT)`, working whether
-/// `olive_std` is linked statically or loaded by the JIT.
-fn finalize_python_runtime() {
-    // RTLD_DEFAULT is NULL on Linux but -2 on macOS/BSD -- passing a bare
-    // null handle here silently fails to resolve the symbol on macOS, so
-    // Py_Finalize (and therefore CPython's own buffered-stdout flush) never
-    // runs and any output from a Python-side `print()` is lost.
-    #[cfg(unix)]
-    unsafe {
-        let sym = libc::dlsym(libc::RTLD_DEFAULT, c"olive_py_finalize".as_ptr());
-        if !sym.is_null() {
-            let f: extern "C" fn() = std::mem::transmute(sym);
-            f();
-        }
+/// Calls `olive_py_finalize` through the JIT's own symbol resolver rather
+/// than a bare `dlsym(RTLD_DEFAULT)`: `olive_std` is `dlopen`'d `RTLD_LOCAL`
+/// for the JIT (see `jit_loader::register_runtime_symbols`), and macOS's
+/// dyld -- unlike glibc -- won't surface `RTLD_LOCAL` symbols through
+/// `RTLD_DEFAULT`, so a bare dlsym silently no-ops there: Py_Finalize never
+/// runs, and CPython's buffered stdout from a Python-side `print()` is lost.
+/// No-op if Python was never initialized.
+fn finalize_python_runtime(codegen: &CraneliftCodegen<JITModule>) {
+    if let Some(sym) = codegen.runtime_symbol("olive_py_finalize") {
+        let f: extern "C" fn() = unsafe { std::mem::transmute(sym) };
+        f();
     }
 }
 
