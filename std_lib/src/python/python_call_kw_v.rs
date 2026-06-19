@@ -8,6 +8,12 @@
 //! building a real `dict` (the pre-R15 path) when vectorcall or interning
 //! isn't available, exactly like every other vectorcall-gated entry point.
 
+use crate::python::python_call_kw_core::{
+    call_kw_v_core, call_kw_v_core_safe, call_kw_v_method_core, call_kw_v_method_core_safe,
+};
+use crate::python::python_call_kw_legacy::{
+    legacy_call_kw, legacy_call_kw_safe, legacy_call_method_kw, legacy_call_method_kw_safe,
+};
 use crate::python::python_kwnames::kwnames_tuple;
 use crate::python::*;
 use std::os::raw::c_char;
@@ -15,7 +21,7 @@ use std::sync::atomic::Ordering;
 
 /// Whether the vectorcall fast path can run at all: `kwnames_tuple` itself
 /// needs interning (R8) to build its tuple.
-fn has_kw_vectorcall() -> bool {
+pub(crate) fn has_kw_vectorcall() -> bool {
     HAS_VECTORCALL.load(Ordering::Relaxed) && use_interned_names()
 }
 
@@ -23,7 +29,7 @@ fn has_kw_vectorcall() -> bool {
 /// Aborts the process on the first bad conversion -- matches every other
 /// `_unsafe` tagged-call entry point, which never cleans up before
 /// `handle_py_error` because that call never returns.
-unsafe fn convert_segment_unsafe(
+pub(crate) unsafe fn convert_segment_unsafe(
     sv_ptr: *mut i64,
     len: usize,
     coll_tags: i64,
@@ -53,7 +59,7 @@ unsafe fn convert_segment_unsafe(
 /// itself converted (`buf[base..]`, never touching a method call's `self`
 /// at `buf[1]`, which sits below `base` and isn't ours), abandons `pairs`,
 /// and reports failure so the caller can encode it instead of aborting.
-unsafe fn convert_segment_safe(
+pub(crate) unsafe fn convert_segment_safe(
     sv_ptr: *mut i64,
     len: usize,
     coll_tags: i64,
@@ -89,7 +95,7 @@ unsafe fn convert_segment_safe(
     }
 }
 
-unsafe fn stable_vec(list: i64) -> (*mut i64, usize) {
+pub(crate) unsafe fn stable_vec(list: i64) -> (*mut i64, usize) {
     if list == 0 {
         (std::ptr::null_mut(), 0)
     } else {
@@ -148,34 +154,18 @@ pub extern "C" fn olive_py_call_kw_v(
                     kw_coll_tags,
                 );
             }
-            let mut pairs = Vec::new();
-            let mut buf: [PyObject; 34] = [std::ptr::null_mut(); 34];
-            convert_segment_unsafe(
-                pos_ptr, pos_len, coll_tags, arg_tags, &mut buf, 1, &mut pairs,
-            );
-            convert_segment_unsafe(
+            call_kw_v_core(
+                unwrapped_func,
+                pos_ptr,
+                pos_len,
+                coll_tags,
+                arg_tags,
+                kwnames,
                 kw_ptr,
                 kw_len,
                 kw_coll_tags,
                 kw_arg_tags,
-                &mut buf,
-                1 + pos_len,
-                &mut pairs,
-            );
-            let nargsf = pos_len | PY_VECTORCALL_ARGUMENTS_OFFSET;
-            let res = PY_VECTORCALL(unwrapped_func, buf.as_ptr().add(1), nargsf, kwnames);
-            for slot in &buf[1..1 + pos_len + kw_len] {
-                if !slot.is_null() {
-                    PY_DEC_REF(*slot);
-                }
-            }
-            sync_back(&pairs);
-            if res.is_null() {
-                handle_py_error();
-            } else if !PY_ERR_OCCURRED().is_null() {
-                PY_ERR_CLEAR();
-            }
-            olive_py_wrap_owned(res)
+            )
         })
     }
 }
@@ -227,33 +217,18 @@ pub extern "C" fn olive_py_call_kw_v_safe(
                     kw_coll_tags,
                 );
             }
-            let mut pairs = Vec::new();
-            let mut buf: [PyObject; 34] = [std::ptr::null_mut(); 34];
-            if !convert_segment_safe(
-                pos_ptr, pos_len, coll_tags, arg_tags, &mut buf, 1, &mut pairs,
-            ) {
-                return conversion_err();
-            }
-            if !convert_segment_safe(
+            call_kw_v_core_safe(
+                unwrapped_func,
+                pos_ptr,
+                pos_len,
+                coll_tags,
+                arg_tags,
+                kwnames,
                 kw_ptr,
                 kw_len,
                 kw_coll_tags,
                 kw_arg_tags,
-                &mut buf,
-                1 + pos_len,
-                &mut pairs,
-            ) {
-                return conversion_err();
-            }
-            let nargsf = pos_len | PY_VECTORCALL_ARGUMENTS_OFFSET;
-            let res = PY_VECTORCALL(unwrapped_func, buf.as_ptr().add(1), nargsf, kwnames);
-            for slot in &buf[1..1 + pos_len + kw_len] {
-                if !slot.is_null() {
-                    PY_DEC_REF(*slot);
-                }
-            }
-            sync_back(&pairs);
-            finish_call_safe(Ok(res), RET_HANDLE)
+            )
         })
     }
 }
@@ -323,35 +298,19 @@ pub extern "C" fn olive_py_call_method_kw_v(
                     kw_coll_tags,
                 );
             }
-            let mut pairs = Vec::new();
-            let mut buf: [PyObject; 34] = [std::ptr::null_mut(); 34];
-            buf[1] = unwrapped_obj;
-            convert_segment_unsafe(
-                pos_ptr, pos_len, coll_tags, arg_tags, &mut buf, 2, &mut pairs,
-            );
-            convert_segment_unsafe(
+            call_kw_v_method_core(
+                unwrapped_obj,
+                name,
+                pos_ptr,
+                pos_len,
+                coll_tags,
+                arg_tags,
+                kwnames,
                 kw_ptr,
                 kw_len,
                 kw_coll_tags,
                 kw_arg_tags,
-                &mut buf,
-                2 + pos_len,
-                &mut pairs,
-            );
-            let nargsf = (pos_len + 1) | PY_VECTORCALL_ARGUMENTS_OFFSET;
-            let res = PY_VECTORCALL_METHOD(name, buf.as_ptr().add(1), nargsf, kwnames);
-            for slot in &buf[2..2 + pos_len + kw_len] {
-                if !slot.is_null() {
-                    PY_DEC_REF(*slot);
-                }
-            }
-            sync_back(&pairs);
-            if res.is_null() {
-                handle_py_error();
-            } else if !PY_ERR_OCCURRED().is_null() {
-                PY_ERR_CLEAR();
-            }
-            olive_py_wrap_owned(res)
+            )
         })
     }
 }
@@ -418,184 +377,20 @@ pub extern "C" fn olive_py_call_method_kw_v_safe(
                     kw_coll_tags,
                 );
             }
-            let mut pairs = Vec::new();
-            let mut buf: [PyObject; 34] = [std::ptr::null_mut(); 34];
-            buf[1] = unwrapped_obj;
-            if !convert_segment_safe(
-                pos_ptr, pos_len, coll_tags, arg_tags, &mut buf, 2, &mut pairs,
-            ) {
-                return conversion_err();
-            }
-            if !convert_segment_safe(
+            call_kw_v_method_core_safe(
+                unwrapped_obj,
+                name,
+                pos_ptr,
+                pos_len,
+                coll_tags,
+                arg_tags,
+                kwnames,
                 kw_ptr,
                 kw_len,
                 kw_coll_tags,
                 kw_arg_tags,
-                &mut buf,
-                2 + pos_len,
-                &mut pairs,
-            ) {
-                return conversion_err();
-            }
-            let nargsf = (pos_len + 1) | PY_VECTORCALL_ARGUMENTS_OFFSET;
-            let res = PY_VECTORCALL_METHOD(name, buf.as_ptr().add(1), nargsf, kwnames);
-            for slot in &buf[2..2 + pos_len + kw_len] {
-                if !slot.is_null() {
-                    PY_DEC_REF(*slot);
-                }
-            }
-            sync_back(&pairs);
-            finish_call_safe(Ok(res), RET_HANDLE)
+            )
         })
-    }
-}
-
-/// Splits `kwnames_key`'s packed, comma-joined names and zips them back up
-/// with `kwvals_list`'s values into the interleaved `[name, value, ...]`
-/// shape `call_kw_dict` expects, then defers to it entirely. Taken only
-/// when vectorcall or interning is unavailable, or a kwnames tuple failed
-/// to build -- correctness over speed on that lane.
-unsafe fn legacy_call_kw(
-    unwrapped_func: PyObject,
-    args_list: i64,
-    coll_tags: i64,
-    kwnames_key: i64,
-    kwvals_list: i64,
-    kw_coll_tags: i64,
-) -> PyObject {
-    unsafe {
-        let interleaved = build_interleaved_kwargs(kwnames_key, kwvals_list);
-        crate::python::python_call::call_kw_dict(
-            unwrapped_func,
-            args_list,
-            coll_tags,
-            interleaved,
-            kw_coll_tags,
-        )
-    }
-}
-
-unsafe fn legacy_call_kw_safe(
-    unwrapped_func: PyObject,
-    args_list: i64,
-    coll_tags: i64,
-    kwnames_key: i64,
-    kwvals_list: i64,
-    kw_coll_tags: i64,
-) -> i64 {
-    unsafe {
-        let interleaved = build_interleaved_kwargs(kwnames_key, kwvals_list);
-        crate::python::python_safe::call_kw_dict_safe(
-            unwrapped_func,
-            args_list,
-            coll_tags,
-            interleaved,
-            kw_coll_tags,
-        )
-    }
-}
-
-unsafe fn legacy_call_method_kw(
-    obj: PyObject,
-    attr: i64,
-    args_list: i64,
-    coll_tags: i64,
-    kwnames_key: i64,
-    kwvals_list: i64,
-    kw_coll_tags: i64,
-) -> PyObject {
-    unsafe {
-        let bound = with_gil(|| {
-            if use_interned_names() {
-                let name = interned_attr((attr & !1) as *const c_char);
-                if name.is_null() {
-                    std::ptr::null_mut()
-                } else {
-                    PY_OBJECT_GET_ATTR(obj, name)
-                }
-            } else {
-                PY_OBJECT_GET_ATTR_STRING(obj, (attr & !1) as *const c_char)
-            }
-        });
-        if bound.is_null() {
-            with_gil(|| handle_py_error());
-        }
-        let res = legacy_call_kw(
-            bound,
-            args_list,
-            coll_tags,
-            kwnames_key,
-            kwvals_list,
-            kw_coll_tags,
-        );
-        with_gil(|| PY_DEC_REF(bound));
-        res
-    }
-}
-
-unsafe fn legacy_call_method_kw_safe(
-    obj: PyObject,
-    attr: i64,
-    args_list: i64,
-    coll_tags: i64,
-    kwnames_key: i64,
-    kwvals_list: i64,
-    kw_coll_tags: i64,
-) -> i64 {
-    unsafe {
-        let bound = with_gil(|| {
-            if use_interned_names() {
-                let name = interned_attr((attr & !1) as *const c_char);
-                if name.is_null() {
-                    std::ptr::null_mut()
-                } else {
-                    PY_OBJECT_GET_ATTR(obj, name)
-                }
-            } else {
-                PY_OBJECT_GET_ATTR_STRING(obj, (attr & !1) as *const c_char)
-            }
-        });
-        if bound.is_null() {
-            let err_str_ptr = with_gil(|| {
-                catch_py_exception_msg().unwrap_or_else(|| "attribute lookup failed".to_string())
-            });
-            return crate::result::olive_result_err(crate::olive_str_internal(&err_str_ptr));
-        }
-        let res = legacy_call_kw_safe(
-            bound,
-            args_list,
-            coll_tags,
-            kwnames_key,
-            kwvals_list,
-            kw_coll_tags,
-        );
-        with_gil(|| PY_DEC_REF(bound));
-        res
-    }
-}
-
-/// Rebuilds the interleaved `[name, value, name, value, ...]` `StableVec`
-/// the pre-R15 dict-building path expects, from the packed name string and
-/// the values-only list this phase's fast path uses instead. Only reached
-/// on the fallback lane, so paying one extra list allocation here doesn't
-/// touch the fast path's cost at all.
-unsafe fn build_interleaved_kwargs(kwnames_key: i64, kwvals_list: i64) -> i64 {
-    unsafe {
-        let (kw_ptr, kw_len) = stable_vec(kwvals_list);
-        if kw_len == 0 {
-            return 0;
-        }
-        let packed =
-            std::ffi::CStr::from_ptr((kwnames_key & !1) as *const c_char).to_string_lossy();
-        let names: Vec<&str> = packed.split(',').collect();
-        let list_ptr = crate::olive_list_new((kw_len * 2) as i64);
-        let sv = &mut *(list_ptr as *mut crate::StableVec);
-        for i in 0..kw_len {
-            let name_ptr = crate::olive_str_internal(names.get(i).copied().unwrap_or(""));
-            *sv.ptr.add(i * 2) = name_ptr;
-            *sv.ptr.add(i * 2 + 1) = *kw_ptr.add(i);
-        }
-        list_ptr
     }
 }
 

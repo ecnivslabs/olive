@@ -122,7 +122,7 @@ impl<'a> MirBuilder<'a> {
                 } else {
                     self.get_type(value.id).clone()
                 };
-                let (mut rval, val_ty) = match self.lower_py_call_scalar_hint(value, &ty) {
+                let (mut rval, val_ty) = match self.lower_py_scalar_hint(value, &ty) {
                     Some(op) => (op, ty.clone()),
                     None => (self.lower_expr(value), self.get_type(value.id).clone()),
                 };
@@ -283,7 +283,7 @@ impl<'a> MirBuilder<'a> {
             StmtKind::ExprStmt(expr) => {
                 if is_tail {
                     let ret_ty = self.current_locals[0].ty.clone();
-                    let (mut rval, expr_ty) = match self.lower_py_call_scalar_hint(expr, &ret_ty) {
+                    let (mut rval, expr_ty) = match self.lower_py_scalar_hint(expr, &ret_ty) {
                         Some(op) => (op, ret_ty.clone()),
                         None => (self.lower_expr(expr), self.get_type(expr.id).clone()),
                     };
@@ -430,7 +430,7 @@ impl<'a> MirBuilder<'a> {
 
             StmtKind::Return(Some(expr)) => {
                 let ret_ty = self.current_locals[0].ty.clone();
-                let (mut rval, expr_ty) = match self.lower_py_call_scalar_hint(expr, &ret_ty) {
+                let (mut rval, expr_ty) = match self.lower_py_scalar_hint(expr, &ret_ty) {
                     Some(op) => (op, ret_ty.clone()),
                     None => (self.lower_expr(expr), self.get_type(expr.id).clone()),
                 };

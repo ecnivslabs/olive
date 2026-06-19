@@ -29,7 +29,7 @@ const ARG_BYTES: i64 = 7;
 /// `python_ret::RET_*` in the runtime crate exactly; packed into the top 4
 /// bits of the same `arg_tags` word the arity-specialized entry points pass
 /// (arity 0-4 never uses more than the low 16 bits for real argument tags).
-const RET_HANDLE: i64 = 0;
+pub(super) const RET_HANDLE: i64 = 0;
 const RET_INT: i64 = 1;
 const RET_FLOAT: i64 = 2;
 const RET_STR: i64 = 3;
@@ -73,6 +73,34 @@ pub(super) struct PyCallArgs {
     kw_arg_tags: i64,
     kw_coll_tags: i64,
     fast_path: bool,
+}
+
+impl PyCallArgs {
+    /// Unpacks the fields `py_call_kw_arity.rs`'s method-call emitter needs
+    /// -- that file lives outside this module, so it can't destructure a
+    /// private-field struct literal directly the way this file's own
+    /// `emit_py_call_method_kw_v` does.
+    pub(super) fn into_kw_parts(
+        self,
+    ) -> (
+        Vec<Operand>,
+        Vec<Operand>,
+        Option<String>,
+        i64,
+        i64,
+        i64,
+        i64,
+    ) {
+        (
+            self.pos_ops,
+            self.kw_vals,
+            self.kw_names_packed,
+            self.arg_tags,
+            self.coll_tags,
+            self.kw_arg_tags,
+            self.kw_coll_tags,
+        )
+    }
 }
 
 impl<'a> MirBuilder<'a> {
@@ -402,7 +430,7 @@ impl<'a> MirBuilder<'a> {
         // the `args_list` aggregate entirely -- each argument goes straight
         // into a call register through a dedicated arity-specialized entry
         // point, so this call site allocates nothing. Arity 5-16 and any
-        // kwargs call keep the list-based path below.
+        // kwargs call over the combined cap below keep the list-based path.
         if kw_ops.is_empty() && fast_path && pos_ops.len() <= 4 {
             return self.emit_py_call_arity(
                 callee_op,
@@ -410,6 +438,24 @@ impl<'a> MirBuilder<'a> {
                 (coll_tags, arg_tags),
                 flavor,
                 result_ty,
+                span,
+            );
+        }
+
+        // Same no-allocation shape extended to kwargs: `positional +
+        // keyword <= 4` skips both `args_list` and `kwvals_list`.
+        if !kw_ops.is_empty() && fast_path && pos_ops.len() + kw_vals.len() <= 4 {
+            let kwnames = kw_names_packed.clone().unwrap_or_default();
+            return self.emit_py_call_kw_arity(
+                callee_op,
+                pos_ops,
+                kw_vals,
+                kwnames,
+                coll_tags,
+                arg_tags,
+                kw_coll_tags,
+                kw_arg_tags,
+                flavor,
                 span,
             );
         }
@@ -581,6 +627,12 @@ impl<'a> MirBuilder<'a> {
         if call_args.kw_ops.is_empty() && call_args.fast_path && call_args.pos_ops.len() <= 4 {
             return self
                 .emit_py_call_method_arity(obj_op, attr, call_args, flavor, result_ty, span);
+        }
+        if !call_args.kw_ops.is_empty()
+            && call_args.fast_path
+            && call_args.pos_ops.len() + call_args.kw_vals.len() <= 4
+        {
+            return self.emit_py_call_method_kw_arity(obj_op, attr, call_args, flavor, span);
         }
         if !call_args.kw_ops.is_empty() && call_args.fast_path {
             return self.emit_py_call_method_kw_v(obj_op, attr, call_args, flavor, span);
@@ -799,6 +851,24 @@ impl<'a> MirBuilder<'a> {
             Type::Null,
             expr.span,
         )
+    }
+
+    /// Tries every py-value expression shape R10-style scalar-hint fusion
+    /// covers, in turn: a direct call (`lower_py_call_scalar_hint`), then a
+    /// direct attribute read (`lower_py_getattr_scalar_hint` in `data.rs`).
+    /// Called from the same four statement sites (`let`, plain assignment,
+    /// explicit `return`, tail-expression return) that need a fusable-scalar
+    /// hint from their own already-known target type. `None` from both
+    /// means `expr`'s shape doesn't support fusion or `hint` isn't a
+    /// concrete scalar; the caller falls through to plain `lower_expr` +
+    /// `coerce`, unchanged from before either fusion existed.
+    pub(in crate::mir::builder) fn lower_py_scalar_hint(
+        &mut self,
+        expr: &Expr,
+        hint: &Type,
+    ) -> Option<Operand> {
+        self.lower_py_call_scalar_hint(expr, hint)
+            .or_else(|| self.lower_py_getattr_scalar_hint(expr, hint))
     }
 
     /// Widens R10's scalar-return fusion beyond stub-typed calls, with no
@@ -1032,17 +1102,36 @@ mod tests {
     /// this is the vectorcall entry point (still one `args_list` and one
     /// `kwvals_list` aggregate), not the dict-building `_kw_t` path.
     #[test]
-    fn kwargs_call_keeps_list_path_regardless_of_positional_arity() {
-        let src = "import py \"math\" as math\n\nfn f():\n    math.f(1, x=2)\n\nf()\n";
+    fn kwargs_call_over_the_arity_cap_keeps_the_list_path() {
+        // positional + keyword = 5, over the arity-specialized shells' cap
+        // of 4 -- must fall back to the list-based `_method_kw_v` entry.
+        let src = "import py \"math\" as math\n\nfn f():\n    math.f(1, 2, 3, 4, x=5)\n\nf()\n";
         let fns = build(src);
         let f = fns.iter().find(|f| f.name == "f").unwrap();
         assert!(
             has_list_aggregate(f),
-            "a kwargs call must still build a list aggregate"
+            "a kwargs call over the arity cap must still build a list aggregate"
         );
         assert_eq!(
             call_target(f).as_deref(),
             Some("__olive_py_call_method_kw_v")
+        );
+    }
+
+    #[test]
+    fn kwargs_call_within_the_arity_cap_skips_the_list_aggregate() {
+        // positional + keyword = 2, within the arity-specialized shells'
+        // cap -- routes to `__olive_py_call_method_kw_v_p1_k1`, no list.
+        let src = "import py \"math\" as math\n\nfn f():\n    math.f(1, x=2)\n\nf()\n";
+        let fns = build(src);
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        assert!(
+            !has_list_aggregate(f),
+            "a kwargs call within the arity cap must not build a list aggregate"
+        );
+        assert_eq!(
+            call_target(f).as_deref(),
+            Some("__olive_py_call_method_kw_v_p1_k1")
         );
     }
 
@@ -1150,6 +1239,54 @@ mod tests {
         assert!(
             has_call_to(f, "__olive_py_make_callable"),
             "assigning a Type::Fn value to a PyObject-typed let must convert via __olive_py_make_callable"
+        );
+    }
+
+    /// GetAttr analogue of the call-scalar-fusion tests above: a `let`
+    /// annotation supplies the concrete scalar hint `math.value`'s own
+    /// checker type (bare `PyObject`, no stub) can't provide on its own.
+    #[test]
+    fn attr_read_with_let_annotation_fuses_to_getattr_ret() {
+        let src = "import py \"math\" as math\n\nfn f():\n    let v: int = math.value\n\nf()\n";
+        let fns = build(src);
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        assert!(
+            has_call_to(f, "__olive_py_getattr_ret"),
+            "a scalar-annotated let over a dynamic attribute read must fuse to __olive_py_getattr_ret"
+        );
+        assert!(
+            !has_call_to(f, "__olive_py_getattr"),
+            "a fused attribute read must not also emit the plain unfused getattr"
+        );
+    }
+
+    /// Same fusion, reached through a plain reassignment instead of a
+    /// `let`: the target's already-declared type is the hint.
+    #[test]
+    fn attr_read_reassigned_into_typed_local_fuses_to_getattr_ret() {
+        let src = "import py \"math\" as math\n\nfn f():\n    let mut last = 0\n    last = math.value\n\nf()\n";
+        let fns = build(src);
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        assert!(
+            has_call_to(f, "__olive_py_getattr_ret"),
+            "reassigning a dynamic attribute read into an already-int local must fuse"
+        );
+    }
+
+    /// No fusable hint (unannotated `let`, checker types the local itself
+    /// as `PyObject`) must keep the plain, unfused `olive_py_getattr` path.
+    #[test]
+    fn attr_read_without_scalar_hint_stays_unfused() {
+        let src = "import py \"math\" as math\n\nfn f():\n    let v = math.value\n\nf()\n";
+        let fns = build(src);
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        assert!(
+            has_call_to(f, "__olive_py_getattr"),
+            "an unannotated attribute read must stay on the plain getattr path"
+        );
+        assert!(
+            !has_call_to(f, "__olive_py_getattr_ret"),
+            "an unannotated attribute read has no hint to fuse with"
         );
     }
 }

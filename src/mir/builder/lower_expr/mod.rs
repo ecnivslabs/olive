@@ -5,6 +5,7 @@ mod data;
 mod literals;
 mod ops;
 mod py_call;
+mod py_call_kw_arity;
 mod sort_key;
 
 use super::{MirBuilder, NestedFnInfo};

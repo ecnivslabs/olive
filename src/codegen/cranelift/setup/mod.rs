@@ -36,6 +36,8 @@ impl<M: Module> CraneliftCodegen<M> {
         let sig_8i64_i64 = mk_sig(&[types::I64; 8], &[types::I64]);
         let sig_9i64_i64 = mk_sig(&[types::I64; 9], &[types::I64]);
         let sig_10i64_i64 = mk_sig(&[types::I64; 10], &[types::I64]);
+        let sig_11i64_i64 = mk_sig(&[types::I64; 11], &[types::I64]);
+        let sig_12i64_i64 = mk_sig(&[types::I64; 12], &[types::I64]);
         let sig_6i64_f64 = mk_sig(&[types::I64; 6], &[types::I64]);
         let sig_f64_f64 = mk_sig(&[types::F64], &[types::F64]);
         let sig_f64_f64_f64 = mk_sig(&[types::F64, types::F64], &[types::F64]);
@@ -443,6 +445,49 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_py_call_kw_v_safe", &sig_8i64_i64),
             ("__olive_py_call_method_kw_v", &sig_10i64_i64),
             ("__olive_py_call_method_kw_v_safe", &sig_9i64_i64),
+            // Arity-specialized kwargs shells (positional+keyword <= 4):
+            // no `args_list`/`kwvals_list` aggregate, every value straight
+            // in a register. See `python_call_kw_arity.rs`.
+            ("__olive_py_call_kw_v_p0_k1", &sig_8i64_i64),
+            ("__olive_py_call_kw_v_p0_k1_safe", &sig_7i64_i64),
+            ("__olive_py_call_kw_v_p0_k2", &sig_9i64_i64),
+            ("__olive_py_call_kw_v_p0_k2_safe", &sig_8i64_i64),
+            ("__olive_py_call_kw_v_p0_k3", &sig_10i64_i64),
+            ("__olive_py_call_kw_v_p0_k3_safe", &sig_9i64_i64),
+            ("__olive_py_call_kw_v_p0_k4", &sig_11i64_i64),
+            ("__olive_py_call_kw_v_p0_k4_safe", &sig_10i64_i64),
+            ("__olive_py_call_kw_v_p1_k1", &sig_9i64_i64),
+            ("__olive_py_call_kw_v_p1_k1_safe", &sig_8i64_i64),
+            ("__olive_py_call_kw_v_p1_k2", &sig_10i64_i64),
+            ("__olive_py_call_kw_v_p1_k2_safe", &sig_9i64_i64),
+            ("__olive_py_call_kw_v_p1_k3", &sig_11i64_i64),
+            ("__olive_py_call_kw_v_p1_k3_safe", &sig_10i64_i64),
+            ("__olive_py_call_kw_v_p2_k1", &sig_10i64_i64),
+            ("__olive_py_call_kw_v_p2_k1_safe", &sig_9i64_i64),
+            ("__olive_py_call_kw_v_p2_k2", &sig_11i64_i64),
+            ("__olive_py_call_kw_v_p2_k2_safe", &sig_10i64_i64),
+            ("__olive_py_call_kw_v_p3_k1", &sig_11i64_i64),
+            ("__olive_py_call_kw_v_p3_k1_safe", &sig_10i64_i64),
+            ("__olive_py_call_method_kw_v_p0_k1", &sig_9i64_i64),
+            ("__olive_py_call_method_kw_v_p0_k1_safe", &sig_8i64_i64),
+            ("__olive_py_call_method_kw_v_p0_k2", &sig_10i64_i64),
+            ("__olive_py_call_method_kw_v_p0_k2_safe", &sig_9i64_i64),
+            ("__olive_py_call_method_kw_v_p0_k3", &sig_11i64_i64),
+            ("__olive_py_call_method_kw_v_p0_k3_safe", &sig_10i64_i64),
+            ("__olive_py_call_method_kw_v_p0_k4", &sig_12i64_i64),
+            ("__olive_py_call_method_kw_v_p0_k4_safe", &sig_11i64_i64),
+            ("__olive_py_call_method_kw_v_p1_k1", &sig_10i64_i64),
+            ("__olive_py_call_method_kw_v_p1_k1_safe", &sig_9i64_i64),
+            ("__olive_py_call_method_kw_v_p1_k2", &sig_11i64_i64),
+            ("__olive_py_call_method_kw_v_p1_k2_safe", &sig_10i64_i64),
+            ("__olive_py_call_method_kw_v_p1_k3", &sig_12i64_i64),
+            ("__olive_py_call_method_kw_v_p1_k3_safe", &sig_11i64_i64),
+            ("__olive_py_call_method_kw_v_p2_k1", &sig_11i64_i64),
+            ("__olive_py_call_method_kw_v_p2_k1_safe", &sig_10i64_i64),
+            ("__olive_py_call_method_kw_v_p2_k2", &sig_12i64_i64),
+            ("__olive_py_call_method_kw_v_p2_k2_safe", &sig_11i64_i64),
+            ("__olive_py_call_method_kw_v_p3_k1", &sig_12i64_i64),
+            ("__olive_py_call_method_kw_v_p3_k1_safe", &sig_11i64_i64),
             // `func, arg_tags, loc` -- `arg_tags` carries only `ret_tag`
             // (R10), no real per-argument tags since there are no arguments.
             ("__olive_py_call0", &sig_3i64_i64),
@@ -491,6 +536,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_py_from_int", &sig_i64_i64),
             ("__olive_py_from_str", &sig_i64_i64),
             ("__olive_py_getattr", &sig_i64_i64_i64),
+            ("__olive_py_getattr_ret", &sig_3i64_i64),
             ("__olive_py_getattr_safe", &sig_i64_i64_i64),
             ("__olive_py_getitem", &sig_i64_i64_i64),
             ("__olive_py_getitem_int", &sig_i64_i64_i64),

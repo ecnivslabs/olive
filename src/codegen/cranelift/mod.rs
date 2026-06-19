@@ -531,6 +531,136 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
         "__olive_py_call_method_kw_v_safe",
         b"olive_py_call_method_kw_v_safe\0",
     ),
+    ("__olive_py_call_kw_v_p0_k1", b"olive_py_call_kw_v_p0_k1\0"),
+    (
+        "__olive_py_call_kw_v_p0_k1_safe",
+        b"olive_py_call_kw_v_p0_k1_safe\0",
+    ),
+    ("__olive_py_call_kw_v_p0_k2", b"olive_py_call_kw_v_p0_k2\0"),
+    (
+        "__olive_py_call_kw_v_p0_k2_safe",
+        b"olive_py_call_kw_v_p0_k2_safe\0",
+    ),
+    ("__olive_py_call_kw_v_p0_k3", b"olive_py_call_kw_v_p0_k3\0"),
+    (
+        "__olive_py_call_kw_v_p0_k3_safe",
+        b"olive_py_call_kw_v_p0_k3_safe\0",
+    ),
+    ("__olive_py_call_kw_v_p0_k4", b"olive_py_call_kw_v_p0_k4\0"),
+    (
+        "__olive_py_call_kw_v_p0_k4_safe",
+        b"olive_py_call_kw_v_p0_k4_safe\0",
+    ),
+    ("__olive_py_call_kw_v_p1_k1", b"olive_py_call_kw_v_p1_k1\0"),
+    (
+        "__olive_py_call_kw_v_p1_k1_safe",
+        b"olive_py_call_kw_v_p1_k1_safe\0",
+    ),
+    ("__olive_py_call_kw_v_p1_k2", b"olive_py_call_kw_v_p1_k2\0"),
+    (
+        "__olive_py_call_kw_v_p1_k2_safe",
+        b"olive_py_call_kw_v_p1_k2_safe\0",
+    ),
+    ("__olive_py_call_kw_v_p1_k3", b"olive_py_call_kw_v_p1_k3\0"),
+    (
+        "__olive_py_call_kw_v_p1_k3_safe",
+        b"olive_py_call_kw_v_p1_k3_safe\0",
+    ),
+    ("__olive_py_call_kw_v_p2_k1", b"olive_py_call_kw_v_p2_k1\0"),
+    (
+        "__olive_py_call_kw_v_p2_k1_safe",
+        b"olive_py_call_kw_v_p2_k1_safe\0",
+    ),
+    ("__olive_py_call_kw_v_p2_k2", b"olive_py_call_kw_v_p2_k2\0"),
+    (
+        "__olive_py_call_kw_v_p2_k2_safe",
+        b"olive_py_call_kw_v_p2_k2_safe\0",
+    ),
+    ("__olive_py_call_kw_v_p3_k1", b"olive_py_call_kw_v_p3_k1\0"),
+    (
+        "__olive_py_call_kw_v_p3_k1_safe",
+        b"olive_py_call_kw_v_p3_k1_safe\0",
+    ),
+    (
+        "__olive_py_call_method_kw_v_p0_k1",
+        b"olive_py_call_method_kw_v_p0_k1\0",
+    ),
+    (
+        "__olive_py_call_method_kw_v_p0_k1_safe",
+        b"olive_py_call_method_kw_v_p0_k1_safe\0",
+    ),
+    (
+        "__olive_py_call_method_kw_v_p0_k2",
+        b"olive_py_call_method_kw_v_p0_k2\0",
+    ),
+    (
+        "__olive_py_call_method_kw_v_p0_k2_safe",
+        b"olive_py_call_method_kw_v_p0_k2_safe\0",
+    ),
+    (
+        "__olive_py_call_method_kw_v_p0_k3",
+        b"olive_py_call_method_kw_v_p0_k3\0",
+    ),
+    (
+        "__olive_py_call_method_kw_v_p0_k3_safe",
+        b"olive_py_call_method_kw_v_p0_k3_safe\0",
+    ),
+    (
+        "__olive_py_call_method_kw_v_p0_k4",
+        b"olive_py_call_method_kw_v_p0_k4\0",
+    ),
+    (
+        "__olive_py_call_method_kw_v_p0_k4_safe",
+        b"olive_py_call_method_kw_v_p0_k4_safe\0",
+    ),
+    (
+        "__olive_py_call_method_kw_v_p1_k1",
+        b"olive_py_call_method_kw_v_p1_k1\0",
+    ),
+    (
+        "__olive_py_call_method_kw_v_p1_k1_safe",
+        b"olive_py_call_method_kw_v_p1_k1_safe\0",
+    ),
+    (
+        "__olive_py_call_method_kw_v_p1_k2",
+        b"olive_py_call_method_kw_v_p1_k2\0",
+    ),
+    (
+        "__olive_py_call_method_kw_v_p1_k2_safe",
+        b"olive_py_call_method_kw_v_p1_k2_safe\0",
+    ),
+    (
+        "__olive_py_call_method_kw_v_p1_k3",
+        b"olive_py_call_method_kw_v_p1_k3\0",
+    ),
+    (
+        "__olive_py_call_method_kw_v_p1_k3_safe",
+        b"olive_py_call_method_kw_v_p1_k3_safe\0",
+    ),
+    (
+        "__olive_py_call_method_kw_v_p2_k1",
+        b"olive_py_call_method_kw_v_p2_k1\0",
+    ),
+    (
+        "__olive_py_call_method_kw_v_p2_k1_safe",
+        b"olive_py_call_method_kw_v_p2_k1_safe\0",
+    ),
+    (
+        "__olive_py_call_method_kw_v_p2_k2",
+        b"olive_py_call_method_kw_v_p2_k2\0",
+    ),
+    (
+        "__olive_py_call_method_kw_v_p2_k2_safe",
+        b"olive_py_call_method_kw_v_p2_k2_safe\0",
+    ),
+    (
+        "__olive_py_call_method_kw_v_p3_k1",
+        b"olive_py_call_method_kw_v_p3_k1\0",
+    ),
+    (
+        "__olive_py_call_method_kw_v_p3_k1_safe",
+        b"olive_py_call_method_kw_v_p3_k1_safe\0",
+    ),
     ("__olive_py_call0", b"olive_py_call0\0"),
     ("__olive_py_call0_safe", b"olive_py_call0_safe\0"),
     ("__olive_py_call1", b"olive_py_call1\0"),
@@ -588,6 +718,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_py_from_int", b"olive_py_from_int\0"),
     ("__olive_py_from_str", b"olive_py_from_str\0"),
     ("__olive_py_getattr", b"olive_py_getattr\0"),
+    ("__olive_py_getattr_ret", b"olive_py_getattr_ret\0"),
     ("__olive_py_getattr_safe", b"olive_py_getattr_safe\0"),
     ("__olive_py_getitem", b"olive_py_getitem\0"),
     ("__olive_py_getitem_int", b"olive_py_getitem_int\0"),
