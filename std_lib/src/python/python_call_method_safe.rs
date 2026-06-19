@@ -17,7 +17,7 @@ unsafe fn call_method_with_raw_args_safe(
     args: &mut [i64],
 ) -> Result<PyObject, i64> {
     unsafe {
-        if HAS_VECTORCALL.load(Ordering::Relaxed) && HAS_INTERN.load(Ordering::Relaxed) {
+        if HAS_VECTORCALL.load(Ordering::Relaxed) && use_interned_names() {
             let name = interned_attr(attr);
             if name.is_null() {
                 return Ok(std::ptr::null_mut());
@@ -56,7 +56,7 @@ unsafe fn call_method_with_raw_args_safe(
             sync_back(&pairs);
             Ok(res)
         } else {
-            let bound = if HAS_INTERN.load(Ordering::Relaxed) {
+            let bound = if use_interned_names() {
                 let name = interned_attr(attr);
                 if name.is_null() {
                     std::ptr::null_mut()

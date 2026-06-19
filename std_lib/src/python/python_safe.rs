@@ -515,7 +515,7 @@ pub extern "C" fn olive_py_getattr_safe(obj: PyObject, attr: i64) -> i64 {
     }
     let attr_ptr = (attr & !1) as *const c_char;
     with_gil(|| unsafe {
-        let r = if HAS_INTERN.load(Ordering::Relaxed) {
+        let r = if use_interned_names() {
             let name = interned_attr(attr_ptr);
             if name.is_null() {
                 std::ptr::null_mut()
@@ -557,7 +557,7 @@ pub extern "C" fn olive_py_setattr_safe(obj: PyObject, attr: i64, val: i64) -> i
             }
             return conversion_err();
         }
-        let res = if HAS_INTERN.load(Ordering::Relaxed) {
+        let res = if use_interned_names() {
             let name = interned_attr(attr_ptr);
             if name.is_null() {
                 -1

@@ -151,6 +151,7 @@ impl OliveBytes {
 /// assert!(ptr != 0);
 /// ```
 pub fn new_buf(data: Vec<u8>) -> i64 {
+    crate::slab::tune_allocator();
     let mut b = OliveBytes {
         kind: KIND_BYTES,
         ptr: std::ptr::null_mut(),

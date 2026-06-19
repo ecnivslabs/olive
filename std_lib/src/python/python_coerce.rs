@@ -52,12 +52,20 @@ pub(crate) fn is_arena_ptr(ptr: usize) -> bool {
         && unsafe { *(ptr as *const i64) == crate::KIND_PYOBJECT }
 }
 
-/// Allocates a handle in the process-lifetime global slab (see
-/// `SlabSet::pyobject`), never a task-local one.
+/// Process-lifetime slab for PyObject handles. Guarded by the process-wide
+/// GIL on the normal path (every alloc/free runs inside `with_gil`, which
+/// serializes all Python-touching threads), or by `PYOBJ_SLAB_MUTEX` when
+/// the subinterpreter pool owns per-interpreter GILs. The mode is fixed
+/// before any user Python code runs, so a handle is always freed under the
+/// same guard it was allocated under.
+static PYOBJ_SLAB: crate::python::GilCell<crate::slab::GenSlab> = crate::python::GilCell::new(
+    crate::slab::GenSlab::new(std::mem::size_of::<OlivePyObject>()),
+);
+static PYOBJ_SLAB_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn alloc_pyobject_handle(py_ptr: PyObject) -> *mut OlivePyObject {
-    crate::slab::with_escape_arena(|| unsafe {
-        let active = crate::slab::ACTIVE_SLABS.get();
-        let (body, _fresh) = (*active).pyobject.alloc();
+    let write = || unsafe {
+        let (body, _fresh) = (*PYOBJ_SLAB.get()).alloc();
         let o = body as *mut OlivePyObject;
         std::ptr::write(
             o,
@@ -67,26 +75,38 @@ fn alloc_pyobject_handle(py_ptr: PyObject) -> *mut OlivePyObject {
             },
         );
         o
-    })
+    };
+    if crate::python::gil_process_wide() {
+        with_gil(write)
+    } else {
+        let _guard = PYOBJ_SLAB_MUTEX.lock().unwrap();
+        write()
+    }
 }
 
 /// Frees a handle, returning the held py pointer, or `None` when the slot
 /// is already free (double drop) -- the slab's generation check absorbs it.
-/// Liveness check, payload read and free all run under the one global lock
-/// so a concurrent free of the same handle can't race the payload read.
+/// Liveness check, payload read and free all run under one guard (GIL or
+/// mutex) so a concurrent free of the same handle can't race the payload
+/// read.
 fn free_pyobject_handle(ptr: *mut OlivePyObject) -> Option<PyObject> {
-    crate::slab::with_escape_arena(|| unsafe {
-        let active = crate::slab::ACTIVE_SLABS.get();
+    let take = || unsafe {
         if !is_arena_ptr(ptr as usize) {
             return None;
         }
         let py_ptr = (*ptr).py_ptr;
-        if (*active).pyobject.free(ptr as *mut u8) {
+        if (*PYOBJ_SLAB.get()).free(ptr as *mut u8) {
             Some(py_ptr)
         } else {
             None
         }
-    })
+    };
+    if crate::python::gil_process_wide() {
+        with_gil(take)
+    } else {
+        let _guard = PYOBJ_SLAB_MUTEX.lock().unwrap();
+        take()
+    }
 }
 
 pub unsafe fn olive_py_wrap_owned(py_ptr: PyObject) -> PyObject {
@@ -703,15 +723,19 @@ pub extern "C" fn olive_py_decref(obj: PyObject) {
         return;
     }
     // Claiming under the slab's generation check makes a double drop a
-    // no-op: the second caller finds the slot already free.
-    let taken = free_pyobject_handle(obj as *mut OlivePyObject);
-    if let Some(py_ptr) = taken
-        && !py_ptr.is_null()
-    {
-        with_gil(|| unsafe {
-            PY_DEC_REF(py_ptr);
-        });
-    }
+    // no-op: the second caller finds the slot already free. One with_gil
+    // spans handle free and decref so the pair costs a single depth check
+    // inside fused regions.
+    with_gil(|| {
+        let taken = free_pyobject_handle(obj as *mut OlivePyObject);
+        if let Some(py_ptr) = taken
+            && !py_ptr.is_null()
+        {
+            unsafe {
+                PY_DEC_REF(py_ptr);
+            }
+        }
+    });
 }
 
 #[cfg(test)]

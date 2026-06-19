@@ -1,6 +1,5 @@
 use crate::python::*;
 use std::os::raw::{c_char, c_double, c_long};
-use std::sync::atomic::Ordering;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_from_int(v: i64) -> PyObject {
@@ -364,6 +363,26 @@ pub extern "C" fn olive_py_setitem(obj: PyObject, key: PyObject, val: PyObject) 
     });
 }
 
+/// Whether `obj`'s exact runtime type is `list`/`tuple` -- the two builtin
+/// sequence types with a direct C-level indexed accessor
+/// (`PyList_GetItem`/`PyTuple_GetItem`) that skips both the temporary
+/// `PyLong` key `PyObject_GetItem` needs and the generic `__getitem__`
+/// slot dispatch. Subclasses fall through to the generic path: a subclass
+/// may override `__getitem__`, so only the exact builtin type is provably
+/// safe to fast-path.
+#[inline]
+unsafe fn fast_sequence_kind(ty: PyObject) -> Option<bool> {
+    unsafe {
+        if !PY_LIST_TYPE.is_null() && ty == PY_LIST_TYPE {
+            Some(true)
+        } else if !PY_TUPLE_TYPE.is_null() && ty == PY_TUPLE_TYPE {
+            Some(false)
+        } else {
+            None
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_getitem_int(obj: PyObject, key: i64) -> PyObject {
     check_python_loaded();
@@ -372,6 +391,23 @@ pub extern "C" fn olive_py_getitem_int(obj: PyObject, key: i64) -> PyObject {
         return std::ptr::null_mut();
     }
     with_gil(|| unsafe {
+        // `PyList_GetItem`/`PyTuple_GetItem` reject negative indices outright
+        // (no wraparound), unlike Python's `xs[-1]` semantics, so only a
+        // non-negative key is eligible for the fast accessor.
+        if key >= 0
+            && let Some(is_list) = fast_sequence_kind(raw_ob_type(unwrapped_obj))
+        {
+            let item = if is_list {
+                PY_LIST_GET_ITEM(unwrapped_obj, key as isize)
+            } else {
+                PY_TUPLE_GET_ITEM(unwrapped_obj, key as isize)
+            };
+            if item.is_null() {
+                handle_py_error();
+            }
+            PY_INC_REF(item);
+            return olive_py_wrap_owned(item);
+        }
         let py_key = PY_LONG_FROM_LONG(key as std::os::raw::c_long);
         if py_key.is_null() {
             return std::ptr::null_mut();
@@ -489,7 +525,7 @@ pub extern "C" fn olive_py_getattr(obj: PyObject, attr: i64) -> PyObject {
     }
     let attr_ptr = (attr & !1) as *const c_char;
     with_gil(|| unsafe {
-        let a = if HAS_INTERN.load(Ordering::Relaxed) {
+        let a = if use_interned_names() {
             let name = interned_attr(attr_ptr);
             if name.is_null() {
                 std::ptr::null_mut()
@@ -516,7 +552,7 @@ pub extern "C" fn olive_py_setattr(obj: PyObject, attr: i64, val: i64) -> PyObje
     let attr_ptr = (attr & !1) as *const c_char;
     with_gil(|| unsafe {
         let py_val = olive_to_py_checked(val);
-        let res = if HAS_INTERN.load(Ordering::Relaxed) {
+        let res = if use_interned_names() {
             let name = interned_attr(attr_ptr);
             if name.is_null() {
                 -1
@@ -608,6 +644,7 @@ pub extern "C" fn olive_py_getslice(
 mod str_and_size_tests {
     use super::*;
     use crate::python::python_coerce::{olive_str_to_py, py_str_to_olive, pyobject_slab_test_lock};
+    use std::sync::atomic::Ordering;
 
     fn with_forced_str_and_size<R>(want: bool, f: impl FnOnce() -> R) -> R {
         let prev = HAS_STR_AND_SIZE.load(Ordering::SeqCst);

@@ -130,6 +130,7 @@ print(found)
 pub extern "C" fn olive_py_initialize() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| unsafe {
+        crate::slab::tune_allocator();
         let mut handle: *mut c_void = std::ptr::null_mut();
 
         // Host process (R20): when loaded as a CPython extension module,
