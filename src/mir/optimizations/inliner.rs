@@ -46,14 +46,10 @@ impl Inliner {
                                 if target_fn.is_async {
                                     continue;
                                 }
-                                let is_recursive = target_fn.basic_blocks.iter().any(|bb| {
-                                    bb.statements.iter().any(|s| {
-                                        matches!(&s.kind, StatementKind::Assign(_, Rvalue::Call {
-                                            func: Operand::Constant(Constant::Function(n)), ..
-                                        }) if n == &target_fn.name)
-                                    })
-                                });
-                                if is_recursive {
+                                // Don't inline a callee on a recursion cycle
+                                // (direct or mutual); it re-grows every pass to
+                                // the depth limit and leaves a broken body.
+                                if Self::reaches(name, name, fn_map) {
                                     continue;
                                 }
                                 if target_fn.basic_blocks.len() < 100 {
@@ -80,6 +76,42 @@ impl Inliner {
                 i += 1;
             }
         }
+    }
+
+    /// Whether `from` can transitively call `target`. Called with `from ==
+    /// target` to detect a recursion cycle.
+    fn reaches(from: &str, target: &str, fn_map: &HashMap<String, MirFunction>) -> bool {
+        let mut stack = vec![from.to_string()];
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut first = true;
+        while let Some(name) = stack.pop() {
+            if !first && name == target {
+                return true;
+            }
+            first = false;
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            let Some(f) = fn_map.get(&name) else { continue };
+            for bb in &f.basic_blocks {
+                for s in &bb.statements {
+                    if let StatementKind::Assign(
+                        _,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(n)),
+                            ..
+                        },
+                    ) = &s.kind
+                    {
+                        if n == target {
+                            return true;
+                        }
+                        stack.push(n.clone());
+                    }
+                }
+            }
+        }
+        false
     }
 
     fn perform_inline(
@@ -418,6 +450,53 @@ mod tests {
         let inliner = Inliner::new();
         inliner.inline_function(&mut caller, &fn_map, 3);
         assert_eq!(caller.basic_blocks.len(), 1);
+    }
+
+    #[test]
+    fn no_inline_mutually_recursive_callee() {
+        // `a` calls `b`, `b` calls `a`: inlining either must be refused.
+        let a = callee_fn(
+            "a",
+            vec![assign(
+                0,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("b".into())),
+                    args: vec![],
+                },
+            )],
+        );
+        let b = callee_fn(
+            "b",
+            vec![assign(
+                0,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("a".into())),
+                    args: vec![],
+                },
+            )],
+        );
+        let mut fn_map: HashMap<String, MirFunction> = HashMap::default();
+        fn_map.insert("a".into(), a);
+        fn_map.insert("b".into(), b);
+        let mut caller = func(
+            "main",
+            vec![local_decl()],
+            vec![assign(
+                0,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("a".into())),
+                    args: vec![],
+                },
+            )],
+            0,
+        );
+        let inliner = Inliner::new();
+        inliner.inline_function(&mut caller, &fn_map, 5);
+        assert_eq!(
+            caller.basic_blocks.len(),
+            1,
+            "must not inline a callee in a recursion cycle"
+        );
     }
 
     #[test]

@@ -674,7 +674,9 @@ impl<'a> MirBuilder<'a> {
             }
 
             StmtKind::Assert { test, msg } => {
-                let test_op = self.lower_expr(test);
+                let raw = self.lower_expr(test);
+                let test_ty = self.get_type(test.id);
+                let test_op = self.truthify(raw, &test_ty, test.span);
                 if let Some(m) = msg {
                     self.lower_expr(m);
                 }

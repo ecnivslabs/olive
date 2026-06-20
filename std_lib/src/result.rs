@@ -1,4 +1,5 @@
-use crate::{olive_panic, olive_str_from_ptr, olive_str_internal};
+use crate::panic::abort_unwrap;
+use crate::{olive_str_from_ptr, olive_str_internal};
 
 pub(crate) const KIND_RESULT: i64 = 9;
 
@@ -63,18 +64,17 @@ pub extern "C" fn olive_result_is_err(r: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_result_unwrap(r: i64) -> i64 {
     if r == 0 {
-        olive_panic(olive_str_internal("unwrap called on null result"));
+        abort_unwrap("unwrap called on null result");
     }
     let obj = unsafe { &*(r as *const OliveResult) };
     if obj.tag != 1 {
         let err = obj.payload;
-        let msg = if err == 0 {
-            olive_str_internal("unwrap called on Err result")
+        if err == 0 {
+            abort_unwrap("unwrap called on Err result");
         } else {
             let s = olive_str_from_ptr(err);
-            olive_str_internal(&format!("unwrap called on Err: {s}"))
-        };
-        olive_panic(msg);
+            abort_unwrap(&format!("unwrap called on Err: {s}"));
+        }
     }
     crate::panic::olive_set_fault_loc(0);
     obj.payload
@@ -83,11 +83,11 @@ pub extern "C" fn olive_result_unwrap(r: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_result_unwrap_err(r: i64) -> i64 {
     if r == 0 {
-        olive_panic(olive_str_internal("unwrap_err called on null result"));
+        abort_unwrap("unwrap_err called on null result");
     }
     let obj = unsafe { &*(r as *const OliveResult) };
     if obj.tag == 1 {
-        olive_panic(olive_str_internal("unwrap_err called on Ok result"));
+        abort_unwrap("unwrap_err called on Ok result");
     }
     crate::panic::olive_set_fault_loc(0);
     obj.payload

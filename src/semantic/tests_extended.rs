@@ -99,11 +99,24 @@ mod semantic_tests_extended {
     }
 
     #[test]
-    fn list_homogeneity_enforced() {
+    fn unannotated_mixed_list_widens_to_any() {
+        // A heterogeneous literal with no annotation is inferred as `[Any]`
+        // rather than rejected.
         let tc = typeck("let xs = [1, \"hello\", 3]\n");
         assert!(
+            tc.errors.is_empty(),
+            "mixed-type list should widen to [Any], got: {:?}",
+            tc.errors
+        );
+    }
+
+    #[test]
+    fn annotated_element_type_still_enforced() {
+        // Soundness: an explicit element type rejects an incompatible element.
+        let tc = typeck("let xs: [str] = [\"a\", 5]\n");
+        assert!(
             !tc.errors.is_empty(),
-            "mixed-type list should produce a type error"
+            "a `[str]` annotation must reject a non-string element"
         );
     }
 

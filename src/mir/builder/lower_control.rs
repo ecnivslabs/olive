@@ -6,6 +6,33 @@ use crate::semantic::types::Type;
 use crate::span::Span;
 
 impl<'a> MirBuilder<'a> {
+    /// Lowers a branch/loop condition to a 0/1 discriminant.
+    fn lower_condition(&mut self, condition: &Expr) -> Operand {
+        let op = self.lower_expr(condition);
+        let ty = self.get_type(condition.id);
+        self.truthify(op, &ty, condition.span)
+    }
+
+    /// Reduces an operand to a 0/1 discriminant. An `Any` goes through
+    /// `__olive_any_truthy`; a bool passes through.
+    pub(crate) fn truthify(&mut self, op: Operand, ty: &Type, span: Span) -> Operand {
+        if *ty != Type::Any {
+            return op;
+        }
+        let tmp = self.new_local(Type::Bool, None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                tmp,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("__olive_any_truthy".to_string())),
+                    args: vec![op],
+                },
+            ),
+            span,
+        );
+        self.operand_for_local(tmp)
+    }
+
     pub(super) fn lower_if(
         &mut self,
         condition: &Expr,
@@ -14,7 +41,7 @@ impl<'a> MirBuilder<'a> {
         else_body: &Option<Vec<Stmt>>,
         is_tail: bool,
     ) {
-        let cond_op = self.lower_expr(condition);
+        let cond_op = self.lower_condition(condition);
         let then_bb = self.new_block();
         let merge_bb = self.new_block();
 
@@ -53,7 +80,7 @@ impl<'a> MirBuilder<'a> {
         let mut current_next = next_bb;
         for (elif_cond, elif_body) in elif_clauses {
             self.current_block = Some(current_next);
-            let elif_op = self.lower_expr(elif_cond);
+            let elif_op = self.lower_condition(elif_cond);
             let elif_then = self.new_block();
             let elif_next = self.new_block();
 
@@ -129,7 +156,7 @@ impl<'a> MirBuilder<'a> {
         }
 
         self.current_block = Some(header_bb);
-        let cond_op = self.lower_expr(condition);
+        let cond_op = self.lower_condition(condition);
 
         let else_bb = if else_body.is_some() {
             self.new_block()

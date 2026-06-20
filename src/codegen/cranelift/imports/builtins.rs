@@ -11,6 +11,15 @@ pub(crate) fn resolve_builtin_import(
         return match name {
             "__olive_print_int" => Some("__olive_print_int"),
             "__olive_print_str" => Some("__olive_print_str"),
+            "__olive_print_py" => Some("__olive_print_py"),
+            "__olive_box_float" => Some("__olive_box_float"),
+            "__olive_box_bool" => Some("__olive_box_bool"),
+            "__olive_box_null" => Some("__olive_box_null"),
+            "__olive_any_is_null" => Some("__olive_any_is_null"),
+            "__olive_unbox_float" => Some("__olive_unbox_float"),
+            "__olive_unbox_int" => Some("__olive_unbox_int"),
+            "__olive_any_truthy" => Some("__olive_any_truthy"),
+            "__olive_any_to_str" => Some("__olive_any_to_str"),
             "__olive_print_float" => Some("__olive_print_float"),
             "__olive_print_list" => Some("__olive_print_list"),
             "__olive_print_list_float" => Some("__olive_print_list_float"),
@@ -439,6 +448,7 @@ pub(crate) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
             }
             OliveType::Enum(_, _) => Some("__olive_print_enum"),
             OliveType::Bool => Some("__olive_print_bool"),
+            OliveType::PyObject | OliveType::PyNamed(_, _) => Some("__olive_print_py"),
             OliveType::Union(_) | OliveType::Any => Some("__olive_print_any"),
             OliveType::Dict(_, _) | OliveType::Struct(_, _) => Some("__olive_print_obj"),
             _ => Some("__olive_print_int"),
@@ -447,12 +457,14 @@ pub(crate) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
             OliveType::Str => Some("__olive_copy"),
             OliveType::Float => Some("__olive_float_to_str"),
             OliveType::PyObject => Some("__olive_py_to_str"),
+            OliveType::Any => Some("__olive_any_to_str"),
             _ => Some("__olive_str"),
         },
         "int" => match current_ty {
             OliveType::Float => Some("__olive_float_to_int"),
             OliveType::Str => Some("__olive_str_to_int"),
             OliveType::PyObject => Some("__olive_py_to_int"),
+            OliveType::Any => Some("__olive_unbox_int"),
             _ => Some("__olive_int"),
         },
         "float" => match current_ty {
@@ -460,6 +472,7 @@ pub(crate) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
             OliveType::Int => Some("__olive_int_to_float"),
             OliveType::Str => Some("__olive_str_to_float"),
             OliveType::PyObject => Some("__olive_py_to_float"),
+            OliveType::Any => Some("__olive_unbox_float"),
             _ => Some("__olive_float"),
         },
         "bool" => {

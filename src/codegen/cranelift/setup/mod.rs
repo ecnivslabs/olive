@@ -52,6 +52,14 @@ impl<M: Module> CraneliftCodegen<M> {
         let sig_void_void = mk_sig(&[], &[]);
         let import_table: &[(&str, &cranelift::prelude::Signature)] = &[
             ("__olive_alloc", &sig_i64_i64),
+            ("__olive_box_float", &sig_f64_i64),
+            ("__olive_box_bool", &sig_i64_i64),
+            ("__olive_box_null", &sig_void_i64),
+            ("__olive_any_is_null", &sig_i64_i64),
+            ("__olive_unbox_float", &sig_i64_f64),
+            ("__olive_unbox_int", &sig_i64_i64),
+            ("__olive_any_truthy", &sig_i64_i64),
+            ("__olive_any_to_str", &sig_i64_i64),
             ("__olive_async_file_read", &sig_i64_i64),
             ("__olive_async_file_write", &sig_i64_i64_i64),
             ("__olive_atexit", &sig_i64_void),
@@ -310,6 +318,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_print_enum", &sig_i64_i64),
             ("__olive_print_any", &sig_i64_i64),
             ("__olive_print_str", &sig_i64_i64),
+            ("__olive_print_py", &sig_i64_i64),
             ("__olive_str", &sig_i64_i64),
             ("__olive_py_call", &sig_i64_i64_i64),
             ("__olive_py_call_kw", &sig_3i64_i64),

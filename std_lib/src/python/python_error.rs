@@ -154,9 +154,9 @@ pub unsafe fn handle_py_error() {
         let loc = py_call_loc();
         let msg = format!("uncaught Python exception\n{}", body.trim_end());
         if loc.is_empty() {
-            crate::panic::abort(&msg, None)
+            crate::panic::abort_python(&msg, None)
         } else {
-            crate::panic::abort(&msg, Some(&loc))
+            crate::panic::abort_python(&msg, Some(&loc))
         }
     }
 }

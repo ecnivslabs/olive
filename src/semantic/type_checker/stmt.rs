@@ -33,13 +33,13 @@ impl TypeChecker {
                 is_mut,
                 ..
             } => {
-                let val_ty = self.check_expr(value);
                 let declared_ty = type_ann.as_ref().map(|ann| self.resolve_type_expr(ann));
                 let var_ty = if let Some(decl) = declared_ty {
+                    let val_ty = self.check_expr_expecting(value, &decl);
                     self.unify(&decl, &val_ty, value.span);
                     decl
                 } else {
-                    val_ty
+                    self.check_expr(value)
                 };
                 self.define_type(name, var_ty, *is_mut);
             }
@@ -106,13 +106,13 @@ impl TypeChecker {
                 value,
                 ..
             } => {
-                let val_ty = self.check_expr(value);
                 let declared_ty = type_ann.as_ref().map(|ann| self.resolve_type_expr(ann));
                 let var_ty = if let Some(decl) = declared_ty {
+                    let val_ty = self.check_expr_expecting(value, &decl);
                     self.unify(&decl, &val_ty, value.span);
                     decl
                 } else {
-                    val_ty
+                    self.check_expr(value)
                 };
                 self.define_type(name, var_ty, false);
             }
@@ -693,10 +693,15 @@ impl TypeChecker {
             }
 
             StmtKind::Return(Some(expr)) => {
-                let ret_ty = self.check_expr(expr);
-                if let Some(expected) = self.current_return_type.clone() {
-                    self.unify(&expected, &ret_ty, stmt.span);
-                }
+                let ret_ty = match self.current_return_type.clone() {
+                    Some(expected) => {
+                        let ret_ty = self.check_expr_expecting(expr, &expected);
+                        self.unify(&expected, &ret_ty, stmt.span);
+                        ret_ty
+                    }
+                    None => self.check_expr(expr),
+                };
+                let _ = ret_ty;
             }
 
             StmtKind::Return(None) => {
@@ -834,6 +839,7 @@ impl TypeChecker {
             } => {
                 self.define_type(alias, Type::PyObject, false);
                 self.py_aliases.insert(alias.clone());
+                self.py_alias_module.insert(alias.clone(), module.clone());
 
                 // Prefer explicit stub block; fall back to .pyi introspection.
                 if !typed_types.is_empty() || !typed_fns.is_empty() {
