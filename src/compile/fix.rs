@@ -72,10 +72,53 @@ struct Edit {
     code: Option<String>,
 }
 
-/// Runs the front end, applies every machine-applicable fix to disk (unless
-/// `dry_run`), and returns what changed. Advisory suggestions are reported but
-/// never written.
+/// Upper bound on passes, so two fixes that reintroduce each other cannot loop
+/// forever. A pass that applies nothing ends the loop first in every real case.
+const MAX_FIX_PASSES: usize = 16;
+
+/// Applies machine-applicable fixes to disk (unless `dry_run`), re-running the
+/// front end until a pass changes nothing. One pass stops at the first failing
+/// stage — a name typo is a resolution error and short-circuits type checking —
+/// so later-stage fixes need the re-run. A dry run reports the first pass only.
 pub fn run_fix(filename: &str, dry_run: bool) -> Result<FixReport, ()> {
+    if dry_run {
+        let (applied, codes, changed) = fix_pass(filename, true)?;
+        return Ok(finish_report(applied, codes, changed.len()));
+    }
+
+    let mut applied = 0;
+    let mut codes: Vec<String> = Vec::new();
+    let mut changed: HashSet<String> = HashSet::new();
+    for _ in 0..MAX_FIX_PASSES {
+        let (pass_applied, pass_codes, pass_changed) = fix_pass(filename, false)?;
+        if pass_applied == 0 {
+            break;
+        }
+        applied += pass_applied;
+        for c in pass_codes {
+            if !codes.contains(&c) {
+                codes.push(c);
+            }
+        }
+        changed.extend(pass_changed);
+    }
+    Ok(finish_report(applied, codes, changed.len()))
+}
+
+/// Sorts the codes and packages the run totals.
+fn finish_report(applied: usize, mut codes: Vec<String>, files_changed: usize) -> FixReport {
+    codes.sort();
+    FixReport {
+        applied,
+        files_changed,
+        codes,
+    }
+}
+
+/// One pass: collect diagnostics, apply the machine-applicable ones, and return
+/// the fix count, the codes seen, and the paths touched so the caller can union
+/// changed files across passes.
+fn fix_pass(filename: &str, dry_run: bool) -> Result<(usize, Vec<String>, Vec<String>), ()> {
     let (diagnostics, sources) = collect_diagnostics(filename)?;
     let first_party = super::pipeline::first_party_files(filename, &sources);
 
@@ -97,12 +140,22 @@ pub fn run_fix(filename: &str, dry_run: bool) -> Result<FixReport, ()> {
     }
 
     let mut applied = 0;
-    let mut files_changed = 0;
     let mut codes: Vec<String> = Vec::new();
+    let mut changed: Vec<String> = Vec::new();
     for (file_id, mut edits) in per_file {
         let Some((path, original)) = sources.get(&file_id) else {
             continue;
         };
+        // Spans are character offsets (the lexer and the ariadne renderer both
+        // index by `char`); `replace_range` takes byte offsets. Translate through a
+        // char->byte table, or a multi-byte char before an edit shifts the splice
+        // and mangles the file.
+        let byte_at: Vec<usize> = original
+            .char_indices()
+            .map(|(b, _)| b)
+            .chain(std::iter::once(original.len()))
+            .collect();
+
         // Apply from the end backwards so earlier offsets stay valid as text is
         // spliced. Overlapping edits are dropped; only the rightmost of an
         // overlapping pair survives, never a partial mangle.
@@ -111,17 +164,14 @@ pub fn run_fix(filename: &str, dry_run: bool) -> Result<FixReport, ()> {
         let mut last_start = usize::MAX;
         let mut file_applied = 0;
         for edit in edits {
-            if edit.end > last_start {
+            if edit.start > edit.end || edit.end > last_start {
                 continue;
             }
-            if edit.start > edit.end
-                || edit.end > text.len()
-                || !text.is_char_boundary(edit.start)
-                || !text.is_char_boundary(edit.end)
-            {
+            let (Some(&start), Some(&end)) = (byte_at.get(edit.start), byte_at.get(edit.end))
+            else {
                 continue;
-            }
-            text.replace_range(edit.start..edit.end, &edit.replacement);
+            };
+            text.replace_range(start..end, &edit.replacement);
             last_start = edit.start;
             file_applied += 1;
             if let Some(c) = edit.code
@@ -134,19 +184,14 @@ pub fn run_fix(filename: &str, dry_run: bool) -> Result<FixReport, ()> {
             continue;
         }
         applied += file_applied;
-        files_changed += 1;
+        changed.push(path.clone());
         if !dry_run && let Err(e) = std::fs::write(path, &text) {
             eprintln!("error writing {path}: {e}");
             return Err(());
         }
     }
 
-    codes.sort();
-    Ok(FixReport {
-        applied,
-        files_changed,
-        codes,
-    })
+    Ok((applied, codes, changed))
 }
 
 #[cfg(test)]
@@ -209,6 +254,57 @@ mod tests {
     #[test]
     fn nothing_to_fix_reports_zero() {
         let p = TempProject::new("clean", "let x = 1\nprint(x)\n");
+        let report = run_fix(p.path(), false).unwrap();
+        assert_eq!(report.applied, 0);
+        assert_eq!(report.files_changed, 0);
+    }
+
+    #[test]
+    fn fix_lands_correctly_after_multibyte_chars() {
+        // Six bytes of accented text sit ahead of the typo, so its char offset
+        // and byte offset differ: a char-offset splice would corrupt the file.
+        let p = TempProject::new(
+            "utf8",
+            "let greeting = \"café ééééé\"\nlet total = 1\nprint(totl)\n",
+        );
+        let report = run_fix(p.path(), false).unwrap();
+        assert_eq!(report.applied, 1);
+        let after = std::fs::read_to_string(&p.file).unwrap();
+        assert!(after.contains("print(total)"), "got: {after}");
+        assert!(
+            after.contains("\"café ééééé\""),
+            "literal corrupted: {after}"
+        );
+    }
+
+    #[test]
+    fn multiple_typos_in_one_file_all_fixed() {
+        let p = TempProject::new(
+            "multi",
+            "let alpha = 1\nlet bravo = 2\nprint(alpna)\nprint(bravp)\n",
+        );
+        let report = run_fix(p.path(), false).unwrap();
+        assert_eq!(report.applied, 2);
+        let after = std::fs::read_to_string(&p.file).unwrap();
+        assert!(after.contains("print(alpha)"), "got: {after}");
+        assert!(after.contains("print(bravo)"), "got: {after}");
+    }
+
+    #[test]
+    fn fixing_reaches_a_fixpoint() {
+        let p = TempProject::new("fixpoint", "let total = 1\nprint(totl)\n");
+        let first = run_fix(p.path(), false).unwrap();
+        assert_eq!(first.applied, 1);
+        let second = run_fix(p.path(), false).unwrap();
+        assert_eq!(second.applied, 0);
+        assert_eq!(second.files_changed, 0);
+    }
+
+    #[test]
+    fn ambiguous_typo_is_not_autofixed() {
+        // Equidistant candidates (`bat` is one edit from both `bar` and `baz`)
+        // are advisory only; nothing is written.
+        let p = TempProject::new("ambig", "let bar = 1\nlet baz = 2\nprint(bat)\n");
         let report = run_fix(p.path(), false).unwrap();
         assert_eq!(report.applied, 0);
         assert_eq!(report.files_changed, 0);
