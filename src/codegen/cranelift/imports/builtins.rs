@@ -811,7 +811,7 @@ pub(crate) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
         },
         "str" => match current_ty {
             OliveType::Str => Some("__olive_copy"),
-            OliveType::Float => Some("__olive_float_to_str"),
+            OliveType::Float | OliveType::F32 => Some("__olive_float_to_str"),
             OliveType::PyObject => Some("__olive_py_to_str"),
             OliveType::Any => Some("__olive_any_to_str"),
             OliveType::Null => Some("__olive_none_to_str"),
@@ -820,14 +820,14 @@ pub(crate) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
             _ => Some("__olive_str"),
         },
         "int" => match current_ty {
-            OliveType::Float => Some("__olive_float_to_int"),
+            OliveType::Float | OliveType::F32 => Some("__olive_float_to_int"),
             OliveType::Str => Some("__olive_str_to_int"),
             OliveType::PyObject => Some("__olive_py_to_int"),
             OliveType::Any => Some("__olive_unbox_int"),
             _ => Some("__olive_int"),
         },
         "float" => match current_ty {
-            OliveType::Float => Some("__olive_copy_float"),
+            OliveType::Float | OliveType::F32 => Some("__olive_copy_float"),
             OliveType::Int => Some("__olive_int_to_float"),
             OliveType::Str => Some("__olive_str_to_float"),
             OliveType::PyObject => Some("__olive_py_to_float"),
@@ -835,7 +835,7 @@ pub(crate) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
             _ => Some("__olive_float"),
         },
         "bool" => {
-            if *current_ty == OliveType::Float {
+            if matches!(current_ty, OliveType::Float | OliveType::F32) {
                 Some("__olive_bool_from_float")
             } else {
                 Some("__olive_bool")
