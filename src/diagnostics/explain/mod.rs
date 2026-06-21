@@ -144,6 +144,13 @@ mod tests {
     #[test]
     fn examples_match_their_codes() {
         use crate::compile::pipeline::run_pipeline;
+        // Hold CWD_LOCK for the duration: some fixed examples (e.g. E0406, E0704)
+        // import the stdlib via a cwd-relative path, and other tests call
+        // set_current_dir while holding this lock. Without it the two can race on
+        // Windows, causing the stdlib lookup to fail.
+        let _cwd_guard = crate::commands::utils::CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("olive_explain_verify_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         for e in all() {
