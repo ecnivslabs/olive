@@ -68,6 +68,8 @@ struct Cli {
 enum Commands {
     New {
         name: String,
+        #[arg(long)]
+        lib: bool,
     },
     Build {
         path: Option<String>,
@@ -169,7 +171,7 @@ fn main() {
     }
 
     match cli.command {
-        Commands::New { name } => commands::project::execute_new(&name),
+        Commands::New { name, lib } => commands::project::execute_new(&name, lib),
         Commands::Build {
             path,
             output,

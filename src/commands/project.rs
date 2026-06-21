@@ -16,7 +16,7 @@ fn git_user_name() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-pub fn execute_new(name: &str) {
+pub fn execute_new(name: &str, lib: bool) {
     let path = Path::new(name);
     if path.exists() {
         eprintln!("error: directory `{}` already exists", name);
@@ -25,12 +25,13 @@ pub fn execute_new(name: &str) {
 
     fs::create_dir_all(path.join("src")).unwrap();
 
+    let entry = if lib { "src/lib.liv" } else { "src/main.liv" };
     let config = Config {
         pod: Some(Pod {
             name: name.to_string(),
             version: "0.1.0".to_string(),
             author: git_user_name(),
-            entry: "src/main.liv".to_string(),
+            entry: entry.to_string(),
             olive: None,
         }),
         dependencies: HashMap::new(),
@@ -40,11 +41,12 @@ pub fn execute_new(name: &str) {
     };
 
     fs::write(path.join("pit.toml"), toml::to_string(&config).unwrap()).unwrap();
-    fs::write(
-        path.join("src/main.liv"),
-        "fn main():\n    print(\"Hello from Olive!\")\n",
-    )
-    .unwrap();
+    let source = if lib {
+        "fn greet(name: str) -> str:\n    return \"Hello, \" + name + \"!\"\n"
+    } else {
+        "fn main():\n    print(\"Hello from Olive!\")\n"
+    };
+    fs::write(path.join(entry), source).unwrap();
     fs::write(path.join(".gitignore"), ".env\n.env.*\n*.secret\ngrove/\n").unwrap();
 
     match std::process::Command::new("git")
@@ -56,10 +58,12 @@ pub fn execute_new(name: &str) {
         _ => eprintln!("warning: could not initialize git repository"),
     }
 
-    println!(
-        "\x1b[1;32mCreated\x1b[0m binary (application) `{}` pod",
-        name
-    );
+    let kind = if lib {
+        "library"
+    } else {
+        "binary (application)"
+    };
+    println!("\x1b[1;32mCreated\x1b[0m {} `{}` pod", kind, name);
 }
 
 pub fn execute_publish() {
@@ -129,7 +133,7 @@ mod tests {
         let cwd = std::env::current_dir().unwrap();
         std::env::set_current_dir(&dir).unwrap();
 
-        execute_new("test_proj");
+        execute_new("test_proj", false);
 
         let proj_dir = dir.join("test_proj");
         assert!(proj_dir.join("pit.toml").exists());
@@ -159,7 +163,7 @@ mod tests {
         let cwd = std::env::current_dir().unwrap();
         std::env::set_current_dir(&dir).unwrap();
 
-        execute_new("toml_check");
+        execute_new("toml_check", false);
 
         let config_content = std::fs::read_to_string(dir.join("toml_check/pit.toml")).unwrap();
         let config: Config = toml::from_str(&config_content).unwrap();
@@ -183,10 +187,36 @@ mod tests {
         let cwd = std::env::current_dir().unwrap();
         std::env::set_current_dir(&dir).unwrap();
 
-        execute_new("gitignore_check");
+        execute_new("gitignore_check", false);
 
         let gitignore = std::fs::read_to_string(dir.join("gitignore_check/.gitignore")).unwrap();
         assert!(gitignore.contains("grove/"));
+
+        std::env::set_current_dir(&cwd).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn execute_new_lib_creates_lib_liv() {
+        let _lock = crate::commands::utils::CWD_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("olive_project_test_lib");
+        let _ = std::fs::create_dir_all(&dir);
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+
+        execute_new("test_lib", true);
+
+        let proj_dir = dir.join("test_lib");
+        assert!(proj_dir.join("pit.toml").exists());
+        assert!(proj_dir.join("src/lib.liv").exists());
+        assert!(!proj_dir.join("src/main.liv").exists());
+
+        let config_content = std::fs::read_to_string(proj_dir.join("pit.toml")).unwrap();
+        let config: Config = toml::from_str(&config_content).unwrap();
+        assert_eq!(config.pod.as_ref().unwrap().entry, "src/lib.liv");
+
+        let lib_content = std::fs::read_to_string(proj_dir.join("src/lib.liv")).unwrap();
+        assert!(!lib_content.contains("fn main()"));
 
         std::env::set_current_dir(&cwd).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
