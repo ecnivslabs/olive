@@ -1,6 +1,7 @@
 use crate::slab::GenSlab;
 use crate::{KIND_BYTES, olive_str_from_ptr, olive_str_internal};
 use std::cell::UnsafeCell;
+use std::os::raw::c_void;
 
 thread_local! {
     static BYTES_SLAB: UnsafeCell<GenSlab> =
@@ -13,24 +14,59 @@ pub struct OliveBytes {
     pub ptr: *mut u8,
     pub len: i64,
     pub cap: i64,
+    /// Non-null: `ptr` borrows this owned `PyBytes`; buffer is read-only.
+    pub py: *mut c_void,
+    /// Native backing already crossed to Python once; next crossing promotes.
+    pub exported: i64,
 }
 
 impl OliveBytes {
+    /// Copies a Python-backed buffer into a native `Vec` and drops the
+    /// backing reference. No-op for native backing. Every mutation path
+    /// must run this first: the `PyBytes` payload is shared and immutable.
+    pub fn realize(&mut self) {
+        if self.py.is_null() {
+            return;
+        }
+        let data = self.as_slice().to_vec();
+        let py = self.py;
+        self.py = std::ptr::null_mut();
+        self.set_vec(data);
+        crate::python::olive_py_backing_release(py);
+    }
+
     /// Replaces the internal buffer with the given `Vec<u8>`.
     ///
     /// # Examples
     ///
     /// ```
     /// # use olive_std::bytes::OliveBytes;
-    /// let mut b = OliveBytes { kind: 6, ptr: std::ptr::null_mut(), len: 0, cap: 0 };
+    /// let mut b = OliveBytes::empty();
     /// b.set_vec(vec![10, 20, 30]);
     /// assert_eq!(b.len, 3);
     /// ```
     pub fn set_vec(&mut self, mut v: Vec<u8>) {
+        if !self.py.is_null() {
+            let py = self.py;
+            self.py = std::ptr::null_mut();
+            crate::python::olive_py_backing_release(py);
+        }
         self.ptr = v.as_mut_ptr();
         self.len = v.len() as i64;
         self.cap = v.capacity() as i64;
         std::mem::forget(v);
+    }
+
+    /// Fresh native-backed value with no buffer.
+    pub const fn empty() -> Self {
+        OliveBytes {
+            kind: KIND_BYTES,
+            ptr: std::ptr::null_mut(),
+            len: 0,
+            cap: 0,
+            py: std::ptr::null_mut(),
+            exported: 0,
+        }
     }
 
     /// # Safety
@@ -41,7 +77,7 @@ impl OliveBytes {
     ///
     /// ```
     /// # use olive_std::bytes::OliveBytes;
-    /// let mut b = OliveBytes { kind: 6, ptr: std::ptr::null_mut(), len: 0, cap: 0 };
+    /// let mut b = OliveBytes::empty();
     /// b.set_vec(vec![1, 2, 3]);
     /// unsafe {
     ///     let v = b.take_vec();
@@ -50,6 +86,7 @@ impl OliveBytes {
     /// }
     /// ```
     pub unsafe fn take_vec(&mut self) -> Vec<u8> {
+        self.realize();
         let v = unsafe { Vec::from_raw_parts(self.ptr, self.len as usize, self.cap as usize) };
         self.ptr = std::ptr::null_mut();
         self.len = 0;
@@ -63,7 +100,7 @@ impl OliveBytes {
     ///
     /// ```
     /// # use olive_std::bytes::OliveBytes;
-    /// let mut b = OliveBytes { kind: 6, ptr: std::ptr::null_mut(), len: 0, cap: 0 };
+    /// let mut b = OliveBytes::empty();
     /// b.set_vec(vec![10, 20, 30]);
     /// assert_eq!(b.as_slice(), &[10, 20, 30]);
     /// ```
@@ -81,12 +118,13 @@ impl OliveBytes {
     ///
     /// ```
     /// # use olive_std::bytes::OliveBytes;
-    /// let mut b = OliveBytes { kind: 6, ptr: std::ptr::null_mut(), len: 0, cap: 0 };
+    /// let mut b = OliveBytes::empty();
     /// b.set_vec(vec![1, 2, 3]);
     /// b.as_mut_slice()[1] = 42;
     /// assert_eq!(b.as_slice(), &[1, 42, 3]);
     /// ```
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        self.realize();
         if self.ptr.is_null() {
             &mut []
         } else {
@@ -100,7 +138,7 @@ impl OliveBytes {
     ///
     /// ```
     /// # use olive_std::bytes::OliveBytes;
-    /// let mut b = OliveBytes { kind: 6, ptr: std::ptr::null_mut(), len: 0, cap: 0 };
+    /// let mut b = OliveBytes::empty();
     /// b.set_vec(vec![1, 2, 3]);
     /// let len = b.with_vec(|v| v.len());
     /// assert_eq!(len, 3);
@@ -119,12 +157,13 @@ impl OliveBytes {
     ///
     /// ```
     /// # use olive_std::bytes::OliveBytes;
-    /// let mut b = OliveBytes { kind: 6, ptr: std::ptr::null_mut(), len: 0, cap: 0 };
+    /// let mut b = OliveBytes::empty();
     /// b.set_vec(vec![1, 2]);
     /// b.append(&[3, 4]);
     /// assert_eq!(b.as_slice(), &[1, 2, 3, 4]);
     /// ```
     pub fn append(&mut self, data: &[u8]) {
+        self.realize();
         let n = data.len() as i64;
         if self.len + n <= self.cap {
             unsafe {
@@ -151,13 +190,45 @@ impl OliveBytes {
 /// assert!(ptr != 0);
 /// ```
 pub fn new_buf(data: Vec<u8>) -> i64 {
-    let mut b = OliveBytes {
-        kind: KIND_BYTES,
-        ptr: std::ptr::null_mut(),
-        len: 0,
-        cap: 0,
-    };
+    let mut b = OliveBytes::empty();
     b.set_vec(data);
+    alloc_slot(b)
+}
+
+/// Wraps an owned `PyBytes` reference without copying. Caller transfers a
+/// strong reference taken under the GIL; `ptr`/`len` must come from
+/// `PyBytes_AS_STRING`/`PyBytes_Size` on that same object.
+pub fn new_buf_py_backed(py: *mut c_void, ptr: *mut u8, len: i64) -> i64 {
+    alloc_slot(OliveBytes {
+        kind: KIND_BYTES,
+        ptr,
+        len,
+        cap: 0,
+        py,
+        exported: 0,
+    })
+}
+
+/// Deep copy for escape/copy-typed paths. A Python-backed source shares
+/// the immutable payload via a fresh reference instead of copying.
+pub fn clone_buf(src: i64) -> i64 {
+    let b = unsafe { &*(src as *const OliveBytes) };
+    if b.py.is_null() {
+        new_buf(b.as_slice().to_vec())
+    } else {
+        crate::python::olive_py_backing_incref(b.py);
+        alloc_slot(OliveBytes {
+            kind: KIND_BYTES,
+            ptr: b.ptr,
+            len: b.len,
+            cap: 0,
+            py: b.py,
+            exported: 0,
+        })
+    }
+}
+
+fn alloc_slot(b: OliveBytes) -> i64 {
     BYTES_SLAB.with(|sl| {
         let sl = unsafe { &mut *sl.get() };
         let (body, _) = sl.alloc();
@@ -323,6 +394,44 @@ pub extern "C" fn olive_buf_slice(buf: i64, start: i64, end: i64) -> i64 {
     new_buf(data[s..e].to_vec())
 }
 
+/// `buf[a:b:c]` with full Python slice semantics, shared with list/str via
+/// `slice_bounds`. Contiguous forward slices copy in one pass.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_buf_getslice(
+    buf: i64,
+    start: i64,
+    stop: i64,
+    step: i64,
+    flags: i64,
+) -> i64 {
+    if buf == 0 {
+        return new_buf(Vec::new());
+    }
+    let b = unsafe { &*(buf as *const OliveBytes) };
+    let data = b.as_slice();
+    let (start, stop, step) =
+        crate::list::slice_bounds(data.len() as i64, start, stop, step, flags);
+    if step == 1 {
+        let s = start as usize;
+        let e = stop.max(start) as usize;
+        return new_buf(data[s..e].to_vec());
+    }
+    let mut out = Vec::new();
+    let mut i = start;
+    if step > 0 {
+        while i < stop {
+            out.push(data[i as usize]);
+            i += step;
+        }
+    } else {
+        while i > stop {
+            out.push(data[i as usize]);
+            i += step;
+        }
+    }
+    new_buf(out)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_buf_free(buf: i64) {
     if buf == 0 || !crate::slab::ptr_in_slab_span(buf) {
@@ -331,7 +440,16 @@ pub extern "C" fn olive_buf_free(buf: i64) {
     if crate::slab::slot_is_live(buf) {
         unsafe {
             let b = &mut *(buf as *mut OliveBytes);
-            drop(b.take_vec());
+            if b.py.is_null() {
+                drop(b.take_vec());
+            } else {
+                let py = b.py;
+                b.py = std::ptr::null_mut();
+                b.ptr = std::ptr::null_mut();
+                b.len = 0;
+                b.cap = 0;
+                crate::python::olive_py_backing_release(py);
+            }
         }
     }
     BYTES_SLAB.with(|sl| {
@@ -499,6 +617,27 @@ mod tests {
         assert_eq!(out, "ell");
         olive_buf_free(b);
         olive_buf_free(sl);
+    }
+
+    #[test]
+    fn buf_getslice_full_semantics() {
+        let b = olive_buf_from_str(s("abcdef"));
+        let has_all = 1 | 2 | 4;
+        let simple = olive_buf_getslice(b, 1, 4, 1, has_all);
+        assert_eq!(crate::olive_str_from_ptr(olive_buf_to_str(simple)), "bcd");
+        let neg = olive_buf_getslice(b, -2, 0, 1, 1);
+        assert_eq!(crate::olive_str_from_ptr(olive_buf_to_str(neg)), "ef");
+        let stepped = olive_buf_getslice(b, 0, 6, 2, has_all);
+        assert_eq!(crate::olive_str_from_ptr(olive_buf_to_str(stepped)), "ace");
+        let rev = olive_buf_getslice(b, 0, 0, -1, 4);
+        assert_eq!(crate::olive_str_from_ptr(olive_buf_to_str(rev)), "fedcba");
+        let empty = olive_buf_getslice(b, 4, 1, 1, has_all);
+        assert_eq!(olive_buf_len(empty), 0);
+        let clamped = olive_buf_getslice(b, 2, 99, 1, has_all);
+        assert_eq!(crate::olive_str_from_ptr(olive_buf_to_str(clamped)), "cdef");
+        for h in [b, simple, neg, stepped, rev, empty, clamped] {
+            olive_buf_free(h);
+        }
     }
 
     #[test]

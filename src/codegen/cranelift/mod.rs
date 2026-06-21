@@ -107,6 +107,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_buf_read_u64_le", b"olive_buf_read_u64_le\0"),
     ("__olive_buf_set", b"olive_buf_set\0"),
     ("__olive_buf_slice", b"olive_buf_slice\0"),
+    ("__olive_buf_getslice", b"olive_buf_getslice\0"),
     ("__olive_buf_to_hex", b"olive_buf_to_hex\0"),
     ("__olive_buf_to_str", b"olive_buf_to_str\0"),
     ("__olive_buf_write_u16_be", b"olive_buf_write_u16_be\0"),

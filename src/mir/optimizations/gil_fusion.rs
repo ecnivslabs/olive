@@ -149,9 +149,10 @@ impl GilFusion {
                     StmtClass::Neutral
                 } else if matches!(ty, OliveType::Str | OliveType::Bytes) {
                     // Always routes to the runtime's own string/bytes free
-                    // path (`__olive_free_str`/`__olive_buf_free`) -- never
-                    // a struct's FFI destructor, so it's as safe to bridge
-                    // as any other runtime call.
+                    // path (`__olive_free_str`/`__olive_buf_free`), never
+                    // a struct's FFI destructor. A Python-backed bytes free
+                    // decrefs under its own reentrant with_gil and exact
+                    // PyBytes dealloc is C-only, so bridging stays safe.
                     StmtClass::Neutral
                 } else {
                     // Every other move-type drop may hit a struct's custom

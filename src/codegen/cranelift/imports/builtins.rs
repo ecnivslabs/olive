@@ -502,6 +502,7 @@ pub(crate) fn resolve_builtin_import(
             "__olive_buf_to_hex" => Some("__olive_buf_to_hex"),
             "__olive_buf_concat" => Some("__olive_buf_concat"),
             "__olive_buf_slice" => Some("__olive_buf_slice"),
+            "__olive_buf_getslice" => Some("__olive_buf_getslice"),
             "__olive_buf_free" => Some("__olive_buf_free"),
             "__olive_buf_read_u16_le" => Some("__olive_buf_read_u16_le"),
             "__olive_buf_read_u16_be" => Some("__olive_buf_read_u16_be"),

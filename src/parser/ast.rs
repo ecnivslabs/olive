@@ -122,7 +122,8 @@ impl std::fmt::Display for TypeExprKind {
             TypeExprKind::Name(n) => write!(f, "{}", n),
             TypeExprKind::Qualified(parts) => write!(f, "{}", parts.join(".")),
             TypeExprKind::Generic(n, args) => {
-                write!(f, "{}[", n)?;
+                // Stored name is module-mangled with ::, surface syntax is dotted.
+                write!(f, "{}[", n.replace("::", "."))?;
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;

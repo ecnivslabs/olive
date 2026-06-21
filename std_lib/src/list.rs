@@ -503,10 +503,16 @@ const SLICE_HAS_START: i64 = 1;
 const SLICE_HAS_STOP: i64 = 2;
 const SLICE_HAS_STEP: i64 = 4;
 
-/// Resolves a Python slice against a sequence length, returning the selected
-/// indices. Handles negative bounds, clamping, omitted endpoints, and negative
-/// steps exactly as CPython's `PySlice_AdjustIndices`.
-pub(crate) fn slice_indices(len: i64, start: i64, stop: i64, step: i64, flags: i64) -> Vec<usize> {
+/// Normalizes Python slice bounds against a sequence length. Handles
+/// negative bounds, clamping, omitted endpoints, and negative steps exactly
+/// as CPython's `PySlice_AdjustIndices`.
+pub(crate) fn slice_bounds(
+    len: i64,
+    start: i64,
+    stop: i64,
+    step: i64,
+    flags: i64,
+) -> (i64, i64, i64) {
     let step = if flags & SLICE_HAS_STEP != 0 { step } else { 1 };
     if step == 0 {
         crate::panic::abort("slice step cannot be zero", None);
@@ -533,6 +539,12 @@ pub(crate) fn slice_indices(len: i64, start: i64, stop: i64, step: i64, flags: i
     } else {
         clamp(stop)
     };
+    (start, stop, step)
+}
+
+/// Resolves a Python slice to the selected indices via `slice_bounds`.
+pub(crate) fn slice_indices(len: i64, start: i64, stop: i64, step: i64, flags: i64) -> Vec<usize> {
+    let (start, stop, step) = slice_bounds(len, start, stop, step, flags);
     let mut out = Vec::new();
     let mut i = start;
     if step > 0 {

@@ -1,6 +1,7 @@
 pub mod python_async;
 pub mod python_bindings;
 pub mod python_buffer;
+pub(crate) mod python_bytes_backing;
 pub mod python_call;
 pub mod python_call_kw_arity;
 pub mod python_call_kw_core;
@@ -29,6 +30,7 @@ pub mod python_writeback;
 
 pub use python_async::*;
 pub use python_bindings::*;
+pub(crate) use python_bytes_backing::*;
 pub use python_call::*;
 pub use python_coerce::*;
 pub use python_coerce_ffi::*;
@@ -101,6 +103,24 @@ impl Drop for GilGuard {
             unsafe { PY_GILSTATE_RELEASE(self.0) };
         }
     }
+}
+
+/// Drops the strong reference backing a Python-backed `bytes` value.
+/// Exact `PyBytes` dealloc is C-only, so this never runs Python code.
+pub(crate) fn olive_py_backing_release(py: *mut c_void) {
+    if py.is_null() {
+        return;
+    }
+    with_gil(|| unsafe { PY_DEC_REF(py) });
+}
+
+/// Takes an extra strong reference for a second `bytes` value sharing the
+/// same immutable `PyBytes` payload.
+pub(crate) fn olive_py_backing_incref(py: *mut c_void) {
+    if py.is_null() {
+        return;
+    }
+    with_gil(|| unsafe { PY_INC_REF(py) });
 }
 
 pub fn with_gil<R, F: FnOnce() -> R>(f: F) -> R {

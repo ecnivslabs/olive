@@ -547,6 +547,7 @@ impl<'a> MirBuilder<'a> {
             let func_name = match &current_obj_ty {
                 Type::PyObject | Type::Any => "__olive_py_getslice",
                 Type::Str => "__olive_str_getslice",
+                Type::Bytes => "__olive_buf_getslice",
                 Type::List(e) if Self::list_elem_needs_copy(e) => "__olive_list_getslice_typed",
                 Type::List(_) | Type::Tuple(_) | Type::Set(_) => "__olive_list_getslice",
                 _ => "__olive_list_getslice",

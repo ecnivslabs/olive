@@ -121,6 +121,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_buf_read_u64_le", &sig_i64_i64_i64),
             ("__olive_buf_set", &sig_i64_i64_i64_void),
             ("__olive_buf_slice", &sig_3i64_i64),
+            ("__olive_buf_getslice", &sig_i64_5_i64),
             ("__olive_buf_to_hex", &sig_i64_i64),
             ("__olive_buf_to_str", &sig_i64_i64),
             ("__olive_buf_write_u16_be", &sig_i64_i64_i64_void),
