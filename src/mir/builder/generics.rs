@@ -102,7 +102,23 @@ impl<'a> MirBuilder<'a> {
     pub(super) fn monomorphize(&mut self, name: &str, type_args: &[Type]) -> String {
         let generic_stmt = match self.generic_fns.get(name).cloned() {
             Some(s) => s,
-            None => return name.to_string(),
+            None => {
+                // Methods declared inside a generic struct body are compiled as
+                // part of the struct's own specialization, keyed only under
+                // Base::__init__. Route Base::method through that specialization.
+                if let Some((base, method)) = name.rsplit_once("::")
+                    && method != "__init__"
+                {
+                    let init_key = format!("{}::__init__", base);
+                    if self.generic_fns.contains_key(&init_key) {
+                        let spec_init = self.monomorphize(&init_key, type_args);
+                        let spec_struct =
+                            spec_init.strip_suffix("::__init__").unwrap_or(&spec_init);
+                        return format!("{}::{}", spec_struct, method);
+                    }
+                }
+                return name.to_string();
+            }
         };
 
         let arg_str = type_args
@@ -466,6 +482,49 @@ mod tests {
         let fns = build("fn f(x: i64, y: bool) -> i64:\n    return x\n");
         let f = fns.iter().find(|f| f.name == "f").unwrap();
         assert_eq!(f.arg_count, 2);
+    }
+
+    fn call_targets(fns: &[super::super::super::ir::MirFunction]) -> Vec<String> {
+        use super::super::super::ir::{Constant, Operand, Rvalue, StatementKind};
+        let mut names = Vec::new();
+        for f in fns {
+            for bb in &f.basic_blocks {
+                for s in &bb.statements {
+                    if let StatementKind::Assign(
+                        _,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(n)),
+                            ..
+                        },
+                    ) = &s.kind
+                    {
+                        names.push(n.clone());
+                    }
+                }
+            }
+        }
+        names
+    }
+
+    #[test]
+    fn generic_struct_body_method_dispatch() {
+        let fns = build(
+            "struct Holder[T]:\n    val: T\n    fn __init__(self, val: T):\n        self.val = val\n    fn peek(self) -> int:\n        return 42\n\nfn main():\n    let b = Holder(5)\n    print(b.peek())\n",
+        );
+        assert!(fns.iter().any(|f| f.name == "Holder_int::peek"));
+        let calls = call_targets(&fns);
+        assert!(calls.iter().any(|n| n == "Holder_int::peek"));
+        assert!(!calls.iter().any(|n| n == "Holder::peek"));
+    }
+
+    #[test]
+    fn generic_struct_method_two_type_params() {
+        let fns = build(
+            "struct Pair[A, B]:\n    x: A\n    y: B\n    fn first(self) -> A:\n        return self.x\n\nfn main():\n    let p = Pair(7, \"s\")\n    print(p.first())\n",
+        );
+        assert!(fns.iter().any(|f| f.name == "Pair_int_str::first"));
+        let calls = call_targets(&fns);
+        assert!(calls.iter().any(|n| n == "Pair_int_str::first"));
     }
 
     #[test]
