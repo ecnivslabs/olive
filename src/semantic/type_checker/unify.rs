@@ -5,6 +5,30 @@ use crate::parser::{TypeExpr, TypeExprKind};
 use crate::span::Span;
 
 impl TypeChecker {
+    /// Whether `None` may be assigned to a value of this type. True for the
+    /// pointer- and heap-backed types, where the null pointer is a real runtime
+    /// value; false for the scalar value types.
+    pub(super) fn is_nullable_target(t: &Type) -> bool {
+        matches!(
+            t,
+            Type::Struct(_, _)
+                | Type::Enum(_, _)
+                | Type::TraitObject(_, _)
+                | Type::PyObject
+                | Type::PyNamed(_, _)
+                | Type::Ptr(_)
+                | Type::Ref(_)
+                | Type::MutRef(_)
+                | Type::Fn(_, _, _)
+                | Type::List(_)
+                | Type::Dict(_, _)
+                | Type::Set(_)
+                | Type::Tuple(_)
+                | Type::Future(_)
+                | Type::Vector(_, _)
+        )
+    }
+
     pub(super) fn unify(&mut self, t1: &Type, t2: &Type, span: Span) {
         let t1 = self.apply_subst(t1.clone());
         let t2 = self.apply_subst(t2.clone());
@@ -275,6 +299,12 @@ impl TypeChecker {
                     ));
                 }
             }
+
+            // `None` is the null pointer for any heap- or pointer-backed type,
+            // so it may stand in for one that is not yet initialised. Value
+            // types stay strict, since there `None` and `0` would be
+            // indistinguishable.
+            (Type::Null, other) | (other, Type::Null) if Self::is_nullable_target(other) => {}
 
             (other, Type::Union(members)) | (Type::Union(members), other) => {
                 if !members.contains(other) {

@@ -421,6 +421,10 @@ fn collect_refs_expr(expr: &Expr, out: &mut FxHashSet<String>) {
             collect_refs_expr(left, out);
             collect_refs_expr(right, out);
         }
+        ExprKind::Range { start, end, .. } => {
+            collect_refs_expr(start, out);
+            collect_refs_expr(end, out);
+        }
         ExprKind::UnaryOp { operand, .. } => collect_refs_expr(operand, out),
         ExprKind::Cast(inner, ty) => {
             collect_refs_expr(inner, out);

@@ -15,12 +15,19 @@ impl<'a> MirBuilder<'a> {
             let str_op = if ty == Type::Str {
                 op
             } else {
+                // `None` is a bare `0` at runtime, so a plain `str` call would
+                // dispatch to the integer path; name the null formatter directly.
+                let str_fn = if ty == Type::Null {
+                    "__olive_none_to_str"
+                } else {
+                    "str"
+                };
                 let tmp = self.new_local(Type::Str, None, true);
                 self.push_statement(
                     StatementKind::Assign(
                         tmp,
                         Rvalue::Call {
-                            func: Operand::Constant(Constant::Function("str".to_string())),
+                            func: Operand::Constant(Constant::Function(str_fn.to_string())),
                             args: vec![op],
                         },
                     ),

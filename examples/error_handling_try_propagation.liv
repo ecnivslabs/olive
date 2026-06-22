@@ -1,0 +1,38 @@
+enum ByteError:
+    Empty
+    OutOfRange(int)
+
+// Errors are plain values: a fallible function returns the success type or an
+// error enum, joined with `|`. Construct a variant by calling it.
+fn parse_byte(s: str) -> int | ByteError:
+    if len(s) == 0:
+        return Empty()
+    let n = int(s)
+    if n < 0 or n > 255:
+        return OutOfRange(n)
+    return n
+
+// `try` before a call (or `?` after it) hands the error back to the caller as
+// soon as one shows up, so the happy path stays linear. The caller's return type
+// has to carry the same error so it has somewhere to go.
+fn parse_rgb(r: str, g: str, b: str) -> int | ByteError:
+    let red = try parse_byte(r)
+    let green = parse_byte(g)?
+    let blue = parse_byte(b)?
+    return red * 65536 + green * 256 + blue
+
+fn report(r: str, g: str, b: str):
+    // `match` splits success from failure. A capitalized arm matches that error
+    // variant; a lowercase name binds the success value.
+    match parse_rgb(r, g, b):
+        Empty:
+            print(f"({r}, {g}, {b}) -> a channel is missing")
+        OutOfRange(n):
+            print(f"({r}, {g}, {b}) -> {n} does not fit in a byte")
+        packed:
+            print(f"({r}, {g}, {b}) -> packed {packed}")
+
+fn main():
+    report("16", "128", "255")
+    report("16", "", "255")
+    report("16", "300", "255")

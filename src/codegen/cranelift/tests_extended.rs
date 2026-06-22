@@ -219,7 +219,7 @@ mod codegen_tests_extended {
     #[test]
     fn enum_match_wildcard() {
         let mut cg = compile(
-            "enum Opt:\n    Some(i64)\n    None\n\nfn f(n: i64) -> i64:\n    let o = Some(n)\n    match o:\n        case Some(v):\n            return v\n        case _:\n            return 0\n",
+            "enum Opt:\n    Some(i64)\n    Nil\n\nfn f(n: i64) -> i64:\n    let o = Some(n)\n    match o:\n        case Some(v):\n            return v\n        case _:\n            return 0\n",
         );
         assert_eq!(call_i64_1(&mut cg, "f", 42), 42);
     }
@@ -227,7 +227,7 @@ mod codegen_tests_extended {
     #[test]
     fn enum_match_some() {
         let mut cg = compile(
-            "enum Opt:\n    Some(i64)\n    None\n\nfn f(n: i64) -> i64:\n    let o = Some(n)\n    match o:\n        case Some(v):\n            return v\n        case None:\n            return 0\n",
+            "enum Opt:\n    Some(i64)\n    Nil\n\nfn f(n: i64) -> i64:\n    let o = Some(n)\n    match o:\n        case Some(v):\n            return v\n        case Nil:\n            return 0\n",
         );
         assert_eq!(call_i64_1(&mut cg, "f", 42), 42);
     }

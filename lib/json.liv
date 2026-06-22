@@ -116,7 +116,7 @@ fn _parse_value(s: str, mut i: int) -> [Any]:
     if c == "f":
         return [False, i + 5]
     if c == "n":
-        return [null, i + 4]
+        return [None, i + 4]
     return _parse_number(s, i)
 
 fn loads(s: str):
@@ -124,7 +124,7 @@ fn loads(s: str):
     return res[0]
 
 fn _stringify(obj):
-    if obj == null:
+    if obj == None:
         return "null"
     if type(obj) == "bool":
         if obj:

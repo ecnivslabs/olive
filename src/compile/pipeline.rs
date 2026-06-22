@@ -74,9 +74,10 @@ pub fn run_pipeline(filename: &str) -> Result<PipelineOutput, ()> {
         &mut file_id_counter,
         &mut sources,
     )?;
-    let program = parser::Program {
+    let mut program = parser::Program {
         stmts: combined_stmts,
     };
+    crate::semantic::desugar::desugar_trait_defaults(&mut program);
     let parse_duration = t0.elapsed();
 
     let first_party = first_party_files(filename, &sources);

@@ -157,15 +157,35 @@ impl<'a> MirBuilder<'a> {
                 }
             }
             MatchPattern::Literal(lit_expr) => {
-                let lit_op = self.lower_expr(lit_expr);
                 let is_eq = self.new_local(Type::Bool, None, false);
-                self.push_statement(
-                    StatementKind::Assign(
-                        is_eq,
-                        Rvalue::BinaryOp(crate::parser::BinOp::Eq, Operand::Copy(discr), lit_op),
-                    ),
-                    expr_span,
-                );
+                if matches!(lit_expr.kind, crate::parser::ExprKind::Null) {
+                    // A `None` arm matches a boxed null in an `Any` via the
+                    // runtime check; a statically-null scrutinee always matches.
+                    let rvalue = match match_ty {
+                        Type::Any => Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(
+                                "__olive_any_is_null".to_string(),
+                            )),
+                            args: vec![Operand::Copy(discr)],
+                        },
+                        Type::Null => Rvalue::Use(Operand::Constant(Constant::Bool(true))),
+                        _ => Rvalue::Use(Operand::Constant(Constant::Bool(false))),
+                    };
+                    self.push_statement(StatementKind::Assign(is_eq, rvalue), expr_span);
+                } else {
+                    let lit_op = self.lower_expr(lit_expr);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            is_eq,
+                            Rvalue::BinaryOp(
+                                crate::parser::BinOp::Eq,
+                                Operand::Copy(discr),
+                                lit_op,
+                            ),
+                        ),
+                        expr_span,
+                    );
+                }
                 self.terminate_block(
                     self.current_block.unwrap(),
                     TerminatorKind::SwitchInt {

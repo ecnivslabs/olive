@@ -37,7 +37,8 @@ const MAX_RETRIES = 5
 * `f32`, `f64`: Specific-width floating-point numbers.
 * `str`: UTF-8 encoded string.
 * `bool`: Boolean (`True` or `False`).
-* `None`: Represents the absence of a value.
+* `None`: The absence of a value. `None` is both the type and its single value, the same word used in a type annotation and in an expression.
+* `Any`: A value of unknown or mixed type, resolved at runtime.
 
 ### Union Types
 
@@ -49,6 +50,23 @@ result = "Error"
 ```
 
 Union types are commonly resolved using pattern matching.
+
+### The `Any` Type
+
+When a value's type is not known until runtime, annotate it as `Any`. This is what lets a single collection hold a mix of types, such as the values returned when decoding JSON:
+
+```rust
+let row: [Any] = [1, "Olive", True, None]
+```
+
+A literal list with mixed element types widens to `[Any]` automatically. Use `type(value)` to inspect what an `Any` holds, and `None` for the absent case. Comparing an `Any` against `None` tests for the absent value:
+
+```rust
+if value == None:
+    print("missing")
+```
+
+Annotating a list as `[T]` for a concrete `T` still enforces that every element is a `T`.
 
 ### String Formatting
 
@@ -68,9 +86,12 @@ Ordered, growable sequences of a single type:
 
 ```rust
 let mut numbers = [1, 2, 3]
-numbers.push(4)
+numbers.append(4)         // grows in place: [1, 2, 3, 4]
 let first = numbers[0]
+let last = numbers.pop()  // removes and returns 4
 ```
+
+Lists also support `insert(index, value)`, `remove(index)`, and `extend(other)`. Two lists join with `+`.
 
 ### Fixed Arrays
 
@@ -117,7 +138,7 @@ Fixed-size, heterogeneous collections:
 
 ```rust
 let pair: (int, str) = (1, "Active")
-let (id, status) = pair  // Destructuring assignment
+let id, status = pair  // Destructuring assignment
 ```
 
 ## Control Flow
@@ -139,14 +160,26 @@ else:
 
 #### For Loops
 
-Iterate over collections, iterators, or ranges:
+Iterate over a collection, or over an integer range written with `..` (exclusive of the end) or `..=` (inclusive):
 
 ```rust
 for item in ["apple", "banana", "cherry"]:
     print(item)
 
-for i in range(5):
+for i in 0..5:        // 0, 1, 2, 3, 4
     print(i)
+
+for i in 1..=5:       // 1, 2, 3, 4, 5
+    print(i)
+```
+
+Iterating a collection by name consumes it. To keep it usable afterward, iterate over a borrow with `&`:
+
+```rust
+let names = ["a", "b"]
+for n in &names:
+    print(n)
+print(len(names))     // names is still here
 ```
 
 #### While Loops
@@ -164,15 +197,18 @@ Generate lists, sets, or dictionaries from iterables:
 
 ```rust
 let numbers = [1, 2, 3, 4]
-let squares = [x * x for x in numbers if x % 2 == 0]  // Evaluates to [4, 16]
-let unique_squares = {x * x for x in numbers}         // Evaluates to {1, 4, 9, 16}
+let squares = [x * x for x in &numbers if x % 2 == 0]  // Evaluates to [4, 16]
+let unique_squares = {x * x for x in &numbers}         // Evaluates to {1, 4, 9, 16}
 ```
+
+Iterating over `&numbers` borrows the list rather than consuming it, so it stays usable afterward. Iterating over `numbers` directly would move it into the comprehension.
 
 ## Built-in Functions
 
 * `print(...)`: Writes output to standard out.
 * `len(obj)`: Returns the number of elements in a collection.
 * `type(obj)`: Returns the type name as a string.
-* `range(stop)` / `range(start, stop)`: Generates an integer range iterator.
 * `assert(condition, message)`: Aborts execution with a message if the condition is false.
+
+Integer ranges are written with the `..` and `..=` operators rather than a function, for example `0..n` or `1..=n`.
 

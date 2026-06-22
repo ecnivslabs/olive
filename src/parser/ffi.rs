@@ -114,11 +114,9 @@ impl Parser {
         let mut params = Vec::new();
         let mut is_vararg = false;
         while self.peek().kind != TokenKind::RParen && self.peek().kind != TokenKind::Eof {
-            if self.peek().kind == TokenKind::Star
-                || (self.peek().kind == TokenKind::Dot && self.peek_at(1).kind == TokenKind::Dot)
-            {
-                if self.peek().kind == TokenKind::Dot {
-                    self.advance();
+            if self.peek().kind == TokenKind::Star || self.peek().kind == TokenKind::DotDot {
+                if self.peek().kind == TokenKind::DotDot {
+                    // C variadic `...` lexes as `..` followed by a final `.`.
                     self.advance();
                     if self.peek().kind == TokenKind::Dot {
                         self.advance();

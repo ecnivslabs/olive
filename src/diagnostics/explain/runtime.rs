@@ -24,9 +24,9 @@ pub(super) const ENTRIES: &[Explanation] = &[
         title: "indexing a null value",
         summary: "Indexing was attempted on a value that is null, an uninitialised \
                   container rather than an actual list.",
-        wrong: "fn main():\n    let xs = null\n    print(xs[0])",
+        wrong: "fn main():\n    let xs = None\n    print(xs[0])",
         fixed: "fn main():\n    let xs = [1, 2, 3]\n    print(xs[0])",
-        notes: &["Assign a real container, or check the value against `null` before indexing."],
+        notes: &["Assign a real container, or check the value against `None` before indexing."],
     },
     Explanation {
         code: "E0703",

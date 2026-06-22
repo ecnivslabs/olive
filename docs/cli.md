@@ -5,7 +5,7 @@ The `pit` toolchain is the unified compiler, package manager, and project manage
 ## Project Management
 
 * `pit new <name>`
-  Scaffolds a new Olive project in a directory matching the specified `<name>`. Generates a basic `pit.toml` manifest and `src/main.liv`.
+  Scaffolds a new Olive project in a directory matching the specified `<name>`. Generates a `pit.toml` manifest, `src/main.liv`, and a `.gitignore`, then initializes a git repository in the project directory.
 
 * `pit build [path]`
   Compiles the current project based on the `pit.toml` manifest, or compiles a single `.liv` file if the path points to one.
@@ -29,7 +29,17 @@ The `pit` toolchain is the unified compiler, package manager, and project manage
   * `--release`: Run tests with optimizations enabled.
 
 * `pit fmt [file]`
-  Formats the current project or a specified file according to the standard Olive style guidelines.
+  Formats the current project or a specified file according to the standard Olive style guidelines. By default it rewrites files in place.
+  * `--check`: Exit non-zero if any file is not already formatted, without writing changes.
+  * `--diff`: Print the formatting changes as a unified diff instead of writing them.
+  * `--stdin`: Read source from standard input and write the formatted result to standard output.
+
+* `pit fix [file]`
+  Applies the suggested fixes from the compiler's diagnostics to the current project or a specified file. Only fixes the compiler marks as safe are applied automatically.
+  * `--dry-run`: Show the fixes that would be applied without writing changes.
+
+* `pit explain <code>`
+  Prints a detailed explanation of a diagnostic code, including what triggers it and how to resolve it. Codes look like `E0400` for errors or `W0610` for warnings.
 
 ## Package Management
 

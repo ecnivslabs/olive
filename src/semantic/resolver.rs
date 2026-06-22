@@ -58,13 +58,6 @@ impl Resolver {
                 used: true,
             });
         }
-        table.define(Symbol {
-            name: "None".to_string(),
-            kind: SymbolKind::Variable,
-            span: Span::default(),
-            is_private: false,
-            used: true,
-        });
         Self {
             table,
             errors: Vec::new(),
@@ -638,6 +631,10 @@ impl Resolver {
             }
             ExprKind::Await(inner) => {
                 self.resolve_expr(inner);
+            }
+            ExprKind::Range { start, end, .. } => {
+                self.resolve_expr(start);
+                self.resolve_expr(end);
             }
             ExprKind::Cast(operand, _) => {
                 self.resolve_expr(operand);

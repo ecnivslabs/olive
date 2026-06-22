@@ -1,22 +1,22 @@
 # Traits
 
-A trait defines shared behavior that types can implement. It functions as a compile-time contract: any type implementing a trait must provide implementations for its declared methods. This allows writing generic functions constrained by specific trait bounds.
+A trait is a set of methods that several types can share. A type takes on a trait by implementing it, and code can then treat any implementing type through that trait.
 
 ## Defining a Trait
 
-A trait definition lists the method signatures.
+A trait lists its methods, each with a body. That body is the default: a type that implements the trait gets it for free unless it provides its own.
 
 ```rust
 trait Drawable:
-    fn draw(self)
-    fn area(self) -> float
+    fn draw(self):
+        print("a shape")
 ```
 
-The `self` parameter refers to the implementing type.
+The `self` parameter is the implementing value.
 
 ## Implementing a Trait
 
-Use `impl TraitName for TypeName` to implement a trait.
+Write `impl Trait for Type` and override the methods you want to change:
 
 ```rust
 struct Circle:
@@ -24,52 +24,36 @@ struct Circle:
 
 impl Drawable for Circle:
     fn draw(self):
-        print(f"Drawing a circle with radius {self.radius}")
-
-    fn area(self) -> float:
-        return 3.14 * self.radius * self.radius
+        print(f"circle r={self.radius}")
 ```
 
-## Generic Traits
+## Inheriting the Default
 
-Traits can be generic.
+A type that is happy with the defaults implements the trait with `pass` and inherits every method as written:
 
 ```rust
-trait Converter[T, U]:
-    fn convert(self, input: T) -> U
-
-struct IntToString:
+struct Blank:
     pass
 
-impl Converter[int, str] for IntToString:
-    fn convert(self, input: int) -> str:
-        return str(input)
+impl Drawable for Blank:
+    pass
+
+Blank().draw()    // prints "a shape"
 ```
 
-## Default Method Implementations
-
-Traits can provide default method implementations. Types use the default if they do not override it.
-
-```rust
-trait Logger:
-    fn log(self, msg: str):
-        print(f"[LOG]: {msg}")
-
-struct SimpleApp:
-    pass
-
-impl Logger for SimpleApp:
-    pass
-```
+You can also override some methods and inherit the rest: only the methods you write replace their defaults.
 
 ## Dynamic Dispatch (Trait Objects)
 
-Functions can accept trait objects for dynamic dispatch. This allows passing any type that implements the trait, resolving the method call at runtime via a vtable.
+A function can take a collection typed by the trait. Each element keeps its own concrete type, and the right method runs for each one, resolved at runtime:
 
 ```rust
 fn render_all(items: [Drawable]):
     for item in items:
         item.draw()
+
+fn main():
+    render_all([Circle(1.5), Blank(), Circle(9.0)])
 ```
 
-Any struct that implements `Drawable` can be passed into this function.
+This prints the circle output for the circles and the default for the blank. Any type that implements `Drawable` can go in the list.

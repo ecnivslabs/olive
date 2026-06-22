@@ -220,7 +220,7 @@ mod codegen_tests {
     #[test]
     fn enum_match_variant_with_payload() {
         let mut cg = compile(
-            "enum Opt:\n    Some(i64)\n    None(i64)\n\nfn unwrap_or(v: i64, default: i64) -> i64:\n    let o = Some(v)\n    match o:\n        case Some(x):\n            return x\n        case None(x):\n            return default\n",
+            "enum Opt:\n    Some(i64)\n    Nil(i64)\n\nfn unwrap_or(v: i64, default: i64) -> i64:\n    let o = Some(v)\n    match o:\n        case Some(x):\n            return x\n        case Nil(x):\n            return default\n",
         );
         assert_eq!(call_i64_2(&mut cg, "unwrap_or", 42, 0), 42);
         assert_eq!(call_i64_2(&mut cg, "unwrap_or", 7, 0), 7);

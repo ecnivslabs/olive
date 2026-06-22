@@ -58,6 +58,14 @@ impl TypeChecker {
             ExprKind::Bool(_) => Type::Bool,
             ExprKind::Null => Type::Null,
 
+            ExprKind::Range { start, end, .. } => {
+                let s_ty = self.check_expr(start);
+                let e_ty = self.check_expr(end);
+                self.unify(&Type::Int, &s_ty, start.span);
+                self.unify(&Type::Int, &e_ty, end.span);
+                Type::List(Box::new(Type::Int))
+            }
+
             ExprKind::Deref(inner) => {
                 let inner_ty = self.check_expr(inner);
                 let resolved = self.apply_subst(inner_ty.clone());
@@ -324,6 +332,8 @@ impl TypeChecker {
                         self.expr_kwarg_maps.insert(expr.id, kwarg_map);
                     }
 
+                    let kw_first_gap = final_args.iter().position(Option::is_none);
+
                     let mut packed_args = Vec::new();
                     for t in final_args {
                         if let Some(t) = t {
@@ -367,7 +377,22 @@ impl TypeChecker {
                             }
                         }
                     } else {
-                        if raw_count != expected_fields.len() {
+                        let required = self
+                            .struct_required_fields
+                            .get(&name)
+                            .copied()
+                            .unwrap_or(expected_fields.len());
+                        let too_few = if has_kwargs {
+                            kw_first_gap.is_some_and(|gap| gap < required)
+                        } else {
+                            raw_count < required
+                        };
+                        if raw_count > expected_fields.len() || too_few {
+                            let expected = if required == expected_fields.len() {
+                                format!("{}", expected_fields.len())
+                            } else {
+                                format!("{} to {}", required, expected_fields.len())
+                            };
                             self.errors.push(super::super::error::SemanticError::rich(
                                 crate::compile::errors::Diagnostic::error(
                                     "E0403",
@@ -376,8 +401,7 @@ impl TypeChecker {
                                 )
                                 .label(format!(
                                     "expected {} field(s), found {}",
-                                    expected_fields.len(),
-                                    raw_count
+                                    expected, raw_count
                                 ))
                                 .help(format!(
                                     "`{name}` has fields: {}",
@@ -405,14 +429,33 @@ impl TypeChecker {
                     return Type::Struct(name, type_args);
                 }
 
+                // For a plain function call whose positional arguments line up
+                // one-to-one with the parameters, check each argument against its
+                // parameter type. This lets a collection literal adopt the
+                // parameter's element type, so passing `[Circle(..)]` to a
+                // `[Drawable]` parameter widens the elements to trait objects.
+                let param_hints: Vec<Type> = match (&callee.kind, &resolved_callee) {
+                    (ExprKind::Identifier(_), Type::Fn(params, _, _))
+                        if params.len() == args.len()
+                            && args.iter().all(|a| matches!(a, CallArg::Positional(_))) =>
+                    {
+                        params.clone()
+                    }
+                    _ => Vec::new(),
+                };
+
                 let mut arg_types = Vec::with_capacity(args.len());
-                for arg in args {
+                for (i, arg) in args.iter().enumerate() {
                     match arg {
                         CallArg::Positional(e)
                         | CallArg::Keyword(_, e)
                         | CallArg::Splat(e)
                         | CallArg::KwSplat(e) => {
-                            arg_types.push(self.check_expr(e));
+                            if let Some(hint) = param_hints.get(i) {
+                                arg_types.push(self.check_expr_expecting(e, hint));
+                            } else {
+                                arg_types.push(self.check_expr(e));
+                            }
                         }
                     }
                 }

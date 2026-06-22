@@ -6,6 +6,13 @@ fn next_node_id() -> usize {
     NODE_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
+/// A fresh, globally-unique node id. Used when a stretch of AST is cloned (for
+/// example, copying a trait default method into an `impl`) and every copied
+/// expression needs its own id so type information does not collide.
+pub fn fresh_node_id() -> usize {
+    next_node_id()
+}
+
 use crate::span::Span;
 
 #[derive(Debug, Clone)]
@@ -316,6 +323,14 @@ pub enum ExprKind {
     Try(Box<Expr>),
     Await(Box<Expr>),
     AsyncBlock(Vec<Stmt>),
+
+    /// An integer range `start..end` (exclusive) or `start..=end` (inclusive),
+    /// used mainly to drive a counted `for` loop.
+    Range {
+        start: Box<Expr>,
+        end: Box<Expr>,
+        inclusive: bool,
+    },
 
     Match {
         expr: Box<Expr>,

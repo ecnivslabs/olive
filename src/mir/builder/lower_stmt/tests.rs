@@ -83,7 +83,7 @@ fn struct_auto_init_generates_function() {
 
 #[test]
 fn enum_decl_registers_variants() {
-    let fns = build("enum Opt:\n    Some(i64)\n    None\n\nlet v = Some(42)\n");
+    let fns = build("enum Opt:\n    Some(i64)\n    Nil\n\nlet v = Some(42)\n");
     let main = fns.iter().find(|f| f.name == "__main__").unwrap();
     let has_aggregate = main.basic_blocks.iter().any(|bb| {
         bb.statements

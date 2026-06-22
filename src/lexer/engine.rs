@@ -475,7 +475,7 @@ impl Lexer {
             "case" => TokenKind::Case,
             "unsafe" => TokenKind::Unsafe,
             "defer" => TokenKind::Defer,
-            "null" => TokenKind::Null,
+            "None" => TokenKind::Null,
             "with" => TokenKind::With,
 
             "_" => TokenKind::Underscore,
@@ -774,6 +774,15 @@ impl Lexer {
                 }
 
                 ',' => self.make_tok(TokenKind::Comma, ",", line, col, start),
+                '.' if self.peek() == Some('.') => {
+                    self.advance();
+                    if self.peek() == Some('=') {
+                        self.advance();
+                        self.make_tok(TokenKind::DotDotEq, "..=", line, col, start)
+                    } else {
+                        self.make_tok(TokenKind::DotDot, "..", line, col, start)
+                    }
+                }
                 '.' => self.make_tok(TokenKind::Dot, ".", line, col, start),
                 ';' => self.make_tok(TokenKind::Semicolon, ";", line, col, start),
                 '&' => {

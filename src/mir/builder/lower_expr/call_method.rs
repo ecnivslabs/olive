@@ -113,6 +113,10 @@ impl<'a> MirBuilder<'a> {
             return op;
         }
 
+        if let Some(op) = self.lower_list_method(obj, attr, &arg_ops, span, expr_id) {
+            return op;
+        }
+
         if let ExprKind::Identifier(name) = &obj.kind {
             let obj_ty = self.get_type(obj.id);
             let mut current_obj_ty = obj_ty.clone();
@@ -313,6 +317,54 @@ impl<'a> MirBuilder<'a> {
 
     /// Routes the dict methods `keys`/`values`/`remove` to their runtime fns,
     /// for a `Dict` or `Any` receiver. `None` for anything else.
+    /// Lowers the mutating methods on a native list to their runtime calls.
+    /// `append`/`insert`/`extend` mutate in place and yield the list; `pop` and
+    /// `remove` return the removed element.
+    fn lower_list_method(
+        &mut self,
+        obj: &Expr,
+        attr: &str,
+        arg_ops: &[Operand],
+        span: Span,
+        expr_id: usize,
+    ) -> Option<Operand> {
+        let runtime = match attr {
+            "append" => "__olive_list_append",
+            "insert" => "__olive_list_insert",
+            "extend" => "__olive_list_extend",
+            "remove" => "__olive_list_remove",
+            "pop" => "__olive_list_pop",
+            _ => return None,
+        };
+        let mut recv_ty = self.get_type(obj.id);
+        while let Type::Ref(inner) | Type::MutRef(inner) = recv_ty {
+            recv_ty = *inner;
+        }
+        if !matches!(recv_ty, Type::List(_)) {
+            return None;
+        }
+        let obj_op = self.lower_expr_as_copy(obj);
+        let returns_elem = matches!(attr, "pop" | "remove");
+        let mut call_args = vec![obj_op.clone()];
+        call_args.extend_from_slice(arg_ops);
+        let tmp = self.new_local(self.get_type(expr_id), None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                tmp,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(runtime.to_string())),
+                    args: call_args,
+                },
+            ),
+            span,
+        );
+        if returns_elem {
+            Some(self.operand_for_local(tmp))
+        } else {
+            Some(obj_op)
+        }
+    }
+
     fn lower_dict_method(
         &mut self,
         obj: &Expr,
@@ -762,6 +814,19 @@ impl<'a> MirBuilder<'a> {
         };
         let mut init_args = vec![Operand::Copy(obj_tmp)];
         init_args.extend(arg_ops);
+
+        // Fill any omitted trailing fields with their declared default value, so
+        // a struct with defaults can be built from a prefix of its fields. A
+        // default's type is unified with its field, matching the provided args.
+        if let Some(defaults) = self.struct_field_defaults.get(struct_name).cloned() {
+            let supplied = init_args.len() - 1;
+            for default in defaults.iter().skip(supplied) {
+                let Some(default_expr) = default else {
+                    break;
+                };
+                init_args.push(self.lower_expr_as_copy(default_expr));
+            }
+        }
 
         let init_res = self.new_local(self.get_type(expr_id), None, false);
         self.push_statement(

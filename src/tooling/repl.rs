@@ -31,7 +31,8 @@ pub fn repl_compile_run(
     let mut combined = def_stmts.to_vec();
     combined.extend_from_slice(let_stmts);
     combined.extend(exec_stmts);
-    let program = parser::Program { stmts: combined };
+    let mut program = parser::Program { stmts: combined };
+    crate::semantic::desugar::desugar_trait_defaults(&mut program);
 
     let mut resolver = Resolver::new();
     resolver.resolve_program(&program);

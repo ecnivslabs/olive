@@ -55,6 +55,24 @@ impl Parser {
     }
 
     pub(crate) fn parse_expr(&mut self) -> ParseResult<Expr> {
-        self.parse_or()
+        let start = self.parse_or()?;
+        if matches!(
+            self.peek().kind,
+            crate::lexer::TokenKind::DotDot | crate::lexer::TokenKind::DotDotEq
+        ) {
+            let inclusive = self.peek().kind == crate::lexer::TokenKind::DotDotEq;
+            self.advance();
+            let end = self.parse_or()?;
+            let span = start.span.merge(end.span);
+            return Ok(Expr::new(
+                ExprKind::Range {
+                    start: Box::new(start),
+                    end: Box::new(end),
+                    inclusive,
+                },
+                span,
+            ));
+        }
+        Ok(start)
     }
 }
