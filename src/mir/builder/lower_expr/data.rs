@@ -99,6 +99,13 @@ impl<'a> MirBuilder<'a> {
             // gives it a second reference to fold through.
             let narrowed = self.get_type(expr_id);
             if matches!(ty, Type::Union(_)) && narrowed != ty {
+                // Tag-encoded scalar unions must decode, not reinterpret.
+                if ty.is_scalar_nullable_union()
+                    && let Some(unboxed) =
+                        self.unbox_from_any(Operand::Copy(local), &narrowed, Span::default())
+                {
+                    return unboxed;
+                }
                 let view = self.new_local_with_owning(narrowed.clone(), None, false, false);
                 self.push_statement(
                     StatementKind::Assign(view, Rvalue::Cast(Operand::Copy(local), narrowed)),
@@ -418,14 +425,17 @@ impl<'a> MirBuilder<'a> {
     ) -> Operand {
         let result_ty = self.get_type(expr_id);
         let tmp = self.new_local_with_owning(result_ty.clone(), None, false, false);
-        self.push_statement(
-            StatementKind::Assign(tmp, Rvalue::Use(Operand::Constant(Constant::None))),
+        let none_op = self.coerce(
+            Operand::Constant(Constant::None),
+            &Type::Null,
+            &result_ty,
             span,
         );
+        self.push_statement(StatementKind::Assign(tmp, Rvalue::Use(none_op)), span);
 
         let obj_op = self.lower_expr(obj);
         let obj_ty = self.get_type(obj.id);
-        let is_null = if matches!(obj_ty, Type::Any) {
+        let is_null = if matches!(obj_ty, Type::Any) || obj_ty.is_scalar_nullable_union() {
             let is_null = self.new_local(Type::Bool, None, false);
             self.push_statement(
                 StatementKind::Assign(
@@ -507,15 +517,13 @@ impl<'a> MirBuilder<'a> {
                     .cloned()
             })
             .unwrap_or_else(|| non_null_ty(&result_ty));
-        let field_tmp = self.new_local_with_owning(field_ty, None, true, false);
+        let field_tmp = self.new_local_with_owning(field_ty.clone(), None, true, false);
         self.push_statement(
             StatementKind::Assign(field_tmp, Rvalue::GetAttr(narrowed_obj, attr.to_string())),
             span,
         );
-        self.push_statement(
-            StatementKind::Assign(tmp, Rvalue::Use(Operand::Copy(field_tmp))),
-            span,
-        );
+        let field_val = self.coerce(Operand::Copy(field_tmp), &field_ty, &result_ty, span);
+        self.push_statement(StatementKind::Assign(tmp, Rvalue::Use(field_val)), span);
         if let Some(bb) = self.current_block {
             self.terminate_block(bb, TerminatorKind::Goto { target: merge_bb }, span);
         }

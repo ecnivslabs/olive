@@ -16,7 +16,7 @@ impl<'a> MirBuilder<'a> {
     /// Reduces an operand to a 0/1 discriminant. An `Any` goes through
     /// `__olive_any_truthy`; a bool passes through.
     pub(crate) fn truthify(&mut self, op: Operand, ty: &Type, span: Span) -> Operand {
-        if *ty != Type::Any {
+        if *ty != Type::Any && !ty.is_scalar_nullable_union() {
             return op;
         }
         let tmp = self.new_local(Type::Bool, None, false);

@@ -105,13 +105,11 @@ fn encode_descriptor(
         OliveType::Str => out.push(4),
         OliveType::Null => out.push(5),
         OliveType::Bytes => out.push(15),
-        // `T | None` is not a boxed, kind-tagged `Any`: it stores `T`'s own
-        // raw representation with `0` as the `None` sentinel (see
-        // translate.rs). Descriptor-wise that means encoding `T` directly;
-        // every `copy_typed`/`free_typed` leaf already treats a `0` operand
-        // as a no-op, so the sentinel needs no descriptor bits of its own.
-        // A union with more than one non-null member has no single raw
-        // representation to fall back on, so it stays boxed-`Any`-style.
+        // Scalar T | None is Any-tag encoded, so it carries the Any
+        // descriptor. Pointer T | None stores T raw with 0 as None; its
+        // copy/free leaves already treat 0 as a no-op. A mixed multi-member
+        // union has no single raw shape and stays Any-style.
+        OliveType::Union(_) if ty.is_scalar_nullable_union() => out.push(6),
         OliveType::Union(members) => {
             let non_null: Vec<&OliveType> =
                 members.iter().filter(|m| **m != OliveType::Null).collect();

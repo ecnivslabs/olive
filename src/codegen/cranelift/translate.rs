@@ -45,6 +45,11 @@ pub(super) fn free_func_name_for_type(
         // which a plain scalar member's untagged bits can coincidentally
         // satisfy (see the runtime doc comment).
         OliveType::Union(members) => {
+            // Scalar T | None is Any-tag encoded; floats and wide ints live
+            // in heap boxes that only the Any free understands.
+            if ty.is_scalar_nullable_union() {
+                return "__olive_free_any";
+            }
             let non_null: Vec<&OliveType> = members
                 .iter()
                 .filter(|m| !matches!(m, OliveType::Null))

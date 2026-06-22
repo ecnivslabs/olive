@@ -721,21 +721,27 @@ pub extern "C" fn olive_str_to_float(ptr: i64) -> f64 {
 }
 
 /// `str.to_int() -> int | None` (E7.1): same grammar as `int()`
-/// (`olive_str_to_int` above), but yields `int | None`'s `0` sentinel on a
-/// parse failure instead of panicking.
+/// (`olive_str_to_int` above), but yields a tagged `int | None` word so a
+/// parsed 0 stays distinct from the parse-failure None.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_to_int_opt(ptr: i64) -> i64 {
     let s = olive_str_from_ptr(ptr);
-    s.trim().parse::<i64>().unwrap_or(0)
+    match s.trim().parse::<i64>() {
+        Ok(v) => boxed::olive_box_int(v),
+        Err(_) => boxed::TAG_NULL,
+    }
 }
 
 /// `str.to_float() -> float | None` (E7.1): same grammar as `float()`
-/// (`olive_str_to_float` above), but yields `float | None`'s `0.0` sentinel
-/// on a parse failure instead of panicking.
+/// (`olive_str_to_float` above), but yields a tagged `float | None` word so
+/// a parsed 0.0 stays distinct from the parse-failure None.
 #[unsafe(no_mangle)]
-pub extern "C" fn olive_str_to_float_opt(ptr: i64) -> f64 {
+pub extern "C" fn olive_str_to_float_opt(ptr: i64) -> i64 {
     let s = olive_str_from_ptr(ptr);
-    s.trim().parse::<f64>().unwrap_or(0.0)
+    match s.trim().parse::<f64>() {
+        Ok(v) => boxed::olive_box_float(v),
+        Err(_) => boxed::TAG_NULL,
+    }
 }
 
 /// `+` on operands whose static type is `Any`: dispatch on the runtime kind so

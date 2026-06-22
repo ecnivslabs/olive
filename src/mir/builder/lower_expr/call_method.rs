@@ -1370,14 +1370,12 @@ impl<'a> MirBuilder<'a> {
         span: Span,
         expr_id: usize,
     ) -> Operand {
-        // Unbox Python scalars supplied for concrete native fields; generic
-        // (`Param`) fields fall through `coerce` untouched.
+        // Unbox Python scalars supplied for concrete native fields, and tag
+        // scalars landing in scalar-union fields; generic (`Param`) fields
+        // fall through `coerce` untouched.
         if let Some(field_names) = self.struct_fields.get(struct_name).cloned() {
             for (i, op) in arg_ops.iter_mut().enumerate() {
                 let from_ty = arg_tys.get(i).cloned().unwrap_or(Type::Any);
-                if !from_ty.is_py_value() {
-                    continue;
-                }
                 let Some(field_name) = field_names.get(i) else {
                     break;
                 };
@@ -1385,6 +1383,7 @@ impl<'a> MirBuilder<'a> {
                     .struct_field_types
                     .get(&(struct_name.to_string(), field_name.clone()))
                     .cloned()
+                    && (from_ty.is_py_value() || field_ty.is_scalar_nullable_union())
                 {
                     *op = self.coerce(op.clone(), &from_ty, &field_ty, span);
                 }
