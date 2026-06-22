@@ -198,3 +198,55 @@ fn narrow_float_union_parameter_decodes_value() {
     ));
     assert_eq!(call_i64(&mut cg, "f"), 1);
 }
+
+#[test]
+fn mixed_union_literal_match_is_kind_safe() {
+    // The historical mixed-union defect: a str literal arm raw-compared
+    // against an int word and dereferenced it as a string pointer.
+    let mut cg = compile(concat!(
+        "fn m(v: int | str) -> int:\n    match v:\n        case \"hi\":\n            return 1\n        case 0:\n            return 2\n        case _:\n            return 3\n",
+        "fn f_int() -> int:\n    let v: int | str = 7\n    return m(v)\n",
+        "fn f_zero() -> int:\n    let v: int | str = 0\n    return m(v)\n",
+        "fn f_hi() -> int:\n    let v: int | str = \"hi\"\n    return m(v)\n",
+        "fn f_other() -> int:\n    let v: int | str = \"yo\"\n    return m(v)\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f_int"), 3);
+    assert_eq!(call_i64(&mut cg, "f_zero"), 2);
+    assert_eq!(call_i64(&mut cg, "f_hi"), 1);
+    assert_eq!(call_i64(&mut cg, "f_other"), 3);
+}
+
+#[test]
+fn mixed_union_eq_never_parses_strings() {
+    // Strict union equality: an int member never equals a numeric string.
+    let mut cg = compile(
+        "fn f() -> int:\n    let a: int | str = 7\n    let b: int | str = \"7\"\n    if a == \"7\":\n        return -1\n    if b == 7:\n        return -2\n    if a == b:\n        return -3\n    if a == 7 and b == \"7\":\n        return 1\n    return 0\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 1);
+}
+
+#[test]
+fn mixed_union_none_zero_empty_distinct() {
+    let mut cg = compile(concat!(
+        "fn m(v: int | str | None) -> int:\n    match v:\n        case None:\n            return 1\n        case \"\":\n            return 2\n        case 0:\n            return 3\n        case _:\n            return 4\n",
+        "fn f_none() -> int:\n    let v: int | str | None = None\n    return m(v)\n",
+        "fn f_empty() -> int:\n    let v: int | str | None = \"\"\n    return m(v)\n",
+        "fn f_zero() -> int:\n    let v: int | str | None = 0\n    return m(v)\n",
+        "fn f_str() -> int:\n    let v: int | str | None = \"x\"\n    return m(v)\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f_none"), 1);
+    assert_eq!(call_i64(&mut cg, "f_empty"), 2);
+    assert_eq!(call_i64(&mut cg, "f_zero"), 3);
+    assert_eq!(call_i64(&mut cg, "f_str"), 4);
+}
+
+#[test]
+fn mixed_union_float_str_distinct() {
+    let mut cg = compile(concat!(
+        "fn m(v: float | str) -> int:\n    match v:\n        case 2.5:\n            return 1\n        case \"2.5\":\n            return 2\n        case _:\n            return 3\n",
+        "fn f_float() -> int:\n    let v: float | str = 2.5\n    return m(v)\n",
+        "fn f_str() -> int:\n    let v: float | str = \"2.5\"\n    return m(v)\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f_float"), 1);
+    assert_eq!(call_i64(&mut cg, "f_str"), 2);
+}

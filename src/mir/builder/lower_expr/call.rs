@@ -7,8 +7,8 @@ use crate::span::Span;
 
 impl<'a> MirBuilder<'a> {
     fn write_func_name(ty: &Type) -> &'static str {
-        // Scalar T | None is Any-tag encoded, so the Any writer decodes it.
-        if ty.is_scalar_nullable_union() {
+        // Tag-encoded unions decode via the Any writer.
+        if ty.is_tag_encoded_union() {
             return "__olive_write_any";
         }
         let ty = crate::semantic::type_descriptor::concrete_ty(ty);

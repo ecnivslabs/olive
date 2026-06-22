@@ -1383,7 +1383,7 @@ impl<'a> MirBuilder<'a> {
                     .struct_field_types
                     .get(&(struct_name.to_string(), field_name.clone()))
                     .cloned()
-                    && (from_ty.is_py_value() || field_ty.is_scalar_nullable_union())
+                    && (from_ty.is_py_value() || field_ty.is_tag_encoded_union())
                 {
                     *op = self.coerce(op.clone(), &from_ty, &field_ty, span);
                 }

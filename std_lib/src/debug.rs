@@ -180,16 +180,18 @@ pub extern "C" fn olive_debug_str_new(bytes: *const u8, len: i64) -> i64 {
     crate::string::olive_str_internal(&String::from_utf8_lossy(slice))
 }
 
-/// Decodes a tag-encoded scalar-union word for the debugger: writes the
-/// payload through `out` and returns the kind (0 = None, 1 = int, 2 = bool,
-/// 3 = float where `out` holds the f64 bit pattern). Layout knowledge stays
-/// here, next to boxed.rs, instead of leaking into pit.
+/// Decodes a tag-encoded union word for the debugger: writes the payload
+/// through `out` and returns the kind (0 = None, 1 = int, 2 = bool,
+/// 3 = float where `out` holds the f64 bit pattern, 4 = str where `out`
+/// holds the tagged str word itself). Layout knowledge stays here, next to
+/// boxed.rs, instead of leaking into pit.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_debug_any_decode(val: i64, out: *mut i64) -> i64 {
     let (kind, payload) = match val & crate::boxed::TAG_MASK {
         crate::boxed::TAG_INT => (1, val >> 3),
         crate::boxed::TAG_BOOL => (2, val >> 3),
         crate::boxed::TAG_NULL => (0, 0),
+        _ if val & 1 == 1 => (4, val),
         _ => {
             let b = unsafe { &*(val as *const crate::boxed::OliveBoxed) };
             if b.kind == crate::KIND_FLOAT {

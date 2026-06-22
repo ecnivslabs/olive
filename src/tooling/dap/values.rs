@@ -188,7 +188,7 @@ pub(crate) fn children_raw(
 /// Display type: tag-encoded scalar unions keep their union identity so the
 /// Any descriptor decodes them; everything else collapses as before.
 pub(crate) fn render_ty(ty: &Type) -> &Type {
-    if ty.is_scalar_nullable_union() {
+    if ty.is_tag_encoded_union() {
         ty
     } else {
         concrete_ty(ty)

@@ -32,7 +32,7 @@ impl<'a> MirBuilder<'a> {
                 // A binding narrowed out of a tag-encoded union decodes the
                 // payload; the raw word is the encoding, not the value.
                 let value =
-                    if discr_ty.is_scalar_nullable_union() && !matches!(match_ty, Type::Union(_)) {
+                    if discr_ty.is_tag_encoded_union() && !matches!(match_ty, Type::Union(_)) {
                         self.unbox_from_any(Operand::Copy(discr), match_ty, expr_span)
                             .unwrap_or(Operand::Copy(discr))
                     } else {
@@ -186,8 +186,7 @@ impl<'a> MirBuilder<'a> {
                         // Boxed encodings (Any member or tagged scalar union)
                         // hold null as a tag word; pointer unions use bare 0.
                         Type::Union(members)
-                            if members.contains(&Type::Any)
-                                || match_ty.is_scalar_nullable_union() =>
+                            if members.contains(&Type::Any) || match_ty.is_tag_encoded_union() =>
                         {
                             Rvalue::Call {
                                 func: Operand::Constant(Constant::Function(
@@ -204,43 +203,21 @@ impl<'a> MirBuilder<'a> {
                         _ => Rvalue::Use(Operand::Constant(Constant::Bool(false))),
                     };
                     self.push_statement(StatementKind::Assign(is_eq, rvalue), expr_span);
-                } else if match_ty.is_scalar_nullable_union() {
-                    // Tagged scrutinee: rule out null first (unboxers map the
-                    // null word to 0, which would falsely match a 0 literal),
-                    // then compare the decoded payload.
+                } else if match_ty.is_tag_encoded_union() {
+                    // Kind-respecting compare: an int word must never raw-match
+                    // a str literal, and null must not unbox to a matching 0.
                     let lit_ty = self.get_type(lit_expr.id);
-                    let is_null = self.new_local(Type::Bool, None, false);
-                    self.push_statement(
-                        StatementKind::Assign(
-                            is_null,
-                            Rvalue::Call {
-                                func: Operand::Constant(Constant::Function(
-                                    "__olive_any_is_null".to_string(),
-                                )),
-                                args: vec![Operand::Copy(discr)],
-                            },
-                        ),
-                        expr_span,
-                    );
-                    let cmp_bb = self.new_block();
-                    self.terminate_block(
-                        self.current_block.unwrap(),
-                        TerminatorKind::SwitchInt {
-                            discr: Operand::Copy(is_null),
-                            targets: vec![(1, failure_bb)],
-                            otherwise: cmp_bb,
-                        },
-                        expr_span,
-                    );
-                    self.current_block = Some(cmp_bb);
-                    let payload = self
-                        .unbox_from_any(Operand::Copy(discr), &lit_ty, expr_span)
-                        .unwrap_or(Operand::Copy(discr));
                     let lit_op = self.lower_expr(lit_expr);
+                    let lit_box = self.box_into_any(lit_op, &lit_ty, expr_span);
                     self.push_statement(
                         StatementKind::Assign(
                             is_eq,
-                            Rvalue::BinaryOp(crate::parser::BinOp::Eq, payload, lit_op),
+                            Rvalue::Call {
+                                func: Operand::Constant(Constant::Function(
+                                    "__olive_any_eq_strict".to_string(),
+                                )),
+                                args: vec![Operand::Copy(discr), lit_box],
+                            },
                         ),
                         expr_span,
                     );
