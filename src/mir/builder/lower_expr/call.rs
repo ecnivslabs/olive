@@ -240,9 +240,13 @@ impl<'a> MirBuilder<'a> {
 
         let func_name = if current_arg_ty == Type::Str {
             "__olive_str_len"
+        } else if matches!(current_arg_ty, Type::Dict(_, _)) {
+            // A dict is an object (key map), not a contiguous vector, so it has
+            // its own length function.
+            "__olive_obj_len"
         } else if matches!(
             current_arg_ty,
-            Type::List(_) | Type::Tuple(_) | Type::Set(_) | Type::Dict(_, _) | Type::Any
+            Type::List(_) | Type::Tuple(_) | Type::Set(_) | Type::Any
         ) {
             "__olive_list_len"
         } else if current_arg_ty == Type::Bytes {

@@ -334,6 +334,24 @@ pub extern "C" fn olive_str_fmt(template: i64, args: i64) -> i64 {
     olive_str_internal(&result)
 }
 
+/// Builds a list of the string's characters, each as a one-character string.
+/// Backs `for c in s` iteration.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_str_chars(s: i64) -> i64 {
+    if s == 0 {
+        return crate::list::olive_list_new(0);
+    }
+    let chars: Vec<String> = olive_str_from_ptr(s)
+        .chars()
+        .map(|c| c.to_string())
+        .collect();
+    let list = crate::list::olive_list_new(chars.len() as i64);
+    for (i, c) in chars.iter().enumerate() {
+        crate::list::olive_list_set(list, i as i64, crate::olive_str_internal(c));
+    }
+    list
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_char_count(s: i64) -> i64 {
     if s == 0 {

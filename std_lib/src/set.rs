@@ -21,6 +21,21 @@ pub extern "C" fn olive_set_new(capacity: i64) -> i64 {
     res
 }
 
+/// Snapshots a set's elements into a list, backing `for x in some_set`.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_set_items(set_ptr: i64) -> i64 {
+    if set_ptr == 0 {
+        return crate::list::olive_list_new(0);
+    }
+    let s = unsafe { &*(set_ptr as *const OliveHashSet) };
+    let list = crate::list::olive_list_new(s.len as i64);
+    for i in 0..s.len {
+        let val = unsafe { *s.ptr.add(i) };
+        crate::list::olive_list_set(list, i as i64, val);
+    }
+    list
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_set_add(set_ptr: i64, val: i64) {
     if set_ptr == 0 {

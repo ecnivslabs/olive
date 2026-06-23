@@ -168,6 +168,24 @@ pub extern "C" fn olive_obj_keys(obj_ptr: i64) -> i64 {
     res
 }
 
+/// Returns a list of `[key, value]` pairs, backing `for k, v in d.items()`.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_obj_items(obj_ptr: i64) -> i64 {
+    if obj_ptr == 0 {
+        return crate::list::olive_list_new(0);
+    }
+    let m = unsafe { &*(obj_ptr as *const OliveObj) };
+    let pairs: Vec<(i64, i64)> = m.fields.iter().map(|(k, v)| (k.0, *v)).collect();
+    let outer = crate::list::olive_list_new(pairs.len() as i64);
+    for (i, (k, v)) in pairs.iter().enumerate() {
+        let pair = crate::list::olive_list_new(2);
+        crate::list::olive_list_set(pair, 0, *k);
+        crate::list::olive_list_set(pair, 1, *v);
+        crate::list::olive_list_set(outer, i as i64, pair);
+    }
+    outer
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_values(obj_ptr: i64) -> i64 {
     if obj_ptr == 0 {

@@ -280,6 +280,13 @@ impl Parser {
             self.advance();
             while self.peek().kind != TokenKind::RBracket && self.peek().kind != TokenKind::Eof {
                 params.push(self.expect(TokenKind::Identifier)?.value);
+                // An optional trait bound, e.g. `[T: Comparable]`. Generics are
+                // resolved structurally, so the bound documents the requirement
+                // the body already imposes; parse and accept it.
+                if self.peek().kind == TokenKind::Colon {
+                    self.advance();
+                    self.parse_type_expr()?;
+                }
                 if self.peek().kind == TokenKind::Comma {
                     self.advance();
                 } else {

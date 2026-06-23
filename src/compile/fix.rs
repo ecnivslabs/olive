@@ -78,7 +78,7 @@ const MAX_FIX_PASSES: usize = 16;
 
 /// Applies machine-applicable fixes to disk (unless `dry_run`), re-running the
 /// front end until a pass changes nothing. One pass stops at the first failing
-/// stage — a name typo is a resolution error and short-circuits type checking —
+/// stage (a name typo is a resolution error and short-circuits type checking),
 /// so later-stage fixes need the re-run. A dry run reports the first pass only.
 pub fn run_fix(filename: &str, dry_run: bool) -> Result<FixReport, ()> {
     if dry_run {

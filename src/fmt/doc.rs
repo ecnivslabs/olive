@@ -4,7 +4,7 @@ use std::rc::Rc;
 pub const INDENT: usize = 4;
 
 /// A document in the Wadler/Leijen pretty-printing algebra. A `Doc` describes the
-/// *structure* of the output — where breaks may happen and how deep to indent — and
+/// *structure* of the output (where breaks may happen and how deep to indent), and
 /// the renderer decides flat-vs-broken per `Group` against a width budget.
 #[derive(Clone)]
 pub enum Doc {

@@ -98,6 +98,30 @@ pub(super) fn scan_rvalue_imports(
         Rvalue::Call { .. } => {}
         Rvalue::BinaryOp(op, lhs, rhs) => {
             use crate::parser::BinOp::*;
+            // An `Any` operand routes arithmetic and comparison to the runtime
+            // kind-dispatching helpers, so make all of them (and what they call)
+            // available.
+            if is_any_op(func_mir, lhs) || is_any_op(func_mir, rhs) {
+                for f in [
+                    "__olive_any_add",
+                    "__olive_any_sub",
+                    "__olive_any_mul",
+                    "__olive_any_div",
+                    "__olive_any_mod",
+                    "__olive_any_lt",
+                    "__olive_any_le",
+                    "__olive_any_gt",
+                    "__olive_any_ge",
+                    "__olive_any_eq",
+                    "__olive_any_ne",
+                    "__olive_str_concat",
+                    "__olive_list_concat",
+                    "__olive_box_float",
+                    "__olive_unbox_float",
+                ] {
+                    needed.insert(f);
+                }
+            }
             match op {
                 Add => {
                     let mut is_pyobj = false;
@@ -340,6 +364,6 @@ mod builtins;
 mod tests;
 
 pub(super) use builtins::{
-    cl_type, is_float_op, is_list_op, is_pyobj_op, is_str_op, is_u64_op, map_builtin_to_runtime,
-    resolve_builtin_import,
+    cl_type, is_any_op, is_float_op, is_list_op, is_pyobj_op, is_str_op, is_u64_op,
+    map_builtin_to_runtime, resolve_builtin_import,
 };

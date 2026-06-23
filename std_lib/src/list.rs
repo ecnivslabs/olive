@@ -92,6 +92,54 @@ pub extern "C" fn olive_list_set(list_ptr: i64, idx: i64, val: i64) {
     }
 }
 
+/// Reverses a list in place. Element representation is irrelevant.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_reverse(list_ptr: i64) {
+    if list_ptr == 0 {
+        return;
+    }
+    let s = unsafe { &mut *(list_ptr as *mut StableVec) };
+    let slice = unsafe { std::slice::from_raw_parts_mut(s.ptr, s.len) };
+    slice.reverse();
+}
+
+fn list_slice_mut<'a>(list_ptr: i64) -> Option<&'a mut [i64]> {
+    if list_ptr == 0 {
+        return None;
+    }
+    let s = unsafe { &mut *(list_ptr as *mut StableVec) };
+    Some(unsafe { std::slice::from_raw_parts_mut(s.ptr, s.len) })
+}
+
+/// Sorts a list of integers ascending, in place.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_sort_int(list_ptr: i64) {
+    if let Some(slice) = list_slice_mut(list_ptr) {
+        slice.sort_unstable();
+    }
+}
+
+/// Sorts a list of floats ascending, in place. Elements are stored as bit
+/// patterns, so they are read back as `f64` for the comparison.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_sort_float(list_ptr: i64) {
+    if let Some(slice) = list_slice_mut(list_ptr) {
+        slice.sort_by(|a, b| {
+            let fa = f64::from_bits(*a as u64);
+            let fb = f64::from_bits(*b as u64);
+            fa.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
+}
+
+/// Sorts a list of strings lexicographically, in place.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_sort_str(list_ptr: i64) {
+    if let Some(slice) = list_slice_mut(list_ptr) {
+        slice.sort_by_key(|&p| crate::olive_str_from_ptr(p));
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_list_get(list_ptr: i64, idx: i64) -> i64 {
     if list_ptr == 0 {
@@ -273,7 +321,10 @@ pub extern "C" fn olive_iter(list_ptr: i64) -> i64 {
     let mut is_py = false;
     let mut actual_list_ptr = list_ptr;
 
-    if list_ptr != 0 {
+    // A tagged pointer with a high address is a string: iterate its characters.
+    if list_ptr != 0 && (list_ptr & 1) == 1 && (list_ptr & !1) > 0x10000 {
+        actual_list_ptr = crate::string::olive_str_chars(list_ptr);
+    } else if list_ptr != 0 {
         unsafe {
             let raw_ptr = list_ptr as *const libc::c_void;
             if python::is_readable_ptr(raw_ptr) {
@@ -283,6 +334,11 @@ pub extern "C" fn olive_iter(list_ptr: i64) -> i64 {
                     actual_list_ptr =
                         crate::python::python_iter::olive_py_iter(list_ptr as *mut libc::c_void)
                             as i64;
+                } else if kind == KIND_OBJ {
+                    // A dict iterates over its keys.
+                    actual_list_ptr = crate::obj::olive_obj_keys(list_ptr);
+                } else if kind == KIND_SET {
+                    actual_list_ptr = crate::set::olive_set_items(list_ptr);
                 }
             }
         }

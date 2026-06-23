@@ -155,6 +155,22 @@ impl Parser {
         } else {
             (None, first_ty)
         };
+        // `impl Box[T]:` writes the type parameters inside the type, not after
+        // `impl`, so when none were given explicitly, treat the type's
+        // uppercase-named generic arguments (the convention for a parameter) as
+        // the impl's type parameters.
+        let mut type_params = type_params;
+        if type_params.is_empty()
+            && let TypeExprKind::Generic(_, args) = &type_name.kind
+        {
+            for arg in args {
+                if let TypeExprKind::Name(n) = &arg.kind
+                    && n.chars().next().is_some_and(char::is_uppercase)
+                {
+                    type_params.push(n.clone());
+                }
+            }
+        }
         let body = self.parse_block()?;
         let span = self.span_from(&start);
         Ok(Stmt::new(

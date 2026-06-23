@@ -119,7 +119,7 @@ impl<'a> Lowerer<'a> {
         Self::assemble(items)
     }
 
-    /// Absorb a block's trailing comments — those indented at least `col`. Shallower
+    /// Absorb a block's trailing comments, those indented at least `col`. Shallower
     /// comments belong to an enclosing scope and are left for it to place.
     pub(super) fn flush_block(&mut self, items: &mut Vec<Item>, bound: usize, col: usize) {
         while let Some(c) = self.cw.take_before_col(bound, col) {
@@ -180,8 +180,8 @@ impl<'a> Lowerer<'a> {
         self.suite(header, body, bound)
     }
 
-    /// True when the span's leading text is the keyword `kw` followed by whitespace —
-    /// distinguishes prefix `try x` / `await x` from postfix `x?` / `x.await`.
+    /// True when the span's leading text is the keyword `kw` followed by whitespace.
+    /// Distinguishes prefix `try x` / `await x` from postfix `x?` / `x.await`.
     fn span_kw_prefix(&self, span: crate::span::Span, kw: &str) -> bool {
         let end = span.start + kw.len();
         if end >= span.end {

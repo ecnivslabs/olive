@@ -117,6 +117,10 @@ impl<'a> MirBuilder<'a> {
             return op;
         }
 
+        if let Some(op) = self.lower_str_method(obj, attr, &arg_ops, span, expr_id) {
+            return op;
+        }
+
         if let ExprKind::Identifier(name) = &obj.kind {
             let obj_ty = self.get_type(obj.id);
             let mut current_obj_ty = obj_ty.clone();
@@ -317,6 +321,67 @@ impl<'a> MirBuilder<'a> {
 
     /// Routes the dict methods `keys`/`values`/`remove` to their runtime fns,
     /// for a `Dict` or `Any` receiver. `None` for anything else.
+    /// Lowers the common string methods to their runtime calls. The receiver is
+    /// the first argument, matching the runtime signatures.
+    fn lower_str_method(
+        &mut self,
+        obj: &Expr,
+        attr: &str,
+        arg_ops: &[Operand],
+        span: Span,
+        expr_id: usize,
+    ) -> Option<Operand> {
+        let runtime = match attr {
+            "upper" => "__olive_str_upper",
+            "lower" => "__olive_str_lower",
+            "strip" => "__olive_str_trim",
+            "lstrip" => "__olive_str_trim_start",
+            "rstrip" => "__olive_str_trim_end",
+            "split" => "__olive_str_split",
+            "join" => "__olive_str_join",
+            "replace" => "__olive_str_replace",
+            "find" => "__olive_str_find",
+            "repeat" => "__olive_str_repeat",
+            "contains" => "__olive_str_contains",
+            "startswith" => "__olive_str_starts_with",
+            "endswith" => "__olive_str_ends_with",
+            _ => return None,
+        };
+        let mut recv_ty = self.get_type(obj.id);
+        while let Type::Ref(inner) | Type::MutRef(inner) = recv_ty {
+            recv_ty = *inner;
+        }
+        // An `Any` receiver holding a string is the bare string pointer, so the
+        // runtime string functions apply directly.
+        if !matches!(recv_ty, Type::Str | Type::Any) {
+            return None;
+        }
+        let obj_op = self.lower_expr_as_copy(obj);
+        // `sep.join(list)` maps to `olive_str_join(list, sep)`, so the list comes
+        // first; every other method takes the receiver first.
+        let call_args = if attr == "join" {
+            let mut a = arg_ops.to_vec();
+            a.push(obj_op);
+            a
+        } else {
+            let mut a = vec![obj_op];
+            a.extend_from_slice(arg_ops);
+            a
+        };
+        let tmp = self.new_local(self.get_type(expr_id), None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                tmp,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(runtime.to_string())),
+                    args: call_args,
+                },
+            ),
+            span,
+        );
+        Some(self.operand_for_local(tmp))
+    }
+
     /// Lowers the mutating methods on a native list to their runtime calls.
     /// `append`/`insert`/`extend` mutate in place and yield the list; `pop` and
     /// `remove` return the removed element.
@@ -328,21 +393,39 @@ impl<'a> MirBuilder<'a> {
         span: Span,
         expr_id: usize,
     ) -> Option<Operand> {
+        if !matches!(
+            attr,
+            "append" | "insert" | "extend" | "remove" | "pop" | "sort" | "reverse"
+        ) {
+            return None;
+        }
+        let mut recv_ty = self.get_type(obj.id);
+        while let Type::Ref(inner) | Type::MutRef(inner) = recv_ty {
+            recv_ty = *inner;
+        }
+        // An `Any` receiver holding a list is the bare list pointer, so the
+        // runtime list functions apply directly. Its element type is unknown, so
+        // `sort` falls back to the integer ordering.
+        let elem: Type = match &recv_ty {
+            Type::List(e) => (**e).clone(),
+            Type::Any => Type::Any,
+            _ => return None,
+        };
+        let elem = &elem;
         let runtime = match attr {
             "append" => "__olive_list_append",
             "insert" => "__olive_list_insert",
             "extend" => "__olive_list_extend",
             "remove" => "__olive_list_remove",
             "pop" => "__olive_list_pop",
+            "reverse" => "__olive_list_reverse",
+            "sort" => match elem {
+                Type::Float | Type::F32 => "__olive_list_sort_float",
+                Type::Str => "__olive_list_sort_str",
+                _ => "__olive_list_sort_int",
+            },
             _ => return None,
         };
-        let mut recv_ty = self.get_type(obj.id);
-        while let Type::Ref(inner) | Type::MutRef(inner) = recv_ty {
-            recv_ty = *inner;
-        }
-        if !matches!(recv_ty, Type::List(_)) {
-            return None;
-        }
         let obj_op = self.lower_expr_as_copy(obj);
         let returns_elem = matches!(attr, "pop" | "remove");
         let mut call_args = vec![obj_op.clone()];
@@ -376,6 +459,8 @@ impl<'a> MirBuilder<'a> {
         let runtime = match attr {
             "keys" => "__olive_obj_keys",
             "values" => "__olive_obj_values",
+            "items" => "__olive_obj_items",
+            "get" => "__olive_obj_get",
             "remove" => "__olive_obj_remove",
             _ => return None,
         };

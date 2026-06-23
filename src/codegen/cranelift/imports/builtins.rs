@@ -49,6 +49,10 @@ pub(crate) fn resolve_builtin_import(
             "__olive_list_insert" => Some("__olive_list_insert"),
             "__olive_list_remove" => Some("__olive_list_remove"),
             "__olive_list_pop" => Some("__olive_list_pop"),
+            "__olive_list_reverse" => Some("__olive_list_reverse"),
+            "__olive_list_sort_int" => Some("__olive_list_sort_int"),
+            "__olive_list_sort_float" => Some("__olive_list_sort_float"),
+            "__olive_list_sort_str" => Some("__olive_list_sort_str"),
             "__olive_str_len" => Some("__olive_str_len"),
             "__olive_list_len" => Some("__olive_list_len"),
             "__olive_get_index_any" => Some("__olive_get_index_any"),
@@ -57,6 +61,17 @@ pub(crate) fn resolve_builtin_import(
             "__olive_str_get" => Some("__olive_str_get"),
             "__olive_str_get_checked" => Some("__olive_str_get_checked"),
             "__olive_str_concat" => Some("__olive_str_concat"),
+            "__olive_any_add" => Some("__olive_any_add"),
+            "__olive_any_sub" => Some("__olive_any_sub"),
+            "__olive_any_mul" => Some("__olive_any_mul"),
+            "__olive_any_div" => Some("__olive_any_div"),
+            "__olive_any_mod" => Some("__olive_any_mod"),
+            "__olive_any_lt" => Some("__olive_any_lt"),
+            "__olive_any_le" => Some("__olive_any_le"),
+            "__olive_any_gt" => Some("__olive_any_gt"),
+            "__olive_any_ge" => Some("__olive_any_ge"),
+            "__olive_any_eq" => Some("__olive_any_eq"),
+            "__olive_any_ne" => Some("__olive_any_ne"),
             "__olive_list_concat" => Some("__olive_list_concat"),
             "__olive_str_eq" => Some("__olive_str_eq"),
             "__olive_obj_new" => Some("__olive_obj_new"),
@@ -149,6 +164,8 @@ pub(crate) fn resolve_builtin_import(
             "__olive_str_split" => Some("__olive_str_split"),
             "__olive_str_join" => Some("__olive_str_join"),
             "__olive_obj_keys" => Some("__olive_obj_keys"),
+            "__olive_obj_items" => Some("__olive_obj_items"),
+            "__olive_obj_len" => Some("__olive_obj_len"),
             "__olive_obj_values" => Some("__olive_obj_values"),
             "__olive_obj_remove" => Some("__olive_obj_remove"),
             "__olive_json_parse" => Some("__olive_json_parse"),
@@ -541,6 +558,13 @@ pub(crate) fn is_float_op(func_mir: &MirFunction, op: &Operand) -> bool {
 pub(crate) fn is_pyobj_op(func_mir: &MirFunction, op: &Operand) -> bool {
     match op {
         Operand::Copy(loc) | Operand::Move(loc) => func_mir.locals[loc.0].ty == OliveType::PyObject,
+        _ => false,
+    }
+}
+
+pub(crate) fn is_any_op(func_mir: &MirFunction, op: &Operand) -> bool {
+    match op {
+        Operand::Copy(loc) | Operand::Move(loc) => func_mir.locals[loc.0].ty == OliveType::Any,
         _ => false,
     }
 }

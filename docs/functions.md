@@ -32,11 +32,13 @@ To handle an unknown number of arguments, use `*` for positional arguments (capt
 ```rust
 fn log(message: str, *tags: str, **metadata: str):
     print(f"[{' | '.join(tags)}] {message}")
-    for k, v in metadata:
+    for k, v in metadata.items():
         print(f"  {k}: {v}")
 
 log("Server started", "info", "network", port="8080", host="localhost")
 ```
+
+`tags` is a list and `metadata` is a dict, so they support the usual list and dict operations.
 
 ## Generics (Type Parameters)
 

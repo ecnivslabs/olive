@@ -235,7 +235,6 @@ impl<'a> MirBuilder<'a> {
         }
 
         let callee_ty = self.get_type(callee.id);
-        let arg_count = arg_ops.len();
 
         if callee_ty == Type::PyObject {
             let callee_op = self.lower_expr_as_copy(callee);
@@ -318,7 +317,7 @@ impl<'a> MirBuilder<'a> {
             callee,
             func,
             arg_ops,
-            vec![None; arg_count],
+            arg_kw_names,
             arg_tys,
             expr.span,
             expr.id,

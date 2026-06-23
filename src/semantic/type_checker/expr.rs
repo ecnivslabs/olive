@@ -210,6 +210,11 @@ impl TypeChecker {
             }
 
             ExprKind::Call { callee, args } => {
+                if let ExprKind::Attr { obj, attr } = &callee.kind
+                    && let Some(ret) = self.builtin_collection_method(obj, attr, args)
+                {
+                    return ret;
+                }
                 let callee_ty = self.check_expr(callee);
                 let applied = self.apply_subst(callee_ty.clone());
 
@@ -426,7 +431,10 @@ impl TypeChecker {
                         }
                     }
 
-                    return Type::Struct(name, type_args);
+                    // Resolve the type arguments inferred from the field values
+                    // (e.g. `Box(7)` becomes `Box[int]`) so methods on the value
+                    // monomorphize to the right concrete instance.
+                    return self.apply_subst(Type::Struct(name, type_args));
                 }
 
                 // For a plain function call whose positional arguments line up
@@ -545,6 +553,10 @@ impl TypeChecker {
                     current_obj_ty = *inner;
                 }
                 match current_obj_ty {
+                    // `f[int](..)` indexes a function by a type: this is an
+                    // explicit type argument, which inference already handles, so
+                    // the result is just the function itself.
+                    Type::Fn(_, _, _) => current_obj_ty,
                     Type::List(inner) => {
                         self.unify(&Type::Int, &idx_ty, expr.span);
                         *inner
@@ -553,7 +565,17 @@ impl TypeChecker {
                         self.unify(&k, &idx_ty, expr.span);
                         *v
                     }
-                    Type::Tuple(_) => Type::Any,
+                    Type::Tuple(comps) => {
+                        // A constant index into a tuple yields that field's type;
+                        // a dynamic index can be any field, so it widens to `Any`.
+                        if let ExprKind::Integer(i) = &index.kind
+                            && let Some(t) = comps.get(*i as usize)
+                        {
+                            t.clone()
+                        } else {
+                            Type::Any
+                        }
+                    }
                     Type::Str => {
                         self.unify(&Type::Int, &idx_ty, expr.span);
                         Type::Str
@@ -1004,6 +1026,57 @@ impl TypeChecker {
         match kind {
             Collection::List => Type::List(Box::new(elem_ty)),
             Collection::Set => Type::Set(Box::new(elem_ty)),
+        }
+    }
+
+    /// Types a built-in method call on a string, list, or dict. Returns `None`
+    /// for anything else (e.g. a user struct method), letting the normal
+    /// resolution run.
+    fn builtin_collection_method(
+        &mut self,
+        obj: &Expr,
+        attr: &str,
+        args: &[CallArg],
+    ) -> Option<Type> {
+        let obj_ty = self.check_expr(obj);
+        let obj_ty = self.apply_subst(obj_ty);
+        for a in args {
+            match a {
+                CallArg::Positional(e)
+                | CallArg::Keyword(_, e)
+                | CallArg::Splat(e)
+                | CallArg::KwSplat(e) => {
+                    self.check_expr(e);
+                }
+            }
+        }
+        let mut base = obj_ty.clone();
+        while let Type::Ref(inner) | Type::MutRef(inner) = base {
+            base = *inner;
+        }
+        match (&base, attr) {
+            // String method names are string-specific, so they type the same way
+            // on a concrete `str` or on an `Any` that holds one.
+            (
+                Type::Str | Type::Any,
+                "upper" | "lower" | "strip" | "lstrip" | "rstrip" | "replace" | "repeat" | "join",
+            ) => Some(Type::Str),
+            (Type::Str | Type::Any, "split") => Some(Type::List(Box::new(Type::Str))),
+            (Type::Str | Type::Any, "find") => Some(Type::Int),
+            (Type::Str | Type::Any, "contains" | "startswith" | "endswith") => Some(Type::Bool),
+            (Type::List(elem), "pop" | "remove") => Some((**elem).clone()),
+            (Type::List(_), "append" | "insert" | "extend" | "sort" | "reverse") => {
+                Some(base.clone())
+            }
+            (Type::Dict(_, v), "get") => Some((**v).clone()),
+            (Type::Dict(k, _), "keys") => Some(Type::List(k.clone())),
+            (Type::Dict(_, v), "values") => Some(Type::List(v.clone())),
+            (Type::Dict(k, v), "items") => Some(Type::List(Box::new(Type::Tuple(vec![
+                (**k).clone(),
+                (**v).clone(),
+            ])))),
+            (Type::Dict(_, v), "remove") => Some((**v).clone()),
+            _ => None,
         }
     }
 

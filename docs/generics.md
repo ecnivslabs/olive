@@ -44,3 +44,26 @@ fn first[T](items: [T]) -> T:
 
 let item = first([1, 2, 3])    // T is int, inferred from the list
 ```
+
+You can name the type explicitly when you want to, though it is rarely needed:
+
+```rust
+let item = first[int]([1, 2, 3])
+```
+
+## Trait Bounds
+
+Constrain a type parameter with `: Trait` so the parameter is expected to provide that trait's methods:
+
+```rust
+trait Comparable:
+    fn rank(self) -> int:
+        return 0
+
+fn larger[T: Comparable](a: T, b: T) -> T:
+    if a.rank() > b.rank():
+        return a
+    return b
+```
+
+Any type implementing `Comparable` can be passed to `larger`.

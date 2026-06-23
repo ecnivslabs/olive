@@ -1,5 +1,5 @@
 use super::CraneliftCodegen;
-use super::imports::{is_float_op, is_list_op, is_pyobj_op, is_str_op, is_u64_op};
+use super::imports::{is_any_op, is_float_op, is_list_op, is_pyobj_op, is_str_op, is_u64_op};
 use crate::mir::{Constant, Local, MirFunction, Operand};
 use crate::semantic::types::Type as OliveType;
 use cranelift::prelude::*;
@@ -77,6 +77,34 @@ impl<M: Module> CraneliftCodegen<M> {
             let local_func = module.declare_func_in_func(*func_id, builder.func);
             let inst = builder.ins().call(local_func, &[l_val, r_val]);
             return builder.inst_results(inst)[0];
+        }
+
+        // An `Any` operand carries no static type, so arithmetic and comparison
+        // dispatch on the runtime kind (string/float/int/list) rather than the
+        // default integer path. `Any == None` is already rewritten earlier.
+        if is_any_op(func_mir, lhs) || is_any_op(func_mir, rhs) {
+            let any_fn = match op {
+                Add => Some("__olive_any_add"),
+                Sub => Some("__olive_any_sub"),
+                Mul => Some("__olive_any_mul"),
+                Div => Some("__olive_any_div"),
+                Mod => Some("__olive_any_mod"),
+                Lt => Some("__olive_any_lt"),
+                LtEq => Some("__olive_any_le"),
+                Gt => Some("__olive_any_gt"),
+                GtEq => Some("__olive_any_ge"),
+                Eq => Some("__olive_any_eq"),
+                NotEq => Some("__olive_any_ne"),
+                _ => None,
+            };
+            if let Some(name) = any_fn {
+                let fid = func_ids
+                    .get(name)
+                    .unwrap_or_else(|| panic!("missing {name}"));
+                let local_func = module.declare_func_in_func(*fid, builder.func);
+                let inst = builder.ins().call(local_func, &[l, r]);
+                return builder.inst_results(inst)[0];
+            }
         }
 
         match op {

@@ -293,7 +293,21 @@ impl<'a> MirBuilder<'a> {
         self.current_block = Some(body_bb);
         self.enter_scope();
 
-        let next_val = self.new_local(Type::Any, None, false);
+        // Type the yielded value by the iterable's element type so a typed value
+        // (a string char, a list element) prints and dispatches correctly rather
+        // than falling back to the `Any` path, even after copy propagation.
+        let mut iter_ty = self.get_type(iter.id);
+        while let Type::Ref(inner) | Type::MutRef(inner) = iter_ty {
+            iter_ty = *inner;
+        }
+        let elem_ty = match iter_ty {
+            Type::Str => Type::Str,
+            Type::List(t) | Type::Set(t) => *t,
+            Type::Dict(k, _) => *k,
+            _ => Type::Any,
+        };
+
+        let next_val = self.new_local(elem_ty.clone(), None, false);
         self.push_statement(
             StatementKind::Assign(
                 next_val,
@@ -307,17 +321,27 @@ impl<'a> MirBuilder<'a> {
 
         match target {
             ForTarget::Name(name, _) => {
-                let local = self.declare_var(name.clone(), Type::Any, true);
+                let local = self.declare_var(name.clone(), elem_ty, true);
                 self.push_statement(
                     StatementKind::Assign(local, Rvalue::Use(Operand::Copy(next_val))),
                     iter.span,
                 );
             }
             ForTarget::Tuple(names) => {
+                let comp_tys: Vec<Type> = match &elem_ty {
+                    Type::Tuple(comps) => comps.clone(),
+                    _ => Vec::new(),
+                };
                 for (i, (name, _)) in names.iter().enumerate() {
-                    let local = self.declare_var(name.clone(), Type::Any, true);
+                    // Type each binding by its tuple component so operators and
+                    // methods dispatch correctly rather than via the `Any` path.
+                    let comp_ty = comp_tys.get(i).cloned().unwrap_or(Type::Any);
+                    // Each binding is a view into the element, which the iterable
+                    // owns, so it must not be freed here (avoids a double free
+                    // when both bindings are consumed in one expression).
+                    let local = self.declare_var_view(name.clone(), comp_ty.clone(), true);
                     let idx_op = Operand::Constant(Constant::Int(i as i64));
-                    let elem_tmp = self.new_local_with_owning(Type::Any, None, false, false);
+                    let elem_tmp = self.new_local_with_owning(comp_ty, None, false, false);
                     self.push_statement(
                         StatementKind::Assign(
                             elem_tmp,
