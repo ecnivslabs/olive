@@ -645,6 +645,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_any_ne_profiled", &sig_3i64_i64),
             ("__olive_any_eq_strict", &sig_i64_i64_i64),
             ("__olive_any_ne_strict", &sig_i64_i64_i64),
+            ("__olive_struct_box", &sig_i64_i64_i64),
             ("__olive_str_capitalize", &sig_i64_i64),
             ("__olive_str_center", &sig_3i64_i64),
             ("__olive_str_contains", &sig_i64_i64_i64),

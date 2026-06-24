@@ -51,8 +51,13 @@ impl Type {
         }
     }
 
-    /// Union of scalars, str, and None with at least one scalar member.
-    /// Stored Any-tag encoded so zero, None, and str words stay distinct.
+    /// Union stored in the Any tag encoding so member kinds stay distinct at
+    /// runtime: scalars tag inline, None is TAG_NULL, str and self-describing
+    /// containers pass through as identity words, structs box with their
+    /// descriptor. Applies when a scalar member makes a raw word ambiguous
+    /// (zero vs None) or when 2+ non-null members include a struct, whose
+    /// raw header word is a field count, not a kind. Pointer-backed `T |
+    /// None` keeps the raw 0-sentinel layout.
     pub fn is_tag_encoded_union(&self) -> bool {
         let is_scalar = |m: &Type| {
             matches!(
@@ -71,12 +76,25 @@ impl Type {
                     | Type::Bool
             )
         };
+        let is_identity = |m: &Type| {
+            matches!(
+                m,
+                Type::Str | Type::List(_) | Type::Dict(_, _) | Type::Set(_) | Type::Bytes
+            )
+        };
         match self {
             Type::Union(members) => {
+                let encodable = members.iter().all(|m| {
+                    matches!(m, Type::Null | Type::Struct(_, _, _))
+                        || is_scalar(m)
+                        || is_identity(m)
+                });
+                if !encodable {
+                    return false;
+                }
+                let non_null = members.iter().filter(|m| !matches!(m, Type::Null)).count();
                 members.iter().any(is_scalar)
-                    && members
-                        .iter()
-                        .all(|m| matches!(m, Type::Null | Type::Str) || is_scalar(m))
+                    || (non_null >= 2 && members.iter().any(|m| matches!(m, Type::Struct(_, _, _))))
             }
             _ => false,
         }

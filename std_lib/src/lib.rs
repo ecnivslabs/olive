@@ -50,6 +50,7 @@ pub mod result;
 pub mod shadow_stack;
 pub mod slab;
 pub mod string_slab;
+pub mod struct_box;
 pub mod sys;
 pub mod sys_signal;
 pub mod uuid;
@@ -483,6 +484,10 @@ pub(crate) fn format_list_elem(val: i64) -> String {
                     return format!("Err({})", format_list_elem(res.payload));
                 }
             }
+            struct_box::KIND_STRUCT_BOX => {
+                let b = unsafe { &*(val as *const struct_box::OliveStructBox) };
+                return format::format_desc(b.ptr, b.desc);
+            }
             _ => {}
         }
     }
@@ -638,7 +643,12 @@ pub extern "C" fn olive_any_to_str(val: i64) -> i64 {
                     olive_str_internal("<PyObject>")
                 };
             }
-            KIND_LIST | KIND_ANY_LIST | KIND_OBJ | KIND_ENUM | KIND_SET => {
+            KIND_LIST
+            | KIND_ANY_LIST
+            | KIND_OBJ
+            | KIND_ENUM
+            | KIND_SET
+            | struct_box::KIND_STRUCT_BOX => {
                 return olive_str_internal(&format_list_elem(val));
             }
             _ => {}
@@ -911,9 +921,21 @@ any_profiled!(olive_any_ge_profiled, olive_any_ge);
 any_profiled!(olive_any_eq_profiled, olive_any_eq);
 any_profiled!(olive_any_ne_profiled, olive_any_ne);
 
+/// Heap kind of a word that is not a numeric scalar box, if any. Used to keep
+/// strict equality from raw-comparing container or struct words as numbers.
+fn any_heap_object_kind(v: i64) -> Option<i64> {
+    if v & boxed::TAG_MASK != 0 || !is_active_object(v) {
+        return None;
+    }
+    let k = unsafe { *(v as *const i64) };
+    (k != KIND_FLOAT && k != KIND_INT).then_some(k)
+}
+
 /// Kind-respecting equality for tag-encoded union words. None only equals
-/// None, a string only equals an equal string, numerics compare by value
-/// with float promotion. A string never parses as a number here.
+/// None, a string only equals an equal string, structs compare by field
+/// content through their descriptor, other heap members by identity, and
+/// numerics by value with float promotion. A string never parses as a
+/// number here.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_any_eq_strict(a: i64, b: i64) -> i64 {
     if a == boxed::TAG_NULL || b == boxed::TAG_NULL {
@@ -926,6 +948,29 @@ pub extern "C" fn olive_any_eq_strict(a: i64, b: i64) -> i64 {
             return olive_str_eq(a, b);
         }
         return 0;
+    }
+    let a_obj = any_heap_object_kind(a);
+    let b_obj = any_heap_object_kind(b);
+    if a_obj.is_some() || b_obj.is_some() {
+        return match (a_obj, b_obj) {
+            (Some(ka), Some(kb)) if ka == kb => {
+                if ka == struct_box::KIND_STRUCT_BOX {
+                    let (ba, bb) = unsafe {
+                        (
+                            &*(a as *const struct_box::OliveStructBox),
+                            &*(b as *const struct_box::OliveStructBox),
+                        )
+                    };
+                    if !format::desc_eq(ba.desc, bb.desc) {
+                        return 0;
+                    }
+                    eq_typed::olive_eq_typed(ba.ptr, bb.ptr, ba.desc)
+                } else {
+                    (a == b) as i64
+                }
+            }
+            _ => 0,
+        };
     }
     if any_is_float(a) || any_is_float(b) {
         return (boxed::olive_unbox_float(a) == boxed::olive_unbox_float(b)) as i64;
@@ -1146,6 +1191,7 @@ pub extern "C" fn olive_free_any(ptr: i64) {
         crate::result::KIND_RESULT => crate::result::olive_free_result(ptr),
         KIND_PYOBJECT => python::olive_py_decref(ptr as *mut std::os::raw::c_void),
         KIND_ITER => olive_free_iter(ptr),
+        struct_box::KIND_STRUCT_BOX => struct_box::free_struct_box(ptr),
         _ => {}
     }
 }
@@ -1177,6 +1223,7 @@ pub extern "C" fn olive_free_union_member(ptr: i64) {
         crate::result::KIND_RESULT => crate::result::olive_free_result(ptr),
         KIND_PYOBJECT => python::olive_py_decref(ptr as *mut std::os::raw::c_void),
         KIND_ITER => olive_free_iter(ptr),
+        struct_box::KIND_STRUCT_BOX => struct_box::free_struct_box(ptr),
         _ => {}
     }
 }
@@ -1267,6 +1314,10 @@ pub extern "C" fn olive_typeof_str(val: i64) -> i64 {
         return olive_str_internal("int");
     }
     let kind = unsafe { *(val as *const i64) };
+    if kind == struct_box::KIND_STRUCT_BOX {
+        let b = unsafe { &*(val as *const struct_box::OliveStructBox) };
+        return olive_str_internal(&format::desc_struct_name(b.desc));
+    }
     let name = match kind {
         KIND_LIST | KIND_ANY_LIST => "list",
         KIND_OBJ => "dict",

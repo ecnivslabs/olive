@@ -18,6 +18,43 @@ pub(crate) const D_ENUM: u8 = 13;
 pub(crate) const D_BACKREF: u8 = 14;
 pub(crate) const D_BYTES: u8 = 15;
 
+/// Renders a value through a full descriptor starting at its first byte, for
+/// callers holding a runtime descriptor pointer (struct boxes).
+pub(crate) fn format_desc(val: i64, desc: i64) -> String {
+    let mut pos = 0usize;
+    fmt(val, desc as *const u8, &mut pos)
+}
+
+/// Struct name out of a `D_STRUCT` descriptor, or "struct" when the layout
+/// was never registered (`D_OBJ`).
+pub(crate) fn desc_struct_name(desc: i64) -> String {
+    let d = desc as *const u8;
+    if unsafe { byte(d, 0) } != D_STRUCT {
+        return "struct".to_string();
+    }
+    let mut pos = 1usize;
+    read_lp(d, &mut pos)
+}
+
+/// Byte equality of two NUL-terminated descriptors; same pointer short-circuits.
+pub(crate) fn desc_eq(a: i64, b: i64) -> bool {
+    if a == b {
+        return true;
+    }
+    let (a, b) = (a as *const u8, b as *const u8);
+    let mut i = 0usize;
+    loop {
+        let (ba, bb) = unsafe { (byte(a, i), byte(b, i)) };
+        if ba != bb {
+            return false;
+        }
+        if ba == 0 {
+            return true;
+        }
+        i += 1;
+    }
+}
+
 /// Reads a length-prefixed string from a descriptor; length field is biased by 13.
 fn read_lp(desc: *const u8, pos: &mut usize) -> String {
     let len = unsafe { byte(desc, *pos) } as usize - 13;

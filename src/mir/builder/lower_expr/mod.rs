@@ -12,6 +12,7 @@ use super::{MirBuilder, NestedFnInfo};
 use crate::mir::AggregateKind;
 use crate::mir::ir::*;
 use crate::parser::{CallArg, Expr, ExprKind, Stmt, StmtKind};
+use crate::semantic::type_descriptor::type_descriptor;
 use crate::semantic::types::Type;
 use crate::span::Span;
 
@@ -105,6 +106,30 @@ impl<'a> MirBuilder<'a> {
             (Operand::Constant(Constant::None), Type::Any) => &Type::Null,
             _ => from_ty,
         };
+        // A raw struct pointer is ambiguous once erased (its header word is a
+        // field count, not a kind), so it boxes with its descriptor.
+        if matches!(from_ty, Type::Struct(_, _, _)) {
+            let desc = type_descriptor(
+                from_ty,
+                &self.struct_fields,
+                &self.struct_field_types,
+                &self.enum_defs,
+            );
+            let tmp = self.new_local(Type::Any, None, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    tmp,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function(
+                            "__olive_struct_box".to_string(),
+                        )),
+                        args: vec![op, Operand::Constant(Constant::Str(desc))],
+                    },
+                ),
+                span,
+            );
+            return Operand::Copy(tmp);
+        }
         let boxer = match from_ty {
             Type::Int
             | Type::I8
