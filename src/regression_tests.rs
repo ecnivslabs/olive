@@ -247,3 +247,26 @@ fn regression_any_keyed_dict_int_lookup() {
     );
     assert_eq!(call_i64(&mut cg, "f"), 30);
 }
+
+#[test]
+fn regression_append_boxes_large_odd_into_any() {
+    // A scalar pushed onto an `[Any]` by `append` must be tagged like a literal
+    // element. A large odd int left bare is bit-identical to a tagged string
+    // pointer, so reading it back through an `Any` add once dereferenced garbage
+    // and crashed; the element must survive the round trip intact.
+    let mut cg = compile(
+        "fn f() -> i64:\n    let mut xs: [Any] = []\n    xs.append(200000001)\n    let mut t: Any = 0\n    t = t + xs[0]\n    return int(t)\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 200000001);
+}
+
+#[test]
+fn regression_membership_in_any_list_matches_scalar() {
+    // The needle of an `in` test against an `[Any]` is tagged the same way the
+    // stored elements are, so equal inline scalars share one word and compare
+    // equal even past the string-pointer threshold.
+    let mut cg = compile(
+        "fn f() -> i64:\n    let mut xs: [Any] = []\n    xs.append(100000003)\n    if 100000003 in xs:\n        return 1\n    return 0\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 1);
+}

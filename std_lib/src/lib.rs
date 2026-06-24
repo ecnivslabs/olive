@@ -83,23 +83,29 @@ enum KeyClass {
 }
 
 fn classify_key(v: i64) -> KeyClass {
+    // Inline immediates are checked before the string heuristic so a large odd
+    // integer is never misread as a tagged pointer.
+    match v & boxed::TAG_MASK {
+        boxed::TAG_INT => return KeyClass::Scalar(KIND_INT, v >> 3),
+        boxed::TAG_BOOL => return KeyClass::Scalar(KIND_BOOL, v >> 3),
+        boxed::TAG_NULL => return KeyClass::Scalar(KIND_NULL, 0),
+        _ => {}
+    }
     if v & 1 == 1 && (v & !1) > 0x10000 {
         return KeyClass::Str(olive_str_as_str(v).unwrap_or(""));
     }
     if is_active_object(v) {
         let kind = unsafe { *(v as *const i64) };
-        if matches!(kind, KIND_INT | KIND_FLOAT | KIND_BOOL | KIND_NULL) {
+        if matches!(kind, KIND_INT | KIND_FLOAT) {
+            // A heap-boxed (out-of-range) int collapses to the same class as an
+            // inline int of equal value, so equal keys hash and compare alike.
             let b = unsafe { &*(v as *const boxed::OliveBoxed) };
-            // A boxed int collapses to the same class as a bare int of equal
-            // value; the other boxed scalars keep their own kind so a boxed
-            // `null` never collides with the integer zero.
             return KeyClass::Scalar(kind, b.bits);
         }
         return KeyClass::Raw(v);
     }
-    // A bare non-pointer word is an unboxed integer (raw ints, bools, and the
-    // null/zero sentinel all live here); normalize it to the int class so it
-    // matches its boxed form.
+    // A bare non-pointer word is a raw integer (a concrete int key or `0`);
+    // normalize it to the int class so it matches its inline form.
     KeyClass::Scalar(KIND_INT, v)
 }
 
@@ -365,6 +371,12 @@ fn looks_like_float(val: i64) -> bool {
 }
 
 fn format_list_elem(val: i64) -> String {
+    match val & boxed::TAG_MASK {
+        boxed::TAG_INT => return format!("{}", val >> 3),
+        boxed::TAG_BOOL => return if val >> 3 != 0 { "True" } else { "False" }.to_string(),
+        boxed::TAG_NULL => return "None".to_string(),
+        _ => {}
+    }
     if val & 1 == 1 {
         let untagged = val & !1;
         if untagged > 0x10000 {
@@ -378,11 +390,6 @@ fn format_list_elem(val: i64) -> String {
                 let b = unsafe { &*(val as *const boxed::OliveBoxed) };
                 return format!("{}", f64::from_bits(b.bits as u64));
             }
-            KIND_BOOL => {
-                let b = unsafe { &*(val as *const boxed::OliveBoxed) };
-                return if b.bits != 0 { "True" } else { "False" }.to_string();
-            }
-            KIND_NULL => return "None".to_string(),
             KIND_INT => {
                 let b = unsafe { &*(val as *const boxed::OliveBoxed) };
                 return format!("{}", b.bits);
@@ -487,6 +494,14 @@ pub extern "C" fn olive_bool_to_str(val: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_any_to_str(val: i64) -> i64 {
+    match val & boxed::TAG_MASK {
+        boxed::TAG_INT => return olive_str_internal(&format!("{}", val >> 3)),
+        boxed::TAG_BOOL => {
+            return olive_str_internal(if val >> 3 != 0 { "True" } else { "False" });
+        }
+        boxed::TAG_NULL => return olive_str_internal("None"),
+        _ => {}
+    }
     if val & 1 == 1 && (val & !1) > 0x10000 {
         return olive_str_internal(&olive_str_from_ptr(val));
     }
@@ -497,11 +512,6 @@ pub extern "C" fn olive_any_to_str(val: i64) -> i64 {
                 let b = unsafe { &*(val as *const boxed::OliveBoxed) };
                 return olive_str_internal(&format!("{}", f64::from_bits(b.bits as u64)));
             }
-            KIND_BOOL => {
-                let b = unsafe { &*(val as *const boxed::OliveBoxed) };
-                return olive_str_internal(if b.bits != 0 { "True" } else { "False" });
-            }
-            KIND_NULL => return olive_str_internal("None"),
             KIND_INT => {
                 let b = unsafe { &*(val as *const boxed::OliveBoxed) };
                 return olive_str_internal(&format!("{}", b.bits));
@@ -898,6 +908,11 @@ pub extern "C" fn olive_free_any(ptr: i64) {
         olive_free_str(ptr);
         return;
     }
+    // An inline immediate (`TAG_INT`/`TAG_BOOL`/`TAG_NULL`) owns nothing; only
+    // 8-aligned heap pointers carry a kind header.
+    if ptr & boxed::TAG_MASK != 0 {
+        return;
+    }
     if ptr < 0x1000 {
         return;
     }
@@ -908,7 +923,7 @@ pub extern "C" fn olive_free_any(ptr: i64) {
         KIND_OBJ => olive_free_obj(ptr),
         KIND_ENUM => olive_free_enum(ptr),
         KIND_BYTES => bytes::olive_buf_free(ptr),
-        KIND_FLOAT | KIND_BOOL | KIND_NULL | KIND_INT => boxed::olive_free_boxed(ptr),
+        KIND_FLOAT | KIND_INT => boxed::olive_free_boxed(ptr),
         crate::result::KIND_RESULT => crate::result::olive_free_result(ptr),
         KIND_PYOBJECT => python::olive_py_decref(ptr as *mut std::os::raw::c_void),
         KIND_ITER => olive_free_iter(ptr),
@@ -988,7 +1003,13 @@ pub extern "C" fn olive_is_bytes(val: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_typeof_str(val: i64) -> i64 {
-    // A bare `0` is int; boxed `null` (`KIND_NULL`) is handled below.
+    match val & boxed::TAG_MASK {
+        boxed::TAG_INT => return olive_str_internal("int"),
+        boxed::TAG_BOOL => return olive_str_internal("bool"),
+        boxed::TAG_NULL => return olive_str_internal("None"),
+        _ => {}
+    }
+    // A bare `0` is int; an inline `null` is handled above.
     if val > 0x10000 && (val & 1) != 0 {
         return olive_str_internal("str");
     }
@@ -1003,8 +1024,6 @@ pub extern "C" fn olive_typeof_str(val: i64) -> i64 {
         KIND_SET => "set",
         KIND_BYTES => "bytes",
         KIND_FLOAT => "float",
-        KIND_BOOL => "bool",
-        KIND_NULL => "None",
         KIND_PYOBJECT => "PyObject",
         _ => "int",
     };

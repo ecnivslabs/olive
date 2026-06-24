@@ -5,6 +5,21 @@ use crate::parser::Parser;
 use crate::semantic::{Resolver, TypeChecker};
 use cranelift_jit::JITModule;
 use rustc_hash::FxHashSet as HashSet;
+use std::sync::{Mutex, MutexGuard, OnceLock};
+
+/// The Olive runtime keeps a process-global object registry (`std_lib`'s pointer
+/// bounds and active-object set), which is sound for one program per process —
+/// how an Olive binary actually runs. The unit tests instead JIT and run many
+/// independent programs inside the single test process, so running them at once
+/// lets their registries corrupt each other. Execution is serialized through
+/// this lock (compilation stays parallel) so the harness mirrors one program at
+/// a time. Compilation is the slow phase, so the suite stays fast.
+fn exec_lock() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
 
 pub fn compile(src: &str) -> CraneliftCodegen<JITModule> {
     let tokens = Lexer::new(src, 0).tokenise().unwrap();
@@ -45,6 +60,7 @@ pub fn call_i64(cg: &mut CraneliftCodegen<JITModule>, name: &str) -> i64 {
         .get_function(name)
         .unwrap_or_else(|| panic!("function '{}' not found", name));
     let f: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
+    let _guard = exec_lock();
     f()
 }
 
@@ -53,6 +69,7 @@ pub fn call_i64_1(cg: &mut CraneliftCodegen<JITModule>, name: &str, a: i64) -> i
         .get_function(name)
         .unwrap_or_else(|| panic!("function '{}' not found", name));
     let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(ptr) };
+    let _guard = exec_lock();
     f(a)
 }
 
@@ -61,6 +78,7 @@ pub fn call_i64_2(cg: &mut CraneliftCodegen<JITModule>, name: &str, a: i64, b: i
         .get_function(name)
         .unwrap_or_else(|| panic!("function '{}' not found", name));
     let f: extern "C" fn(i64, i64) -> i64 = unsafe { std::mem::transmute(ptr) };
+    let _guard = exec_lock();
     f(a, b)
 }
 
@@ -69,5 +87,6 @@ pub fn call_i64_3(cg: &mut CraneliftCodegen<JITModule>, name: &str, a: i64, b: i
         .get_function(name)
         .unwrap_or_else(|| panic!("function '{}' not found", name));
     let f: extern "C" fn(i64, i64, i64) -> i64 = unsafe { std::mem::transmute(ptr) };
+    let _guard = exec_lock();
     f(a, b, c)
 }
