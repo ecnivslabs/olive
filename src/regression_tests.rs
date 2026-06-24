@@ -155,3 +155,95 @@ fn regression_while_loop_mutation() {
     );
     assert_eq!(call_i64_1(&mut cg, "f", 10), 55);
 }
+
+#[test]
+fn regression_any_list_large_odd_int_arithmetic() {
+    // A large odd int read from an `[Any]` slot once collided with the string
+    // pointer heuristic and segfaulted when added. Boxing keeps it a sound int.
+    let mut cg = compile(
+        "fn f() -> i64:\n    let mut xs: [Any] = [0, 0, 0]\n    let mut i = 0\n    while i < 3:\n        xs[i] = i * 200000000 + 1\n        i = i + 1\n    let mut s = 0\n    let mut k = 0\n    while k < 3:\n        s = s + xs[k]\n        k = k + 1\n    return int(s)\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 600000003);
+}
+
+#[test]
+fn regression_any_scalar_large_odd_int_arithmetic() {
+    // The same soundness for a scalar `Any` value, not just a container slot.
+    let mut cg = compile(
+        "fn box_it(i: i64) -> Any:\n    return i * 200000000 + 1\n\nfn f() -> i64:\n    let mut s = 0\n    let mut k = 0\n    while k < 3:\n        let a = box_it(k)\n        s = s + a\n        k = k + 1\n    return int(s)\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 600000003);
+}
+
+#[test]
+fn regression_any_float_in_container_roundtrips() {
+    // A float boxed into an `Any` slot keeps its value through arithmetic
+    // rather than reading its raw bit pattern as an int.
+    let mut cg = compile(
+        "fn f() -> i64:\n    let mut xs: [Any] = [0.0, 0.0]\n    let mut i = 0\n    while i < 2:\n        xs[i] = 1.5 + float(i)\n        i = i + 1\n    return int(float(xs[0]) + float(xs[1]))\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 4);
+}
+
+#[test]
+fn regression_int_of_float_does_not_box_arg() {
+    // `int(float)` dispatches to a native float->int conversion on the concrete
+    // argument type. The argument must not be boxed into `int`'s nominal `Any`
+    // parameter (that would pick `unbox_int` and, in a loop, allocate a boxed
+    // scalar per call), so the value must round-trip correctly.
+    let mut cg = compile(
+        "fn f(n: i64) -> i64:\n    let mut s = 0\n    let mut k = 0\n    while k < n:\n        s = s + int(7.0 * float(k) + 0.5)\n        k = k + 1\n    return s\n",
+    );
+    // int(7.0*k + 0.5) for k=0..5: 0,7,14,21,28 -> 70
+    assert_eq!(call_i64_1(&mut cg, "f", 5), 70);
+}
+
+#[test]
+fn regression_int_keyed_dict_literal_scalarized() {
+    // Scalarization mapped int-keyed dict reads but skipped the literal's
+    // writes, so a lookup read an uninitialized slot.
+    let mut cg = compile("fn f() -> i64:\n    let d = {1: 10, 2: 20}\n    return d[1] + d[2]\n");
+    assert_eq!(call_i64(&mut cg, "f"), 30);
+}
+
+#[test]
+fn regression_scalarized_list_feeds_recursion() {
+    // A local list scalarized to a field must carry its element type, not a
+    // blanket `Any`. A wrong `Any` routed the recursion-bound arithmetic through
+    // the boxing `any_*` helpers, so the recursive call saw a boxed pointer and
+    // never terminated.
+    let mut cg = compile(
+        "fn hf(n: i64) -> i64:\n    let data = [n, n * 2]\n    let v = data[0]\n    if v <= 1:\n        return v\n    return hf(v - 1) + hf(n - 2)\n\nfn f() -> i64:\n    return hf(6)\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 8);
+}
+
+#[test]
+fn regression_scalarized_dict_feeds_recursion() {
+    // The same soundness for a scalarized local dict driving the recursion.
+    let mut cg = compile(
+        "fn hf(n: i64) -> i64:\n    let info = {\"val\": n, \"next\": n + 1}\n    let v = info[\"val\"]\n    if v <= 1:\n        return v\n    return hf(v - 1) + hf(n - 2)\n\nfn f() -> i64:\n    return hf(6)\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 8);
+}
+
+#[test]
+fn regression_inferred_return_unboxes_for_caller() {
+    // An un-annotated function returns a nested list element; the caller reads
+    // it as a concrete int, so the `_return` slot must match the inferred type
+    // rather than boxing into `Any`.
+    let mut cg = compile(
+        "fn get(n: i64):\n    let mut c = list_new(2)\n    c[0] = list_new(2)\n    let mut row = c[0]\n    row[0] = 5\n    return c[0][0]\n\nfn f() -> i64:\n    return get(2)\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 5);
+}
+
+#[test]
+fn regression_any_keyed_dict_int_lookup() {
+    // An `Any`-typed int key hashes by value, so a separately built lookup key
+    // still finds the entry.
+    let mut cg = compile(
+        "fn f() -> i64:\n    let mut d: {Any: i64} = {}\n    d[1] = 10\n    d[2] = 20\n    return d[1] + d[2]\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 30);
+}

@@ -19,12 +19,24 @@ pub(super) fn register_runtime_symbols(
     let lib_name = libloading::library_filename("olive_std");
     let mut paths = Vec::new();
 
+    // Search the profile that matches this compiler build first: a debug test
+    // run must not pick up a stale `target/release` runtime (and vice versa), or
+    // the JIT links against an out-of-date `libolive_std` and silently
+    // mis-handles values whose ABI changed (e.g. a boxed-scalar kind the old
+    // copy doesn't know).
+    let target_dirs: [&str; 2] = if cfg!(debug_assertions) {
+        ["target/debug", "target/release"]
+    } else {
+        ["target/release", "target/debug"]
+    };
+
     if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
         let base = std::path::PathBuf::from(manifest_dir);
         let mut cur = Some(base.as_path());
         while let Some(p) = cur {
-            paths.push(p.join("target/release").join(&lib_name));
-            paths.push(p.join("target/debug").join(&lib_name));
+            for dir in target_dirs {
+                paths.push(p.join(dir).join(&lib_name));
+            }
             cur = p.parent();
         }
     }
@@ -32,8 +44,9 @@ pub(super) fn register_runtime_symbols(
     if let Ok(cwd) = std::env::current_dir() {
         let mut cur = Some(cwd.as_path());
         while let Some(p) = cur {
-            paths.push(p.join("target/release").join(&lib_name));
-            paths.push(p.join("target/debug").join(&lib_name));
+            for dir in target_dirs {
+                paths.push(p.join(dir).join(&lib_name));
+            }
             cur = p.parent();
         }
     }
@@ -51,8 +64,9 @@ pub(super) fn register_runtime_symbols(
         }
     }
 
-    paths.push(std::path::PathBuf::from("target/release").join(&lib_name));
-    paths.push(std::path::PathBuf::from("target/debug").join(&lib_name));
+    for dir in target_dirs {
+        paths.push(std::path::PathBuf::from(dir).join(&lib_name));
+    }
     paths.push(std::path::PathBuf::from("/usr/local/lib").join(&lib_name));
     paths.push(std::path::PathBuf::from("/usr/lib").join(&lib_name));
     paths.push(std::path::PathBuf::from("/lib").join(&lib_name));

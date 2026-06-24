@@ -13,9 +13,8 @@ use crate::semantic::types::Type;
 use crate::span::Span;
 
 impl<'a> MirBuilder<'a> {
-    /// Boxes a scalar into an `Any` container slot. Only container elements box
-    /// (a raw slot can't tell float-bits/null from an int); scalar `Any`
-    /// variables/args/returns stay raw, so this is the sole boxing site.
+    /// Boxes a scalar into an `Any` container slot so a read sees a
+    /// self-describing value.
     pub(super) fn coerce_to_elem(&mut self, op: Operand, elem: &Expr, elem_ty: &Type) -> Operand {
         // A trait-object element holds a fat pointer (data + vtable), so a
         // concrete struct stored into one must be widened the same way an
@@ -31,10 +30,40 @@ impl<'a> MirBuilder<'a> {
         self.box_into_any(op, &from_ty, elem.span)
     }
 
-    /// Boxes a float, bool, or null into its `Any` heap form; passes anything
-    /// else through.
+    /// Coerces a dict key or set element into an `Any` slot. Unlike a value
+    /// slot, these are hashed and compared by their raw word, and store and
+    /// lookup take separate paths, so an integer stays bare to hash identically
+    /// on both sides. `null` still boxes since a bare `0` key is reserved as the
+    /// runtime's "absent" sentinel.
+    pub(super) fn coerce_to_hashable(
+        &mut self,
+        op: Operand,
+        elem: &Expr,
+        elem_ty: &Type,
+    ) -> Operand {
+        if *elem_ty != Type::Any {
+            return op;
+        }
+        let from_ty = self.get_type(elem.id);
+        if from_ty == Type::Null {
+            return self.box_into_any(op, &from_ty, elem.span);
+        }
+        op
+    }
+
+    /// Boxes a scalar (int, float, bool, or null) into its self-describing `Any`
+    /// heap form; passes pointers and aggregates through unchanged.
     pub(super) fn box_into_any(&mut self, op: Operand, from_ty: &Type, span: Span) -> Operand {
         let boxer = match from_ty {
+            Type::Int
+            | Type::I8
+            | Type::I16
+            | Type::I32
+            | Type::U8
+            | Type::U16
+            | Type::U32
+            | Type::U64
+            | Type::Usize => Some(("__olive_box_int", true)),
             Type::Float | Type::F32 => Some(("__olive_box_float", true)),
             Type::Bool => Some(("__olive_box_bool", true)),
             Type::Null => Some(("__olive_box_null", false)),
@@ -118,13 +147,57 @@ impl<'a> MirBuilder<'a> {
             }
         }
 
-        // `None` carries no type tag once it sits in an `Any` slot, so box it to
-        // the runtime null sentinel rather than leaving a bare `0`.
-        if *to_ty == Type::Any && *from_ty == Type::Null {
+        // A scalar widening into `Any` is boxed so the slot stays
+        // self-describing: a bare word can't distinguish an int from a float's
+        // bits, `null` from `0`, or a large odd int from a tagged string.
+        if *to_ty == Type::Any {
             return self.box_into_any(op, from_ty, span);
         }
 
+        // Inverse of the widening above: narrowing back to a concrete scalar.
+        if *from_ty == Type::Any
+            && let Some(unboxed) = self.unbox_from_any(op.clone(), to_ty, span)
+        {
+            return unboxed;
+        }
+
         op
+    }
+
+    /// Unboxes an `Any` into a concrete scalar local; returns `None` for
+    /// non-scalar targets (pointers stay as-is).
+    pub(super) fn unbox_from_any(
+        &mut self,
+        op: Operand,
+        to_ty: &Type,
+        span: Span,
+    ) -> Option<Operand> {
+        let unboxer = match to_ty {
+            Type::Int
+            | Type::I8
+            | Type::I16
+            | Type::I32
+            | Type::U8
+            | Type::U16
+            | Type::U32
+            | Type::U64
+            | Type::Usize
+            | Type::Bool => "__olive_unbox_int",
+            Type::Float | Type::F32 => "__olive_unbox_float",
+            _ => return None,
+        };
+        let tmp = self.new_local(to_ty.clone(), None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                tmp,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(unboxer.to_string())),
+                    args: vec![op],
+                },
+            ),
+            span,
+        );
+        Some(Operand::Copy(tmp))
     }
 
     pub(super) fn lower_expr(&mut self, expr: &Expr) -> Operand {

@@ -1,10 +1,13 @@
-//! Boxed scalars for `Any` containers. Inside a list/dict/set every slot is a
-//! raw `i64`, so a float (bits look like an int), a bool, or `null` (looks like
-//! int 0) is boxed behind a kind header to stay self-describing. Ints and
-//! pointers already are, so they're never boxed.
+//! Boxed scalars for `Any` slots. A bare `i64` is ambiguous once its static
+//! type is erased: a float reads as an int, `null` as `0`, and a large odd int
+//! is bit-identical to a low-bit-tagged string pointer. So every scalar that
+//! flows into an `Any` (a container element, an `Any` variable/argument/return,
+//! or an operand of an `Any` arithmetic op) is boxed behind a kind header to
+//! stay self-describing. Only pointers, already self-describing, stay bare.
 
 use crate::{
-    KIND_BOOL, KIND_FLOAT, KIND_NULL, is_active_object, olive_str_from_ptr, register_object,
+    KIND_BOOL, KIND_FLOAT, KIND_INT, KIND_NULL, is_active_object, olive_str_from_ptr,
+    register_object,
 };
 
 /// A scalar inside an `Any`. `bits` is the float bit pattern (`KIND_FLOAT`),
@@ -13,6 +16,16 @@ use crate::{
 pub struct OliveBoxed {
     pub kind: i64,
     pub bits: i64,
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_box_int(i: i64) -> i64 {
+    let res = Box::into_raw(Box::new(OliveBoxed {
+        kind: KIND_INT,
+        bits: i,
+    })) as i64;
+    register_object(res);
+    res
 }
 
 #[unsafe(no_mangle)]
@@ -123,7 +136,7 @@ fn as_boxed(v: i64) -> Option<&'static OliveBoxed> {
         return None;
     }
     let b = unsafe { &*(v as *const OliveBoxed) };
-    matches!(b.kind, KIND_FLOAT | KIND_BOOL | KIND_NULL).then_some(b)
+    matches!(b.kind, KIND_FLOAT | KIND_BOOL | KIND_NULL | KIND_INT).then_some(b)
 }
 
 #[cfg(test)]
@@ -151,6 +164,27 @@ mod tests {
     fn unbox_raw_passthrough() {
         assert_eq!(olive_unbox_int(42), 42);
         assert_eq!(olive_unbox_float(42), 42.0);
+    }
+
+    #[test]
+    fn box_unbox_int_roundtrip() {
+        // A large odd int is bit-identical to a tagged string pointer; boxing
+        // keeps it self-describing so it never trips the string heuristic.
+        let big = 200_000_001;
+        let p = olive_box_int(big);
+        assert_eq!(olive_unbox_int(p), big);
+        assert_eq!(olive_unbox_float(p), big as f64);
+        assert_eq!(olive_any_is_null(p), 0);
+        assert_eq!(olive_any_truthy(p), 1);
+        olive_free_boxed(p);
+    }
+
+    #[test]
+    fn boxed_int_zero_is_truthy_falsy_by_value() {
+        let z = olive_box_int(0);
+        assert_eq!(olive_any_truthy(z), 0, "boxed 0 is falsy");
+        assert_eq!(olive_any_is_null(z), 0, "boxed 0 is not null");
+        olive_free_boxed(z);
     }
 
     #[test]

@@ -231,6 +231,41 @@ impl<'a> MirBuilder<'a> {
         } else {
             self.lower_expr(right)
         };
+        // The runtime `Any` operators dispatch on a self-describing value, so a
+        // concrete operand paired with an `Any` one is boxed first. Without this
+        // a raw scalar word reaches the dispatch and a large odd int is
+        // misread as a tagged string pointer.
+        use crate::parser::BinOp;
+        let any_dispatch = matches!(
+            op,
+            BinOp::Add
+                | BinOp::Sub
+                | BinOp::Mul
+                | BinOp::Div
+                | BinOp::Mod
+                | BinOp::Lt
+                | BinOp::LtEq
+                | BinOp::Gt
+                | BinOp::GtEq
+                | BinOp::Eq
+                | BinOp::NotEq
+        );
+        let l_ty = self.get_type(left.id).clone();
+        let (l, r) = if any_dispatch {
+            let l = if r_ty == Type::Any && l_ty != Type::Any {
+                self.box_into_any(l, &l_ty, span)
+            } else {
+                l
+            };
+            let r = if l_ty == Type::Any && r_ty != Type::Any {
+                self.box_into_any(r, &r_ty, span)
+            } else {
+                r
+            };
+            (l, r)
+        } else {
+            (l, r)
+        };
         let tmp = self.new_local(self.get_type(expr_id), None, false);
         self.push_statement(
             StatementKind::Assign(tmp, Rvalue::BinaryOp(op.clone(), l, r)),

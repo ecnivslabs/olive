@@ -1766,7 +1766,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pit"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "ariadne",
  "base64",

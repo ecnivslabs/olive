@@ -1124,6 +1124,12 @@ impl TypeChecker {
                     }
                     return Type::PyObject;
                 }
+                // An `Any` operand keeps the result dynamic: the value is boxed
+                // at runtime and dispatched there, so the static type stays
+                // `Any` rather than collapsing to the concrete side.
+                if l_resolved == Type::Any || r_resolved == Type::Any {
+                    return Type::Any;
+                }
                 self.unify(l, r, span);
                 self.apply_subst(l.clone())
             }
@@ -1138,6 +1144,9 @@ impl TypeChecker {
             BinOp::And | BinOp::Or => {
                 if is_py {
                     return Type::PyObject;
+                }
+                if l_resolved == Type::Any || r_resolved == Type::Any {
+                    return Type::Any;
                 }
                 self.unify(l, r, span);
                 self.apply_subst(l.clone())

@@ -12,6 +12,7 @@ pub(crate) fn resolve_builtin_import(
             "__olive_print_int" => Some("__olive_print_int"),
             "__olive_print_str" => Some("__olive_print_str"),
             "__olive_print_py" => Some("__olive_print_py"),
+            "__olive_box_int" => Some("__olive_box_int"),
             "__olive_box_float" => Some("__olive_box_float"),
             "__olive_box_bool" => Some("__olive_box_bool"),
             "__olive_box_null" => Some("__olive_box_null"),

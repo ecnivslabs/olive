@@ -185,8 +185,8 @@ impl TypeChecker {
                 "list_new",
                 Type::Fn(
                     vec![Type::Int],
-                    Box::new(Type::List(Box::new(Type::Param("T".to_string())))),
-                    vec![Type::Param("T".to_string())],
+                    Box::new(Type::List(Box::new(Type::Any))),
+                    Vec::new(),
                 ),
             ),
             (

@@ -41,10 +41,14 @@ impl<'a> MirBuilder<'a> {
             let saved_is_async = self.current_is_async;
             self.current_is_async = *is_async;
 
-            let ret_ty = return_type
-                .as_ref()
-                .map(|ann| self.resolve_type_expr(ann))
-                .unwrap_or(Type::Any);
+            // With no annotation the return type was inferred by the type
+            // checker; read it back so the `_return` slot matches the type
+            // callers see. Defaulting to `Any` here would box a concrete return
+            // value that the caller then reads raw.
+            let ret_ty = match return_type {
+                Some(ann) => self.resolve_type_expr(ann),
+                None => self.inferred_return_type(name, *is_async),
+            };
 
             self.start_function(name.clone(), params.len(), ret_ty);
 
@@ -262,6 +266,29 @@ impl<'a> MirBuilder<'a> {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// The type checker's inferred return type for an un-annotated function,
+    /// read from its resolved signature. An async function's signature carries
+    /// a `Future[T]`, but the `_return` slot holds the inner `T`. A return type
+    /// left unconstrained (a bare type variable) falls back to `Any`.
+    fn inferred_return_type(&self, name: &str, is_async: bool) -> Type {
+        let ret = match self.global_types.get(name) {
+            Some(Type::Fn(_, ret, _)) => (**ret).clone(),
+            _ => return Type::Any,
+        };
+        let ret = if is_async {
+            match ret {
+                Type::Future(inner) => *inner,
+                other => other,
+            }
+        } else {
+            ret
+        };
+        match ret {
+            Type::Var(_) => Type::Any,
+            other => other,
         }
     }
 

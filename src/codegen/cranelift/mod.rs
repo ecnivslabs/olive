@@ -359,6 +359,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_print_any", b"olive_print_any\0"),
     ("__olive_print_str", b"olive_print_str\0"),
     ("__olive_print_py", b"olive_print_py\0"),
+    ("__olive_box_int", b"olive_box_int\0"),
     ("__olive_box_float", b"olive_box_float\0"),
     ("__olive_box_bool", b"olive_box_bool\0"),
     ("__olive_box_null", b"olive_box_null\0"),

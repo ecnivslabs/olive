@@ -116,6 +116,8 @@ pub(super) fn scan_rvalue_imports(
                     "__olive_any_ne",
                     "__olive_str_concat",
                     "__olive_list_concat",
+                    "__olive_box_int",
+                    "__olive_unbox_int",
                     "__olive_box_float",
                     "__olive_unbox_float",
                 ] {
