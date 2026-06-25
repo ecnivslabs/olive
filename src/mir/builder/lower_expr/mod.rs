@@ -390,6 +390,20 @@ impl<'a> MirBuilder<'a> {
             );
         }
 
+        if let Some(name) = callee_name
+            && self.lookup_var(name).is_none()
+            && let Some(info) = self.lookup_nested_fn(name)
+        {
+            return self.lower_nested_fn_call(
+                &info,
+                &arg_ops,
+                &arg_tys,
+                &arg_kw_names,
+                expr.span,
+                expr.id,
+            );
+        }
+
         let func = self.lower_expr(callee);
         self.lower_general_call_path(
             callee,

@@ -50,4 +50,34 @@ pub(super) const ENTRIES: &[Explanation] = &[
         fixed: "fn greet():\n    print(\"loading helper\")\n    print(\"hi\")",
         notes: &["Move the runnable statements into a function the importer can call."],
     },
+    Explanation {
+        code: "E0423",
+        title: "capturing closure used as a value",
+        summary: "A nested function that reads a variable from its enclosing function \
+                  is lifted to a function taking those variables as hidden arguments. \
+                  It has no standalone value, so it cannot be returned, assigned, or \
+                  passed as an argument. Call it in place instead.",
+        wrong: "fn main():\n    let n = 1\n    fn inc() -> i64:\n        return n\n    let g = inc",
+        fixed: "fn main():\n    let n = 1\n    fn inc() -> i64:\n        return n\n    print(inc())",
+        notes: &[
+            "Call the nested function directly where it is defined.",
+            "If you need a value to pass around, make it a top-level function that takes \
+             the captured data as parameters.",
+        ],
+    },
+    Explanation {
+        code: "E0424",
+        title: "capturing closure called outside its defining scope",
+        summary: "A capturing nested function reads variables from the function that \
+                  defines it. It can only be called where those variables are in \
+                  scope: the defining function, or a deeper one that captures the same \
+                  variables. Calling it from a sibling that lacks them has nothing to \
+                  pass for the captures.",
+        wrong: "fn main():\n    let p = 1\n    fn a() -> i64:\n        return p\n    fn b() -> i64:\n        return a()\n    print(b())",
+        fixed: "fn main():\n    let p = 1\n    fn a() -> i64:\n        return p\n    print(a())",
+        notes: &[
+            "Call it from the function that defines it.",
+            "Or pass the captured values explicitly as parameters so any caller can supply them.",
+        ],
+    },
 ];

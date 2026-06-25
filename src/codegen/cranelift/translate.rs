@@ -467,7 +467,17 @@ impl<M: Module> CraneliftCodegen<M> {
                 let v =
                     Self::translate_operand(builder, val_op, vars, string_ids, module, func_ids);
 
-                let v = if builder.func.dfg.value_type(v) == types::F64 {
+                // Incref a borrowed PyObject; the container decrefs it on drop.
+                let v = if let Operand::Copy(src) = val_op
+                    && matches!(func_mir.locals[src.0].ty, OliveType::PyObject)
+                {
+                    let copy_ref_id = func_ids
+                        .get("__olive_py_copy_ref")
+                        .expect("missing __olive_py_copy_ref");
+                    let local_func = module.declare_func_in_func(*copy_ref_id, builder.func);
+                    let inst = builder.ins().call(local_func, &[v]);
+                    builder.inst_results(inst)[0]
+                } else if builder.func.dfg.value_type(v) == types::F64 {
                     builder.ins().bitcast(types::I64, MemFlags::new(), v)
                 } else {
                     v
@@ -640,25 +650,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 let val = builder.use_var(*var);
                 if matches!(op, Operand::Move(_)) {
                     let var_ty = builder.func.dfg.value_type(val);
-                    let zero = if var_ty == types::F64 {
-                        builder.ins().f64const(0.0)
-                    } else if var_ty == types::F32 {
-                        builder.ins().f32const(0.0)
-                    } else if var_ty.is_int() {
-                        builder.ins().iconst(var_ty, 0)
-                    } else if var_ty.is_vector() {
-                        let lane = var_ty.lane_type();
-                        let scalar = if lane == types::F64 {
-                            builder.ins().f64const(0.0)
-                        } else if lane == types::F32 {
-                            builder.ins().f32const(0.0)
-                        } else {
-                            builder.ins().iconst(lane, 0)
-                        };
-                        builder.ins().splat(var_ty, scalar)
-                    } else {
-                        builder.ins().iconst(types::I64, 0)
-                    };
+                    let zero = super::imports::typed_zero(builder, var_ty);
                     builder.def_var(*var, zero);
                 }
                 val

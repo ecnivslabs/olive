@@ -93,13 +93,17 @@ impl<'a> MirBuilder<'a> {
             if l_null || r_null {
                 let operand = if l_null { right } else { left };
                 let v = self.lower_expr_as_copy(operand);
+                // Raw-int reinterpret before the 0 test; a PyObject-typed operand
+                // would route through Python eq (boxes the 0, compares identity).
+                let raw = self.new_local(Type::Int, None, false);
+                self.push_statement(StatementKind::Assign(raw, Rvalue::Use(v)), span);
                 let is_zero = self.new_local(Type::Bool, None, false);
                 self.push_statement(
                     StatementKind::Assign(
                         is_zero,
                         Rvalue::BinaryOp(
                             crate::parser::BinOp::Eq,
-                            v,
+                            Operand::Copy(raw),
                             Operand::Constant(Constant::Int(0)),
                         ),
                     ),

@@ -1,5 +1,5 @@
 #[cfg(test)]
-use crate::test_utils::{call_i64, call_i64_1, call_i64_2, call_i64_3, compile};
+use crate::test_utils::{call_i64, call_i64_1, call_i64_2, call_i64_3, compile, compile_minimal};
 
 #[test]
 fn regression_struct_field_access_through_ref() {
@@ -356,4 +356,186 @@ fn regression_bce_repeated_dynamic_index() {
     let mut cg =
         compile("fn f(i: i64) -> i64:\n    let xs = [7, 8, 9]\n    return xs[i] + xs[i]\n");
     assert_eq!(call_i64_1(&mut cg, "f", 1), 16);
+}
+
+#[test]
+fn regression_closure_captures_scalar() {
+    let mut cg = compile(
+        "fn f() -> i64:\n    let n = 10\n    fn add(x: i64) -> i64:\n        return x + n\n    return add(5)\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 15);
+}
+
+#[test]
+fn regression_closure_multi_capture_and_reuse() {
+    // Two captures, called twice, and the captured locals stay usable after.
+    let mut cg = compile(
+        "fn f() -> i64:\n    let a = 10\n    let b = 20\n    fn g(x: i64) -> i64:\n        return x + a + b\n    return g(1) + g(2) + a + b\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 31 + 32 + 30);
+}
+
+#[test]
+fn regression_closure_captures_heap_read() {
+    let mut cg = compile(
+        "fn f() -> i64:\n    let xs = [1, 2, 3]\n    fn total() -> i64:\n        return xs[0] + xs[1] + xs[2]\n    return total() + xs[0]\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 7);
+}
+
+#[test]
+fn regression_closure_heap_mutation_through_alias() {
+    // Captured heap value is aliased: mutation is visible outside, no double-free.
+    let mut cg = compile(
+        "fn f() -> i64:\n    let mut xs = [1, 2, 3]\n    fn push():\n        xs.append(99)\n    push()\n    return len(xs) + xs[3]\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 4 + 99);
+}
+
+#[test]
+fn regression_closure_transitive_capture() {
+    // Middle fn captures `n` as a param, making it visible to the grandchild.
+    let mut cg = compile(
+        "fn f() -> i64:\n    let n = 5\n    fn outer(x: i64) -> i64:\n        fn inner(y: i64) -> i64:\n            return y + n\n        return inner(x) + n\n    return outer(1)\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 11);
+}
+
+#[test]
+fn regression_pyobject_none_compare_compiles() {
+    // `pyobj != None` boxes the compared 0 in codegen; the conversion helper
+    // must be imported or codegen panics on a missing runtime fn.
+    let _cg =
+        compile("struct B:\n    v: PyObject\nfn check(b: &B) -> bool:\n    return b.v != None\n");
+}
+
+#[test]
+fn regression_pyobject_field_into_aggregate_compiles() {
+    // A borrowed PyObject field placed in a list/tuple/set needs an owned ref
+    // (`__olive_py_copy_ref`), else container drop frees it and the field dangles.
+    let _cg = compile(
+        "struct M:\n    a: PyObject\n    b: PyObject\nimpl M:\n    fn build(self):\n        let xs = [self.a, self.b]\n",
+    );
+}
+
+#[test]
+fn regression_pyobject_field_into_setindex_compiles() {
+    // SetIndex of a borrowed PyObject field needs an owned ref too, else the
+    // list decrefs it on drop.
+    let _cg = compile(
+        "struct M:\n    a: PyObject\nimpl M:\n    fn build(self, xs: &mut [PyObject]):\n        xs[0] = self.a\n",
+    );
+}
+
+#[test]
+fn regression_async_block_in_loop_compiles() {
+    // Async state machine zero-inits locals; a sub-i64 (bool) local must be
+    // zeroed with its own cranelift type or the SSA builder rejects the mismatch.
+    let _cg = compile(
+        "async fn handle():\n    print(1)\nasync fn run():\n    let mut i = 0\n    while i < 3:\n        i = i + 1\n        async:\n            await handle()\nfn main():\n    async:\n        await run()\n",
+    );
+}
+
+#[test]
+fn regression_default_param_omitted() {
+    let mut cg = compile(
+        "fn add(x: i64, y: i64 = 5) -> i64:\n    return x + y\nfn f() -> i64:\n    return add(1)\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 6);
+}
+
+#[test]
+fn regression_default_param_supplied() {
+    let mut cg = compile(
+        "fn add(x: i64, y: i64 = 5) -> i64:\n    return x + y\nfn f() -> i64:\n    return add(1, 2)\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 3);
+}
+
+#[test]
+fn regression_method_default_param_omitted() {
+    let mut cg = compile(
+        "struct C:\n    v: i64\nimpl C:\n    fn add(self, x: i64, y: i64 = 10) -> i64:\n        return self.v + x + y\nfn f() -> i64:\n    let c = C(1)\n    return c.add(2)\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 13);
+}
+
+#[test]
+fn regression_generic_method_minimal_opt() {
+    // Monomorphized method receiver needs its field layout registered or field
+    // access derefs a raw struct pointer. Full opt scalarizes it away; lean only.
+    let mut cg = compile_minimal(
+        "struct Box[T]:\n    v: T\nimpl[T] Box[T]:\n    fn get(self) -> T:\n        return self.v\nfn f() -> i64:\n    let b = Box(42)\n    return b.get()\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 42);
+}
+
+#[test]
+fn regression_generic_struct_field_minimal_opt() {
+    let mut cg = compile_minimal(
+        "struct Box[T]:\n    v: T\nfn f() -> i64:\n    let b = Box(7)\n    return b.v\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 7);
+}
+
+#[test]
+fn regression_generic_method_default_minimal_opt() {
+    let mut cg = compile_minimal(
+        "struct Box[T]:\n    v: T\nimpl[T] Box[T]:\n    fn show(self, p: i64 = 9) -> i64:\n        return p\nfn f() -> i64:\n    let b = Box(5)\n    return b.show()\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 9);
+}
+
+#[test]
+fn regression_tail_self_recursion_terminates() {
+    // Self tail call becomes a loop; back-edge must target a header, not the
+    // sealed entry, or SSA construction panics.
+    let mut cg = compile(
+        "fn down(n: i64, base: i64) -> i64:\n    if n <= 0:\n        return base\n    return down(n - 1, base)\nfn f() -> i64:\n    return down(100000, 7)\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 7);
+}
+
+#[test]
+fn regression_tail_recursion_accumulator() {
+    // Args staged through temporaries so each sees its pre-update param value.
+    let mut cg = compile(
+        "fn sum(n: i64, acc: i64) -> i64:\n    if n <= 0:\n        return acc\n    return sum(n - 1, acc + n)\nfn f() -> i64:\n    return sum(5, 0)\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 15);
+}
+
+#[test]
+fn regression_closure_tail_recursion() {
+    let mut cg = compile(
+        "fn f() -> i64:\n    let base = 100\n    fn down(n: i64) -> i64:\n        if n <= 0:\n            return base\n        return down(n - 1)\n    return down(50000)\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 100);
+}
+
+#[test]
+fn regression_closure_recursion() {
+    // Non-tail recursion (keeps the tail-call pass out): a capturing closure
+    // that calls itself supplies its captures each frame.
+    let mut cg = compile(
+        "fn f() -> i64:\n    let base = 100\n    fn sum(n: i64) -> i64:\n        if n <= 0:\n            return base\n        return n + sum(n - 1)\n    return sum(3)\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 100 + 3 + 2 + 1);
+}
+
+#[test]
+fn regression_nested_fn_name_no_collision() {
+    // A same-named helper in two functions must stay distinct after lifting.
+    let mut cg = compile(
+        "fn a() -> i64:\n    fn helper() -> i64:\n        return 1\n    return helper()\nfn b() -> i64:\n    fn helper() -> i64:\n        return 2\n    return helper()\nfn f() -> i64:\n    return a() * 10 + b()\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 12);
+}
+
+#[test]
+fn regression_closure_capture_in_loop() {
+    let mut cg = compile(
+        "fn f() -> i64:\n    let step = 3\n    let mut total = 0\n    let mut i = 0\n    while i < 4:\n        fn bump(v: i64) -> i64:\n            return v + step\n        total = bump(total)\n        i = i + 1\n    return total\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 12);
 }

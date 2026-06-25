@@ -1,6 +1,8 @@
 pub mod abi;
+pub mod closure_check;
 pub mod desugar;
 mod error;
+pub mod free_vars;
 pub mod lint;
 pub(crate) mod pyi;
 mod resolver;

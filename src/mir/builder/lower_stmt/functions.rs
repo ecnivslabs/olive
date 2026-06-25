@@ -22,8 +22,26 @@ impl<'a> MirBuilder<'a> {
                 self.generic_fns.insert(name.clone(), stmt.clone());
                 return;
             }
-            if !self.fn_meta.contains_key(name) {
-                self.register_fn_meta(name, params);
+
+            // Resolve captures against the still-live enclosing scope before
+            // `start_function` clears it; nested fns read them as trailing params.
+            let is_nested = self.current_name != "__main__" && !self.current_name.is_empty();
+            let info = if is_nested {
+                self.lookup_nested_fn(name)
+            } else {
+                None
+            };
+            let mangled = info
+                .as_ref()
+                .map(|i| i.mangled.clone())
+                .unwrap_or_else(|| name.clone());
+            let captures = match &info {
+                Some(i) => self.resolve_captures(&i.raw_captures),
+                None => Vec::new(),
+            };
+
+            if !self.fn_meta.contains_key(&mangled) {
+                self.register_fn_meta(&mangled, params);
             }
 
             let is_memo = decorators
@@ -50,7 +68,7 @@ impl<'a> MirBuilder<'a> {
                 None => self.inferred_return_type(name, *is_async),
             };
 
-            self.start_function(name.clone(), params.len(), ret_ty);
+            self.start_function(mangled.clone(), params.len(), ret_ty);
 
             let mut param_locals = Vec::new();
             for param in params {
@@ -74,6 +92,17 @@ impl<'a> MirBuilder<'a> {
                 self.current_locals[local.0].is_owning = false;
                 param_locals.push(local);
             }
+
+            // Captures are trailing params aliasing the caller's value (copied in);
+            // the callee never owns or drops them.
+            for cap in &captures {
+                let local = self.declare_var(cap.name.clone(), cap.ty.clone(), false);
+                self.current_locals[local.0].is_owning = false;
+            }
+            self.current_arg_count += captures.len();
+
+            self.nested_fns
+                .push(self.collect_nested_fns(body, &mangled));
 
             if is_memo {
                 let cache_tmp = self.new_local(Type::Any, Some("cache".to_string()), false);
@@ -209,6 +238,7 @@ impl<'a> MirBuilder<'a> {
                 }
             }
 
+            self.nested_fns.pop();
             self.finish_function();
 
             self.current_name = saved_name;

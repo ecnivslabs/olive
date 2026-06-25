@@ -58,6 +58,8 @@ pub struct TypeChecker {
     pub(super) current_struct: Option<String>,
     pub(super) async_depth: usize,
     pub(super) vararg_fns: HashSet<String>,
+    /// Per fn, count of leading non-default params (call may omit trailing defaults).
+    pub(super) fn_required_args: HashMap<String, usize>,
     pub struct_fields: HashMap<String, Vec<String>>,
     /// Per struct, the count of leading fields that have no default value and so
     /// must be supplied when constructing it positionally.
@@ -398,6 +400,7 @@ impl TypeChecker {
             current_struct: None,
             async_depth: 0,
             vararg_fns: HashSet::default(),
+            fn_required_args: HashMap::default(),
             struct_fields: HashMap::default(),
             struct_required_fields: HashMap::default(),
             traits,

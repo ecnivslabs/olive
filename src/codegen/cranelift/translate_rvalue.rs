@@ -530,9 +530,9 @@ impl<M: Module> CraneliftCodegen<M> {
                     val
                 }
             }
-            Rvalue::Aggregate(kind, ops) => {
-                Self::translate_aggregate(builder, vars, string_ids, module, func_ids, kind, ops)
-            }
+            Rvalue::Aggregate(kind, ops) => Self::translate_aggregate(
+                func_mir, builder, vars, string_ids, module, func_ids, kind, ops,
+            ),
             Rvalue::VTableLoad { vtable, method_idx } => {
                 let fat_ptr_val =
                     Self::translate_operand(builder, vtable, vars, string_ids, module, func_ids);

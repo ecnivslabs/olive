@@ -252,6 +252,7 @@ impl<'a> MirBuilder<'a> {
             } else {
                 base_method_name
             };
+            self.fill_trailing_defaults(&method_name, &mut method_args, callee.id, span);
             self.push_statement(
                 StatementKind::Assign(
                     tmp,
@@ -317,6 +318,7 @@ impl<'a> MirBuilder<'a> {
                 } else {
                     base_method_name
                 };
+                self.fill_trailing_defaults(&method_name, &mut method_args, callee.id, span);
                 self.push_statement(
                     StatementKind::Assign(
                         tmp,
@@ -341,6 +343,38 @@ impl<'a> MirBuilder<'a> {
                 );
             }
             self.operand_for_local(tmp)
+        }
+    }
+
+    /// Fills omitted trailing-default params so the call matches the method's
+    /// arity. `callee_id` types the params for coercion. Positional only.
+    fn fill_trailing_defaults(
+        &mut self,
+        fn_name: &str,
+        args: &mut Vec<Operand>,
+        callee_id: usize,
+        span: Span,
+    ) {
+        let meta = match self.fn_meta.get(fn_name).cloned() {
+            Some(m) => m,
+            None => return,
+        };
+        let param_tys = match self.get_type(callee_id) {
+            Type::Fn(ptys, _, _) => ptys,
+            _ => Vec::new(),
+        };
+        while args.len() < meta.param_names.len() {
+            let i = args.len();
+            match meta.default_exprs.get(i) {
+                Some(Some(default_expr)) => {
+                    let op = self.lower_expr_as_copy(default_expr);
+                    let from_ty = self.get_type(default_expr.id);
+                    let to_ty = param_tys.get(i).unwrap_or(&Type::Any);
+                    let coerced = self.coerce(op, &from_ty, to_ty, span);
+                    args.push(coerced);
+                }
+                _ => break,
+            }
         }
     }
 

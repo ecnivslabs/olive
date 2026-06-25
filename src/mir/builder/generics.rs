@@ -164,6 +164,18 @@ impl<'a> MirBuilder<'a> {
             _ => {}
         }
 
+        // Mirror the generic struct's field layout under the specialized name
+        // (`Box_int`); without it, field access falls to the dynamic path and
+        // derefs a raw struct pointer as a dict. Register before lowering the body.
+        if let Some(base_struct) = name.strip_suffix("::__init__")
+            && let Some(spec_struct) = specialized_name.strip_suffix("::__init__")
+            && let Some(fields) = self.struct_fields.get(base_struct).cloned()
+        {
+            self.struct_fields
+                .entry(spec_struct.to_string())
+                .or_insert(fields);
+        }
+
         // While lowering the specialized body, resolve type parameters read from
         // the original `expr_types` (e.g. a `Box(..)` construct inside the body)
         // to the concrete instance. Saved/restored to support nesting.
