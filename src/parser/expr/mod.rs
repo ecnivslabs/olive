@@ -54,7 +54,10 @@ impl Parser {
         ))
     }
 
-    pub(crate) fn parse_expr(&mut self) -> ParseResult<Expr> {
+    /// Parses an `or`-expression with an optional `..`/`..=` range suffix, but
+    /// no ternary. Used where a trailing `if` belongs to an enclosing construct
+    /// (a comprehension's filter clause) rather than a conditional expression.
+    pub(crate) fn parse_range(&mut self) -> ParseResult<Expr> {
         let start = self.parse_or()?;
         if matches!(
             self.peek().kind,
@@ -69,6 +72,27 @@ impl Parser {
                     start: Box::new(start),
                     end: Box::new(end),
                     inclusive,
+                },
+                span,
+            ));
+        }
+        Ok(start)
+    }
+
+    pub(crate) fn parse_expr(&mut self) -> ParseResult<Expr> {
+        let start = self.parse_range()?;
+        // Conditional expression `value if cond else other` (Python ternary).
+        if self.peek().kind == crate::lexer::TokenKind::If {
+            self.advance();
+            let cond = self.parse_or()?;
+            self.expect(crate::lexer::TokenKind::Else)?;
+            let otherwise = self.parse_expr()?;
+            let span = start.span.merge(otherwise.span);
+            return Ok(Expr::new(
+                ExprKind::Ternary {
+                    cond: Box::new(cond),
+                    then: Box::new(start),
+                    otherwise: Box::new(otherwise),
                 },
                 span,
             ));

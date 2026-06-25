@@ -49,9 +49,9 @@ impl TypeChecker {
             ExprKind::Integer(_) => Type::IntegerLiteral(self.fresh_var_id()),
             ExprKind::Float(_) => Type::FloatLiteral(self.fresh_var_id()),
             ExprKind::Str(_) => Type::Str,
-            ExprKind::FStr(exprs) => {
-                for e in exprs {
-                    self.check_expr(e);
+            ExprKind::FStr(parts) => {
+                for p in parts {
+                    self.check_expr(&p.expr);
                 }
                 Type::Str
             }
@@ -169,9 +169,11 @@ impl TypeChecker {
             ExprKind::Set(elems) => self.infer_collection(elems, &expected, Collection::Set),
 
             ExprKind::Dict(pairs) => {
+                // A bare `Any` expectation does not pin key/value types: a
+                // homogeneous literal keeps its real types so it formats and
+                // dispatches correctly; only mixed keys or values widen to `Any`.
                 let (exp_k, exp_v) = match &expected {
                     Some(Type::Dict(k, v)) => (Some((**k).clone()), Some((**v).clone())),
-                    Some(Type::Any) => (Some(Type::Any), Some(Type::Any)),
                     _ => (None, None),
                 };
                 let k_ty = self.fresh_var();
@@ -210,6 +212,19 @@ impl TypeChecker {
             }
 
             ExprKind::Call { callee, args } => {
+                if let ExprKind::Identifier(name) = &callee.kind
+                    && matches!(name.as_str(), "sum" | "min" | "max")
+                    && args.len() == 1
+                    && self.lookup_type(name).is_none()
+                    && let CallArg::Positional(arg) = &args[0]
+                {
+                    let raw = self.check_expr(arg);
+                    let arg_ty = self.apply_subst(raw);
+                    if let Type::List(elem) = &arg_ty {
+                        return (**elem).clone();
+                    }
+                    return Type::Int;
+                }
                 if let ExprKind::Attr { obj, attr } = &callee.kind
                     && let Some(ret) = self.builtin_collection_method(obj, attr, args)
                 {
@@ -552,6 +567,16 @@ impl TypeChecker {
                 while let Type::Ref(inner) | Type::MutRef(inner) = current_obj_ty {
                     current_obj_ty = *inner;
                 }
+                // A slice index preserves the sequence type rather than yielding
+                // an element.
+                if matches!(index.kind, ExprKind::Slice { .. }) {
+                    return match current_obj_ty {
+                        Type::List(_) | Type::Str | Type::Bytes | Type::Set(_) => current_obj_ty,
+                        Type::Tuple(_) => Type::List(Box::new(Type::Any)),
+                        ref t if t.is_py_value() => Type::PyObject,
+                        _ => Type::List(Box::new(Type::Any)),
+                    };
+                }
                 match current_obj_ty {
                     // `f[int](..)` indexes a function by a type: this is an
                     // explicit type argument, which inference already handles, so
@@ -753,6 +778,19 @@ impl TypeChecker {
                 Type::Dict(Box::new(k), Box::new(v))
             }
 
+            ExprKind::Ternary {
+                cond,
+                then,
+                otherwise,
+            } => {
+                self.check_expr(cond);
+                let then_ty = self.check_expr(then);
+                let else_ty = self.check_expr(otherwise);
+                let result = self.fresh_var();
+                self.unify(&result, &then_ty, then.span);
+                self.unify(&result, &else_ty, otherwise.span);
+                self.apply_subst(result)
+            }
             ExprKind::Match { expr, cases } => {
                 let match_ty = self.check_expr(expr);
                 let return_ty = self.fresh_var();
@@ -763,14 +801,22 @@ impl TypeChecker {
                 for case in cases {
                     self.enter_scope();
 
-                    if let crate::parser::ast::MatchPattern::Variant(v_name, _) = &case.pattern {
-                        matched_variants.insert(v_name.clone());
-                    }
-                    if let crate::parser::ast::MatchPattern::Wildcard = &case.pattern {
-                        has_wildcard = true;
+                    // A guarded arm may not run even when its pattern fits, so it
+                    // never makes the match exhaustive on its own.
+                    if case.guard.is_none() {
+                        if let crate::parser::ast::MatchPattern::Variant(v_name, _) = &case.pattern
+                        {
+                            matched_variants.insert(v_name.clone());
+                        }
+                        if let crate::parser::ast::MatchPattern::Wildcard = &case.pattern {
+                            has_wildcard = true;
+                        }
                     }
 
                     self.check_pattern(&case.pattern, &match_ty, case.span);
+                    if let Some(guard) = &case.guard {
+                        self.check_expr(guard);
+                    }
 
                     let mut case_ty = Type::Null;
                     for (i, stmt) in case.body.iter().enumerate() {
@@ -940,14 +986,9 @@ impl TypeChecker {
             }
 
             ExprKind::Slice { start, stop, step } => {
-                if let Some(e) = start {
-                    self.check_expr(e);
-                }
-                if let Some(e) = stop {
-                    self.check_expr(e);
-                }
-                if let Some(e) = step {
-                    self.check_expr(e);
+                for e in [start, stop, step].into_iter().flatten() {
+                    let t = self.check_expr(e);
+                    self.unify(&Type::Int, &t, e.span);
                 }
                 Type::Any
             }
@@ -998,10 +1039,13 @@ impl TypeChecker {
         expected: &Option<Type>,
         kind: Collection,
     ) -> Type {
+        // A bare `Any` expectation (e.g. a `print`/`Any` parameter) does not force
+        // the elements to `Any`: a homogeneous literal keeps its real element type
+        // so it can still be formatted and dispatched; only a mixed literal widens.
+        // An explicit `[Any]` annotation still pins the element type.
         let exp_elem = match expected {
             Some(Type::List(e)) if kind == Collection::List => Some((**e).clone()),
             Some(Type::Set(e)) if kind == Collection::Set => Some((**e).clone()),
-            Some(Type::Any) => Some(Type::Any),
             _ => None,
         };
         let elem_ty = if let Some(exp) = exp_elem {
@@ -1076,6 +1120,28 @@ impl TypeChecker {
                 (**v).clone(),
             ])))),
             (Type::Dict(_, v), "remove") => Some((**v).clone()),
+            (Type::Set(elem), "add" | "remove") => {
+                let elem = (**elem).clone();
+                Some(if attr == "add" { base.clone() } else { elem })
+            }
+            (Type::Set(elem), "contains") => {
+                let _ = elem;
+                Some(Type::Bool)
+            }
+            // Builtin collections and strings expose a fixed method set; any other
+            // method name is a definite error. Reporting it here keeps it from
+            // falling through to the FFI path and crashing codegen.
+            (Type::List(_) | Type::Set(_) | Type::Tuple(_) | Type::Dict(_, _) | Type::Str, _) => {
+                self.errors.push(super::super::error::SemanticError::rich(
+                    crate::compile::errors::Diagnostic::error(
+                        "E0422",
+                        format!("no method `{attr}` on type `{base}`"),
+                        obj.span,
+                    )
+                    .label("method not found"),
+                ));
+                Some(Type::Any)
+            }
             _ => None,
         }
     }

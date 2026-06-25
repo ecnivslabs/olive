@@ -69,6 +69,7 @@ pub struct PyFnSig {
 pub struct Decorator {
     pub name: String,
     pub is_directive: bool,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -261,7 +262,7 @@ pub enum ExprKind {
     Integer(i64),
     Float(f64),
     Str(String),
-    FStr(Vec<Expr>),
+    FStr(Vec<FStrPart>),
     Bool(bool),
     /// The `null` literal. Runtime value is `0`, but a distinct node so it gets
     /// `Type::Null` and boxes to a sentinel inside an `Any`.
@@ -336,13 +337,27 @@ pub enum ExprKind {
         expr: Box<Expr>,
         cases: Vec<MatchCase>,
     },
+    Ternary {
+        cond: Box<Expr>,
+        then: Box<Expr>,
+        otherwise: Box<Expr>,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub struct MatchCase {
     pub pattern: MatchPattern,
+    pub guard: Option<Expr>,
     pub body: Vec<Stmt>,
     pub span: Span,
+}
+
+/// One piece of an f-string: a literal chunk or an interpolated expression with
+/// an optional Python format spec (`{value:spec}`). Literal chunks carry no spec.
+#[derive(Debug, Clone)]
+pub struct FStrPart {
+    pub expr: Expr,
+    pub spec: Option<String>,
 }
 
 #[derive(Debug, Clone)]

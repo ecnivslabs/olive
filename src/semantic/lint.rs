@@ -413,8 +413,8 @@ fn collect_refs_expr(expr: &Expr, out: &mut FxHashSet<String>) {
         | ExprKind::Bool(_)
         | ExprKind::Null => {}
         ExprKind::FStr(parts) => {
-            for e in parts {
-                collect_refs_expr(e, out);
+            for p in parts {
+                collect_refs_expr(&p.expr, out);
             }
         }
         ExprKind::BinOp { left, right, .. } => {
@@ -481,10 +481,22 @@ fn collect_refs_expr(expr: &Expr, out: &mut FxHashSet<String>) {
             }
         }
         ExprKind::AsyncBlock(body) => collect_refs(body, out),
+        ExprKind::Ternary {
+            cond,
+            then,
+            otherwise,
+        } => {
+            collect_refs_expr(cond, out);
+            collect_refs_expr(then, out);
+            collect_refs_expr(otherwise, out);
+        }
         ExprKind::Match { expr, cases } => {
             collect_refs_expr(expr, out);
             for case in cases {
                 collect_refs_pattern(&case.pattern, out);
+                if let Some(g) = &case.guard {
+                    collect_refs_expr(g, out);
+                }
                 collect_refs(&case.body, out);
             }
         }

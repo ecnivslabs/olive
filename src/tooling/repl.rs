@@ -33,6 +33,7 @@ pub fn repl_compile_run(
     combined.extend(exec_stmts);
     let mut program = parser::Program { stmts: combined };
     crate::semantic::desugar::desugar_trait_defaults(&mut program);
+    crate::semantic::desugar::desugar_bare_variants(&mut program);
 
     let mut resolver = Resolver::new();
     resolver.resolve_program(&program);
@@ -132,6 +133,8 @@ pub fn repl_compile_run(
     let mut codegen = CraneliftCodegen::new_jit(
         mir_builder.functions,
         mir_builder.struct_fields,
+        type_checker.field_types.clone(),
+        type_checker.enum_defs.clone(),
         mir_builder.vtables.clone(),
         mir_builder.global_vars,
         mir_builder.file_names.clone(),

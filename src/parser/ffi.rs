@@ -93,10 +93,11 @@ impl Parser {
         let mut decorators = Vec::new();
         while self.peek().kind == TokenKind::At {
             self.advance();
-            let name = self.expect(TokenKind::Identifier)?.value;
+            let name_tok = self.expect(TokenKind::Identifier)?;
             decorators.push(Decorator {
-                name,
+                name: name_tok.value.clone(),
                 is_directive: false,
+                span: Self::tok_span(&name_tok),
             });
             self.skip_newlines();
         }

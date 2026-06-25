@@ -1,6 +1,138 @@
 use crate::mir::{Constant, MirFunction, Operand};
 use crate::semantic::types::Type as OliveType;
 use cranelift::prelude::types;
+use rustc_hash::FxHashMap as HashMap;
+
+/// Collections store elements raw, so `print`/`str` need the static type to
+/// render them. These are the types routed through the typed formatter.
+pub(crate) fn needs_type_descriptor(ty: &OliveType) -> bool {
+    let mut ty = ty;
+    while let OliveType::Ref(inner) | OliveType::MutRef(inner) = ty {
+        ty = inner;
+    }
+    matches!(
+        ty,
+        OliveType::List(_)
+            | OliveType::Set(_)
+            | OliveType::Tuple(_)
+            | OliveType::Dict(_, _)
+            | OliveType::Struct(_, _)
+            | OliveType::Enum(_, _)
+    )
+}
+
+type StructFields = HashMap<String, Vec<String>>;
+type FieldTypes = HashMap<(String, String), OliveType>;
+type EnumDefs = HashMap<String, Vec<(String, Vec<OliveType>)>>;
+
+/// Encodes a type as the byte descriptor consumed by `olive_format_typed`. All
+/// bytes are non-zero so the descriptor interns as a NUL-terminated string;
+/// length bytes are biased by 13 to clear the tag range and the NUL.
+pub(crate) fn type_descriptor(
+    ty: &OliveType,
+    struct_fields: &StructFields,
+    field_types: &FieldTypes,
+    enum_defs: &EnumDefs,
+) -> String {
+    let mut out = Vec::new();
+    let mut visiting = std::collections::HashSet::new();
+    encode_descriptor(
+        ty,
+        &mut out,
+        struct_fields,
+        field_types,
+        enum_defs,
+        &mut visiting,
+    );
+    out.into_iter().map(|b| b as char).collect()
+}
+
+fn push_len_prefixed(out: &mut Vec<u8>, s: &str) {
+    let bytes = s.as_bytes();
+    out.push((bytes.len().min(242) + 13) as u8);
+    out.extend_from_slice(&bytes[..bytes.len().min(242)]);
+}
+
+fn encode_descriptor(
+    ty: &OliveType,
+    out: &mut Vec<u8>,
+    struct_fields: &StructFields,
+    field_types: &FieldTypes,
+    enum_defs: &EnumDefs,
+    visiting: &mut std::collections::HashSet<String>,
+) {
+    let mut ty = ty;
+    while let OliveType::Ref(inner) | OliveType::MutRef(inner) | OliveType::Ptr(inner) = ty {
+        ty = inner;
+    }
+    let enc = |t: &OliveType, out: &mut Vec<u8>, v: &mut std::collections::HashSet<String>| {
+        encode_descriptor(t, out, struct_fields, field_types, enum_defs, v);
+    };
+    match ty {
+        OliveType::Float | OliveType::F32 | OliveType::FloatLiteral(_) => out.push(2),
+        OliveType::Bool => out.push(3),
+        OliveType::Str => out.push(4),
+        OliveType::Null => out.push(5),
+        OliveType::Any | OliveType::Union(_) | OliveType::PyObject | OliveType::PyNamed(_, _) => {
+            out.push(6)
+        }
+        OliveType::List(inner) | OliveType::Vector(inner, _) => {
+            out.push(7);
+            enc(inner, out, visiting);
+        }
+        OliveType::Set(inner) => {
+            out.push(8);
+            enc(inner, out, visiting);
+        }
+        OliveType::Dict(k, v) => {
+            out.push(9);
+            enc(k, out, visiting);
+            enc(v, out, visiting);
+        }
+        OliveType::Tuple(items) => {
+            out.push(10);
+            out.push((items.len() + 1) as u8);
+            for it in items {
+                enc(it, out, visiting);
+            }
+        }
+        OliveType::Struct(name, _)
+            if struct_fields.contains_key(name) && !visiting.contains(name) =>
+        {
+            visiting.insert(name.clone());
+            let fields = &struct_fields[name];
+            out.push(12);
+            push_len_prefixed(out, name);
+            out.push((fields.len() + 13) as u8);
+            for f in fields {
+                push_len_prefixed(out, f);
+                let fty = field_types
+                    .get(&(name.clone(), f.clone()))
+                    .cloned()
+                    .unwrap_or(OliveType::Any);
+                enc(&fty, out, visiting);
+            }
+            visiting.remove(name);
+        }
+        OliveType::Enum(name, _) if enum_defs.contains_key(name) && !visiting.contains(name) => {
+            visiting.insert(name.clone());
+            let variants = &enum_defs[name];
+            out.push(13);
+            push_len_prefixed(out, name);
+            out.push((variants.len() + 13) as u8);
+            for (v_name, payloads) in variants {
+                push_len_prefixed(out, v_name);
+                out.push((payloads.len() + 13) as u8);
+                for pty in payloads {
+                    enc(pty, out, visiting);
+                }
+            }
+            visiting.remove(name);
+        }
+        OliveType::Struct(_, _) | OliveType::Enum(_, _) => out.push(11),
+        _ => out.push(1),
+    }
+}
 
 pub(crate) fn resolve_builtin_import(
     func_mir: &MirFunction,
@@ -23,6 +155,11 @@ pub(crate) fn resolve_builtin_import(
             "__olive_any_to_str" => Some("__olive_any_to_str"),
             "__olive_none_to_str" => Some("__olive_none_to_str"),
             "__olive_bool_to_str" => Some("__olive_bool_to_str"),
+            "__olive_format_int" => Some("__olive_format_int"),
+            "__olive_format_float" => Some("__olive_format_float"),
+            "__olive_format_str" => Some("__olive_format_str"),
+            "__olive_format_bool" => Some("__olive_format_bool"),
+            "__olive_format_any" => Some("__olive_format_any"),
             "__olive_print_float" => Some("__olive_print_float"),
             "__olive_print_list" => Some("__olive_print_list"),
             "__olive_print_list_float" => Some("__olive_print_list_float"),
@@ -82,6 +219,8 @@ pub(crate) fn resolve_builtin_import(
             "__olive_in_list" => Some("__olive_in_list"),
             "__olive_in_obj" => Some("__olive_in_obj"),
             "__olive_set_add" => Some("__olive_set_add"),
+            "__olive_set_contains" => Some("__olive_set_contains"),
+            "__olive_set_remove" => Some("__olive_set_remove"),
             "__olive_set_new" => Some("__olive_set_new"),
             "__olive_free" => Some("__olive_free"),
             "__olive_free_str" => Some("__olive_free_str"),
@@ -396,6 +535,8 @@ pub(crate) fn resolve_builtin_import(
             "__olive_py_getitem" => Some("__olive_py_getitem"),
             "__olive_py_getitem_int" => Some("__olive_py_getitem_int"),
             "__olive_py_getslice" => Some("__olive_py_getslice"),
+            "__olive_str_getslice" => Some("__olive_str_getslice"),
+            "__olive_list_getslice" => Some("__olive_list_getslice"),
             "__olive_py_getitem_safe" => Some("__olive_py_getitem_safe"),
             "__olive_py_setitem" => Some("__olive_py_setitem"),
             "__olive_py_setitem_int" => Some("__olive_py_setitem_int"),
@@ -427,7 +568,7 @@ pub(crate) fn resolve_builtin_import(
     }
     match name {
         "print" | "str" | "int" | "float" | "bool" | "iter" | "next" | "has_next" | "len"
-        | "slice" | "list" | "dict"
+        | "slice" | "list" | "dict" | "sum" | "min" | "max"
             if !args.is_empty() =>
         {
             let arg_type = match &args[0] {
@@ -458,6 +599,30 @@ pub(crate) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
                 Some("__olive_obj_len")
             }
             _ => Some("__olive_list_len"),
+        },
+        "sum" => match current_ty {
+            OliveType::List(inner)
+                if matches!(inner.as_ref(), OliveType::Float | OliveType::F32) =>
+            {
+                Some("__olive_list_sum_float")
+            }
+            _ => Some("__olive_list_sum_int"),
+        },
+        "min" => match current_ty {
+            OliveType::List(inner)
+                if matches!(inner.as_ref(), OliveType::Float | OliveType::F32) =>
+            {
+                Some("__olive_list_min_float")
+            }
+            _ => Some("__olive_list_min_int"),
+        },
+        "max" => match current_ty {
+            OliveType::List(inner)
+                if matches!(inner.as_ref(), OliveType::Float | OliveType::F32) =>
+            {
+                Some("__olive_list_max_float")
+            }
+            _ => Some("__olive_list_max_int"),
         },
         "print" => match current_ty {
             OliveType::Str => Some("__olive_print_str"),

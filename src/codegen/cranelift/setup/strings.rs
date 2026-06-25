@@ -85,6 +85,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 match &stmt.kind {
                     StatementKind::Assign(_, rval) => {
                         self.collect_strings_in_rvalue(rval);
+                        self.collect_type_descriptor(func, rval);
                     }
                     StatementKind::SetAttr(_, attr, val_op) => {
                         self.intern_attr_string(attr);
@@ -98,6 +99,28 @@ impl<M: Module> CraneliftCodegen<M> {
                     _ => {}
                 }
             }
+        }
+    }
+
+    fn collect_type_descriptor(&mut self, func: &MirFunction, rval: &crate::mir::Rvalue) {
+        use super::super::imports::{needs_type_descriptor, type_descriptor};
+        use crate::mir::{Constant, Operand, Rvalue};
+        let Rvalue::Call { func: callee, args } = rval else {
+            return;
+        };
+        let Operand::Constant(Constant::Function(name)) = callee else {
+            return;
+        };
+        if (name != "print" && name != "str") || args.len() != 1 {
+            return;
+        }
+        let ty = match &args[0] {
+            Operand::Copy(l) | Operand::Move(l) => &func.locals[l.0].ty,
+            _ => return,
+        };
+        if needs_type_descriptor(ty) {
+            let desc = type_descriptor(ty, &self.struct_fields, &self.field_types, &self.enum_defs);
+            self.intern_attr_string(&desc);
         }
     }
 

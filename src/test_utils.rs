@@ -23,7 +23,9 @@ fn exec_lock() -> MutexGuard<'static, ()> {
 
 pub fn compile(src: &str) -> CraneliftCodegen<JITModule> {
     let tokens = Lexer::new(src, 0).tokenise().unwrap();
-    let prog = Parser::new(tokens).parse_program().unwrap();
+    let mut prog = Parser::new(tokens).parse_program().unwrap();
+    crate::semantic::desugar::desugar_trait_defaults(&mut prog);
+    crate::semantic::desugar::desugar_bare_variants(&mut prog);
     let mut r = Resolver::new();
     r.resolve_program(&prog);
     assert!(r.errors.is_empty(), "resolver errors: {:?}", r.errors);
@@ -44,6 +46,8 @@ pub fn compile(src: &str) -> CraneliftCodegen<JITModule> {
     let mut cg = CraneliftCodegen::new_jit(
         builder.functions,
         builder.struct_fields,
+        tc.field_types.clone(),
+        tc.enum_defs.clone(),
         builder.vtables.clone(),
         builder.global_vars,
         builder.file_names.clone(),

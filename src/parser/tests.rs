@@ -421,8 +421,8 @@ mod parser_tests {
         match expr_stmt(&parse("f\"x is {x}\"\n")) {
             ExprKind::FStr(parts) => {
                 assert_eq!(parts.len(), 2);
-                assert!(matches!(parts[0].kind, ExprKind::Str(_)));
-                assert!(matches!(parts[1].kind, ExprKind::Identifier(_)));
+                assert!(matches!(parts[0].expr.kind, ExprKind::Str(_)));
+                assert!(matches!(parts[1].expr.kind, ExprKind::Identifier(_)));
             }
             _ => panic!(),
         }

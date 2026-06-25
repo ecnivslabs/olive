@@ -250,4 +250,14 @@ pub(super) const ENTRIES: &[Explanation] = &[
             "A raw `ptr` is always allowed; you own the meaning of the address.",
         ],
     },
+    Explanation {
+        code: "E0422",
+        title: "no such method on this type",
+        summary: "A method was called on a built-in type (a list, set, tuple, dict, or \
+                  string) that does not define it. These types expose a fixed method \
+                  set, so an unknown name cannot resolve.",
+        wrong: "fn main():\n    let xs = [1, 2, 3]\n    print(xs.first())",
+        fixed: "fn main():\n    let xs = [1, 2, 3]\n    print(xs[0])",
+        notes: &["Check the spelling, or use indexing/slicing for element access."],
+    },
 ];

@@ -14,6 +14,9 @@ impl<M: Module> CraneliftCodegen<M> {
         module: &mut M,
         func_ids: &HashMap<String, FuncId>,
         string_ids: &HashMap<String, DataId>,
+        struct_fields: &HashMap<String, Vec<String>>,
+        field_types: &HashMap<(String, String), OliveType>,
+        enum_defs: &HashMap<String, Vec<(String, Vec<OliveType>)>>,
         c_struct_offsets: &HashMap<String, Vec<super::FfiStructFieldLayout>>,
         c_struct_sizes: &HashMap<String, i64>,
         ffi_vararg_ptrs: &HashMap<String, *const u8>,
@@ -52,6 +55,32 @@ impl<M: Module> CraneliftCodegen<M> {
                 OliveType::Int
             };
 
+            if (name == "print" || name == "str")
+                && call_args.len() == 1
+                && super::imports::needs_type_descriptor(&arg_type)
+            {
+                let desc = super::imports::type_descriptor(
+                    &arg_type,
+                    struct_fields,
+                    field_types,
+                    enum_defs,
+                );
+                let data_id = *string_ids
+                    .get(&desc)
+                    .expect("type descriptor not interned during collection");
+                let local_data = module.declare_data_in_func(data_id, builder.func);
+                let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                let sym = if name == "print" {
+                    "__olive_print_typed"
+                } else {
+                    "__olive_format_typed"
+                };
+                let func_id = func_ids[sym];
+                let local_func = module.declare_func_in_func(func_id, builder.func);
+                let inst = builder.ins().call(local_func, &[call_args[0], desc_ptr]);
+                return builder.inst_results(inst)[0];
+            }
+
             let resolved_name = if (name == "print"
                 || name == "str"
                 || name == "int"
@@ -66,6 +95,9 @@ impl<M: Module> CraneliftCodegen<M> {
                 || name == "dict"
                 || name == "keys"
                 || name == "values"
+                || (name == "sum" && !func_ids.contains_key("sum"))
+                || (name == "min" && !func_ids.contains_key("min"))
+                || (name == "max" && !func_ids.contains_key("max"))
                 || name == "remove")
                 && !args.is_empty()
             {
@@ -109,7 +141,8 @@ impl<M: Module> CraneliftCodegen<M> {
                     || resolved_name == "__olive_math_log"
                     || resolved_name == "__olive_math_log10"
                     || resolved_name == "__olive_py_from_float"
-                    || resolved_name == "__olive_box_float";
+                    || resolved_name == "__olive_box_float"
+                    || resolved_name == "__olive_format_float";
                 let ffi_entry = ffi_entries.iter().find(|e| e.jit_name == resolved_name);
 
                 if let Some(entry) = ffi_entry

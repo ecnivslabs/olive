@@ -42,6 +42,8 @@ pub fn compile_and_run(
     let mut codegen = CraneliftCodegen::new_jit(
         out.functions,
         out.struct_fields.clone(),
+        out.field_types.clone(),
+        out.enum_defs.clone(),
         out.vtables.clone(),
         out.global_vars.clone(),
         out.file_names.clone(),
@@ -85,6 +87,8 @@ pub fn compile_and_emit(filename: &str, output: &str, show_time: bool, release: 
     let mut codegen = CraneliftCodegen::new_aot(
         out.functions,
         out.struct_fields.clone(),
+        out.field_types.clone(),
+        out.enum_defs.clone(),
         out.vtables.clone(),
         out.global_vars.clone(),
         out.file_names.clone(),
@@ -216,6 +220,8 @@ pub fn compile_and_test(filename: &str, _show_time: bool, release: bool) {
     let mut codegen = CraneliftCodegen::new_jit(
         out.functions,
         out.struct_fields.clone(),
+        out.field_types.clone(),
+        out.enum_defs.clone(),
         out.vtables.clone(),
         out.global_vars.clone(),
         out.file_names.clone(),

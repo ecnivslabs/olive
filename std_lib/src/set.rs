@@ -55,6 +55,38 @@ pub extern "C" fn olive_set_add(set_ptr: i64, val: i64) {
     }
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_set_contains(set_ptr: i64, val: i64) -> i64 {
+    if set_ptr == 0 {
+        return 0;
+    }
+    let s = unsafe { &*(set_ptr as *const OliveHashSet) };
+    let hs = unsafe { &*s.inner };
+    hs.contains(&val) as i64
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_set_remove(set_ptr: i64, val: i64) -> i64 {
+    if set_ptr == 0 {
+        return 0;
+    }
+    unsafe {
+        let s = &mut *(set_ptr as *mut OliveHashSet);
+        let hs = &mut *s.inner;
+        if hs.remove(&val) {
+            let mut v = Vec::from_raw_parts(s.ptr, s.len, s.cap);
+            if let Some(pos) = v.iter().position(|&x| x == val) {
+                v.remove(pos);
+            }
+            s.ptr = v.as_mut_ptr();
+            s.cap = v.capacity();
+            s.len = v.len();
+            std::mem::forget(v);
+        }
+    }
+    val
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

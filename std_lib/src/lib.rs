@@ -29,6 +29,7 @@ pub mod compress;
 pub mod crypto;
 pub mod datetime;
 pub mod encoding;
+pub mod format;
 pub mod io;
 pub mod json;
 pub mod logging;
@@ -293,9 +294,27 @@ pub extern "C" fn olive_print(val: i64) -> i64 {
     0
 }
 
+/// Formats a float the way Python's `repr` does: a finite value with no
+/// fractional or exponent part still shows a trailing `.0` so it reads as a
+/// float, not an int.
+pub(crate) fn fmt_float(val: f64) -> String {
+    if val.is_nan() {
+        return "nan".to_string();
+    }
+    if val.is_infinite() {
+        return if val < 0.0 { "-inf" } else { "inf" }.to_string();
+    }
+    let s = format!("{val}");
+    if s.bytes().all(|b| b.is_ascii_digit() || b == b'-') {
+        format!("{s}.0")
+    } else {
+        s
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_print_float(val: f64) -> i64 {
-    println!("{}", val);
+    println!("{}", fmt_float(val));
     0
 }
 
@@ -341,7 +360,7 @@ pub extern "C" fn olive_print_list_float(ptr: i64) -> i64 {
     let parts: Vec<String> = (0..v.len)
         .map(|i| {
             let bits = unsafe { *v.ptr.add(i) };
-            format!("{}", f64::from_bits(bits as u64))
+            fmt_float(f64::from_bits(bits as u64))
         })
         .collect();
     println!("[{}]", parts.join(", "));
@@ -370,7 +389,7 @@ fn looks_like_float(val: i64) -> bool {
     abs_f > 1e-100 && abs_f < 1e100
 }
 
-fn format_list_elem(val: i64) -> String {
+pub(crate) fn format_list_elem(val: i64) -> String {
     match val & boxed::TAG_MASK {
         boxed::TAG_INT => return format!("{}", val >> 3),
         boxed::TAG_BOOL => return if val >> 3 != 0 { "True" } else { "False" }.to_string(),
@@ -388,7 +407,7 @@ fn format_list_elem(val: i64) -> String {
         match kind {
             KIND_FLOAT => {
                 let b = unsafe { &*(val as *const boxed::OliveBoxed) };
-                return format!("{}", f64::from_bits(b.bits as u64));
+                return fmt_float(f64::from_bits(b.bits as u64));
             }
             KIND_INT => {
                 let b = unsafe { &*(val as *const boxed::OliveBoxed) };
@@ -434,7 +453,7 @@ fn format_list_elem(val: i64) -> String {
         }
     }
     if looks_like_float(val) {
-        format!("{}", f64::from_bits(val as u64))
+        fmt_float(f64::from_bits(val as u64))
     } else {
         format!("{}", val)
     }
@@ -510,7 +529,7 @@ pub extern "C" fn olive_any_to_str(val: i64) -> i64 {
         match kind {
             KIND_FLOAT => {
                 let b = unsafe { &*(val as *const boxed::OliveBoxed) };
-                return olive_str_internal(&format!("{}", f64::from_bits(b.bits as u64)));
+                return olive_str_internal(&fmt_float(f64::from_bits(b.bits as u64)));
             }
             KIND_INT => {
                 let b = unsafe { &*(val as *const boxed::OliveBoxed) };
@@ -567,7 +586,7 @@ pub extern "C" fn olive_bool_from_float(val: f64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_float_to_str(val: f64) -> i64 {
-    olive_str_internal(&format!("{}", val))
+    olive_str_internal(&fmt_float(val))
 }
 
 #[unsafe(no_mangle)]

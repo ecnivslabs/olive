@@ -232,7 +232,7 @@ impl<'a> MirBuilder<'a> {
             }
             ExprKind::Float(f) => Operand::Constant(Constant::Float((*f).to_bits())),
             ExprKind::Str(s) => Operand::Constant(Constant::Str(s.clone())),
-            ExprKind::FStr(exprs) => self.lower_fstr_expr(exprs, expr.span),
+            ExprKind::FStr(parts) => self.lower_fstr_expr(parts, expr.span),
             ExprKind::Bool(b) => Operand::Constant(Constant::Bool(*b)),
             ExprKind::Try(inner) => self.lower_try_expr(inner, expr.span, expr.id),
             ExprKind::Await(inner) => self.lower_await_expr(inner, expr.id),
@@ -278,6 +278,11 @@ impl<'a> MirBuilder<'a> {
                 expr: match_expr,
                 cases,
             } => self.lower_match_expr(match_expr, cases, expr.span, expr.id),
+            ExprKind::Ternary {
+                cond,
+                then,
+                otherwise,
+            } => self.lower_ternary_expr(cond, then, otherwise, expr.span, expr.id),
         }
     }
 

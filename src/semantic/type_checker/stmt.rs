@@ -1013,8 +1013,10 @@ impl TypeChecker {
                 self.current_struct = prev_struct;
 
                 let mut variant_names = Vec::new();
+                let mut defs = Vec::new();
                 for (v_name, p_types) in variant_data {
                     variant_names.push(v_name.clone());
+                    defs.push((v_name.clone(), p_types.clone()));
                     let fn_ty = Type::Fn(
                         p_types,
                         Box::new(Type::Enum(name.clone(), abstract_args.clone())),
@@ -1025,6 +1027,7 @@ impl TypeChecker {
                     self.define_type(&v_name, fn_ty, false);
                 }
                 self.enum_variants.insert(name.clone(), variant_names);
+                self.enum_defs.insert(name.clone(), defs);
             }
         }
     }

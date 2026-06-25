@@ -272,9 +272,9 @@ mod parser_tests_extended {
         match expr_stmt(&p) {
             ExprKind::FStr(parts) => {
                 assert_eq!(parts.len(), 3);
-                assert!(matches!(parts[0].kind, ExprKind::Str(_)));
-                assert!(matches!(parts[1].kind, ExprKind::Identifier(_)));
-                assert!(matches!(parts[2].kind, ExprKind::Str(_)));
+                assert!(matches!(parts[0].expr.kind, ExprKind::Str(_)));
+                assert!(matches!(parts[1].expr.kind, ExprKind::Identifier(_)));
+                assert!(matches!(parts[2].expr.kind, ExprKind::Str(_)));
             }
             _ => panic!("expected FStr"),
         }
