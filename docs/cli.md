@@ -14,6 +14,8 @@ The `pit` toolchain is the unified compiler, package manager, and project manage
   * `-t, --time`: Emit performance timings during compilation.
   * `--release`: Compile with optimizations enabled.
   * `--pgo <path>`: Use the profile at `<path>` for profile-guided inlining instead of auto-detecting one captured by an earlier `pit run`.
+  * `--pymodule`: Compile project into a C-compatible Python extension module shared library (`.so`, `.dylib`, or `.pyd`).
+  * `--module-name <name>`: Override the output Python extension module name (defaults to project `name` in `pit.toml`).
   * `--explain-copies`: Print every compiler-inserted deep-copy site with file:line, type, and reason.
 
 * `pit run [file]`
