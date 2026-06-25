@@ -223,14 +223,12 @@ impl<M: Module> CraneliftCodegen<M> {
             }
             AggregateKind::FatPtr => {
                 let alloc_id = func_ids
-                    .get("__olive_alloc")
-                    .expect("missing __olive_alloc");
+                    .get("__olive_fatptr_alloc")
+                    .expect("missing __olive_fatptr_alloc");
                 let alloc_func = module.declare_func_in_func(*alloc_id, builder.func);
-                // 3 words: data ptr, vtable ptr, drop-shim ptr (frees the
-                // concrete struct the data ptr points to -- see
-                // `build_trait_drop_shim`).
-                let size = builder.ins().iconst(types::I64, 24);
-                let inst = builder.ins().call(alloc_func, &[size]);
+                // Slab record: [kind, data ptr, vtable ptr, drop-shim ptr]; the
+                // runtime writes the kind word so free paths can classify it.
+                let inst = builder.ins().call(alloc_func, &[]);
                 let ptr = builder.inst_results(inst)[0];
 
                 let data_val =
@@ -240,11 +238,11 @@ impl<M: Module> CraneliftCodegen<M> {
                 let drop_shim_val =
                     Self::translate_operand(builder, &ops[2], vars, string_ids, module, func_ids);
 
-                builder.ins().store(MemFlags::trusted(), data_val, ptr, 0);
-                builder.ins().store(MemFlags::trusted(), vtable_val, ptr, 8);
+                builder.ins().store(MemFlags::trusted(), data_val, ptr, 8);
+                builder.ins().store(MemFlags::trusted(), vtable_val, ptr, 16);
                 builder
                     .ins()
-                    .store(MemFlags::trusted(), drop_shim_val, ptr, 16);
+                    .store(MemFlags::trusted(), drop_shim_val, ptr, 24);
                 ptr
             }
             _ => {

@@ -209,6 +209,7 @@ pub fn run_pipeline_opt(
         (false, _) => mir::Optimizer::minimal(),
     };
     optimizer.set_explain_copies(explain_copies);
+    optimizer.set_vtables(mir_builder.vtables.clone());
     let (gencheck_errors, copy_sites) = optimizer.run(&mut mir_builder.functions);
     if explain_copies && !copy_sites.is_empty() {
         println!("\nexplain-copies:");

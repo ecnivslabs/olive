@@ -835,7 +835,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 let vtable_ptr =
                     builder
                         .ins()
-                        .load(types::I64, MemFlags::trusted(), fat_ptr_val, 8);
+                        .load(types::I64, MemFlags::trusted(), fat_ptr_val, 16);
                 let offset = (*method_idx * 8) as i32;
                 builder
                     .ins()
@@ -846,7 +846,7 @@ impl<M: Module> CraneliftCodegen<M> {
                     Self::translate_operand(builder, fat_ptr, vars, string_ids, module, func_ids);
                 builder
                     .ins()
-                    .load(types::I64, MemFlags::trusted(), fat_ptr_val, 0)
+                    .load(types::I64, MemFlags::trusted(), fat_ptr_val, 8)
             }
             Rvalue::PtrLoad(ptr_op) => {
                 let ptr =

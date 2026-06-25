@@ -831,37 +831,16 @@ impl<M: Module> CraneliftCodegen<M> {
                 let var = vars.get(local).unwrap();
                 let val = builder.use_var(*var);
 
-                // A trait object's own two/three words say nothing about the
-                // concrete struct underneath (that's erased -- the point of
-                // dynamic dispatch), so there is no static descriptor to look
-                // up here. The fat pointer's third word is the drop shim
-                // synthesized at the coercion site (`build_trait_drop_shim`),
-                // which knows the real type and frees it correctly (including
-                // any heap fields it owns) before the fat pointer block itself
-                // is freed.
+                // A trait object's record says nothing about the concrete
+                // struct underneath (that's erased -- the point of dynamic
+                // dispatch), so there is no static descriptor to look up here.
+                // The runtime free reads the record's drop shim, synthesized
+                // at the coercion site (`build_trait_drop_shim`), which knows
+                // the real type and frees it before the record itself.
                 if let OliveType::TraitObject(..) = ty {
-                    let nonnull_bb = builder.create_block();
-                    let done_bb = builder.create_block();
-                    let nonnull = builder.ins().icmp_imm(IntCC::NotEqual, val, 0);
-                    builder.ins().brif(nonnull, nonnull_bb, &[], done_bb, &[]);
-
-                    builder.seal_block(nonnull_bb);
-                    builder.switch_to_block(nonnull_bb);
-                    let data_ptr = builder.ins().load(types::I64, MemFlags::trusted(), val, 0);
-                    let shim_ptr = builder.ins().load(types::I64, MemFlags::trusted(), val, 16);
-                    let mut sig = module.make_signature();
-                    sig.call_conv = module.isa().default_call_conv();
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let sig_ref = builder.import_signature(sig);
-                    builder.ins().call_indirect(sig_ref, shim_ptr, &[data_ptr]);
-                    let free_id = func_ids["__olive_free"];
+                    let free_id = func_ids["__olive_free_fatptr"];
                     let local_func = module.declare_func_in_func(free_id, builder.func);
                     builder.ins().call(local_func, &[val]);
-                    builder.ins().jump(done_bb, &[]);
-
-                    builder.seal_block(done_bb);
-                    builder.switch_to_block(done_bb);
                     let zero = builder.ins().iconst(types::I64, 0);
                     builder.def_var(*var, zero);
                     return;

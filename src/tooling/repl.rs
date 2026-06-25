@@ -99,7 +99,8 @@ pub fn repl_compile_run(
     mir_builder.build_program(&program);
     mir_builder.monomorphize_drop_fns();
 
-    let optimizer = mir::Optimizer::new();
+    let mut optimizer = mir::Optimizer::new();
+    optimizer.set_vtables(mir_builder.vtables.clone());
     let (gencheck_errors, _) = optimizer.run(&mut mir_builder.functions);
     if !gencheck_errors.is_empty() {
         for d in &gencheck_errors {

@@ -1192,6 +1192,7 @@ pub extern "C" fn olive_free_any(ptr: i64) {
         KIND_PYOBJECT => python::olive_py_decref(ptr as *mut std::os::raw::c_void),
         KIND_ITER => olive_free_iter(ptr),
         struct_box::KIND_STRUCT_BOX => struct_box::free_struct_box(ptr),
+        struct_obj::KIND_FATPTR => struct_obj::olive_free_fatptr(ptr),
         _ => {}
     }
 }
@@ -1224,6 +1225,7 @@ pub extern "C" fn olive_free_union_member(ptr: i64) {
         KIND_PYOBJECT => python::olive_py_decref(ptr as *mut std::os::raw::c_void),
         KIND_ITER => olive_free_iter(ptr),
         struct_box::KIND_STRUCT_BOX => struct_box::free_struct_box(ptr),
+        struct_obj::KIND_FATPTR => struct_obj::olive_free_fatptr(ptr),
         _ => {}
     }
 }

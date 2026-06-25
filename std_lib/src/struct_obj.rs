@@ -4,6 +4,10 @@ use std::cell::UnsafeCell;
 // Body words = field count word + n_fields; sizes above this use pow2 classes.
 const FIXED_MAX_WORDS: usize = 17;
 
+/// Trait-object record: [kind, data ptr, vtable ptr, drop shim ptr].
+pub(crate) const KIND_FATPTR: i64 = 17;
+const FATPTR_WORDS: usize = 4;
+
 pub struct StructSlabs {
     fixed: Vec<GenSlab>,
     large: Vec<(usize, GenSlab)>,
@@ -87,6 +91,39 @@ fn free_struct_slot_raw_local(ptr: i64, n_fields: i64) {
             s.class_for(words).free(ptr as *mut u8);
         });
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_fatptr_alloc() -> i64 {
+    let active = crate::slab::ACTIVE_SLABS.get();
+    let body = if !active.is_null() {
+        unsafe { (*active).struct_slabs.class_for(FATPTR_WORDS).alloc().0 }
+    } else {
+        STRUCT_SLABS.with(|s| unsafe { (&mut *s.get()).class_for(FATPTR_WORDS).alloc().0 })
+    };
+    unsafe { *(body as *mut i64) = KIND_FATPTR };
+    body as i64
+}
+
+/// Frees the concrete value through the record's drop shim, then the record.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_free_fatptr(ptr: i64) {
+    if ptr == 0 || !crate::slab::ptr_in_slab_span(ptr) || !crate::slab::slot_is_live(ptr) {
+        return;
+    }
+    unsafe {
+        let words = ptr as *const i64;
+        if *words != KIND_FATPTR {
+            return;
+        }
+        let data = *words.add(1);
+        let shim = *words.add(3);
+        if shim != 0 && data != 0 {
+            let shim_fn: extern "C" fn(i64) -> i64 = std::mem::transmute(shim as usize);
+            shim_fn(data);
+        }
+    }
+    free_struct_slot_raw(ptr, FATPTR_WORDS as i64 - 1);
 }
 
 #[unsafe(no_mangle)]
@@ -174,6 +211,67 @@ mod tests {
         assert_ne!(ptr, 0);
         assert_eq!(unsafe { *(ptr as *const i64) }, 0);
         olive_free_struct(ptr);
+    }
+
+    #[test]
+    fn fatptr_alloc_writes_kind() {
+        let ptr = olive_fatptr_alloc();
+        assert_ne!(ptr, 0);
+        assert_eq!(unsafe { *(ptr as *const i64) }, KIND_FATPTR);
+        unsafe {
+            *((ptr + 8) as *mut i64) = 0;
+            *((ptr + 24) as *mut i64) = 0;
+        }
+        olive_free_fatptr(ptr);
+    }
+
+    #[test]
+    fn fatptr_free_recycles_and_absorbs_double_free() {
+        let a = olive_fatptr_alloc();
+        unsafe {
+            *((a + 8) as *mut i64) = 0;
+            *((a + 24) as *mut i64) = 0;
+        }
+        olive_free_fatptr(a);
+        olive_free_fatptr(a);
+        let b = olive_fatptr_alloc();
+        assert_eq!(a, b, "slot recycles after free");
+        unsafe {
+            *((b + 8) as *mut i64) = 0;
+            *((b + 24) as *mut i64) = 0;
+        }
+        olive_free_fatptr(b);
+    }
+
+    extern "C" fn count_shim(data: i64) -> i64 {
+        unsafe { *(data as *mut i64) += 1 };
+        0
+    }
+
+    #[test]
+    fn fatptr_free_runs_drop_shim() {
+        let mut hits: i64 = 0;
+        let ptr = olive_fatptr_alloc();
+        unsafe {
+            *((ptr + 8) as *mut i64) = &mut hits as *mut i64 as i64;
+            *((ptr + 16) as *mut i64) = 0;
+            *((ptr + 24) as *mut i64) = count_shim as extern "C" fn(i64) -> i64 as usize as i64;
+        }
+        olive_free_fatptr(ptr);
+        assert_eq!(hits, 1, "shim runs exactly once");
+    }
+
+    #[test]
+    fn free_any_classifies_fatptr() {
+        let mut hits: i64 = 0;
+        let ptr = olive_fatptr_alloc();
+        unsafe {
+            *((ptr + 8) as *mut i64) = &mut hits as *mut i64 as i64;
+            *((ptr + 16) as *mut i64) = 0;
+            *((ptr + 24) as *mut i64) = count_shim as extern "C" fn(i64) -> i64 as usize as i64;
+        }
+        crate::olive_free_any(ptr);
+        assert_eq!(hits, 1, "free_any dispatches by kind word");
     }
 
     #[test]
