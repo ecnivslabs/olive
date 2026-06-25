@@ -315,6 +315,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_list_all_any", &sig_i64_i64),
             ("__olive_list_append", &sig_i64_i64_void),
             ("__olive_list_concat", &sig_i64_i64_i64),
+            ("__olive_list_concat_move", &sig_i64_i64_i64),
             ("__olive_list_concat_typed", &sig_3i64_i64),
             ("__olive_list_getslice_typed", &sig_6i64_i64),
             ("__olive_list_extend_typed", &sig_i64_i64_i64_void),

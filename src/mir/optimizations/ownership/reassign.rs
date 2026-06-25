@@ -156,6 +156,14 @@ pub(super) fn insert_reassign_drops(func: &mut MirFunction, reassign: &HashSet<L
                 each(&mut aliases_of, a);
                 each(&mut aliases_of, b);
             }
+            // list_concat_move reuses its left operand's storage the same way.
+            if let StatementKind::Assign(dst, Rvalue::Call { func: f, args }) = &stmt.kind
+                && matches!(f, Operand::Constant(Constant::Function(n))
+                    if n == "__olive_list_concat_move")
+                && let Some(Operand::Copy(src) | Operand::Move(src)) = args.first()
+            {
+                aliases_of.entry(*src).or_default().insert(*dst);
+            }
         }
         let mut rebuilt = Vec::with_capacity(old.len() + 2);
         // Seeded from the block's entry state, so a loop-body reassignment

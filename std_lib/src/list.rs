@@ -481,6 +481,35 @@ pub extern "C" fn olive_list_pop(list_ptr: i64) -> i64 {
     }
 }
 
+/// Concat that reuses the left list's storage and steals the right list's
+/// elements. Only reachable when ownership proved both operands die at this
+/// statement, so no element is shared afterward. The right list is left as
+/// an empty shell for its pending drop.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_concat_move(l: i64, r: i64) -> i64 {
+    if l == 0 {
+        if r == 0 {
+            return 0;
+        }
+        return olive_list_concat_move(olive_list_new(0), r);
+    }
+    if r == 0 {
+        return l;
+    }
+    unsafe {
+        let sl = &mut *(l as *mut StableVec);
+        let sr = &mut *(r as *mut StableVec);
+        let mut v = Vec::from_raw_parts(sl.ptr, sl.len, sl.cap);
+        v.extend_from_slice(std::slice::from_raw_parts(sr.ptr, sr.len));
+        sl.ptr = v.as_mut_ptr();
+        sl.cap = v.capacity();
+        sl.len = v.len();
+        std::mem::forget(v);
+        sr.len = 0;
+    }
+    l
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_list_concat(l: i64, r: i64) -> i64 {
     if l == 0 {
@@ -1049,6 +1078,34 @@ mod tests {
         let a = make_list(&[1, 2]);
         let c = olive_list_concat(a, 0);
         assert_eq!(c, a);
+    }
+
+    #[test]
+    fn concat_move_reuses_left_and_empties_right() {
+        let a = make_list(&[1, 2]);
+        let b = make_list(&[3, 4]);
+        let c = olive_list_concat_move(a, b);
+        assert_eq!(c, a);
+        assert_eq!(olive_list_len(c), 4);
+        assert_eq!(olive_list_get(c, 2), 3);
+        assert_eq!(olive_list_len(b), 0);
+    }
+
+    #[test]
+    fn concat_move_null_left_still_owns_result() {
+        let b = make_list(&[7]);
+        let c = olive_list_concat_move(0, b);
+        assert_ne!(c, b);
+        assert_eq!(olive_list_len(c), 1);
+        assert_eq!(olive_list_get(c, 0), 7);
+        assert_eq!(olive_list_len(b), 0);
+    }
+
+    #[test]
+    fn concat_move_null_right_is_identity() {
+        let a = make_list(&[5]);
+        assert_eq!(olive_list_concat_move(a, 0), a);
+        assert_eq!(olive_list_len(a), 1);
     }
 
     #[test]
