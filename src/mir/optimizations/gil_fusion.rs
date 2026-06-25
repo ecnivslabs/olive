@@ -78,6 +78,7 @@ impl GilFusion {
             | Rvalue::GetTag(_)
             | Rvalue::GetTypeId(_)
             | Rvalue::VectorSplat(..)
+            | Rvalue::VectorReduce(..)
             | Rvalue::VectorLoad(..)
             | Rvalue::VectorFMA(..)
             | Rvalue::PtrLoad(_)

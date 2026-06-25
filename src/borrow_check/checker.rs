@@ -469,7 +469,9 @@ impl<'a> BorrowChecker<'a> {
             }
             Rvalue::PtrLoad(op) => self.check_operand(op, state, span),
             Rvalue::VTableLoad { vtable, .. } => self.check_operand(vtable, state, span),
-            Rvalue::VectorSplat(op, _) => self.check_operand(op, state, span),
+            Rvalue::VectorSplat(op, _) | Rvalue::VectorReduce(_, op, _) => {
+                self.check_operand(op, state, span)
+            }
             Rvalue::VectorLoad(obj, idx, _) => {
                 self.check_operand(obj, state, span);
                 self.check_operand(idx, state, span);

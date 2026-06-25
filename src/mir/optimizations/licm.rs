@@ -239,7 +239,7 @@ impl Licm {
             Rvalue::GetAttr(op, _) => vec![op],
             Rvalue::GetIndex(obj, idx, _) => vec![obj, idx],
             Rvalue::GetTag(op) | Rvalue::GetTypeId(op) => vec![op],
-            Rvalue::VectorSplat(op, _) => vec![op],
+            Rvalue::VectorSplat(op, _) | Rvalue::VectorReduce(_, op, _) => vec![op],
             Rvalue::VectorLoad(a, b, _) => vec![a, b],
             Rvalue::VectorFMA(a, b, c) => vec![a, b, c],
             Rvalue::PtrLoad(op) | Rvalue::FatPtrData(op) => vec![op],

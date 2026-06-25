@@ -59,6 +59,8 @@ pub enum Rvalue {
     VectorSplat(Operand, usize),
     VectorLoad(Operand, Operand, usize),
     VectorFMA(Operand, Operand, Operand),
+    /// Horizontal fold of a vector's lanes with an associative int op.
+    VectorReduce(BinOp, Operand, usize),
     PtrLoad(Operand),
     FatPtrData(Operand),
     VTableLoad {

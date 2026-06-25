@@ -56,6 +56,26 @@ impl<M: Module> CraneliftCodegen<M> {
 
         use crate::parser::BinOp::*;
 
+        // Vectorized lanes wrap like release scalar arithmetic; overflow
+        // checks stay on the scalar epilogue, and Cranelift has no flagged
+        // SIMD arithmetic to lower anyway.
+        if l_ty.is_vector() {
+            let lanes_float = l_ty.lane_type().is_float();
+            let result = match (op, lanes_float) {
+                (Add, true) => builder.ins().fadd(l, r),
+                (Sub, true) => builder.ins().fsub(l, r),
+                (Mul, true) => builder.ins().fmul(l, r),
+                (Add, false) => builder.ins().iadd(l, r),
+                (Sub, false) => builder.ins().isub(l, r),
+                (Mul, false) => builder.ins().imul(l, r),
+                (BitAnd, false) => builder.ins().band(l, r),
+                (BitOr, false) => builder.ins().bor(l, r),
+                (BitXor, false) => builder.ins().bxor(l, r),
+                _ => unreachable!("unsupported vector binop reached codegen"),
+            };
+            return result;
+        }
+
         let is_py = is_pyobj_op(func_mir, lhs) || is_pyobj_op(func_mir, rhs);
         if is_py && matches!(op, Add | Sub | Mul | Div | Mod | Pow) {
             let (l_val, l_coerced) = if is_float_op(func_mir, lhs) {

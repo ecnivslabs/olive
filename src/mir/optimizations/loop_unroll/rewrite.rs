@@ -30,6 +30,7 @@ pub(super) fn stmt_reads_local(stmt: &Statement, local: Local) -> bool {
             | Rvalue::GetTag(op)
             | Rvalue::GetTypeId(op)
             | Rvalue::VectorSplat(op, _)
+            | Rvalue::VectorReduce(_, op, _)
             | Rvalue::PtrLoad(op)
             | Rvalue::GenOf(op)
             | Rvalue::FatPtrData(op)
@@ -133,6 +134,7 @@ fn subst_rvalue(rval: &mut Rvalue, from: Local, to: &Operand) {
         Rvalue::Ref(_)
         | Rvalue::MutRef(_)
         | Rvalue::VectorSplat(..)
+        | Rvalue::VectorReduce(..)
         | Rvalue::VectorLoad(..)
         | Rvalue::VectorFMA(..) => {}
     }

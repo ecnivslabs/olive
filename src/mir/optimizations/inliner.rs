@@ -339,7 +339,9 @@ impl Inliner {
             } => {
                 self.remap_operand(vtable, offset);
             }
-            Rvalue::VectorSplat(op, _) => self.remap_operand(op, offset),
+            Rvalue::VectorSplat(op, _) | Rvalue::VectorReduce(_, op, _) => {
+                self.remap_operand(op, offset)
+            }
             Rvalue::VectorLoad(obj, idx, _) => {
                 self.remap_operand(obj, offset);
                 self.remap_operand(idx, offset);

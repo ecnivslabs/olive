@@ -621,7 +621,8 @@ fn rval_references(rval: &Rvalue, local: Local) -> bool {
         | Rvalue::PtrLoad(op)
         | Rvalue::GenOf(op)
         | Rvalue::VTableLoad { vtable: op, .. }
-        | Rvalue::VectorSplat(op, _) => operand_is(op, local),
+        | Rvalue::VectorSplat(op, _)
+        | Rvalue::VectorReduce(_, op, _) => operand_is(op, local),
         Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r, _) => {
             operand_is(l, local) || operand_is(r, local)
         }

@@ -119,7 +119,8 @@ impl CommonSubexpressionElimination {
             | Rvalue::Cast(op, _)
             | Rvalue::PtrLoad(op)
             | Rvalue::GenOf(op)
-            | Rvalue::VectorSplat(op, _) => f(op),
+            | Rvalue::VectorSplat(op, _)
+            | Rvalue::VectorReduce(_, op, _) => f(op),
             Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r, _) | Rvalue::VectorLoad(l, r, _) => {
                 f(l);
                 f(r);

@@ -103,7 +103,9 @@ impl DeadCodeElimination {
             }
             Rvalue::PtrLoad(op) | Rvalue::GenOf(op) => self.record_operand_usage(op, used),
             Rvalue::VTableLoad { vtable, .. } => self.record_operand_usage(vtable, used),
-            Rvalue::VectorSplat(op, _) => self.record_operand_usage(op, used),
+            Rvalue::VectorSplat(op, _) | Rvalue::VectorReduce(_, op, _) => {
+                self.record_operand_usage(op, used)
+            }
             Rvalue::VectorLoad(obj, idx, _) => {
                 self.record_operand_usage(obj, used);
                 self.record_operand_usage(idx, used);
