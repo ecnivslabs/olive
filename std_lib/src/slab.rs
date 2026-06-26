@@ -4,17 +4,21 @@
 //! slot. Chunks never freed.
 
 use std::alloc::Layout;
+use std::ptr::NonNull;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 const CHUNK_TARGET: usize = 1 << 16;
 
+// `live_count` is always a `Box::into_raw` pointer, never null, so `NonNull`
+// gives `Option<ChunkSpan>` a free niche instead of a separate tag byte,
+// keeping the hot per-lookup thread-local cache copy small.
 #[derive(Clone, Copy)]
 struct ChunkSpan {
     start: usize,
     end: usize,
     slot_bytes: usize,
-    live_count: *const AtomicUsize,
+    live_count: NonNull<AtomicUsize>,
     is_global: bool,
 }
 
@@ -24,11 +28,16 @@ unsafe impl Sync for ChunkSpan {}
 static CHUNK_TABLE: AtomicPtr<Vec<ChunkSpan>> = AtomicPtr::new(std::ptr::null_mut());
 static CHUNK_WRITER: Mutex<()> = Mutex::new(());
 
+// Superset of all chunk addresses, never shrunk: a miss outside it skips the
+// table search, which is the common case for literals and foreign pointers.
+static SPAN_MIN: AtomicUsize = AtomicUsize::new(usize::MAX);
+static SPAN_MAX: AtomicUsize = AtomicUsize::new(0);
+
 fn register_chunk(
     start: usize,
     end: usize,
     slot_bytes: usize,
-    live_count: *const AtomicUsize,
+    live_count: NonNull<AtomicUsize>,
     is_global: bool,
 ) {
     let _guard = CHUNK_WRITER.lock().unwrap();
@@ -38,6 +47,8 @@ fn register_chunk(
     } else {
         unsafe { (*cur).clone() }
     };
+    SPAN_MIN.fetch_min(start, Ordering::Relaxed);
+    SPAN_MAX.fetch_max(end, Ordering::Relaxed);
     let at = next.partition_point(|c| c.start < start);
     next.insert(
         at,
@@ -62,21 +73,35 @@ fn unregister_chunk(start: usize) {
     if let Some(pos) = next.iter().position(|c| c.start == start) {
         let chunk = next.remove(pos);
         unsafe {
-            let _ = Box::from_raw(chunk.live_count as *mut AtomicUsize);
+            let _ = Box::from_raw(chunk.live_count.as_ptr());
         }
     }
     CHUNK_TABLE.store(Box::into_raw(Box::new(next)), Ordering::Release);
 }
 
 thread_local! {
-    static LAST_CHUNK: std::cell::Cell<Option<ChunkSpan>> = const { std::cell::Cell::new(None) };
+    // Two ways: hot loops often alternate between two chunks (a large
+    // accumulator and a small-class source), which a single entry thrashes.
+    static LAST_CHUNKS: std::cell::Cell<[Option<ChunkSpan>; 2]> =
+        const { std::cell::Cell::new([None, None]) };
 }
 
 fn find_chunk_for_addr(addr: usize) -> Option<ChunkSpan> {
-    if let Some(c) = LAST_CHUNK.with(|cache| cache.get())
+    if addr < SPAN_MIN.load(Ordering::Relaxed) || addr >= SPAN_MAX.load(Ordering::Relaxed) {
+        return None;
+    }
+    let cached = LAST_CHUNKS.with(|cache| cache.get());
+    if let Some(c) = cached[0]
         && addr >= c.start
         && addr < c.end
     {
+        return Some(c);
+    }
+    if let Some(c) = cached[1]
+        && addr >= c.start
+        && addr < c.end
+    {
+        LAST_CHUNKS.with(|cache| cache.set([Some(c), cached[0]]));
         return Some(c);
     }
     let table = CHUNK_TABLE.load(Ordering::Acquire);
@@ -90,7 +115,7 @@ fn find_chunk_for_addr(addr: usize) -> Option<ChunkSpan> {
     }
     let c = chunks[i - 1];
     if addr >= c.start && addr < c.end {
-        LAST_CHUNK.with(|cache| cache.set(Some(c)));
+        LAST_CHUNKS.with(|cache| cache.set([Some(c), cached[0]]));
         Some(c)
     } else {
         None
@@ -209,7 +234,7 @@ impl GenSlab {
                 let g = (*gen_ptr).load(Ordering::Relaxed) + 1;
                 (*gen_ptr).store(g, Ordering::Release);
                 if let Some(chunk) = find_chunk_for_addr(body as usize) {
-                    (*chunk.live_count).fetch_add(1, Ordering::Relaxed);
+                    chunk.live_count.as_ref().fetch_add(1, Ordering::Relaxed);
                 }
                 return (body, false);
             }
@@ -247,7 +272,8 @@ impl GenSlab {
             }
         }
 
-        let live_count = Box::into_raw(Box::new(AtomicUsize::new(0)));
+        let live_count =
+            unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(AtomicUsize::new(0)))) };
         let is_global = is_within_global_slabs(self as *const GenSlab as usize);
         register_chunk(
             chunk as usize,
@@ -258,7 +284,7 @@ impl GenSlab {
         );
         self.bump = chunk;
         self.bump_end = unsafe { chunk.add(bytes) };
-        self.active_live_count = live_count;
+        self.active_live_count = live_count.as_ptr();
         self.chunks.push((chunk, layout));
     }
 
@@ -317,7 +343,7 @@ impl GenSlab {
                 }
             }
             if let Some(chunk) = find_chunk_for_addr(body as usize) {
-                let prev = (*chunk.live_count).fetch_sub(1, Ordering::Release);
+                let prev = chunk.live_count.as_ref().fetch_sub(1, Ordering::Release);
                 if prev == 1 {
                     let is_active =
                         self.bump as usize >= chunk.start && (self.bump as usize) < chunk.end;
@@ -352,6 +378,14 @@ pub fn slot_generation(body: i64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chunk_span_option_has_no_extra_tag() {
+        assert_eq!(
+            std::mem::size_of::<Option<ChunkSpan>>(),
+            std::mem::size_of::<ChunkSpan>()
+        );
+    }
 
     #[test]
     fn alloc_is_live_free_is_not() {
