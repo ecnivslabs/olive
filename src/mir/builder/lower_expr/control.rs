@@ -97,7 +97,7 @@ impl<'a> MirBuilder<'a> {
                 }
                 _ => {}
             }
-        } else if inner_ty == Type::PyObject {
+        } else if inner_ty.is_py_value() {
             error_type_id = Self::enum_type_id("Error");
         }
 

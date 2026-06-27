@@ -259,7 +259,7 @@ impl<'a> MirBuilder<'a> {
                 current_obj_ty,
                 Type::Struct(_, _) | Type::Any | Type::Var(_)
             ) && self.lookup_var(name).is_some();
-            if !is_struct_or_self && obj_ty != Type::PyObject && current_obj_ty != Type::PyObject {
+            if !is_struct_or_self && !obj_ty.is_py_value() && !current_obj_ty.is_py_value() {
                 let mangled = format!("{}::{}", name, attr);
                 if let Some(local) = self.lookup_var(&mangled) {
                     let ty = self.current_locals[local.0].ty.clone();
@@ -277,7 +277,7 @@ impl<'a> MirBuilder<'a> {
         }
 
         let obj_ty = self.get_type(obj.id);
-        if obj_ty == Type::PyObject {
+        if obj_ty.is_py_value() {
             let obj_op = self.lower_expr_as_copy(obj);
             let tmp = self.new_local(Type::PyObject, None, true);
             self.push_statement(
@@ -365,7 +365,7 @@ impl<'a> MirBuilder<'a> {
         let i_raw = self.lower_expr(index);
         let ty = self.get_type(expr_id);
         let tmp = self.new_local_with_owning(ty, None, true, false);
-        if current_obj_ty == Type::PyObject {
+        if current_obj_ty.is_py_value() {
             let idx_ty = self.get_type(index.id).clone();
             let func_name = if Self::is_int_ty(&idx_ty) {
                 "__olive_py_getitem_int"

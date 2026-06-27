@@ -41,7 +41,7 @@ impl<'a> MirBuilder<'a> {
         expr_id: usize,
     ) -> Operand {
         let obj_ty = self.get_type(obj.id);
-        if obj_ty == Type::PyObject {
+        if obj_ty.is_py_value() {
             let obj_op = self.lower_expr_as_copy(obj);
             let attr_local = self.new_local(Type::PyObject, None, true);
             self.push_statement(

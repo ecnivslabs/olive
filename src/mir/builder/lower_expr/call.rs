@@ -251,7 +251,7 @@ impl<'a> MirBuilder<'a> {
             "__olive_list_len"
         } else if current_arg_ty == Type::Bytes {
             "__olive_buf_len"
-        } else if current_arg_ty == Type::PyObject {
+        } else if current_arg_ty.is_py_value() {
             "__olive_py_len"
         } else {
             return None;
@@ -336,7 +336,7 @@ impl<'a> MirBuilder<'a> {
 
         self.current_block = Some(false_bb);
         let b_ty = self.get_type(b_expr.id);
-        let b_op = if result_ty == Type::PyObject && b_ty != Type::PyObject {
+        let b_op = if result_ty.is_py_value() && !b_ty.is_py_value() {
             self.emit_to_py_arg(b_op, &b_ty, span)
         } else {
             b_op
