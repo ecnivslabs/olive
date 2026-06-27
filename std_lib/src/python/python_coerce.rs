@@ -183,6 +183,23 @@ fn looks_like_float(val: i64) -> bool {
     abs_f > 1e-100 && abs_f < 1e100
 }
 
+/// Decodes inline Any-tagged scalars; use for container elements, not raw scalars.
+pub fn olive_any_to_py(val: i64) -> PyObject {
+    match val & crate::boxed::TAG_MASK {
+        crate::boxed::TAG_INT => return unsafe { PY_LONG_FROM_LONG((val >> 3) as c_long) },
+        crate::boxed::TAG_BOOL => return unsafe { PY_BOOL_FROM_LONG((val >> 3) as c_long) },
+        crate::boxed::TAG_NULL => {
+            return unsafe {
+                let none = _PY_NONE_STRUCT as PyObject;
+                PY_INC_REF(none);
+                none
+            };
+        }
+        _ => {}
+    }
+    olive_to_py(val)
+}
+
 pub fn olive_to_py(val: i64) -> PyObject {
     if val > 0x10000 && val & 1 != 0 {
         unsafe { PY_UNICODE_FROM_STRING((val & !1) as *const c_char) }
@@ -192,14 +209,14 @@ pub fn olive_to_py(val: i64) -> PyObject {
             unsafe {
                 let kind = *(ptr as *const i64);
                 match kind {
-                    crate::KIND_LIST => olive_py_create_list_proxy(val),
+                    crate::KIND_LIST | crate::KIND_ANY_LIST => olive_py_create_list_proxy(val),
                     crate::KIND_OBJ => olive_py_create_dict_proxy(val),
                     crate::KIND_SET => {
                         let hs = &*(ptr as *const crate::OliveHashSet);
                         let pys = PY_SET_NEW(std::ptr::null_mut());
                         for i in 0..hs.len {
                             let v = *hs.ptr.add(i);
-                            let py_v = olive_to_py(v);
+                            let py_v = olive_any_to_py(v);
                             PY_SET_ADD(pys, py_v);
                             PY_DEC_REF(py_v);
                         }
@@ -214,6 +231,15 @@ pub fn olive_to_py(val: i64) -> PyObject {
                         let py_obj = &*(ptr as *const OlivePyObject);
                         PY_INC_REF(py_obj.py_ptr);
                         py_obj.py_ptr
+                    }
+                    // Heap-boxed `Any` scalars too wide to inline.
+                    crate::KIND_INT => {
+                        let b = &*(ptr as *const crate::boxed::OliveBoxed);
+                        PY_LONG_FROM_LONG(b.bits as c_long)
+                    }
+                    crate::KIND_FLOAT => {
+                        let b = &*(ptr as *const crate::boxed::OliveBoxed);
+                        PY_FLOAT_FROM_DOUBLE(f64::from_bits(b.bits as u64) as c_double)
                     }
                     _ => {
                         if looks_like_float(val) {
@@ -349,49 +375,58 @@ pub unsafe fn py_to_olive_internal(py_val: PyObject) -> i64 {
         } else if is_subtype(PY_BYTES_TYPE) {
             olive_py_to_bytes_internal(py_val)
         } else {
-            let seq_len = PY_OBJECT_LENGTH(py_val);
-            if seq_len >= 0 {
-                olive_py_to_list_internal(py_val)
-            } else {
+            // Unknown objects stay PyObject; `__len__`-heuristic wrongly listifies spaCy Tokens etc.
+            if !PY_ERR_OCCURRED().is_null() {
                 PY_ERR_CLEAR();
-                olive_py_wrap(py_val) as i64
             }
+            olive_py_wrap(py_val) as i64
         }
     }
 }
 
 pub unsafe fn olive_py_to_list_internal(obj: PyObject) -> i64 {
     unsafe {
-        let len = PY_OBJECT_LENGTH(obj) as usize;
+        let ty = raw_ob_type(obj);
+        let is_list = !ty.is_null()
+            && !PY_LIST_TYPE.is_null()
+            && (ty == PY_LIST_TYPE || PY_TYPE_IS_SUBTYPE(ty, PY_LIST_TYPE) != 0);
+        let is_tuple = !ty.is_null()
+            && !PY_TUPLE_TYPE.is_null()
+            && (ty == PY_TUPLE_TYPE || PY_TYPE_IS_SUBTYPE(ty, PY_TUPLE_TYPE) != 0);
+
+        // Non-list/tuple iterables (generators, sets, spaCy Docs) go through PySequence_List.
+        let mut materialized = std::ptr::null_mut();
+        let source = if is_list || is_tuple {
+            obj
+        } else {
+            materialized = PY_SEQUENCE_LIST(obj);
+            if materialized.is_null() {
+                PY_ERR_CLEAR();
+                return crate::olive_list_new(0);
+            }
+            materialized
+        };
+        let from_real_list = is_list || !materialized.is_null();
+
+        let len = if source == obj {
+            PY_OBJECT_LENGTH(obj) as usize
+        } else {
+            PY_OBJECT_LENGTH(source) as usize
+        };
         let list_ptr = crate::olive_list_new(len as i64);
         if len > 0 {
             let sv = &mut *(list_ptr as *mut crate::StableVec);
-            let ty = raw_ob_type(obj);
-            let is_list = !ty.is_null()
-                && !PY_LIST_TYPE.is_null()
-                && (ty == PY_LIST_TYPE || PY_TYPE_IS_SUBTYPE(ty, PY_LIST_TYPE) != 0);
-            let is_tuple = !ty.is_null()
-                && !PY_TUPLE_TYPE.is_null()
-                && (ty == PY_TUPLE_TYPE || PY_TYPE_IS_SUBTYPE(ty, PY_TUPLE_TYPE) != 0);
-
             for i in 0..len {
-                let py_item = if is_list {
-                    let item = PY_LIST_GET_ITEM(obj, i as isize);
-                    if !item.is_null() {
-                        PY_INC_REF(item);
-                    }
-                    item
-                } else if is_tuple {
-                    let item = PY_TUPLE_GET_ITEM(obj, i as isize);
+                let py_item = if from_real_list {
+                    let item = PY_LIST_GET_ITEM(source, i as isize);
                     if !item.is_null() {
                         PY_INC_REF(item);
                     }
                     item
                 } else {
-                    let index_obj = PY_LONG_FROM_LONG(i as c_long);
-                    let item = PY_OBJECT_GET_ITEM(obj, index_obj);
-                    if !index_obj.is_null() {
-                        PY_DEC_REF(index_obj);
+                    let item = PY_TUPLE_GET_ITEM(source, i as isize);
+                    if !item.is_null() {
+                        PY_INC_REF(item);
                     }
                     item
                 };
@@ -400,6 +435,9 @@ pub unsafe fn olive_py_to_list_internal(obj: PyObject) -> i64 {
                     PY_DEC_REF(py_item);
                 }
             }
+        }
+        if !materialized.is_null() {
+            PY_DEC_REF(materialized);
         }
         list_ptr
     }

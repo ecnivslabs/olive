@@ -19,6 +19,43 @@ impl<'a> MirBuilder<'a> {
         // the runtime null check (negated for `!=`).
         if matches!(op, crate::parser::BinOp::Eq | crate::parser::BinOp::NotEq) {
             let l_ty = self.get_type(left.id);
+            // PyObject None is a singleton, not bare 0; detect syntactically since type widens.
+            let is_none_lit = |e: &Expr| matches!(e.kind, crate::parser::ast::ExprKind::Null);
+            let py_operand = if is_none_lit(right) && matches!(l_ty, Type::PyObject) {
+                Some(left)
+            } else if is_none_lit(left) && matches!(r_ty, Type::PyObject) {
+                Some(right)
+            } else {
+                None
+            };
+            if let Some(operand) = py_operand {
+                let v = self.lower_expr_as_copy(operand);
+                let is_none = self.new_local(Type::Bool, None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        is_none,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(
+                                "__olive_py_is_none".to_string(),
+                            )),
+                            args: vec![v],
+                        },
+                    ),
+                    span,
+                );
+                if matches!(op, crate::parser::BinOp::Eq) {
+                    return self.operand_for_local(is_none);
+                }
+                let neg = self.new_local(Type::Bool, None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        neg,
+                        Rvalue::UnaryOp(crate::parser::UnaryOp::Not, Operand::Copy(is_none)),
+                    ),
+                    span,
+                );
+                return self.operand_for_local(neg);
+            }
             let any_operand = match (&l_ty, &r_ty) {
                 (Type::Any, Type::Null) => Some(left),
                 (Type::Null, Type::Any) => Some(right),

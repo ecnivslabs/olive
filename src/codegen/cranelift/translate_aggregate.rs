@@ -151,6 +151,23 @@ impl<M: Module> CraneliftCodegen<M> {
                 let inst = builder.ins().call(new_func, &[n_val]);
                 let list_ptr = builder.inst_results(inst)[0];
 
+                // KIND_LIST=1 (raw concrete elements) vs KIND_ANY_LIST=15 (inline Any-tagged).
+                // The Python proxy reads this to choose the right element decoder.
+                let is_any_list = matches!(kind, AggregateKind::List)
+                    && ops.iter().any(|op| {
+                        matches!(
+                            op,
+                            Operand::Copy(l) | Operand::Move(l)
+                                if matches!(func_mir.locals[l.0].ty, OliveType::Any)
+                        )
+                    });
+                if is_any_list {
+                    let any_kind = builder.ins().iconst(types::I64, 15_i64);
+                    builder
+                        .ins()
+                        .store(MemFlags::trusted(), any_kind, list_ptr, 0);
+                }
+
                 let data_ptr = builder
                     .ins()
                     .load(types::I64, MemFlags::trusted(), list_ptr, 8);

@@ -38,6 +38,7 @@ impl Resolver {
             "bytes_push",
             "bytes_push_u16_le",
             "bytes_push_u32_le",
+            "realize",
         ];
         for name in builtin_fns {
             table.define(Symbol {

@@ -852,6 +852,7 @@ impl TypeChecker {
                 let return_ty = self.fresh_var();
 
                 let mut matched_variants = std::collections::HashSet::new();
+                let mut matched_null = false;
                 let mut has_wildcard = false;
 
                 for case in cases {
@@ -867,9 +868,23 @@ impl TypeChecker {
                         if let crate::parser::ast::MatchPattern::Wildcard = &case.pattern {
                             has_wildcard = true;
                         }
+                        if let crate::parser::ast::MatchPattern::Literal(e) = &case.pattern
+                            && matches!(e.kind, crate::parser::ast::ExprKind::Null)
+                        {
+                            matched_null = true;
+                        }
                     }
 
-                    self.check_pattern(&case.pattern, &match_ty, case.span);
+                    // Narrow a binding pattern to unmatched union members.
+                    let pat_ty = if matches!(
+                        case.pattern,
+                        crate::parser::ast::MatchPattern::Identifier(_, _)
+                    ) {
+                        self.narrow_match_ty(&match_ty, &matched_variants, matched_null)
+                    } else {
+                        match_ty.clone()
+                    };
+                    self.check_pattern(&case.pattern, &pat_ty, case.span);
                     if let Some(guard) = &case.guard {
                         self.check_expr(guard);
                     }
@@ -1132,6 +1147,44 @@ impl TypeChecker {
     /// Types a built-in method call on a string, list, or dict. Returns `None`
     /// for anything else (e.g. a user struct method), letting the normal
     /// resolution run.
+    fn narrow_match_ty(
+        &self,
+        ty: &Type,
+        matched: &std::collections::HashSet<String>,
+        matched_null: bool,
+    ) -> Type {
+        let Type::Union(members) = ty else {
+            return ty.clone();
+        };
+        let remaining: Vec<Type> = members
+            .iter()
+            .filter(|m| {
+                if matched_null && matches!(m, Type::Null) {
+                    return false;
+                }
+                if let Type::Enum(en, _) = m
+                    && let Some(vars) = self.enum_variants.get(en)
+                {
+                    return !vars.iter().all(|v| matched.contains(v));
+                }
+                true
+            })
+            .cloned()
+            .collect();
+        // Only collapse to a lone pointer-shaped member (PyObject/trait object); structs carry tags.
+        match remaining.as_slice() {
+            [only]
+                if matches!(
+                    only,
+                    Type::PyObject | Type::PyNamed(_, _) | Type::TraitObject(_, _)
+                ) =>
+            {
+                only.clone()
+            }
+            _ => ty.clone(),
+        }
+    }
+
     fn builtin_collection_method(
         &mut self,
         obj: &Expr,
@@ -1140,13 +1193,15 @@ impl TypeChecker {
     ) -> Option<Type> {
         let obj_ty = self.check_expr(obj);
         let obj_ty = self.apply_subst(obj_ty);
+        let mut arg_tys = Vec::with_capacity(args.len());
         for a in args {
             match a {
                 CallArg::Positional(e)
                 | CallArg::Keyword(_, e)
                 | CallArg::Splat(e)
                 | CallArg::KwSplat(e) => {
-                    self.check_expr(e);
+                    let t = self.check_expr(e);
+                    arg_tys.push(self.apply_subst(t));
                 }
             }
         }
@@ -1168,7 +1223,27 @@ impl TypeChecker {
             (Type::List(_), "append" | "insert" | "extend" | "sort" | "reverse") => {
                 Some(base.clone())
             }
-            (Type::Dict(_, v), "get") => Some((**v).clone()),
+            (Type::Dict(_, v), "get") => {
+                let v_ty = (**v).clone();
+                if args.is_empty() || args.len() > 2 {
+                    self.errors.push(super::super::error::SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0403",
+                            "wrong number of arguments to `get`".to_string(),
+                            obj.span,
+                        )
+                        .label(format!("expected 1 to 2 argument(s), found {}", args.len())),
+                    ));
+                    return Some(v_ty);
+                }
+                if args.len() == 2 {
+                    let default_ty = arg_tys[1].clone();
+                    if v_ty != Type::Any && default_ty != v_ty {
+                        return Some(Type::Union(vec![v_ty, default_ty]));
+                    }
+                }
+                Some(v_ty)
+            }
             (Type::Dict(k, _), "keys") => Some(Type::List(k.clone())),
             (Type::Dict(_, v), "values") => Some(Type::List(v.clone())),
             (Type::Dict(k, v), "items") => Some(Type::List(Box::new(Type::Tuple(vec![

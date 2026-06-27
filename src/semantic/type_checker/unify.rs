@@ -162,6 +162,12 @@ impl TypeChecker {
 
             (Type::Ptr(a), Type::Ptr(b)) => self.unify(a, b, span),
 
+            (Type::Ref(a), Type::Ref(b)) | (Type::MutRef(a), Type::MutRef(b)) => {
+                self.unify(a, b, span)
+            }
+            // &mut T satisfies &T (but not the reverse).
+            (Type::Ref(a), Type::MutRef(b)) => self.unify(a, b, span),
+
             (Type::List(a), Type::List(b)) => self.unify(a, b, span),
             (Type::Set(a), Type::Set(b)) => self.unify(a, b, span),
             (Type::Future(a), Type::Future(b)) => self.unify(a, b, span),
@@ -307,7 +313,16 @@ impl TypeChecker {
             (Type::Null, other) | (other, Type::Null) if Self::is_nullable_target(other) => {}
 
             (other, Type::Union(members)) | (Type::Union(members), other) => {
-                if !members.contains(other) {
+                // Struct satisfies union if it implements one of the union's trait-object members.
+                let implements_member = if let Type::Struct(sname, _) = other {
+                    members.iter().any(|m| {
+                        matches!(m, Type::TraitObject(tname, _)
+                            if self.type_traits.contains(&(sname.clone(), tname.clone())))
+                    })
+                } else {
+                    false
+                };
+                if !members.contains(other) && !implements_member {
                     self.errors.push(SemanticError::rich(
                         crate::compile::errors::Diagnostic::error(
                             "E0400",
@@ -495,6 +510,11 @@ impl TypeChecker {
                 "Never" => Type::Never,
                 "Any" => Type::Any,
                 "PyObject" => Type::PyObject,
+                // Bare collection names in type position are the collection type,
+                // not the same-named builtin constructor function.
+                "list" => Type::List(Box::new(Type::Any)),
+                "set" => Type::Set(Box::new(Type::Any)),
+                "dict" => Type::Dict(Box::new(Type::Any), Box::new(Type::Any)),
                 _ => {
                     if let Some(t) = self.lookup_type(name) {
                         t

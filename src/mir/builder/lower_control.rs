@@ -307,7 +307,9 @@ impl<'a> MirBuilder<'a> {
             _ => Type::Any,
         };
 
-        let next_val = self.new_local(elem_ty.clone(), None, false);
+        // Borrow iteration yields non-owning views; freeing them drops live elements.
+        let iter_is_borrow = matches!(self.get_type(iter.id), Type::Ref(_) | Type::MutRef(_));
+        let next_val = self.new_local_with_owning(elem_ty.clone(), None, false, !iter_is_borrow);
         self.push_statement(
             StatementKind::Assign(
                 next_val,

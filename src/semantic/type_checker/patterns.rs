@@ -6,7 +6,12 @@ use crate::span::Span;
 
 impl TypeChecker {
     pub(super) fn bind_for_target(&mut self, target: &ForTarget, iter_ty: &Type, span: Span) {
-        let resolved = self.apply_subst(iter_ty.clone());
+        let mut resolved = self.apply_subst(iter_ty.clone());
+        // Iterating a borrow (`for x in &xs`) keeps the element types of the
+        // underlying collection, so look through the reference.
+        while let Type::Ref(inner) | Type::MutRef(inner) = resolved {
+            resolved = self.apply_subst(*inner);
+        }
         let elem_ty = match resolved {
             Type::List(inner) => *inner,
             Type::Set(inner) => *inner,

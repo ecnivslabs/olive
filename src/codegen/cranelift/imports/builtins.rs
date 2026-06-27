@@ -238,6 +238,7 @@ pub(crate) fn resolve_builtin_import(
             "__olive_str_eq" => Some("__olive_str_eq"),
             "__olive_obj_new" => Some("__olive_obj_new"),
             "__olive_obj_get" => Some("__olive_obj_get"),
+            "__olive_obj_get_default" => Some("__olive_obj_get_default"),
             "__olive_obj_set" => Some("__olive_obj_set"),
             "__olive_pow" => Some("__olive_pow"),
             "__olive_in_list" => Some("__olive_in_list"),
@@ -544,6 +545,7 @@ pub(crate) fn resolve_builtin_import(
             "__olive_py_import" => Some("__olive_py_import"),
             "__olive_py_import_safe" => Some("__olive_py_import_safe"),
             "__olive_py_getattr" => Some("__olive_py_getattr"),
+            "__olive_py_realize" => Some("__olive_py_realize"),
             "__olive_py_getattr_safe" => Some("__olive_py_getattr_safe"),
             "__olive_py_call" => Some("__olive_py_call"),
             "__olive_py_call_safe" => Some("__olive_py_call_safe"),
@@ -585,6 +587,7 @@ pub(crate) fn resolve_builtin_import(
             "__olive_py_div" => Some("__olive_py_div"),
             "__olive_py_mod" => Some("__olive_py_mod"),
             "__olive_py_pow" => Some("__olive_py_pow"),
+            "__olive_signal_install_sigint" => Some("__olive_signal_install_sigint"),
             _ => None,
         };
     }
@@ -607,6 +610,7 @@ pub(crate) fn resolve_builtin_import(
         }
 
         "list_new" => Some("__olive_list_new"),
+        "realize" => Some("__olive_py_realize"),
         _ => None,
     }
 }

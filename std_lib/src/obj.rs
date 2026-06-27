@@ -71,6 +71,21 @@ pub extern "C" fn olive_obj_get(obj_ptr: i64, attr: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn olive_obj_get_default(obj_ptr: i64, attr: i64, default: i64) -> i64 {
+    if obj_ptr == 0 || attr == 0 {
+        panic!(
+            "Null pointer dereference: attempted to get attribute from a null object or invalid attribute string"
+        );
+    }
+    let kind = unsafe { *(obj_ptr as *const i64) };
+    if kind == KIND_PYOBJECT {
+        return python::olive_py_getattr(obj_ptr as *mut std::ffi::c_void, attr) as i64;
+    }
+    let m = unsafe { &*(obj_ptr as *const OliveObj) };
+    *m.fields.get(&OliveStringKey(attr)).unwrap_or(&default)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_remove(obj_ptr: i64, attr: i64) -> i64 {
     if obj_ptr == 0 || attr == 0 {
         panic!("Null pointer dereference: attempted to remove attribute from a null object");
@@ -249,6 +264,18 @@ mod tests {
     fn get_missing_key() {
         let obj = olive_obj_new();
         assert_eq!(olive_obj_get(obj, s("nonexistent")), 0);
+    }
+
+    #[test]
+    fn get_default_present() {
+        let obj = make_obj(&[("x", 1)]);
+        assert_eq!(olive_obj_get_default(obj, s("x"), 99), 1);
+    }
+
+    #[test]
+    fn get_default_missing() {
+        let obj = olive_obj_new();
+        assert_eq!(olive_obj_get_default(obj, s("missing"), 99), 99);
     }
 
     #[test]

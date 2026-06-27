@@ -43,6 +43,11 @@ pub fn execute_run(
         let all_deps = super::utils::aggregate_deps(&config);
         maybe_install_deps(&all_deps);
         if let Some(pod) = config.pod {
+            crate::compile::loader::set_pod_meta(crate::compile::loader::PodMeta {
+                name: pod.name.clone(),
+                version: pod.version.clone(),
+                author: pod.author.clone().unwrap_or_default(),
+            });
             run_build_script(time, release);
             (pod.entry.clone(), true)
         } else {

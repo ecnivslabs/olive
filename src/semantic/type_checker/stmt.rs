@@ -14,6 +14,67 @@ fn ffi_type(t: Type) -> Type {
 }
 
 impl TypeChecker {
+    /// Pre-registers all method signatures so forward calls within the same impl resolve correctly.
+    fn register_impl_method_signatures(&mut self, struct_name: &str, body: &[Stmt]) {
+        for s in body {
+            let StmtKind::Fn {
+                name,
+                type_params,
+                params,
+                return_type,
+                is_async,
+                ..
+            } = &s.kind
+            else {
+                continue;
+            };
+            self.enter_scope();
+            for tp in type_params {
+                self.define_type(tp, Type::Param(tp.clone()), false);
+            }
+            let inner_ret = return_type
+                .as_ref()
+                .map(|ann| self.resolve_type_expr(ann))
+                .unwrap_or_else(|| self.fresh_var());
+            let ret_ty = if *is_async {
+                Type::Future(Box::new(inner_ret))
+            } else {
+                inner_ret
+            };
+            let mut param_types = Vec::with_capacity(params.len());
+            for (i, param) in params.iter().enumerate() {
+                if i == 0 && param.name == "self" && param.type_ann.is_none() {
+                    param_types.push(
+                        self.lookup_type(struct_name)
+                            .unwrap_or(Type::Struct(struct_name.to_string(), vec![])),
+                    );
+                } else {
+                    param_types.push(
+                        param
+                            .type_ann
+                            .as_ref()
+                            .map(|ann| self.resolve_type_expr(ann))
+                            .unwrap_or(Type::Any),
+                    );
+                }
+            }
+            self.leave_scope();
+
+            let mut all_type_params: Vec<Type> =
+                type_params.iter().map(|p| Type::Param(p.clone())).collect();
+            if let Some(Type::Struct(_, struct_args)) = self.lookup_type(struct_name) {
+                for arg in struct_args {
+                    if !all_type_params.contains(&arg) {
+                        all_type_params.push(arg);
+                    }
+                }
+            }
+            let mangled = format!("{}::{}", struct_name, name);
+            let fn_ty = Type::Fn(param_types, Box::new(ret_ty), all_type_params);
+            self.type_env[0].insert(mangled, fn_ty);
+        }
+    }
+
     /// Records an E0421: a type used at the C FFI boundary has no C layout.
     fn push_ffi_unsafe(&mut self, message: String, span: crate::span::Span, reason: &str) {
         self.errors.push(SemanticError::rich(
@@ -622,8 +683,9 @@ impl TypeChecker {
                     crate::parser::TypeExprKind::Name(n) => n.clone(),
                     _ => type_name.to_string(),
                 };
-                self.current_struct = Some(base_type_name);
+                self.current_struct = Some(base_type_name.clone());
                 self.enter_scope();
+                self.register_impl_method_signatures(&base_type_name, body);
                 for s in body {
                     self.check_stmt(s);
                 }

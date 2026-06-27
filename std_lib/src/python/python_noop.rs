@@ -103,6 +103,9 @@ pub unsafe extern "C" fn noop_gil_release(_: c_int) {}
 pub unsafe extern "C" fn noop_tuple_new(_: isize) -> PyObject {
     std::ptr::null_mut()
 }
+pub unsafe extern "C" fn noop_tuple_size(_: PyObject) -> isize {
+    0
+}
 pub unsafe extern "C" fn noop_tuple_setitem(_: PyObject, _: isize, _: PyObject) -> c_int {
     -1
 }

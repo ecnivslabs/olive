@@ -41,6 +41,56 @@ pub extern "C" fn olive_py_conv_to_olive(py_val: PyObject) -> i64 {
     with_gil(|| unsafe { py_to_olive_internal(py_val) })
 }
 
+/// Deep-converts an Olive value to a genuine Python object (dicts to real
+/// `dict`, lists to real `list`, recursively), wrapped as an Olive `PyObject`.
+/// Unlike the default boundary, which hands Python a zero-copy proxy, this yields
+/// a value that satisfies `isinstance(x, dict)` and other concrete-type checks,
+/// for libraries that require a real dict.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_realize(val: i64) -> PyObject {
+    check_python_loaded();
+    with_gil(|| unsafe { olive_py_wrap_owned(deep_to_py(val)) })
+}
+
+unsafe fn deep_to_py(val: i64) -> PyObject {
+    unsafe {
+        if val == 0 || !crate::is_active_object(val) {
+            return olive_any_to_py(val);
+        }
+        let kind = *(val as *const i64);
+        match kind {
+            crate::KIND_OBJ => {
+                let py_dict = PY_DICT_NEW();
+                let keys = crate::olive_obj_keys(val);
+                let n = crate::olive_list_len(keys);
+                for i in 0..n {
+                    let key = crate::olive_list_get(keys, i);
+                    let value = crate::olive_obj_get(val, key);
+                    let py_value = deep_to_py(value);
+                    PY_DICT_SET_ITEM_STRING(py_dict, (key & !1) as *const c_char, py_value);
+                    PY_DEC_REF(py_value);
+                }
+                py_dict
+            }
+            crate::KIND_LIST | crate::KIND_ANY_LIST => {
+                let n = crate::olive_list_len(val);
+                let py_list = PY_LIST_NEW(n as isize);
+                for i in 0..n {
+                    let elem = crate::olive_list_get(val, i);
+                    let item = if kind == crate::KIND_ANY_LIST {
+                        deep_to_py(elem)
+                    } else {
+                        olive_to_py(elem)
+                    };
+                    PY_LIST_SET_ITEM(py_list, i as isize, item);
+                }
+                py_list
+            }
+            _ => olive_to_py(val),
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_from_float_bits(val: i64) -> PyObject {
     check_python_loaded();
@@ -341,8 +391,11 @@ pub extern "C" fn olive_py_none() -> PyObject {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_is_none(obj: PyObject) -> i64 {
     check_python_loaded();
+    if (obj as i64) == 0 {
+        return 1;
+    }
     let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
-    if unwrapped_obj == unsafe { _PY_NONE_STRUCT } {
+    if unwrapped_obj.is_null() || unwrapped_obj == unsafe { _PY_NONE_STRUCT } {
         1
     } else {
         0
@@ -444,12 +497,16 @@ pub extern "C" fn olive_py_to_sequence(val: i64) -> PyObject {
     }
     unsafe {
         let kind = *(val as *const i64);
-        if kind == crate::KIND_LIST {
+        if kind == crate::KIND_LIST || kind == crate::KIND_ANY_LIST {
             let sv = &*(val as *const crate::StableVec);
             let pyl = crate::python::PY_TUPLE_NEW(sv.len as isize);
             for i in 0..sv.len {
                 let v = *sv.ptr.add(i);
-                let py_v = olive_to_py(v);
+                let py_v = if kind == crate::KIND_ANY_LIST {
+                    olive_any_to_py(v)
+                } else {
+                    olive_to_py(v)
+                };
                 crate::python::PY_TUPLE_SET_ITEM(pyl, i as isize, py_v);
             }
             pyl

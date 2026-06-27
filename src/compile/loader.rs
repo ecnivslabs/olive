@@ -13,6 +13,45 @@ use std::{
 
 std::thread_local! {
     static PROJECT_ROOT: std::cell::RefCell<PathBuf> = const { std::cell::RefCell::new(PathBuf::new()) };
+    static POD_META: std::cell::RefCell<Option<PodMeta>> = const { std::cell::RefCell::new(None) };
+}
+
+pub struct PodMeta {
+    pub name: String,
+    pub version: String,
+    pub author: String,
+}
+
+pub fn set_pod_meta(meta: PodMeta) {
+    POD_META.with(|m| *m.borrow_mut() = Some(meta));
+}
+
+fn synthesize_meta_stmts(span: span::Span) -> Vec<parser::Stmt> {
+    let (name, version, author) = POD_META.with(|m| {
+        let borrow = m.borrow();
+        match &*borrow {
+            Some(meta) => (meta.name.clone(), meta.version.clone(), meta.author.clone()),
+            None => (String::new(), String::new(), String::new()),
+        }
+    });
+    vec![
+        make_str_const("NAME", &name, span),
+        make_str_const("VERSION", &version, span),
+        make_str_const("AUTHOR", &author, span),
+        make_str_const("PIT_VERSION", env!("CARGO_PKG_VERSION"), span),
+    ]
+}
+
+fn make_str_const(name: &str, value: &str, span: span::Span) -> parser::Stmt {
+    parser::Stmt::new(
+        parser::StmtKind::Const {
+            name: name.to_string(),
+            name_span: span,
+            type_ann: None,
+            value: parser::Expr::new(parser::ExprKind::Str(value.to_string()), span),
+        },
+        span,
+    )
 }
 
 fn lex_span(file_id: usize, line: usize, col: usize, start: usize, end: usize) -> span::Span {
@@ -143,6 +182,25 @@ pub fn load_and_parse(
     for stmt in program.stmts {
         match &stmt.kind {
             parser::StmtKind::Import { module, alias } => {
+                if module.len() == 1 && module[0] == "meta" {
+                    let mod_prefix = alias.as_deref().unwrap_or("meta");
+                    let mut imported_stmts = synthesize_meta_stmts(stmt.span);
+                    let defined_names: HashSet<String> = imported_stmts
+                        .iter()
+                        .filter_map(|s| {
+                            if let parser::StmtKind::Const { name, .. } = &s.kind {
+                                Some(name.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    mangle_statements(&mut imported_stmts, mod_prefix, &defined_names);
+                    all_stmts.extend(imported_stmts);
+                    all_stmts.push(stmt.clone());
+                    continue;
+                }
+
                 let mod_name = module.join("/");
                 let mut mod_path = parent_dir.join(format!("{}.liv", mod_name));
 
@@ -266,6 +324,13 @@ pub fn load_and_parse(
                 names: _names,
                 is_star: _is_star,
             } => {
+                if module.len() == 1 && module[0] == "meta" {
+                    let imported_stmts = synthesize_meta_stmts(stmt.span);
+                    all_stmts.extend(imported_stmts);
+                    all_stmts.push(stmt.clone());
+                    continue;
+                }
+
                 let mod_name = module.join("/");
                 let mut mod_path = parent_dir.join(format!("{}.liv", mod_name));
 
@@ -319,6 +384,14 @@ pub fn collect_source_files(
     py_files: &mut Vec<String>,
     visited: &mut HashSet<String>,
 ) {
+    // Set project root on first call so deep modules hash correctly and cache invalidates properly.
+    if visited.is_empty() {
+        let root = Path::new(filename)
+            .parent()
+            .unwrap_or(Path::new("."))
+            .to_path_buf();
+        PROJECT_ROOT.with(|r| *r.borrow_mut() = root);
+    }
     let canonical = fs::canonicalize(filename)
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| filename.to_string());

@@ -11,6 +11,21 @@ mod functions;
 mod tests;
 
 impl<'a> MirBuilder<'a> {
+    /// True if expr is a single-element index into a list/tuple/set (yields a non-owning view).
+    fn is_collection_index(&self, expr: &crate::parser::Expr) -> bool {
+        let ExprKind::Index { obj, index } = &expr.kind else {
+            return false;
+        };
+        if matches!(index.kind, ExprKind::Slice { .. }) {
+            return false;
+        }
+        let mut ty = self.get_type(obj.id);
+        while let Type::Ref(inner) | Type::MutRef(inner) = ty {
+            ty = *inner;
+        }
+        matches!(ty, Type::List(_) | Type::Tuple(_) | Type::Set(_))
+    }
+
     pub(super) fn lower_stmt(&mut self, stmt: &Stmt) {
         self.lower_stmt_with_tail(stmt, false);
     }
@@ -77,6 +92,10 @@ impl<'a> MirBuilder<'a> {
                 };
                 rval = self.coerce(rval, &val_ty, &ty, value.span);
                 let local = self.declare_var(name.clone(), ty, *is_mut);
+                // Collection index yields a non-owning view; taking ownership drops a live element.
+                if self.is_collection_index(value) {
+                    self.current_locals[local.0].is_owning = false;
+                }
                 self.push_statement(StatementKind::Assign(local, Rvalue::Use(rval)), stmt.span);
             }
 
@@ -179,7 +198,10 @@ impl<'a> MirBuilder<'a> {
 
             StmtKind::ExprStmt(expr) => {
                 if is_tail {
-                    let rval = self.lower_expr(expr);
+                    let mut rval = self.lower_expr(expr);
+                    let expr_ty = self.get_type(expr.id).clone();
+                    let ret_ty = self.current_locals[0].ty.clone();
+                    rval = self.coerce(rval, &expr_ty, &ret_ty, expr.span);
                     self.push_statement(
                         StatementKind::Assign(Local(0), Rvalue::Use(rval)),
                         expr.span,

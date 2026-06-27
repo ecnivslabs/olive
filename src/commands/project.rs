@@ -6,6 +6,16 @@ use crate::tooling::repl::run_shell;
 use std::collections::HashMap;
 use std::{fs, path::Path, process};
 
+fn git_user_name() -> Option<String> {
+    std::process::Command::new("git")
+        .args(["config", "--get", "user.name"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 pub fn execute_new(name: &str) {
     let path = Path::new(name);
     if path.exists() {
@@ -19,6 +29,7 @@ pub fn execute_new(name: &str) {
         pod: Some(Pod {
             name: name.to_string(),
             version: "0.1.0".to_string(),
+            author: git_user_name(),
             entry: "src/main.liv".to_string(),
             olive: None,
         }),

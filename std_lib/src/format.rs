@@ -16,8 +16,7 @@ const D_OBJ: u8 = 11;
 const D_STRUCT: u8 = 12;
 const D_ENUM: u8 = 13;
 
-/// Reads a length-prefixed (length biased by 13) string fragment from a
-/// descriptor, advancing the cursor past it.
+/// Reads a length-prefixed string from a descriptor; length field is biased by 13.
 fn read_lp(desc: *const u8, pos: &mut usize) -> String {
     let len = unsafe { byte(desc, *pos) } as usize - 13;
     *pos += 1;
@@ -77,13 +76,7 @@ fn skip(desc: *const u8, pos: &mut usize) {
     }
 }
 
-/// Renders a value against a static type descriptor emitted by codegen.
-///
-/// Concrete collections store their elements raw (an `int` is a bare machine
-/// word, not an inline-tagged `Any`), so the printer cannot recover the element
-/// type from the bytes alone. The descriptor carries the static element type so
-/// raw scalars render correctly and nested containers recurse with the right
-/// shape.
+/// Renders val via static type descriptor; needed because concrete collections store raw scalars.
 fn fmt(val: i64, desc: *const u8, pos: &mut usize) -> String {
     let tag = unsafe { byte(desc, *pos) };
     *pos += 1;

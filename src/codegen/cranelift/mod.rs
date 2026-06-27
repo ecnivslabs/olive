@@ -330,10 +330,12 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ),
     ("__olive_next", b"olive_next\0"),
     ("__olive_obj_get", b"olive_obj_get\0"),
+    ("__olive_obj_get_default", b"olive_obj_get_default\0"),
     ("__olive_obj_keys", b"olive_obj_keys\0"),
     ("__olive_obj_items", b"olive_obj_items\0"),
     ("__olive_obj_len", b"olive_obj_len\0"),
     ("__olive_obj_new", b"olive_obj_new\0"),
+    ("__olive_obj_remove", b"olive_obj_remove\0"),
     ("__olive_obj_set", b"olive_obj_set\0"),
     ("__olive_obj_values", b"olive_obj_values\0"),
     ("__olive_os_args", b"olive_os_args\0"),
@@ -390,6 +392,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_py_call_kw_safe", b"olive_py_call_kw_safe\0"),
     ("__olive_py_call_safe", b"olive_py_call_safe\0"),
     ("__olive_py_conv_to_py", b"olive_py_conv_to_py\0"),
+    ("__olive_py_realize", b"olive_py_realize\0"),
     ("__olive_py_decref", b"olive_py_decref\0"),
     ("__olive_py_eq", b"olive_py_eq\0"),
     ("__olive_py_lt", b"olive_py_lt\0"),
@@ -550,6 +553,10 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_yaml_stringify", b"olive_yaml_stringify\0"),
     ("__olive_zstd_compress", b"olive_zstd_compress\0"),
     ("__olive_zstd_decompress", b"olive_zstd_decompress\0"),
+    (
+        "__olive_signal_install_sigint",
+        b"olive_signal_install_sigint\0",
+    ),
 ];
 pub(super) const POLL_PENDING: i64 = i64::MIN;
 

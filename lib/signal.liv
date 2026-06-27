@@ -1,0 +1,2 @@
+fn install_sigint_handler(message: str):
+    __olive_signal_install_sigint(message)

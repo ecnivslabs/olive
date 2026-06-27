@@ -92,6 +92,17 @@ impl<'a> MirBuilder<'a> {
         to_ty: &Type,
         span: Span,
     ) -> Operand {
+        // Struct → Trait|None coercion must go through the trait fat pointer, not the union.
+        if let (Type::Struct(_, _), Type::Union(members)) = (from_ty, to_ty) {
+            let traits: Vec<&Type> = members
+                .iter()
+                .filter(|m| matches!(m, Type::TraitObject(_, _)))
+                .collect();
+            if let [trait_member] = traits.as_slice() {
+                return self.coerce(op, from_ty, trait_member, span);
+            }
+        }
+
         if let Type::TraitObject(trait_name, _) = to_ty
             && let Type::Struct(struct_name, _) = from_ty
         {

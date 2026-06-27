@@ -285,10 +285,57 @@ impl Lexer {
                     Some('n') => s.push('\n'),
                     Some('t') => s.push('\t'),
                     Some('r') => s.push('\r'),
+                    Some('0') => s.push('\0'),
                     Some('\\') => s.push('\\'),
                     Some('\'') => s.push('\''),
                     Some('"') => s.push('"'),
                     Some('\n') => {}
+                    Some('x') => {
+                        let hi = self.advance();
+                        let lo = self.advance();
+                        match (
+                            hi.and_then(|c| c.to_digit(16)),
+                            lo.and_then(|c| c.to_digit(16)),
+                        ) {
+                            (Some(h), Some(l)) => s.push(((h * 16 + l) as u8) as char),
+                            _ => {
+                                return Err(LexError {
+                                    message: "invalid `\\x` escape: expected two hex digits".into(),
+                                    line,
+                                    col,
+                                    start: self.pos - 1,
+                                    end: self.pos,
+                                });
+                            }
+                        }
+                    }
+                    Some('u') => {
+                        let mut hex = String::new();
+                        if self.peek() == Some('{') {
+                            self.advance();
+                            while let Some(c) = self.peek() {
+                                if c == '}' {
+                                    self.advance();
+                                    break;
+                                }
+                                hex.push(c);
+                                self.advance();
+                            }
+                        }
+                        match u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                            Some(ch) => s.push(ch),
+                            None => {
+                                return Err(LexError {
+                                    message: "invalid `\\u{...}` escape: expected a Unicode scalar"
+                                        .into(),
+                                    line,
+                                    col,
+                                    start: self.pos - 1,
+                                    end: self.pos,
+                                });
+                            }
+                        }
+                    }
                     Some(c) => {
                         s.push('\\');
                         s.push(c);

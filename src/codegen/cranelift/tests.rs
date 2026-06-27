@@ -360,4 +360,114 @@ fn main() -> i64:
         let mut cg = compile(code);
         assert_eq!(call_i64(&mut cg, "main"), 42);
     }
+
+    #[test]
+    fn dict_get_default_present() {
+        let mut cg = compile(
+            "fn f() -> int:\n    let d: {str: int} = {\"a\": 5}\n    return d.get(\"a\", 99)\n",
+        );
+        assert_eq!(call_i64(&mut cg, "f"), 5);
+    }
+
+    #[test]
+    fn dict_get_default_missing() {
+        let mut cg = compile(
+            "fn f() -> int:\n    let d: {str: int} = {\"a\": 5}\n    return d.get(\"z\", 99)\n",
+        );
+        assert_eq!(call_i64(&mut cg, "f"), 99);
+    }
+
+    #[test]
+    fn dict_remove_resolves() {
+        let mut cg = compile(
+            "fn f() -> int:\n    let mut d: {str: int} = {\"a\": 5, \"b\": 6}\n    d.remove(\"a\")\n    return d.get(\"a\", -1)\n",
+        );
+        assert_eq!(call_i64(&mut cg, "f"), -1);
+    }
+
+    #[test]
+    fn float_arg_to_builtin_passes() {
+        // Float args reach a float-typed builtin (pow) intact now that the call
+        // path reads the callee signature instead of a hardcoded name list.
+        let mut cg = compile("fn f() -> int:\n    return int(2.0 ** 10.0)\n");
+        assert_eq!(call_i64(&mut cg, "f"), 1024);
+    }
+
+    #[test]
+    fn trait_object_local_and_return_dispatch() {
+        // A struct widened into a trait-object local or returned through a
+        // trait-typed factory must build a fat pointer and dispatch dynamically.
+        let src = "trait T:\n    fn v(self) -> int:\n        0\nstruct A:\n    n: int\nimpl T for A:\n    fn v(self) -> int:\n        self.n\nfn mk(n: int) -> T:\n    A(n)\nfn f() -> int:\n    let p: T = A(7)\n    let q = mk(35)\n    return p.v() + q.v()\n";
+        let mut cg = compile(src);
+        assert_eq!(call_i64(&mut cg, "f"), 42);
+    }
+
+    #[test]
+    fn indexing_borrowed_list_does_not_consume_elements() {
+        // Binding `xs[i]` from a borrowed `&[...]` must be a view, not an owned
+        // value; otherwise the binding frees an element the caller still owns and
+        // a later read returns garbage. `probe` reads two elements of the borrow,
+        // then the caller reads index 1 again and must still see it.
+        let src = "fn probe(xs: &[[int]], i: int) -> int:\n    let a: [int] = xs[i]\n    let b: [int] = xs[i + 1]\n    return a[0] + b[0]\nfn f() -> int:\n    let data: [[int]] = [[10], [20], [30]]\n    let p = probe(&data, 0)\n    let second: [int] = data[1]\n    return p + second[0]\n";
+        let mut cg = compile(src);
+        assert_eq!(call_i64(&mut cg, "f"), 50);
+    }
+
+    #[test]
+    fn forward_method_call_resolves_union_return() {
+        // A method that calls a sibling method defined LATER in the same `impl`
+        // must see its real `int | E` return type, so the `match` destructures.
+        let src = "enum E:\n    Bad\nstruct S:\n    n: int\nimpl S:\n    fn caller(self) -> int:\n        match self.callee():\n            Bad:\n                return -1\n            v:\n                return v\n    fn callee(self) -> int | E:\n        if self.n == 0:\n            return Bad\n        return self.n\nfn f() -> int:\n    return S(9).caller()\n";
+        let mut cg = compile(src);
+        assert_eq!(call_i64(&mut cg, "f"), 9);
+    }
+
+    #[test]
+    fn borrowed_tuple_list_reiterated_in_loop() {
+        // Iterating a borrow of a `[(int, int)]` yields views the list still
+        // owns; the yielded tuple must not be freed at loop-body exit, so a
+        // re-iteration inside a `while` keeps seeing every element.
+        let src = "fn build(items: &[(int, int)], loops: int) -> int:\n    let mut count = 0\n    let mut l = 0\n    while l < loops:\n        for a, b in items:\n            count = count + a + b\n        l += 1\n    return count\nfn f() -> int:\n    let segs: [(int, int)] = [(1, 2), (3, 4)]\n    return build(&segs, 3)\n";
+        let mut cg = compile(src);
+        assert_eq!(call_i64(&mut cg, "f"), 30);
+    }
+
+    #[test]
+    fn borrowed_tuple_list_destructure_types() {
+        // Iterating a borrow of a `[(float, float)]` must bind the tuple parts as
+        // `float`, so a `.1f` format spec resolves the float path. Returning the
+        // truncated sum proves both parts kept their float type.
+        let src = "fn f() -> int:\n    let segs: [(float, float)] = [(1.5, 2.5), (3.0, 4.0)]\n    let mut total = 0.0\n    for s, e in &segs:\n        total = total + s + e\n    return int(total)\n";
+        let mut cg = compile(src);
+        assert_eq!(call_i64(&mut cg, "f"), 11);
+    }
+
+    #[test]
+    fn trait_option_return_and_match() {
+        // A factory returning `Trait | None` must build a fat pointer for the
+        // struct case and a bare `None` otherwise; the match narrows the catch-all
+        // to the trait and dispatches, while `None` matches the empty case.
+        let src = "trait T:\n    fn v(self) -> int:\n        0\nstruct A:\n    n: int\nimpl T for A:\n    fn v(self) -> int:\n        self.n\nfn get(found: bool) -> T | None:\n    if found:\n        return A(20)\n    return None\nfn pick(found: bool) -> int:\n    match get(found):\n        None:\n            return -1\n        p:\n            return p.v()\nfn f() -> int:\n    return pick(True) + pick(False)\n";
+        let mut cg = compile(src);
+        assert_eq!(call_i64(&mut cg, "f"), 19);
+    }
+
+    #[test]
+    fn method_scalar_arg_boxes_into_any_param() {
+        // A bool passed to a method's `Any` parameter must box (tag) so it round
+        // trips as a bool, not a bare word. `True` boxed reads back truthy.
+        let src = "struct H:\n    v: Any\nimpl H:\n    fn __init__(self):\n        self.v = 0\n    fn put(self, x: Any):\n        self.v = x\n    fn truthy(self) -> bool:\n        self.v == True\nfn f() -> int:\n    let mut h = H()\n    h.put(True)\n    if h.truthy():\n        return 1\n    return 0\n";
+        let mut cg = compile(src);
+        assert_eq!(call_i64(&mut cg, "f"), 1);
+    }
+
+    #[test]
+    fn struct_or_none_catch_all_binding() {
+        // A catch-all binding after a `None` arm over `Struct | None` keeps the
+        // full union (a struct member still carries the union tag), so the match
+        // lowers without collapsing to a bare struct and faulting.
+        let src = "struct R:\n    x: int\nfn make(b: int) -> R | None:\n    if b == 0:\n        return None\n    return R(7)\nfn f() -> int:\n    match make(1):\n        None:\n            return -1\n        _r:\n            return 0\n";
+        let mut cg = compile(src);
+        assert_eq!(call_i64(&mut cg, "f"), 0);
+    }
 }

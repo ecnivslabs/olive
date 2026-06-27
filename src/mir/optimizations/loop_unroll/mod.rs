@@ -9,9 +9,7 @@ use crate::span::Span;
 use rewrite::{is_storage_of, rvalue_refs_local, step_from_add, stmt_reads_local, subst_local};
 use rustc_hash::FxHashSet;
 
-/// Unrolls counted loops. Full unroll for constant trip counts (literal indices
-/// feed const-fold and bounds-check elimination), partial unroll with epilogue
-/// otherwise. Single-exit, straight-line bodies only.
+/// Full unroll for constant trip counts; 4x partial with epilogue otherwise. Straight-line only.
 pub struct LoopUnroll;
 
 const FULL_TRIP_LIMIT: i64 = 32;
@@ -203,8 +201,7 @@ fn linear_chain(
     Some(chain)
 }
 
-/// Strips the induction update, returning its step. Handles both `i = i + c`
-/// (range loops) and the `t = i + c; i = t` temporary form (`while` loops).
+/// Strips the induction update; handles both direct i=i+c and tmp-indirection forms.
 fn extract_step(work: &mut Vec<Statement>, induction: Local) -> Option<i64> {
     let mut writes = Vec::new();
     for (idx, stmt) in work.iter().enumerate() {

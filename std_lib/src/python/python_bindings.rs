@@ -47,6 +47,7 @@ pub static mut PY_NUMBER_LONG: unsafe extern "C" fn(PyObject) -> PyObject = noop
 pub static mut PY_FLOAT_AS_DOUBLE: unsafe extern "C" fn(PyObject) -> c_double = noop_as_double;
 pub static mut PY_UNICODE_AS_UTF8: unsafe extern "C" fn(PyObject) -> *const c_char = noop_as_utf8;
 pub static mut PY_LONG_FROM_LONG: unsafe extern "C" fn(c_long) -> PyObject = noop_from_long;
+pub static mut PY_BOOL_FROM_LONG: unsafe extern "C" fn(c_long) -> PyObject = noop_from_long;
 pub static mut PY_FLOAT_FROM_DOUBLE: unsafe extern "C" fn(c_double) -> PyObject = noop_from_double;
 pub static mut PY_UNICODE_FROM_STRING: unsafe extern "C" fn(*const c_char) -> PyObject =
     noop_from_string;
@@ -132,6 +133,7 @@ pub static mut PY_LIST_GET_ITEM: unsafe extern "C" fn(PyObject, isize) -> PyObje
     noop_getitem_idx;
 pub static mut PY_TUPLE_GET_ITEM: unsafe extern "C" fn(PyObject, isize) -> PyObject =
     noop_getitem_idx;
+pub static mut PY_TUPLE_SIZE: unsafe extern "C" fn(PyObject) -> isize = noop_tuple_size;
 pub static mut PY_TUPLE_TYPE: PyObject = std::ptr::null_mut();
 pub static mut PY_OBJECT_RICHCOMPAREBOOL: unsafe extern "C" fn(PyObject, PyObject, c_int) -> c_int =
     crate::python::python_noop::noop_richcomparebool;

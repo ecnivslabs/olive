@@ -170,6 +170,18 @@ impl<'a> MirBuilder<'a> {
                             args: vec![Operand::Copy(discr)],
                         },
                         Type::Null => Rvalue::Use(Operand::Constant(Constant::Bool(true))),
+                        // Union with Any uses boxed-null sentinel; other pointer unions use bare 0.
+                        Type::Union(members) if members.contains(&Type::Any) => Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(
+                                "__olive_any_is_null".to_string(),
+                            )),
+                            args: vec![Operand::Copy(discr)],
+                        },
+                        Type::Union(_) => Rvalue::BinaryOp(
+                            crate::parser::BinOp::Eq,
+                            Operand::Copy(discr),
+                            Operand::Constant(Constant::Int(0)),
+                        ),
                         _ => Rvalue::Use(Operand::Constant(Constant::Bool(false))),
                     };
                     self.push_statement(StatementKind::Assign(is_eq, rvalue), expr_span);

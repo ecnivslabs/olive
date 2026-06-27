@@ -302,6 +302,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_net_udp_set_timeout", &sig_i64_f64_i64),
             ("__olive_next", &sig_i64_i64),
             ("__olive_obj_get", &sig_i64_i64_i64),
+            ("__olive_obj_get_default", &sig_3i64_i64),
             ("__olive_obj_keys", &sig_i64_i64),
             ("__olive_obj_items", &sig_i64_i64),
             ("__olive_obj_len", &sig_i64_i64),
@@ -351,6 +352,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_py_check_alive", &sig_i64_i64),
             ("__olive_py_conv_to_olive", &sig_i64_i64),
             ("__olive_py_conv_to_py", &sig_i64_i64),
+            ("__olive_py_realize", &sig_i64_i64),
             ("__olive_py_decref", &sig_i64_void),
             ("__olive_py_bitor", &sig_i64_i64_i64),
             ("__olive_py_eq", &sig_i64_i64_i64),
@@ -506,6 +508,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_yaml_stringify", &sig_i64_i64),
             ("__olive_zstd_compress", &sig_i64_i64),
             ("__olive_zstd_decompress", &sig_i64_i64),
+            ("__olive_signal_install_sigint", &sig_i64_i64),
         ];
 
         let has_async = self.functions.iter().any(|f| f.is_async);

@@ -8,6 +8,22 @@ use cranelift_module::{DataId, FuncId, Module};
 use rustc_hash::FxHashMap as HashMap;
 
 impl<M: Module> CraneliftCodegen<M> {
+    /// Whether the callee's declared parameter at `arg_index` is a float, read
+    /// from its signature so float args reach float-typed builtins intact.
+    fn callee_param_is_float(
+        builder: &FunctionBuilder,
+        callee: cranelift::codegen::ir::FuncRef,
+        arg_index: usize,
+        has_sret: bool,
+    ) -> bool {
+        let sig = builder.func.dfg.ext_funcs[callee].signature;
+        let pidx = arg_index + if has_sret { 1 } else { 0 };
+        builder.func.dfg.signatures[sig]
+            .params
+            .get(pidx)
+            .is_some_and(|p| p.value_type == types::F64 || p.value_type == types::F32)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn translate_call(
         func_mir: &MirFunction,
@@ -104,6 +120,8 @@ impl<M: Module> CraneliftCodegen<M> {
                 map_builtin_to_runtime(name, &arg_type).unwrap_or(name.as_str())
             } else if name == "ffi_errno" {
                 "__olive_ffi_errno"
+            } else if name == "realize" {
+                "__olive_py_realize"
             } else {
                 name.as_str()
             };
@@ -124,25 +142,6 @@ impl<M: Module> CraneliftCodegen<M> {
                 let mut final_args = Vec::new();
                 let mut sret_ptr = None;
                 let is_builtin = resolved_name.starts_with("__olive") || resolved_name == "print";
-                let accepts_float = resolved_name == "__olive_print_float"
-                    || resolved_name == "__olive_float_to_str"
-                    || resolved_name == "__olive_float_to_int"
-                    || resolved_name == "__olive_bool_from_float"
-                    || resolved_name == "__olive_pow_float"
-                    || resolved_name == "__olive_copy_float"
-                    || resolved_name == "__olive_math_sin"
-                    || resolved_name == "__olive_math_cos"
-                    || resolved_name == "__olive_math_tan"
-                    || resolved_name == "__olive_math_asin"
-                    || resolved_name == "__olive_math_acos"
-                    || resolved_name == "__olive_math_atan"
-                    || resolved_name == "__olive_math_atan2"
-                    || resolved_name == "__olive_math_exp"
-                    || resolved_name == "__olive_math_log"
-                    || resolved_name == "__olive_math_log10"
-                    || resolved_name == "__olive_py_from_float"
-                    || resolved_name == "__olive_box_float"
-                    || resolved_name == "__olive_format_float";
                 let ffi_entry = ffi_entries.iter().find(|e| e.jit_name == resolved_name);
 
                 if let Some(entry) = ffi_entry
@@ -322,7 +321,7 @@ impl<M: Module> CraneliftCodegen<M> {
                                 false
                             }
                         } else {
-                            accepts_float
+                            Self::callee_param_is_float(builder, local_func, i, sret_ptr.is_some())
                         };
                         if !expects_float {
                             final_args.push(builder.ins().bitcast(
@@ -343,7 +342,7 @@ impl<M: Module> CraneliftCodegen<M> {
                                 false
                             }
                         } else {
-                            accepts_float
+                            Self::callee_param_is_float(builder, local_func, i, sret_ptr.is_some())
                         };
 
                         if !expects_float {
