@@ -175,6 +175,10 @@ pub fn ptr_in_slab_span(val: i64) -> bool {
 }
 
 fn slab_header_of(val: i64) -> Option<*const AtomicU64> {
+    chunk_for_valid_slot(val).map(|_| (val as usize - 8) as *const AtomicU64)
+}
+
+fn chunk_for_valid_slot(val: i64) -> Option<ChunkSpan> {
     if val <= 0 || val & 7 != 0 {
         return None;
     }
@@ -183,7 +187,15 @@ fn slab_header_of(val: i64) -> Option<*const AtomicU64> {
     if (addr - c.start) % c.slot_bytes != 16 {
         return None;
     }
-    Some((addr - 8) as *const AtomicU64)
+    Some(c)
+}
+
+/// Combines `ptr_in_slab_span` and `chunk_is_global` into the one chunk
+/// lookup both need, for a free path that would otherwise classify the same
+/// address twice back to back: `None` for a literal or foreign pointer,
+/// `Some(is_global)` for a live slot.
+pub fn slab_membership(val: i64) -> Option<bool> {
+    chunk_for_valid_slot(val).map(|c| c.is_global)
 }
 
 pub struct GenSlab {

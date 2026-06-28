@@ -65,15 +65,25 @@ pub extern "C" fn olive_struct_alloc(n_fields: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_free_struct(ptr: i64) {
-    if ptr == 0 || !crate::slab::ptr_in_slab_span(ptr) {
+    if ptr == 0 {
         return;
     }
+    let Some(is_global) = crate::slab::slab_membership(ptr) else {
+        return;
+    };
     let n_fields = unsafe { *(ptr as *const i64) };
-    free_struct_slot_raw(ptr, n_fields);
+    free_struct_slot_raw_with(ptr, n_fields, Some(is_global));
 }
 
 pub(crate) fn free_struct_slot_raw(ptr: i64, n_fields: i64) {
-    if crate::slab::chunk_is_global(ptr as usize) {
+    free_struct_slot_raw_with(ptr, n_fields, None);
+}
+
+/// `known_global` skips the chunk lookup when the caller already classified
+/// `ptr` a moment ago (e.g. `olive_free_struct`'s own span check).
+pub(crate) fn free_struct_slot_raw_with(ptr: i64, n_fields: i64, known_global: Option<bool>) {
+    let is_global = known_global.unwrap_or_else(|| crate::slab::chunk_is_global(ptr as usize));
+    if is_global {
         crate::slab::with_escape_arena(|| free_struct_slot_raw_local(ptr, n_fields));
     } else {
         free_struct_slot_raw_local(ptr, n_fields);
@@ -108,7 +118,13 @@ pub extern "C" fn olive_fatptr_alloc() -> i64 {
 /// Frees the concrete value through the record's drop shim, then the record.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_free_fatptr(ptr: i64) {
-    if ptr == 0 || !crate::slab::ptr_in_slab_span(ptr) || !crate::slab::slot_is_live(ptr) {
+    if ptr == 0 {
+        return;
+    }
+    let Some(is_global) = crate::slab::slab_membership(ptr) else {
+        return;
+    };
+    if !crate::slab::slot_is_live(ptr) {
         return;
     }
     unsafe {
@@ -123,7 +139,7 @@ pub extern "C" fn olive_free_fatptr(ptr: i64) {
             shim_fn(data);
         }
     }
-    free_struct_slot_raw(ptr, FATPTR_WORDS as i64 - 1);
+    free_struct_slot_raw_with(ptr, FATPTR_WORDS as i64 - 1, Some(is_global));
 }
 
 #[unsafe(no_mangle)]
