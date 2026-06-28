@@ -257,3 +257,71 @@ fn indirect_call_through_list_element_works() {
     );
     assert_eq!(call_i64(&mut cg, "f"), 35);
 }
+
+// Closure devirtualization: a closure bound once and called through a
+// single-def local should resolve to a direct call, but only where it's
+// actually sound -- see `devirtualize_closure.rs`.
+
+#[test]
+fn closure_called_repeatedly_in_loop_stays_correct() {
+    let mut cg = compile(
+        "fn make_adder(n: int) -> fn(int) -> int:\n    return lambda x: x + n\n\
+         fn f() -> int:\n\
+         \x20   let add = make_adder(1)\n\
+         \x20   let mut total = 0\n\
+         \x20   let mut i = 0\n\
+         \x20   while i < 100:\n\
+         \x20       total = total + add(i)\n\
+         \x20       i = i + 1\n\
+         \x20   return total\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), (0..100).sum::<i64>() + 100);
+}
+
+#[test]
+fn closure_reassigned_mid_function_keeps_correct_target() {
+    // Single-def analysis must see two static defs of `f` here and refuse
+    // to devirtualize either call to a fixed target -- if it mistakenly
+    // fixed on `make_adder(1)`'s thunk, the second call would return 11
+    // instead of 12.
+    let mut cg = compile(
+        "fn make_adder(n: int) -> fn(int) -> int:\n    return lambda x: x + n\n\
+         fn f() -> int:\n\
+         \x20   let mut g = make_adder(1)\n\
+         \x20   let first = g(10)\n\
+         \x20   g = make_adder(2)\n\
+         \x20   return first + g(10)\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 11 + 12);
+}
+
+#[test]
+fn closure_bound_in_either_branch_stays_correct() {
+    // Two static defs of `g`, one per branch: neither is single-def
+    // globally, so this must stay a normal indirect call either way.
+    let mut cg = compile(
+        "fn make_adder(n: int) -> fn(int) -> int:\n    return lambda x: x + n\n\
+         fn f() -> int:\n\
+         \x20   let mut g = make_adder(1)\n\
+         \x20   let flag = 2\n\
+         \x20   if flag == 2:\n\
+         \x20       g = make_adder(2)\n\
+         \x20   return g(10)\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 12);
+}
+
+#[test]
+fn two_independent_closures_devirtualize_without_cross_contamination() {
+    // Two distinct records with two distinct thunks, each single-def in its
+    // own right: rewriting one call site must not affect the other's target
+    // or its own captured `n`.
+    let mut cg = compile(
+        "fn make_adder(n: int) -> fn(int) -> int:\n    return lambda x: x + n\n\
+         fn f() -> int:\n\
+         \x20   let add1 = make_adder(1)\n\
+         \x20   let add10 = make_adder(10)\n\
+         \x20   return add1(5) + add10(5)\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 6 + 15);
+}
