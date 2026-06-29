@@ -399,7 +399,9 @@ pub extern "C" fn olive_starred_unpack_fail(got: i64, need: i64, loc: i64) -> i6
 pub extern "C" fn olive_key_fail(key: i64, loc: i64) -> i64 {
     let loc = (loc != 0).then(|| olive_str_from_ptr(loc));
     let msg = match crate::classify_key(key) {
-        crate::KeyClass::Str(s) => format!("key not found: \"{s}\""),
+        crate::KeyClass::Str(s) => {
+            format!("key not found: \"{}\"", String::from_utf8_lossy(s))
+        }
         crate::KeyClass::Scalar(_, v) => format!("key not found: {v}"),
         crate::KeyClass::Raw(_) => "key not found".to_string(),
     };

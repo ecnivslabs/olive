@@ -51,7 +51,28 @@ fn main():
 main()
 "#;
 
-const EXPECTED: &str = "True\n{\"name\": \"olive\", \"count\": 41}\nTrue\n";
+/// Checks both `isinstance` results and that the realized dict serialized with
+/// both entries. Dict iteration is hash-ordered, so pinning one key order would
+/// assert an accident rather than the realization this test is about.
+fn assert_realized(stdout: &str, stderr: &str) {
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 3, "stdout: {stdout:?} stderr: {stderr}");
+    assert_eq!(lines[0], "True", "dict is not a real Python dict");
+    assert_eq!(lines[2], "True", "list is not a real Python list");
+    let dumped = lines[1];
+    assert!(
+        dumped.starts_with('{') && dumped.ends_with('}'),
+        "not a json object: {dumped:?}"
+    );
+    assert!(
+        dumped.contains("\"name\": \"olive\""),
+        "missing name entry: {dumped:?}"
+    );
+    assert!(
+        dumped.contains("\"count\": 41"),
+        "missing count entry: {dumped:?}"
+    );
+}
 
 #[test]
 fn realized_collections_pass_isinstance_under_jit() {
@@ -73,12 +94,7 @@ fn realized_collections_pass_isinstance_under_jit() {
         "pit run failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(
-        stdout,
-        EXPECTED,
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert_realized(&stdout, &String::from_utf8_lossy(&out.stderr));
 
     std::fs::remove_file(&path).ok();
 }
@@ -117,12 +133,7 @@ fn realized_collections_pass_isinstance_under_aot_release() {
         "built binary failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(
-        stdout,
-        EXPECTED,
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert_realized(&stdout, &String::from_utf8_lossy(&out.stderr));
 
     std::fs::remove_file(&path).ok();
     std::fs::remove_file(&out_bin).ok();
