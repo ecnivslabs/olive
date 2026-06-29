@@ -380,9 +380,28 @@ mod reflex_corpus {
         r
     }
 
-    fn unique_bin(stem: &str) -> PathBuf {
-        let n = UNIQUE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        std::env::temp_dir().join(format!("olive_reflex_{}_{stem}_{n}", std::process::id()))
+    /// Deletes the built binary on scope exit, so an assert firing between the
+    /// build and the end of a check does not leave it behind.
+    struct TempBin(PathBuf);
+
+    impl TempBin {
+        fn new(stem: &str) -> Self {
+            let n = UNIQUE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            TempBin(
+                std::env::temp_dir()
+                    .join(format!("olive_reflex_{}_{stem}_{n}", std::process::id())),
+            )
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempBin {
+        fn drop(&mut self) {
+            fs::remove_file(&self.0).ok();
+        }
     }
 
     fn read_stdin_fixture(liv: &Path) -> Option<Vec<u8>> {
@@ -400,10 +419,11 @@ mod reflex_corpus {
         );
         assert_eq!(jit_out, expected, "{}: JIT stdout mismatch", liv.display());
 
-        let out_bin = unique_bin(liv.file_stem().unwrap().to_str().unwrap());
-        let (built, build_err) = build_aot(liv, &out_bin);
+        let out_bin_guard = TempBin::new(liv.file_stem().unwrap().to_str().unwrap());
+        let out_bin = out_bin_guard.path();
+        let (built, build_err) = build_aot(liv, out_bin);
         assert!(built, "{}: AOT build failed: {build_err}", liv.display());
-        let (aot_out, aot_err, aot_code) = run_bin(&out_bin, stdin.as_deref());
+        let (aot_out, aot_err, aot_code) = run_bin(out_bin, stdin.as_deref());
         assert_eq!(
             aot_code,
             0,
@@ -429,8 +449,9 @@ mod reflex_corpus {
             liv.display()
         );
 
-        let out_bin = unique_bin(liv.file_stem().unwrap().to_str().unwrap());
-        let (built, build_err) = build_aot(liv, &out_bin);
+        let out_bin_guard = TempBin::new(liv.file_stem().unwrap().to_str().unwrap());
+        let out_bin = out_bin_guard.path();
+        let (built, build_err) = build_aot(liv, out_bin);
         assert!(
             !built,
             "{}: AOT accepted a program it should reject",
@@ -454,10 +475,11 @@ mod reflex_corpus {
             liv.display()
         );
 
-        let out_bin = unique_bin(liv.file_stem().unwrap().to_str().unwrap());
-        let (built, build_err) = build_aot(liv, &out_bin);
+        let out_bin_guard = TempBin::new(liv.file_stem().unwrap().to_str().unwrap());
+        let out_bin = out_bin_guard.path();
+        let (built, build_err) = build_aot(liv, out_bin);
         assert!(built, "{}: AOT build failed: {build_err}", liv.display());
-        let (aot_out, aot_err, aot_code) = run_bin(&out_bin, stdin.as_deref());
+        let (aot_out, aot_err, aot_code) = run_bin(out_bin, stdin.as_deref());
         assert_ne!(aot_code, 0, "{}: AOT should have faulted", liv.display());
         assert!(
             aot_err.contains(&marker),

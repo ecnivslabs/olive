@@ -66,12 +66,29 @@ fn expected_fragments(src: &str) -> Vec<String> {
     out
 }
 
-fn unique_path(stem: &str) -> PathBuf {
-    let n = UNIQUE.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "olive_docblock_{}_{stem}_{n}.liv",
-        std::process::id()
-    ))
+/// Deletes its artifact on scope exit. This harness bails out of a block with
+/// `continue` on every failure path, so cleanup tied to the binding is what
+/// keeps a run from leaving thousands of files behind in the temp dir.
+struct TempFile(PathBuf);
+
+impl TempFile {
+    fn new(stem: &str) -> Self {
+        let n = UNIQUE.fetch_add(1, Ordering::Relaxed);
+        TempFile(std::env::temp_dir().join(format!(
+            "olive_docblock_{}_{stem}_{n}.liv",
+            std::process::id()
+        )))
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        std::fs::remove_file(&self.0).ok();
+    }
 }
 
 // A doc block calling `input()` (basics.md's builtin table, io.md) would
@@ -166,13 +183,14 @@ fn doc_examples_compile_and_run() {
                 continue;
             }
 
-            let src_path = unique_path(&format!("{stem}_{i}"));
-            let mut f = std::fs::File::create(&src_path)
+            let src = TempFile::new(&format!("{stem}_{i}"));
+            let src_path = src.path();
+            let mut f = std::fs::File::create(src_path)
                 .unwrap_or_else(|e| panic!("create {}: {e}", src_path.display()));
             f.write_all(block.code.as_bytes()).unwrap();
             drop(f);
 
-            let (jit_out, jit_err, jit_code) = run_jit(&src_path);
+            let (jit_out, jit_err, jit_code) = run_jit(src_path);
             if jit_code != 0 {
                 if !is_elided_context_error(&block.code, &jit_err) {
                     failures.push(format!(
@@ -185,8 +203,9 @@ fn doc_examples_compile_and_run() {
             }
             checked += 1;
 
-            let out_bin = unique_path(&format!("{stem}_{i}_bin"));
-            let (built, build_err) = build_aot(&src_path, &out_bin);
+            let bin = TempFile::new(&format!("{stem}_{i}_bin"));
+            let out_bin = bin.path();
+            let (built, build_err) = build_aot(src_path, out_bin);
             if !built {
                 failures.push(format!(
                     "{}#{i}: AOT build failed (JIT succeeded)\n{build_err}\n--- code ---\n{}",
@@ -195,7 +214,7 @@ fn doc_examples_compile_and_run() {
                 ));
                 continue;
             }
-            let (aot_out, aot_err, aot_code) = run_bin(&out_bin);
+            let (aot_out, aot_err, aot_code) = run_bin(out_bin);
             if aot_code != 0 {
                 failures.push(format!(
                     "{}#{i}: AOT exited {aot_code} (JIT succeeded)\n{aot_err}",
