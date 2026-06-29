@@ -229,7 +229,9 @@ impl<'a> MirBuilder<'a> {
         // Coerce args to param types so scalars box into Any, matching free-function call path.
         let callee_ty = self.get_type(callee.id);
         let coerced_args: Vec<Operand> = if let Type::Fn(ptys, _, _) = &callee_ty {
-            let offset = ptys.len().saturating_sub(arg_ops.len());
+            // Skip only the receiver `self`; trailing defaults are filled
+            // separately, so they must not shift the positional alignment.
+            let offset = ptys.len().saturating_sub(arg_ops.len()).min(1);
             arg_ops
                 .iter()
                 .enumerate()

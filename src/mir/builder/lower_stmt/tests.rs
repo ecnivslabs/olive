@@ -92,3 +92,30 @@ fn enum_decl_registers_variants() {
     });
     assert!(has_aggregate);
 }
+
+// A float stored into a PyObject subscript must reach Python exactly once.
+// The general assign coerce already runs `py_from_float`; the subscript path
+// must not wrap it a second time, which read the resulting pointer as f64 bits.
+#[test]
+fn pyobject_float_setitem_converts_once() {
+    let src =
+        "import py \"builtins\" as b\n\nfn main():\n    let d = b.dict()\n    d[\"f\"] = 0.5\n";
+    let fns = build(src);
+    let main = fns.iter().find(|f| f.name == "main").unwrap();
+    let from_float = main
+        .basic_blocks
+        .iter()
+        .flat_map(|bb| &bb.statements)
+        .filter(|s| {
+            matches!(
+                &s.kind,
+                StatementKind::Assign(_, Rvalue::Call { func, .. })
+                    if matches!(func, Operand::Constant(Constant::Function(n)) if n == "__olive_py_from_float")
+            )
+        })
+        .count();
+    assert_eq!(
+        from_float, 1,
+        "float setitem must convert to Python exactly once"
+    );
+}
