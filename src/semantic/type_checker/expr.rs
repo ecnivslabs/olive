@@ -469,6 +469,31 @@ impl TypeChecker {
                         }
                     }
                 }
+                // `slice`'s builtin table entry (mod.rs) declares `Any` since
+                // the runtime dispatches by argument type; narrow it here the
+                // same way so `list + [slice(s, a, b)]` doesn't widen an
+                // inferred element type to `Any`.
+                if let ExprKind::Identifier(name) = &callee.kind
+                    && name == "slice"
+                    && args.len() == 3
+                    && let CallArg::Positional(obj_arg) = &args[0]
+                    && let CallArg::Positional(start_arg) = &args[1]
+                    && let CallArg::Positional(end_arg) = &args[2]
+                {
+                    let raw = self.check_expr(obj_arg);
+                    let obj_ty = self.apply_subst(raw);
+                    let start_ty = self.check_expr(start_arg);
+                    self.unify(&start_ty, &Type::Int, start_arg.span);
+                    let end_ty = self.check_expr(end_arg);
+                    self.unify(&end_ty, &Type::Int, end_arg.span);
+                    return match &obj_ty {
+                        Type::Str => Type::Str,
+                        Type::Bytes => Type::Bytes,
+                        Type::List(_) => obj_ty.clone(),
+                        t if t.is_py_value() => Type::PyObject,
+                        _ => Type::Any,
+                    };
+                }
                 if let ExprKind::Identifier(name) = &callee.kind
                     && name == "round"
                     && args.len() == 1
