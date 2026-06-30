@@ -4,18 +4,32 @@ use crate::mir::MirFunction;
 use crate::mir::StatementKind;
 use cranelift_module::{DataDescription, Linkage, Module};
 
+/// Literal string data, NUL terminated and aligned so the low bits of its
+/// address stay clear for the Olive string pointer tag. Alignment is stated
+/// rather than inferred from a padded length, which only holds while the
+/// linker happens to lay these out contiguously from an aligned base.
+fn literal_data(text: &str) -> DataDescription {
+    let mut data_ctx = DataDescription::new();
+    let mut bytes = text.as_bytes().to_vec();
+    bytes.push(0);
+    while !bytes.len().is_multiple_of(STR_LITERAL_ALIGN as usize) {
+        bytes.push(0);
+    }
+    data_ctx.set_align(STR_LITERAL_ALIGN);
+    data_ctx.define(bytes.into_boxed_slice());
+    data_ctx
+}
+
+/// Keeps bit0 (string tag) and bit1 (heap-allocated tag) clear on every
+/// literal address, so a tagged literal round trips through `str_body`.
+const STR_LITERAL_ALIGN: u64 = 4;
+
 impl<M: Module> CraneliftCodegen<M> {
     pub(crate) fn intern_attr_string(&mut self, attr: &str) {
         if self.string_ids.contains_key(attr) {
             return;
         }
-        let mut data_ctx = DataDescription::new();
-        let mut bytes = attr.as_bytes().to_vec();
-        bytes.push(0);
-        if !bytes.len().is_multiple_of(2) {
-            bytes.push(0);
-        }
-        data_ctx.define(bytes.into_boxed_slice());
+        let data_ctx = literal_data(attr);
         let name = format!("str_{}", self.string_ids.len());
         let id = self
             .module
@@ -36,13 +50,7 @@ impl<M: Module> CraneliftCodegen<M> {
         if let Some(&id) = self.loc_ids.get(&span) {
             return id;
         }
-        let mut data_ctx = DataDescription::new();
-        let mut bytes = loc.into_bytes();
-        bytes.push(0);
-        if !bytes.len().is_multiple_of(2) {
-            bytes.push(0);
-        }
-        data_ctx.define(bytes.into_boxed_slice());
+        let data_ctx = literal_data(&loc);
         let name = format!("loc_{}", self.loc_ids.len());
         let id = self
             .module
@@ -332,13 +340,7 @@ impl<M: Module> CraneliftCodegen<M> {
         if let Operand::Constant(Constant::Str(s)) = op
             && !self.string_ids.contains_key(s)
         {
-            let mut data_ctx = DataDescription::new();
-            let mut bytes = s.as_bytes().to_vec();
-            bytes.push(0);
-            if bytes.len() % 2 != 0 {
-                bytes.push(0);
-            }
-            data_ctx.define(bytes.into_boxed_slice());
+            let data_ctx = literal_data(s);
 
             let name = format!("str_{}", self.string_ids.len());
             let id = self

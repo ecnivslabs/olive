@@ -988,8 +988,7 @@ pub extern "C" fn olive_any_ne_strict(a: i64, b: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_concat(l: i64, r: i64) -> i64 {
-    let l_body = l & !1;
-    let l_is_heap = l_body != 0 && slab::ptr_in_slab_span(l_body);
+    let l_is_heap = string_slab::str_is_heap(l) && string_slab::str_body(l) != 0;
     let l_bytes = string::olive_str_to_bytes_with(l, Some(l_is_heap));
     let r_bytes = olive_str_to_bytes(r);
     if let Some(res) = string_slab::str_concat_inplace_with(l, l_bytes, r_bytes, Some(l_is_heap)) {

@@ -1,4 +1,4 @@
-use crate::slab::ptr_in_slab_span;
+use crate::string_slab::{str_body, str_is_heap};
 use crate::*;
 
 /// Converts an Olive string pointer (tagged or untagged) to a byte slice.
@@ -7,15 +7,14 @@ pub fn olive_str_to_bytes<'a>(ptr: i64) -> &'a [u8] {
     olive_str_to_bytes_with(ptr, None)
 }
 
-/// Same as `olive_str_to_bytes`, but skips the chunk classification when the
-/// caller already knows `ptr`'s heap-vs-literal status (e.g. it just checked
-/// `ptr_in_slab_span` itself a moment ago).
+/// Same as `olive_str_to_bytes`, but takes the caller's already-known
+/// heap-vs-literal answer when it has one.
 pub fn olive_str_to_bytes_with<'a>(ptr: i64, known_heap: Option<bool>) -> &'a [u8] {
     if ptr == 0 {
         return b"";
     }
-    let p = ptr & !1;
-    let is_heap = known_heap.unwrap_or_else(|| ptr_in_slab_span(p));
+    let p = str_body(ptr);
+    let is_heap = known_heap.unwrap_or_else(|| str_is_heap(ptr));
     if is_heap {
         let header_val = unsafe { *(p as *const usize).sub(2) };
         let len = header_val & 0xFFFFFFFFFFFF;
@@ -33,12 +32,13 @@ pub extern "C" fn olive_str_len(s: i64) -> i64 {
 /// Interned single-byte strings, NUL-terminated like any literal. Indexing
 /// and per-char iteration return these instead of allocating, and the free
 /// path already ignores pointers outside the slab span.
-#[repr(align(2))]
-struct CharTable([[u8; 2]; 256]);
+#[repr(align(4))]
+struct CharTable([[u8; 4]; 256]);
 
-// Even alignment keeps every entry clear of the heap-str tag bit.
+// 4-byte stride from a 4-aligned base keeps bit0 and bit1 clear on every
+// entry, so an interned char pointer never reads as a tagged heap string.
 static CHAR_STRS: CharTable = {
-    let mut t = [[0u8; 2]; 256];
+    let mut t = [[0u8; 4]; 256];
     let mut i = 0;
     while i < 256 {
         t[i][0] = i as u8;
@@ -56,7 +56,7 @@ pub extern "C" fn olive_str_get(s: i64, i: i64) -> i64 {
     if s == 0 {
         return 0;
     }
-    let ptr = (s & !1) as *const u8;
+    let ptr = str_body(s) as *const u8;
     let byte = unsafe { *ptr.add(i as usize) };
     if byte == 0 {
         return 0;
@@ -82,7 +82,7 @@ pub extern "C" fn olive_str_get_checked(s: i64, i: i64, loc: i64) -> i64 {
     if idx < 0 || idx >= len {
         crate::panic::olive_bounds_fail(i, len, loc);
     }
-    let ptr = (s & !1) as *const u8;
+    let ptr = str_body(s) as *const u8;
     let byte = unsafe { *ptr.add(idx as usize) };
     char_str(byte)
 }

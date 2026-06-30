@@ -590,7 +590,7 @@ mod tests {
         for _ in 0..ITERS {
             unsafe {
                 let raw = olive_py_unwrap(obj);
-                let name = crate::python::python_intern::interned_attr((attr & !1) as *const _);
+                let name = crate::python::python_intern::interned_attr(crate::string_slab::str_body(attr) as *const _);
                 let a = PY_OBJECT_GET_ATTR(raw, name);
                 PY_DEC_REF(a);
             }

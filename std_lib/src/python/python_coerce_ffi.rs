@@ -516,7 +516,7 @@ pub extern "C" fn olive_dict_keys_ffi(obj_ptr: i64) -> i64 {
 pub extern "C" fn olive_py_import(name: i64) -> PyObject {
     check_python_loaded();
     with_gil(|| unsafe {
-        let m = PY_IMPORT_IMPORT_MODULE((name & !1) as *const c_char);
+        let m = PY_IMPORT_IMPORT_MODULE(crate::string_slab::str_body(name) as *const c_char);
         if m.is_null() {
             handle_py_error();
         }
@@ -531,7 +531,7 @@ pub extern "C" fn olive_py_getattr(obj: PyObject, attr: i64) -> PyObject {
     if unwrapped_obj.is_null() {
         return std::ptr::null_mut();
     }
-    let attr_ptr = (attr & !1) as *const c_char;
+    let attr_ptr = crate::string_slab::str_body(attr) as *const c_char;
     with_gil(|| unsafe {
         let a = if use_interned_names() {
             let name = interned_attr(attr_ptr);
@@ -564,7 +564,7 @@ pub extern "C" fn olive_py_getattr_ret(obj: PyObject, attr: i64, ret_tag: i64) -
     if unwrapped_obj.is_null() {
         return 0;
     }
-    let attr_ptr = (attr & !1) as *const c_char;
+    let attr_ptr = crate::string_slab::str_body(attr) as *const c_char;
     with_gil(|| unsafe {
         let a = if use_interned_names() {
             let name = interned_attr(attr_ptr);
@@ -590,7 +590,7 @@ pub extern "C" fn olive_py_setattr(obj: PyObject, attr: i64, val: i64) -> PyObje
     if unwrapped_obj.is_null() {
         return obj;
     }
-    let attr_ptr = (attr & !1) as *const c_char;
+    let attr_ptr = crate::string_slab::str_body(attr) as *const c_char;
     with_gil(|| unsafe {
         let py_val = olive_to_py_checked(val);
         let res = if use_interned_names() {

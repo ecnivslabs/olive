@@ -278,16 +278,22 @@ fn format_typed(session: &EngineShared, val: i64, desc: &CStr) -> String {
     read_rendered(f(val, desc.as_ptr() as i64))
 }
 
-/// Every `olive_format_typed` result is a freshly interned, tag-bit-set
-/// olive string with no embedded NUL (`olive_str_internal` strips them) and
-/// a guaranteed trailing one (`string_slab::str_alloc`), so a plain `CStr`
+/// Low bits an Olive string pointer carries: the string tag and the
+/// heap-allocated tag. Mirrors `STR_TAG`/`STR_HEAP` in the runtime's
+/// `string_slab`, which the debugger reaches by symbol rather than by
+/// linking, so the value cannot be shared directly.
+const STR_TAG_BITS: i64 = 3;
+
+/// Every `olive_format_typed` result is a freshly interned, tagged olive
+/// string with no embedded NUL (`olive_str_internal` strips them) and a
+/// guaranteed trailing one (`string_slab::str_alloc`), so a plain `CStr`
 /// read is safe without duplicating the slab/literal layout distinction
 /// `olive_str_to_bytes` makes.
 fn read_rendered(ptr: i64) -> String {
     if ptr == 0 {
         return String::new();
     }
-    let masked = (ptr & !1) as *const std::os::raw::c_char;
+    let masked = (ptr & !STR_TAG_BITS) as *const std::os::raw::c_char;
     unsafe { CStr::from_ptr(masked) }
         .to_string_lossy()
         .into_owned()

@@ -73,14 +73,14 @@ pub(crate) unsafe fn legacy_call_method_kw(
     unsafe {
         let bound = with_gil(|| {
             if use_interned_names() {
-                let name = interned_attr((attr & !1) as *const c_char);
+                let name = interned_attr(crate::string_slab::str_body(attr) as *const c_char);
                 if name.is_null() {
                     std::ptr::null_mut()
                 } else {
                     PY_OBJECT_GET_ATTR(obj, name)
                 }
             } else {
-                PY_OBJECT_GET_ATTR_STRING(obj, (attr & !1) as *const c_char)
+                PY_OBJECT_GET_ATTR_STRING(obj, crate::string_slab::str_body(attr) as *const c_char)
             }
         });
         if bound.is_null() {
@@ -111,14 +111,14 @@ pub(crate) unsafe fn legacy_call_method_kw_safe(
     unsafe {
         let bound = with_gil(|| {
             if use_interned_names() {
-                let name = interned_attr((attr & !1) as *const c_char);
+                let name = interned_attr(crate::string_slab::str_body(attr) as *const c_char);
                 if name.is_null() {
                     std::ptr::null_mut()
                 } else {
                     PY_OBJECT_GET_ATTR(obj, name)
                 }
             } else {
-                PY_OBJECT_GET_ATTR_STRING(obj, (attr & !1) as *const c_char)
+                PY_OBJECT_GET_ATTR_STRING(obj, crate::string_slab::str_body(attr) as *const c_char)
             }
         });
         if bound.is_null() {
@@ -152,7 +152,7 @@ unsafe fn build_interleaved_kwargs(kwnames_key: i64, kwvals_list: i64) -> i64 {
             return 0;
         }
         let packed =
-            std::ffi::CStr::from_ptr((kwnames_key & !1) as *const c_char).to_string_lossy();
+            std::ffi::CStr::from_ptr(crate::string_slab::str_body(kwnames_key) as *const c_char).to_string_lossy();
         let names: Vec<&str> = packed.split(',').collect();
         let list_ptr = crate::olive_list_new((kw_len * 2) as i64);
         let sv = &mut *(list_ptr as *mut crate::StableVec);

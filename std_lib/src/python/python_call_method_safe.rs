@@ -90,7 +90,7 @@ pub extern "C" fn olive_py_call_method0_safe(obj: PyObject, name: i64, arg_tags:
         let err_str_ptr = crate::olive_str_internal("Null object pointer");
         return crate::result::olive_result_err(err_str_ptr);
     }
-    let attr_ptr = (name & !1) as *const c_char;
+    let attr_ptr = crate::string_slab::str_body(name) as *const c_char;
     with_gil(|| unsafe {
         let outcome = call_method_with_raw_args_safe(unwrapped_obj, attr_ptr, 0, 0, &mut []);
         finish_call_safe(outcome, ret_tag_of(arg_tags))
@@ -115,7 +115,7 @@ pub extern "C" fn olive_py_call_method1_safe(
         let err_str_ptr = crate::olive_str_internal("Null object pointer");
         return crate::result::olive_result_err(err_str_ptr);
     }
-    let attr_ptr = (name & !1) as *const c_char;
+    let attr_ptr = crate::string_slab::str_body(name) as *const c_char;
     with_gil(|| unsafe {
         let mut args = [a0];
         let outcome =
@@ -143,7 +143,7 @@ pub extern "C" fn olive_py_call_method2_safe(
         let err_str_ptr = crate::olive_str_internal("Null object pointer");
         return crate::result::olive_result_err(err_str_ptr);
     }
-    let attr_ptr = (name & !1) as *const c_char;
+    let attr_ptr = crate::string_slab::str_body(name) as *const c_char;
     with_gil(|| unsafe {
         let mut args = [a0, a1];
         let outcome =
@@ -172,7 +172,7 @@ pub extern "C" fn olive_py_call_method3_safe(
         let err_str_ptr = crate::olive_str_internal("Null object pointer");
         return crate::result::olive_result_err(err_str_ptr);
     }
-    let attr_ptr = (name & !1) as *const c_char;
+    let attr_ptr = crate::string_slab::str_body(name) as *const c_char;
     with_gil(|| unsafe {
         let mut args = [a0, a1, a2];
         let outcome =
@@ -202,7 +202,7 @@ pub extern "C" fn olive_py_call_method4_safe(
         let err_str_ptr = crate::olive_str_internal("Null object pointer");
         return crate::result::olive_result_err(err_str_ptr);
     }
-    let attr_ptr = (name & !1) as *const c_char;
+    let attr_ptr = crate::string_slab::str_body(name) as *const c_char;
     with_gil(|| unsafe {
         let mut args = [a0, a1, a2, a3];
         let outcome =

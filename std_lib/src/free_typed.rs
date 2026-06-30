@@ -458,7 +458,7 @@ mod tests {
         let l = list_from_vec(vec![s]);
         olive_free_typed(l, desc(&[D_LIST, crate::format::D_STR]));
         assert!(!slot_is_live(l));
-        assert!(!crate::slab::ptr_is_slab_body(s & !1), "heap string freed");
+        assert!(!crate::slab::ptr_is_slab_body(crate::string_slab::str_body(s)), "heap string freed");
     }
 
     #[test]
@@ -540,8 +540,8 @@ mod tests {
         olive_free_typed(node1, d);
         assert!(!slot_is_live(node1));
         assert!(!slot_is_live(node2));
-        assert!(!slot_is_live(val1 & !1));
-        assert!(!slot_is_live(val2 & !1));
+        assert!(!slot_is_live(crate::string_slab::str_body(val1)));
+        assert!(!slot_is_live(crate::string_slab::str_body(val2)));
     }
 
     #[test]
@@ -576,6 +576,6 @@ mod tests {
         ]);
         olive_free_typed(node1, d);
         assert!(!slot_is_live(node1));
-        assert!(!slot_is_live(val1 & !1));
+        assert!(!slot_is_live(crate::string_slab::str_body(val1)));
     }
 }
