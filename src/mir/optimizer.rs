@@ -9,11 +9,10 @@ use crate::mir::optimizations::{
     const_fold::ConstantFolding, const_prop::ConstantPropagation, copy_prop::CopyPropagation,
     cse::CommonSubexpressionElimination, dce::DeadCodeElimination, devirtualize::Devirtualize,
     devirtualize_closure::DevirtualizeClosures, drop_hooks, gencheck::GenCheckInsertion,
-    gil_fusion::GilFusion, gvn::GlobalValueNumbering,
-    inliner::Inliner, licm::Licm, loop_unroll::LoopUnroll, move_elision::MoveElision,
-    ownership::OwnershipInference, peephole::PeepholeOptimize, scalarize::ScalarizeStructs,
-    simplify_cfg::SimplifyCfg, strength_reduction::StrengthReduction, tail_call::TailCallOpt,
-    vectorize::LoopVectorizer,
+    gil_fusion::GilFusion, gvn::GlobalValueNumbering, inliner::Inliner, licm::Licm,
+    loop_unroll::LoopUnroll, move_elision::MoveElision, ownership::OwnershipInference,
+    peephole::PeepholeOptimize, scalarize::ScalarizeStructs, simplify_cfg::SimplifyCfg,
+    strength_reduction::StrengthReduction, tail_call::TailCallOpt, vectorize::LoopVectorizer,
 };
 
 pub struct Optimizer {

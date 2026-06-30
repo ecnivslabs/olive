@@ -129,4 +129,3 @@ fn drop_hook_struct_keeps_dynamic_drop_path() {
     let mut cg = compile(src);
     assert_eq!(call_i64(&mut cg, "f"), 7000);
 }
-

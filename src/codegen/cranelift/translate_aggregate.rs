@@ -239,7 +239,9 @@ impl<M: Module> CraneliftCodegen<M> {
                     Self::translate_operand(builder, &ops[2], vars, string_ids, module, func_ids);
 
                 builder.ins().store(MemFlags::trusted(), data_val, ptr, 8);
-                builder.ins().store(MemFlags::trusted(), vtable_val, ptr, 16);
+                builder
+                    .ins()
+                    .store(MemFlags::trusted(), vtable_val, ptr, 16);
                 builder
                     .ins()
                     .store(MemFlags::trusted(), drop_shim_val, ptr, 24);

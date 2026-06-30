@@ -148,7 +148,12 @@ pub fn compile_instrumented(src: &str) -> (JitInstance, crate::mir::debug_hooks:
     (JitInstance(Some(cg)), program)
 }
 
-fn compile_with(src: &str, mut opt: Optimizer, profile: bool, release_backend: bool) -> JitInstance {
+fn compile_with(
+    src: &str,
+    mut opt: Optimizer,
+    profile: bool,
+    release_backend: bool,
+) -> JitInstance {
     let tokens = Lexer::new(src, 0).tokenise().unwrap();
     let mut prog = Parser::new(tokens).parse_program().unwrap();
     crate::semantic::desugar::desugar_trait_defaults(&mut prog);
