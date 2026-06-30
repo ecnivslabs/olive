@@ -32,12 +32,15 @@ pub extern "C" fn olive_str_len(s: i64) -> i64 {
 /// Interned single-byte strings, NUL-terminated like any literal. Indexing
 /// and per-char iteration return these instead of allocating, and the free
 /// path already ignores pointers outside the slab span.
-#[repr(align(4))]
-struct CharTable([[u8; 4]; 256]);
+#[repr(C, align(4))]
+pub struct CharTable([[u8; 4]; 256]);
 
 // 4-byte stride from a 4-aligned base keeps bit0 and bit1 clear on every
 // entry, so an interned char pointer never reads as a tagged heap string.
-static CHAR_STRS: CharTable = {
+// Exported because codegen indexes it directly to inline `s[i]`; the stride
+// is part of that contract, so changing it means changing the emitted shift.
+#[unsafe(export_name = "olive_char_table")]
+pub static CHAR_STRS: CharTable = {
     let mut t = [[0u8; 4]; 256];
     let mut i = 0;
     while i < 256 {
