@@ -6,6 +6,7 @@
 
 mod breakpoints;
 mod variants;
+mod watch;
 
 use super::hooks::{self, Frame};
 use super::values::VarStore;
@@ -18,9 +19,11 @@ use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Condvar, Mutex, OnceLock};
+use watch::WatchTable;
 
 pub use breakpoints::BpSpec;
 pub(crate) use variants::DebugVariantTable;
+pub use watch::WatchSpec;
 
 type StructFields = FxHashMap<String, Vec<String>>;
 type FieldTypes = FxHashMap<(String, String), Type>;
@@ -51,6 +54,7 @@ pub enum StopReason {
     Breakpoint,
     Step,
     Pause,
+    DataBreakpoint,
     Fault { code: String, message: String },
 }
 
@@ -108,6 +112,7 @@ pub struct EngineShared {
     step_line: AtomicI64,
     entry_pending: AtomicBool,
     breakpoints: Mutex<BpTable>,
+    watchpoints: Mutex<WatchTable>,
     program: DebugProgramInfo,
     file_names: FxHashMap<usize, String>,
     events_tx: Mutex<Sender<DebugEvent>>,
@@ -193,6 +198,7 @@ impl EngineShared {
             step_line: AtomicI64::new(0),
             entry_pending: AtomicBool::new(stop_on_entry),
             breakpoints: Mutex::new(FxHashMap::default()),
+            watchpoints: Mutex::new(FxHashMap::default()),
             program,
             file_names,
             events_tx: Mutex::new(events_tx),
@@ -220,14 +226,28 @@ impl EngineShared {
         let _ = self.variant_table.set(table);
     }
 
-    /// Every fn_id with at least one currently-set breakpoint. Empty when
-    /// nothing is set, in which case a plain `continue` should leave every
-    /// function on its clean body.
+    /// Every fn_id with at least one currently-set breakpoint or data
+    /// breakpoint. Empty when nothing is set, in which case a plain
+    /// `continue` should leave every function on its clean body. A watched
+    /// function has to stay on the list too -- `debug_store` only exists on
+    /// the `$debug` variant, so a function that's never independently
+    /// breakpointed would revert to clean on its next call and the watch
+    /// would silently stop firing the moment that call happened.
     fn bp_owning_fn_ids(&self) -> FxHashSet<u32> {
         let bps = self.breakpoints.lock().unwrap();
-        bps.keys()
+        let mut ids: FxHashSet<u32> = bps
+            .keys()
             .filter_map(|packed| self.program.line_to_fn.get(packed).copied())
-            .collect()
+            .collect();
+        drop(bps);
+        ids.extend(
+            self.watchpoints
+                .lock()
+                .unwrap()
+                .keys()
+                .map(|&(fn_id, _)| fn_id),
+        );
+        ids
     }
 
     /// Reverts every function to "instrumented only if it currently owns a

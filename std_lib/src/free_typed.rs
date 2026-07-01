@@ -458,7 +458,10 @@ mod tests {
         let l = list_from_vec(vec![s]);
         olive_free_typed(l, desc(&[D_LIST, crate::format::D_STR]));
         assert!(!slot_is_live(l));
-        assert!(!crate::slab::ptr_is_slab_body(crate::string_slab::str_body(s)), "heap string freed");
+        assert!(
+            !crate::slab::ptr_is_slab_body(crate::string_slab::str_body(s)),
+            "heap string freed"
+        );
     }
 
     #[test]

@@ -633,7 +633,9 @@ impl<M: Module> CraneliftCodegen<M> {
                             i
                         };
                         let addr = builder.ins().iadd(body, idx);
-                        let byte = builder.ins().uload8(types::I64, MemFlags::trusted(), addr, 0);
+                        let byte = builder
+                            .ins()
+                            .uload8(types::I64, MemFlags::trusted(), addr, 0);
                         let table_id = module
                             .declare_data("olive_char_table", Linkage::Import, false, false)
                             .expect("declare olive_char_table");

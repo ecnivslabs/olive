@@ -279,7 +279,9 @@ impl ListAppend {
         // The literal never exists now, so its storage and drop markers would
         // act on an uninitialized local.
         for block in func.basic_blocks.iter_mut() {
-            block.statements.retain(|st| !is_marker_for(&st.kind, s.temp));
+            block
+                .statements
+                .retain(|st| !is_marker_for(&st.kind, s.temp));
         }
     }
 }

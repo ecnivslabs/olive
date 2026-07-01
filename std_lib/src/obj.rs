@@ -58,8 +58,10 @@ pub extern "C" fn olive_obj_set(obj_ptr: i64, attr: i64, val: i64) -> i64 {
     // exit; the dict keeps a private copy so its stored key never dangles.
     // Untagged attribute names are read-only interned symbols, kept as-is.
     if crate::is_tagged_str_key(attr) && !m.fields.contains_key(&OliveStringKey(attr)) {
-        let bytes =
-            unsafe { std::ffi::CStr::from_ptr(crate::string_slab::str_body(attr) as *const std::ffi::c_char).to_bytes() };
+        let bytes = unsafe {
+            std::ffi::CStr::from_ptr(crate::string_slab::str_body(attr) as *const std::ffi::c_char)
+                .to_bytes()
+        };
         let owned = crate::string_slab::str_alloc(bytes);
         m.fields.insert(OliveStringKey(owned), val);
     } else {

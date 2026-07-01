@@ -57,7 +57,7 @@ impl<M: Module> CraneliftCodegen<M> {
         // it (a `Move` zeroes its source), so each one is translated once.
         let push_elem = matches!(func, Operand::Constant(Constant::Function(n))
             if n == "__olive_list_push")
-            .then_some(1);
+        .then_some(1);
         let call_args: Vec<Value> = args
             .iter()
             .enumerate()

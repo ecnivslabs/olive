@@ -191,7 +191,11 @@ pub(crate) unsafe fn call_kw_dict_safe(
                     return conversion_err();
                 }
                 // Olive strings are always NUL-terminated at their raw address; no copy needed.
-                PY_DICT_SET_ITEM_STRING(py_kwargs, crate::string_slab::str_body(key) as *const c_char, py_v);
+                PY_DICT_SET_ITEM_STRING(
+                    py_kwargs,
+                    crate::string_slab::str_body(key) as *const c_char,
+                    py_v,
+                );
                 PY_DEC_REF(py_v);
                 i += 2;
                 kw_i += 1;

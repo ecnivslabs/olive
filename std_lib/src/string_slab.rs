@@ -350,7 +350,10 @@ mod tests {
         assert_eq!(a, res, "must mutate in-place when capacity fits");
         assert_eq!(crate::string::olive_str_from_ptr(res).len(), 6);
         unsafe {
-            let s = std::ffi::CStr::from_ptr(crate::string_slab::str_body(res) as *const std::ffi::c_char).to_bytes();
+            let s = std::ffi::CStr::from_ptr(
+                crate::string_slab::str_body(res) as *const std::ffi::c_char
+            )
+            .to_bytes();
             assert_eq!(s, b"abcdef");
         }
         str_free(res);
@@ -363,7 +366,10 @@ mod tests {
         assert_ne!(a, res, "must reallocate when new capacity exceeds old");
         assert_eq!(crate::string::olive_str_from_ptr(res).len(), 9);
         unsafe {
-            let s = std::ffi::CStr::from_ptr(crate::string_slab::str_body(res) as *const std::ffi::c_char).to_bytes();
+            let s = std::ffi::CStr::from_ptr(
+                crate::string_slab::str_body(res) as *const std::ffi::c_char
+            )
+            .to_bytes();
             assert_eq!(s, b"abcdefghi");
         }
         str_free(res);
@@ -398,14 +404,20 @@ mod tests {
         str_free(warm);
 
         let a = crate::slab::with_escape_arena(|| str_alloc(b"x"));
-        assert!(crate::slab::chunk_is_global(crate::string_slab::str_body(a) as usize));
+        assert!(crate::slab::chunk_is_global(
+            crate::string_slab::str_body(a) as usize
+        ));
 
         let tail = vec![b'y'; 64];
         let grown = str_concat_inplace(a, b"x", &tail).expect("capacity must grow");
         assert_ne!(a, grown);
 
         let probe = str_alloc(b"z");
-        assert_ne!(str_body(probe), str_body(a), "local alloc must not recycle a global-arena slot");
+        assert_ne!(
+            str_body(probe),
+            str_body(a),
+            "local alloc must not recycle a global-arena slot"
+        );
 
         str_free(grown);
         str_free(probe);

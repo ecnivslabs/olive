@@ -553,14 +553,16 @@ mod tests {
                 ))
             });
             let kwnames = static_attr_name("repeat_key");
-            let first_tuple = with_gil(|| kwnames_tuple(crate::string_slab::str_body(kwnames) as *const c_char));
+            let first_tuple =
+                with_gil(|| kwnames_tuple(crate::string_slab::str_body(kwnames) as *const c_char));
             for _ in 0..1000 {
                 let kwvals = make_int_list(&[7]);
                 let res = olive_py_call_kw_v(func, 0, 0, 0, kwnames, kwvals, 0, ARG_INT, 0);
                 assert!(!res.is_null());
                 olive_py_decref(res);
             }
-            let same_tuple = with_gil(|| kwnames_tuple(crate::string_slab::str_body(kwnames) as *const c_char));
+            let same_tuple =
+                with_gil(|| kwnames_tuple(crate::string_slab::str_body(kwnames) as *const c_char));
             assert_eq!(
                 first_tuple, same_tuple,
                 "1000 calls sharing one kwnames key must reuse the same cached tuple"

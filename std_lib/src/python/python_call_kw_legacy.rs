@@ -152,7 +152,8 @@ unsafe fn build_interleaved_kwargs(kwnames_key: i64, kwvals_list: i64) -> i64 {
             return 0;
         }
         let packed =
-            std::ffi::CStr::from_ptr(crate::string_slab::str_body(kwnames_key) as *const c_char).to_string_lossy();
+            std::ffi::CStr::from_ptr(crate::string_slab::str_body(kwnames_key) as *const c_char)
+                .to_string_lossy();
         let names: Vec<&str> = packed.split(',').collect();
         let list_ptr = crate::olive_list_new((kw_len * 2) as i64);
         let sv = &mut *(list_ptr as *mut crate::StableVec);

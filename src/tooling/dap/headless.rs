@@ -390,6 +390,7 @@ fn run_monitor(events_rx: Receiver<DebugEvent>, redirect: Redirect, proto: Arc<M
                     StopReason::Breakpoint => "breakpoint",
                     StopReason::Step => "step",
                     StopReason::Pause => "pause",
+                    StopReason::DataBreakpoint => "data breakpoint",
                     StopReason::Fault { .. } => "exception",
                 };
                 emit(
