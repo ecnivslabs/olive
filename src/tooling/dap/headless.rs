@@ -105,11 +105,13 @@ fn handle(state: &mut HeadlessState, msg: Value) -> bool {
     match cmd {
         "launch" => handle_launch(state, id, &msg),
         "break" => handle_break(state, id, &msg),
-        "continue" => run_control(state, id, |s| s.cont()),
-        "next" => run_control(state, id, |s| s.next()),
-        "stepIn" => run_control(state, id, |s| s.step_in()),
-        "stepOut" => run_control(state, id, |s| s.step_out()),
-        "pause" => run_control(state, id, |s| s.pause()),
+        // Headless has no concept of threads; every control command targets
+        // the main debuggee thread, always id 1.
+        "continue" => run_control(state, id, |s| s.cont(1)),
+        "next" => run_control(state, id, |s| s.next(1)),
+        "stepIn" => run_control(state, id, |s| s.step_in(1)),
+        "stepOut" => run_control(state, id, |s| s.step_out(1)),
+        "pause" => run_control(state, id, |s| s.pause(1)),
         "stack" => handle_stack(state, id),
         "vars" => handle_vars(state, id, &msg),
         "eval" => handle_eval(state, id, &msg),
@@ -262,7 +264,7 @@ fn handle_stack(state: &HeadlessState, id: Option<i64>) {
         return;
     };
     let frames: Vec<Value> = session
-        .stack()
+        .stack(1)
         .iter()
         .enumerate()
         .map(|(idx, f)| json!({"id": idx, "fn": f.name, "file": f.file, "line": f.line}))
@@ -384,7 +386,7 @@ fn handle_set_var(state: &HeadlessState, id: Option<i64>, args: &Value) {
 fn run_monitor(events_rx: Receiver<DebugEvent>, redirect: Redirect, proto: Arc<Mutex<FdFile>>) {
     for ev in events_rx.iter() {
         match ev {
-            DebugEvent::Stopped { reason, frame } => {
+            DebugEvent::Stopped { reason, frame, .. } => {
                 let reason_str = match &reason {
                     StopReason::Entry => "entry",
                     StopReason::Breakpoint => "breakpoint",
@@ -427,6 +429,9 @@ fn run_monitor(events_rx: Receiver<DebugEvent>, redirect: Redirect, proto: Arc<M
                 emit(&proto, &json!({"event": "exited", "code": code}));
                 break;
             }
+            // Headless has no per-thread surface; thread lifecycle is only
+            // ever observable through the real DAP protocol's `threads`.
+            DebugEvent::ThreadStarted { .. } | DebugEvent::ThreadExited { .. } => {}
         }
     }
 }

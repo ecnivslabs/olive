@@ -41,9 +41,10 @@ pub struct DebugSession {
     shared: Arc<EngineShared>,
     events_rx: Option<Receiver<DebugEvent>>,
     /// Never read again after `launch()` resolves runtime symbols and gets
-    /// `__main__`'s pointer; held only so the JIT module and its libraries
-    /// stay mapped for the session's whole life.
-    #[allow(dead_code)]
+    /// `__main__`'s pointer (`raw_fn` is the one test-only exception); held
+    /// only so the JIT module and its libraries stay mapped for the
+    /// session's whole life.
+    #[cfg_attr(not(test), allow(dead_code))]
     codegen: CraneliftCodegen<JITModule>,
     debuggee: Option<JoinHandle<()>>,
 }
@@ -72,6 +73,21 @@ impl DebugSession {
         self.events_rx
             .take()
             .expect("events receiver already taken")
+    }
+
+    /// `name`'s `$debug` variant address -- `get_function` would hand back
+    /// the clean body's fixed address instead, since dispatch between the
+    /// two lives in each *caller's* compiled call site (an indirect load
+    /// through the dispatch cell), not in the callee's own entry point.
+    /// Lets a multi-thread test call a second function directly on its own
+    /// manually-spawned thread, exactly as `aio`'s `spawn_traced` calls into
+    /// a spawned function, without needing a real `async fn`/executor pool
+    /// in the fixture program.
+    #[cfg(test)]
+    pub(crate) fn raw_fn(&mut self, name: &str) -> Option<*const u8> {
+        self.codegen
+            .debug_variant_addr(name)
+            .map(|addr| addr as *const u8)
     }
 }
 
@@ -159,15 +175,36 @@ pub fn launch(program: &str, stop_on_entry: bool) -> Result<DebugSession, Launch
         install(hooks::debug_fault_hook as *const () as i64);
     }
 
+    // Lets `olive_std::aio`'s executor pool, spawned tasks, and pool_run(_sync)
+    // -- all of which run real olive-compiled code on their own OS thread --
+    // register themselves with this session the same way the main thread
+    // does, instead of staying invisible to breakpoints/stepping/inspection.
+    if let Some(setter) = codegen.runtime_symbol("olive_debug_set_thread_hooks") {
+        let install: extern "C" fn(i64, i64) = unsafe { std::mem::transmute(setter) };
+        install(
+            hooks::debug_thread_start as *const () as i64,
+            hooks::debug_thread_end as *const () as i64,
+        );
+    }
+
     let main_fn: extern "C" fn() -> i64 = unsafe { std::mem::transmute(main_ptr) };
+    // Registered here, synchronously, before the debuggee thread exists --
+    // not inside its closure. `wait_for_start`'s first `cont()` can arrive
+    // the instant `configurationDone` does; if thread 1 weren't already in
+    // the registry by then, that `cont()` would find nothing to resume and
+    // the debuggee would block forever waiting for a wakeup nobody sends.
+    let main_ctl = shared.register_thread("main");
+    if shared.wants_stop_on_entry() {
+        main_ctl.set_force_check(true);
+    }
     let debuggee_shared = shared.clone();
     let debuggee = std::thread::Builder::new()
         .name("olive-debuggee".to_string())
         .spawn(move || {
-            hooks::enable_debuggee();
+            hooks::attach_debuggee_thread(main_ctl);
             debuggee_shared.wait_for_start();
             let exit_code = main_fn();
-            hooks::disable_debuggee();
+            hooks::detach_main_thread();
             hooks::clear_session();
             debuggee_shared.send_exited(exit_code as i32);
         })

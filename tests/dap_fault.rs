@@ -65,11 +65,12 @@ fn run_child() {
     let path = PathBuf::from(std::env::var(PATH_ENV).expect("path env set by parent"));
     let session = launch(path.to_str().unwrap(), false).expect("launch failed");
 
-    session.cont();
+    session.cont(1);
     match session.events().recv().unwrap() {
         DebugEvent::Stopped {
             reason: StopReason::Fault { code, message },
             frame,
+            ..
         } => {
             println!("FAULT_CODE={code}");
             println!("FAULT_FN={}", frame.name);
@@ -82,7 +83,7 @@ fn run_child() {
         other => panic!("expected Stopped(Fault), got {other:?}"),
     }
 
-    session.cont();
+    session.cont(1);
     loop {
         std::thread::park();
     }

@@ -264,7 +264,7 @@ pub(super) fn handle_completions(state: &ServerState, request_seq: i64, args: &V
     );
 }
 
-pub(super) fn handle_exception_info(state: &ServerState, request_seq: i64) {
+pub(super) fn handle_exception_info(state: &ServerState, request_seq: i64, args: &Value) {
     let Some(session) = &state.session else {
         send_error(state, request_seq, "exceptionInfo", "no active session");
         return;
@@ -279,7 +279,7 @@ pub(super) fn handle_exception_info(state: &ServerState, request_seq: i64) {
         return;
     };
     let location = session
-        .stack()
+        .stack(super::thread_id_of(args))
         .first()
         .map(|f| format!("{} ({}:{})", f.name, f.file, f.line))
         .unwrap_or_default();

@@ -290,7 +290,7 @@ pub(crate) fn write_value(
             frame_idx,
             cell_idx,
         } => {
-            if frame_idx != 0 {
+            if !session.is_innermost_frame(frame_idx) {
                 return Err(
                     "only the topmost (currently running) frame's locals can be edited; \
                      step or continue into an outer frame before editing its locals"

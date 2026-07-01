@@ -10,6 +10,7 @@
 //! replace leaks the old string instead -- bounded, rare, and safe.
 
 use crate::{OliveEnum, OliveObj, StableVec};
+use std::sync::atomic::{AtomicI64, Ordering};
 
 /// Element count of a list or set. Not used for tuples: a tuple's fixed
 /// arity comes from its static type, not the runtime value.
@@ -218,4 +219,48 @@ pub extern "C" fn olive_debug_any_encode(kind: i64, payload: i64) -> i64 {
         3 => crate::boxed::olive_box_float(f64::from_bits(payload as u64)),
         _ => crate::boxed::olive_box_int(payload),
     }
+}
+
+/// Raw `extern "C" fn(name_ptr: i64)` / `extern "C" fn()` pair the debugger
+/// installs at `pit debug`/`pit dap` launch (`olive_debug_set_thread_hooks`)
+/// so a thread spawned through `spawn_traced` can register itself with the
+/// active session. Zero (unset) outside a debug session, so `spawn_traced`
+/// costs exactly the two relaxed loads below either way.
+static THREAD_START_HOOK: AtomicI64 = AtomicI64::new(0);
+static THREAD_END_HOOK: AtomicI64 = AtomicI64::new(0);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_debug_set_thread_hooks(start: i64, end: i64) {
+    THREAD_START_HOOK.store(start, Ordering::Relaxed);
+    THREAD_END_HOOK.store(end, Ordering::Relaxed);
+}
+
+/// Spawns `f` on a named OS thread, registering it with an active debug
+/// session (if any) so breakpoints/stepping/inspection reach code running on
+/// it. `aio`'s executor pool, spawned tasks, and `pool_run`(`_sync`) all
+/// execute real olive-compiled code on their own thread and are otherwise
+/// invisible to the debugger the way the main thread never is. A plain
+/// `std::thread::spawn` outside a debug session either way: both hooks stay
+/// zero, so this costs exactly the checks below and nothing more.
+pub fn spawn_traced<F>(name: &'static str, f: F) -> std::thread::JoinHandle<()>
+where
+    F: FnOnce() + Send + 'static,
+{
+    std::thread::Builder::new()
+        .name(name.to_string())
+        .spawn(move || {
+            let start = THREAD_START_HOOK.load(Ordering::Relaxed);
+            if start != 0 {
+                let cname = std::ffi::CString::new(name).unwrap_or_default();
+                let hook: extern "C" fn(i64) = unsafe { std::mem::transmute(start as *const ()) };
+                hook(cname.as_ptr() as i64);
+            }
+            f();
+            let end = THREAD_END_HOOK.load(Ordering::Relaxed);
+            if end != 0 {
+                let hook: extern "C" fn() = unsafe { std::mem::transmute(end as *const ()) };
+                hook();
+            }
+        })
+        .expect("failed to spawn traced thread")
 }

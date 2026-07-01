@@ -8,7 +8,7 @@
 //! Process-global state lives only in this file; `engine`/`launch` reach it
 //! through the `pub(crate)` functions below, never through a bare static.
 
-use super::engine::{EngineShared, StopReason};
+use super::engine::{EngineShared, StopReason, ThreadControl, any_force_check};
 use rustc_hash::FxHashMap;
 use rustc_hash::FxHashSet;
 use std::cell::{Cell, RefCell};
@@ -18,12 +18,21 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
 thread_local! {
-    /// Set only on the spawned debuggee thread for the lifetime of a debug
-    /// session. Runtime worker threads (thread pools, async executors) never
-    /// set it, so hooks on those threads are a load, compare, return.
+    /// Set only on a traced thread (the main debuggee thread, or an aio
+    /// worker that's called `enable_debuggee_thread`) for the lifetime of a
+    /// debug session. Untraced runtime threads never set it, so hooks on
+    /// those threads are a load, compare, return.
     static DEBUGGEE_ENABLED: Cell<bool> = const { Cell::new(false) };
-    /// Per-thread call stack. Only the debuggee thread ever pushes to this;
-    /// a snapshot is cloned into the parked engine state on a stop.
+    /// This thread's own `ThreadControl`, set once by
+    /// `enable_debuggee_thread`/`attach_debuggee_thread` and cleared by
+    /// `disable_debuggee_thread`. Reached on every statement hook, so it's a
+    /// direct handle rather than a lookup into `EngineShared::threads` --
+    /// the whole reason a session keeps that registry keyed by id at all is
+    /// so the *other* side (the server thread) can reach a specific thread
+    /// by the id it announced, not so this thread has to search for itself.
+    static MY_THREAD_CTL: RefCell<Option<Arc<ThreadControl>>> = const { RefCell::new(None) };
+    /// Per-thread call stack. Only this thread ever pushes to it; a
+    /// snapshot is cloned into the parked engine state on a stop.
     static FRAMES: RefCell<Vec<Frame>> = const { RefCell::new(Vec::new()) };
     /// Cache of `(fn_id → cell_count)` populated on first visit per
     /// fn_id. Avoids the session slot lookup in `debug_enter` for loops
@@ -54,9 +63,6 @@ struct SessionSnapshot {
 /// before `FORCE_CHECK` so the overwhelmingly common "no breakpoints, not
 /// stepping" case only pays for one relaxed load.
 static BP_COUNT: AtomicUsize = AtomicUsize::new(0);
-/// True whenever a stop condition doesn't depend on the breakpoint set
-/// (pending stop-on-entry, an active pause request).
-static FORCE_CHECK: AtomicBool = AtomicBool::new(false);
 /// Whether a runtime fault parks the debuggee before the process exits, per
 /// the client's `faults` exception-breakpoint filter. Defaults to on so a
 /// session that never touches `setExceptionBreakpoints` keeps today's
@@ -92,15 +98,14 @@ fn session_state() -> &'static RwLock<Option<SessionSnapshot>> {
 }
 
 /// Installs the process's one live session. Errors if a session is already
-/// active; resets breakpoint/force-check state so a prior session's leftover
-/// packed keys (file ids are only unique within a single compile) never leak
-/// into the new one.
+/// active; resets breakpoint state so a prior session's leftover packed keys
+/// (file ids are only unique within a single compile) never leak into the
+/// new one.
 pub(crate) fn install_session(shared: Arc<EngineShared>) -> Result<(), ()> {
     let mut state = session_state().write().unwrap();
     if state.is_some() {
         return Err(());
     }
-    set_force_check(shared.wants_stop_on_entry());
     set_stop_on_fault(true);
     WATCH_ACTIVE.store(false, Ordering::Relaxed);
     SINGLE_BP_LINE.store(-1, Ordering::Relaxed);
@@ -124,7 +129,6 @@ pub(crate) fn install_session(shared: Arc<EngineShared>) -> Result<(), ()> {
 
 pub(crate) fn clear_session() {
     *session_state().write().unwrap() = None;
-    set_force_check(false);
     WATCH_ACTIVE.store(false, Ordering::Relaxed);
     SINGLE_BP_LINE.store(-1, Ordering::Relaxed);
     SINGLE_WATCH_KEY.store(-1, Ordering::Relaxed);
@@ -219,52 +223,130 @@ pub(crate) fn contains_breakpoint(packed: i64) -> bool {
         .is_some_and(|s| s.breakpoints.contains(&packed))
 }
 
-pub(crate) fn set_force_check(v: bool) {
-    FORCE_CHECK.store(v, Ordering::Relaxed);
-}
-
 pub(crate) fn set_stop_on_fault(v: bool) {
     STOP_ON_FAULT.store(v, Ordering::Relaxed);
 }
 
-pub(crate) fn enable_debuggee() {
-    DEBUGGEE_ENABLED.set(true);
+/// Registers a brand-new traced thread with the active session, attaches
+/// this thread to it, and announces its arrival -- the self-registering path
+/// an aio worker takes the first time it runs instrumented code, since
+/// nothing outside it could reach a threadId it hasn't announced yet. A
+/// no-op outside a debug session (`session_shared()` is `None`, so
+/// `DEBUGGEE_ENABLED`/`MY_THREAD_CTL` stay unset and every hook on this
+/// thread keeps taking its cheap early return).
+pub(crate) fn enable_debuggee_thread(name: &str) {
+    if let Some(shared) = session_shared() {
+        let ctl = shared.register_thread(name);
+        shared.announce_thread_started(ctl.id);
+        attach_debuggee_thread(ctl);
+    }
 }
 
-pub(crate) fn disable_debuggee() {
+/// Attaches this thread to an already-registered `ThreadControl` -- the path
+/// `launch.rs` takes for the main debuggee thread, which is registered by
+/// the *spawning* side before the thread starts so a `cont()` racing this
+/// thread's own startup always has a real thread to resume.
+pub(crate) fn attach_debuggee_thread(ctl: Arc<ThreadControl>) {
+    DEBUGGEE_ENABLED.set(true);
+    MY_THREAD_CTL.with_borrow_mut(|slot| *slot = Some(ctl));
+}
+
+/// Counterpart to `enable_debuggee_thread`: deregisters this aio worker
+/// thread, announces its exit, and clears its debuggee state. Safe to call
+/// even after the session has already torn down (`session_shared()` returns
+/// `None`): there's simply nothing left to deregister from or announce to.
+pub(crate) fn disable_debuggee_thread() {
+    if let Some(ctl) = MY_THREAD_CTL.with_borrow_mut(|slot| slot.take())
+        && let Some(shared) = session_shared()
+    {
+        shared.deregister_thread(ctl.id);
+        shared.announce_thread_exited(ctl.id);
+    }
     DEBUGGEE_ENABLED.set(false);
+}
+
+/// Counterpart to `attach_debuggee_thread`: clears this thread's debuggee
+/// state without deregistering or announcing anything -- the main debuggee
+/// thread's own shutdown, where the whole session is tearing down a moment
+/// later anyway, so neither a registry entry nor a `ThreadExited` event
+/// outlives it long enough to matter to anyone.
+pub(crate) fn detach_main_thread() {
+    MY_THREAD_CTL.with_borrow_mut(|slot| *slot = None);
+    DEBUGGEE_ENABLED.set(false);
+}
+
+/// Raw C-ABI thread-start hook, installed into `olive_std` at launch
+/// (`olive_debug_set_thread_hooks`) so `aio`'s executor pool, spawned tasks,
+/// and `pool_run`(`_sync`) -- all of which run real olive-compiled code on
+/// their own OS thread -- become visible to the debugger the same way the
+/// main thread always has been. `name_ptr` is a short-lived C string owned
+/// by the caller (`olive_std::debug::spawn_traced`); copied before use.
+pub extern "C" fn debug_thread_start(name_ptr: i64) {
+    let name = if name_ptr == 0 {
+        String::new()
+    } else {
+        unsafe { CStr::from_ptr(name_ptr as *const c_char) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    enable_debuggee_thread(&name);
+}
+
+/// Raw C-ABI thread-exit hook, the `debug_thread_start` counterpart called
+/// right before a traced aio thread's closure returns.
+pub extern "C" fn debug_thread_end() {
+    disable_debuggee_thread();
 }
 
 /// Inline stmt-check helper. Called from JIT'd code before every
 /// `debug_stmt` call. Returns 0 when this specific statement can be
-/// skipped (no breakpoint on this line and no stepping is active).
-/// Combined zero-check + per-line breakpoint check in one function so
-/// the MIR conditional ONLY dispatches to `debug_stmt` when there's
+/// skipped (no breakpoint on this line and no stepping is active on this
+/// thread). Combined zero-check + per-line breakpoint check in one function
+/// so the MIR conditional ONLY dispatches to `debug_stmt` when there's
 /// genuinely a reason to stop.
 ///
 /// Uses three-tier fast path:
-/// 1. No breakpoints + not stepping → return 0 (2 relaxed atomics, no lock)
+/// 1. No breakpoints + not stepping → return 0 (2 relaxed atomics, no lock,
+///    no thread-local touch)
 /// 2. Singe breakpoint → compare `SINGLE_BP_LINE` directly (1 atomic load)
 /// 3. Multi breakpoint → fall back to `FAST_BP_SET` RwLock
 ///
-/// Deliberately NOT forced by `WATCH_ACTIVE`: `mir::debug_hooks` pairs every
-/// `debug_stmt` call with an unconditional reload of *every* named local
-/// from the frame mirror (`make_stmt_conditional`'s doc comment), built and
-/// tested only for the rare, deliberate frequency of an actual breakpoint
-/// or step hit. Forcing it on every statement so a data-breakpoint-only
-/// stop's line stays current was tried and reverted: it reassigns a
-/// reassigned/moved local (a fresh `let` inside a loop, a container append)
-/// from a stale mirror value outside the ownership system's own writes,
-/// and reliably corrupts a real program (`matrix_mult` benchmark, E0707
-/// "stale reference" within a few hundred iterations). A data-breakpoint
-/// stop's reported line is therefore only as current as the last real
-/// `debug_stmt` hit in that function -- accurate when a line breakpoint or
-/// step is active alongside the watch, otherwise it lags to that point.
+/// The stepping/pause half of the check is this thread's own
+/// `ThreadControl::force_check`, not a process-global flag: a step or pause
+/// targeting one thread must not force every other thread's statement hook
+/// onto the slow path too. That per-thread flag lives behind a thread-local
+/// `RefCell`, so it's gated behind `any_force_check()` (a single flat atomic
+/// counter of how many threads are currently armed) rather than read
+/// unconditionally -- the overwhelmingly common case across a whole session
+/// is zero threads stepping, and touching `MY_THREAD_CTL` on every one of a
+/// program's statements to learn that measured ~25% slower on a
+/// call-heavy benchmark (fibonacci) than the flat-atomic check this
+/// replaces. Deliberately NOT forced by `WATCH_ACTIVE`:
+/// `mir::debug_hooks` pairs every `debug_stmt` call with an unconditional
+/// reload of *every* named local from the frame mirror (`make_stmt_conditional`'s
+/// doc comment), built and tested only for the rare, deliberate frequency of
+/// an actual breakpoint or step hit. Forcing it on every statement so a
+/// data-breakpoint-only stop's line stays current was tried and reverted: it
+/// reassigns a reassigned/moved local (a fresh `let` inside a loop, a
+/// container append) from a stale mirror value outside the ownership
+/// system's own writes, and reliably corrupts a real program (`matrix_mult`
+/// benchmark, E0707 "stale reference" within a few hundred iterations). A
+/// data-breakpoint stop's reported line is therefore only as current as the
+/// last real `debug_stmt` hit in that function -- accurate when a line
+/// breakpoint or step is active alongside the watch, otherwise it lags to
+/// that point.
 pub extern "C" fn debug_should_check_stmt(packed: i64) -> i64 {
-    if FORCE_CHECK.load(Ordering::Relaxed) {
+    if bp_fast_match(packed) {
         return 1;
     }
-    if bp_fast_match(packed) { 1 } else { 0 }
+    if any_force_check() {
+        let force =
+            MY_THREAD_CTL.with_borrow(|slot| slot.as_ref().is_some_and(|t| t.force_check()));
+        if force {
+            return 1;
+        }
+    }
+    0
 }
 
 /// The same lock-free tiered breakpoint check `debug_should_check_stmt`
@@ -295,6 +377,9 @@ pub extern "C" fn debug_stmt(packed: i64) {
 }
 
 fn stmt_full_check(packed: i64) {
+    let Some(thread) = my_thread_ctl() else {
+        return;
+    };
     let depth = FRAMES.with_borrow(|frames| frames.len());
 
     // Check breakpoint membership before cloning the frame.
@@ -314,22 +399,29 @@ fn stmt_full_check(packed: i64) {
     };
     drop(state);
 
-    let Some(reason) = shared.stop_reason_for(packed, depth, &top) else {
+    let Some(reason) = shared.stop_reason_for(&thread, packed, depth, &top) else {
         return;
     };
     let snapshot = FRAMES.with_borrow(|frames| frames.clone());
-    shared.park(reason, snapshot);
-    apply_pending_patches(&shared);
+    shared.park_on(&thread, reason, snapshot);
+    apply_pending_patches(&thread);
+}
+
+/// This thread's own `ThreadControl`, if it's currently a traced debuggee
+/// thread. `None` covers both "no debug session" and "an untraced thread
+/// somehow reached an instrumented hook" identically -- both are a no-op.
+fn my_thread_ctl() -> Option<Arc<ThreadControl>> {
+    MY_THREAD_CTL.with_borrow(|slot| slot.clone())
 }
 
 /// Applies writes queued by `EngineShared::set_local_cell` (a `setVariable`/
 /// `setExpression` request handled while this frame was parked) into the
 /// mirror the frame's own `debug_load` calls read from right after. Those
 /// calls only ever target the innermost frame -- the one that was actually
-/// blocked inside `park()` -- so the frame that just resumed here is always
-/// the right one; no cell/frame identity check is needed.
-fn apply_pending_patches(shared: &EngineShared) {
-    let patches = shared.take_pending_patches();
+/// blocked inside `park_on()` -- so the frame that just resumed here is
+/// always the right one; no cell/frame identity check is needed.
+fn apply_pending_patches(thread: &ThreadControl) {
+    let patches = thread.take_pending_patches();
     if patches.is_empty() {
         return;
     }
@@ -419,6 +511,9 @@ fn watch_slow_path(cell_idx: usize) {
     let Some(shared) = session_shared() else {
         return;
     };
+    let Some(thread) = my_thread_ctl() else {
+        return;
+    };
     let top: Option<Frame> = FRAMES.with_borrow(|frames| frames.last().cloned());
     let Some(top) = top else {
         return;
@@ -427,8 +522,8 @@ fn watch_slow_path(cell_idx: usize) {
         return;
     };
     let snapshot = FRAMES.with_borrow(|frames| frames.clone());
-    shared.park(reason, snapshot);
-    apply_pending_patches(&shared);
+    shared.park_on(&thread, reason, snapshot);
+    apply_pending_patches(&thread);
 }
 
 pub extern "C" fn debug_exit() {
@@ -462,10 +557,11 @@ pub extern "C" fn debug_load(cell_idx: i64) -> i64 {
 }
 
 /// Installed once at launch via `olive_debug_set_fault_hook`, called from
-/// inside `abort_with` on whatever thread panicked (the debuggee thread in
-/// this single-session model). Parks like a breakpoint hit, using the same
-/// `FRAMES` snapshot `debug_stmt` would: nothing was popped, since a fault
-/// aborts mid-statement rather than returning cleanly.
+/// inside `abort_with` on whatever thread panicked -- the main debuggee
+/// thread or a traced aio worker, either way `MY_THREAD_CTL` names it. Parks
+/// like a breakpoint hit, using the same `FRAMES` snapshot `debug_stmt`
+/// would: nothing was popped, since a fault aborts mid-statement rather than
+/// returning cleanly.
 pub extern "C" fn debug_fault_hook(code_ptr: i64, msg_ptr: i64, _loc_ptr: i64) {
     if !DEBUGGEE_ENABLED.get() || !STOP_ON_FAULT.load(Ordering::Relaxed) {
         return;
@@ -479,9 +575,12 @@ pub extern "C" fn debug_fault_hook(code_ptr: i64, msg_ptr: i64, _loc_ptr: i64) {
     let Some(shared) = session_shared() else {
         return;
     };
+    let Some(thread) = my_thread_ctl() else {
+        return;
+    };
     let snapshot = FRAMES.with_borrow(|frames| frames.clone());
-    shared.park(StopReason::Fault { code, message }, snapshot);
-    apply_pending_patches(&shared);
+    shared.park_on(&thread, StopReason::Fault { code, message }, snapshot);
+    apply_pending_patches(&thread);
 }
 
 /// Symbols registered unconditionally into every JIT module. Nothing calls
