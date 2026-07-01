@@ -51,9 +51,25 @@ impl<M: Module> CraneliftCodegen<M> {
         args: &[Operand],
         dest_ty: &OliveType,
     ) -> Value {
+        // The pushed element lands in a list slot, so it needs the same incref
+        // and float bitcast a list literal's element would have gotten before
+        // `ListAppend` folded the literal away. Translating an operand consumes
+        // it (a `Move` zeroes its source), so each one is translated once.
+        let push_elem = matches!(func, Operand::Constant(Constant::Function(n))
+            if n == "__olive_list_push")
+            .then_some(1);
         let call_args: Vec<Value> = args
             .iter()
-            .map(|a| Self::translate_operand(builder, a, vars, string_ids, module, func_ids))
+            .enumerate()
+            .map(|(i, a)| {
+                if push_elem == Some(i) {
+                    Self::translate_aggregate_elem(
+                        func_mir, builder, vars, string_ids, module, func_ids, a,
+                    )
+                } else {
+                    Self::translate_operand(builder, a, vars, string_ids, module, func_ids)
+                }
+            })
             .collect();
 
         if let Operand::Constant(Constant::Function(name)) = func {

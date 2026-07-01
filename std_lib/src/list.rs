@@ -510,6 +510,26 @@ pub extern "C" fn olive_list_concat_move(l: i64, r: i64) -> i64 {
     l
 }
 
+/// Appends one element in place and returns the same list. Reachable only
+/// from the `xs = xs + [e]` rewrite, which fires on the exact conditions
+/// `concat_move` already requires, so no live view observes the growth.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_push(l: i64, v: i64) -> i64 {
+    if l == 0 {
+        return olive_list_push(olive_list_new(0), v);
+    }
+    unsafe {
+        let s = &mut *(l as *mut StableVec);
+        let mut vec = Vec::from_raw_parts(s.ptr, s.len, s.cap);
+        vec.push(v);
+        s.ptr = vec.as_mut_ptr();
+        s.cap = vec.capacity();
+        s.len = vec.len();
+        std::mem::forget(vec);
+    }
+    l
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_list_concat(l: i64, r: i64) -> i64 {
     if l == 0 {
@@ -1088,6 +1108,33 @@ mod tests {
         let a = make_list(&[1, 2]);
         let c = olive_list_concat(a, 0);
         assert_eq!(c, a);
+    }
+
+    #[test]
+    fn push_appends_in_place_and_returns_same_list() {
+        let a = make_list(&[1, 2]);
+        let r = olive_list_push(a, 3);
+        assert_eq!(r, a);
+        assert_eq!(olive_list_len(a), 3);
+        assert_eq!(olive_list_get(a, 2), 3);
+    }
+
+    #[test]
+    fn push_grows_past_initial_capacity() {
+        let a = make_list(&[]);
+        for i in 0..64 {
+            olive_list_push(a, i);
+        }
+        assert_eq!(olive_list_len(a), 64);
+        assert_eq!(olive_list_get(a, 63), 63);
+    }
+
+    #[test]
+    fn push_null_left_allocates() {
+        let r = olive_list_push(0, 5);
+        assert_ne!(r, 0);
+        assert_eq!(olive_list_len(r), 1);
+        assert_eq!(olive_list_get(r, 0), 5);
     }
 
     #[test]

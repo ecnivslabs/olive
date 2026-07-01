@@ -355,6 +355,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_list_append", b"olive_list_append\0"),
     ("__olive_list_concat", b"olive_list_concat\0"),
     ("__olive_list_concat_move", b"olive_list_concat_move\0"),
+    ("__olive_list_push", b"olive_list_push\0"),
     ("__olive_list_concat_typed", b"olive_list_concat_typed\0"),
     (
         "__olive_list_getslice_typed",

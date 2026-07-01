@@ -89,6 +89,16 @@ impl MoveElision {
                             self.optimize_operand(bb_idx, stmt_idx, op, live_after, locals, moved);
                         }
                     }
+                    // `__olive_list_push` hands its element to the list, the
+                    // same transfer a list literal's element makes. Everything
+                    // else in call position is read-only.
+                    Rvalue::Call { func, args } => {
+                        let is_push = matches!(func, Operand::Constant(Constant::Function(n))
+                            if n == "__olive_list_push");
+                        if is_push && let Some(op) = args.get_mut(1) {
+                            self.optimize_operand(bb_idx, stmt_idx, op, live_after, locals, moved);
+                        }
+                    }
                     _ => {}
                 }
             }

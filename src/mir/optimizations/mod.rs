@@ -15,6 +15,7 @@ pub mod gil_fusion;
 pub mod gvn;
 pub mod inliner;
 pub mod licm;
+pub mod list_append;
 pub mod loop_unroll;
 pub mod move_elision;
 pub mod ownership;
