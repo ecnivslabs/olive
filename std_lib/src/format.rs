@@ -17,6 +17,10 @@ pub(crate) const D_STRUCT: u8 = 12;
 pub(crate) const D_ENUM: u8 = 13;
 pub(crate) const D_BACKREF: u8 = 14;
 pub(crate) const D_BYTES: u8 = 15;
+/// Same layout as `D_STRUCT` (name + fields), for a struct type that defines
+/// `__drop__`: an implicit compiler copy of it shares the allocation and
+/// bumps a refcount instead of duplicating fields (`struct_share.rs`).
+pub(crate) const D_STRUCT_SHARED: u8 = 16;
 
 /// Renders a value through a full descriptor starting at its first byte, for
 /// callers holding a runtime descriptor pointer (struct boxes).
@@ -29,7 +33,8 @@ pub(crate) fn format_desc(val: i64, desc: i64) -> String {
 /// was never registered (`D_OBJ`).
 pub(crate) fn desc_struct_name(desc: i64) -> String {
     let d = desc as *const u8;
-    if unsafe { byte(d, 0) } != D_STRUCT {
+    let tag = unsafe { byte(d, 0) };
+    if tag != D_STRUCT && tag != D_STRUCT_SHARED {
         return "struct".to_string();
     }
     let mut pos = 1usize;
@@ -89,7 +94,7 @@ pub(crate) fn skip(desc: *const u8, pos: &mut usize) {
                 skip(desc, pos);
             }
         }
-        D_STRUCT => {
+        D_STRUCT | D_STRUCT_SHARED => {
             let _name = read_lp(desc, pos);
             let n = unsafe { byte(desc, *pos) } as usize - 13;
             *pos += 1;
@@ -134,7 +139,7 @@ fn fmt(val: i64, desc: *const u8, pos: &mut usize) -> String {
         D_SET => fmt_seq(val, desc, pos, '{', '}'),
         D_TUPLE => fmt_tuple(val, desc, pos),
         D_DICT => fmt_dict(val, desc, pos),
-        D_STRUCT => fmt_struct(val, desc, pos),
+        D_STRUCT | D_STRUCT_SHARED => fmt_struct(val, desc, pos),
         D_ENUM => fmt_enum(val, desc, pos),
         _ => format!("{val}"),
     }

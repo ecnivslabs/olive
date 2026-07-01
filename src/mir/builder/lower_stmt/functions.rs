@@ -101,6 +101,44 @@ impl<'a> MirBuilder<'a> {
             }
             self.current_arg_count += captures.len();
 
+            // A struct's own `__drop__` runs once per logical owner, but an
+            // implicit compiler copy of a has-drop struct (async task-arg
+            // marshalling, escape-copies) shares the same allocation instead
+            // of duplicating it -- see `struct_share.rs`. So every drop call
+            // must check in with the shared refcount first and only run the
+            // real body (and reclaim `self`'s own memory, at this function's
+            // ordinary end) when it is actually the last reference.
+            if mangled.ends_with("::__drop__") && !param_locals.is_empty() {
+                let self_local = param_locals[0];
+                let gate = self.new_local(Type::Bool, None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        gate,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(
+                                "__olive_struct_gate".to_string(),
+                            )),
+                            args: vec![Operand::Copy(self_local)],
+                        },
+                    ),
+                    stmt.span,
+                );
+                let body_bb = self.new_block();
+                let skip_bb = self.new_block();
+                let cur_bb = self.current_block.unwrap();
+                self.terminate_block(
+                    cur_bb,
+                    TerminatorKind::SwitchInt {
+                        discr: Operand::Copy(gate),
+                        targets: vec![(1, body_bb)],
+                        otherwise: skip_bb,
+                    },
+                    stmt.span,
+                );
+                self.terminate_block(skip_bb, TerminatorKind::Return, stmt.span);
+                self.current_block = Some(body_bb);
+            }
+
             self.nested_fns
                 .push(self.collect_nested_fns(body, &mangled));
             self.bound_lambdas

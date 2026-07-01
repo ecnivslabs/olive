@@ -17,7 +17,7 @@ pub fn collect_struct_has_drop(functions: &[MirFunction]) -> HashSet<String> {
 
 /// Build the monomorphized name for a struct type, matching the naming
 /// convention used by the generic monomorphizer.
-fn monomorphized_name(struct_name: &str, type_args: &[Type]) -> String {
+pub fn monomorphized_name(struct_name: &str, type_args: &[Type]) -> String {
     if type_args.is_empty() {
         return struct_name.to_string();
     }

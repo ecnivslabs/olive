@@ -13,9 +13,11 @@
 
 use crate::boxed::TAG_MASK;
 use crate::format::{
-    D_ANY, D_BACKREF, D_BYTES, D_DICT, D_ENUM, D_LIST, D_SET, D_STR, D_STRUCT, D_TUPLE, byte, skip,
+    D_ANY, D_BACKREF, D_BYTES, D_DICT, D_ENUM, D_LIST, D_SET, D_STR, D_STRUCT, D_STRUCT_SHARED,
+    D_TUPLE, byte, skip,
 };
 use crate::slab::slot_is_live;
+use crate::struct_share::release_struct;
 use crate::{OliveEnum, OliveHashSet, OliveObj, StableVec};
 
 #[unsafe(no_mangle)]
@@ -159,6 +161,7 @@ fn free_val(val: i64, desc: *const u8, pos: &mut usize) {
         D_TUPLE => free_tuple(val, desc, pos),
         D_DICT => free_dict(val, desc, pos),
         D_STRUCT => free_struct(val, desc, pos),
+        D_STRUCT_SHARED => free_shared_struct(val, desc, pos),
         D_ENUM => free_enum(val, desc, pos),
         D_BACKREF => {
             let hi = unsafe { byte(desc, *pos) } as usize;
@@ -323,6 +326,38 @@ fn free_struct(val: i64, desc: *const u8, pos: &mut usize) {
     let n = unsafe { byte(desc, *pos) } as usize - 13;
     *pos += 1;
     if val == 0 || !slot_is_live(val) {
+        for _ in 0..n {
+            skip_lp(desc, pos);
+            skip(desc, pos);
+        }
+        return;
+    }
+    let n_fields = unsafe { *(val as *const i64) };
+    let fields = unsafe {
+        let mut f = Vec::with_capacity(n_fields as usize);
+        for i in 0..n_fields {
+            f.push(*((val + 8 + 8 * i) as *const i64));
+        }
+        f
+    };
+    crate::struct_obj::free_struct_slot_raw(val, n_fields);
+    for i in 0..n {
+        skip_lp(desc, pos);
+        let field = if i < fields.len() { fields[i] } else { 0 };
+        free_val(field, desc, pos);
+    }
+}
+
+/// A resource-owning struct (source defines `__drop__`): its implicit copies
+/// share the allocation rather than duplicate it (`copy_shared_struct`), so
+/// dropping one only reclaims memory and releases fields when it is the
+/// last reference (`struct_share.rs`). Any other reference is left fully
+/// intact for whichever copy drops last.
+fn free_shared_struct(val: i64, desc: *const u8, pos: &mut usize) {
+    skip_lp(desc, pos);
+    let n = unsafe { byte(desc, *pos) } as usize - 13;
+    *pos += 1;
+    if val == 0 || !slot_is_live(val) || !release_struct(val) {
         for _ in 0..n {
             skip_lp(desc, pos);
             skip(desc, pos);

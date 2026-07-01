@@ -52,6 +52,7 @@ pub mod shadow_stack;
 pub mod slab;
 pub mod string_slab;
 pub mod struct_box;
+pub mod struct_share;
 pub mod sys;
 pub mod sys_signal;
 pub mod uuid;
