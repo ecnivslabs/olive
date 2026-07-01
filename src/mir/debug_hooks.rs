@@ -48,7 +48,7 @@ pub struct DebugProgramInfo {
 pub fn instrument(functions: &mut [MirFunction]) -> DebugProgramInfo {
     let mut program = DebugProgramInfo::default();
     for (fn_id, func) in functions.iter_mut().enumerate() {
-        if func.is_async || !has_real_span(func) {
+        if (func.is_async && is_state_machine_async(func)) || !has_real_span(func) {
             continue;
         }
         let cells = named_cells(func);
@@ -95,7 +95,7 @@ pub fn instrument_clean(functions: &[MirFunction]) -> Vec<MirFunction> {
         .iter()
         .enumerate()
         .map(|(fn_id, func)| {
-            if func.is_async || !has_real_span(func) {
+            if (func.is_async && is_state_machine_async(func)) || !has_real_span(func) {
                 return func.clone();
             }
             let cells = named_cells(func);
@@ -121,6 +121,59 @@ pub(crate) fn has_real_span(func: &MirFunction) -> bool {
     func.basic_blocks
         .iter()
         .any(|bb| bb.statements.iter().any(|s| s.span != Span::default()))
+}
+
+/// Whether `codegen::cranelift::async_sm::analyze_async_sm` will lower this
+/// `async fn` to a heap-allocated state machine (any reachable
+/// `__olive_await` call) rather than compiling it through the ordinary
+/// `translate_function` path and running it on a real, traced OS thread
+/// (`olive_spawn_task`). Mirrors that function's own reachable-call scan --
+/// same CFG walk, same match on a call to `"__olive_await"` -- so this
+/// module's instrumentation skip agrees exactly with which path codegen
+/// actually takes; `mir` can't call into `codegen` to share the one
+/// function, since codegen depends on mir and not the reverse.
+///
+/// The state-machine path suspends and resumes the same logical call across
+/// unrelated `poll()` invocations with locals living in a heap frame rather
+/// than in named cells reachable through a single enter/exit pair, which
+/// the `debug_enter`/`debug_exit`/`Frame` shadow-stack model here has no way
+/// to represent yet -- so those functions stay uninstrumented. A no-await
+/// async fn's body runs exactly like ordinary code on its own OS thread and
+/// gets full instrumentation like any other function.
+pub(crate) fn is_state_machine_async(func: &MirFunction) -> bool {
+    let n_bbs = func.basic_blocks.len();
+    let mut visited = vec![false; n_bbs];
+    let mut queue = std::collections::VecDeque::new();
+    queue.push_back(0usize);
+    while let Some(bb_idx) = queue.pop_front() {
+        if visited[bb_idx] {
+            continue;
+        }
+        visited[bb_idx] = true;
+        let bb = &func.basic_blocks[bb_idx];
+        for stmt in &bb.statements {
+            if let StatementKind::Assign(_, Rvalue::Call { func: callee, .. }) = &stmt.kind
+                && matches!(callee, Operand::Constant(Constant::Function(name)) if name == "__olive_await")
+            {
+                return true;
+            }
+        }
+        if let Some(term) = &bb.terminator {
+            match &term.kind {
+                TerminatorKind::Goto { target } => queue.push_back(target.0),
+                TerminatorKind::SwitchInt {
+                    targets, otherwise, ..
+                } => {
+                    for (_, t) in targets {
+                        queue.push_back(t.0);
+                    }
+                    queue.push_back(otherwise.0);
+                }
+                _ => {}
+            }
+        }
+    }
+    false
 }
 
 fn named_cells(func: &MirFunction) -> Vec<CellInfo> {
@@ -731,9 +784,30 @@ mod tests {
     }
 
     #[test]
-    fn async_fns_untouched() {
+    fn no_await_async_fn_gets_instrumented() {
+        // No reachable `__olive_await` call: codegen compiles this through
+        // the ordinary `translate_function` path and runs it on a real,
+        // traced OS thread (`olive_spawn_task`), so it should be
+        // instrumented exactly like a plain function.
         let mut functions = crate::test_utils::build_mir(
             "async fn fetch() -> int:\n    return 1\nfn main():\n    print(1)\n",
+        );
+        Optimizer::minimal().run(&mut functions);
+        let before = find(&functions, "fetch").clone();
+        let program = instrument(&mut functions);
+        let after = find(&functions, "fetch");
+        assert_ne!(before.basic_blocks, after.basic_blocks);
+        assert!(program.functions.iter().any(|f| f.name == "fetch"));
+    }
+
+    #[test]
+    fn await_containing_async_fn_untouched() {
+        // A real `__olive_await` call means codegen lowers this to a
+        // heap-allocated state machine, whose suspend/resume-across-poll
+        // frame model the current shadow-stack instrumentation can't
+        // represent -- must stay untouched.
+        let mut functions = crate::test_utils::build_mir(
+            "async fn inner() -> int:\n    return 1\nasync fn fetch() -> int:\n    let x = await inner()\n    return x\nfn main():\n    print(1)\n",
         );
         Optimizer::minimal().run(&mut functions);
         let before = find(&functions, "fetch").clone();

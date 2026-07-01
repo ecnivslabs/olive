@@ -109,11 +109,11 @@ impl<'a> MirBuilder<'a> {
                 if is_error(v) {
                     match v {
                         Type::Struct(name, _, _) => {
-                            error_type_id = Self::struct_type_id(name);
+                            error_type_id = crate::mir::struct_type_id(name);
                             break;
                         }
                         Type::Enum(name, _) => {
-                            error_type_id = Self::enum_type_id(name);
+                            error_type_id = crate::mir::enum_type_id(name);
                             break;
                         }
                         _ => {}
@@ -123,15 +123,15 @@ impl<'a> MirBuilder<'a> {
         } else if is_error(&inner_ty) {
             match &inner_ty {
                 Type::Struct(name, _, _) => {
-                    error_type_id = Self::struct_type_id(name);
+                    error_type_id = crate::mir::struct_type_id(name);
                 }
                 Type::Enum(name, _) => {
-                    error_type_id = Self::enum_type_id(name);
+                    error_type_id = crate::mir::enum_type_id(name);
                 }
                 _ => {}
             }
         } else if inner_ty.is_py_value() {
-            error_type_id = Self::enum_type_id("Error");
+            error_type_id = crate::mir::enum_type_id("Error");
         }
 
         if error_type_id == -1 {
@@ -240,7 +240,7 @@ impl<'a> MirBuilder<'a> {
             StatementKind::Assign(
                 err_tmp,
                 Rvalue::Aggregate(
-                    AggregateKind::EnumVariant(Self::enum_type_id("Error"), 0),
+                    AggregateKind::EnumVariant(crate::mir::enum_type_id("Error"), 0),
                     vec![Operand::Copy(located_msg)],
                 ),
             ),

@@ -146,6 +146,29 @@ pub struct MirFunction {
     pub is_async: bool,
 }
 
+/// The runtime `type_id` word an `enum` variant's `OliveEnum` header carries
+/// (`std_lib/src/enum_obj.rs`'s `olive_enum_new`), read back by
+/// `Rvalue::GetTypeId` for a type-erased `match` on a union of enum types.
+/// A pure, stable function of the enum's name, not a registry lookup, so
+/// anything with the name on hand -- codegen constructing a literal, or the
+/// debugger constructing one for `setVariable` -- computes the identical id
+/// without needing to share a table.
+pub(crate) fn enum_type_id(enum_name: &str) -> i64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = rustc_hash::FxHasher::default();
+    enum_name.hash(&mut h);
+    (h.finish() & 0x7FFF_FFFF_FFFF_FFFF) as i64
+}
+
+/// Same scheme as `enum_type_id`, for a struct's error-type identity
+/// (`try`/`except` dispatch on which struct type was raised).
+pub(crate) fn struct_type_id(struct_name: &str) -> i64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = rustc_hash::FxHasher::default();
+    struct_name.hash(&mut h);
+    (h.finish() & 0x7FFF_FFFF_FFFF_FFFF) as i64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

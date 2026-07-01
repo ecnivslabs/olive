@@ -1,30 +1,52 @@
-//! `xs[1].name`-style path evaluator for the `evaluate` request. Grammar:
-//! `ident ('.' ident | '[' int ']' | '[' quoted_str ']')*`. Resolution
-//! reuses `values::frame_variables`/`values::children` rather than
-//! re-reading heap layout here; errors are messages, never panics. No
-//! arithmetic, no calls: paths only. `conditions.rs` reuses this module's
-//! tokenizer for the same grammar inside a boolean expression.
+//! `evaluate` request: the read-only entry point over `expr.rs`'s
+//! arithmetic-expression grammar. A bare path (`xs[1].name`, no operators)
+//! resolves through `values::frame_variables`/`values::children` so its
+//! result stays expandable in the UI exactly as a plain read would;
+//! anything with an operator (or an aggregate literal) evaluates to a
+//! plain scalar via `expr::eval_arith` instead.
 
+pub(crate) use super::expr::*;
 use super::launch::DebugSession;
 use super::values::{self, Variable};
 
 pub fn evaluate(session: &DebugSession, frame_idx: usize, expr: &str) -> Result<Variable, String> {
-    let mut tokens = tokenize(expr)?.into_iter();
-    let Some(Token::Ident(root)) = tokens.next() else {
-        return Err(format!("'{expr}' is not a valid expression"));
+    let ast = parse_arith(expr)?;
+    if let AExpr::Path(tokens) = &ast {
+        return evaluate_path(session, frame_idx, tokens);
+    }
+
+    let Some((fn_id, cells)) = session.frame_cells(frame_idx) else {
+        return Err("not stopped".to_string());
+    };
+    let value = eval_arith(session, fn_id, &cells, &ast)?;
+    Ok(Variable {
+        name: expr.to_string(),
+        type_name: value.type_name().to_string(),
+        value: value.to_string(),
+        reference: 0,
+    })
+}
+
+fn evaluate_path(
+    session: &DebugSession,
+    frame_idx: usize,
+    tokens: &[Token],
+) -> Result<Variable, String> {
+    let Some(Token::Ident(root)) = tokens.first() else {
+        return Err("empty path".to_string());
     };
 
     let vars = values::frame_variables(session, frame_idx);
     let mut current = vars
         .into_iter()
-        .find(|v| v.name == root)
+        .find(|v| v.name == *root)
         .ok_or_else(|| format!("no such variable: {root}"))?;
 
-    for tok in tokens {
+    for tok in &tokens[1..] {
         if current.reference == 0 {
             return Err(format!("{} has no fields or elements", current.name));
         }
-        let key = token_key(&tok);
+        let key = token_key(tok);
         current = values::children(session, current.reference)
             .into_iter()
             .find(|c| c.name == key)
@@ -33,118 +55,12 @@ pub fn evaluate(session: &DebugSession, frame_idx: usize, expr: &str) -> Result<
     Ok(current)
 }
 
-/// The name a token matches against in `values::children_raw`'s output:
-/// a field name verbatim, a sequence/enum index as its decimal string, or a
-/// dict key rendered the same quoted way `values.rs` renders a string key.
-/// Shared by this module's own descent above, `conditions.rs`'s path
-/// operands, and `setvar.rs`'s lvalue resolution -- all three walk the same
-/// grammar against the same child listing.
-pub(crate) fn token_key(tok: &Token) -> String {
-    match tok {
-        Token::Ident(name) => name.clone(),
-        Token::Index(i) => i.to_string(),
-        Token::Key(s) => format!("\"{s}\""),
-    }
-}
-
-/// Shared with `conditions.rs`: a condition's path operands use this exact
-/// grammar, tokenized the same way.
-pub(crate) enum Token {
-    Ident(String),
-    Index(i64),
-    Key(String),
-}
-
-pub(crate) fn tokenize(expr: &str) -> Result<Vec<Token>, String> {
-    let chars: Vec<char> = expr.chars().collect();
-    let mut i = 0;
-    let mut out = Vec::new();
-
-    let start = i;
-    while i < chars.len() && is_ident_char(chars[i]) {
-        i += 1;
-    }
-    if i == start {
-        return Err(format!("'{expr}' does not start with an identifier"));
-    }
-    out.push(Token::Ident(chars[start..i].iter().collect()));
-
-    while i < chars.len() {
-        match chars[i] {
-            '.' => {
-                i += 1;
-                let start = i;
-                while i < chars.len() && is_ident_char(chars[i]) {
-                    i += 1;
-                }
-                if i == start {
-                    return Err(format!("expected a field name after '.' in '{expr}'"));
-                }
-                out.push(Token::Ident(chars[start..i].iter().collect()));
-            }
-            '[' => {
-                i += 1;
-                if chars.get(i) == Some(&'"') {
-                    i += 1;
-                    let mut s = String::new();
-                    loop {
-                        match chars.get(i) {
-                            None => return Err(format!("unterminated string in '{expr}'")),
-                            Some('"') => break,
-                            Some('\\') if chars.get(i + 1).is_some() => {
-                                s.push(chars[i + 1]);
-                                i += 2;
-                            }
-                            Some(&c) => {
-                                s.push(c);
-                                i += 1;
-                            }
-                        }
-                    }
-                    i += 1; // closing quote
-                    if chars.get(i) != Some(&']') {
-                        return Err(format!("expected ']' after string index in '{expr}'"));
-                    }
-                    i += 1;
-                    out.push(Token::Key(s));
-                } else {
-                    let start = i;
-                    if chars.get(i) == Some(&'-') {
-                        i += 1;
-                    }
-                    while i < chars.len() && chars[i].is_ascii_digit() {
-                        i += 1;
-                    }
-                    if i == start {
-                        return Err(format!("expected an integer index in '{expr}'"));
-                    }
-                    let text: String = chars[start..i].iter().collect();
-                    let n: i64 = text
-                        .parse()
-                        .map_err(|_| format!("invalid integer index in '{expr}'"))?;
-                    if chars.get(i) != Some(&']') {
-                        return Err(format!("expected ']' after index in '{expr}'"));
-                    }
-                    i += 1;
-                    out.push(Token::Index(n));
-                }
-            }
-            _ => return Err(format!("unexpected character in '{expr}' at position {i}")),
-        }
-    }
-    Ok(out)
-}
-
-pub(crate) fn is_ident_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '_'
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tooling::dap::launch::launch;
 
-    const SRC: &str = "struct Point:\n    x: int\n    y: int\n    fn __init__(self, x: int, y: int):\n        self.x = x\n        self.y = y\n\nfn main():\n    let p = Point(1, 2)\n    let xs = [10, 20, 30]\n    let d = {\"a\": 1, \"b\": 2}\n    print(p)\n    print(xs)\n    print(d)\n";
+    const SRC: &str = "struct Point:\n    x: int\n    y: int\n    fn __init__(self, x: int, y: int):\n        self.x = x\n        self.y = y\n\nfn main():\n    let p = Point(1, 2)\n    let xs = [10, 20, 30]\n    let d = {\"a\": 1, \"b\": 2}\n    let n = 7\n    print(p)\n    print(xs)\n    print(d)\n    print(n)\n";
 
     /// The exec lock guards the process-wide "one session at a time" slot
     /// too, so it must stay held for the caller's whole test, not just
@@ -164,7 +80,7 @@ mod tests {
         ));
         std::fs::write(&path, SRC).unwrap();
         let session = launch(path.to_str().unwrap(), false).expect("launch failed");
-        session.set_breakpoints(0, &[12]);
+        session.set_breakpoints(0, &[13]);
         session.cont(1);
         session.events().recv().unwrap();
         std::fs::remove_file(&path).ok();
@@ -202,5 +118,31 @@ mod tests {
         let (session, _guard) = stopped_session();
         assert!(evaluate(&session, 0, "xs[").is_err());
         assert!(evaluate(&session, 0, "9xs").is_err());
+    }
+
+    #[test]
+    fn arithmetic_over_paths_and_literals() {
+        let (session, _guard) = stopped_session();
+        assert_eq!(evaluate(&session, 0, "n + 1").unwrap().value, "8");
+        assert_eq!(evaluate(&session, 0, "n * 2 - 1").unwrap().value, "13");
+        assert_eq!(evaluate(&session, 0, "(n + 1) * 2").unwrap().value, "16");
+        assert_eq!(evaluate(&session, 0, "n / 2").unwrap().value, "3");
+        assert_eq!(evaluate(&session, 0, "n % 2").unwrap().value, "1");
+        assert_eq!(evaluate(&session, 0, "-n").unwrap().value, "-7");
+        assert_eq!(evaluate(&session, 0, "xs[1] + xs[0]").unwrap().value, "30");
+        assert_eq!(evaluate(&session, 0, "1 + 2.5").unwrap().value, "3.5");
+    }
+
+    #[test]
+    fn arithmetic_result_has_no_reference() {
+        let (session, _guard) = stopped_session();
+        assert_eq!(evaluate(&session, 0, "n + 1").unwrap().reference, 0);
+    }
+
+    #[test]
+    fn division_by_zero_is_an_error_not_a_crash() {
+        let (session, _guard) = stopped_session();
+        assert!(evaluate(&session, 0, "n / 0").is_err());
+        assert!(evaluate(&session, 0, "n % 0").is_err());
     }
 }

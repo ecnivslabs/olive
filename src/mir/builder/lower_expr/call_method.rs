@@ -145,7 +145,7 @@ impl<'a> MirBuilder<'a> {
 
                 let variant_info = self.enum_variants.get(&mangled).cloned();
                 if let Some((enum_name, tag)) = variant_info {
-                    let type_id = Self::enum_type_id(&enum_name);
+                    let type_id = crate::mir::enum_type_id(&enum_name);
                     let tmp = self.new_local(self.get_type(expr_id), None, false);
                     self.push_statement(
                         StatementKind::Assign(

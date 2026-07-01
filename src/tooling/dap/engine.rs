@@ -149,7 +149,7 @@ const fn unpack_frame(frame_id: usize) -> (i64, usize) {
 }
 
 /// Names resolved once at launch into `EngineShared::runtime_syms`.
-const RUNTIME_SYM_NAMES: [&str; 13] = [
+const RUNTIME_SYM_NAMES: [&str; 19] = [
     "olive_format_typed",
     "olive_debug_seq_len",
     "olive_debug_seq_get",
@@ -163,6 +163,16 @@ const RUNTIME_SYM_NAMES: [&str; 13] = [
     "olive_debug_dict_set",
     "olive_debug_enum_set",
     "olive_debug_str_new",
+    // Whole-aggregate `setVariable`/`setExpression` construction
+    // (`setvar.rs::build_aggregate`): the same allocators codegen itself
+    // uses for a list/dict/struct/enum literal, reached by name instead of
+    // by direct linkage.
+    "olive_list_new",
+    "olive_obj_new",
+    "olive_obj_set",
+    "olive_obj_set_typed",
+    "olive_struct_alloc",
+    "olive_enum_new",
 ];
 
 fn pack(file_id: usize, line: u32) -> i64 {

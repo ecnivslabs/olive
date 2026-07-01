@@ -15,6 +15,13 @@ impl<M: Module> CraneliftCodegen<M> {
     /// `debug_dual_variant` widens this to every debug-instrumentable
     /// function, Any-add sites or not: `tooling::dap::launch` needs a cell
     /// on each one to swap between its clean and `$debug` compiled bodies.
+    ///
+    /// A state-machine-capable async fn is excluded either way -- its body
+    /// goes through `translate_async_sm_poll`, a separate path with no cell
+    /// indirection threaded in. A non-SM async fn's body-fallback clone
+    /// (`{name}__async_body`) compiles through the ordinary path below just
+    /// like ordinary code (`mir::debug_hooks::is_state_machine_async` is the
+    /// same distinction, mirrored here since `mir` can't call into codegen).
     pub(super) fn generate_dispatch_cells(&mut self) {
         if !self.profile && !self.debug_dual_variant {
             return;
@@ -24,7 +31,7 @@ impl<M: Module> CraneliftCodegen<M> {
             .functions
             .iter()
             .filter(|f| {
-                !f.is_async
+                (!f.is_async || Self::analyze_async_sm(f).is_none())
                     && (any_add_ranges
                         .get(&f.name)
                         .is_some_and(|&(start, end)| end > start)

@@ -365,6 +365,8 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_math_round_with_digits", &sig_f64_i64_f64),
             ("__olive_math_sin", &sig_f64_f64),
             ("__olive_math_tan", &sig_f64_f64),
+            ("__olive_math_wrapping_add", &sig_i64_i64_i64),
+            ("__olive_math_wrapping_mul", &sig_i64_i64_i64),
             ("__olive_memo_get", &sig_i64_i64_i64),
             ("__olive_mutex_free", &sig_i64_void),
             ("__olive_mutex_lock", &sig_i64_i64),

@@ -345,6 +345,14 @@ impl TypeChecker {
                 Type::Fn(vec![Type::Float], Box::new(Type::Float), Vec::new()),
             ),
             (
+                "__olive_math_wrapping_mul",
+                Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int), Vec::new()),
+            ),
+            (
+                "__olive_math_wrapping_add",
+                Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int), Vec::new()),
+            ),
+            (
                 "__olive_math_asin",
                 Type::Fn(vec![Type::Float], Box::new(Type::Float), Vec::new()),
             ),

@@ -1,6 +1,7 @@
 pub mod conditions;
 pub mod engine;
 pub mod eval;
+mod expr;
 pub mod headless;
 pub mod hooks;
 pub mod launch;

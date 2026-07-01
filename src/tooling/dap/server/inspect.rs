@@ -122,7 +122,17 @@ pub(super) fn handle_set_variable(state: &ServerState, request_seq: i64, args: &
             return;
         }
     };
-    let raw = match setvar::encode_literal(session, &ty, value_text) {
+    // The "child" form (a container's `variablesReference`) carries no
+    // frame of its own in the DAP protocol; frame 0 is only consulted for a
+    // path operand nested inside the new value's expression (`[n, n + 1]`),
+    // never for a pure literal (`[1, 2, 3]`, `Point(1, 2)`) -- the common
+    // case this feature exists for.
+    let value_frame = if is_scope {
+        (reference - SCOPE_REF_BASE) as usize
+    } else {
+        0
+    };
+    let raw = match setvar::encode_value(session, value_frame, &ty, value_text) {
         Ok(r) => r,
         Err(msg) => {
             send_error(state, request_seq, "setVariable", &msg);
@@ -178,7 +188,7 @@ pub(super) fn handle_set_expression(state: &ServerState, request_seq: i64, args:
             return;
         }
     };
-    let raw = match setvar::encode_literal(session, &ty, value_text) {
+    let raw = match setvar::encode_value(session, frame_idx, &ty, value_text) {
         Ok(r) => r,
         Err(msg) => {
             send_error(state, request_seq, "setExpression", &msg);
