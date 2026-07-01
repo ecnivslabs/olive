@@ -48,9 +48,10 @@ pub struct DebugProgramInfo {
 pub fn instrument(functions: &mut [MirFunction]) -> DebugProgramInfo {
     let mut program = DebugProgramInfo::default();
     for (fn_id, func) in functions.iter_mut().enumerate() {
-        if (func.is_async && is_state_machine_async(func)) || !has_real_span(func) {
+        if !has_real_span(func) {
             continue;
         }
+        let is_sm = func.is_async && is_state_machine_async(func);
         let cells = named_cells(func);
         instrument_function(
             func,
@@ -59,6 +60,7 @@ pub fn instrument(functions: &mut [MirFunction]) -> DebugProgramInfo {
             &mut program.lines,
             &mut program.line_to_fn,
             false,
+            is_sm,
         );
         program.functions.push(DebugFnInfo {
             name: func.name.clone(),
@@ -95,9 +97,10 @@ pub fn instrument_clean(functions: &[MirFunction]) -> Vec<MirFunction> {
         .iter()
         .enumerate()
         .map(|(fn_id, func)| {
-            if (func.is_async && is_state_machine_async(func)) || !has_real_span(func) {
+            if !has_real_span(func) {
                 return func.clone();
             }
+            let is_sm = func.is_async && is_state_machine_async(func);
             let cells = named_cells(func);
             let mut clean = func.clone();
             let mut lines = HashSet::default();
@@ -109,6 +112,7 @@ pub fn instrument_clean(functions: &[MirFunction]) -> Vec<MirFunction> {
                 &mut lines,
                 &mut line_to_fn,
                 true,
+                is_sm,
             );
             clean
         })
@@ -134,12 +138,15 @@ pub(crate) fn has_real_span(func: &MirFunction) -> bool {
 /// function, since codegen depends on mir and not the reverse.
 ///
 /// The state-machine path suspends and resumes the same logical call across
-/// unrelated `poll()` invocations with locals living in a heap frame rather
-/// than in named cells reachable through a single enter/exit pair, which
-/// the `debug_enter`/`debug_exit`/`Frame` shadow-stack model here has no way
-/// to represent yet -- so those functions stay uninstrumented. A no-await
-/// async fn's body runs exactly like ordinary code on its own OS thread and
-/// gets full instrumentation like any other function.
+/// unrelated `poll()` invocations, with locals living in a heap frame rather
+/// than in named cells reachable through a single enter/exit pair. Such a
+/// function is still instrumented, but without the `debug_enter`/`debug_exit`
+/// pair: its per-poll frame push/pop is owned by codegen's
+/// `debug_sm_resume`/`debug_sm_suspend`/`debug_sm_done` hooks instead, since
+/// the MIR prelude runs only on the first poll and the MIR return only on
+/// completion, neither balancing the other across the suspends in between.
+/// A no-await async fn's body runs exactly like ordinary code on its own OS
+/// thread and gets the full ordinary instrumentation like any other function.
 pub(crate) fn is_state_machine_async(func: &MirFunction) -> bool {
     let n_bbs = func.basic_blocks.len();
     let mut visited = vec![false; n_bbs];
@@ -201,7 +208,15 @@ fn instrument_function(
     lines: &mut HashSet<i64>,
     line_to_fn: &mut HashMap<i64, u32>,
     defer_stores: bool,
+    is_sm: bool,
 ) {
+    // A state-machine `async fn` stores eagerly even in the clean variant:
+    // its named locals have to be current in the mirror at every `await`
+    // suspend, not just at a breakpoint hit, so a caller walking the async
+    // stack reads the real values of a frame parked mid-`await` (which the
+    // deferred-store clean variant would leave stale). Bounded, debug-only.
+    let defer_stores = defer_stores && !is_sm;
+
     let cell_of: HashMap<usize, usize> = cells
         .iter()
         .enumerate()
@@ -210,7 +225,13 @@ fn instrument_function(
 
     // Phase 1: Instrument all blocks with debug hooks (same as before).
     let mut stmt_sites: Vec<(usize, usize, i64)> = Vec::new();
-    let mut entry_prelude = Some(build_entry_prelude(func, fn_id, func.arg_count, &cell_of));
+    let mut entry_prelude = Some(build_entry_prelude(
+        func,
+        fn_id,
+        func.arg_count,
+        &cell_of,
+        is_sm,
+    ));
 
     for bb_idx in 0..func.basic_blocks.len() {
         let original = std::mem::take(&mut func.basic_blocks[bb_idx].statements);
@@ -263,16 +284,24 @@ fn instrument_function(
         }
         func.basic_blocks[bb_idx].statements = rebuilt;
 
-        let return_span = match &func.basic_blocks[bb_idx].terminator {
-            Some(Terminator {
-                kind: TerminatorKind::Return,
-                span,
-            }) => Some(*span),
-            _ => None,
-        };
-        if let Some(span) = return_span {
-            let exit_call = call_stmt(func, "__olive_debug_exit", vec![], span);
-            func.basic_blocks[bb_idx].statements.push(exit_call);
+        // A state-machine `async fn` poll's frame lifecycle is owned by the
+        // codegen-emitted `debug_sm_resume`/`suspend`/`done` hooks, not by a
+        // matched enter/exit here: its poll returns and re-enters many times
+        // across `await`s, so a single `debug_exit` before the MIR `return`
+        // would fire only on completion while nothing balanced the pushes on
+        // every intervening suspend. `debug_sm_done` pops it instead.
+        if !is_sm {
+            let return_span = match &func.basic_blocks[bb_idx].terminator {
+                Some(Terminator {
+                    kind: TerminatorKind::Return,
+                    span,
+                }) => Some(*span),
+                _ => None,
+            };
+            if let Some(span) = return_span {
+                let exit_call = call_stmt(func, "__olive_debug_exit", vec![], span);
+                func.basic_blocks[bb_idx].statements.push(exit_call);
+            }
         }
     }
 
@@ -446,13 +475,22 @@ fn build_entry_prelude(
     fn_id: u32,
     arg_count: usize,
     cell_of: &HashMap<usize, usize>,
+    is_sm: bool,
 ) -> Vec<Statement> {
-    let mut out = vec![call_stmt(
-        func,
-        "__olive_debug_enter",
-        vec![Operand::Constant(Constant::Int(fn_id as i64))],
-        Span::default(),
-    )];
+    // A state-machine `async fn` frame is pushed by `debug_sm_resume` (once
+    // per poll) rather than a `debug_enter` here (once per logical call): the
+    // MIR prelude only runs on the first poll, so it can't own a lifecycle
+    // that spans later poll re-entries. Arg stores still belong here -- they
+    // run exactly once, on that first poll, seeding the persistent mirror.
+    let mut out = Vec::new();
+    if !is_sm {
+        out.push(call_stmt(
+            func,
+            "__olive_debug_enter",
+            vec![Operand::Constant(Constant::Int(fn_id as i64))],
+            Span::default(),
+        ));
+    }
     for local_idx in 1..=arg_count {
         if let Some(&cell_idx) = cell_of.get(&local_idx) {
             out.push(call_stmt(
@@ -801,11 +839,15 @@ mod tests {
     }
 
     #[test]
-    fn await_containing_async_fn_untouched() {
-        // A real `__olive_await` call means codegen lowers this to a
-        // heap-allocated state machine, whose suspend/resume-across-poll
-        // frame model the current shadow-stack instrumentation can't
-        // represent -- must stay untouched.
+    fn await_containing_async_fn_instrumented_without_enter_exit() {
+        // A real `__olive_await` call lowers to a heap-frame state machine.
+        // Its body is instrumented like any other -- per-line safepoints,
+        // stores, reloads -- so breakpoints/stepping/inspection work inside
+        // it, but with no `debug_enter`/`debug_exit`: the frame's push/pop
+        // is owned by codegen's per-poll `debug_sm_resume`/`suspend`/`done`
+        // hooks, since the MIR prelude runs only on the first poll and the
+        // MIR return only on completion, neither balancing the other across
+        // the suspends in between.
         let mut functions = crate::test_utils::build_mir(
             "async fn inner() -> int:\n    return 1\nasync fn fetch() -> int:\n    let x = await inner()\n    return x\nfn main():\n    print(1)\n",
         );
@@ -813,9 +855,19 @@ mod tests {
         let before = find(&functions, "fetch").clone();
         let program = instrument(&mut functions);
         let after = find(&functions, "fetch");
-        assert_eq!(before.basic_blocks, after.basic_blocks);
-        assert_eq!(before.locals, after.locals);
-        assert!(!program.functions.iter().any(|f| f.name == "fetch"));
+        assert_ne!(before.basic_blocks, after.basic_blocks);
+        assert!(program.functions.iter().any(|f| f.name == "fetch"));
+        let names = call_names(after);
+        assert!(names.contains(&"__olive_debug_stmt"), "SM body safepoints");
+        assert!(names.contains(&"__olive_debug_store"), "SM body arg store");
+        assert!(
+            !names.contains(&"__olive_debug_enter"),
+            "SM frame push is codegen's debug_sm_resume, not a MIR enter"
+        );
+        assert!(
+            !names.contains(&"__olive_debug_exit"),
+            "SM frame pop is codegen's debug_sm_done, not a MIR exit"
+        );
     }
 
     fn clean(src: &str) -> Vec<MirFunction> {

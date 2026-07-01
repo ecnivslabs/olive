@@ -36,6 +36,16 @@ pub(crate) fn any_force_check() -> bool {
     FORCE_CHECK_COUNT.load(Ordering::Relaxed) != 0
 }
 
+/// An in-flight step captured off one thread when an `async fn` frame
+/// suspends, re-armed on whichever thread resumes that frame. Opaque outside
+/// this module -- `hooks` only stores and hands it back, never reads the mode.
+#[derive(Clone, Copy)]
+pub(crate) struct StepStash {
+    mode: u8,
+    depth: usize,
+    line: i64,
+}
+
 struct ParkState {
     parked: bool,
     parked_frames: Vec<Frame>,
@@ -51,6 +61,13 @@ struct ParkState {
     /// because two threads parked at once must never see each other's
     /// patches applied to the wrong frame stack.
     pending_patches: Vec<(usize, i64)>,
+    /// `(fn_id, packed line, cells)` of the synthesized async-caller frames
+    /// the last `stack()` walked up the executor's await graph, so a
+    /// follow-up `variables` request naming one of those frame ids resolves
+    /// its cells here rather than from the live shadow stack (which never
+    /// held them). Rebuilt on every `stack()`; empty when the stop wasn't in
+    /// an `async fn` with suspended callers.
+    async_frames: Vec<(u32, i64, Vec<i64>)>,
 }
 
 pub(crate) struct ThreadControl {
@@ -79,6 +96,7 @@ impl ThreadControl {
                 run_token: 0,
                 detached: false,
                 pending_patches: Vec::new(),
+                async_frames: Vec::new(),
             }),
             resume_cv: Condvar::new(),
             mode_variant: AtomicU8::new(MODE_CONTINUE),
@@ -176,6 +194,41 @@ impl ThreadControl {
         self.resume_cv.notify_all();
     }
 
+    /// Captures and clears this thread's active step, if it's mid-step, so a
+    /// suspending `async fn` frame can carry the step with it and re-arm it
+    /// on whichever thread next resumes that frame (`hooks::debug_sm_suspend`).
+    /// Returns `None` when the thread isn't stepping -- a plain continue,
+    /// pause, or breakpoint hit has nothing to carry across the suspension.
+    /// Clearing the thread's own step here is what stops the step from
+    /// spuriously firing in an unrelated task the same worker picks up next.
+    pub(crate) fn take_step_stash(&self) -> Option<StepStash> {
+        let mode = self.mode_variant.load(Ordering::Relaxed);
+        if !matches!(mode, MODE_STEP_OVER | MODE_STEP_IN | MODE_STEP_OUT) {
+            return None;
+        }
+        let stash = StepStash {
+            mode,
+            depth: self.step_depth.load(Ordering::Relaxed),
+            line: self.step_line.load(Ordering::Relaxed),
+        };
+        self.mode_variant.store(MODE_CONTINUE, Ordering::Relaxed);
+        self.store_force_check(false);
+        Some(stash)
+    }
+
+    /// Re-arms a step carried across a suspension (`take_step_stash`) onto
+    /// this thread, the counterpart `hooks::debug_sm_resume` calls when the
+    /// frame it belongs to is polled again. `depth` was captured at the
+    /// `async fn` frame's own level, which is exactly the level it re-enters
+    /// at (the executor always polls a task with an otherwise-empty shadow
+    /// stack), so it needs no adjustment.
+    pub(crate) fn restore_step_stash(&self, stash: StepStash) {
+        self.mode_variant.store(stash.mode, Ordering::Relaxed);
+        self.step_depth.store(stash.depth, Ordering::Relaxed);
+        self.step_line.store(stash.line, Ordering::Relaxed);
+        self.store_force_check(true);
+    }
+
     /// The depth/line of the frame this thread is currently parked in,
     /// source for every step mode's starting point.
     pub(crate) fn stopped_depth_line(&self) -> (usize, i64) {
@@ -231,6 +284,22 @@ impl ThreadControl {
 
     pub(crate) fn take_pending_patches(&self) -> Vec<(usize, i64)> {
         std::mem::take(&mut self.park.lock().unwrap().pending_patches)
+    }
+
+    /// Records the async-caller frames the current `stack()` reconstructed, so
+    /// a later `variables` request on one of them (`async_frame_at`) can read
+    /// its cells back.
+    pub(crate) fn set_async_frames(&self, frames: Vec<(u32, i64, Vec<i64>)>) {
+        self.park.lock().unwrap().async_frames = frames;
+    }
+
+    /// `(fn_id, cells)` of the `idx`-th async-caller frame from the last
+    /// `stack()`. `None` if `idx` is past what that walk produced.
+    pub(crate) fn async_frame_at(&self, idx: usize) -> Option<(u32, Vec<i64>)> {
+        let ps = self.park.lock().unwrap();
+        ps.async_frames
+            .get(idx)
+            .map(|(fn_id, _, cells)| (*fn_id, cells.clone()))
     }
 
     /// Begins a park: records the frame snapshot and returns the run token

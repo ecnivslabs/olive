@@ -633,6 +633,12 @@ impl<'a> MirBuilder<'a> {
             | Type::Usize
             | Type::Bool => "__olive_unbox_int",
             Type::Float | Type::F32 => "__olive_unbox_float",
+            // The struct member of a tag-encoded union always boxes on entry
+            // (`box_into_any`'s Struct arm): its raw header word would
+            // otherwise read as a field count, not a kind. Narrowing back
+            // must peel that box off, or the caller gets the box's own
+            // fields (kind, descriptor pointer) instead of the struct's.
+            Type::Struct(_, _, _) => "__olive_struct_unbox",
             _ => return None,
         };
         let tmp = self.new_local(to_ty.clone(), None, false);

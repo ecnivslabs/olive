@@ -133,6 +133,15 @@ pub fn launch(program: &str, stop_on_entry: bool) -> Result<DebugSession, Launch
         false,
     );
     codegen.debug_dual_variant = true;
+    // A state-machine `async fn`'s poll can't carry its debug `fn_id` in MIR
+    // the way a `debug_enter` call does (it's codegen-emitted, on both the
+    // clean primary body and the `$debug` variant), so hand codegen the
+    // name -> fn_id map its `debug_sm_resume` emission looks up.
+    codegen.debug_sm_fn_ids = program_info
+        .functions
+        .iter()
+        .map(|f| (f.name.clone(), f.fn_id))
+        .collect();
     codegen.generate();
     codegen.finalize();
 

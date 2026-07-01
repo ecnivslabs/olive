@@ -831,6 +831,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_any_eq_strict", b"olive_any_eq_strict\0"),
     ("__olive_any_ne_strict", b"olive_any_ne_strict\0"),
     ("__olive_struct_box", b"olive_struct_box\0"),
+    ("__olive_struct_unbox", b"olive_struct_unbox\0"),
     ("__olive_str_capitalize", b"olive_str_capitalize\0"),
     ("__olive_str_center", b"olive_str_center\0"),
     ("__olive_str_contains", b"olive_str_contains\0"),
@@ -1011,6 +1012,14 @@ pub struct CraneliftCodegen<M: Module> {
     /// `$debug` compiled bodies. Only ever set for a `pit debug` session's
     /// codegen; `pit run` never touches this.
     pub(crate) debug_dual_variant: bool,
+    /// Debug `fn_id` (position in `mir::debug_hooks::instrument`'s function
+    /// list) per state-machine `async fn` name, set at launch before
+    /// `generate()`. A state-machine poll's `debug_sm_resume` hook needs the
+    /// `fn_id` to size its persistent frame, but the poll is codegen-emitted
+    /// on both the clean primary body and the `$debug` variant, neither of
+    /// which carries the id in its MIR the way a `debug_enter` call does --
+    /// so codegen looks it up here. Empty outside a `pit debug` session.
+    pub(crate) debug_sm_fn_ids: HashMap<String, u32>,
     /// One 1-byte kind-history cell per `Any`-typed `+` call site in source order,
     /// allocated by `generate_kind_history` (counts sites first, then allocates).
     /// `translate_binop.rs` consumes them via `any_add_site_cursor` in the same
@@ -1378,6 +1387,7 @@ impl CraneliftCodegen<JITModule> {
             hotcount_ids: HashMap::default(),
             dispatch_ids: HashMap::default(),
             debug_dual_variant: false,
+            debug_sm_fn_ids: HashMap::default(),
             any_add_site_ids: Vec::new(),
             any_add_site_cursor: 0,
             any_add_site_ranges: HashMap::default(),
@@ -1534,6 +1544,7 @@ impl CraneliftCodegen<ObjectModule> {
             hotcount_ids: HashMap::default(),
             dispatch_ids: HashMap::default(),
             debug_dual_variant: false,
+            debug_sm_fn_ids: HashMap::default(),
             any_add_site_ids: Vec::new(),
             any_add_site_cursor: 0,
             any_add_site_ranges: HashMap::default(),
