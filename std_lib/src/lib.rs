@@ -659,6 +659,10 @@ pub extern "C" fn olive_any_add(a: i64, b: i64) -> i64 {
 /// entire program lifetime (the same tradeoff inline-cache/feedback-vector
 /// designs make: a few observations are enough to trust monomorphic
 /// behavior, further verification isn't worth its own cost).
+// Swept 4/8/32 on a monomorphic no-retier workload; 8 measured fastest in
+// both runs (see benchmark/results/tier_sweep.md) though the effect size
+// doesn't cleanly attribute to the recording mechanism itself -- kept as
+// the empirically-best of the tested candidates either way.
 const ANY_SITE_SAMPLE_WINDOW: u8 = 8;
 const ANY_SITE_MIXED: u8 = 254;
 

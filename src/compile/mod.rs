@@ -5,7 +5,7 @@ pub(crate) mod laws;
 mod linker;
 pub(crate) mod lints;
 pub(crate) mod loader;
-mod pgo;
+pub(crate) mod pgo;
 pub(crate) mod pipeline;
 #[cfg(test)]
 mod tests;
@@ -44,6 +44,10 @@ fn run_jit_to_exit_code(
         }
     }
 
+    // `write_profile` gates PGO for this run entirely: a build script isn't
+    // the program PGO is meant to capture, so it neither reads nor writes one.
+    let target = write_profile.then(|| cache::prepare(filename, release).0);
+
     let cg_start = std::time::Instant::now();
     let mut codegen = CraneliftCodegen::new_jit(
         out.functions,
@@ -56,6 +60,17 @@ fn run_jit_to_exit_code(
         &out.native_libs,
         release,
     );
+    // Auto-pickup, symmetric with the write-on-exit below: a repeated run of
+    // the same file starts pre-specialized instead of re-observing from cold.
+    if let Some(t) = &target
+        && let Some(path) = pgo::auto_detect(t.hash())
+        && let Some(profile) = pgo::load(&path)
+    {
+        let applied = codegen.apply_profile(&profile);
+        if applied > 0 {
+            println!("\x1b[1;32m   PGO\x1b[0m applied {applied} specialization(s) from {path}");
+        }
+    }
     codegen.generate();
     codegen.finalize();
     let cg_duration = cg_start.elapsed();
@@ -79,10 +94,11 @@ fn run_jit_to_exit_code(
     finalize_python_runtime();
 
     // Best-effort: a failed write must never affect the program's exit code.
-    if write_profile && let Ok(mut cg) = codegen.lock() {
+    if let Some(t) = &target
+        && let Ok(mut cg) = codegen.lock()
+    {
         let profile = cg.export_profile();
-        let (target, _) = cache::prepare(filename, release);
-        pgo::write(&profile, &pgo::path_for_hash(target.hash()));
+        pgo::write(&profile, &pgo::path_for_hash(t.hash()));
     }
 
     if show_time {
@@ -217,11 +233,14 @@ pub fn compile_hybrid(filename: &str, show_time: bool, release: bool) {
     }
 
     // Auto-pickup: reuse a profile from an earlier `pit run`, no flag needed.
-    let auto_pgo_path = pgo::path_for_hash(target.hash());
-    let pgo_arg = Path::new(&auto_pgo_path)
-        .exists()
-        .then_some(auto_pgo_path.as_str());
-    compile_and_emit(filename, &target.binary_path, show_time, release, pgo_arg);
+    let pgo_arg = pgo::auto_detect(target.hash());
+    compile_and_emit(
+        filename,
+        &target.binary_path,
+        show_time,
+        release,
+        pgo_arg.as_deref(),
+    );
     cache::record(&target);
 
     let code = exec_binary(&target.binary_path);

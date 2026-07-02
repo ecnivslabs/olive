@@ -7,9 +7,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Call count a function needs before it's worth recompiling with the full
-/// optimizer. A conservative starting point, not a tuned value -- real tuning
-/// needs profiling across representative Olive programs this project doesn't
-/// have yet (see plan Phase 1 gate).
+/// optimizer. Swept 200-5000 on call-heavy and Any-add-heavy workloads; no
+/// candidate measured distinguishable from another (see
+/// benchmark/results/tier_sweep.md). Kept at the value everything else in
+/// this system already mirrors in spirit (`PGO_HOT_CALL_THRESHOLD`).
 const TIER_UP_THRESHOLD: i64 = 1000;
 const TIER_UP_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
@@ -359,5 +360,36 @@ mod tests {
         let mut cg = compile("fn f(n: i64) -> i64:\n    return n + 1\n");
         assert!(!cg.retier("f"));
         assert!(!cg.retier("does_not_exist"));
+    }
+
+    /// `JIT_ARENA_SIZE` sufficiency, breadth not depth: the 2M-iteration
+    /// benchmarks elsewhere stress one function retiered repeatedly, all
+    /// landing in the same arena slot once relocated. This retiers hundreds
+    /// of *distinct* functions -- each `retier` appends a fresh compiled
+    /// body into the one arena reserved for the JIT module's whole life
+    /// (`new_jit`) -- checking the reservation holds up as the number of
+    /// live, distinct retiered bodies grows, not just call volume against one.
+    #[test]
+    fn arena_survives_many_distinct_retiers() {
+        use crate::test_utils::{call_i64_1, compile_minimal};
+
+        const N: usize = 500;
+        let mut src = String::new();
+        for i in 0..N {
+            src.push_str(&format!(
+                "fn f{i}(n: i64) -> i64:\n    let mut a: Any = 0\n    let mut j = 0\n    while j < n:\n        let b: Any = 1\n        a = a + b\n        j = j + 1\n    return int(a)\n\nfn driver{i}(n: i64) -> i64:\n    return f{i}(n)\n\n"
+            ));
+        }
+
+        let mut cg = compile_minimal(&src);
+        for i in 0..N {
+            call_i64_1(&mut cg, &format!("driver{i}"), 20);
+        }
+        for i in 0..N {
+            assert!(cg.retier(&format!("f{i}")), "retier failed for f{i}");
+        }
+        for i in 0..N {
+            assert_eq!(call_i64_1(&mut cg, &format!("driver{i}"), 1000), 1000);
+        }
     }
 }

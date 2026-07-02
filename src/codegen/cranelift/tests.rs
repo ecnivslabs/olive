@@ -470,4 +470,19 @@ fn main() -> i64:
         let mut cg = compile(src);
         assert_eq!(call_i64(&mut cg, "f"), 0);
     }
+
+    #[test]
+    fn reserve_jit_arena_falls_back_cleanly_on_reservation_failure() {
+        let isa_builder = cranelift_native::builder().unwrap();
+        let isa = isa_builder
+            .finish(cranelift::prelude::settings::Flags::new(
+                cranelift::prelude::settings::builder(),
+            ))
+            .unwrap();
+        let mut builder =
+            cranelift_jit::JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        // Exceeds any real address space without overflowing the provider's
+        // internal page-alignment arithmetic (unlike `usize::MAX`).
+        assert!(!super::super::reserve_jit_arena(&mut builder, 1usize << 62));
+    }
 }
