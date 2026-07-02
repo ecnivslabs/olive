@@ -1,4 +1,6 @@
-use crate::parser::{CallArg, CompClause, Expr, ExprKind, ForTarget, MatchPattern, Stmt, StmtKind};
+use crate::parser::{
+    CallArg, CompClause, Expr, ExprKind, ForTarget, MatchPattern, Param, Stmt, StmtKind,
+};
 use std::borrow::Cow;
 use std::collections::HashSet;
 
@@ -48,6 +50,7 @@ fn mangle_stmt(stmt: &mut Stmt, prefix: &str, names: &HashSet<String>, is_top_le
             if let Some(ty) = return_type {
                 mangle_type_expr(ty, prefix, names);
             }
+            mangle_param_defaults(params, prefix, names);
             let param_names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
             mangle_scoped(body, prefix, names, &param_names);
         }
@@ -57,11 +60,12 @@ fn mangle_stmt(stmt: &mut Stmt, prefix: &str, names: &HashSet<String>, is_top_le
             if is_top_level && names.contains(name) {
                 *name = format!("{}::{}", prefix, name);
             }
-            for f in fields {
+            for f in fields.iter_mut() {
                 if let Some(ty) = &mut f.type_ann {
                     mangle_type_expr(ty, prefix, names);
                 }
             }
+            mangle_param_defaults(fields, prefix, names);
             for s in body {
                 mangle_stmt(s, prefix, names, false);
             }
@@ -234,6 +238,23 @@ fn mangle_stmt(stmt: &mut Stmt, prefix: &str, names: &HashSet<String>, is_top_le
 fn mangle_scoped(stmts: &mut [Stmt], prefix: &str, names: &HashSet<String>, shadow: &[&str]) {
     let active = shadow_names(names, shadow.iter().copied());
     mangle_block_inline(stmts, prefix, active);
+}
+
+/// Mangles each parameter's default-value expression, whether it belongs to
+/// a `fn`'s parameter list or a `struct`'s field list -- both share `Param`.
+/// A default is resolved in the scope of the params/fields already declared
+/// before it (mirrors the resolver defining each one before checking its
+/// default), so earlier names shadow a same-named top-level definition just
+/// as they do in the function body.
+fn mangle_param_defaults(params: &mut [Param], prefix: &str, names: &HashSet<String>) {
+    let mut bound = Vec::with_capacity(params.len());
+    for p in params.iter_mut() {
+        bound.push(p.name.clone());
+        if let Some(default) = &mut p.default {
+            let active = shadow_names(names, bound.iter().map(String::as_str));
+            mangle_expr(default, prefix, &active);
+        }
+    }
 }
 
 /// Mangles a statement sequence that shares one lexical scope with its

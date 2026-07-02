@@ -757,9 +757,26 @@ impl TypeChecker {
                                         expr.span,
                                     );
                                 }
+                                let full = params.len() - 1;
+                                let required = self
+                                    .fn_required_args
+                                    .get(&init_name)
+                                    .copied()
+                                    .unwrap_or(full);
+                                let too_few = if has_kwargs {
+                                    kw_first_gap.is_some_and(|gap| gap < required)
+                                } else {
+                                    raw_count < required
+                                };
                                 if params.len() != packed_args.len() + 1
-                                    || raw_count != packed_args.len()
+                                    || raw_count > full
+                                    || too_few
                                 {
+                                    let expected = if required == full {
+                                        format!("{full}")
+                                    } else {
+                                        format!("{required} to {full}")
+                                    };
                                     self.errors.push(super::super::error::SemanticError::rich(
                                         crate::compile::errors::Diagnostic::error(
                                             "E0403",
@@ -767,9 +784,7 @@ impl TypeChecker {
                                             expr.span,
                                         )
                                         .label(format!(
-                                            "expected {} argument(s), found {}",
-                                            params.len() - 1,
-                                            raw_count
+                                            "expected {expected} argument(s), found {raw_count}"
                                         )),
                                     ));
                                 } else {

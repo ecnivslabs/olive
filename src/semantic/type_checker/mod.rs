@@ -291,6 +291,110 @@ impl TypeChecker {
                 ),
             ),
             (
+                "__olive_str_char",
+                Type::Fn(vec![Type::Str, Type::Int], Box::new(Type::Str), Vec::new()),
+            ),
+            (
+                "__olive_str_slice",
+                Type::Fn(
+                    vec![Type::Str, Type::Int, Type::Int],
+                    Box::new(Type::Str),
+                    Vec::new(),
+                ),
+            ),
+            (
+                "__olive_str_char_count",
+                Type::Fn(vec![Type::Str], Box::new(Type::Int), Vec::new()),
+            ),
+            (
+                "__olive_str_contains",
+                Type::Fn(vec![Type::Str, Type::Str], Box::new(Type::Int), Vec::new()),
+            ),
+            (
+                "__olive_str_ends_with",
+                Type::Fn(vec![Type::Str, Type::Str], Box::new(Type::Int), Vec::new()),
+            ),
+            (
+                "__olive_str_find",
+                Type::Fn(vec![Type::Str, Type::Str], Box::new(Type::Int), Vec::new()),
+            ),
+            (
+                "__olive_str_fmt",
+                Type::Fn(
+                    vec![Type::Str, Type::List(Box::new(Type::Str))],
+                    Box::new(Type::Str),
+                    Vec::new(),
+                ),
+            ),
+            (
+                "__olive_str_grapheme_count",
+                Type::Fn(vec![Type::Str], Box::new(Type::Int), Vec::new()),
+            ),
+            (
+                "__olive_str_graphemes",
+                Type::Fn(
+                    vec![Type::Str],
+                    Box::new(Type::List(Box::new(Type::Str))),
+                    Vec::new(),
+                ),
+            ),
+            (
+                "__olive_str_is_ascii",
+                Type::Fn(vec![Type::Str], Box::new(Type::Int), Vec::new()),
+            ),
+            (
+                "__olive_str_join",
+                Type::Fn(
+                    vec![Type::List(Box::new(Type::Str)), Type::Str],
+                    Box::new(Type::Str),
+                    Vec::new(),
+                ),
+            ),
+            (
+                "__olive_str_lower",
+                Type::Fn(vec![Type::Str], Box::new(Type::Str), Vec::new()),
+            ),
+            (
+                "__olive_str_repeat",
+                Type::Fn(vec![Type::Str, Type::Int], Box::new(Type::Str), Vec::new()),
+            ),
+            (
+                "__olive_str_replace",
+                Type::Fn(
+                    vec![Type::Str, Type::Str, Type::Str],
+                    Box::new(Type::Str),
+                    Vec::new(),
+                ),
+            ),
+            (
+                "__olive_str_split",
+                Type::Fn(
+                    vec![Type::Str, Type::Str],
+                    Box::new(Type::List(Box::new(Type::Str))),
+                    Vec::new(),
+                ),
+            ),
+            (
+                "__olive_str_starts_with",
+                Type::Fn(vec![Type::Str, Type::Str], Box::new(Type::Int), Vec::new()),
+            ),
+            (
+                "__olive_str_trim",
+                Type::Fn(vec![Type::Str], Box::new(Type::Str), Vec::new()),
+            ),
+            (
+                "__olive_str_trim_end",
+                Type::Fn(vec![Type::Str], Box::new(Type::Str), Vec::new()),
+            ),
+            (
+                "__olive_str_trim_start",
+                Type::Fn(vec![Type::Str], Box::new(Type::Str), Vec::new()),
+            ),
+            (
+                "__olive_str_upper",
+                Type::Fn(vec![Type::Str], Box::new(Type::Str), Vec::new()),
+            ),
+            (
                 "__olive_async_file_read",
                 Type::Fn(
                     vec![Type::Str],

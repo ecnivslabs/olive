@@ -767,6 +767,12 @@ impl TypeChecker {
                 if parts.len() >= 2 {
                     let module = &parts[0];
                     let type_name = &parts[1];
+                    // An imported Olive module type: loader registers under module-qualified name.
+                    if let Some(t) = self.lookup_type(&parts.join("::"))
+                        && !matches!(t, Type::Fn(..))
+                    {
+                        return t;
+                    }
                     if let Some(type_map) = self.py_module_types.get(module)
                         && let Some(ty) = type_map.get(type_name)
                     {
@@ -982,6 +988,12 @@ mod tests {
     #[test]
     fn generic_param_passed_str() {
         let tc = pipeline("fn id[T](x: T) -> T:\n    return x\nlet y = id(\"hi\")\n");
+        assert!(tc.errors.is_empty());
+    }
+
+    #[test]
+    fn py_module_qualified_type_skips_fn() {
+        let tc = pipeline("import py \"glm\" as glm\nstruct Cam:\n    pos: glm.vec3\n");
         assert!(tc.errors.is_empty());
     }
 }

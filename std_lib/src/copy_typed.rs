@@ -263,13 +263,22 @@ fn copy_val(val: i64, desc: *const u8, pos: &mut usize, visited: &mut FxHashMap<
     }
 }
 
-/// A tagged pointer is a literal or heap string and clones to a fresh heap
-/// string; an untagged word is an interned symbol or a scalar and is shared.
+/// Clones a verified slab-resident heap string; every other word is shared
+/// by value. A concrete container reached through `Any` stores raw scalars,
+/// so an odd word here is not proof of a string -- a raw `7` wears the same
+/// low bit as a tagged pointer, and dereferencing it reads garbage (the same
+/// hazard `olive_free_union_member` gates against). An interned literal is
+/// immortal and safe to share unconditionally.
 fn copy_str(val: i64) -> i64 {
-    if val == 0 || val & 1 == 0 {
+    if val & 1 == 0 {
         return val;
     }
-    crate::olive_copy(val)
+    if crate::string_slab::str_is_heap(val)
+        && crate::slab::ptr_is_slab_body(crate::string_slab::str_body(val))
+    {
+        return crate::olive_copy(val);
+    }
+    val
 }
 
 fn copy_list_like(
@@ -503,19 +512,10 @@ enum AnyDest {
 /// exactly as the recursive form did, but the walk is bounded by heap, not
 /// by call-stack depth.
 pub(crate) fn copy_any(val: i64, visited: &mut FxHashMap<i64, i64>) -> i64 {
-    copy_any_impl(val, visited, false)
-}
-
-/// Native ints can be odd too; gate string check on slab membership.
-fn copy_boundary(val: i64, visited: &mut FxHashMap<i64, i64>) -> i64 {
-    copy_any_impl(val, visited, true)
-}
-
-fn copy_any_impl(val: i64, visited: &mut FxHashMap<i64, i64>, boundary: bool) -> i64 {
     let mut root = 0i64;
     let mut stack: Vec<(i64, AnyDest)> = vec![(val, AnyDest::Root)];
     while let Some((src, dest)) = stack.pop() {
-        let copied = copy_any_node(src, &mut stack, visited, boundary);
+        let copied = copy_any_node(src, &mut stack, visited);
         match dest {
             AnyDest::Root => root = copied,
             AnyDest::List(list, i) => crate::list::olive_list_set(list, i, copied),
@@ -533,7 +533,7 @@ fn copy_any_impl(val: i64, visited: &mut FxHashMap<i64, i64>, boundary: bool) ->
 
 /// Copies val into GLOBAL_SLABS before it crosses; copy semantics, original untouched.
 pub(crate) fn relocate_across_boundary(val: i64) -> i64 {
-    crate::slab::with_escape_arena(|| copy_boundary(val, &mut FxHashMap::default()))
+    crate::slab::with_escape_arena(|| copy_any(val, &mut FxHashMap::default()))
 }
 
 /// Copies one `D_ANY` node. Leaves resolve immediately; a container
@@ -543,16 +543,12 @@ fn copy_any_node(
     val: i64,
     stack: &mut Vec<(i64, AnyDest)>,
     visited: &mut FxHashMap<i64, i64>,
-    boundary: bool,
 ) -> i64 {
     if val == 0 {
         return val;
     }
     if val & 1 != 0 {
-        if boundary && !crate::string_slab::str_is_heap(val) {
-            return val;
-        }
-        return crate::olive_copy(val);
+        return copy_str(val);
     }
     if val & TAG_MASK != 0 {
         return val;
@@ -851,6 +847,31 @@ mod tests {
         let boxed = crate::boxed::olive_box_int(42);
         let cp = olive_copy_typed(boxed, desc(&[D_ANY]));
         assert_eq!(cp, boxed, "inline immediate shares its word");
+    }
+
+    #[test]
+    fn any_dict_with_raw_scalars_deep_copied() {
+        // A concrete dict reached through `Any` stores raw values: an odd
+        // int like 7 wears the string tag bit and must not be dereferenced.
+        let d = olive_obj_new();
+        olive_obj_set(d, s("a"), 7);
+        olive_obj_set(d, s("big"), 238_471);
+        let cp = olive_copy_typed(d, desc(&[D_ANY]));
+        assert_ne!(cp, d, "dict is a fresh allocation");
+        crate::olive_free_any(d);
+        assert_eq!(olive_obj_get(cp, s("a")), 7);
+        assert_eq!(olive_obj_get(cp, s("big")), 238_471);
+        crate::olive_free_any(cp);
+    }
+
+    #[test]
+    fn any_dict_with_raw_int_keys_deep_copied() {
+        let d = olive_obj_new();
+        olive_obj_set(d, 7, s("odd raw key"));
+        let cp = olive_copy_typed(d, desc(&[D_ANY]));
+        crate::olive_free_any(d);
+        assert_eq!(read(olive_obj_get(cp, 7)), "odd raw key");
+        crate::olive_free_any(cp);
     }
 
     #[test]

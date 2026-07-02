@@ -781,3 +781,40 @@ fn regression_f32_literal_arg_to_user_fn() {
     );
     assert_eq!(call_i64(&mut cg, "f"), 1);
 }
+
+#[test]
+fn regression_str_concat_shared_operand_across_lets() {
+    // GVN used to fold two `let`-bound `+` chains with a textually identical
+    // right operand into aliases of one heap buffer, so the first chain's
+    // in-place growth silently truncated the second and third.
+    let mut cg = compile(concat!(
+        "fn f() -> i64:\n",
+        "    let dir = \"file://\" + \"/tmp/x\"\n",
+        "    let a = \"prefix-\" + dir + \"-A\"\n",
+        "    let b = \"prefix-\" + dir + \"-B\"\n",
+        "    let c = \"prefix-\" + dir + \"-C\"\n",
+        "    if a == \"prefix-file:///tmp/x-A\" and b == \"prefix-file:///tmp/x-B\" and c == \"prefix-file:///tmp/x-C\":\n",
+        "        return 1\n",
+        "    return 0\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 1);
+}
+
+#[test]
+fn regression_str_concat_reused_left_operand() {
+    // `str_concat_inplace` grows or frees its left operand's own storage.
+    // A `let`-bound string reused as the left side of `+` across several
+    // later `let`s used to get consumed by the first `+` and corrupted for
+    // every use after it.
+    let mut cg = compile(concat!(
+        "fn f() -> i64:\n",
+        "    let shared = \"PREFIX-\" + \"shared\"\n",
+        "    let a = shared + \"-a\"\n",
+        "    let b = shared + \"-b\"\n",
+        "    let c = shared + \"-c\"\n",
+        "    if a == \"PREFIX-shared-a\" and b == \"PREFIX-shared-b\" and c == \"PREFIX-shared-c\" and shared == \"PREFIX-shared\":\n",
+        "        return 1\n",
+        "    return 0\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 1);
+}

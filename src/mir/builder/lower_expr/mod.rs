@@ -116,6 +116,9 @@ impl<'a> MirBuilder<'a> {
                 &self.enum_defs,
             );
             let tmp = self.new_local(Type::Any, None, false);
+            if let Operand::Copy(l) | Operand::Move(l) = op {
+                self.current_locals[l.0].is_owning = false;
+            }
             self.push_statement(
                 StatementKind::Assign(
                     tmp,
@@ -180,6 +183,18 @@ impl<'a> MirBuilder<'a> {
                 .collect();
             if let [trait_member] = traits.as_slice() {
                 return self.coerce(op, from_ty, trait_member, span);
+            }
+        }
+
+        // A struct entering a multi-member union boxes the same way it does
+        // for `Any`: its raw header word is a field count, which the union's
+        // kind-dispatched drop and copy paths would misread as a kind tag
+        // (a 1-field struct reads as KIND_LIST). `T | None` keeps the raw
+        // pointer with the zero sentinel, matching its typed drop path.
+        if let (Type::Struct(_, _, _), Type::Union(members)) = (from_ty, to_ty) {
+            let non_null = members.iter().filter(|m| !matches!(m, Type::Null)).count();
+            if non_null > 1 {
+                return self.box_into_any(op, from_ty, span);
             }
         }
 
@@ -861,6 +876,25 @@ impl<'a> MirBuilder<'a> {
 
         let callee_ty = self.get_type(callee.id);
 
+        // A struct constructor called through its module qualifier
+        // (`lib.S(...)`) still types as `Type::Struct` on the callee itself,
+        // exactly like the unqualified `S(...)` case -- the type checker
+        // already resolved it (`expr.rs`'s `Type::Struct(name, ...)` arm)
+        // against the mangled `lib::S` name. This must be checked before the
+        // `ExprKind::Attr` dispatch below, which otherwise claims every
+        // attr-call unconditionally and mistakes the constructor for a
+        // qualified native/free-function call by name.
+        if let Type::Struct(struct_name, type_args, _) = &callee_ty {
+            return self.lower_struct_construct_call(
+                struct_name,
+                type_args,
+                arg_ops,
+                arg_tys,
+                expr.span,
+                expr.id,
+            );
+        }
+
         if let ExprKind::Attr { obj, attr } = &callee.kind
             && let ExprKind::Identifier(name) = &obj.kind
             && self.has_native_module_fn(name, attr)
@@ -1023,17 +1057,6 @@ impl<'a> MirBuilder<'a> {
                 args,
                 arg_ops,
                 arg_kw_names,
-                arg_tys,
-                expr.span,
-                expr.id,
-            );
-        }
-
-        if let Type::Struct(struct_name, type_args, _) = callee_ty {
-            return self.lower_struct_construct_call(
-                &struct_name,
-                &type_args,
-                arg_ops,
                 arg_tys,
                 expr.span,
                 expr.id,
