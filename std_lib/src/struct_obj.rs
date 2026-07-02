@@ -142,6 +142,13 @@ pub(crate) fn fatptr_new(data: i64, vtable: i64, drop_shim: i64, desc_word: i64)
     ptr
 }
 
+/// Patches the data word after the record is already registered in the
+/// copy path's `visited` map, so cyclic trait objects resolve instead of
+/// recursing forever.
+pub(crate) fn fatptr_set_data(ptr: i64, data: i64) {
+    unsafe { *(ptr as *mut i64).add(1) = data };
+}
+
 /// The raw words a copy needs to rebuild the record: (data, vtable, drop_shim,
 /// desc word as stored). `desc_word` keeps its tag bits so the rebuilt record
 /// is byte-identical to the original.
