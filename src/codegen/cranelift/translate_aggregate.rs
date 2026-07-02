@@ -226,8 +226,10 @@ impl<M: Module> CraneliftCodegen<M> {
                     .get("__olive_fatptr_alloc")
                     .expect("missing __olive_fatptr_alloc");
                 let alloc_func = module.declare_func_in_func(*alloc_id, builder.func);
-                // Slab record: [kind, data ptr, vtable ptr, drop-shim ptr]; the
-                // runtime writes the kind word so free paths can classify it.
+                // Slab record: [kind, data ptr, vtable ptr, drop-shim ptr,
+                // concrete descriptor ptr]; the runtime writes the kind word so
+                // free paths classify it, and the descriptor lets the copy path
+                // deep-copy the erased value.
                 let inst = builder.ins().call(alloc_func, &[]);
                 let ptr = builder.inst_results(inst)[0];
 
@@ -237,6 +239,8 @@ impl<M: Module> CraneliftCodegen<M> {
                     Self::translate_operand(builder, &ops[1], vars, string_ids, module, func_ids);
                 let drop_shim_val =
                     Self::translate_operand(builder, &ops[2], vars, string_ids, module, func_ids);
+                let desc_val =
+                    Self::translate_operand(builder, &ops[3], vars, string_ids, module, func_ids);
 
                 builder.ins().store(MemFlags::trusted(), data_val, ptr, 8);
                 builder
@@ -245,6 +249,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 builder
                     .ins()
                     .store(MemFlags::trusted(), drop_shim_val, ptr, 24);
+                builder.ins().store(MemFlags::trusted(), desc_val, ptr, 32);
                 ptr
             }
             _ => {

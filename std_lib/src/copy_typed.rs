@@ -3,8 +3,8 @@
 
 use crate::boxed::TAG_MASK;
 use crate::format::{
-    D_ANY, D_BACKREF, D_BYTES, D_DICT, D_ENUM, D_LIST, D_SET, D_STR, D_STRUCT, D_STRUCT_SHARED,
-    D_TUPLE, byte, skip,
+    D_ANY, D_BACKREF, D_BYTES, D_DICT, D_ENUM, D_FATPTR, D_LIST, D_SET, D_STR, D_STRUCT,
+    D_STRUCT_SHARED, D_TUPLE, byte, skip,
 };
 use crate::slab::slot_is_live;
 use crate::struct_share::retain_struct;
@@ -249,6 +249,7 @@ fn copy_val(val: i64, desc: *const u8, pos: &mut usize, visited: &mut FxHashMap<
         D_DICT => copy_dict(val, desc, pos, visited),
         D_STRUCT => copy_struct(val, desc, pos, visited),
         D_STRUCT_SHARED => copy_shared_struct(val, desc, pos),
+        D_FATPTR => copy_fatptr(val, visited),
         D_ENUM => copy_enum(val, desc, pos, visited),
         D_BACKREF => {
             let hi = unsafe { byte(desc, *pos) } as usize;
@@ -430,6 +431,26 @@ fn copy_shared_struct(val: i64, desc: *const u8, pos: &mut usize) -> i64 {
         return val;
     }
     retain_struct(val)
+}
+
+/// A trait object owns the concrete struct behind its `data` word, so a copy
+/// must duplicate that struct too, not share the record. The concrete
+/// descriptor rides in the record; deep-copy `data` through it and rebuild the
+/// record around the copy, keeping the same vtable, drop shim and descriptor.
+fn copy_fatptr(val: i64, visited: &mut FxHashMap<i64, i64>) -> i64 {
+    if val == 0 || !slot_is_live(val) {
+        return val;
+    }
+    if let Some(&seen) = visited.get(&val) {
+        return seen;
+    }
+    let (data, vtable, drop_shim, desc_word) = crate::struct_obj::fatptr_fields(val);
+    let concrete_desc = crate::struct_obj::fatptr_desc(val) as *const u8;
+    let mut inner_pos = 0usize;
+    let new_data = copy_val(data, concrete_desc, &mut inner_pos, visited);
+    let new = crate::struct_obj::fatptr_new(new_data, vtable, drop_shim, desc_word);
+    visited.insert(val, new);
+    new
 }
 
 fn copy_enum(val: i64, desc: *const u8, pos: &mut usize, visited: &mut FxHashMap<i64, i64>) -> i64 {
@@ -746,6 +767,60 @@ mod tests {
         assert_eq!(unsafe { *((cp + 8) as *const i64) }, 7);
         assert_eq!(read(unsafe { *((cp + 16) as *const i64) }), "field");
         olive_free_typed(cp, dp);
+    }
+
+    /// 8-aligned descriptor, so `fatptr_desc`'s low-bit strip is a no-op.
+    fn desc_aligned(bytes: &[u8]) -> i64 {
+        let mut v: Vec<u64> = vec![0; bytes.len() / 8 + 1];
+        let p = v.as_mut_ptr() as *mut u8;
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), p, bytes.len()) };
+        std::mem::forget(v);
+        p as i64
+    }
+
+    // Frees a `Person { name: str }` behind a trait-object `data` word.
+    extern "C" fn person_drop_shim(data: i64) -> i64 {
+        unsafe { crate::olive_free_str(*((data + 8) as *const i64)) };
+        crate::struct_obj::olive_free_struct(data);
+        0
+    }
+
+    #[test]
+    fn fatptr_deep_copies_concrete_and_survives_source_free() {
+        // Regression: a trait object stored into a container used to share one
+        // concrete allocation across owners, so a source drop (its drop shim
+        // deep-freeing the struct) left the container pointing at freed bytes.
+        let person = crate::olive_struct_alloc(1);
+        unsafe { *((person + 8) as *mut i64) = s("alexandria") };
+        let concrete = desc_aligned(&[
+            D_STRUCT,
+            13 + 1,
+            b'P',
+            13 + 1,
+            13 + 4,
+            b'n',
+            b'a',
+            b'm',
+            b'e',
+            D_STR,
+        ]);
+        let shim = person_drop_shim as extern "C" fn(i64) -> i64 as usize as i64;
+        let fat = crate::struct_obj::fatptr_new(person, 0, shim, concrete);
+
+        let d = desc(&[D_FATPTR]);
+        let cp = olive_copy_typed(fat, d);
+        let cp_data = crate::struct_obj::fatptr_fields(cp).0;
+        assert_ne!(cp_data, person, "concrete struct is a fresh allocation");
+        assert_ne!(cp, fat, "record is a fresh allocation");
+
+        // Frees the original struct and its name through the drop shim.
+        olive_free_typed(fat, d);
+        assert_eq!(
+            read(unsafe { *((cp_data + 8) as *const i64) }),
+            "alexandria",
+            "copy independent of the source's deep free"
+        );
+        olive_free_typed(cp, d);
     }
 
     #[test]

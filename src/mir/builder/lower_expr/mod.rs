@@ -210,11 +210,23 @@ impl<'a> MirBuilder<'a> {
             };
             let drop_shim_name = self.build_trait_drop_shim(&struct_name, &type_args, is_ffi);
             let drop_shim_op = Operand::Constant(Constant::Function(drop_shim_name));
+            // The concrete struct's descriptor rides in the record so the copy
+            // path can deep-copy the erased value, mirroring the drop shim.
+            let concrete_desc = type_descriptor(
+                from_ty,
+                &self.struct_fields,
+                &self.struct_field_types,
+                &self.enum_defs,
+            );
+            let desc_op = Operand::Constant(Constant::Str(concrete_desc));
             let fat_ptr_tmp = self.new_local(to_ty.clone(), None, false);
             self.push_statement(
                 StatementKind::Assign(
                     fat_ptr_tmp,
-                    Rvalue::Aggregate(AggregateKind::FatPtr, vec![op, vtable_op, drop_shim_op]),
+                    Rvalue::Aggregate(
+                        AggregateKind::FatPtr,
+                        vec![op, vtable_op, drop_shim_op, desc_op],
+                    ),
                 ),
                 span,
             );
