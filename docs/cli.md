@@ -8,6 +8,11 @@ The `pit` toolchain is the unified compiler, package manager, and project manage
   Scaffolds a new Olive project in a directory matching the specified `<name>`. Generates a `pit.toml` manifest, `src/main.liv`, and a `.gitignore`, then initializes a git repository in the project directory.
   * `--lib`: Scaffold a library pod instead of a binary. Generates `src/lib.liv` (no `fn main()`) and sets `entry` in `pit.toml` to `src/lib.liv`, so other pods can depend on it and `import <name>` resolves straight to it.
 
+* `pit init`
+  Turns the current directory into an Olive pod in place, for a repository that already exists (e.g. already under git). Writes `pit.toml` and, if missing, `src/main.liv` and `.gitignore` into the current directory. Refuses to run if a `pit.toml` is already present. Unlike `pit new`, it never runs `git init` and never overwrites an existing entry file or `.gitignore` (it appends `grove/` to an existing `.gitignore` instead of replacing it).
+  * `--name <name>`: Pod name to record in `pit.toml`. Defaults to the current directory's name.
+  * `--lib`: Same as `pit new --lib`, but only creates `src/lib.liv` if it doesn't already exist.
+
 * `pit build [path]`
   Compiles the current project based on the `pit.toml` manifest, or compiles a single `.liv` file if the path points to one.
   * `-o, --output <path>`: Specify the output executable path (only applicable for single file builds).

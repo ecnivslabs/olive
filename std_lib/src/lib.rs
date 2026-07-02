@@ -55,6 +55,7 @@ pub mod struct_box;
 pub mod struct_share;
 pub mod sys;
 pub mod sys_signal;
+pub mod term;
 pub mod uuid;
 pub mod websocket;
 pub mod yaml;

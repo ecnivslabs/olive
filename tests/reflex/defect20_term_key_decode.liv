@@ -1,0 +1,56 @@
+import term
+
+fn describe(k: term.Key) -> str:
+    match k:
+        Enter:
+            return "enter"
+        ShiftEnter:
+            return "shift+enter"
+        Backspace:
+            return "backspace"
+        Tab:
+            return "tab"
+        Escape:
+            return "escape"
+        Up:
+            return "up"
+        Down:
+            return "down"
+        Left:
+            return "left"
+        Right:
+            return "right"
+        Home:
+            return "home"
+        End:
+            return "end"
+        Delete:
+            return "delete"
+        Resize:
+            return "resize"
+        Eof:
+            return "eof"
+        Ctrl(c):
+            return "ctrl:" + c
+        Char(c):
+            return "char:" + c
+
+fn main():
+    print(describe(term._decode("enter")))
+    print(describe(term._decode("shift+enter")))
+    print(describe(term._decode("backspace")))
+    print(describe(term._decode("tab")))
+    print(describe(term._decode("escape")))
+    print(describe(term._decode("up")))
+    print(describe(term._decode("down")))
+    print(describe(term._decode("left")))
+    print(describe(term._decode("right")))
+    print(describe(term._decode("home")))
+    print(describe(term._decode("end")))
+    print(describe(term._decode("delete")))
+    print(describe(term._decode("resize")))
+    print(describe(term._decode("eof")))
+    print(describe(term._decode("ctrl+c")))
+    print(describe(term._decode("ctrl+a")))
+    print(describe(term._decode("x")))
+    print(describe(term._decode("Z")))

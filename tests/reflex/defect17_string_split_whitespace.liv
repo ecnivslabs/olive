@@ -1,0 +1,12 @@
+import string
+
+fn main():
+    let words = string.split_whitespace("  hello   world  foo\tbar\n")
+    print(len(words))
+    print(words[0])
+    print(words[1])
+    print(words[2])
+    print(words[3])
+    print(string.split_whitespace(""))
+    print(string.split_whitespace("   "))
+    print(string.split_whitespace("single"))

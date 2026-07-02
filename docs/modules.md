@@ -765,6 +765,80 @@ reflect.atexit(fn_ptr)
 reflect.run_exit_hooks()
 ```
 
+### `term`
+
+Raw terminal control for building full-screen interfaces:
+
+```rust
+import term
+```
+
+```rust
+term.enable_raw() -> bool          // per-keystroke input, no line buffering/echo
+term.disable_raw() -> bool
+term.enter_alt_screen() -> bool    // switch to the alternate screen buffer
+term.leave_alt_screen() -> bool    // restore the caller's original screen
+term.clear() -> bool
+term.cursor_hide() -> bool
+term.cursor_show() -> bool
+term.cursor_move(x, y) -> bool     // 0-indexed, origin top-left
+term.flush() -> bool
+term.write(s) -> bool             // stdout with no trailing newline, for in-place redraws
+term.cols() -> int
+term.rows() -> int
+term.is_tty() -> bool
+term.enable_key_enhancement() -> bool  // request disambiguated keys (e.g. shift+enter); false if unsupported
+term.disable_key_enhancement() -> bool
+term.read_key() -> Key             // blocks for one key press or terminal event
+```
+
+```rust
+enum Key:
+    Enter
+    ShiftEnter
+    Backspace
+    Tab
+    Escape
+    Up
+    Down
+    Left
+    Right
+    Home
+    End
+    Delete
+    Ctrl(str)   // control combo, e.g. Ctrl("c") for ctrl+c
+    Char(str)   // the literal character typed
+    Resize      // terminal geometry changed
+    Eof         // input stream closed or errored; treat as a hard stop
+```
+
+`read_key()` blocks and returns one `Key` variant per press or event. Match
+on it exhaustively:
+
+```rust
+match term.read_key():
+    Enter:
+        ...
+    Ctrl(c):
+        if c == "c":
+            ...
+    Char(c):
+        ...
+    _:
+        ...
+```
+
+`ShiftEnter` is only distinguishable from `Enter` after a successful
+`enable_key_enhancement()` on a terminal that supports it (most modern
+terminals do; falls back to indistinguishable `Enter` otherwise). `Eof`
+means the input stream is gone (closed pipe, dead pty) -- calling
+`read_key()` again after `Eof` will keep returning `Eof`, so callers must
+exit rather than loop.
+
+Always pair `enable_raw()`/`enter_alt_screen()` with `disable_raw()`/
+`leave_alt_screen()` on every exit path (including panics), or the user's
+shell is left in raw mode.
+
 ### `signal`
 
 Signal handling:
