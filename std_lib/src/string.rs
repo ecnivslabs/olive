@@ -242,7 +242,7 @@ pub extern "C" fn olive_str_find(s: i64, needle: i64) -> i64 {
     let text = olive_str_from_ptr(s);
     let pat = olive_str_from_ptr(needle);
     match text.find(&pat) {
-        Some(i) => i as i64,
+        Some(byte_idx) => text[..byte_idx].chars().count() as i64,
         None => -1,
     }
 }
@@ -342,7 +342,7 @@ pub extern "C" fn olive_str_rfind(s: i64, needle: i64) -> i64 {
     let text = olive_str_from_ptr(s);
     let pat = olive_str_from_ptr(needle);
     match text.rfind(&pat) {
-        Some(i) => i as i64,
+        Some(byte_idx) => text[..byte_idx].chars().count() as i64,
         None => -1,
     }
 }
@@ -754,6 +754,16 @@ mod tests {
     fn find_null_inputs() {
         assert_eq!(olive_str_find(0, s("x")), -1);
         assert_eq!(olive_str_find(s("x"), 0), -1);
+    }
+
+    #[test]
+    fn find_returns_char_index_not_byte_index() {
+        assert_eq!(olive_str_find(s("❯ hello"), s("hello")), 2);
+    }
+
+    #[test]
+    fn rfind_returns_char_index_not_byte_index() {
+        assert_eq!(olive_str_rfind(s("❯ ab ❯ cd"), s("❯")), 5);
     }
 
     #[test]

@@ -69,6 +69,20 @@ pub extern "C" fn olive_term_write(s: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn olive_term_begin_sync() -> i64 {
+    let mut out = stdout();
+    let wrote = out.write_all(b"\x1b[?2026h").is_ok();
+    (wrote && out.flush().is_ok()) as i64
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_term_end_sync() -> i64 {
+    let mut out = stdout();
+    let wrote = out.write_all(b"\x1b[?2026l").is_ok();
+    (wrote && out.flush().is_ok()) as i64
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn olive_term_cols() -> i64 {
     terminal::size().map(|(c, _)| c as i64).unwrap_or(80)
 }
