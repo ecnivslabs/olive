@@ -10,6 +10,13 @@ pub struct BuildTarget {
     mode_key: &'static str,
 }
 
+impl BuildTarget {
+    /// Same identity `pgo::path_for_hash` keys a profile by.
+    pub fn hash(&self) -> u64 {
+        self.hash
+    }
+}
+
 fn mode_key(release: bool) -> &'static str {
     if release { "release" } else { "debug" }
 }

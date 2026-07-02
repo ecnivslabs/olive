@@ -6,7 +6,10 @@ use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
 
 mod data;
+mod dispatch;
 mod extern_vars;
+mod kind_history;
+mod profiling;
 mod strings;
 
 #[cfg(test)]
@@ -437,16 +440,27 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_str_char_count", &sig_i64_i64),
             ("__olive_str_concat", &sig_i64_i64_i64),
             ("__olive_any_add", &sig_i64_i64_i64),
+            ("__olive_any_add_profiled", &sig_3i64_i64),
             ("__olive_any_sub", &sig_i64_i64_i64),
+            ("__olive_any_sub_profiled", &sig_3i64_i64),
             ("__olive_any_mul", &sig_i64_i64_i64),
+            ("__olive_any_mul_profiled", &sig_3i64_i64),
             ("__olive_any_div", &sig_i64_i64_i64),
+            ("__olive_any_div_profiled", &sig_3i64_i64),
             ("__olive_any_mod", &sig_i64_i64_i64),
+            ("__olive_any_mod_profiled", &sig_3i64_i64),
             ("__olive_any_lt", &sig_i64_i64_i64),
+            ("__olive_any_lt_profiled", &sig_3i64_i64),
             ("__olive_any_le", &sig_i64_i64_i64),
+            ("__olive_any_le_profiled", &sig_3i64_i64),
             ("__olive_any_gt", &sig_i64_i64_i64),
+            ("__olive_any_gt_profiled", &sig_3i64_i64),
             ("__olive_any_ge", &sig_i64_i64_i64),
+            ("__olive_any_ge_profiled", &sig_3i64_i64),
             ("__olive_any_eq", &sig_i64_i64_i64),
+            ("__olive_any_eq_profiled", &sig_3i64_i64),
             ("__olive_any_ne", &sig_i64_i64_i64),
+            ("__olive_any_ne_profiled", &sig_3i64_i64),
             ("__olive_str_contains", &sig_i64_i64_i64),
             ("__olive_str_ends_with", &sig_i64_i64_i64),
             ("__olive_str_eq", &sig_i64_i64_i64),
@@ -830,6 +844,9 @@ impl<M: Module> CraneliftCodegen<M> {
 
         self.generate_global_vars();
         self.generate_vtables();
+        self.generate_hotcounts();
+        self.generate_dispatch_cells();
+        self.generate_kind_history();
 
         let func_count = self.functions.len();
         for i in 0..func_count {

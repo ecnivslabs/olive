@@ -66,12 +66,17 @@ pub(super) fn first_party_files(entry: &str, sources: &super::errors::Sources) -
 /// harness so every optimizer pass stays exercised.
 #[cfg(test)]
 pub fn run_pipeline(filename: &str) -> Result<PipelineOutput, ()> {
-    run_pipeline_opt(filename, true)
+    run_pipeline_opt(filename, true, None)
 }
 
 /// Compiles `filename`, running the full optimizer when `release` is set and the
-/// lean debug pipeline otherwise, so non-release builds stay fast.
-pub fn run_pipeline_opt(filename: &str, release: bool) -> Result<PipelineOutput, ()> {
+/// lean debug pipeline otherwise, so non-release builds stay fast. `hot_functions`
+/// (from a PGO profile) biases the inliner toward proven-hot callees; `None` elsewhere.
+pub fn run_pipeline_opt(
+    filename: &str,
+    release: bool,
+    hot_functions: Option<std::collections::HashSet<String>>,
+) -> Result<PipelineOutput, ()> {
     let t0 = std::time::Instant::now();
     let mut loaded = HashSet::new();
     loaded.insert(filename.to_string());
@@ -159,10 +164,10 @@ pub fn run_pipeline_opt(filename: &str, release: bool) -> Result<PipelineOutput,
     }
 
     let opt_start = std::time::Instant::now();
-    let optimizer = if release {
-        mir::Optimizer::new()
-    } else {
-        mir::Optimizer::minimal()
+    let optimizer = match (release, hot_functions) {
+        (true, Some(hot)) => mir::Optimizer::new_with_hot_functions(hot.into_iter().collect()),
+        (true, None) => mir::Optimizer::new(),
+        (false, _) => mir::Optimizer::minimal(),
     };
     optimizer.run(&mut mir_builder.functions);
     let opt_duration = opt_start.elapsed();

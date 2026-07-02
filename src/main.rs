@@ -38,6 +38,8 @@ enum Commands {
         time: bool,
         #[arg(long)]
         release: bool,
+        #[arg(long)]
+        pgo: Option<String>,
     },
     Run {
         file: Option<String>,
@@ -111,7 +113,14 @@ fn main() {
             output,
             time,
             release,
-        } => commands::build::execute_build(path.as_ref(), output.as_ref(), time, release),
+            pgo,
+        } => commands::build::execute_build(
+            path.as_ref(),
+            output.as_ref(),
+            time,
+            release,
+            pgo.as_deref(),
+        ),
         Commands::Run {
             file,
             time,

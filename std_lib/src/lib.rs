@@ -640,8 +640,53 @@ pub extern "C" fn olive_any_add(a: i64, b: i64) -> i64 {
     if any_is_list(a) && any_is_list(b) {
         return crate::list::olive_list_concat(a, b);
     }
-    boxed::olive_box_int(boxed::olive_unbox_int(a) + boxed::olive_unbox_int(b))
+    // wrapping_add, not `+`: plain `+` panics on overflow in debug builds.
+    boxed::olive_box_int(boxed::olive_unbox_int(a).wrapping_add(boxed::olive_unbox_int(b)))
 }
+
+/// A call site's kind-history byte, one of:
+/// - `0..ANY_SITE_SAMPLE_WINDOW`: still sampling, N calls observed so far, all
+///   two plain (non-str/float/list) ints -- keep recording.
+/// - `ANY_SITE_SAMPLE_WINDOW`: graduated all-int -- `ANY_SITE_SAMPLE_WINDOW`
+///   consecutive calls were all plain ints, stop touching this cell.
+/// - `ANY_SITE_MIXED`: at least one call had a non-int operand -- terminal,
+///   never specializable.
+///
+/// Recording unconditionally on every call measured at ~58% overhead on an
+/// Any-add-only microbenchmark (3M-iteration loop, release build) -- pure cost
+/// for a call this project's whole point is to make cheap. A fixed sample
+/// window bounds that cost to a handful of calls per site instead of the
+/// entire program lifetime (the same tradeoff inline-cache/feedback-vector
+/// designs make: a few observations are enough to trust monomorphic
+/// behavior, further verification isn't worth its own cost).
+const ANY_SITE_SAMPLE_WINDOW: u8 = 8;
+const ANY_SITE_MIXED: u8 = 254;
+
+fn is_plain_int_any(v: i64) -> bool {
+    !any_is_str(v) && !any_is_float(v) && !any_is_list(v)
+}
+
+/// Delegates to the underlying dispatcher, plus recording whether both
+/// operands were plain ints into `site_history` for specialization.
+macro_rules! any_profiled {
+    ($name:ident, $inner:ident) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $name(a: i64, b: i64, site_history: *mut u8) -> i64 {
+            if !site_history.is_null() {
+                let cur = unsafe { *site_history };
+                if cur < ANY_SITE_SAMPLE_WINDOW {
+                    let both_int = is_plain_int_any(a) && is_plain_int_any(b);
+                    let next = if both_int { cur + 1 } else { ANY_SITE_MIXED };
+                    unsafe {
+                        *site_history = next;
+                    }
+                }
+            }
+            $inner(a, b)
+        }
+    };
+}
+any_profiled!(olive_any_add_profiled, olive_any_add);
 
 fn any_is_str(v: i64) -> bool {
     v & 1 == 1 && (v & !1) > 0x10000
@@ -657,20 +702,23 @@ fn any_is_list(v: i64) -> bool {
 
 /// Arithmetic on `Any` operands: a float on either side promotes to float,
 /// otherwise both are integers and the result is reboxed as an `Any` int.
+/// Wrapping on the int path -- plain `-`/`*` panic on overflow in debug builds.
 macro_rules! any_arith {
-    ($name:ident, $op:tt) => {
+    ($name:ident, $op:tt, $wrapping:ident) => {
         #[unsafe(no_mangle)]
         pub extern "C" fn $name(a: i64, b: i64) -> i64 {
             if any_is_float(a) || any_is_float(b) {
                 boxed::olive_box_float(boxed::olive_unbox_float(a) $op boxed::olive_unbox_float(b))
             } else {
-                boxed::olive_box_int(boxed::olive_unbox_int(a) $op boxed::olive_unbox_int(b))
+                boxed::olive_box_int(boxed::olive_unbox_int(a).$wrapping(boxed::olive_unbox_int(b)))
             }
         }
     };
 }
-any_arith!(olive_any_sub, -);
-any_arith!(olive_any_mul, *);
+any_arith!(olive_any_sub, -, wrapping_sub);
+any_arith!(olive_any_mul, *, wrapping_mul);
+any_profiled!(olive_any_sub_profiled, olive_any_sub);
+any_profiled!(olive_any_mul_profiled, olive_any_mul);
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_any_div(a: i64, b: i64) -> i64 {
@@ -681,10 +729,12 @@ pub extern "C" fn olive_any_div(a: i64, b: i64) -> i64 {
         boxed::olive_box_int(if d == 0 {
             0
         } else {
-            boxed::olive_unbox_int(a) / d
+            // i64::MIN / -1 is a hardware trap (SIGFPE); wrapping_div avoids it.
+            boxed::olive_unbox_int(a).wrapping_div(d)
         })
     }
 }
+any_profiled!(olive_any_div_profiled, olive_any_div);
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_any_mod(a: i64, b: i64) -> i64 {
@@ -695,10 +745,12 @@ pub extern "C" fn olive_any_mod(a: i64, b: i64) -> i64 {
         boxed::olive_box_int(if d == 0 {
             0
         } else {
-            boxed::olive_unbox_int(a) % d
+            // Same i64::MIN / -1 trap as olive_any_div.
+            boxed::olive_unbox_int(a).wrapping_rem(d)
         })
     }
 }
+any_profiled!(olive_any_mod_profiled, olive_any_mod);
 
 /// Comparison on `Any` operands: two strings compare lexicographically, a float
 /// on either side compares as float, otherwise as integers. The boolean result
@@ -724,6 +776,12 @@ any_cmp!(olive_any_gt, >);
 any_cmp!(olive_any_ge, >=);
 any_cmp!(olive_any_eq, ==);
 any_cmp!(olive_any_ne, !=);
+any_profiled!(olive_any_lt_profiled, olive_any_lt);
+any_profiled!(olive_any_le_profiled, olive_any_le);
+any_profiled!(olive_any_gt_profiled, olive_any_gt);
+any_profiled!(olive_any_ge_profiled, olive_any_ge);
+any_profiled!(olive_any_eq_profiled, olive_any_eq);
+any_profiled!(olive_any_ne_profiled, olive_any_ne);
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_concat(l: i64, r: i64) -> i64 {

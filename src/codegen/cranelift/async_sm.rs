@@ -231,6 +231,14 @@ impl<M: Module> CraneliftCodegen<M> {
                         &self.ffi_vararg_ptrs,
                         &self.ffi_vararg_ids,
                         &self.ffi_entries,
+                        &self.dispatch_ids,
+                        // SM-poll bodies are excluded from `count_any_add_sites`
+                        // (see kind_history.rs), so they must never touch the real
+                        // cursor -- an empty slice makes any lookup here always
+                        // fall back to the unprofiled call, by construction.
+                        &[],
+                        &mut 0usize,
+                        &Default::default(),
                         &mut builder,
                         stmt,
                         &vars,

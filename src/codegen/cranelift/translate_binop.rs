@@ -4,7 +4,16 @@ use crate::mir::{Constant, Local, MirFunction, Operand};
 use crate::semantic::types::Type as OliveType;
 use cranelift::prelude::*;
 use cranelift_module::{DataId, FuncId, Module};
-use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+
+/// `Any` inline-scalar tag bits (`std_lib/src/boxed.rs`, kept in sync by hand --
+/// the two crates share no common dependency to hold this in one place). Only
+/// `TAG_INT` matters here: the guarded fast path below only ever fires for two
+/// operands that are already-inline 61-bit integers.
+const ANY_TAG_MASK: i64 = 7;
+const ANY_TAG_INT: i64 = 2;
+const ANY_INT_MIN: i64 = -(1 << 60);
+const ANY_INT_MAX: i64 = (1 << 60) - 1;
 
 impl<M: Module> CraneliftCodegen<M> {
     #[allow(clippy::too_many_arguments)]
@@ -13,6 +22,9 @@ impl<M: Module> CraneliftCodegen<M> {
         module: &mut M,
         func_ids: &HashMap<String, FuncId>,
         string_ids: &HashMap<String, DataId>,
+        any_add_site_ids: &[DataId],
+        any_add_site_cursor: &mut usize,
+        specialize_sites: &HashSet<usize>,
         builder: &mut FunctionBuilder,
         vars: &HashMap<Local, Variable>,
         op: &crate::parser::BinOp,
@@ -83,6 +95,39 @@ impl<M: Module> CraneliftCodegen<M> {
         // dispatch on the runtime kind (string/float/int/list) rather than the
         // default integer path. `Any == None` is already rewritten earlier.
         if is_any_op(func_mir, lhs) || is_any_op(func_mir, rhs) {
+            // Specializable ops share one site sequence; guard always
+            // re-checked at runtime, so a stale specialize decision only
+            // costs a missed fast path, never a wrong result.
+            if super::is_specializable_any_binop(op) {
+                if let Some(&site_id) = any_add_site_ids.get(*any_add_site_cursor) {
+                    let site_index = *any_add_site_cursor;
+                    *any_add_site_cursor += 1;
+                    let profiled_name = Self::any_binop_profiled_name(op);
+                    let fid = func_ids
+                        .get(profiled_name)
+                        .unwrap_or_else(|| panic!("missing {profiled_name}"));
+                    let local_func = module.declare_func_in_func(*fid, builder.func);
+                    let local_data = module.declare_data_in_func(site_id, builder.func);
+                    let site_ptr = builder.ins().symbol_value(types::I64, local_data);
+
+                    if specialize_sites.contains(&site_index) {
+                        return Self::translate_any_binop_specialized(
+                            builder,
+                            op,
+                            l,
+                            r,
+                            |builder| {
+                                let inst = builder.ins().call(local_func, &[l, r, site_ptr]);
+                                builder.inst_results(inst)[0]
+                            },
+                        );
+                    }
+                    let inst = builder.ins().call(local_func, &[l, r, site_ptr]);
+                    return builder.inst_results(inst)[0];
+                }
+                *any_add_site_cursor += 1;
+            }
+
             let any_fn = match op {
                 Add => Some("__olive_any_add"),
                 Sub => Some("__olive_any_sub"),
@@ -428,6 +473,166 @@ impl<M: Module> CraneliftCodegen<M> {
                 }
             }
         }
+    }
+
+    /// Panics on a non-specializable op -- caller already checked.
+    fn any_binop_profiled_name(op: &crate::parser::BinOp) -> &'static str {
+        use crate::parser::BinOp::*;
+        match op {
+            Add => "__olive_any_add_profiled",
+            Sub => "__olive_any_sub_profiled",
+            Mul => "__olive_any_mul_profiled",
+            Div => "__olive_any_div_profiled",
+            Mod => "__olive_any_mod_profiled",
+            Lt => "__olive_any_lt_profiled",
+            LtEq => "__olive_any_le_profiled",
+            Gt => "__olive_any_gt_profiled",
+            GtEq => "__olive_any_ge_profiled",
+            Eq => "__olive_any_eq_profiled",
+            NotEq => "__olive_any_ne_profiled",
+            _ => unreachable!("{op:?} is not a specializable Any binop"),
+        }
+    }
+
+    /// Both operands inline `TAG_INT` -> unbox, compute, validity-check,
+    /// repack; else `fallback` (same call an unspecialized site makes).
+    ///
+    /// `*` needs a widening `smulhi`/`imul` overflow check, not a post-hoc
+    /// range check: two 61-bit values can multiply past `i64`, and a wrapped
+    /// product can coincidentally land back in-range and look valid.
+    /// `/`/`%` need only a zero-divisor check -- quotient/remainder of two
+    /// 61-bit-bounded values can't itself leave that range, and `i64::MIN`
+    /// can't reach here (tag check already bounds operands to ±2^60).
+    /// Comparisons need no check and return a raw `i64` 0/1, not a repacked
+    /// `Any` (matches `any_cmp!`'s "stays a bare word" semantics).
+    fn translate_any_binop_specialized(
+        builder: &mut FunctionBuilder,
+        op: &crate::parser::BinOp,
+        l: Value,
+        r: Value,
+        fallback: impl FnOnce(&mut FunctionBuilder) -> Value,
+    ) -> Value {
+        use crate::parser::BinOp::*;
+
+        let result_var = builder.declare_var(types::I64);
+
+        let fast_block = builder.create_block();
+        let compute_ok_block = builder.create_block();
+        let compute_fail_block = builder.create_block();
+        let slow_block = builder.create_block();
+        let merge_block = builder.create_block();
+
+        let diff_l = builder.ins().bxor_imm(l, ANY_TAG_INT);
+        let diff_r = builder.ins().bxor_imm(r, ANY_TAG_INT);
+        let diff = builder.ins().bor(diff_l, diff_r);
+        let tag_bits = builder.ins().band_imm(diff, ANY_TAG_MASK);
+        let both_int = builder.ins().icmp_imm(IntCC::Equal, tag_bits, 0);
+        builder
+            .ins()
+            .brif(both_int, fast_block, &[], slow_block, &[]);
+
+        builder.switch_to_block(fast_block);
+        builder.seal_block(fast_block);
+        let vl = builder.ins().sshr_imm(l, 3);
+        let vr = builder.ins().sshr_imm(r, 3);
+
+        match op {
+            Add | Sub => {
+                let raw = if matches!(op, Add) {
+                    builder.ins().iadd(vl, vr)
+                } else {
+                    builder.ins().isub(vl, vr)
+                };
+                let biased = builder.ins().iadd_imm(raw, -ANY_INT_MIN);
+                let in_range = builder.ins().icmp_imm(
+                    IntCC::UnsignedLessThanOrEqual,
+                    biased,
+                    ANY_INT_MAX - ANY_INT_MIN,
+                );
+                builder
+                    .ins()
+                    .brif(in_range, compute_ok_block, &[], compute_fail_block, &[]);
+
+                builder.switch_to_block(compute_ok_block);
+                builder.seal_block(compute_ok_block);
+                let shifted = builder.ins().ishl_imm(raw, 3);
+                let tagged = builder.ins().bor_imm(shifted, ANY_TAG_INT);
+                builder.def_var(result_var, tagged);
+                builder.ins().jump(merge_block, &[]);
+            }
+            Mul => {
+                let hi = builder.ins().smulhi(vl, vr);
+                let lo = builder.ins().imul(vl, vr);
+                let sign = builder.ins().sshr_imm(lo, 63);
+                let fits_i64 = builder.ins().icmp(IntCC::Equal, hi, sign);
+                let biased = builder.ins().iadd_imm(lo, -ANY_INT_MIN);
+                let in_range = builder.ins().icmp_imm(
+                    IntCC::UnsignedLessThanOrEqual,
+                    biased,
+                    ANY_INT_MAX - ANY_INT_MIN,
+                );
+                let ok = builder.ins().band(fits_i64, in_range);
+                builder
+                    .ins()
+                    .brif(ok, compute_ok_block, &[], compute_fail_block, &[]);
+
+                builder.switch_to_block(compute_ok_block);
+                builder.seal_block(compute_ok_block);
+                let shifted = builder.ins().ishl_imm(lo, 3);
+                let tagged = builder.ins().bor_imm(shifted, ANY_TAG_INT);
+                builder.def_var(result_var, tagged);
+                builder.ins().jump(merge_block, &[]);
+            }
+            Div | Mod => {
+                let nonzero = builder.ins().icmp_imm(IntCC::NotEqual, vr, 0);
+                builder
+                    .ins()
+                    .brif(nonzero, compute_ok_block, &[], compute_fail_block, &[]);
+
+                builder.switch_to_block(compute_ok_block);
+                builder.seal_block(compute_ok_block);
+                let raw = if matches!(op, Div) {
+                    builder.ins().sdiv(vl, vr)
+                } else {
+                    builder.ins().srem(vl, vr)
+                };
+                let shifted = builder.ins().ishl_imm(raw, 3);
+                let tagged = builder.ins().bor_imm(shifted, ANY_TAG_INT);
+                builder.def_var(result_var, tagged);
+                builder.ins().jump(merge_block, &[]);
+            }
+            Lt | LtEq | Gt | GtEq | Eq | NotEq => {
+                let cc = match op {
+                    Lt => IntCC::SignedLessThan,
+                    LtEq => IntCC::SignedLessThanOrEqual,
+                    Gt => IntCC::SignedGreaterThan,
+                    GtEq => IntCC::SignedGreaterThanOrEqual,
+                    Eq => IntCC::Equal,
+                    NotEq => IntCC::NotEqual,
+                    _ => unreachable!(),
+                };
+                let cmp = builder.ins().icmp(cc, vl, vr);
+                let raw_bool = builder.ins().uextend(types::I64, cmp);
+                builder.def_var(result_var, raw_bool);
+                builder.ins().jump(merge_block, &[]);
+            }
+            _ => unreachable!("{op:?} is not a specializable Any binop"),
+        }
+
+        // Unreachable for comparisons (no validity check to fail); legal SSA regardless.
+        builder.switch_to_block(compute_fail_block);
+        builder.seal_block(compute_fail_block);
+        builder.ins().jump(slow_block, &[]);
+
+        builder.switch_to_block(slow_block);
+        builder.seal_block(slow_block);
+        let slow_result = fallback(builder);
+        builder.def_var(result_var, slow_result);
+        builder.ins().jump(merge_block, &[]);
+
+        builder.switch_to_block(merge_block);
+        builder.seal_block(merge_block);
+        builder.use_var(result_var)
     }
 
     #[allow(clippy::too_many_arguments)]

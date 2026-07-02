@@ -1,7 +1,15 @@
 use crate::mir::*;
-use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
-pub struct Inliner;
+/// Static heuristic: basic-block ceiling a callee must stay under to inline.
+const DEFAULT_INLINE_THRESHOLD: usize = 100;
+
+/// Ceiling for a callee proven hot by a real profile (PGO).
+const HOT_INLINE_THRESHOLD: usize = 300;
+
+pub struct Inliner {
+    hot_functions: HashSet<String>,
+}
 
 impl Default for Inliner {
     fn default() -> Self {
@@ -11,7 +19,22 @@ impl Default for Inliner {
 
 impl Inliner {
     pub fn new() -> Self {
-        Self
+        Self {
+            hot_functions: HashSet::default(),
+        }
+    }
+
+    /// Callees named here get `HOT_INLINE_THRESHOLD` instead of the default.
+    pub fn with_hot_functions(hot_functions: HashSet<String>) -> Self {
+        Self { hot_functions }
+    }
+
+    fn threshold_for(&self, callee_name: &str) -> usize {
+        if self.hot_functions.contains(callee_name) {
+            HOT_INLINE_THRESHOLD
+        } else {
+            DEFAULT_INLINE_THRESHOLD
+        }
     }
 
     pub fn inline_function(
@@ -52,7 +75,7 @@ impl Inliner {
                                 if Self::reaches(name, name, fn_map) {
                                     continue;
                                 }
-                                if target_fn.basic_blocks.len() < 100 {
+                                if target_fn.basic_blocks.len() < self.threshold_for(name) {
                                     call_found = Some((stmt_idx, name.clone(), args.clone()));
                                     break;
                                 }
@@ -430,6 +453,60 @@ mod tests {
         let inliner = Inliner::new();
         inliner.inline_function(&mut caller, &fn_map, 3);
         assert!(caller.basic_blocks.len() > 1, "expected inlined blocks");
+    }
+
+    #[test]
+    fn hot_function_over_default_threshold_still_inlines() {
+        let mut oversized_body = Vec::new();
+        for _ in 0..150 {
+            oversized_body.push(assign(0, Rvalue::Use(Operand::Constant(Constant::Int(1)))));
+        }
+        let callee = callee_fn("callee", oversized_body);
+        // Threshold counts blocks, not statements -- pad with real blocks.
+        let mut callee = callee;
+        for _ in 0..150 {
+            callee.basic_blocks.push(BasicBlock {
+                statements: vec![],
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Return,
+                    span: sp(),
+                }),
+            });
+        }
+        assert!(callee.basic_blocks.len() > DEFAULT_INLINE_THRESHOLD);
+
+        let caller_body = || {
+            func(
+                "main",
+                vec![local_decl()],
+                vec![assign(
+                    0,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function("callee".into())),
+                        args: vec![],
+                    },
+                )],
+                0,
+            )
+        };
+        let mut fn_map: HashMap<String, MirFunction> = HashMap::default();
+        fn_map.insert("callee".into(), callee);
+
+        let mut cold_caller = caller_body();
+        Inliner::new().inline_function(&mut cold_caller, &fn_map, 3);
+        assert_eq!(
+            cold_caller.basic_blocks.len(),
+            1,
+            "oversized callee must not inline under the default threshold"
+        );
+
+        let mut hot_caller = caller_body();
+        let hot = HashSet::from_iter(["callee".to_string()]);
+        Inliner::with_hot_functions(hot).inline_function(&mut hot_caller, &fn_map, 3);
+        assert!(
+            hot_caller.basic_blocks.len() > 1,
+            "the same oversized callee must inline once named as hot"
+        );
     }
 
     #[test]

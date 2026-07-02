@@ -1,5 +1,5 @@
 use crate::mir::*;
-use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use crate::mir::optimizations::{
     Transform, algebraic::AlgebraicSimplification, bounds_check_elim::BoundsCheckElim,
@@ -27,16 +27,21 @@ impl Optimizer {
     /// Full optimizing pipeline. Used for release builds and by the in-process
     /// test harness so every pass stays exercised.
     pub fn new() -> Self {
-        Self::with_release(true)
+        Self::with_release(true, HashSet::default())
     }
 
     /// Lean pipeline for debug builds: only the cleanup needed to keep codegen
     /// fast and the MIR sane, trading runtime speed for quick compiles.
     pub fn minimal() -> Self {
-        Self::with_release(false)
+        Self::with_release(false, HashSet::default())
     }
 
-    fn with_release(release: bool) -> Self {
+    /// `new()`'s pipeline, but the inliner favors callees named in `hot_functions`.
+    pub fn new_with_hot_functions(hot_functions: HashSet<String>) -> Self {
+        Self::with_release(true, hot_functions)
+    }
+
+    fn with_release(release: bool, hot_functions: HashSet<String>) -> Self {
         Self {
             scalar_passes: vec![
                 Box::new(CopyPropagation),
@@ -65,7 +70,7 @@ impl Optimizer {
                 Box::new(PeepholeOptimize),
                 Box::new(DeadCodeElimination),
             ],
-            inliner: Inliner::new(),
+            inliner: Inliner::with_hot_functions(hot_functions),
             release,
         }
     }
