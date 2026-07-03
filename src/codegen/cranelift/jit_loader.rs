@@ -18,7 +18,7 @@ impl CraneliftCodegen<JITModule> {
         }
         for lib in &self._libs {
             if let Ok(sym) =
-                unsafe { lib.get::<unsafe extern "C" fn()>(c_name.as_bytes_with_nul()) }
+                unsafe { lib.get::<unsafe extern "C" fn()>(c_name.as_bytes()) }
             {
                 return Some(*sym as *const u8);
             }
@@ -116,13 +116,15 @@ pub(super) fn register_runtime_symbols(
                 continue;
             }
 
+            let symbol_name = c_name.strip_suffix(b"\0").unwrap_or(c_name);
+
             #[cfg(target_family = "unix")]
             let ptr = {
                 let p = libc::dlsym(libc::RTLD_DEFAULT, c_name.as_ptr() as *const _);
                 if p.is_null() {
                     loaded_lib
                         .as_ref()
-                        .and_then(|lib| lib.get::<unsafe extern "C" fn()>(c_name).ok())
+                        .and_then(|lib| lib.get::<unsafe extern "C" fn()>(symbol_name).ok())
                         .map(|f| *f as *mut std::ffi::c_void)
                         .unwrap_or(std::ptr::null_mut())
                 } else {
@@ -133,7 +135,7 @@ pub(super) fn register_runtime_symbols(
             #[cfg(not(target_family = "unix"))]
             let ptr = loaded_lib
                 .as_ref()
-                .and_then(|lib| lib.get::<unsafe extern "C" fn()>(c_name).ok())
+                .and_then(|lib| lib.get::<unsafe extern "C" fn()>(symbol_name).ok())
                 .map(|f| *f as *mut std::ffi::c_void)
                 .unwrap_or(std::ptr::null_mut());
 
@@ -143,7 +145,7 @@ pub(super) fn register_runtime_symbols(
                 eprintln!(
                     "warning: could not resolve runtime symbol '{}' (c_name: '{}')",
                     jit_name,
-                    String::from_utf8_lossy(c_name)
+                    String::from_utf8_lossy(symbol_name)
                 );
             }
         }

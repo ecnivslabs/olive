@@ -33,3 +33,27 @@ fn get_with_headers(url: str, headers) -> str:
     if res == 0:
         return ""
     return res
+
+fn last_error() -> str:
+    return __olive_http_last_error()
+
+fn post_json_async(url: str, body: str) -> int:
+    return __olive_http_post_json_async(url, body)
+
+fn post_json_async_headers(url: str, body: str, headers) -> int:
+    return __olive_http_post_json_async_headers(url, body, headers)
+
+fn poll(handle: int) -> int:
+    return __olive_http_poll(handle)
+
+fn take_result(handle: int) -> str:
+    let res = __olive_http_take_result(handle)
+    if res == 0:
+        return ""
+    return res
+
+fn take_error(handle: int) -> str:
+    let res = __olive_http_take_error(handle)
+    if res == 0:
+        return ""
+    return res

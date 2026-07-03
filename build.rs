@@ -16,6 +16,7 @@ fn main() {
     println!("cargo:rustc-env=GIT_BRANCH={branch}");
     println!("cargo:rustc-env=BUILD_DATE={date}");
     println!("cargo:rerun-if-changed=src/main.rs");
+    println!("cargo:rerun-if-changed=std_lib/src");
 
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
     let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());

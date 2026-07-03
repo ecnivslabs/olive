@@ -1,10 +1,11 @@
 use crate::{olive_str_from_ptr, olive_str_internal};
 use crossterm::event::{
     Event, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags, read,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags, poll, read,
 };
 use crossterm::{cursor, execute, terminal};
 use std::io::{IsTerminal, Write, stdout};
+use std::time::Duration;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_term_enable_raw() -> i64 {
@@ -151,6 +152,40 @@ fn encode_key(code: KeyCode, modifiers: KeyModifiers) -> Option<String> {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_term_read_key() -> i64 {
     loop {
+        let event = match read() {
+            Ok(event) => event,
+            Err(_) => return olive_str_internal("eof"),
+        };
+        let key = match event {
+            Event::Resize(_, _) => return olive_str_internal("resize"),
+            Event::Key(key) => key,
+            _ => continue,
+        };
+        if key.kind == KeyEventKind::Release {
+            continue;
+        }
+        match encode_key(key.code, key.modifiers) {
+            Some(token) => return olive_str_internal(&token),
+            None => continue,
+        }
+    }
+}
+
+/// Same contract as `olive_term_read_key`, but returns "idle" once `ms`
+/// elapses with no event instead of blocking forever. Lets callers redraw
+/// on a tick (e.g. to clear a timed-out confirmation hint) without a
+/// second thread.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_term_read_key_timeout(ms: i64) -> i64 {
+    let budget = Duration::from_millis(ms.max(0) as u64);
+    loop {
+        let ready = match poll(budget) {
+            Ok(ready) => ready,
+            Err(_) => return olive_str_internal("eof"),
+        };
+        if !ready {
+            return olive_str_internal("idle");
+        }
         let event = match read() {
             Ok(event) => event,
             Err(_) => return olive_str_internal("eof"),
