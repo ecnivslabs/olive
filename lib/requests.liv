@@ -57,3 +57,24 @@ fn take_error(handle: int) -> str:
     if res == 0:
         return ""
     return res
+
+fn stream_start(url: str, body: str, headers) -> int:
+    return __olive_http_stream_start(url, body, headers)
+
+fn stream_poll(handle: int) -> int:
+    return __olive_http_stream_poll(handle)
+
+fn stream_take_chunk(handle: int) -> str:
+    let res = __olive_http_stream_take_chunk(handle)
+    if res == 0:
+        return ""
+    return res
+
+fn stream_take_error(handle: int) -> str:
+    let res = __olive_http_stream_take_error(handle)
+    if res == 0:
+        return ""
+    return res
+
+fn stream_close(handle: int):
+    __olive_http_stream_close(handle)
