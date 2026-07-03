@@ -993,7 +993,8 @@ mod tests {
 
     #[test]
     fn py_module_qualified_type_skips_fn() {
-        let tc = pipeline("import py \"glm\" as glm\nstruct Cam:\n    pos: glm.vec3\n");
+        // stdlib module, always importable; unlike glm this doesn't need a package installed
+        let tc = pipeline("import py \"json\" as json\nstruct Cam:\n    pos: json.vec3\n");
         assert!(tc.errors.is_empty());
     }
 }

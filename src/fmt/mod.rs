@@ -51,7 +51,8 @@ pub fn format_source(source: &str, max_width: usize) -> Result<String, String> {
     if source.trim().is_empty() {
         return Ok(String::new());
     }
-    let mut lexer = Lexer::new(source, 0);
+    let source = crate::lexer::normalize_newlines(source);
+    let mut lexer = Lexer::new(&source, 0);
     let tokens = lexer
         .tokenise()
         .map_err(|e| format!("{}:{}: {}", e.line, e.col, e.message))?;
