@@ -107,6 +107,27 @@ impl<M: Module> CraneliftCodegen<M> {
                 return builder.inst_results(inst)[0];
             }
 
+            // Copy-on-escape: deep-copy a borrowed value so the container it
+            // enters owns an independent one. The descriptor comes from the
+            // argument's static type, like the typed print/free paths.
+            if name == "__olive_copy_typed" && call_args.len() == 1 {
+                let desc = super::imports::type_descriptor(
+                    &arg_type,
+                    struct_fields,
+                    field_types,
+                    enum_defs,
+                );
+                let data_id = *string_ids
+                    .get(&desc)
+                    .expect("copy descriptor not interned during collection");
+                let local_data = module.declare_data_in_func(data_id, builder.func);
+                let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                let func_id = func_ids["__olive_copy_typed"];
+                let local_func = module.declare_func_in_func(func_id, builder.func);
+                let inst = builder.ins().call(local_func, &[call_args[0], desc_ptr]);
+                return builder.inst_results(inst)[0];
+            }
+
             let resolved_name = if (name == "print"
                 || name == "str"
                 || name == "int"

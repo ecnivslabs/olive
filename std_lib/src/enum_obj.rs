@@ -1,4 +1,11 @@
+use crate::slab::GenSlab;
 use crate::*;
+use std::cell::UnsafeCell;
+
+thread_local! {
+    static ENUM_SLAB: UnsafeCell<GenSlab> =
+        const { UnsafeCell::new(GenSlab::new(std::mem::size_of::<OliveEnum>())) };
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_enum_new(type_id: i64, tag: i64, arg_count: i64) -> i64 {
@@ -6,15 +13,23 @@ pub extern "C" fn olive_enum_new(type_id: i64, tag: i64, arg_count: i64) -> i64 
     let payload_ptr = payload.as_mut_ptr();
     let payload_len = payload.len();
     std::mem::forget(payload);
-    let res = Box::into_raw(Box::new(OliveEnum {
-        kind: KIND_ENUM,
-        type_id,
-        tag,
-        payload_ptr,
-        payload_len,
-    })) as i64;
-    register_object(res);
-    res
+    ENUM_SLAB.with(|sl| {
+        let sl = unsafe { &mut *sl.get() };
+        let (body, _) = sl.alloc();
+        unsafe {
+            std::ptr::write(
+                body as *mut OliveEnum,
+                OliveEnum {
+                    kind: KIND_ENUM,
+                    type_id,
+                    tag,
+                    payload_ptr,
+                    payload_len,
+                },
+            );
+        }
+        body as i64
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -71,13 +86,22 @@ pub extern "C" fn olive_enum_set(ptr: i64, index: i64, val: i64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_free_enum(ptr: i64) {
-    if ptr != 0 {
-        unregister_object(ptr);
+    if ptr == 0 || !crate::slab::ptr_in_slab_span(ptr) {
+        return;
+    }
+    if crate::slab::slot_is_live(ptr) {
         unsafe {
-            let e = Box::from_raw(ptr as *mut OliveEnum);
+            let e = &*(ptr as *const OliveEnum);
             let _ = Vec::from_raw_parts(e.payload_ptr, e.payload_len, e.payload_len);
         }
     }
+    free_enum_slot_raw(ptr);
+}
+
+pub(crate) fn free_enum_slot_raw(ptr: i64) {
+    ENUM_SLAB.with(|sl| {
+        unsafe { &mut *sl.get() }.free(ptr as *mut u8);
+    });
 }
 
 #[unsafe(no_mangle)]

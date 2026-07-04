@@ -163,15 +163,9 @@ pub fn run_pipeline_opt(
         return Err(());
     }
 
-    let opt_start = std::time::Instant::now();
-    let optimizer = match (release, hot_functions) {
-        (true, Some(hot)) => mir::Optimizer::new_with_hot_functions(hot.into_iter().collect()),
-        (true, None) => mir::Optimizer::new(),
-        (false, _) => mir::Optimizer::minimal(),
-    };
-    optimizer.run(&mut mir_builder.functions);
-    let opt_duration = opt_start.elapsed();
-
+    // Borrow checking runs on the builder's MIR, before optimization:
+    // inlining and copy propagation rewrite locals in ways that read as
+    // uninitialized uses to the checker but never existed in source.
     let borrow_start = std::time::Instant::now();
     let mut borrow_failed = false;
     for func in &mir_builder.functions {
@@ -204,6 +198,15 @@ pub fn run_pipeline_opt(
         return Err(());
     }
     let borrow_duration = borrow_start.elapsed();
+
+    let opt_start = std::time::Instant::now();
+    let optimizer = match (release, hot_functions) {
+        (true, Some(hot)) => mir::Optimizer::new_with_hot_functions(hot.into_iter().collect()),
+        (true, None) => mir::Optimizer::new(),
+        (false, _) => mir::Optimizer::minimal(),
+    };
+    optimizer.run(&mut mir_builder.functions);
+    let opt_duration = opt_start.elapsed();
 
     let native_libs = collect_native_libs(&program);
 

@@ -14,6 +14,7 @@ pub struct OlivePyObject {
 
 struct Chunk {
     data: Box<[std::mem::MaybeUninit<OlivePyObject>; CHUNK_CAP]>,
+    live: Box<[u64; CHUNK_CAP / 64]>,
     free: Vec<usize>,
     used: usize,
 }
@@ -22,6 +23,7 @@ impl Chunk {
     fn new() -> Self {
         Chunk {
             data: Box::new(unsafe { std::mem::MaybeUninit::uninit().assume_init() }),
+            live: Box::new([0; CHUNK_CAP / 64]),
             free: Vec::new(),
             used: 0,
         }
@@ -37,6 +39,7 @@ impl Chunk {
         } else {
             return std::ptr::null_mut();
         };
+        self.live[idx / 64] |= 1 << (idx % 64);
         unsafe {
             let slot = self.data[idx].as_mut_ptr();
             slot.write(obj);
@@ -44,12 +47,23 @@ impl Chunk {
         }
     }
 
-    fn free_slot(&mut self, ptr: *mut OlivePyObject) {
+    fn slot_index(&self, ptr: usize) -> Option<usize> {
         let base = self.data.as_ptr() as usize;
         let end = base + CHUNK_CAP * std::mem::size_of::<OlivePyObject>();
-        let addr = ptr as usize;
-        if addr >= base && addr < end {
-            let idx = (addr - base) / std::mem::size_of::<OlivePyObject>();
+        if ptr < base
+            || ptr >= end
+            || !(ptr - base).is_multiple_of(std::mem::size_of::<OlivePyObject>())
+        {
+            return None;
+        }
+        Some((ptr - base) / std::mem::size_of::<OlivePyObject>())
+    }
+
+    fn free_slot(&mut self, ptr: *mut OlivePyObject) {
+        if let Some(idx) = self.slot_index(ptr as usize)
+            && self.live[idx / 64] & (1 << (idx % 64)) != 0
+        {
+            self.live[idx / 64] &= !(1 << (idx % 64));
             self.free.push(idx);
         }
     }
@@ -58,6 +72,13 @@ impl Chunk {
         let base = self.data.as_ptr() as usize;
         let end = base + CHUNK_CAP * std::mem::size_of::<OlivePyObject>();
         ptr >= base && ptr < end
+    }
+
+    fn slot_live(&self, ptr: usize) -> bool {
+        match self.slot_index(ptr) {
+            Some(idx) => self.live[idx / 64] & (1 << (idx % 64)) != 0,
+            None => false,
+        }
     }
 }
 
@@ -122,6 +143,18 @@ fn is_arena_ptr(ptr: usize) -> bool {
     }
 }
 
+/// Whether `ptr` is a live arena handle. False before the arena exists,
+/// so non-Python programs pay one static load.
+pub(crate) fn arena_slot_live(ptr: usize) -> bool {
+    let Some(lock) = ARENA.get() else {
+        return false;
+    };
+    match lock.read() {
+        Ok(a) => a.chunks.iter().any(|c| c.slot_live(ptr)),
+        Err(_) => false,
+    }
+}
+
 pub unsafe fn olive_py_wrap_owned(py_ptr: PyObject) -> PyObject {
     if py_ptr.is_null() {
         return std::ptr::null_mut();
@@ -131,7 +164,6 @@ pub unsafe fn olive_py_wrap_owned(py_ptr: PyObject) -> PyObject {
         py_ptr,
     };
     let raw = arena().write().unwrap().alloc(obj);
-    crate::register_object(raw as i64);
     raw as PyObject
 }
 
@@ -558,7 +590,6 @@ pub extern "C" fn olive_py_decref(obj: PyObject) {
     if obj.is_null() {
         return;
     }
-    crate::unregister_object(obj as i64);
     if is_arena_ptr(obj as usize) {
         let raw = obj as *mut OlivePyObject;
         let py_ptr = unsafe { (*raw).py_ptr };

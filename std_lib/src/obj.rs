@@ -1,44 +1,41 @@
+use crate::slab::GenSlab;
 use crate::*;
 use std::cell::UnsafeCell;
 
-const OBJ_POOL_CAP: usize = 131072;
-
-struct ObjPool {
-    entries: Vec<*mut OliveObj>,
-}
-
-unsafe impl Send for ObjPool {}
-
-impl ObjPool {
-    const fn new() -> Self {
-        Self {
-            entries: Vec::new(),
-        }
-    }
-}
-
 thread_local! {
-    static OBJ_POOL: UnsafeCell<ObjPool> = const { UnsafeCell::new(ObjPool::new()) };
+    static OBJ_SLAB: UnsafeCell<GenSlab> =
+        const { UnsafeCell::new(GenSlab::new(std::mem::size_of::<OliveObj>())) };
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_new() -> i64 {
-    let pooled = OBJ_POOL.with(|p| {
-        let p = unsafe { &mut *p.get() };
-        p.entries.pop().unwrap_or(std::ptr::null_mut())
-    });
+    OBJ_SLAB.with(|sl| {
+        let sl = unsafe { &mut *sl.get() };
+        let (body, fresh) = sl.alloc();
+        let o = body as *mut OliveObj;
+        unsafe {
+            if fresh {
+                std::ptr::write(
+                    o,
+                    OliveObj {
+                        kind: KIND_OBJ,
+                        fields: HashMap::default(),
+                    },
+                );
+            } else {
+                // Recycled slot: the cleared field map survived the free.
+                (*o).kind = KIND_OBJ;
+            }
+        }
+        body as i64
+    })
+}
 
-    if !pooled.is_null() {
-        let res = pooled as i64;
-        return res;
-    }
-
-    let res = Box::into_raw(Box::new(OliveObj {
-        kind: KIND_OBJ,
-        fields: HashMap::default(),
-    })) as i64;
-    register_object(res);
-    res
+/// Builds a dict object around an already-populated field map.
+pub(crate) fn new_obj_from_map(fields: HashMap<OliveStringKey, i64>) -> i64 {
+    let ptr = olive_obj_new();
+    unsafe { (*(ptr as *mut OliveObj)).fields = fields };
+    ptr
 }
 
 #[unsafe(no_mangle)]
@@ -51,7 +48,17 @@ pub extern "C" fn olive_obj_set(obj_ptr: i64, attr: i64, val: i64) -> i64 {
         return python::olive_py_setattr(obj_ptr as *mut std::ffi::c_void, attr, val) as i64;
     }
     let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
-    m.fields.insert(OliveStringKey(attr), val);
+    // A tagged string key is a caller value that will be freed at its scope
+    // exit; the dict keeps a private copy so its stored key never dangles.
+    // Untagged attribute names are read-only interned symbols, kept as-is.
+    if attr & 1 != 0 && !m.fields.contains_key(&OliveStringKey(attr)) {
+        let bytes =
+            unsafe { std::ffi::CStr::from_ptr((attr & !1) as *const std::ffi::c_char).to_bytes() };
+        let owned = crate::string_slab::str_alloc(bytes);
+        m.fields.insert(OliveStringKey(owned), val);
+    } else {
+        m.fields.insert(OliveStringKey(attr), val);
+    }
     obj_ptr
 }
 
@@ -95,7 +102,15 @@ pub extern "C" fn olive_obj_remove(obj_ptr: i64, attr: i64) -> i64 {
         panic!("Null pointer dereference: attempted to remove attribute from a null object");
     }
     let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
-    m.fields.remove(&OliveStringKey(attr)).unwrap_or(0)
+    match m.fields.remove_entry(&OliveStringKey(attr)) {
+        Some((k, v)) => {
+            if k.0 & 1 != 0 {
+                crate::olive_free_str(k.0);
+            }
+            v
+        }
+        None => 0,
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -121,33 +136,34 @@ pub extern "C" fn olive_obj_len(obj_ptr: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_free_obj(ptr: i64) {
-    if ptr == 0 {
+    if ptr == 0 || !crate::slab::ptr_in_slab_span(ptr) {
         return;
     }
-    let obj = unsafe { &mut *(ptr as *mut OliveObj) };
-    for &val in obj.fields.values() {
-        if is_active_object(val) {
-            olive_free_any(val);
-        }
-    }
-    obj.fields.clear();
-
-    let returned = OBJ_POOL.with(|p| {
-        let p = unsafe { &mut *p.get() };
-        if p.entries.len() < OBJ_POOL_CAP {
-            p.entries.push(ptr as *mut OliveObj);
-            true
-        } else {
-            false
-        }
-    });
-
-    if !returned {
-        unregister_object(ptr);
+    if crate::slab::slot_is_live(ptr) {
         unsafe {
-            let _ = Box::from_raw(ptr as *mut OliveObj);
+            let obj = &mut *(ptr as *mut OliveObj);
+            for &val in obj.fields.values() {
+                if is_active_object(val) {
+                    olive_free_any(val);
+                }
+            }
+            // Tagged keys are dict-owned string copies; free them so the map's own
+            // keys do not outlive it. Untagged attribute names are interned symbols.
+            for k in obj.fields.keys() {
+                if k.0 & 1 != 0 {
+                    crate::olive_free_str(k.0);
+                }
+            }
+            obj.fields.clear();
         }
     }
+    free_obj_slot_raw(ptr);
+}
+
+pub(crate) fn free_obj_slot_raw(ptr: i64) {
+    OBJ_SLAB.with(|sl| {
+        unsafe { &mut *sl.get() }.free(ptr as *mut u8);
+    });
 }
 
 #[unsafe(no_mangle)]
@@ -162,29 +178,10 @@ pub extern "C" fn olive_is_obj(val: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_keys(obj_ptr: i64) -> i64 {
     if obj_ptr == 0 {
-        let res = Box::into_raw(Box::new(StableVec {
-            kind: KIND_LIST,
-            ptr: std::ptr::null_mut(),
-            cap: 0,
-            len: 0,
-        })) as i64;
-        register_object(res);
-        return res;
+        return crate::list::list_from_vec(Vec::new());
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
-    let mut ptrs: Vec<i64> = m.fields.keys().map(|k| k.0).collect();
-    let ptr = ptrs.as_mut_ptr();
-    let cap = ptrs.capacity();
-    let len = ptrs.len();
-    std::mem::forget(ptrs);
-    let res = Box::into_raw(Box::new(StableVec {
-        kind: KIND_LIST,
-        ptr,
-        cap,
-        len,
-    })) as i64;
-    register_object(res);
-    res
+    crate::list::list_from_vec(m.fields.keys().map(|k| k.0).collect())
 }
 
 /// Returns a list of `[key, value]` pairs, backing `for k, v in d.items()`.
@@ -208,29 +205,10 @@ pub extern "C" fn olive_obj_items(obj_ptr: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_values(obj_ptr: i64) -> i64 {
     if obj_ptr == 0 {
-        let res = Box::into_raw(Box::new(StableVec {
-            kind: KIND_LIST,
-            ptr: std::ptr::null_mut(),
-            cap: 0,
-            len: 0,
-        })) as i64;
-        register_object(res);
-        return res;
+        return crate::list::list_from_vec(Vec::new());
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
-    let mut vals: Vec<i64> = m.fields.values().copied().collect();
-    let ptr = vals.as_mut_ptr();
-    let cap = vals.capacity();
-    let len = vals.len();
-    std::mem::forget(vals);
-    let res = Box::into_raw(Box::new(StableVec {
-        kind: KIND_LIST,
-        ptr,
-        cap,
-        len,
-    })) as i64;
-    register_object(res);
-    res
+    crate::list::list_from_vec(m.fields.values().copied().collect())
 }
 
 #[cfg(test)]

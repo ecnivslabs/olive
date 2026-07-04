@@ -26,10 +26,12 @@ pub mod aio;
 pub mod boxed;
 pub mod bytes;
 pub mod compress;
+pub mod copy_typed;
 pub mod crypto;
 pub mod datetime;
 pub mod encoding;
 pub mod format;
+pub mod free_typed;
 pub mod io;
 pub mod json;
 pub mod logging;
@@ -42,9 +44,10 @@ pub mod random;
 pub mod regex;
 pub mod requests;
 pub mod result;
+pub mod slab;
+pub mod string_slab;
 pub mod sys;
 pub mod sys_signal;
-mod tracking;
 pub mod uuid;
 pub mod websocket;
 pub mod yaml;
@@ -64,7 +67,11 @@ pub(crate) const KIND_BOOL: i64 = 12;
 pub(crate) const KIND_NULL: i64 = 13;
 pub(crate) const KIND_INT: i64 = 14;
 
-pub use tracking::{active_objects_count, is_active_object, register_object, unregister_object};
+/// Whether `val` points at a live runtime object: a slab body or a
+/// Python arena handle. Sound for arbitrary words.
+pub fn is_active_object(val: i64) -> bool {
+    slab::ptr_is_slab_body(val) || python::python_coerce::arena_slot_live(val as usize)
+}
 
 #[repr(C)]
 pub struct StableVec {
@@ -417,7 +424,7 @@ pub(crate) fn format_list_elem(val: i64) -> String {
                 let b = unsafe { &*(val as *const boxed::OliveBoxed) };
                 return format!("{}", b.bits);
             }
-            KIND_LIST => return format_list(val),
+            KIND_LIST | KIND_ANY_LIST => return format_list(val),
             KIND_OBJ => {
                 let m = unsafe { &*(val as *const OliveObj) };
                 let mut parts = Vec::with_capacity(m.fields.len());
@@ -547,7 +554,7 @@ pub extern "C" fn olive_any_to_str(val: i64) -> i64 {
                     olive_str_internal("<PyObject>")
                 };
             }
-            KIND_LIST | KIND_OBJ | KIND_ENUM | KIND_SET => {
+            KIND_LIST | KIND_ANY_LIST | KIND_OBJ | KIND_ENUM | KIND_SET => {
                 return olive_str_internal(&format_list_elem(val));
             }
             _ => {}
@@ -701,7 +708,10 @@ fn any_is_float(v: i64) -> bool {
 }
 
 fn any_is_list(v: i64) -> bool {
-    is_active_object(v) && unsafe { *(v as *const i64) } == KIND_LIST
+    is_active_object(v) && {
+        let k = unsafe { *(v as *const i64) };
+        k == KIND_LIST || k == KIND_ANY_LIST
+    }
 }
 
 /// Arithmetic on `Any` operands: a float on either side promotes to float,
@@ -799,11 +809,13 @@ pub extern "C" fn olive_str_concat(l: i64, r: i64) -> i64 {
     } else {
         unsafe { std::ffi::CStr::from_ptr((r & !1) as *const std::ffi::c_char).to_bytes() }
     };
-    let mut buf = Vec::with_capacity(l_bytes.len() + r_bytes.len() + 1);
+    if let Some(res) = string_slab::str_concat_inplace(l, l_bytes, r_bytes) {
+        return res;
+    }
+    let mut buf = Vec::with_capacity(l_bytes.len() + r_bytes.len());
     buf.extend_from_slice(l_bytes);
     buf.extend_from_slice(r_bytes);
-    let c_str = unsafe { std::ffi::CString::from_vec_unchecked(buf) };
-    c_str.into_raw() as i64 | 1
+    string_slab::str_alloc(&buf)
 }
 
 #[unsafe(no_mangle)]
@@ -869,11 +881,7 @@ pub extern "C" fn olive_in_list(val: i64, list_ptr: i64) -> i64 {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_free_str(ptr: i64) {
-    if ptr != 0 && (ptr & 1) == 0 {
-        unsafe {
-            let _ = std::ffi::CString::from_raw(ptr as *mut std::ffi::c_char);
-        }
-    }
+    string_slab::str_free(ptr);
 }
 
 #[unsafe(no_mangle)]
@@ -896,12 +904,13 @@ pub extern "C" fn olive_get_index_any(obj: i64, index: i64, loc: i64) -> i64 {
     }
     let kind = unsafe { *(obj as *const i64) };
     match kind {
-        KIND_LIST => {
+        KIND_LIST | KIND_ANY_LIST => {
             let len = olive_list_len(obj);
+            let val = olive_list_get(obj, index);
             if index < 0 || index >= len {
                 panic::olive_bounds_fail(index, len, loc);
             }
-            olive_list_get(obj, index)
+            val
         }
         KIND_OBJ => olive_obj_get(obj, index),
         KIND_ENUM => olive_enum_get(obj, index),
@@ -940,7 +949,7 @@ pub extern "C" fn olive_set_index_any(obj: i64, index: i64, val: i64, loc: i64) 
     }
     let kind = unsafe { *(obj as *const i64) };
     match kind {
-        KIND_LIST => {
+        KIND_LIST | KIND_ANY_LIST => {
             let len = olive_list_len(obj);
             if index < 0 || index >= len {
                 panic::olive_bounds_fail(index, len, loc);
@@ -972,20 +981,6 @@ pub extern "C" fn olive_set_index_any(obj: i64, index: i64, val: i64, loc: i64) 
     }
 }
 
-fn olive_free_set(ptr: i64) {
-    if ptr != 0 {
-        unsafe {
-            let s = Box::from_raw(ptr as *mut OliveHashSet);
-            if !s.ptr.is_null() {
-                let _ = Vec::from_raw_parts(s.ptr, s.len, s.cap);
-            }
-            if !s.inner.is_null() {
-                let _ = Box::from_raw(s.inner);
-            }
-        }
-    }
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_free_any(ptr: i64) {
     if ptr == 0 {
@@ -1005,8 +1000,8 @@ pub extern "C" fn olive_free_any(ptr: i64) {
     }
     let kind = unsafe { *(ptr as *const i64) };
     match kind {
-        KIND_LIST => olive_free_list(ptr),
-        KIND_SET => olive_free_set(ptr),
+        KIND_LIST | KIND_ANY_LIST => olive_free_list(ptr),
+        KIND_SET => set::olive_free_set(ptr),
         KIND_OBJ => olive_free_obj(ptr),
         KIND_ENUM => olive_free_enum(ptr),
         KIND_BYTES => bytes::olive_buf_free(ptr),
@@ -1105,7 +1100,7 @@ pub extern "C" fn olive_typeof_str(val: i64) -> i64 {
     }
     let kind = unsafe { *(val as *const i64) };
     let name = match kind {
-        KIND_LIST => "list",
+        KIND_LIST | KIND_ANY_LIST => "list",
         KIND_OBJ => "dict",
         KIND_ENUM => "enum",
         KIND_SET => "set",

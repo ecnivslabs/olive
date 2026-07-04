@@ -1,71 +1,80 @@
+use crate::slab::GenSlab;
 use crate::*;
 use std::cell::UnsafeCell;
 
-const LIST_POOL_CAP: usize = 131072;
-
-struct ListPool {
-    entries: Vec<*mut StableVec>,
-}
-
-unsafe impl Send for ListPool {}
-
-impl ListPool {
-    const fn new() -> Self {
-        Self {
-            entries: Vec::new(),
-        }
-    }
-}
+/// Element buffers up to this capacity stay attached to a freed slot for reuse.
+const RETAIN_CAP: usize = 4;
 
 thread_local! {
-    static LIST_POOL: UnsafeCell<ListPool> = const { UnsafeCell::new(ListPool::new()) };
+    static LIST_SLAB: UnsafeCell<GenSlab> =
+        const { UnsafeCell::new(GenSlab::new(std::mem::size_of::<StableVec>())) };
+    static ITER_SLAB: UnsafeCell<GenSlab> =
+        const { UnsafeCell::new(GenSlab::new(std::mem::size_of::<OliveIter>())) };
+}
+
+/// Allocates a list header from the slab and fills it. A recycled slot may
+/// carry a retained element buffer, which is released before overwriting.
+pub(crate) fn alloc_list_header(kind: i64, ptr: *mut i64, cap: usize, len: usize) -> i64 {
+    LIST_SLAB.with(|sl| {
+        let sl = unsafe { &mut *sl.get() };
+        let (body, fresh) = sl.alloc();
+        let s = body as *mut StableVec;
+        unsafe {
+            if !fresh {
+                let old = &*s;
+                if !old.ptr.is_null() && old.cap > 0 {
+                    let _ = Vec::from_raw_parts(old.ptr, 0, old.cap);
+                }
+            }
+            (*s).kind = kind;
+            (*s).ptr = ptr;
+            (*s).cap = cap;
+            (*s).len = len;
+        }
+        body as i64
+    })
+}
+
+pub(crate) fn list_from_vec(mut v: Vec<i64>) -> i64 {
+    let ptr = v.as_mut_ptr();
+    let cap = v.capacity();
+    let len = v.len();
+    std::mem::forget(v);
+    alloc_list_header(KIND_LIST, ptr, cap, len)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_list_new(len: i64) -> i64 {
     let n = len as usize;
-
-    if n <= 4 {
-        let pooled = LIST_POOL.with(|p| {
-            let p = unsafe { &mut *p.get() };
-            p.entries.pop().unwrap_or(std::ptr::null_mut())
-        });
-
-        if !pooled.is_null() {
-            unsafe {
-                let s = &mut *pooled;
-                if s.cap < n {
-                    let mut v = Vec::from_raw_parts(s.ptr, 0, s.cap);
-                    v.reserve(n);
-                    s.ptr = v.as_mut_ptr();
-                    s.cap = v.capacity();
-                    std::mem::forget(v);
-                }
-
-                for i in 0..n {
-                    *s.ptr.add(i) = 0;
-                }
-                s.len = n;
+    LIST_SLAB.with(|sl| {
+        let sl = unsafe { &mut *sl.get() };
+        let (body, fresh) = sl.alloc();
+        let s = unsafe { &mut *(body as *mut StableVec) };
+        if fresh {
+            let mut v = vec![0i64; n];
+            s.ptr = v.as_mut_ptr();
+            s.cap = v.capacity();
+            std::mem::forget(v);
+        } else {
+            if s.ptr.is_null() || s.cap < n {
+                let mut v = if s.ptr.is_null() {
+                    Vec::with_capacity(n)
+                } else {
+                    unsafe { Vec::from_raw_parts(s.ptr, 0, s.cap) }
+                };
+                v.reserve(n);
+                s.ptr = v.as_mut_ptr();
+                s.cap = v.capacity();
+                std::mem::forget(v);
             }
-            let res = pooled as i64;
-            return res;
+            unsafe {
+                std::ptr::write_bytes(s.ptr, 0, n);
+            }
         }
-    }
-
-    let mut v = vec![0; n];
-    let ptr = v.as_mut_ptr();
-    let cap = v.capacity();
-    let len = v.len();
-    std::mem::forget(v);
-
-    let res = Box::into_raw(Box::new(StableVec {
-        kind: KIND_LIST,
-        ptr,
-        cap,
-        len,
-    })) as i64;
-    register_object(res);
-    res
+        s.kind = KIND_LIST;
+        s.len = n;
+        body as i64
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -334,18 +343,7 @@ pub extern "C" fn olive_list_concat(l: i64, r: i64) -> i64 {
         v.extend_from_slice(std::slice::from_raw_parts(sl.ptr, sl.len));
         v.extend_from_slice(std::slice::from_raw_parts(sr.ptr, sr.len));
     }
-    let ptr = v.as_mut_ptr();
-    let cap = v.capacity();
-    let len = v.len();
-    std::mem::forget(v);
-    let res = Box::into_raw(Box::new(StableVec {
-        kind: KIND_LIST,
-        ptr,
-        cap,
-        len,
-    })) as i64;
-    register_object(res);
-    res
+    list_from_vec(v)
 }
 
 const SLICE_HAS_START: i64 = 1;
@@ -433,37 +431,44 @@ pub extern "C" fn olive_list_extend(target: i64, source: i64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_free_list(ptr: i64) {
-    if ptr == 0 {
+    if ptr == 0 || !crate::slab::ptr_in_slab_span(ptr) {
         return;
     }
     unsafe {
         let s = &mut *(ptr as *mut StableVec);
-        for i in 0..s.len {
-            let elem = *s.ptr.add(i);
-            if is_active_object(elem) {
-                olive_free_any(elem);
-            }
+        if s.kind == KIND_SET {
+            return crate::set::olive_free_set(ptr);
         }
-
-        let returned = LIST_POOL.with(|p| {
-            let p = &mut *p.get();
-            if p.entries.len() < LIST_POOL_CAP && s.cap <= 4 {
-                s.len = 0;
-                p.entries.push(ptr as *mut StableVec);
-                true
-            } else {
-                false
+        if crate::slab::slot_is_live(ptr) {
+            for i in 0..s.len {
+                let elem = *s.ptr.add(i);
+                if is_active_object(elem) {
+                    olive_free_any(elem);
+                }
             }
-        });
-
-        if !returned {
-            unregister_object(ptr);
-            if !s.ptr.is_null() {
-                let _ = Vec::from_raw_parts(s.ptr, s.len, s.cap);
-            }
-            let _ = Box::from_raw(ptr as *mut StableVec);
+            settle_list_buffer(ptr);
         }
+        free_list_slot_raw(ptr);
     }
+}
+
+/// Releases or retains the element buffer of a (possibly already freed) slot.
+/// The slot body persists after a slab free, so this is safe in either order.
+pub(crate) unsafe fn settle_list_buffer(ptr: i64) {
+    let s = unsafe { &mut *(ptr as *mut StableVec) };
+    if s.cap > RETAIN_CAP {
+        if !s.ptr.is_null() {
+            let _ = unsafe { Vec::from_raw_parts(s.ptr, 0, s.cap) };
+        }
+        s.ptr = std::ptr::null_mut();
+        s.cap = 0;
+    }
+}
+
+pub(crate) fn free_list_slot_raw(ptr: i64) {
+    LIST_SLAB.with(|sl| {
+        unsafe { &mut *sl.get() }.free(ptr as *mut u8);
+    });
 }
 
 #[repr(C)]
@@ -474,16 +479,21 @@ pub struct OliveIter {
     pub is_py: bool,
     pub py_peeked: i64,
     pub has_peeked: bool,
+    // list_ptr was allocated for this iterator (dict keys, set items, str chars)
+    // rather than borrowed from the iterated value, so freeing the iterator frees it.
+    pub derived: bool,
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_iter(list_ptr: i64) -> i64 {
     let mut is_py = false;
+    let mut derived = false;
     let mut actual_list_ptr = list_ptr;
 
     // A tagged pointer with a high address is a string: iterate its characters.
     if list_ptr != 0 && (list_ptr & 1) == 1 && (list_ptr & !1) > 0x10000 {
         actual_list_ptr = crate::string::olive_str_chars(list_ptr);
+        derived = true;
     } else if list_ptr != 0 {
         unsafe {
             let raw_ptr = list_ptr as *const libc::c_void;
@@ -497,37 +507,54 @@ pub extern "C" fn olive_iter(list_ptr: i64) -> i64 {
                 } else if kind == KIND_OBJ {
                     // A dict iterates over its keys.
                     actual_list_ptr = crate::obj::olive_obj_keys(list_ptr);
+                    derived = true;
                 } else if kind == KIND_SET {
                     actual_list_ptr = crate::set::olive_set_items(list_ptr);
+                    derived = true;
                 }
             }
         }
     }
 
-    let res = Box::into_raw(Box::new(OliveIter {
-        kind: KIND_ITER,
-        list_ptr: actual_list_ptr,
-        index: 0,
-        is_py,
-        py_peeked: 0,
-        has_peeked: false,
-    })) as i64;
-    register_object(res);
-    res
+    ITER_SLAB.with(|sl| {
+        let sl = unsafe { &mut *sl.get() };
+        let (body, _) = sl.alloc();
+        unsafe {
+            std::ptr::write(
+                body as *mut OliveIter,
+                OliveIter {
+                    kind: KIND_ITER,
+                    list_ptr: actual_list_ptr,
+                    index: 0,
+                    is_py,
+                    py_peeked: 0,
+                    has_peeked: false,
+                    derived,
+                },
+            );
+        }
+        body as i64
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_free_iter(ptr: i64) {
-    if ptr != 0 {
-        unregister_object(ptr);
+    if ptr == 0 || !crate::slab::ptr_in_slab_span(ptr) {
+        return;
+    }
+    if crate::slab::slot_is_live(ptr) {
         unsafe {
-            let it = Box::from_raw(ptr as *mut OliveIter);
+            let it = &*(ptr as *const OliveIter);
             if it.is_py && it.list_ptr != 0 {
                 crate::python::olive_py_decref(it.list_ptr as *mut libc::c_void);
+            } else if it.derived && it.list_ptr != 0 {
+                olive_free_list(it.list_ptr);
             }
-            if it.is_py && it.has_peeked && it.py_peeked != 0 && is_active_object(it.py_peeked) {}
         }
     }
+    ITER_SLAB.with(|sl| {
+        unsafe { &mut *sl.get() }.free(ptr as *mut u8);
+    });
 }
 
 #[unsafe(no_mangle)]

@@ -81,7 +81,7 @@ impl<'a> MirBuilder<'a> {
                     let last_idx = name.rfind("::").unwrap();
                     let struct_name = &name[..last_idx];
                     if self.struct_fields.contains_key(struct_name) {
-                        Type::Struct(struct_name.to_string(), Vec::new())
+                        Type::Struct(struct_name.to_string(), Vec::new(), false)
                     } else {
                         ty
                     }

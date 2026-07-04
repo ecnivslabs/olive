@@ -31,6 +31,7 @@ pub(super) fn stmt_reads_local(stmt: &Statement, local: Local) -> bool {
             | Rvalue::GetTypeId(op)
             | Rvalue::VectorSplat(op, _)
             | Rvalue::PtrLoad(op)
+            | Rvalue::GenOf(op)
             | Rvalue::FatPtrData(op)
             | Rvalue::VTableLoad { vtable: op, .. } => check(op),
             Rvalue::BinaryOp(_, a, b) | Rvalue::GetIndex(a, b, _) | Rvalue::VectorLoad(a, b, _) => {
@@ -57,6 +58,9 @@ pub(super) fn stmt_reads_local(stmt: &Statement, local: Local) -> bool {
             check(a);
             check(b);
             check(c);
+        }
+        StatementKind::GenCheck { value, generation } => {
+            hit |= *value == local || *generation == local;
         }
         StatementKind::StorageLive(_) | StatementKind::StorageDead(_) | StatementKind::Drop(_) => {}
     }
@@ -93,6 +97,8 @@ pub(super) fn subst_local(stmt: &mut Statement, from: Local, to: &Operand) {
             subst_operand(a, from, to);
             subst_operand(b, from, to);
         }
+        // A gen check names locals directly; substitution never applies.
+        StatementKind::GenCheck { .. } => {}
         StatementKind::StorageLive(_) | StatementKind::StorageDead(_) | StatementKind::Drop(_) => {}
     }
 }
@@ -106,6 +112,7 @@ fn subst_rvalue(rval: &mut Rvalue, from: Local, to: &Operand) {
         | Rvalue::GetTag(op)
         | Rvalue::GetTypeId(op)
         | Rvalue::PtrLoad(op)
+        | Rvalue::GenOf(op)
         | Rvalue::FatPtrData(op)
         | Rvalue::VTableLoad { vtable: op, .. } => subst_operand(op, from, to),
         Rvalue::BinaryOp(_, a, b) | Rvalue::GetIndex(a, b, _) => {

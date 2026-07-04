@@ -2,6 +2,15 @@ use super::Transform;
 use crate::mir::liveness::Liveness;
 use crate::mir::*;
 
+/// Upgrades the last use of an owning heap local from `Copy` to `Move` so the
+/// value transfers instead of waiting for the scope-end drop.
+///
+/// A `Move` nulls the source variable, which turns its later `Drop` into a
+/// no-op. That is only sound where the destination takes over responsibility
+/// for freeing: an owning local, a container element, a stored field, or a
+/// global. Read-only positions (operands of binops, call arguments, switch
+/// discriminants, the container side of an indexed store) must keep `Copy`,
+/// otherwise the value is nulled with no owner left and leaks.
 pub struct MoveElision;
 
 impl Transform for MoveElision {
@@ -14,10 +23,6 @@ impl Transform for MoveElision {
             for (stmt_idx, stmt) in bb.statements.iter_mut().enumerate() {
                 let live_after = &liveness.live_after[bb_idx][stmt_idx + 1];
                 changed |= self.optimize_statement(stmt, live_after, locals);
-            }
-            if let Some(term) = &mut bb.terminator {
-                let live_after = &liveness.live_after[bb_idx][bb.statements.len()];
-                changed |= self.optimize_terminator(term, live_after, locals);
             }
         }
 
@@ -34,104 +39,36 @@ impl MoveElision {
     ) -> bool {
         match &mut stmt.kind {
             StatementKind::Assign(dst, rval) => {
-                // dst aliases src; src's value persists through dst, so moving is unsound.
-                if matches!(rval, Rvalue::Use(Operand::Copy(_))) && live_after.contains(dst) {
-                    return false;
+                // The destination must be able to free the value it receives.
+                let dst_owns = locals
+                    .get(dst.0)
+                    .is_some_and(|d| d.is_owning && d.ty.is_move_type());
+                match rval {
+                    Rvalue::Use(op) => {
+                        if !dst_owns {
+                            return false;
+                        }
+                        // dst aliases src; src's value persists through dst, so
+                        // moving is unsound while dst stays live.
+                        if matches!(op, Operand::Copy(_)) && live_after.contains(dst) {
+                            return false;
+                        }
+                        self.optimize_operand(op, live_after, locals)
+                    }
+                    Rvalue::Aggregate(_, ops) => {
+                        let mut changed = false;
+                        for op in ops {
+                            changed |= self.optimize_operand(op, live_after, locals);
+                        }
+                        changed
+                    }
+                    _ => false,
                 }
-                self.optimize_rvalue(rval, live_after, locals)
             }
-            StatementKind::SetAttr(obj, _, val) => {
-                let mut changed = self.optimize_operand(obj, live_after, locals);
-                changed |= self.optimize_operand(val, live_after, locals);
-                changed
-            }
-            StatementKind::SetIndex(obj, idx, val, _) => {
-                let mut changed = self.optimize_operand(obj, live_after, locals);
-                changed |= self.optimize_operand(idx, live_after, locals);
-                changed |= self.optimize_operand(val, live_after, locals);
-                changed
-            }
-            StatementKind::VectorStore(obj, idx, val) => {
-                let mut changed = self.optimize_operand(obj, live_after, locals);
-                changed |= self.optimize_operand(idx, live_after, locals);
-                changed |= self.optimize_operand(val, live_after, locals);
-                changed
-            }
-            StatementKind::PtrStore(ptr, val) => {
-                let mut changed = self.optimize_operand(ptr, live_after, locals);
-                changed |= self.optimize_operand(val, live_after, locals);
-                changed
-            }
+            StatementKind::SetAttr(_, _, val) => self.optimize_operand(val, live_after, locals),
+            StatementKind::SetIndex(_, _, val, _) => self.optimize_operand(val, live_after, locals),
+            StatementKind::PtrStore(_, val) => self.optimize_operand(val, live_after, locals),
             _ => false,
-        }
-    }
-
-    fn optimize_terminator(
-        &self,
-        term: &mut Terminator,
-        live_after: &rustc_hash::FxHashSet<Local>,
-        locals: &[LocalDecl],
-    ) -> bool {
-        match &mut term.kind {
-            TerminatorKind::SwitchInt { discr, .. } => {
-                self.optimize_operand(discr, live_after, locals)
-            }
-            _ => false,
-        }
-    }
-
-    fn optimize_rvalue(
-        &self,
-        rval: &mut Rvalue,
-        live_after: &rustc_hash::FxHashSet<Local>,
-        locals: &[LocalDecl],
-    ) -> bool {
-        match rval {
-            Rvalue::Use(op)
-            | Rvalue::UnaryOp(_, op)
-            | Rvalue::GetAttr(op, _)
-            | Rvalue::GetTag(op)
-            | Rvalue::GetTypeId(op)
-            | Rvalue::FatPtrData(op)
-            | Rvalue::Cast(op, _) => self.optimize_operand(op, live_after, locals),
-            Rvalue::BinaryOp(_, l, r) => {
-                let mut changed = self.optimize_operand(l, live_after, locals);
-                changed |= self.optimize_operand(r, live_after, locals);
-                changed
-            }
-            // Indexing reads an element that may alias the container's storage,
-            // so the container must not be moved (freed) here even on its last
-            // use. The index is an integer and never a move type.
-            Rvalue::GetIndex(_, _, _) => false,
-            Rvalue::Call { func: f_op, args } => {
-                let mut changed = self.optimize_operand(f_op, live_after, locals);
-                for arg in args {
-                    changed |= self.optimize_operand(arg, live_after, locals);
-                }
-                changed
-            }
-            Rvalue::Aggregate(_, ops) => {
-                let mut changed = false;
-                for op in ops {
-                    changed |= self.optimize_operand(op, live_after, locals);
-                }
-                changed
-            }
-            Rvalue::Ref(_) | Rvalue::MutRef(_) => false,
-            Rvalue::PtrLoad(op) => self.optimize_operand(op, live_after, locals),
-            Rvalue::VTableLoad { vtable, .. } => self.optimize_operand(vtable, live_after, locals),
-            Rvalue::VectorSplat(op, _) => self.optimize_operand(op, live_after, locals),
-            Rvalue::VectorLoad(obj, idx, _) => {
-                let mut changed = self.optimize_operand(obj, live_after, locals);
-                changed |= self.optimize_operand(idx, live_after, locals);
-                changed
-            }
-            Rvalue::VectorFMA(a, b, c) => {
-                let mut changed = self.optimize_operand(a, live_after, locals);
-                changed |= self.optimize_operand(b, live_after, locals);
-                changed |= self.optimize_operand(c, live_after, locals);
-                changed
-            }
         }
     }
 
@@ -172,13 +109,6 @@ mod tests {
     fn assign(l: usize, rv: Rvalue) -> Statement {
         Statement {
             kind: StatementKind::Assign(Local(l), rv),
-            span: sp(),
-        }
-    }
-
-    fn stmt(k: StatementKind) -> Statement {
-        Statement {
-            kind: k,
             span: sp(),
         }
     }
@@ -227,20 +157,6 @@ mod tests {
     }
 
     #[test]
-    fn copy_preserved_for_param() {
-        let mut f = func(
-            "f",
-            vec![move_type_local(), move_type_local()],
-            vec![assign(1, Rvalue::Use(Operand::Copy(Local(0))))],
-        );
-        // Local(0) is an argument (arg_count=1), so its value is live
-        // across the block for potential later use. MoveElision skips args.
-        let _changed = MoveElision.run(&mut f);
-        // Just verify it runs without crashing
-        assert!(!f.basic_blocks[0].statements.is_empty());
-    }
-
-    #[test]
     fn int_type_not_moved() {
         let mut f = func(
             "f",
@@ -258,27 +174,58 @@ mod tests {
     }
 
     #[test]
-    fn multi_block_copy_to_move() {
-        let mut f = MirFunction {
-            name: "f".into(),
-            locals: vec![move_type_local(), move_type_local()],
-            basic_blocks: vec![BasicBlock {
-                statements: vec![assign(1, Rvalue::Use(Operand::Copy(Local(0))))],
-                terminator: Some(Terminator {
-                    kind: TerminatorKind::Return,
-                    span: sp(),
-                }),
-            }],
-            arg_count: 0,
-            vararg_idx: None,
-            kwarg_idx: None,
-            param_names: vec![],
-            is_async: false,
-        };
+    fn call_args_never_moved() {
+        let mut f = func(
+            "f",
+            vec![move_type_local(), move_type_local()],
+            vec![assign(
+                1,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("g".into())),
+                    args: vec![Operand::Copy(Local(0))],
+                },
+            )],
+        );
+        // Moving an argument nulls the caller's variable with no new owner.
+        assert!(!MoveElision.run(&mut f));
+        match &f.basic_blocks[0].statements[0].kind {
+            StatementKind::Assign(_, Rvalue::Call { args, .. }) => {
+                assert!(matches!(args[0], Operand::Copy(_)));
+            }
+            _ => panic!("expected call"),
+        }
+    }
+
+    #[test]
+    fn view_destination_keeps_copy() {
+        let mut view_dst = move_type_local();
+        view_dst.is_owning = false;
+        let mut f = func(
+            "f",
+            vec![move_type_local(), view_dst],
+            vec![assign(1, Rvalue::Use(Operand::Copy(Local(0))))],
+        );
+        // A non-owning destination will never free the value; moving into it
+        // would leave the value ownerless.
+        assert!(!MoveElision.run(&mut f));
+    }
+
+    #[test]
+    fn aggregate_elements_moved() {
+        let mut f = func(
+            "f",
+            vec![move_type_local(), move_type_local()],
+            vec![assign(
+                1,
+                Rvalue::Aggregate(AggregateKind::List, vec![Operand::Copy(Local(0))]),
+            )],
+        );
         assert!(MoveElision.run(&mut f));
         match &f.basic_blocks[0].statements[0].kind {
-            StatementKind::Assign(_, Rvalue::Use(Operand::Move(_))) => {}
-            _ => panic!("expected Move"),
+            StatementKind::Assign(_, Rvalue::Aggregate(_, ops)) => {
+                assert!(matches!(ops[0], Operand::Move(_)));
+            }
+            _ => panic!("expected aggregate"),
         }
     }
 }

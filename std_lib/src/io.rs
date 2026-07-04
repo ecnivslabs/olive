@@ -1,4 +1,4 @@
-use crate::{KIND_LIST, KIND_OBJ, OliveObj, StableVec, olive_str_from_ptr, olive_str_internal};
+use crate::{olive_str_from_ptr, olive_str_internal};
 use rustc_hash::FxHashMap as HashMap;
 use std::io::{Read, Seek, SeekFrom, Write};
 
@@ -104,13 +104,7 @@ pub extern "C" fn olive_dir_list(path: i64) -> i64 {
     let entries = match std::fs::read_dir(&path_str) {
         Ok(e) => e,
         Err(_) => {
-            let v = Box::new(StableVec {
-                kind: KIND_LIST,
-                ptr: std::ptr::null_mut(),
-                cap: 0,
-                len: 0,
-            });
-            return Box::into_raw(v) as i64;
+            return crate::list::list_from_vec(Vec::new());
         }
     };
     let mut ptrs: Vec<i64> = Vec::new();
@@ -118,16 +112,7 @@ pub extern "C" fn olive_dir_list(path: i64) -> i64 {
         let name = entry.file_name().to_string_lossy().into_owned();
         ptrs.push(olive_str_internal(&name));
     }
-    let ptr = ptrs.as_mut_ptr();
-    let cap = ptrs.capacity();
-    let len = ptrs.len();
-    std::mem::forget(ptrs);
-    Box::into_raw(Box::new(StableVec {
-        kind: KIND_LIST,
-        ptr,
-        cap,
-        len,
-    })) as i64
+    crate::list::list_from_vec(ptrs)
 }
 
 #[unsafe(no_mangle)]
@@ -161,10 +146,7 @@ pub extern "C" fn olive_file_stat(path: i64) -> i64 {
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0),
     );
-    Box::into_raw(Box::new(OliveObj {
-        kind: KIND_OBJ,
-        fields,
-    })) as i64
+    crate::obj::new_obj_from_map(fields)
 }
 
 #[unsafe(no_mangle)]
@@ -432,14 +414,7 @@ pub extern "C" fn olive_file_tell(handle: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_file_read_lines(path: i64) -> i64 {
-    let empty = || {
-        Box::into_raw(Box::new(StableVec {
-            kind: KIND_LIST,
-            ptr: std::ptr::null_mut(),
-            cap: 0,
-            len: 0,
-        })) as i64
-    };
+    let empty = || crate::list::list_from_vec(Vec::new());
     if path == 0 {
         return empty();
     }
@@ -447,17 +422,8 @@ pub extern "C" fn olive_file_read_lines(path: i64) -> i64 {
         Ok(c) => c,
         Err(_) => return empty(),
     };
-    let mut ptrs: Vec<i64> = content.lines().map(olive_str_internal).collect();
-    let ptr = ptrs.as_mut_ptr();
-    let cap = ptrs.capacity();
-    let len = ptrs.len();
-    std::mem::forget(ptrs);
-    Box::into_raw(Box::new(StableVec {
-        kind: KIND_LIST,
-        ptr,
-        cap,
-        len,
-    })) as i64
+    let ptrs: Vec<i64> = content.lines().map(olive_str_internal).collect();
+    crate::list::list_from_vec(ptrs)
 }
 
 use std::io::BufRead;
@@ -554,6 +520,7 @@ pub extern "C" fn olive_bufwrite_close(bw: i64) {
 mod tests {
     use super::*;
     use crate::olive_str_internal;
+    use crate::{OliveObj, StableVec};
 
     fn make_str(s: &str) -> i64 {
         olive_str_internal(s)

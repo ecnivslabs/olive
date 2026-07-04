@@ -56,6 +56,13 @@ const PY_COERCE: Fault = Fault {
     help: Some("convert the Python value to the target type or read it into a PyObject first"),
     note: Some("Python value cannot be converted to the required native type"),
 };
+const STALE_REF: Fault = Fault {
+    code: "E0707",
+    help: Some(
+        "keep the owner alive while the value is in use, or copy the value instead of borrowing it",
+    ),
+    note: Some("the value this name refers to was freed when its owner went away"),
+};
 
 /// Aborts when a Python value cannot be converted to the required native scalar.
 pub fn abort_py_coerce(msg: &str) -> ! {
@@ -255,6 +262,23 @@ pub extern "C" fn olive_bounds_fail(index: i64, len: i64, loc: i64) -> i64 {
 pub extern "C" fn olive_nil_index_fail(loc: i64) -> i64 {
     let loc = (loc != 0).then(|| olive_str_from_ptr(loc));
     abort_with(&NIL_INDEX, "cannot index into a null value", loc.as_deref())
+}
+
+/// Raised when a generation check finds a borrowed value whose owner already
+/// freed it. Fires before the stale pointer is dereferenced, so the program
+/// dies with a source caret instead of corrupting the heap.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_stale_ref_fail(name: i64, loc: i64) -> i64 {
+    let loc = (loc != 0).then(|| olive_str_from_ptr(loc));
+    let msg = if name != 0 {
+        format!(
+            "stale reference: `{}` points at a value that was already freed",
+            olive_str_from_ptr(name)
+        )
+    } else {
+        "stale reference: this value was already freed".to_string()
+    };
+    abort_with(&STALE_REF, &msg, loc.as_deref())
 }
 
 /// Raised when the divisor of an integer `/` or `%` is zero. Hardware would

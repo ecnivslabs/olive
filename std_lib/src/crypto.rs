@@ -1,4 +1,4 @@
-use crate::{OliveObj, olive_str_from_ptr, olive_str_internal};
+use crate::{olive_str_from_ptr, olive_str_internal};
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -154,10 +154,7 @@ pub extern "C" fn olive_crypto_rsa_keygen() -> i64 {
         crate::OliveStringKey(olive_str_internal("priv")),
         olive_str_internal(&priv_b64),
     );
-    Box::into_raw(Box::new(OliveObj {
-        kind: crate::KIND_OBJ,
-        fields,
-    })) as i64
+    crate::obj::new_obj_from_map(fields)
 }
 
 #[unsafe(no_mangle)]
@@ -217,6 +214,7 @@ pub extern "C" fn olive_crypto_rsa_decrypt(priv_ptr: i64, data_ptr: i64) -> i64 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::OliveObj;
     use crate::olive_str_internal;
 
     fn s(text: &str) -> i64 {

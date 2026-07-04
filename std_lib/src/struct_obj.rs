@@ -1,83 +1,82 @@
+use crate::slab::GenSlab;
 use std::cell::UnsafeCell;
 
-const MAX_CACHED_FIELDS: usize = 8;
-const FREE_LIST_CAP: usize = 256;
+// Body words = field count word + n_fields; sizes above this use pow2 classes.
+const FIXED_MAX_WORDS: usize = 17;
 
-struct FreeList {
-    heads: [*mut u8; MAX_CACHED_FIELDS],
-    counts: [usize; MAX_CACHED_FIELDS],
+struct StructSlabs {
+    fixed: Vec<GenSlab>,
+    large: Vec<(usize, GenSlab)>,
 }
 
-impl FreeList {
-    const fn new() -> Self {
+impl StructSlabs {
+    fn new() -> Self {
         Self {
-            heads: [std::ptr::null_mut(); MAX_CACHED_FIELDS],
-            counts: [0usize; MAX_CACHED_FIELDS],
+            fixed: (0..=FIXED_MAX_WORDS).map(|w| GenSlab::new(w * 8)).collect(),
+            large: Vec::new(),
         }
+    }
+
+    fn class_for(&mut self, body_words: usize) -> &mut GenSlab {
+        if body_words <= FIXED_MAX_WORDS {
+            return &mut self.fixed[body_words];
+        }
+        let class = body_words.next_power_of_two();
+        if let Some(i) = self.large.iter().position(|(w, _)| *w == class) {
+            return &mut self.large[i].1;
+        }
+        self.large.push((class, GenSlab::new(class * 8)));
+        &mut self.large.last_mut().unwrap().1
     }
 }
 
 thread_local! {
-    static STRUCT_FREE_LIST: UnsafeCell<FreeList> = const { UnsafeCell::new(FreeList::new()) };
+    static STRUCT_SLABS: UnsafeCell<StructSlabs> = UnsafeCell::new(StructSlabs::new());
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_struct_alloc(n_fields: i64) -> i64 {
-    let idx = (n_fields as usize).wrapping_sub(1);
-    if idx < MAX_CACHED_FIELDS {
-        let ptr = STRUCT_FREE_LIST.with(|fl| {
-            let fl = unsafe { &mut *fl.get() };
-            let head = fl.heads[idx];
-            if !head.is_null() {
-                let next = unsafe { *(head as *const *mut u8) };
-                fl.heads[idx] = next;
-                fl.counts[idx] -= 1;
-                head as i64
-            } else {
-                0i64
-            }
-        });
-        if ptr != 0 {
-            unsafe { *(ptr as *mut i64) = n_fields };
-            return ptr;
-        }
-    }
-    let total = (n_fields + 1) * 8;
-    let layout = std::alloc::Layout::from_size_align(total as usize, 8).unwrap();
-    let ptr = unsafe { std::alloc::alloc(layout) } as i64;
-    unsafe { *(ptr as *mut i64) = n_fields };
-    ptr
+    let words = n_fields as usize + 1;
+    STRUCT_SLABS.with(|s| {
+        let s = unsafe { &mut *s.get() };
+        let (body, _) = s.class_for(words).alloc();
+        unsafe { *(body as *mut i64) = n_fields };
+        body as i64
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_free_struct(ptr: i64) {
-    if ptr == 0 {
+    if ptr == 0 || !crate::slab::ptr_in_slab_span(ptr) {
         return;
     }
     let n_fields = unsafe { *(ptr as *const i64) };
-    let idx = (n_fields as usize).wrapping_sub(1);
-    if idx < MAX_CACHED_FIELDS {
-        let returned = STRUCT_FREE_LIST.with(|fl| {
-            let fl = unsafe { &mut *fl.get() };
-            if fl.counts[idx] < FREE_LIST_CAP {
-                let raw = ptr as *mut *mut u8;
-                unsafe { *raw = fl.heads[idx] };
-                fl.heads[idx] = ptr as *mut u8;
-                fl.counts[idx] += 1;
-                true
-            } else {
-                false
-            }
-        });
-        if returned {
-            return;
-        }
+    free_struct_slot_raw(ptr, n_fields);
+}
+
+pub(crate) fn free_struct_slot_raw(ptr: i64, n_fields: i64) {
+    let words = n_fields as usize + 1;
+    STRUCT_SLABS.with(|s| {
+        let s = unsafe { &mut *s.get() };
+        s.class_for(words).free(ptr as *mut u8);
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_struct_gen_of(ptr: i64) -> i64 {
+    if ptr == 0 || !crate::slab::ptr_in_slab_span(ptr) {
+        return 0;
     }
-    unsafe {
-        let total = ((n_fields + 1) * 8) as usize;
-        let layout = std::alloc::Layout::from_size_align_unchecked(total, 8);
-        std::alloc::dealloc(ptr as *mut u8, layout);
+    unsafe { *((ptr - 8) as *const i64) }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_struct_gen_stale(ptr: i64, generation: i64) -> i64 {
+    if ptr == 0 || generation == 0 || !crate::slab::ptr_in_slab_span(ptr) {
+        return 0;
     }
+    let cur = unsafe { *((ptr - 8) as *const i64) };
+    (((cur ^ generation) << 1) != 0 || cur & 1 == 0) as i64
 }
 
 #[cfg(test)]
@@ -130,5 +129,35 @@ mod tests {
             assert_ne!(ptr, 0);
             olive_free_struct(ptr);
         }
+    }
+
+    #[test]
+    fn double_free_absorbed() {
+        let ptr = olive_struct_alloc(2);
+        olive_free_struct(ptr);
+        olive_free_struct(ptr);
+        let ptr2 = olive_struct_alloc(2);
+        assert_eq!(ptr, ptr2);
+        olive_free_struct(ptr2);
+    }
+
+    #[test]
+    fn empty_struct_alloc() {
+        let ptr = olive_struct_alloc(0);
+        assert_ne!(ptr, 0);
+        assert_eq!(unsafe { *(ptr as *const i64) }, 0);
+        olive_free_struct(ptr);
+    }
+
+    #[test]
+    fn struct_generation_check() {
+        let ptr = olive_struct_alloc(1);
+        assert_ne!(ptr, 0);
+        let generation = olive_struct_gen_of(ptr);
+        assert_ne!(generation, 0);
+        assert_eq!(olive_struct_gen_stale(ptr, generation), 0);
+
+        olive_free_struct(ptr);
+        assert_eq!(olive_struct_gen_stale(ptr, generation), 1);
     }
 }

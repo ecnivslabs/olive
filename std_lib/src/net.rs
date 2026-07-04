@@ -1,4 +1,4 @@
-use crate::{OliveObj, olive_str_internal};
+use crate::olive_str_internal;
 use rustc_hash::FxHashMap as HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, UdpSocket};
@@ -167,10 +167,7 @@ pub extern "C" fn olive_net_udp_recv(sock_ptr: i64, max_len: i64) -> i64 {
                 crate::OliveStringKey(olive_str_internal("addr")),
                 olive_str_internal(&src_addr.to_string()),
             );
-            Box::into_raw(Box::new(OliveObj {
-                kind: crate::KIND_OBJ,
-                fields,
-            })) as i64
+            crate::obj::new_obj_from_map(fields)
         }
         Err(_) => 0,
     }
@@ -215,15 +212,7 @@ pub extern "C" fn olive_net_dns_lookup(hostname: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_net_dns_lookup_all(hostname: i64) -> i64 {
-    use crate::{KIND_LIST, StableVec};
-    let empty_list = || {
-        Box::into_raw(Box::new(StableVec {
-            kind: KIND_LIST,
-            ptr: std::ptr::null_mut(),
-            cap: 0,
-            len: 0,
-        })) as i64
-    };
+    let empty_list = || crate::list::list_from_vec(Vec::new());
     if hostname == 0 {
         return empty_list();
     }
@@ -231,19 +220,10 @@ pub extern "C" fn olive_net_dns_lookup_all(hostname: i64) -> i64 {
     let addr = format!("{}:0", host);
     match std::net::ToSocketAddrs::to_socket_addrs(&addr.as_str()) {
         Ok(addrs) => {
-            let mut ptrs: Vec<i64> = addrs
+            let ptrs: Vec<i64> = addrs
                 .map(|a| olive_str_internal(&a.ip().to_string()))
                 .collect();
-            let ptr = ptrs.as_mut_ptr();
-            let cap = ptrs.capacity();
-            let len = ptrs.len();
-            std::mem::forget(ptrs);
-            Box::into_raw(Box::new(StableVec {
-                kind: KIND_LIST,
-                ptr,
-                cap,
-                len,
-            })) as i64
+            crate::list::list_from_vec(ptrs)
         }
         Err(_) => empty_list(),
     }
@@ -252,6 +232,7 @@ pub extern "C" fn olive_net_dns_lookup_all(hostname: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::OliveObj;
 
     fn s(text: &str) -> i64 {
         crate::olive_str_internal(text)

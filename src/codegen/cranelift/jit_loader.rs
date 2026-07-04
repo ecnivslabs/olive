@@ -85,6 +85,7 @@ pub(super) fn register_runtime_symbols(
         if path.exists()
             && let Ok(l) = unsafe { libloading::Library::new(path) }
         {
+            println!("DEBUG LOADED LIB: {:?}", path);
             loaded_lib = Some(l);
             break;
         }
@@ -100,27 +101,37 @@ pub(super) fn register_runtime_symbols(
             }
 
             #[cfg(target_family = "unix")]
-            let ptr = {
+            let (ptr, source) = {
                 let p = dlsym(std::ptr::null_mut(), c_name.as_ptr() as *const _);
                 if p.is_null() {
-                    loaded_lib
+                    let from_lib = loaded_lib
                         .as_ref()
                         .and_then(|lib| lib.get::<unsafe extern "C" fn()>(c_name).ok())
                         .map(|f| *f as *mut std::ffi::c_void)
-                        .unwrap_or(std::ptr::null_mut())
+                        .unwrap_or(std::ptr::null_mut());
+                    (from_lib, "loaded_lib")
                 } else {
-                    p
+                    (p, "dlsym")
                 }
             };
 
             #[cfg(not(target_family = "unix"))]
-            let ptr = loaded_lib
-                .as_ref()
-                .and_then(|lib| lib.get::<unsafe extern "C" fn()>(c_name).ok())
-                .map(|f| *f as *mut std::ffi::c_void)
-                .unwrap_or(std::ptr::null_mut());
+            let (ptr, source) = (
+                loaded_lib
+                    .as_ref()
+                    .and_then(|lib| lib.get::<unsafe extern "C" fn()>(c_name).ok())
+                    .map(|f| *f as *mut std::ffi::c_void)
+                    .unwrap_or(std::ptr::null_mut()),
+                "loaded_lib",
+            );
 
             if !ptr.is_null() {
+                if jit_name.contains("set_index_any") || jit_name.contains("get_index_any") {
+                    println!(
+                        "DEBUG RESOLVED SYMBOL: {} -> {:p} (from {})",
+                        jit_name, ptr, source
+                    );
+                }
                 builder.symbol(jit_name, ptr as *const u8);
             } else {
                 eprintln!(

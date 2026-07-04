@@ -13,7 +13,14 @@
 //! Only these heap forms and ordinary pointers are tracked; an immediate is a
 //! plain register value with no lifetime.
 
-use crate::{KIND_FLOAT, KIND_INT, is_active_object, olive_str_from_ptr, register_object};
+use crate::slab::GenSlab;
+use crate::{KIND_FLOAT, KIND_INT, is_active_object, olive_str_from_ptr};
+use std::cell::UnsafeCell;
+
+thread_local! {
+    static BOXED_SLAB: UnsafeCell<GenSlab> =
+        const { UnsafeCell::new(GenSlab::new(std::mem::size_of::<OliveBoxed>())) };
+}
 
 /// Low-bit tag selecting an inline immediate. Heap pointers use `0`, strings
 /// use bit `0`; these three are the remaining even, non-zero patterns.
@@ -36,9 +43,14 @@ pub struct OliveBoxed {
 }
 
 fn heap_box(kind: i64, bits: i64) -> i64 {
-    let res = Box::into_raw(Box::new(OliveBoxed { kind, bits })) as i64;
-    register_object(res);
-    res
+    BOXED_SLAB.with(|sl| {
+        let sl = unsafe { &mut *sl.get() };
+        let (body, _) = sl.alloc();
+        unsafe {
+            std::ptr::write(body as *mut OliveBoxed, OliveBoxed { kind, bits });
+        }
+        body as i64
+    })
 }
 
 /// Encodes an integer for an `Any` slot: inline when it fits 61 bits, otherwise
@@ -158,10 +170,10 @@ pub extern "C" fn olive_any_truthy(v: i64) -> i64 {
 
 /// Frees a heap scalar from `heap_box`; inline immediates own nothing.
 pub fn olive_free_boxed(ptr: i64) {
-    if ptr != 0 && ptr & TAG_MASK == 0 {
-        unsafe {
-            drop(Box::from_raw(ptr as *mut OliveBoxed));
-        }
+    if ptr != 0 && ptr & TAG_MASK == 0 && crate::slab::ptr_in_slab_span(ptr) {
+        BOXED_SLAB.with(|sl| {
+            unsafe { &mut *sl.get() }.free(ptr as *mut u8);
+        });
     }
 }
 

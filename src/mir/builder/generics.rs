@@ -36,7 +36,9 @@ impl<'a> MirBuilder<'a> {
                     } else if self.traits.contains_key(name) {
                         Type::TraitObject(name.clone(), Vec::new())
                     } else {
-                        Type::Struct(name.clone(), Vec::new())
+                        let is_ffi =
+                            matches!(self.global_types.get(name), Some(Type::Struct(_, _, true)));
+                        Type::Struct(name.clone(), Vec::new(), is_ffi)
                     }
                 }
             },
@@ -50,7 +52,9 @@ impl<'a> MirBuilder<'a> {
                 _ => {
                     let resolved_args: Vec<Type> =
                         args.iter().map(|a| self.resolve_type_expr(a)).collect();
-                    Type::Struct(name.clone(), resolved_args)
+                    let is_ffi =
+                        matches!(self.global_types.get(name), Some(Type::Struct(_, _, true)));
+                    Type::Struct(name.clone(), resolved_args, is_ffi)
                 }
             },
             TypeExprKind::List(inner) => Type::List(Box::new(self.resolve_type_expr(inner))),
@@ -385,7 +389,7 @@ impl<'a> MirBuilder<'a> {
                 self.type_to_type_expr_kind(inner),
                 Span::default(),
             ))),
-            Type::Struct(name, args) => {
+            Type::Struct(name, args, _) => {
                 let type_args = args
                     .iter()
                     .map(|a| TypeExpr::new(self.type_to_type_expr_kind(a), Span::default()))

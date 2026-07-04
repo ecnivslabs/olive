@@ -180,6 +180,7 @@ impl<'a> MirBuilder<'a> {
             header: header_bb,
             exit: exit_bb,
             scope_depth: self.scope_locals.len(),
+            cleanup: None,
         });
         self.current_block = Some(body_bb);
         self.enter_scope();
@@ -291,6 +292,7 @@ impl<'a> MirBuilder<'a> {
             header: header_bb,
             exit: exit_bb,
             scope_depth: self.scope_locals.len(),
+            cleanup: Some(iter_local),
         });
         self.current_block = Some(body_bb);
         self.enter_scope();
@@ -391,6 +393,9 @@ impl<'a> MirBuilder<'a> {
         }
 
         self.current_block = Some(exit_bb);
+        // Every exit path (loop done, break, else-body) converges here; free
+        // the iterator once. Freeing again on a rare path is a no-op.
+        self.emit_iter_free(iter_local);
     }
 
     /// Lowers `for name in start..end` to a counted loop, avoiding any iterator
@@ -463,6 +468,7 @@ impl<'a> MirBuilder<'a> {
             // The loop's own scope (`i_local` + body) was already entered above,
             // unlike the other loop forms, so it sits one frame lower.
             scope_depth: self.scope_locals.len().saturating_sub(1),
+            cleanup: None,
         });
         self.current_block = Some(body_bb);
         for s in body {

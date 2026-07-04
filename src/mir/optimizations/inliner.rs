@@ -291,6 +291,10 @@ impl Inliner {
                 self.remap_operand(ptr, offset);
                 self.remap_operand(val, offset);
             }
+            StatementKind::GenCheck { value, generation } => {
+                value.0 += offset;
+                generation.0 += offset;
+            }
         }
     }
 
@@ -323,7 +327,7 @@ impl Inliner {
             Rvalue::Ref(l) | Rvalue::MutRef(l) => {
                 l.0 += offset;
             }
-            Rvalue::PtrLoad(op) => self.remap_operand(op, offset),
+            Rvalue::PtrLoad(op) | Rvalue::GenOf(op) => self.remap_operand(op, offset),
             Rvalue::VTableLoad {
                 vtable,
                 method_idx: _,

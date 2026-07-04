@@ -188,6 +188,47 @@ impl<M: Module> CraneliftCodegen<M> {
             Rvalue::Use(op) => {
                 Self::translate_operand(builder, op, vars, string_ids, module, func_ids)
             }
+            Rvalue::GenOf(op) => {
+                let v = Self::translate_operand(builder, op, vars, string_ids, module, func_ids);
+                let is_str = matches!(
+                    op,
+                    Operand::Copy(l) | Operand::Move(l)
+                        if crate::mir::optimizations::gencheck::str_backed(&func_mir.locals[l.0].ty)
+                );
+                if is_str {
+                    let id = func_ids
+                        .get("__olive_str_gen_of")
+                        .expect("missing __olive_str_gen_of");
+                    let local_func = module.declare_func_in_func(*id, builder.func);
+                    let inst = builder.ins().call(local_func, &[v]);
+                    return builder.inst_results(inst)[0];
+                }
+                let is_struct = matches!(
+                    op,
+                    Operand::Copy(l) | Operand::Move(l)
+                        if crate::mir::optimizations::gencheck::struct_backed(&func_mir.locals[l.0].ty)
+                );
+                if is_struct {
+                    let id = func_ids
+                        .get("__olive_struct_gen_of")
+                        .expect("missing __olive_struct_gen_of");
+                    let local_func = module.declare_func_in_func(*id, builder.func);
+                    let inst = builder.ins().call(local_func, &[v]);
+                    return builder.inst_results(inst)[0];
+                }
+                // Branchless null guard: a null borrow reads a scratch slot;
+                // the check that consumes the word skips null anyway.
+                let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    8,
+                    3,
+                ));
+                let scratch = builder.ins().stack_addr(types::I64, slot, 0);
+                let header = builder.ins().iadd_imm(v, -8);
+                let is_null = builder.ins().icmp_imm(IntCC::Equal, v, 0);
+                let addr = builder.ins().select(is_null, scratch, header);
+                builder.ins().load(types::I64, MemFlags::trusted(), addr, 0)
+            }
             Rvalue::Call { func, args } => Self::translate_call(
                 func_mir,
                 module,
@@ -250,7 +291,7 @@ impl<M: Module> CraneliftCodegen<M> {
                     while let OliveType::Ref(inner) | OliveType::MutRef(inner) = obj_ty {
                         obj_ty = inner;
                     }
-                    if let OliveType::Struct(struct_name, _) = obj_ty {
+                    if let OliveType::Struct(struct_name, _, _) = obj_ty {
                         if let Some((offset, ty_name, bits)) =
                             c_struct_field_info(c_struct_offsets, struct_name, attr)
                         {
@@ -344,7 +385,7 @@ impl<M: Module> CraneliftCodegen<M> {
                         let inst = builder.ins().call(local_func, &[o, i]);
                         builder.inst_results(inst)[0]
                     }
-                    OliveType::Dict(_, _) | OliveType::Struct(_, _) => {
+                    OliveType::Dict(_, _) | OliveType::Struct(_, _, _) => {
                         let get_id = func_ids
                             .get("__olive_obj_get")
                             .expect("missing __olive_obj_get");

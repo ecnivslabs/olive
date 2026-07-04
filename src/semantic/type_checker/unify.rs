@@ -11,7 +11,7 @@ impl TypeChecker {
     pub(super) fn is_nullable_target(t: &Type) -> bool {
         matches!(
             t,
-            Type::Struct(_, _)
+            Type::Struct(_, _, _)
                 | Type::Enum(_, _)
                 | Type::TraitObject(_, _)
                 | Type::PyObject
@@ -229,10 +229,10 @@ impl TypeChecker {
 
             (Type::U64, Type::Int) | (Type::Int, Type::U64) => {}
 
-            (Type::Struct(name, _), Type::Int) | (Type::Int, Type::Struct(name, _))
+            (Type::Struct(name, _, _), Type::Int) | (Type::Int, Type::Struct(name, _, _))
                 if self.c_ffi_structs.contains(name.as_str()) => {}
 
-            (Type::Struct(a_name, a_args), Type::Struct(b_name, b_args)) => {
+            (Type::Struct(a_name, a_args, _), Type::Struct(b_name, b_args, _)) => {
                 if a_name != b_name || a_args.len() != b_args.len() {
                     self.errors.push(SemanticError::type_mismatch(
                         span,
@@ -274,8 +274,8 @@ impl TypeChecker {
                 }
             }
 
-            (Type::TraitObject(trait_name, _), Type::Struct(struct_name, _))
-            | (Type::Struct(struct_name, _), Type::TraitObject(trait_name, _)) => {
+            (Type::TraitObject(trait_name, _), Type::Struct(struct_name, _, _))
+            | (Type::Struct(struct_name, _, _), Type::TraitObject(trait_name, _)) => {
                 if !self
                     .type_traits
                     .contains(&(struct_name.clone(), trait_name.clone()))
@@ -314,7 +314,7 @@ impl TypeChecker {
 
             (other, Type::Union(members)) | (Type::Union(members), other) => {
                 // Struct satisfies union if it implements one of the union's trait-object members.
-                let implements_member = if let Type::Struct(sname, _) = other {
+                let implements_member = if let Type::Struct(sname, _, _) = other {
                     members.iter().any(|m| {
                         matches!(m, Type::TraitObject(tname, _)
                             if self.type_traits.contains(&(sname.clone(), tname.clone())))
@@ -368,7 +368,7 @@ impl TypeChecker {
             Type::Ref(inner) | Type::MutRef(inner) | Type::Future(inner) => {
                 self.occurs_check(id, inner.as_ref())
             }
-            Type::Struct(_, args) | Type::Enum(_, args) | Type::TraitObject(_, args) => {
+            Type::Struct(_, args, _) | Type::Enum(_, args) | Type::TraitObject(_, args) => {
                 args.iter().any(|arg| self.occurs_check(id, arg))
             }
             Type::Union(members) => members.iter().any(|m| self.occurs_check(id, m)),
@@ -447,11 +447,12 @@ impl TypeChecker {
             Type::Ref(inner) => Type::Ref(Box::new(self.apply_subst_impl(*inner, finalize))),
             Type::MutRef(inner) => Type::MutRef(Box::new(self.apply_subst_impl(*inner, finalize))),
             Type::Future(inner) => Type::Future(Box::new(self.apply_subst_impl(*inner, finalize))),
-            Type::Struct(name, args) => Type::Struct(
+            Type::Struct(name, args, is_ffi) => Type::Struct(
                 name,
                 args.into_iter()
                     .map(|a| self.apply_subst_impl(a, finalize))
                     .collect(),
+                is_ffi,
             ),
             Type::Enum(name, args) => Type::Enum(
                 name,
@@ -542,7 +543,9 @@ impl TypeChecker {
                         {
                             Type::TraitObject(trait_name, resolved_args)
                         } else {
-                            Type::Struct(name.clone(), resolved_args)
+                            let is_ffi =
+                                matches!(self.lookup_type(name), Some(Type::Struct(_, _, true)));
+                            Type::Struct(name.clone(), resolved_args, is_ffi)
                         }
                     }
                 }

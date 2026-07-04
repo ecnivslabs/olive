@@ -17,7 +17,7 @@ pub enum Type {
     Bytes,
     Bool,
     Null,
-    Struct(String, Vec<Type>),
+    Struct(String, Vec<Type>, bool),
     Enum(String, Vec<Type>),
     TraitObject(String, Vec<Type>),
     Param(String),
@@ -71,7 +71,6 @@ impl Type {
                 | Type::Any
                 | Type::PyObject
                 | Type::PyNamed(_, _)
-                | Type::Str
                 | Type::Ref(_)
                 | Type::MutRef(_)
                 | Type::Ptr(_)
@@ -111,7 +110,9 @@ impl fmt::Display for Type {
                 }
                 Ok(())
             }
-            Type::Struct(name, args) | Type::Enum(name, args) | Type::TraitObject(name, args) => {
+            Type::Struct(name, args, _)
+            | Type::Enum(name, args)
+            | Type::TraitObject(name, args) => {
                 write!(f, "{}", name)?;
                 if !args.is_empty() {
                     write!(f, "[")?;
@@ -256,9 +257,9 @@ mod tests {
 
     #[test]
     fn struct_type() {
-        let t = Type::Struct("Point".into(), vec![Type::Int, Type::Int]);
+        let t = Type::Struct("Point".into(), vec![Type::Int, Type::Int], false);
         let (name, _fields) = match &t {
-            Type::Struct(n, f) => (n, f),
+            Type::Struct(n, f, _) => (n, f),
             _ => panic!(),
         };
         assert_eq!(name, "Point");

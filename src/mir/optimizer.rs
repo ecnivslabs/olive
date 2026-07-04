@@ -4,10 +4,11 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use crate::mir::optimizations::{
     Transform, algebraic::AlgebraicSimplification, bounds_check_elim::BoundsCheckElim,
     const_fold::ConstantFolding, const_prop::ConstantPropagation, copy_prop::CopyPropagation,
-    cse::CommonSubexpressionElimination, dce::DeadCodeElimination, gvn::GlobalValueNumbering,
-    inliner::Inliner, licm::Licm, loop_unroll::LoopUnroll, move_elision::MoveElision,
-    peephole::PeepholeOptimize, scalarize::ScalarizeStructs, simplify_cfg::SimplifyCfg,
-    strength_reduction::StrengthReduction, tail_call::TailCallOpt, vectorize::LoopVectorizer,
+    cse::CommonSubexpressionElimination, dce::DeadCodeElimination, gencheck::GenCheckInsertion,
+    gvn::GlobalValueNumbering, inliner::Inliner, licm::Licm, loop_unroll::LoopUnroll,
+    move_elision::MoveElision, ownership::OwnershipInference, peephole::PeepholeOptimize,
+    scalarize::ScalarizeStructs, simplify_cfg::SimplifyCfg, strength_reduction::StrengthReduction,
+    tail_call::TailCallOpt, vectorize::LoopVectorizer,
 };
 
 pub struct Optimizer {
@@ -76,11 +77,25 @@ impl Optimizer {
     }
 
     pub fn run(&self, functions: &mut [MirFunction]) {
+        // Ownership inference is semantic (not optional): drops must agree
+        // with the inferred owner in every pipeline.
+        let ownership = OwnershipInference {
+            borrowed_returns: crate::mir::optimizations::ownership::compute_borrowed_returns(
+                functions,
+            ),
+            param_escapes: crate::mir::optimizations::ownership::compute_param_escapes(functions),
+        };
+        for func in functions.iter_mut() {
+            ownership.run(func);
+        }
+
         if !self.release {
             for func in functions.iter_mut() {
                 SimplifyCfg.run(func);
                 DeadCodeElimination.run(func);
+                MoveElision.run(func);
             }
+            self.insert_gen_checks(functions, ownership);
             return;
         }
 
@@ -136,6 +151,20 @@ impl Optimizer {
             // Runs last so no later pass can rewrite an access whose bounds
             // check it has already proven redundant.
             BoundsCheckElim.run(func);
+        }
+
+        self.insert_gen_checks(functions, ownership);
+    }
+
+    /// Runs after every other pass in both pipelines: checks must sit exactly
+    /// where the analysis proved them necessary on the final statement order.
+    fn insert_gen_checks(&self, functions: &mut [MirFunction], ownership: OwnershipInference) {
+        let gencheck = GenCheckInsertion {
+            borrowed_returns: ownership.borrowed_returns,
+            param_escapes: ownership.param_escapes,
+        };
+        for func in functions.iter_mut() {
+            gencheck.run(func);
         }
     }
 }

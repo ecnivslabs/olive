@@ -28,6 +28,9 @@ pub(super) struct LoopContext {
     /// everything from this depth up, since they skip the loop body's normal
     /// end-of-iteration `leave_scope`.
     pub(super) scope_depth: usize,
+    /// Iterator handle to free on every path out of the loop. `Any`-typed, so
+    /// scope drops skip it; the exit block and `return` free it explicitly.
+    pub(super) cleanup: Option<Local>,
 }
 
 /// A lifted nested fn: `mangled` is the global name (`parent$name`),
@@ -551,6 +554,31 @@ impl<'a> MirBuilder<'a> {
         }
     }
 
+    /// Frees a loop's iterator handle. The runtime call is idempotent (guarded
+    /// by the live-object registry), so converging paths may each emit one.
+    pub(super) fn emit_iter_free(&mut self, iter_local: Local) {
+        let sink = self.new_unscoped_local(Type::Int);
+        self.push_statement(
+            StatementKind::Assign(
+                sink,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("__olive_free_iter".to_string())),
+                    args: vec![Operand::Copy(iter_local)],
+                },
+            ),
+            Span::default(),
+        );
+    }
+
+    /// Frees the iterators of every loop still open at a `return`, which jumps
+    /// past each loop's exit block where they are normally freed.
+    pub(super) fn emit_open_loop_iter_frees(&mut self) {
+        let iters: Vec<Local> = self.loop_stack.iter().filter_map(|c| c.cleanup).collect();
+        for iter_local in iters {
+            self.emit_iter_free(iter_local);
+        }
+    }
+
     pub(super) fn get_type(&self, expr_id: usize) -> Type {
         let ty = self.expr_types.get(&expr_id).cloned().unwrap_or(Type::Any);
         let ty = if self.mono_type_map.is_empty() {
@@ -574,12 +602,15 @@ impl<'a> MirBuilder<'a> {
                 .get(n)
                 .cloned()
                 .unwrap_or_else(|| ty.clone()),
-            Type::Struct(n, args) if args.is_empty() && self.mono_type_map.contains_key(n) => {
+            Type::Struct(n, args, _is_ffi)
+                if args.is_empty() && self.mono_type_map.contains_key(n) =>
+            {
                 self.mono_type_map[n].clone()
             }
-            Type::Struct(n, args) => Type::Struct(
+            Type::Struct(n, args, is_ffi) => Type::Struct(
                 n.clone(),
                 args.iter().map(|a| self.subst_mono_type(a)).collect(),
+                *is_ffi,
             ),
             Type::Enum(n, args) => Type::Enum(
                 n.clone(),
@@ -712,13 +743,10 @@ impl<'a> MirBuilder<'a> {
         None
     }
 
+    /// Every use is a borrow; ownership transfers are inferred later from
+    /// liveness (ownership pass + MoveElision), never at the use site.
     pub(super) fn operand_for_local(&self, local: Local) -> Operand {
-        let decl = &self.current_locals[local.0];
-        if decl.ty.is_move_type() && decl.is_owning {
-            Operand::Move(local)
-        } else {
-            Operand::Copy(local)
-        }
+        Operand::Copy(local)
     }
 
     pub(super) fn is_terminated(&self) -> bool {

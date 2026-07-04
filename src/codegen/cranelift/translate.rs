@@ -31,8 +31,8 @@ pub(super) fn free_func_name_for_type(
         OliveType::Str => "__olive_free_str",
         OliveType::Bytes => "__olive_buf_free",
         OliveType::List(_) | OliveType::Tuple(_) | OliveType::Set(_) => "__olive_free_list",
-        OliveType::Struct(name, _) if struct_fields.contains_key(name) => "__olive_free_struct",
-        OliveType::Dict(_, _) | OliveType::Struct(_, _) => "__olive_free_obj",
+        OliveType::Struct(name, _, _) if struct_fields.contains_key(name) => "__olive_free_struct",
+        OliveType::Dict(_, _) | OliveType::Struct(_, _, _) => "__olive_free_obj",
         OliveType::Enum(_, _) => "__olive_free_enum",
         OliveType::Any => "__olive_free_any",
         // `T | None` is represented as the raw `T` value with `None` as a zero
@@ -389,6 +389,25 @@ impl<M: Module> CraneliftCodegen<M> {
                     val
                 };
 
+                // list_new always produces KIND_LIST (1) at runtime, but when
+                // the destination is typed [Any] the elements will be boxed —
+                // patch to KIND_ANY_LIST (15) so FFI proxies decode correctly.
+                if matches!(
+                    &func_mir.locals[local.0].ty,
+                    OliveType::List(inner) if matches!(inner.as_ref(), OliveType::Any)
+                ) && matches!(
+                    rval,
+                    crate::mir::ir::Rvalue::Call {
+                        func: crate::mir::ir::Operand::Constant(
+                            crate::mir::Constant::Function(name)
+                        ),
+                        ..
+                    } if name == "__olive_list_new"
+                ) {
+                    let any_kind = builder.ins().iconst(types::I64, 15_i64);
+                    builder.ins().store(MemFlags::trusted(), any_kind, val, 0);
+                }
+
                 builder.def_var(*var, val);
             }
             StatementKind::SetAttr(obj, attr, val_op) => {
@@ -400,7 +419,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 while let OliveType::Ref(inner) | OliveType::MutRef(inner) = obj_ty {
                     obj_ty = inner;
                 }
-                if let OliveType::Struct(struct_name, _) = obj_ty {
+                if let OliveType::Struct(struct_name, _, _) = obj_ty {
                     if let Some((offset, ty_name, bits)) =
                         c_struct_field_info(c_struct_offsets, struct_name, attr)
                     {
@@ -472,14 +491,18 @@ impl<M: Module> CraneliftCodegen<M> {
                         // otherwise every reassignment (e.g. a per-frame camera field) leaks.
                         // Struct storage is zero-initialized, so the first write decrefs a
                         // harmless null.
-                        if let Some(field_ty) = field_types.get(&(struct_name.clone(), attr.clone()))
+                        if let Some(field_ty) =
+                            field_types.get(&(struct_name.clone(), attr.clone()))
                             && matches!(field_ty, OliveType::PyObject)
                         {
                             let decref_id = func_ids
                                 .get("__olive_py_decref")
                                 .expect("missing __olive_py_decref");
                             let decref_func = module.declare_func_in_func(*decref_id, builder.func);
-                            let old = builder.ins().load(types::I64, MemFlags::trusted(), o, offset);
+                            let old =
+                                builder
+                                    .ins()
+                                    .load(types::I64, MemFlags::trusted(), o, offset);
                             builder.ins().call(decref_func, &[old]);
                         }
 
@@ -555,7 +578,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 let loc = loc_value(builder, module, loc_id);
 
                 match ty {
-                    OliveType::Dict(_, _) | OliveType::Struct(_, _) | OliveType::PyObject => {
+                    OliveType::Dict(_, _) | OliveType::Struct(_, _, _) | OliveType::PyObject => {
                         let set_id = func_ids
                             .get("__olive_obj_set")
                             .expect("missing __olive_obj_set");
@@ -625,7 +648,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 if !ty.is_move_type() {
                     return;
                 }
-                if let OliveType::Struct(name, _) = ty
+                if let OliveType::Struct(name, _, _) = ty
                     && c_struct_names.contains(name.as_str())
                 {
                     let var = vars.get(local).unwrap();
@@ -654,6 +677,29 @@ impl<M: Module> CraneliftCodegen<M> {
                 let var = vars.get(local).unwrap();
                 let val = builder.use_var(*var);
 
+                // A container type carries a descriptor so elements, fields,
+                // and payloads are freed by their static types instead of
+                // runtime guessing.
+                if let Some(desc_ty) = super::imports::drop_descriptor_type(ty, struct_fields) {
+                    let desc = super::imports::type_descriptor(
+                        desc_ty,
+                        struct_fields,
+                        field_types,
+                        enum_defs,
+                    );
+                    let data_id = *string_ids
+                        .get(&desc)
+                        .expect("drop descriptor not interned during collection");
+                    let local_data = module.declare_data_in_func(data_id, builder.func);
+                    let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                    let free_id = func_ids["__olive_free_typed"];
+                    let local_func = module.declare_func_in_func(free_id, builder.func);
+                    builder.ins().call(local_func, &[val, desc_ptr]);
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    builder.def_var(*var, zero);
+                    return;
+                }
+
                 let free_func_name = free_func_name_for_type(ty, struct_fields);
 
                 let free_id = func_ids
@@ -671,6 +717,74 @@ impl<M: Module> CraneliftCodegen<M> {
                 let val =
                     Self::translate_operand(builder, val_op, vars, string_ids, module, func_ids);
                 builder.ins().store(MemFlags::trusted(), val, ptr, 0);
+            }
+            StatementKind::GenCheck { value, generation } => {
+                let v = builder.use_var(*vars.get(value).unwrap());
+                let g = builder.use_var(*vars.get(generation).unwrap());
+
+                let fail = builder.create_block();
+                let ok = builder.create_block();
+                builder.set_cold_block(fail);
+
+                // Strings and structs use helpers instead of a raw read.
+                if crate::mir::optimizations::gencheck::str_backed(&func_mir.locals[value.0].ty) {
+                    let id = func_ids
+                        .get("__olive_str_gen_stale")
+                        .expect("missing __olive_str_gen_stale");
+                    let local_func = module.declare_func_in_func(*id, builder.func);
+                    let inst = builder.ins().call(local_func, &[v, g]);
+                    let stale = builder.inst_results(inst)[0];
+                    builder.ins().brif(stale, fail, &[], ok, &[]);
+                } else if crate::mir::optimizations::gencheck::struct_backed(
+                    &func_mir.locals[value.0].ty,
+                ) {
+                    let id = func_ids
+                        .get("__olive_struct_gen_stale")
+                        .expect("missing __olive_struct_gen_stale");
+                    let local_func = module.declare_func_in_func(*id, builder.func);
+                    let inst = builder.ins().call(local_func, &[v, g]);
+                    let stale = builder.inst_results(inst)[0];
+                    builder.ins().brif(stale, fail, &[], ok, &[]);
+                } else {
+                    let probe = builder.create_block();
+                    // Null carries no generation; later null handling reports it.
+                    let nonnull = builder.ins().icmp_imm(IntCC::NotEqual, v, 0);
+                    builder.ins().brif(nonnull, probe, &[], ok, &[]);
+
+                    builder.seal_block(probe);
+                    builder.switch_to_block(probe);
+                    let cur = builder.ins().load(types::I64, MemFlags::trusted(), v, -8);
+                    // Shift drops the shared bit; bit 0 must still read live.
+                    let diff = builder.ins().bxor(cur, g);
+                    let diff = builder.ins().ishl_imm(diff, 1);
+                    let dead = builder.ins().band_imm(cur, 1);
+                    let dead = builder.ins().bxor_imm(dead, 1);
+                    let stale = builder.ins().bor(diff, dead);
+                    builder.ins().brif(stale, fail, &[], ok, &[]);
+                }
+
+                builder.seal_block(fail);
+                builder.switch_to_block(fail);
+                let name = func_mir.locals[value.0]
+                    .name
+                    .as_deref()
+                    .and_then(|n| string_ids.get(n))
+                    .map(|id| {
+                        let local = module.declare_data_in_func(*id, builder.func);
+                        let ptr = builder.ins().symbol_value(types::I64, local);
+                        builder.ins().bor_imm(ptr, 1)
+                    })
+                    .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+                let loc = loc_value(builder, module, loc_id);
+                let fail_id = func_ids
+                    .get("__olive_stale_ref_fail")
+                    .expect("missing __olive_stale_ref_fail");
+                let local_func = module.declare_func_in_func(*fail_id, builder.func);
+                builder.ins().call(local_func, &[name, loc]);
+                builder.ins().trap(TrapCode::unwrap_user(1));
+
+                builder.seal_block(ok);
+                builder.switch_to_block(ok);
             }
             StatementKind::StorageLive(_) | StatementKind::StorageDead(_) => {}
             StatementKind::VectorStore(obj, idx, val_op) => {

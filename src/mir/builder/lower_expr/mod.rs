@@ -103,7 +103,7 @@ impl<'a> MirBuilder<'a> {
         span: Span,
     ) -> Operand {
         // Struct → Trait|None coercion must go through the trait fat pointer, not the union.
-        if let (Type::Struct(_, _), Type::Union(members)) = (from_ty, to_ty) {
+        if let (Type::Struct(_, _, _), Type::Union(members)) = (from_ty, to_ty) {
             let traits: Vec<&Type> = members
                 .iter()
                 .filter(|m| matches!(m, Type::TraitObject(_, _)))
@@ -114,7 +114,7 @@ impl<'a> MirBuilder<'a> {
         }
 
         if let Type::TraitObject(trait_name, _) = to_ty
-            && let Type::Struct(struct_name, _) = from_ty
+            && let Type::Struct(struct_name, _, _) = from_ty
         {
             let vtable_name = format!("__vtable_{}_{}", trait_name, struct_name);
             if !self.vtables.contains_key(&vtable_name)
@@ -123,7 +123,7 @@ impl<'a> MirBuilder<'a> {
                 let mut method_names = Vec::new();
                 for (method_name, _) in &trait_def.methods {
                     let mangled = format!("{}::{}", struct_name, method_name);
-                    if let Type::Struct(_, type_args) = from_ty
+                    if let Type::Struct(_, type_args, _) = from_ty
                         && !type_args.is_empty()
                     {
                         method_names.push(self.monomorphize(&mangled, type_args));
@@ -373,7 +373,7 @@ impl<'a> MirBuilder<'a> {
         };
 
         let (mut arg_ops, mut arg_kw_names, mut arg_tys) =
-            self.lower_call_args(args, callee, callee_name, expr.span);
+            self.lower_call_args(args, callee, expr.span);
 
         if let Some(kwarg_map) = self.expr_kwarg_maps.get(&expr.id) {
             let mut new_arg_ops = vec![Operand::Constant(Constant::Int(0)); kwarg_map.len()];
@@ -459,7 +459,7 @@ impl<'a> MirBuilder<'a> {
             );
         }
 
-        if let Type::Struct(struct_name, type_args) = callee_ty {
+        if let Type::Struct(struct_name, type_args, _) = callee_ty {
             return self.lower_struct_construct_call(
                 &struct_name,
                 &type_args,

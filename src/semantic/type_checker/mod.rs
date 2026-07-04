@@ -762,7 +762,11 @@ impl TypeChecker {
                         .iter()
                         .map(|p| Type::Param(p.clone()))
                         .collect::<Vec<_>>();
-                    self.define_type(name, Type::Struct(name.clone(), abstract_args), false);
+                    self.define_type(
+                        name,
+                        Type::Struct(name.clone(), abstract_args, false),
+                        false,
+                    );
                 }
                 crate::parser::StmtKind::Enum {
                     name, type_params, ..
@@ -873,7 +877,7 @@ impl TypeChecker {
 
                 Type::Fn(instantiated_params, Box::new(instantiated_ret), fresh_args)
             }
-            Type::Struct(name, args) => {
+            Type::Struct(name, args, is_ffi) => {
                 let mut fresh_args = Vec::new();
                 for arg in args {
                     if let Type::Param(_) = arg {
@@ -882,7 +886,7 @@ impl TypeChecker {
                         fresh_args.push(arg);
                     }
                 }
-                Type::Struct(name, fresh_args)
+                Type::Struct(name, fresh_args, is_ffi)
             }
             Type::Enum(name, args) => {
                 let mut fresh_args = Vec::new();
@@ -932,11 +936,12 @@ impl TypeChecker {
             Type::Future(inner) => {
                 Type::Future(Box::new(self.replace_params_with_vars(*inner, subst)))
             }
-            Type::Struct(name, args) => Type::Struct(
+            Type::Struct(name, args, is_ffi) => Type::Struct(
                 name,
                 args.into_iter()
                     .map(|a| self.replace_params_with_vars(a, subst))
                     .collect(),
+                is_ffi,
             ),
             Type::Enum(name, args) => Type::Enum(
                 name,
@@ -954,7 +959,7 @@ impl TypeChecker {
         type_args: &[Type],
     ) -> HashMap<String, Type> {
         let mut subst = HashMap::default();
-        if let Some(Type::Struct(_, params)) = self.lookup_type(struct_name) {
+        if let Some(Type::Struct(_, params, _)) = self.lookup_type(struct_name) {
             for (p, a) in params.iter().zip(type_args) {
                 if let Type::Param(name) = p {
                     subst.insert(name.clone(), a.clone());

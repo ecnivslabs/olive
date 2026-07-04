@@ -1,4 +1,11 @@
+use crate::slab::GenSlab;
 use crate::{KIND_BYTES, olive_str_from_ptr, olive_str_internal};
+use std::cell::UnsafeCell;
+
+thread_local! {
+    static BYTES_SLAB: UnsafeCell<GenSlab> =
+        const { UnsafeCell::new(GenSlab::new(std::mem::size_of::<OliveBytes>())) };
+}
 
 #[repr(C)]
 pub struct OliveBytes {
@@ -151,9 +158,14 @@ pub fn new_buf(data: Vec<u8>) -> i64 {
         cap: 0,
     };
     b.set_vec(data);
-    let res = Box::into_raw(Box::new(b)) as i64;
-    crate::register_object(res);
-    res
+    BYTES_SLAB.with(|sl| {
+        let sl = unsafe { &mut *sl.get() };
+        let (body, _) = sl.alloc();
+        unsafe {
+            std::ptr::write(body as *mut OliveBytes, b);
+        }
+        body as i64
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -287,13 +299,18 @@ pub extern "C" fn olive_buf_slice(buf: i64, start: i64, end: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_buf_free(buf: i64) {
-    if buf != 0 {
-        crate::unregister_object(buf);
+    if buf == 0 || !crate::slab::ptr_in_slab_span(buf) {
+        return;
+    }
+    if crate::slab::slot_is_live(buf) {
         unsafe {
-            let mut b = Box::from_raw(buf as *mut OliveBytes);
+            let b = &mut *(buf as *mut OliveBytes);
             drop(b.take_vec());
         }
     }
+    BYTES_SLAB.with(|sl| {
+        unsafe { &mut *sl.get() }.free(buf as *mut u8);
+    });
 }
 
 fn read_bytes<const N: usize>(buf: i64, offset: i64) -> Option<[u8; N]> {

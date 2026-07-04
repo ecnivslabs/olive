@@ -1,5 +1,7 @@
 use crate::panic::abort_unwrap;
+use crate::slab::GenSlab;
 use crate::{olive_str_from_ptr, olive_str_internal};
+use std::cell::UnsafeCell;
 
 pub(crate) const KIND_RESULT: i64 = 9;
 
@@ -10,27 +12,43 @@ pub struct OliveResult {
     pub payload: i64,
 }
 
+thread_local! {
+    static RESULT_SLAB: UnsafeCell<GenSlab> =
+        const { UnsafeCell::new(GenSlab::new(std::mem::size_of::<OliveResult>())) };
+}
+
 fn make_result(ok: bool, payload: i64) -> i64 {
-    let res = Box::into_raw(Box::new(OliveResult {
-        kind: KIND_RESULT,
-        tag: if ok { 1 } else { 0 },
-        payload,
-    })) as i64;
-    crate::register_object(res);
-    res
+    RESULT_SLAB.with(|sl| {
+        let sl = unsafe { &mut *sl.get() };
+        let (body, _) = sl.alloc();
+        unsafe {
+            std::ptr::write(
+                body as *mut OliveResult,
+                OliveResult {
+                    kind: KIND_RESULT,
+                    tag: if ok { 1 } else { 0 },
+                    payload,
+                },
+            );
+        }
+        body as i64
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_free_result(ptr: i64) {
-    if ptr != 0 {
-        crate::unregister_object(ptr);
-        unsafe {
-            let res = Box::from_raw(ptr as *mut OliveResult);
-            if crate::is_active_object(res.payload) {
-                crate::olive_free_any(res.payload);
-            }
+    if ptr == 0 || !crate::slab::ptr_in_slab_span(ptr) {
+        return;
+    }
+    if crate::slab::slot_is_live(ptr) {
+        let payload = unsafe { (*(ptr as *const OliveResult)).payload };
+        if crate::is_active_object(payload) {
+            crate::olive_free_any(payload);
         }
     }
+    RESULT_SLAB.with(|sl| {
+        unsafe { &mut *sl.get() }.free(ptr as *mut u8);
+    });
 }
 
 #[unsafe(no_mangle)]

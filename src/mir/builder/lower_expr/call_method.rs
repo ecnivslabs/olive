@@ -154,7 +154,7 @@ impl<'a> MirBuilder<'a> {
             }
             let is_struct_var = matches!(
                 current_obj_ty,
-                Type::Struct(_, _) | Type::TraitObject(_, _) | Type::Any
+                Type::Struct(_, _, _) | Type::TraitObject(_, _) | Type::Any
             ) && self.lookup_var(name).is_some();
             if !is_struct_var {
                 let mangled = format!("{}::{}", name, attr);
@@ -178,7 +178,7 @@ impl<'a> MirBuilder<'a> {
                 let call_ret_ty = self.get_type(expr_id);
 
                 if self.c_ffi_fns.contains(&mangled_str)
-                    && let Type::Struct(ref sname, ref targs) = call_ret_ty.clone()
+                    && let Type::Struct(ref sname, ref targs, _) = call_ret_ty.clone()
                     && sname == "Result"
                     && !targs.is_empty()
                 {
@@ -264,7 +264,7 @@ impl<'a> MirBuilder<'a> {
 
         let obj_ty = self.get_type(obj.id);
 
-        if let Type::Struct(struct_name, type_args) = &obj_ty {
+        if let Type::Struct(struct_name, type_args, _) = &obj_ty {
             let base_method_name = format!("{}::{}", struct_name, attr);
             let method_name = if !type_args.is_empty() {
                 self.monomorphize(&base_method_name, type_args)
@@ -330,7 +330,7 @@ impl<'a> MirBuilder<'a> {
             while let Type::Ref(inner) | Type::MutRef(inner) = &inner_ty {
                 inner_ty = *inner.clone();
             }
-            if let Type::Struct(struct_name, type_args) = &inner_ty {
+            if let Type::Struct(struct_name, type_args, _) = &inner_ty {
                 let base_method_name = format!("{}::{}", struct_name, attr);
                 let method_name = if !type_args.is_empty() {
                     self.monomorphize(&base_method_name, type_args)
@@ -708,7 +708,7 @@ impl<'a> MirBuilder<'a> {
 
         if let Some(fn_name) = &call_fn_name
             && self.c_ffi_fns.contains(fn_name)
-            && let Type::Struct(struct_name, type_args) = &ret_ty
+            && let Type::Struct(struct_name, type_args, _) = &ret_ty
             && struct_name == "Result"
             && !type_args.is_empty()
         {

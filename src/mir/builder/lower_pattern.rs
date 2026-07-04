@@ -285,7 +285,7 @@ impl<'a> MirBuilder<'a> {
             span,
         );
 
-        Operand::Move(result_local)
+        Operand::Copy(result_local)
     }
 
     #[allow(clippy::too_many_arguments)]

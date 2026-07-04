@@ -63,7 +63,7 @@ impl<'a> MirBuilder<'a> {
 
         let is_error = |ty: &Type| -> bool {
             match ty {
-                Type::Struct(name, _) | Type::Enum(name, _) => {
+                Type::Struct(name, _, _) | Type::Enum(name, _) => {
                     name == "Error" || name.ends_with("Error")
                 }
                 _ => false,
@@ -75,7 +75,7 @@ impl<'a> MirBuilder<'a> {
             for v in variants {
                 if is_error(v) {
                     match v {
-                        Type::Struct(name, _) => {
+                        Type::Struct(name, _, _) => {
                             error_type_id = Self::struct_type_id(name);
                             break;
                         }
@@ -89,7 +89,7 @@ impl<'a> MirBuilder<'a> {
             }
         } else if is_error(&inner_ty) {
             match &inner_ty {
-                Type::Struct(name, _) => {
+                Type::Struct(name, _, _) => {
                     error_type_id = Self::struct_type_id(name);
                 }
                 Type::Enum(name, _) => {

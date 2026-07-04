@@ -44,10 +44,11 @@ impl TypeChecker {
             let mut param_types = Vec::with_capacity(params.len());
             for (i, param) in params.iter().enumerate() {
                 if i == 0 && param.name == "self" && param.type_ann.is_none() {
-                    param_types.push(
-                        self.lookup_type(struct_name)
-                            .unwrap_or(Type::Struct(struct_name.to_string(), vec![])),
-                    );
+                    param_types.push(self.lookup_type(struct_name).unwrap_or(Type::Struct(
+                        struct_name.to_string(),
+                        vec![],
+                        false,
+                    )));
                 } else {
                     param_types.push(
                         param
@@ -62,7 +63,7 @@ impl TypeChecker {
 
             let mut all_type_params: Vec<Type> =
                 type_params.iter().map(|p| Type::Param(p.clone())).collect();
-            if let Some(Type::Struct(_, struct_args)) = self.lookup_type(struct_name) {
+            if let Some(Type::Struct(_, struct_args, _)) = self.lookup_type(struct_name) {
                 for arg in struct_args {
                     if !all_type_params.contains(&arg) {
                         all_type_params.push(arg);
@@ -242,7 +243,7 @@ impl TypeChecker {
                 if let crate::parser::ExprKind::Attr { obj, attr } = &target.kind {
                     let obj_ty = self.check_expr(obj);
                     let resolved_obj = self.apply_subst(obj_ty);
-                    if let Type::Struct(struct_name, _) = resolved_obj {
+                    if let Type::Struct(struct_name, _, _) = resolved_obj {
                         let existing = self
                             .field_types
                             .get(&(struct_name.clone(), attr.clone()))
@@ -362,7 +363,7 @@ impl TypeChecker {
                     type_params.iter().map(|p| Type::Param(p.clone())).collect();
 
                 if let Some(struct_name) = &self.current_struct
-                    && let Some(Type::Struct(_, struct_args)) = self.lookup_type(struct_name)
+                    && let Some(Type::Struct(_, struct_args, _)) = self.lookup_type(struct_name)
                 {
                     for arg in struct_args {
                         if !all_type_params.contains(&arg) {
@@ -426,10 +427,10 @@ impl TypeChecker {
                     {
                         let struct_name = self.current_struct.clone().unwrap();
                         if let Some(struct_ty) = self.lookup_type(&struct_name) {
-                            if let Type::Struct(_, args) = struct_ty {
-                                p_ty = Type::Struct(struct_name, args);
+                            if let Type::Struct(_, args, is_ffi) = struct_ty {
+                                p_ty = Type::Struct(struct_name, args, is_ffi);
                             } else {
-                                p_ty = Type::Struct(struct_name, Vec::new());
+                                p_ty = Type::Struct(struct_name, Vec::new(), false);
                             }
                         } else {
                             p_ty = Type::Any;
@@ -522,7 +523,7 @@ impl TypeChecker {
                     let ctx_ty = self.check_expr(&item.context_expr);
                     let resolved_ctx = self.apply_subst(ctx_ty.clone());
 
-                    if let Type::Struct(name, _) = &resolved_ctx {
+                    if let Type::Struct(name, _, _) = &resolved_ctx {
                         let enter_mangled = format!("{}::__enter__", name);
                         let exit_mangled = format!("{}::__exit__", name);
 
@@ -614,7 +615,11 @@ impl TypeChecker {
                     .iter()
                     .map(|p| Type::Param(p.clone()))
                     .collect::<Vec<_>>();
-                self.define_type(name, Type::Struct(name.clone(), abstract_args), false);
+                self.define_type(
+                    name,
+                    Type::Struct(name.clone(), abstract_args, false),
+                    false,
+                );
                 self.struct_fields.insert(
                     name.clone(),
                     fields.iter().map(|f| f.name.clone()).collect(),
@@ -710,7 +715,7 @@ impl TypeChecker {
                                     if !new_params.is_empty() {
                                         let first_name = match &new_params[0] {
                                             Type::TraitObject(n, _) => Some(n.clone()),
-                                            Type::Struct(n, _) => Some(n.clone()),
+                                            Type::Struct(n, _, _) => Some(n.clone()),
                                             _ => None,
                                         };
                                         if first_name == Some(tr.to_string())
@@ -892,7 +897,11 @@ impl TypeChecker {
                 }
                 for s in structs {
                     let type_name = format!("{}::{}", alias, s.name);
-                    self.define_type(&type_name, Type::Struct(type_name.clone(), vec![]), false);
+                    self.define_type(
+                        &type_name,
+                        Type::Struct(type_name.clone(), vec![], true),
+                        false,
+                    );
                     self.c_ffi_structs.insert(type_name.clone());
                     for field in &s.fields {
                         let resolved = self.resolve_type_expr(&field.ty);
