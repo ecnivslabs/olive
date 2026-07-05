@@ -674,6 +674,36 @@ impl TypeChecker {
                 let obj_ty = self.check_expr(obj);
                 let resolved_obj = self.apply_subst(obj_ty);
 
+                if let ExprKind::Identifier(name) = &obj.kind {
+                    let mangled = format!("{}::{}", name, attr);
+                    let is_py_stub = self
+                        .py_fn_arity
+                        .get(name)
+                        .map(|fns| fns.contains_key(attr))
+                        .unwrap_or(false);
+                    if !is_py_stub {
+                        if let Some(ty) = self.lookup_type(&mangled) {
+                            let instantiated = self.instantiate(ty);
+                            if let Type::Fn(params, _, _) = &instantiated
+                                && !params.is_empty()
+                            {
+                                let mut auto_ref_obj = resolved_obj.clone();
+                                if let Type::MutRef(inner) = &params[0] {
+                                    if auto_ref_obj == **inner {
+                                        auto_ref_obj = Type::MutRef(Box::new(auto_ref_obj));
+                                    }
+                                } else if let Type::Ref(inner) = &params[0]
+                                    && auto_ref_obj == **inner
+                                {
+                                    auto_ref_obj = Type::Ref(Box::new(auto_ref_obj));
+                                }
+                                self.unify(&params[0], &auto_ref_obj, expr.span);
+                            }
+                            return instantiated;
+                        }
+                    }
+                }
+
                 if let Type::PyNamed(ref m, ref n) = resolved_obj {
                     if let Some(field_ty) = self.resolve_py_field(m, n, attr) {
                         return field_ty;
@@ -683,29 +713,6 @@ impl TypeChecker {
 
                 if resolved_obj.is_py_value() {
                     return Type::PyObject;
-                }
-
-                if let ExprKind::Identifier(name) = &obj.kind {
-                    let mangled = format!("{}::{}", name, attr);
-                    if let Some(ty) = self.lookup_type(&mangled) {
-                        let instantiated = self.instantiate(ty);
-                        if let Type::Fn(params, _, _) = &instantiated
-                            && !params.is_empty()
-                        {
-                            let mut auto_ref_obj = resolved_obj.clone();
-                            if let Type::MutRef(inner) = &params[0] {
-                                if auto_ref_obj == **inner {
-                                    auto_ref_obj = Type::MutRef(Box::new(auto_ref_obj));
-                                }
-                            } else if let Type::Ref(inner) = &params[0]
-                                && auto_ref_obj == **inner
-                            {
-                                auto_ref_obj = Type::Ref(Box::new(auto_ref_obj));
-                            }
-                            self.unify(&params[0], &auto_ref_obj, expr.span);
-                        }
-                        return instantiated;
-                    }
                 }
 
                 let mut inner_obj = resolved_obj.clone();

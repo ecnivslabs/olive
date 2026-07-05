@@ -40,6 +40,22 @@ impl<'a> MirBuilder<'a> {
         span: Span,
         expr_id: usize,
     ) -> Operand {
+        if let ExprKind::Identifier(name) = &obj.kind {
+            if self.has_native_module_fn(name, attr) {
+                let mangled = format!("{}::{}", name, attr);
+                let func_op = Operand::Constant(Constant::Function(mangled));
+                return self.lower_general_call_path(
+                    callee,
+                    func_op,
+                    arg_ops,
+                    arg_kw_names,
+                    arg_tys,
+                    span,
+                    expr_id,
+                );
+            }
+        }
+
         let obj_ty = self.get_type(obj.id);
         if obj_ty.is_py_value() {
             let obj_op = self.lower_expr_as_copy(obj);
@@ -1134,5 +1150,12 @@ impl<'a> MirBuilder<'a> {
         );
 
         Operand::Copy(obj_tmp)
+    }
+
+    pub(super) fn has_native_module_fn(&self, name: &str, attr: &str) -> bool {
+        let mangled = format!("{}::{}", name, attr);
+        self.fn_meta.contains_key(&mangled)
+            || self.lookup_var(&mangled).is_some()
+            || self.globals.contains_key(&mangled)
     }
 }
