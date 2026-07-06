@@ -849,6 +849,13 @@ pub(super) fn ffi_cl_type(name: &str) -> cranelift::prelude::Type {
 }
 
 impl CraneliftCodegen<JITModule> {
+    /// Surrenders the module so a test harness can `free_memory` it; cranelift
+    /// leaks JIT mappings otherwise.
+    #[cfg(test)]
+    pub(crate) fn into_module(self) -> JITModule {
+        self.module
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new_jit(
         functions: Vec<MirFunction>,
