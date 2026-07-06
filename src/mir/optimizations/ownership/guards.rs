@@ -127,6 +127,11 @@ fn owning_roots(
 }
 
 /// At a view's return: alias deletes the root's drop, interior copies out first, else guard by pointer compare.
+///
+/// Invariant: the MIR builder places every root drop in the same basic block
+/// as its `_return = value` assignment, so this pass only scans the current
+/// block. Cross-block drops cannot be produced by the builder; if that ever
+/// changes, process_return_sites must follow the drop into successor blocks.
 pub(super) fn process_return_sites(
     func: &mut MirFunction,
     classes: &[LocalClass],

@@ -1,6 +1,11 @@
 //! Whole-program summaries the per-function ownership pass consumes: which
 //! params escape into longer-lived storage, and which functions may return a
 //! borrow instead of a fresh value.
+//!
+//! Limitation: `collect_assigns` and `params_escaping` scan only
+//! `Constant::Function` callees. Indirect calls through function-typed values
+//! are invisible to the escape analysis, so escapes through those edges are
+//! undetected here and left to the gencheck runtime backstop (E0707).
 
 use crate::mir::*;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};

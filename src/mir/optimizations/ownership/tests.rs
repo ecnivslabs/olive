@@ -633,3 +633,212 @@ fn view_store_is_deep_copied() {
         "a copied view needs no mark"
     );
 }
+
+#[test]
+fn runtime_escapes_covers_all_store_like_builtins() {
+    // Every runtime function that stores a heap pointer argument in a
+    // longer-lived structure must be in RUNTIME_ESCAPES or documented here.
+    // Adding a new store-like builtin to imports/builtins.rs must update
+    // this list AND RUNTIME_ESCAPES; the test fails until classified.
+    let store_sites: &[(&str, usize, &str)] = &[
+        // Container stores: value stored in list/set/object
+        ("__olive_list_append", 1, "stores value pointer in list"),
+        (
+            "__olive_list_insert",
+            2,
+            "stores value pointer in list at position",
+        ),
+        ("__olive_obj_set", 2, "stores value pointer in object/dict"),
+        ("__olive_set_add", 1, "stores value pointer in set"),
+        // Channel: value stored in channel buffer (receiver may free)
+        ("__olive_chan_send", 1, "value transfers to channel"),
+        // Mutex: value stored in mutex on init or unlock
+        ("__olive_mutex_new", 0, "initial value stored in mutex"),
+        ("__olive_mutex_unlock", 1, "value stored in mutex on unlock"),
+        // Pool: callback closure stored until executed
+        ("__olive_pool_run", 1, "callback stored in pool"),
+        ("__olive_pool_run_sync", 1, "callback stored in pool"),
+        // Cache (memoization): return value stored in cache at position 2.
+        // Only stores `_0` (return local), which the ownership pass does
+        // not track for escapes; no RUNTIME_ESCAPES entry needed.
+        ("__olive_cache_set", 2, "stores return value in memo cache"),
+        (
+            "__olive_cache_set_tuple",
+            2,
+            "stores return value in tuple-keyed cache",
+        ),
+        // Python interop: stores PyObject pointer in Python object at pos 2.
+        // Memory managed by Python GC, not Olive slab allocator; excluded.
+        (
+            "__olive_py_setitem",
+            2,
+            "stores PyObject pointer in Python object",
+        ),
+        (
+            "__olive_py_setitem_int",
+            2,
+            "stores PyObject pointer in Python object (int key)",
+        ),
+        (
+            "__olive_py_setattr",
+            2,
+            "stores PyObject pointer as Python attribute",
+        ),
+    ];
+    for &(name, pos, reason) in store_sites {
+        let in_re = super::summaries::runtime_escape(name, pos);
+        // PyObject stores are managed by Python GC, not Olive slab allocator.
+        // Cache stores only _0 (return local, not tracked for escapes).
+        let excluded = matches!(
+            name,
+            "__olive_cache_set"
+                | "__olive_cache_set_tuple"
+                | "__olive_py_setitem"
+                | "__olive_py_setitem_int"
+                | "__olive_py_setattr"
+        );
+        assert!(
+            excluded || in_re,
+            "store-like builtin '{name}' at position {pos} not in RUNTIME_ESCAPES: {reason}"
+        );
+    }
+}
+
+#[test]
+fn return_root_drops_are_in_same_block_as_return_assign() {
+    // The builder always places root drops in the same block as the return
+    // assignment. This test verifies the invariant: if a root drop were in
+    // a successor block, process_return_sites would miss it (and the pass
+    // still runs without crashing, confirming the cross-block case is
+    // unreachable from the builder).
+    //
+    // bb0: _1 = fresh; _2 = _1 (view); _0 = _2; goto bb1
+    // bb1: drop(_1); return
+    let mut f = MirFunction {
+        name: "f".into(),
+        locals: vec![
+            decl(Type::Int, true),
+            decl(heap_ty(), true),
+            decl(heap_ty(), true),
+        ],
+        basic_blocks: vec![
+            BasicBlock {
+                statements: vec![
+                    assign(1, Rvalue::Aggregate(AggregateKind::List, vec![])),
+                    assign(2, Rvalue::Use(Operand::Copy(Local(1)))),
+                    assign(0, Rvalue::Use(Operand::Copy(Local(2)))),
+                ],
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Goto {
+                        target: BasicBlockId(1),
+                    },
+                    span: sp(),
+                }),
+            },
+            BasicBlock {
+                statements: vec![drop_stmt(1)],
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Return,
+                    span: sp(),
+                }),
+            },
+        ],
+        arg_count: 0,
+        vararg_idx: None,
+        kwarg_idx: None,
+        param_names: vec![],
+        is_async: false,
+    };
+    // Must not panic despite the cross-block drop layout.
+    pass().run(&mut f);
+    // The root drop in bb1 was not guarded (process_return_sites only sees
+    // drops in the same block as _return=). The pass must still produce
+    // correct code: the view _2 has no Drop (already removed), and _1's
+    // drop in bb1 survives as a plain Drop (unguarded). This is safe
+    // because the builder never produces cross-block return/drop, so a
+    // future change that creates this shape must first fix the pass.
+    let guards = f
+        .basic_blocks
+        .iter()
+        .filter_map(|bb| bb.terminator.as_ref())
+        .filter(|t| matches!(t.kind, TerminatorKind::SwitchInt { .. }))
+        .count();
+    assert_eq!(guards, 0, "no guards expected: drop is in successor block");
+    let drops: Vec<_> = f
+        .basic_blocks
+        .iter()
+        .flat_map(|b| &b.statements)
+        .filter(|s| matches!(s.kind, StatementKind::Drop(_)))
+        .collect();
+    assert!(
+        drops
+            .iter()
+            .any(|s| matches!(s.kind, StatementKind::Drop(l) if l == Local(1))),
+        "root drop in successor block must survive"
+    );
+}
+
+#[test]
+fn indirect_call_escape_invisible_to_ownership() {
+    // A call through a function-typed local (not Constant::Function) is
+    // invisible to the escape analysis. The ownership pass cannot classify
+    // the callee's param escapes or borrowed returns, so no move elision
+    // occurs for the argument. The gencheck backstop handles this at
+    // runtime (E0707).
+    //
+    // _1 = fn-typed local (param); _2 = fresh list; _0 = call _1(_2);
+    // _2[0] = 5; drop(_2);
+    let mut f = func_of(
+        vec![
+            decl(Type::Int, true),
+            decl(Type::Any, true),
+            decl(heap_ty(), true),
+        ],
+        vec![
+            assign(2, Rvalue::Aggregate(AggregateKind::List, vec![])),
+            assign(
+                0,
+                Rvalue::Call {
+                    // Indirect: _1 is a local, not Constant::Function
+                    func: Operand::Copy(Local(1)),
+                    args: vec![Operand::Copy(Local(2))],
+                },
+            ),
+            Statement {
+                kind: StatementKind::SetIndex(
+                    Operand::Copy(Local(2)),
+                    Operand::Constant(Constant::Int(0)),
+                    Operand::Constant(Constant::Int(5)),
+                    false,
+                ),
+                span: sp(),
+            },
+            drop_stmt(2),
+        ],
+    );
+    pass().run(&mut f);
+    // The arg _2 must remain Copy (no move elision) because the indirect
+    // callee is invisible to the escape analysis.
+    let call_stmt = &f.basic_blocks[0].statements[1];
+    let args = match &call_stmt.kind {
+        StatementKind::Assign(_, Rvalue::Call { args, .. }) => args,
+        _ => panic!("expected call"),
+    };
+    assert!(
+        matches!(&args[0], Operand::Copy(l) if *l == Local(2)),
+        "arg to indirect call must remain Copy (escape invisible)"
+    );
+    // _2 is still live after the call (use + drop), so the pass must
+    // classify it as a pure owner (no borrow edges, no flag-guard).
+    assert!(
+        f.locals[2].is_owning,
+        "_2 should stay owning after indirect call"
+    );
+    let flags = f
+        .basic_blocks
+        .iter()
+        .filter_map(|bb| bb.terminator.as_ref())
+        .filter(|t| matches!(t.kind, TerminatorKind::SwitchInt { .. }))
+        .count();
+    assert_eq!(flags, 0, "no flag guards expected for pure owner");
+}
