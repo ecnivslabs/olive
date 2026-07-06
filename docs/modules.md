@@ -269,8 +269,8 @@ import aio
 
 ```rust
 aio.run(future)                         // run a future to completion
-aio.gather(futures)                     // run futures in parallel, wait for all
-aio.select(futures)                     // run futures, return when first completes
+aio.gather(futures)                     // run futures in parallel, resolve with all results in order
+aio.select(futures)                     // run futures in parallel, resolve with the first result
 aio.cancel(future)                      // cancel a running future
 aio.free_future(future)                 // free a future handle
 ```

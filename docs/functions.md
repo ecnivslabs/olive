@@ -52,6 +52,23 @@ let n = first([1, 2, 3])      // T is inferred as int
 let s = first(["a", "b"])    // T is inferred as str
 ```
 
+## Nested Functions
+
+Functions can be defined inside other functions. A nested function can read
+the variables of its enclosing function; the captures are resolved at compile
+time with no allocation:
+
+```rust
+fn scale_all(values: [int], factor: int) -> [int]:
+    fn scale(x: int) -> int:
+        return x * factor
+    return [scale(v) for v in &values]
+```
+
+A nested function must be called within its enclosing function. Returning it
+or storing it for later is a compile error (`E0423`), because the captured
+variables die with the enclosing call.
+
 ## Function Types
 
 You can use function types to specify that a parameter must be a function with a specific signature.

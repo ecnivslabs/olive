@@ -1,6 +1,6 @@
 # Compiler Internals
 
-The Olive compiler (`olivc`) transforms source code into optimized native machine code through a sequence of representations. The compiler architecture prioritizes low compilation latency; the entire pipeline from invocation to execution typically completes in milliseconds.
+The Olive compiler transforms source code into optimized native machine code through a sequence of representations. The architecture prioritizes low compilation latency; the pipeline from invocation to execution typically completes in milliseconds.
 
 ## 1. Lexical Analysis (`lexer/`)
 
@@ -36,21 +36,44 @@ MIR is the central representation in the compiler. It models the program as a Co
 
 ## 5. Borrow Checking (`borrow_check/`)
 
-The borrow checker enforces memory safety on the MIR CFG without a garbage collector.
+The borrow checker validates explicit references (`&`, `&mut`) on the MIR CFG.
 
 - **Liveness analysis**: Computes which variables are live at each program point.
-- **Dataflow tracking**: Follows references back to their origin to verify aliasing and mutation rules.
-- **NLL (Non-Lexical Lifetimes)**: Borrows end when the reference is last used, not at the end of the lexical scope. This avoids false positives that would force unnecessary code restructuring.
-- **Ownership rules**: Enforces single ownership and exclusive mutable borrowing.
+- **Aliasing rules**: Many readers or one writer, never both. Violations are compile errors (`E0503` and friends).
+- **NLL (Non-Lexical Lifetimes)**: Borrows end when the reference is last used, not at the end of the lexical scope.
 
-## 6. Codegen & JIT Runtime (`codegen/`)
+Plain assignments and function arguments are not checked here; those are handled by ownership inference below, which keeps them safe without rejecting programs.
+
+## 6. Ownership Inference (`mir/optimizations/ownership/`)
+
+Olive has no garbage collector. The builder lowers every use of a heap value as a copy and every scope exit as a drop; this pass then reclassifies each local as an owner, a view, or dynamically owned, and rewrites the drops to match.
+
+- **Whole-program summaries**: A fixpoint analysis computes which function parameters escape into longer-lived storage and which functions may return a borrow. Callers use these summaries to decide moves and copies.
+- **Move promotion**: A copy whose source is dead afterwards becomes a move; the stale drop is removed.
+- **Copy on escape**: A value stored into a container while still live elsewhere is deep-copied at the store, so no value ever has two owners. See [Ownership](ownership.md) for the user-facing semantics.
+- **Reassignment frees**: A sole owner that gets reassigned frees the old value first instead of leaking it.
+- **Drop guards**: Locals whose ownership depends on the path taken get a shadow flag; their drops test it at runtime.
+
+## 7. Generation Checks (`mir/optimizations/gencheck/`)
+
+The runtime backstop for what inference cannot prove. Heap objects live in generational slab allocators (`std_lib`): every slot carries a generation counter that increments on allocation and free. This pass runs after all other optimizations and inserts checks on suspect borrows: the generation is captured at borrow time and re-validated before uses a free could precede. A failed check aborts with `E0707` and a source caret. Checks are elided when a forward analysis proves no free can intervene, so well-typed hot paths pay nothing.
+
+## 8. Codegen (`codegen/`)
 
 The final stage compiles MIR to native machine code through Cranelift.
 
-- **SSA generation**: MIR is converted to Static Single Assignment form, which is Cranelift's native input format.
-- **Intrinsics**: The JIT runtime provides optimized intrinsics for memory allocation, string operations, SIMD, and built-in standard library calls.
-- **Standard library**: Built-in runtime symbols (`math`, `io`, `aio`, `net`, `requests`, `random`) are resolved from a dynamically loaded shared library rather than being baked into the JIT. This keeps startup fast and the binary lean.
-- **Execution**: Compiled functions are loaded into executable memory and invoked directly by the Olive runtime.
+- **SSA generation**: MIR is converted to Static Single Assignment form, Cranelift's native input format.
+- **Two backends**: `pit run` JIT-compiles into executable memory and runs immediately; `pit build` emits object files through the same MIR pipeline and links a native executable.
+- **Standard library**: Runtime symbols (`math`, `io`, `aio`, `net`, `requests`, `random`, allocators) are resolved from a dynamically loaded shared library rather than baked into the JIT. This keeps startup fast and the binary lean.
+
+## 9. JIT Tiering and Profiling
+
+The JIT starts every function at a fast-to-compile tier and upgrades hot code while the program runs.
+
+- **Dispatch cells**: Calls go through a per-function pointer cell, so a recompiled body can be swapped in without patching call sites.
+- **Hot counts**: Per-function entry counters decide when a function is worth retiering.
+- **Any-op specialization**: Call sites record the runtime kinds flowing through `Any` arithmetic. A site that has only seen ints graduates to a guarded fast path: inline integer ops with a fallback branch for anything else.
+- **PGO**: `pit build` can consume a profile from a previous run to make the same decisions ahead of time.
 
 ## Error Reporting & Diagnostics
 
@@ -59,6 +82,8 @@ Olive uses the `ariadne` library for error formatting. Each diagnostic includes:
 1. **Error code and message**: A clear description of what went wrong.
 2. **Source snippet**: The relevant code with markers pointing to the exact location.
 3. **Help text**: A suggestion for how to fix it, derived from semantic analysis.
+
+`pit explain <code>` prints a longer explanation with a wrong and a fixed example for every code, including the runtime faults (`E0700` and up).
 
 ## Performance Approach
 
