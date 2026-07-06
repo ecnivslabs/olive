@@ -472,7 +472,7 @@ impl<M: Module> CraneliftCodegen<M> {
                             builder, val_op, vars, string_ids, module, func_ids,
                         );
                         let v = if let Operand::Copy(src) = val_op
-                            && matches!(func_mir.locals[src.0].ty, OliveType::PyObject)
+                            && func_mir.locals[src.0].ty.is_py_value()
                         {
                             let copy_ref_id = func_ids
                                 .get("__olive_py_copy_ref")
@@ -561,7 +561,7 @@ impl<M: Module> CraneliftCodegen<M> {
 
                 // Incref a borrowed PyObject; the container decrefs it on drop.
                 let v = if let Operand::Copy(src) = val_op
-                    && matches!(func_mir.locals[src.0].ty, OliveType::PyObject)
+                    && func_mir.locals[src.0].ty.is_py_value()
                 {
                     let copy_ref_id = func_ids
                         .get("__olive_py_copy_ref")
