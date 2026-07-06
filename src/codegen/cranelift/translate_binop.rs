@@ -38,40 +38,40 @@ impl<M: Module> CraneliftCodegen<M> {
 
         let is_py = is_pyobj_op(func_mir, lhs) || is_pyobj_op(func_mir, rhs);
         if is_py && matches!(op, Add | Sub | Mul | Div | Mod | Pow) {
-            let l_val = if is_float_op(func_mir, lhs) {
+            let (l_val, l_coerced) = if is_float_op(func_mir, lhs) {
                 let func_id = func_ids
                     .get("__olive_py_from_float")
                     .expect("missing __olive_py_from_float");
                 let local_func = module.declare_func_in_func(*func_id, builder.func);
                 let inst = builder.ins().call(local_func, &[l]);
-                builder.inst_results(inst)[0]
+                (builder.inst_results(inst)[0], true)
             } else if !is_pyobj_op(func_mir, lhs) {
                 let func_id = func_ids
                     .get("__olive_py_from_int")
                     .expect("missing __olive_py_from_int");
                 let local_func = module.declare_func_in_func(*func_id, builder.func);
                 let inst = builder.ins().call(local_func, &[l]);
-                builder.inst_results(inst)[0]
+                (builder.inst_results(inst)[0], true)
             } else {
-                l
+                (l, false)
             };
 
-            let r_val = if is_float_op(func_mir, rhs) {
+            let (r_val, r_coerced) = if is_float_op(func_mir, rhs) {
                 let func_id = func_ids
                     .get("__olive_py_from_float")
                     .expect("missing __olive_py_from_float");
                 let local_func = module.declare_func_in_func(*func_id, builder.func);
                 let inst = builder.ins().call(local_func, &[r]);
-                builder.inst_results(inst)[0]
+                (builder.inst_results(inst)[0], true)
             } else if !is_pyobj_op(func_mir, rhs) {
                 let func_id = func_ids
                     .get("__olive_py_from_int")
                     .expect("missing __olive_py_from_int");
                 let local_func = module.declare_func_in_func(*func_id, builder.func);
                 let inst = builder.ins().call(local_func, &[r]);
-                builder.inst_results(inst)[0]
+                (builder.inst_results(inst)[0], true)
             } else {
-                r
+                (r, false)
             };
 
             let fn_name = match op {
@@ -88,7 +88,21 @@ impl<M: Module> CraneliftCodegen<M> {
                 .unwrap_or_else(|| panic!("missing py_arith fn: {}", fn_name));
             let local_func = module.declare_func_in_func(*func_id, builder.func);
             let inst = builder.ins().call(local_func, &[l_val, r_val]);
-            return builder.inst_results(inst)[0];
+            let result = builder.inst_results(inst)[0];
+
+            // Coerced arguments were boxed just for this call; nothing else owns them.
+            let decref_id = func_ids
+                .get("__olive_py_decref")
+                .expect("missing __olive_py_decref");
+            if l_coerced {
+                let local_func = module.declare_func_in_func(*decref_id, builder.func);
+                builder.ins().call(local_func, &[l_val]);
+            }
+            if r_coerced {
+                let local_func = module.declare_func_in_func(*decref_id, builder.func);
+                builder.ins().call(local_func, &[r_val]);
+            }
+            return result;
         }
 
         // An `Any` operand carries no static type, so arithmetic and comparison

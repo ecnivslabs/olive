@@ -11,32 +11,61 @@ use crate::mir::*;
 /// global. Read-only positions (operands of binops, call arguments, switch
 /// discriminants, the container side of an indexed store) must keep `Copy`,
 /// otherwise the value is nulled with no owner left and leaks.
+///
+/// Promoting to `Move` without removing the stale `Drop` would double-free.
 pub struct MoveElision;
 
 impl Transform for MoveElision {
     fn run(&self, func: &mut MirFunction) -> bool {
         let liveness = Liveness::compute(func);
-        let mut changed = false;
+        let mut moved: Vec<(usize, usize, Local)> = Vec::new();
 
         let locals = &func.locals;
         for (bb_idx, bb) in func.basic_blocks.iter_mut().enumerate() {
             for (stmt_idx, stmt) in bb.statements.iter_mut().enumerate() {
                 let live_after = &liveness.live_after[bb_idx][stmt_idx + 1];
-                changed |= self.optimize_statement(stmt, live_after, locals);
+                self.optimize_statement(bb_idx, stmt_idx, stmt, live_after, locals, &mut moved);
             }
         }
 
-        changed
+        if moved.is_empty() {
+            return false;
+        }
+
+        let mut drop_removals: Vec<(usize, usize)> = Vec::new();
+        for (bb, idx, src) in &moved {
+            let stmts = &func.basic_blocks[*bb].statements;
+            for (j, stmt) in stmts.iter().enumerate().skip(idx + 1) {
+                match &stmt.kind {
+                    StatementKind::Drop(l) if l == src => {
+                        drop_removals.push((*bb, j));
+                        break;
+                    }
+                    StatementKind::Assign(d, _) if d == src => break,
+                    _ => {}
+                }
+            }
+        }
+        drop_removals.sort_unstable_by(|a, b| b.cmp(a));
+        for (bb, idx) in drop_removals {
+            func.basic_blocks[bb].statements.remove(idx);
+        }
+
+        true
     }
 }
 
 impl MoveElision {
+    #[allow(clippy::too_many_arguments)]
     fn optimize_statement(
         &self,
+        bb_idx: usize,
+        stmt_idx: usize,
         stmt: &mut Statement,
         live_after: &rustc_hash::FxHashSet<Local>,
         locals: &[LocalDecl],
-    ) -> bool {
+        moved: &mut Vec<(usize, usize, Local)>,
+    ) {
         match &mut stmt.kind {
             StatementKind::Assign(dst, rval) => {
                 // The destination must be able to free the value it receives.
@@ -46,48 +75,55 @@ impl MoveElision {
                 match rval {
                     Rvalue::Use(op) => {
                         if !dst_owns {
-                            return false;
+                            return;
                         }
                         // dst aliases src; src's value persists through dst, so
                         // moving is unsound while dst stays live.
                         if matches!(op, Operand::Copy(_)) && live_after.contains(dst) {
-                            return false;
+                            return;
                         }
-                        self.optimize_operand(op, live_after, locals)
+                        self.optimize_operand(bb_idx, stmt_idx, op, live_after, locals, moved);
                     }
                     Rvalue::Aggregate(_, ops) => {
-                        let mut changed = false;
                         for op in ops {
-                            changed |= self.optimize_operand(op, live_after, locals);
+                            self.optimize_operand(bb_idx, stmt_idx, op, live_after, locals, moved);
                         }
-                        changed
                     }
-                    _ => false,
+                    _ => {}
                 }
             }
-            StatementKind::SetAttr(_, _, val) => self.optimize_operand(val, live_after, locals),
-            StatementKind::SetIndex(_, _, val, _) => self.optimize_operand(val, live_after, locals),
-            StatementKind::PtrStore(_, val) => self.optimize_operand(val, live_after, locals),
-            _ => false,
+            StatementKind::SetAttr(_, _, val) => {
+                self.optimize_operand(bb_idx, stmt_idx, val, live_after, locals, moved);
+            }
+            StatementKind::SetIndex(_, _, val, _) => {
+                self.optimize_operand(bb_idx, stmt_idx, val, live_after, locals, moved);
+            }
+            StatementKind::PtrStore(_, val) => {
+                self.optimize_operand(bb_idx, stmt_idx, val, live_after, locals, moved);
+            }
+            _ => {}
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn optimize_operand(
         &self,
+        bb_idx: usize,
+        stmt_idx: usize,
         op: &mut Operand,
         live_after: &rustc_hash::FxHashSet<Local>,
         locals: &[LocalDecl],
-    ) -> bool {
-        if let Operand::Copy(local) = op
-            && !live_after.contains(local)
+        moved: &mut Vec<(usize, usize, Local)>,
+    ) {
+        if let Operand::Copy(local) = *op
+            && !live_after.contains(&local)
         {
             let decl = &locals[local.0];
             if decl.ty.is_move_type() && decl.is_owning {
-                *op = Operand::Move(*local);
-                return true;
+                *op = Operand::Move(local);
+                moved.push((bb_idx, stmt_idx, local));
             }
         }
-        false
     }
 }
 
