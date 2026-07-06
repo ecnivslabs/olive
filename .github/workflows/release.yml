@@ -44,7 +44,7 @@ jobs:
         run: cargo build --workspace
 
       - name: Run tests
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
 
   build:
     name: Build ${{ matrix.target }}
