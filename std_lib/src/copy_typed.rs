@@ -7,7 +7,9 @@
 //! Copy is bounded by the descriptor, not the data: a recursive field is cut to
 //! `D_OBJ` at emit time, so `copy_val` returns the shared word there and never
 //! recurses forever on a data cycle. The untyped `D_ANY` walk has no descriptor
-//! to bound it, so it carries a depth cap instead.
+//! to bound it, so it copies via an explicit heap-allocated worklist instead of
+//! native recursion, with no depth limit; a cycle resolves through the same
+//! `COPY_VISITED` map the typed walk uses.
 //!
 //! A stored string is cloned through `olive_copy`, which lifts a literal or a
 //! heap string into a fresh heap string; an interned attribute symbol (untagged)
@@ -25,8 +27,6 @@ use crate::{
 use rustc_hash::FxHashMap;
 use std::cell::RefCell;
 use std::collections::HashMap;
-
-const ANY_DEPTH_CAP: u32 = 512;
 
 thread_local! {
     // Tracks already-copied heap pointers to prevent infinite cycles.
@@ -144,7 +144,7 @@ fn copy_val(val: i64, desc: *const u8, pos: &mut usize) -> i64 {
     *pos += 1;
     match tag {
         D_STR => copy_str(val),
-        D_ANY | D_BYTES => copy_any(val, 0),
+        D_ANY | D_BYTES => copy_any(val),
         D_LIST => copy_list_like(val, desc, pos),
         D_SET => copy_set(val, desc, pos),
         D_TUPLE => copy_tuple(val, desc, pos),
@@ -330,17 +330,52 @@ fn copy_enum(val: i64, desc: *const u8, pos: &mut usize) -> i64 {
     if live { new } else { val }
 }
 
+/// Where a pending `D_ANY` child's copy gets written once computed.
+enum AnyDest {
+    Root,
+    List(i64, i64),
+    Set(i64),
+    ObjField(i64, i64),
+    EnumSlot(i64, i64),
+}
+
 /// Kind-driven deep copy of a statically-`Any` word, the mirror of the
-/// kind-driven deep free `olive_free_any` drives. A descriptor cannot bound this
-/// walk, so a depth cap breaks a pathological data cycle by sharing the tail.
-fn copy_any(val: i64, depth: u32) -> i64 {
+/// kind-driven deep free `olive_free_any` drives. Iterative: each container
+/// allocates its (empty) copy and records it in `COPY_VISITED` before its
+/// children are queued, so a cycle resolves to the already-allocated shell
+/// exactly as the recursive form did, but the walk is bounded by heap, not
+/// by call-stack depth.
+fn copy_any(val: i64) -> i64 {
+    let mut root = 0i64;
+    let mut stack: Vec<(i64, AnyDest)> = vec![(val, AnyDest::Root)];
+    while let Some((src, dest)) = stack.pop() {
+        let copied = copy_any_node(src, &mut stack);
+        match dest {
+            AnyDest::Root => root = copied,
+            AnyDest::List(list, i) => crate::list::olive_list_set(list, i, copied),
+            AnyDest::Set(set) => crate::set::olive_set_add(set, copied),
+            AnyDest::ObjField(obj, key) => unsafe {
+                (*(obj as *mut OliveObj))
+                    .fields
+                    .insert(OliveStringKey(key), copied);
+            },
+            AnyDest::EnumSlot(en, i) => crate::olive_enum_set(en, i, copied),
+        }
+    }
+    root
+}
+
+/// Copies one `D_ANY` node. Leaves resolve immediately; a container
+/// allocates its shell, marks it visited, and pushes `(child, dest)` work
+/// for each element so the caller's stack keeps walking instead of recursing.
+fn copy_any_node(val: i64, stack: &mut Vec<(i64, AnyDest)>) -> i64 {
     if val == 0 || val & TAG_MASK != 0 {
         return val;
     }
     if val & 1 != 0 {
         return crate::olive_copy(val);
     }
-    if depth >= ANY_DEPTH_CAP || !crate::is_active_object(val) {
+    if !crate::is_active_object(val) {
         return val;
     }
     if let Some(cloned) = COPY_VISITED.with(|v| v.borrow().get(&val).copied()) {
@@ -355,9 +390,8 @@ fn copy_any(val: i64, depth: u32) -> i64 {
             };
             let new = crate::list::olive_list_new(elen as i64);
             COPY_VISITED.with(|v| v.borrow_mut().insert(val, new));
-            for i in 0..elen {
-                let c = copy_any(unsafe { *eptr.add(i) }, depth + 1);
-                crate::list::olive_list_set(new, i as i64, c);
+            for i in (0..elen).rev() {
+                stack.push((unsafe { *eptr.add(i) }, AnyDest::List(new, i as i64)));
             }
             unsafe { (*(new as *mut StableVec)).kind = kind };
             new
@@ -369,8 +403,8 @@ fn copy_any(val: i64, depth: u32) -> i64 {
             };
             let new = crate::set::olive_set_new(elen as i64);
             COPY_VISITED.with(|v| v.borrow_mut().insert(val, new));
-            for i in 0..elen {
-                crate::set::olive_set_add(new, copy_any(unsafe { *eptr.add(i) }, depth + 1));
+            for i in (0..elen).rev() {
+                stack.push((unsafe { *eptr.add(i) }, AnyDest::Set(new)));
             }
             new
         }
@@ -378,23 +412,20 @@ fn copy_any(val: i64, depth: u32) -> i64 {
             let obj = unsafe { &*(val as *const OliveObj) };
             let new = crate::obj::olive_obj_new();
             COPY_VISITED.with(|v| v.borrow_mut().insert(val, new));
-            let mut fields = FxHashMap::default();
             for (k, &v) in obj.fields.iter() {
-                fields.insert(OliveStringKey(copy_str(k.0)), copy_any(v, depth + 1));
+                stack.push((v, AnyDest::ObjField(new, copy_str(k.0))));
             }
-            unsafe { (*(new as *mut OliveObj)).fields = fields };
             new
         }
         KIND_ENUM => {
             let e = unsafe { &*(val as *const OliveEnum) };
             let new = crate::olive_enum_new(e.type_id, e.tag, e.payload_len as i64);
             COPY_VISITED.with(|v| v.borrow_mut().insert(val, new));
-            for j in 0..e.payload_len {
-                crate::olive_enum_set(
-                    new,
-                    j as i64,
-                    copy_any(unsafe { *e.payload_ptr.add(j) }, depth + 1),
-                );
+            for j in (0..e.payload_len).rev() {
+                stack.push((
+                    unsafe { *e.payload_ptr.add(j) },
+                    AnyDest::EnumSlot(new, j as i64),
+                ));
             }
             new
         }
@@ -555,6 +586,52 @@ mod tests {
         assert_ne!(cp_inner, inner);
         crate::olive_free_any(src);
         assert_eq!(read(olive_list_get(cp_inner, 0)), "deep");
+        crate::olive_free_any(cp);
+    }
+
+    #[test]
+    fn any_deep_nest_has_no_depth_cap() {
+        // 1000 levels comfortably clears the old 512 cap; every level must be
+        // its own independent list, not the source shared past the cutoff.
+        let mut cur = list_from_vec(vec![s("leaf")]);
+        for _ in 0..1000 {
+            cur = list_from_vec(vec![cur]);
+        }
+        let cp = olive_copy_typed(cur, desc(&[D_ANY]));
+
+        let mut o = cur;
+        let mut c = cp;
+        for _ in 0..1000 {
+            assert_ne!(o, c, "every nesting level must be a fresh list");
+            o = olive_list_get(o, 0);
+            c = olive_list_get(c, 0);
+        }
+        crate::list::olive_list_set(o, 0, s("mutated"));
+        assert_eq!(
+            read(olive_list_get(c, 0)),
+            "leaf",
+            "copy independent of a mutation at the innermost level"
+        );
+
+        crate::olive_free_any(cur);
+        crate::olive_free_any(cp);
+    }
+
+    #[test]
+    fn any_list_cycle_round_trips() {
+        let src = list_from_vec(vec![0i64]);
+        unsafe { (*(src as *mut StableVec)).kind = KIND_ANY_LIST };
+        crate::list::olive_list_set(src, 0, src);
+
+        let cp = olive_copy_typed(src, desc(&[D_ANY]));
+        assert_ne!(cp, src, "copy is a fresh list");
+        let cp_inner = olive_list_get(cp, 0);
+        assert_eq!(cp, cp_inner, "cycle must preserve identity in the copy");
+
+        // Break both cycles before freeing so free_any's own walk terminates.
+        crate::list::olive_list_set(src, 0, 0);
+        crate::list::olive_list_set(cp, 0, 0);
+        crate::olive_free_any(src);
         crate::olive_free_any(cp);
     }
 

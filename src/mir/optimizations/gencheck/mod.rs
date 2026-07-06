@@ -1,5 +1,4 @@
-//! Generation-check insertion. Runs after every other pass, so nothing can
-//! Generation-check insertion. Runs after passes so checks aren't
+//! Generation-check insertion. Runs after every other pass, so checks aren't
 //! moved or duplicated. Suspects (views, element/field reads, escaped
 //! owners, borrowed-return calls) capture the slab generation at borrow
 //! time and re-validate before each use that a free could precede. Failed

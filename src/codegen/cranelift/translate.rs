@@ -35,12 +35,11 @@ pub(super) fn free_func_name_for_type(
         OliveType::Dict(_, _) | OliveType::Struct(_, _, _) => "__olive_free_obj",
         OliveType::Enum(_, _) => "__olive_free_enum",
         OliveType::Any => "__olive_free_any",
-        // `T | None` is represented as the raw `T` value with `None` as a zero
-        // sentinel, not an Any-boxed value with a runtime kind tag -- freeing
-        // it through `__olive_free_any` misreads whatever `T`'s own header
-        // word means (e.g. a struct's field count) as a kind tag. Route to
-        // `T`'s real free function instead; only fall back to the generic
-        // kind-dispatch for a union that doesn't reduce to a single type.
+        // `T | None` stores the raw `T` with `None` as a zero sentinel (no
+        // Any-box with kind tag).  `__olive_free_any` would misinterpret T's
+        // header word as a kind tag; dispatch to T's concrete free function
+        // instead, falling back to generic kind-dispatch only for multi-type
+        // unions.
         OliveType::Union(members) => {
             let non_null: Vec<&OliveType> = members
                 .iter()
@@ -390,7 +389,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 };
 
                 // list_new always produces KIND_LIST (1) at runtime, but when
-                // the destination is typed [Any] the elements will be boxed —
+                // the destination is typed [Any] the elements will be boxed -
                 // patch to KIND_ANY_LIST (15) so FFI proxies decode correctly.
                 if matches!(
                     &func_mir.locals[local.0].ty,
