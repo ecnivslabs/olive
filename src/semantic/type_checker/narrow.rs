@@ -30,10 +30,13 @@ impl TypeChecker {
 
     /// Narrow facts a condition proves in its true branch and, separately,
     /// its false branch. Recognizes plain-identifier `x != None` / `x ==
-    /// None` and `and`-chains of them; `not (...)` swaps which side of the
-    /// wrapped condition each fact set describes. Everything else yields no
-    /// facts (v1: no `or`, no field/index targets, no reassigned bindings
-    /// mid-region -- reassignment is handled separately via `kill_narrow`).
+    /// None`, plain-identifier `x != <scalar literal>` / `x == <scalar
+    /// literal>` against a `T | int`-style union (the sentinel-return idiom
+    /// used throughout the stdlib), and `and`-chains of either; `not (...)`
+    /// swaps which side of the wrapped condition each fact set describes.
+    /// Everything else yields no facts (v1: no `or`, no field/index
+    /// targets, no reassigned bindings mid-region -- reassignment is
+    /// handled separately via `kill_narrow`).
     pub(super) fn narrow_facts(&mut self, cond: &Expr) -> (FactSet, FactSet) {
         match &cond.kind {
             ExprKind::UnaryOp {
@@ -61,7 +64,7 @@ impl TypeChecker {
                 let name = match (&left.kind, &right.kind) {
                     (ExprKind::Identifier(n), ExprKind::Null) => n,
                     (ExprKind::Null, ExprKind::Identifier(n)) => n,
-                    _ => return (Vec::new(), Vec::new()),
+                    _ => return self.narrow_facts_scalar(left, op.clone(), right),
                 };
                 let Some(declared) = self.lookup_type(name) else {
                     return (Vec::new(), Vec::new());
@@ -78,6 +81,72 @@ impl TypeChecker {
                 }
             }
             _ => (Vec::new(), Vec::new()),
+        }
+    }
+
+    /// Handles `x != <scalar literal>` / `x == <scalar literal>` against a
+    /// declared union that mixes a scalar arm (`int`/`float`/`str`/`bool`)
+    /// with one or more non-scalar arms -- the `Struct | int` sentinel
+    /// idiom the stdlib uses for fallible constructors (`net.connect`,
+    /// `io.bufread`, `process.Command.spawn`, ...). Splits the union into
+    /// the literal's scalar type and everything else, so calling a method
+    /// on the narrowed branch resolves to the concrete struct instead of
+    /// the union.
+    fn narrow_facts_scalar(&mut self, left: &Expr, op: BinOp, right: &Expr) -> (FactSet, FactSet) {
+        let (name, literal) = match (&left.kind, &right.kind) {
+            (ExprKind::Identifier(n), lit) => (n, lit),
+            (lit, ExprKind::Identifier(n)) => (n, lit),
+            _ => return (Vec::new(), Vec::new()),
+        };
+        let Some(scalar) = scalar_literal_type(literal) else {
+            return (Vec::new(), Vec::new());
+        };
+        let Some(declared) = self.lookup_type(name) else {
+            return (Vec::new(), Vec::new());
+        };
+        let resolved = self.apply_subst(declared);
+        let Type::Union(members) = &resolved else {
+            return (Vec::new(), Vec::new());
+        };
+        if !members.contains(&scalar) {
+            return (Vec::new(), Vec::new());
+        }
+
+        let matching: Vec<Type> = members.iter().filter(|m| **m == scalar).cloned().collect();
+        let rest: Vec<Type> = members.iter().filter(|m| **m != scalar).cloned().collect();
+
+        // Only the `Struct | int`-style sentinel idiom is safe to narrow
+        // here: the scalar arm is `int` and every other arm is a
+        // pointer-shaped type (struct/enum/list/...), matching the boxed
+        // representation the None-narrowing path already relies on. A
+        // union mixing two raw scalars (`int | str`) is stored unboxed and
+        // narrowing its *type* alone would not change how the value's
+        // bits are read, so leave those untouched.
+        if scalar != Type::Int || rest.iter().any(is_scalar_type) {
+            return (Vec::new(), Vec::new());
+        }
+
+        let collapse = |v: Vec<Type>| -> Option<Type> {
+            match v.len() {
+                0 => None,
+                1 => Some(v.into_iter().next().unwrap()),
+                _ => Some(Type::Union(v)),
+            }
+        };
+
+        let matching_fact = collapse(matching).map(|t| vec![(name.clone(), t)]);
+        let rest_fact = collapse(rest).map(|t| vec![(name.clone(), t)]);
+
+        match op {
+            BinOp::Eq => (
+                matching_fact.unwrap_or_default(),
+                rest_fact.unwrap_or_default(),
+            ),
+            BinOp::NotEq => (
+                rest_fact.unwrap_or_default(),
+                matching_fact.unwrap_or_default(),
+            ),
+            _ => unreachable!(),
         }
     }
 
@@ -140,6 +209,45 @@ impl TypeChecker {
             }
             _ => false,
         }
+    }
+}
+
+/// True for raw, unboxed scalar types (as opposed to pointer-shaped types
+/// like structs, enums, and lists).
+fn is_scalar_type(t: &Type) -> bool {
+    matches!(
+        t,
+        Type::Int
+            | Type::I8
+            | Type::I16
+            | Type::I32
+            | Type::U8
+            | Type::U16
+            | Type::U32
+            | Type::U64
+            | Type::Usize
+            | Type::Float
+            | Type::F32
+            | Type::Str
+            | Type::Bytes
+            | Type::Bool
+            | Type::Null
+    )
+}
+
+/// The scalar `Type` a literal expression denotes, for matching against a
+/// union member. `None` for anything that isn't a plain scalar literal.
+fn scalar_literal_type(expr: &ExprKind) -> Option<Type> {
+    match expr {
+        ExprKind::Integer(_) => Some(Type::Int),
+        ExprKind::Float(_) => Some(Type::Float),
+        ExprKind::Str(_) => Some(Type::Str),
+        ExprKind::Bool(_) => Some(Type::Bool),
+        ExprKind::UnaryOp {
+            op: UnaryOp::Neg,
+            operand,
+        } => scalar_literal_type(&operand.kind),
+        _ => None,
     }
 }
 

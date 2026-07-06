@@ -1,0 +1,156 @@
+import string
+import io
+
+/// Translates a shell glob into an anchored regex source string. `*` matches
+/// within one path segment, `**` spans segments, `?` matches one non-`/`
+/// character, `[...]`/`[!...]` are character classes, and `{a,b}` is brace
+/// alternation (recursing on each branch so nested `**`/classes work).
+fn _to_regex_source(pat: str) -> str:
+    let chars = string.graphemes(pat)
+    let n = len(chars)
+    let mut out = ""
+    let mut i = 0
+
+    while i < n:
+        let c = chars[i]
+
+        if c == "*":
+            if i + 1 < n and chars[i + 1] == "*":
+                out = out + ".*"
+                i = i + 2
+
+                if i < n and chars[i] == "/":
+                    i = i + 1
+
+                continue
+
+            out = out + "[^/]*"
+        elif c == "?":
+            out = out + "[^/]"
+        elif c == "[":
+            let mut j = i + 1
+            let mut cls = "["
+
+            if j < n and (chars[j] == "!" or chars[j] == "^"):
+                cls = cls + "^"
+                j = j + 1
+
+            while j < n and chars[j] != "]":
+                cls = cls + chars[j]
+                j = j + 1
+
+            if j < n:
+                out = out + cls + "]"
+                i = j
+            else:
+                out = out + "\\["
+        elif c == "{":
+            let mut depth = 1
+            let mut j = i + 1
+
+            while j < n and depth > 0:
+                if chars[j] == "{":
+                    depth = depth + 1
+                elif chars[j] == "}":
+                    depth = depth - 1
+
+                    if depth == 0:
+                        break
+
+                j = j + 1
+
+            if j < n:
+                let inner = string.join(chars[i + 1:j], "")
+                let branches = _split_top_level(inner)
+                let mut translated: [str] = []
+
+                for b in branches:
+                    translated.append(_to_regex_source(b))
+
+                out = out + "(?:" + string.join(translated, "|") + ")"
+                i = j
+            else:
+                out = out + "\\{"
+        elif c == "." or c == "\\" or c == "^" or c == "$" or c == "+" or c == "(" or c == ")" or c == "}" or c == "|":
+            out = out + "\\" + c
+        else:
+            out = out + c
+
+        i = i + 1
+
+    return out
+
+fn _split_top_level(s: str) -> [str]:
+    let chars = string.graphemes(s)
+    let n = len(chars)
+    let mut parts: [str] = []
+    let mut depth = 0
+    let mut start = 0
+    let mut i = 0
+
+    while i < n:
+        let c = chars[i]
+
+        if c == "{":
+            depth = depth + 1
+        elif c == "}":
+            depth = depth - 1
+        elif c == "," and depth == 0:
+            parts.append(string.join(chars[start:i], ""))
+            start = i + 1
+
+        i = i + 1
+
+    parts.append(string.join(chars[start:n], ""))
+
+    return parts
+
+struct Pattern:
+    handle: int
+
+    fn __init__(self, handle: int):
+        self.handle = handle
+
+    fn __drop__(self):
+        if self.handle != 0:
+            __olive_regex_pattern_close(self.handle)
+            self.handle = 0
+
+    fn matches(self, path: str) -> bool:
+        return __olive_regex_pattern_matches(self.handle, path) == 1
+
+fn compile(pattern: str) -> Pattern | int:
+    let source = "^" + _to_regex_source(pattern) + "$"
+    let handle = __olive_regex_compile(source)
+
+    if handle == 0:
+        return -1
+
+    return Pattern(handle)
+
+fn matches(pattern: str, path: str) -> bool:
+    let p = compile(pattern)
+
+    if p == -1:
+        return False
+
+    return p.matches(path)
+
+fn find_in(root: str, pattern: str) -> [str]:
+    let p = compile(pattern)
+
+    if p == -1:
+        return []
+
+    let mut out: [str] = []
+
+    for path in io.walk(root):
+        let rel = io.path_relative(root, path)
+
+        if p.matches(rel):
+            out.append(path)
+
+    return out
+
+fn find(pattern: str) -> [str]:
+    return find_in(".", pattern)

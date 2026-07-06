@@ -49,6 +49,45 @@ fn path_stem(path: str) -> str:
 fn path_is_absolute(path: str) -> bool:
     return __olive_path_is_absolute(path) == 1
 
+fn canonicalize(path: str) -> str:
+    let result = __olive_path_canonicalize(path)
+    if result == 0:
+        return ""
+    return result
+
+fn path_join_all(parts: [str]) -> str:
+    return __olive_path_join_all(parts)
+
+fn path_relative(base: str, path: str) -> str:
+    let result = __olive_path_relative(base, path)
+    if result == 0:
+        return ""
+    return result
+
+fn is_symlink(path: str) -> bool:
+    return __olive_path_is_symlink(path) == 1
+
+fn read_link(path: str) -> str:
+    let result = __olive_path_read_link(path)
+    if result == 0:
+        return ""
+    return result
+
+fn symlink(target: str, link: str) -> bool:
+    return __olive_path_symlink(target, link) == 1
+
+fn hard_link(src: str, dst: str) -> bool:
+    return __olive_path_hard_link(src, dst) == 1
+
+fn walk(root: str) -> [str]:
+    return __olive_walk(root)
+
+fn copy_dir(src: str, dst: str) -> bool:
+    return __olive_copy_dir(src, dst) == 1
+
+fn set_mode(path: str, mode: int) -> bool:
+    return __olive_set_mode(path, mode) == 1
+
 fn temp_dir() -> str:
     return __olive_temp_dir()
 

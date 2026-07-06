@@ -37,6 +37,22 @@ pub(crate) fn runtime_escape(name: &str, pos: usize) -> bool {
     RUNTIME_ESCAPES.iter().any(|&(n, p)| n == name && p == pos)
 }
 
+/// Runtime calls whose result is a non-owning view into a value still owned
+/// elsewhere, mirrored into the same borrow classification a whole-program
+/// `returns_borrow` function gets. `__olive_struct_unbox` peels the struct
+/// pointer out of a tag-encoded union box without taking it (the box, and
+/// the struct through it, stays owned by the union local); without this the
+/// ownership pass falls through to its `RvClass::Own` default, double-owns
+/// the peeled pointer, and frees the struct out from under the union local
+/// on its first use -- a use-after-free the moment a narrowed `Struct | int`
+/// value (the fallible-constructor idiom throughout this stdlib) is read
+/// more than once, e.g. inside a loop.
+const RUNTIME_BORROWED_RETURNS: &[&str] = &["__olive_struct_unbox"];
+
+pub(crate) fn runtime_borrowed_return(name: &str) -> bool {
+    RUNTIME_BORROWED_RETURNS.contains(&name)
+}
+
 /// The subset of `RUNTIME_ESCAPES` that crosses a real task boundary (a
 /// generic `chan_send[T]`/`mutex_new[T]`/`mutex_unlock[T]` call, `lib/aio.liv`):
 /// the escaping value needs `__olive_relocate_typed` (E5.6), not
@@ -244,7 +260,7 @@ fn returns_borrow(func: &MirFunction, borrowed: &HashSet<String>) -> bool {
                             Rvalue::Call {
                                 func: Operand::Constant(Constant::Function(name)),
                                 ..
-                            } => borrowed.contains(name.as_str()),
+                            } => borrowed.contains(name.as_str()) || runtime_borrowed_return(name),
                             _ => false,
                         };
                     }
@@ -280,7 +296,7 @@ fn returns_borrow(func: &MirFunction, borrowed: &HashSet<String>) -> bool {
                         Rvalue::Call {
                             func: Operand::Constant(Constant::Function(name)),
                             ..
-                        } => borrowed.contains(name.as_str()),
+                        } => borrowed.contains(name.as_str()) || runtime_borrowed_return(name),
                         _ => false,
                     };
                 }

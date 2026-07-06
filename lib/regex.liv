@@ -24,3 +24,55 @@ fn split(pattern: str, text: str) -> list:
 
 fn is_valid(pattern: str) -> bool:
     return __olive_regex_is_valid(pattern) == 1
+
+struct Pattern:
+    handle: int
+
+    fn __init__(self, handle: int):
+        self.handle = handle
+
+    fn __drop__(self):
+        if self.handle != 0:
+            __olive_regex_pattern_close(self.handle)
+            self.handle = 0
+
+    fn matches(self, text: str) -> bool:
+        return __olive_regex_pattern_matches(self.handle, text) == 1
+
+    fn find(self, text: str) -> str:
+        let result = __olive_regex_pattern_find(self.handle, text)
+        if result == 0:
+            return ""
+        return result
+
+    fn find_all(self, text: str) -> [str]:
+        return __olive_regex_pattern_find_all(self.handle, text)
+
+    fn captures(self, text: str) -> [str]:
+        return __olive_regex_pattern_captures(self.handle, text)
+
+    fn captures_all(self, text: str) -> [[str]]:
+        return __olive_regex_pattern_captures_all(self.handle, text)
+
+    fn capture_named(self, text: str, name: str) -> str:
+        let result = __olive_regex_pattern_capture_named(self.handle, text, name)
+        if result == 0:
+            return ""
+        return result
+
+    fn replace(self, text: str, rep: str) -> str:
+        return __olive_regex_pattern_replace(self.handle, text, rep)
+
+    fn replace_all(self, text: str, rep: str) -> str:
+        return __olive_regex_pattern_replace_all(self.handle, text, rep)
+
+    fn split(self, text: str) -> [str]:
+        return __olive_regex_pattern_split(self.handle, text)
+
+fn compile(pattern: str) -> Pattern | int:
+    let handle = __olive_regex_compile(pattern)
+
+    if handle == 0:
+        return -1
+
+    return Pattern(handle)
