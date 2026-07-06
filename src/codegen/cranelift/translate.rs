@@ -51,7 +51,7 @@ pub(super) fn free_func_name_for_type(
                 _ => "__olive_free_any",
             }
         }
-        OliveType::PyObject => "__olive_py_decref",
+        OliveType::PyObject | OliveType::PyNamed(_, _) => "__olive_py_decref",
         _ => "__olive_free",
     }
 }

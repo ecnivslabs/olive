@@ -106,13 +106,20 @@ impl Arena {
         ptr
     }
 
-    fn free(&mut self, ptr: *mut OlivePyObject) {
+    /// Claims a live slot for release: clears the live bit and returns the
+    /// held py pointer, or None when the slot is already free (double drop).
+    fn take(&mut self, ptr: *mut OlivePyObject) -> Option<PyObject> {
         for chunk in self.chunks.iter_mut() {
             if chunk.contains(ptr as usize) {
+                if !chunk.slot_live(ptr as usize) {
+                    return None;
+                }
+                let py_ptr = unsafe { (*ptr).py_ptr };
                 chunk.free_slot(ptr);
-                return;
+                return Some(py_ptr);
             }
         }
+        None
     }
 
     fn contains(&self, ptr: usize) -> bool {
@@ -612,14 +619,14 @@ pub extern "C" fn olive_py_decref(obj: PyObject) {
     if obj.is_null() {
         return;
     }
-    if is_arena_ptr(obj as usize) {
-        let raw = obj as *mut OlivePyObject;
-        let py_ptr = unsafe { (*raw).py_ptr };
-        if !py_ptr.is_null() {
-            with_gil(|| unsafe {
-                PY_DEC_REF(py_ptr);
-            });
-        }
-        arena().write().unwrap().free(raw);
+    // Claiming under the write lock makes a double drop a no-op: the second
+    // caller finds the slot already free instead of decrefing a stale pointer.
+    let taken = arena().write().unwrap().take(obj as *mut OlivePyObject);
+    if let Some(py_ptr) = taken
+        && !py_ptr.is_null()
+    {
+        with_gil(|| unsafe {
+            PY_DEC_REF(py_ptr);
+        });
     }
 }

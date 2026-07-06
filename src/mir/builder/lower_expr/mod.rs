@@ -570,30 +570,24 @@ impl<'a> MirBuilder<'a> {
         }
     }
 
+    /// Converts a value crossing into Python by its static type. A raw word
+    /// is ambiguous at the boundary (a large odd int reads as a tagged str
+    /// pointer), so scalars must become real Python objects here.
     pub(super) fn emit_to_py_arg(
         &mut self,
         op: Operand,
         ty: &Type,
         span: crate::span::Span,
     ) -> Operand {
-        if *ty != Type::Float {
+        if ty.is_py_value() {
             return op;
         }
-
-        let tmp = self.new_local(Type::PyObject, None, false);
-        self.push_statement(
-            StatementKind::Assign(
-                tmp,
-                Rvalue::Call {
-                    func: Operand::Constant(Constant::Function(
-                        "__olive_py_from_float".to_string(),
-                    )),
-                    args: vec![op],
-                },
-            ),
-            span,
-        );
-        self.operand_for_local(tmp)
+        let resolved = match ty {
+            Type::IntegerLiteral(_) => &Type::Int,
+            Type::FloatLiteral(_) => &Type::Float,
+            other => other,
+        };
+        self.coerce(op, resolved, &Type::PyObject, span)
     }
 
     pub(super) fn is_int_ty(ty: &Type) -> bool {

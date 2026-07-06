@@ -310,8 +310,32 @@ fn rewrite(
     field_map: &HashMap<String, (usize, crate::semantic::types::Type)>,
     base: usize,
 ) {
+    let droppable: Vec<usize> = {
+        let mut v: Vec<usize> = field_map
+            .values()
+            .filter(|(_, ty)| ty.is_move_type())
+            .map(|&(idx, _)| idx)
+            .collect();
+        v.sort_unstable();
+        v
+    };
+    // Slots start undefined; a zero value makes the first overwrite drop a no-op.
+    let zero_init = |new_stmts: &mut Vec<Statement>, span| {
+        for &idx in &droppable {
+            new_stmts.push(Statement {
+                kind: StatementKind::Assign(
+                    Local(base + idx),
+                    Rvalue::Use(Operand::Constant(Constant::Int(0))),
+                ),
+                span,
+            });
+        }
+    };
     for bb in &mut func.basic_blocks {
         let mut new_stmts: Vec<Statement> = Vec::with_capacity(bb.statements.len());
+        // Locals aliasing a slot's current value (reads of the slot); a
+        // reassignment from such an alias must not free the slot first.
+        let mut slot_alias_of: HashMap<Local, usize> = HashMap::default();
         for stmt in bb.statements.drain(..) {
             match stmt.kind {
                 StatementKind::Assign(
@@ -327,6 +351,7 @@ fn rewrite(
                             span: stmt.span,
                         });
                     }
+                    zero_init(&mut new_stmts, stmt.span);
                 }
 
                 StatementKind::Assign(
@@ -339,6 +364,7 @@ fn rewrite(
                             span: stmt.span,
                         });
                     }
+                    zero_init(&mut new_stmts, stmt.span);
                     for i in (0..ops.len()).step_by(2) {
                         let field = match ops[i] {
                             Operand::Constant(Constant::Int(n)) => Some(n.to_string()),
@@ -372,6 +398,7 @@ fn rewrite(
                             span: stmt.span,
                         });
                     }
+                    zero_init(&mut new_stmts, stmt.span);
                     for (i, op) in ops.iter().enumerate() {
                         let field = i.to_string();
                         if let Some(&(idx, _)) = field_map.get(&field) {
@@ -389,7 +416,17 @@ fn rewrite(
                 StatementKind::SetAttr(ref op, ref field, ref val)
                     if operand_local(op).is_some_and(|l| aliases.contains(&l)) =>
                 {
-                    if let Some(&(idx, _)) = field_map.get(field) {
+                    if let Some(&(idx, ref ty)) = field_map.get(field) {
+                        // A real SetAttr frees the value the field held; the
+                        // slot must do the same, unless the new value aliases it.
+                        let val_aliases_slot =
+                            operand_local(val).is_some_and(|l| slot_alias_of.get(&l) == Some(&idx));
+                        if ty.is_move_type() && !val_aliases_slot {
+                            new_stmts.push(Statement {
+                                kind: StatementKind::Drop(Local(base + idx)),
+                                span: stmt.span,
+                            });
+                        }
                         new_stmts.push(Statement {
                             kind: StatementKind::Assign(
                                 Local(base + idx),
@@ -404,6 +441,7 @@ fn rewrite(
                     if operand_local(op).is_some_and(|l| aliases.contains(&l)) =>
                 {
                     if let Some(&(idx, _)) = field_map.get(field) {
+                        slot_alias_of.insert(dst, idx);
                         new_stmts.push(Statement {
                             kind: StatementKind::Assign(
                                 dst,
@@ -422,7 +460,15 @@ fn rewrite(
                         Operand::Constant(Constant::Str(s)) => s.clone(),
                         _ => continue,
                     };
-                    if let Some(&(idx, _)) = field_map.get(&field) {
+                    if let Some(&(idx, ref ty)) = field_map.get(&field) {
+                        let val_aliases_slot =
+                            operand_local(val).is_some_and(|l| slot_alias_of.get(&l) == Some(&idx));
+                        if ty.is_move_type() && !val_aliases_slot {
+                            new_stmts.push(Statement {
+                                kind: StatementKind::Drop(Local(base + idx)),
+                                span: stmt.span,
+                            });
+                        }
                         new_stmts.push(Statement {
                             kind: StatementKind::Assign(
                                 Local(base + idx),
@@ -442,6 +488,7 @@ fn rewrite(
                         _ => continue,
                     };
                     if let Some(&(idx, _)) = field_map.get(&field) {
+                        slot_alias_of.insert(dst, idx);
                         new_stmts.push(Statement {
                             kind: StatementKind::Assign(
                                 dst,
@@ -475,7 +522,22 @@ fn rewrite(
                 StatementKind::StorageLive(l) | StatementKind::StorageDead(l)
                     if aliases.contains(&l) => {}
 
-                _ => new_stmts.push(stmt),
+                _ => {
+                    if let StatementKind::Assign(dst, ref rval) = stmt.kind {
+                        match rval {
+                            Rvalue::Use(Operand::Copy(src) | Operand::Move(src))
+                                if slot_alias_of.contains_key(src) =>
+                            {
+                                let idx = slot_alias_of[src];
+                                slot_alias_of.insert(dst, idx);
+                            }
+                            _ => {
+                                slot_alias_of.remove(&dst);
+                            }
+                        }
+                    }
+                    new_stmts.push(stmt);
+                }
             }
         }
         bb.statements = new_stmts;

@@ -68,7 +68,7 @@ pub(super) fn collect_needed_imports(
                                     needed.insert("__olive_free_enum");
                                     needed.insert("__olive_free_typed");
                                 }
-                                OliveType::PyObject => {
+                                OliveType::PyObject | OliveType::PyNamed(_, _) => {
                                     needed.insert("__olive_py_decref");
                                 }
                                 OliveType::Any => {

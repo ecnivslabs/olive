@@ -69,8 +69,6 @@ impl Type {
                 | Type::Null
                 | Type::Never
                 | Type::Any
-                | Type::PyObject
-                | Type::PyNamed(_, _)
                 | Type::Ref(_)
                 | Type::MutRef(_)
                 | Type::Ptr(_)
