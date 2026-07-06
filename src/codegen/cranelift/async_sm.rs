@@ -1,4 +1,4 @@
-use super::imports::cl_type;
+use super::imports::{cl_type, type_descriptor};
 use super::{CraneliftCodegen, KIND_SM_FUTURE, POLL_PENDING, SmAwaitPoint};
 use crate::mir::{Constant, Local, MirFunction, Operand, StatementKind, TerminatorKind};
 use cranelift::prelude::*;
@@ -417,6 +417,7 @@ impl<M: Module> CraneliftCodegen<M> {
 
         let body_ref = self.module.declare_func_in_func(body_func_id, builder.func);
         let fn_ptr_val = builder.ins().func_addr(types::I64, body_ref);
+        // Heap blob, not stack. trusted() implies no-aliasing.
         let mf = MemFlags::new();
         builder.ins().store(mf, fn_ptr_val, cb_ptr, 0);
 
@@ -424,7 +425,28 @@ impl<M: Module> CraneliftCodegen<M> {
         builder.ins().store(mf, nargs_val, cb_ptr, 8);
 
         for (i, &arg) in params.iter().enumerate() {
-            builder.ins().store(mf, arg, cb_ptr, 8 * (2 + i) as i32);
+            let decl = &func.locals[i + 1];
+            let stored = if decl.ty.is_move_type() && !decl.is_owning {
+                // Non-owning (borrow) param entering thread boundary: deep copy.
+                let desc = type_descriptor(
+                    &decl.ty,
+                    &self.struct_fields,
+                    &self.field_types,
+                    &self.enum_defs,
+                );
+                self.intern_attr_string(&desc);
+                let data_id = self.string_ids[&desc];
+                let local_data = self.module.declare_data_in_func(data_id, builder.func);
+                let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                let copy_id = self.func_ids["__olive_copy_typed"];
+                let copy_ref = self.module.declare_func_in_func(copy_id, builder.func);
+                let copy_call = builder.ins().call(copy_ref, &[arg, desc_ptr]);
+                builder.inst_results(copy_call)[0]
+            } else {
+                // Owning param or scalar: move directly, no copy needed.
+                arg
+            };
+            builder.ins().store(mf, stored, cb_ptr, 8 * (2 + i) as i32);
         }
 
         let spawn_id = *self

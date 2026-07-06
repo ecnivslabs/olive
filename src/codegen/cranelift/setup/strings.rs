@@ -5,7 +5,7 @@ use crate::mir::StatementKind;
 use cranelift_module::{DataDescription, Linkage, Module};
 
 impl<M: Module> CraneliftCodegen<M> {
-    pub(super) fn intern_attr_string(&mut self, attr: &str) {
+    pub(crate) fn intern_attr_string(&mut self, attr: &str) {
         if self.string_ids.contains_key(attr) {
             return;
         }
