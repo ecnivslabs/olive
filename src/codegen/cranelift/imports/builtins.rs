@@ -42,6 +42,7 @@ pub(crate) fn needs_type_descriptor(ty: &OliveType) -> bool {
             | OliveType::Dict(_, _)
             | OliveType::Struct(_, _, _)
             | OliveType::Enum(_, _)
+            | OliveType::Bytes
     )
 }
 
@@ -72,6 +73,8 @@ pub(crate) fn drop_descriptor_type<'a>(
     };
     match t {
         OliveType::Struct(name, _, _) => struct_fields.contains_key(name).then_some(t),
+        // A buffer has no element layout to walk; the direct free suffices.
+        OliveType::Bytes => None,
         _ if needs_type_descriptor(t) => Some(t),
         _ => None,
     }
@@ -126,6 +129,7 @@ fn encode_descriptor(
         OliveType::Bool => out.push(3),
         OliveType::Str => out.push(4),
         OliveType::Null => out.push(5),
+        OliveType::Bytes => out.push(15),
         OliveType::Any | OliveType::Union(_) | OliveType::PyObject | OliveType::PyNamed(_, _) => {
             out.push(6)
         }
@@ -283,6 +287,9 @@ pub(crate) fn resolve_builtin_import(
             "__olive_any_eq" => Some("__olive_any_eq"),
             "__olive_any_ne" => Some("__olive_any_ne"),
             "__olive_list_concat" => Some("__olive_list_concat"),
+            "__olive_list_concat_typed" => Some("__olive_list_concat_typed"),
+            "__olive_list_getslice_typed" => Some("__olive_list_getslice_typed"),
+            "__olive_list_extend_typed" => Some("__olive_list_extend_typed"),
             "__olive_str_eq" => Some("__olive_str_eq"),
             "__olive_obj_new" => Some("__olive_obj_new"),
             "__olive_obj_get" => Some("__olive_obj_get"),
@@ -610,6 +617,7 @@ pub(crate) fn resolve_builtin_import(
             "__olive_py_to_int" => Some("__olive_py_to_int"),
             "__olive_py_to_float" => Some("__olive_py_to_float"),
             "__olive_py_to_str" => Some("__olive_py_to_str"),
+            "__olive_py_to_bytes" => Some("__olive_py_to_bytes"),
             "__olive_py_to_any" => Some("__olive_py_to_any"),
             "__olive_to_pyobject" => Some("__olive_to_pyobject"),
             "__olive_py_from_int" => Some("__olive_py_from_int"),

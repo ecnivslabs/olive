@@ -93,6 +93,7 @@ pub static mut PY_SEQUENCE_LIST: unsafe extern "C" fn(PyObject) -> PyObject = no
 pub static mut PY_BYTES_AS_STRING: unsafe extern "C" fn(PyObject) -> *const c_char =
     noop_bytes_as_string;
 pub static mut PY_BYTES_SIZE: unsafe extern "C" fn(PyObject) -> isize = noop_bytes_size;
+pub static mut PY_BYTES_FROM_OBJECT: unsafe extern "C" fn(PyObject) -> PyObject = noop_call_1;
 
 pub static mut PY_BOOL_TYPE: PyObject = std::ptr::null_mut();
 pub static mut PY_LONG_TYPE: PyObject = std::ptr::null_mut();

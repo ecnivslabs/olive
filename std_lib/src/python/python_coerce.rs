@@ -296,6 +296,28 @@ pub fn olive_to_py(val: i64) -> PyObject {
     }
 }
 
+/// Fails loudly; a pending exception here poisons the next C-API call.
+pub unsafe fn olive_to_py_checked(val: i64) -> PyObject {
+    let r = olive_to_py(val);
+    unsafe {
+        if r.is_null() || !PY_ERR_OCCURRED().is_null() {
+            crate::python::python_error::handle_py_error();
+        }
+    }
+    r
+}
+
+/// Checked variant of `olive_any_to_py`.
+pub unsafe fn olive_any_to_py_checked(val: i64) -> PyObject {
+    let r = olive_any_to_py(val);
+    unsafe {
+        if r.is_null() || !PY_ERR_OCCURRED().is_null() {
+            crate::python::python_error::handle_py_error();
+        }
+    }
+    r
+}
+
 pub unsafe fn olive_py_create_list_proxy(ptr: i64) -> PyObject {
     unsafe {
         let obj = crate::python_proxy::PY_TYPE_GENERIC_ALLOC(

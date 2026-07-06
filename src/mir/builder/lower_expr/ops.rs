@@ -343,12 +343,56 @@ impl<'a> MirBuilder<'a> {
         } else {
             (l, r)
         };
+        // Deep-copy elements; plain concat shares pointers and double-frees on drop.
+        let mut deref_l = &l_ty;
+        while let Type::Ref(inner) | Type::MutRef(inner) = deref_l {
+            deref_l = inner;
+        }
+        if matches!(op, BinOp::Add)
+            && let Type::List(elem) = deref_l
+            && Self::list_elem_needs_copy(elem)
+        {
+            let tmp = self.new_local(self.get_type(expr_id), None, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    tmp,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function(
+                            "__olive_list_concat_typed".into(),
+                        )),
+                        args: vec![l, r],
+                    },
+                ),
+                span,
+            );
+            return self.operand_for_local(tmp);
+        }
         let tmp = self.new_local(self.get_type(expr_id), None, false);
         self.push_statement(
             StatementKind::Assign(tmp, Rvalue::BinaryOp(op.clone(), l, r)),
             span,
         );
         self.operand_for_local(tmp)
+    }
+
+    /// Whether list elements own heap data (double-frees if shared across lists).
+    pub(crate) fn list_elem_needs_copy(elem: &Type) -> bool {
+        !matches!(
+            elem,
+            Type::Int
+                | Type::I8
+                | Type::I16
+                | Type::I32
+                | Type::U8
+                | Type::U16
+                | Type::U32
+                | Type::U64
+                | Type::Usize
+                | Type::Float
+                | Type::F32
+                | Type::Bool
+                | Type::Null
+        )
     }
 
     pub(super) fn lower_unary_op_expr(

@@ -32,8 +32,8 @@ enum RvClass {
     UseCopy(Local),
     /// Produces a value the destination owns.
     Own,
-    /// Produces a borrow of a value owned elsewhere.
-    Borrow,
+    /// Borrow of a value owned elsewhere; carries the base local if named (element/field read).
+    Borrow(Option<Local>),
     /// No heap value (constants, self-assign).
     Neutral,
     /// Not an assignment: the local's value was stored beyond this frame
@@ -51,6 +51,17 @@ enum LocalClass {
     /// Not a heap local or already non-owning from the builder.
     External,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum EdgeKind {
+    /// The view aliases the whole value of the source.
+    Alias,
+    /// The view points into an element or field of the source.
+    Interior,
+}
+
+/// view -> (source, how the view relates to it)
+type BorrowEdges = HashMap<Local, HashSet<(Local, EdgeKind)>>;
 
 struct AssignRec {
     bb: usize,
@@ -80,20 +91,22 @@ impl Transform for OwnershipInference {
             &self.param_escapes,
         );
 
-        // A lone escaping call arg whose pure-owner source dies at the call
-        // hands the value over outright: the callee's container owns it and
-        // the nulled variable keeps the scope-end drop inert.
+        // Promoted Move hands src's value to dst; src's stale scope-end Drop must go too.
+        let mut moved_from: Vec<(usize, usize, Local)> = Vec::new();
+
+        // Escaping arg whose owner-source dies at the call transfers outright; its Drop goes stale too.
         for (bb, idx, pos) in arg_moves {
             if let StatementKind::Assign(_, Rvalue::Call { args, .. }) =
                 &mut func.basic_blocks[bb].statements[idx].kind
                 && let Operand::Copy(l) = args[pos]
             {
                 args[pos] = Operand::Move(l);
+                moved_from.push((bb, idx, l));
             }
         }
         let (classes, transfers) = classify(func, &records, &heap, &builder_owning);
 
-        let mut changed = false;
+        let mut changed = !moved_from.is_empty();
 
         for (rec_idx, rec) in records.iter().enumerate() {
             if transfers.contains(&rec_idx)
@@ -123,13 +136,23 @@ impl Transform for OwnershipInference {
             }
         }
 
-        // Roots a view may alias, for return-site drop handling.
-        let mut borrow_edges: HashMap<Local, HashSet<Local>> = HashMap::default();
+        // Roots a view may alias, for return-site drop handling (Alias = whole value, Interior = element/field).
+        let mut borrow_edges: BorrowEdges = HashMap::default();
         for (rec_idx, rec) in records.iter().enumerate() {
-            if let RvClass::UseCopy(src) = rec.class
-                && !transfers.contains(&rec_idx)
-            {
-                borrow_edges.entry(rec.dst).or_default().insert(src);
+            match rec.class {
+                RvClass::UseCopy(src) if !transfers.contains(&rec_idx) => {
+                    borrow_edges
+                        .entry(rec.dst)
+                        .or_default()
+                        .insert((src, EdgeKind::Alias));
+                }
+                RvClass::Borrow(Some(base)) => {
+                    borrow_edges
+                        .entry(rec.dst)
+                        .or_default()
+                        .insert((base, EdgeKind::Interior));
+                }
+                _ => {}
             }
         }
 
@@ -153,6 +176,55 @@ impl Transform for OwnershipInference {
         let (did_insert, flag_of) =
             insert_flags_and_marks(func, &classes, &mixed_locals, &records, &transfers);
         changed |= did_insert;
+
+        // Same last-use promotion, for a plain `dst = src` rebind instead of a call arg.
+        for (rec_idx, rec) in records.iter().enumerate() {
+            if transfers.contains(&rec_idx)
+                && let RvClass::UseCopy(src) = rec.class
+            {
+                moved_from.push((rec.bb, rec.idx, src));
+            }
+        }
+
+        // `str_concat_inplace` always consumes its left operand's storage; a dead-after copy there is really a last use.
+        for (bb_idx, bb) in func.basic_blocks.iter_mut().enumerate() {
+            for (idx, stmt) in bb.statements.iter_mut().enumerate() {
+                if let StatementKind::Assign(_, Rvalue::BinaryOp(op, l_op, _)) = &mut stmt.kind
+                    && *op == crate::parser::BinOp::Add
+                    && let Operand::Copy(l) = *l_op
+                    && l.0 < heap.len()
+                    && heap[l.0]
+                    && builder_owning[l.0]
+                    && func.locals[l.0].ty == Type::Str
+                    && !liveness.live_after[bb_idx][idx + 1].contains(&l)
+                {
+                    *l_op = Operand::Move(l);
+                    moved_from.push((bb_idx, idx, l));
+                    changed = true;
+                }
+            }
+        }
+
+        // Remove each now-stale Drop, descending per block so earlier indices stay valid.
+        let mut drop_removals: Vec<(usize, usize)> = Vec::new();
+        for (bb, idx, src) in moved_from {
+            let stmts = &func.basic_blocks[bb].statements;
+            for (j, stmt) in stmts.iter().enumerate().skip(idx + 1) {
+                match &stmt.kind {
+                    StatementKind::Drop(l) if *l == src => {
+                        drop_removals.push((bb, j));
+                        break;
+                    }
+                    StatementKind::Assign(d, _) if *d == src => break,
+                    _ => {}
+                }
+            }
+        }
+        drop_removals.sort_unstable_by(|a, b| b.cmp(a));
+        for (bb, idx) in drop_removals {
+            func.basic_blocks[bb].statements.remove(idx);
+            changed = true;
+        }
 
         if !reassign.is_empty() {
             changed |= insert_reassign_drops(func, &reassign);
@@ -304,6 +376,13 @@ fn redirect_operand(kind: &mut StatementKind, slot: CopySlot, tmp: Local) {
     }
 }
 
+fn borrow_base(op: &Operand, heap: &[bool]) -> Option<Local> {
+    match op {
+        Operand::Copy(l) | Operand::Move(l) if l.0 < heap.len() && heap[l.0] => Some(*l),
+        _ => None,
+    }
+}
+
 enum SiteKind {
     /// Escaping argument of a call, at this lowered position.
     CallArg(usize),
@@ -403,17 +482,18 @@ fn collect_assigns(
                 Rvalue::Use(Operand::Constant(_)) | Rvalue::Use(Operand::Copy(_)) => {
                     RvClass::Neutral
                 }
-                Rvalue::GetIndex(_, _, _)
-                | Rvalue::GetAttr(_, _)
-                | Rvalue::PtrLoad(_)
-                | Rvalue::FatPtrData(_)
-                | Rvalue::VTableLoad { .. }
-                | Rvalue::Ref(_)
-                | Rvalue::MutRef(_) => RvClass::Borrow,
+                Rvalue::GetIndex(base, _, _)
+                | Rvalue::GetAttr(base, _)
+                | Rvalue::PtrLoad(base)
+                | Rvalue::FatPtrData(base) => RvClass::Borrow(borrow_base(base, heap)),
+                Rvalue::Ref(l) | Rvalue::MutRef(l) => {
+                    RvClass::Borrow((l.0 < heap.len() && heap[l.0]).then_some(*l))
+                }
+                Rvalue::VTableLoad { .. } => RvClass::Borrow(None),
                 Rvalue::Call {
                     func: Operand::Constant(Constant::Function(name)),
                     ..
-                } if borrowed_returns.contains(name) => RvClass::Borrow,
+                } if borrowed_returns.contains(name) => RvClass::Borrow(None),
                 _ => RvClass::Own,
             };
             let src_dead = match &class {
@@ -483,7 +563,7 @@ fn solve_impurity(
     }
     let mut borrowish = vec![false; n];
     for rec in records {
-        if matches!(rec.class, RvClass::Borrow | RvClass::UseCopy(_)) {
+        if matches!(rec.class, RvClass::Borrow(_) | RvClass::UseCopy(_)) {
             borrowish[rec.dst.0] = true;
         }
     }
@@ -491,7 +571,7 @@ fn solve_impurity(
     for rec in records {
         let kind = match rec.class {
             RvClass::Own => DefKind::Owning,
-            RvClass::Borrow => DefKind::Impure,
+            RvClass::Borrow(_) => DefKind::Impure,
             RvClass::UseCopy(src) if rec.src_dead && !borrowish[src.0] => DefKind::Alias(src),
             RvClass::UseCopy(_) => DefKind::Impure,
             RvClass::Neutral | RvClass::Escape => continue,
@@ -637,7 +717,7 @@ fn classify(
                     }
                 }
                 RvClass::Own => owning_count[rec.dst.0] += 1,
-                RvClass::Borrow | RvClass::Escape => borrow_count[rec.dst.0] += 1,
+                RvClass::Borrow(_) | RvClass::Escape => borrow_count[rec.dst.0] += 1,
                 RvClass::Neutral => {}
             }
         }
@@ -677,11 +757,11 @@ fn reassign_free_locals(
     classes: &[LocalClass],
     heap: &[bool],
     records: &[AssignRec],
-    borrow_edges: &HashMap<Local, HashSet<Local>>,
+    borrow_edges: &BorrowEdges,
 ) -> HashSet<Local> {
     let mut view_roots: HashSet<Local> = HashSet::default();
     for srcs in borrow_edges.values() {
-        view_roots.extend(srcs.iter().copied());
+        view_roots.extend(srcs.iter().map(|(l, _)| *l));
     }
     let mut assigns = vec![0u32; classes.len()];
     for rec in records {
@@ -823,7 +903,7 @@ fn insert_flags_and_marks(
         let owns = match rec.class {
             RvClass::UseCopy(_) => transfers.contains(&i),
             RvClass::Own => true,
-            RvClass::Borrow | RvClass::Neutral => false,
+            RvClass::Borrow(_) | RvClass::Neutral => false,
             _ => unreachable!(),
         };
         updates
@@ -875,14 +955,15 @@ fn insert_flags_and_marks(
     (true, flag_of)
 }
 
-/// Transitive owning roots a view might alias, following borrow edges.
+/// Transitive owning roots a view might alias; `interior` marks a path that crossed an element/field borrow.
 fn owning_roots(
     start: Local,
-    borrow_edges: &HashMap<Local, HashSet<Local>>,
+    borrow_edges: &BorrowEdges,
     classes: &[LocalClass],
     builder_owning: &[bool],
-) -> HashSet<Local> {
+) -> (HashSet<Local>, bool) {
     let mut roots = HashSet::default();
+    let mut interior = false;
     let mut stack = vec![start];
     let mut seen: HashSet<Local> = HashSet::default();
     while let Some(l) = stack.pop() {
@@ -897,24 +978,27 @@ fn owning_roots(
             continue;
         }
         if let Some(srcs) = borrow_edges.get(&l) {
-            stack.extend(srcs.iter().copied());
+            for (src, kind) in srcs {
+                if *kind == EdgeKind::Interior {
+                    interior = true;
+                }
+                stack.push(*src);
+            }
         }
     }
-    roots
+    (roots, interior)
 }
 
-/// At a return of a view, the root's drop in the same block would free the
-/// value being returned. A single-root pure view provably aliases it: delete
-/// the drop. Otherwise keep the drop but skip it at runtime when the pointers
-/// are equal.
+/// At a view's return: alias deletes the root's drop, interior copies out first, else guard by pointer compare.
 fn process_return_sites(
     func: &mut MirFunction,
     classes: &[LocalClass],
-    borrow_edges: &HashMap<Local, HashSet<Local>>,
+    borrow_edges: &BorrowEdges,
     builder_owning: &[bool],
 ) -> bool {
     let mut changed = false;
     let mut guards: Vec<(usize, usize)> = Vec::new();
+    let mut copies: Vec<(usize, usize, Local)> = Vec::new();
 
     for bb_idx in 0..func.basic_blocks.len() {
         let mut ret_local: Option<Local> = None;
@@ -932,8 +1016,12 @@ fn process_return_sites(
         if v.0 >= classes.len() || !matches!(classes[v.0], LocalClass::View | LocalClass::Mixed) {
             continue;
         }
-        let roots = owning_roots(v, borrow_edges, classes, builder_owning);
+        let (roots, interior) = owning_roots(v, borrow_edges, classes, builder_owning);
         if roots.is_empty() {
+            continue;
+        }
+        if interior {
+            copies.push((bb_idx, assign_idx, v));
             continue;
         }
         let single_pure = roots.len() == 1 && classes[v.0] == LocalClass::View;
@@ -961,6 +1049,27 @@ fn process_return_sites(
     guards.sort_unstable_by(|a, b| b.cmp(a));
     for (bb_idx, idx) in guards {
         guard_drop_with_ptr_ne(func, bb_idx, idx);
+        changed = true;
+    }
+
+    for (bb_idx, idx, v) in copies {
+        let tmp = push_local(func, func.locals[v.0].ty.clone());
+        let span = func.basic_blocks[bb_idx].statements[idx].span;
+        let copy_call = Statement {
+            kind: StatementKind::Assign(
+                tmp,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("__olive_copy_typed".into())),
+                    args: vec![Operand::Copy(v)],
+                },
+            ),
+            span,
+        };
+        func.basic_blocks[bb_idx].statements[idx] = Statement {
+            kind: StatementKind::Assign(Local(0), Rvalue::Use(Operand::Move(tmp))),
+            span,
+        };
+        func.basic_blocks[bb_idx].statements.insert(idx, copy_call);
         changed = true;
     }
     changed

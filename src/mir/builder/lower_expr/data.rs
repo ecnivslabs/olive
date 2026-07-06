@@ -143,13 +143,23 @@ impl<'a> MirBuilder<'a> {
                 if let ExprKind::Deref(inner) = &elem.kind {
                     let inner_ty = self.get_type(inner.id);
                     if !matches!(inner_ty, Type::Ptr(_) | Type::Int) {
+                        let mut src_ty = &inner_ty;
+                        while let Type::Ref(i) | Type::MutRef(i) = src_ty {
+                            src_ty = i;
+                        }
+                        let extend_fn = match src_ty {
+                            Type::List(e) if Self::list_elem_needs_copy(e) => {
+                                "__olive_list_extend_typed"
+                            }
+                            _ => "__olive_list_extend",
+                        };
                         let source = self.lower_expr(inner);
                         self.push_statement(
                             StatementKind::Assign(
                                 void_dummy,
                                 Rvalue::Call {
                                     func: Operand::Constant(Constant::Function(
-                                        "__olive_list_extend".to_string(),
+                                        extend_fn.to_string(),
                                     )),
                                     args: vec![Operand::Copy(tmp), source],
                                 },
@@ -327,6 +337,7 @@ impl<'a> MirBuilder<'a> {
             let func_name = match &current_obj_ty {
                 Type::PyObject | Type::Any => "__olive_py_getslice",
                 Type::Str => "__olive_str_getslice",
+                Type::List(e) if Self::list_elem_needs_copy(e) => "__olive_list_getslice_typed",
                 Type::List(_) | Type::Tuple(_) | Type::Set(_) => "__olive_list_getslice",
                 _ => "__olive_list_getslice",
             };

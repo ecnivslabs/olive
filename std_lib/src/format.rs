@@ -16,6 +16,7 @@ pub(crate) const D_OBJ: u8 = 11;
 pub(crate) const D_STRUCT: u8 = 12;
 pub(crate) const D_ENUM: u8 = 13;
 pub(crate) const D_BACKREF: u8 = 14;
+pub(crate) const D_BYTES: u8 = 15;
 
 /// Reads a length-prefixed string from a descriptor; length field is biased by 13.
 fn read_lp(desc: *const u8, pos: &mut usize) -> String {
@@ -91,6 +92,7 @@ fn fmt(val: i64, desc: *const u8, pos: &mut usize) -> String {
         D_STR => format!("\"{}\"", olive_str_from_ptr(val)),
         D_NULL => "None".to_string(),
         D_ANY | D_OBJ => format_list_elem(val),
+        D_BYTES => crate::bytes::format_bytes(val),
         D_LIST => fmt_seq(val, desc, pos, '[', ']'),
         D_SET => fmt_seq(val, desc, pos, '{', '}'),
         D_TUPLE => fmt_tuple(val, desc, pos),

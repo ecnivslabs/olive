@@ -25,6 +25,9 @@ pub extern "C" fn olive_py_from_str(s: i64) -> PyObject {
     check_python_loaded();
     with_gil(|| unsafe {
         let r = PY_UNICODE_FROM_STRING((s & !1) as *const c_char);
+        if r.is_null() {
+            handle_py_error();
+        }
         olive_py_wrap_borrowed(r)
     })
 }
@@ -32,7 +35,7 @@ pub extern "C" fn olive_py_from_str(s: i64) -> PyObject {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_conv_to_py(val: i64) -> PyObject {
     check_python_loaded();
-    with_gil(|| olive_to_py(val))
+    with_gil(|| unsafe { olive_to_py_checked(val) })
 }
 
 #[unsafe(no_mangle)]
@@ -55,7 +58,7 @@ pub extern "C" fn olive_py_realize(val: i64) -> PyObject {
 unsafe fn deep_to_py(val: i64) -> PyObject {
     unsafe {
         if val == 0 || !crate::is_active_object(val) {
-            return olive_any_to_py(val);
+            return olive_any_to_py_checked(val);
         }
         let kind = *(val as *const i64);
         match kind {
@@ -80,13 +83,13 @@ unsafe fn deep_to_py(val: i64) -> PyObject {
                     let item = if kind == crate::KIND_ANY_LIST {
                         deep_to_py(elem)
                     } else {
-                        olive_to_py(elem)
+                        olive_to_py_checked(elem)
                     };
                     PY_LIST_SET_ITEM(py_list, i as isize, item);
                 }
                 py_list
             }
-            _ => olive_to_py(val),
+            _ => olive_to_py_checked(val),
         }
     }
 }
@@ -226,20 +229,44 @@ pub extern "C" fn olive_py_to_str(obj: PyObject) -> i64 {
     }
     with_gil(|| unsafe {
         let str_obj = PY_OBJECT_STR(unwrapped_obj);
-
-        if !str_obj.is_null() {
-            let s = PY_UNICODE_AS_UTF8(str_obj);
-            let r = if !s.is_null() {
-                let r_str = CStr::from_ptr(s).to_string_lossy();
-                crate::olive_str_internal(&r_str)
-            } else {
-                0
-            };
-            PY_DEC_REF(str_obj);
-            r
-        } else {
-            0
+        if str_obj.is_null() {
+            handle_py_error();
         }
+        let s = PY_UNICODE_AS_UTF8(str_obj);
+        if s.is_null() {
+            PY_ERR_CLEAR();
+            crate::panic::abort_py_coerce("cannot encode this Python string as UTF-8");
+        }
+        let r_str = CStr::from_ptr(s).to_string_lossy();
+        let r = crate::olive_str_internal(&r_str);
+        PY_DEC_REF(str_obj);
+        r
+    })
+}
+
+/// Materializes a Python bytes-like object into a native buffer; non-bytes-like raises.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_to_bytes(obj: PyObject) -> i64 {
+    check_python_loaded();
+    let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
+    if unwrapped_obj.is_null() {
+        return crate::bytes::new_buf(Vec::new());
+    }
+    with_gil(|| unsafe {
+        let bytes_obj = PY_BYTES_FROM_OBJECT(unwrapped_obj);
+        if bytes_obj.is_null() {
+            handle_py_error();
+            return crate::bytes::new_buf(Vec::new());
+        }
+        let ptr = PY_BYTES_AS_STRING(bytes_obj);
+        let len = PY_BYTES_SIZE(bytes_obj);
+        let data = if ptr.is_null() || len <= 0 {
+            Vec::new()
+        } else {
+            std::slice::from_raw_parts(ptr as *const u8, len as usize).to_vec()
+        };
+        PY_DEC_REF(bytes_obj);
+        crate::bytes::new_buf(data)
     })
 }
 
@@ -254,7 +281,7 @@ pub extern "C" fn olive_py_from_list(s: i64) -> PyObject {
         let pyl = PY_LIST_NEW(sv.len as isize);
         for i in 0..sv.len {
             let v = *sv.ptr.add(i);
-            let py_v = olive_to_py(v);
+            let py_v = olive_to_py_checked(v);
             PY_LIST_SET_ITEM(pyl, i as isize, py_v);
         }
         olive_py_wrap_owned(pyl)
@@ -289,10 +316,7 @@ pub extern "C" fn olive_py_getitem(obj: PyObject, key: PyObject) -> PyObject {
         return std::ptr::null_mut();
     }
     with_gil(|| unsafe {
-        let py_key = olive_to_py(key as i64);
-        if py_key.is_null() {
-            return std::ptr::null_mut();
-        }
+        let py_key = olive_to_py_checked(key as i64);
         let r = PY_OBJECT_GET_ITEM(unwrapped_obj, py_key);
         PY_DEC_REF(py_key);
         if r.is_null() {
@@ -306,7 +330,7 @@ pub extern "C" fn olive_py_getitem(obj: PyObject, key: PyObject) -> PyObject {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_to_pyobject(val: i64) -> i64 {
     check_python_loaded();
-    with_gil(|| unsafe { olive_py_wrap_owned(olive_any_to_py(val)) as i64 })
+    with_gil(|| unsafe { olive_py_wrap_owned(olive_any_to_py_checked(val)) as i64 })
 }
 
 /// Materializes a Python arena handle into a self-describing Any value
@@ -330,10 +354,7 @@ pub extern "C" fn olive_py_dict_get_default(obj: i64, key: i64, default: i64) ->
         return default;
     }
     with_gil(|| unsafe {
-        let py_key = olive_to_py(key);
-        if py_key.is_null() {
-            return default;
-        }
+        let py_key = olive_to_py_checked(key);
         let val = PY_OBJECT_GET_ITEM(unwrapped_obj, py_key);
         PY_DEC_REF(py_key);
         if val.is_null() {
@@ -355,17 +376,8 @@ pub extern "C" fn olive_py_setitem(obj: PyObject, key: PyObject, val: PyObject) 
         return;
     }
     with_gil(|| unsafe {
-        let py_key = olive_to_py(key as i64);
-        let py_val = olive_to_py(val as i64);
-        if py_key.is_null() || py_val.is_null() {
-            if !py_key.is_null() {
-                PY_DEC_REF(py_key);
-            }
-            if !py_val.is_null() {
-                PY_DEC_REF(py_val);
-            }
-            return;
-        }
+        let py_key = olive_to_py_checked(key as i64);
+        let py_val = olive_to_py_checked(val as i64);
         let res = PY_OBJECT_SET_ITEM(unwrapped_obj, py_key, py_val);
         PY_DEC_REF(py_key);
         PY_DEC_REF(py_val);
@@ -405,16 +417,10 @@ pub extern "C" fn olive_py_setitem_int(obj: PyObject, key: i64, val: PyObject) {
     }
     with_gil(|| unsafe {
         let py_key = PY_LONG_FROM_LONG(key as std::os::raw::c_long);
-        let py_val = olive_to_py(val as i64);
-        if py_key.is_null() || py_val.is_null() {
-            if !py_key.is_null() {
-                PY_DEC_REF(py_key);
-            }
-            if !py_val.is_null() {
-                PY_DEC_REF(py_val);
-            }
-            return;
+        if py_key.is_null() {
+            handle_py_error();
         }
+        let py_val = olive_to_py_checked(val as i64);
         let res = PY_OBJECT_SET_ITEM(unwrapped_obj, py_key, py_val);
         PY_DEC_REF(py_key);
         PY_DEC_REF(py_val);
@@ -511,7 +517,7 @@ pub extern "C" fn olive_py_setattr(obj: PyObject, attr: i64, val: i64) -> PyObje
         return obj;
     }
     with_gil(|| unsafe {
-        let py_val = olive_to_py(val);
+        let py_val = olive_to_py_checked(val);
         let res = PY_OBJECT_SET_ATTR_STRING(unwrapped_obj, (attr & !1) as *const c_char, py_val);
         if res == -1 {
             handle_py_error();
@@ -559,6 +565,11 @@ pub extern "C" fn olive_py_to_sequence(val: i64) -> PyObject {
                 } else {
                     olive_to_py(v)
                 };
+                if py_v.is_null() || !crate::python::PY_ERR_OCCURRED().is_null() {
+                    // Error stays set; the caller's boundary check reports it.
+                    crate::python::PY_DEC_REF(pyl);
+                    return std::ptr::null_mut();
+                }
                 crate::python::PY_TUPLE_SET_ITEM(pyl, i as isize, py_v);
             }
             pyl

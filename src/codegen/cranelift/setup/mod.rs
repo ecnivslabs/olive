@@ -30,6 +30,7 @@ impl<M: Module> CraneliftCodegen<M> {
         };
 
         let sig_3i64_i64 = mk_sig(&[types::I64, types::I64, types::I64], &[types::I64]);
+        let sig_6i64_i64 = mk_sig(&[types::I64; 6], &[types::I64]);
         let sig_6i64_f64 = mk_sig(&[types::I64; 6], &[types::I64]);
         let sig_f64_f64 = mk_sig(&[types::F64], &[types::F64]);
         let sig_f64_f64_f64 = mk_sig(&[types::F64, types::F64], &[types::F64]);
@@ -249,6 +250,9 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_json_stringify_pretty", &sig_i64_i64),
             ("__olive_list_append", &sig_i64_i64_void),
             ("__olive_list_concat", &sig_i64_i64_i64),
+            ("__olive_list_concat_typed", &sig_3i64_i64),
+            ("__olive_list_getslice_typed", &sig_6i64_i64),
+            ("__olive_list_extend_typed", &sig_i64_i64_i64_void),
             ("__olive_list_getslice", &sig_i64_5_i64),
             ("__olive_list_sum_int", &sig_i64_i64),
             ("__olive_list_sum_float", &sig_i64_f64),
@@ -405,6 +409,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_py_setitem_int", &sig_i64_i64_i64_void),
             ("__olive_py_setitem_safe", &sig_3i64_i64),
             ("__olive_py_copy_ref", &sig_i64_i64),
+            ("__olive_py_to_bytes", &sig_i64_i64),
             ("__olive_py_to_dict", &sig_i64_i64),
             ("__olive_py_to_float", &sig_i64_f64),
             ("__olive_py_to_int", &sig_i64_i64),

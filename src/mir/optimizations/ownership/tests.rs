@@ -167,6 +167,67 @@ fn alias_of_dead_source_transfers() {
         "dead source should transfer"
     );
     assert!(f.locals[2].is_owning);
+    let drops: Vec<_> = f.basic_blocks[0]
+        .statements
+        .iter()
+        .filter_map(|s| match &s.kind {
+            StatementKind::Drop(l) => Some(*l),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        drops,
+        vec![Local(2)],
+        "source's drop must not survive a transfer: it would free memory \
+         the destination now owns"
+    );
+}
+
+#[test]
+fn str_concat_left_operand_transfer_drops_its_own_source() {
+    // `str_concat_inplace` consumes `_1`'s slot, so its trailing drop must not survive.
+    let mut f = func_of(
+        vec![
+            decl(Type::Str, true),
+            decl(Type::Str, true),
+            decl(Type::Str, true),
+        ],
+        vec![
+            assign(1, Rvalue::Use(Operand::Constant(Constant::Str("a".into())))),
+            assign(
+                2,
+                Rvalue::BinaryOp(
+                    crate::parser::BinOp::Add,
+                    Operand::Copy(Local(1)),
+                    Operand::Constant(Constant::Str("b".into())),
+                ),
+            ),
+            drop_stmt(2),
+            drop_stmt(1),
+        ],
+    );
+    pass().run(&mut f);
+    assert!(
+        matches!(
+            &f.basic_blocks[0].statements[1].kind,
+            StatementKind::Assign(_, Rvalue::BinaryOp(_, Operand::Move(l), _)) if *l == Local(1)
+        ),
+        "dead left operand of str concat should move"
+    );
+    let drops: Vec<_> = f.basic_blocks[0]
+        .statements
+        .iter()
+        .filter_map(|s| match &s.kind {
+            StatementKind::Drop(l) => Some(*l),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        drops,
+        vec![Local(2)],
+        "left operand's drop must not survive: str_concat_inplace already \
+         consumed its slab slot, reused or freed"
+    );
 }
 
 #[test]
@@ -315,6 +376,39 @@ fn returned_view_root_drop_removed() {
         .flat_map(|b| &b.statements)
         .any(|s| matches!(s.kind, StatementKind::Drop(_)));
     assert!(!any_drop, "returning the only view of _1 must not drop _1");
+}
+
+#[test]
+fn returned_interior_element_is_copied_not_root_drop_elided() {
+    // _2 is an interior view into _1; _1 must still drop, so the returned element needs its own copy.
+    let mut f = func_of(
+        vec![
+            decl(heap_ty(), true),
+            decl(heap_ty(), true),
+            decl(heap_ty(), true),
+        ],
+        vec![
+            assign(1, Rvalue::Aggregate(AggregateKind::List, vec![])),
+            assign(
+                2,
+                Rvalue::GetIndex(
+                    Operand::Copy(Local(1)),
+                    Operand::Constant(Constant::Int(0)),
+                    false,
+                ),
+            ),
+            assign(0, Rvalue::Use(Operand::Copy(Local(2)))),
+            drop_stmt(1),
+        ],
+    );
+    pass().run(&mut f);
+    assert_eq!(copy_calls(&f), 1, "interior return copies before root drop");
+    let root_drop_survives = f
+        .basic_blocks
+        .iter()
+        .flat_map(|b| &b.statements)
+        .any(|s| matches!(s.kind, StatementKind::Drop(l) if l == Local(1)));
+    assert!(root_drop_survives, "container must still be freed");
 }
 
 #[test]

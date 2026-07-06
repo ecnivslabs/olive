@@ -206,6 +206,7 @@ pub extern "C" fn olive_py_initialize() {
         PY_SEQUENCE_LIST = compat_dlsym(handle, "PySequence_List");
         PY_BYTES_AS_STRING = compat_dlsym(handle, "PyBytes_AsString");
         PY_BYTES_SIZE = compat_dlsym(handle, "PyBytes_Size");
+        PY_BYTES_FROM_OBJECT = compat_dlsym(handle, "PyBytes_FromObject");
         PY_DICT_KEYS = compat_dlsym(handle, "PyDict_Keys");
         PY_OBJECT_TYPE = compat_dlsym(handle, "PyObject_Type");
         PY_OBJECT_STR = compat_dlsym(handle, "PyObject_Str");

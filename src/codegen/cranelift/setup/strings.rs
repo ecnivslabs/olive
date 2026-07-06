@@ -132,6 +132,26 @@ impl<M: Module> CraneliftCodegen<M> {
         let Operand::Constant(Constant::Function(name)) = callee else {
             return;
         };
+        let typed_list_arg = match name.as_str() {
+            "__olive_list_concat_typed" if args.len() == 2 => Some(0usize),
+            "__olive_list_getslice_typed" if args.len() == 5 => Some(0usize),
+            "__olive_list_extend_typed" if args.len() == 2 => Some(1usize),
+            _ => None,
+        };
+        if let Some(pos) = typed_list_arg {
+            let mut ty = match &args[pos] {
+                Operand::Copy(l) | Operand::Move(l) => &func.locals[l.0].ty,
+                _ => return,
+            };
+            while let crate::semantic::types::Type::Ref(inner)
+            | crate::semantic::types::Type::MutRef(inner) = ty
+            {
+                ty = inner;
+            }
+            let desc = type_descriptor(ty, &self.struct_fields, &self.field_types, &self.enum_defs);
+            self.intern_attr_string(&desc);
+            return;
+        }
         if name != "print" && name != "str" && name != "__olive_copy_typed" {
             return;
         }

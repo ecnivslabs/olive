@@ -145,6 +145,15 @@ pub(super) fn scan_rvalue_imports(
             if name == "__olive_copy_typed" {
                 needed.insert("__olive_copy_typed");
             }
+            if name == "__olive_list_concat_typed" {
+                needed.insert("__olive_list_concat_typed");
+            }
+            if name == "__olive_list_getslice_typed" {
+                needed.insert("__olive_list_getslice_typed");
+            }
+            if name == "__olive_list_extend_typed" {
+                needed.insert("__olive_list_extend_typed");
+            }
         }
         Rvalue::Call { .. } => {}
         Rvalue::GenOf(Operand::Copy(l) | Operand::Move(l))

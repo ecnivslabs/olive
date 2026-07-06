@@ -297,13 +297,13 @@ impl<'a> MirBuilder<'a> {
         self.current_block = Some(body_bb);
         self.enter_scope();
 
-        // Type the yielded value by the iterable's element type so a typed value
-        // (a string char, a list element) prints and dispatches correctly rather
-        // than falling back to the `Any` path, even after copy propagation.
+        // Type by element so typed values dispatch correctly, not via `Any`.
         let mut iter_ty = self.get_type(iter.id);
         while let Type::Ref(inner) | Type::MutRef(inner) = iter_ty {
             iter_ty = *inner;
         }
+        // `__olive_next` never copies; only str iteration yields a fresh value.
+        let next_is_owning = matches!(iter_ty, Type::Str);
         let elem_ty = match iter_ty {
             Type::Str => Type::Str,
             Type::List(t) | Type::Set(t) => *t,
@@ -311,9 +311,7 @@ impl<'a> MirBuilder<'a> {
             _ => Type::Any,
         };
 
-        // Borrow iteration yields non-owning views; freeing them drops live elements.
-        let iter_is_borrow = matches!(self.get_type(iter.id), Type::Ref(_) | Type::MutRef(_));
-        let next_val = self.new_local_with_owning(elem_ty.clone(), None, false, !iter_is_borrow);
+        let next_val = self.new_local_with_owning(elem_ty.clone(), None, false, next_is_owning);
         self.push_statement(
             StatementKind::Assign(
                 next_val,

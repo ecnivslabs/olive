@@ -128,6 +128,41 @@ impl<M: Module> CraneliftCodegen<M> {
                 return builder.inst_results(inst)[0];
             }
 
+            // Descriptor comes from the list arg's static type; needed to deep-copy elements.
+            let desc_arg = match name.as_str() {
+                "__olive_list_concat_typed" if call_args.len() == 2 => Some(0usize),
+                "__olive_list_getslice_typed" if call_args.len() == 5 => Some(0usize),
+                "__olive_list_extend_typed" if call_args.len() == 2 => Some(1usize),
+                _ => None,
+            };
+            if let Some(pos) = desc_arg {
+                let mut list_ty = match &args[pos] {
+                    Operand::Copy(l) | Operand::Move(l) => &func_mir.locals[l.0].ty,
+                    _ => &arg_type,
+                };
+                while let OliveType::Ref(inner) | OliveType::MutRef(inner) = list_ty {
+                    list_ty = inner;
+                }
+                let desc =
+                    super::imports::type_descriptor(list_ty, struct_fields, field_types, enum_defs);
+                let data_id = *string_ids
+                    .get(&desc)
+                    .expect("typed list op descriptor not interned during collection");
+                let local_data = module.declare_data_in_func(data_id, builder.func);
+                let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                let func_id = func_ids[name.as_str()];
+                let local_func = module.declare_func_in_func(func_id, builder.func);
+                let mut full_args = call_args.clone();
+                full_args.push(desc_ptr);
+                let inst = builder.ins().call(local_func, &full_args);
+                let results = builder.inst_results(inst);
+                return if results.is_empty() {
+                    builder.ins().iconst(types::I64, 0)
+                } else {
+                    results[0]
+                };
+            }
+
             let resolved_name = if (name == "print"
                 || name == "str"
                 || name == "int"

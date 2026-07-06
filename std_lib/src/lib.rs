@@ -443,6 +443,7 @@ pub(crate) fn format_list_elem(val: i64) -> String {
                 }
                 return "<PyObject>".to_string();
             }
+            KIND_BYTES => return bytes::format_bytes(val),
             KIND_ENUM => {
                 let e = unsafe { &*(val as *const OliveEnum) };
                 let mut parts = Vec::with_capacity(e.payload_len);
