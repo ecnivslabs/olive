@@ -21,13 +21,20 @@ pub struct GenCheckInsertion {
 }
 
 /// Whether values of this type live in generational slab slots, so the word
-/// at `ptr - 8` is a valid generation. `Any`, Python objects, and FFI-backed
-/// structs live elsewhere: they are never checked, and an alias mark must
-/// never touch their memory. Strings are slab-backed too but tagged and
-/// literal-tolerant, so they check through a runtime helper (`str_backed`).
+/// at `ptr - 8` is a valid generation. Types excluded: `Any` (boxed scalars
+/// use BOXED_SLAB but the Any local is never checked), Python objects,
+/// FFI-backed structs, `Future` (box-allocated, no generation word), and
+/// `Fn` types (boxed heap allocation, not slab). Strings are slab-backed too
+/// but tagged and literal-tolerant, so they check through a runtime helper
+/// (`str_backed`). `Bytes` is slab-backed via BYTES_SLAB.
 pub(crate) fn slab_backed(ty: &Type) -> bool {
     match ty {
-        Type::List(_) | Type::Tuple(_) | Type::Set(_) | Type::Dict(_, _) | Type::Enum(_, _) => true,
+        Type::List(_)
+        | Type::Tuple(_)
+        | Type::Set(_)
+        | Type::Dict(_, _)
+        | Type::Enum(_, _)
+        | Type::Bytes => true,
         Type::Union(members) => {
             let non_null: Vec<_> = members
                 .iter()

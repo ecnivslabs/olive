@@ -64,6 +64,14 @@ fn func_of(locals: Vec<LocalDecl>, stmts: Vec<Statement>) -> MirFunction {
     }
 }
 
+fn bytes_ty() -> Type {
+    Type::Bytes
+}
+
+fn future_ty() -> Type {
+    Type::Future(Box::new(Type::Int))
+}
+
 fn pass() -> GenCheckInsertion {
     GenCheckInsertion {
         borrowed_returns: HashSet::default(),
@@ -391,4 +399,55 @@ fn ffi_struct_is_not_checked() {
     );
     assert!(!pass().run(&mut f));
     assert_eq!(count_checks(&f), 0, "ffi struct has no generation checking");
+}
+
+#[test]
+fn bytes_stale_after_drop_gets_check() {
+    let mut f = func_of(
+        vec![decl(Type::Int), decl(bytes_ty()), decl(bytes_ty())],
+        vec![
+            assign(1, Rvalue::Use(Operand::Constant(Constant::Int(0)))),
+            assign(2, Rvalue::Use(Operand::Copy(Local(1)))),
+            drop_stmt(1),
+            use_stmt(2),
+        ],
+    );
+    assert!(pass().run(&mut f));
+    let stmts = &f.basic_blocks[0].statements;
+    let check_pos = stmts
+        .iter()
+        .position(|s| matches!(s.kind, StatementKind::GenCheck { value, .. } if value == Local(2)))
+        .expect("bytes borrow must get a generation check");
+    let use_pos = stmts
+        .iter()
+        .position(|s| matches!(&s.kind, StatementKind::SetIndex(Operand::Copy(l), _, _, _) if *l == Local(2)))
+        .unwrap();
+    assert!(
+        check_pos < use_pos,
+        "check must precede the stale bytes use"
+    );
+}
+
+#[test]
+fn future_type_gets_no_generation_check() {
+    let mut f = func_of(
+        vec![decl(Type::Int), decl(future_ty())],
+        vec![assign(1, Rvalue::Use(Operand::Constant(Constant::Int(0))))],
+    );
+    assert!(!pass().run(&mut f));
+    assert_eq!(count_checks(&f), 0, "future gets no slab generation check");
+}
+
+#[test]
+fn bytes_or_none_is_slab_backed() {
+    let ty = Type::Union(vec![bytes_ty(), Type::Null]);
+    assert!(super::slab_backed(&ty), "bytes | None must be slab-backed");
+}
+
+#[test]
+fn future_is_not_slab_backed() {
+    assert!(
+        !super::slab_backed(&future_ty()),
+        "future must not be slab-backed"
+    );
 }
