@@ -30,6 +30,11 @@ jobs:
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-test-
 
+      - name: Build workspace
+        # Kept separate from `cargo test`: pipelined compilation can start test
+        # binaries before olive_std's .so/.a finish linking on a cold cache.
+        run: cargo build --workspace
+
       - name: Run tests
         run: cargo test --workspace
 
