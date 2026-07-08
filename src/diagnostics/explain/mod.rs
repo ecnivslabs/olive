@@ -62,8 +62,8 @@ mod tests {
         "E0411", "E0412", "E0413", "E0414", "E0415", "E0416", "E0417", "E0418", "E0419", "E0420",
         "E0421", "E0422", "E0423", "E0424", "E0500", "E0501", "E0502", "E0503", "E0504", "E0505",
         "E0506", "E0507", "E0600", "E0601", "E0602", "E0700", "E0701", "E0702", "E0703", "E0704",
-        "E0705", "E0706", "E0707", "W0601", "W0602", "W0610", "W0620", "W0630", "W0640", "W0650",
-        "W0660",
+        "E0705", "E0706", "E0707", "E0708", "W0601", "W0602", "W0610", "W0620", "W0630", "W0640",
+        "W0650", "W0660",
     ];
 
     #[test]
@@ -130,17 +130,22 @@ mod tests {
     /// pass here, though `pit build` still reports them on the unoptimized program.
     /// E0501 is defensive: ownership inference only moves a value at its last
     /// use, so source code cannot reach a use-after-move; the check remains as
-    /// a net against compiler bugs.
+    /// a net against compiler bugs. E0708 is defensive for the same reason: a
+    /// value escaping across a call boundary is always conservatively unknown,
+    /// and a value escaping into a container is copied rather than aliased, so
+    /// ordinary source cannot reach the every-path-stale shape the compile-time
+    /// check exists to reject; it stays as a net against a future regression in
+    /// those protections (verified instead by dedicated gencheck unit tests).
     /// E0301 and E0004 need a second file (an imported module / a cross-module
     /// private name), so they cannot fail as a lone entry. E0503 and E0505 share a
     /// condition and message with an earlier pass (the unsafe-deref check and
     /// E0411), which reports first on the minimal example. All `W####` warnings
     /// compile by design, so their `wrong` form never fails.
     const SKIP_WRONG: &[&str] = &[
-        "E0700", "E0701", "E0702", "E0703", "E0704", "E0705", "E0706", "E0707", "E0301", "E0004",
-        "E0406", "E0420", "E0501", "E0502", "E0503", "E0504", "E0505", "E0507", "E0408", "E0409",
-        "E0600", "E0601", "E0602", "W0601", "W0602", "W0610", "W0620", "W0630", "W0640", "W0650",
-        "W0660",
+        "E0700", "E0701", "E0702", "E0703", "E0704", "E0705", "E0706", "E0707", "E0708", "E0301",
+        "E0004", "E0406", "E0420", "E0501", "E0502", "E0503", "E0504", "E0505", "E0507", "E0408",
+        "E0409", "E0600", "E0601", "E0602", "W0601", "W0602", "W0610", "W0620", "W0630", "W0640",
+        "W0650", "W0660",
     ];
 
     /// Every `fixed` example must compile and every `wrong` example must fail to,

@@ -98,7 +98,13 @@ pub fn repl_compile_run(
     mir_builder.build_program(&program);
 
     let optimizer = mir::Optimizer::new();
-    optimizer.run(&mut mir_builder.functions);
+    let gencheck_errors = optimizer.run(&mut mir_builder.functions);
+    if !gencheck_errors.is_empty() {
+        for d in &gencheck_errors {
+            d.emit(sources);
+        }
+        return false;
+    }
 
     let mut had_borrow_error = false;
     for func in &mir_builder.functions {

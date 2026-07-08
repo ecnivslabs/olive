@@ -205,8 +205,14 @@ pub fn run_pipeline_opt(
         (true, None) => mir::Optimizer::new(),
         (false, _) => mir::Optimizer::minimal(),
     };
-    optimizer.run(&mut mir_builder.functions);
+    let gencheck_errors = optimizer.run(&mut mir_builder.functions);
     let opt_duration = opt_start.elapsed();
+    if !gencheck_errors.is_empty() {
+        for d in &gencheck_errors {
+            d.emit(&sources);
+        }
+        return Err(());
+    }
 
     let native_libs = collect_native_libs(&program);
 

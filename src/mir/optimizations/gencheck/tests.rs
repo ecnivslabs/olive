@@ -64,6 +64,57 @@ fn func_of(locals: Vec<LocalDecl>, stmts: Vec<Statement>) -> MirFunction {
     }
 }
 
+/// Three blocks: `pre` then a branch on an opaque runtime condition (never
+/// constant-folded by this pass) into `taken` -> `join`, or straight to
+/// `join`. Used to build genuinely path-dependent staleness: a root dropped
+/// on only one incoming edge, so the merge is a real runtime check, not a
+/// definite-every-path giveaway.
+fn branching_func(
+    locals: Vec<LocalDecl>,
+    pre: Vec<Statement>,
+    taken: Vec<Statement>,
+    join: Vec<Statement>,
+) -> MirFunction {
+    MirFunction {
+        name: "f".into(),
+        locals,
+        basic_blocks: vec![
+            BasicBlock {
+                statements: pre,
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::SwitchInt {
+                        discr: Operand::Constant(Constant::Int(0)),
+                        targets: vec![(1, BasicBlockId(1))],
+                        otherwise: BasicBlockId(2),
+                    },
+                    span: sp(),
+                }),
+            },
+            BasicBlock {
+                statements: taken,
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Goto {
+                        target: BasicBlockId(2),
+                    },
+                    span: sp(),
+                }),
+            },
+            BasicBlock {
+                statements: join,
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Return,
+                    span: sp(),
+                }),
+            },
+        ],
+        arg_count: 0,
+        vararg_idx: None,
+        kwarg_idx: None,
+        param_names: vec![],
+        is_async: false,
+    }
+}
+
 fn bytes_ty() -> Type {
     Type::Bytes
 }
@@ -76,6 +127,7 @@ fn pass() -> GenCheckInsertion {
     GenCheckInsertion {
         borrowed_returns: HashSet::default(),
         param_escapes: HashMap::default(),
+        diagnostics: Default::default(),
     }
 }
 
@@ -103,18 +155,24 @@ fn owner_only_function_gets_no_checks() {
 
 #[test]
 fn view_use_after_root_drop_is_checked() {
-    // _2 = _1; drop(_1); use _2  -- proof dies at the drop.
-    let mut f = func_of(
+    // _2 = _1; only one branch drops _1 before the join uses _2 -- stale on
+    // that path alone, so it's a runtime check, not a compile-time reject.
+    let mut f = branching_func(
         vec![decl(Type::Int), decl(heap_ty()), decl(heap_ty())],
         vec![
             assign(1, Rvalue::Aggregate(AggregateKind::List, vec![])),
             assign(2, Rvalue::Use(Operand::Copy(Local(1)))),
-            drop_stmt(1),
-            use_stmt(2),
         ],
+        vec![drop_stmt(1)],
+        vec![use_stmt(2)],
     );
-    assert!(pass().run(&mut f));
-    let stmts = &f.basic_blocks[0].statements;
+    let p = pass();
+    assert!(p.run(&mut f));
+    assert!(
+        p.diagnostics.borrow().is_empty(),
+        "only path-dependent, not E0708"
+    );
+    let stmts = &f.basic_blocks[2].statements;
     let check_pos = stmts
         .iter()
         .position(|s| matches!(s.kind, StatementKind::GenCheck { value, .. } if value == Local(2)))
@@ -129,18 +187,21 @@ fn view_use_after_root_drop_is_checked() {
 #[test]
 fn str_view_after_root_drop_is_checked() {
     // A string view outliving its owner's drop is a suspect too, and its
-    // capture goes through the literal-tolerant helper (via codegen).
-    let mut f = func_of(
+    // capture goes through the literal-tolerant helper (via codegen). Only
+    // one branch drops the owner, so this stays a runtime check.
+    let mut f = branching_func(
         vec![decl(Type::Int), decl(Type::Str), decl(Type::Str)],
         vec![
             assign(1, Rvalue::Use(Operand::Constant(Constant::Int(0)))),
             assign(2, Rvalue::Use(Operand::Copy(Local(1)))),
-            drop_stmt(1),
-            use_stmt(2),
         ],
+        vec![drop_stmt(1)],
+        vec![use_stmt(2)],
     );
-    assert!(pass().run(&mut f));
-    let stmts = &f.basic_blocks[0].statements;
+    let p = pass();
+    assert!(p.run(&mut f));
+    assert!(p.diagnostics.borrow().is_empty());
+    let stmts = &f.basic_blocks[2].statements;
     assert!(
         stmts
             .iter()
@@ -148,10 +209,95 @@ fn str_view_after_root_drop_is_checked() {
         "string view gets a stale check"
     );
     assert!(
-        stmts
+        f.basic_blocks
             .iter()
+            .flat_map(|b| &b.statements)
             .any(|s| matches!(&s.kind, StatementKind::Assign(_, Rvalue::GenOf(_)))),
         "string view captures a generation"
+    );
+}
+
+#[test]
+fn must_stale_use_after_unconditional_drop_is_rejected() {
+    // _2 aliases _1 on the only path; _1 is unconditionally dropped before
+    // the only use of _2 -- every path gives it away, so this is a compile
+    // error, not a runtime check.
+    let mut f = func_of(
+        vec![decl(Type::Int), decl(heap_ty()), decl(heap_ty())],
+        vec![
+            assign(1, Rvalue::Aggregate(AggregateKind::List, vec![])),
+            assign(2, Rvalue::Use(Operand::Copy(Local(1)))),
+            drop_stmt(1),
+            use_stmt(2),
+        ],
+    );
+    let p = pass();
+    p.run(&mut f);
+    assert_eq!(
+        count_checks(&f),
+        0,
+        "definite staleness is rejected, not checked"
+    );
+    let diags = p.diagnostics.borrow();
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0].code(), Some("E0708"));
+}
+
+#[test]
+fn must_stale_reassigned_root_before_use_is_not_flagged() {
+    // _1 is dropped, then _1 is redefined with a fresh, unrelated owner
+    // before _2 is used: the drop that would complete _2's proof is no
+    // longer live, so this must not be rejected. The may-analysis has no
+    // rule for a root's redefinition clearing another local's proof, so it
+    // stays conservative here and keeps the runtime check.
+    let mut f = func_of(
+        vec![decl(Type::Int), decl(heap_ty()), decl(heap_ty())],
+        vec![
+            assign(1, Rvalue::Aggregate(AggregateKind::List, vec![])),
+            assign(2, Rvalue::Use(Operand::Copy(Local(1)))),
+            drop_stmt(1),
+            assign(1, Rvalue::Aggregate(AggregateKind::List, vec![])),
+            use_stmt(2),
+        ],
+    );
+    let p = pass();
+    p.run(&mut f);
+    assert!(
+        p.diagnostics.borrow().is_empty(),
+        "reassigned root clears the must-stale proof"
+    );
+}
+
+#[test]
+fn must_stale_move_into_reassigned_root_is_not_flagged() {
+    // Mirrors the exact statement shape a "drop old, move new value in"
+    // reassignment lowers to: _2 = []; _4 = _2 (view); drop(_2); _6 = [];
+    // _2 = move(_6); use(_4). The move's own operand (_6) picks up _2 as a
+    // root purely because it is about to become _2's new content -- that
+    // must never itself be flagged where the move happens, or every
+    // ordinary container reassignment with a live view would falsely
+    // reject as giving _6 away to itself.
+    let mut f = func_of(
+        vec![
+            decl(Type::Int),
+            decl(heap_ty()),
+            decl(heap_ty()),
+            decl(heap_ty()),
+        ],
+        vec![
+            assign(2, Rvalue::Aggregate(AggregateKind::List, vec![])),
+            assign(4, Rvalue::Use(Operand::Copy(Local(2)))),
+            drop_stmt(2),
+            assign(6, Rvalue::Aggregate(AggregateKind::List, vec![])),
+            assign(2, Rvalue::Use(Operand::Move(Local(6)))),
+            use_stmt(4),
+        ],
+    );
+    let p = pass();
+    p.run(&mut f);
+    assert!(
+        p.diagnostics.borrow().is_empty(),
+        "moving a fresh value into a reassigned root must not self-reject"
     );
 }
 
@@ -228,6 +374,7 @@ fn unsafe_call_kills_unknown_rooted_proof() {
     let p = GenCheckInsertion {
         borrowed_returns: br,
         param_escapes: HashMap::default(),
+        diagnostics: Default::default(),
     };
     let mut f = func_of(
         vec![decl(Type::Int), decl(heap_ty()), decl(heap_ty())],
@@ -251,6 +398,10 @@ fn unsafe_call_kills_unknown_rooted_proof() {
     );
     assert!(p.run(&mut f));
     assert_eq!(count_checks(&f), 1);
+    assert!(
+        p.diagnostics.borrow().is_empty(),
+        "unknown-owner suspect never earns a compile-time reject"
+    );
 }
 
 #[test]
@@ -260,6 +411,7 @@ fn safe_runtime_call_preserves_proof() {
     let p = GenCheckInsertion {
         borrowed_returns: br,
         param_escapes: HashMap::default(),
+        diagnostics: Default::default(),
     };
     let mut f = func_of(
         vec![decl(Type::Int), decl(heap_ty()), decl(heap_ty())],
@@ -344,6 +496,7 @@ fn escaped_param_is_checked_after_call() {
     let p = GenCheckInsertion {
         borrowed_returns: HashSet::default(),
         param_escapes: pe,
+        diagnostics: Default::default(),
     };
     let mut f = func_of(
         vec![decl(Type::Int), decl(heap_ty())],
@@ -361,11 +514,16 @@ fn escaped_param_is_checked_after_call() {
     );
     assert!(p.run(&mut f));
     assert_eq!(count_checks(&f), 1, "escaped value re-verified after call");
+    assert!(
+        p.diagnostics.borrow().is_empty(),
+        "unknown-owner suspect never earns a compile-time reject"
+    );
 }
 
 #[test]
 fn non_ffi_struct_is_checked() {
-    let mut f = func_of(
+    // Only one branch drops the owner, so the join is a real runtime check.
+    let mut f = branching_func(
         vec![
             decl(Type::Int),
             decl(Type::Struct("MyStruct".into(), vec![], false)),
@@ -374,11 +532,13 @@ fn non_ffi_struct_is_checked() {
         vec![
             assign(1, Rvalue::Use(Operand::Constant(Constant::Int(0)))),
             assign(2, Rvalue::Use(Operand::Copy(Local(1)))),
-            drop_stmt(1),
-            use_stmt(2),
         ],
+        vec![drop_stmt(1)],
+        vec![use_stmt(2)],
     );
-    assert!(pass().run(&mut f));
+    let p = pass();
+    assert!(p.run(&mut f));
+    assert!(p.diagnostics.borrow().is_empty());
     assert_eq!(count_checks(&f), 1, "user struct gets a check");
 }
 
@@ -403,17 +563,20 @@ fn ffi_struct_is_not_checked() {
 
 #[test]
 fn bytes_stale_after_drop_gets_check() {
-    let mut f = func_of(
+    // Only one branch drops the owner, so the join is a real runtime check.
+    let mut f = branching_func(
         vec![decl(Type::Int), decl(bytes_ty()), decl(bytes_ty())],
         vec![
             assign(1, Rvalue::Use(Operand::Constant(Constant::Int(0)))),
             assign(2, Rvalue::Use(Operand::Copy(Local(1)))),
-            drop_stmt(1),
-            use_stmt(2),
         ],
+        vec![drop_stmt(1)],
+        vec![use_stmt(2)],
     );
-    assert!(pass().run(&mut f));
-    let stmts = &f.basic_blocks[0].statements;
+    let p = pass();
+    assert!(p.run(&mut f));
+    assert!(p.diagnostics.borrow().is_empty());
+    let stmts = &f.basic_blocks[2].statements;
     let check_pos = stmts
         .iter()
         .position(|s| matches!(s.kind, StatementKind::GenCheck { value, .. } if value == Local(2)))

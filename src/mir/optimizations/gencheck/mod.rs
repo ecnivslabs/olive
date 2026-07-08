@@ -7,17 +7,24 @@
 //! checked. Element borrows validate at creation when an alias mark exists.
 
 use super::Transform;
+use crate::compile::errors::Diagnostic;
 use crate::mir::*;
 use crate::semantic::types::Type;
 use crate::span::Span;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::cell::RefCell;
 
+mod must_stale;
 #[cfg(test)]
 mod tests;
 
 pub struct GenCheckInsertion {
     pub borrowed_returns: HashSet<String>,
     pub param_escapes: HashMap<String, Vec<bool>>,
+    /// E0708 reports collected across every function this pass has run on.
+    /// `Transform::run` takes `&self`, so this is the only way to hand
+    /// compile errors back to the caller without changing that signature.
+    pub diagnostics: RefCell<Vec<Diagnostic>>,
 }
 
 /// Whether values of this type live in generational slab slots, so the word
@@ -106,6 +113,9 @@ struct SuspectInfo {
     /// Locals whose drop may free this value (aliased sources, containers
     /// read from or escaped into).
     roots: HashSet<Local>,
+    /// Where this local was first marked a suspect; the E0708 caret's
+    /// "borrowed here" anchor.
+    borrow_span: Option<Span>,
 }
 
 impl Transform for GenCheckInsertion {
@@ -129,14 +139,51 @@ impl Transform for GenCheckInsertion {
         let index_of: HashMap<Local, usize> =
             suspects.iter().enumerate().map(|(i, &l)| (l, i)).collect();
 
-        let (check_sites, def_checks) = self.solve(func, &info, &suspects, &index_of);
+        let must_hits = must_stale::find_must_stale(func, &info, &checkable);
+        let must_sites: HashSet<(usize, usize, Local)> =
+            must_hits.iter().map(|h| (h.bb, h.idx, h.local)).collect();
+        for hit in &must_hits {
+            self.diagnostics
+                .borrow_mut()
+                .push(e0708_for(func, &info, hit));
+        }
+
+        let (mut check_sites, mut def_checks) = self.solve(func, &info, &suspects, &index_of);
+        // A use proven stale on every path is rejected above, not checked.
+        check_sites.retain(|s| !must_sites.contains(s));
+        def_checks.retain(|s| !must_sites.contains(s));
+
         if check_sites.is_empty() && def_checks.is_empty() {
-            return false;
+            return !must_hits.is_empty();
         }
 
         self.insert(func, &info, check_sites, def_checks);
         true
     }
+}
+
+/// The three-way caret for a definite-staleness rejection: where the value
+/// was borrowed, where it was given away, and where it was used after.
+fn e0708_for(
+    func: &MirFunction,
+    info: &[SuspectInfo],
+    hit: &must_stale::MustStaleUse,
+) -> Diagnostic {
+    let use_span = if hit.idx == usize::MAX {
+        func.basic_blocks[hit.bb]
+            .terminator
+            .as_ref()
+            .map(|t| t.span)
+            .unwrap_or_default()
+    } else {
+        func.basic_blocks[hit.bb].statements[hit.idx].span
+    };
+    let borrow_span = info[hit.local.0].borrow_span.unwrap_or_default();
+    Diagnostic::error("E0708", "use of a value after it was given away", use_span)
+        .label("used here after it was definitely given away")
+        .secondary(borrow_span, "borrowed here")
+        .secondary(hit.free_span, "freed or escaped here")
+        .note(format!("in function `{}`", func.name))
 }
 
 /// A statement position where a check goes in front, keyed by original
@@ -169,6 +216,7 @@ impl GenCheckInsertion {
                         && tracked.get(l.0).copied().unwrap_or(false)
                     {
                         info[l.0].suspect = true;
+                        info[l.0].borrow_span.get_or_insert(stmt.span);
                         match owner {
                             Some(c) => {
                                 info[l.0].roots.insert(c);
@@ -228,6 +276,7 @@ impl GenCheckInsertion {
                         if tracked.get(src.0).copied().unwrap_or(false) && src != dst =>
                     {
                         info[dst.0].suspect = true;
+                        info[dst.0].borrow_span.get_or_insert(stmt.span);
                         info[dst.0].roots.insert(*src);
                         // Both names see one object: an escape or drop that
                         // frees it through either must taint the other too.
@@ -246,6 +295,7 @@ impl GenCheckInsertion {
                     | Rvalue::FatPtrData(base)
                     | Rvalue::VTableLoad { vtable: base, .. } => {
                         info[dst.0].suspect = true;
+                        info[dst.0].borrow_span.get_or_insert(stmt.span);
                         info[dst.0].elem_def = true;
                         if let Operand::Copy(b) | Operand::Move(b) = base {
                             info[dst.0].roots.insert(*b);
@@ -260,6 +310,7 @@ impl GenCheckInsertion {
                         ..
                     } if self.borrowed_returns.contains(name) => {
                         info[dst.0].suspect = true;
+                        info[dst.0].borrow_span.get_or_insert(stmt.span);
                         info[dst.0].unknown = true;
                     }
                     _ => {}
@@ -543,6 +594,10 @@ fn merge_aliases(info: &mut [SuspectInfo], aliases: &[(Local, Local)]) {
             for (x, y) in [(a, b), (b, a)] {
                 if info[y.0].suspect && !info[x.0].suspect {
                     info[x.0].suspect = true;
+                    changed = true;
+                }
+                if info[x.0].borrow_span.is_none() && info[y.0].borrow_span.is_some() {
+                    info[x.0].borrow_span = info[y.0].borrow_span;
                     changed = true;
                 }
                 if info[y.0].unknown && !info[x.0].unknown {
