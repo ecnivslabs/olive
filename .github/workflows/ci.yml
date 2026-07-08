@@ -26,6 +26,13 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.os == 'windows-latest' && 'x86_64-pc-windows-msvc' || '' }}
+
+      - name: Get rustc host triple
+        id: rustc-host
+        shell: bash
+        run: echo "triple=$(rustc -vV | sed -n 's/host: //p')" >> "$GITHUB_OUTPUT"
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -35,8 +42,8 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-test-
+          key: ${{ runner.os }}-${{ steps.rustc-host.outputs.triple }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ steps.rustc-host.outputs.triple }}-cargo-test-
 
       - name: Build workspace
         # Kept separate from `cargo test`: pipelined compilation can start test
