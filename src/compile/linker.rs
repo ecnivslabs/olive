@@ -142,8 +142,13 @@ pub fn link_object(obj_path: &str, out: &str, native_libs: &[FfiLibInfo]) {
         for sys_lib in ["-lm", "-lpthread", "-ldl"] {
             cmd.arg(sys_lib);
         }
-        #[cfg(target_os = "windows")]
+        // GNU ld (MinGW's `cc`) wants `-l` flags, not bare MSVC `.lib` names.
+        #[cfg(all(target_os = "windows", target_env = "msvc"))]
         for sys_lib in ["ws2_32.lib", "userenv.lib", "bcrypt.lib", "ntdll.lib"] {
+            cmd.arg(sys_lib);
+        }
+        #[cfg(all(target_os = "windows", not(target_env = "msvc")))]
+        for sys_lib in ["-lws2_32", "-luserenv", "-lbcrypt", "-lntdll"] {
             cmd.arg(sys_lib);
         }
     } else if let Some(ref dir) = find_library_dir() {
