@@ -142,12 +142,10 @@ pub fn link_object(obj_path: &str, out: &str, native_libs: &[FfiLibInfo]) {
         for sys_lib in ["-lm", "-lpthread", "-ldl"] {
             cmd.arg(sys_lib);
         }
-        // GNU ld (MinGW's `cc`) wants `-l` flags, not bare MSVC `.lib` names.
-        #[cfg(all(target_os = "windows", target_env = "msvc"))]
-        for sys_lib in ["ws2_32.lib", "userenv.lib", "bcrypt.lib", "ntdll.lib"] {
-            cmd.arg(sys_lib);
-        }
-        #[cfg(all(target_os = "windows", not(target_env = "msvc")))]
+        // `cc` is never MSVC's link.exe here (MSVC ships no binary named `cc`) --
+        // it's always MinGW's gcc/ld, even when rustc itself targets MSVC. GNU ld
+        // wants `-l` flags, not bare MSVC `.lib` names.
+        #[cfg(target_os = "windows")]
         for sys_lib in ["-lws2_32", "-luserenv", "-lbcrypt", "-lntdll"] {
             cmd.arg(sys_lib);
         }
