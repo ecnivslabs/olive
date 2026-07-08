@@ -248,19 +248,18 @@ pub(super) fn process_return_sites(
                     }
                     idx += 1;
                 }
-                if !found {
-                    if let Some(Terminator {
+                if !found
+                    && let Some(Terminator {
                         kind: TerminatorKind::Goto { target },
                         ..
                     }) = &func.basic_blocks[bb_idx].terminator
-                    {
-                        for stmt in &func.basic_blocks[target.0].statements {
-                            if matches!(&stmt.kind,
-                                StatementKind::Drop(r) if site.roots.contains(r))
-                            {
-                                found = true;
-                                break;
-                            }
+                {
+                    for stmt in &func.basic_blocks[target.0].statements {
+                        if matches!(&stmt.kind,
+                            StatementKind::Drop(r) if site.roots.contains(r))
+                        {
+                            found = true;
+                            break;
                         }
                     }
                 }

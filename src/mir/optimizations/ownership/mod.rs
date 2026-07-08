@@ -110,6 +110,28 @@ impl Transform for OwnershipInference {
                 moved_from.push((bb, idx, l));
             }
         }
+        // `str_concat_inplace` always consumes its left operand's storage; a
+        // dead-after copy there is really a last use. Runs here, before any
+        // block-mutating step below, because it indexes `bb.statements`
+        // fresh against `liveness`'s original layout: reading it after a
+        // pass has inserted or removed statements walks stale indices.
+        for (bb_idx, bb) in func.basic_blocks.iter_mut().enumerate() {
+            for (idx, stmt) in bb.statements.iter_mut().enumerate() {
+                if let StatementKind::Assign(_, Rvalue::BinaryOp(op, l_op, _)) = &mut stmt.kind
+                    && *op == crate::parser::BinOp::Add
+                    && let Operand::Copy(l) = *l_op
+                    && l.0 < heap.len()
+                    && heap[l.0]
+                    && builder_owning[l.0]
+                    && func.locals[l.0].ty == Type::Str
+                    && !liveness.live_after[bb_idx][idx + 1].contains(&l)
+                {
+                    *l_op = Operand::Move(l);
+                    moved_from.push((bb_idx, idx, l));
+                }
+            }
+        }
+
         let (classes, transfers) = classify(func, &records, &heap, &builder_owning);
 
         let mut changed = !moved_from.is_empty();
@@ -189,25 +211,6 @@ impl Transform for OwnershipInference {
                 && let RvClass::UseCopy(src) = rec.class
             {
                 moved_from.push((rec.bb, rec.idx, src));
-            }
-        }
-
-        // `str_concat_inplace` always consumes its left operand's storage; a dead-after copy there is really a last use.
-        for (bb_idx, bb) in func.basic_blocks.iter_mut().enumerate() {
-            for (idx, stmt) in bb.statements.iter_mut().enumerate() {
-                if let StatementKind::Assign(_, Rvalue::BinaryOp(op, l_op, _)) = &mut stmt.kind
-                    && *op == crate::parser::BinOp::Add
-                    && let Operand::Copy(l) = *l_op
-                    && l.0 < heap.len()
-                    && heap[l.0]
-                    && builder_owning[l.0]
-                    && func.locals[l.0].ty == Type::Str
-                    && !liveness.live_after[bb_idx][idx + 1].contains(&l)
-                {
-                    *l_op = Operand::Move(l);
-                    moved_from.push((bb_idx, idx, l));
-                    changed = true;
-                }
             }
         }
 

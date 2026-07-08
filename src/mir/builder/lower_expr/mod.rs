@@ -60,6 +60,20 @@ impl<'a> MirBuilder<'a> {
     /// Boxes a scalar (int, float, bool, or null) into its self-describing `Any`
     /// heap form; passes pointers and aggregates through unchanged.
     pub(super) fn box_into_any(&mut self, op: Operand, from_ty: &Type, span: Span) -> Operand {
+        // A raw MIR constant is never pre-boxed, whatever its inferred static
+        // type says: unification can widen a bare literal's own type to
+        // `Any` to satisfy a container element elsewhere (e.g. `list_new`'s
+        // element var), without the literal itself ever passing through a
+        // boxing step. Dispatch on the constant's own kind in that case
+        // instead of trusting a from_ty that would otherwise look like a
+        // no-op "already Any" value and skip boxing entirely.
+        let from_ty = match (&op, from_ty) {
+            (Operand::Constant(Constant::Int(_)), Type::Any) => &Type::Int,
+            (Operand::Constant(Constant::Float(_)), Type::Any) => &Type::Float,
+            (Operand::Constant(Constant::Bool(_)), Type::Any) => &Type::Bool,
+            (Operand::Constant(Constant::None), Type::Any) => &Type::Null,
+            _ => from_ty,
+        };
         let boxer = match from_ty {
             Type::Int
             | Type::I8
@@ -470,7 +484,7 @@ impl<'a> MirBuilder<'a> {
 
             if name == "list_new"
                 && !args.is_empty()
-                && let Some(op) = self.lower_list_new_builtin(args, expr.span)
+                && let Some(op) = self.lower_list_new_builtin(args, expr.span, expr.id)
             {
                 return op;
             }
