@@ -5,9 +5,41 @@ use crossterm::event::{
     KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags,
     PushKeyboardEnhancementFlags, poll, read,
 };
-use crossterm::{cursor, execute, terminal};
-use std::io::{IsTerminal, Write, stdout};
+use crossterm::{cursor, queue, terminal};
+use std::fs::File;
+use std::io::{BufWriter, IsTerminal, Write, stdout};
+use std::os::unix::io::FromRawFd;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+
+/// All `term.*` output funnels through this single handle instead of a
+/// fresh `stdout()` per call. Buffering is scoped to a `begin_sync`/
+/// `end_sync` bracket (`SYNC_ACTIVE`): outside one, every op still flushes
+/// immediately, so a bare `term.write` keeps the old "flushes every call"
+/// contract plain scripts rely on. Inside one -- which is how the frame
+/// renderer's `_apply` always uses it, one bracket per redrawn frame --
+/// writes queue and only `end_sync` flushes, cutting a redrawn frame from
+/// 4+ syscalls per changed line down to one. Raw fd 1, not
+/// `std::io::Stdout`, since `Stdout` internally line-buffers and flushes on
+/// every `\n`.
+fn term_out() -> &'static Mutex<BufWriter<File>> {
+    static OUT: OnceLock<Mutex<BufWriter<File>>> = OnceLock::new();
+    OUT.get_or_init(|| Mutex::new(BufWriter::with_capacity(64 * 1024, unsafe {
+        File::from_raw_fd(1)
+    })))
+}
+
+static SYNC_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Flushes immediately unless a sync bracket is open, in which case the
+/// flush is deferred to `end_sync`.
+fn flush_unless_syncing(out: &mut BufWriter<File>) -> bool {
+    if SYNC_ACTIVE.load(Ordering::Relaxed) {
+        return true;
+    }
+    out.flush().is_ok()
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_term_enable_raw() -> i64 {
@@ -21,27 +53,37 @@ pub extern "C" fn olive_term_disable_raw() -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_term_enter_alt_screen() -> i64 {
-    execute!(stdout(), terminal::EnterAlternateScreen).is_ok() as i64
+    let mut out = term_out().lock().unwrap();
+    let ok = queue!(*out, terminal::EnterAlternateScreen).is_ok();
+    (ok && flush_unless_syncing(&mut out)) as i64
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_term_leave_alt_screen() -> i64 {
-    execute!(stdout(), terminal::LeaveAlternateScreen).is_ok() as i64
+    let mut out = term_out().lock().unwrap();
+    let ok = queue!(*out, terminal::LeaveAlternateScreen).is_ok();
+    (ok && flush_unless_syncing(&mut out)) as i64
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_term_clear() -> i64 {
-    execute!(stdout(), terminal::Clear(terminal::ClearType::All)).is_ok() as i64
+    let mut out = term_out().lock().unwrap();
+    let ok = queue!(*out, terminal::Clear(terminal::ClearType::All)).is_ok();
+    (ok && flush_unless_syncing(&mut out)) as i64
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_term_cursor_hide() -> i64 {
-    execute!(stdout(), cursor::Hide).is_ok() as i64
+    let mut out = term_out().lock().unwrap();
+    let ok = queue!(*out, cursor::Hide).is_ok();
+    (ok && flush_unless_syncing(&mut out)) as i64
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_term_cursor_show() -> i64 {
-    execute!(stdout(), cursor::Show).is_ok() as i64
+    let mut out = term_out().lock().unwrap();
+    let ok = queue!(*out, cursor::Show).is_ok();
+    (ok && flush_unless_syncing(&mut out)) as i64
 }
 
 #[unsafe(no_mangle)]
@@ -49,40 +91,48 @@ pub extern "C" fn olive_term_cursor_move(x: i64, y: i64) -> i64 {
     if x < 0 || y < 0 || x > u16::MAX as i64 || y > u16::MAX as i64 {
         return 0;
     }
-    execute!(stdout(), cursor::MoveTo(x as u16, y as u16)).is_ok() as i64
+    let mut out = term_out().lock().unwrap();
+    let ok = queue!(*out, cursor::MoveTo(x as u16, y as u16)).is_ok();
+    (ok && flush_unless_syncing(&mut out)) as i64
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_term_flush() -> i64 {
-    stdout().flush().is_ok() as i64
+    term_out().lock().unwrap().flush().is_ok() as i64
 }
 
 /// Writes a string to stdout with no trailing newline, for redrawing a line
-/// in place under raw mode (`print` always appends one).
+/// in place under raw mode (`print` always appends one). Flushes
+/// immediately unless called inside a `begin_sync`/`end_sync` bracket.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_term_write(s: i64) -> i64 {
     if s == 0 {
         return 0;
     }
     let text = olive_str_from_ptr(s);
-    let mut out = stdout();
-    let wrote = out.write_all(text.as_bytes()).is_ok();
-    let flushed = out.flush().is_ok();
-    (wrote && flushed) as i64
+    let mut out = term_out().lock().unwrap();
+    let ok = out.write_all(text.as_bytes()).is_ok();
+    (ok && flush_unless_syncing(&mut out)) as i64
 }
 
+/// Opens a synchronized-output bracket (DECSET 2026): every `term.*` write
+/// until the matching `end_sync` is buffered and flushed as one syscall,
+/// instead of one flush per write.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_term_begin_sync() -> i64 {
-    let mut out = stdout();
-    let wrote = out.write_all(b"\x1b[?2026h").is_ok();
-    (wrote && out.flush().is_ok()) as i64
+    let mut out = term_out().lock().unwrap();
+    let ok = out.write_all(b"\x1b[?2026h").is_ok();
+    let flushed = out.flush().is_ok();
+    SYNC_ACTIVE.store(true, Ordering::Relaxed);
+    (ok && flushed) as i64
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_term_end_sync() -> i64 {
-    let mut out = stdout();
-    let wrote = out.write_all(b"\x1b[?2026l").is_ok();
-    (wrote && out.flush().is_ok()) as i64
+    let mut out = term_out().lock().unwrap();
+    let ok = out.write_all(b"\x1b[?2026l").is_ok();
+    SYNC_ACTIVE.store(false, Ordering::Relaxed);
+    (ok && out.flush().is_ok()) as i64
 }
 
 #[unsafe(no_mangle)]
@@ -109,16 +159,20 @@ pub extern "C" fn olive_term_enable_key_enhancement() -> i64 {
     if !matches!(terminal::supports_keyboard_enhancement(), Ok(true)) {
         return 0;
     }
-    execute!(
-        stdout(),
+    let mut out = term_out().lock().unwrap();
+    let ok = queue!(
+        *out,
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
     )
-    .is_ok() as i64
+    .is_ok();
+    (ok && out.flush().is_ok()) as i64
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_term_disable_key_enhancement() -> i64 {
-    execute!(stdout(), PopKeyboardEnhancementFlags).is_ok() as i64
+    let mut out = term_out().lock().unwrap();
+    let ok = queue!(*out, PopKeyboardEnhancementFlags).is_ok();
+    (ok && out.flush().is_ok()) as i64
 }
 
 /// Requests SGR mouse tracking (wheel + button presses) from the terminal.
@@ -127,12 +181,16 @@ pub extern "C" fn olive_term_disable_key_enhancement() -> i64 {
 /// indistinguishable from a real key press.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_term_enable_mouse() -> i64 {
-    execute!(stdout(), EnableMouseCapture).is_ok() as i64
+    let mut out = term_out().lock().unwrap();
+    let ok = queue!(*out, EnableMouseCapture).is_ok();
+    (ok && out.flush().is_ok()) as i64
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_term_disable_mouse() -> i64 {
-    execute!(stdout(), DisableMouseCapture).is_ok() as i64
+    let mut out = term_out().lock().unwrap();
+    let ok = queue!(*out, DisableMouseCapture).is_ok();
+    (ok && out.flush().is_ok()) as i64
 }
 
 /// Writes `text` to the system clipboard via OSC 52 -- works locally, over
@@ -146,7 +204,7 @@ pub extern "C" fn olive_term_clipboard_write(s: i64) -> i64 {
     let text = olive_str_from_ptr(s);
     let encoded = STANDARD.encode(text.as_bytes());
     let seq = format!("\x1b]52;c;{encoded}\x07");
-    let mut out = stdout();
+    let mut out = term_out().lock().unwrap();
     let wrote = out.write_all(seq.as_bytes()).is_ok();
     (wrote && out.flush().is_ok()) as i64
 }
