@@ -602,8 +602,9 @@ fn regression_subscript_any_boxing() {
 
 #[test]
 fn regression_subscript_any_boxing_inferred() {
+    // Inferred [Any] list_new round-trips boxed values.
     let mut cg = compile(
-        "fn f() -> Any:\n    let mut xs = list_new(2)\n    xs[0] = 200000001\n    let mut ys: [Any] = xs\n    return ys[0]\n",
+        "fn f() -> Any:\n    let mut xs: [Any] = list_new(2)\n    xs[0] = 200000001\n    let mut ys: [Any] = xs\n    return ys[0]\n",
     );
     let val = call_i64(&mut cg, "f");
     assert_eq!(val, (200000001 << 3) | 2);
@@ -612,7 +613,7 @@ fn regression_subscript_any_boxing_inferred() {
 #[test]
 fn regression_subscript_any_boxing_return() {
     let mut cg = compile(
-        "fn f() -> [Any]:\n    let mut xs = list_new(2)\n    xs[0] = 200000001\n    return xs\nfn g() -> Any:\n    let xs = f()\n    return xs[0]\n",
+        "fn f() -> [Any]:\n    let mut xs: [Any] = list_new(2)\n    xs[0] = 200000001\n    return xs\nfn g() -> Any:\n    let xs = f()\n    return xs[0]\n",
     );
     let val = call_i64(&mut cg, "g");
     assert_eq!(val, (200000001 << 3) | 2);
@@ -620,13 +621,39 @@ fn regression_subscript_any_boxing_return() {
 
 #[test]
 fn regression_list_new_kind_any_list() {
-    // list_new must produce KIND_ANY_LIST (15) so subscript reads round-trip
-    // boxed Any values correctly through function boundaries.
+    // Annotated [Any] list_new must produce KIND_ANY_LIST (15).
     let mut cg = compile(
-        "fn make() -> [Any]:\n    let mut xs = list_new(3)\n    xs[0] = 42\n    xs[1] = 99\n    return xs\nfn f() -> Any:\n    let xs = make()\n    return xs[1]\n",
+        "fn make() -> [Any]:\n    let mut xs: [Any] = list_new(3)\n    xs[0] = 42\n    xs[1] = 99\n    return xs\nfn f() -> Any:\n    let xs = make()\n    return xs[1]\n",
     );
     let val = call_i64(&mut cg, "f");
     assert_eq!(val, (99 << 3) | 2);
+}
+
+#[test]
+fn regression_list_new_infers_typed_list() {
+    // Param-generic list_new infers [int] from usage.
+    let mut cg = compile(
+        "fn f(n: i64) -> i64:\n    let mut xs = list_new(n)\n    let mut i = 0\n    while i < n:\n        xs[i] = i * 3\n        i = i + 1\n    let mut total = 0\n    i = 0\n    while i < n:\n        total = total + xs[i]\n        i = i + 1\n    return total\nfn g() -> i64:\n    return f(5)\n",
+    );
+    assert_eq!(call_i64(&mut cg, "g"), 30);
+}
+
+#[test]
+fn regression_forward_call_top_level_annotated_return() {
+    // Forward call: unregistered callee signature orphaned the result type var.
+    let mut cg = compile(
+        "fn caller(n: i64) -> i64:\n    return callee(n) * 2\nfn callee(n: i64) -> i64:\n    return n + 1\nfn g() -> i64:\n    return caller(3)\n",
+    );
+    assert_eq!(call_i64(&mut cg, "g"), 8);
+}
+
+#[test]
+fn regression_forward_call_impl_method_unannotated_return() {
+    // Same gap: impl method without -> T called before declaration.
+    let mut cg = compile(
+        "struct S:\n    x: i64\nimpl S:\n    fn double_it(self) -> i64:\n        return self.helper() * 2\n    fn helper(self):\n        return self.x + 1\nfn g() -> i64:\n    let s = S(3)\n    return s.double_it()\n",
+    );
+    assert_eq!(call_i64(&mut cg, "g"), 8);
 }
 
 #[test]

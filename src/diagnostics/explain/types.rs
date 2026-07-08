@@ -260,4 +260,20 @@ pub(super) const ENTRIES: &[Explanation] = &[
         fixed: "fn main():\n    let xs = [1, 2, 3]\n    print(xs[0])",
         notes: &["Check the spelling, or use indexing/slicing for element access."],
     },
+    Explanation {
+        code: "E0425",
+        title: "element type cannot alias an `Any` container",
+        summary: "A list/set element or dict key/value was inferred as a scalar (an \
+                  int, float, bool, null, or Python value) at one use and as `Any` at \
+                  another. `Any` stores scalars boxed; a plain scalar does not, so the \
+                  same container cannot be both without an explicit `Any` annotation \
+                  where it is created.",
+        wrong: "fn f() -> [Any]:\n    let mut xs = list_new(1)\n    xs[0] = 1\n    return xs",
+        fixed: "fn f() -> [Any]:\n    let mut xs: [Any] = list_new(1)\n    xs[0] = 1\n    return xs",
+        notes: &[
+            "Annotating at creation binds the element type to `Any` from the start.",
+            "Pointer-backed elements (str, list, struct, ...) are unaffected: only \
+             scalars change representation inside `Any`.",
+        ],
+    },
 ];
