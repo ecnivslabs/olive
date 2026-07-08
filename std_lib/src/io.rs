@@ -155,9 +155,7 @@ pub extern "C" fn olive_file_stat(path: i64) -> i64 {
     );
     fields.insert(
         crate::OliveStringKey(olive_str_internal("is_symlink")),
-        crate::boxed::olive_box_bool(
-            link_meta.map(|m| m.is_symlink()).unwrap_or(false) as i64
-        ),
+        crate::boxed::olive_box_bool(link_meta.map(|m| m.is_symlink()).unwrap_or(false) as i64),
     );
     fields.insert(
         crate::OliveStringKey(olive_str_internal("modified")),
