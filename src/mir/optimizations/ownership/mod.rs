@@ -18,8 +18,8 @@ pub use escape_copies::{CopyReason, CopySite};
 use guards::{apply_drop_guards, insert_flags_and_marks, process_return_sites};
 pub(crate) use reassign::REASSIGN_LIVE_BORROWS;
 use reassign::{insert_reassign_drops, reassign_free_locals};
-use summaries::{runtime_borrowed_return, runtime_escape};
 pub use summaries::{compute_borrowed_returns, compute_param_escapes};
+use summaries::{runtime_borrowed_return, runtime_escape};
 
 /// Classifies heap locals as owner, view, or dynamic, then makes drops agree.
 ///

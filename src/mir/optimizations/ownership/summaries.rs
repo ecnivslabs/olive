@@ -31,6 +31,10 @@ const RUNTIME_ESCAPES: &[(&str, usize)] = &[
     // the callable's lifetime (freed by its destructor), not by the
     // caller's frame anymore.
     ("__olive_py_make_callable", 0),
+    // The box wraps the struct's own pointer with no copy of its own (see
+    // `box_into_any`); a view source (e.g. a for-loop element) needs a real
+    // copy here or the box outlives the container that still owns it.
+    ("__olive_struct_box", 0),
 ];
 
 pub(crate) fn runtime_escape(name: &str, pos: usize) -> bool {

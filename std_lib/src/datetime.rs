@@ -199,16 +199,37 @@ pub extern "C" fn olive_datetime_parts(ts: f64) -> i64 {
     let (year, month, day, h, min, sec) = unix_to_parts(ts as i64);
     let dow = day_of_week(ts as i64);
     let mut fields = HashMap::default();
-    fields.insert(crate::OliveStringKey(olive_str_internal("year")), year);
-    fields.insert(crate::OliveStringKey(olive_str_internal("month")), month);
-    fields.insert(crate::OliveStringKey(olive_str_internal("day")), day);
-    fields.insert(crate::OliveStringKey(olive_str_internal("hour")), h);
-    fields.insert(crate::OliveStringKey(olive_str_internal("minute")), min);
-    fields.insert(crate::OliveStringKey(olive_str_internal("second")), sec);
-    fields.insert(crate::OliveStringKey(olive_str_internal("weekday")), dow); // 0=Mon
+    fields.insert(
+        crate::OliveStringKey(olive_str_internal("year")),
+        crate::boxed::olive_box_int(year),
+    );
+    fields.insert(
+        crate::OliveStringKey(olive_str_internal("month")),
+        crate::boxed::olive_box_int(month),
+    );
+    fields.insert(
+        crate::OliveStringKey(olive_str_internal("day")),
+        crate::boxed::olive_box_int(day),
+    );
+    fields.insert(
+        crate::OliveStringKey(olive_str_internal("hour")),
+        crate::boxed::olive_box_int(h),
+    );
+    fields.insert(
+        crate::OliveStringKey(olive_str_internal("minute")),
+        crate::boxed::olive_box_int(min),
+    );
+    fields.insert(
+        crate::OliveStringKey(olive_str_internal("second")),
+        crate::boxed::olive_box_int(sec),
+    );
+    fields.insert(
+        crate::OliveStringKey(olive_str_internal("weekday")),
+        crate::boxed::olive_box_int(dow), // 0=Mon
+    );
     fields.insert(
         crate::OliveStringKey(olive_str_internal("timestamp")),
-        ts as i64,
+        crate::boxed::olive_box_int(ts as i64),
     );
     crate::obj::new_obj_from_map(fields)
 }
@@ -482,48 +503,26 @@ mod tests {
         assert_eq!(olive_datetime_parse(0), -1.0);
     }
 
+    fn parts_field(obj: &OliveObj, name: &str) -> i64 {
+        crate::boxed::olive_unbox_int(
+            *obj.fields
+                .get(&crate::OliveStringKey(olive_str_internal(name)))
+                .unwrap(),
+        )
+    }
+
     #[test]
     fn parts_roundtrip() {
         let ts = 1705319445.0f64;
         let parts_ptr = olive_datetime_parts(ts);
         assert_ne!(parts_ptr, 0);
         let obj = unsafe { &*(parts_ptr as *const OliveObj) };
-        assert_eq!(
-            *obj.fields
-                .get(&crate::OliveStringKey(olive_str_internal("year")))
-                .unwrap(),
-            2024
-        );
-        assert_eq!(
-            *obj.fields
-                .get(&crate::OliveStringKey(olive_str_internal("month")))
-                .unwrap(),
-            1
-        );
-        assert_eq!(
-            *obj.fields
-                .get(&crate::OliveStringKey(olive_str_internal("day")))
-                .unwrap(),
-            15
-        );
-        assert_eq!(
-            *obj.fields
-                .get(&crate::OliveStringKey(olive_str_internal("hour")))
-                .unwrap(),
-            11
-        );
-        assert_eq!(
-            *obj.fields
-                .get(&crate::OliveStringKey(olive_str_internal("minute")))
-                .unwrap(),
-            50
-        );
-        assert_eq!(
-            *obj.fields
-                .get(&crate::OliveStringKey(olive_str_internal("second")))
-                .unwrap(),
-            45
-        );
+        assert_eq!(parts_field(obj, "year"), 2024);
+        assert_eq!(parts_field(obj, "month"), 1);
+        assert_eq!(parts_field(obj, "day"), 15);
+        assert_eq!(parts_field(obj, "hour"), 11);
+        assert_eq!(parts_field(obj, "minute"), 50);
+        assert_eq!(parts_field(obj, "second"), 45);
     }
 
     #[test]
@@ -538,12 +537,7 @@ mod tests {
         let next = olive_datetime_add_days(ts, 1);
         let parts_ptr = olive_datetime_parts(next);
         let obj = unsafe { &*(parts_ptr as *const OliveObj) };
-        assert_eq!(
-            *obj.fields
-                .get(&crate::OliveStringKey(olive_str_internal("day")))
-                .unwrap(),
-            16
-        );
+        assert_eq!(parts_field(obj, "day"), 16);
     }
 
     #[test]
@@ -552,18 +546,8 @@ mod tests {
         let next = olive_datetime_add_months(ts, 1);
         let parts_ptr = olive_datetime_parts(next);
         let obj = unsafe { &*(parts_ptr as *const OliveObj) };
-        assert_eq!(
-            *obj.fields
-                .get(&crate::OliveStringKey(olive_str_internal("month")))
-                .unwrap(),
-            2
-        );
-        assert_eq!(
-            *obj.fields
-                .get(&crate::OliveStringKey(olive_str_internal("day")))
-                .unwrap(),
-            29
-        );
+        assert_eq!(parts_field(obj, "month"), 2);
+        assert_eq!(parts_field(obj, "day"), 29);
     }
 
     #[test]
@@ -607,27 +591,9 @@ mod tests {
         let eod = olive_datetime_end_of_day(ts);
         let sod_parts = unsafe { &*(olive_datetime_parts(sod) as *const OliveObj) };
         let eod_parts = unsafe { &*(olive_datetime_parts(eod) as *const OliveObj) };
-        assert_eq!(
-            *sod_parts
-                .fields
-                .get(&crate::OliveStringKey(olive_str_internal("hour")))
-                .unwrap(),
-            0
-        );
-        assert_eq!(
-            *eod_parts
-                .fields
-                .get(&crate::OliveStringKey(olive_str_internal("hour")))
-                .unwrap(),
-            23
-        );
-        assert_eq!(
-            *eod_parts
-                .fields
-                .get(&crate::OliveStringKey(olive_str_internal("second")))
-                .unwrap(),
-            59
-        );
+        assert_eq!(parts_field(sod_parts, "hour"), 0);
+        assert_eq!(parts_field(eod_parts, "hour"), 23);
+        assert_eq!(parts_field(eod_parts, "second"), 59);
     }
 
     #[test]

@@ -104,10 +104,7 @@ fn list_str_vec(ptr: i64) -> Vec<String> {
     }
     let v = unsafe { &*(ptr as *const crate::StableVec) };
     let items = unsafe { std::slice::from_raw_parts(v.ptr, v.len) };
-    items
-        .iter()
-        .map(|&p| olive_str_from_ptr(p))
-        .collect()
+    items.iter().map(|&p| olive_str_from_ptr(p)).collect()
 }
 
 fn obj_str_pairs(ptr: i64) -> Vec<(String, String)> {

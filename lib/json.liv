@@ -99,7 +99,10 @@ fn _parse_string(buf: int, n: int, mut i: int) -> [Any]:
             else:
                 let mut cp = hi
                 i = i + 4
-                if cp >= 55296 and cp <= 56319 and i + 6 < n and bytes.get(buf, i + 1) == 92 and bytes.get(buf, i + 2) == 117:
+                if cp >= 55296 and cp <= 56319 and i + 6 < n and bytes.get(
+                    buf,
+                    i + 1,
+                ) == 92 and bytes.get(buf, i + 2) == 117:
                     let lo = _parse_hex4(buf, n, i + 3)
                     if lo >= 56320 and lo <= 57343:
                         cp = 65536 + (cp - 55296) * 1024 + (lo - 56320)
