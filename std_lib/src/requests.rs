@@ -8,6 +8,24 @@ use std::time::Duration;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+// Streaming responses (LLM chat completions) can legitimately run far past
+// 30s, so they can't use REQUEST_TIMEOUT, which bounds the whole
+// request/response lifetime. Instead the stream agent bounds only how long
+// a single read may block: a connection that's actively delivering chunks
+// never trips this, one that's gone dead does.
+const STREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const STREAM_READ_TIMEOUT: Duration = Duration::from_secs(60);
+
+fn stream_agent() -> &'static ureq::Agent {
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT.get_or_init(|| {
+        ureq::AgentBuilder::new()
+            .timeout_connect(STREAM_CONNECT_TIMEOUT)
+            .timeout_read(STREAM_READ_TIMEOUT)
+            .build()
+    })
+}
+
 thread_local! {
     static LAST_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
 }
@@ -389,8 +407,8 @@ fn spawn_post_json_stream(url: String, body: String, headers: Vec<(String, Strin
     );
 
     thread::spawn(move || {
-        let mut req = ureq::post(&url)
-            .timeout(REQUEST_TIMEOUT)
+        let mut req = stream_agent()
+            .post(&url)
             .set("Content-Type", "application/json")
             .set("Accept", "text/event-stream");
         for (k, v) in &headers {

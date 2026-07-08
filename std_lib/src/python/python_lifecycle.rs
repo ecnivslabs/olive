@@ -96,8 +96,14 @@ ver = f'{sys.version_info.major}.{sys.version_info.minor}'
 abiflags = sysconfig.get_config_var('ABIFLAGS') or ''
 libdir = sysconfig.get_config_var('LIBDIR') or ''
 ldlibrary = sysconfig.get_config_var('LDLIBRARY') or ''
-ext = '.dylib' if sys.platform == 'darwin' else '.so'
+ext = '.dylib' if sys.platform == 'darwin' else ('.dll' if sys.platform == 'win32' else '.so')
 candidates = []
+if sys.platform == 'win32':
+    ver_nodot = f'{sys.version_info.major}{sys.version_info.minor}'
+    candidates.append(os.path.join(sys.base_prefix, f'python{ver_nodot}.dll'))
+    candidates.append(os.path.join(sys.base_prefix, 'python3.dll'))
+    candidates.append(os.path.join(sys.prefix, f'python{ver_nodot}.dll'))
+    candidates.append(os.path.join(sys.prefix, 'python3.dll'))
 if libdir and ldlibrary:
     candidates.append(os.path.join(libdir, ldlibrary))
 if libdir:

@@ -184,64 +184,100 @@ pub fn link_shared_object(obj_path: &str, out: &str, native_libs: &[FfiLibInfo])
 fn link_object_impl(obj_path: &str, out: &str, native_libs: &[FfiLibInfo], shared: bool) {
     let static_dir = find_static_library_dir();
     let used_static_link = static_dir.is_some();
-    let mut cmd = std::process::Command::new("cc");
+    let is_msvc = cfg!(target_env = "msvc");
 
-    cmd.arg(obj_path);
+    let mut cmd = if is_msvc {
+        let mut c = std::process::Command::new("link.exe");
+        c.arg("/NOLOGO");
+        c.arg(format!("/OUT:{out}"));
+        c.arg(obj_path);
 
-    if shared {
-        cmd.arg("-shared");
-    }
-
-    if let Some(dir) = static_dir {
-        // rustc builds with function/data sections by default, so the linker can
-        // drop archive members nothing reaches -- without this flag every object
-        // file in libolive_std.a that supplies any referenced symbol comes in
-        // whole, dragging in every *other* function bundled into that same
-        // codegen unit too (a `print(fib(28))` binary was 85MB before this).
-        #[cfg(any(target_os = "linux", target_os = "windows"))]
-        cmd.arg("-Wl,--gc-sections");
-        #[cfg(target_os = "macos")]
-        cmd.arg("-Wl,-dead_strip");
-
-        // Link the archive by exact path: the runtime's own code lands directly in
-        // the output binary, no `liblive_std` shared object needed on disk to run it.
-        cmd.arg(dir.join(static_library_filename()));
-        // `rustc` normally supplies these automatically when it drives the final
-        // link; invoking `cc` directly on the archive doesn't, so the transitive
-        // system libs Rust's std/deps pull in (libm for f64 intrinsics, threading,
-        // dynamic loading, POSIX extensions) need to be named explicitly.
-        #[cfg(target_os = "linux")]
-        for sys_lib in [
-            "-lm",
-            "-lpthread",
-            "-ldl",
-            "-lrt",
-            "-lutil",
-            "-lcrypto",
-            "-lssl",
-        ] {
-            cmd.arg(sys_lib);
+        if shared {
+            c.arg("/DLL");
         }
-        #[cfg(target_os = "macos")]
-        for sys_lib in ["-lm", "-lpthread", "-ldl"] {
-            cmd.arg(sys_lib);
+
+        if let Some(dir) = static_dir {
+            c.arg("/OPT:REF");
+            c.arg("/OPT:ICF");
+            c.arg(dir.join(static_library_filename()));
+            for sys_lib in [
+                "ws2_32.lib",
+                "userenv.lib",
+                "bcrypt.lib",
+                "ntdll.lib",
+                "advapi32.lib",
+                "iphlpapi.lib",
+            ] {
+                c.arg(sys_lib);
+            }
+        } else if let Some(ref dir) = find_library_dir() {
+            c.arg(format!("/LIBPATH:{}", dir.display()));
+            c.arg("olive_std.lib");
+        } else {
+            c.arg("olive_std.lib");
         }
-        // `cc` is never MSVC's link.exe here (MSVC ships no binary named `cc`) --
-        // it's always MinGW's gcc/ld, even when rustc itself targets MSVC. GNU ld
-        // wants `-l` flags, not bare MSVC `.lib` names.
-        #[cfg(target_os = "windows")]
-        for sys_lib in ["-lws2_32", "-luserenv", "-lbcrypt", "-lntdll"] {
-            cmd.arg(sys_lib);
-        }
-    } else if let Some(ref dir) = find_library_dir() {
-        cmd.arg("-L");
-        cmd.arg(dir);
-        cmd.arg("-lolive_std");
-        #[cfg(not(target_os = "windows"))]
-        cmd.arg(format!("-Wl,-rpath,{}", dir.display()));
+        c
     } else {
-        cmd.arg("-lolive_std");
-    }
+        let mut c = std::process::Command::new("cc");
+
+        c.arg(obj_path);
+
+        if shared {
+            c.arg("-shared");
+        }
+
+        if let Some(dir) = static_dir {
+            // rustc builds with function/data sections by default, so the linker can
+            // drop archive members nothing reaches -- without this flag every object
+            // file in libolive_std.a that supplies any referenced symbol comes in
+            // whole, dragging in every *other* function bundled into that same
+            // codegen unit too (a `print(fib(28))` binary was 85MB before this).
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            c.arg("-Wl,--gc-sections");
+            #[cfg(target_os = "macos")]
+            c.arg("-Wl,-dead_strip");
+
+            // Link the archive by exact path: the runtime's own code lands directly in
+            // the output binary, no `liblive_std` shared object needed on disk to run it.
+            c.arg(dir.join(static_library_filename()));
+            // `rustc` normally supplies these automatically when it drives the final
+            // link; invoking `cc` directly on the archive doesn't, so the transitive
+            // system libs Rust's std/deps pull in (libm for f64 intrinsics, threading,
+            // dynamic loading, POSIX extensions) need to be named explicitly.
+            #[cfg(target_os = "linux")]
+            for sys_lib in [
+                "-lm",
+                "-lpthread",
+                "-ldl",
+                "-lrt",
+                "-lutil",
+                "-lcrypto",
+                "-lssl",
+            ] {
+                c.arg(sys_lib);
+            }
+            #[cfg(target_os = "macos")]
+            for sys_lib in ["-lm", "-lpthread", "-ldl"] {
+                c.arg(sys_lib);
+            }
+            // `cc` is never MSVC's link.exe here (MSVC ships no binary named `cc`) --
+            // it's always MinGW's gcc/ld, even when rustc itself targets MSVC. GNU ld
+            // wants `-l` flags, not bare MSVC `.lib` names.
+            #[cfg(target_os = "windows")]
+            for sys_lib in ["-lws2_32", "-luserenv", "-lbcrypt", "-lntdll"] {
+                c.arg(sys_lib);
+            }
+        } else if let Some(ref dir) = find_library_dir() {
+            c.arg("-L");
+            c.arg(dir);
+            c.arg("-lolive_std");
+            #[cfg(not(target_os = "windows"))]
+            c.arg(format!("-Wl,-rpath,{}", dir.display()));
+        } else {
+            c.arg("-lolive_std");
+        }
+        c
+    };
 
     for (_, path, _, _, _) in native_libs {
         let lib_path = Path::new(path.as_str());
@@ -259,16 +295,19 @@ fn link_object_impl(obj_path: &str, out: &str, native_libs: &[FfiLibInfo], share
             cmd.arg(&resolved);
             if let Some(dir) = resolved.parent()
                 && !is_standard_lib_dir(dir)
+                && !is_msvc
             {
                 #[cfg(not(target_os = "windows"))]
                 cmd.arg(format!("-Wl,-rpath,{}", dir.display()));
             }
         } else if let Some(dir) = resolve_exact_library(path) {
             cmd.arg(dir.join(path));
-            if !is_standard_lib_dir(&dir) {
+            if !is_standard_lib_dir(&dir) && !is_msvc {
                 #[cfg(not(target_os = "windows"))]
                 cmd.arg(format!("-Wl,-rpath,{}", dir.display()));
             }
+        } else if is_msvc {
+            cmd.arg(path);
         } else if cfg!(target_os = "macos") {
             // ld64 has no equivalent to GNU ld's `-l:exact-name` linking; the
             // stem fallback is the only portable option left once the file
@@ -283,11 +322,14 @@ fn link_object_impl(obj_path: &str, out: &str, native_libs: &[FfiLibInfo], share
         }
     }
 
-    cmd.arg("-o");
-    cmd.arg(out);
+    if !is_msvc {
+        cmd.arg("-o");
+        cmd.arg(out);
+    }
 
     let status = cmd.status().unwrap_or_else(|e| {
-        eprintln!("error: could not invoke cc: {e}");
+        let name = if is_msvc { "link.exe" } else { "cc" };
+        eprintln!("error: could not invoke {name}: {e}");
         process::exit(1);
     });
 

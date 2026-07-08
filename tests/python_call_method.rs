@@ -19,12 +19,18 @@ fn pit_bin() -> PathBuf {
 }
 
 fn python_available() -> bool {
-    Command::new("python3")
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+    for cmd in &["python3", "python"] {
+        if Command::new(cmd)
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+        {
+            return true;
+        }
+    }
+    false
 }
 
 static UNIQUE: AtomicU64 = AtomicU64::new(0);
