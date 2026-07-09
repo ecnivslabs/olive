@@ -35,6 +35,7 @@ pub fn execute_run(
     aot: bool,
     hybrid: bool,
     release: bool,
+    explain_copies: bool,
 ) {
     let (entry, is_project) = if let Some(f) = file {
         (f.clone(), false)
@@ -58,9 +59,9 @@ pub fn execute_run(
 
     let mode = resolve_run_mode(is_project, jit, aot, hybrid, emit_ast, emit_mir);
     match mode {
-        RunMode::Jit => compile_and_run(&entry, time, emit_ast, emit_mir, release),
-        RunMode::Aot => compile_and_run_aot(&entry, time, release),
-        RunMode::Hybrid => compile_hybrid(&entry, time, release),
+        RunMode::Jit => compile_and_run(&entry, time, emit_ast, emit_mir, release, explain_copies),
+        RunMode::Aot => compile_and_run_aot(&entry, time, release, explain_copies),
+        RunMode::Hybrid => compile_hybrid(&entry, time, release, explain_copies),
     }
 }
 

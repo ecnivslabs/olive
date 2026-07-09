@@ -40,6 +40,8 @@ enum Commands {
         release: bool,
         #[arg(long)]
         pgo: Option<String>,
+        #[arg(long)]
+        explain_copies: bool,
     },
     Run {
         file: Option<String>,
@@ -57,6 +59,8 @@ enum Commands {
         hybrid: bool,
         #[arg(long)]
         release: bool,
+        #[arg(long)]
+        explain_copies: bool,
     },
     Fmt {
         file: Option<String>,
@@ -114,12 +118,14 @@ fn main() {
             time,
             release,
             pgo,
+            explain_copies,
         } => commands::build::execute_build(
             path.as_ref(),
             output.as_ref(),
             time,
             release,
             pgo.as_deref(),
+            explain_copies,
         ),
         Commands::Run {
             file,
@@ -130,6 +136,7 @@ fn main() {
             aot,
             hybrid,
             release,
+            explain_copies,
         } => commands::run::execute_run(
             file.as_ref(),
             time,
@@ -139,6 +146,7 @@ fn main() {
             aot,
             hybrid,
             release,
+            explain_copies,
         ),
         Commands::Fmt {
             file,
@@ -148,7 +156,7 @@ fn main() {
         } => commands::project::execute_fmt(file.as_ref(), check, diff, stdin),
         Commands::Fix { file, dry_run } => commands::fix::execute_fix(file.as_ref(), dry_run),
         Commands::Explain { code } => commands::explain::execute_explain(&code),
-        Commands::Test { time, release } => commands::build::execute_test(time, release),
+        Commands::Test { time, release } => commands::build::execute_test(time, release, false),
         Commands::Shell => commands::project::execute_shell(),
         Commands::Add { pod } => commands::deps::execute_add(&pod),
         Commands::Remove { pod } => commands::deps::execute_remove(&pod),

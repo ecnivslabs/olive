@@ -1,5 +1,6 @@
 use super::*;
 use crate::mir::optimizations::Transform;
+use std::cell::RefCell;
 
 fn sp() -> Span {
     Span::default()
@@ -68,6 +69,8 @@ fn pass() -> OwnershipInference {
     OwnershipInference {
         borrowed_returns: HashSet::default(),
         param_escapes: HashMap::default(),
+        explain_copies: false,
+        copy_sites: RefCell::new(Vec::new()),
     }
 }
 

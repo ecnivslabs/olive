@@ -98,7 +98,7 @@ pub fn repl_compile_run(
     mir_builder.build_program(&program);
 
     let optimizer = mir::Optimizer::new();
-    let gencheck_errors = optimizer.run(&mut mir_builder.functions);
+    let (gencheck_errors, _) = optimizer.run(&mut mir_builder.functions);
     if !gencheck_errors.is_empty() {
         for d in &gencheck_errors {
             d.emit(sources);

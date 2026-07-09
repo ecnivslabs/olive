@@ -87,7 +87,7 @@ pub fn compile_minimal_aot(src: &str) -> CraneliftCodegen<ObjectModule> {
         HashSet::default(),
     );
     builder.build_program(&prog);
-    Optimizer::minimal().run(&mut builder.functions);
+    let (_diags, _copy_sites) = Optimizer::minimal().run(&mut builder.functions);
     CraneliftCodegen::new_aot(
         builder.functions,
         builder.struct_fields,
@@ -121,7 +121,7 @@ fn compile_with(src: &str, opt: Optimizer, profile: bool, release_backend: bool)
         HashSet::default(),
     );
     builder.build_program(&prog);
-    opt.run(&mut builder.functions);
+    let (_diags, _copy_sites) = opt.run(&mut builder.functions);
     let mut cg = CraneliftCodegen::new_jit(
         builder.functions,
         builder.struct_fields,

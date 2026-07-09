@@ -4,6 +4,7 @@ use crate::mir::*;
 use crate::semantic::types::Type;
 use crate::span::Span;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::cell::RefCell;
 
 mod escape_copies;
 mod guards;
@@ -13,6 +14,7 @@ pub mod summaries;
 mod tests;
 
 use escape_copies::insert_escape_copies;
+pub use escape_copies::{CopyReason, CopySite};
 use guards::{apply_drop_guards, insert_flags_and_marks, process_return_sites};
 use reassign::{insert_reassign_drops, reassign_free_locals};
 use summaries::runtime_escape;
@@ -30,6 +32,8 @@ pub use summaries::{compute_borrowed_returns, compute_param_escapes};
 pub struct OwnershipInference {
     pub borrowed_returns: HashSet<String>,
     pub param_escapes: HashMap<String, Vec<bool>>,
+    pub explain_copies: bool,
+    pub copy_sites: RefCell<Vec<CopySite>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -250,6 +254,8 @@ impl Transform for OwnershipInference {
             &heap,
             &self.param_escapes,
             &reassign,
+            self.explain_copies,
+            &self.copy_sites,
         );
 
         changed
