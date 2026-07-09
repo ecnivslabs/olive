@@ -8,10 +8,26 @@ use crossterm::event::{
 use crossterm::{cursor, queue, terminal};
 use std::fs::File;
 use std::io::{BufWriter, IsTerminal, Write, stdout};
+#[cfg(unix)]
 use std::os::unix::io::FromRawFd;
+#[cfg(windows)]
+use std::os::windows::io::FromRawHandle;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+
+#[cfg(unix)]
+fn raw_stdout_file() -> File {
+    unsafe { File::from_raw_fd(1) }
+}
+
+#[cfg(windows)]
+fn raw_stdout_file() -> File {
+    extern "system" {
+        fn GetStdHandle(nStdHandle: u32) -> *mut std::ffi::c_void;
+    }
+    unsafe { File::from_raw_handle(GetStdHandle((-11i32) as u32)) }
+}
 
 /// All `term.*` output funnels through this single handle instead of a
 /// fresh `stdout()` per call. Buffering is scoped to a `begin_sync`/
@@ -20,14 +36,12 @@ use std::time::Duration;
 /// contract plain scripts rely on. Inside one -- which is how the frame
 /// renderer's `_apply` always uses it, one bracket per redrawn frame --
 /// writes queue and only `end_sync` flushes, cutting a redrawn frame from
-/// 4+ syscalls per changed line down to one. Raw fd 1, not
+/// 4+ syscalls per changed line down to one. Raw fd 1 / stdout handle, not
 /// `std::io::Stdout`, since `Stdout` internally line-buffers and flushes on
 /// every `\n`.
 fn term_out() -> &'static Mutex<BufWriter<File>> {
     static OUT: OnceLock<Mutex<BufWriter<File>>> = OnceLock::new();
-    OUT.get_or_init(|| Mutex::new(BufWriter::with_capacity(64 * 1024, unsafe {
-        File::from_raw_fd(1)
-    })))
+    OUT.get_or_init(|| Mutex::new(BufWriter::with_capacity(64 * 1024, raw_stdout_file())))
 }
 
 static SYNC_ACTIVE: AtomicBool = AtomicBool::new(false);
