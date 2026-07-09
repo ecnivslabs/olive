@@ -91,10 +91,8 @@ fn free_list_like(val: i64, desc: *const u8, pos: &mut usize) {
     };
     crate::list::free_list_slot_raw(val);
     free_elems(eptr, elen, desc, inner_start);
-    if ecap > crate::list::RETAIN_CAP {
-        if !eptr.is_null() {
-            let _ = unsafe { Vec::from_raw_parts(eptr, 0, ecap) };
-        }
+    if ecap > crate::list::RETAIN_CAP && !eptr.is_null() {
+        let _ = unsafe { Vec::from_raw_parts(eptr, 0, ecap) };
     }
 }
 
@@ -171,10 +169,8 @@ fn free_tuple(val: i64, desc: *const u8, pos: &mut usize) {
         let elem = if i < elen { unsafe { *eptr.add(i) } } else { 0 };
         free_val(elem, desc, pos);
     }
-    if ecap > crate::list::RETAIN_CAP {
-        if !eptr.is_null() {
-            let _ = unsafe { Vec::from_raw_parts(eptr, 0, ecap) };
-        }
+    if ecap > crate::list::RETAIN_CAP && !eptr.is_null() {
+        let _ = unsafe { Vec::from_raw_parts(eptr, 0, ecap) };
     }
 }
 
