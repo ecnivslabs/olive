@@ -62,7 +62,7 @@ time with no allocation:
 fn scale_all(values: [int], factor: int) -> [int]:
     fn scale(x: int) -> int:
         return x * factor
-    return [scale(v) for v in &values]
+    return [scale(v) for v in values]
 ```
 
 A nested function must be called within its enclosing function. Returning it

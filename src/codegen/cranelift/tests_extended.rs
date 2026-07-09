@@ -312,6 +312,22 @@ mod codegen_tests_extended {
     }
 
     #[test]
+    fn for_loop_borrows_iterable() {
+        let mut cg = compile(
+            "fn f() -> i64:\n    let xs = [1, 2, 3]\n    let mut s = 0\n    for x in xs:\n        s = s + x\n    return s + len(xs)\n",
+        );
+        assert_eq!(call_i64(&mut cg, "f"), 9);
+    }
+
+    #[test]
+    fn for_loop_borrows_nested_tuple() {
+        let mut cg = compile(
+            "fn f() -> i64:\n    let segs = [(1, 2), (3, 4)]\n    let mut total = 0\n    for a, b in segs:\n        total = total + a + b\n    total + len(segs)\n",
+        );
+        assert_eq!(call_i64(&mut cg, "f"), 12);
+    }
+
+    #[test]
     fn integer_comparison_chain() {
         let mut cg = compile(
             "fn f(a: i64, b: i64, c: i64) -> i64:\n    if a < b:\n        if b < c:\n            return 42\n    return 0\n",

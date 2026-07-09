@@ -235,6 +235,12 @@ impl<'a> MirBuilder<'a> {
         }
 
         let iter_expr_op = self.lower_expr(iter);
+        let iter_ty = self.get_type(iter.id);
+        let iter_copy = self.new_local(iter_ty, None, true);
+        self.push_statement(
+            StatementKind::Assign(iter_copy, Rvalue::Use(iter_expr_op)),
+            iter.span,
+        );
         let iter_local = self.new_local(Type::Any, Some("_iter_obj".to_string()), true);
 
         self.push_statement(
@@ -242,7 +248,7 @@ impl<'a> MirBuilder<'a> {
                 iter_local,
                 Rvalue::Call {
                     func: Operand::Constant(Constant::Function("__olive_iter".to_string())),
-                    args: vec![iter_expr_op],
+                    args: vec![Operand::Copy(iter_copy)],
                 },
             ),
             iter.span,

@@ -166,7 +166,7 @@ Dicts and sets are hash-backed, so iteration order is unspecified and may differ
 A dict supports `get(key)`, `keys()`, `values()`, `items()`, and `remove(key)`. Iterate the keys directly, or the key-value pairs with `items()`:
 
 ```rust
-for name in &scores:
+for name in scores:
     print(name)
 
 for name, score in scores.items():
@@ -230,14 +230,17 @@ for i in 1..=5:       // 1, 2, 3, 4, 5
     print(i)
 ```
 
-Iterating a collection by name consumes it. To keep it usable afterward, iterate over a borrow with `&`:
+Iteration borrows the collection, not consumes. The iterable stays usable after the loop:
 
 ```rust
 let names = ["a", "b"]
-for n in &names:
+for n in names:
     print(n)
 print(len(names))     // names is still here
 ```
+
+When the iterable is not used after the loop, the optimizer turns the implicit
+copy into a move automatically, so hot loops pay no cost.
 
 #### While Loops
 
@@ -254,11 +257,12 @@ Generate lists, sets, or dictionaries from iterables:
 
 ```rust
 let numbers = [1, 2, 3, 4]
-let squares = [x * x for x in &numbers if x % 2 == 0]  // Evaluates to [4, 16]
-let unique_squares = {x * x for x in &numbers}         // Evaluates to {1, 4, 9, 16}
+let squares = [x * x for x in numbers if x % 2 == 0]  // Evaluates to [4, 16]
+let unique_squares = {x * x for x in numbers}         // Evaluates to {1, 4, 9, 16}
 ```
 
-Iterating over `&numbers` borrows the list rather than consuming it, so it stays usable afterward. Iterating over `numbers` directly would move it into the comprehension.
+Comprehensions borrow the iterable, so the collection stays usable afterward.
+The optimizer converts the implicit copy to a move when it is not used again.
 
 ## Built-in Functions
 
