@@ -24,6 +24,123 @@ pub extern "C" fn olive_free_typed(val: i64, desc: i64) {
     free_val(val, desc as *const u8, &mut pos);
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_clear_typed(val: i64, desc: i64) {
+    if val == 0 || !slot_is_live(val) {
+        return;
+    }
+    let mut pos = 0usize;
+    let desc_ptr = desc as *const u8;
+    let tag = unsafe { byte(desc_ptr, pos) };
+    pos += 1;
+    match tag {
+        D_LIST | D_TUPLE => {
+            let inner_start = pos;
+            if tag == D_LIST {
+                skip(desc_ptr, &mut pos);
+            } else {
+                let n = unsafe { byte(desc_ptr, pos) } as usize - 1;
+                pos += 1;
+                for _ in 0..n {
+                    skip(desc_ptr, &mut pos);
+                }
+            }
+            let (eptr, elen) = unsafe {
+                let s = &mut *(val as *mut StableVec);
+                let res = (s.ptr, s.len);
+                s.len = 0;
+                res
+            };
+            free_elems(eptr, elen, desc_ptr, inner_start);
+        }
+        D_SET => {
+            let inner_start = pos;
+            skip(desc_ptr, &mut pos);
+            let (eptr, elen) = unsafe {
+                let s = &mut *(val as *mut OliveHashSet);
+                let res = (s.ptr, s.len);
+                s.len = 0;
+                if !s.inner.is_null() {
+                    (&mut *s.inner).clear();
+                }
+                res
+            };
+            free_elems(eptr, elen, desc_ptr, inner_start);
+        }
+        D_DICT => {
+            skip(desc_ptr, &mut pos);
+            let val_start = pos;
+            skip(desc_ptr, &mut pos);
+            let fields = unsafe {
+                let obj = &mut *(val as *mut OliveObj);
+                std::mem::take(&mut obj.fields)
+            };
+            if elem_owns(desc_ptr, val_start) {
+                for &v in fields.values() {
+                    let mut p = val_start;
+                    free_val(v, desc_ptr, &mut p);
+                }
+            }
+            for k in fields.keys() {
+                if k.0 & 1 != 0 {
+                    crate::olive_free_str(k.0);
+                }
+            }
+        }
+        D_STRUCT => {
+            skip_lp(desc_ptr, &mut pos);
+            let n = unsafe { byte(desc_ptr, pos) } as usize - 13;
+            pos += 1;
+            let n_fields = unsafe { *(val as *const i64) };
+            let fields = unsafe {
+                let mut f = Vec::with_capacity(n_fields as usize);
+                for i in 0..n_fields {
+                    let field_ptr = (val + 8 + 8 * i) as *mut i64;
+                    f.push(*field_ptr);
+                    *field_ptr = 0;
+                }
+                f
+            };
+            for i in 0..n {
+                skip_lp(desc_ptr, &mut pos);
+                let field = if i < fields.len() { fields[i] } else { 0 };
+                free_val(field, desc_ptr, &mut pos);
+            }
+        }
+        D_ENUM => {
+            skip_lp(desc_ptr, &mut pos);
+            let n = unsafe { byte(desc_ptr, pos) } as usize - 13;
+            pos += 1;
+            let (tag, pptr, plen) = unsafe {
+                let e = &mut *(val as *mut OliveEnum);
+                let res = (e.tag as usize, e.payload_ptr, e.payload_len);
+                e.payload_len = 0;
+                res
+            };
+            for i in 0..n {
+                skip_lp(desc_ptr, &mut pos);
+                let np = unsafe { byte(desc_ptr, pos) } as usize - 13;
+                pos += 1;
+                for j in 0..np {
+                    if i == tag && j < plen {
+                        free_val(unsafe { *pptr.add(j) }, desc_ptr, &mut pos);
+                    } else {
+                        skip(desc_ptr, &mut pos);
+                    }
+                }
+            }
+            if !pptr.is_null() {
+                unsafe {
+                    let _ = Vec::from_raw_parts(pptr, plen, plen);
+                    let e = &mut *(val as *mut OliveEnum);
+                    e.payload_ptr = std::ptr::null_mut();
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Skips a length-prefixed name; length byte is biased by 13.
 fn skip_lp(desc: *const u8, pos: &mut usize) {
     let len = unsafe { byte(desc, *pos) } as usize - 13;

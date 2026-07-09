@@ -1,6 +1,6 @@
 use super::CraneliftCodegen;
 use super::translate::{attr_symbol, c_struct_field_info};
-use crate::mir::{Constant, Local, MirFunction, Operand, Rvalue};
+use crate::mir::{AggregateKind, Constant, Local, MirFunction, Operand, Rvalue};
 use crate::semantic::types::Type as OliveType;
 use cranelift::prelude::*;
 use cranelift_module::{DataId, FuncId, Module};
@@ -183,7 +183,27 @@ impl<M: Module> CraneliftCodegen<M> {
         rval: &Rvalue,
         vars: &HashMap<Local, Variable>,
         loc_id: Option<DataId>,
+        reuse_target: Option<(Local, Value, bool)>,
     ) -> Value {
+        let is_reusable = match rval {
+            Rvalue::Aggregate(kind, _) => !matches!(kind, AggregateKind::FatPtr),
+            _ => false,
+        };
+        if let Some((reuse_local, reuse_val, _)) = reuse_target
+            && !is_reusable
+        {
+            let ty = &func_mir.locals[reuse_local.0].ty;
+            if let Some(desc_ty) = super::imports::drop_descriptor_type(ty, struct_fields) {
+                let desc =
+                    super::imports::type_descriptor(desc_ty, struct_fields, field_types, enum_defs);
+                let data_id = *string_ids.get(&desc).unwrap();
+                let local_data = module.declare_data_in_func(data_id, builder.func);
+                let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                let free_id = func_ids["__olive_free_typed"];
+                let local_func = module.declare_func_in_func(free_id, builder.func);
+                builder.ins().call(local_func, &[reuse_val, desc_ptr]);
+            }
+        }
         match rval {
             Rvalue::Use(op) => {
                 Self::translate_operand(builder, op, vars, string_ids, module, func_ids)
@@ -589,7 +609,15 @@ impl<M: Module> CraneliftCodegen<M> {
                 }
             }
             Rvalue::Aggregate(kind, ops) => Self::translate_aggregate(
-                func_mir, builder, vars, string_ids, module, func_ids, kind, ops,
+                func_mir,
+                builder,
+                vars,
+                string_ids,
+                module,
+                func_ids,
+                kind,
+                ops,
+                reuse_target,
             ),
             Rvalue::VTableLoad { vtable, method_idx } => {
                 let fat_ptr_val =

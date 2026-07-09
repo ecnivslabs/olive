@@ -16,6 +16,7 @@ mod tests;
 use escape_copies::insert_escape_copies;
 pub use escape_copies::{CopyReason, CopySite};
 use guards::{apply_drop_guards, insert_flags_and_marks, process_return_sites};
+pub(crate) use reassign::REASSIGN_LIVE_BORROWS;
 use reassign::{insert_reassign_drops, reassign_free_locals};
 use summaries::runtime_escape;
 pub use summaries::{compute_borrowed_returns, compute_param_escapes};

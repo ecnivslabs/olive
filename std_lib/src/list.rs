@@ -15,8 +15,7 @@ thread_local! {
 /// Allocates a list header from the slab and fills it. A recycled slot may
 /// carry a retained element buffer, which is released before overwriting.
 pub(crate) fn alloc_list_header(kind: i64, ptr: *mut i64, cap: usize, len: usize) -> i64 {
-    LIST_SLAB.with(|sl| {
-        let sl = unsafe { &mut *sl.get() };
+    let slab_alloc = |sl: &mut GenSlab| {
         let (body, fresh) = sl.alloc();
         let s = body as *mut StableVec;
         unsafe {
@@ -32,7 +31,15 @@ pub(crate) fn alloc_list_header(kind: i64, ptr: *mut i64, cap: usize, len: usize
             (*s).len = len;
         }
         body as i64
-    })
+    };
+    unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null() {
+            slab_alloc(&mut (*active).list)
+        } else {
+            LIST_SLAB.with(|sl| slab_alloc(&mut *sl.get()))
+        }
+    }
 }
 
 pub(crate) fn list_from_vec(mut v: Vec<i64>) -> i64 {
@@ -46,8 +53,7 @@ pub(crate) fn list_from_vec(mut v: Vec<i64>) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_list_new(len: i64) -> i64 {
     let n = len as usize;
-    LIST_SLAB.with(|sl| {
-        let sl = unsafe { &mut *sl.get() };
+    let slab_alloc = |sl: &mut GenSlab| {
         let (body, fresh) = sl.alloc();
         let s = unsafe { &mut *(body as *mut StableVec) };
         if fresh || cfg!(debug_assertions) {
@@ -74,7 +80,15 @@ pub extern "C" fn olive_list_new(len: i64) -> i64 {
         s.kind = KIND_LIST;
         s.len = n;
         body as i64
-    })
+    };
+    unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null() {
+            slab_alloc(&mut (*active).list)
+        } else {
+            LIST_SLAB.with(|sl| slab_alloc(&mut *sl.get()))
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -466,9 +480,49 @@ pub(crate) unsafe fn settle_list_buffer(ptr: i64) {
 }
 
 pub(crate) fn free_list_slot_raw(ptr: i64) {
-    LIST_SLAB.with(|sl| {
-        unsafe { &mut *sl.get() }.free(ptr as *mut u8);
-    });
+    unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null() {
+            (*active).list.free(ptr as *mut u8);
+        } else {
+            LIST_SLAB.with(|sl| {
+                (&mut *sl.get()).free(ptr as *mut u8);
+            });
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_new_reuse(old_ptr: i64, n_len: i64, bump: i64) -> i64 {
+    if old_ptr == 0 {
+        return olive_list_new(n_len);
+    }
+    let n = n_len as usize;
+    if bump != 0 {
+        unsafe {
+            let gen_ptr = (old_ptr as *mut std::sync::atomic::AtomicU64).sub(1);
+            let g = (*gen_ptr).load(std::sync::atomic::Ordering::Relaxed) + 2;
+            (*gen_ptr).store(g, std::sync::atomic::Ordering::Release);
+        }
+    }
+    unsafe {
+        let s = &mut *(old_ptr as *mut StableVec);
+        if s.ptr.is_null() || s.cap < n {
+            let mut v = if s.ptr.is_null() {
+                Vec::with_capacity(n)
+            } else {
+                Vec::from_raw_parts(s.ptr, 0, s.cap)
+            };
+            v.reserve(n);
+            s.ptr = v.as_mut_ptr();
+            s.cap = v.capacity();
+            std::mem::forget(v);
+        }
+        std::ptr::write_bytes(s.ptr, 0, n);
+        s.len = n;
+        s.kind = KIND_LIST;
+    }
+    old_ptr
 }
 
 #[repr(C)]

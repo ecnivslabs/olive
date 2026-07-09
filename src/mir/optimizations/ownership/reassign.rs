@@ -3,10 +3,12 @@ use crate::mir::*;
 use crate::semantic::types::Type;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
-/// Move-type owners that are reassigned and never aliased by a live view.
-/// The overwritten value is unreachable and can be freed first.
-/// `Owner` excludes escapes and mixed borrow paths; the view-root check
-/// excludes locals a surviving `let b = x` reads.
+use std::cell::RefCell;
+
+thread_local! {
+    pub(crate) static REASSIGN_LIVE_BORROWS: RefCell<HashMap<String, HashMap<Local, bool>>> = RefCell::new(HashMap::default());
+}
+
 pub(super) fn reassign_free_locals(
     func: &MirFunction,
     classes: &[LocalClass],
@@ -22,10 +24,6 @@ pub(super) fn reassign_free_locals(
     for rec in records {
         assigns[rec.dst.0] += 1;
     }
-    // A local assigned inside a loop body executes that one static statement
-    // more than once at runtime, overwriting its own prior value on every
-    // revisit -- the same hazard as >=2 static assigns, just invisible to a
-    // per-function textual count (`let fwd = ...` inside a loop appears once).
     let in_loop_body: HashSet<Local> = crate::mir::loop_utils::find_loops(func)
         .iter()
         .flat_map(|lp| &lp.body)
@@ -35,16 +33,31 @@ pub(super) fn reassign_free_locals(
             _ => None,
         })
         .collect();
-    (0..classes.len())
-        .filter(|&i| {
-            i != 0
-                && heap[i]
-                && classes[i] == LocalClass::Owner
-                && (assigns[i] >= 2 || in_loop_body.contains(&Local(i)))
-                && !view_roots.contains(&Local(i))
-        })
-        .map(Local)
-        .collect()
+    let mut result = HashSet::default();
+    let mut borrow_map = HashMap::default();
+    for i in 0..classes.len() {
+        if i != 0
+            && heap[i]
+            && classes[i] == LocalClass::Owner
+            && (assigns[i] >= 2 || in_loop_body.contains(&Local(i)))
+        {
+            let local = Local(i);
+            let has_borrow = view_roots.contains(&local);
+            // Only locals WITHOUT live borrows get an explicit MIR drop inserted
+            // by insert_reassign_drops. Borrow-aliased locals are recorded in
+            // REASSIGN_LIVE_BORROWS so the codegen can still attempt in-place
+            // reuse (with a generation bump), but the MIR pass must not free
+            // them since a live view may still alias the slot.
+            borrow_map.insert(local, has_borrow);
+            if !has_borrow {
+                result.insert(local);
+            }
+        }
+    }
+    REASSIGN_LIVE_BORROWS.with(|map| {
+        map.borrow_mut().insert(func.name.clone(), borrow_map);
+    });
+    result
 }
 
 /// Whether `x` appears as an operand of `rval`. A reassignment whose value

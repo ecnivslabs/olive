@@ -17,8 +17,7 @@ pub extern "C" fn olive_set_new(capacity: i64) -> i64 {
     let v_cap = v.capacity();
     std::mem::forget(v);
     let inner = Box::into_raw(Box::new(FxHashSet::<i64>::default()));
-    SET_SLAB.with(|sl| {
-        let sl = unsafe { &mut *sl.get() };
+    let slab_alloc = |sl: &mut GenSlab| {
         let (body, _) = sl.alloc();
         unsafe {
             std::ptr::write(
@@ -33,7 +32,15 @@ pub extern "C" fn olive_set_new(capacity: i64) -> i64 {
             );
         }
         body as i64
-    })
+    };
+    unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null() {
+            slab_alloc(&mut (*active).set)
+        } else {
+            SET_SLAB.with(|sl| slab_alloc(&mut *sl.get()))
+        }
+    }
 }
 
 pub(crate) fn olive_free_set(ptr: i64) {
@@ -63,9 +70,50 @@ pub(crate) unsafe fn release_set_storage(ptr: i64) {
 }
 
 pub(crate) fn free_set_slot_raw(ptr: i64) {
-    SET_SLAB.with(|sl| {
-        unsafe { &mut *sl.get() }.free(ptr as *mut u8);
-    });
+    unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null() {
+            (*active).set.free(ptr as *mut u8);
+        } else {
+            SET_SLAB.with(|sl| {
+                (&mut *sl.get()).free(ptr as *mut u8);
+            });
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_set_new_reuse(old_ptr: i64, capacity: i64, bump: i64) -> i64 {
+    if old_ptr == 0 {
+        return olive_set_new(capacity);
+    }
+    if bump != 0 {
+        unsafe {
+            let gen_ptr = (old_ptr as *mut std::sync::atomic::AtomicU64).sub(1);
+            let g = (*gen_ptr).load(std::sync::atomic::Ordering::Relaxed) + 2;
+            (*gen_ptr).store(g, std::sync::atomic::Ordering::Release);
+        }
+    }
+    let s = unsafe { &mut *(old_ptr as *mut OliveHashSet) };
+    let cap = capacity as usize;
+    unsafe {
+        if s.ptr.is_null() || s.cap < cap {
+            let mut v = if s.ptr.is_null() {
+                Vec::with_capacity(cap)
+            } else {
+                Vec::from_raw_parts(s.ptr, 0, s.cap)
+            };
+            v.reserve(cap);
+            s.ptr = v.as_mut_ptr();
+            s.cap = v.capacity();
+            std::mem::forget(v);
+        }
+        if s.inner.is_null() {
+            s.inner = Box::into_raw(Box::new(FxHashSet::<i64>::default()));
+        }
+        s.len = 0;
+    }
+    old_ptr
 }
 
 /// Snapshots a set's elements into a list, backing `for x in some_set`.

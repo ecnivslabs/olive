@@ -44,15 +44,26 @@ impl<M: Module> CraneliftCodegen<M> {
         func_ids: &HashMap<String, FuncId>,
         kind: &AggregateKind,
         ops: &[Operand],
+        reuse: Option<(Local, Value, bool)>,
     ) -> Value {
         match kind {
             AggregateKind::Dict => {
-                let new_id = func_ids
-                    .get("__olive_obj_new")
-                    .expect("missing __olive_obj_new");
-                let new_func = module.declare_func_in_func(*new_id, builder.func);
-                let inst = builder.ins().call(new_func, &[]);
-                let dict_ptr = builder.inst_results(inst)[0];
+                let dict_ptr = if let Some((_, reuse_val, has_borrow)) = reuse {
+                    let new_id = func_ids.get("__olive_dict_new_reuse").unwrap();
+                    let new_func = module.declare_func_in_func(*new_id, builder.func);
+                    let bump_val = builder
+                        .ins()
+                        .iconst(types::I64, if has_borrow { 1 } else { 0 });
+                    let inst = builder.ins().call(new_func, &[reuse_val, bump_val]);
+                    builder.inst_results(inst)[0]
+                } else {
+                    let new_id = func_ids
+                        .get("__olive_obj_new")
+                        .expect("missing __olive_obj_new");
+                    let new_func = module.declare_func_in_func(*new_id, builder.func);
+                    let inst = builder.ins().call(new_func, &[]);
+                    builder.inst_results(inst)[0]
+                };
 
                 let set_id = func_ids
                     .get("__olive_obj_set")
@@ -80,12 +91,25 @@ impl<M: Module> CraneliftCodegen<M> {
                 let type_id_val = builder.ins().iconst(types::I64, *type_id);
                 let tag_val = builder.ins().iconst(types::I64, *tag as i64);
                 let count = builder.ins().iconst(types::I64, ops.len() as i64);
-                let new_id = func_ids
-                    .get("__olive_enum_new")
-                    .expect("missing __olive_enum_new");
-                let new_func = module.declare_func_in_func(*new_id, builder.func);
-                let inst = builder.ins().call(new_func, &[type_id_val, tag_val, count]);
-                let enum_ptr = builder.inst_results(inst)[0];
+                let enum_ptr = if let Some((_, reuse_val, has_borrow)) = reuse {
+                    let new_id = func_ids.get("__olive_enum_new_reuse").unwrap();
+                    let new_func = module.declare_func_in_func(*new_id, builder.func);
+                    let bump_val = builder
+                        .ins()
+                        .iconst(types::I64, if has_borrow { 1 } else { 0 });
+                    let inst = builder.ins().call(
+                        new_func,
+                        &[reuse_val, type_id_val, tag_val, count, bump_val],
+                    );
+                    builder.inst_results(inst)[0]
+                } else {
+                    let new_id = func_ids
+                        .get("__olive_enum_new")
+                        .expect("missing __olive_enum_new");
+                    let new_func = module.declare_func_in_func(*new_id, builder.func);
+                    let inst = builder.ins().call(new_func, &[type_id_val, tag_val, count]);
+                    builder.inst_results(inst)[0]
+                };
 
                 let set_id = func_ids
                     .get("__olive_enum_set")
@@ -103,12 +127,22 @@ impl<M: Module> CraneliftCodegen<M> {
             }
             AggregateKind::Set => {
                 let count = builder.ins().iconst(types::I64, ops.len() as i64);
-                let new_id = func_ids
-                    .get("__olive_set_new")
-                    .expect("missing __olive_set_new");
-                let new_func = module.declare_func_in_func(*new_id, builder.func);
-                let inst = builder.ins().call(new_func, &[count]);
-                let set_ptr = builder.inst_results(inst)[0];
+                let set_ptr = if let Some((_, reuse_val, has_borrow)) = reuse {
+                    let new_id = func_ids.get("__olive_set_new_reuse").unwrap();
+                    let new_func = module.declare_func_in_func(*new_id, builder.func);
+                    let bump_val = builder
+                        .ins()
+                        .iconst(types::I64, if has_borrow { 1 } else { 0 });
+                    let inst = builder.ins().call(new_func, &[reuse_val, count, bump_val]);
+                    builder.inst_results(inst)[0]
+                } else {
+                    let new_id = func_ids
+                        .get("__olive_set_new")
+                        .expect("missing __olive_set_new");
+                    let new_func = module.declare_func_in_func(*new_id, builder.func);
+                    let inst = builder.ins().call(new_func, &[count]);
+                    builder.inst_results(inst)[0]
+                };
 
                 let add_id = func_ids
                     .get("__olive_set_add")
@@ -144,12 +178,22 @@ impl<M: Module> CraneliftCodegen<M> {
             _ => {
                 let n = ops.len() as i64;
                 let n_val = builder.ins().iconst(types::I64, n);
-                let new_id = func_ids
-                    .get("__olive_list_new")
-                    .expect("missing __olive_list_new");
-                let new_func = module.declare_func_in_func(*new_id, builder.func);
-                let inst = builder.ins().call(new_func, &[n_val]);
-                let list_ptr = builder.inst_results(inst)[0];
+                let list_ptr = if let Some((_, reuse_val, has_borrow)) = reuse {
+                    let new_id = func_ids.get("__olive_list_new_reuse").unwrap();
+                    let new_func = module.declare_func_in_func(*new_id, builder.func);
+                    let bump_val = builder
+                        .ins()
+                        .iconst(types::I64, if has_borrow { 1 } else { 0 });
+                    let inst = builder.ins().call(new_func, &[reuse_val, n_val, bump_val]);
+                    builder.inst_results(inst)[0]
+                } else {
+                    let new_id = func_ids
+                        .get("__olive_list_new")
+                        .expect("missing __olive_list_new");
+                    let new_func = module.declare_func_in_func(*new_id, builder.func);
+                    let inst = builder.ins().call(new_func, &[n_val]);
+                    builder.inst_results(inst)[0]
+                };
 
                 // KIND_LIST=1 (raw concrete elements) vs KIND_ANY_LIST=15 (inline Any-tagged).
                 // The Python proxy reads this to choose the right element decoder.

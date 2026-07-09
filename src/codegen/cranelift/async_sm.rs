@@ -243,6 +243,7 @@ impl<M: Module> CraneliftCodegen<M> {
                         stmt,
                         &vars,
                         &self.loc_ids,
+                        None,
                     );
                 }
 

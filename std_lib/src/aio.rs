@@ -15,6 +15,7 @@ struct OliveTask {
     done: AtomicBool,
     completions: Mutex<Vec<Arc<Completion>>>,
     sm_waiters: Mutex<Vec<Arc<OliveTask>>>,
+    slabs: Mutex<Option<Box<crate::slab::SlabSet>>>,
 }
 
 struct Completion {
@@ -97,15 +98,28 @@ fn executor_get_or_create_task(ex: &OliveExecutor, sm_future_ptr: i64) -> Arc<Ol
         done: AtomicBool::new(false),
         completions: Mutex::new(Vec::new()),
         sm_waiters: Mutex::new(Vec::new()),
+        slabs: Mutex::new(None),
     });
     map.insert(sm_future_ptr, t.clone());
     t
 }
 
 fn executor_drive(ex: &Arc<OliveExecutor>, task: Arc<OliveTask>) {
+    let slabs_ptr = {
+        let mut slabs_guard = task.slabs.lock().unwrap();
+        if slabs_guard.is_none() {
+            *slabs_guard = Some(Box::new(crate::slab::SlabSet::new()));
+        }
+        slabs_guard.as_mut().unwrap().as_mut() as *mut crate::slab::SlabSet
+    };
+    let old_active = crate::slab::ACTIVE_SLABS.get();
+    crate::slab::ACTIVE_SLABS.set(slabs_ptr);
+
     let sf = unsafe { &*(task.sm_future as *const OliveSmFuture) };
     let poll_fn: fn(i64) -> i64 = unsafe { std::mem::transmute(sf.poll_fn as usize) };
     let result = poll_fn(sf.frame);
+
+    crate::slab::ACTIVE_SLABS.set(old_active);
 
     if result != POLL_PENDING {
         task.done.store(true, Ordering::SeqCst);
@@ -119,6 +133,7 @@ fn executor_drive(ex: &Arc<OliveExecutor>, task: Arc<OliveTask>) {
             executor_enqueue(ex, w);
         }
         ex.task_map.lock().unwrap().remove(&task.sm_future);
+        *task.slabs.lock().unwrap() = None;
         return;
     }
 
@@ -941,8 +956,7 @@ mod tests {
 
     #[test]
     fn pool_run_sync_executes() {
-        let result = olive_pool_run_sync(add_one as *const () as i64, 41);
-        assert_eq!(result, 42);
+        assert_eq!(olive_pool_run_sync(add_one as *const () as i64, 41), 42);
     }
 
     #[test]
@@ -955,18 +969,15 @@ mod tests {
             });
             let shared2 = shared.clone();
             handles.push(std::thread::spawn(move || {
-                let result = i * i;
-                let mut state = shared2.state.lock().unwrap();
-                *state = FutureState::Ready(result);
+                *shared2.state.lock().unwrap() = FutureState::Ready(i * i);
                 shared2.cvar.notify_all();
             }));
             let mut state = shared.state.lock().unwrap();
-            loop {
-                if let FutureState::Ready(v) = *state {
-                    assert_eq!(v, i * i);
-                    break;
-                }
+            while let FutureState::Pending = *state {
                 state = shared.cvar.wait(state).unwrap();
+            }
+            if let FutureState::Ready(v) = *state {
+                assert_eq!(v, i * i);
             }
         }
         for h in handles {
