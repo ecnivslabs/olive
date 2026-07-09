@@ -7,6 +7,7 @@
 //! are invisible to the escape analysis, so escapes through those edges are
 //! undetected here and left to the gencheck runtime backstop (E0707).
 
+use super::block_preds;
 use crate::mir::*;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -164,45 +165,103 @@ fn returns_borrow(func: &MirFunction, borrowed: &HashSet<String>) -> bool {
     if !func.locals.first().is_some_and(|d| d.ty.is_move_type()) {
         return false;
     }
-    // Local taint: holds a value owned elsewhere.
     let n = func.locals.len();
-    let mut tainted = vec![false; n];
-    for t in tainted.iter_mut().take(func.arg_count + 1).skip(1) {
-        *t = true;
+    let nb = func.basic_blocks.len();
+    let preds = block_preds(func);
+    // Per-block entry taint state. Seeded with params as tainted everywhere.
+    let param_bound = func.arg_count.min(n - 1);
+    let mut entry: Vec<Vec<bool>> = vec![vec![false; n]; nb];
+    for e in entry.iter_mut() {
+        for s in e.iter_mut().take(param_bound + 1).skip(1) {
+            *s = true;
+        }
     }
+    let mut out: Vec<Vec<bool>> = entry.clone();
+    // Forward may-analysis: union at joins, ALWAYS compute taint for dst
+    // (not just set to true) so a fresh assignment to _return clears the
+    // taint even if a prior assignment in another block set it.
     loop {
         let mut changed = false;
-        for bb in &func.basic_blocks {
-            for stmt in &bb.statements {
-                let StatementKind::Assign(dst, rval) = &stmt.kind else {
-                    continue;
-                };
-                if dst.0 >= n || tainted[dst.0] {
-                    continue;
-                }
-                let taint = match rval {
-                    Rvalue::Use(Operand::Copy(src)) | Rvalue::Use(Operand::Move(src)) => {
-                        src.0 < n && tainted[src.0]
+        for bb in 0..nb {
+            let mut state = vec![false; n];
+            for &p in &preds[bb] {
+                let mut p_out = out[p.0].clone();
+                for stmt in &func.basic_blocks[p.0].statements {
+                    if let StatementKind::Assign(dst, rval) = &stmt.kind
+                        && dst.0 < n
+                    {
+                        p_out[dst.0] = match rval {
+                            Rvalue::Use(Operand::Copy(src)) | Rvalue::Use(Operand::Move(src)) => {
+                                src.0 < n && p_out[src.0]
+                            }
+                            Rvalue::GetIndex(_, _, _)
+                            | Rvalue::GetAttr(_, _)
+                            | Rvalue::PtrLoad(_)
+                            | Rvalue::FatPtrData(_)
+                            | Rvalue::VTableLoad { .. } => true,
+                            Rvalue::Call {
+                                func: Operand::Constant(Constant::Function(name)),
+                                ..
+                            } => borrowed.contains(name.as_str()),
+                            _ => false,
+                        };
                     }
-                    Rvalue::GetIndex(_, _, _)
-                    | Rvalue::GetAttr(_, _)
-                    | Rvalue::PtrLoad(_)
-                    | Rvalue::FatPtrData(_)
-                    | Rvalue::VTableLoad { .. } => true,
-                    Rvalue::Call {
-                        func: Operand::Constant(Constant::Function(name)),
-                        ..
-                    } => borrowed.contains(name),
-                    _ => false,
-                };
-                if taint {
-                    tainted[dst.0] = true;
-                    changed = true;
                 }
+                for (i, &p_val) in p_out.iter().enumerate() {
+                    if p_val {
+                        state[i] = true;
+                    }
+                }
+            }
+            if bb == 0 {
+                for s in state.iter_mut().take(param_bound + 1).skip(1) {
+                    *s = true;
+                }
+            }
+            if state != entry[bb] {
+                entry[bb] = state.clone();
+                changed = true;
+            }
+            for stmt in &func.basic_blocks[bb].statements {
+                if let StatementKind::Assign(dst, rval) = &stmt.kind
+                    && dst.0 < n
+                {
+                    state[dst.0] = match rval {
+                        Rvalue::Use(Operand::Copy(src)) | Rvalue::Use(Operand::Move(src)) => {
+                            src.0 < n && state[src.0]
+                        }
+                        Rvalue::GetIndex(_, _, _)
+                        | Rvalue::GetAttr(_, _)
+                        | Rvalue::PtrLoad(_)
+                        | Rvalue::FatPtrData(_)
+                        | Rvalue::VTableLoad { .. } => true,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(name)),
+                            ..
+                        } => borrowed.contains(name.as_str()),
+                        _ => false,
+                    };
+                }
+            }
+            if state != out[bb] {
+                out[bb] = state;
+                changed = true;
             }
         }
         if !changed {
-            return tainted[0];
+            break;
         }
     }
+    // Only mark function returning borrow if a reachable RETURN block has
+    // tainted _return. Intermediate _return taint in non-return blocks
+    // (from a prior assignment later overwritten) does not count.
+    for (bb, block) in func.basic_blocks.iter().enumerate() {
+        if !matches!(&block.terminator, Some(t) if matches!(&t.kind, TerminatorKind::Return)) {
+            continue;
+        }
+        if out[bb][0] {
+            return true;
+        }
+    }
+    false
 }

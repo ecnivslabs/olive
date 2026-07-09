@@ -243,8 +243,14 @@ impl Transform for OwnershipInference {
 
         changed |= apply_drop_guards(func, &mixed_locals, &flag_of);
 
-        changed |=
-            insert_escape_copies(func, &classes, &builder_owning, &heap, &self.param_escapes);
+        changed |= insert_escape_copies(
+            func,
+            &classes,
+            &builder_owning,
+            &heap,
+            &self.param_escapes,
+            &reassign,
+        );
 
         changed
     }
