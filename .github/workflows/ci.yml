@@ -57,3 +57,28 @@ jobs:
           # uninlined in debug builds; MSVC debug frames are large enough
           # that Windows' 1MiB default thread stack isn't enough headroom.
           RUST_MIN_STACK: "16777216"
+
+  sanitizers:
+    name: Sanitizer Tests (ASAN/TSAN)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nightly Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Run under ASAN
+        run: |
+          cargo clean
+          RUSTFLAGS="-Zsanitizer=address" RUSTDOCFLAGS="-Zsanitizer=address" cargo test -p olive_std --lib -Zbuild-std --target x86_64-unknown-linux-gnu
+        env:
+          RUST_MIN_STACK: "16777216"
+
+      - name: Run under TSAN
+        run: |
+          cargo clean
+          RUSTFLAGS="-Zsanitizer=thread" RUSTDOCFLAGS="-Zsanitizer=thread" cargo test -p olive_std --lib -Zbuild-std --target x86_64-unknown-linux-gnu
+        env:
+          RUST_MIN_STACK: "16777216"

@@ -73,8 +73,8 @@ fn free_list_like(val: i64, desc: *const u8, pos: &mut usize) {
     if val == 0 || !slot_is_live(val) {
         return;
     }
-    let (eptr, elen) = unsafe {
-        let s = &*(val as *const StableVec);
+    let (eptr, elen, ecap) = unsafe {
+        let s = &mut *(val as *mut StableVec);
         if s.kind == crate::KIND_SET {
             // A set-typed value that reached a list descriptor (e.g. through
             // inference); elements are scalars or shared words, free storage.
@@ -82,11 +82,20 @@ fn free_list_like(val: i64, desc: *const u8, pos: &mut usize) {
             crate::set::free_set_slot_raw(val);
             return;
         }
-        (s.ptr, s.len)
+        let res = (s.ptr, s.len, s.cap);
+        if s.cap > crate::list::RETAIN_CAP {
+            s.ptr = std::ptr::null_mut();
+            s.cap = 0;
+        }
+        res
     };
     crate::list::free_list_slot_raw(val);
     free_elems(eptr, elen, desc, inner_start);
-    unsafe { crate::list::settle_list_buffer(val) };
+    if ecap > crate::list::RETAIN_CAP {
+        if !eptr.is_null() {
+            let _ = unsafe { Vec::from_raw_parts(eptr, 0, ecap) };
+        }
+    }
 }
 
 fn free_elems(eptr: *const i64, elen: usize, desc: *const u8, inner_start: usize) {
@@ -123,13 +132,20 @@ fn free_set(val: i64, desc: *const u8, pos: &mut usize) {
     if val == 0 || !slot_is_live(val) {
         return;
     }
-    let (eptr, elen) = unsafe {
+    let (eptr, elen, ecap, einner) = unsafe {
         let s = &*(val as *const OliveHashSet);
-        (s.ptr, s.len)
+        (s.ptr, s.len, s.cap, s.inner)
     };
     crate::set::free_set_slot_raw(val);
     free_elems(eptr, elen, desc, inner_start);
-    unsafe { crate::set::release_set_storage(val) };
+    unsafe {
+        if !eptr.is_null() {
+            let _ = Vec::from_raw_parts(eptr, elen, ecap);
+        }
+        if !einner.is_null() {
+            let _ = Box::from_raw(einner);
+        }
+    }
 }
 
 fn free_tuple(val: i64, desc: *const u8, pos: &mut usize) {
@@ -141,16 +157,25 @@ fn free_tuple(val: i64, desc: *const u8, pos: &mut usize) {
         }
         return;
     }
-    let (eptr, elen) = unsafe {
-        let s = &*(val as *const StableVec);
-        (s.ptr, s.len)
+    let (eptr, elen, ecap) = unsafe {
+        let s = &mut *(val as *mut StableVec);
+        let res = (s.ptr, s.len, s.cap);
+        if s.cap > crate::list::RETAIN_CAP {
+            s.ptr = std::ptr::null_mut();
+            s.cap = 0;
+        }
+        res
     };
     crate::list::free_list_slot_raw(val);
     for i in 0..n {
         let elem = if i < elen { unsafe { *eptr.add(i) } } else { 0 };
         free_val(elem, desc, pos);
     }
-    unsafe { crate::list::settle_list_buffer(val) };
+    if ecap > crate::list::RETAIN_CAP {
+        if !eptr.is_null() {
+            let _ = unsafe { Vec::from_raw_parts(eptr, 0, ecap) };
+        }
+    }
 }
 
 fn free_dict(val: i64, desc: *const u8, pos: &mut usize) {
@@ -160,22 +185,24 @@ fn free_dict(val: i64, desc: *const u8, pos: &mut usize) {
     if val == 0 || !slot_is_live(val) {
         return;
     }
+    let fields = unsafe {
+        let obj = &mut *(val as *mut OliveObj);
+        std::mem::take(&mut obj.fields)
+    };
     crate::obj::free_obj_slot_raw(val);
-    let obj = unsafe { &mut *(val as *mut OliveObj) };
     if elem_owns(desc, val_start) {
-        for &v in obj.fields.values() {
+        for &v in fields.values() {
             let mut p = val_start;
             free_val(v, desc, &mut p);
         }
     }
     // Tagged keys are dict-owned string copies; free them. Untagged attribute
     // names are read-only interned symbols and classify as no-ops anyway.
-    for k in obj.fields.keys() {
+    for k in fields.keys() {
         if k.0 & 1 != 0 {
             crate::olive_free_str(k.0);
         }
     }
-    obj.fields.clear();
 }
 
 fn free_struct(val: i64, desc: *const u8, pos: &mut usize) {
@@ -190,14 +217,17 @@ fn free_struct(val: i64, desc: *const u8, pos: &mut usize) {
         return;
     }
     let n_fields = unsafe { *(val as *const i64) };
+    let fields = unsafe {
+        let mut f = Vec::with_capacity(n_fields as usize);
+        for i in 0..n_fields {
+            f.push(*((val + 8 + 8 * i) as *const i64));
+        }
+        f
+    };
     crate::struct_obj::free_struct_slot_raw(val, n_fields);
     for i in 0..n {
         skip_lp(desc, pos);
-        let field = if (i as i64) < n_fields {
-            unsafe { *((val + 8 + 8 * i as i64) as *const i64) }
-        } else {
-            0
-        };
+        let field = if i < fields.len() { fields[i] } else { 0 };
         free_val(field, desc, pos);
     }
 }

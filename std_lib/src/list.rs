@@ -3,7 +3,7 @@ use crate::*;
 use std::cell::UnsafeCell;
 
 /// Element buffers up to this capacity stay attached to a freed slot for reuse.
-const RETAIN_CAP: usize = 4;
+pub(crate) const RETAIN_CAP: usize = 4;
 
 thread_local! {
     static LIST_SLAB: UnsafeCell<GenSlab> =
@@ -20,7 +20,7 @@ pub(crate) fn alloc_list_header(kind: i64, ptr: *mut i64, cap: usize, len: usize
         let (body, fresh) = sl.alloc();
         let s = body as *mut StableVec;
         unsafe {
-            if !fresh {
+            if !fresh && !cfg!(debug_assertions) {
                 let old = &*s;
                 if !old.ptr.is_null() && old.cap > 0 {
                     let _ = Vec::from_raw_parts(old.ptr, 0, old.cap);
@@ -50,7 +50,7 @@ pub extern "C" fn olive_list_new(len: i64) -> i64 {
         let sl = unsafe { &mut *sl.get() };
         let (body, fresh) = sl.alloc();
         let s = unsafe { &mut *(body as *mut StableVec) };
-        if fresh {
+        if fresh || cfg!(debug_assertions) {
             let mut v = vec![0i64; n];
             s.ptr = v.as_mut_ptr();
             s.cap = v.capacity();

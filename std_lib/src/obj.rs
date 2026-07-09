@@ -14,7 +14,7 @@ pub extern "C" fn olive_obj_new() -> i64 {
         let (body, fresh) = sl.alloc();
         let o = body as *mut OliveObj;
         unsafe {
-            if fresh {
+            if fresh || cfg!(debug_assertions) {
                 std::ptr::write(
                     o,
                     OliveObj {

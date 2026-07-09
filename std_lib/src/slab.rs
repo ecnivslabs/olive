@@ -150,6 +150,13 @@ impl GenSlab {
             (*gen_ptr).store(generation + 1, Ordering::Release);
             *(body as *mut *mut u64) = self.free_head;
             self.free_head = (body as *mut u64).sub(2);
+            #[cfg(debug_assertions)]
+            {
+                let body_size = self.slot_bytes - 16;
+                if body_size > 8 {
+                    std::ptr::write_bytes(body.add(8), 0x5a, body_size - 8);
+                }
+            }
             true
         }
     }
@@ -203,6 +210,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(debug_assertions))]
     fn recycled_body_keeps_tail_words() {
         let mut s = GenSlab::new(32);
         let (p, _) = s.alloc();
@@ -217,6 +225,25 @@ mod tests {
         unsafe {
             assert_eq!(*(p2 as *const i64).add(1), 42);
             assert_eq!(*(p2 as *const i64).add(2), 43);
+        }
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn recycled_body_is_poisoned_in_debug() {
+        let mut s = GenSlab::new(32);
+        let (p, _) = s.alloc();
+        unsafe {
+            *(p as *mut i64) = 1;
+            *(p as *mut i64).add(1) = 42;
+            *(p as *mut i64).add(2) = 43;
+        }
+        s.free(p);
+        let (p2, _) = s.alloc();
+        assert_eq!(p, p2);
+        unsafe {
+            assert_eq!(*(p2 as *const i64).add(1), 0x5a5a5a5a5a5a5a5a);
+            assert_eq!(*(p2 as *const i64).add(2), 0x5a5a5a5a5a5a5a5a);
         }
     }
 
