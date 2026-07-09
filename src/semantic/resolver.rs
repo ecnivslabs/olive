@@ -41,6 +41,8 @@ impl Resolver {
             "realize",
             "Error",
             "Error::Error",
+            "enumerate",
+            "zip",
         ];
         for name in builtin_fns {
             table.define(Symbol {
@@ -683,6 +685,16 @@ impl Resolver {
                 for s in body {
                     self.resolve_stmt(s);
                 }
+                self.pop_scope();
+            }
+            ExprKind::Lambda { params, body } => {
+                self.table.push(ScopeKind::Block);
+                for p in params {
+                    if p.name != "_" {
+                        self.define_sym(&p.name, SymbolKind::Variable, p.span);
+                    }
+                }
+                self.resolve_expr(body);
                 self.pop_scope();
             }
         }

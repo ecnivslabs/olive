@@ -524,6 +524,7 @@ impl Lexer {
             "defer" => TokenKind::Defer,
             "None" => TokenKind::Null,
             "with" => TokenKind::With,
+            "lambda" => TokenKind::Lambda,
 
             "_" => TokenKind::Underscore,
             _ => TokenKind::Identifier,

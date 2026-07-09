@@ -295,6 +295,17 @@ impl FreeVars {
                 self.expr(then);
                 self.expr(otherwise);
             }
+            ExprKind::Lambda { params, body } => {
+                self.scopes
+                    .push(params.iter().map(|p| p.name.clone()).collect());
+                for p in params {
+                    if let Some(d) = &p.default {
+                        self.expr(d);
+                    }
+                }
+                self.expr(body);
+                self.scopes.pop();
+            }
         }
     }
 }

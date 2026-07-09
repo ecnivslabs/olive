@@ -157,6 +157,19 @@ impl Lowerer<'_> {
                 text(" else "),
                 self.expr(otherwise),
             ]),
+            ExprKind::Lambda { params, body } => {
+                let param_docs: Vec<Doc> = params.iter().map(|p| self.param(p)).collect();
+                concat_all([
+                    text("lambda"),
+                    if params.is_empty() {
+                        nil()
+                    } else {
+                        concat(text(" "), join(text(", "), param_docs))
+                    },
+                    text(": "),
+                    self.expr(body),
+                ])
+            }
         }
     }
 

@@ -214,6 +214,14 @@ fn bare_expr(expr: &mut Expr, nullary: &FxHashSet<String>) {
                 bare_block(&mut case.body, nullary);
             }
         }
+        ExprKind::Lambda { params, body } => {
+            for p in params {
+                if let Some(d) = &mut p.default {
+                    bare_expr(d, nullary);
+                }
+            }
+            bare_expr(body, nullary);
+        }
         _ => {}
     }
     if let ExprKind::Identifier(name) = &expr.kind
@@ -497,6 +505,14 @@ fn refresh_expr(expr: &mut Expr) {
                 }
                 refresh_block(&mut case.body);
             }
+        }
+        ExprKind::Lambda { params, body } => {
+            for p in params {
+                if let Some(d) = &mut p.default {
+                    refresh_expr(d);
+                }
+            }
+            refresh_expr(body);
         }
     }
 }

@@ -400,4 +400,80 @@ impl<'a> MirBuilder<'a> {
             None
         }
     }
+
+    pub(super) fn lower_print_builtin(
+        &mut self,
+        _callee: &Expr,
+        args: &[CallArg],
+        arg_ops: &[Operand],
+        span: Span,
+        _expr_id: usize,
+    ) -> Operand {
+        if args.is_empty() {
+            let nl = self.new_local(Type::Int, None, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    nl,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function("__olive_write_nl".to_string())),
+                        args: vec![],
+                    },
+                ),
+                span,
+            );
+            let ret = self.new_local(Type::Int, None, false);
+            self.push_statement(
+                StatementKind::Assign(ret, Rvalue::Use(Operand::Constant(Constant::Int(0)))),
+                span,
+            );
+            return self.operand_for_local(ret);
+        }
+        for (i, arg_op) in arg_ops.iter().enumerate() {
+            if i > 0 {
+                let space = self.new_local(Type::Int, None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        space,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(
+                                "__olive_write_char".to_string(),
+                            )),
+                            args: vec![Operand::Constant(Constant::Int(32))],
+                        },
+                    ),
+                    span,
+                );
+            }
+            let write = self.new_local(Type::Int, None, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    write,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function(
+                            "__olive_write_any".to_string(),
+                        )),
+                        args: vec![arg_op.clone()],
+                    },
+                ),
+                span,
+            );
+        }
+        let nl = self.new_local(Type::Int, None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                nl,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("__olive_write_nl".to_string())),
+                    args: vec![],
+                },
+            ),
+            span,
+        );
+        let ret = self.new_local(Type::Int, None, false);
+        self.push_statement(
+            StatementKind::Assign(ret, Rvalue::Use(Operand::Constant(Constant::Int(0)))),
+            span,
+        );
+        self.operand_for_local(ret)
+    }
 }

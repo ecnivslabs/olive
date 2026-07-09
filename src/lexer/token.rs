@@ -42,6 +42,7 @@ pub enum TokenKind {
     Defer,
     Null,
     With,
+    Lambda,
 
     Plus,
     Minus,

@@ -1,7 +1,7 @@
 use super::LoopContext;
 use super::MirBuilder;
 use crate::mir::ir::*;
-use crate::parser::{Expr, ExprKind, ForTarget, Stmt};
+use crate::parser::{BinOp, CallArg, Expr, ExprKind, ForTarget, Stmt};
 use crate::semantic::types::Type;
 use crate::span::Span;
 
@@ -231,6 +231,468 @@ impl<'a> MirBuilder<'a> {
             && let ForTarget::Name(name, _) = target
         {
             self.lower_for_range(name, start, end, *inclusive, body, else_body);
+            return;
+        }
+
+        // Desugar enumerate(iterable) in for-loop position:
+        // for (i, x) in enumerate(xs): body
+        // becomes:
+        // let _counter = 0
+        // let _iter = iter(xs)
+        // while has_next(_iter):
+        //   let x = next(_iter)
+        //   let i = _counter
+        //   _counter = _counter + 1
+        //   body
+        if let ExprKind::Call { callee, args } = &iter.kind
+            && let ExprKind::Identifier(name) = &callee.kind
+            && name == "enumerate"
+            && !args.is_empty()
+        {
+            let inner_expr = match &args[0] {
+                CallArg::Positional(e)
+                | CallArg::Keyword(_, e)
+                | CallArg::Splat(e)
+                | CallArg::KwSplat(e) => e,
+            };
+            let inner_op = self.lower_expr(inner_expr);
+            let inner_ty = self.get_type(inner_expr.id);
+            let inner_copy = self.new_local(inner_ty, None, true);
+            self.push_statement(
+                StatementKind::Assign(inner_copy, Rvalue::Use(inner_op)),
+                iter.span,
+            );
+            let iter_local = self.new_local(Type::Any, Some("_iter".to_string()), true);
+            self.push_statement(
+                StatementKind::Assign(
+                    iter_local,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function("__olive_iter".to_string())),
+                        args: vec![Operand::Copy(inner_copy)],
+                    },
+                ),
+                iter.span,
+            );
+            let counter = self.new_local(Type::Int, Some("_count".to_string()), true);
+            self.push_statement(
+                StatementKind::Assign(counter, Rvalue::Use(Operand::Constant(Constant::Int(0)))),
+                iter.span,
+            );
+            let header_bb = self.new_block();
+            let body_bb = self.new_block();
+            let exit_bb = self.new_block();
+            if let Some(bb) = self.current_block {
+                self.terminate_block(
+                    bb,
+                    TerminatorKind::Goto { target: header_bb },
+                    Span::default(),
+                );
+            }
+            self.current_block = Some(header_bb);
+            let has_next = self.new_local(Type::Bool, None, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    has_next,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function("__olive_has_next".to_string())),
+                        args: vec![Operand::Copy(iter_local)],
+                    },
+                ),
+                iter.span,
+            );
+            let else_bb = if else_body.is_some() {
+                self.new_block()
+            } else {
+                exit_bb
+            };
+            self.terminate_block(
+                header_bb,
+                TerminatorKind::SwitchInt {
+                    discr: Operand::Copy(has_next),
+                    targets: vec![(1, body_bb)],
+                    otherwise: else_bb,
+                },
+                iter.span,
+            );
+            self.loop_stack.push(LoopContext {
+                header: header_bb,
+                exit: exit_bb,
+                scope_depth: self.scope_locals.len(),
+                cleanup: Some(iter_local),
+            });
+            self.current_block = Some(body_bb);
+            self.enter_scope();
+
+            let mut inner_iter_ty = self.get_type(inner_expr.id);
+            while let Type::Ref(inner) | Type::MutRef(inner) = inner_iter_ty {
+                inner_iter_ty = *inner;
+            }
+            let next_is_owning = matches!(inner_iter_ty, Type::Str);
+            let elem_ty = match inner_iter_ty {
+                Type::Str => Type::Str,
+                Type::List(t) | Type::Set(t) => *t,
+                Type::Dict(k, _) => *k,
+                _ => Type::Any,
+            };
+            let next_val = self.new_local_with_owning(elem_ty, None, false, next_is_owning);
+            self.push_statement(
+                StatementKind::Assign(
+                    next_val,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function("__olive_next".to_string())),
+                        args: vec![Operand::Copy(iter_local)],
+                    },
+                ),
+                iter.span,
+            );
+
+            match target {
+                ForTarget::Tuple(names) => {
+                    if let Some((i_name, _)) = names.first() {
+                        let i_local = self.declare_var(i_name.clone(), Type::Int, true);
+                        self.push_statement(
+                            StatementKind::Assign(i_local, Rvalue::Use(Operand::Copy(counter))),
+                            iter.span,
+                        );
+                    }
+                    if let Some((x_name, _)) = names.get(1) {
+                        let view_local = self.declare_var_view(x_name.clone(), Type::Any, true);
+                        let elem_copy = self.new_local_with_owning(Type::Any, None, false, false);
+                        self.push_statement(
+                            StatementKind::Assign(elem_copy, Rvalue::Use(Operand::Copy(next_val))),
+                            iter.span,
+                        );
+                        self.push_statement(
+                            StatementKind::Assign(
+                                view_local,
+                                Rvalue::Use(Operand::Copy(elem_copy)),
+                            ),
+                            iter.span,
+                        );
+                    }
+                }
+                ForTarget::Name(name, _) => {
+                    let local = self.declare_var(
+                        name.clone(),
+                        Type::Tuple(vec![Type::Int, Type::Any]),
+                        true,
+                    );
+                    let tuple_local =
+                        self.new_local(Type::Tuple(vec![Type::Int, Type::Any]), None, false);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            tuple_local,
+                            Rvalue::Aggregate(
+                                AggregateKind::Tuple,
+                                vec![Operand::Copy(counter), Operand::Copy(next_val)],
+                            ),
+                        ),
+                        iter.span,
+                    );
+                    self.push_statement(
+                        StatementKind::Assign(local, Rvalue::Use(Operand::Copy(tuple_local))),
+                        iter.span,
+                    );
+                }
+            }
+
+            let one = Operand::Constant(Constant::Int(1));
+            self.push_statement(
+                StatementKind::Assign(
+                    counter,
+                    Rvalue::BinaryOp(BinOp::Add, Operand::Copy(counter), one),
+                ),
+                iter.span,
+            );
+
+            for s in body {
+                self.lower_stmt(s);
+            }
+            self.leave_scope();
+            if let Some(bb) = self.current_block {
+                self.terminate_block(
+                    bb,
+                    TerminatorKind::Goto { target: header_bb },
+                    Span::default(),
+                );
+            }
+            self.loop_stack.pop();
+
+            if let Some(eb) = else_body {
+                self.current_block = Some(else_bb);
+                self.enter_scope();
+                for s in eb {
+                    self.lower_stmt(s);
+                }
+                self.leave_scope();
+                if let Some(bb) = self.current_block {
+                    self.terminate_block(
+                        bb,
+                        TerminatorKind::Goto { target: exit_bb },
+                        Span::default(),
+                    );
+                }
+            }
+            self.current_block = Some(exit_bb);
+            return;
+        }
+
+        // Desugar zip(a, b) in for-loop position:
+        // for (a, b) in zip(xs, ys): body
+        // becomes:
+        // let _copy_xs = copy(xs)
+        // let _copy_ys = copy(ys)
+        // let _len_xs = len(_copy_xs)
+        // let _len_ys = len(_copy_ys)
+        // let _min_len = if _len_xs < _len_ys { _len_xs } else { _len_ys }
+        // let _i = 0
+        // while _i < _min_len:
+        //   let a = @_copy_xs[_i]
+        //   let b = @_copy_ys[_i]
+        //   _i = _i + 1
+        //   body
+        if let ExprKind::Call { callee, args } = &iter.kind
+            && let ExprKind::Identifier(name) = &callee.kind
+            && name == "zip"
+            && args.len() >= 2
+        {
+            let a_expr = match &args[0] {
+                CallArg::Positional(e)
+                | CallArg::Keyword(_, e)
+                | CallArg::Splat(e)
+                | CallArg::KwSplat(e) => e,
+            };
+            let b_expr = match &args[1] {
+                CallArg::Positional(e)
+                | CallArg::Keyword(_, e)
+                | CallArg::Splat(e)
+                | CallArg::KwSplat(e) => e,
+            };
+
+            let a_op = self.lower_expr(a_expr);
+            let a_ty = self.get_type(a_expr.id);
+            let b_op = self.lower_expr(b_expr);
+            let b_ty = self.get_type(b_expr.id);
+
+            let copy_a = self.new_local(a_ty.clone(), None, true);
+            self.push_statement(StatementKind::Assign(copy_a, Rvalue::Use(a_op)), iter.span);
+            let copy_b = self.new_local(b_ty.clone(), None, true);
+            self.push_statement(StatementKind::Assign(copy_b, Rvalue::Use(b_op)), iter.span);
+
+            let len_a_fn = MirBuilder::<'a>::len_runtime_fn(&a_ty);
+            let len_b_fn = MirBuilder::<'a>::len_runtime_fn(&b_ty);
+            let len_a = self.new_local(Type::Int, None, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    len_a,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function(len_a_fn.to_string())),
+                        args: vec![Operand::Copy(copy_a)],
+                    },
+                ),
+                iter.span,
+            );
+            let len_b = self.new_local(Type::Int, None, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    len_b,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function(len_b_fn.to_string())),
+                        args: vec![Operand::Copy(copy_b)],
+                    },
+                ),
+                iter.span,
+            );
+
+            let cmp = self.new_local(Type::Bool, None, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    cmp,
+                    Rvalue::BinaryOp(BinOp::Lt, Operand::Copy(len_a), Operand::Copy(len_b)),
+                ),
+                iter.span,
+            );
+
+            let min_bb = self.new_block();
+            let max_bb = self.new_block();
+            let header_bb = self.new_block();
+            let body_bb = self.new_block();
+            let exit_bb = self.new_block();
+
+            if let Some(bb) = self.current_block {
+                self.terminate_block(
+                    bb,
+                    TerminatorKind::SwitchInt {
+                        discr: Operand::Copy(cmp),
+                        targets: vec![(1, min_bb)],
+                        otherwise: max_bb,
+                    },
+                    iter.span,
+                );
+            }
+
+            let min_len = self.new_local(Type::Int, Some("_min_len".to_string()), true);
+            self.current_block = Some(min_bb);
+            self.push_statement(
+                StatementKind::Assign(min_len, Rvalue::Use(Operand::Copy(len_a))),
+                iter.span,
+            );
+            self.terminate_block(
+                min_bb,
+                TerminatorKind::Goto { target: header_bb },
+                Span::default(),
+            );
+
+            self.current_block = Some(max_bb);
+            self.push_statement(
+                StatementKind::Assign(min_len, Rvalue::Use(Operand::Copy(len_b))),
+                iter.span,
+            );
+            self.terminate_block(
+                max_bb,
+                TerminatorKind::Goto { target: header_bb },
+                Span::default(),
+            );
+
+            self.current_block = Some(header_bb);
+            let index = self.new_local(Type::Int, Some("_i".to_string()), true);
+            self.push_statement(
+                StatementKind::Assign(index, Rvalue::Use(Operand::Constant(Constant::Int(0)))),
+                iter.span,
+            );
+            let cond = self.new_local(Type::Bool, None, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    cond,
+                    Rvalue::BinaryOp(BinOp::Lt, Operand::Copy(index), Operand::Copy(min_len)),
+                ),
+                iter.span,
+            );
+
+            let else_bb = if else_body.is_some() {
+                self.new_block()
+            } else {
+                exit_bb
+            };
+            self.terminate_block(
+                header_bb,
+                TerminatorKind::SwitchInt {
+                    discr: Operand::Copy(cond),
+                    targets: vec![(1, body_bb)],
+                    otherwise: else_bb,
+                },
+                iter.span,
+            );
+
+            self.loop_stack.push(LoopContext {
+                header: header_bb,
+                exit: exit_bb,
+                scope_depth: self.scope_locals.len(),
+                cleanup: None,
+            });
+            self.current_block = Some(body_bb);
+            self.enter_scope();
+
+            let a_elem_ty = MirBuilder::<'a>::elem_type_for(&a_ty);
+            let b_elem_ty = MirBuilder::<'a>::elem_type_for(&b_ty);
+
+            let a_val = self.new_local_with_owning(a_elem_ty.clone(), None, false, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    a_val,
+                    Rvalue::GetIndex(Operand::Copy(copy_a), Operand::Copy(index), false),
+                ),
+                iter.span,
+            );
+            let b_val = self.new_local_with_owning(b_elem_ty.clone(), None, false, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    b_val,
+                    Rvalue::GetIndex(Operand::Copy(copy_b), Operand::Copy(index), false),
+                ),
+                iter.span,
+            );
+
+            match target {
+                ForTarget::Tuple(names) => {
+                    if let Some((an, _)) = names.first() {
+                        let a_local = self.declare_var(an.clone(), a_elem_ty, true);
+                        self.push_statement(
+                            StatementKind::Assign(a_local, Rvalue::Use(Operand::Copy(a_val))),
+                            iter.span,
+                        );
+                    }
+                    if let Some((bn, _)) = names.get(1) {
+                        let b_local = self.declare_var(bn.clone(), b_elem_ty, true);
+                        self.push_statement(
+                            StatementKind::Assign(b_local, Rvalue::Use(Operand::Copy(b_val))),
+                            iter.span,
+                        );
+                    }
+                }
+                ForTarget::Name(name, _) => {
+                    let local = self.declare_var(
+                        name.clone(),
+                        Type::Tuple(vec![a_elem_ty, b_elem_ty]),
+                        true,
+                    );
+                    let tuple_local =
+                        self.new_local(Type::Tuple(vec![Type::Any, Type::Any]), None, false);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            tuple_local,
+                            Rvalue::Aggregate(
+                                AggregateKind::Tuple,
+                                vec![Operand::Copy(a_val), Operand::Copy(b_val)],
+                            ),
+                        ),
+                        iter.span,
+                    );
+                    self.push_statement(
+                        StatementKind::Assign(local, Rvalue::Use(Operand::Copy(tuple_local))),
+                        iter.span,
+                    );
+                }
+            }
+
+            let one = Operand::Constant(Constant::Int(1));
+            self.push_statement(
+                StatementKind::Assign(
+                    index,
+                    Rvalue::BinaryOp(BinOp::Add, Operand::Copy(index), one),
+                ),
+                iter.span,
+            );
+
+            for s in body {
+                self.lower_stmt(s);
+            }
+            self.leave_scope();
+            if let Some(bb) = self.current_block {
+                self.terminate_block(
+                    bb,
+                    TerminatorKind::Goto { target: header_bb },
+                    Span::default(),
+                );
+            }
+            self.loop_stack.pop();
+
+            if let Some(eb) = else_body {
+                self.current_block = Some(else_bb);
+                self.enter_scope();
+                for s in eb {
+                    self.lower_stmt(s);
+                }
+                self.leave_scope();
+                if let Some(bb) = self.current_block {
+                    self.terminate_block(
+                        bb,
+                        TerminatorKind::Goto { target: exit_bb },
+                        Span::default(),
+                    );
+                }
+            }
+            self.current_block = Some(exit_bb);
             return;
         }
 
@@ -521,6 +983,28 @@ impl<'a> MirBuilder<'a> {
 
         self.leave_scope();
         self.current_block = Some(exit_bb);
+    }
+
+    fn len_runtime_fn(ty: &Type) -> &'static str {
+        match ty {
+            Type::Str => "__olive_str_len",
+            Type::Dict(_, _) | Type::Any | Type::Struct(_, _, _) => "__olive_obj_len",
+            Type::Bytes => "__olive_buf_len",
+            _ => "__olive_list_len",
+        }
+    }
+
+    fn elem_type_for(ty: &Type) -> Type {
+        let mut t = ty;
+        while let Type::Ref(inner) | Type::MutRef(inner) = t {
+            t = inner;
+        }
+        match t {
+            Type::Str => Type::Str,
+            Type::List(inner) | Type::Set(inner) => *inner.clone(),
+            Type::Dict(k, _) => *k.clone(),
+            _ => Type::Any,
+        }
     }
 }
 

@@ -104,6 +104,8 @@ impl Default for TypeChecker {
 impl TypeChecker {
     pub fn new() -> Self {
         let mut global_env = HashMap::default();
+        let mut vararg_fns = HashSet::default();
+        vararg_fns.insert("print".to_string());
 
         let builtins = [
             (
@@ -368,6 +370,28 @@ impl TypeChecker {
                 "ffi_errno",
                 Type::Fn(vec![], Box::new(Type::Int), Vec::new()),
             ),
+            (
+                "enumerate",
+                Type::Fn(
+                    vec![Type::Any],
+                    Box::new(Type::List(Box::new(Type::Tuple(vec![
+                        Type::Int,
+                        Type::Any,
+                    ])))),
+                    Vec::new(),
+                ),
+            ),
+            (
+                "zip",
+                Type::Fn(
+                    vec![Type::Any, Type::Any],
+                    Box::new(Type::List(Box::new(Type::Tuple(vec![
+                        Type::Any,
+                        Type::Any,
+                    ])))),
+                    Vec::new(),
+                ),
+            ),
         ];
 
         let mut traits = HashMap::default();
@@ -413,7 +437,7 @@ impl TypeChecker {
             enum_defs: HashMap::default(),
             current_struct: None,
             async_depth: 0,
-            vararg_fns: HashSet::default(),
+            vararg_fns,
             fn_required_args: HashMap::default(),
             struct_fields: HashMap::default(),
             struct_required_fields: HashMap::default(),

@@ -348,6 +348,16 @@ impl Checker {
             | ExprKind::Str(_)
             | ExprKind::Bool(_)
             | ExprKind::Null => {}
+            ExprKind::Lambda { params, body } => {
+                let locals: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+                self.frames.push(Frame {
+                    locals,
+                    captured: HashSet::default(),
+                    closures: HashMap::default(),
+                });
+                self.expr(body);
+                self.frames.pop();
+            }
         }
     }
 

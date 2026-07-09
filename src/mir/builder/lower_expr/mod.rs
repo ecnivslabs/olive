@@ -8,7 +8,7 @@ mod ops;
 use super::MirBuilder;
 use crate::mir::AggregateKind;
 use crate::mir::ir::*;
-use crate::parser::{CallArg, Expr, ExprKind};
+use crate::parser::{CallArg, Expr, ExprKind, Stmt, StmtKind};
 use crate::semantic::types::Type;
 use crate::span::Span;
 
@@ -389,6 +389,11 @@ impl<'a> MirBuilder<'a> {
                 then,
                 otherwise,
             } => self.lower_ternary_expr(cond, then, otherwise, expr.span, expr.id),
+
+            ExprKind::Lambda {
+                params: l_params,
+                body: l_body,
+            } => self.lower_lambda_expr(l_params, l_body, expr.id, expr.span),
         }
     }
 
@@ -453,6 +458,10 @@ impl<'a> MirBuilder<'a> {
             let base = name.rsplit("::").next().unwrap_or(name);
             if matches!(base, "panic" | "unwrap" | "unwrap_err") {
                 self.emit_set_fault_loc(expr.span);
+            }
+
+            if name == "print" && args.len() != 1 {
+                return self.lower_print_builtin(callee, args, &arg_ops, expr.span, expr.id);
             }
 
             if name == "type"
@@ -848,6 +857,63 @@ impl<'a> MirBuilder<'a> {
         }
 
         self.operand_for_local(result)
+    }
+
+    pub(super) fn lower_lambda_expr(
+        &mut self,
+        params: &[crate::parser::Param],
+        body: &Expr,
+        expr_id: usize,
+        _span: Span,
+    ) -> Operand {
+        let lambda_name = format!("{}$lambda_{}", self.current_name, self.lambda_counter);
+        self.lambda_counter += 1;
+
+        let saved_name = std::mem::take(&mut self.current_name);
+        let saved_locals = std::mem::take(&mut self.current_locals);
+        let saved_blocks = std::mem::take(&mut self.current_blocks);
+        let saved_block = self.current_block.take();
+        let saved_var_map = std::mem::take(&mut self.var_map);
+        let saved_loop_stack = std::mem::take(&mut self.loop_stack);
+        let saved_scope_locals = std::mem::take(&mut self.scope_locals);
+        let saved_arg_count = self.current_arg_count;
+        let saved_is_async = self.current_is_async;
+
+        let ret_ty = match self.get_type(expr_id) {
+            Type::Fn(_, ret, _) => *ret,
+            _ => Type::Any,
+        };
+        self.start_function(lambda_name.clone(), params.len(), ret_ty);
+
+        for p in params {
+            let p_ty = p
+                .type_ann
+                .as_ref()
+                .map(|ann| self.resolve_type_expr(ann))
+                .unwrap_or(Type::Any);
+            let local = self.declare_var(p.name.clone(), p_ty, p.is_mut);
+            self.current_locals[local.0].is_owning = false;
+        }
+
+        let return_stmt = Stmt::new(StmtKind::Return(Some(body.clone())), body.span);
+        self.lower_stmt(&return_stmt);
+        if let Some(bb) = self.current_block {
+            self.terminate_block(bb, TerminatorKind::Return, Span::default());
+        }
+
+        self.finish_function();
+
+        self.current_name = saved_name;
+        self.current_locals = saved_locals;
+        self.current_blocks = saved_blocks;
+        self.current_block = saved_block;
+        self.var_map = saved_var_map;
+        self.loop_stack = saved_loop_stack;
+        self.scope_locals = saved_scope_locals;
+        self.current_arg_count = saved_arg_count;
+        self.current_is_async = saved_is_async;
+
+        Operand::Constant(Constant::Function(lambda_name))
     }
 }
 
