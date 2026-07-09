@@ -1804,6 +1804,7 @@ dependencies = [
  "ariadne",
  "base64",
  "blake3",
+ "cc",
  "clap",
  "cranelift",
  "cranelift-frontend",
