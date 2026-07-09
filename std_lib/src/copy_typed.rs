@@ -26,20 +26,22 @@ use crate::{
 };
 use rustc_hash::FxHashMap;
 use std::cell::RefCell;
-use std::collections::HashMap;
 
 thread_local! {
     // Tracks already-copied heap pointers to prevent infinite cycles.
-    static COPY_VISITED: RefCell<HashMap<i64, i64>> = RefCell::new(HashMap::new());
+    static COPY_VISITED: RefCell<FxHashMap<i64, i64>> = RefCell::new(FxHashMap::default());
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_copy_typed(val: i64, desc: i64) -> i64 {
-    COPY_VISITED.with(|v| v.borrow_mut().clear());
-    let mut pos = 0usize;
-    let res = copy_val(val, desc as *const u8, &mut pos);
-    COPY_VISITED.with(|v| v.borrow_mut().clear());
-    res
+    COPY_VISITED.with(|v| {
+        let mut visited = v.borrow_mut();
+        visited.clear();
+        let mut pos = 0usize;
+        let res = copy_val(val, desc as *const u8, &mut pos, &mut visited);
+        visited.clear();
+        res
+    })
 }
 
 /// Concat for heap-element lists; deep-copies elements via `desc` (`[D_LIST, <elem>...]`) so operand drops can't double-free.
@@ -60,17 +62,25 @@ pub extern "C" fn olive_list_concat_typed(l: i64, r: i64, desc: i64) -> i64 {
     let total = ls.map_or(0, |s| s.2) + rs.map_or(0, |s| s.2);
     let kind = ls.or(rs).map_or(KIND_LIST, |s| s.0);
     let new = crate::list::olive_list_new(total as i64);
-    COPY_VISITED.with(|v| v.borrow_mut().clear());
-    let mut out = 0i64;
-    for (_, eptr, elen) in [ls, rs].into_iter().flatten() {
-        for i in 0..elen {
-            let mut pos = 1usize;
-            let c = copy_val(unsafe { *eptr.add(i) }, desc as *const u8, &mut pos);
-            crate::list::olive_list_set(new, out, c);
-            out += 1;
+    COPY_VISITED.with(|v| {
+        let mut visited = v.borrow_mut();
+        visited.clear();
+        let mut out = 0i64;
+        for (_, eptr, elen) in [ls, rs].into_iter().flatten() {
+            for i in 0..elen {
+                let mut pos = 1usize;
+                let c = copy_val(
+                    unsafe { *eptr.add(i) },
+                    desc as *const u8,
+                    &mut pos,
+                    &mut visited,
+                );
+                crate::list::olive_list_set(new, out, c);
+                out += 1;
+            }
         }
-    }
-    COPY_VISITED.with(|v| v.borrow_mut().clear());
+        visited.clear();
+    });
     unsafe { (*(new as *mut StableVec)).kind = kind };
     new
 }
@@ -94,13 +104,21 @@ pub extern "C" fn olive_list_getslice_typed(
     };
     let idxs = crate::list::slice_indices(elen as i64, start, stop, step, flags);
     let new = crate::list::olive_list_new(idxs.len() as i64);
-    COPY_VISITED.with(|v| v.borrow_mut().clear());
-    for (j, &i) in idxs.iter().enumerate() {
-        let mut pos = 1usize;
-        let c = copy_val(unsafe { *eptr.add(i) }, desc as *const u8, &mut pos);
-        crate::list::olive_list_set(new, j as i64, c);
-    }
-    COPY_VISITED.with(|v| v.borrow_mut().clear());
+    COPY_VISITED.with(|v| {
+        let mut visited = v.borrow_mut();
+        visited.clear();
+        for (j, &i) in idxs.iter().enumerate() {
+            let mut pos = 1usize;
+            let c = copy_val(
+                unsafe { *eptr.add(i) },
+                desc as *const u8,
+                &mut pos,
+                &mut visited,
+            );
+            crate::list::olive_list_set(new, j as i64, c);
+        }
+        visited.clear();
+    });
     unsafe { (*(new as *mut StableVec)).kind = kind };
     new
 }
@@ -115,13 +133,21 @@ pub extern "C" fn olive_list_extend_typed(target: i64, source: i64, desc: i64) {
         let s = &*(source as *const StableVec);
         (s.ptr, s.len)
     };
-    COPY_VISITED.with(|v| v.borrow_mut().clear());
-    for i in 0..elen {
-        let mut pos = 1usize;
-        let c = copy_val(unsafe { *eptr.add(i) }, desc as *const u8, &mut pos);
-        crate::olive_list_append(target, c);
-    }
-    COPY_VISITED.with(|v| v.borrow_mut().clear());
+    COPY_VISITED.with(|v| {
+        let mut visited = v.borrow_mut();
+        visited.clear();
+        for i in 0..elen {
+            let mut pos = 1usize;
+            let c = copy_val(
+                unsafe { *eptr.add(i) },
+                desc as *const u8,
+                &mut pos,
+                &mut visited,
+            );
+            crate::olive_list_append(target, c);
+        }
+        visited.clear();
+    });
 }
 
 /// Skips a length-prefixed name; length byte is biased by 13.
@@ -130,9 +156,9 @@ fn skip_lp(desc: *const u8, pos: &mut usize) {
     *pos += 1 + len;
 }
 
-fn copy_val(val: i64, desc: *const u8, pos: &mut usize) -> i64 {
+fn copy_val(val: i64, desc: *const u8, pos: &mut usize, visited: &mut FxHashMap<i64, i64>) -> i64 {
     let cloned_opt = if val != 0 && crate::is_active_object(val) {
-        COPY_VISITED.with(|v| v.borrow().get(&val).copied())
+        visited.get(&val).copied()
     } else {
         None
     };
@@ -144,19 +170,19 @@ fn copy_val(val: i64, desc: *const u8, pos: &mut usize) -> i64 {
     *pos += 1;
     match tag {
         D_STR => copy_str(val),
-        D_ANY | D_BYTES => copy_any(val),
-        D_LIST => copy_list_like(val, desc, pos),
-        D_SET => copy_set(val, desc, pos),
-        D_TUPLE => copy_tuple(val, desc, pos),
-        D_DICT => copy_dict(val, desc, pos),
-        D_STRUCT => copy_struct(val, desc, pos),
-        D_ENUM => copy_enum(val, desc, pos),
+        D_ANY | D_BYTES => copy_any(val, visited),
+        D_LIST => copy_list_like(val, desc, pos, visited),
+        D_SET => copy_set(val, desc, pos, visited),
+        D_TUPLE => copy_tuple(val, desc, pos, visited),
+        D_DICT => copy_dict(val, desc, pos, visited),
+        D_STRUCT => copy_struct(val, desc, pos, visited),
+        D_ENUM => copy_enum(val, desc, pos, visited),
         D_BACKREF => {
             let hi = unsafe { byte(desc, *pos) } as usize;
             let lo = unsafe { byte(desc, *pos + 1) } as usize;
             *pos += 2;
             let mut target_pos = (hi << 8) | lo;
-            copy_val(val, desc, &mut target_pos)
+            copy_val(val, desc, &mut target_pos, visited)
         }
         // Scalars and the recursion-cut `D_OBJ` share the word by value.
         _ => val,
@@ -172,7 +198,12 @@ fn copy_str(val: i64) -> i64 {
     crate::olive_copy(val)
 }
 
-fn copy_list_like(val: i64, desc: *const u8, pos: &mut usize) -> i64 {
+fn copy_list_like(
+    val: i64,
+    desc: *const u8,
+    pos: &mut usize,
+    visited: &mut FxHashMap<i64, i64>,
+) -> i64 {
     let inner_start = *pos;
     skip(desc, pos);
     if val == 0 || !slot_is_live(val) {
@@ -181,46 +212,56 @@ fn copy_list_like(val: i64, desc: *const u8, pos: &mut usize) -> i64 {
     let (kind, eptr, elen) = unsafe {
         let s = &*(val as *const StableVec);
         if s.kind == KIND_SET {
-            return copy_set_at(val, desc, inner_start);
+            return copy_set_at(val, desc, inner_start, visited);
         }
         (s.kind, s.ptr, s.len)
     };
     let new = crate::list::olive_list_new(elen as i64);
-    COPY_VISITED.with(|v| v.borrow_mut().insert(val, new));
+    visited.insert(val, new);
     for i in 0..elen {
         let mut p = inner_start;
-        let c = copy_val(unsafe { *eptr.add(i) }, desc, &mut p);
+        let c = copy_val(unsafe { *eptr.add(i) }, desc, &mut p, visited);
         crate::list::olive_list_set(new, i as i64, c);
     }
     unsafe { (*(new as *mut StableVec)).kind = kind };
     new
 }
 
-fn copy_set(val: i64, desc: *const u8, pos: &mut usize) -> i64 {
+fn copy_set(val: i64, desc: *const u8, pos: &mut usize, visited: &mut FxHashMap<i64, i64>) -> i64 {
     let inner_start = *pos;
     skip(desc, pos);
     if val == 0 || !slot_is_live(val) {
         return val;
     }
-    copy_set_at(val, desc, inner_start)
+    copy_set_at(val, desc, inner_start, visited)
 }
 
-fn copy_set_at(val: i64, desc: *const u8, inner_start: usize) -> i64 {
+fn copy_set_at(
+    val: i64,
+    desc: *const u8,
+    inner_start: usize,
+    visited: &mut FxHashMap<i64, i64>,
+) -> i64 {
     let (eptr, elen) = unsafe {
         let s = &*(val as *const OliveHashSet);
         (s.ptr, s.len)
     };
     let new = crate::set::olive_set_new(elen as i64);
-    COPY_VISITED.with(|v| v.borrow_mut().insert(val, new));
+    visited.insert(val, new);
     for i in 0..elen {
         let mut p = inner_start;
-        let c = copy_val(unsafe { *eptr.add(i) }, desc, &mut p);
+        let c = copy_val(unsafe { *eptr.add(i) }, desc, &mut p, visited);
         crate::set::olive_set_add(new, c);
     }
     new
 }
 
-fn copy_tuple(val: i64, desc: *const u8, pos: &mut usize) -> i64 {
+fn copy_tuple(
+    val: i64,
+    desc: *const u8,
+    pos: &mut usize,
+    visited: &mut FxHashMap<i64, i64>,
+) -> i64 {
     let n = unsafe { byte(desc, *pos) } as usize - 1;
     *pos += 1;
     if val == 0 || !slot_is_live(val) {
@@ -234,16 +275,16 @@ fn copy_tuple(val: i64, desc: *const u8, pos: &mut usize) -> i64 {
         (s.ptr, s.len)
     };
     let new = crate::list::olive_list_new(n as i64);
-    COPY_VISITED.with(|v| v.borrow_mut().insert(val, new));
+    visited.insert(val, new);
     for i in 0..n {
         let elem = if i < elen { unsafe { *eptr.add(i) } } else { 0 };
-        let c = copy_val(elem, desc, pos);
+        let c = copy_val(elem, desc, pos, visited);
         crate::list::olive_list_set(new, i as i64, c);
     }
     new
 }
 
-fn copy_dict(val: i64, desc: *const u8, pos: &mut usize) -> i64 {
+fn copy_dict(val: i64, desc: *const u8, pos: &mut usize, visited: &mut FxHashMap<i64, i64>) -> i64 {
     let key_start = *pos;
     skip(desc, pos);
     let val_start = *pos;
@@ -253,20 +294,25 @@ fn copy_dict(val: i64, desc: *const u8, pos: &mut usize) -> i64 {
     }
     let obj = unsafe { &*(val as *const OliveObj) };
     let new = crate::obj::olive_obj_new();
-    COPY_VISITED.with(|v| v.borrow_mut().insert(val, new));
+    visited.insert(val, new);
     let mut fields = FxHashMap::default();
     for (k, &v) in obj.fields.iter() {
         let mut kp = key_start;
-        let kc = copy_val(k.0, desc, &mut kp);
+        let kc = copy_val(k.0, desc, &mut kp, visited);
         let mut vp = val_start;
-        let vc = copy_val(v, desc, &mut vp);
+        let vc = copy_val(v, desc, &mut vp, visited);
         fields.insert(OliveStringKey(kc), vc);
     }
     unsafe { (*(new as *mut OliveObj)).fields = fields };
     new
 }
 
-fn copy_struct(val: i64, desc: *const u8, pos: &mut usize) -> i64 {
+fn copy_struct(
+    val: i64,
+    desc: *const u8,
+    pos: &mut usize,
+    visited: &mut FxHashMap<i64, i64>,
+) -> i64 {
     skip_lp(desc, pos);
     let n = unsafe { byte(desc, *pos) } as usize - 13;
     *pos += 1;
@@ -279,7 +325,7 @@ fn copy_struct(val: i64, desc: *const u8, pos: &mut usize) -> i64 {
     }
     let n_fields = unsafe { *(val as *const i64) };
     let new = crate::olive_struct_alloc(n_fields);
-    COPY_VISITED.with(|v| v.borrow_mut().insert(val, new));
+    visited.insert(val, new);
     for i in 0..n {
         skip_lp(desc, pos);
         let field = if (i as i64) < n_fields {
@@ -287,7 +333,7 @@ fn copy_struct(val: i64, desc: *const u8, pos: &mut usize) -> i64 {
         } else {
             0
         };
-        let c = copy_val(field, desc, pos);
+        let c = copy_val(field, desc, pos, visited);
         if (i as i64) < n_fields {
             unsafe { *((new + 8 + 8 * i as i64) as *mut i64) = c };
         }
@@ -295,7 +341,7 @@ fn copy_struct(val: i64, desc: *const u8, pos: &mut usize) -> i64 {
     new
 }
 
-fn copy_enum(val: i64, desc: *const u8, pos: &mut usize) -> i64 {
+fn copy_enum(val: i64, desc: *const u8, pos: &mut usize, visited: &mut FxHashMap<i64, i64>) -> i64 {
     skip_lp(desc, pos);
     let n = unsafe { byte(desc, *pos) } as usize - 13;
     *pos += 1;
@@ -312,7 +358,7 @@ fn copy_enum(val: i64, desc: *const u8, pos: &mut usize) -> i64 {
         0
     };
     if live {
-        COPY_VISITED.with(|v| v.borrow_mut().insert(val, new));
+        visited.insert(val, new);
     }
     for i in 0..n {
         skip_lp(desc, pos);
@@ -320,7 +366,7 @@ fn copy_enum(val: i64, desc: *const u8, pos: &mut usize) -> i64 {
         *pos += 1;
         for j in 0..np {
             if i == tag && j < plen {
-                let c = copy_val(unsafe { *pptr.add(j) }, desc, pos);
+                let c = copy_val(unsafe { *pptr.add(j) }, desc, pos, visited);
                 crate::olive_enum_set(new, j as i64, c);
             } else {
                 skip(desc, pos);
@@ -345,11 +391,11 @@ enum AnyDest {
 /// children are queued, so a cycle resolves to the already-allocated shell
 /// exactly as the recursive form did, but the walk is bounded by heap, not
 /// by call-stack depth.
-fn copy_any(val: i64) -> i64 {
+fn copy_any(val: i64, visited: &mut FxHashMap<i64, i64>) -> i64 {
     let mut root = 0i64;
     let mut stack: Vec<(i64, AnyDest)> = vec![(val, AnyDest::Root)];
     while let Some((src, dest)) = stack.pop() {
-        let copied = copy_any_node(src, &mut stack);
+        let copied = copy_any_node(src, &mut stack, visited);
         match dest {
             AnyDest::Root => root = copied,
             AnyDest::List(list, i) => crate::list::olive_list_set(list, i, copied),
@@ -368,7 +414,11 @@ fn copy_any(val: i64) -> i64 {
 /// Copies one `D_ANY` node. Leaves resolve immediately; a container
 /// allocates its shell, marks it visited, and pushes `(child, dest)` work
 /// for each element so the caller's stack keeps walking instead of recursing.
-fn copy_any_node(val: i64, stack: &mut Vec<(i64, AnyDest)>) -> i64 {
+fn copy_any_node(
+    val: i64,
+    stack: &mut Vec<(i64, AnyDest)>,
+    visited: &mut FxHashMap<i64, i64>,
+) -> i64 {
     if val == 0 || val & TAG_MASK != 0 {
         return val;
     }
@@ -378,7 +428,7 @@ fn copy_any_node(val: i64, stack: &mut Vec<(i64, AnyDest)>) -> i64 {
     if !crate::is_active_object(val) {
         return val;
     }
-    if let Some(cloned) = COPY_VISITED.with(|v| v.borrow().get(&val).copied()) {
+    if let Some(cloned) = visited.get(&val).copied() {
         return cloned;
     }
     let kind = unsafe { *(val as *const i64) };
@@ -389,7 +439,7 @@ fn copy_any_node(val: i64, stack: &mut Vec<(i64, AnyDest)>) -> i64 {
                 (s.ptr, s.len)
             };
             let new = crate::list::olive_list_new(elen as i64);
-            COPY_VISITED.with(|v| v.borrow_mut().insert(val, new));
+            visited.insert(val, new);
             for i in (0..elen).rev() {
                 stack.push((unsafe { *eptr.add(i) }, AnyDest::List(new, i as i64)));
             }
@@ -402,7 +452,7 @@ fn copy_any_node(val: i64, stack: &mut Vec<(i64, AnyDest)>) -> i64 {
                 (s.ptr, s.len)
             };
             let new = crate::set::olive_set_new(elen as i64);
-            COPY_VISITED.with(|v| v.borrow_mut().insert(val, new));
+            visited.insert(val, new);
             for i in (0..elen).rev() {
                 stack.push((unsafe { *eptr.add(i) }, AnyDest::Set(new)));
             }
@@ -411,7 +461,7 @@ fn copy_any_node(val: i64, stack: &mut Vec<(i64, AnyDest)>) -> i64 {
         KIND_OBJ => {
             let obj = unsafe { &*(val as *const OliveObj) };
             let new = crate::obj::olive_obj_new();
-            COPY_VISITED.with(|v| v.borrow_mut().insert(val, new));
+            visited.insert(val, new);
             for (k, &v) in obj.fields.iter() {
                 stack.push((v, AnyDest::ObjField(new, copy_str(k.0))));
             }
@@ -420,7 +470,7 @@ fn copy_any_node(val: i64, stack: &mut Vec<(i64, AnyDest)>) -> i64 {
         KIND_ENUM => {
             let e = unsafe { &*(val as *const OliveEnum) };
             let new = crate::olive_enum_new(e.type_id, e.tag, e.payload_len as i64);
-            COPY_VISITED.with(|v| v.borrow_mut().insert(val, new));
+            visited.insert(val, new);
             for j in (0..e.payload_len).rev() {
                 stack.push((
                     unsafe { *e.payload_ptr.add(j) },

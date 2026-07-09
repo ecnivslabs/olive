@@ -818,16 +818,8 @@ any_profiled!(olive_any_ne_profiled, olive_any_ne);
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_concat(l: i64, r: i64) -> i64 {
-    let l_bytes = if l == 0 {
-        b"" as &[u8]
-    } else {
-        unsafe { std::ffi::CStr::from_ptr((l & !1) as *const std::ffi::c_char).to_bytes() }
-    };
-    let r_bytes = if r == 0 {
-        b"" as &[u8]
-    } else {
-        unsafe { std::ffi::CStr::from_ptr((r & !1) as *const std::ffi::c_char).to_bytes() }
-    };
+    let l_bytes = olive_str_to_bytes(l);
+    let r_bytes = olive_str_to_bytes(r);
     if let Some(res) = string_slab::str_concat_inplace(l, l_bytes, r_bytes) {
         return res;
     }
@@ -845,9 +837,9 @@ pub extern "C" fn olive_str_eq(l: i64, r: i64) -> i64 {
     if l == 0 || r == 0 {
         return 0;
     }
-    let l_cstr = unsafe { std::ffi::CStr::from_ptr((l & !1) as *const std::ffi::c_char) };
-    let r_cstr = unsafe { std::ffi::CStr::from_ptr((r & !1) as *const std::ffi::c_char) };
-    if l_cstr == r_cstr { 1 } else { 0 }
+    let l_bytes = olive_str_to_bytes(l);
+    let r_bytes = olive_str_to_bytes(r);
+    if l_bytes == r_bytes { 1 } else { 0 }
 }
 
 #[unsafe(no_mangle)]

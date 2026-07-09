@@ -1,15 +1,25 @@
+use crate::slab::ptr_in_slab_span;
 use crate::*;
+
+/// Converts an Olive string pointer (tagged or untagged) to a byte slice.
+/// O(1) for slab-backed strings; O(N) fallback via CStr for literals.
+pub fn olive_str_to_bytes<'a>(ptr: i64) -> &'a [u8] {
+    if ptr == 0 {
+        return b"";
+    }
+    let p = ptr & !1;
+    if ptr_in_slab_span(p) {
+        let header_val = unsafe { *(p as *const usize).sub(2) };
+        let len = header_val & 0xFFFFFFFFFFFF;
+        unsafe { std::slice::from_raw_parts(p as *const u8, len) }
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(p as *const std::ffi::c_char).to_bytes() }
+    }
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_len(s: i64) -> i64 {
-    if s == 0 {
-        return 0;
-    }
-    unsafe {
-        std::ffi::CStr::from_ptr((s & !1) as *const std::ffi::c_char)
-            .to_bytes()
-            .len() as i64
-    }
+    olive_str_to_bytes(s).len() as i64
 }
 
 #[unsafe(no_mangle)]
@@ -70,11 +80,11 @@ pub extern "C" fn olive_str_getslice(s: i64, start: i64, stop: i64, step: i64, f
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_slice(s: i64, start: i64, end: i64) -> i64 {
-    let text = olive_str_from_ptr(s);
+    let bytes = olive_str_to_bytes(s);
     let start = start as usize;
     let end = end as usize;
-    if start <= end && end <= text.len() {
-        olive_str_internal(&text[start..end])
+    if start <= end && end <= bytes.len() {
+        olive_str_internal(unsafe { std::str::from_utf8_unchecked(&bytes[start..end]) })
     } else {
         0
     }
@@ -112,12 +122,7 @@ pub fn olive_str_from_ptr(ptr: i64) -> String {
     if ptr == 0 {
         return String::new();
     }
-    let p = ptr & !1;
-    unsafe {
-        std::ffi::CStr::from_ptr(p as *const std::ffi::c_char)
-            .to_string_lossy()
-            .into_owned()
-    }
+    String::from_utf8_lossy(olive_str_to_bytes(ptr)).into_owned()
 }
 
 /// Returns an optional `&str` referencing the string pointed to by `ptr`.
@@ -152,11 +157,7 @@ pub fn olive_str_as_str<'a>(ptr: i64) -> Option<&'a str> {
     if ptr == 0 {
         return None;
     }
-    let p = ptr & !1;
-    unsafe {
-        let c_str = std::ffi::CStr::from_ptr(p as *const std::ffi::c_char);
-        c_str.to_str().ok()
-    }
+    std::str::from_utf8(olive_str_to_bytes(ptr)).ok()
 }
 
 #[unsafe(no_mangle)]
