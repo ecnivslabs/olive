@@ -88,6 +88,18 @@ stops the program with error `E0707` and a source location:
 
 Run `pit explain E0707` for details.
 
+## Compile-time staleness detection
+
+When the compiler can prove a borrow outlives its owner on every control-flow
+path through a function, it rejects the program at compile time with error
+`E0708` ("use of a value after it was given away"). The diagnostic shows where
+the value was borrowed, where it escaped, and where it was subsequently used.
+
+Cases where staleness depends on which branch runs are not rejected at compile
+time; those fall to the E0707 runtime check.
+
+Run `pit explain E0708` for a worked example.
+
 ## Frees are deterministic
 
 A value is freed at a known point: its owner's last use, or the owner's
@@ -106,7 +118,14 @@ copy site, its type, and why it was needed.
 
 ## Iteration
 
-For-loops and comprehensions borrow the iterable by default — the collection
+For-loops and comprehensions borrow the iterable by default. The collection
 stays usable after the loop. When the iterable has no live uses after the
 loop, the optimizer promotes the implicit copy back to a move, so hot loops
 incur no allocation overhead.
+
+## Task boundaries
+
+Values crossing task boundaries via channels, mutexes, or pool functions are
+either moved exclusively (when the sending local is provably dead) or
+deep-copied. No managed value is ever shared between tasks. See
+[Async](async.md) for details.

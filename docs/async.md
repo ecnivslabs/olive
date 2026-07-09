@@ -85,3 +85,7 @@ reference](modules.md) for the full list.
   worker thread per CPU core. A task that blocks a worker (a synchronous call
   inside async code) occupies that thread until it returns, so keep blocking
   work out of hot async paths or hand it to `aio.pool_run`.
+- **Share-nothing memory model**: values crossing a task boundary (via
+  `chan_send`, `mutex_new`, `mutex_unlock`, or `aio.pool_run`) are either
+  moved exclusively or deep-copied before the boundary. No Olive-managed heap
+  value is ever reachable from two tasks at the same time.

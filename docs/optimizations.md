@@ -70,7 +70,7 @@ Short counted loops are fully unrolled (up to 32 iterations); longer ones are pa
 Runs last among the optimizations, so no later pass can move an access it has already proven safe. An index proven in range by loop analysis drops its runtime check.
 
 ### Generation-Check Insertion
-Runs after everything, in both pipelines. Inserts the runtime staleness checks that back ownership inference (see [Internals](internals.md)); a forward analysis elides every check it can prove unnecessary.
+Runs after everything, in both pipelines. Inserts the runtime staleness checks that back ownership inference (see [Internals](internals.md)); a forward analysis elides every check it can prove unnecessary. A parallel must-free lattice, computed at the same time, promotes sites where staleness is provably certain on every path to compile-time errors (`E0708`) rather than runtime checks.
 
 ## Runtime Tiering
 
