@@ -178,6 +178,7 @@ pub enum BinOp {
     GtEq,
     And,
     Or,
+    Coalesce,
     In,
     NotIn,
     Shl,

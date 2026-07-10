@@ -49,11 +49,13 @@ pub extern "C" fn olive_str_get_checked(s: i64, i: i64, loc: i64) -> i64 {
     if s == 0 {
         crate::panic::olive_nil_index_fail(loc);
     }
-    if i < 0 {
-        crate::panic::olive_bounds_fail(i, olive_str_len(s), loc);
+    let len = olive_str_len(s);
+    let idx = if i < 0 { i + len } else { i };
+    if idx < 0 {
+        crate::panic::olive_bounds_fail(idx, len, loc);
     }
     let ptr = (s & !1) as *const u8;
-    let target = i as usize;
+    let target = idx as usize;
     let mut j = 0usize;
     loop {
         let byte = unsafe { *ptr.add(j) };

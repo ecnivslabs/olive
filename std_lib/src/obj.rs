@@ -77,12 +77,28 @@ pub extern "C" fn olive_obj_get(obj_ptr: i64, attr: i64) -> i64 {
     }
     let kind = unsafe { *(obj_ptr as *const i64) };
     if kind == KIND_PYOBJECT {
-        // `d["key"]` is item lookup, not attribute access; a Python dict has no
-        // matching attribute. Missing keys read back as `0`, like an Olive dict.
         return python::olive_py_dict_get_default(obj_ptr, attr, 0);
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
     *m.fields.get(&OliveStringKey(attr)).unwrap_or(&0)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_obj_get_checked(obj_ptr: i64, attr: i64, loc: i64) -> i64 {
+    if obj_ptr == 0 || attr == 0 {
+        crate::panic::olive_nil_index_fail(loc);
+    }
+    let kind = unsafe { *(obj_ptr as *const i64) };
+    if kind == KIND_PYOBJECT {
+        return python::olive_py_dict_get_default(obj_ptr, attr, 0);
+    }
+    let m = unsafe { &*(obj_ptr as *const OliveObj) };
+    if let Some(&val) = m.fields.get(&OliveStringKey(attr)) {
+        val
+    } else {
+        crate::panic::olive_bounds_fail(0, m.fields.len() as i64, loc);
+        0
+    }
 }
 
 #[unsafe(no_mangle)]

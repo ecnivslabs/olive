@@ -177,6 +177,92 @@ impl fmt::Display for Type {
     }
 }
 
+/// Result of checking whether a cast from `src` to `dst` is valid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CastKind {
+    /// Numeric-to-numeric or numeric-to-float (already implemented).
+    NumericExisting,
+    /// Scalar (int/float/bool) to str, via the runtime `olive_str` etc.
+    ScalarToStr,
+    /// Not a valid cast.
+    Invalid,
+}
+
+/// Classifies a cast from type `src` to type `dst`. Both sides must be fully
+/// resolved (no type variables) before calling; the checker calls
+/// `apply_subst` first.
+pub fn cast_kind(src: &Type, dst: &Type) -> CastKind {
+    // Helper: is the type a numeric kind (int or float)?
+    fn is_numeric(t: &Type) -> bool {
+        matches!(
+            t,
+            Type::Int
+                | Type::I8
+                | Type::I16
+                | Type::I32
+                | Type::U8
+                | Type::U16
+                | Type::U32
+                | Type::U64
+                | Type::Usize
+                | Type::Float
+                | Type::F32
+                | Type::Bool
+        )
+    }
+    fn is_int(t: &Type) -> bool {
+        matches!(
+            t,
+            Type::Int
+                | Type::I8
+                | Type::I16
+                | Type::I32
+                | Type::U8
+                | Type::U16
+                | Type::U32
+                | Type::U64
+                | Type::Usize
+                | Type::Bool
+        )
+    }
+    fn is_float(t: &Type) -> bool {
+        matches!(t, Type::Float | Type::F32)
+    }
+    // Unresolved type variables may remain after substitution if nothing
+    // constrained the literal; treat them as numeric.
+    //
+    //                 source ↓                →  destination
+    match (src, dst) {
+        // int-like → int-like (widening, narrowing, sign change)
+        (s, d) if is_int(s) && is_int(d) => CastKind::NumericExisting,
+        // int-like ↔ float
+        (s, d) if (is_int(s) && is_float(d)) || (is_float(s) && is_int(d)) => {
+            CastKind::NumericExisting
+        }
+        // float ↔ float
+        (s, d) if is_float(s) && is_float(d) => CastKind::NumericExisting,
+        // numeric → str
+        (s, Type::Str) if is_numeric(s) => CastKind::ScalarToStr,
+        // unconstrained integer literal → int/float (format resolved at codegen)
+        (Type::IntegerLiteral(_), d) if is_numeric(d) => CastKind::NumericExisting,
+        // unconstrained integer/float literal → str
+        (Type::IntegerLiteral(_) | Type::FloatLiteral(_), Type::Str) => CastKind::ScalarToStr,
+        // PyObject → native (int/float/str/bool): runtime conversion
+        (Type::PyObject | Type::PyNamed(_, _), _)
+            if is_numeric(dst) || *dst == Type::Str || *dst == Type::Bool =>
+        {
+            CastKind::NumericExisting
+        }
+        // Any → native: runtime unboxing
+        (Type::Any, _) if is_numeric(dst) || *dst == Type::Str || *dst == Type::Bool => {
+            CastKind::NumericExisting
+        }
+        // Unresolved type variable / generic param: could be anything, allow
+        (Type::Var(_) | Type::Param(_), _) => CastKind::NumericExisting,
+        _ => CastKind::Invalid,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

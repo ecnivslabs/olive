@@ -258,8 +258,9 @@ pub extern "C" fn olive_list_get(list_ptr: i64, idx: i64) -> i64 {
         return 0;
     }
     let s = unsafe { &*(list_ptr as *const StableVec) };
-    if (idx as usize) < s.len {
-        unsafe { *s.ptr.add(idx as usize) }
+    let i = if idx < 0 { idx + s.len as i64 } else { idx };
+    if (i as usize) < s.len {
+        unsafe { *s.ptr.add(i as usize) }
     } else {
         0
     }

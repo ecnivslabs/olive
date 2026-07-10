@@ -40,10 +40,8 @@ impl Checker {
                 body,
                 type_params,
                 ..
-            } => {
-                if type_params.is_empty() {
-                    self.enter_function(params, body);
-                }
+            } if type_params.is_empty() => {
+                self.enter_function(params, body);
             }
             StmtKind::Impl { body, .. } | StmtKind::Trait { methods: body, .. } => {
                 for m in body {
@@ -178,10 +176,8 @@ impl Checker {
                 body,
                 type_params,
                 ..
-            } => {
-                if type_params.is_empty() {
-                    self.enter_function(params, body);
-                }
+            } if type_params.is_empty() => {
+                self.enter_function(params, body);
             }
             StmtKind::Let { value, .. } | StmtKind::Const { value, .. } => self.expr(value),
             StmtKind::MultiLet { value, .. } | StmtKind::MultiConst { value, .. } => {

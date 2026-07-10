@@ -301,8 +301,14 @@ impl<'a> MirBuilder<'a> {
     ) {
         if clause_idx == clauses.len() {
             if let Some((k_expr, v_expr)) = elt {
-                let k = self.lower_expr(k_expr);
-                let v = self.lower_expr(v_expr);
+                let (key_box_ty, val_box_ty) = match &self.current_locals[result_local.0].ty {
+                    Type::Dict(k, v) => (*k.clone(), *v.clone()),
+                    _ => (Type::Any, Type::Any),
+                };
+                let k_op = self.lower_expr(k_expr);
+                let k = self.coerce_to_hashable(k_op, k_expr, &key_box_ty);
+                let v_op = self.lower_expr(v_expr);
+                let v = self.coerce_to_elem(v_op, v_expr, &val_box_ty);
                 let set_id = Operand::Constant(Constant::Function("__olive_obj_set".to_string()));
                 let tmp = self.new_local(Type::Any, None, false);
                 self.push_statement(

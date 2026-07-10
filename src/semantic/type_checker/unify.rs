@@ -346,7 +346,7 @@ impl TypeChecker {
         }
     }
 
-    /// Types whose representation differs inside an `Any` slot.
+    /// Types that share `Any`'s tagged-i64 representation (no additional boxing).
     fn needs_any_boxing(ty: &Type) -> bool {
         matches!(
             ty,
@@ -363,8 +363,6 @@ impl TypeChecker {
                 | Type::F32
                 | Type::Bool
                 | Type::Null
-                | Type::PyObject
-                | Type::PyNamed(_, _)
                 | Type::IntegerLiteral(_)
                 | Type::FloatLiteral(_)
         )

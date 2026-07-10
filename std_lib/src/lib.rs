@@ -917,20 +917,21 @@ pub extern "C" fn olive_get_index_any(obj: i64, index: i64, loc: i64) -> i64 {
     match kind {
         KIND_LIST | KIND_ANY_LIST => {
             let len = olive_list_len(obj);
-            let val = olive_list_get(obj, index);
-            if index < 0 || index >= len {
+            let effective = if index < 0 { index + len } else { index };
+            if effective < 0 || effective >= len {
                 panic::olive_bounds_fail(index, len, loc);
             }
-            val
+            olive_list_get(obj, index)
         }
-        KIND_OBJ => olive_obj_get(obj, index),
+        KIND_OBJ => olive_obj_get_checked(obj, index, loc),
         KIND_ENUM => olive_enum_get(obj, index),
         KIND_BYTES => {
             let len = bytes::olive_buf_len(obj);
-            if index < 0 || index >= len {
+            let effective = if index < 0 { index + len } else { index };
+            if effective < 0 || effective >= len {
                 panic::olive_bounds_fail(index, len, loc);
             }
-            bytes::olive_buf_get(obj, index)
+            bytes::olive_buf_get(obj, effective)
         }
         KIND_PYOBJECT => {
             let key_obj = if index > 0x10000 && index & 1 != 0 {

@@ -60,10 +60,14 @@ pub(super) fn emit_bounds_check<M: Module>(
     idx: Value,
     len: Value,
     loc: Value,
-) {
+) -> Value {
     let ok = builder.create_block();
     let fail = builder.create_block();
-    let in_bounds = builder.ins().icmp(IntCC::UnsignedLessThan, idx, len);
+    // Negative indices wrap: idx = idx < 0 ? idx + len : idx
+    let is_neg = builder.ins().icmp_imm(IntCC::SignedLessThan, idx, 0);
+    let wrapped = builder.ins().iadd(idx, len);
+    let final_idx = builder.ins().select(is_neg, wrapped, idx);
+    let in_bounds = builder.ins().icmp(IntCC::UnsignedLessThan, final_idx, len);
     builder.ins().brif(in_bounds, ok, &[], fail, &[]);
 
     builder.seal_block(fail);
@@ -72,11 +76,12 @@ pub(super) fn emit_bounds_check<M: Module>(
         .get("__olive_bounds_fail")
         .expect("missing __olive_bounds_fail");
     let f = module.declare_func_in_func(id, builder.func);
-    builder.ins().call(f, &[idx, len, loc]);
+    builder.ins().call(f, &[final_idx, len, loc]);
     builder.ins().trap(TrapCode::unwrap_user(1));
 
     builder.seal_block(ok);
     builder.switch_to_block(ok);
+    final_idx
 }
 
 /// Panics with a divide-by-zero diagnostic when an integer `/` or `%` has a
@@ -306,6 +311,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 builder.use_var(*var)
             }
             Rvalue::GetAttr(obj, attr) => {
+                let loc = loc_value(builder, module, loc_id);
                 if let Operand::Copy(loc) | Operand::Move(loc) = obj {
                     let mut obj_ty = &func_mir.locals[loc.0].ty;
                     while let OliveType::Ref(inner) | OliveType::MutRef(inner) = obj_ty {
@@ -349,10 +355,10 @@ impl<M: Module> CraneliftCodegen<M> {
                 let attr_val = attr_symbol(builder, module, string_ids, attr);
 
                 let get_id = func_ids
-                    .get("__olive_obj_get")
-                    .expect("missing __olive_obj_get");
+                    .get("__olive_obj_get_checked")
+                    .expect("missing __olive_obj_get_checked");
                 let local_func = module.declare_func_in_func(*get_id, builder.func);
-                let inst = builder.ins().call(local_func, &[o, attr_val]);
+                let inst = builder.ins().call(local_func, &[o, attr_val, loc]);
                 builder.inst_results(inst)[0]
             }
             Rvalue::GetTag(obj) => {
@@ -407,10 +413,10 @@ impl<M: Module> CraneliftCodegen<M> {
                     }
                     OliveType::Dict(_, _) | OliveType::Struct(_, _, _) => {
                         let get_id = func_ids
-                            .get("__olive_obj_get")
-                            .expect("missing __olive_obj_get");
+                            .get("__olive_obj_get_checked")
+                            .expect("missing __olive_obj_get_checked");
                         let local_func = module.declare_func_in_func(*get_id, builder.func);
-                        let inst = builder.ins().call(local_func, &[o, i]);
+                        let inst = builder.ins().call(local_func, &[o, i, loc]);
                         builder.inst_results(inst)[0]
                     }
                     OliveType::Any => {
@@ -445,10 +451,12 @@ impl<M: Module> CraneliftCodegen<M> {
                             o,
                             24,
                         );
-                        if !unchecked {
-                            emit_bounds_check(builder, module, func_ids, i, len, loc);
-                        }
-                        let offset = builder.ins().imul_imm(i, 8);
+                        let fast_idx = if !unchecked {
+                            emit_bounds_check(builder, module, func_ids, i, len, loc)
+                        } else {
+                            i
+                        };
+                        let offset = builder.ins().imul_imm(fast_idx, 8);
                         let addr = builder.ins().iadd(data_ptr, offset);
                         let fast_val = builder.ins().load(types::I64, MemFlags::trusted(), addr, 0);
                         builder.def_var(result_var, fast_val);
@@ -485,16 +493,18 @@ impl<M: Module> CraneliftCodegen<M> {
                             o,
                             24,
                         );
-                        if !unchecked {
-                            emit_bounds_check(builder, module, func_ids, i, len, loc);
-                        }
+                        let idx = if !unchecked {
+                            emit_bounds_check(builder, module, func_ids, i, len, loc)
+                        } else {
+                            i
+                        };
                         let data_ptr = builder.ins().load(
                             types::I64,
                             MemFlags::trusted().with_readonly(),
                             o,
                             8,
                         );
-                        let offset = builder.ins().imul_imm(i, 8);
+                        let offset = builder.ins().imul_imm(idx, 8);
                         let addr = builder.ins().iadd(data_ptr, offset);
                         builder.ins().load(types::I64, MemFlags::trusted(), addr, 0)
                     }
@@ -506,16 +516,18 @@ impl<M: Module> CraneliftCodegen<M> {
                             o,
                             16,
                         );
-                        if !unchecked {
-                            emit_bounds_check(builder, module, func_ids, i, len, loc);
-                        }
+                        let idx = if !unchecked {
+                            emit_bounds_check(builder, module, func_ids, i, len, loc)
+                        } else {
+                            i
+                        };
                         let data_ptr = builder.ins().load(
                             types::I64,
                             MemFlags::trusted().with_readonly(),
                             o,
                             8,
                         );
-                        let addr = builder.ins().iadd(data_ptr, i);
+                        let addr = builder.ins().iadd(data_ptr, idx);
                         let byte = builder.ins().load(types::I8, MemFlags::trusted(), addr, 0);
                         builder.ins().uextend(types::I64, byte)
                     }
@@ -537,6 +549,61 @@ impl<M: Module> CraneliftCodegen<M> {
                     OliveType::Float => types::F64,
                     _ => types::I64,
                 };
+
+                // Scalar-to-str: int/float/bool formatted as string.
+                if *ty == OliveType::Str {
+                    let src_is_int = match op {
+                        crate::mir::Operand::Copy(l) | crate::mir::Operand::Move(l) => {
+                            matches!(
+                                func_mir.locals[l.0].ty,
+                                OliveType::Int
+                                    | OliveType::I8
+                                    | OliveType::I16
+                                    | OliveType::I32
+                                    | OliveType::U8
+                                    | OliveType::U16
+                                    | OliveType::U32
+                                    | OliveType::U64
+                                    | OliveType::Usize
+                            )
+                        }
+                        _ => false,
+                    };
+                    let src_is_float = match op {
+                        crate::mir::Operand::Copy(l) | crate::mir::Operand::Move(l) => {
+                            matches!(func_mir.locals[l.0].ty, OliveType::Float | OliveType::F32)
+                        }
+                        _ => false,
+                    };
+                    let src_is_bool = match op {
+                        crate::mir::Operand::Copy(l) | crate::mir::Operand::Move(l) => {
+                            func_mir.locals[l.0].ty == OliveType::Bool
+                        }
+                        _ => false,
+                    };
+                    if src_is_int {
+                        let id = func_ids.get("__olive_str").expect("missing __olive_str");
+                        let f = module.declare_func_in_func(*id, builder.func);
+                        let inst = builder.ins().call(f, &[val]);
+                        return builder.inst_results(inst)[0];
+                    }
+                    if src_is_float {
+                        let id = func_ids
+                            .get("__olive_float_to_str")
+                            .expect("missing __olive_float_to_str");
+                        let f = module.declare_func_in_func(*id, builder.func);
+                        let inst = builder.ins().call(f, &[val]);
+                        return builder.inst_results(inst)[0];
+                    }
+                    if src_is_bool {
+                        let id = func_ids
+                            .get("__olive_bool_to_str")
+                            .expect("missing __olive_bool_to_str");
+                        let f = module.declare_func_in_func(*id, builder.func);
+                        let inst = builder.ins().call(f, &[val]);
+                        return builder.inst_results(inst)[0];
+                    }
+                }
 
                 let src_is_pyobj = match op {
                     crate::mir::Operand::Copy(l) | crate::mir::Operand::Move(l) => {

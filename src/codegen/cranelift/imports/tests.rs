@@ -348,7 +348,7 @@ fn test_scan_rvalue_imports_get_attr() {
         &Rvalue::GetAttr(Operand::Copy(Local(0)), "x".into()),
         &mut needed,
     );
-    assert!(needed.contains("__olive_obj_get"));
+    assert!(needed.contains("__olive_obj_get_checked"));
 }
 
 #[test]

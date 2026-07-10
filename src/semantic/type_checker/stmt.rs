@@ -252,6 +252,27 @@ impl TypeChecker {
 
             StmtKind::Assign { target, value } => {
                 let val_ty = self.check_expr(value);
+                // Reject global writes from inside functions.
+                if let crate::parser::ExprKind::Identifier(name) = &target.kind {
+                    if self.current_return_type.is_some() && self.type_env.len() > 1 {
+                        for (scope_idx, scope) in self.type_env.iter().enumerate().rev() {
+                            if scope.contains_key(name.as_str()) {
+                                if scope_idx == 0 {
+                                    self.errors.push(SemanticError::rich(
+                                        crate::compile::errors::Diagnostic::error(
+                                            "E0426",
+                                            format!("cannot assign to module-level binding `{name}` from inside a function"),
+                                            target.span,
+                                        )
+                                        .label("global writes are not allowed")
+                                        .help("pass it as a parameter and return the new value"),
+                                    ));
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
                 let target_ty = self.check_expr(target);
                 self.unify(&target_ty, &val_ty, stmt.span);
 
@@ -300,11 +321,11 @@ impl TypeChecker {
                 else_body,
             } => {
                 let cond_ty = self.check_expr(condition);
-                self.expect_truthy(&cond_ty, stmt.span);
+                self.expect_truthy(&cond_ty, condition, stmt.span);
                 self.check_block(then_body);
                 for (cond, body) in elif_clauses {
                     let c_ty = self.check_expr(cond);
-                    self.expect_truthy(&c_ty, cond.span);
+                    self.expect_truthy(&c_ty, cond, cond.span);
                     self.check_block(body);
                 }
                 if let Some(body) = else_body {
@@ -331,6 +352,24 @@ impl TypeChecker {
                 } else {
                     name.clone()
                 };
+
+                // Reject unknown dunder methods in impl blocks. Only __init__
+                // is allowed until E6 ships the operator protocol.
+                if self.current_struct.is_some()
+                    && name.starts_with("__")
+                    && name != "__init__"
+                    && name != "__enter__"
+                    && name != "__exit__"
+                {
+                    self.errors.push(SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0404",
+                            format!("dunder method `{name}` is not yet supported"),
+                            stmt.span,
+                        )
+                        .label("only `__init__` is allowed until E6"),
+                    ));
+                }
 
                 // An unannotated return type reuses the var `hoist_fn_signatures`
                 // already put in scope for forward callers, instead of minting an
@@ -517,7 +556,7 @@ impl TypeChecker {
                 else_body,
             } => {
                 let cond_ty = self.check_expr(condition);
-                self.expect_truthy(&cond_ty, stmt.span);
+                self.expect_truthy(&cond_ty, condition, stmt.span);
                 self.check_block(body);
                 if let Some(body) = else_body {
                     self.check_block(body);
@@ -857,7 +896,7 @@ impl TypeChecker {
 
             StmtKind::Assert { test, msg } => {
                 let test_ty = self.check_expr(test);
-                self.expect_truthy(&test_ty, stmt.span);
+                self.expect_truthy(&test_ty, test, stmt.span);
                 if let Some(m) = msg {
                     self.check_expr(m);
                 }

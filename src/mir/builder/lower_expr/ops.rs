@@ -231,7 +231,75 @@ impl<'a> MirBuilder<'a> {
             }
         }
 
-        if matches!(op, crate::parser::BinOp::And | crate::parser::BinOp::Or) {
+        if matches!(
+            op,
+            crate::parser::BinOp::And | crate::parser::BinOp::Or | crate::parser::BinOp::Coalesce
+        ) {
+            let tmp = self.new_local(self.get_type(expr_id), None, false);
+            let l = self.lower_expr(left);
+
+            if matches!(op, crate::parser::BinOp::Coalesce) {
+                self.push_statement(StatementKind::Assign(tmp, Rvalue::Use(l.clone())), span);
+                // Null check: for `Any` use runtime check, otherwise compare against 0.
+                let l_ty = self.get_type(left.id);
+                let null_check = if matches!(l_ty, Type::Any) {
+                    let is_null = self.new_local(Type::Bool, None, false);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            is_null,
+                            Rvalue::Call {
+                                func: Operand::Constant(Constant::Function(
+                                    "__olive_any_is_null".to_string(),
+                                )),
+                                args: vec![l],
+                            },
+                        ),
+                        span,
+                    );
+                    is_null
+                } else {
+                    let raw = self.new_local(Type::Int, None, false);
+                    self.push_statement(StatementKind::Assign(raw, Rvalue::Use(l)), span);
+                    let is_zero = self.new_local(Type::Bool, None, false);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            is_zero,
+                            Rvalue::BinaryOp(
+                                crate::parser::BinOp::Eq,
+                                Operand::Copy(raw),
+                                Operand::Constant(Constant::Int(0)),
+                            ),
+                        ),
+                        span,
+                    );
+                    is_zero
+                };
+
+                let rhs_bb = self.new_block();
+                let merge_bb = self.new_block();
+
+                if let Some(bb) = self.current_block {
+                    self.terminate_block(
+                        bb,
+                        TerminatorKind::SwitchInt {
+                            discr: Operand::Copy(null_check),
+                            targets: vec![(1, rhs_bb)],
+                            otherwise: merge_bb,
+                        },
+                        span,
+                    );
+                }
+
+                self.current_block = Some(rhs_bb);
+                let r = self.lower_expr(right);
+                self.push_statement(StatementKind::Assign(tmp, Rvalue::Use(r)), span);
+                if let Some(bb) = self.current_block {
+                    self.terminate_block(bb, TerminatorKind::Goto { target: merge_bb }, span);
+                }
+
+                self.current_block = Some(merge_bb);
+                return self.operand_for_local(tmp);
+            }
             let tmp = self.new_local(self.get_type(expr_id), None, false);
             let l = self.lower_expr(left);
             // Result is the original left value, but branch on its truthiness so
@@ -275,6 +343,32 @@ impl<'a> MirBuilder<'a> {
             }
 
             self.current_block = Some(merge_bb);
+            return self.operand_for_local(tmp);
+        }
+
+        // Set algebra: | & - ^ on Set types dispatch to runtime functions.
+        let l_ty = self.get_type(left.id);
+        if matches!(l_ty, Type::Set(_)) && matches!(&r_ty, Type::Set(_)) {
+            let fn_name = match op {
+                crate::parser::BinOp::BitOr => "__olive_set_union",
+                crate::parser::BinOp::BitAnd => "__olive_set_intersection",
+                crate::parser::BinOp::Sub => "__olive_set_diff",
+                crate::parser::BinOp::BitXor => "__olive_set_sym_diff",
+                _ => return self.lower_expr(left),
+            };
+            let l = self.lower_expr_as_copy(left);
+            let r = self.lower_expr_as_copy(right);
+            let tmp = self.new_local(self.get_type(expr_id), None, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    tmp,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function(fn_name.to_string())),
+                        args: vec![l, r],
+                    },
+                ),
+                span,
+            );
             return self.operand_for_local(tmp);
         }
 

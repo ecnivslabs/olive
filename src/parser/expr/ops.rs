@@ -3,15 +3,33 @@ use crate::lexer::TokenKind;
 
 impl Parser {
     pub(crate) fn parse_or(&mut self) -> ParseResult<Expr> {
-        let mut left = self.parse_and()?;
+        let mut left = self.parse_coalesce()?;
         while self.peek().kind == TokenKind::Or {
+            self.advance();
+            let right = self.parse_coalesce()?;
+            let span = left.span.merge(right.span);
+            left = Expr::new(
+                ExprKind::BinOp {
+                    left: Box::new(left),
+                    op: BinOp::Or,
+                    right: Box::new(right),
+                },
+                span,
+            );
+        }
+        Ok(left)
+    }
+
+    pub(crate) fn parse_coalesce(&mut self) -> ParseResult<Expr> {
+        let mut left = self.parse_and()?;
+        while self.peek().kind == TokenKind::QuestionQuestion {
             self.advance();
             let right = self.parse_and()?;
             let span = left.span.merge(right.span);
             left = Expr::new(
                 ExprKind::BinOp {
                     left: Box::new(left),
-                    op: BinOp::Or,
+                    op: BinOp::Coalesce,
                     right: Box::new(right),
                 },
                 span,

@@ -384,7 +384,7 @@ pub(super) fn scan_rvalue_imports(
             }
         }
         Rvalue::GetAttr(..) => {
-            needed.insert("__olive_obj_get");
+            needed.insert("__olive_obj_get_checked");
             needed.insert("__olive_py_getattr");
         }
         Rvalue::GetTag(..) => {
@@ -395,7 +395,7 @@ pub(super) fn scan_rvalue_imports(
         }
         Rvalue::GetIndex(obj, _, _) => {
             needed.insert("__olive_list_get");
-            needed.insert("__olive_obj_get");
+            needed.insert("__olive_obj_get_checked");
             needed.insert("__olive_get_index_any");
             needed.insert("__olive_bounds_fail");
             needed.insert("__olive_nil_index_fail");

@@ -65,6 +65,7 @@ impl<M: Module> CraneliftCodegen<M> {
                     Operand::Constant(Constant::Str(_)) => OliveType::Str,
                     Operand::Constant(Constant::Float(_)) => OliveType::Float,
                     Operand::Constant(Constant::Bool(_)) => OliveType::Bool,
+                    Operand::Constant(Constant::None) => OliveType::Null,
                     Operand::Copy(l) | Operand::Move(l) => func_mir.locals[l.0].ty.clone(),
                     _ => OliveType::Int,
                 }

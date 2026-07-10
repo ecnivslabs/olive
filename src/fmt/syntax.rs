@@ -17,6 +17,7 @@ pub(super) fn binop_str(op: &BinOp) -> &'static str {
         BinOp::GtEq => ">=",
         BinOp::And => "and",
         BinOp::Or => "or",
+        BinOp::Coalesce => "??",
         BinOp::In => "in",
         BinOp::NotIn => "not in",
         BinOp::Shl => "<<",
@@ -32,7 +33,7 @@ pub(super) fn binop_str(op: &BinOp) -> &'static str {
 /// parentheses needed to keep the same parse.
 pub(super) fn binop_prec(op: &BinOp) -> u8 {
     match op {
-        BinOp::Or => 1,
+        BinOp::Or | BinOp::Coalesce => 1,
         BinOp::And => 2,
         BinOp::Eq
         | BinOp::NotEq
