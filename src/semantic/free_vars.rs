@@ -192,7 +192,8 @@ impl FreeVars {
             StmtKind::Import { .. }
             | StmtKind::NativeImport { .. }
             | StmtKind::FromImport { .. }
-            | StmtKind::PyImport { .. } => {}
+            | StmtKind::PyImport { .. }
+            | StmtKind::TypeAlias { .. } => {}
         }
     }
 
@@ -230,7 +231,7 @@ impl FreeVars {
                 self.expr(obj);
                 self.expr(index);
             }
-            ExprKind::Attr { obj, .. } => self.expr(obj),
+            ExprKind::Attr { obj, .. } | ExprKind::OptAttr { obj, .. } => self.expr(obj),
             ExprKind::List(es) | ExprKind::Tuple(es) | ExprKind::Set(es) => {
                 for e in es {
                     self.expr(e);

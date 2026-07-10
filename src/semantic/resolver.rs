@@ -92,6 +92,9 @@ impl Resolver {
                 StmtKind::Struct { name, .. } => {
                     self.define_sym(name, SymbolKind::Struct, stmt.span);
                 }
+                StmtKind::TypeAlias { name, .. } => {
+                    self.define_sym(name, SymbolKind::TypeAlias, stmt.span);
+                }
                 StmtKind::Impl {
                     type_name, body, ..
                 } => {
@@ -297,6 +300,8 @@ impl Resolver {
             }
 
             StmtKind::Trait { .. } => {}
+
+            StmtKind::TypeAlias { .. } => {}
 
             StmtKind::If {
                 condition,
@@ -609,6 +614,10 @@ impl Resolver {
                         return;
                     }
                 }
+                self.resolve_expr(obj);
+            }
+
+            ExprKind::OptAttr { obj, .. } => {
                 self.resolve_expr(obj);
             }
 

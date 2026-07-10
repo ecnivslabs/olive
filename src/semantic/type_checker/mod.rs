@@ -1,4 +1,6 @@
+mod eq;
 mod expr;
+mod narrow;
 mod patterns;
 mod stmt;
 mod unify;
@@ -6,7 +8,7 @@ mod unify;
 use super::error::SemanticError;
 use super::pyi::PyiInfo;
 use super::types::Type;
-use crate::parser::{Program, Stmt};
+use crate::parser::{Program, Stmt, StmtKind, TypeExpr, TypeExprKind};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 #[derive(Clone, Debug)]
@@ -42,6 +44,59 @@ fn describe_arity(arities: &[(usize, Option<usize>)]) -> String {
     }
 }
 
+#[derive(PartialEq, Eq)]
+enum AliasMark {
+    Visiting,
+    Done,
+}
+
+/// Names of other aliases a `type X = ...` target directly refers to, found by
+/// walking the raw AST. Structs/enums/builtins are not aliases and are skipped;
+/// only alias-to-alias edges can form the cycles `hoist_type_aliases` rejects.
+fn alias_deps(
+    expr: &TypeExpr,
+    raw: &HashMap<String, (TypeExpr, crate::span::Span)>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_alias_deps(expr, raw, &mut out);
+    out
+}
+
+fn collect_alias_deps(
+    expr: &TypeExpr,
+    raw: &HashMap<String, (TypeExpr, crate::span::Span)>,
+    out: &mut Vec<String>,
+) {
+    match &expr.kind {
+        TypeExprKind::Name(n) => {
+            if raw.contains_key(n) {
+                out.push(n.clone());
+            }
+        }
+        TypeExprKind::Qualified(_) => {}
+        TypeExprKind::Generic(_, args) | TypeExprKind::Tuple(args) => {
+            for a in args {
+                collect_alias_deps(a, raw, out);
+            }
+        }
+        TypeExprKind::List(inner)
+        | TypeExprKind::Ref(inner)
+        | TypeExprKind::MutRef(inner)
+        | TypeExprKind::Ptr(inner)
+        | TypeExprKind::FixedArray(inner, _) => collect_alias_deps(inner, raw, out),
+        TypeExprKind::Dict(k, v) | TypeExprKind::Union(k, v) => {
+            collect_alias_deps(k, raw, out);
+            collect_alias_deps(v, raw, out);
+        }
+        TypeExprKind::Fn { params, ret } => {
+            for p in params {
+                collect_alias_deps(p, raw, out);
+            }
+            collect_alias_deps(ret, raw, out);
+        }
+    }
+}
+
 pub struct TypeChecker {
     pub(super) substitutions: HashMap<usize, Type>,
     pub expr_types: HashMap<usize, Type>,
@@ -50,6 +105,9 @@ pub struct TypeChecker {
     pub errors: Vec<SemanticError>,
     pub warnings: Vec<SemanticError>,
     pub(super) mut_env: Vec<HashMap<String, bool>>,
+    /// Flow-narrowed types per scope depth, checked before `type_env`. A
+    /// `None`-guard pushes a fact here; reassignment kills it.
+    pub(super) narrow_env: Vec<HashMap<String, Type>>,
     pub field_types: HashMap<(String, String), Type>,
     pub enum_variants: HashMap<String, Vec<String>>,
     /// Enum name to its variants in tag order, each with its payload types. Used
@@ -110,7 +168,7 @@ impl TypeChecker {
         let builtins = [
             (
                 "print",
-                Type::Fn(vec![Type::Any], Box::new(Type::Int), Vec::new()),
+                Type::Fn(vec![Type::Any], Box::new(Type::Null), Vec::new()),
             ),
             (
                 "str",
@@ -432,6 +490,7 @@ impl TypeChecker {
             errors: Vec::new(),
             warnings: Vec::new(),
             mut_env: vec![HashMap::default()],
+            narrow_env: vec![HashMap::default()],
             field_types: HashMap::default(),
             enum_variants,
             enum_defs: HashMap::default(),
@@ -475,14 +534,19 @@ impl TypeChecker {
     pub(super) fn enter_scope(&mut self) {
         self.type_env.push(HashMap::default());
         self.mut_env.push(HashMap::default());
+        self.narrow_env.push(HashMap::default());
     }
 
     pub(super) fn leave_scope(&mut self) {
         self.type_env.pop();
         self.mut_env.pop();
+        self.narrow_env.pop();
     }
 
     pub(super) fn define_type(&mut self, name: &str, ty: Type, is_mut: bool) {
+        // A fresh binding invalidates any narrow fact recorded for a prior
+        // binding of the same name (shadowing).
+        self.kill_narrow(name);
         if let Some(scope) = self.type_env.last_mut() {
             scope.insert(name.to_string(), ty);
         }
@@ -492,8 +556,11 @@ impl TypeChecker {
     }
 
     pub(super) fn lookup_type(&self, name: &str) -> Option<Type> {
-        for scope in self.type_env.iter().rev() {
-            if let Some(ty) = scope.get(name) {
+        for i in (0..self.type_env.len()).rev() {
+            if let Some(ty) = self.narrow_env.get(i).and_then(|scope| scope.get(name)) {
+                return Some(ty.clone());
+            }
+            if let Some(ty) = self.type_env[i].get(name) {
                 return Some(ty.clone());
             }
         }
@@ -821,6 +888,67 @@ impl TypeChecker {
         }
     }
 
+    /// Resolves `type Name = TypeExpr` aliases to real `Type`s and defines them
+    /// like any other type name (no nominal identity). Runs after struct/enum/
+    /// trait names are hoisted so aliases may reference them, and before struct
+    /// field hoisting so fields may reference aliases in turn.
+    fn hoist_type_aliases(&mut self, stmts: &[Stmt]) {
+        let mut raw: HashMap<String, (TypeExpr, crate::span::Span)> = HashMap::default();
+        for stmt in stmts {
+            if let StmtKind::TypeAlias {
+                name,
+                name_span,
+                target,
+            } = &stmt.kind
+            {
+                raw.insert(name.clone(), (target.clone(), *name_span));
+            }
+        }
+        if raw.is_empty() {
+            return;
+        }
+        let mut marks: HashMap<String, AliasMark> = HashMap::default();
+        let names: Vec<String> = raw.keys().cloned().collect();
+        for name in names {
+            self.resolve_alias(&name, &raw, &mut marks);
+        }
+    }
+
+    fn resolve_alias(
+        &mut self,
+        name: &str,
+        raw: &HashMap<String, (TypeExpr, crate::span::Span)>,
+        marks: &mut HashMap<String, AliasMark>,
+    ) {
+        let Some((target, span)) = raw.get(name) else {
+            return;
+        };
+        match marks.get(name) {
+            Some(AliasMark::Done) => return,
+            Some(AliasMark::Visiting) => {
+                self.errors.push(SemanticError::rich(
+                    crate::compile::errors::Diagnostic::error(
+                        "E0426",
+                        format!("type alias `{name}` refers to itself"),
+                        *span,
+                    )
+                    .label("cycle detected here"),
+                ));
+                self.define_type(name, Type::Any, false);
+                marks.insert(name.to_string(), AliasMark::Done);
+                return;
+            }
+            None => {}
+        }
+        marks.insert(name.to_string(), AliasMark::Visiting);
+        for dep in alias_deps(target, raw) {
+            self.resolve_alias(&dep, raw, marks);
+        }
+        let resolved = self.resolve_type_expr(target);
+        self.define_type(name, resolved, false);
+        marks.insert(name.to_string(), AliasMark::Done);
+    }
+
     fn hoist_struct_fields(&mut self, stmts: &[Stmt]) {
         for stmt in stmts {
             if let crate::parser::StmtKind::Struct {
@@ -850,6 +978,7 @@ impl TypeChecker {
 
     pub fn check_program(&mut self, program: &Program) {
         self.hoist_types(&program.stmts);
+        self.hoist_type_aliases(&program.stmts);
         self.hoist_struct_fields(&program.stmts);
         self.hoist_fn_signatures(None, &program.stmts);
 

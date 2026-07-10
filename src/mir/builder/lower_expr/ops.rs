@@ -161,6 +161,54 @@ impl<'a> MirBuilder<'a> {
             }
         }
 
+        // Derived structural `==`/`!=`: the checker only allows this when both
+        // sides resolve to the same aggregate type (or one side is `None`,
+        // handled above as a raw sentinel test), so the left operand's
+        // descriptor is valid for both.
+        if matches!(op, crate::parser::BinOp::Eq | crate::parser::BinOp::NotEq) {
+            let l_ty = self.get_type(left.id);
+            let needs_structural = |t: &Type| {
+                matches!(
+                    t,
+                    Type::Struct(..)
+                        | Type::Enum(..)
+                        | Type::Tuple(_)
+                        | Type::List(_)
+                        | Type::Set(_)
+                        | Type::Dict(_, _)
+                )
+            };
+            if needs_structural(&l_ty) || needs_structural(&r_ty) {
+                let l_op = self.lower_expr_as_copy(left);
+                let r_op = self.lower_expr_as_copy(right);
+                let call_tmp = self.new_local(Type::Bool, None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        call_tmp,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(
+                                "__olive_eq_typed".to_string(),
+                            )),
+                            args: vec![l_op, r_op],
+                        },
+                    ),
+                    span,
+                );
+                if matches!(op, crate::parser::BinOp::Eq) {
+                    return self.operand_for_local(call_tmp);
+                }
+                let not_tmp = self.new_local(Type::Bool, None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        not_tmp,
+                        Rvalue::UnaryOp(crate::parser::UnaryOp::Not, Operand::Copy(call_tmp)),
+                    ),
+                    span,
+                );
+                return self.operand_for_local(not_tmp);
+            }
+        }
+
         // Membership in an `[Any]`/`{Any}` compares the needle word against the
         // stored element words. A scalar element is boxed on the way in, so the
         // needle is boxed the same way; equal inline scalars share one word and
@@ -467,6 +515,21 @@ impl<'a> MirBuilder<'a> {
             span,
         );
         self.operand_for_local(tmp)
+    }
+
+    /// Whether a dict key / set element needs structural hash+eq (the same
+    /// rule the checker's derived `==` uses) instead of the fast raw-word
+    /// path `classify_key` already handles for scalars/strings.
+    pub(crate) fn type_needs_structural_key(ty: &Type) -> bool {
+        matches!(
+            ty,
+            Type::Struct(..)
+                | Type::Enum(..)
+                | Type::Tuple(_)
+                | Type::List(_)
+                | Type::Set(_)
+                | Type::Dict(_, _)
+        )
     }
 
     /// Whether list elements own heap data (double-frees if shared across lists).

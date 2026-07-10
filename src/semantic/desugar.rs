@@ -167,7 +167,7 @@ fn bare_expr(expr: &mut Expr, nullary: &FxHashSet<String>) {
             bare_expr(obj, nullary);
             bare_expr(index, nullary);
         }
-        ExprKind::Attr { obj, .. } => bare_expr(obj, nullary),
+        ExprKind::Attr { obj, .. } | ExprKind::OptAttr { obj, .. } => bare_expr(obj, nullary),
         ExprKind::ListComp { elt, clauses } | ExprKind::SetComp { elt, clauses } => {
             bare_expr(elt, nullary);
             bare_clauses(clauses, nullary);
@@ -400,7 +400,8 @@ fn refresh_stmt(stmt: &mut Stmt) {
         | StmtKind::Import { .. }
         | StmtKind::NativeImport { .. }
         | StmtKind::FromImport { .. }
-        | StmtKind::PyImport { .. } => {}
+        | StmtKind::PyImport { .. }
+        | StmtKind::TypeAlias { .. } => {}
     }
 }
 
@@ -456,7 +457,7 @@ fn refresh_expr(expr: &mut Expr) {
             refresh_expr(obj);
             refresh_expr(index);
         }
-        ExprKind::Attr { obj, .. } => refresh_expr(obj),
+        ExprKind::Attr { obj, .. } | ExprKind::OptAttr { obj, .. } => refresh_expr(obj),
         ExprKind::ListComp { elt, clauses } | ExprKind::SetComp { elt, clauses } => {
             refresh_expr(elt);
             refresh_clauses(clauses);

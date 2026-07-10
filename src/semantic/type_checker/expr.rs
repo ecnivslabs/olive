@@ -870,7 +870,102 @@ impl TypeChecker {
                     return Type::Fn(vec![], Box::new(Type::Bool), Vec::new());
                 }
 
+                // A concrete scalar has no fields or methods left to try: falling
+                // through to `fresh_var()` here used to accept the access silently
+                // and crash at runtime, treating the raw scalar as an object pointer.
+                if matches!(
+                    current_obj,
+                    Type::Int
+                        | Type::I32
+                        | Type::I16
+                        | Type::I8
+                        | Type::U64
+                        | Type::U32
+                        | Type::U16
+                        | Type::U8
+                        | Type::Float
+                        | Type::F32
+                        | Type::Bool
+                        | Type::Null
+                        | Type::IntegerLiteral(_)
+                        | Type::FloatLiteral(_)
+                ) {
+                    self.errors.push(super::super::error::SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0422",
+                            format!("no field or method `{attr}` on `{current_obj}`"),
+                            expr.span,
+                        )
+                        .label("not found"),
+                    ));
+                }
+
                 self.fresh_var()
+            }
+
+            ExprKind::OptAttr { obj, attr } => {
+                let obj_ty = self.check_expr(obj);
+                let resolved_obj = self.apply_subst(obj_ty);
+                let is_none_union =
+                    matches!(&resolved_obj, Type::Union(members) if members.contains(&Type::Null));
+                if !is_none_union {
+                    self.errors.push(super::super::error::SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0404",
+                            "receiver of `?.` can never be `None`",
+                            expr.span,
+                        )
+                        .label("this type has no `None` member")
+                        .help("use plain `.` here"),
+                    ));
+                    return self.fresh_var();
+                }
+                let narrowed = self.non_null_member(&resolved_obj).unwrap_or(Type::Any);
+
+                let mut inner = narrowed.clone();
+                while let Type::Ref(i) | Type::MutRef(i) = &inner {
+                    inner = *i.clone();
+                }
+
+                let result = if let Type::Struct(ref struct_name, ref type_args, _) = inner {
+                    let mangled = format!("{}::{}", struct_name, attr);
+                    if let Some(ty) = self.lookup_type(&mangled) {
+                        self.instantiate(ty)
+                    } else if let Some(ty) = self
+                        .field_types
+                        .get(&(struct_name.clone(), attr.clone()))
+                        .cloned()
+                    {
+                        let subst = self.get_struct_subst(struct_name, type_args);
+                        self.replace_params_with_vars(ty, &subst)
+                    } else {
+                        self.errors.push(super::super::error::SemanticError::rich(
+                            crate::compile::errors::Diagnostic::error(
+                                "E0422",
+                                format!("no field or method `{attr}` on `{struct_name}`"),
+                                expr.span,
+                            )
+                            .label("not found"),
+                        ));
+                        self.fresh_var()
+                    }
+                } else {
+                    self.errors.push(super::super::error::SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0404",
+                            format!("`?.` is not supported on `{narrowed}`"),
+                            expr.span,
+                        )
+                        .label("optional chaining supports struct fields and methods"),
+                    ));
+                    self.fresh_var()
+                };
+
+                match &result {
+                    Type::Union(members) if members.contains(&Type::Null) => result,
+                    Type::Null => result,
+                    other => Type::Union(vec![other.clone(), Type::Null]),
+                }
             }
 
             ExprKind::ListComp { elt, clauses } => {
@@ -1444,12 +1539,13 @@ impl TypeChecker {
                 if l_resolved == Type::Any || r_resolved == Type::Any {
                     return Type::Any;
                 }
-                // Union operands must be narrowed before arithmetic/bitwise
-                // operations.
-                fn is_non_null_union(t: &Type) -> bool {
-                    matches!(t, Type::Union(members) if !members.iter().any(|m| *m == Type::Null))
+                // Union operands (None-unions included) must be narrowed
+                // before arithmetic/bitwise operations; `==`/`!=` against
+                // `None` is a separate arm and unaffected by this check.
+                fn is_unnarrowed_union(t: &Type) -> bool {
+                    matches!(t, Type::Union(_))
                 }
-                if is_non_null_union(&l_resolved) || is_non_null_union(&r_resolved) {
+                if is_unnarrowed_union(&l_resolved) || is_unnarrowed_union(&r_resolved) {
                     self.errors.push(super::super::error::SemanticError::rich(
                         crate::compile::errors::Diagnostic::error(
                             "E0404",
@@ -1464,21 +1560,45 @@ impl TypeChecker {
                 self.apply_subst(l.clone())
             }
             BinOp::Eq | BinOp::NotEq => {
-                // Comparing a struct with None is a null check (allowed);
-                // comparing two structs or a struct with a non-null value is structural (rejected).
-                let l_is_struct = matches!(&l_resolved, Type::Struct(..));
-                let r_is_struct = matches!(&r_resolved, Type::Struct(..));
+                // Comparing an aggregate with `None` is a null check (its own
+                // arm elsewhere handles the raw sentinel test); comparing two
+                // aggregates is structural, derived like Python's `[1,2] ==
+                // [1,2]`. A struct/enum field, tuple element, or collection
+                // member with no defined `==` (a function or a future) makes
+                // the whole comparison a compile error naming the type.
                 let l_is_null = matches!(&l_resolved, Type::Null);
                 let r_is_null = matches!(&r_resolved, Type::Null);
-                if (l_is_struct && !r_is_null) || (r_is_struct && !l_is_null) {
-                    self.errors.push(super::super::error::SemanticError::rich(
-                        crate::compile::errors::Diagnostic::error(
-                            "E0404",
-                            "cannot compare structs with `==` yet",
-                            span,
-                        )
-                        .label("structural equality is planned for a future phase"),
-                    ));
+                let needs_structural = |t: &Type| {
+                    matches!(
+                        t,
+                        Type::Struct(..)
+                            | Type::Enum(..)
+                            | Type::Tuple(_)
+                            | Type::List(_)
+                            | Type::Set(_)
+                            | Type::Dict(_, _)
+                    )
+                };
+                if (needs_structural(&l_resolved) && !r_is_null)
+                    || (needs_structural(&r_resolved) && !l_is_null)
+                {
+                    // `unify`, not a raw `!=`: unresolved literal type
+                    // variables (`[1, 2, 3]`'s element type before it settles
+                    // on `int`) are structurally distinct `Type` values that
+                    // still must unify. Its own diagnostic covers a genuine
+                    // mismatch (`[int]` vs `[str]`).
+                    self.unify(l, r, span);
+                    let unified = self.apply_subst(l.clone());
+                    if !self.type_supports_eq(&unified) {
+                        self.errors.push(super::super::error::SemanticError::rich(
+                            crate::compile::errors::Diagnostic::error(
+                                "E0404",
+                                format!("`{unified}` has no defined `==`"),
+                                span,
+                            )
+                            .label("a field, element, or payload here has no defined `==`"),
+                        ));
+                    }
                 }
                 Type::Bool
             }
@@ -1507,23 +1627,9 @@ impl TypeChecker {
                 if l_resolved == Type::Any || r_resolved == Type::Any {
                     return Type::Any;
                 }
-                let non_null_l = match &l_resolved {
-                    Type::Union(members) => {
-                        let filtered: Vec<Type> = members
-                            .iter()
-                            .filter(|m| **m != Type::Null)
-                            .cloned()
-                            .collect();
-                        if filtered.len() == 1 {
-                            filtered.into_iter().next().unwrap()
-                        } else if filtered.is_empty() {
-                            r_resolved.clone()
-                        } else {
-                            Type::Union(filtered)
-                        }
-                    }
-                    Type::Null => return r_resolved.clone(),
-                    other => other.clone(),
+                let non_null_l = match self.non_null_member(&l_resolved) {
+                    Some(t) => t,
+                    None => return r_resolved.clone(),
                 };
                 if non_null_l == r_resolved {
                     non_null_l

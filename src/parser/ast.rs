@@ -293,6 +293,11 @@ pub enum ExprKind {
         obj: Box<Expr>,
         attr: String,
     },
+    /// `obj?.attr`: skips the access and yields `None` when `obj` is `None`.
+    OptAttr {
+        obj: Box<Expr>,
+        attr: String,
+    },
 
     List(Vec<Expr>),
     Tuple(Vec<Expr>),
@@ -526,6 +531,11 @@ pub enum StmtKind {
     ExprStmt(Expr),
     UnsafeBlock(Vec<Stmt>),
     Defer(Expr),
+    TypeAlias {
+        name: String,
+        name_span: Span,
+        target: TypeExpr,
+    },
 }
 
 #[derive(Debug, Clone)]

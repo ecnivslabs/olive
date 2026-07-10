@@ -356,6 +356,24 @@ impl Lexer {
         Ok(self.make_tok(TokenKind::String, s, line, col, start))
     }
 
+    /// Consumes a run of digits into `num`, allowing `_` separators. An
+    /// underscore is only consumed between two digits, so a leading,
+    /// trailing, or doubled `_` simply ends the run rather than being eaten.
+    fn read_digit_run(&mut self, num: &mut String, is_digit: impl Fn(char) -> bool) {
+        loop {
+            match self.peek() {
+                Some(c) if is_digit(c) => num.push(self.advance().unwrap()),
+                Some('_')
+                    if num.chars().next_back().is_some_and(&is_digit)
+                        && matches!(self.peek_next(), Some(c) if is_digit(c)) =>
+                {
+                    self.advance();
+                }
+                _ => break,
+            }
+        }
+    }
+
     fn read_number(
         &mut self,
         first: char,
@@ -377,9 +395,7 @@ impl Lexer {
                             end: self.pos,
                         });
                     }
-                    while matches!(self.peek(), Some(c) if c.is_ascii_hexdigit()) {
-                        num.push(self.advance().unwrap());
-                    }
+                    self.read_digit_run(&mut num, |c| c.is_ascii_hexdigit());
                     return Ok(self.make_tok(TokenKind::Integer, num, line, col, start));
                 }
                 Some('o') | Some('O') => {
@@ -394,9 +410,7 @@ impl Lexer {
                             end: self.pos,
                         });
                     }
-                    while matches!(self.peek(), Some(c) if matches!(c, '0'..='7')) {
-                        num.push(self.advance().unwrap());
-                    }
+                    self.read_digit_run(&mut num, |c| matches!(c, '0'..='7'));
                     return Ok(self.make_tok(TokenKind::Integer, num, line, col, start));
                 }
                 Some('b') | Some('B') => {
@@ -411,9 +425,7 @@ impl Lexer {
                             end: self.pos,
                         });
                     }
-                    while matches!(self.peek(), Some('0' | '1')) {
-                        num.push(self.advance().unwrap());
-                    }
+                    self.read_digit_run(&mut num, |c| matches!(c, '0' | '1'));
                     return Ok(self.make_tok(TokenKind::Integer, num, line, col, start));
                 }
                 _ => {}
@@ -423,16 +435,12 @@ impl Lexer {
         let mut num = String::from(first);
         let mut is_float = false;
 
-        while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
-            num.push(self.advance().unwrap());
-        }
+        self.read_digit_run(&mut num, |c| c.is_ascii_digit());
 
         if self.peek() == Some('.') && matches!(self.peek_next(), Some(c) if c.is_ascii_digit()) {
             is_float = true;
             num.push(self.advance().unwrap());
-            while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
-                num.push(self.advance().unwrap());
-            }
+            self.read_digit_run(&mut num, |c| c.is_ascii_digit());
         }
 
         if matches!(self.peek(), Some('e') | Some('E')) {
@@ -450,9 +458,7 @@ impl Lexer {
                     end: self.pos,
                 });
             }
-            while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
-                num.push(self.advance().unwrap());
-            }
+            self.read_digit_run(&mut num, |c| c.is_ascii_digit());
         }
 
         Ok(self.make_tok(
@@ -863,6 +869,9 @@ impl Lexer {
                     if self.peek() == Some('?') {
                         self.advance();
                         self.make_tok(TokenKind::QuestionQuestion, "??", line, col, start)
+                    } else if self.peek() == Some('.') {
+                        self.advance();
+                        self.make_tok(TokenKind::QuestionDot, "?.", line, col, start)
                     } else {
                         self.make_tok(TokenKind::Question, "?", line, col, start)
                     }

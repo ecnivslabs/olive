@@ -42,6 +42,9 @@ impl<M: Module> CraneliftCodegen<M> {
         string_ids: &HashMap<String, DataId>,
         module: &mut M,
         func_ids: &HashMap<String, FuncId>,
+        struct_fields: &HashMap<String, Vec<String>>,
+        field_types: &HashMap<(String, String), OliveType>,
+        enum_defs: &HashMap<String, Vec<(String, Vec<OliveType>)>>,
         kind: &AggregateKind,
         ops: &[Operand],
         reuse: Option<(Local, Value, bool)>,
@@ -65,9 +68,32 @@ impl<M: Module> CraneliftCodegen<M> {
                     builder.inst_results(inst)[0]
                 };
 
+                // A struct/enum/tuple/collection key needs the same
+                // structural hash+eq `==` derives; every key literal shares
+                // one static type, so the descriptor is built once.
+                let key_desc_ptr = ops.first().and_then(|first_key| {
+                    let key_ty = super::imports::operand_static_type(first_key, func_mir);
+                    super::imports::needs_structural_key(&key_ty).then(|| {
+                        let desc = super::imports::type_descriptor(
+                            &key_ty,
+                            struct_fields,
+                            field_types,
+                            enum_defs,
+                        );
+                        let data_id = *string_ids
+                            .get(&desc)
+                            .expect("dict key descriptor not interned during collection");
+                        let local_data = module.declare_data_in_func(data_id, builder.func);
+                        builder.ins().symbol_value(types::I64, local_data)
+                    })
+                });
                 let set_id = func_ids
-                    .get("__olive_obj_set")
-                    .expect("missing __olive_obj_set");
+                    .get(if key_desc_ptr.is_some() {
+                        "__olive_obj_set_typed"
+                    } else {
+                        "__olive_obj_set"
+                    })
+                    .expect("missing obj_set variant");
                 let set_func = module.declare_func_in_func(*set_id, builder.func);
 
                 for i in (0..ops.len()).step_by(2) {
@@ -83,7 +109,16 @@ impl<M: Module> CraneliftCodegen<M> {
                         func_ids,
                         &ops[i + 1],
                     );
-                    builder.ins().call(set_func, &[dict_ptr, key, val]);
+                    match key_desc_ptr {
+                        Some(desc_ptr) => {
+                            builder
+                                .ins()
+                                .call(set_func, &[dict_ptr, key, val, desc_ptr]);
+                        }
+                        None => {
+                            builder.ins().call(set_func, &[dict_ptr, key, val]);
+                        }
+                    }
                 }
                 dict_ptr
             }
@@ -144,16 +179,45 @@ impl<M: Module> CraneliftCodegen<M> {
                     builder.inst_results(inst)[0]
                 };
 
+                // Same reasoning as the dict key descriptor above, keyed off
+                // the element type instead.
+                let elem_desc_ptr = ops.first().and_then(|first_elem| {
+                    let elem_ty = super::imports::operand_static_type(first_elem, func_mir);
+                    super::imports::needs_structural_key(&elem_ty).then(|| {
+                        let desc = super::imports::type_descriptor(
+                            &elem_ty,
+                            struct_fields,
+                            field_types,
+                            enum_defs,
+                        );
+                        let data_id = *string_ids
+                            .get(&desc)
+                            .expect("set element descriptor not interned during collection");
+                        let local_data = module.declare_data_in_func(data_id, builder.func);
+                        builder.ins().symbol_value(types::I64, local_data)
+                    })
+                });
                 let add_id = func_ids
-                    .get("__olive_set_add")
-                    .expect("missing __olive_set_add");
+                    .get(if elem_desc_ptr.is_some() {
+                        "__olive_set_add_typed"
+                    } else {
+                        "__olive_set_add"
+                    })
+                    .expect("missing set_add variant");
                 let add_func = module.declare_func_in_func(*add_id, builder.func);
 
                 for op in ops {
                     let val = Self::translate_aggregate_elem(
                         func_mir, builder, vars, string_ids, module, func_ids, op,
                     );
-                    builder.ins().call(add_func, &[set_ptr, val]);
+                    match elem_desc_ptr {
+                        Some(desc_ptr) => {
+                            builder.ins().call(add_func, &[set_ptr, val, desc_ptr]);
+                        }
+                        None => {
+                            builder.ins().call(add_func, &[set_ptr, val]);
+                        }
+                    }
                 }
                 set_ptr
             }

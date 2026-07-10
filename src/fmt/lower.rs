@@ -369,6 +369,12 @@ impl<'a> Lowerer<'a> {
                 value,
                 ..
             } => self.binding("const", false, names, type_ann, value),
+            StmtKind::TypeAlias { name, target, .. } => concat_all([
+                text("type "),
+                text(name.clone()),
+                text(" = "),
+                text(target.to_string()),
+            ]),
             StmtKind::Assign { target, value } => concat_all([
                 self.maybe_bare_tuple(target),
                 text(" = "),

@@ -30,8 +30,10 @@ pub mod copy_typed;
 pub mod crypto;
 pub mod datetime;
 pub mod encoding;
+pub mod eq_typed;
 pub mod format;
 pub mod free_typed;
+pub mod hash_typed;
 pub mod io;
 pub mod json;
 pub mod logging;
@@ -63,8 +65,6 @@ pub(crate) const KIND_BYTES: i64 = 6;
 pub(crate) const KIND_PYOBJECT: i64 = 7;
 pub(crate) const KIND_ITER: i64 = 8;
 pub(crate) const KIND_FLOAT: i64 = 11;
-pub(crate) const KIND_BOOL: i64 = 12;
-pub(crate) const KIND_NULL: i64 = 13;
 pub(crate) const KIND_INT: i64 = 14;
 
 /// Whether `val` points at a live runtime object: a slab body or a
@@ -85,9 +85,14 @@ pub struct StableVec {
 pub struct OliveStringKey(pub i64);
 
 /// How a dict/set key word is identified. A scalar is hashed and compared by
-/// its value so that the same key reaches the same entry whether it arrives raw
-/// (a bare int from a literal) or boxed (an `Any`-typed variable carrying a
-/// `KIND_INT` box); a boxed scalar is never matched by its heap address.
+/// its value; a boxed scalar is never matched by its heap address. A given
+/// dict/set's key type is fixed and never mixes a concrete scalar (always
+/// raw) with `Any` (always tagged/boxed by `box_into_any` before it gets
+/// here), so classifying every non-pointer, non-string word as one uniform
+/// raw class is injective within any single container -- no separate inline
+/// tag check needed, and (see `classify_key`) an inline `Any` tag bit
+/// pattern is bit-identical to a valid raw concrete int of the same value,
+/// which a tag check cannot tell apart.
 enum KeyClass {
     Str(&'static str),
     Scalar(i64, i64),
@@ -95,29 +100,21 @@ enum KeyClass {
 }
 
 fn classify_key(v: i64) -> KeyClass {
-    // Inline immediates are checked before the string heuristic so a large odd
-    // integer is never misread as a tagged pointer.
-    match v & boxed::TAG_MASK {
-        boxed::TAG_INT => return KeyClass::Scalar(KIND_INT, v >> 3),
-        boxed::TAG_BOOL => return KeyClass::Scalar(KIND_BOOL, v >> 3),
-        boxed::TAG_NULL => return KeyClass::Scalar(KIND_NULL, 0),
-        _ => {}
-    }
     if v & 1 == 1 && (v & !1) > 0x10000 {
         return KeyClass::Str(olive_str_as_str(v).unwrap_or(""));
     }
     if is_active_object(v) {
         let kind = unsafe { *(v as *const i64) };
         if matches!(kind, KIND_INT | KIND_FLOAT) {
-            // A heap-boxed (out-of-range) int collapses to the same class as an
-            // inline int of equal value, so equal keys hash and compare alike.
             let b = unsafe { &*(v as *const boxed::OliveBoxed) };
             return KeyClass::Scalar(kind, b.bits);
         }
         return KeyClass::Raw(v);
     }
-    // A bare non-pointer word is a raw integer (a concrete int key or `0`);
-    // normalize it to the int class so it matches its inline form.
+    // A bare non-pointer word: a raw scalar (concrete int/bool/`None`, or an
+    // `Any`-tagged inline int/bool/`None`). Either way, equal words are the
+    // same key and distinct words are distinct keys, which is all a single,
+    // uniformly-typed container ever needs.
     KeyClass::Scalar(KIND_INT, v)
 }
 
@@ -129,6 +126,14 @@ impl PartialEq for OliveStringKey {
         match (classify_key(self.0), classify_key(other.0)) {
             (KeyClass::Str(a), KeyClass::Str(b)) => a == b,
             (KeyClass::Scalar(ka, va), KeyClass::Scalar(kb, vb)) => ka == kb && va == vb,
+            // A struct/enum key under an active typed dict/set op compares
+            // structurally, the same rule `==` derives; outside one (an
+            // untyped `Any`-keyed container) two distinct pointers already
+            // failed the `self.0 == other.0` shortcut above, so no match.
+            (KeyClass::Raw(a), KeyClass::Raw(b)) => {
+                let desc = crate::hash_typed::active_key_descriptor();
+                desc != 0 && crate::eq_typed::eq_key(a, b, desc)
+            }
             _ => false,
         }
     }
@@ -142,7 +147,7 @@ impl std::hash::Hash for OliveStringKey {
                 kind.hash(state);
                 bits.hash(state);
             }
-            KeyClass::Raw(v) => v.hash(state),
+            KeyClass::Raw(v) => crate::hash_typed::hash_key(v).hash(state),
         }
     }
 }
@@ -168,7 +173,7 @@ pub struct OliveHashSet {
     pub ptr: *mut i64,
     pub cap: usize,
     pub len: usize,
-    pub inner: *mut FxHashSet<i64>,
+    pub inner: *mut FxHashSet<OliveStringKey>,
 }
 
 #[unsafe(no_mangle)]
@@ -876,7 +881,7 @@ pub extern "C" fn olive_in_list(val: i64, list_ptr: i64) -> i64 {
     let kind = unsafe { *(list_ptr as *const i64) };
     if kind == KIND_SET {
         let s = unsafe { &*(list_ptr as *const OliveHashSet) };
-        return if unsafe { (*s.inner).contains(&val) } {
+        return if unsafe { (*s.inner).contains(&OliveStringKey(val)) } {
             1
         } else {
             0

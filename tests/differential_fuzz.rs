@@ -37,6 +37,8 @@ impl Gen {
         let struct_val = self.range(1, 100);
         let branch_pick = self.range(0, 3);
         let closure_add = self.range(1, 20);
+        let opt_pick_a = self.range(-10, 10);
+        let opt_pick_b = self.range(-10, 10);
 
         let list_lit = (0..list_len)
             .map(|i| (base + i).to_string())
@@ -109,6 +111,27 @@ fn branch_pick(n: int) -> int:
     else:
         return loop_reassign({loop_n})
 
+fn maybe_box(n: int) -> Box | None:
+    if n > 0:
+        return make_box([n, n, n])
+    return None
+
+fn maybe_list(n: int) -> [int] | None:
+    if n > 0:
+        return [n, n, n]
+    return None
+
+fn guard_len(xs: [int] | None) -> int:
+    // None-union guard: narrowing must let `len` see the plain `[int]`.
+    if xs == None:
+        return -1
+    return len(xs)
+
+fn opt_items_len(b: Box | None) -> int:
+    // `?.` plus `??`: absent receiver or absent field both fall to the default.
+    let items = b?.items ?? []
+    return len(items)
+
 fn main():
     print(moves_and_borrows())
     print(struct_escape())
@@ -116,6 +139,8 @@ fn main():
     print(any_mixing())
     print(nested_closure())
     print(branch_pick({branch_pick}))
+    print(opt_items_len(maybe_box({opt_pick_a})))
+    print(guard_len(maybe_list({opt_pick_b})))
 "#,
             list_lit = list_lit,
             struct_val = struct_val,
@@ -123,6 +148,8 @@ fn main():
             closure_add = closure_add,
             base = base,
             branch_pick = branch_pick,
+            opt_pick_a = opt_pick_a,
+            opt_pick_b = opt_pick_b,
         )
     }
 }

@@ -190,4 +190,69 @@ mod lexer_tests {
             .unwrap();
         assert_eq!(s, "\u{1b}[0m\u{1F600}\0");
     }
+
+    fn first_number_value(src: &str) -> String {
+        Lexer::new(src, 0)
+            .tokenise()
+            .unwrap()
+            .into_iter()
+            .find(|t| matches!(t.kind, TokenKind::Integer | TokenKind::Float))
+            .map(|t| t.value)
+            .unwrap()
+    }
+
+    #[test]
+    fn integer_underscore_separators_are_stripped() {
+        assert_eq!(first_number_value("1_000_000\n"), "1000000");
+    }
+
+    #[test]
+    fn float_underscore_separators_are_stripped() {
+        assert_eq!(first_number_value("1_234.567_8\n"), "1234.5678");
+    }
+
+    #[test]
+    fn hex_octal_binary_underscore_separators_are_stripped() {
+        assert_eq!(first_number_value("0xFF_FF\n"), "0xFFFF");
+        assert_eq!(first_number_value("0o17_17\n"), "0o1717");
+        assert_eq!(first_number_value("0b1010_1010\n"), "0b10101010");
+    }
+
+    #[test]
+    fn exponent_underscore_separators_are_stripped() {
+        assert_eq!(first_number_value("1_0e1_0\n"), "10e10");
+    }
+
+    #[test]
+    fn underscore_span_covers_original_source_length() {
+        // Span math must stay char-correct so fmt can re-slice the original
+        // lexeme (including underscores) rather than the cleaned token value.
+        let toks = Lexer::new("1_000_000\n", 0).tokenise().unwrap();
+        let tok = toks.iter().find(|t| t.kind == TokenKind::Integer).unwrap();
+        assert_eq!(tok.span, (0, 9));
+    }
+
+    #[test]
+    fn leading_underscore_is_not_consumed_into_literal() {
+        // `_123` lexes as an identifier, not an integer with a leading separator.
+        let kinds = tokenise_kinds("_123\n");
+        assert!(!kinds.contains(&TokenKind::Integer));
+        assert!(kinds.contains(&TokenKind::Identifier));
+    }
+
+    #[test]
+    fn trailing_underscore_is_not_consumed_into_literal() {
+        assert_eq!(first_number_value("123_\n"), "123");
+    }
+
+    #[test]
+    fn doubled_underscore_stops_the_literal() {
+        assert_eq!(first_number_value("1__000\n"), "1");
+    }
+
+    #[test]
+    fn underscore_adjacent_to_dot_stops_the_fraction() {
+        // `1_.5`: trailing `_` right before `.` is not consumed.
+        assert_eq!(first_number_value("1_.5\n"), "1");
+    }
 }

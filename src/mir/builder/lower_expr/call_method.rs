@@ -589,10 +589,20 @@ impl<'a> MirBuilder<'a> {
             Type::Set(e) => (**e).clone(),
             _ => return None,
         };
-        let runtime = match attr {
-            "add" => "__olive_set_add",
-            "remove" => "__olive_set_remove",
-            "contains" => "__olive_set_contains",
+        // A struct/enum/tuple/collection element needs the same structural
+        // hash+eq `==` derives, which the plain runtime ops don't have a
+        // type descriptor to compute; the `_typed` variants set it (see
+        // `hash_typed.rs`), the descriptor synthesized at codegen time from
+        // this call's own value argument (arg position 1), same pattern as
+        // `__olive_list_extend_typed`.
+        let structural = Self::type_needs_structural_key(&elem);
+        let runtime = match (attr, structural) {
+            ("add", false) => "__olive_set_add",
+            ("add", true) => "__olive_set_add_typed",
+            ("remove", false) => "__olive_set_remove",
+            ("remove", true) => "__olive_set_remove_typed",
+            ("contains", false) => "__olive_set_contains",
+            ("contains", true) => "__olive_set_contains_typed",
             _ => return None,
         };
         let obj_op = self.lower_expr_as_copy(obj);
@@ -634,19 +644,29 @@ impl<'a> MirBuilder<'a> {
         span: Span,
         expr_id: usize,
     ) -> Option<Operand> {
-        let runtime = match attr {
-            "keys" => "__olive_obj_keys",
-            "values" => "__olive_obj_values",
-            "items" => "__olive_obj_items",
-            "get" if arg_ops.len() == 2 => "__olive_obj_get_default",
-            "get" => "__olive_obj_get",
-            "remove" => "__olive_obj_remove",
-            _ => return None,
-        };
         let mut recv_ty = self.get_type(obj.id);
         while let Type::Ref(inner) | Type::MutRef(inner) = recv_ty {
             recv_ty = *inner;
         }
+        let key_structural = match &recv_ty {
+            Type::Dict(k, _) => Self::type_needs_structural_key(k),
+            _ => false,
+        };
+        // A struct/enum/tuple/collection key needs the structural hash+eq
+        // `==` derives; the `_typed` variants set the descriptor `hash_typed`
+        // consults, synthesized at codegen time from this call's own key
+        // argument (arg position 1), same pattern as set add/remove/contains.
+        let runtime = match (attr, key_structural) {
+            ("keys", _) => "__olive_obj_keys",
+            ("values", _) => "__olive_obj_values",
+            ("items", _) => "__olive_obj_items",
+            ("get", false) if arg_ops.len() == 2 => "__olive_obj_get_default",
+            ("get", true) if arg_ops.len() == 2 => "__olive_obj_get_default_typed",
+            ("get", false) => "__olive_obj_get",
+            ("get", true) => "__olive_obj_get_typed",
+            ("remove", _) => "__olive_obj_remove",
+            _ => return None,
+        };
         let val_ty = match &recv_ty {
             Type::Dict(_, v) => (**v).clone(),
             Type::Any => Type::Any,

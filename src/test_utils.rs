@@ -174,3 +174,24 @@ pub fn call_i64_3(cg: &mut CraneliftCodegen<JITModule>, name: &str, a: i64, b: i
     let _guard = exec_lock();
     f(a, b, c)
 }
+
+/// Runs resolve + typecheck only (no MIR/codegen) and returns the sorted
+/// diagnostic codes produced, for tests asserting a program is rejected
+/// with a specific code rather than asserting a runtime result.
+pub fn check_codes(src: &str) -> Vec<String> {
+    let tokens = Lexer::new(src, 0).tokenise().unwrap();
+    let mut prog = Parser::new(tokens).parse_program().unwrap();
+    crate::semantic::desugar::desugar_trait_defaults(&mut prog);
+    crate::semantic::desugar::desugar_bare_variants(&mut prog);
+    let mut r = Resolver::new();
+    r.resolve_program(&prog);
+    let mut tc = TypeChecker::new();
+    tc.check_program(&prog);
+    tc.errors
+        .iter()
+        .filter_map(|e| match e {
+            crate::semantic::SemanticError::Rich(d) => d.code().map(str::to_string),
+            _ => None,
+        })
+        .collect()
+}

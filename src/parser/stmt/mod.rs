@@ -29,6 +29,13 @@ impl Parser {
             TokenKind::From => self.parse_from_import(),
             TokenKind::Let => self.parse_let(),
             TokenKind::Const => self.parse_const(),
+            TokenKind::Identifier
+                if self.peek().value == "type"
+                    && self.peek_at(1).kind == TokenKind::Identifier
+                    && self.peek_at(2).kind == TokenKind::Equal =>
+            {
+                self.parse_type_alias()
+            }
             TokenKind::At | TokenKind::Hash => self.parse_decorated(),
             TokenKind::Unsafe => self.parse_unsafe_stmt(),
             TokenKind::Defer => self.parse_defer(),

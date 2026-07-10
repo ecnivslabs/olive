@@ -635,6 +635,8 @@ impl<'a> MirBuilder<'a> {
 
             StmtKind::Trait { .. } => {}
 
+            StmtKind::TypeAlias { .. } => {}
+
             StmtKind::Impl {
                 type_params,
                 type_name,

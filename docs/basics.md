@@ -40,6 +40,14 @@ const MAX_RETRIES = 5
 * `None`: The absence of a value. `None` is both the type and its single value, the same word used in a type annotation and in an expression.
 * `Any`: A value of unknown or mixed type, resolved at runtime.
 
+Integer and float literals accept `_` as a digit separator for readability, in decimal, hex, octal, and binary literals alike. It must sit strictly between two digits -- not leading, trailing, doubled, or next to the `.`:
+
+```rust
+let population = 8_100_000_000
+let price = 19_99.99
+let mask = 0xFF_FF_00_00
+```
+
 ### Union Types
 
 You can allow a variable or parameter to accept one of multiple specified types using a union (`|`):
@@ -50,6 +58,28 @@ result = "Error"
 ```
 
 Union types are commonly resolved using pattern matching.
+
+### Type Aliases
+
+`type Name = TypeExpr` gives an existing type a second name. It has no runtime
+identity of its own: the alias and its target are the same type everywhere,
+interchangeably. This is mainly useful for naming a union that would
+otherwise be repeated at every call site:
+
+```rust
+struct ParseError:
+    msg: str
+
+type ParseResult = int | ParseError
+
+fn parse(s: str) -> ParseResult:
+    if s == "":
+        return ParseError("empty input")
+    return len(s)
+```
+
+An alias may reference another alias, but not itself, directly or through a
+cycle (`type A = B` / `type B = A` is a compile error).
 
 ### The `Any` Type
 

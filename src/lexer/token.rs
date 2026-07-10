@@ -93,6 +93,7 @@ pub enum TokenKind {
     DoubleColon,
     Question,
     QuestionQuestion,
+    QuestionDot,
     Hash,
 
     Newline,

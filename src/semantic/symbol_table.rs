@@ -7,6 +7,7 @@ pub enum SymbolKind {
     Function,
     Struct,
     Enum,
+    TypeAlias,
     Parameter,
     LoopVar,
     Import,

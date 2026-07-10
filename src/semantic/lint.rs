@@ -316,6 +316,7 @@ fn collect_refs_stmt(stmt: &Stmt, out: &mut FxHashSet<String>) {
             collect_refs(body, out);
         }
         StmtKind::Trait { methods, .. } => collect_refs(methods, out),
+        StmtKind::TypeAlias { target, .. } => collect_refs_type(target, out),
         StmtKind::Enum { variants, body, .. } => {
             for v in variants {
                 for t in &v.types {
@@ -445,7 +446,7 @@ fn collect_refs_expr(expr: &Expr, out: &mut FxHashSet<String>) {
             collect_refs_expr(obj, out);
             collect_refs_expr(index, out);
         }
-        ExprKind::Attr { obj, .. } => collect_refs_expr(obj, out),
+        ExprKind::Attr { obj, .. } | ExprKind::OptAttr { obj, .. } => collect_refs_expr(obj, out),
         ExprKind::List(elems) | ExprKind::Tuple(elems) | ExprKind::Set(elems) => {
             for e in elems {
                 collect_refs_expr(e, out);

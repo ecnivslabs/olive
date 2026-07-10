@@ -17,15 +17,23 @@ impl Transform for ScalarizeStructs {
             let mut aliases = HashSet::default();
             aliases.insert(candidate);
 
+            let candidate_ty = &func.locals[candidate.0].ty;
             let mut newly_added = true;
             while newly_added {
                 newly_added = false;
                 for bb in &func.basic_blocks {
                     for stmt in &bb.statements {
+                        // A narrowed read retags a `Struct | None` local into a
+                        // same-bits, differently-typed view via a plain `Use`
+                        // (see `lower_identifier_expr`). Alias tracking must not
+                        // walk through that: the view's type no longer matches
+                        // the struct-alloc origin, so treating it as the same
+                        // aggregate corrupts the field map below.
                         if let StatementKind::Assign(dst, Rvalue::Use(op)) = &stmt.kind
                             && let Some(src) = operand_local(op)
                             && aliases.contains(&src)
                             && !aliases.contains(dst)
+                            && &func.locals[dst.0].ty == candidate_ty
                         {
                             aliases.insert(*dst);
                             newly_added = true;
@@ -707,6 +715,10 @@ mod tests {
             )],
             TerminatorKind::Return,
         )]);
+        f.locals = vec![local_decl(crate::semantic::types::Type::Dict(
+            Box::new(crate::semantic::types::Type::Str),
+            Box::new(crate::semantic::types::Type::Int),
+        ))];
         // Just ensure it runs without panicking
         ScalarizeStructs.run(&mut f);
     }
