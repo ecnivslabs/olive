@@ -14,7 +14,11 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 // a single read may block: a connection that's actively delivering chunks
 // never trips this, one that's gone dead does.
 const STREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-const STREAM_READ_TIMEOUT: Duration = Duration::from_secs(60);
+// 10 minutes: streaming LLM completions can sit idle for minutes between
+// chunks (provider "thinking" gaps), so a shorter bound would kill live
+// streams. This only bounds idle time between bytes, not total response
+// length, so a dead-but-half-open connection is still cut.
+const STREAM_READ_TIMEOUT: Duration = Duration::from_secs(600);
 
 fn stream_agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();

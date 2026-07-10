@@ -7,7 +7,7 @@ use cranelift_module::Module;
 use rustc_hash::FxHashMap as HashMap;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub(crate) struct FunctionProfile {
     pub(crate) hotcount: i64,
     /// Kind-history byte per site, source order; same encoding as `std_lib`'s runtime.
@@ -17,6 +17,12 @@ pub(crate) struct FunctionProfile {
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(crate) struct Profile {
     pub(crate) functions: HashMap<String, FunctionProfile>,
+    /// Fingerprint of the compiler that recorded this profile (0 when the
+    /// field is absent, i.e. profiles from before it existed). Sites are
+    /// positional per function, and a different compiler can reorder them
+    /// for identical source, so a mismatched profile must not be applied.
+    #[serde(default)]
+    pub(crate) toolchain: u64,
 }
 
 impl CraneliftCodegen<JITModule> {
@@ -49,15 +55,24 @@ impl CraneliftCodegen<JITModule> {
             functions.entry(name).or_default().any_add_sites = sites;
         }
 
-        Profile { functions }
+        Profile {
+            functions,
+            toolchain: crate::compile::cache::toolchain_fingerprint(),
+        }
     }
 }
 
 impl<M: Module> CraneliftCodegen<M> {
     /// Seeds `specialize_sites` before `generate()`. Site-count mismatch (stale
     /// profile, source changed) skips that function entirely, not partially.
+    /// A profile recorded by a different compiler is rejected outright: site
+    /// positions are only stable per toolchain, so count equality does not
+    /// mean the sites mean the same thing.
     /// Returns count applied, so a caller can report a real number.
     pub(crate) fn apply_profile(&mut self, profile: &Profile) -> usize {
+        if profile.toolchain != crate::compile::cache::toolchain_fingerprint() {
+            return 0;
+        }
         let (_, ranges) = self.count_any_add_sites();
         let mut applied = 0;
         for (name, (start, end)) in ranges {
@@ -123,6 +138,7 @@ mod tests {
                     any_add_sites: vec![8],
                 },
             )]),
+            toolchain: crate::compile::cache::toolchain_fingerprint(),
         };
         let mut cg = compile_minimal_aot(SRC);
         assert_eq!(cg.apply_profile(&profile), 1);
@@ -139,6 +155,7 @@ mod tests {
                     any_add_sites: vec![3],
                 },
             )]),
+            toolchain: crate::compile::cache::toolchain_fingerprint(),
         };
         let mut cg = compile_minimal_aot(SRC);
         assert_eq!(cg.apply_profile(&profile), 0);
@@ -156,10 +173,68 @@ mod tests {
                     any_add_sites: vec![8, 8],
                 },
             )]),
+            toolchain: crate::compile::cache::toolchain_fingerprint(),
         };
         let mut cg = compile_minimal_aot(SRC);
         assert_eq!(cg.apply_profile(&profile), 0);
         assert!(cg.specialize_sites.is_empty());
+    }
+
+    #[test]
+    fn apply_profile_rejects_foreign_toolchain() {
+        let profile = Profile {
+            functions: HashMap::from_iter([(
+                "f".to_string(),
+                FunctionProfile {
+                    hotcount: 1000,
+                    any_add_sites: vec![8],
+                },
+            )]),
+            toolchain: crate::compile::cache::toolchain_fingerprint() ^ 1,
+        };
+        let mut cg = compile_minimal_aot(SRC);
+        assert_eq!(cg.apply_profile(&profile), 0);
+        assert!(cg.specialize_sites.is_empty());
+    }
+
+    #[test]
+    fn apply_profile_rejects_legacy_profile_without_toolchain() {
+        // A profile recorded before the field existed deserializes with
+        // toolchain 0; site positions from another compiler era must not
+        // be applied even when the counts happen to match.
+        let mut current = compile_minimal(SRC);
+        for i in 0..10i64 {
+            call_i64_1(&mut current, "driver", i);
+        }
+        let profile = current.export_profile();
+        let legacy = Profile {
+            functions: profile.functions.clone(),
+            toolchain: 0,
+        };
+        let mut cg = compile_minimal_aot(SRC);
+        assert_eq!(cg.apply_profile(&legacy), 0);
+        assert!(cg.specialize_sites.is_empty());
+    }
+
+    #[test]
+    fn round_trip_preserves_toolchain() {
+        let mut cg = compile_minimal(SRC);
+        for i in 0..10i64 {
+            call_i64_1(&mut cg, "driver", i);
+        }
+        let json = serde_json::to_string(&cg.export_profile()).unwrap();
+        let restored: Profile = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            restored.toolchain,
+            crate::compile::cache::toolchain_fingerprint()
+        );
+    }
+
+    #[test]
+    fn deserialized_profile_without_field_gets_zero() {
+        let json = r#"{"functions":{}}"#;
+        let restored: Profile = serde_json::from_str(json).unwrap();
+        assert_eq!(restored.toolchain, 0);
     }
 
     #[test]
@@ -172,6 +247,7 @@ mod tests {
                     any_add_sites: vec![8],
                 },
             )]),
+            toolchain: crate::compile::cache::toolchain_fingerprint(),
         };
         let mut cg = compile_minimal_aot(SRC);
         assert_eq!(cg.apply_profile(&profile), 0);

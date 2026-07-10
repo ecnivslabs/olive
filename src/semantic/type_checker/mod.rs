@@ -155,6 +155,10 @@ pub struct TypeChecker {
     // expected type for the next checked expression; consumed once in
     // `infer_expr`. Lets an annotation drive a collection literal.
     pub(super) expected: Option<Type>,
+    // top-level module aliases bound by `import`/native `import "..." as`.
+    // `alias.fn(..)` on one of these is a module free-function call: its
+    // signature never carries an implicit `self` parameter.
+    pub(super) imported_modules: HashSet<String>,
 }
 
 impl Default for TypeChecker {
@@ -604,6 +608,7 @@ impl TypeChecker {
             py_explicit_modules: HashSet::default(),
             py_alias_module: HashMap::default(),
             expected: None,
+            imported_modules: HashSet::default(),
         }
     }
 
@@ -1035,6 +1040,24 @@ impl TypeChecker {
         marks.insert(name.to_string(), AliasMark::Done);
     }
 
+    fn hoist_import_aliases(&mut self, stmts: &[Stmt]) {
+        for stmt in stmts {
+            match &stmt.kind {
+                crate::parser::StmtKind::Import { module, alias } => {
+                    let name = alias
+                        .clone()
+                        .or_else(|| module.last().cloned())
+                        .unwrap_or_default();
+                    self.imported_modules.insert(name);
+                }
+                crate::parser::StmtKind::NativeImport { alias, .. } => {
+                    self.imported_modules.insert(alias.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn hoist_struct_fields(&mut self, stmts: &[Stmt]) {
         for stmt in stmts {
             if let crate::parser::StmtKind::Struct {
@@ -1066,6 +1089,7 @@ impl TypeChecker {
         self.hoist_types(&program.stmts);
         self.hoist_type_aliases(&program.stmts);
         self.hoist_struct_fields(&program.stmts);
+        self.hoist_import_aliases(&program.stmts);
         self.hoist_fn_signatures(None, &program.stmts);
 
         for stmt in &program.stmts {

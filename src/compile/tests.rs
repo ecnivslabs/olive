@@ -124,6 +124,53 @@ mod compile_pipeline_tests {
     }
 
     #[test]
+    fn pipeline_module_fn_missing_arg_rejected() {
+        let dir = TempDir::new();
+        let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+
+        let mod_name = format!("arity_helper_{id}");
+        let mod_path = dir.join(format!("{mod_name}.liv"));
+        std::fs::write(
+            &mod_path,
+            "fn pick(a: i64, b: i64, c: i64) -> i64:\n    return a + b + c\n",
+        )
+        .unwrap();
+
+        let main_path = dir.join(format!("main_{id}.liv"));
+        let main_src =
+            format!("import {mod_name}\nfn main():\n    let x = {mod_name}.pick(1, 2)\n");
+        std::fs::write(&main_path, &main_src).unwrap();
+
+        let result = run_pipeline(main_path.to_str().unwrap());
+        assert!(
+            result.is_err(),
+            "module fn called with one argument short must be rejected, not stripped of its first parameter"
+        );
+    }
+
+    #[test]
+    fn pipeline_module_fn_full_args_compiles() {
+        let dir = TempDir::new();
+        let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+
+        let mod_name = format!("arity_ok_{id}");
+        let mod_path = dir.join(format!("{mod_name}.liv"));
+        std::fs::write(
+            &mod_path,
+            "fn pick(a: i64, b: i64, c: i64) -> i64:\n    return a + b + c\n",
+        )
+        .unwrap();
+
+        let main_path = dir.join(format!("main_{id}.liv"));
+        let main_src =
+            format!("import {mod_name}\nfn main():\n    let x = {mod_name}.pick(1, 2, 3)\n");
+        std::fs::write(&main_path, &main_src).unwrap();
+
+        let result = run_pipeline(main_path.to_str().unwrap());
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn pipeline_syntax_error_reported() {
         let f = TempFile::new("let x =\n");
         let result = run_pipeline(f.path());

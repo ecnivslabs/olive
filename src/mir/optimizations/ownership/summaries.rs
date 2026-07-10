@@ -43,15 +43,28 @@ pub(crate) fn runtime_escape(name: &str, pos: usize) -> bool {
 
 /// Runtime calls whose result is a non-owning view into a value still owned
 /// elsewhere, mirrored into the same borrow classification a whole-program
-/// `returns_borrow` function gets. `__olive_struct_unbox` peels the struct
-/// pointer out of a tag-encoded union box without taking it (the box, and
-/// the struct through it, stays owned by the union local); without this the
-/// ownership pass falls through to its `RvClass::Own` default, double-owns
-/// the peeled pointer, and frees the struct out from under the union local
-/// on its first use -- a use-after-free the moment a narrowed `Struct | int`
-/// value (the fallible-constructor idiom throughout this stdlib) is read
-/// more than once, e.g. inside a loop.
-const RUNTIME_BORROWED_RETURNS: &[&str] = &["__olive_struct_unbox"];
+/// `returns_borrow` function gets.
+/// - `__olive_struct_unbox` peels the struct pointer out of a tag-encoded
+///   union box without taking it (the box, and the struct through it, stays
+///   owned by the union local); without this the ownership pass falls
+///   through to its `RvClass::Own` default, double-owns the peeled pointer,
+///   and frees the struct out from under the union local on its first use --
+///   a use-after-free the moment a narrowed `Struct | int` value (the
+///   fallible-constructor idiom throughout this stdlib) is read more than
+///   once, e.g. inside a loop.
+/// - the `__olive_obj_get*` family is dict `.get()`: `olive_obj_get`
+///   returns `*m.fields.get(..)`, the stored word as-is, no incref. The
+///   `d[k]`/`d.attr` paths lower to GetIndex/GetAttr rvalues (already
+///   borrows); only the method-shaped `.get()` calls land here. Classified
+///   `Own` by the Call default, a stored or concatenated result dangles the
+///   moment the dict is freed.
+const RUNTIME_BORROWED_RETURNS: &[&str] = &[
+    "__olive_struct_unbox",
+    "__olive_obj_get",
+    "__olive_obj_get_typed",
+    "__olive_obj_get_default",
+    "__olive_obj_get_default_typed",
+];
 
 pub(crate) fn runtime_borrowed_return(name: &str) -> bool {
     RUNTIME_BORROWED_RETURNS.contains(&name)
