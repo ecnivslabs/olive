@@ -1,5 +1,7 @@
 #[cfg(test)]
-use crate::test_utils::{call_i64, call_i64_1, call_i64_2, call_i64_3, compile, compile_minimal};
+use crate::test_utils::{
+    call_i64, call_i64_1, call_i64_2, call_i64_3, check_codes, compile, compile_minimal,
+};
 
 #[test]
 fn regression_struct_field_access_through_ref() {
@@ -690,4 +692,58 @@ fn regression_scalarized_field_overwrite() {
         "struct S:\n    v: str\n\nfn f() -> i64:\n    let mut s = S('a')\n    let mut i = 0\n    while i < 100:\n        s.v = 'xy' + str(i)\n        i += 1\n    return len(s.v)\n",
     );
     assert_eq!(call_i64(&mut cg, "f"), 4);
+}
+
+#[test]
+fn regression_union_list_literal_widening() {
+    // `[int] | None = [literal]` used to fail to typecheck (E0400): a list
+    // literal's inferred type never widened against a union annotation, only
+    // against a bare `[int]` one.
+    let mut cg = compile(
+        "fn f() -> i64:\n    let x: [int] | None = [10, 20, 30]\n    if x != None:\n        return x[0] * 100 + x[1] * 10 + x[2]\n    return -1\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 1230);
+}
+
+#[test]
+fn regression_union_narrowed_list_index_reads_raw_int() {
+    // The MIR local for `x` keeps its declared `Union` type even inside a
+    // narrowed block; codegen dispatch keyed off that type used to fall
+    // through to the `Any`-tagged decode path and misread any raw int whose
+    // low 3 bits collided with a tag (e.g. 20 read back as `True`).
+    let mut cg = compile(
+        "fn f() -> i64:\n    let x: [int] | None = [10, 20, 30, 40, 50]\n    if x != None:\n        return x[0] + x[1] + x[2] + x[3] + x[4]\n    return -1\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 150);
+}
+
+#[test]
+fn regression_union_narrowed_struct_field_read() {
+    let mut cg = compile(
+        "struct P:\n    a: i64\n    b: i64\n\nfn f() -> i64:\n    let x: P | None = P(3, 4)\n    if x != None:\n        return x.a * 10 + x.b\n    return -1\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 34);
+}
+
+#[test]
+fn regression_union_unnarrowed_index_rejected() {
+    // Indexing a `T | None` without narrowing used to fall through to a
+    // permissive `fresh_var()` and corrupt data at runtime instead of
+    // failing to compile.
+    let codes = check_codes("fn f(xs: [int] | None) -> i64:\n    return xs[0]\n");
+    assert!(codes.contains(&"E0428".to_string()), "codes: {codes:?}");
+}
+
+#[test]
+fn regression_union_unnarrowed_attr_rejected() {
+    let codes = check_codes("struct P:\n    a: i64\n\nfn f(x: P | None) -> i64:\n    return x.a\n");
+    assert!(codes.contains(&"E0428".to_string()), "codes: {codes:?}");
+}
+
+#[test]
+fn regression_union_optional_chaining_not_flagged() {
+    // `?.` is the sanctioned safe-access path and must not trip E0428.
+    let codes =
+        check_codes("struct P:\n    a: i64\n\nfn f(x: P | None) -> i64:\n    return x?.a ?? -1\n");
+    assert!(!codes.contains(&"E0428".to_string()), "codes: {codes:?}");
 }

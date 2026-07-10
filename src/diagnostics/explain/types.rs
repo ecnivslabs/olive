@@ -289,4 +289,19 @@ pub(super) const ENTRIES: &[Explanation] = &[
              an alias cannot, since resolving it is just text substitution.",
         ],
     },
+    Explanation {
+        code: "E0428",
+        title: "possibly-`None` value indexed or accessed directly",
+        summary: "A `T | None` value was indexed (`x[i]`) or had a field/method \
+                  accessed (`x.attr`) without first ruling out `None`. The value may \
+                  really be absent at runtime, so the access is rejected until it is \
+                  narrowed.",
+        wrong: "fn f(xs: [int] | None) -> int:\n    return xs[0]",
+        fixed: "fn f(xs: [int] | None) -> int:\n    if xs != None:\n        return xs[0]\n    return -1",
+        notes: &[
+            "`x?.attr` (with `??` for a default) accesses a field without a \
+             preceding narrow.",
+            "Narrowing a plain identifier (`if x != None:`) is enough; no cast is needed.",
+        ],
+    },
 ];

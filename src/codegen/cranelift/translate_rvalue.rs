@@ -316,10 +316,7 @@ impl<M: Module> CraneliftCodegen<M> {
             Rvalue::GetAttr(obj, attr) => {
                 let loc = loc_value(builder, module, loc_id);
                 if let Operand::Copy(loc) | Operand::Move(loc) = obj {
-                    let mut obj_ty = &func_mir.locals[loc.0].ty;
-                    while let OliveType::Ref(inner) | OliveType::MutRef(inner) = obj_ty {
-                        obj_ty = inner;
-                    }
+                    let obj_ty = super::imports::concrete_ty(&func_mir.locals[loc.0].ty);
                     if let OliveType::Struct(struct_name, _, _) = obj_ty {
                         if let Some((offset, ty_name, bits)) =
                             c_struct_field_info(c_struct_offsets, struct_name, attr)
@@ -384,14 +381,12 @@ impl<M: Module> CraneliftCodegen<M> {
             }
             Rvalue::GetIndex(obj, idx, unchecked) => {
                 let unchecked = *unchecked;
-                let mut ty = match obj {
+                let ty = match obj {
                     Operand::Copy(loc) | Operand::Move(loc) => &func_mir.locals[loc.0].ty,
                     Operand::Constant(Constant::Str(_)) => &OliveType::Str,
                     _ => &OliveType::Any,
                 };
-                while let OliveType::Ref(inner) | OliveType::MutRef(inner) = ty {
-                    ty = inner;
-                }
+                let ty = super::imports::concrete_ty(ty);
 
                 let o = Self::translate_operand(builder, obj, vars, string_ids, module, func_ids);
                 let i = Self::translate_operand(builder, idx, vars, string_ids, module, func_ids);

@@ -27,13 +27,39 @@ pub(crate) fn typed_zero(builder: &mut FunctionBuilder, ty: cranelift::prelude::
     }
 }
 
+/// Peels `Ref`/`MutRef` wrappers and reduces a `T | None` union to its single
+/// non-null member `T`, since that member's raw representation is exactly
+/// what gets stored at runtime (`None` is the null-pointer sentinel; see
+/// `is_nullable_target` and `free_func_name_for_type`). Every codegen site
+/// that dispatches a runtime call by matching an operand's static type must
+/// go through this first, or a unioned value picks the wrong dispatch. A
+/// union with more than one non-null member has no single raw layout and is
+/// left as `Union` for the boxed-`Any` dispatch paths.
+pub(crate) fn concrete_ty(ty: &OliveType) -> &OliveType {
+    let mut ty = ty;
+    loop {
+        match ty {
+            OliveType::Ref(inner) | OliveType::MutRef(inner) => ty = inner,
+            OliveType::Union(members) => {
+                let non_null: Vec<&OliveType> = members
+                    .iter()
+                    .filter(|m| !matches!(m, OliveType::Null))
+                    .collect();
+                match non_null.as_slice() {
+                    [single] => ty = single,
+                    _ => break,
+                }
+            }
+            _ => break,
+        }
+    }
+    ty
+}
+
 /// Collections store elements raw, so `print`/`str` need the static type to
 /// render them. These are the types routed through the typed formatter.
 pub(crate) fn needs_type_descriptor(ty: &OliveType) -> bool {
-    let mut ty = ty;
-    while let OliveType::Ref(inner) | OliveType::MutRef(inner) = ty {
-        ty = inner;
-    }
+    let ty = concrete_ty(ty);
     matches!(
         ty,
         OliveType::List(_)
@@ -737,10 +763,7 @@ pub(crate) fn resolve_builtin_import(
 }
 
 pub(crate) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&'static str> {
-    let mut current_ty = arg_ty;
-    while let OliveType::Ref(inner) | OliveType::MutRef(inner) = current_ty {
-        current_ty = inner;
-    }
+    let current_ty = concrete_ty(arg_ty);
 
     match name {
         "len" => match current_ty {
