@@ -592,7 +592,7 @@ impl<'a> MirBuilder<'a> {
         if let Some(locals) = self.scope_locals.pop() {
             for local in locals.into_iter().rev() {
                 let decl = &self.current_locals[local.0];
-                if decl.ty.is_move_type() && decl.is_owning {
+                if decl.ty.needs_drop() && decl.is_owning {
                     self.push_statement(StatementKind::Drop(local), Span::default());
                 }
                 self.push_statement(StatementKind::StorageDead(local), Span::default());
@@ -624,7 +624,7 @@ impl<'a> MirBuilder<'a> {
             .filter(|&local| {
                 local != Local(0) && Some(local) != exclude && {
                     let decl = &self.current_locals[local.0];
-                    decl.ty.is_move_type() && decl.is_owning
+                    decl.ty.needs_drop() && decl.is_owning
                 }
             })
             .collect();

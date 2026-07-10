@@ -58,12 +58,23 @@ pub(crate) fn runtime_escape(name: &str, pos: usize) -> bool {
 ///   borrows); only the method-shaped `.get()` calls land here. Classified
 ///   `Own` by the Call default, a stored or concatenated result dangles the
 ///   moment the dict is freed.
+/// - `__olive_obj_set`/`_update`/`_clear`/`_setdefault*` are fluent
+///   mutators that hand the receiver (or, for `setdefault`, an element of
+///   it) straight back. As `Own` results the receiver word lands in a fresh
+///   owning `Any` temp -- every `d[k] = v` statement would free the dict at
+///   the temp's scope exit while the original still owns it.
 const RUNTIME_BORROWED_RETURNS: &[&str] = &[
     "__olive_struct_unbox",
     "__olive_obj_get",
     "__olive_obj_get_typed",
     "__olive_obj_get_default",
     "__olive_obj_get_default_typed",
+    "__olive_obj_set",
+    "__olive_obj_setdefault",
+    "__olive_obj_setdefault_typed",
+    "__olive_obj_update",
+    "__olive_obj_update_typed",
+    "__olive_obj_clear",
 ];
 
 pub(crate) fn runtime_borrowed_return(name: &str) -> bool {

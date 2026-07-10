@@ -128,6 +128,18 @@ impl Type {
                 | Type::FloatLiteral(_)
         )
     }
+
+    /// Whether a local of this type can own heap storage that a `Drop`
+    /// statement must release. `Any` is the one difference from
+    /// `is_move_type`: statically opaque, but at runtime it holds the same
+    /// heap words a move type does (a `json.loads` result owns an entire
+    /// object tree), so its owning locals must drop and its assigns must go
+    /// through ownership inference. The pass classifies borrowed views from
+    /// the assign graph and prunes their drops; keeping `Any` out of
+    /// `is_move_type` preserves the scalar/scalarization decisions elsewhere.
+    pub fn needs_drop(&self) -> bool {
+        self.is_move_type() || matches!(self, Type::Any)
+    }
 }
 
 impl fmt::Display for Type {

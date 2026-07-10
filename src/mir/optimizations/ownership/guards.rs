@@ -72,7 +72,6 @@ pub(super) fn insert_flags_and_marks(
             }
         }
         for (idx, stmt) in old.into_iter().enumerate() {
-            let span = stmt.span;
             rebuilt.push(stmt);
             if let Some(list) = updates.get(&(bb_idx, idx)) {
                 for &(flag, owns) in list {
@@ -81,7 +80,10 @@ pub(super) fn insert_flags_and_marks(
                             flag,
                             Rvalue::Use(Operand::Constant(Constant::Bool(owns))),
                         ),
-                        span,
+                        // Synthetic: must not claim the source statement's
+                        // position, or the debugger instruments it as a stop
+                        // point of that line.
+                        span: Span::default(),
                     });
                 }
             }
@@ -288,7 +290,6 @@ pub(super) fn process_return_sites(
 
     for (bb_idx, idx, v) in copies {
         let tmp = push_local(func, func.locals[v.0].ty.clone());
-        let span = func.basic_blocks[bb_idx].statements[idx].span;
         let copy_call = Statement {
             kind: StatementKind::Assign(
                 tmp,
@@ -297,11 +298,11 @@ pub(super) fn process_return_sites(
                     args: vec![Operand::Copy(v)],
                 },
             ),
-            span,
+            span: Span::default(),
         };
         func.basic_blocks[bb_idx].statements[idx] = Statement {
             kind: StatementKind::Assign(Local(0), Rvalue::Use(Operand::Move(tmp))),
-            span,
+            span: Span::default(),
         };
         func.basic_blocks[bb_idx].statements.insert(idx, copy_call);
         changed = true;
@@ -316,14 +317,13 @@ fn guard_drop_with_ptr_ne(func: &mut MirFunction, bb_idx: usize, drop_idx: usize
     let StatementKind::Drop(dropped) = func.basic_blocks[bb_idx].statements[drop_idx].kind else {
         return;
     };
-    let span = func.basic_blocks[bb_idx].statements[drop_idx].span;
 
     let t1 = push_local(func, Type::Int);
     let t2 = push_local(func, Type::Int);
     let cond = push_local(func, Type::Bool);
 
     let mut tail = func.basic_blocks[bb_idx].statements.split_off(drop_idx);
-    let drop_stmt = tail.remove(0);
+    let mut drop_stmt = tail.remove(0);
     let term = func.basic_blocks[bb_idx].terminator.take();
 
     let cont_id = BasicBlockId(func.basic_blocks.len());
@@ -331,12 +331,15 @@ fn guard_drop_with_ptr_ne(func: &mut MirFunction, bb_idx: usize, drop_idx: usize
         statements: tail,
         terminator: term,
     });
+    // Synthetic cleanup: relocated drop and branch plumbing carry no source
+    // position so the debugger never treats them as stop points.
+    drop_stmt.span = Span::default();
     let drop_id = BasicBlockId(func.basic_blocks.len());
     func.basic_blocks.push(BasicBlock {
         statements: vec![drop_stmt],
         terminator: Some(Terminator {
             kind: TerminatorKind::Goto { target: cont_id },
-            span,
+            span: Span::default(),
         }),
     });
 
@@ -347,16 +350,16 @@ fn guard_drop_with_ptr_ne(func: &mut MirFunction, bb_idx: usize, drop_idx: usize
     ] {
         bb.statements.push(Statement {
             kind: StatementKind::StorageLive(l),
-            span,
+            span: Span::default(),
         });
         bb.statements.push(Statement {
             kind: StatementKind::Assign(l, rv),
-            span,
+            span: Span::default(),
         });
     }
     bb.statements.push(Statement {
         kind: StatementKind::StorageLive(cond),
-        span,
+        span: Span::default(),
     });
     bb.statements.push(Statement {
         kind: StatementKind::Assign(
@@ -367,7 +370,7 @@ fn guard_drop_with_ptr_ne(func: &mut MirFunction, bb_idx: usize, drop_idx: usize
                 Operand::Copy(t2),
             ),
         ),
-        span,
+        span: Span::default(),
     });
     bb.terminator = Some(Terminator {
         kind: TerminatorKind::SwitchInt {
@@ -375,7 +378,7 @@ fn guard_drop_with_ptr_ne(func: &mut MirFunction, bb_idx: usize, drop_idx: usize
             targets: vec![(1, drop_id)],
             otherwise: cont_id,
         },
-        span,
+        span: Span::default(),
     });
 }
 
@@ -413,10 +416,8 @@ pub(super) fn apply_drop_guards(
 }
 
 fn guard_drop_with_flag(func: &mut MirFunction, bb_idx: usize, drop_idx: usize, flag: Local) {
-    let span = func.basic_blocks[bb_idx].statements[drop_idx].span;
-
     let mut tail = func.basic_blocks[bb_idx].statements.split_off(drop_idx);
-    let drop_stmt = tail.remove(0);
+    let mut drop_stmt = tail.remove(0);
     let term = func.basic_blocks[bb_idx].terminator.take();
 
     let cont_id = BasicBlockId(func.basic_blocks.len());
@@ -424,12 +425,15 @@ fn guard_drop_with_flag(func: &mut MirFunction, bb_idx: usize, drop_idx: usize, 
         statements: tail,
         terminator: term,
     });
+    // The relocated drop and the branch selecting it are synthetic cleanup:
+    // default spans keep them out of the debugger's stop-point map.
+    drop_stmt.span = Span::default();
     let drop_id = BasicBlockId(func.basic_blocks.len());
     func.basic_blocks.push(BasicBlock {
         statements: vec![drop_stmt],
         terminator: Some(Terminator {
             kind: TerminatorKind::Goto { target: cont_id },
-            span,
+            span: Span::default(),
         }),
     });
 
@@ -439,6 +443,6 @@ fn guard_drop_with_flag(func: &mut MirFunction, bb_idx: usize, drop_idx: usize, 
             targets: vec![(1, drop_id)],
             otherwise: cont_id,
         },
-        span,
+        span: Span::default(),
     });
 }
