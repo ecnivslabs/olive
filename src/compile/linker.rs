@@ -182,7 +182,10 @@ pub fn link_shared_object(obj_path: &str, out: &str, native_libs: &[FfiLibInfo])
 }
 
 fn is_gnu_link(cmd_name: &str) -> bool {
-    if let Ok(output) = std::process::Command::new(cmd_name).arg("--version").output() {
+    if let Ok(output) = std::process::Command::new(cmd_name)
+        .arg("--version")
+        .output()
+    {
         let text = String::from_utf8_lossy(&output.stdout);
         if text.contains("GNU") || text.contains("coreutils") {
             return true;

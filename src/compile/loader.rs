@@ -162,7 +162,7 @@ pub fn load_and_parse_collecting(
         }
     };
 
-    let program = match Parser::new(tokens).parse_program() {
+    let mut program = match Parser::new(tokens).parse_program() {
         Ok(p) => p,
         Err(e) => {
             return Err(Box::new(
@@ -175,6 +175,25 @@ pub fn load_and_parse_collecting(
             ));
         }
     };
+
+    let file_dir = Path::new(filename)
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    for stmt in &mut program.stmts {
+        if let parser::StmtKind::NativeImport { path, .. } = &mut stmt.kind {
+            let p = Path::new(path.as_str());
+            if !p.is_absolute() && (path.contains('/') || path.contains('\\')) {
+                let resolved = file_dir.join(p);
+                if let Ok(canon) = resolved.canonicalize() {
+                    *path = canon.to_string_lossy().to_string();
+                } else {
+                    *path = resolved.to_string_lossy().to_string();
+                }
+            }
+        }
+    }
 
     if !is_main {
         for stmt in &program.stmts {

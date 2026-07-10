@@ -42,7 +42,7 @@ fn main() {
     if std::path::Path::new(&lib_path).exists() {
         println!("cargo:rustc-link-search=native={}", search_dir);
         println!("cargo:rustc-link-arg=-Wl,--no-as-needed,-lolive_std,--as-needed");
-        println!("cargo:rustc-link-arg=-Wl,--enable-new-dtags,-rpath,$ORIGIN");
+        println!("cargo:rustc-link-arg=-Wl,--enable-new-dtags,-rpath,$ORIGIN:$ORIGIN/../lib");
         println!("cargo:rustc-cfg=olive_std_linked");
     }
     println!("cargo:rerun-if-changed={}", lib_path);
