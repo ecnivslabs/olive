@@ -23,6 +23,7 @@ pub extern "C" fn olive_obj_new() -> i64 {
                 );
             } else {
                 (*o).kind = KIND_OBJ;
+                (*o).fields.clear();
             }
         }
         body as i64
@@ -38,9 +39,11 @@ pub extern "C" fn olive_obj_new() -> i64 {
 }
 
 /// Builds a dict object around an already-populated field map.
-pub(crate) fn new_obj_from_map(fields: HashMap<OliveStringKey, i64>) -> i64 {
+pub(crate) fn new_obj_from_map(mut fields: HashMap<OliveStringKey, i64>) -> i64 {
     let ptr = olive_obj_new();
-    unsafe { (*(ptr as *mut OliveObj)).fields = fields };
+    unsafe {
+        std::mem::swap(&mut (*(ptr as *mut OliveObj)).fields, &mut fields);
+    }
     ptr
 }
 
@@ -48,6 +51,9 @@ pub(crate) fn new_obj_from_map(fields: HashMap<OliveStringKey, i64>) -> i64 {
 pub extern "C" fn olive_obj_set(obj_ptr: i64, attr: i64, val: i64) -> i64 {
     if obj_ptr == 0 {
         panic!("Null pointer dereference: attempted to set attribute on a null object");
+    }
+    if !crate::slab::ptr_is_slab_body(obj_ptr) {
+        return obj_ptr;
     }
     let kind = unsafe { *(obj_ptr as *const i64) };
     if kind == KIND_PYOBJECT {
@@ -72,8 +78,8 @@ pub extern "C" fn olive_obj_set(obj_ptr: i64, attr: i64, val: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_get(obj_ptr: i64, attr: i64) -> i64 {
-    if obj_ptr == 0 {
-        panic!("Null pointer dereference: attempted to get attribute from a null object");
+    if obj_ptr == 0 || !crate::slab::ptr_is_slab_body(obj_ptr) {
+        return 0;
     }
     let kind = unsafe { *(obj_ptr as *const i64) };
     if kind == KIND_PYOBJECT {
@@ -85,8 +91,9 @@ pub extern "C" fn olive_obj_get(obj_ptr: i64, attr: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_get_checked(obj_ptr: i64, attr: i64, loc: i64) -> i64 {
-    if obj_ptr == 0 {
+    if obj_ptr == 0 || !crate::slab::ptr_is_slab_body(obj_ptr) {
         crate::panic::olive_nil_index_fail(loc);
+        return 0;
     }
     let kind = unsafe { *(obj_ptr as *const i64) };
     if kind == KIND_PYOBJECT {
@@ -103,8 +110,8 @@ pub extern "C" fn olive_obj_get_checked(obj_ptr: i64, attr: i64, loc: i64) -> i6
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_get_default(obj_ptr: i64, attr: i64, default: i64) -> i64 {
-    if obj_ptr == 0 {
-        panic!("Null pointer dereference: attempted to get attribute from a null object");
+    if obj_ptr == 0 || !crate::slab::ptr_is_slab_body(obj_ptr) {
+        return default;
     }
     let kind = unsafe { *(obj_ptr as *const i64) };
     if kind == KIND_PYOBJECT {
@@ -250,6 +257,17 @@ pub extern "C" fn olive_obj_len(obj_ptr: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_free_obj(ptr: i64) {
     if ptr == 0 {
+        return;
+    }
+    let is_ours = unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null() {
+            (*active).obj.owns_addr(ptr as usize)
+        } else {
+            OBJ_SLAB.with(|sl| (*sl.get()).owns_addr(ptr as usize))
+        }
+    };
+    if !is_ours {
         return;
     }
     let Some(is_global) = crate::slab::slab_membership(ptr) else {

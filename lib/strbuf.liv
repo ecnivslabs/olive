@@ -1,0 +1,44 @@
+struct StrBuf:
+    handle: int
+
+fn new(cap: int = 0) -> StrBuf:
+    return StrBuf(handle=__olive_strbuf_new(cap))
+
+fn push(sb: StrBuf, s: str):
+    __olive_strbuf_push(sb.handle, s)
+
+fn len(sb: StrBuf) -> int:
+    return __olive_strbuf_len(sb.handle)
+
+fn char_len(sb: StrBuf) -> int:
+    return __olive_strbuf_char_len(sb.handle)
+
+fn build(sb: StrBuf) -> str:
+    return __olive_strbuf_build(sb.handle)
+
+fn clear(sb: StrBuf):
+    __olive_strbuf_clear(sb.handle)
+
+fn free(sb: StrBuf):
+    __olive_strbuf_free(sb.handle)
+
+fn raw_new(cap: int = 0) -> int:
+    return __olive_strbuf_new(cap)
+
+fn raw_push(handle: int, s: str):
+    __olive_strbuf_push(handle, s)
+
+fn raw_len(handle: int) -> int:
+    return __olive_strbuf_len(handle)
+
+fn raw_char_len(handle: int) -> int:
+    return __olive_strbuf_char_len(handle)
+
+fn raw_build(handle: int) -> str:
+    return __olive_strbuf_build(handle)
+
+fn raw_clear(handle: int):
+    __olive_strbuf_clear(handle)
+
+fn raw_free(handle: int):
+    __olive_strbuf_free(handle)

@@ -213,9 +213,13 @@ impl<M: Module> CraneliftCodegen<M> {
                 let is_list = is_list_op(func_mir, lhs);
 
                 if is_str {
+                    let fn_name = match lhs {
+                        Operand::Move(_) => "__olive_str_concat_move",
+                        _ => "__olive_str_concat",
+                    };
                     let concat_func_id = func_ids
-                        .get("__olive_str_concat")
-                        .expect("missing __olive_str_concat");
+                        .get(fn_name)
+                        .unwrap_or_else(|| panic!("missing {fn_name}"));
                     let local_func = module.declare_func_in_func(*concat_func_id, builder.func);
                     let inst = builder.ins().call(local_func, &[l, r]);
                     builder.inst_results(inst)[0]

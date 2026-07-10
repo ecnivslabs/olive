@@ -1466,5 +1466,6 @@ impl<'a> MirBuilder<'a> {
         self.fn_meta.contains_key(&mangled)
             || self.lookup_var(&mangled).is_some()
             || self.globals.contains_key(&mangled)
+            || self.c_ffi_fns.contains(&mangled)
     }
 }

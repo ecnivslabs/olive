@@ -48,8 +48,13 @@ pub(crate) fn static_attr_name(name: &str) -> i64 {
 /// live body found here can only be a pyobject slot.
 #[inline]
 pub(crate) fn is_arena_ptr(ptr: usize) -> bool {
-    crate::slab::ptr_is_slab_body(ptr as i64)
-        && unsafe { *(ptr as *const i64) == crate::KIND_PYOBJECT }
+    let slab_ptr = unsafe { PYOBJ_SLAB.get() };
+    if slab_ptr.is_null() {
+        return false;
+    }
+    let is_owned =
+        unsafe { (*slab_ptr).owns_addr(ptr) && *(ptr as *const i64) == crate::KIND_PYOBJECT };
+    is_owned && crate::slab::ptr_is_slab_body(ptr as i64)
 }
 
 /// Process-lifetime slab for PyObject handles. Guarded by the process-wide

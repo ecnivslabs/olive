@@ -121,7 +121,7 @@ pub extern "C" fn olive_str_alloc(ptr: *const u8, len: usize) -> i64 {
 
 /// Same as `str_alloc`, but writes two slices back to back without first
 /// concatenating them into an intermediate buffer.
-fn str_alloc_two(a: &[u8], b: &[u8]) -> i64 {
+pub fn str_alloc_two(a: &[u8], b: &[u8]) -> i64 {
     let len = a.len() + b.len();
     let cap = class_bytes(len + 1);
     with_class_slab(cap, |slab| {

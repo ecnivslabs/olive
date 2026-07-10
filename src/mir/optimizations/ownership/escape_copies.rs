@@ -40,8 +40,6 @@ enum CopySlot {
     Arg(usize),
     /// The source operand of a plain `dst = Use(op)` assignment.
     UseVal,
-    /// The left operand of a `BinaryOp`.
-    BinLhs,
 }
 
 /// The `args_list` aggregate holds one slot per positional argument, so its
@@ -275,22 +273,6 @@ pub(super) fn insert_escape_copies(
                 {
                     hits.push((bb_idx, idx, CopySlot::UseVal, *l, "__olive_copy_typed"));
                 }
-                // `str_concat_inplace` grows or frees its left operand's own
-                // storage: a `+` chain that ends this local's life (proven by
-                // the ownership pass promoting that use to `Move`) may run it
-                // in place, but any `Copy` reaching this point means the
-                // local is still needed afterward -- the runtime has no way
-                // to tell "sole owner" from "shared" apart, so a surviving
-                // `Copy` here must hand it an independent buffer instead.
-                StatementKind::Assign(_, Rvalue::BinaryOp(op, Operand::Copy(l), _))
-                    if *op == crate::parser::BinOp::Add
-                        && l.0 != 0
-                        && l.0 < heap.len()
-                        && heap[l.0]
-                        && func.locals[l.0].ty == crate::semantic::types::Type::Str =>
-                {
-                    hits.push((bb_idx, idx, CopySlot::BinLhs, *l, "__olive_copy_typed"));
-                }
                 StatementKind::Assign(
                     _,
                     Rvalue::Call {
@@ -426,7 +408,6 @@ fn redirect_operand(kind: &mut StatementKind, slot: CopySlot, tmp: Local) {
             args[pos] = target
         }
         (CopySlot::UseVal, StatementKind::Assign(_, Rvalue::Use(val))) => *val = target,
-        (CopySlot::BinLhs, StatementKind::Assign(_, Rvalue::BinaryOp(_, lhs, _))) => *lhs = target,
         _ => {}
     }
 }

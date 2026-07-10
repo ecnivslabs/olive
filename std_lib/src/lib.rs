@@ -51,6 +51,7 @@ pub mod requests;
 pub mod result;
 pub mod shadow_stack;
 pub mod slab;
+pub mod strbuf;
 pub mod string_slab;
 pub mod struct_box;
 pub mod struct_share;
@@ -994,13 +995,20 @@ pub extern "C" fn olive_str_concat(l: i64, r: i64) -> i64 {
     let l_is_heap = string_slab::str_is_heap(l) && string_slab::str_body(l) != 0;
     let l_bytes = string::olive_str_to_bytes_with(l, Some(l_is_heap));
     let r_bytes = olive_str_to_bytes(r);
+    string_slab::str_alloc_two(l_bytes, r_bytes)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_str_concat_move(l: i64, r: i64) -> i64 {
+    let l_is_heap = string_slab::str_is_heap(l) && string_slab::str_body(l) != 0;
+    let l_bytes = string::olive_str_to_bytes_with(l, Some(l_is_heap));
+    let r_bytes = olive_str_to_bytes(r);
     if let Some(res) = string_slab::str_concat_inplace_with(l, l_bytes, r_bytes, Some(l_is_heap)) {
         return res;
     }
-    let mut buf = Vec::with_capacity(l_bytes.len() + r_bytes.len());
-    buf.extend_from_slice(l_bytes);
-    buf.extend_from_slice(r_bytes);
-    string_slab::str_alloc(&buf)
+    let res = string_slab::str_alloc_two(l_bytes, r_bytes);
+    string_slab::str_free(l);
+    res
 }
 
 #[unsafe(no_mangle)]
@@ -1170,6 +1178,10 @@ pub extern "C" fn olive_set_index_any(obj: i64, index: i64, val: i64, loc: i64) 
             if index < 0 || index >= len {
                 panic::olive_bounds_fail(index, len, loc);
             }
+            let old = list::olive_list_get(obj, index);
+            if is_active_object(old) {
+                olive_free_any(old);
+            }
             olive_list_set(obj, index, val)
         }
         KIND_BYTES => {
@@ -1180,6 +1192,10 @@ pub extern "C" fn olive_set_index_any(obj: i64, index: i64, val: i64, loc: i64) 
             bytes::olive_buf_set(obj, index, val)
         }
         KIND_OBJ => {
+            let old = obj::olive_obj_get(obj, index);
+            if is_active_object(old) {
+                olive_free_any(old);
+            }
             olive_obj_set(obj, index, val);
         }
         KIND_PYOBJECT => {
@@ -1211,7 +1227,7 @@ pub extern "C" fn olive_free_any(ptr: i64) {
     if ptr & boxed::TAG_MASK != 0 {
         return;
     }
-    if ptr < 0x1000 {
+    if ptr < 0x1000 || !slab::ptr_is_slab_body(ptr) {
         return;
     }
     let kind = unsafe { *(ptr as *const i64) };

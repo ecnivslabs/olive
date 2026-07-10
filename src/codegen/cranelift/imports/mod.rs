@@ -23,6 +23,15 @@ pub(super) fn collect_needed_imports(
                         needed.insert("__olive_py_setattr");
                         // A PyObject struct field overwrite releases the old value it held.
                         needed.insert("__olive_py_decref");
+                        needed.insert("__olive_free_typed");
+                        needed.insert("__olive_free_str");
+                        needed.insert("__olive_buf_free");
+                        needed.insert("__olive_free_list");
+                        needed.insert("__olive_free_struct");
+                        needed.insert("__olive_free_obj");
+                        needed.insert("__olive_free_enum");
+                        needed.insert("__olive_free_fatptr");
+                        needed.insert("__olive_free_any");
                         if let Operand::Copy(src) = val_op
                             && matches!(func.locals[src.0].ty, OliveType::PyObject)
                         {
@@ -36,6 +45,15 @@ pub(super) fn collect_needed_imports(
                         needed.insert("__olive_set_index_any");
                         needed.insert("__olive_bounds_fail");
                         needed.insert("__olive_nil_index_fail");
+                        needed.insert("__olive_free_typed");
+                        needed.insert("__olive_free_str");
+                        needed.insert("__olive_buf_free");
+                        needed.insert("__olive_free_list");
+                        needed.insert("__olive_free_struct");
+                        needed.insert("__olive_free_obj");
+                        needed.insert("__olive_free_enum");
+                        needed.insert("__olive_free_fatptr");
+                        needed.insert("__olive_free_any");
                         if let Operand::Copy(src) = val_op
                             && matches!(func.locals[src.0].ty, OliveType::PyObject)
                         {
@@ -309,6 +327,7 @@ pub(super) fn scan_rvalue_imports(
                         needed.insert("__olive_py_from_int");
                     } else if is_str_op(func_mir, lhs) {
                         needed.insert("__olive_str_concat");
+                        needed.insert("__olive_str_concat_move");
                     } else if is_list_op(func_mir, lhs) {
                         needed.insert("__olive_list_concat");
                     } else if !is_float_op(func_mir, lhs) {

@@ -120,15 +120,57 @@ impl<M: Module> CraneliftCodegen<M> {
                         self.collect_strings_in_rvalue(rval);
                         self.collect_type_descriptor(func, rval);
                     }
-                    StatementKind::SetAttr(_, attr, val_op) => {
+                    StatementKind::SetAttr(obj_op, attr, val_op) => {
                         self.intern_attr_string(attr);
                         self.collect_strings_in_operand(val_op);
+                        use super::super::imports::{
+                            concrete_ty, drop_descriptor_type, operand_static_type, type_descriptor,
+                        };
+                        let op_ty = operand_static_type(obj_op, func);
+                        let obj_ty = concrete_ty(&op_ty);
+                        if let crate::semantic::types::Type::Struct(struct_name, _, _) = obj_ty {
+                            if let Some(field_ty) =
+                                self.field_types.get(&(struct_name.clone(), attr.clone()))
+                            {
+                                if field_ty.is_move_type()
+                                    && let Some(desc_ty) =
+                                        drop_descriptor_type(field_ty, &self.struct_fields)
+                                {
+                                    let desc = type_descriptor(
+                                        desc_ty,
+                                        &self.struct_fields,
+                                        &self.field_types,
+                                        &self.enum_defs,
+                                    );
+                                    self.intern_attr_string(&desc);
+                                }
+                            }
+                        }
                     }
                     StatementKind::SetIndex(obj_op, idx_op, val_op, _) => {
                         self.collect_strings_in_operand(obj_op);
                         self.collect_strings_in_operand(idx_op);
                         self.collect_strings_in_operand(val_op);
                         self.collect_dict_key_descriptor(func, obj_op);
+                        use super::super::imports::{
+                            concrete_ty, drop_descriptor_type, operand_static_type, type_descriptor,
+                        };
+                        let op_ty = operand_static_type(obj_op, func);
+                        let obj_ty = concrete_ty(&op_ty);
+                        if let crate::semantic::types::Type::List(elem_ty) = obj_ty {
+                            if elem_ty.is_move_type()
+                                && let Some(desc_ty) =
+                                    drop_descriptor_type(elem_ty, &self.struct_fields)
+                            {
+                                let desc = type_descriptor(
+                                    desc_ty,
+                                    &self.struct_fields,
+                                    &self.field_types,
+                                    &self.enum_defs,
+                                );
+                                self.intern_attr_string(&desc);
+                            }
+                        }
                     }
                     StatementKind::Drop(local) => {
                         use super::super::imports::{drop_descriptor_type, type_descriptor};
