@@ -1,0 +1,82 @@
+---
+// Single source for the install instructions: docs/getting_started.md and
+// README.md both split on Linux/macOS (one curl|sh command) vs Windows
+// (a manual download, since most Windows users won't have a POSIX shell).
+// Used everywhere the site shows how to install so the two never drift
+// apart again.
+interface Props {
+  id?: string;
+  dark?: boolean;
+}
+const { id = 'install', dark = false } = Astro.props;
+---
+<div class="install-tabs" data-dark={dark ? 'true' : undefined} id={id}>
+  <div class="install-tablist" role="tablist" aria-label="Install command by platform">
+    <button type="button" role="tab" aria-selected="true" aria-controls={`${id}-unix`} id={`${id}-tab-unix`} data-os="unix" class="active">Linux / macOS</button>
+    <button type="button" role="tab" aria-selected="false" aria-controls={`${id}-windows`} id={`${id}-tab-windows`} data-os="windows">Windows</button>
+  </div>
+  <div role="tabpanel" id={`${id}-unix`} aria-labelledby={`${id}-tab-unix`} class="install-panel" data-os="unix">
+    <div class="install"><span class="prompt">$</span>curl -sSL https://raw.githubusercontent.com/ecnivslabs/olive/master/install.sh | sh</div>
+  </div>
+  <div role="tabpanel" id={`${id}-windows`} aria-labelledby={`${id}-tab-windows`} class="install-panel" data-os="windows" hidden>
+    <p class="win-steps">
+      Download <code>pit-windows-x86_64.exe</code> from the <a href="https://github.com/ecnivslabs/olive/releases/latest">releases page</a>,
+      rename it to <code>pit.exe</code>, and add its folder to your <code>PATH</code>.
+    </p>
+  </div>
+</div>
+
+<script>
+  for (const root of document.querySelectorAll<HTMLElement>('.install-tabs')) {
+    const tabs = Array.from(root.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+    const panels = Array.from(root.querySelectorAll<HTMLElement>('[role="tabpanel"]'));
+
+    function select(os: string) {
+      for (const tab of tabs) {
+        const active = tab.dataset.os === os;
+        tab.classList.toggle('active', active);
+        tab.setAttribute('aria-selected', String(active));
+      }
+      for (const panel of panels) {
+        panel.hidden = panel.dataset.os !== os;
+      }
+    }
+
+    for (const tab of tabs) {
+      tab.addEventListener('click', () => select(tab.dataset.os!));
+    }
+
+    // Best-effort default: if the visitor is plainly on Windows, open there.
+    // Static/no-JS fallback stays Linux/macOS, matching docs/getting_started.md's order.
+    if (navigator.userAgent.includes('Windows')) select('windows');
+  }
+</script>
+
+<style>
+  .install-tabs { display: inline-block; }
+  .install-tablist { display: inline-flex; gap: 4px; margin-bottom: 12px; }
+  .install-tablist button {
+    font-family: var(--font-mono); font-size: 12.5px; padding: 7px 14px; border-radius: 4px;
+    background: none; border: 1px solid var(--border); color: var(--ink-muted); cursor: pointer;
+  }
+  [data-dark] .install-tablist button { border-color: #33322A; color: #8A8577; }
+  .install-tablist button.active { background: var(--accent); border-color: var(--accent); color: var(--on-dark); }
+  [data-dark] .install-tablist button.active { background: #A9BA6C; border-color: #A9BA6C; color: #14130F; }
+
+  .install {
+    font-family: var(--font-mono); font-size: 14px; background: var(--ink);
+    color: var(--on-dark); padding: 14px 24px; border-radius: 3px;
+    max-width: 100%; white-space: pre-wrap; word-break: break-all; text-align: left;
+  }
+  .install .prompt { color: #A9BA6C; margin-right: 10px; }
+  [data-dark] .install { background: var(--on-dark); color: var(--ink); }
+  [data-dark] .install .prompt { color: var(--accent); }
+
+  .win-steps {
+    font-size: 14px; line-height: 1.7; color: var(--ink-body); margin: 0; text-align: left;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 16px 20px;
+  }
+  [data-dark] .win-steps { background: #1A1913; border-color: #2C2A22; color: #B8B4A6; }
+  .win-steps code { font-family: var(--font-mono); background: rgba(0,0,0,0.06); padding: 1px 5px; border-radius: 3px; }
+  [data-dark] .win-steps code { background: rgba(255,255,255,0.08); }
+</style>
