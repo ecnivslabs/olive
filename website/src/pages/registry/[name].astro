@@ -1,0 +1,106 @@
+---
+import BaseLayout from '../../components/BaseLayout.astro';
+import { fetchPods, repoFromDl, type Pod } from '../../lib/registry';
+import { createMarkdownProcessor } from '@astrojs/markdown-remark';
+// @ts-expect-error -- JSON import, no ambient module declaration needed for this
+import oliveGrammar from '../../../olive.tmLanguage.json' with { type: 'json' };
+
+export async function getStaticPaths() {
+  const pods = await fetchPods();
+  return pods.map((pod) => ({ params: { name: pod.name }, props: { pod } }));
+}
+
+const { pod } = Astro.props as { pod: Pod };
+const repo = repoFromDl(pod.dl);
+
+let readmeHtml: string | null = null;
+
+if (repo) {
+  try {
+    const res = await fetch(`https://raw.githubusercontent.com/${repo.owner}/${repo.repo}/HEAD/README.md`);
+    if (res.ok) {
+      const raw = await res.text();
+      const processor = await createMarkdownProcessor({
+        shikiConfig: {
+          themes: { light: 'github-light', dark: 'github-dark' },
+          langs: [oliveGrammar],
+        },
+      });
+      const result = await processor.render(raw);
+      readmeHtml = result.code;
+    }
+  } catch {
+    // README not reachable at build time -- fall through to the empty state below.
+  }
+}
+---
+<BaseLayout
+  title={pod.name}
+  description={pod.description ?? `The ${pod.name} pod for Olive.`}
+  active="registry"
+>
+  <main>
+    <section class="head">
+      <a class="back" href="/registry/">← Registry</a>
+      <div class="title-row">
+        <h1>{pod.name}</h1>
+        <span class="vers">{pod.vers}</span>
+      </div>
+      {pod.by && <p class="by">by {pod.by}</p>}
+      {pod.description && <p class="desc">{pod.description}</p>}
+      <div class="install"><span class="prompt">$</span>pit add {pod.name}</div>
+      <div class="meta">
+        <span>{pod.versionCount} version{pod.versionCount === 1 ? '' : 's'}</span>
+        {pod.olive_req && <span>requires olive ≥ {pod.olive_req}</span>}
+        <span>{pod.deps.length === 0 ? 'no dependencies' : `${pod.deps.length} dependenc${pod.deps.length === 1 ? 'y' : 'ies'}`}</span>
+        {repo && <a href={`https://github.com/${repo.owner}/${repo.repo}`}>View on GitHub →</a>}
+      </div>
+    </section>
+
+    <section class="readme">
+      {readmeHtml ? (
+        <div class="readme-body" set:html={readmeHtml} />
+      ) : repo ? (
+        <p class="empty-note">
+          This pod links to <a href={`https://github.com/${repo.owner}/${repo.repo}`}>{repo.owner}/{repo.repo}</a>,
+          but no <code>README.md</code> could be read from it.
+        </p>
+      ) : (
+        <p class="empty-note">No repository is linked for this pod yet.</p>
+      )}
+    </section>
+  </main>
+</BaseLayout>
+
+<style>
+  .head { max-width: 760px; margin: 0 auto; padding: 56px 24px 20px; }
+  .back { font-family: var(--font-mono); font-size: 13px; color: var(--ink-muted); }
+  .title-row { display: flex; align-items: baseline; gap: 16px; margin: 24px 0 8px; }
+  h1 { font-family: var(--font-mono); font-size: 32px; font-weight: 500; font-style: normal; }
+  .vers { font-family: var(--font-mono); font-size: 14px; color: var(--accent); }
+  .by { font-size: 13px; color: var(--ink-muted); margin: 0 0 18px; }
+  .desc { font-size: 16px; line-height: 1.7; color: var(--ink-body); margin: 0 0 24px; max-width: 62ch; }
+  .install {
+    background: var(--ink); color: #E9E5D6; border-radius: 4px; padding: 12px 18px;
+    font-family: var(--font-mono); font-size: 13px; display: inline-block; margin-bottom: 20px;
+  }
+  .install .prompt { color: #A9BA6C; margin-right: 8px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center; font-family: var(--font-mono); font-size: 12px; color: var(--ink-muted); }
+
+  .readme { max-width: 760px; margin: 30px auto 0; padding: 40px 24px 100px; border-top: 1px solid var(--border); }
+  .empty-note { color: var(--ink-muted); font-size: 14.5px; }
+  .empty-note code { font-family: var(--font-mono); background: var(--surface); padding: 1px 6px; border-radius: 3px; }
+
+  .readme-body :global(h1) { font-family: var(--font-sans); font-weight: 600; font-size: 24px; margin: 32px 0 14px; }
+  .readme-body :global(h1:first-child) { margin-top: 0; }
+  .readme-body :global(h2) { font-family: var(--font-sans); font-weight: 600; font-size: 20px; margin: 28px 0 12px; }
+  .readme-body :global(p) { font-size: 15px; line-height: 1.75; color: var(--ink-body); margin: 0 0 18px; }
+  .readme-body :global(code) { font-family: var(--font-mono); background: var(--surface); padding: 1px 6px; border-radius: 3px; font-size: 0.88em; }
+  .readme-body :global(pre) { border: 1px solid var(--border); border-radius: 6px; padding: 18px 20px; overflow-x: auto; margin: 0 0 20px; }
+  .readme-body :global(pre code) { background: none; padding: 0; }
+  .readme-body :global(ul), .readme-body :global(ol) { color: var(--ink-body); font-size: 15px; line-height: 1.75; }
+  .readme-body :global(a) { text-decoration: underline; text-underline-offset: 2px; }
+  .readme-body :global(table) { border-collapse: collapse; width: 100%; margin: 0 0 20px; font-size: 14px; }
+  .readme-body :global(th), .readme-body :global(td) { border: 1px solid var(--border); padding: 8px 12px; text-align: left; }
+  .readme-body :global(th) { background: var(--surface); font-family: var(--font-mono); font-weight: 500; }
+</style>
