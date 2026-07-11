@@ -90,6 +90,15 @@ pub fn str_free(ptr: i64) {
     if body == 0 || !ptr_in_slab_span(body) {
         return;
     }
+    if crate::slab::chunk_is_global(body as usize) {
+        crate::slab::with_escape_arena(|| str_free_local(ptr));
+    } else {
+        str_free_local(ptr);
+    }
+}
+
+fn str_free_local(ptr: i64) {
+    let body = ptr & !1;
     let header_val = unsafe { *(body as *const usize).sub(2) };
     let cap_idx = header_val >> 48;
     unsafe {

@@ -70,6 +70,14 @@ pub(crate) unsafe fn release_set_storage(ptr: i64) {
 }
 
 pub(crate) fn free_set_slot_raw(ptr: i64) {
+    if crate::slab::chunk_is_global(ptr as usize) {
+        crate::slab::with_escape_arena(|| free_set_slot_raw_local(ptr));
+    } else {
+        free_set_slot_raw_local(ptr);
+    }
+}
+
+fn free_set_slot_raw_local(ptr: i64) {
     unsafe {
         let active = crate::slab::ACTIVE_SLABS.get();
         if !active.is_null() {
