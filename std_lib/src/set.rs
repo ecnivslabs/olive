@@ -196,6 +196,40 @@ pub extern "C" fn olive_set_remove(set_ptr: i64, val: i64) -> i64 {
     val
 }
 
+/// `s.remove(x)`: faults if `x` is absent (Python semantics). `discard`
+/// keeps `olive_set_remove`'s existing silent-on-absence behavior.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_set_remove_checked(set_ptr: i64, val: i64, loc: i64) -> i64 {
+    if set_ptr == 0 {
+        crate::panic::olive_bounds_fail(0, 0, loc);
+        return 0;
+    }
+    let present = unsafe {
+        let s = &*(set_ptr as *const OliveHashSet);
+        (*s.inner).contains(&OliveStringKey(val))
+    };
+    if !present {
+        let len = unsafe { (*(set_ptr as *const OliveHashSet)).len as i64 };
+        crate::panic::olive_bounds_fail(0, len, loc);
+        return 0;
+    }
+    olive_set_remove(set_ptr, val)
+}
+
+/// `s.clear()`: empties the set in place, returns it.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_set_clear(set_ptr: i64) -> i64 {
+    if set_ptr == 0 {
+        return set_ptr;
+    }
+    unsafe {
+        let s = &mut *(set_ptr as *mut OliveHashSet);
+        (*s.inner).clear();
+        s.len = 0;
+    }
+    set_ptr
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_set_union(a: i64, b: i64) -> i64 {
     if a == 0 {

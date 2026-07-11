@@ -117,7 +117,26 @@ impl Parser {
                 }
                 _ => break,
             };
-            let right = self.parse_bitor()?;
+            let mut right = self.parse_bitor()?;
+            // `x in a..b` / `x not in a..b`: the range binds to `in`'s right
+            // operand specifically, without changing `..`'s precedence
+            // anywhere else (a bare `a..b` still sits above `or`).
+            if matches!(op, BinOp::In | BinOp::NotIn)
+                && matches!(self.peek().kind, TokenKind::DotDot | TokenKind::DotDotEq)
+            {
+                let inclusive = self.peek().kind == TokenKind::DotDotEq;
+                self.advance();
+                let end = self.parse_bitor()?;
+                let range_span = right.span.merge(end.span);
+                right = Expr::new(
+                    ExprKind::Range {
+                        start: Box::new(right),
+                        end: Box::new(end),
+                        inclusive,
+                    },
+                    range_span,
+                );
+            }
             let span = left.span.merge(right.span);
             left = Expr::new(
                 ExprKind::BinOp {

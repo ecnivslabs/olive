@@ -135,6 +135,99 @@ pub extern "C" fn olive_obj_remove(obj_ptr: i64, attr: i64) -> i64 {
     }
 }
 
+/// `d.pop(k)`: removes and returns the value, faulting if `k` is absent.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_obj_pop_checked(obj_ptr: i64, attr: i64, loc: i64) -> i64 {
+    if obj_ptr == 0 || attr == 0 {
+        crate::panic::olive_nil_index_fail(loc);
+    }
+    let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
+    match m.fields.remove_entry(&OliveStringKey(attr)) {
+        Some((k, v)) => {
+            if k.0 & 1 != 0 {
+                crate::olive_free_str(k.0);
+            }
+            v
+        }
+        None => {
+            crate::panic::olive_bounds_fail(0, m.fields.len() as i64, loc);
+            0
+        }
+    }
+}
+
+/// `d.pop(k, default)`: non-faulting, returns `default` when `k` is absent.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_obj_pop_default(obj_ptr: i64, attr: i64, default: i64) -> i64 {
+    if obj_ptr == 0 || attr == 0 {
+        return default;
+    }
+    let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
+    match m.fields.remove_entry(&OliveStringKey(attr)) {
+        Some((k, v)) => {
+            if k.0 & 1 != 0 {
+                crate::olive_free_str(k.0);
+            }
+            v
+        }
+        None => default,
+    }
+}
+
+/// `d.setdefault(k, v)`: returns the existing value, or inserts and returns `v`.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_obj_setdefault(obj_ptr: i64, attr: i64, default: i64) -> i64 {
+    if obj_ptr == 0 || attr == 0 {
+        panic!("Null pointer dereference: attempted to use setdefault on a null object");
+    }
+    let m = unsafe { &*(obj_ptr as *const OliveObj) };
+    if let Some(&v) = m.fields.get(&OliveStringKey(attr)) {
+        return v;
+    }
+    olive_obj_set(obj_ptr, attr, default);
+    default
+}
+
+/// `d.update(other)`: merges `other`'s entries into `d` (overwrite on key
+/// conflict), returns `d`. `other` keeps its own entries; values are raw
+/// words here, see `olive_obj_update_typed` for heap-owning values.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_obj_update(obj_ptr: i64, other_ptr: i64) -> i64 {
+    if obj_ptr == 0 || other_ptr == 0 {
+        return obj_ptr;
+    }
+    let entries: Vec<(i64, i64)> = {
+        let om = unsafe { &*(other_ptr as *const OliveObj) };
+        om.fields.iter().map(|(k, &v)| (k.0, v)).collect()
+    };
+    for (k, v) in entries {
+        olive_obj_set(obj_ptr, k, v);
+    }
+    obj_ptr
+}
+
+/// `d.clear()`: empties the dict in place (freeing owned keys and values),
+/// returns it.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_obj_clear(obj_ptr: i64) -> i64 {
+    if obj_ptr == 0 {
+        return obj_ptr;
+    }
+    let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
+    for &val in m.fields.values() {
+        if is_active_object(val) {
+            olive_free_any(val);
+        }
+    }
+    for k in m.fields.keys() {
+        if k.0 & 1 != 0 {
+            crate::olive_free_str(k.0);
+        }
+    }
+    m.fields.clear();
+    obj_ptr
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_in_obj(key: i64, obj_ptr: i64) -> i64 {
     if obj_ptr == 0 || key == 0 {

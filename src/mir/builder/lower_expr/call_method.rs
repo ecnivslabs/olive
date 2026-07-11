@@ -428,21 +428,57 @@ impl<'a> MirBuilder<'a> {
         span: Span,
         expr_id: usize,
     ) -> Option<Operand> {
-        let runtime = match attr {
-            "upper" => "__olive_str_upper",
-            "lower" => "__olive_str_lower",
-            "strip" => "__olive_str_trim",
-            "lstrip" => "__olive_str_trim_start",
-            "rstrip" => "__olive_str_trim_end",
-            "split" => "__olive_str_split",
-            "join" => "__olive_str_join",
-            "replace" => "__olive_str_replace",
-            "find" => "__olive_str_find",
-            "repeat" => "__olive_str_repeat",
-            "contains" => "__olive_str_contains",
-            "startswith" => "__olive_str_starts_with",
-            "endswith" => "__olive_str_ends_with",
-            _ => return None,
+        // Methods with one runtime function regardless of argument count.
+        let fixed = match attr {
+            "upper" => Some("__olive_str_upper"),
+            "lower" => Some("__olive_str_lower"),
+            "join" => Some("__olive_str_join"),
+            "replace" => Some("__olive_str_replace"),
+            "find" => Some("__olive_str_find"),
+            "rfind" => Some("__olive_str_rfind"),
+            "count" => Some("__olive_str_count"),
+            "repeat" => Some("__olive_str_repeat"),
+            "contains" => Some("__olive_str_contains"),
+            "startswith" => Some("__olive_str_starts_with"),
+            "endswith" => Some("__olive_str_ends_with"),
+            "splitlines" => Some("__olive_str_splitlines"),
+            "title" => Some("__olive_str_title"),
+            "capitalize" => Some("__olive_str_capitalize"),
+            "zfill" => Some("__olive_str_zfill"),
+            "removeprefix" => Some("__olive_str_removeprefix"),
+            "removesuffix" => Some("__olive_str_removesuffix"),
+            "isdigit" => Some("__olive_str_isdigit"),
+            "isalpha" => Some("__olive_str_isalpha"),
+            "isspace" => Some("__olive_str_isspace"),
+            "isupper" => Some("__olive_str_isupper"),
+            "islower" => Some("__olive_str_islower"),
+            "partition" => Some("__olive_str_partition"),
+            _ => None,
+        };
+        // Optional-argument methods: the no-arg form uses the whitespace/plain
+        // runtime fn, a given argument switches to the `_chars`/explicit-arg
+        // variant. `ljust`/`rjust`/`center` default the fill char to a space.
+        let variable = match (attr, arg_ops.len()) {
+            ("strip", 0) => Some(("__olive_str_trim", vec![])),
+            ("strip", _) => Some(("__olive_str_trim_chars", arg_ops.to_vec())),
+            ("lstrip", 0) => Some(("__olive_str_trim_start", vec![])),
+            ("lstrip", _) => Some(("__olive_str_trim_start_chars", arg_ops.to_vec())),
+            ("rstrip", 0) => Some(("__olive_str_trim_end", vec![])),
+            ("rstrip", _) => Some(("__olive_str_trim_end_chars", arg_ops.to_vec())),
+            ("split", 0) => Some((
+                "__olive_str_split",
+                vec![Operand::Constant(Constant::Int(0))],
+            )),
+            ("split", _) => Some(("__olive_str_split", arg_ops.to_vec())),
+            ("ljust", _) => Some(("__olive_str_ljust", Self::pad_args(arg_ops))),
+            ("rjust", _) => Some(("__olive_str_rjust", Self::pad_args(arg_ops))),
+            ("center", _) => Some(("__olive_str_center", Self::pad_args(arg_ops))),
+            _ => None,
+        };
+        let (runtime, method_args): (&str, Vec<Operand>) = match (fixed, variable) {
+            (Some(r), _) => (r, arg_ops.to_vec()),
+            (None, Some((r, a))) => (r, a),
+            (None, None) => return None,
         };
         let mut recv_ty = self.get_type(obj.id);
         while let Type::Ref(inner) | Type::MutRef(inner) = recv_ty {
@@ -457,12 +493,12 @@ impl<'a> MirBuilder<'a> {
         // `sep.join(list)` maps to `olive_str_join(list, sep)`, so the list comes
         // first; every other method takes the receiver first.
         let call_args = if attr == "join" {
-            let mut a = arg_ops.to_vec();
+            let mut a = method_args;
             a.push(obj_op);
             a
         } else {
             let mut a = vec![obj_op];
-            a.extend_from_slice(arg_ops);
+            a.extend(method_args);
             a
         };
         let tmp = self.new_local(self.get_type(expr_id), None, false);
@@ -479,6 +515,17 @@ impl<'a> MirBuilder<'a> {
         Some(self.operand_for_local(tmp))
     }
 
+    /// `ljust`/`rjust`/`center` default the fill char to a space when omitted.
+    fn pad_args(arg_ops: &[Operand]) -> Vec<Operand> {
+        if arg_ops.len() >= 2 {
+            arg_ops.to_vec()
+        } else {
+            let mut v = arg_ops.to_vec();
+            v.push(Operand::Constant(Constant::Str(" ".to_string())));
+            v
+        }
+    }
+
     /// Lowers the mutating methods on a native list to their runtime calls.
     /// `append`/`insert`/`extend` mutate in place and yield the list; `pop` and
     /// `remove` return the removed element.
@@ -491,6 +538,9 @@ impl<'a> MirBuilder<'a> {
         span: Span,
         expr_id: usize,
     ) -> Option<Operand> {
+        if matches!(attr, "count" | "index" | "clear") {
+            return self.lower_list_method_ext(obj, attr, arg_ops, span, expr_id);
+        }
         if !matches!(
             attr,
             "append" | "insert" | "extend" | "remove" | "pop" | "sort" | "reverse"
@@ -570,6 +620,58 @@ impl<'a> MirBuilder<'a> {
         }
     }
 
+    /// `count(x)`/`index(x)`/`clear()` (E3.6): `count`/`index` always go
+    /// through the descriptor-typed comparison (`olive_eq_typed`'s raw
+    /// fast path already covers scalars), the descriptor synthesized at
+    /// codegen time from the value argument's own type (arg position 1),
+    /// same pattern as set add/remove/contains. `index` faults on a miss.
+    fn lower_list_method_ext(
+        &mut self,
+        obj: &Expr,
+        attr: &str,
+        arg_ops: &[Operand],
+        span: Span,
+        expr_id: usize,
+    ) -> Option<Operand> {
+        let mut recv_ty = self.get_type(obj.id);
+        while let Type::Ref(inner) | Type::MutRef(inner) = recv_ty {
+            recv_ty = *inner;
+        }
+        if !matches!(recv_ty, Type::List(_) | Type::Any) {
+            return None;
+        }
+        let obj_op = self.lower_expr_as_copy(obj);
+        let val_op = arg_ops
+            .first()
+            .cloned()
+            .unwrap_or(Operand::Constant(Constant::Int(0)));
+        let (runtime, call_args): (&str, Vec<Operand>) = match attr {
+            "count" => ("__olive_list_count_typed", vec![obj_op.clone(), val_op]),
+            "index" => (
+                "__olive_list_index_typed",
+                vec![obj_op.clone(), val_op, self.index_loc_operand(span)],
+            ),
+            "clear" => ("__olive_list_clear", vec![obj_op.clone()]),
+            _ => return None,
+        };
+        let tmp = self.new_local(self.get_type(expr_id), None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                tmp,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(runtime.to_string())),
+                    args: call_args,
+                },
+            ),
+            span,
+        );
+        if attr == "clear" {
+            Some(obj_op)
+        } else {
+            Some(self.operand_for_local(tmp))
+        }
+    }
+
     /// Lowers `add`/`remove` on a native set to the runtime calls. Both mutate in
     /// place; `add` yields the set, `remove` yields the removed element.
     fn lower_set_method(
@@ -581,7 +683,22 @@ impl<'a> MirBuilder<'a> {
         span: Span,
         expr_id: usize,
     ) -> Option<Operand> {
-        if !matches!(attr, "add" | "remove" | "contains") {
+        if matches!(attr, "clear") {
+            let obj_op = self.lower_expr_as_copy(obj);
+            let tmp = self.new_local(self.get_type(expr_id), None, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    tmp,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function("__olive_set_clear".into())),
+                        args: vec![obj_op.clone()],
+                    },
+                ),
+                span,
+            );
+            return Some(obj_op);
+        }
+        if !matches!(attr, "add" | "remove" | "discard" | "contains") {
             return None;
         }
         let mut recv_ty = self.get_type(obj.id);
@@ -597,13 +714,16 @@ impl<'a> MirBuilder<'a> {
         // type descriptor to compute; the `_typed` variants set it (see
         // `hash_typed.rs`), the descriptor synthesized at codegen time from
         // this call's own value argument (arg position 1), same pattern as
-        // `__olive_list_extend_typed`.
+        // `__olive_list_extend_typed`. `remove` faults on a miss (Python
+        // semantics), `discard` keeps the old silent behavior.
         let structural = Self::type_needs_structural_key(&elem);
         let runtime = match (attr, structural) {
             ("add", false) => "__olive_set_add",
             ("add", true) => "__olive_set_add_typed",
-            ("remove", false) => "__olive_set_remove",
-            ("remove", true) => "__olive_set_remove_typed",
+            ("remove", false) => "__olive_set_remove_checked",
+            ("remove", true) => "__olive_set_remove_checked_typed",
+            ("discard", false) => "__olive_set_remove",
+            ("discard", true) => "__olive_set_remove_typed",
             ("contains", false) => "__olive_set_contains",
             ("contains", true) => "__olive_set_contains_typed",
             _ => return None,
@@ -619,6 +739,9 @@ impl<'a> MirBuilder<'a> {
             } else {
                 call_args.push(op.clone());
             }
+        }
+        if attr == "remove" {
+            call_args.push(self.index_loc_operand(span));
         }
         let tmp = self.new_local(self.get_type(expr_id), None, false);
         self.push_statement(
@@ -647,6 +770,9 @@ impl<'a> MirBuilder<'a> {
         span: Span,
         expr_id: usize,
     ) -> Option<Operand> {
+        if matches!(attr, "pop" | "setdefault" | "update" | "clear") {
+            return self.lower_dict_method_ext(obj, attr, arg_ops, arg_tys, span, expr_id);
+        }
         let mut recv_ty = self.get_type(obj.id);
         while let Type::Ref(inner) | Type::MutRef(inner) = recv_ty {
             recv_ty = *inner;
@@ -702,6 +828,101 @@ impl<'a> MirBuilder<'a> {
             span,
         );
         Some(self.operand_for_local(tmp))
+    }
+
+    /// `pop`/`setdefault`/`update`/`clear` (E3.6). `pop`/`setdefault` reuse
+    /// `get`'s structural-key dispatch (arg position 1 is the key); `update`
+    /// dispatches on whether the dict's *value* type owns heap data (arg
+    /// position 1 there is the whole source dict, matching
+    /// `__olive_list_extend_typed`).
+    fn lower_dict_method_ext(
+        &mut self,
+        obj: &Expr,
+        attr: &str,
+        arg_ops: &[Operand],
+        arg_tys: &[Type],
+        span: Span,
+        expr_id: usize,
+    ) -> Option<Operand> {
+        let mut recv_ty = self.get_type(obj.id);
+        while let Type::Ref(inner) | Type::MutRef(inner) = recv_ty {
+            recv_ty = *inner;
+        }
+        let (key_ty, val_ty): (Type, Type) = match &recv_ty {
+            Type::Dict(k, v) => ((**k).clone(), (**v).clone()),
+            Type::Any => (Type::Any, Type::Any),
+            _ => return None,
+        };
+        let key_structural = Self::type_needs_structural_key(&key_ty);
+        let obj_op = self.lower_expr_as_copy(obj);
+        let zero = || Operand::Constant(Constant::Int(0));
+        let box_val = |b: &mut Self, op: Operand, idx: usize| {
+            if val_ty == Type::Any {
+                let from_ty = arg_tys.get(idx).cloned().unwrap_or(Type::Any);
+                b.box_into_any(op, &from_ty, span)
+            } else {
+                op
+            }
+        };
+        let (runtime, call_args): (&str, Vec<Operand>) = match attr {
+            "clear" => ("__olive_obj_clear", vec![obj_op.clone()]),
+            "pop" if arg_ops.len() >= 2 => {
+                let key_op = arg_ops[0].clone();
+                let default = box_val(self, arg_ops[1].clone(), 1);
+                let f = if key_structural {
+                    "__olive_obj_pop_default_typed"
+                } else {
+                    "__olive_obj_pop_default"
+                };
+                (f, vec![obj_op.clone(), key_op, default])
+            }
+            "pop" => {
+                let key_op = arg_ops.first().cloned().unwrap_or(zero());
+                let loc = self.index_loc_operand(span);
+                let f = if key_structural {
+                    "__olive_obj_pop_checked_typed"
+                } else {
+                    "__olive_obj_pop_checked"
+                };
+                (f, vec![obj_op.clone(), key_op, loc])
+            }
+            "setdefault" => {
+                let key_op = arg_ops.first().cloned().unwrap_or(zero());
+                let default = box_val(self, arg_ops.get(1).cloned().unwrap_or(zero()), 1);
+                let f = if key_structural {
+                    "__olive_obj_setdefault_typed"
+                } else {
+                    "__olive_obj_setdefault"
+                };
+                (f, vec![obj_op.clone(), key_op, default])
+            }
+            "update" => {
+                let other = arg_ops.first().cloned().unwrap_or(zero());
+                let f = if Self::list_elem_needs_copy(&val_ty) {
+                    "__olive_obj_update_typed"
+                } else {
+                    "__olive_obj_update"
+                };
+                (f, vec![obj_op.clone(), other])
+            }
+            _ => return None,
+        };
+        let tmp = self.new_local(self.get_type(expr_id), None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                tmp,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(runtime.to_string())),
+                    args: call_args,
+                },
+            ),
+            span,
+        );
+        if matches!(attr, "clear" | "update") {
+            Some(obj_op)
+        } else {
+            Some(self.operand_for_local(tmp))
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

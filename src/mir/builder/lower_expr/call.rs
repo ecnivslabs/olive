@@ -496,4 +496,100 @@ impl<'a> MirBuilder<'a> {
         );
         self.operand_for_local(ret)
     }
+
+    /// `sorted`/`reversed`/`any`/`all`: bare-function sequence builtins
+    /// dispatched by the argument's element type. `sorted`/`reversed`
+    /// deep-copy heap-owning elements first (rule 3) so the source list is
+    /// untouched, then run the existing in-place list op on the copy.
+    pub(super) fn lower_sequence_builtin(
+        &mut self,
+        name: &str,
+        args: &[CallArg],
+        span: Span,
+        expr_id: usize,
+    ) -> Option<Operand> {
+        if args.len() != 1 || !matches!(name, "sorted" | "reversed" | "any" | "all") {
+            return None;
+        }
+        let arg_expr = match &args[0] {
+            CallArg::Positional(e)
+            | CallArg::Keyword(_, e)
+            | CallArg::Splat(e)
+            | CallArg::KwSplat(e) => e,
+        };
+        let recv_ty = self.get_type(arg_expr.id);
+        let mut current = &recv_ty;
+        while let Type::Ref(inner) | Type::MutRef(inner) = current {
+            current = inner;
+        }
+        let elem_ty: Type = match current {
+            Type::List(e) => (**e).clone(),
+            _ => Type::Any,
+        };
+        let list_op = self.lower_expr_as_copy(arg_expr);
+
+        if matches!(name, "any" | "all") {
+            let runtime = match (name, &elem_ty) {
+                ("any", Type::Bool) => "__olive_list_any_bool",
+                ("all", Type::Bool) => "__olive_list_all_bool",
+                ("any", _) => "__olive_list_any_any",
+                ("all", _) => "__olive_list_all_any",
+                _ => unreachable!(),
+            };
+            let tmp = self.new_local(Type::Bool, None, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    tmp,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function(runtime.to_string())),
+                        args: vec![list_op],
+                    },
+                ),
+                span,
+            );
+            return Some(self.operand_for_local(tmp));
+        }
+
+        let needs_copy = Self::list_elem_needs_copy(&elem_ty);
+        let copy_fn = if needs_copy {
+            "__olive_list_getslice_typed"
+        } else {
+            "__olive_list_getslice"
+        };
+        let zero = Operand::Constant(Constant::Int(0));
+        let copy_local = self.new_local(self.get_type(expr_id), None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                copy_local,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(copy_fn.to_string())),
+                    args: vec![list_op, zero.clone(), zero.clone(), zero.clone(), zero],
+                },
+            ),
+            span,
+        );
+        let copy_op = self.operand_for_local(copy_local);
+
+        let apply_fn = if name == "sorted" {
+            match &elem_ty {
+                Type::Float | Type::F32 => "__olive_list_sort_float",
+                Type::Str => "__olive_list_sort_str",
+                _ => "__olive_list_sort_int",
+            }
+        } else {
+            "__olive_list_reverse"
+        };
+        let void_local = self.new_local(Type::Int, None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                void_local,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(apply_fn.to_string())),
+                    args: vec![copy_op.clone()],
+                },
+            ),
+            span,
+        );
+        Some(copy_op)
+    }
 }
