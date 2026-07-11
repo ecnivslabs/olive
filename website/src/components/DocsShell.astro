@@ -1,0 +1,67 @@
+---
+import BaseLayout from './BaseLayout.astro';
+import type { DocsNavGroup } from '../lib/docsNav';
+
+interface Props {
+  title: string;
+  description: string;
+  current: string;
+  nav: DocsNavGroup[];
+}
+const { title, description, current, nav } = Astro.props;
+const base = import.meta.env.BASE_URL;
+---
+<BaseLayout title={title} description={description} active="docs">
+  <div class="body">
+    <aside class="sidebar">
+      {nav.map(group => (
+        <div class="group">
+          <p class="group-h">{group.heading}</p>
+          {group.links.map(link => (
+            <a href={`${base}docs/${link.slug}/`} class={link.slug === current ? 'current' : ''} aria-current={link.slug === current ? 'page' : undefined}>{link.label}</a>
+          ))}
+        </div>
+      ))}
+    </aside>
+    <div class="content">
+      <p class="crumb">docs / {current}</p>
+      <slot />
+    </div>
+  </div>
+</BaseLayout>
+
+<style>
+  .body { display: grid; grid-template-columns: 260px 1fr; }
+  .sidebar { border-right: 1px solid var(--border); padding: 40px 32px; }
+  .group { margin-bottom: 30px; }
+  .group-h {
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--ink-muted); margin: 0 0 12px;
+  }
+  .group a { display: block; font-size: 14px; color: var(--ink-body); padding: 6px 0; }
+  .group a.current { color: var(--accent); font-weight: 500; }
+
+  .content { padding: 56px 64px; min-width: 0; }
+  .crumb { font-family: var(--font-mono); font-size: 12px; color: var(--ink-muted); margin: 0 0 18px; }
+  .content :global(h1) { font-size: 40px; margin: 0 0 20px; }
+  .content :global(h2) { font-size: 26px; margin: 40px 0 16px; }
+  .content :global(p) { font-size: 15px; line-height: 1.75; color: var(--ink-body); max-width: 68ch; margin: 0 0 20px; }
+  .content :global(strong) { color: var(--ink); font-weight: 600; }
+  .content :global(code) { font-family: var(--font-mono); background: var(--surface); padding: 1px 6px; border-radius: 3px; font-size: 0.88em; }
+  .content :global(pre) { background: var(--ink); border-radius: 6px; padding: 20px 22px; overflow-x: auto; margin: 0 0 24px; }
+  .content :global(pre code) { background: none; padding: 0; color: #E9E5D6; }
+  .content :global(ul), .content :global(ol) { color: var(--ink-body); font-size: 15px; line-height: 1.75; max-width: 68ch; }
+  .content :global(a) { text-decoration: underline; text-underline-offset: 2px; }
+
+  @media (max-width: 960px) {
+    .body { grid-template-columns: 220px 1fr; }
+    .sidebar { padding: 32px 20px; }
+    .content { padding: 40px 32px; }
+  }
+
+  @media (max-width: 680px) {
+    .body { grid-template-columns: 1fr; }
+    .sidebar { border-right: none; border-bottom: 1px solid var(--border); padding: 24px; }
+    .content { padding: 32px 24px; }
+  }
+</style>

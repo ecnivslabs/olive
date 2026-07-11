@@ -4,7 +4,7 @@ Enums (enumerations) represent data that can be one of several distinct variants
 
 ## Defining Enums
 
-```rust
+```olive
 enum WebResponse:
     Success
     NotFound
@@ -13,7 +13,7 @@ enum WebResponse:
 
 Enum variants can carry data. Each variant specifies the types of its associated values:
 
-```rust
+```olive
 enum Message:
     Quit
     Move(int, int)          // x and y coordinates
@@ -25,7 +25,7 @@ enum Message:
 
 `match` lets you branch on enum variants and extract their associated data in one step:
 
-```rust
+```olive
 fn process_message(msg: Message) -> None:
     match msg:
         Quit:
@@ -42,7 +42,7 @@ fn process_message(msg: Message) -> None:
 
 Use `_` as a catch-all when you only care about specific variants:
 
-```rust
+```olive
 fn handle_response(res: WebResponse) -> None:
     match res:
         Success:
@@ -53,7 +53,7 @@ fn handle_response(res: WebResponse) -> None:
 
 A variant's own payload positions accept `_` too, for fields you don't need:
 
-```rust
+```olive
 enum Shape:
     Circle(float)
     Rectangle(float, float)
@@ -73,7 +73,7 @@ fn main():
 
 You can bind a matched value to a name and use it inside the branch:
 
-```rust
+```olive
 fn log_status(status: int):
     match status:
         200:
@@ -89,7 +89,7 @@ Here, `code` matches any value and makes it available as a variable inside that 
 A pattern can carry an `if` condition. The arm only matches when the guard
 holds, and later arms are tried otherwise:
 
-```rust
+```olive
 fn describe(status: int) -> str:
     match status:
         200:
@@ -119,7 +119,7 @@ top level of a `match`.
 
 ### Tuple Patterns
 
-```rust
+```olive
 fn describe_point(p: (int, int)) -> str:
     match p:
         (0, 0):
@@ -141,7 +141,7 @@ fn main():
 Match a struct by naming the fields you care about; unnamed fields are
 ignored:
 
-```rust
+```olive
 struct Point:
     x: int
     y: int
@@ -164,7 +164,7 @@ fn main():
 Match a list by its length, or peel off a fixed prefix/suffix and bind the
 remainder with `*name`:
 
-```rust
+```olive
 fn summarize(xs: [int]) -> str:
     match xs:
         []:
@@ -184,7 +184,7 @@ fn main():
 
 `a..b` matches up to (not including) `b`; `a..=b` includes it:
 
-```rust
+```olive
 fn bucket(n: int) -> str:
     match n:
         0..10:
@@ -204,7 +204,7 @@ fn main():
 `|` matches any of several alternatives in one arm. Every alternative must
 bind the same names:
 
-```rust
+```olive
 enum Shape:
     Circle(float)
     Square(float)
@@ -224,7 +224,7 @@ fn main():
 Every pattern form recurses, so a variant's payload can itself be a tuple,
 a list, or a range, and or-patterns can combine whole variants:
 
-```rust
+```olive
 enum Node:
     Leaf(int)
     Pair(int, int)
@@ -252,7 +252,7 @@ fn main():
 
 A union type like `Shape | Color` holds a value that could be any of the listed enum types. `match` handles all of them in one place:
 
-```rust
+```olive
 enum Shape:
     Circle(float)
     Square(float)
@@ -279,7 +279,7 @@ The compiler checks that every variant from every enum in the union is handled. 
 
 Enums can also be generic.
 
-```rust
+```olive
 enum Response[T]:
     Data(T)
     Error(str)
@@ -301,7 +301,7 @@ match find_item(1):
 `impl` blocks work on enums the same way they do on structs, including a
 `self` receiver that a `match` can destructure:
 
-```rust
+```olive
 enum Shape:
     Circle(float)
     Square(float)

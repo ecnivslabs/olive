@@ -6,7 +6,7 @@ Olive functions are first-class values. They can be assigned to variables, passe
 
 Functions are defined using the `fn` keyword. Parameters and return types can be explicitly annotated for clarity and compile-time boundary checks:
 
-```rust
+```olive
 fn greet(name: str) -> str:
     return f"Hello, {name}"
 ```
@@ -17,7 +17,7 @@ fn greet(name: str) -> str:
 
 You can provide default values for arguments, making them optional when calling the function.
 
-```rust
+```olive
 import math
 
 fn power(base: int, exponent: int = 2) -> int:
@@ -31,7 +31,7 @@ print(power(10, 3))  // 1000
 
 To handle an unknown number of arguments, use `*` for positional arguments (captured as a list) and `**` for keyword arguments (captured as a dictionary).
 
-```rust
+```olive
 fn log(message: str, *tags: str, **metadata: str):
     print(f"[{' | '.join(tags)}] {message}")
     for k, v in metadata.items():
@@ -46,7 +46,7 @@ log("Server started", "info", "network", port="8080", host="localhost")
 
 Olive supports generics, enabling the creation of functions that work with any type. Type parameters are defined in square brackets after the function name.
 
-```rust
+```olive
 fn first[T](items: [T]) -> T:
     return items[0]
 
@@ -59,7 +59,7 @@ let s = first(["a", "b"])    // T is inferred as str
 Function types describe a function's signature -- `fn(param types) -> return
 type` -- so a parameter can require any function with that shape:
 
-```rust
+```olive
 fn apply(f: fn(int) -> int, val: int) -> int:
     return f(val)
 
@@ -73,7 +73,7 @@ full speed, whether it's the target of a normal call or being passed around
 as a value. Calling *through* a `fn`-typed value (a variable, a struct
 field, a list element) is an indirect call, resolved at runtime:
 
-```rust
+```olive
 struct Op:
     apply: fn(int) -> int
 
@@ -90,7 +90,7 @@ print(Op(double).apply(5)) // 10
 annotated in parentheses, or left bare when the type is inferable from
 context:
 
-```rust
+```olive
 let square = lambda (x: int): x * x
 print(square(6))  // 36
 
@@ -111,7 +111,7 @@ one directly, from inside the function that defines it, costs nothing extra:
 the captured variables are passed as ordinary trailing arguments, no
 allocation, no heap record.
 
-```rust
+```olive
 fn scale_all(values: [int], factor: int) -> [int]:
     fn scale(x: int) -> int:
         return x * factor
@@ -125,7 +125,7 @@ first-class closures have in any language. From then on it's an ordinary
 `fn`-typed value: call it, store it, pass it around, exactly like a bare
 function.
 
-```rust
+```olive
 fn make_adder(n: int) -> fn(int) -> int:
     return lambda x: x + n
 
@@ -136,7 +136,7 @@ print(add5(3))  // 8
 Captures are copied at the moment the closure is built, not read live from
 the original variable afterward:
 
-```rust
+```olive
 fn make_reader() -> fn() -> int:
     let mut n = 1
     let g = lambda: n
@@ -160,7 +160,7 @@ Olive uses tags to modify the behavior of functions at different stages.
 
 Decorators modify the function's behavior at **runtime** or affect code generation. Common decorators:
 
-```rust
+```olive
 @memo
 fn fibonacci(n: int) -> int:
     if n <= 1: return n
@@ -169,7 +169,7 @@ fn fibonacci(n: int) -> int:
 
 `@safe` marks an FFI function as safe to call without an `unsafe` block:
 
-```rust
+```olive
 import "libm.so" as math:
     @safe
     fn sqrt(x: float) -> float
@@ -179,7 +179,7 @@ import "libm.so" as math:
 
 Directives are instructions for the **compiler** or tools. They don't affect runtime logic directly but change how the code is handled during the build process.
 
-```rust
+```olive
 #[test]
 fn test_math_logic():
     assert 2 + 2 == 4
@@ -189,7 +189,7 @@ When you run `pit test`, it identifies all functions tagged with `#[test]` and e
 
 `#[bench]` marks a function for `pit bench` instead:
 
-```rust
+```olive
 #[bench]
 fn fib_bench() -> int:
     return fib(20)
@@ -201,7 +201,7 @@ fn fib_bench() -> int:
 
 A `///` comment directly above a `fn`, `struct`, or `enum` documents it. A run of consecutive `///` lines is one doc comment; a decorator (`#[test]`, `@memo`) between the comment and the item doesn't break the association.
 
-```rust
+```olive
 /// Adds two numbers.
 fn add(a: int, b: int) -> int:
     return a + b

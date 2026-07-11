@@ -6,14 +6,14 @@ Olive is statically typed with a clean, indentation-based syntax. Type annotatio
 
 Declare variables using the `let` keyword. Variables are immutable by default:
 
-```rust
+```olive
 let name = "Olive"
 // name = "New Name"  // Compile-time error
 ```
 
 To define a mutable variable, use `let mut`:
 
-```rust
+```olive
 let mut count = 0
 count = 1
 ```
@@ -22,7 +22,7 @@ count = 1
 
 Use `const` for values that must be evaluated at compile-time:
 
-```rust
+```olive
 const MAX_RETRIES = 5
 ```
 
@@ -42,7 +42,7 @@ const MAX_RETRIES = 5
 
 Integer and float literals accept `_` as a digit separator for readability, in decimal, hex, octal, and binary literals alike. It must sit strictly between two digits -- not leading, trailing, doubled, or next to the `.`:
 
-```rust
+```olive
 let population = 8_100_000_000
 let price = 19_99.99
 let mask = 0xFF_FF_00_00
@@ -55,7 +55,7 @@ integer `/` truncates toward zero (Rust semantics) rather than flooring.
 `**` is exponentiation, right-associative, binding tighter than unary minus
 so `-2 ** 2` is `-4`, not `4`:
 
-```rust
+```olive
 print(2 ** 10)     // 1024
 print(-2 ** 2)     // -4
 print(2 ** 3 ** 2) // 512, ** groups right: 2 ** (3 ** 2)
@@ -66,7 +66,7 @@ print(2.0 ** 0.5)  // 1.4142135623730951
 `math.floordiv` (int) or `math.ffloordiv` (float) when you want the floor
 instead:
 
-```rust
+```olive
 import math
 
 print(-7 / 2)               // -3, truncated
@@ -91,7 +91,7 @@ expensive to keep.
 
 You can allow a variable or parameter to accept one of multiple specified types using a union (`|`):
 
-```rust
+```olive
 let mut result: int | str = 10
 result = "Error"
 ```
@@ -105,7 +105,7 @@ identity of its own: the alias and its target are the same type everywhere,
 interchangeably. This is mainly useful for naming a union that would
 otherwise be repeated at every call site:
 
-```rust
+```olive
 struct ParseError:
     msg: str
 
@@ -124,13 +124,13 @@ cycle (`type A = B` / `type B = A` is a compile error).
 
 When a value's type is not known until runtime, annotate it as `Any`. This is what lets a single collection hold a mix of types, such as the values returned when decoding JSON:
 
-```rust
+```olive
 let row: [Any] = [1, "Olive", True, None]
 ```
 
 A literal list with mixed element types widens to `[Any]` automatically. Use `type(value)` to inspect what an `Any` holds, and `None` for the absent case. Comparing an `Any` against `None` tests for the absent value:
 
-```rust
+```olive
 if value == None:
     print("missing")
 ```
@@ -145,7 +145,7 @@ things read and narrow it, no unwrapping required.
 Comparing against `None` narrows the type for the rest of the branch (or the
 rest of the scope, if the other branch always returns/breaks/continues):
 
-```rust
+```olive
 fn describe(x: int | None) -> str:
     if x != None:
         return "have " + str(x)  // x is `int` here, not `int | None`
@@ -155,7 +155,7 @@ fn describe(x: int | None) -> str:
 `??` fills in a default when the left side is `None`, short-circuiting (the
 right side only evaluates if needed):
 
-```rust
+```olive
 let n = maybe_count() ?? 0
 ```
 
@@ -163,7 +163,7 @@ let n = maybe_count() ?? 0
 receiver is `None`, producing `None` instead of faulting; chain it with `??`
 for a default:
 
-```rust
+```olive
 print(find_user(id)?.name ?? "anon")
 ```
 
@@ -171,7 +171,7 @@ print(find_user(id)?.name ?? "anon")
 
 Format strings by prefixing them with `f` and enclosing expressions in curly braces:
 
-```rust
+```olive
 let name = "Olive"
 let version = 1.0
 print(f"Welcome to {name} v{version:.2f}")
@@ -181,7 +181,7 @@ A trailing `=` inside the braces is the debug form: it prints the source
 text of the expression, an `=`, and its value, useful for quick print
 debugging. A format spec still applies after the `=`:
 
-```rust
+```olive
 let x = 5
 print(f"{x=}")       // x=5
 print(f"{x=:04d}")   // x=0005
@@ -191,7 +191,7 @@ print(f"{x=:04d}")   // x=0005
 
 Strings carry the common text operations:
 
-```rust
+```olive
 print("HeLLo".upper())              // HELLO
 print("HeLLo".lower())              // hello
 print("  hi  ".strip())            // hi
@@ -216,7 +216,7 @@ The full method set: `upper`, `lower`, `strip`/`lstrip`/`rstrip` (optionally
 
 Iterate a string by character:
 
-```rust
+```olive
 for ch in "hi":
     print(ch)
 ```
@@ -227,7 +227,7 @@ for ch in "hi":
 
 Ordered, growable sequences of a single type:
 
-```rust
+```olive
 let mut numbers = [1, 2, 3]
 numbers.append(4)         // grows in place: [1, 2, 3, 4]
 let first = numbers[0]
@@ -245,7 +245,7 @@ elements so each repetition is independent.
 Lists and strings slice with `[start:stop:step]`. Any part can be omitted, and
 negative steps walk backwards:
 
-```rust
+```olive
 let xs = [1, 2, 3, 4, 5]
 print(xs[1:4])     // [2, 3, 4]
 print(xs[::-1])    // [5, 4, 3, 2, 1]
@@ -261,7 +261,7 @@ the end: `-1` is the last element, `-2` the second-to-last. Still
 bounds-checked -- indexing past the start faults the same way a too-large
 positive index does.
 
-```rust
+```olive
 let xs = [1, 2, 3, 4, 5]
 print(xs[-1])        // 5
 print(xs[-2])        // 4
@@ -272,7 +272,7 @@ print("hello"[-1])   // o
 
 Fixed-size arrays with a known length at compile time. The length is structural, mainly for typing a fixed-size field (an FFI struct with a C array member, for instance); to actually allocate a fixed-size buffer, use `bytes_new(n)` or a list with `list_new(n)`.
 
-```rust
+```olive
 struct Grid:
     cells: [int; 16]
 ```
@@ -281,7 +281,7 @@ struct Grid:
 
 Mutable, growable byte buffers for binary data. Indexing reads and writes single bytes and compiles to direct memory access. Passing a `bytes` value to Python converts it to a Python `bytes` object:
 
-```rust
+```olive
 let mut buf = bytes_new(16)        // zero-filled, length 16
 buf[0] = 255
 let first = buf[0]                 // 255
@@ -295,7 +295,7 @@ let size = len(buf)
 
 Hash-map key-value collections:
 
-```rust
+```olive
 let scores = {"Alice": 95, "Bob": 88}
 print(scores["Alice"])
 print(scores.get("Bob"))
@@ -310,7 +310,7 @@ returns `default`), `update(other)` (merges `other` in, overwriting on a key
 conflict; `other` itself is untouched), and `clear()`. Iterate the keys
 directly, or the key-value pairs with `items()`:
 
-```rust
+```olive
 for name in scores:
     print(name)
 
@@ -322,7 +322,7 @@ for name, score in scores.items():
 
 Unordered collections of unique elements:
 
-```rust
+```olive
 let valid_ids = {101, 102, 103}
 ```
 
@@ -335,7 +335,7 @@ symmetric difference.
 
 Fixed-size, heterogeneous collections:
 
-```rust
+```olive
 let pair: (int, str) = (1, "Active")
 let id, status = pair  // Destructuring assignment
 ```
@@ -345,7 +345,7 @@ list; unlike a tuple's fixed arity, this works against a list of any
 runtime length, and faults if there aren't enough elements for the plain
 names. At most one `*name` per target list, in `let` or plain assignment:
 
-```rust
+```olive
 let scores = [90, 85, 72, 68, 55]
 let highest, *rest = scores
 print(highest)   // 90
@@ -363,7 +363,7 @@ a, *b = scores   // plain assignment works the same way
 Parentheses around a `let` target list are pure grouping, with no effect
 on meaning; `pit fmt` normalizes them away:
 
-```rust
+```olive
 let (id, status) = pair   // identical to `let id, status = pair`
 ```
 
@@ -373,7 +373,7 @@ let (id, status) = pair   // identical to `let id, status = pair`
 
 Conditional branches use `if`, `elif`, and `else`:
 
-```rust
+```olive
 if score >= 90:
     print("A")
 elif score >= 80:
@@ -388,7 +388,7 @@ compile errors in condition position, not silent "truthy" checks -- the
 usual bug this catches is `if x:` on an `int | None` that can't tell a real
 `0` from the absent case. Spell out what you mean instead:
 
-```rust
+```olive
 if len(xs) > 0:
     print("has items")
 
@@ -403,7 +403,7 @@ if maybe_user != None:
 
 An `if` can be used inline as an expression:
 
-```rust
+```olive
 let grade = "pass" if score >= 50 else "fail"
 ```
 
@@ -413,7 +413,7 @@ let grade = "pass" if score >= 50 else "fail"
 
 Iterate over a collection, or over an integer range written with `..` (exclusive of the end) or `..=` (inclusive):
 
-```rust
+```olive
 for item in ["apple", "banana", "cherry"]:
     print(item)
 
@@ -428,7 +428,7 @@ A range steps by 1 by default; `by` sets a different, contextual step (not a
 reserved word -- it only means anything right after a range). A negative step
 walks backward, which is how a descending range is written:
 
-```rust
+```olive
 for i in 0..10 by 2:    // 0, 2, 4, 6, 8
     print(i)
 
@@ -446,7 +446,7 @@ range (`5..0`) is simply empty, matching Python's `range(5, 0)`.
 `enumerate`/`zip` exist only written directly as a loop's (or comprehension
 clause's) iterable -- not as a value to assign, pass around, or return:
 
-```rust
+```olive
 let fruits = ["apple", "banana", "cherry"]
 for i, fruit in enumerate(fruits):
     print(i, fruit)          // 0 apple / 1 banana / 2 cherry
@@ -464,7 +464,7 @@ membership without building a loop. A stepped range can't be tested this way
 (there's no cheap way to check membership against a step without walking
 it) -- write the step check alongside a plain range instead:
 
-```rust
+```olive
 let n = 5
 print(n in 0..10)     // True
 print(15 not in 0..10) // True
@@ -476,7 +476,7 @@ they're given), never copies it: the iterable stays usable after the loop,
 and mutating or reassigning it while the loop is still running is a compile
 error, not a race:
 
-```rust
+```olive
 let names = ["a", "b"]
 for n in names:
     print(n)
@@ -490,7 +490,7 @@ for x in xs:
 
 #### While Loops
 
-```rust
+```olive
 let mut i = 0
 while i < 5:
     print(i)
@@ -501,7 +501,7 @@ while i < 5:
 
 Generate lists, sets, or dictionaries from iterables:
 
-```rust
+```olive
 let numbers = [1, 2, 3, 4]
 let squares = [x * x for x in numbers if x % 2 == 0]  // Evaluates to [4, 16]
 let unique_squares = {x * x for x in numbers}         // Evaluates to {1, 4, 9, 16}

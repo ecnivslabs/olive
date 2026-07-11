@@ -15,7 +15,7 @@
 
 ## Overview
 
-**A general-purpose systems language that's easy to read, fast to run, and keeps your memory safe.**
+**A systems language that's easy to read, fast to run, and keeps your memory safe.**
 
 Olive was built for when you want the speed of a low-level language without the headache of complex syntax. It uses a clean, indentation-based structure and a smart ownership model to provide consistent performance without a garbage collector.
 
@@ -32,17 +32,16 @@ Olive was built for when you want the speed of a low-level language without the 
 ## A Taste of Olive
 
 ```rust
-// A generic function to calculate average
-fn average[T: Numeric](numbers: [T]) -> float:
-    let mut total = 0.0
-    for n in numbers:
-        total += float(n)
-    return total / float(len(numbers))
+fn total(data: [int]) -> int:
+    let mut sum = 0
+    for n in data:
+        sum += n
+    return sum
 
 async fn process_data(data: [int]):
     print(f"Processing {len(data)} items...")
-    let avg = average(data)
-    print(f"Result: {avg:.2f}")
+    let result = total(data)
+    print(f"Result: {result}")
 
 fn main():
     let data = [10, 20, 30, 40, 50]
@@ -73,6 +72,7 @@ pit run
 
 - [Introduction](docs/introduction.md): Philosophy and goals.
 - [Basics](docs/basics.md): Variables, types, and control flow.
+- [Functions](docs/functions.md): Grouping code into reusable blocks.
 - [Ownership](docs/ownership.md): How memory safety works.
 - [Generics](docs/generics.md): Writing reusable code.
 - [Traits](docs/traits.md): Defining shared behavior between types.

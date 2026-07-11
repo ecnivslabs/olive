@@ -9,7 +9,7 @@ threads sized to the machine's CPU count, sharing one ready queue.
 Declare asynchronous functions with the `async` keyword. Use `await` inside
 them to yield execution during I/O:
 
-```rust
+```olive
 import aio
 import requests
 
@@ -26,7 +26,7 @@ the runtime.
 To run a block of code asynchronously without defining a separate function,
 use `async:`. The block evaluates to a future:
 
-```rust
+```olive
 import aio
 
 fn main():
@@ -46,7 +46,7 @@ returns its result.
 `aio.gather` runs a list of futures concurrently and resolves with all their
 results, in the same order:
 
-```rust
+```olive
 async fn work(n: int) -> int:
     return n * 2
 
@@ -62,7 +62,7 @@ gives `[str]`.
 `aio.select` runs a list of futures concurrently and resolves with the value
 of the first one to complete:
 
-```rust
+```olive
 let winner = await aio.select([slow_mirror(), fast_mirror()])
 ```
 

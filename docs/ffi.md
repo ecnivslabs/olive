@@ -6,7 +6,7 @@ Olive calls external libraries written in C, C++, or Rust, as long as they expos
 
 Use the `import` statement to load a shared library (`.so`, `.dll`, or `.dylib`) and declare the signatures you need from it:
 
-```rust
+```olive
 import "libc.so.6" as libc:
     fn printf(fmt: str, *args) -> int
     fn malloc(size: int) -> *void
@@ -19,7 +19,7 @@ The compiler binds each declared signature to a direct call at compile time. A t
 
 Olive strings are UTF-8. When you pass a `str` to a parameter that a C function expects as `char*`, the compiler hands over a null-terminated copy automatically, so you declare the parameter as `str` and call it with an ordinary Olive string:
 
-```rust
+```olive
 import "libc.so.6" as libc:
     fn puts(s: str) -> int
 
@@ -32,7 +32,7 @@ fn main():
 
 Declare the layout of native structs and unions inside the import block so it matches the C memory layout. A union is written as `union struct`:
 
-```rust
+```olive
 import "libfoo.so" as foo:
     struct Settings:
         name: str
@@ -48,7 +48,7 @@ import "libfoo.so" as foo:
 
 Inside an import block, give a struct field an explicit bit width with `@`:
 
-```rust
+```olive
 import "libfoo.so" as foo:
     struct Flags:
         is_ready: int @ 1
@@ -60,7 +60,7 @@ import "libfoo.so" as foo:
 
 The C calling convention is the default. To name a different one, put a convention directive above the function. This matters mainly on Windows:
 
-```rust
+```olive
 import "user32.dll" as win:
     @stdcall
     fn MessageBoxA(hWnd: *void, text: str, caption: str, type: int) -> int
@@ -72,7 +72,7 @@ The directives are `@cdecl`, `@stdcall`, and `@fastcall`. `@stdcall` and `@fastc
 
 The borrow checker cannot reason about memory across the FFI boundary or through raw pointers, so foreign calls and pointer dereferences must sit inside an `unsafe:` block:
 
-```rust
+```olive
 import "libc.so.6" as libc:
     fn malloc(size: int) -> *void
     fn free(ptr: *void)
@@ -89,7 +89,7 @@ Keep `unsafe` scopes small and wrap pointer work behind a safe interface.
 
 If a native import block or a specific function is known to be safe (no memory risks), mark it with `@safe`. This skips the `unsafe:` requirement:
 
-```rust
+```olive
 // All functions in this block are safe to call
 @safe
 import "libm.so" as math:

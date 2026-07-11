@@ -1,0 +1,23 @@
+---
+import { getEntry, render } from 'astro:content';
+import DocsShell from '../../components/DocsShell.astro';
+import { parseDocsNav } from '../../lib/docsNav';
+
+const introEntry = await getEntry('docs', 'introduction');
+const indexEntry = await getEntry('docs', 'index');
+const nav = indexEntry ? parseDocsNav(indexEntry.body ?? '') : [];
+
+if (!introEntry) {
+  throw new Error('docs/introduction.md is missing — the docs landing page has nothing to show.');
+}
+
+const { Content } = await render(introEntry);
+---
+<DocsShell
+  title="Introduction"
+  description="Olive documentation — technical reference and user guide."
+  current="introduction"
+  nav={nav}
+>
+  <Content />
+</DocsShell>

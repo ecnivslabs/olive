@@ -23,7 +23,7 @@ Three rules define how values behave:
 Rule 3 is observable. A container never aliases a variable you can still
 reach:
 
-```rust
+```olive
 fn main():
     let mut a = [1, 2]
     let b = [a]      // b stores its own copy of a
@@ -38,7 +38,7 @@ performance detail; the visible behavior is always value semantics.
 
 ## Assignment
 
-```rust
+```olive
 let list1 = [1, 2, 3]
 let list2 = list1
 print(list1)   // fine
@@ -55,7 +55,7 @@ Rust: use-after-assignment is not an error you have to code around.
 Explicit references borrow a value without owning it, and these are checked
 at compile time.
 
-```rust
+```olive
 let list = [1, 2, 3]
 let r1 = &list
 let r2 = &list
@@ -65,7 +65,7 @@ print(r1[0])   // any number of readers
 A mutable reference needs exclusive access. Taking one while another borrow
 is live is a compile error:
 
-```rust
+```olive
 let mut list = [1, 2, 3]
 let r = &mut list
 let r2 = &list   // E0503: already borrowed as mutable

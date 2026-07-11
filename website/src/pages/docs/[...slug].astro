@@ -1,0 +1,29 @@
+---
+import { getCollection, getEntry, render } from 'astro:content';
+import DocsShell from '../../components/DocsShell.astro';
+import { parseDocsNav } from '../../lib/docsNav';
+
+export async function getStaticPaths() {
+  const entries = await getCollection('docs', ({ id }) => id !== 'index');
+  return entries.map((entry) => ({
+    params: { slug: entry.id },
+    props: { entry },
+  }));
+}
+
+const { entry } = Astro.props;
+const { Content, headings } = await render(entry);
+
+const indexEntry = await getEntry('docs', 'index');
+const nav = indexEntry ? parseDocsNav(indexEntry.body ?? '') : [];
+
+const title = headings.find((h) => h.depth === 1)?.text ?? entry.id;
+---
+<DocsShell
+  title={title}
+  description={`Olive documentation — ${title}`}
+  current={entry.id}
+  nav={nav}
+>
+  <Content />
+</DocsShell>

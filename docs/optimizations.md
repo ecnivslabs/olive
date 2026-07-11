@@ -17,7 +17,7 @@ Replaces uses of a copied variable with the original, exposing more work to the 
 
 ### Constant Propagation & Folding
 Values known at compile time are substituted and evaluated immediately.
-```rust
+```olive
 let x = 10
 let y = x + 5  // becomes 15 at compile time
 ```
