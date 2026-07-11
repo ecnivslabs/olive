@@ -320,9 +320,30 @@ impl<'a> MirBuilder<'a> {
                 start,
                 end,
                 inclusive,
+                step,
             } => {
                 let start_op = self.lower_expr_as_copy(start);
                 let end_op = self.lower_expr_as_copy(end);
+                let step_op = match step {
+                    Some(step_expr) => {
+                        let raw = self.lower_expr_as_copy(step_expr);
+                        let checked = self.new_local(Type::Int, None, false);
+                        self.push_statement(
+                            StatementKind::Assign(
+                                checked,
+                                Rvalue::Call {
+                                    func: Operand::Constant(Constant::Function(
+                                        "__olive_check_nonzero_step".to_string(),
+                                    )),
+                                    args: vec![raw, self.index_loc_operand(step_expr.span)],
+                                },
+                            ),
+                            step_expr.span,
+                        );
+                        Operand::Copy(checked)
+                    }
+                    None => Operand::Constant(Constant::Int(1)),
+                };
                 let tmp = self.new_local(Type::List(Box::new(Type::Int)), None, true);
                 self.push_statement(
                     StatementKind::Assign(
@@ -335,6 +356,7 @@ impl<'a> MirBuilder<'a> {
                                 start_op,
                                 end_op,
                                 Operand::Constant(Constant::Int(*inclusive as i64)),
+                                step_op,
                             ],
                         },
                     ),
@@ -351,6 +373,9 @@ impl<'a> MirBuilder<'a> {
             ExprKind::AsyncBlock(body) => self.lower_async_block_expr(body, expr.span),
             ExprKind::Deref(inner) => self.lower_deref_expr(inner, expr.id),
             ExprKind::Borrow(inner) => self.lower_borrow_expr(inner, expr.id, expr.span),
+            ExprKind::Starred(_) => unreachable!(
+                "Starred only appears inside an Assign/MultiLet target, lowered by lower_stmt"
+            ),
             ExprKind::MutBorrow(inner) => self.lower_mut_borrow_expr(inner, expr.id, expr.span),
             ExprKind::Identifier(name) => self.lower_identifier_expr(name, expr.id),
             ExprKind::BinOp { left, op, right } => {

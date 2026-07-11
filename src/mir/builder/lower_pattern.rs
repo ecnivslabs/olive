@@ -355,10 +355,7 @@ impl<'a> MirBuilder<'a> {
             Type::Dict(k, _) => *k,
             _ => Type::Any,
         };
-        let iter_op = self.lower_expr(&clause.iter);
-        let iter_type = self.get_type(clause.iter.id);
-        let iter_copy = self.new_local(iter_type, None, true);
-        self.push_statement(StatementKind::Assign(iter_copy, Rvalue::Use(iter_op)), span);
+        let (iter_copy, _) = self.borrow_iterable(&clause.iter);
         let cond_bb = self.new_block();
         let body_bb = self.new_block();
         let next_clause_bb = self.new_block();

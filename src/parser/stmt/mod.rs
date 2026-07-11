@@ -3,7 +3,7 @@ use super::{
     ast::*,
     error::{ParseError, ParseResult},
 };
-use crate::lexer::TokenKind;
+use crate::lexer::{Token, TokenKind};
 
 mod control;
 mod functions;
@@ -207,9 +207,47 @@ impl Parser {
         Ok(Stmt::new(StmtKind::Defer(expr), span))
     }
 
+    /// A bare `*name` element of a multi-target list (`a, *rest = xs`)
+    /// parses through the ordinary expression grammar as `Deref(name)`,
+    /// indistinguishable at the token level from a real pointer
+    /// dereference (`*ptr = 5`). The two are disambiguated by arity: a
+    /// lone target keeps its `Deref` meaning unchanged (`*ptr = 5` still
+    /// writes through the pointer); only inside a genuine multi-target
+    /// tuple does a bare `*name` become a starred gather target. Errors if
+    /// more than one element would become starred.
+    fn rewrite_starred_targets(lhs: &mut Expr, err_tok: &Token) -> ParseResult<()> {
+        let ExprKind::Tuple(elems) = &mut lhs.kind else {
+            return Ok(());
+        };
+        let mut seen = false;
+        for elem in elems.iter_mut() {
+            if let ExprKind::Deref(inner) = &elem.kind
+                && matches!(inner.kind, ExprKind::Identifier(_))
+            {
+                if seen {
+                    return Err(ParseError {
+                        message: "at most one `*name` target is allowed".into(),
+                        line: err_tok.line,
+                        col: err_tok.col,
+                        start: elem.span.start,
+                        end: elem.span.end,
+                    });
+                }
+                seen = true;
+                let ExprKind::Deref(inner) = std::mem::replace(&mut elem.kind, ExprKind::Null)
+                else {
+                    unreachable!()
+                };
+                elem.kind = ExprKind::Starred(inner);
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn parse_expr_or_assign(&mut self) -> ParseResult<Stmt> {
         let start = self.peek().clone();
-        let lhs = self.parse_expr_list()?;
+        let mut lhs = self.parse_expr_list()?;
+        Self::rewrite_starred_targets(&mut lhs, &start)?;
         let (op_line, op_col) = (self.peek().line, self.peek().col);
         match self.peek().kind.clone() {
             TokenKind::Equal => {

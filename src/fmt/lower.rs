@@ -349,26 +349,41 @@ impl<'a> Lowerer<'a> {
                 value,
                 is_mut,
                 ..
-            } => self.binding("let", *is_mut, std::slice::from_ref(name), type_ann, value),
+            } => self.binding(
+                "let",
+                *is_mut,
+                std::slice::from_ref(name),
+                None,
+                type_ann,
+                value,
+            ),
             StmtKind::MultiLet {
                 names,
                 type_ann,
                 value,
                 is_mut,
+                starred,
                 ..
-            } => self.binding("let", *is_mut, names, type_ann, value),
+            } => self.binding("let", *is_mut, names, *starred, type_ann, value),
             StmtKind::Const {
                 name,
                 type_ann,
                 value,
                 ..
-            } => self.binding("const", false, std::slice::from_ref(name), type_ann, value),
+            } => self.binding(
+                "const",
+                false,
+                std::slice::from_ref(name),
+                None,
+                type_ann,
+                value,
+            ),
             StmtKind::MultiConst {
                 names,
                 type_ann,
                 value,
                 ..
-            } => self.binding("const", false, names, type_ann, value),
+            } => self.binding("const", false, names, None, type_ann, value),
             StmtKind::TypeAlias { name, target, .. } => concat_all([
                 text("type "),
                 text(name.clone()),
@@ -399,6 +414,7 @@ impl<'a> Lowerer<'a> {
         kw: &str,
         is_mut: bool,
         names: &[String],
+        starred: Option<usize>,
         type_ann: &Option<TypeExpr>,
         value: &Expr,
     ) -> Doc {
@@ -407,7 +423,18 @@ impl<'a> Lowerer<'a> {
         if is_mut {
             d = concat(d, text("mut "));
         }
-        d = concat(d, text(names.join(", ")));
+        let rendered: Vec<String> = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| {
+                if starred == Some(i) {
+                    format!("*{n}")
+                } else {
+                    n.clone()
+                }
+            })
+            .collect();
+        d = concat(d, text(rendered.join(", ")));
         if let Some(t) = type_ann {
             d = concat_all([d, text(": "), text(t.to_string())]);
         }

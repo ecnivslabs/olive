@@ -431,28 +431,6 @@ impl TypeChecker {
                 "ffi_errno",
                 Type::Fn(vec![], Box::new(Type::Int), Vec::new()),
             ),
-            (
-                "enumerate",
-                Type::Fn(
-                    vec![Type::Any],
-                    Box::new(Type::List(Box::new(Type::Tuple(vec![
-                        Type::Int,
-                        Type::Any,
-                    ])))),
-                    Vec::new(),
-                ),
-            ),
-            (
-                "zip",
-                Type::Fn(
-                    vec![Type::Any, Type::Any],
-                    Box::new(Type::List(Box::new(Type::Tuple(vec![
-                        Type::Any,
-                        Type::Any,
-                    ])))),
-                    Vec::new(),
-                ),
-            ),
         ];
 
         let mut traits = HashMap::default();

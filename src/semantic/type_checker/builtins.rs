@@ -87,8 +87,20 @@ impl TypeChecker {
         right: &crate::parser::Expr,
         span: Span,
     ) {
-        if !matches!(right.kind, crate::parser::ExprKind::Range { .. }) {
+        let crate::parser::ExprKind::Range { step, .. } = &right.kind else {
             return;
+        };
+        if let Some(step_expr) = step {
+            self.errors
+                .push(crate::semantic::error::SemanticError::rich(
+                    crate::compile::errors::Diagnostic::error(
+                        "E0431",
+                        "stepped range used with `in`",
+                        step_expr.span,
+                    )
+                    .label("membership on a stepped range is not supported")
+                    .help("use a plain range with `in`, or a step-aware condition"),
+                ));
         }
         let resolved = self.apply_subst(left_ty.clone());
         if !matches!(resolved, Type::Int | Type::IntegerLiteral(_) | Type::Any) {
@@ -120,6 +132,182 @@ impl TypeChecker {
             "sorted" | "reversed" => Some(self.check_sorted_reversed(name, arg, span)),
             "any" | "all" => Some(self.check_any_all(name, arg, span)),
             _ => None,
+        }
+    }
+
+    /// Strips `&`/`&mut` and reads the element type an iterable of `ty`
+    /// yields; `Any` for anything not directly iterable (matches the `for`
+    /// lowering's own unwrap loop in `lower_control.rs`, kept in lockstep).
+    fn iterable_elem_ty(&mut self, ty: &Type) -> Type {
+        let mut t = self.apply_subst(ty.clone());
+        while let Type::Ref(inner) | Type::MutRef(inner) = t {
+            t = self.apply_subst(*inner);
+        }
+        match t {
+            Type::Str => Type::Str,
+            Type::List(e) | Type::Set(e) => *e,
+            Type::Dict(k, _) => *k,
+            _ => Type::Any,
+        }
+    }
+
+    /// `for`-head / comprehension-clause iterable typing (E4.1/E4.2):
+    /// `enumerate(xs)` / `enumerate(xs, start)` and `zip(a, b)` are desugars,
+    /// not real calls, so their element types come from `xs`/`a`/`b`'s own
+    /// checked types rather than a generic `Any`-shaped signature. Used
+    /// directly in a `for`/comprehension iterable position only; elsewhere
+    /// `enumerate`/`zip` are rejected by the `Call` arm's own arm for them
+    /// (`expr.rs`), since neither has a real standalone runtime entry.
+    pub(super) fn check_for_iter(&mut self, iter: &Expr) -> Type {
+        if let crate::parser::ExprKind::Call { callee, args } = &iter.kind
+            && let crate::parser::ExprKind::Identifier(name) = &callee.kind
+            && self.lookup_type(name).is_none()
+        {
+            match name.as_str() {
+                "enumerate" if matches!(args.len(), 1 | 2) => {
+                    let inner = arg_expr(&args[0]);
+                    let inner_ty = self.check_expr(inner);
+                    if let Some(start_arg) = args.get(1) {
+                        let start_expr = arg_expr(start_arg);
+                        let start_ty = self.check_expr(start_expr);
+                        let resolved = self.apply_subst(start_ty.clone());
+                        if !matches!(resolved, Type::Int | Type::IntegerLiteral(_)) {
+                            self.errors.push(crate::semantic::error::SemanticError::rich(
+                                crate::compile::errors::Diagnostic::error(
+                                    "E0404",
+                                    format!(
+                                        "`enumerate`'s start argument must be an int, got `{resolved}`"
+                                    ),
+                                    start_expr.span,
+                                )
+                                .label("expected int"),
+                            ));
+                        }
+                    }
+                    let elem_ty = self.iterable_elem_ty(&inner_ty);
+                    return Type::List(Box::new(Type::Tuple(vec![Type::Int, elem_ty])));
+                }
+                "zip" if args.len() >= 2 => {
+                    if args.len() > 2 {
+                        self.errors
+                            .push(crate::semantic::error::SemanticError::rich(
+                                crate::compile::errors::Diagnostic::error(
+                                    "E0421",
+                                    format!("`zip` takes exactly 2 iterables, got {}", args.len()),
+                                    iter.span,
+                                )
+                                .label("extra argument")
+                                .help("zip two iterables at a time; nest calls for more"),
+                            ));
+                    }
+                    let a_ty = self.check_expr(arg_expr(&args[0]));
+                    let b_ty = self.check_expr(arg_expr(&args[1]));
+                    for extra in &args[2..] {
+                        self.check_expr(arg_expr(extra));
+                    }
+                    let a_elem = self.iterable_elem_ty(&a_ty);
+                    let b_elem = self.iterable_elem_ty(&b_ty);
+                    return Type::List(Box::new(Type::Tuple(vec![a_elem, b_elem])));
+                }
+                _ => {}
+            }
+        }
+        self.check_expr(iter)
+    }
+
+    /// `let a, *rest = xs` / `a, *rest = xs` (E4.4): unlike exact tuple
+    /// destructuring (a fixed, statically-known arity), a starred target
+    /// needs a runtime-length source, so it only accepts a list (or `Any`).
+    /// `rest` binds to the same list type; the other names bind to its
+    /// element type. Arity is never checked here -- a shortfall faults at
+    /// runtime when the loop-free indexed reads run out of bounds.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn check_starred_destructure(
+        &mut self,
+        names: &[String],
+        starred_idx: usize,
+        val_ty: &Type,
+        type_ann: Option<&crate::parser::TypeExpr>,
+        is_mut: bool,
+        span: Span,
+    ) {
+        let resolved = self.apply_subst(val_ty.clone());
+        let elem_ty = match &resolved {
+            Type::List(e) => (**e).clone(),
+            Type::Any | Type::PyObject => Type::Any,
+            _ => {
+                self.errors
+                    .push(crate::semantic::error::SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0417",
+                            "cannot destructure a non-list value with a starred target",
+                            span,
+                        )
+                        .label(format!("this value is `{resolved}`, not a list"))
+                        .help("a `*name` target requires a `[T]` on the right-hand side"),
+                    ));
+                for name in names {
+                    self.define_type(name, Type::Any, is_mut);
+                }
+                return;
+            }
+        };
+        let bound_elem_ty = if let Some(ann) = type_ann {
+            let expected_ty = self.resolve_type_expr(ann);
+            self.unify(&expected_ty, &elem_ty, span);
+            expected_ty
+        } else {
+            elem_ty
+        };
+        for (i, name) in names.iter().enumerate() {
+            if i == starred_idx {
+                self.define_type(name, Type::List(Box::new(bound_elem_ty.clone())), is_mut);
+            } else {
+                self.define_type(name, bound_elem_ty.clone(), is_mut);
+            }
+        }
+    }
+
+    /// The plain-assignment counterpart of [`check_starred_destructure`]:
+    /// `a, *rest = xs` reassigning existing bindings rather than declaring
+    /// new ones, so each target unifies against its already-known type
+    /// instead of defining a fresh one.
+    pub(super) fn check_starred_assign_destructure(
+        &mut self,
+        targets: &[Expr],
+        starred_idx: usize,
+        val_ty: &Type,
+        span: Span,
+    ) {
+        let resolved = self.apply_subst(val_ty.clone());
+        let elem_ty = match &resolved {
+            Type::List(e) => (**e).clone(),
+            Type::Any | Type::PyObject => Type::Any,
+            _ => {
+                self.errors
+                    .push(crate::semantic::error::SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0417",
+                            "cannot destructure a non-list value with a starred target",
+                            span,
+                        )
+                        .label(format!("this value is `{resolved}`, not a list"))
+                        .help("a `*name` target requires a `[T]` on the right-hand side"),
+                    ));
+                return;
+            }
+        };
+        for (i, target) in targets.iter().enumerate() {
+            if i == starred_idx {
+                let crate::parser::ExprKind::Starred(inner) = &target.kind else {
+                    continue;
+                };
+                let inner_ty = self.check_expr(inner);
+                self.unify(&inner_ty, &Type::List(Box::new(elem_ty.clone())), span);
+            } else {
+                let target_ty = self.check_expr(target);
+                self.unify(&target_ty, &elem_ty, span);
+            }
         }
     }
 }

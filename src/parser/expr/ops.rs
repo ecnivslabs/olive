@@ -127,12 +127,17 @@ impl Parser {
                 let inclusive = self.peek().kind == TokenKind::DotDotEq;
                 self.advance();
                 let end = self.parse_bitor()?;
-                let range_span = right.span.merge(end.span);
+                let step = self.parse_optional_range_step()?;
+                let range_span = match &step {
+                    Some(s) => right.span.merge(s.span),
+                    None => right.span.merge(end.span),
+                };
                 right = Expr::new(
                     ExprKind::Range {
                         start: Box::new(right),
                         end: Box::new(end),
                         inclusive,
+                        step,
                     },
                     range_span,
                 );

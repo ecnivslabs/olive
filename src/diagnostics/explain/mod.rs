@@ -60,10 +60,11 @@ mod tests {
         "E0001", "E0002", "E0003", "E0004", "E0006", "E0100", "E0200", "E0300", "E0301", "E0400",
         "E0401", "E0402", "E0403", "E0404", "E0405", "E0406", "E0407", "E0408", "E0409", "E0410",
         "E0411", "E0412", "E0413", "E0414", "E0415", "E0416", "E0417", "E0418", "E0419", "E0420",
-        "E0421", "E0422", "E0423", "E0424", "E0425", "E0426", "E0428", "E0500", "E0501", "E0502",
-        "E0503", "E0504", "E0505", "E0506", "E0507", "E0600", "E0601", "E0602", "E0700", "E0701",
-        "E0702", "E0703", "E0704", "E0705", "E0706", "E0707", "E0708", "W0601", "W0602", "W0610",
-        "W0620", "W0630", "W0640", "W0650", "W0660",
+        "E0421", "E0422", "E0423", "E0424", "E0425", "E0426", "E0428", "E0429", "E0430", "E0431",
+        "E0432", "E0500", "E0501", "E0502", "E0503", "E0504", "E0505", "E0506", "E0507", "E0600",
+        "E0601", "E0602", "E0700", "E0701", "E0702", "E0703", "E0704", "E0705", "E0706", "E0707",
+        "E0708", "E0709", "E0710", "W0601", "W0602", "W0610", "W0620", "W0630", "W0640", "W0650",
+        "W0660",
     ];
 
     #[test]
@@ -140,12 +141,15 @@ mod tests {
     /// private name), so they cannot fail as a lone entry. E0503 and E0505 share a
     /// condition and message with an earlier pass (the unsafe-deref check and
     /// E0411), which reports first on the minimal example. All `W####` warnings
-    /// compile by design, so their `wrong` form never fails.
+    /// compile by design, so their `wrong` form never fails. E0432 is defensive
+    /// like E0501/E0708: `*name` only ever parses inside a `let`/assignment
+    /// target list, always consumed there before the generic checker sees a
+    /// bare `Starred` node, so ordinary source cannot reach it either.
     const SKIP_WRONG: &[&str] = &[
-        "E0700", "E0701", "E0702", "E0703", "E0704", "E0705", "E0706", "E0707", "E0708", "E0301",
-        "E0004", "E0406", "E0420", "E0501", "E0502", "E0503", "E0504", "E0505", "E0507", "E0408",
-        "E0409", "E0600", "E0601", "E0602", "W0601", "W0602", "W0610", "W0620", "W0630", "W0640",
-        "W0650", "W0660",
+        "E0700", "E0701", "E0702", "E0703", "E0704", "E0705", "E0706", "E0707", "E0708", "E0709",
+        "E0710", "E0301", "E0004", "E0406", "E0420", "E0432", "E0501", "E0502", "E0503", "E0504",
+        "E0505", "E0507", "E0408", "E0409", "E0600", "E0601", "E0602", "W0601", "W0602", "W0610",
+        "W0620", "W0630", "W0640", "W0650", "W0660",
     ];
 
     /// Every `fixed` example must compile and every `wrong` example must fail to,

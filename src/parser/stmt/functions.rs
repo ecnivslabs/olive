@@ -1,5 +1,6 @@
 use super::super::{Parser, ast::*, error::ParseResult};
 use crate::lexer::TokenKind;
+use crate::span::Span;
 
 impl Parser {
     pub(crate) fn parse_return(&mut self) -> ParseResult<Stmt> {
@@ -271,14 +272,40 @@ impl Parser {
             is_mut = true;
         }
 
-        let first = self.expect(TokenKind::Identifier)?;
-        let mut name_spans = vec![Self::tok_span(&first)];
-        let mut names = vec![first.value];
-        while self.peek().kind == TokenKind::Comma {
+        // `let (a, b) = t` parses identically to `let a, b = t`; the parens
+        // are pure grouping with no effect on the resulting AST (E4.5).
+        let parenthesized = self.peek().kind == TokenKind::LParen;
+        if parenthesized {
             self.advance();
-            let tok = self.expect(TokenKind::Identifier)?;
-            name_spans.push(Self::tok_span(&tok));
-            names.push(tok.value);
+        }
+
+        let mut starred: Option<usize> = None;
+        let mut names: Vec<String> = Vec::new();
+        let mut name_spans: Vec<Span> = Vec::new();
+        loop {
+            if self.peek().kind == TokenKind::Star {
+                let star_tok = self.peek().clone();
+                self.advance();
+                if starred.is_some() {
+                    return Err(self.err_at(&star_tok, "at most one `*name` target is allowed"));
+                }
+                starred = Some(names.len());
+                let tok = self.expect(TokenKind::Identifier)?;
+                name_spans.push(Self::tok_span(&star_tok).merge(Self::tok_span(&tok)));
+                names.push(tok.value);
+            } else {
+                let tok = self.expect(TokenKind::Identifier)?;
+                name_spans.push(Self::tok_span(&tok));
+                names.push(tok.value);
+            }
+            if self.peek().kind != TokenKind::Comma {
+                break;
+            }
+            self.advance();
+        }
+
+        if parenthesized {
+            self.expect(TokenKind::RParen)?;
         }
 
         let type_ann = if self.peek().kind == TokenKind::Colon {
@@ -315,6 +342,7 @@ impl Parser {
                     type_ann,
                     value,
                     is_mut,
+                    starred,
                 },
                 span,
             ))

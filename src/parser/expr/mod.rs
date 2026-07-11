@@ -15,6 +15,7 @@ impl Parser {
             | ExprKind::Attr { .. }
             | ExprKind::Index { .. }
             | ExprKind::Deref(_) => true,
+            ExprKind::Starred(inner) => matches!(inner.kind, ExprKind::Identifier(_)),
             ExprKind::Tuple(elems) => elems.iter().all(Self::is_valid_assign_target),
             _ => false,
         }
@@ -54,6 +55,16 @@ impl Parser {
         ))
     }
 
+    /// `by` is contextual, not a reserved word: only consumed right after a
+    /// range end, recognized by text on an ordinary `Identifier` token.
+    pub(crate) fn parse_optional_range_step(&mut self) -> ParseResult<Option<Box<Expr>>> {
+        if self.peek().kind == TokenKind::Identifier && self.peek().value == "by" {
+            self.advance();
+            return Ok(Some(Box::new(self.parse_or()?)));
+        }
+        Ok(None)
+    }
+
     /// Parses an `or`-expression with an optional `..`/`..=` range suffix, but
     /// no ternary. Used where a trailing `if` belongs to an enclosing construct
     /// (a comprehension's filter clause) rather than a conditional expression.
@@ -66,12 +77,17 @@ impl Parser {
             let inclusive = self.peek().kind == crate::lexer::TokenKind::DotDotEq;
             self.advance();
             let end = self.parse_or()?;
-            let span = start.span.merge(end.span);
+            let step = self.parse_optional_range_step()?;
+            let span = match &step {
+                Some(s) => start.span.merge(s.span),
+                None => start.span.merge(end.span),
+            };
             return Ok(Expr::new(
                 ExprKind::Range {
                     start: Box::new(start),
                     end: Box::new(end),
                     inclusive,
+                    step,
                 },
                 span,
             ));

@@ -11,6 +11,8 @@ mod eq_tests;
 mod fmt;
 #[cfg(test)]
 mod hash_tests;
+#[cfg(test)]
+mod iteration_tests;
 mod lexer;
 mod mangle;
 mod mir;
@@ -33,6 +35,8 @@ mod semantic;
 #[cfg(test)]
 mod small_reflex_tests;
 mod span;
+#[cfg(test)]
+mod starred_unpack_tests;
 #[cfg(test)]
 mod string_method_tests;
 #[cfg(test)]
