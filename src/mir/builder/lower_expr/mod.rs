@@ -308,6 +308,12 @@ impl<'a> MirBuilder<'a> {
 
     pub(super) fn lower_expr(&mut self, expr: &Expr) -> Operand {
         match &expr.kind {
+            // The checker unifies an int literal against a `float`-expected
+            // position (`let x: float = 5`); the literal must then lower to
+            // the float's own bit pattern, not the int's bits reinterpreted.
+            ExprKind::Integer(i) if matches!(self.get_type(expr.id), Type::Float | Type::F32) => {
+                Operand::Constant(Constant::Float((*i as f64).to_bits()))
+            }
             ExprKind::Integer(i) => Operand::Constant(Constant::Int(*i)),
             ExprKind::Null => Operand::Constant(Constant::None),
             ExprKind::Range {
@@ -486,6 +492,10 @@ impl<'a> MirBuilder<'a> {
                 && args.len() == 2
                 && let Some(op) = self.lower_maxmin_builtin(name, args, expr.span, expr.id)
             {
+                return op;
+            }
+
+            if let Some(op) = self.lower_sequence_builtin(name, args, expr.span, expr.id) {
                 return op;
             }
 

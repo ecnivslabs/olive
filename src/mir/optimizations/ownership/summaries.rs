@@ -17,6 +17,8 @@ const RUNTIME_ESCAPES: &[(&str, usize)] = &[
     ("__olive_list_append", 1),
     ("__olive_list_insert", 2),
     ("__olive_obj_set", 2),
+    ("__olive_obj_setdefault", 2),
+    ("__olive_obj_setdefault_typed", 2),
     ("__olive_set_add", 1),
     ("__olive_chan_send", 1),
     ("__olive_mutex_new", 0),

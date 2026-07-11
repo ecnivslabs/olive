@@ -304,6 +304,233 @@ pub extern "C" fn olive_str_join(list_ptr: i64, sep: i64) -> i64 {
     olive_str_internal(&parts.join(&sep_str))
 }
 
+/// Non-overlapping occurrences of `sub` in `s`, Python's `str.count` semantics
+/// (an empty `sub` counts every gap, `len(s) + 1` positions).
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_str_count(s: i64, sub: i64) -> i64 {
+    let text = olive_str_from_ptr(s);
+    let pat = olive_str_from_ptr(sub);
+    text.matches(&pat).count() as i64
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_str_rfind(s: i64, needle: i64) -> i64 {
+    if s == 0 || needle == 0 {
+        return -1;
+    }
+    let text = olive_str_from_ptr(s);
+    let pat = olive_str_from_ptr(needle);
+    match text.rfind(&pat) {
+        Some(i) => i as i64,
+        None => -1,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_str_splitlines(s: i64) -> i64 {
+    let text = olive_str_from_ptr(s);
+    let parts: Vec<i64> = text.lines().map(olive_str_internal).collect();
+    crate::list::list_from_vec(parts)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_str_title(s: i64) -> i64 {
+    let text = olive_str_from_ptr(s);
+    let mut out = String::with_capacity(text.len());
+    let mut prev_alpha = false;
+    for c in text.chars() {
+        if c.is_alphabetic() {
+            if prev_alpha {
+                out.extend(c.to_lowercase());
+            } else {
+                out.extend(c.to_uppercase());
+            }
+            prev_alpha = true;
+        } else {
+            out.push(c);
+            prev_alpha = false;
+        }
+    }
+    olive_str_internal(&out)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_str_capitalize(s: i64) -> i64 {
+    let text = olive_str_from_ptr(s);
+    let mut chars = text.chars();
+    let out = match chars.next() {
+        Some(first) => {
+            let mut out: String = first.to_uppercase().collect();
+            out.push_str(&chars.as_str().to_lowercase());
+            out
+        }
+        None => String::new(),
+    };
+    olive_str_internal(&out)
+}
+
+/// Left-pads with `0` to `width` chars, preserving a leading `+`/`-` sign.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_str_zfill(s: i64, width: i64) -> i64 {
+    let text = olive_str_from_ptr(s);
+    let width = width.max(0) as usize;
+    let (sign, rest) = if let Some(r) = text.strip_prefix('-') {
+        ("-", r)
+    } else if let Some(r) = text.strip_prefix('+') {
+        ("+", r)
+    } else {
+        ("", text.as_str())
+    };
+    let total = sign.chars().count() + rest.chars().count();
+    let out = if total >= width {
+        text.clone()
+    } else {
+        format!("{sign}{}{rest}", "0".repeat(width - total))
+    };
+    olive_str_internal(&out)
+}
+
+fn fill_char(fill: i64) -> char {
+    olive_str_from_ptr(fill).chars().next().unwrap_or(' ')
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_str_ljust(s: i64, width: i64, fill: i64) -> i64 {
+    let text = olive_str_from_ptr(s);
+    let len = text.chars().count() as i64;
+    let out = if len >= width {
+        text
+    } else {
+        let pad: String = std::iter::repeat_n(fill_char(fill), (width - len) as usize).collect();
+        format!("{text}{pad}")
+    };
+    olive_str_internal(&out)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_str_rjust(s: i64, width: i64, fill: i64) -> i64 {
+    let text = olive_str_from_ptr(s);
+    let len = text.chars().count() as i64;
+    let out = if len >= width {
+        text
+    } else {
+        let pad: String = std::iter::repeat_n(fill_char(fill), (width - len) as usize).collect();
+        format!("{pad}{text}")
+    };
+    olive_str_internal(&out)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_str_center(s: i64, width: i64, fill: i64) -> i64 {
+    let text = olive_str_from_ptr(s);
+    let len = text.chars().count() as i64;
+    let out = if len >= width {
+        text
+    } else {
+        let total_pad = (width - len) as usize;
+        let left = total_pad / 2;
+        let right = total_pad - left;
+        let c = fill_char(fill);
+        let left_pad: String = std::iter::repeat_n(c, left).collect();
+        let right_pad: String = std::iter::repeat_n(c, right).collect();
+        format!("{left_pad}{text}{right_pad}")
+    };
+    olive_str_internal(&out)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_str_removeprefix(s: i64, prefix: i64) -> i64 {
+    let text = olive_str_from_ptr(s);
+    let pre = olive_str_from_ptr(prefix);
+    olive_str_internal(text.strip_prefix(&pre).unwrap_or(&text))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_str_removesuffix(s: i64, suffix: i64) -> i64 {
+    let text = olive_str_from_ptr(s);
+    let suf = olive_str_from_ptr(suffix);
+    olive_str_internal(text.strip_suffix(&suf).unwrap_or(&text))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_str_isdigit(s: i64) -> i64 {
+    let text = olive_str_from_ptr(s);
+    (!text.is_empty() && text.chars().all(|c| c.is_numeric())) as i64
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_str_isalpha(s: i64) -> i64 {
+    let text = olive_str_from_ptr(s);
+    (!text.is_empty() && text.chars().all(|c| c.is_alphabetic())) as i64
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_str_isspace(s: i64) -> i64 {
+    let text = olive_str_from_ptr(s);
+    (!text.is_empty() && text.chars().all(|c| c.is_whitespace())) as i64
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_str_isupper(s: i64) -> i64 {
+    let text = olive_str_from_ptr(s);
+    let cased: Vec<char> = text.chars().filter(|c| c.is_alphabetic()).collect();
+    (!cased.is_empty() && cased.iter().all(|c| c.is_uppercase())) as i64
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_str_islower(s: i64) -> i64 {
+    let text = olive_str_from_ptr(s);
+    let cased: Vec<char> = text.chars().filter(|c| c.is_alphabetic()).collect();
+    (!cased.is_empty() && cased.iter().all(|c| c.is_lowercase())) as i64
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_str_trim_chars(s: i64, chars: i64) -> i64 {
+    let text = olive_str_from_ptr(s);
+    let set: std::collections::HashSet<char> = olive_str_from_ptr(chars).chars().collect();
+    olive_str_internal(text.trim_matches(|c| set.contains(&c)))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_str_trim_start_chars(s: i64, chars: i64) -> i64 {
+    let text = olive_str_from_ptr(s);
+    let set: std::collections::HashSet<char> = olive_str_from_ptr(chars).chars().collect();
+    olive_str_internal(text.trim_start_matches(|c| set.contains(&c)))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_str_trim_end_chars(s: i64, chars: i64) -> i64 {
+    let text = olive_str_from_ptr(s);
+    let set: std::collections::HashSet<char> = olive_str_from_ptr(chars).chars().collect();
+    olive_str_internal(text.trim_end_matches(|c| set.contains(&c)))
+}
+
+/// `s.partition(sep)`: `(before, sep, after)` on the first match, or
+/// `(s, "", "")` when `sep` doesn't occur. A tuple shares a list's raw
+/// layout (see `translate_aggregate`'s tuple/list fallthrough), so the
+/// result is built the same way a list literal is.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_str_partition(s: i64, sep: i64) -> i64 {
+    let text = olive_str_from_ptr(s);
+    let pat = olive_str_from_ptr(sep);
+    let (before, mid, after) = if !pat.is_empty()
+        && let Some(idx) = text.find(&pat)
+    {
+        (
+            text[..idx].to_string(),
+            pat.clone(),
+            text[idx + pat.len()..].to_string(),
+        )
+    } else {
+        (text.clone(), String::new(), String::new())
+    };
+    let out = crate::list::olive_list_new(3);
+    crate::list::olive_list_set(out, 0, olive_str_internal(&before));
+    crate::list::olive_list_set(out, 1, olive_str_internal(&mid));
+    crate::list::olive_list_set(out, 2, olive_str_internal(&after));
+    out
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_fmt(template: i64, args: i64) -> i64 {
     if template == 0 {

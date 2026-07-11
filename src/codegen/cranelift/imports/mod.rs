@@ -196,6 +196,27 @@ pub(super) fn scan_rvalue_imports(
             if name == "__olive_obj_get_default_typed" {
                 needed.insert("__olive_obj_get_default_typed");
             }
+            if name == "__olive_list_count_typed" {
+                needed.insert("__olive_list_count_typed");
+            }
+            if name == "__olive_list_index_typed" {
+                needed.insert("__olive_list_index_typed");
+            }
+            if name == "__olive_obj_update_typed" {
+                needed.insert("__olive_obj_update_typed");
+            }
+            if name == "__olive_set_remove_checked_typed" {
+                needed.insert("__olive_set_remove_checked_typed");
+            }
+            if name == "__olive_obj_pop_checked_typed" {
+                needed.insert("__olive_obj_pop_checked_typed");
+            }
+            if name == "__olive_obj_pop_default_typed" {
+                needed.insert("__olive_obj_pop_default_typed");
+            }
+            if name == "__olive_obj_setdefault_typed" {
+                needed.insert("__olive_obj_setdefault_typed");
+            }
         }
         Rvalue::Call { .. } => {}
         Rvalue::GenOf(Operand::Copy(l) | Operand::Move(l))

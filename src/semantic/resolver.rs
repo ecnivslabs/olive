@@ -50,6 +50,10 @@ impl Resolver {
             "abs",
             "round",
             "input",
+            "sorted",
+            "reversed",
+            "any",
+            "all",
         ];
         for name in builtin_fns {
             table.define(Symbol {
