@@ -160,6 +160,12 @@ pub(super) fn scan_rvalue_imports(
                     "__olive_format_typed"
                 });
             }
+            if name == "__olive_write_any"
+                && let [Operand::Copy(l) | Operand::Move(l)] = args.as_slice()
+                && needs_type_descriptor(&func_mir.locals[l.0].ty)
+            {
+                needed.insert("__olive_write_typed");
+            }
             if name == "__olive_copy_typed" {
                 needed.insert("__olive_copy_typed");
             }

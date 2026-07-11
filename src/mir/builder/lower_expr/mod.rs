@@ -463,8 +463,9 @@ impl<'a> MirBuilder<'a> {
                 self.emit_set_fault_loc(expr.span);
             }
 
-            if name == "print" && args.len() != 1 {
-                return self.lower_print_builtin(callee, args, &arg_ops, expr.span, expr.id);
+            if name == "print" {
+                return self
+                    .lower_print_builtin(callee, args, &arg_ops, &arg_tys, expr.span, expr.id);
             }
 
             if name == "type"

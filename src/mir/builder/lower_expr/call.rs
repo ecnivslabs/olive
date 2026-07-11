@@ -6,6 +6,25 @@ use crate::semantic::types::Type;
 use crate::span::Span;
 
 impl<'a> MirBuilder<'a> {
+    fn write_func_name(ty: &Type) -> &'static str {
+        match ty {
+            Type::Str | Type::Null => "__olive_write_str",
+            Type::Bool => "__olive_write_bool",
+            Type::Int
+            | Type::I8
+            | Type::I16
+            | Type::I32
+            | Type::U8
+            | Type::U16
+            | Type::U32
+            | Type::U64
+            | Type::Usize
+            | Type::IntegerLiteral(_) => "__olive_write_int",
+            Type::Float | Type::F32 | Type::FloatLiteral(_) => "__olive_write_float",
+            _ => "__olive_write_any",
+        }
+    }
+
     pub(super) fn lower_call_args(
         &mut self,
         args: &[CallArg],
@@ -406,6 +425,7 @@ impl<'a> MirBuilder<'a> {
         _callee: &Expr,
         args: &[CallArg],
         arg_ops: &[Operand],
+        arg_tys: &[Type],
         span: Span,
         _expr_id: usize,
     ) -> Operand {
@@ -444,14 +464,14 @@ impl<'a> MirBuilder<'a> {
                     span,
                 );
             }
+            let arg_ty = arg_tys.get(i).cloned().unwrap_or(Type::Any);
+            let func_name = Self::write_func_name(&arg_ty);
             let write = self.new_local(Type::Int, None, false);
             self.push_statement(
                 StatementKind::Assign(
                     write,
                     Rvalue::Call {
-                        func: Operand::Constant(Constant::Function(
-                            "__olive_write_any".to_string(),
-                        )),
+                        func: Operand::Constant(Constant::Function(func_name.to_string())),
                         args: vec![arg_op.clone()],
                     },
                 ),

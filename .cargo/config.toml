@@ -1,0 +1,5 @@
+[env]
+# zstd-sys C files compiled with MSVC /GS emit __security_cookie references,
+# which MinGW linker on Windows cannot resolve. Disable the check.
+CFLAGS_x86_64_pc_windows_msvc = "/GS-"
+CFLAGS_x86_64-pc-windows-msvc = "/GS-"

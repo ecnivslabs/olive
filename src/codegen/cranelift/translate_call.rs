@@ -75,30 +75,34 @@ impl<M: Module> CraneliftCodegen<M> {
                 arg_type
             };
 
-            if (name == "print" || name == "str")
-                && call_args.len() == 1
-                && super::imports::needs_type_descriptor(&arg_type)
-            {
-                let desc = super::imports::type_descriptor(
-                    &arg_type,
-                    struct_fields,
-                    field_types,
-                    enum_defs,
-                );
-                let data_id = *string_ids
-                    .get(&desc)
-                    .expect("type descriptor not interned during collection");
-                let local_data = module.declare_data_in_func(data_id, builder.func);
-                let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
-                let sym = if name == "print" {
-                    "__olive_print_typed"
-                } else {
-                    "__olive_format_typed"
-                };
-                let func_id = func_ids[sym];
-                let local_func = module.declare_func_in_func(func_id, builder.func);
-                let inst = builder.ins().call(local_func, &[call_args[0], desc_ptr]);
-                return builder.inst_results(inst)[0];
+            if call_args.len() == 1 && super::imports::needs_type_descriptor(&arg_type) {
+                let use_typed = name == "print" || name == "__olive_write_any";
+                if use_typed || name == "str" {
+                    let desc = super::imports::type_descriptor(
+                        &arg_type,
+                        struct_fields,
+                        field_types,
+                        enum_defs,
+                    );
+                    let data_id = *string_ids
+                        .get(&desc)
+                        .expect("type descriptor not interned during collection");
+                    let local_data = module.declare_data_in_func(data_id, builder.func);
+                    let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                    let sym = if name == "print" || name == "__olive_write_any" {
+                        if name == "print" {
+                            "__olive_print_typed"
+                        } else {
+                            "__olive_write_typed"
+                        }
+                    } else {
+                        "__olive_format_typed"
+                    };
+                    let func_id = func_ids[sym];
+                    let local_func = module.declare_func_in_func(func_id, builder.func);
+                    let inst = builder.ins().call(local_func, &[call_args[0], desc_ptr]);
+                    return builder.inst_results(inst)[0];
+                }
             }
 
             // Copy-on-escape: deep-copy a borrowed value so the container it
