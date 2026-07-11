@@ -280,6 +280,7 @@ impl Checker {
             | ExprKind::Borrow(e)
             | ExprKind::MutBorrow(e)
             | ExprKind::Deref(e)
+            | ExprKind::Starred(e)
             | ExprKind::Try(e)
             | ExprKind::Await(e) => self.expr(e),
             ExprKind::Index { obj, index } => {

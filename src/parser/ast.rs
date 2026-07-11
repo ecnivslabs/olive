@@ -304,6 +304,11 @@ pub enum ExprKind {
     Set(Vec<Expr>),
     Dict(Vec<(Expr, Expr)>),
 
+    /// `*name` in an assignment target list (`a, *rest = xs`): gathers every
+    /// element not claimed by a plain name into a list. Valid only inside
+    /// the target of `Assign`/`MultiLet`; rejected everywhere else.
+    Starred(Box<Expr>),
+
     ListComp {
         elt: Box<Expr>,
         clauses: Vec<CompClause>,
@@ -332,11 +337,13 @@ pub enum ExprKind {
     AsyncBlock(Vec<Stmt>),
 
     /// An integer range `start..end` (exclusive) or `start..=end` (inclusive),
-    /// used mainly to drive a counted `for` loop.
+    /// used mainly to drive a counted `for` loop. `step` is the contextual
+    /// `by <expr>` suffix (`0..10 by 2`); `None` means step 1.
     Range {
         start: Box<Expr>,
         end: Box<Expr>,
         inclusive: bool,
+        step: Option<Box<Expr>>,
     },
 
     Match {
@@ -503,6 +510,8 @@ pub enum StmtKind {
         type_ann: Option<TypeExpr>,
         value: Expr,
         is_mut: bool,
+        /// Index into `names` of a `*name` target (`let a, *rest = xs`), if any.
+        starred: Option<usize>,
     },
     Const {
         name: String,

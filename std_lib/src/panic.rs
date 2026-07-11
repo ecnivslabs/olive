@@ -63,6 +63,16 @@ const STALE_REF: Fault = Fault {
     ),
     note: Some("the value this name refers to was freed when its owner went away"),
 };
+const ZERO_STEP: Fault = Fault {
+    code: "E0709",
+    help: Some("guard the step so it is non-zero before looping"),
+    note: Some("a `by 0` range step would never advance and loop forever"),
+};
+const STARRED_UNPACK: Fault = Fault {
+    code: "E0710",
+    help: Some("check the list's length before destructuring it, or use a plain name instead"),
+    note: Some("a starred target (`a, *rest = xs`) needs at least as many elements as plain names"),
+};
 
 /// Aborts when a Python value cannot be converted to the required native scalar.
 pub fn abort_py_coerce(msg: &str) -> ! {
@@ -293,6 +303,31 @@ pub extern "C" fn olive_div_zero_fail(is_mod: i64, loc: i64) -> i64 {
         "divide by zero: the right-hand side of `/` is 0"
     };
     abort_with(&DIV_ZERO, msg, loc.as_deref())
+}
+
+/// Checks a range's `by` step: returns it unchanged when non-zero, aborts
+/// otherwise. A literal `by 0` is already a compile error (W3); this covers
+/// a step computed at runtime.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_check_nonzero_step(step: i64, loc: i64) -> i64 {
+    if step == 0 {
+        let loc = (loc != 0).then(|| olive_str_from_ptr(loc));
+        abort_with(
+            &ZERO_STEP,
+            "range step is 0: this range would loop forever",
+            loc.as_deref(),
+        );
+    }
+    step
+}
+
+/// Raised when a starred destructure's source has fewer elements than the
+/// plain names on the left require (`a, b, *rest = xs` needs `len(xs) >= 2`).
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_starred_unpack_fail(got: i64, need: i64, loc: i64) -> i64 {
+    let loc = (loc != 0).then(|| olive_str_from_ptr(loc));
+    let msg = format!("not enough values to unpack: needed at least {need}, got {got}");
+    abort_with(&STARRED_UNPACK, &msg, loc.as_deref())
 }
 
 #[cfg(test)]

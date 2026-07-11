@@ -453,6 +453,8 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_bounds_fail", b"olive_bounds_fail\0"),
     ("__olive_nil_index_fail", b"olive_nil_index_fail\0"),
     ("__olive_div_zero_fail", b"olive_div_zero_fail\0"),
+    ("__olive_check_nonzero_step", b"olive_check_nonzero_step\0"),
+    ("__olive_check_list_min_len", b"olive_check_list_min_len\0"),
     ("__olive_str_get_checked", b"olive_str_get_checked\0"),
     ("__olive_path_basename", b"olive_path_basename\0"),
     ("__olive_path_dirname", b"olive_path_dirname\0"),

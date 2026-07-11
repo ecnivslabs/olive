@@ -248,6 +248,37 @@ fn in_range_round_trips() {
 }
 
 #[test]
+fn range_step_round_trips() {
+    let src = "for i in 0..10 by 2:\n    print(i)\nfor i in 10..0 by -1:\n    print(i)\n";
+    let out = fmt(src);
+    assert_eq!(out, src);
+    assert_eq!(canonical(src), canonical(&out));
+    assert_eq!(fmt(&out), out, "not idempotent");
+}
+
+#[test]
+fn parenthesized_let_normalizes_to_bare_form() {
+    // E4.5: `let (a, b) = t` parses to the identical AST as `let a, b = t`
+    // (no field records the parens), so fmt naturally drops them; a
+    // single-name `let (a) = t` normalizes the same way to `let a = t`.
+    let src = "let (a, b, c) = t\nlet (single) = 42\n";
+    let bare = "let a, b, c = t\nlet single = 42\n";
+    let out = fmt(src);
+    assert_eq!(out, bare);
+    assert_eq!(canonical(src), canonical(&out));
+    assert_eq!(fmt(&out), out, "not idempotent");
+}
+
+#[test]
+fn starred_unpack_round_trips() {
+    let src = "let a, *rest = xs\nlet b, *mid, z = xs\np, *q = xs\n";
+    let out = fmt(src);
+    assert_eq!(out, src);
+    assert_eq!(canonical(src), canonical(&out));
+    assert_eq!(fmt(&out), out, "not idempotent");
+}
+
+#[test]
 fn numeric_underscore_literal_round_trips() {
     // fmt re-slices the original lexeme, so the separators themselves --
     // not just the numeric value -- must survive formatting unchanged.

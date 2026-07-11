@@ -474,6 +474,7 @@ fn collect_refs_expr(expr: &Expr, out: &mut FxHashSet<String>) {
         ExprKind::Borrow(inner)
         | ExprKind::MutBorrow(inner)
         | ExprKind::Deref(inner)
+        | ExprKind::Starred(inner)
         | ExprKind::Try(inner)
         | ExprKind::Await(inner) => collect_refs_expr(inner, out),
         ExprKind::Slice { start, stop, step } => {

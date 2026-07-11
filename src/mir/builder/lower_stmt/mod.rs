@@ -103,8 +103,36 @@ impl<'a> MirBuilder<'a> {
                 names,
                 value,
                 is_mut,
+                starred,
                 ..
             } => {
+                if let Some(starred_idx) = starred {
+                    let rval = self.lower_expr(value);
+                    let (rhs_local, len_local, elem_ty) =
+                        self.lower_starred_destructure_source(value, rval, names.len(), value.span);
+                    for (i, name) in names.iter().enumerate() {
+                        let op = self.starred_slot_operand(
+                            rhs_local,
+                            len_local,
+                            &elem_ty,
+                            i,
+                            *starred_idx,
+                            names.len(),
+                            value.span,
+                        );
+                        let bind_ty = if i == *starred_idx {
+                            Type::List(Box::new(elem_ty.clone()))
+                        } else {
+                            elem_ty.clone()
+                        };
+                        let local = self.declare_var(name.clone(), bind_ty, *is_mut);
+                        self.push_statement(
+                            StatementKind::Assign(local, Rvalue::Use(op)),
+                            stmt.span,
+                        );
+                    }
+                    return;
+                }
                 let rval = self.lower_expr(value);
                 let rhs_local = self.new_tmp_for_expr(value);
                 self.push_statement(

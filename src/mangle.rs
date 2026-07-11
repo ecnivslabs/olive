@@ -735,6 +735,7 @@ mod tests {
             value: val("1"),
             type_ann: None,
             is_mut: false,
+            starred: None,
         });
         mangle_stmt(&mut s, "m", &ids(&["a"]));
         let names = match s.kind {
