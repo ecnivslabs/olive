@@ -22,6 +22,8 @@ pub mod hash_tests;
 #[cfg(test)]
 pub mod iteration_tests;
 #[cfg(test)]
+pub mod lambda_tests;
+#[cfg(test)]
 pub mod narrow_tests;
 #[cfg(test)]
 pub mod numeric_underscore_tests;

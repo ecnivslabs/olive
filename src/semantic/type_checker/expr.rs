@@ -1502,19 +1502,45 @@ impl TypeChecker {
                 params: l_params,
                 body: l_body,
             } => {
+                // An unannotated param first tries the expected fn type at the
+                // use site (`sorted(xs, key=lambda x: ...)`); failing that it
+                // gets a fresh var that must resolve from body usage, or the
+                // lambda is uninferable (E0433).
+                let exp_params: Option<Vec<Type>> = match &expected {
+                    Some(Type::Fn(p, _, _)) if p.len() == l_params.len() => Some(p.clone()),
+                    _ => None,
+                };
                 self.enter_scope();
                 let mut param_types = Vec::with_capacity(l_params.len());
-                for p in l_params {
-                    let p_ty = p
-                        .type_ann
-                        .as_ref()
-                        .map(|ann| self.resolve_type_expr(ann))
-                        .unwrap_or_else(|| self.fresh_var());
+                let mut inferred: Vec<(&str, usize, Span)> = Vec::new();
+                for (i, p) in l_params.iter().enumerate() {
+                    let p_ty = if let Some(ann) = &p.type_ann {
+                        self.resolve_type_expr(ann)
+                    } else if let Some(hint) = exp_params.as_ref().and_then(|v| v.get(i)) {
+                        hint.clone()
+                    } else {
+                        let id = self.fresh_var_id();
+                        inferred.push((&p.name, id, p.span));
+                        Type::Var(id)
+                    };
                     param_types.push(p_ty.clone());
                     self.define_type(&p.name, p_ty, p.is_mut);
                 }
                 let body_ty = self.check_expr(l_body);
                 self.leave_scope();
+                for (name, id, span) in inferred {
+                    if matches!(self.apply_subst(Type::Var(id)), Type::Var(_)) {
+                        self.errors.push(super::super::error::SemanticError::rich(
+                            crate::compile::errors::Diagnostic::error(
+                                "E0433",
+                                format!("cannot infer type of parameter `{name}`"),
+                                span,
+                            )
+                            .label("no annotation, and no expected type at this use site")
+                            .help(format!("annotate it: `{name}: <type>`")),
+                        ));
+                    }
+                }
                 Type::Fn(param_types, Box::new(body_ty), vec![])
             }
         }
