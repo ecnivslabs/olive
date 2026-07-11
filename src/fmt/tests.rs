@@ -279,6 +279,24 @@ fn starred_unpack_round_trips() {
 }
 
 #[test]
+fn lambda_bare_params_round_trips() {
+    let src = "let g = lambda x, y: x + y\nlet h = lambda: 42\n";
+    let out = fmt(src);
+    assert_eq!(out, src);
+    assert_eq!(canonical(src), canonical(&out));
+    assert_eq!(fmt(&out), out, "not idempotent");
+}
+
+#[test]
+fn lambda_annotated_params_round_trips() {
+    let src = "let g = lambda (x: int, y: int): x + y\n";
+    let out = fmt(src);
+    assert_eq!(out, src);
+    assert_eq!(canonical(src), canonical(&out));
+    assert_eq!(fmt(&out), out, "not idempotent");
+}
+
+#[test]
 fn numeric_underscore_literal_round_trips() {
     // fmt re-slices the original lexeme, so the separators themselves --
     // not just the numeric value -- must survive formatting unchanged.

@@ -356,4 +356,17 @@ pub(super) const ENTRIES: &[Explanation] = &[
         fixed: "fn f(xs: [int]):\n    let first, *rest = xs\n    print(first, rest)",
         notes: &["At most one `*name` is allowed per target list."],
     },
+    Explanation {
+        code: "E0433",
+        title: "cannot infer type of lambda parameter",
+        summary: "An unannotated lambda parameter needs either an expected function \
+                  type at the use site (a typed variable, a typed call argument) or \
+                  usage inside the body that pins its type. Neither happened here.",
+        wrong: "fn f():\n    let g = lambda x: x\n    print(g(1))",
+        fixed: "fn f():\n    let g = lambda (x: int): x\n    print(g(1))",
+        notes: &[
+            "A lambda passed directly to a typed parameter (`sorted(xs, key=lambda x: \
+             x.name)`) infers from that parameter's declared type instead.",
+        ],
+    },
 ];

@@ -103,6 +103,8 @@ impl<'a> MirBuilder<'a> {
 
             self.nested_fns
                 .push(self.collect_nested_fns(body, &mangled));
+            self.bound_lambdas
+                .push(self.collect_bound_lambdas(body, &mangled));
 
             if is_memo {
                 let cache_tmp = self.new_local(Type::Any, Some("cache".to_string()), false);
@@ -239,6 +241,7 @@ impl<'a> MirBuilder<'a> {
             }
 
             self.nested_fns.pop();
+            self.bound_lambdas.pop();
             self.finish_function();
 
             self.current_name = saved_name;

@@ -13,6 +13,8 @@ mod fmt;
 mod hash_tests;
 #[cfg(test)]
 mod iteration_tests;
+#[cfg(test)]
+mod lambda_tests;
 mod lexer;
 mod mangle;
 mod mir;
