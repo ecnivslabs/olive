@@ -2,6 +2,13 @@ use crate::{olive_str_from_ptr, olive_str_internal};
 use rustc_hash::FxHashMap as HashMap;
 use std::io::{Read, Seek, SeekFrom, Write};
 
+fn olive_write_str_to_stdout(s: &str) {
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
+    let _ = handle.write_all(s.as_bytes());
+    let _ = handle.flush();
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_file_read(path: i64) -> i64 {
     if path == 0 {
@@ -288,6 +295,28 @@ pub extern "C" fn olive_stdin_read() -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_stdin_read_line() -> i64 {
+    let mut line = String::new();
+    match std::io::stdin().read_line(&mut line) {
+        Ok(0) => olive_str_internal(""),
+        Ok(_) => {
+            if line.ends_with('\n') {
+                line.pop();
+                if line.ends_with('\r') {
+                    line.pop();
+                }
+            }
+            olive_str_internal(&line)
+        }
+        Err(_) => olive_str_internal(""),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_input(prompt_ptr: i64) -> i64 {
+    if prompt_ptr != 0 {
+        let prompt = olive_str_from_ptr(prompt_ptr);
+        olive_write_str_to_stdout(&prompt);
+    }
     let mut line = String::new();
     match std::io::stdin().read_line(&mut line) {
         Ok(0) => olive_str_internal(""),

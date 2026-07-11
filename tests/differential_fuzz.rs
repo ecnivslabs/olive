@@ -250,6 +250,13 @@ fn check_seed(seed: u64) {
 /// Single test, sequential: avoids cross-test contention on the AOT output path.
 #[test]
 fn differential_fuzz() {
+    // AOT linking on Windows MSVC requires MinGW but cranelift emits COFF
+    // objects while MinGW's ld expects a compatible format. The current
+    // `cc`-based linker only works under MinGW-w64 (GNU target). Skip this
+    // test on MSVC Windows to avoid `collect2.exe: ld returned 1 exit status`.
+    if cfg!(all(target_os = "windows", target_env = "msvc")) {
+        return;
+    }
     for &seed in FIXED_SEEDS {
         check_seed(seed);
     }

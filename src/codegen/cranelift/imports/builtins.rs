@@ -745,9 +745,24 @@ pub(crate) fn resolve_builtin_import(
     if name == "ffi_errno" {
         return Some("__olive_ffi_errno");
     }
+    if name == "round" && !args.is_empty() {
+        let resolved = if args.len() == 2 {
+            "__olive_math_round_with_digits"
+        } else {
+            "__olive_math_round_to_int"
+        };
+        return Some(resolved);
+    }
+    if name == "input" {
+        return if args.is_empty() {
+            Some("__olive_stdin_read_line")
+        } else {
+            Some("__olive_input")
+        };
+    }
     match name {
         "print" | "str" | "int" | "float" | "bool" | "iter" | "next" | "has_next" | "len"
-        | "slice" | "list" | "dict" | "sum" | "min" | "max"
+        | "slice" | "list" | "dict" | "sum" | "min" | "max" | "abs"
             if !args.is_empty() =>
         {
             let arg_type = match &args[0] {
@@ -873,6 +888,12 @@ pub(crate) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
         "keys" => Some("__olive_obj_keys"),
         "values" => Some("__olive_obj_values"),
         "remove" => Some("__olive_obj_remove"),
+        "abs" => match current_ty {
+            OliveType::Float | OliveType::F32 => Some("__olive_math_abs"),
+            _ => Some("__olive_int_abs"),
+        },
+        "round" => Some("__olive_math_round_to_int"),
+        "input" => Some("__olive_input"),
         _ => None,
     }
 }

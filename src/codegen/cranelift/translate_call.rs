@@ -191,7 +191,9 @@ impl<M: Module> CraneliftCodegen<M> {
                 };
             }
 
-            let resolved_name = if (name == "print"
+            let resolved_name = if name == "round" && args.len() == 2 {
+                "__olive_math_round_with_digits"
+            } else if (name == "print"
                 || name == "str"
                 || name == "int"
                 || name == "float"
@@ -208,10 +210,15 @@ impl<M: Module> CraneliftCodegen<M> {
                 || (name == "sum" && !func_ids.contains_key("sum"))
                 || (name == "min" && !func_ids.contains_key("min"))
                 || (name == "max" && !func_ids.contains_key("max"))
-                || name == "remove")
+                || name == "remove"
+                || name == "abs"
+                || name == "round"
+                || name == "input")
                 && !args.is_empty()
             {
                 map_builtin_to_runtime(name, &arg_type).unwrap_or(name.as_str())
+            } else if name == "input" && args.is_empty() {
+                "__olive_stdin_read_line"
             } else if name == "ffi_errno" {
                 "__olive_ffi_errno"
             } else if name == "realize" {
