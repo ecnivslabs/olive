@@ -221,6 +221,33 @@ fn type_alias_union_round_trips() {
 }
 
 #[test]
+fn power_operator_round_trips() {
+    let src = "z = -2 ** 2 + 2 ** 3 ** 2\n";
+    let out = fmt(src);
+    assert_eq!(out, src);
+    assert_eq!(canonical(src), canonical(&out));
+    assert_eq!(fmt(&out), out, "not idempotent");
+}
+
+#[test]
+fn fstring_debug_form_round_trips() {
+    let src = "z = f\"{x=}\"\n";
+    let out = fmt(src);
+    assert_eq!(out, src);
+    assert_eq!(canonical(src), canonical(&out));
+    assert_eq!(fmt(&out), out, "not idempotent");
+}
+
+#[test]
+fn in_range_round_trips() {
+    let src = "z = 5 in 0..10\n";
+    let out = fmt(src);
+    assert_eq!(out, src);
+    assert_eq!(canonical(src), canonical(&out));
+    assert_eq!(fmt(&out), out, "not idempotent");
+}
+
+#[test]
 fn numeric_underscore_literal_round_trips() {
     // fmt re-slices the original lexeme, so the separators themselves --
     // not just the numeric value -- must survive formatting unchanged.

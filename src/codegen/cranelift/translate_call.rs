@@ -153,24 +153,39 @@ impl<M: Module> CraneliftCodegen<M> {
             let desc_arg = match name.as_str() {
                 "__olive_list_concat_typed" if call_args.len() == 2 => Some(0usize),
                 "__olive_list_getslice_typed" if call_args.len() == 5 => Some(0usize),
+                "__olive_list_repeat_typed" if call_args.len() == 2 => Some(0usize),
                 "__olive_list_extend_typed" if call_args.len() == 2 => Some(1usize),
+                "__olive_obj_update_typed" if call_args.len() == 2 => Some(1usize),
                 "__olive_set_add_typed"
                 | "__olive_set_remove_typed"
                 | "__olive_set_contains_typed"
                 | "__olive_obj_get_typed"
+                | "__olive_list_count_typed"
                     if call_args.len() == 2 =>
                 {
                     Some(1usize)
                 }
-                "__olive_obj_get_default_typed" if call_args.len() == 3 => Some(1usize),
+                "__olive_obj_get_default_typed"
+                | "__olive_list_index_typed"
+                | "__olive_set_remove_checked_typed"
+                | "__olive_obj_pop_checked_typed"
+                | "__olive_obj_pop_default_typed"
+                | "__olive_obj_setdefault_typed"
+                    if call_args.len() == 3 =>
+                {
+                    Some(1usize)
+                }
                 _ => None,
             };
             if let Some(pos) = desc_arg {
-                let list_ty = match &args[pos] {
-                    Operand::Copy(l) | Operand::Move(l) => &func_mir.locals[l.0].ty,
-                    _ => &arg_type,
-                };
-                let list_ty = super::imports::concrete_ty(list_ty);
+                // `operand_static_type`, not a Copy/Move-only match falling back to
+                // `arg_type` (args[0]'s type): a folded `Constant` operand at `pos`
+                // (e.g. `xs.count(2)`) needs its OWN type, not the receiver's, or the
+                // wrong descriptor gets looked up and a raw int is misread as a
+                // container pointer. Must match `collect_type_descriptor`'s
+                // interning exactly, which already uses this function.
+                let arg_static_ty = super::imports::operand_static_type(&args[pos], func_mir);
+                let list_ty = super::imports::concrete_ty(&arg_static_ty);
                 let desc =
                     super::imports::type_descriptor(list_ty, struct_fields, field_types, enum_defs);
                 let data_id = *string_ids

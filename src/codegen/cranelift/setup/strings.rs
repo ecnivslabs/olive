@@ -208,16 +208,28 @@ impl<M: Module> CraneliftCodegen<M> {
         let typed_list_arg = match name.as_str() {
             "__olive_list_concat_typed" if args.len() == 2 => Some(0usize),
             "__olive_list_getslice_typed" if args.len() == 5 => Some(0usize),
+            "__olive_list_repeat_typed" if args.len() == 2 => Some(0usize),
             "__olive_list_extend_typed" if args.len() == 2 => Some(1usize),
+            "__olive_obj_update_typed" if args.len() == 2 => Some(1usize),
             "__olive_set_add_typed"
             | "__olive_set_remove_typed"
             | "__olive_set_contains_typed"
             | "__olive_obj_get_typed"
+            | "__olive_list_count_typed"
                 if args.len() == 2 =>
             {
                 Some(1usize)
             }
-            "__olive_obj_get_default_typed" if args.len() == 3 => Some(1usize),
+            "__olive_obj_get_default_typed"
+            | "__olive_list_index_typed"
+            | "__olive_set_remove_checked_typed"
+            | "__olive_obj_pop_checked_typed"
+            | "__olive_obj_pop_default_typed"
+            | "__olive_obj_setdefault_typed"
+                if args.len() == 3 =>
+            {
+                Some(1usize)
+            }
             _ => None,
         };
         if let Some(pos) = typed_list_arg {

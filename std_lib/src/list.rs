@@ -191,6 +191,54 @@ pub extern "C" fn olive_list_sum_float(ptr: i64) -> f64 {
     acc
 }
 
+/// `any(xs)` over a `[bool]` list: elements are raw 0/1 words.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_any_bool(ptr: i64) -> i64 {
+    if ptr == 0 {
+        return 0;
+    }
+    let v = unsafe { &*(ptr as *const StableVec) };
+    let slice = unsafe { std::slice::from_raw_parts(v.ptr, v.len) };
+    slice.iter().any(|&e| e != 0) as i64
+}
+
+/// `all(xs)` over a `[bool]` list: elements are raw 0/1 words.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_all_bool(ptr: i64) -> i64 {
+    if ptr == 0 {
+        return 1;
+    }
+    let v = unsafe { &*(ptr as *const StableVec) };
+    let slice = unsafe { std::slice::from_raw_parts(v.ptr, v.len) };
+    slice.iter().all(|&e| e != 0) as i64
+}
+
+/// `any(xs)` over an `[Any]` list: each element is truthy-checked by its own tag.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_any_any(ptr: i64) -> i64 {
+    if ptr == 0 {
+        return 0;
+    }
+    let v = unsafe { &*(ptr as *const StableVec) };
+    let slice = unsafe { std::slice::from_raw_parts(v.ptr, v.len) };
+    slice
+        .iter()
+        .any(|&e| crate::boxed::olive_any_truthy(e) != 0) as i64
+}
+
+/// `all(xs)` over an `[Any]` list: each element is truthy-checked by its own tag.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_all_any(ptr: i64) -> i64 {
+    if ptr == 0 {
+        return 1;
+    }
+    let v = unsafe { &*(ptr as *const StableVec) };
+    let slice = unsafe { std::slice::from_raw_parts(v.ptr, v.len) };
+    slice
+        .iter()
+        .all(|&e| crate::boxed::olive_any_truthy(e) != 0) as i64
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_list_set(list_ptr: i64, idx: i64, val: i64) {
     if list_ptr == 0 {
@@ -430,6 +478,82 @@ pub extern "C" fn olive_list_getslice(
         unsafe { *ov.ptr.add(j) = *v.ptr.add(i) };
     }
     out
+}
+
+/// `xs * n` for scalar-element lists: `n <= 0` yields an empty list.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_repeat(ptr: i64, n: i64) -> i64 {
+    if n <= 0 || ptr == 0 {
+        return olive_list_new(0);
+    }
+    let v = unsafe { &*(ptr as *const StableVec) };
+    let out = olive_list_new(v.len as i64 * n);
+    let ov = unsafe { &mut *(out as *mut StableVec) };
+    for rep in 0..n as usize {
+        for i in 0..v.len {
+            unsafe {
+                *ov.ptr.add(rep * v.len + i) = *v.ptr.add(i);
+            }
+        }
+    }
+    out
+}
+
+/// `xs.count(x)`: number of elements structurally equal to `x`. Always goes
+/// through `olive_eq_typed`, whose raw `a == b` fast path already covers
+/// scalars, so one path serves every element type.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_count_typed(list_ptr: i64, val: i64, desc: i64) -> i64 {
+    if list_ptr == 0 {
+        return 0;
+    }
+    let s = unsafe { &*(list_ptr as *const StableVec) };
+    let mut n = 0i64;
+    for i in 0..s.len {
+        let elem = unsafe { *s.ptr.add(i) };
+        if crate::eq_typed::olive_eq_typed(elem, val, desc) != 0 {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// `xs.index(x)`: first index structurally equal to `x`; faults if absent.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_index_typed(list_ptr: i64, val: i64, loc: i64, desc: i64) -> i64 {
+    if list_ptr != 0 {
+        let s = unsafe { &*(list_ptr as *const StableVec) };
+        for i in 0..s.len {
+            let elem = unsafe { *s.ptr.add(i) };
+            if crate::eq_typed::olive_eq_typed(elem, val, desc) != 0 {
+                return i as i64;
+            }
+        }
+    }
+    let len = if list_ptr == 0 {
+        0
+    } else {
+        unsafe { (*(list_ptr as *const StableVec)).len as i64 }
+    };
+    crate::panic::olive_bounds_fail(-1, len, loc);
+    0
+}
+
+/// `xs.clear()`: empties the list in place (freeing owned elements), returns it.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_clear(ptr: i64) -> i64 {
+    if ptr == 0 {
+        return ptr;
+    }
+    let s = unsafe { &mut *(ptr as *mut StableVec) };
+    for i in 0..s.len {
+        let elem = unsafe { *s.ptr.add(i) };
+        if is_active_object(elem) {
+            olive_free_any(elem);
+        }
+    }
+    s.len = 0;
+    ptr
 }
 
 #[unsafe(no_mangle)]

@@ -490,6 +490,43 @@ impl<'a> MirBuilder<'a> {
         while let Type::Ref(inner) | Type::MutRef(inner) = deref_l {
             deref_l = inner;
         }
+        let mut deref_r = &r_ty;
+        while let Type::Ref(inner) | Type::MutRef(inner) = deref_r {
+            deref_r = inner;
+        }
+        // Repeat: str*int / [T]*int, either operand order. Heap-owning
+        // elements deep-copy per repetition (rule 3), scalars copy raw.
+        if matches!(op, BinOp::Mul) {
+            let seq = if matches!(deref_l, Type::Str | Type::List(_)) {
+                Some((l.clone(), deref_l.clone(), r.clone()))
+            } else if matches!(deref_r, Type::Str | Type::List(_)) {
+                Some((r.clone(), deref_r.clone(), l.clone()))
+            } else {
+                None
+            };
+            if let Some((seq_op, seq_ty, count_op)) = seq {
+                let runtime = match &seq_ty {
+                    Type::Str => "__olive_str_repeat",
+                    Type::List(elem) if Self::list_elem_needs_copy(elem) => {
+                        "__olive_list_repeat_typed"
+                    }
+                    Type::List(_) => "__olive_list_repeat",
+                    _ => unreachable!(),
+                };
+                let tmp = self.new_local(self.get_type(expr_id), None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        tmp,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(runtime.to_string())),
+                            args: vec![seq_op, count_op],
+                        },
+                    ),
+                    span,
+                );
+                return self.operand_for_local(tmp);
+            }
+        }
         if matches!(op, BinOp::Add)
             && let Type::List(elem) = deref_l
             && Self::list_elem_needs_copy(elem)

@@ -109,6 +109,16 @@ fn pow(base: float, exponent: float) -> float:
 fn ipow(base: int, exponent: int) -> int:
     return base ** exponent
 
+fn floordiv(a: int, b: int) -> int:
+    let q = a / b
+    let r = a % b
+    if r != 0 and (r < 0) != (b < 0):
+        return q - 1
+    return q
+
+fn ffloordiv(a: float, b: float) -> float:
+    return float(floor(a / b))
+
 fn sinh(x: float) -> float:
     let e = exp(x)
     return (e - 1.0 / e) / 2.0

@@ -205,9 +205,24 @@ impl Parser {
                 }
 
                 let field: String = chars[start_expr..i - 1].iter().collect();
-                let (expr_str, spec) = split_fstring_spec(&field);
+                let (mut expr_str, spec) = split_fstring_spec(&field);
                 if expr_str.trim().is_empty() {
                     return Err(self.err_at(&tok, "empty expression in f-string"));
+                }
+
+                // Python 3.8 debug form `{expr=}`: a trailing `=` (not part of
+                // `==`/`!=`/`<=`/`>=`) prints the source text of `expr` verbatim,
+                // followed by `=`, followed by its value.
+                let trimmed_end = expr_str.trim_end();
+                if let Some(before) = trimmed_end.strip_suffix('=')
+                    && !before.trim().is_empty()
+                    && !matches!(before.chars().last(), Some('=' | '!' | '<' | '>'))
+                {
+                    exprs.push(FStrPart {
+                        expr: Expr::new(ExprKind::Str(trimmed_end.to_string()), span),
+                        spec: None,
+                    });
+                    expr_str = before.to_string();
                 }
 
                 let mut lexer = crate::lexer::Lexer::new(&expr_str, tok.file_id);

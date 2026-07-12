@@ -198,7 +198,19 @@ impl TypeChecker {
 
             ExprKind::BinOp { left, op, right } => {
                 let l_ty = self.check_expr(left);
-                let r_ty = self.check_expr(right);
+                let r_ty = if matches!(op, BinOp::And) {
+                    let (true_facts, _) = self.narrow_facts(left);
+                    self.enter_scope();
+                    self.apply_narrow_facts(&true_facts);
+                    let r_ty = self.check_expr(right);
+                    self.leave_scope();
+                    r_ty
+                } else {
+                    self.check_expr(right)
+                };
+                if matches!(op, BinOp::In | BinOp::NotIn) {
+                    self.check_in_range_operand(&l_ty, right, expr.span);
+                }
                 self.check_binop(op, &l_ty, &r_ty, expr.span)
             }
 
@@ -315,6 +327,11 @@ impl TypeChecker {
                     let tb = self.check_expr(b);
                     self.unify(&ta, &tb, expr.span);
                     return self.apply_subst(ta);
+                }
+                if let ExprKind::Identifier(name) = &callee.kind
+                    && let Some(ty) = self.check_sequence_builtin_call(name, args, expr.span)
+                {
+                    return ty;
                 }
                 if let ExprKind::Identifier(name) = &callee.kind
                     && name == "abs"
@@ -1585,6 +1602,29 @@ impl TypeChecker {
         while let Type::Ref(inner) | Type::MutRef(inner) = base {
             base = *inner;
         }
+        if matches!(base, Type::Str | Type::Any)
+            && let Some(ty) = self.check_string_method_ext(attr, &arg_tys, obj.span)
+        {
+            return Some(ty);
+        }
+        if let Type::List(elem) = &base
+            && let Some(ty) =
+                self.check_list_method_ext(&elem.clone(), attr, args.len(), obj.span, &base)
+        {
+            return Some(ty);
+        }
+        if let Type::Dict(_, v) = &base
+            && let Some(ty) =
+                self.check_dict_method_ext(&v.clone(), attr, args.len(), obj.span, &base)
+        {
+            return Some(ty);
+        }
+        if let Type::Set(elem) = &base
+            && let Some(ty) =
+                self.check_set_method_ext(&elem.clone(), attr, args.len(), obj.span, &base)
+        {
+            return Some(ty);
+        }
         match (&base, attr) {
             // String method names are string-specific, so they type the same way
             // on a concrete `str` or on an `Any` that holds one.
@@ -1692,6 +1732,12 @@ impl TypeChecker {
             | BinOp::BitOr
             | BinOp::BitAnd
             | BinOp::BitXor => {
+                // Repeat: str*int / [T]*int, either operand order.
+                if *op == BinOp::Mul
+                    && let Some(ty) = self.check_repeat_mul(&l_resolved, &r_resolved)
+                {
+                    return ty;
+                }
                 // Set algebra: | & - ^ on Set types return a Set with unified element type.
                 if matches!(&l_resolved, Type::Set(_)) && matches!(&r_resolved, Type::Set(_)) {
                     self.unify(l, r, span);
