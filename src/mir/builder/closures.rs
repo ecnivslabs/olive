@@ -1,7 +1,7 @@
 use super::{MirBuilder, NestedFnInfo};
 use crate::mir::ir::Local;
-use crate::parser::{Stmt, StmtKind};
-use crate::semantic::free_vars::free_variables;
+use crate::parser::{Expr, ExprKind, Stmt, StmtKind};
+use crate::semantic::free_vars::{free_variables, free_variables_expr};
 use crate::semantic::types::Type;
 use rustc_hash::FxHashMap as HashMap;
 
@@ -59,6 +59,69 @@ impl<'a> MirBuilder<'a> {
     /// Resolves `name` to the nearest lexically-enclosing nested fn.
     pub(super) fn lookup_nested_fn(&self, name: &str) -> Option<NestedFnInfo> {
         self.nested_fns
+            .iter()
+            .rev()
+            .find_map(|m| m.get(name).cloned())
+    }
+
+    /// Builds the name -> lifted-lambda table for `let`/assign bindings of a
+    /// lambda directly in this body (`let g = lambda ...: ...`). The mangled
+    /// name is derived from the lambda expr's node id, computed identically
+    /// here and in `lower_lambda_expr`, so this table can be built up front
+    /// without lowering the lambda first.
+    pub(super) fn collect_bound_lambdas(
+        &self,
+        body: &[Stmt],
+        parent: &str,
+    ) -> HashMap<String, NestedFnInfo> {
+        let mut defs = Vec::new();
+        collect_lambda_bindings(body, &mut defs);
+        let mut out: HashMap<String, NestedFnInfo> = HashMap::default();
+        for (name, lambda_expr) in defs {
+            let ExprKind::Lambda {
+                params,
+                body: lbody,
+            } = &lambda_expr.kind
+            else {
+                unreachable!("collect_lambda_bindings only collects Lambda exprs");
+            };
+            // An unannotated param's real type is the checker's inferred
+            // one (see `lower_lambda_expr`); defaulting to `Any` here would
+            // desync the call site's arg coercion from the callee's actual
+            // param type.
+            let checked_param_tys = match self.get_type(lambda_expr.id) {
+                Type::Fn(p, _, _) => p,
+                _ => Vec::new(),
+            };
+            let param_tys = params
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    p.type_ann
+                        .as_ref()
+                        .map(|ann| self.resolve_type_expr(ann))
+                        .or_else(|| checked_param_tys.get(i).cloned())
+                        .unwrap_or(Type::Any)
+                })
+                .collect();
+            out.insert(
+                name.to_string(),
+                NestedFnInfo {
+                    mangled: format!("{parent}$lambda_{}", lambda_expr.id),
+                    raw_captures: free_variables_expr(params, lbody),
+                    param_tys,
+                },
+            );
+        }
+        out
+    }
+
+    /// Resolves `name` to a lambda bound directly to it in an enclosing
+    /// scope. Checked independently of `lookup_nested_fn`, whose lookup
+    /// deliberately defers to a same-named local; here the bound name IS
+    /// the local.
+    pub(super) fn lookup_bound_lambda(&self, name: &str) -> Option<NestedFnInfo> {
+        self.bound_lambdas
             .iter()
             .rev()
             .find_map(|m| m.get(name).cloned())
@@ -148,6 +211,57 @@ fn collect_fn_defs<'s>(stmts: &'s [Stmt], out: &mut Vec<&'s Stmt>) {
             }
             StmtKind::With { body, .. } | StmtKind::UnsafeBlock(body) => {
                 collect_fn_defs(body, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// `(name, lambda_expr)` pairs for every `let`/assign binding of a lambda
+/// directly to a name in `stmts`, descending control-flow but not fn or
+/// lambda bodies.
+fn collect_lambda_bindings<'s>(stmts: &'s [Stmt], out: &mut Vec<(&'s str, &'s Expr)>) {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Let { name, value, .. } | StmtKind::Const { name, value, .. } => {
+                if matches!(value.kind, ExprKind::Lambda { .. }) {
+                    out.push((name, value));
+                }
+            }
+            StmtKind::Assign { target, value } => {
+                if let ExprKind::Identifier(name) = &target.kind
+                    && matches!(value.kind, ExprKind::Lambda { .. })
+                {
+                    out.push((name, value));
+                }
+            }
+            StmtKind::If {
+                then_body,
+                elif_clauses,
+                else_body,
+                ..
+            } => {
+                collect_lambda_bindings(then_body, out);
+                for (_, b) in elif_clauses {
+                    collect_lambda_bindings(b, out);
+                }
+                if let Some(b) = else_body {
+                    collect_lambda_bindings(b, out);
+                }
+            }
+            StmtKind::While {
+                body, else_body, ..
+            }
+            | StmtKind::For {
+                body, else_body, ..
+            } => {
+                collect_lambda_bindings(body, out);
+                if let Some(b) = else_body {
+                    collect_lambda_bindings(b, out);
+                }
+            }
+            StmtKind::With { body, .. } | StmtKind::UnsafeBlock(body) => {
+                collect_lambda_bindings(body, out);
             }
             _ => {}
         }

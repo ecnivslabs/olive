@@ -261,3 +261,18 @@ pub fn check_codes(src: &str) -> Vec<String> {
         })
         .collect()
 }
+
+/// Runs the closure-capture pass only (E0423/E0424), not the type checker.
+/// `check_codes` doesn't cover this pass, mirroring `check_borrow_codes`
+/// existing separately from it for the same reason.
+pub fn check_closure_codes(src: &str) -> Vec<String> {
+    let tokens = Lexer::new(src, 0).tokenise().unwrap();
+    let prog = Parser::new(tokens).parse_program().unwrap();
+    crate::semantic::closure_check::check_closures(&prog)
+        .iter()
+        .filter_map(|e| match e {
+            crate::semantic::SemanticError::Rich(d) => d.code().map(str::to_string),
+            _ => None,
+        })
+        .collect()
+}

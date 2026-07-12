@@ -5,7 +5,7 @@ mod data;
 mod literals;
 mod ops;
 
-use super::MirBuilder;
+use super::{MirBuilder, NestedFnInfo};
 use crate::mir::AggregateKind;
 use crate::mir::ir::*;
 use crate::parser::{CallArg, Expr, ExprKind, Stmt, StmtKind};
@@ -581,6 +581,66 @@ impl<'a> MirBuilder<'a> {
             );
         }
 
+        // A name bound directly to a lambda (`let g = lambda: ...`) is
+        // always a local, so it never reaches the `lookup_nested_fn` branch
+        // above (that lookup intentionally defers to a same-named local).
+        if let Some(name) = callee_name
+            && let Some(info) = self.lookup_bound_lambda(name)
+        {
+            return self.lower_nested_fn_call(
+                &info,
+                &arg_ops,
+                &arg_tys,
+                &arg_kw_names,
+                expr.span,
+                expr.id,
+            );
+        }
+
+        // Immediately-invoked lambda (`(lambda x: x + n)(5)`): captures
+        // resolve against this scope directly, no name needed.
+        if let ExprKind::Lambda {
+            params: l_params,
+            body: l_body,
+        } = &callee.kind
+        {
+            // Checked types read before `lower_lambda_expr` swaps scope, same
+            // reasoning as `collect_bound_lambdas`: an unannotated param's
+            // real type is the checker's inference, not a blind `Any`.
+            let checked_param_tys = match self.get_type(callee.id) {
+                Type::Fn(p, _, _) => p,
+                _ => Vec::new(),
+            };
+            let func_op = self.lower_lambda_expr(l_params, l_body, callee.id, callee.span);
+            let Operand::Constant(Constant::Function(mangled)) = &func_op else {
+                unreachable!("lower_lambda_expr always returns Constant::Function")
+            };
+            let param_tys = l_params
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    p.type_ann
+                        .as_ref()
+                        .map(|ann| self.resolve_type_expr(ann))
+                        .or_else(|| checked_param_tys.get(i).cloned())
+                        .unwrap_or(Type::Any)
+                })
+                .collect();
+            let info = NestedFnInfo {
+                mangled: mangled.clone(),
+                raw_captures: crate::semantic::free_vars::free_variables_expr(l_params, l_body),
+                param_tys,
+            };
+            return self.lower_nested_fn_call(
+                &info,
+                &arg_ops,
+                &arg_tys,
+                &arg_kw_names,
+                expr.span,
+                expr.id,
+            );
+        }
+
         let func = self.lower_expr(callee);
         self.lower_general_call_path(
             callee,
@@ -905,8 +965,15 @@ impl<'a> MirBuilder<'a> {
         expr_id: usize,
         _span: Span,
     ) -> Operand {
-        let lambda_name = format!("{}$lambda_{}", self.current_name, self.lambda_counter);
-        self.lambda_counter += 1;
+        // Named by the lambda expr's own node id rather than a running
+        // counter, so a caller can compute the same mangled name up front
+        // (`collect_bound_lambdas`) without lowering the lambda first.
+        let lambda_name = format!("{}$lambda_{}", self.current_name, expr_id);
+
+        // Captures resolved against the still-live enclosing scope before
+        // `start_function` clears it, exactly like a named nested fn.
+        let raw_captures = crate::semantic::free_vars::free_variables_expr(params, body);
+        let captures = self.resolve_captures(&raw_captures);
 
         let saved_name = std::mem::take(&mut self.current_name);
         let saved_locals = std::mem::take(&mut self.current_locals);
@@ -918,21 +985,35 @@ impl<'a> MirBuilder<'a> {
         let saved_arg_count = self.current_arg_count;
         let saved_is_async = self.current_is_async;
 
-        let ret_ty = match self.get_type(expr_id) {
-            Type::Fn(_, ret, _) => *ret,
-            _ => Type::Any,
+        // An unannotated param's real type came from the checker's
+        // inference (call-site hint or body usage, see `check_expr`'s
+        // `Lambda` arm); defaulting straight to `Any` here would silently
+        // re-box an already-concrete value and corrupt it (a `Var` that
+        // resolved to e.g. `Int` must stay `Int`, not fall back to `Any`).
+        let (checked_param_tys, ret_ty) = match self.get_type(expr_id) {
+            Type::Fn(p, ret, _) => (p, *ret),
+            _ => (Vec::new(), Type::Any),
         };
         self.start_function(lambda_name.clone(), params.len(), ret_ty);
 
-        for p in params {
+        for (i, p) in params.iter().enumerate() {
             let p_ty = p
                 .type_ann
                 .as_ref()
                 .map(|ann| self.resolve_type_expr(ann))
+                .or_else(|| checked_param_tys.get(i).cloned())
                 .unwrap_or(Type::Any);
             let local = self.declare_var(p.name.clone(), p_ty, p.is_mut);
             self.current_locals[local.0].is_owning = false;
         }
+
+        // Captures are trailing params aliasing the caller's value (copied
+        // in); the lambda never owns or drops them.
+        for cap in &captures {
+            let local = self.declare_var(cap.name.clone(), cap.ty.clone(), false);
+            self.current_locals[local.0].is_owning = false;
+        }
+        self.current_arg_count += captures.len();
 
         let return_stmt = Stmt::new(StmtKind::Return(Some(body.clone())), body.span);
         self.lower_stmt(&return_stmt);

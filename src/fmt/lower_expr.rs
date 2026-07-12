@@ -170,17 +170,24 @@ impl Lowerer<'_> {
                 self.expr(otherwise),
             ]),
             ExprKind::Lambda { params, body } => {
+                // A bare (unannotated) param list prints without parens; any
+                // annotation needs them to stay unambiguous with the `:`
+                // separating params from the body (see `parse_lambda`).
+                let needs_parens = params.iter().any(|p| {
+                    p.type_ann.is_some()
+                        || p.default.is_some()
+                        || p.kind != crate::parser::ParamKind::Regular
+                        || p.is_mut
+                });
                 let param_docs: Vec<Doc> = params.iter().map(|p| self.param(p)).collect();
-                concat_all([
-                    text("lambda"),
-                    if params.is_empty() {
-                        nil()
-                    } else {
-                        concat(text(" "), join(text(", "), param_docs))
-                    },
-                    text(": "),
-                    self.expr(body),
-                ])
+                let params_doc = if params.is_empty() {
+                    nil()
+                } else if needs_parens {
+                    concat_all([text(" ("), join(text(", "), param_docs), text(")")])
+                } else {
+                    concat(text(" "), join(text(", "), param_docs))
+                };
+                concat_all([text("lambda"), params_doc, text(": "), self.expr(body)])
             }
         }
     }
