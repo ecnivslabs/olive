@@ -636,7 +636,7 @@ fn classify(
     }
 }
 
-fn push_local(func: &mut MirFunction, ty: Type) -> Local {
+pub fn push_local(func: &mut MirFunction, ty: Type) -> Local {
     let l = Local(func.locals.len());
     func.locals.push(LocalDecl {
         ty,

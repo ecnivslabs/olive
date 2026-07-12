@@ -7,11 +7,11 @@ use std::cell::RefCell;
 use crate::mir::optimizations::{
     Transform, algebraic::AlgebraicSimplification, bounds_check_elim::BoundsCheckElim,
     const_fold::ConstantFolding, const_prop::ConstantPropagation, copy_prop::CopyPropagation,
-    cse::CommonSubexpressionElimination, dce::DeadCodeElimination, gencheck::GenCheckInsertion,
-    gvn::GlobalValueNumbering, inliner::Inliner, licm::Licm, loop_unroll::LoopUnroll,
-    move_elision::MoveElision, ownership::OwnershipInference, peephole::PeepholeOptimize,
-    scalarize::ScalarizeStructs, simplify_cfg::SimplifyCfg, strength_reduction::StrengthReduction,
-    tail_call::TailCallOpt, vectorize::LoopVectorizer,
+    cse::CommonSubexpressionElimination, dce::DeadCodeElimination, drop_hooks,
+    gencheck::GenCheckInsertion, gvn::GlobalValueNumbering, inliner::Inliner, licm::Licm,
+    loop_unroll::LoopUnroll, move_elision::MoveElision, ownership::OwnershipInference,
+    peephole::PeepholeOptimize, scalarize::ScalarizeStructs, simplify_cfg::SimplifyCfg,
+    strength_reduction::StrengthReduction, tail_call::TailCallOpt, vectorize::LoopVectorizer,
 };
 
 pub struct Optimizer {
@@ -98,6 +98,10 @@ impl Optimizer {
         };
         for func in functions.iter_mut() {
             ownership.run(func);
+        }
+        let has_drop = drop_hooks::collect_struct_has_drop(functions);
+        for func in functions.iter_mut() {
+            drop_hooks::lower_drop_hooks(func, &has_drop);
         }
         let copy_sites = ownership.copy_sites.replace(Vec::new());
 

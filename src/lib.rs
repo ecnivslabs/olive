@@ -16,6 +16,8 @@ pub mod tooling;
 pub mod builtin_tests;
 #[cfg(test)]
 pub mod collection_method_tests;
+#[cfg(test)]
+pub mod drop_tests;
 pub mod eq_tests;
 #[cfg(test)]
 pub mod fallible_parse_tests;
