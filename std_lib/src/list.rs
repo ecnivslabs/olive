@@ -92,12 +92,23 @@ pub extern "C" fn olive_list_new(len: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn olive_range_list(start: i64, end: i64, inclusive: i64) -> i64 {
-    let last = if inclusive != 0 { end + 1 } else { end };
-    let count = (last - start).max(0);
+pub extern "C" fn olive_range_list(start: i64, end: i64, inclusive: i64, step: i64) -> i64 {
+    // Matches Python's `range(start, stop, step)` element count: derive an
+    // exclusive `last` from `inclusive` (direction-aware, since `..=` walks
+    // toward `end` from either side), then floor-divide. Numerator and `step`
+    // always share a sign for a non-empty range, so Rust's truncating `/`
+    // coincides with floor division; `max(0)` covers the empty case either way.
+    let count = if step > 0 {
+        let last = if inclusive != 0 { end + 1 } else { end };
+        (last - start + step - 1) / step
+    } else {
+        let last = if inclusive != 0 { end - 1 } else { end };
+        (last - start + step + 1) / step
+    }
+    .max(0);
     let list = olive_list_new(count);
     for i in 0..count {
-        olive_list_set(list, i, start + i);
+        olive_list_set(list, i, start + i * step);
     }
     list
 }
@@ -329,6 +340,18 @@ pub extern "C" fn olive_list_len(ptr: i64) -> i64 {
         }
         (*(ptr as *const StableVec)).len as i64
     }
+}
+
+/// Checks a starred destructure's source has at least `min_len` elements
+/// (the plain names on the left); returns the list's actual length so the
+/// caller can compute the starred slice's bound without a second call.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_check_list_min_len(ptr: i64, min_len: i64, loc: i64) -> i64 {
+    let len = olive_list_len(ptr);
+    if len < min_len {
+        crate::panic::olive_starred_unpack_fail(len, min_len, loc);
+    }
+    len
 }
 
 #[unsafe(no_mangle)]

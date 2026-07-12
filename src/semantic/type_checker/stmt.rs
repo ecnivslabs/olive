@@ -126,11 +126,21 @@ impl TypeChecker {
                 type_ann,
                 value,
                 is_mut,
+                starred,
                 ..
             } => {
                 let val_ty_raw = self.check_expr(value);
                 let val_ty = self.apply_subst(val_ty_raw);
-                if let Type::Tuple(elem_tys) = val_ty.clone() {
+                if let Some(starred_idx) = starred {
+                    self.check_starred_destructure(
+                        names,
+                        *starred_idx,
+                        &val_ty,
+                        type_ann.as_ref(),
+                        *is_mut,
+                        stmt.span,
+                    );
+                } else if let Type::Tuple(elem_tys) = val_ty.clone() {
                     if elem_tys.len() == names.len() {
                         for (name, ty) in names.iter().zip(elem_tys) {
                             if let Some(ann) = type_ann {
@@ -251,6 +261,15 @@ impl TypeChecker {
             }
 
             StmtKind::Assign { target, value } => {
+                if let crate::parser::ExprKind::Tuple(elems) = &target.kind
+                    && let Some(starred_idx) = elems
+                        .iter()
+                        .position(|e| matches!(e.kind, crate::parser::ExprKind::Starred(_)))
+                {
+                    let val_ty = self.check_expr(value);
+                    self.check_starred_assign_destructure(elems, starred_idx, &val_ty, stmt.span);
+                    return;
+                }
                 let val_ty = self.check_expr(value);
                 // Reject global writes from inside functions.
                 if let crate::parser::ExprKind::Identifier(name) = &target.kind
@@ -599,7 +618,7 @@ impl TypeChecker {
                 body,
                 else_body,
             } => {
-                let iter_ty = self.check_expr(iter);
+                let iter_ty = self.check_for_iter(iter);
                 self.enter_scope();
                 self.bind_for_target(target, &iter_ty, stmt.span);
                 for s in body {

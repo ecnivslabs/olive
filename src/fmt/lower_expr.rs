@@ -35,16 +35,25 @@ impl Lowerer<'_> {
             ExprKind::Borrow(x) => concat(text("&"), self.unary_operand(x, 11)),
             ExprKind::MutBorrow(x) => concat(text("&mut "), self.unary_operand(x, 11)),
             ExprKind::Deref(x) => concat(text("*"), self.unary_operand(x, 11)),
+            ExprKind::Starred(x) => concat(text("*"), self.expr(x)),
 
             ExprKind::Range {
                 start,
                 end,
                 inclusive,
-            } => concat_all([
-                self.expr(start),
-                text(if *inclusive { "..=" } else { ".." }),
-                self.expr(end),
-            ]),
+                step,
+            } => {
+                let mut docs = vec![
+                    self.expr(start),
+                    text(if *inclusive { "..=" } else { ".." }),
+                    self.expr(end),
+                ];
+                if let Some(step) = step {
+                    docs.push(text(" by "));
+                    docs.push(self.expr(step));
+                }
+                concat_all(docs)
+            }
             ExprKind::Try(x) => {
                 if self.span_starts_with_try(e.span) {
                     concat(text("try "), self.unary_operand(x, 11))

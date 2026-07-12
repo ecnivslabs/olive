@@ -175,6 +175,72 @@ pub fn call_i64_3(cg: &mut CraneliftCodegen<JITModule>, name: &str, a: i64, b: i
     f(a, b, c)
 }
 
+/// Builds MIR only (no optimization, no codegen) -- the exact shape the
+/// borrow checker sees. For tests asserting *how* something lowers (e.g. a
+/// `for`-loop borrows its iterable via `Rvalue::Ref` instead of copying it)
+/// rather than what it computes.
+pub fn build_mir(src: &str) -> Vec<crate::mir::ir::MirFunction> {
+    let tokens = Lexer::new(src, 0).tokenise().unwrap();
+    let mut prog = Parser::new(tokens).parse_program().unwrap();
+    crate::semantic::desugar::desugar_trait_defaults(&mut prog);
+    crate::semantic::desugar::desugar_bare_variants(&mut prog);
+    let mut r = Resolver::new();
+    r.resolve_program(&prog);
+    assert!(r.errors.is_empty(), "resolver errors: {:?}", r.errors);
+    let mut tc = TypeChecker::new();
+    tc.check_program(&prog);
+    assert!(tc.errors.is_empty(), "type errors: {:?}", tc.errors);
+    let mut builder = MirBuilder::new(
+        &tc.expr_types,
+        &tc.expr_kwarg_maps,
+        &tc.type_env[0],
+        tc.struct_fields.clone(),
+        &tc.traits,
+        HashSet::default(),
+    );
+    builder.build_program(&prog);
+    builder.functions
+}
+
+/// Builds MIR and runs the borrow checker (the pass `pipeline.rs` runs
+/// between MIR build and optimization), returning the codes it raised.
+/// `check_codes` alone can't see these: exclusivity violations (E05xx) are
+/// a MIR-level pass, not part of the type checker.
+pub fn check_borrow_codes(src: &str) -> Vec<String> {
+    let tokens = Lexer::new(src, 0).tokenise().unwrap();
+    let mut prog = Parser::new(tokens).parse_program().unwrap();
+    crate::semantic::desugar::desugar_trait_defaults(&mut prog);
+    crate::semantic::desugar::desugar_bare_variants(&mut prog);
+    let mut r = Resolver::new();
+    r.resolve_program(&prog);
+    assert!(r.errors.is_empty(), "resolver errors: {:?}", r.errors);
+    let mut tc = TypeChecker::new();
+    tc.check_program(&prog);
+    assert!(tc.errors.is_empty(), "type errors: {:?}", tc.errors);
+    let mut builder = MirBuilder::new(
+        &tc.expr_types,
+        &tc.expr_kwarg_maps,
+        &tc.type_env[0],
+        tc.struct_fields.clone(),
+        &tc.traits,
+        HashSet::default(),
+    );
+    builder.build_program(&prog);
+    let mut codes = Vec::new();
+    for func in &builder.functions {
+        let mut checker = crate::borrow_check::BorrowChecker::new(func, &tc.struct_fields);
+        checker.check();
+        for e in &checker.errors {
+            if let crate::semantic::SemanticError::Rich(d) = e
+                && let Some(c) = d.code()
+            {
+                codes.push(c.to_string());
+            }
+        }
+    }
+    codes
+}
+
 /// Runs resolve + typecheck only (no MIR/codegen) and returns the sorted
 /// diagnostic codes produced, for tests asserting a program is rejected
 /// with a specific code rather than asserting a runtime result.

@@ -478,6 +478,7 @@ fn refresh_expr(expr: &mut Expr) {
         ExprKind::Borrow(e)
         | ExprKind::MutBorrow(e)
         | ExprKind::Deref(e)
+        | ExprKind::Starred(e)
         | ExprKind::Try(e)
         | ExprKind::Await(e) => refresh_expr(e),
         ExprKind::Slice { start, stop, step } => {

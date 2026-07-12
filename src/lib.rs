@@ -20,6 +20,8 @@ pub mod eq_tests;
 #[cfg(test)]
 pub mod hash_tests;
 #[cfg(test)]
+pub mod iteration_tests;
+#[cfg(test)]
 pub mod narrow_tests;
 #[cfg(test)]
 pub mod numeric_underscore_tests;
@@ -39,6 +41,8 @@ pub mod scalar_attr_tests;
 pub mod small_reflex_tests;
 #[cfg(test)]
 pub mod speculation_tests;
+#[cfg(test)]
+pub mod starred_unpack_tests;
 #[cfg(test)]
 pub mod string_method_tests;
 #[cfg(test)]

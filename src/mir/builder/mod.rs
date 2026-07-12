@@ -737,6 +737,41 @@ impl<'a> MirBuilder<'a> {
         local
     }
 
+    /// Lowers `expr` and hands back a local holding it, materializing a
+    /// fresh local first if lowering produced a bare constant.
+    pub(super) fn local_of_expr(&mut self, expr: &Expr) -> (Local, Type) {
+        let op = self.lower_expr(expr);
+        let ty = self.get_type(expr.id);
+        let local = match op {
+            Operand::Copy(l) | Operand::Move(l) => l,
+            Operand::Constant(_) => {
+                let tmp = self.new_local(ty.clone(), None, false);
+                self.push_statement(StatementKind::Assign(tmp, Rvalue::Use(op)), expr.span);
+                tmp
+            }
+        };
+        (local, ty)
+    }
+
+    /// Borrows `expr` for iteration instead of copying it: emits the exact
+    /// MIR shape of an explicit `&expr` (`Rvalue::Ref`, never owning, so no
+    /// `Drop` and the borrow checker enforces exclusivity against the
+    /// source for the loop's duration). Already-`Ref`/`MutRef` typed
+    /// iterables are reused as-is rather than double-wrapped.
+    pub(super) fn borrow_iterable(&mut self, expr: &Expr) -> (Local, Type) {
+        let (src_local, ty) = self.local_of_expr(expr);
+        if matches!(ty, Type::Ref(_) | Type::MutRef(_)) {
+            return (src_local, ty);
+        }
+        let ref_ty = Type::Ref(Box::new(ty));
+        let ref_local = self.new_local_with_owning(ref_ty.clone(), None, false, false);
+        self.push_statement(
+            StatementKind::Assign(ref_local, Rvalue::Ref(src_local)),
+            expr.span,
+        );
+        (ref_local, ref_ty)
+    }
+
     pub(super) fn lookup_var(&self, name: &str) -> Option<Local> {
         for scope in self.var_map.iter().rev() {
             if let Some(&local) = scope.get(name) {

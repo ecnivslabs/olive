@@ -281,6 +281,33 @@ let pair: (int, str) = (1, "Active")
 let id, status = pair  // Destructuring assignment
 ```
 
+A `*name` target gathers everything not claimed by a plain name into a
+list; unlike a tuple's fixed arity, this works against a list of any
+runtime length, and faults if there aren't enough elements for the plain
+names. At most one `*name` per target list, in `let` or plain assignment:
+
+```rust
+let scores = [90, 85, 72, 68, 55]
+let highest, *rest = scores
+print(highest)   // 90
+print(rest)      // [85, 72, 68, 55]
+
+let first, *middle, last = scores
+print(first, last)  // 90 55
+print(middle)        // [85, 72, 68]
+
+let mut a = 0
+let mut b = [0]
+a, *b = scores   // plain assignment works the same way
+```
+
+Parentheses around a `let` target list are pure grouping, with no effect
+on meaning; `pit fmt` normalizes them away:
+
+```rust
+let (id, status) = pair   // identical to `let id, status = pair`
+```
+
 ## Control Flow
 
 ### If Statements
@@ -321,26 +348,68 @@ for i in 1..=5:       // 1, 2, 3, 4, 5
     print(i)
 ```
 
+A range steps by 1 by default; `by` sets a different, contextual step (not a
+reserved word -- it only means anything right after a range). A negative step
+walks backward, which is how a descending range is written:
+
+```rust
+for i in 0..10 by 2:    // 0, 2, 4, 6, 8
+    print(i)
+
+for i in 10..0 by -1:   // 10, 9, ..., 1
+    print(i)
+
+for i in 10..=0 by -2:  // 10, 8, 6, 4, 2, 0
+    print(i)
+```
+
+A literal `by 0` is a compile error; a step computed at runtime that turns
+out to be 0 faults instead (it would never advance). A stepless descending
+range (`5..0`) is simply empty, matching Python's `range(5, 0)`.
+
+`enumerate`/`zip` exist only written directly as a loop's (or comprehension
+clause's) iterable -- not as a value to assign, pass around, or return:
+
+```rust
+let fruits = ["apple", "banana", "cherry"]
+for i, fruit in enumerate(fruits):
+    print(i, fruit)          // 0 apple / 1 banana / 2 cherry
+
+for i, fruit in enumerate(fruits, 1):
+    print(i, fruit)          // 1 apple / 2 banana / 3 cherry
+
+let prices = [3, 1, 4]
+for fruit, price in zip(fruits, prices):
+    print(fruit, price)
+```
+
 A range also works directly as the right side of `in`/`not in`, testing
-membership without building a loop:
+membership without building a loop. A stepped range can't be tested this way
+(there's no cheap way to check membership against a step without walking
+it) -- write the step check alongside a plain range instead:
 
 ```rust
 let n = 5
 print(n in 0..10)     // True
 print(15 not in 0..10) // True
+print(n in 0..10 and n % 2 == 0) // stepped membership, written out
 ```
 
-Iteration borrows the collection, not consumes. The iterable stays usable after the loop:
+Iteration borrows the collection (`enumerate`/`zip` borrow every iterable
+they're given), never copies it: the iterable stays usable after the loop,
+and mutating or reassigning it while the loop is still running is a compile
+error, not a race:
 
 ```rust
 let names = ["a", "b"]
 for n in names:
     print(n)
 print(len(names))     // names is still here
-```
 
-When the iterable is not used after the loop, the optimizer turns the implicit
-copy into a move automatically, so hot loops pay no cost.
+let mut xs = [1, 2, 3]
+for x in xs:
+    xs.append(x)       // compile error: xs is borrowed by the loop
+```
 
 #### While Loops
 
@@ -361,8 +430,8 @@ let squares = [x * x for x in numbers if x % 2 == 0]  // Evaluates to [4, 16]
 let unique_squares = {x * x for x in numbers}         // Evaluates to {1, 4, 9, 16}
 ```
 
-Comprehensions borrow the iterable, so the collection stays usable afterward.
-The optimizer converts the implicit copy to a move when it is not used again.
+Comprehensions borrow the iterable (never copy it), so the collection stays
+usable afterward.
 
 ## Built-in Functions
 

@@ -8,7 +8,7 @@ use crate::span::Span;
 impl<'a> MirBuilder<'a> {
     /// Builds a `file:line:col` string operand for a fault site so a runtime
     /// bounds or nil-index panic can point back at the source line.
-    pub(super) fn index_loc_operand(&self, span: Span) -> Operand {
+    pub(in crate::mir::builder) fn index_loc_operand(&self, span: Span) -> Operand {
         let loc = match self.file_names.get(&span.file_id) {
             Some(file) => format!("{}:{}:{}", file, span.line, span.col),
             None => format!("{}:{}", span.line, span.col),
