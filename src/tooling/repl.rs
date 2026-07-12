@@ -93,6 +93,7 @@ pub fn repl_compile_run(
         type_checker.struct_fields.clone(),
         &type_checker.traits,
         type_checker.c_ffi_fns.clone(),
+        type_checker.enum_defs.clone(),
     );
     mir_builder.struct_field_types = type_checker.field_types.clone();
     mir_builder.build_program(&program);

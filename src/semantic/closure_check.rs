@@ -125,23 +125,10 @@ impl Checker {
         let Some(caps) = self.find_closure(name) else {
             return;
         };
+        // A non-call read (returned, stored, passed as an argument) builds a
+        // closure record at the definition site's captures (MIR lowering,
+        // `closures.rs::build_closure_value`); no scope check applies here.
         if !is_call {
-            self.errors.push(SemanticError::rich(
-                Diagnostic::error(
-                    "E0423",
-                    format!("capturing closure `{name}` cannot be used as a value"),
-                    span,
-                )
-                .label("used as a value here")
-                .note(format!(
-                    "`{name}` reads variables from its enclosing function, so it has no \
-                     standalone value to pass around or return"
-                ))
-                .help(
-                    "call it directly, or rewrite it as a top-level function that takes the \
-                     captured values as parameters",
-                ),
-            ));
             return;
         }
         if let Some(missing) = caps.iter().find(|c| !self.accessible(c)) {
@@ -398,29 +385,8 @@ impl Checker {
                 // Reached for any lambda that isn't the direct callee of its
                 // own call (`bind_or_visit` and the IIFE arm above intercept
                 // those cases first): returned, stored, passed as an
-                // argument, or similar. A capturing lambda cannot escape its
-                // defining scope this way (E5.2 lifts this restriction).
-                let caps = self.lambda_captures(params, body);
-                if !caps.is_empty() {
-                    self.errors.push(SemanticError::rich(
-                        Diagnostic::error(
-                            "E0423",
-                            "capturing closure cannot be used as a value",
-                            expr.span,
-                        )
-                        .label("used as a value here")
-                        .note(format!(
-                            "this lambda reads `{}` from its enclosing function, so it has no \
-                             standalone value to pass around or return",
-                            caps.join("`, `")
-                        ))
-                        .help(
-                            "call it directly, bind it to a name and call that name in the \
-                             same scope, or rewrite it as a top-level function that takes the \
-                             captured values as parameters",
-                        ),
-                    ));
-                }
+                // argument, or similar. MIR lowering builds a closure record
+                // for these (`closures.rs::build_closure_value`).
                 self.visit_lambda_body(params, body);
             }
         }
@@ -566,30 +532,32 @@ mod tests {
     }
 
     #[test]
-    fn capturing_closure_as_value_errors() {
-        assert_eq!(
-            codes("fn o():\n    let n = 1\n    fn i() -> i64:\n        return n\n    let g = i\n"),
-            vec!["E0423"]
+    fn capturing_closure_as_value_is_ok() {
+        // E5.2: escaping closures build a record at MIR level; the semantic
+        // pass no longer rejects the escape itself.
+        assert!(
+            codes("fn o():\n    let n = 1\n    fn i() -> i64:\n        return n\n    let g = i\n")
+                .is_empty()
         );
     }
 
     #[test]
-    fn capturing_closure_returned_errors() {
-        assert_eq!(
+    fn capturing_closure_returned_is_ok() {
+        assert!(
             codes(
                 "fn o() -> fn() -> i64:\n    let n = 1\n    fn i() -> i64:\n        return n\n    return i\n"
-            ),
-            vec!["E0423"]
+            )
+            .is_empty()
         );
     }
 
     #[test]
-    fn capturing_closure_as_argument_errors() {
-        assert_eq!(
+    fn capturing_closure_as_argument_is_ok() {
+        assert!(
             codes(
                 "fn apply(f: fn(i64) -> i64, v: i64) -> i64:\n    return f(v)\nfn o() -> i64:\n    let n = 1\n    fn i(x: i64) -> i64:\n        return x + n\n    return apply(i, 5)\n"
-            ),
-            vec!["E0423"]
+            )
+            .is_empty()
         );
     }
 

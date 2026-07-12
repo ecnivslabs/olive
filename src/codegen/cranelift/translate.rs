@@ -736,6 +736,42 @@ impl<M: Module> CraneliftCodegen<M> {
                 if !ty.is_move_type() {
                     return;
                 }
+                // A closure record's layout is per-instance, not per-type
+                // (two closures sharing one `Type::Fn` signature can capture
+                // different variables), so there's no static descriptor to
+                // look up the way an ordinary struct/list/enum has -- the
+                // descriptor was embedded in the record itself at
+                // construction (`closures.rs::build_closure_value`) and is
+                // loaded back here at runtime, then handed to the unmodified
+                // struct free path.
+                if let OliveType::Fn(..) = super::imports::concrete_ty(ty) {
+                    let var = vars.get(local).unwrap();
+                    let val = builder.use_var(*var);
+
+                    let nonnull_bb = builder.create_block();
+                    let done_bb = builder.create_block();
+                    let nonnull = builder.ins().icmp_imm(IntCC::NotEqual, val, 0);
+                    builder.ins().brif(nonnull, nonnull_bb, &[], done_bb, &[]);
+
+                    builder.seal_block(nonnull_bb);
+                    builder.switch_to_block(nonnull_bb);
+                    // The record stores `__desc` via an ordinary `Constant::Str`
+                    // (so the generic string-interning collector picks it up),
+                    // which tags the low bit; strip it back to the raw
+                    // descriptor pointer `olive_free_typed` expects.
+                    let desc_tagged = builder.ins().load(types::I64, MemFlags::trusted(), val, 16);
+                    let desc_ptr = builder.ins().band_imm(desc_tagged, -2);
+                    let free_id = func_ids["__olive_free_typed"];
+                    let local_func = module.declare_func_in_func(free_id, builder.func);
+                    builder.ins().call(local_func, &[val, desc_ptr]);
+                    builder.ins().jump(done_bb, &[]);
+
+                    builder.seal_block(done_bb);
+                    builder.switch_to_block(done_bb);
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    builder.def_var(*var, zero);
+                    return;
+                }
                 if let OliveType::Struct(name, _, _) = ty
                     && c_struct_names.contains(name.as_str())
                 {

@@ -72,6 +72,15 @@ pub(super) fn collect_needed_imports(
                                 OliveType::PyObject | OliveType::PyNamed(_, _) => {
                                     needed.insert("__olive_py_decref");
                                 }
+                                // The closure record's per-instance descriptor
+                                // is loaded from the value itself at runtime
+                                // (`translate.rs`'s `Drop` arm), not looked up
+                                // statically, but the free entry point is the
+                                // same `__olive_free_typed` every other typed
+                                // drop uses.
+                                OliveType::Fn(..) => {
+                                    needed.insert("__olive_free_typed");
+                                }
                                 OliveType::Any => {
                                     needed.insert("__olive_free_any");
                                 }
@@ -168,6 +177,9 @@ pub(super) fn scan_rvalue_imports(
             }
             if name == "__olive_copy_typed" {
                 needed.insert("__olive_copy_typed");
+            }
+            if name == "__olive_relocate_typed" {
+                needed.insert("__olive_relocate_typed");
             }
             if name == "__olive_eq_typed" {
                 needed.insert("__olive_eq_typed");
