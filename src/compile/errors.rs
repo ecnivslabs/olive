@@ -148,6 +148,31 @@ impl Diagnostic {
         self.code.as_deref()
     }
 
+    /// Error severity vs. warning.
+    pub fn is_error(&self) -> bool {
+        self.is_error
+    }
+
+    /// Message rendered directly under the caret on the primary span, if set.
+    pub fn primary_label(&self) -> Option<&str> {
+        self.primary_label.as_deref()
+    }
+
+    /// Related locations worth pointing at, in declaration order.
+    pub fn secondary_labels(&self) -> &[(Span, String)] {
+        &self.secondary
+    }
+
+    /// Background notes explaining why the code is wrong.
+    pub fn notes(&self) -> &[String] {
+        &self.notes
+    }
+
+    /// Actionable help lines.
+    pub fn helps(&self) -> &[String] {
+        &self.helps
+    }
+
     pub fn emit(&self, src: &Sources) {
         let name = |span: Span| {
             src.get(&span.file_id)

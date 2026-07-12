@@ -65,5 +65,8 @@ The `pit` toolchain is the unified compiler, package manager, and project manage
 * `pit shell`
   Starts the interactive Read-Eval-Print Loop (REPL) for evaluating Olive expressions.
 
+* `pit lsp`
+  Starts a Language Server Protocol server over stdio: diagnostics as you type, hover, go-to-definition, completion, and document formatting. Editors talk to it directly; see `editors/vscode/` for an in-repo VSCode client.
+
 * `pit upgrade`
   Upgrades the Olive toolchain (compiler and standard library) to the latest stable release.

@@ -125,6 +125,7 @@ enum Commands {
         release: bool,
     },
     Shell,
+    Lsp,
     Add {
         pod: String,
     },
@@ -142,7 +143,7 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
 
-    if !matches!(cli.command, Commands::Shell) {
+    if !matches!(cli.command, Commands::Shell | Commands::Lsp) {
         ctrlc::set_handler(move || {
             std::process::exit(130);
         })
@@ -197,6 +198,7 @@ fn main() {
         Commands::Explain { code } => commands::explain::execute_explain(&code),
         Commands::Test { time, release } => commands::build::execute_test(time, release, false),
         Commands::Shell => commands::project::execute_shell(),
+        Commands::Lsp => tooling::lsp::run_lsp(),
         Commands::Add { pod } => commands::deps::execute_add(&pod),
         Commands::Remove { pod } => commands::deps::execute_remove(&pod),
         Commands::Install => commands::deps::execute_install(),

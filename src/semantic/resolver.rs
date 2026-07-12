@@ -13,6 +13,11 @@ pub struct Resolver {
     /// Maps a bare variant name to the list of enum names that define it.
     /// When >1 entry, the variant is ambiguous without qualification.
     enum_variant_origins: HashMap<String, Vec<String>>,
+    /// Use-site `Expr::id` to the span of the symbol it resolved to. Recorded
+    /// wherever a name lookup succeeds, so a caller (the language server's
+    /// go-to-definition) can jump from a use to its definition without a
+    /// separate AST pass against a symbol table whose scopes have since closed.
+    pub def_sites: HashMap<usize, Span>,
 }
 
 impl Default for Resolver {
@@ -80,6 +85,7 @@ impl Resolver {
             errors: Vec::new(),
             warnings: Vec::new(),
             enum_variant_origins: HashMap::default(),
+            def_sites: HashMap::default(),
         }
     }
 
@@ -539,6 +545,7 @@ impl Resolver {
                     return;
                 }
                 if let Some(sym) = self.table.lookup(name) {
+                    self.def_sites.insert(expr.id, sym.span);
                     if sym.is_private && sym.span.file_id != expr.span.file_id {
                         self.errors.push(SemanticError::PrivateAccess {
                             name: name.clone(),
@@ -610,7 +617,9 @@ impl Resolver {
                     }
                     if sym.kind == SymbolKind::Import {
                         let mangled = format!("{}::{}", name, attr);
-                        if self.table.lookup(&mangled).is_none() {
+                        if let Some(msym) = self.table.lookup(&mangled) {
+                            self.def_sites.insert(expr.id, msym.span);
+                        } else {
                             let (suggestions, can_autofix) = self.suggest(&mangled);
                             self.errors.push(SemanticError::UndefinedName {
                                 name: mangled,
