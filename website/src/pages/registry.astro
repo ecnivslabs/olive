@@ -23,9 +23,9 @@ const pods = await fetchPods();
     <section class="list" id="pod-list">
       <div id="pod-cards">
         {pods.map((pod) => (
-          <article class="pod-card" data-name={pod.name.toLowerCase()} data-desc={(pod.description ?? '').toLowerCase()}>
+          <a class="pod-card" href={`/registry/${pod.name}/`} data-name={pod.name.toLowerCase()} data-desc={(pod.description ?? '').toLowerCase()}>
             <div class="pod-top">
-              <a class="pod-name" href={`/registry/${pod.name}/`}>{pod.name}</a>
+              <span class="pod-name">{pod.name}</span>
               <span class="pod-vers">{pod.vers}</span>
             </div>
             {pod.by && <p class="pod-by">by {pod.by}</p>}
@@ -35,11 +35,7 @@ const pods = await fetchPods();
               {pod.olive_req && <span>requires olive ≥ {pod.olive_req}</span>}
               <span>{pod.deps.length === 0 ? 'no dependencies' : `${pod.deps.length} dependenc${pod.deps.length === 1 ? 'y' : 'ies'}`}</span>
             </div>
-            <div class="pod-row">
-              <div class="pod-install"><span class="prompt">$</span>pit add {pod.name}</div>
-              <a class="pod-docs" href={`/registry/${pod.name}/`}>Read the docs →</a>
-            </div>
-          </article>
+          </a>
         ))}
       </div>
       <p class="empty" id="pod-empty" hidden>No pods match that search.</p>
@@ -75,9 +71,9 @@ const pods = await fetchPods();
     const depsText = pod.deps.length === 0 ? 'no dependencies' : `${pod.deps.length} dependenc${pod.deps.length === 1 ? 'y' : 'ies'}`;
     const href = `/registry/${encodeURIComponent(pod.name)}/`;
     return `
-      <article class="pod-card" data-name="${escapeHtml(pod.name.toLowerCase())}" data-desc="${escapeHtml((pod.description ?? '').toLowerCase())}">
+      <a class="pod-card" href="${href}" data-name="${escapeHtml(pod.name.toLowerCase())}" data-desc="${escapeHtml((pod.description ?? '').toLowerCase())}">
         <div class="pod-top">
-          <a class="pod-name" href="${href}">${escapeHtml(pod.name)}</a>
+          <span class="pod-name">${escapeHtml(pod.name)}</span>
           <span class="pod-vers">${escapeHtml(pod.vers)}</span>
         </div>
         ${pod.by ? `<p class="pod-by">by ${escapeHtml(pod.by)}</p>` : ''}
@@ -87,11 +83,7 @@ const pods = await fetchPods();
           ${pod.olive_req ? `<span>requires olive &ge; ${escapeHtml(pod.olive_req)}</span>` : ''}
           <span>${depsText}</span>
         </div>
-        <div class="pod-row">
-          <div class="pod-install"><span class="prompt">$</span>pit add ${escapeHtml(pod.name)}</div>
-          <a class="pod-docs" href="${href}">Read the docs →</a>
-        </div>
-      </article>
+      </a>
     `;
   }
 
@@ -153,20 +145,18 @@ const pods = await fetchPods();
   .note { font-size: 13px; color: var(--ink-muted); margin-top: 16px; }
 
   .list { max-width: 760px; margin: 50px auto 0; padding: 0 24px 100px; display: flex; flex-direction: column; gap: 20px; }
-  .pod-card { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 30px 34px; }
+  .pod-card {
+    display: block; background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    padding: 30px 34px; color: inherit; text-decoration: none; transition: border-color 150ms, box-shadow 150ms;
+  }
+  .pod-card[hidden] { display: none; }
+  .pod-card:hover { border-color: var(--accent); box-shadow: 0 6px 20px -8px rgba(25, 22, 16, 0.15); }
   .pod-top { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; gap: 12px; }
-  .pod-name { font-family: var(--font-mono); font-size: 19px; font-weight: 500; color: var(--ink); text-decoration: none; }
-  .pod-name:hover { color: var(--accent); }
+  .pod-name { font-family: var(--font-mono); font-size: 19px; font-weight: 500; color: var(--ink); }
+  .pod-card:hover .pod-name { color: var(--accent); }
   .pod-vers { font-family: var(--font-mono); font-size: 13px; color: var(--accent); }
   .pod-by { font-size: 13px; color: var(--ink-muted); margin: 0 0 16px; }
   .pod-desc { font-size: 14.5px; color: var(--ink-body); line-height: 1.65; margin: 0 0 20px; max-width: 60ch; }
-  .pod-meta { display: flex; flex-wrap: wrap; gap: 10px 22px; font-family: var(--font-mono); font-size: 12px; color: var(--ink-muted); margin-bottom: 20px; }
-  .pod-row { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; }
-  .pod-install {
-    background: var(--ink); color: #E9E5D6; border-radius: 4px; padding: 12px 18px;
-    font-family: var(--font-mono); font-size: 13px; display: inline-block;
-  }
-  .pod-install .prompt { color: #A9BA6C; margin-right: 8px; }
-  .pod-docs { font-size: 13px; }
+  .pod-meta { display: flex; flex-wrap: wrap; gap: 10px 22px; font-family: var(--font-mono); font-size: 12px; color: var(--ink-muted); }
   .empty { text-align: center; color: var(--ink-muted); font-size: 14px; padding: 40px 0; }
 </style>

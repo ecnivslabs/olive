@@ -12,8 +12,10 @@ const base = import.meta.env.BASE_URL;
       <p class="eyebrow">a systems language</p>
       <h1>A language you can read.</h1>
       <p class="sub">No braces. No semicolons. No garbage collector. Indentation defines the structure, and the compiler infers ownership and frees every value it owns.</p>
-      <InstallCommand id="hero-install" />
-      <p class="subline">or <a href={`${base}get-started/`}>read the introduction →</a></p>
+      <div class="hero-ctas">
+        <a class="btn-primary" href={`${base}download/`}>Download</a>
+        <a class="btn-secondary" href={`${base}docs/introduction/`}>Read the introduction →</a>
+      </div>
     </section>
 
     <section class="why">
@@ -72,7 +74,13 @@ const base = import.meta.env.BASE_URL;
     line-height: 1.08; margin: 0 0 24px; max-width: 13ch;
   }
   .sub { font-size: 17px; line-height: 1.7; color: var(--ink-body); max-width: 54ch; margin: 0 0 34px; }
-  .subline { font-size: 13px; color: var(--ink-muted); margin-top: 14px; }
+  .hero-ctas { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; justify-content: center; }
+  .btn-primary {
+    font-family: var(--font-mono); font-size: 14px; background: var(--ink); color: var(--on-dark);
+    padding: 13px 26px; border-radius: 3px;
+  }
+  .btn-primary:hover { color: var(--on-dark); background: var(--accent-hover); }
+  .btn-secondary { font-size: 14px; color: var(--ink-muted); }
 
   .why { padding: 20px 24px 90px; border-top: 1px solid var(--border); }
   .why-grid { max-width: 1040px; margin: 60px auto 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: 48px; }
