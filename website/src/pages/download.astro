@@ -1,0 +1,179 @@
+---
+import BaseLayout from '../components/BaseLayout.astro';
+import { fetchLatestVersion } from '../lib/version';
+
+const version = await fetchLatestVersion();
+const RELEASE_BASE = 'https://github.com/ecnivslabs/olive/releases/latest/download';
+
+const archs = [
+  { id: 'linux-x86_64', os: 'unix', label: 'Linux, x86_64', bin: 'pit-linux-x86_64', lib: 'libolive_std-linux-x86_64.so' },
+  { id: 'linux-aarch64', os: 'unix', label: 'Linux, ARM64', bin: 'pit-linux-aarch64', lib: 'libolive_std-linux-aarch64.so' },
+  { id: 'macos-x86_64', os: 'unix', label: 'macOS, Intel', bin: 'pit-macos-x86_64', lib: 'libolive_std-macos-x86_64.dylib' },
+  { id: 'macos-aarch64', os: 'unix', label: 'macOS, Apple Silicon', bin: 'pit-macos-aarch64', lib: 'libolive_std-macos-aarch64.dylib' },
+];
+---
+<BaseLayout
+  title="Download"
+  description="Download the pit toolchain directly, or install it with one command."
+>
+  <main>
+    <section class="head">
+      <p class="eyebrow">download</p>
+      <h1>Get the toolchain.</h1>
+      <p class="sub">
+        One command installs the right build for your machine automatically.
+        {version && <> Current release <a href="https://github.com/ecnivslabs/olive/releases/latest">{version}</a>.</>}
+      </p>
+    </section>
+
+    <section class="panel">
+      <div class="os-tablist" role="tablist" aria-label="Platform">
+        <button type="button" role="tab" aria-selected="true" data-os="unix" class="active">Linux / macOS</button>
+        <button type="button" role="tab" aria-selected="false" data-os="windows">Windows</button>
+      </div>
+
+      <div class="os-panel" data-os="unix">
+        <p class="panel-label">Recommended</p>
+        <div class="install"><span class="prompt">$</span>curl -sSL https://raw.githubusercontent.com/ecnivslabs/olive/master/install.sh | sh</div>
+        <p class="hint">Detects your OS and CPU architecture and installs the matching build to <code>~/.local/bin</code>.</p>
+
+        <details class="direct">
+          <summary>Prefer the binary directly?</summary>
+          <div class="arch-tablist" role="tablist" aria-label="Architecture">
+            {archs.map((a, i) => (
+              <button type="button" role="tab" aria-selected={i === 0 ? 'true' : 'false'} data-arch={a.id} class={i === 0 ? 'active' : ''}>{a.label}</button>
+            ))}
+          </div>
+          {archs.map((a, i) => (
+            <div class="arch-panel" data-arch={a.id} hidden={i !== 0}>
+              <a class="asset" href={`${RELEASE_BASE}/${a.bin}`}>{a.bin}</a>
+              <a class="asset" href={`${RELEASE_BASE}/${a.lib}`}>{a.lib}</a>
+              <p class="hint">Make it executable and put it on your <code>PATH</code>: <code>chmod +x {a.bin} &amp;&amp; mv {a.bin} ~/.local/bin/pit</code>. Put <code>{a.lib}</code> next to it in <code>~/.local/lib</code>.</p>
+            </div>
+          ))}
+        </details>
+      </div>
+
+      <div class="os-panel" data-os="windows" hidden>
+        <p class="panel-label">Windows, x86_64</p>
+        <p class="hint">Windows on Arm isn't built yet.</p>
+        <div class="win-steps">
+          <ol>
+            <li>Download <a class="asset-inline" href={`${RELEASE_BASE}/pit-windows-x86_64.exe`}>pit-windows-x86_64.exe</a></li>
+            <li>Rename it to <code>pit.exe</code></li>
+            <li>Add its folder to your <code>PATH</code></li>
+          </ol>
+        </div>
+      </div>
+    </section>
+
+    <section class="extra">
+      <div class="extra-item">
+        <h2>Verify a download</h2>
+        <p>
+          Releases are checksummed with <a href="https://github.com/BLAKE3-team/BLAKE3">BLAKE3</a>, not SHA-256.
+          Install <code>b3sum</code> (<code>cargo install b3sum</code>) if you don't have it, then:
+        </p>
+        <div class="install"><span class="prompt">$</span>b3sum -c checksums.txt</div>
+        <p class="hint"><a href={`${RELEASE_BASE}/checksums.txt`}>checksums.txt</a> — one line per release asset.</p>
+      </div>
+      <div class="extra-item">
+        <h2>Build from source</h2>
+        <p>Grab the source for the current release, or clone the repository directly for the latest commit.</p>
+        <div class="source-links">
+          <a class="asset" href={`${RELEASE_BASE}/olive-src.tar.gz`}>olive-src.tar.gz</a>
+          <a class="asset" href="https://github.com/ecnivslabs/olive">github.com/ecnivslabs/olive</a>
+        </div>
+      </div>
+    </section>
+  </main>
+</BaseLayout>
+
+<script>
+  const osButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('.os-tablist [role="tab"]'));
+  const osPanels = Array.from(document.querySelectorAll<HTMLElement>('.os-panel'));
+
+  function selectOs(os: string) {
+    for (const btn of osButtons) {
+      const active = btn.dataset.os === os;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-selected', String(active));
+    }
+    for (const panel of osPanels) {
+      panel.hidden = panel.dataset.os !== os;
+    }
+  }
+  for (const btn of osButtons) {
+    btn.addEventListener('click', () => selectOs(btn.dataset.os!));
+  }
+  if (navigator.userAgent.includes('Windows')) selectOs('windows');
+
+  const archButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('.arch-tablist [role="tab"]'));
+  const archPanels = Array.from(document.querySelectorAll<HTMLElement>('.arch-panel'));
+
+  function selectArch(arch: string) {
+    for (const btn of archButtons) {
+      const active = btn.dataset.arch === arch;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-selected', String(active));
+    }
+    for (const panel of archPanels) {
+      panel.hidden = panel.dataset.arch !== arch;
+    }
+  }
+  for (const btn of archButtons) {
+    btn.addEventListener('click', () => selectArch(btn.dataset.arch!));
+  }
+</script>
+
+<style>
+  .head { padding: 76px 24px 20px; text-align: center; }
+  .eyebrow {
+    font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.14em;
+    color: var(--accent); text-transform: uppercase; margin: 0 0 20px;
+  }
+  h1 { font-style: italic; font-size: clamp(34px, 5vw, 50px); margin: 0 0 18px; }
+  .sub { font-size: 16px; color: var(--ink-body); max-width: 50ch; margin: 0 auto; line-height: 1.65; }
+  .sub a { font-family: var(--font-mono); }
+
+  .panel { max-width: 640px; margin: 60px auto 0; padding: 0 24px; }
+  .os-tablist { display: inline-flex; gap: 4px; margin-bottom: 20px; }
+  .os-tablist button, .arch-tablist button {
+    font-family: var(--font-mono); font-size: 12.5px; padding: 7px 14px; border-radius: 4px;
+    background: none; border: 1px solid var(--border); color: var(--ink-muted); cursor: pointer;
+  }
+  .os-tablist button.active, .arch-tablist button.active {
+    background: var(--accent); border-color: var(--accent); color: var(--on-dark);
+  }
+
+  .panel-label { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted); margin: 0 0 10px; }
+  .install {
+    font-family: var(--font-mono); font-size: 14px; background: var(--ink); color: var(--on-dark);
+    padding: 14px 24px; border-radius: 3px; max-width: 100%; white-space: pre-wrap; word-break: break-all;
+  }
+  .install .prompt { color: #A9BA6C; margin-right: 10px; }
+  .hint { font-size: 13px; color: var(--ink-muted); line-height: 1.6; margin: 12px 0 0; }
+  .hint code { font-family: var(--font-mono); background: var(--surface); padding: 1px 5px; border-radius: 3px; }
+
+  .direct { margin-top: 28px; border-top: 1px solid var(--border); padding-top: 20px; }
+  .direct summary { font-family: var(--font-mono); font-size: 13px; color: var(--ink-body); cursor: pointer; }
+  .arch-tablist { display: flex; flex-wrap: wrap; gap: 6px; margin: 16px 0 16px; }
+  .arch-panel { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+  .arch-panel[hidden] { display: none; }
+  .asset {
+    font-family: var(--font-mono); font-size: 13px; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 4px; padding: 8px 14px; display: inline-block;
+  }
+  .asset-inline { font-family: var(--font-mono); }
+
+  .win-steps ol { font-size: 15px; line-height: 1.9; color: var(--ink-body); padding-left: 20px; margin: 12px 0 0; }
+  .win-steps code { font-family: var(--font-mono); background: var(--surface); padding: 1px 5px; border-radius: 3px; }
+
+  .extra { max-width: 640px; margin: 70px auto 0; padding: 40px 24px 100px; border-top: 1px solid var(--border); display: grid; gap: 44px; }
+  .extra h2 { font-size: 20px; font-style: normal; margin: 0 0 10px; }
+  .extra p { font-size: 14.5px; color: var(--ink-body); line-height: 1.7; margin: 0 0 14px; }
+  .extra p code { font-family: var(--font-mono); background: var(--surface); padding: 1px 5px; border-radius: 3px; }
+  .extra .install { margin-bottom: 10px; }
+  .extra a { font-family: var(--font-mono); }
+  .source-links { display: flex; flex-wrap: wrap; gap: 10px; }
+</style>
