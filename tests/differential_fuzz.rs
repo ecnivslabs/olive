@@ -103,6 +103,18 @@ fn nested_closure() -> int:
         return x + delta
     return adder({base})
 
+struct Callback:
+    f: fn(int) -> int
+
+fn make_adder(n: int) -> fn(int) -> int:
+    return lambda x: x + n
+
+fn escaping_closures() -> int:
+    let add = make_adder({closure_add})
+    let cb = Callback(add)
+    let fns = [add, cb.f]
+    return fns[0]({base}) + fns[1]({base}) + cb.f({base})
+
 fn branch_pick(n: int) -> int:
     if n == 0:
         return moves_and_borrows()
@@ -138,6 +150,7 @@ fn main():
     print(loop_reassign({loop_n}))
     print(any_mixing())
     print(nested_closure())
+    print(escaping_closures())
     print(branch_pick({branch_pick}))
     print(opt_items_len(maybe_box({opt_pick_a})))
     print(guard_len(maybe_list({opt_pick_b})))

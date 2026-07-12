@@ -116,6 +116,18 @@ copies rule 3 describes never happen in compiled code.
 Pass `--explain-copies` to `pit run` or `pit build` to see each remaining
 copy site, its type, and why it was needed.
 
+## Closures
+
+A captured variable is a store, not a reference: building a closure writes
+each variable it reads from the enclosing scope into the closure's own
+record, the same copy-or-move rule as any other value moving into a
+container. A still-live outer variable is copied in; a variable never used
+again after the closure is built is moved, promoted by the same optimizer
+pass that promotes any other copy to a move. Either way, the closure owns
+its own copy from that point on -- mutating the original afterward is never
+visible inside the closure. See [Functions](functions.md#lambda-expressions)
+for the syntax and the direct-call-vs-escaped cost split.
+
 ## Iteration
 
 For-loops and comprehensions borrow the iterable, the same `Rvalue::Ref` an

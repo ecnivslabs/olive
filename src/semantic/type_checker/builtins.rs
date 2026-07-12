@@ -124,7 +124,13 @@ impl TypeChecker {
         args: &[CallArg],
         span: Span,
     ) -> Option<Type> {
-        if args.len() != 1 || self.lookup_type(name).is_some() {
+        if self.lookup_type(name).is_some() {
+            return None;
+        }
+        if name == "sorted" && args.len() == 2 {
+            return Some(self.check_sorted_with_key(args, span));
+        }
+        if args.len() != 1 {
             return None;
         }
         let arg = arg_expr(&args[0]);
@@ -132,6 +138,135 @@ impl TypeChecker {
             "sorted" | "reversed" => Some(self.check_sorted_reversed(name, arg, span)),
             "any" | "all" => Some(self.check_any_all(name, arg, span)),
             _ => None,
+        }
+    }
+
+    /// `sorted(xs, key=f) -> [T]` (E5.5): checks `f` against the list's own
+    /// element type as the expected fn signature (`check_expr_expecting`),
+    /// same as any other call argument's context -- an unannotated `f`
+    /// param infers from the list, not from a fresh, uninferable var.
+    fn check_sorted_with_key(&mut self, args: &[CallArg], span: Span) -> Type {
+        let list_expr = arg_expr(&args[0]);
+        let raw = self.check_expr(list_expr);
+        let arg_ty = self.apply_subst(raw);
+        let elem_ty = match &arg_ty {
+            Type::List(e) => (**e).clone(),
+            Type::Any => Type::Any,
+            _ => {
+                self.errors
+                    .push(crate::semantic::error::SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0404",
+                            format!("`sorted` requires a list argument, got `{arg_ty}`"),
+                            span,
+                        )
+                        .label("expected a list"),
+                    ));
+                return arg_ty;
+            }
+        };
+        let result_ty = match &arg_ty {
+            Type::Any => Type::List(Box::new(Type::Any)),
+            _ => arg_ty,
+        };
+        let CallArg::Keyword(kw_name, key_expr) = &args[1] else {
+            self.errors
+                .push(crate::semantic::error::SemanticError::rich(
+                    crate::compile::errors::Diagnostic::error(
+                        "E0403",
+                        "`sorted`'s second argument must be `key=...`",
+                        span,
+                    )
+                    .label("expected a `key` keyword argument"),
+                ));
+            return result_ty;
+        };
+        if kw_name != "key" {
+            self.errors
+                .push(crate::semantic::error::SemanticError::rich(
+                    crate::compile::errors::Diagnostic::error(
+                        "E0403",
+                        format!("unknown keyword argument `{kw_name}` to `sorted`"),
+                        span,
+                    )
+                    .label("`sorted` only accepts `key`"),
+                ));
+            return result_ty;
+        }
+        let hint = Type::Fn(vec![elem_ty.clone()], Box::new(Type::Any), vec![]);
+        let key_ty = self.check_expr_expecting(key_expr, &hint);
+        self.check_sort_key(&elem_ty, key_expr, key_ty, span);
+        result_ty
+    }
+
+    /// Shared `key=` validation for `sorted(xs, key=f)` and `xs.sort(key=f)`:
+    /// `f: fn(elem) -> K`, `K` orderable -- the same set the native
+    /// `__olive_list_sort_{int,float,str}` runtime already supports.
+    pub(super) fn check_sort_key(
+        &mut self,
+        elem_ty: &Type,
+        key_expr: &Expr,
+        key_ty: Type,
+        span: Span,
+    ) {
+        let key_ty = self.apply_subst(key_ty);
+        let Type::Fn(params, ret, _) = &key_ty else {
+            self.errors
+                .push(crate::semantic::error::SemanticError::rich(
+                    crate::compile::errors::Diagnostic::error(
+                        "E0404",
+                        format!("`key` must be a function, got `{key_ty}`"),
+                        key_expr.span,
+                    )
+                    .label("expected `fn(T) -> K`"),
+                ));
+            return;
+        };
+        if params.len() != 1 {
+            self.errors
+                .push(crate::semantic::error::SemanticError::rich(
+                    crate::compile::errors::Diagnostic::error(
+                        "E0403",
+                        format!(
+                            "`key` function must take exactly one argument, found {}",
+                            params.len()
+                        ),
+                        key_expr.span,
+                    )
+                    .label("expected one parameter"),
+                ));
+            return;
+        }
+        // `unify`, not a raw `!=`: an unannotated param already took `elem_ty`
+        // as its call-site hint, so this is normally a no-op; an explicitly
+        // annotated, incompatible param needs real unification to reject it
+        // (a bare equality check misclassifies e.g. two distinct
+        // `IntegerLiteral` instances as mismatched).
+        let param_ty = self.apply_subst(params[0].clone());
+        if !matches!(param_ty, Type::Any) && !matches!(elem_ty, Type::Any) {
+            self.unify(&param_ty, elem_ty, key_expr.span);
+        }
+        let ret_ty = self.apply_subst((**ret).clone());
+        if !matches!(
+            ret_ty,
+            Type::Int
+                | Type::IntegerLiteral(_)
+                | Type::Float
+                | Type::FloatLiteral(_)
+                | Type::Str
+                | Type::Any
+        ) {
+            self.errors
+                .push(crate::semantic::error::SemanticError::rich(
+                    crate::compile::errors::Diagnostic::error(
+                        "E0404",
+                        format!(
+                            "`key`'s result must be orderable (int, float, or str), got `{ret_ty}`"
+                        ),
+                        span,
+                    )
+                    .label("not an orderable key type"),
+                ));
         }
     }
 

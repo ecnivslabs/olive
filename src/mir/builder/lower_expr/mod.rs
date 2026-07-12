@@ -4,6 +4,7 @@ mod control;
 mod data;
 mod literals;
 mod ops;
+mod sort_key;
 
 use super::{MirBuilder, NestedFnInfo};
 use crate::mir::AggregateKind;
@@ -427,7 +428,43 @@ impl<'a> MirBuilder<'a> {
             ExprKind::Lambda {
                 params: l_params,
                 body: l_body,
-            } => self.lower_lambda_expr(l_params, l_body, expr.id, expr.span),
+            } => {
+                // A lambda literal reached here is used as a plain value
+                // (returned, stored, passed as an argument) -- the IIFE and
+                // direct-call-through-a-bound-name shapes are intercepted
+                // earlier in `lower_call_expr`. Captures resolved against
+                // the still-live scope before `lower_lambda_expr` lowers
+                // the body and swaps it away. Always builds the uniform
+                // closure record, capturing or not -- see the nested-fn
+                // case in `lower_identifier_expr` for why.
+                let raw_captures =
+                    crate::semantic::free_vars::free_variables_expr(l_params, l_body);
+                let func_op = self.lower_lambda_expr(l_params, l_body, expr.id, expr.span);
+                let Operand::Constant(Constant::Function(mangled)) = &func_op else {
+                    unreachable!("lower_lambda_expr always returns Constant::Function")
+                };
+                let checked_param_tys = match self.get_type(expr.id) {
+                    Type::Fn(p, _, _) => p,
+                    _ => Vec::new(),
+                };
+                let param_tys = l_params
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| {
+                        p.type_ann
+                            .as_ref()
+                            .map(|ann| self.resolve_type_expr(ann))
+                            .or_else(|| checked_param_tys.get(i).cloned())
+                            .unwrap_or(Type::Any)
+                    })
+                    .collect();
+                let info = NestedFnInfo {
+                    mangled: mangled.clone(),
+                    raw_captures,
+                    param_tys,
+                };
+                self.build_closure_value(&info, expr.id, expr.span)
+            }
         }
     }
 
@@ -641,7 +678,24 @@ impl<'a> MirBuilder<'a> {
             );
         }
 
-        let func = self.lower_expr(callee);
+        // A direct call to a plain global fn name (not a local, not a nested
+        // fn/bound lambda -- those are all handled above): the callee is
+        // never lowered as a value here, or every ordinary top-level call
+        // would pay for a wasted closure record only to have
+        // `lower_general_call_path` re-derive this exact same name anyway.
+        // Must match that function's own `call_fn_name` derivation exactly.
+        let func = if let ExprKind::Identifier(name) = &callee.kind
+            && self.lookup_var(name).is_none()
+        {
+            Operand::Constant(Constant::Function(name.clone()))
+        } else if let ExprKind::Attr { obj, attr } = &callee.kind
+            && let ExprKind::Identifier(obj_name) = &obj.kind
+            && self.lookup_var(obj_name).is_none()
+        {
+            Operand::Constant(Constant::Function(format!("{obj_name}::{attr}")))
+        } else {
+            self.lower_expr(callee)
+        };
         self.lower_general_call_path(
             callee,
             func,
@@ -1060,6 +1114,7 @@ mod tests {
             tc.struct_fields.clone(),
             &tc.traits,
             FxHashSet::default(),
+            tc.enum_defs.clone(),
         );
         builder.build_program(&prog);
         builder.functions

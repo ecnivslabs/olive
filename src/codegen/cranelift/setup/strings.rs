@@ -251,7 +251,8 @@ impl<M: Module> CraneliftCodegen<M> {
             self.intern_attr_string(&desc);
             return;
         }
-        if name != "print" && name != "str" && name != "__olive_copy_typed" {
+        let is_copy_intrinsic = name == "__olive_copy_typed" || name == "__olive_relocate_typed";
+        if name != "print" && name != "str" && !is_copy_intrinsic {
             return;
         }
         if args.len() != 1 {
@@ -262,7 +263,7 @@ impl<M: Module> CraneliftCodegen<M> {
         // constant-propagated `Copy(local)` here once and silently skipped
         // interning a folded `Constant` argument, crashing codegen later.
         let ty = operand_static_type(&args[0], func);
-        if name == "__olive_copy_typed" || needs_type_descriptor(&ty) {
+        if is_copy_intrinsic || needs_type_descriptor(&ty) {
             let desc =
                 type_descriptor(&ty, &self.struct_fields, &self.field_types, &self.enum_defs);
             self.intern_attr_string(&desc);

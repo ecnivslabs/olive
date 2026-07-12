@@ -60,6 +60,39 @@ impl<'a> MirBuilder<'a> {
         }
 
         let obj_ty = self.get_type(obj.id);
+
+        // `obj.field(...)` where `field` is a plain `fn`-typed struct field,
+        // not a method: read the closure value and call it indirectly (E5.3).
+        // A struct cannot declare a field and a method of the same name, so
+        // field presence alone disambiguates from a real method call.
+        let mut struct_ty = obj_ty.clone();
+        while let Type::Ref(inner) | Type::MutRef(inner) = struct_ty {
+            struct_ty = *inner;
+        }
+        if let Type::Struct(struct_name, _, _) = &struct_ty
+            && let Some(field_ty) = self
+                .struct_field_types
+                .get(&(struct_name.clone(), attr.to_string()))
+                .cloned()
+            && matches!(field_ty, Type::Fn(_, _, _))
+        {
+            let obj_op = self.lower_expr_as_copy(obj);
+            let field_local = self.new_local(field_ty, None, true);
+            self.push_statement(
+                StatementKind::Assign(field_local, Rvalue::GetAttr(obj_op, attr.to_string())),
+                span,
+            );
+            return self.lower_general_call_path(
+                callee,
+                Operand::Copy(field_local),
+                arg_ops,
+                arg_kw_names,
+                arg_tys,
+                span,
+                expr_id,
+            );
+        }
+
         if obj_ty.is_py_value() {
             let obj_op = self.lower_expr_as_copy(obj);
             let attr_local = self.new_local(Type::PyObject, None, true);
@@ -153,7 +186,8 @@ impl<'a> MirBuilder<'a> {
             return op;
         }
 
-        if let Some(op) = self.lower_list_method(obj, attr, &arg_ops, &arg_tys, span, expr_id) {
+        if let Some(op) = self.lower_list_method(obj, attr, args, &arg_ops, &arg_tys, span, expr_id)
+        {
             return op;
         }
 
@@ -529,10 +563,12 @@ impl<'a> MirBuilder<'a> {
     /// Lowers the mutating methods on a native list to their runtime calls.
     /// `append`/`insert`/`extend` mutate in place and yield the list; `pop` and
     /// `remove` return the removed element.
+    #[allow(clippy::too_many_arguments)]
     fn lower_list_method(
         &mut self,
         obj: &Expr,
         attr: &str,
+        raw_args: &[CallArg],
         arg_ops: &[Operand],
         arg_tys: &[Type],
         span: Span,
@@ -560,6 +596,21 @@ impl<'a> MirBuilder<'a> {
             _ => return None,
         };
         let elem = &elem;
+
+        if attr == "sort"
+            && let Some(key_idx) = raw_args
+                .iter()
+                .position(|a| matches!(a, CallArg::Keyword(name, _) if name == "key"))
+        {
+            let key_op = arg_ops[key_idx].clone();
+            let key_ret_ty = match &arg_tys[key_idx] {
+                Type::Fn(_, ret, _) => (**ret).clone(),
+                _ => Type::Int,
+            };
+            let obj_op = self.lower_expr_as_copy(obj);
+            return Some(self.lower_sort_by_key(obj_op, elem, key_op, &key_ret_ty, span));
+        }
+
         let runtime = match attr {
             "append" => "__olive_list_append",
             "insert" => "__olive_list_insert",

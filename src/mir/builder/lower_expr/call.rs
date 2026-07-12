@@ -508,7 +508,17 @@ impl<'a> MirBuilder<'a> {
         span: Span,
         expr_id: usize,
     ) -> Option<Operand> {
-        if args.len() != 1 || !matches!(name, "sorted" | "reversed" | "any" | "all") {
+        let key_arg_expr = if name == "sorted" && args.len() == 2 {
+            match &args[1] {
+                CallArg::Keyword(kw, e) if kw == "key" => Some(e),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if !matches!(name, "sorted" | "reversed" | "any" | "all")
+            || (args.len() != 1 && key_arg_expr.is_none())
+        {
             return None;
         }
         let arg_expr = match &args[0] {
@@ -569,6 +579,15 @@ impl<'a> MirBuilder<'a> {
             span,
         );
         let copy_op = self.operand_for_local(copy_local);
+
+        if let Some(key_expr) = key_arg_expr {
+            let key_ret_ty = match self.get_type(key_expr.id) {
+                Type::Fn(_, ret, _) => *ret,
+                _ => Type::Int,
+            };
+            let key_op = self.lower_expr(key_expr);
+            return Some(self.lower_sort_by_key(copy_op, &elem_ty, key_op, &key_ret_ty, span));
+        }
 
         let apply_fn = if name == "sorted" {
             match &elem_ty {

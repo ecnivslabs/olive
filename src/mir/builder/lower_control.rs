@@ -1131,6 +1131,7 @@ mod tests {
             tc.struct_fields.clone(),
             &tc.traits,
             FxHashSet::default(),
+            tc.enum_defs.clone(),
         );
         builder.build_program(&prog);
         builder.functions

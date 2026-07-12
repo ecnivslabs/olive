@@ -639,6 +639,7 @@ mod tests {
             tc.struct_fields.clone(),
             &tc.traits,
             HashSet::default(),
+            tc.enum_defs.clone(),
         );
         builder.build_program(&prog);
         let mut all_errors = Vec::new();

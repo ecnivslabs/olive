@@ -54,6 +54,13 @@ pub struct MirBuilder<'a> {
     /// the field has no default). Used to fill omitted trailing fields at a
     /// construction site.
     pub(super) struct_field_defaults: HashMap<String, Vec<Option<crate::parser::Expr>>>,
+    /// Enum variant payload types, needed to encode a correct capture
+    /// descriptor when a closure record (E5.2) captures an enum-typed value.
+    pub(super) enum_defs: HashMap<String, Vec<(String, Vec<Type>)>>,
+    /// Closure calling-convention thunks already emitted (`closures.rs`),
+    /// deduped by mangled target name so re-lowering the same escaping
+    /// closure (e.g. inside a loop body) doesn't emit it twice.
+    pub(super) closure_thunks: HashSet<String>,
     /// Type-parameter substitution active while lowering a monomorphized
     /// function, so types read from the original (generic) `expr_types` are
     /// resolved to the concrete instance. Empty outside monomorphization.
@@ -102,6 +109,7 @@ impl<'a> MirBuilder<'a> {
         struct_fields: HashMap<String, Vec<String>>,
         traits: &'a HashMap<String, crate::semantic::type_checker::TraitDef>,
         c_ffi_fns: HashSet<String>,
+        enum_defs: HashMap<String, Vec<(String, Vec<Type>)>>,
     ) -> Self {
         // Built-in single-variant `Error` enum, mirrored from the type checker so
         // construction and `match` lower the same way user enums do.
@@ -116,6 +124,8 @@ impl<'a> MirBuilder<'a> {
             struct_fields,
             struct_field_types: HashMap::default(),
             struct_field_defaults: HashMap::default(),
+            enum_defs,
+            closure_thunks: HashSet::default(),
             mono_type_map: HashMap::default(),
             traits,
             current_name: String::new(),
@@ -819,6 +829,7 @@ mod tests {
             tc.struct_fields.clone(),
             &tc.traits,
             HashSet::default(),
+            tc.enum_defs.clone(),
         );
         builder.build_program(&prog);
         (builder.functions, builder.struct_fields)
