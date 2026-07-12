@@ -23,7 +23,12 @@ impl TypeChecker {
         let raw = self.check_expr(arg);
         let arg_ty = self.apply_subst(raw);
         match &arg_ty {
-            Type::List(_) => arg_ty,
+            Type::List(elem) => {
+                if name == "sorted" {
+                    self.check_struct_sort_needs_lt(elem, span);
+                }
+                arg_ty.clone()
+            }
             Type::Any => Type::List(Box::new(Type::Any)),
             _ => {
                 self.errors
@@ -37,6 +42,29 @@ impl TypeChecker {
                     ));
                 arg_ty
             }
+        }
+    }
+
+    /// E6.3: `sort`/`sorted` with no `key=` on a struct element list needs
+    /// `__lt__` -- without it the native int/float/str comparator would run
+    /// on raw struct pointers, a meaningless order that still typechecks.
+    pub(super) fn check_struct_sort_needs_lt(&mut self, elem_ty: &Type, span: Span) {
+        let Type::Struct(struct_name, ..) = self.apply_subst(elem_ty.clone()) else {
+            return;
+        };
+        if self
+            .lookup_type(&format!("{struct_name}::__lt__"))
+            .is_none()
+        {
+            self.errors
+                .push(crate::semantic::error::SemanticError::rich(
+                    crate::compile::errors::Diagnostic::error(
+                        "E0404",
+                        format!("`{struct_name}` has no `__lt__` defined"),
+                        span,
+                    )
+                    .label("sorting requires ordering; define `__lt__` or pass `key=`"),
+                ));
         }
     }
 

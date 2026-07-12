@@ -350,10 +350,32 @@ pub extern "C" fn olive_list_sort_by_keys(list_ptr: i64, keys_ptr: i64, key_kind
     } else {
         order.sort_by(|&i, &j| cmp_key(keys[i as usize], keys[j as usize], key_kind));
     }
+    apply_order(elems, &order);
+}
+
+fn apply_order(elems: &mut [i64], order: &[u32]) {
+    let n = elems.len().min(order.len());
     let orig: Vec<i64> = elems[..n].to_vec();
-    for (out_i, &src_i) in order.iter().enumerate() {
+    for (out_i, &src_i) in order[..n].iter().enumerate() {
         elems[out_i] = orig[src_i as usize];
     }
+}
+
+/// Permutes `list_ptr` in place to match a caller-computed `order` (an
+/// Olive `[int]` list of source indices): `list_ptr[i]` becomes the element
+/// that was originally at `order[i]`. Pure word reordering -- no allocation,
+/// no calls back into user code -- the safe half of a comparator sort whose
+/// comparisons ran in MIR against borrowed (`&Self`) reads (E6.3).
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_apply_order(list_ptr: i64, order_ptr: i64) {
+    let Some(elems) = list_slice_mut(list_ptr) else {
+        return;
+    };
+    let Some(order) = list_slice_mut(order_ptr) else {
+        return;
+    };
+    let order: Vec<u32> = order.iter().map(|&v| v as u32).collect();
+    apply_order(elems, &order);
 }
 
 #[unsafe(no_mangle)]

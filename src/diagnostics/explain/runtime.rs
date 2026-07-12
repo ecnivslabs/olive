@@ -4,11 +4,16 @@ pub(super) const ENTRIES: &[Explanation] = &[
     Explanation {
         code: "E0700",
         title: "panic",
-        summary: "An `assert` failed at runtime and the program aborted. This is the \
-                  generic runtime fault for an explicitly signalled unrecoverable state.",
+        summary: "The generic runtime fault for an explicitly signalled unrecoverable \
+                  state: an `assert` failed, or `int()`/`float()` was given a string that \
+                  doesn't parse (`int(\"abc\")`).",
         wrong: "fn main():\n    let x = 1\n    assert x == 2",
         fixed: "fn main():\n    let x = 2\n    assert x == 2",
-        notes: &["Assert only what must always hold; return a result for expected failures."],
+        notes: &[
+            "Assert only what must always hold; return a result for expected failures.",
+            "For a string that might not parse, use `.to_int()`/`.to_float()` \
+             (-> `int | None` / `float | None`) instead of `int()`/`float()`.",
+        ],
     },
     Explanation {
         code: "E0701",

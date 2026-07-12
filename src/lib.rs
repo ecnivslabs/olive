@@ -18,6 +18,8 @@ pub mod builtin_tests;
 pub mod collection_method_tests;
 pub mod eq_tests;
 #[cfg(test)]
+pub mod fallible_parse_tests;
+#[cfg(test)]
 pub mod hash_tests;
 #[cfg(test)]
 pub mod iteration_tests;
@@ -29,6 +31,8 @@ pub mod narrow_tests;
 pub mod numeric_underscore_tests;
 #[cfg(test)]
 pub mod olive_tests;
+#[cfg(test)]
+pub mod operator_dunder_tests;
 #[cfg(test)]
 pub mod opt_attr_tests;
 #[cfg(test)]
@@ -42,14 +46,20 @@ pub mod scalar_attr_tests;
 #[cfg(test)]
 pub mod small_reflex_tests;
 #[cfg(test)]
+pub mod sort_dunder_tests;
+#[cfg(test)]
 pub mod sort_key_tests;
 #[cfg(test)]
 pub mod speculation_tests;
 #[cfg(test)]
 pub mod starred_unpack_tests;
 #[cfg(test)]
+pub mod str_dunder_tests;
+#[cfg(test)]
 pub mod string_method_tests;
 #[cfg(test)]
 pub mod test_utils;
+#[cfg(test)]
+pub mod trait_object_tests;
 #[cfg(test)]
 pub mod type_alias_tests;

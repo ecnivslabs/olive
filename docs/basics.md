@@ -446,5 +446,6 @@ usable afterward.
 * `sorted(xs)`: Returns a new sorted list; the source list is untouched.
 * `reversed(xs)`: Returns a new list in reverse order; the source list is untouched.
 * `any(xs)` / `all(xs)`: Whether any/all elements of a `[bool]` (or `[Any]` holding bools) are true.
+* `int(x)`, `float(x)`, `str(x)`, `bool(x)`: Convert between primitive types; `int`/`float` panic on a string that doesn't parse. For a string you don't control, use `s.to_int() -> int | None` / `s.to_float() -> float | None` instead -- same parsing grammar, `None` instead of a panic on failure. See [Error Handling](error_handling.md#parsing-input).
 
 Integer ranges are written with the `..` and `..=` operators rather than a function, for example `0..n` or `1..=n`. A range also works directly on the right of `in`/`not in`: `x in 0..10`.

@@ -114,6 +114,24 @@ impl TypeChecker {
             "split" => {
                 self.check_arity_and_return(attr, arg_tys, span, 0, 1, &[Type::Str], str_list)
             }
+            "to_int" => self.check_arity_and_return(
+                attr,
+                arg_tys,
+                span,
+                0,
+                0,
+                &[],
+                Type::Union(vec![Type::Int, Type::Null]),
+            ),
+            "to_float" => self.check_arity_and_return(
+                attr,
+                arg_tys,
+                span,
+                0,
+                0,
+                &[],
+                Type::Union(vec![Type::Float, Type::Null]),
+            ),
             _ => None,
         }
     }

@@ -189,6 +189,7 @@ impl<M: Module> CraneliftCodegen<M> {
         vars: &HashMap<Local, Variable>,
         loc_id: Option<DataId>,
         reuse_target: Option<(Local, Value, bool)>,
+        dest_ty: &OliveType,
     ) -> Value {
         let is_reusable = match rval {
             Rvalue::Aggregate(kind, _) => !matches!(kind, AggregateKind::FatPtr),
@@ -272,6 +273,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 vars,
                 func,
                 args,
+                dest_ty,
             ),
             Rvalue::BinaryOp(op, lhs, rhs) => Self::translate_binop(
                 func_mir,
@@ -566,6 +568,35 @@ impl<M: Module> CraneliftCodegen<M> {
                     OliveType::Float => types::F64,
                     _ => types::I64,
                 };
+
+                // Narrowing `T | None` to its non-null member `T` reuses this
+                // same `Rvalue::Cast` shape (`data.rs`'s flow-narrowed read),
+                // but means something different from a real `as` cast: a
+                // scalar union has no boxed representation (raw sentinel,
+                // see `narrow_tests.rs`), so its payload word already holds
+                // `T`'s own bits and narrowing must reinterpret them, not
+                // numerically convert -- `fcvt_from_sint` on a `float |
+                // None` union's raw word would read the bit pattern of a
+                // float as if it were an integer count.
+                let src_is_scalar_union = match op {
+                    Operand::Copy(l) | Operand::Move(l) => {
+                        matches!(&func_mir.locals[l.0].ty, OliveType::Union(members)
+                            if members.iter().any(|m| m == ty))
+                    }
+                    _ => false,
+                };
+                if src_is_scalar_union && current_ty != target_cl_ty {
+                    // A union's raw payload word is always I64 (`cl_type`
+                    // maps every `Union` to it); only a `float | None` (64
+                    // bits, direct bitcast) or `f32 | None` (narrow first)
+                    // member ever disagrees with that width.
+                    return if target_cl_ty == types::F64 {
+                        builder.ins().bitcast(types::F64, MemFlags::new(), val)
+                    } else {
+                        let low = builder.ins().ireduce(types::I32, val);
+                        builder.ins().bitcast(types::F32, MemFlags::new(), low)
+                    };
+                }
 
                 // Scalar-to-str: int/float/bool formatted as string.
                 if *ty == OliveType::Str {

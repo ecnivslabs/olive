@@ -14,6 +14,31 @@ use crate::semantic::types::Type;
 use crate::span::Span;
 
 impl<'a> MirBuilder<'a> {
+    /// E6.2: if `ty` is a struct defining `__str__`, calls it and returns
+    /// the resulting `str` operand -- shared by `print`, `str()`, and
+    /// f-string interpolation, all three of which fall back to the
+    /// descriptor-driven auto-repr when the struct has none.
+    pub(super) fn lower_struct_str_call(
+        &mut self,
+        op: Operand,
+        ty: &Type,
+        span: Span,
+    ) -> Option<Operand> {
+        let (struct_name, type_args) = Self::deref_struct_ty(ty.clone())?;
+        let base = format!("{struct_name}::__str__");
+        if !self.fn_meta.contains_key(&base) {
+            return None;
+        }
+        Some(self.call_struct_dunder(
+            &struct_name,
+            &type_args,
+            "__str__",
+            vec![op],
+            Type::Str,
+            span,
+        ))
+    }
+
     /// Boxes a scalar into an `Any` container slot so a read sees a
     /// self-describing value.
     pub(super) fn coerce_to_elem(&mut self, op: Operand, elem: &Expr, elem_ty: &Type) -> Operand {
@@ -149,11 +174,17 @@ impl<'a> MirBuilder<'a> {
                 self.vtables.insert(vtable_name.clone(), method_names);
             }
             let vtable_op = Operand::Constant(Constant::GlobalData(vtable_name.clone()));
+            let (struct_name, type_args, is_ffi) = match from_ty {
+                Type::Struct(n, a, f) => (n.clone(), a.clone(), *f),
+                _ => unreachable!("guarded above"),
+            };
+            let drop_shim_name = self.build_trait_drop_shim(&struct_name, &type_args, is_ffi);
+            let drop_shim_op = Operand::Constant(Constant::Function(drop_shim_name));
             let fat_ptr_tmp = self.new_local(to_ty.clone(), None, false);
             self.push_statement(
                 StatementKind::Assign(
                     fat_ptr_tmp,
-                    Rvalue::Aggregate(AggregateKind::FatPtr, vec![op, vtable_op]),
+                    Rvalue::Aggregate(AggregateKind::FatPtr, vec![op, vtable_op, drop_shim_op]),
                 ),
                 span,
             );
@@ -269,6 +300,62 @@ impl<'a> MirBuilder<'a> {
         }
 
         op
+    }
+
+    /// Synthesizes (or reuses) `<Struct>::__drop_shim(v: Struct) -> None`, a
+    /// one-statement function that just drops its owning param. A trait
+    /// object's own free (`Drop` on a `TraitObject` local) only knows the
+    /// fat pointer's own two/three words, not the concrete struct's field
+    /// layout underneath -- the concrete type is erased, that's the point
+    /// of dynamic dispatch. This shim's address, stored as the fat
+    /// pointer's third word, is how `Drop` on the trait object frees the
+    /// real struct (and any heap fields it owns) correctly regardless of
+    /// which concrete type was boxed.
+    fn build_trait_drop_shim(
+        &mut self,
+        struct_name: &str,
+        type_args: &[Type],
+        is_ffi: bool,
+    ) -> String {
+        let base = format!("{struct_name}::__drop_shim");
+        let shim_name = if type_args.is_empty() {
+            base
+        } else {
+            self.monomorphize(&base, type_args)
+        };
+
+        let saved_name = std::mem::take(&mut self.current_name);
+        let saved_locals = std::mem::take(&mut self.current_locals);
+        let saved_blocks = std::mem::take(&mut self.current_blocks);
+        let saved_block = self.current_block.take();
+        let saved_var_map = std::mem::take(&mut self.var_map);
+        let saved_loop_stack = std::mem::take(&mut self.loop_stack);
+        let saved_scope_locals = std::mem::take(&mut self.scope_locals);
+        let saved_arg_count = self.current_arg_count;
+        let saved_is_async = self.current_is_async;
+        self.current_is_async = false;
+
+        self.start_function(shim_name.clone(), 1, Type::Null);
+        let param_ty = Type::Struct(struct_name.to_string(), type_args.to_vec(), is_ffi);
+        let param_local = self.declare_var("v".to_string(), param_ty, false);
+        self.push_statement(StatementKind::Drop(param_local), Span::default());
+        if let Some(bb) = self.current_block {
+            self.terminate_block(bb, TerminatorKind::Return, Span::default());
+        }
+        self.current_block = Some(self.new_block());
+        self.finish_function();
+
+        self.current_name = saved_name;
+        self.current_locals = saved_locals;
+        self.current_blocks = saved_blocks;
+        self.current_block = saved_block;
+        self.var_map = saved_var_map;
+        self.loop_stack = saved_loop_stack;
+        self.scope_locals = saved_scope_locals;
+        self.current_arg_count = saved_arg_count;
+        self.current_is_async = saved_is_async;
+
+        shim_name
     }
 
     /// Unboxes an `Any` into a concrete scalar local; returns `None` for
@@ -534,6 +621,17 @@ impl<'a> MirBuilder<'a> {
             if name == "print" {
                 return self
                     .lower_print_builtin(callee, args, &arg_ops, &arg_tys, expr.span, expr.id);
+            }
+
+            // E6.2: `str(p)` on a struct defining `__str__` calls it
+            // directly; everything else (including a struct without one)
+            // falls through to the normal `str` builtin dispatch below.
+            if name == "str"
+                && arg_ops.len() == 1
+                && let Some(op) =
+                    self.lower_struct_str_call(arg_ops[0].clone(), &arg_tys[0].clone(), expr.span)
+            {
+                return op;
             }
 
             if name == "type"

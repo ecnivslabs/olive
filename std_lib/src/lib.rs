@@ -670,7 +670,10 @@ pub extern "C" fn olive_int_to_float(val: i64) -> f64 {
 pub extern "C" fn olive_str_to_int(ptr: i64) -> i64 {
     let s = olive_str_from_ptr(ptr);
     s.trim().parse::<i64>().unwrap_or_else(|_| {
-        let msg = olive_str_internal(&format!("int() argument must be an integer, got '{}'", s));
+        let msg = olive_str_internal(&format!(
+            "int() argument must be an integer, got '{}' (for fallible parsing use .to_int())",
+            s
+        ));
         olive_panic(msg)
     })
 }
@@ -679,11 +682,32 @@ pub extern "C" fn olive_str_to_int(ptr: i64) -> i64 {
 pub extern "C" fn olive_str_to_float(ptr: i64) -> f64 {
     let s = olive_str_from_ptr(ptr);
     s.trim().parse::<f64>().unwrap_or_else(|_| {
-        let msg = olive_str_internal(&format!("float() argument must be a number, got '{}'", s));
+        let msg = olive_str_internal(&format!(
+            "float() argument must be a number, got '{}' (for fallible parsing use .to_float())",
+            s
+        ));
         olive_panic(msg);
         #[allow(unreachable_code)]
         0.0
     })
+}
+
+/// `str.to_int() -> int | None` (E7.1): same grammar as `int()`
+/// (`olive_str_to_int` above), but yields `int | None`'s `0` sentinel on a
+/// parse failure instead of panicking.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_str_to_int_opt(ptr: i64) -> i64 {
+    let s = olive_str_from_ptr(ptr);
+    s.trim().parse::<i64>().unwrap_or(0)
+}
+
+/// `str.to_float() -> float | None` (E7.1): same grammar as `float()`
+/// (`olive_str_to_float` above), but yields `float | None`'s `0.0` sentinel
+/// on a parse failure instead of panicking.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_str_to_float_opt(ptr: i64) -> f64 {
+    let s = olive_str_from_ptr(ptr);
+    s.trim().parse::<f64>().unwrap_or(0.0)
 }
 
 /// `+` on operands whose static type is `Any`: dispatch on the runtime kind so
