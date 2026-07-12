@@ -20,6 +20,10 @@ impl<'a> MirBuilder<'a> {
                 self.lower_fstr_format(op, &ty, spec, e.span)
             } else if ty == Type::Str {
                 op
+            } else if let Some(str_op) = self.lower_struct_str_call(op.clone(), &ty, e.span) {
+                // E6.2: a struct defining `__str__` uses it in an
+                // interpolation the same way `print`/`str()` do.
+                str_op
             } else {
                 // `None` is a bare `0` at runtime, so a plain `str` call would
                 // dispatch to the integer path; name the null formatter directly.

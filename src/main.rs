@@ -8,6 +8,8 @@ mod commands;
 mod compile;
 mod diagnostics;
 mod eq_tests;
+#[cfg(test)]
+mod fallible_parse_tests;
 mod fmt;
 #[cfg(test)]
 mod hash_tests;
@@ -22,6 +24,8 @@ mod mir;
 mod narrow_tests;
 #[cfg(test)]
 mod numeric_underscore_tests;
+#[cfg(test)]
+mod operator_dunder_tests;
 #[cfg(test)]
 mod opt_attr_tests;
 mod parser;
@@ -40,10 +44,14 @@ mod span;
 #[cfg(test)]
 mod starred_unpack_tests;
 #[cfg(test)]
+mod str_dunder_tests;
+#[cfg(test)]
 mod string_method_tests;
 #[cfg(test)]
 mod test_utils;
 mod tooling;
+#[cfg(test)]
+mod trait_object_tests;
 #[cfg(test)]
 mod type_alias_tests;
 

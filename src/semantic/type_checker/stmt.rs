@@ -402,22 +402,52 @@ impl TypeChecker {
                     name.clone()
                 };
 
-                // Reject unknown dunder methods in impl blocks. Only __init__
-                // is allowed until E6 ships the operator protocol.
-                if self.current_struct.is_some()
-                    && name.starts_with("__")
-                    && name != "__init__"
-                    && name != "__enter__"
-                    && name != "__exit__"
-                {
-                    self.errors.push(SemanticError::rich(
-                        crate::compile::errors::Diagnostic::error(
-                            "E0404",
-                            format!("dunder method `{name}` is not yet supported"),
-                            stmt.span,
-                        )
-                        .label("only `__init__` is allowed until E6"),
-                    ));
+                // Reject unknown dunder methods in impl blocks. E6 opened the
+                // operator/formatting protocol: arithmetic, `__eq__`,
+                // `__lt__`, `__str__`. `__ne__`/`__gt__`/`__le__`/`__ge__`
+                // derive from `__eq__`/`__lt__` in the checker; a user
+                // definition of one of those four is rejected, not silently
+                // shadowed, so the derivation stays the only source of truth.
+                const DERIVED_ONLY: [&str; 4] = ["__ne__", "__gt__", "__le__", "__ge__"];
+                const PROTOCOL_DUNDERS: [&str; 8] = [
+                    "__add__",
+                    "__sub__",
+                    "__mul__",
+                    "__truediv__",
+                    "__mod__",
+                    "__eq__",
+                    "__lt__",
+                    "__str__",
+                ];
+                if self.current_struct.is_some() && name.starts_with("__") {
+                    if DERIVED_ONLY.contains(&name.as_str()) {
+                        let base = match name.as_str() {
+                            "__ne__" => "__eq__",
+                            _ => "__lt__",
+                        };
+                        self.errors.push(SemanticError::rich(
+                            crate::compile::errors::Diagnostic::error(
+                                "E0404",
+                                format!("`{name}` cannot be defined directly"),
+                                stmt.span,
+                            )
+                            .label(format!("derives automatically from `{base}`"))
+                            .help(format!("define `{base}` instead")),
+                        ));
+                    } else if name != "__init__"
+                        && name != "__enter__"
+                        && name != "__exit__"
+                        && !PROTOCOL_DUNDERS.contains(&name.as_str())
+                    {
+                        self.errors.push(SemanticError::rich(
+                            crate::compile::errors::Diagnostic::error(
+                                "E0404",
+                                format!("dunder method `{name}` is not yet supported"),
+                                stmt.span,
+                            )
+                            .label("not a recognized protocol method"),
+                        ));
+                    }
                 }
 
                 // An unannotated return type reuses the var `hoist_fn_signatures`
@@ -470,6 +500,68 @@ impl TypeChecker {
                     }
 
                     param_types.push(p_ty);
+                }
+
+                // E6.1: enforce the exact protocol shape per dunder kind so a
+                // malformed operator method fails at the definition site with
+                // a clear diagnostic, not as a confusing unify error at every
+                // call site. Arithmetic consumes both operands (matches
+                // Rust's `Add`); `__eq__`/`__lt__` must borrow, since the
+                // compiler calls them repeatedly (e.g. sorting) and a
+                // by-value `self` would be freed after the first comparison.
+                if let Some(struct_name) = self.current_struct.clone() {
+                    let is_arith = matches!(
+                        name.as_str(),
+                        "__add__" | "__sub__" | "__mul__" | "__truediv__" | "__mod__"
+                    );
+                    let is_cmp = name == "__eq__" || name == "__lt__";
+                    if is_arith || is_cmp {
+                        let self_matches_struct = |ty: &Type, want_ref: bool| match ty {
+                            Type::Ref(inner) if want_ref => {
+                                matches!(inner.as_ref(), Type::Struct(n, ..) if *n == struct_name)
+                            }
+                            Type::Struct(n, ..) if !want_ref => *n == struct_name,
+                            _ => false,
+                        };
+                        let shape_ok = param_types.len() == 2
+                            && self_matches_struct(&param_types[0], is_cmp)
+                            && self_matches_struct(&param_types[1], is_cmp);
+                        let ret_ok = !is_cmp || matches!(ret_ty, Type::Bool);
+                        if !shape_ok || !ret_ok {
+                            let expected = if is_cmp {
+                                format!("fn(self: &{struct_name}, other: &{struct_name}) -> bool")
+                            } else {
+                                format!("fn(self, other: {struct_name}) -> T")
+                            };
+                            self.errors.push(SemanticError::rich(
+                                crate::compile::errors::Diagnostic::error(
+                                    "E0404",
+                                    format!("`{name}` has the wrong signature"),
+                                    stmt.span,
+                                )
+                                .label(format!("expected `{expected}`")),
+                            ));
+                        }
+                    }
+                    // E6.2: `__str__` takes bare self (a read, like any
+                    // formatting call) and must return `str` -- feeding a
+                    // wrong-typed result into `print`/f-strings would
+                    // silently print garbage instead of text.
+                    if name == "__str__" {
+                        let shape_ok = param_types.len() == 1
+                            && matches!(&param_types[0], Type::Struct(n, ..) if *n == struct_name)
+                            && matches!(ret_ty, Type::Str);
+                        if !shape_ok {
+                            self.errors.push(SemanticError::rich(
+                                crate::compile::errors::Diagnostic::error(
+                                    "E0404",
+                                    "`__str__` has the wrong signature".to_string(),
+                                    stmt.span,
+                                )
+                                .label(format!("expected `fn(self) -> str`, in `{struct_name}`")),
+                            ));
+                        }
+                    }
                 }
 
                 let mut all_type_params: Vec<Type> =

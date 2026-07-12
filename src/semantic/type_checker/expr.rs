@@ -1060,6 +1060,21 @@ impl TypeChecker {
                     }
                 }
 
+                // A trait-object receiver resolves its method from the trait
+                // definition, not a concrete impl: the implementing type
+                // isn't known statically (that's the point of dynamic
+                // dispatch), so there's no `Struct::method` to look up. This
+                // was a real gap: falling through to `fresh_var()` below let
+                // the call typecheck at `Any`, which reached codegen fine
+                // for a `Null`-returning method but silently misread the
+                // return register for anything else (E6-adjacent fix).
+                if let Type::TraitObject(trait_name, _) = &inner_obj
+                    && let Some(trait_def) = self.traits.get(trait_name)
+                    && let Some((_, ty)) = trait_def.methods.iter().find(|(n, _)| n == attr)
+                {
+                    return self.instantiate(ty.clone());
+                }
+
                 let mut current_obj = resolved_obj.clone();
                 while let Type::Ref(inner) | Type::MutRef(inner) = current_obj {
                     current_obj = *inner;
@@ -1757,14 +1772,16 @@ impl TypeChecker {
                 {
                     self.unify_silently(elem, &val_ty, obj.span);
                 }
-                if attr == "sort"
-                    && let Some((key_expr, key_ty)) =
-                        args.iter().zip(arg_tys.iter()).find_map(|(a, t)| match a {
-                            CallArg::Keyword(name, e) if name == "key" => Some((e, t.clone())),
-                            _ => None,
-                        })
-                {
-                    self.check_sort_key(elem, key_expr, key_ty, obj.span);
+                let key_arg = args.iter().zip(arg_tys.iter()).find_map(|(a, t)| match a {
+                    CallArg::Keyword(name, e) if name == "key" => Some((e, t.clone())),
+                    _ => None,
+                });
+                if attr == "sort" {
+                    if let Some((key_expr, key_ty)) = key_arg {
+                        self.check_sort_key(elem, key_expr, key_ty, obj.span);
+                    } else {
+                        self.check_struct_sort_needs_lt(elem, obj.span);
+                    }
                 }
                 Some(base.clone())
             }
@@ -1883,6 +1900,47 @@ impl TypeChecker {
                     }
                     return Type::PyObject;
                 }
+                // E6.1: struct arithmetic dunders. Resolved through the impl
+                // method table like an ordinary method call, before the
+                // `Any`/union fallbacks below, so a missing or out-of-set
+                // operator (`Vec2 ** Vec2`) rejects here instead of unifying
+                // into a generic type-mismatch error.
+                if let Type::Struct(struct_name, ..) = &l_resolved {
+                    let dunder = match op {
+                        BinOp::Add => "__add__",
+                        BinOp::Sub => "__sub__",
+                        BinOp::Mul => "__mul__",
+                        BinOp::Div => "__truediv__",
+                        BinOp::Mod => "__mod__",
+                        _ => "",
+                    };
+                    if !dunder.is_empty()
+                        && let Some(ty) = self.lookup_type(&format!("{struct_name}::{dunder}"))
+                    {
+                        let instantiated = self.instantiate(ty);
+                        if let Type::Fn(params, ret, _) = &instantiated
+                            && params.len() == 2
+                        {
+                            self.unify(&params[0], l, span);
+                            self.unify(&params[1], r, span);
+                            return self.apply_subst((**ret).clone());
+                        }
+                    }
+                    let shown = if dunder.is_empty() {
+                        "matching operator"
+                    } else {
+                        dunder
+                    };
+                    self.errors.push(super::super::error::SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0404",
+                            format!("`{struct_name}` has no `{shown}` defined"),
+                            span,
+                        )
+                        .label("operator not supported for this struct"),
+                    ));
+                    return self.apply_subst(l.clone());
+                }
                 // An `Any` operand keeps the result dynamic: the value is boxed
                 // at runtime and dispatched there, so the static type stays
                 // `Any` rather than collapsing to the concrete side.
@@ -1939,7 +1997,12 @@ impl TypeChecker {
                     // mismatch (`[int]` vs `[str]`).
                     self.unify(l, r, span);
                     let unified = self.apply_subst(l.clone());
-                    if !self.type_supports_eq(&unified) {
+                    // E6.1: a user `__eq__` overrides E2's derived structural
+                    // equality outright -- it's used even when every field
+                    // would already support `==`, not just as a fallback.
+                    let has_user_eq = matches!(&unified, Type::Struct(name, ..)
+                        if self.lookup_type(&format!("{name}::__eq__")).is_some());
+                    if !has_user_eq && !self.type_supports_eq(&unified) {
                         self.errors.push(super::super::error::SemanticError::rich(
                             crate::compile::errors::Diagnostic::error(
                                 "E0404",
@@ -1952,9 +2015,27 @@ impl TypeChecker {
                 }
                 Type::Bool
             }
-            BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq | BinOp::In | BinOp::NotIn => {
+            BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => {
+                // E6.1: `<`/`>`/`<=`/`>=` on structs all derive from
+                // `__lt__` (`a > b` = `b < a`, etc, wired in the MIR
+                // builder); the checker just requires it exist.
+                if let Type::Struct(struct_name, ..) = &l_resolved
+                    && self
+                        .lookup_type(&format!("{struct_name}::__lt__"))
+                        .is_none()
+                {
+                    self.errors.push(super::super::error::SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0404",
+                            format!("`{struct_name}` has no `__lt__` defined"),
+                            span,
+                        )
+                        .label("ordering not supported for this struct"),
+                    ));
+                }
                 Type::Bool
             }
+            BinOp::In | BinOp::NotIn => Type::Bool,
             BinOp::And | BinOp::Or => {
                 if is_py {
                     return Type::PyObject;

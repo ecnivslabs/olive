@@ -226,7 +226,10 @@ impl<M: Module> CraneliftCodegen<M> {
                     .get("__olive_alloc")
                     .expect("missing __olive_alloc");
                 let alloc_func = module.declare_func_in_func(*alloc_id, builder.func);
-                let size = builder.ins().iconst(types::I64, 16);
+                // 3 words: data ptr, vtable ptr, drop-shim ptr (frees the
+                // concrete struct the data ptr points to -- see
+                // `build_trait_drop_shim`).
+                let size = builder.ins().iconst(types::I64, 24);
                 let inst = builder.ins().call(alloc_func, &[size]);
                 let ptr = builder.inst_results(inst)[0];
 
@@ -234,9 +237,14 @@ impl<M: Module> CraneliftCodegen<M> {
                     Self::translate_operand(builder, &ops[0], vars, string_ids, module, func_ids);
                 let vtable_val =
                     Self::translate_operand(builder, &ops[1], vars, string_ids, module, func_ids);
+                let drop_shim_val =
+                    Self::translate_operand(builder, &ops[2], vars, string_ids, module, func_ids);
 
                 builder.ins().store(MemFlags::trusted(), data_val, ptr, 0);
                 builder.ins().store(MemFlags::trusted(), vtable_val, ptr, 8);
+                builder
+                    .ins()
+                    .store(MemFlags::trusted(), drop_shim_val, ptr, 16);
                 ptr
             }
             _ => {

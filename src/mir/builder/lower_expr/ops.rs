@@ -15,6 +15,85 @@ impl<'a> MirBuilder<'a> {
     ) -> Operand {
         let r_ty = self.get_type(right.id).clone();
 
+        // E6.1: struct operator dunders. Checked first, ahead of every
+        // built-in path below (`None` tests, derived structural `==`,
+        // native `BinaryOp`) -- the checker already resolved these through
+        // the impl method table, so lowering just builds the ordinary call.
+        let l_struct = Self::deref_struct_ty(self.get_type(left.id).clone());
+        if let Some((struct_name, type_args)) = l_struct {
+            use crate::parser::BinOp;
+            let arith_dunder = match op {
+                BinOp::Add => Some("__add__"),
+                BinOp::Sub => Some("__sub__"),
+                BinOp::Mul => Some("__mul__"),
+                BinOp::Div => Some("__truediv__"),
+                BinOp::Mod => Some("__mod__"),
+                _ => None,
+            };
+            if let Some(dunder) = arith_dunder {
+                let l_op = self.lower_expr(left);
+                let r_op = self.lower_expr(right);
+                let ret_ty = self.get_type(expr_id).clone();
+                return self.call_struct_dunder(
+                    &struct_name,
+                    &type_args,
+                    dunder,
+                    vec![l_op, r_op],
+                    ret_ty,
+                    span,
+                );
+            }
+
+            let has_user_eq = self.fn_meta.contains_key(&format!("{struct_name}::__eq__"));
+            if matches!(op, BinOp::Eq | BinOp::NotEq) && has_user_eq {
+                // `__eq__` borrows (checker-enforced `&self`): the compiler
+                // may compare the same value many times (containers,
+                // sorting), and a by-value `self` would free it after the
+                // first call.
+                let (l_ref, _) = self.borrow_iterable(left);
+                let (r_ref, _) = self.borrow_iterable(right);
+                let result = self.call_struct_dunder(
+                    &struct_name,
+                    &type_args,
+                    "__eq__",
+                    vec![Operand::Copy(l_ref), Operand::Copy(r_ref)],
+                    Type::Bool,
+                    span,
+                );
+                if matches!(op, BinOp::Eq) {
+                    return result;
+                }
+                return self.negate_bool(result, span);
+            }
+
+            if matches!(op, BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) {
+                // `>`/`<=`/`>=` all derive from `__lt__` (checker requires
+                // it exist for a struct operand): `a>b`=`b<a`,
+                // `a<=b`=`!(b<a)`, `a>=b`=`!(a<b)`.
+                let (l_ref, _) = self.borrow_iterable(left);
+                let (r_ref, _) = self.borrow_iterable(right);
+                let (lhs, rhs, negate) = match op {
+                    BinOp::Lt => (l_ref, r_ref, false),
+                    BinOp::Gt => (r_ref, l_ref, false),
+                    BinOp::LtEq => (r_ref, l_ref, true),
+                    BinOp::GtEq => (l_ref, r_ref, true),
+                    _ => unreachable!(),
+                };
+                let result = self.call_struct_dunder(
+                    &struct_name,
+                    &type_args,
+                    "__lt__",
+                    vec![Operand::Copy(lhs), Operand::Copy(rhs)],
+                    Type::Bool,
+                    span,
+                );
+                if negate {
+                    return self.negate_bool(result, span);
+                }
+                return result;
+            }
+        }
+
         // `null` in an `Any` is a boxed sentinel, not a bare 0, so test it via
         // the runtime null check (negated for `!=`).
         if matches!(op, crate::parser::BinOp::Eq | crate::parser::BinOp::NotEq) {
@@ -549,6 +628,60 @@ impl<'a> MirBuilder<'a> {
         let tmp = self.new_local(self.get_type(expr_id), None, false);
         self.push_statement(
             StatementKind::Assign(tmp, Rvalue::BinaryOp(op.clone(), l, r)),
+            span,
+        );
+        self.operand_for_local(tmp)
+    }
+
+    /// Unwraps `&`/`&mut` and returns the struct name and type args
+    /// underneath, or `None` for anything else. Used to detect a struct
+    /// operand in operator-dunder dispatch (E6.1).
+    pub(super) fn deref_struct_ty(ty: Type) -> Option<(String, Vec<Type>)> {
+        let mut t = ty;
+        while let Type::Ref(inner) | Type::MutRef(inner) = t {
+            t = *inner;
+        }
+        match t {
+            Type::Struct(name, type_args, _) => Some((name, type_args)),
+            _ => None,
+        }
+    }
+
+    /// Builds an ordinary call to a struct's operator dunder, monomorphizing
+    /// the mangled name first if the struct is generic (E6.1/E6.2).
+    pub(super) fn call_struct_dunder(
+        &mut self,
+        struct_name: &str,
+        type_args: &[Type],
+        dunder: &str,
+        args: Vec<Operand>,
+        ret_ty: Type,
+        span: Span,
+    ) -> Operand {
+        let base = format!("{struct_name}::{dunder}");
+        let method_name = if type_args.is_empty() {
+            base
+        } else {
+            self.monomorphize(&base, type_args)
+        };
+        let tmp = self.new_local(ret_ty, None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                tmp,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(method_name)),
+                    args,
+                },
+            ),
+            span,
+        );
+        self.operand_for_local(tmp)
+    }
+
+    fn negate_bool(&mut self, val: Operand, span: Span) -> Operand {
+        let tmp = self.new_local(Type::Bool, None, false);
+        self.push_statement(
+            StatementKind::Assign(tmp, Rvalue::UnaryOp(crate::parser::UnaryOp::Not, val)),
             span,
         );
         self.operand_for_local(tmp)
