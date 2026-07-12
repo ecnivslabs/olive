@@ -44,6 +44,7 @@ impl<M: Module> CraneliftCodegen<M> {
         vars: &HashMap<Local, Variable>,
         func: &Operand,
         args: &[Operand],
+        dest_ty: &OliveType,
     ) -> Value {
         let call_args: Vec<Value> = args
             .iter()
@@ -531,6 +532,71 @@ impl<M: Module> CraneliftCodegen<M> {
                             } else {
                                 final_args.push(arg);
                             }
+                        } else if matches!(arg_ty, types::I8 | types::I16 | types::I32) {
+                            // `bool`/`i8`/`i16`/`i32`/`u8`/`u16`/`u32` locals are narrower
+                            // than the i64 word every `__olive_*` runtime signature
+                            // declares. Cranelift's call lowering does not widen a
+                            // narrower argument value on its own, so the callee reads
+                            // whatever garbage sits in the upper bits of that register --
+                            // undefined, and only "correct" by register-allocation luck
+                            // (this is what made `not` on a struct-field-derived `bool`
+                            // print wrong while branching on the same value stayed right:
+                            // `brif`-style dispatch only reads the low bits, `__olive_write_bool`
+                            // reads the full word).
+                            let local_sig = builder.func.dfg.ext_funcs[local_func].signature;
+                            let params = &builder.func.dfg.signatures[local_sig].params;
+                            let param_idx = final_args.len();
+                            let expected = params.get(param_idx).map(|p| p.value_type);
+                            if expected == Some(types::I64) {
+                                let is_signed = args.get(i).is_some_and(|op| {
+                                    let ty = match op {
+                                        Operand::Copy(l) | Operand::Move(l) => {
+                                            &func_mir.locals[l.0].ty
+                                        }
+                                        _ => &OliveType::Any,
+                                    };
+                                    matches!(
+                                        super::imports::concrete_ty(ty),
+                                        OliveType::I8 | OliveType::I16 | OliveType::I32
+                                    )
+                                });
+                                if is_signed {
+                                    final_args.push(builder.ins().sextend(types::I64, arg));
+                                } else {
+                                    final_args.push(builder.ins().uextend(types::I64, arg));
+                                }
+                            } else {
+                                final_args.push(arg);
+                            }
+                        } else if arg_ty == types::I64 {
+                            // The reverse of the F64/F32 case above: a `T |
+                            // None` scalar union (e.g. `float | None`) has no
+                            // boxed representation and carries its payload
+                            // as a raw word (`cl_type` maps every `Union` to
+                            // I64), so a narrowed float value reaches here
+                            // I64-typed. Passing it unconverted lands the
+                            // bits in an integer argument register while the
+                            // callee reads its float parameter from XMM0.
+                            let local_sig = builder.func.dfg.ext_funcs[local_func].signature;
+                            let params = &builder.func.dfg.signatures[local_sig].params;
+                            let param_idx = final_args.len();
+                            let expected = params.get(param_idx).map(|p| p.value_type);
+                            if expected == Some(types::F64) {
+                                final_args.push(builder.ins().bitcast(
+                                    types::F64,
+                                    MemFlags::new(),
+                                    arg,
+                                ));
+                            } else if expected == Some(types::F32) {
+                                let low = builder.ins().ireduce(types::I32, arg);
+                                final_args.push(builder.ins().bitcast(
+                                    types::F32,
+                                    MemFlags::new(),
+                                    low,
+                                ));
+                            } else {
+                                final_args.push(arg);
+                            }
                         } else {
                             final_args.push(arg);
                         }
@@ -760,7 +826,14 @@ impl<M: Module> CraneliftCodegen<M> {
                 sig.params
                     .push(AbiParam::new(builder.func.dfg.value_type(a)));
             }
-            sig.returns.push(AbiParam::new(types::I64));
+            // A raw code-address call (vtable dispatch is the only source of
+            // these today): the real return type, not a hardcoded I64 -- a
+            // trait method returning `float` puts its result in XMM0, and a
+            // signature that declares I64 here reads RAX instead, the same
+            // register-mismatch bug the closure-record branch above already
+            // guards against.
+            sig.returns
+                .push(AbiParam::new(super::imports::cl_type(dest_ty)));
 
             let sig_ref = builder.import_signature(sig);
             let inst = builder.ins().call_indirect(sig_ref, fn_ptr_val, &call_args);

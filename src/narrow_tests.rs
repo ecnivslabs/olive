@@ -119,3 +119,38 @@ fn narrow_elif_chain_not_narrowed() {
         "expected E0404 (elif not narrowed in v1), got {codes:?}"
     );
 }
+
+#[test]
+fn narrow_float_union_reinterprets_bits_not_value() {
+    // A scalar `T | None` has no boxed representation: the union's raw word
+    // already holds `T`'s own bits (see the runtime-representation comment
+    // above). Narrowing must bitcast, not numerically convert -- a real bug
+    // this exact case had: `fcvt_from_sint` turned a `float | None`'s raw
+    // word into the *decimal value* of its bit pattern (a huge garbage
+    // float) instead of reinterpreting those bits as the original float.
+    let mut cg = compile(concat!(
+        "fn f() -> int:\n",
+        "    let x: float | None = 3.14\n",
+        "    if x != None:\n",
+        "        let diff = x - 3.14\n",
+        "        if diff > -0.0001 and diff < 0.0001:\n",
+        "            return 1\n",
+        "    return 0\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 1);
+}
+
+#[test]
+fn narrow_float_union_parameter_reinterprets_bits() {
+    let mut cg = compile(concat!(
+        "fn check(x: float | None) -> int:\n",
+        "    if x != None:\n",
+        "        let diff = x - 2.5\n",
+        "        if diff > -0.0001 and diff < 0.0001:\n",
+        "            return 1\n",
+        "    return 0\n",
+        "fn f() -> int:\n",
+        "    return check(2.5)\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 1);
+}

@@ -71,6 +71,35 @@ if found != None:
     print(f"found {found}")
 ```
 
+## Parsing Input
+
+`int(s)` and `float(s)` assert that `s` parses: a malformed string panics, so they're for input you already trust (a config value you control, a literal you just formatted). For input you don't control, use `s.to_int() -> int | None` and `s.to_float() -> float | None` instead. Same parsing grammar, no panic on failure:
+
+```rust
+fn double_it(s: str) -> int | None:
+    let n = s.to_int()
+    if n == None:
+        return None
+    return n * 2
+```
+
+`to_int`/`to_float` return `T | None`, not `T | Error`, so `try`/`?` (which only propagate an *error* variant) pass a `None` result straight through unchanged rather than short-circuiting. Reach for the `None`-specific idioms instead: `??` to fill a default, a guard to bail out, or `match`:
+
+```rust
+let n = s.to_int() ?? 0             // fill a default
+
+let m = s.to_int()
+if m == None:                       // bail out explicitly
+    return None
+
+match s.to_int():
+    None:
+        print("not a number")
+    n:
+        if n != None:
+            print(f"parsed {n}")
+```
+
 ## Assertions and Panic
 
 Assertions catch invariant violations that represent bugs, not recoverable conditions. Use them when a false condition means the program is in a state it was never meant to reach.
