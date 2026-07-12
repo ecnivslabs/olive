@@ -603,6 +603,7 @@ pub struct SlabSet {
     pub set: GenSlab,
     pub enum_slab: GenSlab,
     pub str_slabs: [Option<GenSlab>; 32],
+    pub struct_slabs: crate::struct_obj::StructSlabs,
 }
 
 impl Default for SlabSet {
@@ -612,7 +613,7 @@ impl Default for SlabSet {
 }
 
 impl SlabSet {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             list: GenSlab::new(std::mem::size_of::<crate::StableVec>()),
             obj: GenSlab::new(std::mem::size_of::<crate::OliveObj>()),
@@ -623,15 +624,17 @@ impl SlabSet {
                 None, None, None, None, None, None, None, None, None, None, None, None, None, None,
                 None, None, None, None,
             ],
+            struct_slabs: crate::struct_obj::StructSlabs::new(),
         }
     }
 }
 
 /// Process-lifetime arena for values crossing a task/thread boundary; never torn down.
-static GLOBAL_SLABS: Mutex<SlabSet> = Mutex::new(SlabSet::new());
+static GLOBAL_SLABS: std::sync::LazyLock<Mutex<SlabSet>> =
+    std::sync::LazyLock::new(|| Mutex::new(SlabSet::new()));
 
 fn is_within_global_slabs(addr: usize) -> bool {
-    let base = (&GLOBAL_SLABS as *const Mutex<SlabSet>) as usize;
+    let base = (&*GLOBAL_SLABS as *const Mutex<SlabSet>) as usize;
     let end = base + std::mem::size_of::<Mutex<SlabSet>>();
     addr >= base && addr < end
 }

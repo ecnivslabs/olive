@@ -1,4 +1,4 @@
-use super::summaries::runtime_escape;
+use super::summaries::{runtime_escape, task_boundary_escape};
 use super::{LocalClass, push_local};
 use crate::mir::*;
 use crate::span::Span;
@@ -24,8 +24,10 @@ pub struct CopySite {
     pub function: String,
 }
 
-/// (bb, idx) -> copies to prepend: which operand, its source, its owning temp.
-type CopyPlan = HashMap<(usize, usize), Vec<(CopySlot, Local, Local)>>;
+/// (bb, idx) -> copies to prepend: which operand, its source, its owning
+/// temp, and which runtime copy function to call (`__olive_copy_typed` or,
+/// for a task-boundary-crossing argument, `__olive_relocate_typed`).
+type CopyPlan = HashMap<(usize, usize), Vec<(CopySlot, Local, Local, &'static str)>>;
 
 /// Which operand of a store statement a copy redirects.
 #[derive(Clone, Copy)]
@@ -63,7 +65,7 @@ pub(super) fn insert_escape_copies(
                 || classes.get(l.0) == Some(&LocalClass::Mixed))
     };
 
-    let mut hits: Vec<(usize, usize, CopySlot, Local)> = Vec::new();
+    let mut hits: Vec<(usize, usize, CopySlot, Local, &'static str)> = Vec::new();
     for (bb_idx, bb) in func.basic_blocks.iter().enumerate() {
         for (idx, stmt) in bb.statements.iter().enumerate() {
             match &stmt.kind {
@@ -72,7 +74,7 @@ pub(super) fn insert_escape_copies(
                 | StatementKind::PtrStore(_, Operand::Copy(l))
                     if needs_copy(*l) =>
                 {
-                    hits.push((bb_idx, idx, CopySlot::Val, *l));
+                    hits.push((bb_idx, idx, CopySlot::Val, *l, "__olive_copy_typed"));
                 }
                 StatementKind::Assign(_, Rvalue::Aggregate(kind, ops))
                     if *kind != AggregateKind::FatPtr =>
@@ -81,7 +83,7 @@ pub(super) fn insert_escape_copies(
                         if let Operand::Copy(l) = op
                             && needs_copy(*l)
                         {
-                            hits.push((bb_idx, idx, CopySlot::Agg(pos), *l));
+                            hits.push((bb_idx, idx, CopySlot::Agg(pos), *l, "__olive_copy_typed"));
                         }
                     }
                 }
@@ -101,7 +103,17 @@ pub(super) fn insert_escape_copies(
                             && let Operand::Copy(l) = op
                             && needs_copy(*l)
                         {
-                            hits.push((bb_idx, idx, CopySlot::Arg(pos), *l));
+                            // A value crossing a real task boundary
+                            // (`chan_send`/`mutex_new`/`mutex_unlock`) needs
+                            // the copy to land in the shared escape arena,
+                            // not the sending function's own arena -- see
+                            // the E5.6 write-up in roadmap.md.
+                            let copy_fn = if task_boundary_escape(callee, pos) {
+                                "__olive_relocate_typed"
+                            } else {
+                                "__olive_copy_typed"
+                            };
+                            hits.push((bb_idx, idx, CopySlot::Arg(pos), *l, copy_fn));
                         }
                     }
                 }
@@ -115,7 +127,7 @@ pub(super) fn insert_escape_copies(
     }
 
     let mut plan: CopyPlan = HashMap::default();
-    for (bb_idx, idx, slot, l) in hits {
+    for (bb_idx, idx, slot, l, copy_fn) in hits {
         let tmp = push_local(func, func.locals[l.0].ty.clone());
         if explain_copies {
             sites.borrow_mut().push(CopySite {
@@ -125,7 +137,9 @@ pub(super) fn insert_escape_copies(
                 function: func.name.clone(),
             });
         }
-        plan.entry((bb_idx, idx)).or_default().push((slot, l, tmp));
+        plan.entry((bb_idx, idx))
+            .or_default()
+            .push((slot, l, tmp, copy_fn));
     }
 
     for (bb_idx, bb) in func.basic_blocks.iter_mut().enumerate() {
@@ -133,14 +147,12 @@ pub(super) fn insert_escape_copies(
         let mut rebuilt = Vec::with_capacity(old.len());
         for (idx, mut stmt) in old.into_iter().enumerate() {
             if let Some(list) = plan.get(&(bb_idx, idx)) {
-                for &(slot, src, tmp) in list {
+                for &(slot, src, tmp, copy_fn) in list {
                     rebuilt.push(Statement {
                         kind: StatementKind::Assign(
                             tmp,
                             Rvalue::Call {
-                                func: Operand::Constant(Constant::Function(
-                                    "__olive_copy_typed".into(),
-                                )),
+                                func: Operand::Constant(Constant::Function(copy_fn.into())),
                                 args: vec![Operand::Copy(src)],
                             },
                         ),

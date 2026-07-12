@@ -42,6 +42,8 @@ pub mod scalar_attr_tests;
 #[cfg(test)]
 pub mod small_reflex_tests;
 #[cfg(test)]
+pub mod sort_key_tests;
+#[cfg(test)]
 pub mod speculation_tests;
 #[cfg(test)]
 pub mod starred_unpack_tests;

@@ -1664,9 +1664,35 @@ impl TypeChecker {
     ) -> Option<Type> {
         let obj_ty = self.check_expr(obj);
         let obj_ty = self.apply_subst(obj_ty);
+        // `xs.sort(key=f)` (E5.5): `f` is checked against the list's own
+        // element type as the expected fn signature, same as any other call
+        // argument's context -- an unannotated `f` param infers from the
+        // list, not from a fresh, uninferable var.
+        let sort_elem_ty = if attr == "sort" {
+            let mut base = obj_ty.clone();
+            while let Type::Ref(inner) | Type::MutRef(inner) = base {
+                base = *inner;
+            }
+            match base {
+                Type::List(e) => Some(*e),
+                Type::Any => Some(Type::Any),
+                _ => None,
+            }
+        } else {
+            None
+        };
         let mut arg_tys = Vec::with_capacity(args.len());
         for a in args {
             match a {
+                CallArg::Keyword(name, e) if name == "key" && sort_elem_ty.is_some() => {
+                    let hint = Type::Fn(
+                        vec![sort_elem_ty.clone().unwrap()],
+                        Box::new(Type::Any),
+                        vec![],
+                    );
+                    let t = self.check_expr_expecting(e, &hint);
+                    arg_tys.push(self.apply_subst(t));
+                }
                 CallArg::Positional(e)
                 | CallArg::Keyword(_, e)
                 | CallArg::Splat(e)
@@ -1730,6 +1756,15 @@ impl TypeChecker {
                     && matches!(self.apply_subst((**elem).clone()), Type::Var(_))
                 {
                     self.unify_silently(elem, &val_ty, obj.span);
+                }
+                if attr == "sort"
+                    && let Some((key_expr, key_ty)) =
+                        args.iter().zip(arg_tys.iter()).find_map(|(a, t)| match a {
+                            CallArg::Keyword(name, e) if name == "key" => Some((e, t.clone())),
+                            _ => None,
+                        })
+                {
+                    self.check_sort_key(elem, key_expr, key_ty, obj.span);
                 }
                 Some(base.clone())
             }

@@ -311,6 +311,51 @@ pub extern "C" fn olive_list_sort_str(list_ptr: i64) {
     }
 }
 
+/// `key_kind` for `olive_list_sort_by_keys` below: which ordering the key's
+/// own raw word needs (the key's type, not the element's). `0` (int/bool)
+/// is the fallback for any other tag, so it has no named constant.
+const KEY_FLOAT: i64 = 1;
+const KEY_STR: i64 = 2;
+
+fn cmp_key(a: i64, b: i64, key_kind: i64) -> std::cmp::Ordering {
+    match key_kind {
+        KEY_FLOAT => f64::from_bits(a as u64)
+            .partial_cmp(&f64::from_bits(b as u64))
+            .unwrap_or(std::cmp::Ordering::Equal),
+        KEY_STR => crate::olive_str_from_ptr(a).cmp(&crate::olive_str_from_ptr(b)),
+        _ => a.cmp(&b),
+    }
+}
+
+/// `sort(key=f)`'s decorate-sort-undecorate variant (E5.5): the caller
+/// evaluates `f(elem)` once per element into `keys_ptr` (same length and
+/// order as `list_ptr`), this reorders `list_ptr` to match `keys_ptr`'s
+/// sort order. `keys_ptr` is caller-owned; freeing it is the caller's job.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_sort_by_keys(list_ptr: i64, keys_ptr: i64, key_kind: i64) {
+    let Some(elems) = list_slice_mut(list_ptr) else {
+        return;
+    };
+    let Some(keys) = list_slice_mut(keys_ptr) else {
+        return;
+    };
+    let n = elems.len().min(keys.len());
+    let mut order: Vec<u32> = (0..n as u32).collect();
+    if key_kind == KEY_STR {
+        let decoded: Vec<String> = keys[..n]
+            .iter()
+            .map(|&k| crate::olive_str_from_ptr(k))
+            .collect();
+        order.sort_by(|&i, &j| decoded[i as usize].cmp(&decoded[j as usize]));
+    } else {
+        order.sort_by(|&i, &j| cmp_key(keys[i as usize], keys[j as usize], key_kind));
+    }
+    let orig: Vec<i64> = elems[..n].to_vec();
+    for (out_i, &src_i) in order.iter().enumerate() {
+        elems[out_i] = orig[src_i as usize];
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_list_get(list_ptr: i64, idx: i64) -> i64 {
     if list_ptr == 0 {

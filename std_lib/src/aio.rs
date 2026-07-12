@@ -600,6 +600,15 @@ pub extern "C" fn olive_chan_new() -> i64 {
     })) as i64
 }
 
+/// `val` must already be relocated into the shared escape arena by the
+/// caller (`chan_send[T]` in `lib/aio.liv` does this via
+/// `__olive_relocate_typed`, a compiler-recognized call the same way
+/// `__olive_copy_typed` is -- E5.6). This function used to relocate `val`
+/// itself via a runtime kind-tag guess on word 0, which is not sound for a
+/// struct or closure record (word 0 is that value's own field count, which
+/// routinely collides with an unrelated `KIND_*` constant) -- see the E5.6
+/// write-up in roadmap.md for the full story, including the first,
+/// reverted attempt at this fix.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_chan_send(chan: i64, val: i64) -> i64 {
     if chan == 0 {
@@ -609,8 +618,7 @@ pub extern "C" fn olive_chan_send(chan: i64, val: i64) -> i64 {
     if ch.closed.load(Ordering::SeqCst) {
         return 0;
     }
-    let relocated = crate::copy_typed::relocate_across_boundary(val);
-    ch.queue.lock().unwrap().push_back(relocated);
+    ch.queue.lock().unwrap().push_back(val);
     ch.cvar.notify_one();
     1
 }
@@ -673,11 +681,11 @@ struct OliveMutex {
     cvar: Condvar,
 }
 
+/// See `olive_chan_send`: `val` must already be relocated by the caller.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_mutex_new(val: i64) -> i64 {
-    let relocated = crate::copy_typed::relocate_across_boundary(val);
     Box::into_raw(Box::new(OliveMutex {
-        inner: Mutex::new((false, relocated)),
+        inner: Mutex::new((false, val)),
         cvar: Condvar::new(),
     })) as i64
 }
@@ -696,16 +704,16 @@ pub extern "C" fn olive_mutex_lock(m: i64) -> i64 {
     guard.1
 }
 
+/// See `olive_chan_send`: `new_val` must already be relocated by the caller.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_mutex_unlock(m: i64, new_val: i64) {
     if m == 0 {
         return;
     }
-    let relocated = crate::copy_typed::relocate_across_boundary(new_val);
     let mx = unsafe { &*(m as *const OliveMutex) };
     let mut guard = mx.inner.lock().unwrap();
     guard.0 = false;
-    guard.1 = relocated;
+    guard.1 = new_val;
     mx.cvar.notify_one();
 }
 
@@ -864,10 +872,16 @@ mod tests {
 
     #[test]
     fn chan_threaded_send_recv() {
+        // `olive_chan_send` no longer relocates its argument itself (E5.6);
+        // a caller crossing threads with a raw value must relocate first,
+        // the same contract `chan_send[T]` (`lib/aio.liv`) follows via
+        // `__olive_relocate_typed`.
         let ch = olive_chan_new();
         let handle = std::thread::spawn(move || {
             let v = crate::olive_str_internal("from thread");
-            olive_chan_send(ch, v);
+            let desc = Box::leak(vec![crate::format::D_STR].into_boxed_slice()).as_ptr() as i64;
+            let relocated = crate::copy_typed::olive_relocate_typed(v, desc);
+            olive_chan_send(ch, relocated);
         });
         let got = olive_chan_recv(ch);
         assert_eq!(crate::olive_str_from_ptr(got), "from thread");

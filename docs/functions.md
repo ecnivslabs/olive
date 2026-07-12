@@ -52,26 +52,10 @@ let n = first([1, 2, 3])      // T is inferred as int
 let s = first(["a", "b"])    // T is inferred as str
 ```
 
-## Nested Functions
-
-Functions can be defined inside other functions. A nested function can read
-the variables of its enclosing function; the captures are resolved at compile
-time with no allocation:
-
-```rust
-fn scale_all(values: [int], factor: int) -> [int]:
-    fn scale(x: int) -> int:
-        return x * factor
-    return [scale(v) for v in values]
-```
-
-A nested function must be called within its enclosing function. Returning it
-or storing it for later is a compile error (`E0423`), because the captured
-variables die with the enclosing call.
-
 ## Function Types
 
-You can use function types to specify that a parameter must be a function with a specific signature.
+Function types describe a function's signature -- `fn(param types) -> return
+type` -- so a parameter can require any function with that shape:
 
 ```rust
 fn apply(f: fn(int) -> int, val: int) -> int:
@@ -81,6 +65,90 @@ fn square(x: int) -> int: return x * x
 
 print(apply(square, 5))  // 25
 ```
+
+A call to a plain function by name (`square`, above) is always direct, at
+full speed, whether it's the target of a normal call or being passed around
+as a value. Calling *through* a `fn`-typed value (a variable, a struct
+field, a list element) is an indirect call, resolved at runtime:
+
+```rust
+struct Op:
+    apply: fn(int) -> int
+
+fn double(x: int) -> int: return x * 2
+
+let ops = [square, double]
+print(ops[0](5))          // 25
+print(Op(double).apply(5)) // 10
+```
+
+## Lambda Expressions
+
+`lambda` writes a small function inline, without a name. Parameters can be
+annotated in parentheses, or left bare when the type is inferable from
+context:
+
+```rust
+let square = lambda (x: int): x * x
+print(square(6))  // 36
+
+fn apply(f: fn(int) -> int, val: int) -> int:
+    return f(val)
+
+print(apply(lambda x: x + 1, 41))  // 42, x inferred from apply's own signature
+```
+
+An unannotated parameter with no inferable context (no call-site hint and
+no use that pins its type) is a compile error rather than a silent `Any`.
+
+## Nested Functions and Closures
+
+Functions can be defined inside other functions, and lambdas can read
+variables from the function they're written in -- both are closures. Calling
+one directly, from inside the function that defines it, costs nothing extra:
+the captured variables are passed as ordinary trailing arguments, no
+allocation, no heap record.
+
+```rust
+fn scale_all(values: [int], factor: int) -> [int]:
+    fn scale(x: int) -> int:
+        return x * factor
+    return [scale(v) for v in values]
+```
+
+A closure that *escapes* -- returned, stored in a variable read later,
+stored in a struct or list, or passed as a plain argument -- builds a small
+heap record holding a copy of each variable it captured, the one-time cost
+first-class closures have in any language. From then on it's an ordinary
+`fn`-typed value: call it, store it, pass it around, exactly like a bare
+function.
+
+```rust
+fn make_adder(n: int) -> fn(int) -> int:
+    return lambda x: x + n
+
+let add5 = make_adder(5)
+print(add5(3))  // 8
+```
+
+Captures are copied at the moment the closure is built, not read live from
+the original variable afterward:
+
+```rust
+fn make_reader() -> fn() -> int:
+    let mut n = 1
+    let g = lambda: n
+    n = 99          // g already has its own copy of n's value
+    return g
+
+print(make_reader()())  // 1, not 99
+```
+
+Calling a closure directly by name only works from inside its defining
+function (or a nested one that captures the same variables); calling it
+from a sibling scope that never captured them is a compile error, since the
+values it needs are not there. Only an escaped value can be called from
+anywhere.
 
 ## Decorators and Directives
 

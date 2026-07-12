@@ -31,6 +31,28 @@ pub(crate) fn runtime_escape(name: &str, pos: usize) -> bool {
     RUNTIME_ESCAPES.iter().any(|&(n, p)| n == name && p == pos)
 }
 
+/// The subset of `RUNTIME_ESCAPES` that crosses a real task boundary (a
+/// generic `chan_send[T]`/`mutex_new[T]`/`mutex_unlock[T]` call, `lib/aio.liv`):
+/// the escaping value needs `__olive_relocate_typed` (E5.6), not
+/// `__olive_copy_typed` -- the copy must land in the shared escape arena
+/// (`with_escape_arena`), since the sending task's own slab set can be torn
+/// down (`executor_drive`) while a plain same-arena copy is still
+/// referenced by the channel/mutex. `__olive_pool_run`/`__olive_pool_run_sync`
+/// are deliberately excluded: their `arg`/return are raw `int`, not a
+/// generic `[T]`, so there's no static type here to build a descriptor
+/// from -- see the E5.6 write-up in roadmap.md.
+const TASK_BOUNDARY_ESCAPES: &[(&str, usize)] = &[
+    ("__olive_chan_send", 1),
+    ("__olive_mutex_new", 0),
+    ("__olive_mutex_unlock", 1),
+];
+
+pub(crate) fn task_boundary_escape(name: &str, pos: usize) -> bool {
+    TASK_BOUNDARY_ESCAPES
+        .iter()
+        .any(|&(n, p)| n == name && p == pos)
+}
+
 /// Fixpoint over the whole program: param `i` of a function escapes when the
 /// body stores it (or an alias of it) beyond the frame -- into a field, an
 /// element, a global, an aggregate, or an escaping position of another call.

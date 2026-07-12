@@ -30,10 +30,12 @@ pub struct GenCheckInsertion {
 /// Whether values of this type live in generational slab slots, so the word
 /// at `ptr - 8` is a valid generation. Types excluded: `Any` (boxed scalars
 /// use BOXED_SLAB but the Any local is never checked), Python objects,
-/// FFI-backed structs, `Future` (box-allocated, no generation word), and
-/// `Fn` types (boxed heap allocation, not slab). Strings are slab-backed too
-/// but tagged and literal-tolerant, so they check through a runtime helper
-/// (`str_backed`). `Bytes` is slab-backed via BYTES_SLAB.
+/// FFI-backed structs, and `Future` (box-allocated, no generation word).
+/// Strings are slab-backed too but tagged and literal-tolerant, so they
+/// check through a runtime helper (`str_backed`). `Bytes` is slab-backed via
+/// BYTES_SLAB. `Fn` (a closure record, E5.2) is slab-backed through the same
+/// pool ordinary structs use, but flows through `struct_backed` below like a
+/// struct does, not through this predicate.
 pub(crate) fn slab_backed(ty: &Type) -> bool {
     match ty {
         Type::List(_)
@@ -74,6 +76,11 @@ pub(crate) fn str_backed(ty: &Type) -> bool {
 pub(crate) fn struct_backed(ty: &Type) -> bool {
     match ty {
         Type::Struct(_, _, is_ffi) => !is_ffi,
+        // A closure record (`build_closure_value`) is allocated via the same
+        // `__olive_struct_alloc` slab pool as an ordinary struct and carries
+        // the same generation word at `ptr - 8`, so it checks through the
+        // identical `__olive_struct_gen_*` runtime helpers.
+        Type::Fn(..) => true,
         Type::Union(members) => {
             let non_null: Vec<_> = members
                 .iter()
