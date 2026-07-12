@@ -591,10 +591,10 @@ impl<M: Module> CraneliftCodegen<M> {
                     // bits, direct bitcast) or `f32 | None` (narrow first)
                     // member ever disagrees with that width.
                     return if target_cl_ty == types::F64 {
-                        builder.ins().bitcast(types::F64, MemFlags::new(), val)
+                        super::translate::bitcast_via_stack(builder, types::F64, val)
                     } else {
                         let low = builder.ins().ireduce(types::I32, val);
-                        builder.ins().bitcast(types::F32, MemFlags::new(), low)
+                        super::translate::bitcast_via_stack(builder, types::F32, low)
                     };
                 }
 
