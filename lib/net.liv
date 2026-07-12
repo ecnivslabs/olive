@@ -1,57 +1,140 @@
-fn tcp_connect(addr: str) -> int:
+// Private int-handle helpers
+fn _tcp_connect(addr: str) -> int:
     return __olive_net_tcp_connect(addr)
 
-fn tcp_send(conn: int, data: str) -> int:
+fn _tcp_send(conn: int, data: str) -> int:
     return __olive_net_tcp_send(conn, data)
 
-fn tcp_recv(conn: int, max_len: int) -> str:
+fn _tcp_recv(conn: int, max_len: int) -> str:
     let result = __olive_net_tcp_recv(conn, max_len)
     if result == 0:
         return ""
     return result
 
-fn tcp_close(conn: int):
+fn _tcp_close(conn: int):
     __olive_net_tcp_close(conn)
 
-fn tcp_peer_addr(conn: int) -> str:
+fn _tcp_peer_addr(conn: int) -> str:
     let result = __olive_net_tcp_peer_addr(conn)
     if result == 0:
         return ""
     return result
 
-fn tcp_set_timeout(conn: int, secs: float) -> bool:
+fn _tcp_set_timeout(conn: int, secs: float) -> bool:
     return __olive_net_tcp_set_timeout(conn, secs) == 1
 
-fn tcp_listen(addr: str) -> int:
+fn _tcp_listen(addr: str) -> int:
     return __olive_net_tcp_listen(addr)
 
-fn tcp_accept(server: int) -> int:
+fn _tcp_accept(server: int) -> int:
     return __olive_net_tcp_accept(server)
 
-fn tcp_listener_addr(server: int) -> str:
+fn _tcp_listener_addr(server: int) -> str:
     let result = __olive_net_tcp_listener_addr(server)
     if result == 0:
         return ""
     return result
 
-fn tcp_listener_close(server: int):
+fn _tcp_listener_close(server: int):
     __olive_net_tcp_listener_close(server)
 
-fn udp_open(bind_addr: str) -> int:
+fn _udp_open(bind_addr: str) -> int:
     return __olive_net_udp_open(bind_addr)
 
-fn udp_send(sock: int, addr: str, data: str) -> int:
+fn _udp_send(sock: int, addr: str, data: str) -> int:
     return __olive_net_udp_send(sock, addr, data)
 
-fn udp_recv(sock: int, max_len: int):
+fn _udp_recv(sock: int, max_len: int):
     return __olive_net_udp_recv(sock, max_len)
 
-fn udp_set_timeout(sock: int, secs: float) -> bool:
+fn _udp_set_timeout(sock: int, secs: float) -> bool:
     return __olive_net_udp_set_timeout(sock, secs) == 1
 
-fn udp_close(sock: int):
+fn _udp_close(sock: int):
     __olive_net_udp_close(sock)
 
+// Public struct APIs
+
+struct TcpConn:
+    handle: int
+
+    fn __init__(self, handle: int):
+        self.handle = handle
+
+    fn __drop__(self):
+        if self.handle != 0:
+            _tcp_close(self.handle)
+
+    fn send(self, data: str) -> int:
+        return _tcp_send(self.handle, data)
+
+    fn recv(self, max_len: int) -> str:
+        return _tcp_recv(self.handle, max_len)
+
+    fn peer_addr(self) -> str:
+        return _tcp_peer_addr(self.handle)
+
+    fn set_timeout(self, secs: float) -> bool:
+        return _tcp_set_timeout(self.handle, secs)
+
+struct TcpListener:
+    handle: int
+
+    fn __init__(self, handle: int):
+        self.handle = handle
+
+    fn __drop__(self):
+        if self.handle != 0:
+            _tcp_listener_close(self.handle)
+
+    fn accept(self) -> TcpConn | int:
+        let h = _tcp_accept(self.handle)
+        if h == 0:
+            return 0
+        return TcpConn(h)
+
+    fn addr(self) -> str:
+        return _tcp_listener_addr(self.handle)
+
+struct UdpSocket:
+    handle: int
+
+    fn __init__(self, handle: int):
+        self.handle = handle
+
+    fn __drop__(self):
+        if self.handle != 0:
+            _udp_close(self.handle)
+
+    fn send(self, addr: str, data: str) -> int:
+        return _udp_send(self.handle, addr, data)
+
+    fn recv(self, max_len: int):
+        return _udp_recv(self.handle, max_len)
+
+    fn set_timeout(self, secs: float) -> bool:
+        return _udp_set_timeout(self.handle, secs)
+
+// Constructor functions
+fn connect(addr: str) -> TcpConn | int:
+    let h = _tcp_connect(addr)
+    if h == 0:
+        return 0
+    return TcpConn(h)
+
+fn listen(addr: str) -> TcpListener | int:
+    let h = _tcp_listen(addr)
+    if h == 0:
+        return 0
+    return TcpListener(h)
+
+fn open_udp(bind_addr: str) -> UdpSocket | int:
+    let h = _udp_open(bind_addr)
+    if h == 0:
+        return 0
+    return UdpSocket(h)
+
+// DNS (no resource to manage)
 fn dns_lookup(hostname: str) -> str:
     let result = __olive_net_dns_lookup(hostname)
     if result == 0:

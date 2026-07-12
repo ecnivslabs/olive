@@ -126,6 +126,9 @@ impl<'a> MirBuilder<'a> {
         if name.contains("::__init__") {
             let parts: Vec<&str> = name.split("::__init__").collect();
             specialized_name = format!("{}_{}::__init__", parts[0], arg_str);
+        } else if name.contains("::__drop__") {
+            let parts: Vec<&str> = name.split("::__drop__").collect();
+            specialized_name = format!("{}_{}::__drop__", parts[0], arg_str);
         }
 
         if self.functions.iter().any(|f| f.name == specialized_name) {

@@ -285,6 +285,7 @@ impl Resolver {
                 self.table.push(ScopeKind::Struct);
                 for tp in type_params {
                     self.define_sym(tp, SymbolKind::Variable, stmt.span);
+                    self.table.mark_used_in_current(tp);
                 }
                 for s in body {
                     self.resolve_stmt(s);

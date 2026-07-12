@@ -312,6 +312,44 @@ impl<'a> MirBuilder<'a> {
         )
     }
 
+    /// After building all user code, monomorphize `__drop__` for each concrete
+    /// instantiation of generic structs that define a drop hook.
+    pub fn monomorphize_drop_fns(&mut self) {
+        let generic_drop_keys: Vec<String> = self
+            .generic_fns
+            .keys()
+            .filter(|k| k.ends_with("::__drop__"))
+            .cloned()
+            .collect();
+
+        if generic_drop_keys.is_empty() {
+            return;
+        }
+
+        let mut work: Vec<(String, Vec<Type>)> = Vec::new();
+        for drop_key in &generic_drop_keys {
+            let struct_name = drop_key.strip_suffix("::__drop__").unwrap().to_string();
+            for func in &self.functions {
+                for local in &func.locals {
+                    if let Type::Struct(name, args, _) = &local.ty
+                        && *name == struct_name
+                        && !args.is_empty()
+                        && !work.iter().any(|(n, a)| n == &struct_name && a == args)
+                    {
+                        work.push((struct_name.clone(), args.clone()));
+                    }
+                }
+            }
+        }
+
+        for (struct_name, type_args) in &work {
+            let drop_key = format!("{}::__drop__", struct_name);
+            if self.generic_fns.contains_key(&drop_key) {
+                self.monomorphize(&drop_key, type_args);
+            }
+        }
+    }
+
     pub(super) fn start_function(&mut self, name: String, arg_count: usize, ret_ty: Type) {
         self.current_name = name;
         self.current_locals.clear();
