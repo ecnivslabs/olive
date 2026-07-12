@@ -17,7 +17,7 @@ const pods = await fetchPods();
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="var(--ink-muted)" stroke-width="1.4"/><line x1="16.2" y1="16.2" x2="21" y2="21" stroke="var(--ink-muted)" stroke-width="1.4" stroke-linecap="round"/></svg>
         <input id="pod-search" type="text" placeholder="search pods…" autocomplete="off" />
       </div>
-      <p class="note" id="pod-note">Every published pod appears here — right now, that's {pods.length === 1 ? 'one' : pods.length}.</p>
+      <p class="note" id="pod-note">Every published pod appears here. Right now, that's {pods.length === 1 ? 'one' : pods.length}.</p>
     </section>
 
     <section class="list" id="pod-list">
@@ -97,7 +97,7 @@ const pods = await fetchPods();
 
   function renderPods(pods: Pod[]) {
     if (heading) heading.textContent = pods.length === 1 ? 'One pod so far.' : `${pods.length} pods so far.`;
-    if (note) note.textContent = `Every published pod appears here — right now, that's ${pods.length === 1 ? 'one' : pods.length}.`;
+    if (note) note.textContent = `Every published pod appears here. Right now, that's ${pods.length === 1 ? 'one' : pods.length}.`;
     if (cardsContainer) cardsContainer.innerHTML = pods.map(cardHtml).join('');
     applyFilter();
   }

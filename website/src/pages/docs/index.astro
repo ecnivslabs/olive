@@ -8,14 +8,14 @@ const indexEntry = await getEntry('docs', 'index');
 const nav = indexEntry ? parseDocsNav(indexEntry.body ?? '') : [];
 
 if (!introEntry) {
-  throw new Error('docs/introduction.md is missing — the docs landing page has nothing to show.');
+  throw new Error('docs/introduction.md is missing: the docs landing page has nothing to show.');
 }
 
 const { Content } = await render(introEntry);
 ---
 <DocsShell
   title="Introduction"
-  description="Olive documentation — technical reference and user guide."
+  description="Olive documentation: technical reference and user guide."
   current="introduction"
   nav={nav}
 >
