@@ -159,6 +159,7 @@ pub fn run_pipeline_opt(
     mir_builder.struct_field_types = type_checker.field_types.clone();
 
     mir_builder.build_program(&program);
+    mir_builder.monomorphize_drop_fns();
     let mir_duration = mir_start.elapsed();
 
     if super::lints::check_const_index_bounds(&mir_builder.functions, &sources) {

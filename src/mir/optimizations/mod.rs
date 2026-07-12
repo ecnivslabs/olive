@@ -7,6 +7,7 @@ pub mod const_prop;
 pub mod copy_prop;
 pub mod cse;
 pub mod dce;
+pub mod drop_hooks;
 pub mod gencheck;
 pub mod gvn;
 pub mod inliner;

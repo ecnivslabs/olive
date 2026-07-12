@@ -1,41 +1,42 @@
 import aio
 
-async fn producer(chan: int, count: int):
-    print(f"Producer starting. Channel pointer: {chan}")
+async fn producer(c: aio.Chan[int], count: int):
+    print(f"Producer starting.")
     let mut i = 0
     while i < count:
-        aio.chan_send(chan, i)
+        c.send(i)
         i += 1
 
-    aio.chan_send(chan, -1)
+    c.send(-1)
     print("Producer finished.")
 
-async fn consumer(chan: int, id: int):
-    print(f"Consumer {id} starting. Channel pointer: {chan}")
+async fn consumer(c: aio.Chan[int], id: int):
+    print(f"Consumer {id} starting.")
     while True:
-        let val = aio.chan_recv(chan)
+        let val = c.recv()
         if val == -1:
-            aio.chan_send(chan, -1)
+            c.send(-1)
             break
 
-        print(f"Consumer {id} processed task payload: {val}")
+        print(f"Consumer {id} processed: {val}")
 
-    print(f"Consumer {id} terminating cleanly.")
+    print(f"Consumer {id} terminating.")
 
 fn main():
-    let chan = aio.chan_new()
-    print(f"Created channel pointer in main: {chan}")
-    let payload_count = 10
+    let result = aio.chan[int]()
+    match result:
+        c: aio.Chan[int]:
+            let payload_count = 10
 
-    let p = producer(chan, payload_count)
-    let c1 = consumer(chan, 1)
-    let c2 = consumer(chan, 2)
+            let p = producer(c, payload_count)
+            let c1 = consumer(c, 1)
+            let c2 = consumer(c, 2)
 
-    let fut = async:
-        print("Gathering async task execution pool...")
+            let fut = async:
+                print("Gathering async tasks...")
+                await aio.gather([p, c1, c2])
 
-        await aio.gather([p, c1, c2])
-
-    aio.run(fut)
-    aio.chan_free(chan)
-    print("Task coordination execution complete.")
+            aio.run(fut)
+            print("Task coordination complete.")
+        _:
+            print("Failed to create channel")

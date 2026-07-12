@@ -1,5 +1,96 @@
-// async io
+// Private channel handle helpers
+fn _chan_new() -> int:
+    return __olive_chan_new()
 
+fn _chan_send[T](chan: int, val: T) -> bool:
+    return __olive_chan_send(chan, val) == 1
+
+fn _chan_recv[T](chan: int) -> T:
+    return __olive_chan_recv(chan)
+
+fn _chan_try_recv[T](chan: int) -> T:
+    return __olive_chan_try_recv(chan)
+
+fn _chan_len(chan: int) -> int:
+    return __olive_chan_len(chan)
+
+fn _chan_close(chan: int):
+    __olive_chan_close(chan)
+
+fn _chan_free(chan: int):
+    __olive_chan_free(chan)
+
+// Private mutex handle helpers
+fn _mutex_new[T](val: T) -> int:
+    return __olive_mutex_new(val)
+
+fn _mutex_lock[T](m: int) -> T:
+    return __olive_mutex_lock(m)
+
+fn _mutex_unlock[T](m: int, new_val: T):
+    __olive_mutex_unlock(m, new_val)
+
+fn _mutex_free(m: int):
+    __olive_mutex_free(m)
+
+// Public struct APIs
+
+struct Chan[T]:
+    handle: int
+
+    fn __init__(self, handle: int):
+        self.handle = handle
+
+    fn __drop__(self):
+        if self.handle != 0:
+            _chan_free(self.handle)
+
+    fn send(self, val: T) -> bool:
+        return _chan_send(self.handle, val)
+
+    fn recv(self) -> T:
+        return _chan_recv(self.handle)
+
+    fn try_recv(self) -> T:
+        return _chan_try_recv(self.handle)
+
+    fn len(self) -> int:
+        return _chan_len(self.handle)
+
+    fn close(self):
+        if self.handle != 0:
+            _chan_close(self.handle)
+
+struct Mutex[T]:
+    handle: int
+
+    fn __init__(self, handle: int):
+        self.handle = handle
+
+    fn __drop__(self):
+        if self.handle != 0:
+            _mutex_free(self.handle)
+
+    fn lock(self) -> T:
+        return _mutex_lock(self.handle)
+
+    fn unlock(self, new_val: T):
+        _mutex_unlock(self.handle, new_val)
+
+// Constructor functions
+fn chan[T]() -> Chan[T] | int:
+    let h = _chan_new()
+    if h == 0:
+        return 0
+    return Chan(h)
+
+fn mutex[T](val: T) -> Mutex[T] | int:
+    let h = _mutex_new(val)
+    if h == 0:
+        return 0
+    return Mutex(h)
+
+// Async IO (no resource to manage)
 fn run[T](future: Future[T]) -> T:
     return await future
 
@@ -21,45 +112,7 @@ fn cancel(future):
 fn free_future(future):
     __olive_free_future(future)
 
-// channels
-
-fn chan_new() -> int:
-    return __olive_chan_new()
-
-fn chan_send[T](chan: int, val: T) -> bool:
-    return __olive_chan_send(chan, val) == 1
-
-fn chan_recv[T](chan: int) -> T:
-    return __olive_chan_recv(chan)
-
-fn chan_try_recv[T](chan: int) -> T:
-    return __olive_chan_try_recv(chan)
-
-fn chan_len(chan: int) -> int:
-    return __olive_chan_len(chan)
-
-fn chan_close(chan: int):
-    __olive_chan_close(chan)
-
-fn chan_free(chan: int):
-    __olive_chan_free(chan)
-
-// mutex
-
-fn mutex_new[T](val: T) -> int:
-    return __olive_mutex_new(val)
-
-fn mutex_lock[T](m: int) -> T:
-    return __olive_mutex_lock(m)
-
-fn mutex_unlock[T](m: int, new_val: T):
-    __olive_mutex_unlock(m, new_val)
-
-fn mutex_free(m: int):
-    __olive_mutex_free(m)
-
-// atomics
-
+// Atomics (no resource to manage — plain int-based ops)
 fn atomic_new(val: int) -> int:
     return __olive_atomic_new(val)
 
@@ -78,8 +131,7 @@ fn atomic_cas(ptr: int, expected: int, new_val: int) -> bool:
 fn atomic_free(ptr: int):
     __olive_atomic_free(ptr)
 
-// worker pool
-
+// Worker pool (no resource to manage)
 fn pool_size() -> int:
     return __olive_pool_size()
 
