@@ -302,6 +302,8 @@ pub(super) fn scan_rvalue_imports(
                         needed.insert("__olive_str_concat");
                     } else if is_list_op(func_mir, lhs) {
                         needed.insert("__olive_list_concat");
+                    } else if !is_float_op(func_mir, lhs) {
+                        needed.insert("__olive_overflow_fail");
                     }
                 }
                 Sub | Mul | Div | Mod => {
@@ -334,8 +336,11 @@ pub(super) fn scan_rvalue_imports(
                             }
                             _ => {}
                         }
-                    } else if matches!(op, Div | Mod) && !is_float_op(func_mir, lhs) {
-                        needed.insert("__olive_div_zero_fail");
+                    } else if !is_float_op(func_mir, lhs) {
+                        needed.insert("__olive_overflow_fail");
+                        if matches!(op, Div | Mod) {
+                            needed.insert("__olive_div_zero_fail");
+                        }
                     }
                 }
                 Eq => {

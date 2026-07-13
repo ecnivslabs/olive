@@ -34,6 +34,7 @@ impl<M: Module> CraneliftCodegen<M> {
         lhs: &Operand,
         rhs: &Operand,
         loc_id: Option<DataId>,
+        checked: bool,
     ) -> Value {
         let l = Self::translate_operand(builder, lhs, vars, string_ids, module, func_ids);
         let r = Self::translate_operand(builder, rhs, vars, string_ids, module, func_ids);
@@ -191,6 +192,16 @@ impl<M: Module> CraneliftCodegen<M> {
                     builder.inst_results(inst)[0]
                 } else if is_float {
                     builder.ins().fadd(l, r)
+                } else if checked {
+                    let loc = super::translate_rvalue::loc_value(builder, module, loc_id);
+                    let kind = if is_u64_op(func_mir, lhs) || is_u64_op(func_mir, rhs) {
+                        super::translate_rvalue::OVERFLOW_ADD_U
+                    } else {
+                        super::translate_rvalue::OVERFLOW_ADD
+                    };
+                    super::translate_rvalue::emit_checked_arith(
+                        builder, module, func_ids, kind, l, r, loc,
+                    )
                 } else {
                     builder.ins().iadd(l, r)
                 }
@@ -198,6 +209,16 @@ impl<M: Module> CraneliftCodegen<M> {
             Sub => {
                 if is_float_op(func_mir, lhs) {
                     builder.ins().fsub(l, r)
+                } else if checked {
+                    let loc = super::translate_rvalue::loc_value(builder, module, loc_id);
+                    let kind = if is_u64_op(func_mir, lhs) || is_u64_op(func_mir, rhs) {
+                        super::translate_rvalue::OVERFLOW_SUB_U
+                    } else {
+                        super::translate_rvalue::OVERFLOW_SUB
+                    };
+                    super::translate_rvalue::emit_checked_arith(
+                        builder, module, func_ids, kind, l, r, loc,
+                    )
                 } else {
                     builder.ins().isub(l, r)
                 }
@@ -205,6 +226,16 @@ impl<M: Module> CraneliftCodegen<M> {
             Mul => {
                 if is_float_op(func_mir, lhs) {
                     builder.ins().fmul(l, r)
+                } else if checked {
+                    let loc = super::translate_rvalue::loc_value(builder, module, loc_id);
+                    let kind = if is_u64_op(func_mir, lhs) || is_u64_op(func_mir, rhs) {
+                        super::translate_rvalue::OVERFLOW_MUL_U
+                    } else {
+                        super::translate_rvalue::OVERFLOW_MUL
+                    };
+                    super::translate_rvalue::emit_checked_arith(
+                        builder, module, func_ids, kind, l, r, loc,
+                    )
                 } else {
                     builder.ins().imul(l, r)
                 }
@@ -220,6 +251,15 @@ impl<M: Module> CraneliftCodegen<M> {
                     if is_u64_op(func_mir, lhs) || is_u64_op(func_mir, rhs) {
                         builder.ins().udiv(l, r)
                     } else {
+                        super::translate_rvalue::emit_signed_div_overflow_check(
+                            builder,
+                            module,
+                            func_ids,
+                            super::translate_rvalue::OVERFLOW_DIV_MIN,
+                            l,
+                            r,
+                            loc,
+                        );
                         builder.ins().sdiv(l, r)
                     }
                 }
@@ -232,6 +272,15 @@ impl<M: Module> CraneliftCodegen<M> {
                 if is_u64_op(func_mir, lhs) || is_u64_op(func_mir, rhs) {
                     builder.ins().urem(l, r)
                 } else {
+                    super::translate_rvalue::emit_signed_div_overflow_check(
+                        builder,
+                        module,
+                        func_ids,
+                        super::translate_rvalue::OVERFLOW_MOD_MIN,
+                        l,
+                        r,
+                        loc,
+                    );
                     builder.ins().srem(l, r)
                 }
             }

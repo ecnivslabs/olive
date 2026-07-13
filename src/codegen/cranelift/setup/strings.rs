@@ -1,5 +1,5 @@
 use super::super::CraneliftCodegen;
-use super::super::imports::is_float_op;
+use super::super::imports::{is_any_op, is_float_op, is_list_op, is_pyobj_op, is_str_op};
 use crate::mir::MirFunction;
 use crate::mir::StatementKind;
 use cranelift_module::{DataDescription, Linkage, Module};
@@ -71,6 +71,25 @@ impl<M: Module> CraneliftCodegen<M> {
                             _,
                         ),
                     ) if !is_float_op(func, lhs) => {
+                        self.intern_loc(stmt.span);
+                    }
+                    StatementKind::Assign(
+                        _,
+                        crate::mir::Rvalue::BinaryOp(
+                            crate::parser::BinOp::Add
+                            | crate::parser::BinOp::Sub
+                            | crate::parser::BinOp::Mul,
+                            lhs,
+                            rhs,
+                        ),
+                    ) if !is_float_op(func, lhs)
+                        && !is_str_op(func, lhs)
+                        && !is_list_op(func, lhs)
+                        && !is_pyobj_op(func, lhs)
+                        && !is_pyobj_op(func, rhs)
+                        && !is_any_op(func, lhs)
+                        && !is_any_op(func, rhs) =>
+                    {
                         self.intern_loc(stmt.span);
                     }
                     StatementKind::GenCheck { value, .. } => {

@@ -34,15 +34,21 @@ fn percent_encode(s: &str) -> String {
     out
 }
 
-/// Strips the Windows drive-letter leading slash on that platform.
+/// Strips the leading slash only for Windows drive-letter URIs (`/C:/...`).
 pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
     let rest = uri.strip_prefix("file://")?;
     let decoded = percent_decode(rest);
-    if cfg!(windows) {
-        Some(PathBuf::from(decoded.strip_prefix('/').unwrap_or(&decoded)))
-    } else {
-        Some(PathBuf::from(decoded))
+    if cfg!(windows)
+        && let Some(stripped) = decoded.strip_prefix('/')
+    {
+        let bytes = stripped.as_bytes();
+        let is_drive_letter =
+            bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+        if is_drive_letter {
+            return Some(PathBuf::from(stripped));
+        }
     }
+    Some(PathBuf::from(decoded))
 }
 
 /// The inverse of `uri_to_path`.
@@ -90,5 +96,13 @@ mod tests {
     #[test]
     fn non_file_uri_returns_none() {
         assert!(uri_to_path("http://example.com/main.liv").is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn drive_letter_uri_strips_leading_slash() {
+        let uri = "file:///C:/Users/dev/main.liv";
+        let path = uri_to_path(uri).unwrap();
+        assert_eq!(path, PathBuf::from("C:/Users/dev/main.liv"));
     }
 }

@@ -114,6 +114,95 @@ pub(super) fn emit_div_zero_check<M: Module>(
     builder.switch_to_block(ok);
 }
 
+/// `kind` values passed to `__olive_overflow_fail`, matching its match arms.
+pub(super) const OVERFLOW_ADD: i64 = 0;
+pub(super) const OVERFLOW_SUB: i64 = 1;
+pub(super) const OVERFLOW_MUL: i64 = 2;
+pub(super) const OVERFLOW_ADD_U: i64 = 3;
+pub(super) const OVERFLOW_SUB_U: i64 = 4;
+pub(super) const OVERFLOW_MUL_U: i64 = 5;
+pub(super) const OVERFLOW_DIV_MIN: i64 = 6;
+pub(super) const OVERFLOW_MOD_MIN: i64 = 7;
+
+/// Emits `+`/`-`/`*` via Cranelift's overflow-flagged instructions and faults
+/// through `__olive_overflow_fail` on the carry/overflow flag instead of
+/// silently wrapping. `kind` selects add/sub/mul and signed/unsigned for both
+/// the instruction and the fault message.
+pub(super) fn emit_checked_arith<M: Module>(
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    func_ids: &HashMap<String, FuncId>,
+    kind: i64,
+    l: Value,
+    r: Value,
+    loc: Value,
+) -> Value {
+    let (result, overflowed_flag) = match kind {
+        OVERFLOW_ADD => builder.ins().sadd_overflow(l, r),
+        OVERFLOW_SUB => builder.ins().ssub_overflow(l, r),
+        OVERFLOW_MUL => builder.ins().smul_overflow(l, r),
+        OVERFLOW_ADD_U => builder.ins().uadd_overflow(l, r),
+        OVERFLOW_SUB_U => builder.ins().usub_overflow(l, r),
+        OVERFLOW_MUL_U => builder.ins().umul_overflow(l, r),
+        _ => unreachable!("emit_checked_arith: not an add/sub/mul kind: {kind}"),
+    };
+
+    let ok = builder.create_block();
+    let fail = builder.create_block();
+    let overflowed = builder.ins().icmp_imm(IntCC::NotEqual, overflowed_flag, 0);
+    builder.ins().brif(overflowed, fail, &[], ok, &[]);
+
+    builder.seal_block(fail);
+    builder.switch_to_block(fail);
+    let id = *func_ids
+        .get("__olive_overflow_fail")
+        .expect("missing __olive_overflow_fail");
+    let f = module.declare_func_in_func(id, builder.func);
+    let kind_val = builder.ins().iconst(types::I64, kind);
+    builder.ins().call(f, &[kind_val, l, r, loc]);
+    builder.ins().trap(TrapCode::unwrap_user(1));
+
+    builder.seal_block(ok);
+    builder.switch_to_block(ok);
+    result
+}
+
+/// Panics with an overflow diagnostic when a signed `/` or `%` is the one
+/// combination that overflows instead of trapping cleanly in hardware:
+/// `i64::MIN / -1` (and `% -1`, which computes the same quotient internally).
+/// `kind` is `OVERFLOW_DIV_MIN` or `OVERFLOW_MOD_MIN`, selecting the message.
+/// Must run before `emit_div_zero_check`'s ok block so both corners are
+/// covered without executing `sdiv`/`srem` on the trapping inputs.
+pub(super) fn emit_signed_div_overflow_check<M: Module>(
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    func_ids: &HashMap<String, FuncId>,
+    kind: i64,
+    dividend: Value,
+    divisor: Value,
+    loc: Value,
+) {
+    let ok = builder.create_block();
+    let fail = builder.create_block();
+    let is_min = builder.ins().icmp_imm(IntCC::Equal, dividend, i64::MIN);
+    let is_neg_one = builder.ins().icmp_imm(IntCC::Equal, divisor, -1);
+    let both = builder.ins().band(is_min, is_neg_one);
+    builder.ins().brif(both, fail, &[], ok, &[]);
+
+    builder.seal_block(fail);
+    builder.switch_to_block(fail);
+    let id = *func_ids
+        .get("__olive_overflow_fail")
+        .expect("missing __olive_overflow_fail");
+    let f = module.declare_func_in_func(id, builder.func);
+    let kind_val = builder.ins().iconst(types::I64, kind);
+    builder.ins().call(f, &[kind_val, dividend, divisor, loc]);
+    builder.ins().trap(TrapCode::unwrap_user(1));
+
+    builder.seal_block(ok);
+    builder.switch_to_block(ok);
+}
+
 fn load_and_extend(
     builder: &mut FunctionBuilder,
     ptr: Value,
@@ -190,6 +279,7 @@ impl<M: Module> CraneliftCodegen<M> {
         loc_id: Option<DataId>,
         reuse_target: Option<(Local, Value, bool)>,
         dest_ty: &OliveType,
+        checked: bool,
     ) -> Value {
         let is_reusable = match rval {
             Rvalue::Aggregate(kind, _) => !matches!(kind, AggregateKind::FatPtr),
@@ -292,6 +382,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 lhs,
                 rhs,
                 loc_id,
+                checked,
             ),
             Rvalue::UnaryOp(op, operand) => {
                 let operand_ty = match operand {

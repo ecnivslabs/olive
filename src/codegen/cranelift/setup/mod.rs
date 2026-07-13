@@ -266,6 +266,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_bounds_fail", &sig_3i64_i64),
             ("__olive_nil_index_fail", &sig_i64_i64),
             ("__olive_div_zero_fail", &sig_i64_i64_i64),
+            ("__olive_overflow_fail", &sig_4i64_i64),
             ("__olive_check_nonzero_step", &sig_i64_i64_i64),
             ("__olive_assert_fail", &sig_i64_i64_i64),
             ("__olive_check_list_min_len", &sig_3i64_i64),

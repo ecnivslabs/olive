@@ -17,23 +17,17 @@ impl Transform for ConstantFolding {
                     {
                         use crate::parser::BinOp::*;
                         let res = match op {
-                            Add => Some(Constant::Int((*a).wrapping_add(*b))),
-                            Sub => Some(Constant::Int((*a).wrapping_sub(*b))),
-                            Mul => Some(Constant::Int((*a).wrapping_mul(*b))),
-                            Div => {
-                                if *b != 0 {
-                                    Some(Constant::Int(*a / *b))
-                                } else {
-                                    None
-                                }
-                            }
-                            Mod => {
-                                if *b != 0 {
-                                    Some(Constant::Int(*a % *b))
-                                } else {
-                                    None
-                                }
-                            }
+                            // checked_* returns None on overflow (including the
+                            // i64::MIN / -1 and % -1 corners, which would
+                            // otherwise panic this compiler's own `/`/`%`), so
+                            // the statement is left unfolded and falls through
+                            // to codegen's runtime overflow fault instead of
+                            // silently folding to a wrapped constant.
+                            Add => (*a).checked_add(*b).map(Constant::Int),
+                            Sub => (*a).checked_sub(*b).map(Constant::Int),
+                            Mul => (*a).checked_mul(*b).map(Constant::Int),
+                            Div => (*a).checked_div(*b).map(Constant::Int),
+                            Mod => (*a).checked_rem(*b).map(Constant::Int),
                             Eq => Some(Constant::Bool(*a == *b)),
                             NotEq => Some(Constant::Bool(*a != *b)),
                             Lt => Some(Constant::Bool(*a < *b)),
