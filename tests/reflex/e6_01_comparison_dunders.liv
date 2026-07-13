@@ -1,0 +1,23 @@
+struct Box:
+    v: int
+
+    fn __eq__(self: &Box, other: &Box) -> bool:
+        return self.v == other.v
+
+    fn __lt__(self: &Box, other: &Box) -> bool:
+        return self.v < other.v
+
+fn main():
+    let a = Box(1)
+    let b = Box(2)
+    print(a == b)
+    print(a != b)
+    print(a < b)
+    print(a > b)
+    print(a <= b)
+    print(a >= b)
+    let mut xs = [Box(3), Box(1), Box(2)]
+    xs.sort()
+    print(xs[0].v)
+    print(xs[1].v)
+    print(xs[2].v)

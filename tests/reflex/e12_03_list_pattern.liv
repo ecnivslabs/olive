@@ -1,0 +1,13 @@
+fn describe(xs: [int]) -> str:
+    match xs:
+        []:
+            return "empty"
+        [only]:
+            return "one: " + str(only)
+        [first, *rest]:
+            return "first " + str(first) + " rest " + str(rest)
+
+fn main():
+    print(describe([]))
+    print(describe([5]))
+    print(describe([1, 2, 3, 4]))

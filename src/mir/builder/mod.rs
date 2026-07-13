@@ -154,6 +154,12 @@ impl<'a> MirBuilder<'a> {
         }
     }
 
+    /// True while building `__main__` (top-level statements). A `let` there
+    /// needs real global storage; inside a function it must stay a local.
+    pub(super) fn at_module_scope(&self) -> bool {
+        self.current_name == "__main__"
+    }
+
     /// True for Python runtime ops that surface an exception via `handle_py_error`,
     /// so the Olive call site must be recorded before them.
     pub(super) fn is_raising_py_op(name: &str) -> bool {

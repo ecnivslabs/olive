@@ -1,0 +1,17 @@
+enum Shape:
+    Circle(float)
+    Square(float)
+
+impl Shape:
+    fn tag(self: &Shape) -> int:
+        match self:
+            Circle(_):
+                return 1
+            Square(_):
+                return 2
+
+fn main():
+    let c = Circle(2.0)
+    let s = Square(3.0)
+    print(c.tag())
+    print(s.tag())

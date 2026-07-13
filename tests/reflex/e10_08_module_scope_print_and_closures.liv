@@ -1,0 +1,14 @@
+const XS = [1, 2, 3]
+print(XS)
+
+let ys = [4, 5, 6]
+print(ys)
+
+let square = lambda (x: int): x * x
+print(square(6))
+
+fn make_adder(n: int) -> fn(int) -> int:
+    return lambda x: x + n
+
+let add5 = make_adder(5)
+print(add5(3))

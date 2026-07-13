@@ -1,0 +1,11 @@
+struct Point:
+    x: int
+    y: int
+
+    fn __str__(self) -> str:
+        return f"({self.x}, {self.y})"
+
+fn main():
+    let p = Point(1, 2)
+    print(p)
+    print(str(p))

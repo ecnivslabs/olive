@@ -1,0 +1,8 @@
+fn describe(x: int | None) -> int:
+    if x == None:
+        return -1
+    return x + 1
+
+fn main():
+    print(describe(5))
+    print(describe(None))

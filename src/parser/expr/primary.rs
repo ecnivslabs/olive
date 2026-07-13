@@ -88,18 +88,42 @@ impl Parser {
         }
     }
 
+    /// Pattern-position `|` (`"GET" | "HEAD":`) is alternation, distinct
+    /// from expression bitor -- collected only here, above the single-shape
+    /// atom parser, so a plain non-alternated pattern pays nothing extra.
     pub(crate) fn parse_pattern(&mut self) -> ParseResult<MatchPattern> {
+        let first = self.parse_pattern_atom()?;
+        if self.peek().kind != TokenKind::Pipe {
+            return Ok(first);
+        }
+        let mut alts = vec![first];
+        while self.peek().kind == TokenKind::Pipe {
+            self.advance();
+            alts.push(self.parse_pattern_atom()?);
+        }
+        Ok(MatchPattern::Or(alts))
+    }
+
+    fn parse_pattern_atom(&mut self) -> ParseResult<MatchPattern> {
         match self.peek().kind {
             TokenKind::Underscore => {
                 self.advance();
                 Ok(MatchPattern::Wildcard)
             }
-            TokenKind::Integer
-            | TokenKind::Float
-            | TokenKind::String
-            | TokenKind::True
-            | TokenKind::False
-            | TokenKind::Null => {
+            TokenKind::LParen => self.parse_tuple_pattern(),
+            TokenKind::LBracket => self.parse_list_pattern(),
+            TokenKind::Integer | TokenKind::Float => {
+                let expr = self.parse_primary()?;
+                if matches!(self.peek().kind, TokenKind::DotDot | TokenKind::DotDotEq) {
+                    let inclusive = self.peek().kind == TokenKind::DotDotEq;
+                    self.advance();
+                    let end = self.parse_primary()?;
+                    Ok(MatchPattern::Range(expr, end, inclusive))
+                } else {
+                    Ok(MatchPattern::Literal(expr))
+                }
+            }
+            TokenKind::String | TokenKind::True | TokenKind::False | TokenKind::Null => {
                 let expr = self.parse_primary()?;
                 Ok(MatchPattern::Literal(expr))
             }
@@ -109,19 +133,52 @@ impl Parser {
                 let name_span = Self::tok_span(&tok);
                 if self.peek().kind == TokenKind::LParen {
                     self.advance();
-                    let mut patterns = Vec::new();
-                    while self.peek().kind != TokenKind::RParen
-                        && self.peek().kind != TokenKind::Eof
-                    {
-                        patterns.push(self.parse_pattern()?);
-                        if self.peek().kind == TokenKind::Comma {
-                            self.advance();
-                        } else {
-                            break;
+                    // A call-shaped pattern is either all positional
+                    // (`Point(x, y)`) or all named (`Point(x=0, y=n)`);
+                    // decided once from the first element, then enforced.
+                    let named = self.peek().kind == TokenKind::Identifier
+                        && self.peek_at(1).kind == TokenKind::Equal;
+                    if named {
+                        let mut fields = Vec::new();
+                        while self.peek().kind != TokenKind::RParen
+                            && self.peek().kind != TokenKind::Eof
+                        {
+                            let field_tok = self.expect(TokenKind::Identifier)?;
+                            let field_name = field_tok.value.clone();
+                            self.expect(TokenKind::Equal)?;
+                            let pat = self.parse_pattern()?;
+                            fields.push((field_name, pat));
+                            if self.peek().kind == TokenKind::Comma {
+                                self.advance();
+                            } else {
+                                break;
+                            }
                         }
+                        let end_tok = self.peek().clone();
+                        self.expect(TokenKind::RParen)?;
+                        Ok(MatchPattern::StructFields(
+                            name,
+                            fields,
+                            Span {
+                                end: end_tok.span.1,
+                                ..name_span
+                            },
+                        ))
+                    } else {
+                        let mut patterns = Vec::new();
+                        while self.peek().kind != TokenKind::RParen
+                            && self.peek().kind != TokenKind::Eof
+                        {
+                            patterns.push(self.parse_pattern()?);
+                            if self.peek().kind == TokenKind::Comma {
+                                self.advance();
+                            } else {
+                                break;
+                            }
+                        }
+                        self.expect(TokenKind::RParen)?;
+                        Ok(MatchPattern::Variant(name, patterns))
                     }
-                    self.expect(TokenKind::RParen)?;
-                    Ok(MatchPattern::Variant(name, patterns))
                 } else {
                     if name.chars().next().is_some_and(char::is_uppercase) {
                         Ok(MatchPattern::Variant(name, vec![]))
@@ -132,6 +189,70 @@ impl Parser {
             }
             _ => Err(self.err_at(&self.tokens[self.pos], "expected pattern")),
         }
+    }
+
+    /// `(x, y)`, nesting via ordinary recursion (`((a, b), c)`). A single
+    /// parenthesized pattern with no comma (`(x)`) is just grouping, same
+    /// as an expression -- returned unwrapped, not a one-element tuple.
+    fn parse_tuple_pattern(&mut self) -> ParseResult<MatchPattern> {
+        self.expect(TokenKind::LParen)?;
+        let mut items = Vec::new();
+        let mut saw_comma = false;
+        while self.peek().kind != TokenKind::RParen && self.peek().kind != TokenKind::Eof {
+            items.push(self.parse_pattern()?);
+            if self.peek().kind == TokenKind::Comma {
+                self.advance();
+                saw_comma = true;
+            } else {
+                break;
+            }
+        }
+        self.expect(TokenKind::RParen)?;
+        if !saw_comma && items.len() == 1 {
+            return Ok(items.into_iter().next().unwrap());
+        }
+        Ok(MatchPattern::Tuple(items))
+    }
+
+    /// `[]`, `[first, *rest]`, `[a, b, *mid, z]`. At most one `*name` slot;
+    /// `rest` binds a deep-copied slice, the same semantics as E4.4's
+    /// starred destructuring.
+    fn parse_list_pattern(&mut self) -> ParseResult<MatchPattern> {
+        self.expect(TokenKind::LBracket)?;
+        let mut before = Vec::new();
+        let mut after = Vec::new();
+        let mut rest: Option<(String, Span)> = None;
+        while self.peek().kind != TokenKind::RBracket && self.peek().kind != TokenKind::Eof {
+            if self.peek().kind == TokenKind::Star {
+                if rest.is_some() {
+                    return Err(self.err_at(
+                        &self.tokens[self.pos],
+                        "at most one `*name` rest pattern is allowed in a list pattern",
+                    ));
+                }
+                self.advance();
+                let name_tok = self.expect(TokenKind::Identifier)?;
+                rest = Some((name_tok.value.clone(), Self::tok_span(&name_tok)));
+            } else {
+                let pat = self.parse_pattern()?;
+                if rest.is_some() {
+                    after.push(pat);
+                } else {
+                    before.push(pat);
+                }
+            }
+            if self.peek().kind == TokenKind::Comma {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        self.expect(TokenKind::RBracket)?;
+        Ok(MatchPattern::List {
+            before,
+            rest,
+            after,
+        })
     }
 
     pub(crate) fn parse_comp_clauses(&mut self) -> ParseResult<Vec<CompClause>> {

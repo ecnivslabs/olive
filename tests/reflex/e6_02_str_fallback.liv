@@ -1,0 +1,15 @@
+struct Point:
+    x: int
+    y: int
+
+    fn __str__(self) -> str:
+        return f"({self.x}, {self.y})"
+
+struct Plain:
+    n: int
+
+fn main():
+    let p = Point(1, 2)
+    print(f"point is {p}")
+    let q = Plain(5)
+    print(q)

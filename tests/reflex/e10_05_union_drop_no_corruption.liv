@@ -1,0 +1,31 @@
+enum ByteError:
+    Empty
+    OutOfRange(int)
+
+fn parse_byte(s: str) -> int | ByteError:
+    if len(s) == 0:
+        return Empty()
+    let n = int(s)
+    if n < 0 or n > 255:
+        return OutOfRange(n)
+    return n
+
+fn parse_rgb(r: str, g: str, b: str) -> int | ByteError:
+    let red = try parse_byte(r)
+    let green = parse_byte(g)?
+    let blue = parse_byte(b)?
+    return red * 65536 + green * 256 + blue
+
+fn report(r: str, g: str, b: str):
+    match parse_rgb(r, g, b):
+        Empty:
+            print("missing")
+        OutOfRange(n):
+            print("out of range: " + str(n))
+        packed:
+            print(packed)
+
+fn main():
+    report("255", "0", "0")
+    report("", "0", "0")
+    report("300", "0", "0")

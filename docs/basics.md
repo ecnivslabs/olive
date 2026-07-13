@@ -123,6 +123,36 @@ if value == None:
 
 Annotating a list as `[T]` for a concrete `T` still enforces that every element is a `T`.
 
+### Handling `None`
+
+`T | None` is Olive's optional type: a value that might be absent. Three
+things read and narrow it, no unwrapping required.
+
+Comparing against `None` narrows the type for the rest of the branch (or the
+rest of the scope, if the other branch always returns/breaks/continues):
+
+```rust
+fn describe(x: int | None) -> str:
+    if x != None:
+        return "have " + str(x)  // x is `int` here, not `int | None`
+    return "none"
+```
+
+`??` fills in a default when the left side is `None`, short-circuiting (the
+right side only evaluates if needed):
+
+```rust
+let n = maybe_count() ?? 0
+```
+
+`?.` (optional chaining) skips a field access or method call when the
+receiver is `None`, producing `None` instead of faulting; chain it with `??`
+for a default:
+
+```rust
+print(find_user(id)?.name ?? "anon")
+```
+
 ### String Formatting
 
 Format strings by prefixing them with `f` and enclosing expressions in curly braces:
@@ -151,7 +181,7 @@ Strings carry the common text operations:
 print("HeLLo".upper())              // HELLO
 print("HeLLo".lower())              // hello
 print("  hi  ".strip())            // hi
-print("a,b,c".split(","))          // [a, b, c]
+print("a,b,c".split(","))          // ["a", "b", "c"]
 print(",".join(["x", "y", "z"]))   // x,y,z
 print("hello".replace("l", "L"))   // heLLo
 print("hello".find("ll"))          // 2
@@ -210,12 +240,27 @@ print("hello"[1:3])  // el
 
 A slice is a new value; mutating it does not touch the original.
 
-### Fixed Arrays
+### Negative Indexing
 
-Fixed-size arrays with a known length at compile time. The length is structural; to actually allocate a fixed-size buffer, use `bytes_new(n)` or a list with `list_new(n)`.
+A plain (non-slice) index also accepts a negative value, counting back from
+the end: `-1` is the last element, `-2` the second-to-last. Still
+bounds-checked -- indexing past the start faults the same way a too-large
+positive index does.
 
 ```rust
-let mut matrix: [int; 16]
+let xs = [1, 2, 3, 4, 5]
+print(xs[-1])        // 5
+print(xs[-2])        // 4
+print("hello"[-1])   // o
+```
+
+### Fixed Arrays
+
+Fixed-size arrays with a known length at compile time. The length is structural, mainly for typing a fixed-size field (an FFI struct with a C array member, for instance); to actually allocate a fixed-size buffer, use `bytes_new(n)` or a list with `list_new(n)`.
+
+```rust
+struct Grid:
+    cells: [int; 16]
 ```
 
 ### Bytes
@@ -323,6 +368,23 @@ else:
     print("C")
 ```
 
+A condition must be a real `bool`. Olive does not have Python-style
+truthiness: a non-empty list, a nonzero int, or a `T | None` value are all
+compile errors in condition position, not silent "truthy" checks -- the
+usual bug this catches is `if x:` on an `int | None` that can't tell a real
+`0` from the absent case. Spell out what you mean instead:
+
+```rust
+if len(xs) > 0:
+    print("has items")
+
+if n != 0:
+    print("nonzero")
+
+if maybe_user != None:
+    print("present")
+```
+
 ### Conditional Expressions
 
 An `if` can be used inline as an expression:
@@ -408,7 +470,8 @@ print(len(names))     // names is still here
 
 let mut xs = [1, 2, 3]
 for x in xs:
-    xs.append(x)       // compile error: xs is borrowed by the loop
+    print(x)
+// xs.append(x)         // compile error: xs is borrowed by the loop
 ```
 
 #### While Loops
@@ -438,7 +501,6 @@ usable afterward.
 * `print(a, b, ...)`: Writes any number of values to standard out, space-separated.
 * `len(obj)`: Returns the number of elements in a collection.
 * `type(obj)`: Returns the type name as a string.
-* `assert(condition, message)`: Aborts execution with a message if the condition is false.
 * `abs(n)`: Absolute value; works on `int` and `float`.
 * `round(x)` / `round(x, ndigits)`: Rounds a float, to the nearest int or to `ndigits` decimal places.
 * `input(prompt: str = "")`: Writes `prompt` with no trailing newline, reads and returns one line from stdin.

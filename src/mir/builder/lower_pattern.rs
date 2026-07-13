@@ -212,6 +212,443 @@ impl<'a> MirBuilder<'a> {
                     expr_span,
                 );
             }
+            MatchPattern::Tuple(items) => {
+                let field_tys = match match_ty {
+                    Type::Tuple(tys) if tys.len() == items.len() => tys.clone(),
+                    _ => vec![Type::Any; items.len()],
+                };
+                self.lower_positional_fields(
+                    items, &field_tys, discr, success_bb, failure_bb, expr_span,
+                );
+            }
+            MatchPattern::StructFields(struct_name, fields, _) => {
+                let mut current_bb = self.current_block.unwrap();
+                if fields.is_empty() {
+                    self.terminate_block(
+                        current_bb,
+                        TerminatorKind::Goto { target: success_bb },
+                        expr_span,
+                    );
+                }
+                for (i, (fname, fpat)) in fields.iter().enumerate() {
+                    self.current_block = Some(current_bb);
+                    let field_ty = self
+                        .struct_field_types
+                        .get(&(struct_name.clone(), fname.clone()))
+                        .cloned()
+                        .unwrap_or(Type::Any);
+                    let val_tmp = self.new_local_with_owning(field_ty.clone(), None, false, false);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            val_tmp,
+                            Rvalue::GetAttr(Operand::Copy(discr), fname.clone()),
+                        ),
+                        expr_span,
+                    );
+                    let next_bb = if i == fields.len() - 1 {
+                        success_bb
+                    } else {
+                        self.new_block()
+                    };
+                    self.lower_pattern(fpat, val_tmp, &field_ty, next_bb, failure_bb, expr_span);
+                    current_bb = next_bb;
+                }
+            }
+            MatchPattern::List {
+                before,
+                rest,
+                after,
+            } => {
+                let elem_ty = match match_ty {
+                    Type::List(t) => (**t).clone(),
+                    _ => Type::Any,
+                };
+                let needed = (before.len() + after.len()) as i64;
+
+                let len_tmp = self.new_local(Type::Int, None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        len_tmp,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(
+                                "__olive_list_len".to_string(),
+                            )),
+                            args: vec![Operand::Copy(discr)],
+                        },
+                    ),
+                    expr_span,
+                );
+                let len_ok = self.new_local(Type::Bool, None, false);
+                let cmp_op = if rest.is_some() {
+                    crate::parser::BinOp::GtEq
+                } else {
+                    crate::parser::BinOp::Eq
+                };
+                self.push_statement(
+                    StatementKind::Assign(
+                        len_ok,
+                        Rvalue::BinaryOp(
+                            cmp_op,
+                            Operand::Copy(len_tmp),
+                            Operand::Constant(Constant::Int(needed)),
+                        ),
+                    ),
+                    expr_span,
+                );
+                let len_ok_bb = self.new_block();
+                self.terminate_block(
+                    self.current_block.unwrap(),
+                    TerminatorKind::SwitchInt {
+                        discr: Operand::Copy(len_ok),
+                        targets: vec![(1, len_ok_bb)],
+                        otherwise: failure_bb,
+                    },
+                    expr_span,
+                );
+                self.current_block = Some(len_ok_bb);
+
+                // `before` reads fixed positions from the front; `after` reads
+                // fixed positions counted back from the (now proven-long-enough)
+                // runtime length; `rest`, if present, is the one real
+                // allocation here -- an independent deep-copied slice, same
+                // semantics as E4.4's starred destructuring.
+                let after_start_bb = self.new_block();
+                self.lower_positional_fields(
+                    before,
+                    &vec![elem_ty.clone(); before.len()],
+                    discr,
+                    after_start_bb,
+                    failure_bb,
+                    expr_span,
+                );
+
+                self.current_block = Some(after_start_bb);
+                let mut current_bb = after_start_bb;
+                let rest_bb = self.new_block();
+                if after.is_empty() {
+                    self.terminate_block(
+                        current_bb,
+                        TerminatorKind::Goto { target: rest_bb },
+                        expr_span,
+                    );
+                }
+                for (j, apat) in after.iter().enumerate() {
+                    self.current_block = Some(current_bb);
+                    let back_offset = (after.len() - j) as i64;
+                    let idx_tmp = self.new_local(Type::Int, None, false);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            idx_tmp,
+                            Rvalue::BinaryOp(
+                                crate::parser::BinOp::Sub,
+                                Operand::Copy(len_tmp),
+                                Operand::Constant(Constant::Int(back_offset)),
+                            ),
+                        ),
+                        expr_span,
+                    );
+                    let val_tmp = self.new_local_with_owning(elem_ty.clone(), None, false, false);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            val_tmp,
+                            Rvalue::GetIndex(Operand::Copy(discr), Operand::Copy(idx_tmp), false),
+                        ),
+                        expr_span,
+                    );
+                    let next_bb = if j == after.len() - 1 {
+                        rest_bb
+                    } else {
+                        self.new_block()
+                    };
+                    self.lower_pattern(apat, val_tmp, &elem_ty, next_bb, failure_bb, expr_span);
+                    current_bb = next_bb;
+                }
+
+                self.current_block = Some(rest_bb);
+                if let Some((name, _)) = rest {
+                    let stop_tmp = self.new_local(Type::Int, None, false);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            stop_tmp,
+                            Rvalue::BinaryOp(
+                                crate::parser::BinOp::Sub,
+                                Operand::Copy(len_tmp),
+                                Operand::Constant(Constant::Int(after.len() as i64)),
+                            ),
+                        ),
+                        expr_span,
+                    );
+                    let func_name = if Self::list_elem_needs_copy(&elem_ty) {
+                        "__olive_list_getslice_typed"
+                    } else {
+                        "__olive_list_getslice"
+                    };
+                    const SLICE_HAS_START: i64 = 1;
+                    const SLICE_HAS_STOP: i64 = 2;
+                    let rest_local =
+                        self.declare_var(name.clone(), Type::List(Box::new(elem_ty)), false);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            rest_local,
+                            Rvalue::Call {
+                                func: Operand::Constant(Constant::Function(func_name.to_string())),
+                                args: vec![
+                                    Operand::Copy(discr),
+                                    Operand::Constant(Constant::Int(before.len() as i64)),
+                                    Operand::Copy(stop_tmp),
+                                    Operand::Constant(Constant::Int(0)),
+                                    Operand::Constant(Constant::Int(
+                                        SLICE_HAS_START | SLICE_HAS_STOP,
+                                    )),
+                                ],
+                            },
+                        ),
+                        expr_span,
+                    );
+                }
+                self.terminate_block(
+                    self.current_block.unwrap(),
+                    TerminatorKind::Goto { target: success_bb },
+                    expr_span,
+                );
+            }
+            MatchPattern::Range(start, end, inclusive) => {
+                let start_op = self.lower_expr(start);
+                let end_op = self.lower_expr(end);
+                let ge_lo = self.new_local(Type::Bool, None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        ge_lo,
+                        Rvalue::BinaryOp(
+                            crate::parser::BinOp::GtEq,
+                            Operand::Copy(discr),
+                            start_op,
+                        ),
+                    ),
+                    expr_span,
+                );
+                let hi_check_bb = self.new_block();
+                self.terminate_block(
+                    self.current_block.unwrap(),
+                    TerminatorKind::SwitchInt {
+                        discr: Operand::Copy(ge_lo),
+                        targets: vec![(1, hi_check_bb)],
+                        otherwise: failure_bb,
+                    },
+                    expr_span,
+                );
+                self.current_block = Some(hi_check_bb);
+                let cmp_op = if *inclusive {
+                    crate::parser::BinOp::LtEq
+                } else {
+                    crate::parser::BinOp::Lt
+                };
+                let le_hi = self.new_local(Type::Bool, None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        le_hi,
+                        Rvalue::BinaryOp(cmp_op, Operand::Copy(discr), end_op),
+                    ),
+                    expr_span,
+                );
+                self.terminate_block(
+                    hi_check_bb,
+                    TerminatorKind::SwitchInt {
+                        discr: Operand::Copy(le_hi),
+                        targets: vec![(1, success_bb)],
+                        otherwise: failure_bb,
+                    },
+                    expr_span,
+                );
+            }
+            MatchPattern::Or(alts) => {
+                // Every alternative tests the same `discr`/`match_ty`; a
+                // failed one falls through to try the next, and only the
+                // last alternative's failure reaches the real
+                // `failure_bb`. The checker already proved every
+                // alternative binds the same names at the same types
+                // (E0436), but each alternative's own recursive lowering
+                // still declares its *own* fresh local per binding -- left
+                // alone, the arm body would resolve a name to whichever
+                // alternative's local was declared last, uninitialized on
+                // every other path. One shared local per name, written by
+                // every alternative on its own success path before all of
+                // them converge on `success_bb`, is what makes "the arm
+                // body is never duplicated" actually sound.
+                let mut names = Vec::new();
+                collect_binding_names(&alts[0], &mut names);
+                let shared_locals: Vec<(String, Local)> = names
+                    .into_iter()
+                    .filter_map(|name| {
+                        let ty = self.pattern_binding_type(&alts[0], match_ty, &name)?;
+                        let local = self.new_local_with_owning(ty, Some(name.clone()), true, false);
+                        Some((name, local))
+                    })
+                    .collect();
+
+                let mut current_bb = self.current_block.unwrap();
+                for (i, alt) in alts.iter().enumerate() {
+                    self.current_block = Some(current_bb);
+                    let alt_matched_bb = self.new_block();
+                    let next_try_bb = if i == alts.len() - 1 {
+                        failure_bb
+                    } else {
+                        self.new_block()
+                    };
+                    self.lower_pattern(
+                        alt,
+                        discr,
+                        match_ty,
+                        alt_matched_bb,
+                        next_try_bb,
+                        expr_span,
+                    );
+
+                    self.current_block = Some(alt_matched_bb);
+                    for (name, shared_local) in &shared_locals {
+                        if let Some(alt_local) = self.lookup_var(name) {
+                            self.push_statement(
+                                StatementKind::Assign(
+                                    *shared_local,
+                                    Rvalue::Use(Operand::Copy(alt_local)),
+                                ),
+                                expr_span,
+                            );
+                        }
+                    }
+                    self.terminate_block(
+                        self.current_block.unwrap(),
+                        TerminatorKind::Goto { target: success_bb },
+                        expr_span,
+                    );
+                    current_bb = next_try_bb;
+                }
+                // Every alternative's copy targets the same shared local,
+                // so from here on `name` must resolve to it regardless of
+                // which alternative actually matched at runtime.
+                for (name, local) in shared_locals {
+                    self.var_map.last_mut().unwrap().insert(name, local);
+                }
+            }
+        }
+    }
+
+    /// Shared chain for "read fixed position `i` via `GetIndex`, recursively
+    /// match it, move on to `i+1`" -- tuple elements and a list pattern's
+    /// fixed `before` slots are this same shape (a variant's own positional
+    /// payload loop stays separate above: it also needs the enum tag switch
+    /// interleaved, not just the index reads).
+    fn lower_positional_fields(
+        &mut self,
+        items: &[MatchPattern],
+        item_tys: &[Type],
+        discr: Local,
+        success_bb: BasicBlockId,
+        failure_bb: BasicBlockId,
+        expr_span: Span,
+    ) {
+        let mut current_bb = self.current_block.unwrap();
+        if items.is_empty() {
+            self.terminate_block(
+                current_bb,
+                TerminatorKind::Goto { target: success_bb },
+                expr_span,
+            );
+            return;
+        }
+        for (i, (item, item_ty)) in items.iter().zip(item_tys).enumerate() {
+            self.current_block = Some(current_bb);
+            let val_tmp = self.new_local_with_owning(item_ty.clone(), None, false, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    val_tmp,
+                    Rvalue::GetIndex(
+                        Operand::Copy(discr),
+                        Operand::Constant(Constant::Int(i as i64)),
+                        false,
+                    ),
+                ),
+                expr_span,
+            );
+            let next_bb = if i == items.len() - 1 {
+                success_bb
+            } else {
+                self.new_block()
+            };
+            self.lower_pattern(item, val_tmp, item_ty, next_bb, failure_bb, expr_span);
+            current_bb = next_bb;
+        }
+    }
+
+    /// The type a name would bind to inside `pattern`, given `pattern`
+    /// itself is matched against `ty` -- a read-only walk mirroring
+    /// `lower_pattern`'s own structural recursion (enum payload types via
+    /// `global_types`, tuple fields positionally, struct fields by name,
+    /// list elements), used only to pre-size an or-pattern's shared
+    /// binding locals before any alternative actually runs.
+    fn pattern_binding_type(&self, pattern: &MatchPattern, ty: &Type, name: &str) -> Option<Type> {
+        match pattern {
+            MatchPattern::Identifier(n, _) if n == name => Some(ty.clone()),
+            MatchPattern::Variant(v_name, inner) => {
+                let enum_name = match ty {
+                    Type::Enum(en, _) => en.clone(),
+                    Type::Union(members) => members.iter().find_map(|m| match m {
+                        Type::Enum(en, _) => Some(en.clone()),
+                        _ => None,
+                    })?,
+                    _ => return None,
+                };
+                let mangled = format!("{enum_name}::{v_name}");
+                let param_types = match self.global_types.get(&mangled) {
+                    Some(Type::Fn(pts, _, _)) => pts.clone(),
+                    _ => return None,
+                };
+                inner
+                    .iter()
+                    .zip(param_types.iter())
+                    .find_map(|(p, p_ty)| self.pattern_binding_type(p, p_ty, name))
+            }
+            MatchPattern::Tuple(items) => {
+                let Type::Tuple(field_tys) = ty else {
+                    return None;
+                };
+                items
+                    .iter()
+                    .zip(field_tys.iter())
+                    .find_map(|(item, item_ty)| self.pattern_binding_type(item, item_ty, name))
+            }
+            MatchPattern::StructFields(struct_name, fields, _) => {
+                fields.iter().find_map(|(fname, fpat)| {
+                    let fty = self
+                        .struct_field_types
+                        .get(&(struct_name.clone(), fname.clone()))?;
+                    self.pattern_binding_type(fpat, fty, name)
+                })
+            }
+            MatchPattern::List {
+                before,
+                rest,
+                after,
+            } => {
+                let Type::List(elem_ty) = ty else {
+                    return None;
+                };
+                if let Some(t) = before
+                    .iter()
+                    .chain(after)
+                    .find_map(|p| self.pattern_binding_type(p, elem_ty, name))
+                {
+                    return Some(t);
+                }
+                match rest {
+                    Some((n, _)) if n == name => Some(Type::List(elem_ty.clone())),
+                    _ => None,
+                }
+            }
+            MatchPattern::Or(alts) => alts
+                .iter()
+                .find_map(|alt| self.pattern_binding_type(alt, ty, name)),
+            _ => None,
         }
     }
 
@@ -457,6 +894,43 @@ impl<'a> MirBuilder<'a> {
     }
 }
 
+/// Every name a pattern binds -- the MIR-side counterpart of the type
+/// checker's own `pattern_binding_names` (kept separate since neither side
+/// depends on the other's internals).
+fn collect_binding_names(pattern: &MatchPattern, out: &mut Vec<String>) {
+    match pattern {
+        MatchPattern::Identifier(name, _) => out.push(name.clone()),
+        MatchPattern::Variant(_, inner) => {
+            for p in inner {
+                collect_binding_names(p, out);
+            }
+        }
+        MatchPattern::Tuple(items) | MatchPattern::Or(items) => {
+            for p in items {
+                collect_binding_names(p, out);
+            }
+        }
+        MatchPattern::StructFields(_, fields, _) => {
+            for (_, p) in fields {
+                collect_binding_names(p, out);
+            }
+        }
+        MatchPattern::List {
+            before,
+            rest,
+            after,
+        } => {
+            for p in before.iter().chain(after) {
+                collect_binding_names(p, out);
+            }
+            if let Some((name, _)) = rest {
+                out.push(name.clone());
+            }
+        }
+        MatchPattern::Wildcard | MatchPattern::Literal(_) | MatchPattern::Range(..) => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::MirBuilder;
@@ -548,5 +1022,144 @@ mod tests {
             f.basic_blocks.len() >= 2,
             "comprehension should create multiple blocks"
         );
+    }
+
+    /// E12.3 acceptance: a match on int ranges lowers to a compare chain
+    /// (`SwitchInt` terminators from the `>=`/`<`-family `BinaryOp`s), no
+    /// allocation, no runtime helper call.
+    #[test]
+    fn range_match_is_a_compare_chain() {
+        let fns = build(
+            "fn f(n: i64) -> i64:\n    match n:\n        case 0..10:\n            return 1\n        case 10..=20:\n            return 2\n        case _:\n            return 0\n",
+        );
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        let switch_count = f
+            .basic_blocks
+            .iter()
+            .filter(|bb| {
+                bb.terminator
+                    .as_ref()
+                    .is_some_and(|t| matches!(t.kind, TerminatorKind::SwitchInt { .. }))
+            })
+            .count();
+        // Two ranges, two comparisons apiece (>= lo, </<= hi): at least 4
+        // SwitchInt terminators, none of them a call.
+        assert!(
+            switch_count >= 4,
+            "expected a compare chain, got {switch_count} switches"
+        );
+        let has_call = f.basic_blocks.iter().any(|bb| {
+            bb.statements.iter().any(|s| {
+                matches!(
+                    &s.kind,
+                    StatementKind::Assign(_, crate::mir::Rvalue::Call { .. })
+                )
+            })
+        });
+        assert!(
+            !has_call,
+            "a range pattern should never need a runtime call"
+        );
+    }
+
+    #[test]
+    fn tuple_pattern_reads_by_index() {
+        let fns = build(
+            "fn f(p: (i64, i64)) -> i64:\n    match p:\n        case (0, 0):\n            return 1\n        case (a, b):\n            return a\n",
+        );
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        let has_get_index = f.basic_blocks.iter().any(|bb| {
+            bb.statements.iter().any(|s| {
+                matches!(
+                    &s.kind,
+                    StatementKind::Assign(_, crate::mir::Rvalue::GetIndex(..))
+                )
+            })
+        });
+        assert!(has_get_index);
+    }
+
+    #[test]
+    fn struct_pattern_reads_by_attr() {
+        let fns = build(
+            "struct P:\n    x: i64\n    y: i64\n\nfn f(p: P) -> i64:\n    match p:\n        case P(x=0, y=n):\n            return n\n        case P(x=n, y=m):\n            return n\n",
+        );
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        let has_get_attr = f.basic_blocks.iter().any(|bb| {
+            bb.statements.iter().any(|s| {
+                matches!(
+                    &s.kind,
+                    StatementKind::Assign(_, crate::mir::Rvalue::GetAttr(..))
+                )
+            })
+        });
+        assert!(has_get_attr);
+    }
+
+    #[test]
+    fn list_pattern_checks_length_first() {
+        let fns = build(
+            "fn f(xs: [i64]) -> i64:\n    match xs:\n        case []:\n            return 0\n        case [first, *rest]:\n            return first\n",
+        );
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        let has_len_call = f.basic_blocks.iter().any(|bb| {
+            bb.statements.iter().any(|s| {
+                matches!(
+                    &s.kind,
+                    StatementKind::Assign(
+                        _,
+                        crate::mir::Rvalue::Call {
+                            func: crate::mir::Operand::Constant(crate::mir::Constant::Function(name)),
+                            ..
+                        }
+                    ) if name == "__olive_list_len"
+                )
+            })
+        });
+        assert!(has_len_call);
+    }
+
+    #[test]
+    fn or_pattern_both_alternatives_reach_success() {
+        let fns = build(
+            "enum R:\n    A(i64)\n    B(i64)\n\nfn f(r: R) -> i64:\n    match r:\n        case A(v) | B(v):\n            return v\n",
+        );
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        // Two `GetTag` reads (one per alternative's own enum-tag test),
+        // proving both A and B are actually tried, not just one.
+        let tag_reads = f
+            .basic_blocks
+            .iter()
+            .flat_map(|bb| &bb.statements)
+            .filter(|s| {
+                matches!(
+                    &s.kind,
+                    StatementKind::Assign(_, crate::mir::Rvalue::GetTag(_))
+                )
+            })
+            .count();
+        assert_eq!(tag_reads, 2);
+    }
+
+    #[test]
+    fn guarded_arm_does_not_bypass_later_arms() {
+        // A guard can fail even when the pattern matches, so a guarded
+        // literal arm must not short-circuit the exhaustiveness-relevant
+        // structure: this just proves the guard's own SwitchInt exists
+        // alongside the pattern's.
+        let fns = build(
+            "fn f(n: i64) -> i64:\n    match n:\n        case x if x > 0:\n            return 1\n        case _:\n            return 0\n",
+        );
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        let switch_count = f
+            .basic_blocks
+            .iter()
+            .filter(|bb| {
+                bb.terminator
+                    .as_ref()
+                    .is_some_and(|t| matches!(t.kind, TerminatorKind::SwitchInt { .. }))
+            })
+            .count();
+        assert!(switch_count >= 1);
     }
 }

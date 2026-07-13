@@ -116,6 +116,8 @@ fn index_out_of_range(i: i64, agg_len: Option<usize>) -> bool {
 
 fn can_scalarize(func: &MirFunction, aliases: &HashSet<Local>, origin: Local) -> bool {
     let mut agg_len: Option<usize> = None;
+    // Outer None: no dict init seen yet. Inner None: keys unknowable.
+    let mut dict_keys: Option<Option<HashSet<String>>> = None;
     for bb in &func.basic_blocks {
         for stmt in &bb.statements {
             if let StatementKind::Assign(
@@ -128,6 +130,24 @@ fn can_scalarize(func: &MirFunction, aliases: &HashSet<Local>, origin: Local) ->
                 && *l == origin
             {
                 agg_len = Some(ops.len());
+            }
+            if let StatementKind::Assign(
+                l,
+                Rvalue::Aggregate(crate::mir::ir::AggregateKind::Dict, ops),
+            ) = &stmt.kind
+                && *l == origin
+            {
+                let mut keys = HashSet::default();
+                let mut all_const = true;
+                for pair in ops.chunks(2) {
+                    match pair.first() {
+                        Some(Operand::Constant(Constant::Str(s))) => {
+                            keys.insert(s.clone());
+                        }
+                        _ => all_const = false,
+                    }
+                }
+                dict_keys = Some(all_const.then_some(keys));
             }
             let mut references_alias = false;
             for &alias in aliases {
@@ -188,7 +208,12 @@ fn can_scalarize(func: &MirFunction, aliases: &HashSet<Local>, origin: Local) ->
                                 return false;
                             }
                         }
-                        Operand::Constant(Constant::Str(_)) => {}
+                        // A write defines the key, so it grows the known set.
+                        Operand::Constant(Constant::Str(s)) => {
+                            if let Some(Some(keys)) = &mut dict_keys {
+                                keys.insert(s.clone());
+                            }
+                        }
                         _ => return false,
                     }
                     if operand_local(val).is_some_and(|l| aliases.contains(&l)) {
@@ -205,7 +230,11 @@ fn can_scalarize(func: &MirFunction, aliases: &HashSet<Local>, origin: Local) ->
                                 return false;
                             }
                         }
-                        Operand::Constant(Constant::Str(_)) => {}
+                        // Fold only a provably-present key; else hit the real fault.
+                        Operand::Constant(Constant::Str(s)) => match &dict_keys {
+                            Some(Some(keys)) if keys.contains(s) => {}
+                            _ => return false,
+                        },
                         _ => return false,
                     }
                     if aliases.contains(dst) {

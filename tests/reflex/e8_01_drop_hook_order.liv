@@ -1,0 +1,13 @@
+struct Resource:
+    name: str
+
+    fn __drop__(self):
+        print("drop " + self.name)
+
+fn main():
+    let a = Resource("a")
+    let b = Resource("b")
+    print("before")
+    print(a.name)
+    print(b.name)
+    print("after")

@@ -1,0 +1,7 @@
+struct Perms:
+    items: [str]
+
+fn main():
+    let p = Perms(["read", "write"])
+    print("read" in p.items)
+    print("exec" in p.items)

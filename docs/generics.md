@@ -45,11 +45,9 @@ fn first[T](items: [T]) -> T:
 let item = first([1, 2, 3])    // T is int, inferred from the list
 ```
 
-You can name the type explicitly when you want to, though it is rarely needed:
-
-```rust
-let item = first[int]([1, 2, 3])
-```
+Explicit type arguments at a call site (`first[int](...)`) are not
+supported yet; the type parameter is always inferred from the arguments, as
+above.
 
 ## Structural Requirements
 

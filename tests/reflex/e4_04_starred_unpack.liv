@@ -1,0 +1,7 @@
+fn main():
+    let first, *rest = [1, 2, 3, 4]
+    print(first)
+    print(rest)
+    let *init, last = [1, 2, 3, 4]
+    print(init)
+    print(last)

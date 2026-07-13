@@ -290,6 +290,24 @@ pub(super) const ENTRIES: &[Explanation] = &[
         ],
     },
     Explanation {
+        code: "E0427",
+        title: "ambiguous bare variant name",
+        summary: "Two or more enums in scope declare a variant with the same bare \
+                  name. Olive lets a nullary variant stand alone as a value \
+                  (`return Ok`, not `return A::Ok`), so an unqualified use of that \
+                  name cannot tell which enum it means.",
+        wrong: "enum A:\n    Ok\n    Err(str)\n\nenum B:\n    Ok\n    Pending\n\n\
+                fn make() -> A:\n    return Ok",
+        fixed: "enum A:\n    Ok\n    Err(str)\n\nenum B:\n    Ok\n    Pending\n\n\
+                fn make() -> A:\n    return A::Ok",
+        notes: &[
+            "`EnumName::Variant` always resolves unambiguously, whether or not \
+             the name collides.",
+            "Only the bare (unqualified) use is rejected; `match` arms and \
+             qualified constructions are unaffected.",
+        ],
+    },
+    Explanation {
         code: "E0428",
         title: "possibly-`None` value indexed or accessed directly",
         summary: "A `T | None` value was indexed (`x[i]`) or had a field/method \
@@ -367,6 +385,49 @@ pub(super) const ENTRIES: &[Explanation] = &[
         notes: &[
             "A lambda passed directly to a typed parameter (`sorted(xs, key=lambda x: \
              x.name)`) infers from that parameter's declared type instead.",
+        ],
+    },
+    Explanation {
+        code: "E0434",
+        title: "cannot assign to a module-level binding from a function",
+        summary: "Writable globals would hole the share-nothing task model: a value \
+                  read by one task while another mutates the same module-level \
+                  binding is a data race the compiler cannot see. Reading a global \
+                  from inside a function is fine; only the write is rejected.",
+        wrong: "let mut counter = 0\n\nfn increment():\n    counter += 1",
+        fixed: "let mut counter = 0\n\nfn increment(n: int) -> int:\n    return n + 1\n\ncounter = increment(counter)",
+        notes: &[
+            "Pass the value in and return the new value, or use `aio.atomic` for \
+             genuinely shared mutable state across tasks.",
+        ],
+    },
+    Explanation {
+        code: "E0436",
+        title: "or-pattern alternatives must bind the same names",
+        summary: "`p1 | p2` in pattern position (not expression bitor) tries both \
+                  patterns against the same value, and only one body runs -- if \
+                  the alternatives bound different names, the body couldn't know \
+                  which one to read.",
+        wrong: "enum R:\n    Ok(int)\n    Err(str)\n\nfn f(r: R) -> str:\n    match r:\n        Ok(v) | Err(e):\n            return \"?\"\n        _:\n            return \"other\"",
+        fixed: "enum R:\n    Ok(int)\n    Err(str)\n\nfn f(r: R) -> str:\n    match r:\n        Ok(v):\n            return str(v)\n        Err(v):\n            return v",
+        notes: &[
+            "The alternatives' bindings must also share the same type; a name \
+             bound to `int` on one side and `str` on the other is the same error.",
+        ],
+    },
+    Explanation {
+        code: "E0437",
+        title: "pattern does not match the scrutinee's type",
+        summary: "A tuple, struct-field, or list pattern has to actually fit the \
+                  value being matched: the right element count for a tuple, a \
+                  real field name for a struct, a list type to index into. This \
+                  covers every shape mismatch for those forms with one code.",
+        wrong: "fn f(pair: (int, int)) -> int:\n    match pair:\n        (a, b, c):\n            return a\n        _:\n            return 0",
+        fixed: "fn f(pair: (int, int)) -> int:\n    match pair:\n        (a, b):\n            return a\n        _:\n            return 0",
+        notes: &[
+            "The same code covers a struct-field pattern naming an unknown field, \
+             or a struct/tuple/list pattern used against a value of some other \
+             type entirely.",
         ],
     },
 ];

@@ -1,0 +1,22 @@
+enum R:
+    A(int)
+    B(int)
+
+fn unwrap(r: R) -> int:
+    match r:
+        A(v) | B(v):
+            return v * 2
+
+fn is_safe(method: str) -> bool:
+    match method:
+        "GET" | "HEAD":
+            return True
+        _:
+            return False
+
+fn main():
+    print(unwrap(A(5)))
+    print(unwrap(B(7)))
+    print(is_safe("GET"))
+    print(is_safe("HEAD"))
+    print(is_safe("POST"))

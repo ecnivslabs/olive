@@ -532,6 +532,26 @@ fn collect_refs_pattern(pattern: &MatchPattern, out: &mut FxHashSet<String>) {
         }
         MatchPattern::Literal(expr) => collect_refs_expr(expr, out),
         MatchPattern::Identifier(..) | MatchPattern::Wildcard => {}
+        MatchPattern::Tuple(items) | MatchPattern::Or(items) => {
+            for p in items {
+                collect_refs_pattern(p, out);
+            }
+        }
+        MatchPattern::StructFields(name, fields, _) => {
+            out.insert(name.clone());
+            for (_, p) in fields {
+                collect_refs_pattern(p, out);
+            }
+        }
+        MatchPattern::List { before, after, .. } => {
+            for p in before.iter().chain(after) {
+                collect_refs_pattern(p, out);
+            }
+        }
+        MatchPattern::Range(start, end, _) => {
+            collect_refs_expr(start, out);
+            collect_refs_expr(end, out);
+        }
     }
 }
 

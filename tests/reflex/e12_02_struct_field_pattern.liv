@@ -1,0 +1,17 @@
+struct Point:
+    x: int
+    y: int
+
+fn describe(p: Point) -> str:
+    match p:
+        Point(x=0, y=0):
+            return "origin"
+        Point(x=0, y=n):
+            return "on y-axis at " + str(n)
+        Point(x=n, y=m):
+            return "at " + str(n) + "," + str(m)
+
+fn main():
+    print(describe(Point(0, 0)))
+    print(describe(Point(0, 5)))
+    print(describe(Point(3, 4)))

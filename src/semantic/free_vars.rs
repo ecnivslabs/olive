@@ -91,6 +91,32 @@ impl FreeVars {
             }
             MatchPattern::Literal(e) => self.expr(e),
             MatchPattern::Wildcard => {}
+            MatchPattern::Tuple(items) | MatchPattern::Or(items) => {
+                for p in items {
+                    self.pattern(p);
+                }
+            }
+            MatchPattern::StructFields(_, fields, _) => {
+                for (_, p) in fields {
+                    self.pattern(p);
+                }
+            }
+            MatchPattern::List {
+                before,
+                rest,
+                after,
+            } => {
+                for p in before.iter().chain(after) {
+                    self.pattern(p);
+                }
+                if let Some((n, _)) = rest {
+                    self.bind(n);
+                }
+            }
+            MatchPattern::Range(start, end, _) => {
+                self.expr(start);
+                self.expr(end);
+            }
         }
     }
 

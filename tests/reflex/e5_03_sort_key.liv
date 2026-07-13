@@ -1,0 +1,4 @@
+fn main():
+    let mut xs = ["banana", "fig", "apple"]
+    xs.sort(key=lambda s: len(s))
+    print(xs)

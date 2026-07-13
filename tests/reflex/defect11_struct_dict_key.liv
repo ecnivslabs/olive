@@ -1,0 +1,9 @@
+struct P:
+    x: int
+    y: int
+
+fn main():
+    let mut d: {P: str} = {}
+    d[P(1, 2)] = "origin-ish"
+    print(d[P(1, 2)])
+    print(P(1, 2) in d)

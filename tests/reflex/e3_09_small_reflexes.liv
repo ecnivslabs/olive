@@ -1,0 +1,13 @@
+struct User:
+    email: str
+    username: str
+
+fn main():
+    let x = 5
+    print(f"{x=}")
+    print(5 in 0..10)
+    print(15 in 0..10)
+    let u = User(email="e@x.com", username="u")
+    print(u.username)
+    let y: float = 5
+    print(y)

@@ -782,8 +782,13 @@ impl<'a> MirBuilder<'a> {
         // would pay for a wasted closure record only to have
         // `lower_general_call_path` re-derive this exact same name anyway.
         // Must match that function's own `call_fn_name` derivation exactly.
+        // A name found in `self.globals` instead (a module-scope `let`,
+        // possibly holding a lambda/closure value) is never a real function
+        // symbol under its own bare name -- fall through to `lower_expr`,
+        // which resolves it the same way any other read of that global does.
         let func = if let ExprKind::Identifier(name) = &callee.kind
             && self.lookup_var(name).is_none()
+            && !self.globals.contains_key(name)
         {
             Operand::Constant(Constant::Function(name.clone()))
         } else if let ExprKind::Attr { obj, attr } = &callee.kind

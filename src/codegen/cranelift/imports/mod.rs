@@ -89,6 +89,7 @@ pub(super) fn collect_needed_imports(
                                 // the whole set since the member isn't known here.
                                 OliveType::Union(_) => {
                                     needed.insert("__olive_free_any");
+                                    needed.insert("__olive_free_union_member");
                                     needed.insert("__olive_free_typed");
                                     needed.insert("__olive_free_str");
                                     needed.insert("__olive_buf_free");
@@ -529,6 +530,30 @@ pub(super) fn scan_rvalue_imports(
                     OliveType::PyObject | OliveType::Float | OliveType::F32
                 ) {
                     needed.insert("__olive_py_to_int");
+                }
+            }
+            if *target_ty == OliveType::Str
+                && let Operand::Copy(src) | Operand::Move(src) = op
+            {
+                match func_mir.locals[src.0].ty {
+                    OliveType::Int
+                    | OliveType::I8
+                    | OliveType::I16
+                    | OliveType::I32
+                    | OliveType::U8
+                    | OliveType::U16
+                    | OliveType::U32
+                    | OliveType::U64
+                    | OliveType::Usize => {
+                        needed.insert("__olive_str");
+                    }
+                    OliveType::Float | OliveType::F32 => {
+                        needed.insert("__olive_float_to_str");
+                    }
+                    OliveType::Bool => {
+                        needed.insert("__olive_bool_to_str");
+                    }
+                    _ => {}
                 }
             }
         }

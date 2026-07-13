@@ -14,6 +14,52 @@ fn ffi_type(t: Type) -> Type {
 }
 
 impl TypeChecker {
+    /// Writable globals would hole the share-nothing task model (see the
+    /// roadmap's design decision), so any write to a module-level binding
+    /// from inside a function is rejected -- shared by plain `=` and every
+    /// compound `+=`-family operator, which is a write to the same target
+    /// just as much as a plain assignment is.
+    pub(super) fn reject_global_write(
+        &mut self,
+        target: &crate::parser::ExprKind,
+        span: crate::span::Span,
+    ) {
+        if let crate::parser::ExprKind::Tuple(elems) = target {
+            for e in elems {
+                let inner = match &e.kind {
+                    crate::parser::ExprKind::Starred(inner) => &inner.kind,
+                    other => other,
+                };
+                self.reject_global_write(inner, span);
+            }
+            return;
+        }
+        let crate::parser::ExprKind::Identifier(name) = target else {
+            return;
+        };
+        if self.current_return_type.is_none() || self.type_env.len() <= 1 {
+            return;
+        }
+        for (scope_idx, scope) in self.type_env.iter().enumerate().rev() {
+            if scope.contains_key(name.as_str()) {
+                if scope_idx == 0 {
+                    self.errors.push(SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0434",
+                            format!(
+                                "cannot assign to module-level binding `{name}` from inside a function"
+                            ),
+                            span,
+                        )
+                        .label("global writes are not allowed")
+                        .help("pass it as a parameter and return the new value"),
+                    ));
+                }
+                break;
+            }
+        }
+    }
+
     /// Pre-registers function signatures so a forward call resolves to the
     /// real parameter/return types instead of a type variable that the later,
     /// real check of the callee never reconnects to (which finalizes to `Any`
@@ -271,28 +317,7 @@ impl TypeChecker {
                     return;
                 }
                 let val_ty = self.check_expr(value);
-                // Reject global writes from inside functions.
-                if let crate::parser::ExprKind::Identifier(name) = &target.kind
-                    && self.current_return_type.is_some()
-                    && self.type_env.len() > 1
-                {
-                    for (scope_idx, scope) in self.type_env.iter().enumerate().rev() {
-                        if scope.contains_key(name.as_str()) {
-                            if scope_idx == 0 {
-                                self.errors.push(SemanticError::rich(
-                                    crate::compile::errors::Diagnostic::error(
-                                        "E0426",
-                                        format!("cannot assign to module-level binding `{name}` from inside a function"),
-                                        target.span,
-                                    )
-                                    .label("global writes are not allowed")
-                                    .help("pass it as a parameter and return the new value"),
-                                ));
-                            }
-                            break;
-                        }
-                    }
-                }
+                self.reject_global_write(&target.kind, target.span);
                 // A write to a narrowed binding may reintroduce `None`; the
                 // fact must die before `target` is type-checked below, or
                 // this assignment would type-check against the narrowed
@@ -335,6 +360,7 @@ impl TypeChecker {
             }
 
             StmtKind::AugAssign { target, op, value } => {
+                self.reject_global_write(&target.kind, target.span);
                 let val_ty = self.check_expr(value);
                 let target_ty = self.check_expr(target);
                 let result_ty = self.check_aug_op(op, &target_ty, &val_ty, stmt.span);
@@ -648,15 +674,14 @@ impl TypeChecker {
                         && param.type_ann.is_none()
                     {
                         let struct_name = self.current_struct.clone().unwrap();
-                        if let Some(struct_ty) = self.lookup_type(&struct_name) {
-                            if let Type::Struct(_, args, is_ffi) = struct_ty {
-                                p_ty = Type::Struct(struct_name, args, is_ffi);
-                            } else {
-                                p_ty = Type::Struct(struct_name, Vec::new(), false);
+                        p_ty = match self.lookup_type(&struct_name) {
+                            Some(Type::Struct(_, args, is_ffi)) => {
+                                Type::Struct(struct_name, args, is_ffi)
                             }
-                        } else {
-                            p_ty = Type::Any;
-                        }
+                            Some(Type::Enum(_, args)) => Type::Enum(struct_name, args),
+                            Some(other) => other,
+                            None => Type::Any,
+                        };
                     }
                     self.define_type(&param.name, p_ty, param.is_mut);
                 }

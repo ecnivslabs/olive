@@ -60,11 +60,11 @@ mod tests {
         "E0001", "E0002", "E0003", "E0004", "E0006", "E0100", "E0200", "E0300", "E0301", "E0400",
         "E0401", "E0402", "E0403", "E0404", "E0405", "E0406", "E0407", "E0408", "E0409", "E0410",
         "E0411", "E0412", "E0413", "E0414", "E0415", "E0416", "E0417", "E0418", "E0419", "E0420",
-        "E0421", "E0422", "E0424", "E0425", "E0426", "E0428", "E0429", "E0430", "E0431", "E0432",
-        "E0433", "E0500", "E0501", "E0502", "E0503", "E0504", "E0505", "E0506", "E0507", "E0600",
-        "E0601", "E0602", "E0700", "E0701", "E0702", "E0703", "E0704", "E0705", "E0706", "E0707",
-        "E0708", "E0709", "E0710", "W0601", "W0602", "W0610", "W0620", "W0630", "W0640", "W0650",
-        "W0660",
+        "E0421", "E0422", "E0424", "E0425", "E0426", "E0427", "E0428", "E0429", "E0430", "E0431",
+        "E0432", "E0433", "E0434", "E0436", "E0437", "E0500", "E0501", "E0502", "E0503", "E0504",
+        "E0505", "E0506", "E0507", "E0600", "E0601", "E0602", "E0700", "E0701", "E0702", "E0703",
+        "E0704", "E0705", "E0706", "E0707", "E0708", "E0709", "E0710", "E0711", "W0601", "W0602",
+        "W0610", "W0620", "W0630", "W0640", "W0650", "W0660",
     ];
 
     #[test]
@@ -124,7 +124,7 @@ mod tests {
         "W0602", "W0630",
     ];
     /// Codes whose `wrong` example does not fail this in-process compile: runtime
-    /// faults that still type-check (E0700-E0707); interpreter-dependent Python
+    /// faults that still type-check (E0700-E0711); interpreter-dependent Python
     /// checks; FFI linkage (E0408/E0409); defensive checks unreachable from source
     /// (E0420 recursive type, E0502 borrow-before-init, E0406 result propagation);
     /// and E0504/E0507, whose conflicts the optimizer folds away before the borrow
@@ -147,9 +147,9 @@ mod tests {
     /// bare `Starred` node, so ordinary source cannot reach it either.
     const SKIP_WRONG: &[&str] = &[
         "E0700", "E0701", "E0702", "E0703", "E0704", "E0705", "E0706", "E0707", "E0708", "E0709",
-        "E0710", "E0301", "E0004", "E0406", "E0420", "E0432", "E0501", "E0502", "E0503", "E0504",
-        "E0505", "E0507", "E0408", "E0409", "E0600", "E0601", "E0602", "W0601", "W0602", "W0610",
-        "W0620", "W0630", "W0640", "W0650", "W0660",
+        "E0710", "E0711", "E0301", "E0004", "E0406", "E0420", "E0432", "E0501", "E0502", "E0503",
+        "E0504", "E0505", "E0507", "E0408", "E0409", "E0600", "E0601", "E0602", "W0601", "W0602",
+        "W0610", "W0620", "W0630", "W0640", "W0650", "W0660",
     ];
 
     /// Every `fixed` example must compile and every `wrong` example must fail to,

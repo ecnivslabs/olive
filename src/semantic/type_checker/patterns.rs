@@ -149,7 +149,175 @@ impl TypeChecker {
                 let expr_ty = self.check_expr(expr);
                 self.unify(match_ty, &expr_ty, span);
             }
+            MatchPattern::Tuple(items) => match match_ty {
+                Type::Tuple(field_tys) if field_tys.len() == items.len() => {
+                    for (item, field_ty) in items.iter().zip(field_tys) {
+                        self.check_pattern(item, field_ty, span);
+                    }
+                }
+                Type::Tuple(field_tys) => {
+                    self.push_shape_mismatch(
+                        span,
+                        format!(
+                            "expected a {}-element tuple pattern, found {}",
+                            field_tys.len(),
+                            items.len()
+                        ),
+                        "the pattern must bind exactly as many elements as the tuple has",
+                    );
+                }
+                _ => {
+                    self.push_shape_mismatch(
+                        span,
+                        format!("`{match_ty}` is not a tuple"),
+                        "tuple patterns only apply to tuple-typed values",
+                    );
+                }
+            },
+            MatchPattern::StructFields(name, fields, pat_span) => match match_ty {
+                Type::Struct(struct_name, ..) if struct_name == name => {
+                    for (fname, fpat) in fields {
+                        match self
+                            .field_types
+                            .get(&(struct_name.clone(), fname.clone()))
+                            .cloned()
+                        {
+                            Some(fty) => self.check_pattern(fpat, &fty, *pat_span),
+                            None => self.push_shape_mismatch(
+                                *pat_span,
+                                format!("`{struct_name}` has no field `{fname}`"),
+                                "check the field name against the struct definition",
+                            ),
+                        }
+                    }
+                }
+                Type::Struct(struct_name, ..) => {
+                    self.push_shape_mismatch(
+                        *pat_span,
+                        format!("expected `{struct_name}`, found a pattern for `{name}`"),
+                        "match the scrutinee's own struct name",
+                    );
+                }
+                _ => {
+                    self.push_shape_mismatch(
+                        *pat_span,
+                        format!("`{match_ty}` is not a struct"),
+                        "struct-field patterns only apply to struct-typed values",
+                    );
+                }
+            },
+            MatchPattern::List {
+                before,
+                rest,
+                after,
+            } => match match_ty {
+                Type::List(elem_ty) => {
+                    for p in before.iter().chain(after) {
+                        self.check_pattern(p, elem_ty, span);
+                    }
+                    if let Some((name, _)) = rest {
+                        self.define_type(name, Type::List(elem_ty.clone()), false);
+                    }
+                }
+                _ => {
+                    self.push_shape_mismatch(
+                        span,
+                        format!("`{match_ty}` is not a list"),
+                        "list patterns only apply to list-typed values",
+                    );
+                }
+            },
+            MatchPattern::Range(start, end, _) => {
+                let start_ty = self.check_expr(start);
+                let end_ty = self.check_expr(end);
+                self.unify(match_ty, &start_ty, span);
+                self.unify(match_ty, &end_ty, span);
+            }
+            MatchPattern::Or(alts) => {
+                let first_names = pattern_binding_names(&alts[0]);
+                if let Some(bad) = alts[1..]
+                    .iter()
+                    .find(|alt| pattern_binding_names(alt) != first_names)
+                {
+                    self.errors.push(SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0436",
+                            "or-pattern alternatives must bind the same names",
+                            span,
+                        )
+                        .label(format!(
+                            "this alternative binds {:?}, another binds {:?}",
+                            pattern_binding_names(bad),
+                            first_names
+                        ))
+                        .help("give every alternative the same set of bindings"),
+                    ));
+                }
+                for alt in alts {
+                    self.check_pattern(alt, match_ty, span);
+                }
+            }
         }
+    }
+
+    /// A pattern shape that doesn't match its scrutinee's type at all
+    /// (wrong arity, wrong struct name, wrong container kind) -- one code
+    /// covers every "this pattern cannot apply here" case rather than a
+    /// nearly-identical one per pattern form.
+    fn push_shape_mismatch(&mut self, span: Span, label: impl Into<String>, help: &str) {
+        self.errors.push(SemanticError::rich(
+            crate::compile::errors::Diagnostic::error(
+                "E0437",
+                "pattern does not match the scrutinee's type",
+                span,
+            )
+            .label(label.into())
+            .help(help),
+        ));
+    }
+}
+
+/// Every name a pattern binds, for the or-pattern consistency check --
+/// purely structural (no type lookups), since only the *names* matter
+/// there and this must not touch checker state.
+fn pattern_binding_names(pattern: &MatchPattern) -> Vec<String> {
+    let mut names = Vec::new();
+    collect_binding_names(pattern, &mut names);
+    names.sort();
+    names
+}
+
+fn collect_binding_names(pattern: &MatchPattern, out: &mut Vec<String>) {
+    match pattern {
+        MatchPattern::Identifier(name, _) => out.push(name.clone()),
+        MatchPattern::Variant(_, inner) => {
+            for p in inner {
+                collect_binding_names(p, out);
+            }
+        }
+        MatchPattern::Tuple(items) | MatchPattern::Or(items) => {
+            for p in items {
+                collect_binding_names(p, out);
+            }
+        }
+        MatchPattern::StructFields(_, fields, _) => {
+            for (_, p) in fields {
+                collect_binding_names(p, out);
+            }
+        }
+        MatchPattern::List {
+            before,
+            rest,
+            after,
+        } => {
+            for p in before.iter().chain(after) {
+                collect_binding_names(p, out);
+            }
+            if let Some((name, _)) = rest {
+                out.push(name.clone());
+            }
+        }
+        MatchPattern::Wildcard | MatchPattern::Literal(_) | MatchPattern::Range(..) => {}
     }
 }
 
@@ -244,5 +412,95 @@ mod tests {
             "enum C:\n    Red\n    Green\n    Blue\nlet x = Red\nmatch x:\n    case Red:\n        pass\n    case Green:\n        pass\n",
         );
         assert!(!tc.errors.is_empty());
+    }
+
+    /// E12.3: the E12.1 grammar-only forms now type-check for real, one
+    /// case per form (mirrors E12.1's parser round-trip tests and E12.2's
+    /// rejected-for-now tests, both now superseded by real acceptance).
+    #[test]
+    fn tuple_pattern_checks() {
+        let tc = typeck(
+            "let pair = (1, 2)\nmatch pair:\n    case (0, 0):\n        pass\n    case (a, b):\n        let y = a + b\n",
+        );
+        assert!(tc.errors.is_empty(), "{:?}", codes(&tc));
+    }
+
+    #[test]
+    fn tuple_pattern_wrong_arity() {
+        let tc = typeck(
+            "let pair = (1, 2)\nmatch pair:\n    case (a, b, c):\n        pass\n    case _:\n        pass\n",
+        );
+        assert!(codes(&tc).contains(&"E0437".to_string()));
+    }
+
+    #[test]
+    fn struct_named_pattern_checks() {
+        let tc = typeck(
+            "struct P:\n    x: i64\n    y: i64\nlet p = P(1, 2)\nmatch p:\n    case P(x=0, y=n):\n        let z = n\n    case _:\n        pass\n",
+        );
+        assert!(tc.errors.is_empty(), "{:?}", codes(&tc));
+    }
+
+    #[test]
+    fn struct_pattern_unknown_field() {
+        let tc = typeck(
+            "struct P:\n    x: i64\nlet p = P(1)\nmatch p:\n    case P(z=0):\n        pass\n    case _:\n        pass\n",
+        );
+        assert!(codes(&tc).contains(&"E0437".to_string()));
+    }
+
+    #[test]
+    fn list_pattern_checks() {
+        let tc = typeck(
+            "let xs = [1, 2, 3]\nmatch xs:\n    case []:\n        pass\n    case [first, *rest]:\n        let y = first\n",
+        );
+        assert!(tc.errors.is_empty(), "{:?}", codes(&tc));
+    }
+
+    #[test]
+    fn range_pattern_checks() {
+        let tc = typeck(
+            "let n = 5\nmatch n:\n    case 0..10:\n        pass\n    case _:\n        pass\n",
+        );
+        assert!(tc.errors.is_empty(), "{:?}", codes(&tc));
+    }
+
+    #[test]
+    fn range_pattern_wrong_type() {
+        let tc = typeck(
+            "let s = \"hi\"\nmatch s:\n    case 0..10:\n        pass\n    case _:\n        pass\n",
+        );
+        assert!(!tc.errors.is_empty());
+    }
+
+    #[test]
+    fn or_pattern_checks() {
+        let tc = typeck(
+            "let s = \"GET\"\nmatch s:\n    case \"GET\" | \"HEAD\":\n        pass\n    case _:\n        pass\n",
+        );
+        assert!(tc.errors.is_empty(), "{:?}", codes(&tc));
+    }
+
+    #[test]
+    fn or_pattern_inconsistent_bindings() {
+        let tc = typeck(
+            "enum R:\n    Ok(i64)\n    Err(str)\nlet x = Ok(1)\nmatch x:\n    case Ok(v) | Err(e):\n        pass\n    case _:\n        pass\n",
+        );
+        assert!(codes(&tc).contains(&"E0436".to_string()));
+    }
+
+    #[test]
+    fn or_pattern_consistent_bindings() {
+        let tc = typeck(
+            "enum R:\n    A(i64)\n    B(i64)\nlet x = A(1)\nmatch x:\n    case A(v) | B(v):\n        let y = v\n    case _:\n        pass\n",
+        );
+        assert!(tc.errors.is_empty(), "{:?}", codes(&tc));
+    }
+
+    fn codes(tc: &TypeChecker) -> Vec<String> {
+        tc.errors
+            .iter()
+            .filter_map(|e| e.to_diagnostic().code().map(str::to_string))
+            .collect()
     }
 }

@@ -278,6 +278,60 @@ fn starred_unpack_round_trips() {
     assert_eq!(fmt(&out), out, "not idempotent");
 }
 
+/// E12.1: every new match-pattern form round-trips through fmt, one test
+/// per form (the temporary checker rejection doesn't affect fmt -- it
+/// operates on the AST before type-checking runs). `case` is optional on
+/// input and the printer never emits it (`match_expression` above is the
+/// existing precedent), so these check AST/idempotency equivalence like
+/// that test, not a byte-exact match.
+#[test]
+fn tuple_pattern_round_trips() {
+    let src = "match pair:\n    (0, 0):\n        pass\n    (a, b):\n        pass\n";
+    let out = fmt(src);
+    assert_eq!(canonical(src), canonical(&out));
+    assert_eq!(fmt(&out), out, "not idempotent");
+}
+
+#[test]
+fn tuple_pattern_nested_round_trips() {
+    let src = "match p:\n    ((a, b), c):\n        pass\n";
+    let out = fmt(src);
+    assert_eq!(canonical(src), canonical(&out));
+    assert_eq!(fmt(&out), out, "not idempotent");
+}
+
+#[test]
+fn struct_named_pattern_round_trips() {
+    let src = "match p:\n    Point(x=0, y=n):\n        pass\n";
+    let out = fmt(src);
+    assert_eq!(canonical(src), canonical(&out));
+    assert_eq!(fmt(&out), out, "not idempotent");
+}
+
+#[test]
+fn list_pattern_round_trips() {
+    let src = "match xs:\n    []:\n        pass\n    [first, *rest]:\n        pass\n    [a, b, *mid, z]:\n        pass\n";
+    let out = fmt(src);
+    assert_eq!(canonical(src), canonical(&out));
+    assert_eq!(fmt(&out), out, "not idempotent");
+}
+
+#[test]
+fn range_pattern_round_trips() {
+    let src = "match n:\n    0..10:\n        pass\n    200..=299:\n        pass\n";
+    let out = fmt(src);
+    assert_eq!(canonical(src), canonical(&out));
+    assert_eq!(fmt(&out), out, "not idempotent");
+}
+
+#[test]
+fn or_pattern_round_trips() {
+    let src = "match s:\n    \"GET\" | \"HEAD\":\n        pass\n    \"GET\" | \"HEAD\" | \"OPTIONS\":\n        pass\n";
+    let out = fmt(src);
+    assert_eq!(canonical(src), canonical(&out));
+    assert_eq!(fmt(&out), out, "not idempotent");
+}
+
 #[test]
 fn lambda_bare_params_round_trips() {
     let src = "let g = lambda x, y: x + y\nlet h = lambda: 42\n";

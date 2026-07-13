@@ -125,4 +125,14 @@ pub(super) const ENTRIES: &[Explanation] = &[
              fault (like an out-of-bounds index) rather than a compile error.",
         ],
     },
+    Explanation {
+        code: "E0711",
+        title: "dict key not found",
+        summary: "`d[k]` (checked indexing) was used on a key the dict does not \
+                  contain. A dict has no notion of an out-of-range index, only a \
+                  present or absent key, so this is a separate fault from E0701.",
+        wrong: "fn main():\n    let d: {str: int} = {\"a\": 1}\n    print(d[\"nope\"])",
+        fixed: "fn main():\n    let d: {str: int} = {\"a\": 1}\n    print(d.get(\"nope\", 0))",
+        notes: &["`d.get(k, default)` never faults; `k in d` checks presence first."],
+    },
 ];

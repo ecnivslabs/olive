@@ -1,0 +1,10 @@
+fn main():
+    print("42".to_int())
+    print("3.14".to_float())
+    print("  7  ".to_int())
+    print("+7".to_int())
+    let n = "42".to_int()
+    if n == None:
+        print("bail")
+    else:
+        print(n + 1)

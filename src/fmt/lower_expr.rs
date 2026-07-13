@@ -278,6 +278,44 @@ impl Lowerer<'_> {
                     concat(text(name.clone()), bracketed("(", docs, ")"))
                 }
             }
+            MatchPattern::Tuple(items) => {
+                let docs: Vec<Doc> = items.iter().map(|s| self.pattern(s)).collect();
+                bracketed("(", docs, ")")
+            }
+            MatchPattern::StructFields(name, fields, _) => {
+                let docs: Vec<Doc> = fields
+                    .iter()
+                    .map(|(fname, p)| concat_all([text(fname.clone()), text("="), self.pattern(p)]))
+                    .collect();
+                concat(text(name.clone()), bracketed("(", docs, ")"))
+            }
+            MatchPattern::List {
+                before,
+                rest,
+                after,
+            } => {
+                let mut docs: Vec<Doc> = before.iter().map(|s| self.pattern(s)).collect();
+                if let Some((name, _)) = rest {
+                    docs.push(concat(text("*"), text(name.clone())));
+                }
+                docs.extend(after.iter().map(|s| self.pattern(s)));
+                bracketed("[", docs, "]")
+            }
+            MatchPattern::Range(start, end, inclusive) => {
+                let op = if *inclusive { "..=" } else { ".." };
+                concat_all([self.expr(start), text(op), self.expr(end)])
+            }
+            MatchPattern::Or(alts) => {
+                let docs: Vec<Doc> = alts.iter().map(|s| self.pattern(s)).collect();
+                let mut parts = Vec::new();
+                for (i, d) in docs.into_iter().enumerate() {
+                    if i > 0 {
+                        parts.push(text(" | "));
+                    }
+                    parts.push(d);
+                }
+                concat_all(parts)
+            }
         }
     }
 }

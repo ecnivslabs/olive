@@ -73,6 +73,13 @@ const STARRED_UNPACK: Fault = Fault {
     help: Some("check the list's length before destructuring it, or use a plain name instead"),
     note: Some("a starred target (`a, *rest = xs`) needs at least as many elements as plain names"),
 };
+const DICT_KEY: Fault = Fault {
+    code: "E0711",
+    help: Some(
+        "check the key with `in` first, or use `.get(key, default)` for a non-faulting lookup",
+    ),
+    note: None,
+};
 
 /// Aborts when a Python value cannot be converted to the required native scalar.
 pub fn abort_py_coerce(msg: &str) -> ! {
@@ -328,6 +335,18 @@ pub extern "C" fn olive_starred_unpack_fail(got: i64, need: i64, loc: i64) -> i6
     let loc = (loc != 0).then(|| olive_str_from_ptr(loc));
     let msg = format!("not enough values to unpack: needed at least {need}, got {got}");
     abort_with(&STARRED_UNPACK, &msg, loc.as_deref())
+}
+
+/// Separate code from E0701: a dict key isn't a range, just present/absent.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_key_fail(key: i64, loc: i64) -> i64 {
+    let loc = (loc != 0).then(|| olive_str_from_ptr(loc));
+    let msg = match crate::classify_key(key) {
+        crate::KeyClass::Str(s) => format!("key not found: \"{s}\""),
+        crate::KeyClass::Scalar(_, v) => format!("key not found: {v}"),
+        crate::KeyClass::Raw(_) => "key not found".to_string(),
+    };
+    abort_with(&DICT_KEY, &msg, loc.as_deref())
 }
 
 #[cfg(test)]

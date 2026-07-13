@@ -1,0 +1,7 @@
+import math
+
+fn main():
+    print(math.floordiv(7, 2))
+    print(math.floordiv(-7, 2))
+    print(math.ffloordiv(7.5, 2.0))
+    print(math.ffloordiv(-7.5, 2.0))

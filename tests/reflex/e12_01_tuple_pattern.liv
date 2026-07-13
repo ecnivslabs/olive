@@ -1,0 +1,16 @@
+fn describe(pair: (int, int)) -> str:
+    match pair:
+        (0, 0):
+            return "origin"
+        (a, b):
+            return "other: " + str(a) + "," + str(b)
+
+fn nested(p: ((int, int), int)) -> int:
+    match p:
+        ((a, b), c):
+            return a + b + c
+
+fn main():
+    print(describe((0, 0)))
+    print(describe((3, 4)))
+    print(nested(((1, 2), 3)))

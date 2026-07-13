@@ -18,6 +18,8 @@ fn greet(name: str) -> str:
 You can provide default values for arguments, making them optional when calling the function.
 
 ```rust
+import math
+
 fn power(base: int, exponent: int = 2) -> int:
     return math.ipow(base, exponent)
 
@@ -178,7 +180,7 @@ import "libm.so" as math:
 Directives are instructions for the **compiler** or tools. They don't affect runtime logic directly but change how the code is handled during the build process.
 
 ```rust
-//[test]
+#[test]
 fn test_math_logic():
     assert 2 + 2 == 4
 ```

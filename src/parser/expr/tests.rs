@@ -426,3 +426,123 @@ fn parse_pattern_variant() {
     let pat = p.parse_pattern().expect("parse failed");
     assert!(matches!(pat, MatchPattern::Variant(n, p) if n == "Some" && p.len() == 1));
 }
+
+#[test]
+fn parse_pattern_tuple() {
+    let mut p = make_parser("(x, y)\n");
+    let pat = p.parse_pattern().expect("parse failed");
+    assert!(matches!(pat, MatchPattern::Tuple(items) if items.len() == 2));
+}
+
+#[test]
+fn parse_pattern_tuple_nested() {
+    let mut p = make_parser("((a, b), c)\n");
+    let pat = p.parse_pattern().expect("parse failed");
+    let MatchPattern::Tuple(items) = pat else {
+        panic!("expected Tuple");
+    };
+    assert_eq!(items.len(), 2);
+    assert!(matches!(&items[0], MatchPattern::Tuple(inner) if inner.len() == 2));
+}
+
+#[test]
+fn parse_pattern_single_paren_is_not_a_tuple() {
+    let mut p = make_parser("(x)\n");
+    let pat = p.parse_pattern().expect("parse failed");
+    assert!(matches!(pat, MatchPattern::Identifier(n, _) if n == "x"));
+}
+
+#[test]
+fn parse_pattern_struct_positional() {
+    let mut p = make_parser("Point(x, y)\n");
+    let pat = p.parse_pattern().expect("parse failed");
+    assert!(matches!(pat, MatchPattern::Variant(n, p) if n == "Point" && p.len() == 2));
+}
+
+#[test]
+fn parse_pattern_struct_named() {
+    let mut p = make_parser("Point(x=0, y=n)\n");
+    let pat = p.parse_pattern().expect("parse failed");
+    let MatchPattern::StructFields(name, fields, _) = pat else {
+        panic!("expected StructFields");
+    };
+    assert_eq!(name, "Point");
+    assert_eq!(fields.len(), 2);
+    assert_eq!(fields[0].0, "x");
+    assert!(matches!(fields[0].1, MatchPattern::Literal(_)));
+    assert_eq!(fields[1].0, "y");
+    assert!(matches!(&fields[1].1, MatchPattern::Identifier(n, _) if n == "n"));
+}
+
+#[test]
+fn parse_pattern_list_empty() {
+    let mut p = make_parser("[]\n");
+    let pat = p.parse_pattern().expect("parse failed");
+    assert!(matches!(
+        pat,
+        MatchPattern::List { before, rest: None, after }
+            if before.is_empty() && after.is_empty()
+    ));
+}
+
+#[test]
+fn parse_pattern_list_with_rest() {
+    let mut p = make_parser("[first, *rest]\n");
+    let pat = p.parse_pattern().expect("parse failed");
+    let MatchPattern::List {
+        before,
+        rest,
+        after,
+    } = pat
+    else {
+        panic!("expected List");
+    };
+    assert_eq!(before.len(), 1);
+    assert!(after.is_empty());
+    assert!(matches!(rest, Some((n, _)) if n == "rest"));
+}
+
+#[test]
+fn parse_pattern_list_mid_rest() {
+    let mut p = make_parser("[a, b, *mid, z]\n");
+    let pat = p.parse_pattern().expect("parse failed");
+    let MatchPattern::List {
+        before,
+        rest,
+        after,
+    } = pat
+    else {
+        panic!("expected List");
+    };
+    assert_eq!(before.len(), 2);
+    assert_eq!(after.len(), 1);
+    assert!(matches!(rest, Some((n, _)) if n == "mid"));
+}
+
+#[test]
+fn parse_pattern_range_exclusive() {
+    let mut p = make_parser("0..10\n");
+    let pat = p.parse_pattern().expect("parse failed");
+    assert!(matches!(pat, MatchPattern::Range(_, _, false)));
+}
+
+#[test]
+fn parse_pattern_range_inclusive() {
+    let mut p = make_parser("200..=299\n");
+    let pat = p.parse_pattern().expect("parse failed");
+    assert!(matches!(pat, MatchPattern::Range(_, _, true)));
+}
+
+#[test]
+fn parse_pattern_or() {
+    let mut p = make_parser("\"GET\" | \"HEAD\"\n");
+    let pat = p.parse_pattern().expect("parse failed");
+    assert!(matches!(pat, MatchPattern::Or(alts) if alts.len() == 2));
+}
+
+#[test]
+fn parse_pattern_or_three_way() {
+    let mut p = make_parser("\"GET\" | \"HEAD\" | \"OPTIONS\"\n");
+    let pat = p.parse_pattern().expect("parse failed");
+    assert!(matches!(pat, MatchPattern::Or(alts) if alts.len() == 3));
+}

@@ -1,0 +1,8 @@
+fn guard_len(xs: [int] | None) -> int:
+    if xs == None:
+        return -1
+    return len(xs)
+
+fn main():
+    print(guard_len([1, 2, 3]))
+    print(guard_len(None))

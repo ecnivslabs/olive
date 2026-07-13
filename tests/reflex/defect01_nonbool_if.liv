@@ -1,0 +1,4 @@
+fn main():
+    let xs = [1, 2, 3]
+    if xs:
+        print("yes")

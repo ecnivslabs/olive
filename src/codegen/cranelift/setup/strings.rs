@@ -252,7 +252,16 @@ impl<M: Module> CraneliftCodegen<M> {
             return;
         }
         let is_copy_intrinsic = name == "__olive_copy_typed" || name == "__olive_relocate_typed";
-        if name != "print" && name != "str" && !is_copy_intrinsic {
+        // `print` is desugared to `__olive_write_any` during MIR building (E3.1
+        // variadic print), so it never survives as a literal "print" call to
+        // this pass -- `str` does stay literal until codegen. Checking only
+        // "print" here was long-masked by `Drop`'s own descriptor interning
+        // (collected further down in `collect_strings`) covering the same
+        // string for any value that also happens to get dropped in scope; a
+        // value that's printed but never dropped (a module-level global) had
+        // no other path and crashed codegen's later lookup.
+        let is_write_any = name == "__olive_write_any";
+        if name != "str" && !is_copy_intrinsic && !is_write_any {
             return;
         }
         if args.len() != 1 {

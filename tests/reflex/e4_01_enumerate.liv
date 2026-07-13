@@ -1,0 +1,5 @@
+fn main():
+    for i, x in enumerate([1, 2, 3, 4, 5]):
+        print(i, x)
+    for i, x in enumerate([10, 20], 5):
+        print(i, x)

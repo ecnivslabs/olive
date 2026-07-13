@@ -1,0 +1,7 @@
+fn apply(f: fn(int) -> int, x: int) -> int:
+    return f(x)
+
+fn main():
+    print(apply(lambda x: x * 2, 5))
+    let add = lambda (x: int, y: int): x + y
+    print(add(3, 4))
