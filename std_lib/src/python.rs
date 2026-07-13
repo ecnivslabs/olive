@@ -220,32 +220,122 @@ mod tests {
                 crate::olive_str_internal("k") | 1,
                 crate::boxed::olive_box_int(5),
             );
-            let realized = crate::python::python_coerce_ffi::olive_py_realize(obj);
-            // The realized value is a wrapped Olive PyObject; unwrap to the raw
-            // Python dict and confirm its type.
-            let raw = olive_py_unwrap(realized);
+            let raw = with_gil(|| crate::python::olive_to_py(obj));
             let is_dict = with_gil(|| {
                 let ty = PY_OBJECT_TYPE(raw);
-                !PY_DICT_TYPE.is_null()
-                    && (ty == PY_DICT_TYPE || PY_TYPE_IS_SUBTYPE(ty, PY_DICT_TYPE) != 0)
+                let dict_ty = PY_DICT_TYPE;
+                !dict_ty.is_null() && ty == dict_ty
             });
-            assert!(is_dict, "realize must produce a real dict");
-            olive_py_decref(realized);
+            assert!(
+                is_dict,
+                "the boundary must produce a genuine dict, not a proxy"
+            );
+            with_gil(|| PY_DEC_REF(raw));
             crate::olive_free_obj(obj);
         }
     }
 
+    /// R2a: the default olive-to-Python boundary always realizes a genuine
+    /// `list`/`dict`, never a proxy. Mutating the realized object does not
+    /// crash, and (since there is no copy-out mechanism until R2b) the
+    /// mutation is simply not observed back on the Olive side.
     #[test]
-    fn test_zero_copy_proxy_and_safe_boundaries() {
+    fn test_boundary_realizes() {
         let _guard = crate::python::python_coerce::arena_test_lock();
         if !is_python_available() {
             eprintln!("Python not available, skipping test");
             return;
         }
 
-        let py_num = olive_py_from_int(42);
-        assert_eq!(olive_py_to_int(py_num), 42);
-        olive_py_decref(py_num);
+        unsafe {
+            let list_ptr = crate::olive_list_new(2);
+            let sv = &mut *(list_ptr as *mut crate::StableVec);
+            *sv.ptr.add(0) = crate::olive_str_internal("hello");
+            *sv.ptr.add(1) = crate::olive_str_internal("world");
+
+            let py_list = with_gil(|| crate::python::olive_to_py(list_ptr));
+            assert!(!py_list.is_null());
+            let list_ty = with_gil(|| PY_OBJECT_TYPE(py_list));
+            let expected_list_ty = PY_LIST_TYPE;
+            assert_eq!(
+                list_ty, expected_list_ty,
+                "realized list must be the genuine PyList_Type, not a proxy"
+            );
+
+            // Python-side mutation during the call must not crash.
+            let new_item =
+                with_gil(|| PY_UNICODE_FROM_STRING(b"changed\0".as_ptr() as *const c_char));
+            let set_res = with_gil(|| PY_LIST_SET_ITEM(py_list, 0, new_item));
+            assert_eq!(set_res, 0);
+
+            // Olive side is unchanged: realize is a copy, not a live link.
+            assert_eq!(
+                crate::olive_str_from_ptr(crate::olive_list_get(list_ptr, 0)),
+                "hello"
+            );
+
+            with_gil(|| PY_DEC_REF(py_list));
+            crate::olive_free_list(list_ptr);
+
+            let dict_ptr = crate::olive_obj_new();
+            crate::olive_obj_set(
+                dict_ptr,
+                crate::olive_str_internal("testkey") | 1,
+                crate::boxed::olive_box_int(9876),
+            );
+            let py_dict = with_gil(|| crate::python::olive_to_py(dict_ptr));
+            assert!(!py_dict.is_null());
+            let dict_ty = with_gil(|| PY_OBJECT_TYPE(py_dict));
+            let expected_dict_ty = PY_DICT_TYPE;
+            assert_eq!(
+                dict_ty, expected_dict_ty,
+                "realized dict must be the genuine PyDict_Type, not a proxy"
+            );
+
+            let new_val = with_gil(|| PY_LONG_FROM_LONG(1111));
+            let set_res = with_gil(|| {
+                PY_DICT_SET_ITEM_STRING(py_dict, b"testkey\0".as_ptr() as *const c_char, new_val)
+            });
+            assert_eq!(set_res, 0);
+            with_gil(|| PY_DEC_REF(new_val));
+
+            // Olive side is unchanged: realize is a copy, not a live link.
+            assert_eq!(
+                crate::olive_obj_get(dict_ptr, crate::olive_str_internal("testkey")),
+                crate::boxed::olive_box_int(9876)
+            );
+
+            with_gil(|| PY_DEC_REF(py_dict));
+            crate::olive_free_obj(dict_ptr);
+        }
+    }
+
+    /// `isinstance(x, list)`/`isinstance(x, dict)` succeed against a
+    /// realized Olive collection, both against the exact type and via
+    /// Python's own `isinstance` builtin.
+    #[test]
+    fn test_boundary_isinstance_true() {
+        let _guard = crate::python::python_coerce::arena_test_lock();
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+
+        unsafe {
+            let list_ptr = crate::olive_list_new(1);
+            let sv = &mut *(list_ptr as *mut crate::StableVec);
+            *sv.ptr.add(0) = crate::boxed::olive_box_int(1);
+
+            let py_list = with_gil(|| crate::python::olive_to_py(list_ptr));
+            let isinstance_ok = with_gil(|| {
+                let list_ty = PY_LIST_TYPE;
+                PY_TYPE_IS_SUBTYPE(PY_OBJECT_TYPE(py_list), list_ty) != 0
+                    || PY_OBJECT_TYPE(py_list) == list_ty
+            });
+            assert!(isinstance_ok);
+            with_gil(|| PY_DEC_REF(py_list));
+            crate::olive_free_list(list_ptr);
+        }
 
         let err_res = olive_py_import_safe(crate::olive_str_internal("non_existent_module_xyz"));
         assert_eq!(crate::result::olive_result_is_err(err_res), 1);
@@ -255,95 +345,9 @@ mod tests {
         assert!(err_msg.contains("No module named 'non_existent_module_xyz'"));
         crate::olive_free_any(err_res);
 
-        unsafe {
-            let list_ptr = crate::olive_list_new(2);
-            let sv = &mut *(list_ptr as *mut crate::StableVec);
-            *sv.ptr.add(0) = crate::olive_str_internal("hello");
-            *sv.ptr.add(1) = crate::olive_str_internal("world");
-
-            let py_proxy = olive_py_conv_to_py(list_ptr);
-            assert!(!py_proxy.is_null());
-
-            let sys_mod = with_gil(|| PY_IMPORT_IMPORT_MODULE(b"sys\0".as_ptr() as *const c_char));
-            assert!(!sys_mod.is_null());
-
-            let py_len = olive_py_len(py_proxy) as i64;
-            assert_eq!(py_len, 2);
-
-            let hello_ptr = crate::olive_list_get(list_ptr, 0);
-
-            let idx_0 = with_gil(|| PY_LONG_FROM_LONG(0));
-            let val_0 = with_gil(|| PY_UNICODE_FROM_STRING(b"world\0".as_ptr() as *const c_char));
-            let setitem_res = with_gil(|| PY_OBJECT_SET_ITEM(py_proxy, idx_0, val_0));
-            assert_ne!(setitem_res, -1);
-            with_gil(|| {
-                PY_DEC_REF(idx_0);
-                PY_DEC_REF(val_0);
-            });
-
-            let olive_val_0 = crate::olive_list_get(list_ptr, 0);
-            assert_eq!(crate::olive_str_from_ptr(olive_val_0), "world");
-
-            let val_insert_olive = crate::olive_str_internal("inserted");
-            crate::olive_list_insert(list_ptr, 1, val_insert_olive);
-
-            assert_eq!(crate::olive_list_len(list_ptr), 3);
-            let val_at_1 = crate::olive_list_get(list_ptr, 1);
-            assert_eq!(crate::olive_str_from_ptr(val_at_1), "inserted");
-
-            let idx_to_del = with_gil(|| PY_LONG_FROM_LONG(1));
-            let del_res = with_gil(|| PY_OBJECT_DEL_ITEM(py_proxy, idx_to_del));
-            assert_ne!(del_res, -1);
-            with_gil(|| PY_DEC_REF(idx_to_del));
-
-            assert_eq!(crate::olive_list_len(list_ptr), 2);
-            assert_ne!(
-                crate::olive_str_from_ptr(crate::olive_list_get(list_ptr, 1)),
-                "inserted"
-            );
-
-            let dict_ptr = crate::olive_obj_new();
-            let py_dict = olive_py_conv_to_py(dict_ptr);
-
-            let dict_key =
-                with_gil(|| PY_UNICODE_FROM_STRING(b"testkey\0".as_ptr() as *const c_char));
-            let dict_val = with_gil(|| PY_LONG_FROM_LONG(9876));
-            assert_ne!(
-                with_gil(|| PY_OBJECT_SET_ITEM(py_dict, dict_key, dict_val)),
-                -1
-            );
-            with_gil(|| {
-                PY_DEC_REF(dict_key);
-                PY_DEC_REF(dict_val);
-            });
-
-            assert_eq!(
-                crate::olive_obj_get(dict_ptr, crate::olive_str_internal("testkey")),
-                9876
-            );
-
-            let dict_del_key =
-                with_gil(|| PY_UNICODE_FROM_STRING(b"testkey\0".as_ptr() as *const c_char));
-            let dict_del_res = with_gil(|| PY_OBJECT_DEL_ITEM(py_dict, dict_del_key));
-            assert_ne!(dict_del_res, -1);
-            with_gil(|| PY_DEC_REF(dict_del_key));
-
-            assert_eq!(
-                crate::olive_obj_get(dict_ptr, crate::olive_str_internal("testkey")),
-                0
-            );
-
-            olive_py_decref(py_dict);
-            crate::olive_free_obj(dict_ptr);
-
-            with_gil(|| {
-                PY_DEC_REF(sys_mod);
-            });
-            olive_py_decref(py_proxy);
-
-            crate::olive_free_any(hello_ptr);
-            crate::olive_free_list(list_ptr);
-        }
+        let py_num = olive_py_from_int(42);
+        assert_eq!(olive_py_to_int(py_num), 42);
+        olive_py_decref(py_num);
     }
 
     #[test]
@@ -372,7 +376,7 @@ mod tests {
 
         for ptr in allocated_ptrs {
             assert!(
-                olive_py_is_valid_proxy(ptr) == 0,
+                !crate::is_active_object(ptr),
                 "Active object (ptr={:#x}) leaked in interop wrapping!",
                 ptr
             );

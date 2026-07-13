@@ -44,56 +44,6 @@ pub extern "C" fn olive_py_conv_to_olive(py_val: PyObject) -> i64 {
     with_gil(|| unsafe { py_to_olive_internal(py_val) })
 }
 
-/// Deep-converts an Olive value to a genuine Python object (dicts to real
-/// `dict`, lists to real `list`, recursively), wrapped as an Olive `PyObject`.
-/// Unlike the default boundary, which hands Python a zero-copy proxy, this yields
-/// a value that satisfies `isinstance(x, dict)` and other concrete-type checks,
-/// for libraries that require a real dict.
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_py_realize(val: i64) -> PyObject {
-    check_python_loaded();
-    with_gil(|| unsafe { olive_py_wrap_owned(deep_to_py(val)) })
-}
-
-unsafe fn deep_to_py(val: i64) -> PyObject {
-    unsafe {
-        if val == 0 || !crate::is_active_object(val) {
-            return olive_any_to_py_checked(val);
-        }
-        let kind = *(val as *const i64);
-        match kind {
-            crate::KIND_OBJ => {
-                let py_dict = PY_DICT_NEW();
-                let keys = crate::olive_obj_keys(val);
-                let n = crate::olive_list_len(keys);
-                for i in 0..n {
-                    let key = crate::olive_list_get(keys, i);
-                    let value = crate::olive_obj_get(val, key);
-                    let py_value = deep_to_py(value);
-                    PY_DICT_SET_ITEM_STRING(py_dict, (key & !1) as *const c_char, py_value);
-                    PY_DEC_REF(py_value);
-                }
-                py_dict
-            }
-            crate::KIND_LIST | crate::KIND_ANY_LIST => {
-                let n = crate::olive_list_len(val);
-                let py_list = PY_LIST_NEW(n as isize);
-                for i in 0..n {
-                    let elem = crate::olive_list_get(val, i);
-                    let item = if kind == crate::KIND_ANY_LIST {
-                        deep_to_py(elem)
-                    } else {
-                        olive_to_py_checked(elem)
-                    };
-                    PY_LIST_SET_ITEM(py_list, i as isize, item);
-                }
-                py_list
-            }
-            _ => olive_to_py_checked(val),
-        }
-    }
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_from_float_bits(val: i64) -> PyObject {
     check_python_loaded();
@@ -518,11 +468,6 @@ pub extern "C" fn olive_dict_keys_ffi(obj_ptr: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn olive_py_is_valid_proxy(ptr: i64) -> i64 {
-    if crate::is_active_object(ptr) { 1 } else { 0 }
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn olive_py_import(name: i64) -> PyObject {
     check_python_loaded();
     with_gil(|| unsafe {
@@ -583,41 +528,6 @@ pub extern "C" fn olive_py_bitor(l: PyObject, r: PyObject) -> i64 {
         }
         olive_py_wrap_owned(res) as i64
     })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_py_to_sequence(val: i64) -> PyObject {
-    check_python_loaded();
-    if val == 0 {
-        return std::ptr::null_mut();
-    }
-    if !crate::is_active_object(val) {
-        return std::ptr::null_mut();
-    }
-    unsafe {
-        let kind = *(val as *const i64);
-        if kind == crate::KIND_LIST || kind == crate::KIND_ANY_LIST {
-            let sv = &*(val as *const crate::StableVec);
-            let pyl = crate::python::PY_TUPLE_NEW(sv.len as isize);
-            for i in 0..sv.len {
-                let v = *sv.ptr.add(i);
-                let py_v = if kind == crate::KIND_ANY_LIST {
-                    olive_any_to_py(v)
-                } else {
-                    olive_to_py(v)
-                };
-                if py_v.is_null() || !crate::python::PY_ERR_OCCURRED().is_null() {
-                    // Error stays set; the caller's boundary check reports it.
-                    crate::python::PY_DEC_REF(pyl);
-                    return std::ptr::null_mut();
-                }
-                crate::python::PY_TUPLE_SET_ITEM(pyl, i as isize, py_v);
-            }
-            pyl
-        } else {
-            std::ptr::null_mut()
-        }
-    }
 }
 
 #[unsafe(no_mangle)]

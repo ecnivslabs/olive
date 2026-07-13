@@ -550,7 +550,6 @@ pub(crate) fn resolve_builtin_import(
             "__olive_py_import" => Some("__olive_py_import"),
             "__olive_py_import_safe" => Some("__olive_py_import_safe"),
             "__olive_py_getattr" => Some("__olive_py_getattr"),
-            "__olive_py_realize" => Some("__olive_py_realize"),
             "__olive_py_getattr_safe" => Some("__olive_py_getattr_safe"),
             "__olive_py_call" => Some("__olive_py_call"),
             "__olive_py_call_safe" => Some("__olive_py_call_safe"),
@@ -641,7 +640,6 @@ pub(crate) fn resolve_builtin_import(
         }
 
         "list_new" => Some("__olive_list_new"),
-        "realize" => Some("__olive_py_realize"),
         _ => None,
     }
 }

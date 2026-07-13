@@ -1382,6 +1382,5 @@ pub extern "C" fn olive_cache_set_tuple(cache_ptr: i64, key_ptr: i64, val: i64) 
     cache_ptr
 }
 
-pub mod python_proxy;
 #[cfg(test)]
 mod tests;

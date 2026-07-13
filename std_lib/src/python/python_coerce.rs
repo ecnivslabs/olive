@@ -256,8 +256,7 @@ pub fn olive_to_py(val: i64) -> PyObject {
             unsafe {
                 let kind = *(ptr as *const i64);
                 match kind {
-                    crate::KIND_LIST | crate::KIND_ANY_LIST => olive_py_create_list_proxy(val),
-                    crate::KIND_OBJ => olive_py_create_dict_proxy(val),
+                    crate::KIND_LIST | crate::KIND_ANY_LIST | crate::KIND_OBJ => to_py_deep(val),
                     crate::KIND_SET => {
                         let hs = &*(ptr as *const crate::OliveHashSet);
                         let pys = PY_SET_NEW(std::ptr::null_mut());
@@ -333,29 +332,46 @@ pub unsafe fn olive_any_to_py_checked(val: i64) -> PyObject {
     r
 }
 
-pub unsafe fn olive_py_create_list_proxy(ptr: i64) -> PyObject {
+/// Deep-realizes an Olive collection into a genuine Python object (dicts to
+/// real `dict`, lists to real `list`, recursively). This is the boundary now:
+/// every olive-to-Python crossing of a collection produces a value that
+/// satisfies `isinstance(x, dict)` / `isinstance(x, list)`, not a proxy.
+pub unsafe fn to_py_deep(val: i64) -> PyObject {
     unsafe {
-        let obj = crate::python_proxy::PY_TYPE_GENERIC_ALLOC(
-            crate::python_proxy::OLIVE_LIST_PROXY_TYPE,
-            0,
-        );
-        if !obj.is_null() {
-            (*(obj as *mut crate::python_proxy::NativeProxy)).ptr = ptr;
+        if val == 0 || !crate::is_active_object(val) {
+            return olive_any_to_py_checked(val);
         }
-        obj
-    }
-}
-
-pub unsafe fn olive_py_create_dict_proxy(ptr: i64) -> PyObject {
-    unsafe {
-        let obj = crate::python_proxy::PY_TYPE_GENERIC_ALLOC(
-            crate::python_proxy::OLIVE_DICT_PROXY_TYPE,
-            0,
-        );
-        if !obj.is_null() {
-            (*(obj as *mut crate::python_proxy::NativeProxy)).ptr = ptr;
+        let kind = *(val as *const i64);
+        match kind {
+            crate::KIND_OBJ => {
+                let py_dict = PY_DICT_NEW();
+                let keys = crate::olive_obj_keys(val);
+                let n = crate::olive_list_len(keys);
+                for i in 0..n {
+                    let key = crate::olive_list_get(keys, i);
+                    let value = crate::olive_obj_get(val, key);
+                    let py_value = to_py_deep(value);
+                    PY_DICT_SET_ITEM_STRING(py_dict, (key & !1) as *const c_char, py_value);
+                    PY_DEC_REF(py_value);
+                }
+                py_dict
+            }
+            crate::KIND_LIST | crate::KIND_ANY_LIST => {
+                let n = crate::olive_list_len(val);
+                let py_list = PY_LIST_NEW(n as isize);
+                for i in 0..n {
+                    let elem = crate::olive_list_get(val, i);
+                    let item = if kind == crate::KIND_ANY_LIST {
+                        to_py_deep(elem)
+                    } else {
+                        olive_to_py_checked(elem)
+                    };
+                    PY_LIST_SET_ITEM(py_list, i as isize, item);
+                }
+                py_list
+            }
+            _ => olive_to_py_checked(val),
         }
-        obj
     }
 }
 
@@ -368,13 +384,6 @@ pub unsafe fn py_to_olive_internal(py_val: PyObject) -> i64 {
         let ty = raw_ob_type(py_val);
         if ty.is_null() {
             return 0;
-        }
-
-        let list_type = crate::python_proxy::OLIVE_LIST_PROXY_TYPE;
-        let dict_type = crate::python_proxy::OLIVE_DICT_PROXY_TYPE;
-        if (!list_type.is_null() && ty == list_type) || (!dict_type.is_null() && ty == dict_type) {
-            let proxy = &*(py_val as *const crate::python_proxy::NativeProxy);
-            return proxy.ptr;
         }
 
         let is_subtype = |expected: PyObject| {
