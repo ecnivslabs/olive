@@ -5,7 +5,7 @@ use crate::semantic::types::Type;
 use crate::span::Span;
 
 impl<'a> MirBuilder<'a> {
-    pub(super) fn lower_binop_expr(
+    pub(crate) fn lower_binop_expr(
         &mut self,
         left: &Expr,
         op: &crate::parser::BinOp,
@@ -60,6 +60,7 @@ impl<'a> MirBuilder<'a> {
                     Type::Bool,
                     span,
                 );
+                self.last_cmp_operands = Some((Operand::Copy(l_ref), Operand::Copy(r_ref)));
                 if matches!(op, BinOp::Eq) {
                     return result;
                 }
@@ -87,6 +88,7 @@ impl<'a> MirBuilder<'a> {
                     Type::Bool,
                     span,
                 );
+                self.last_cmp_operands = Some((Operand::Copy(l_ref), Operand::Copy(r_ref)));
                 if negate {
                     return self.negate_bool(result, span);
                 }
@@ -101,13 +103,13 @@ impl<'a> MirBuilder<'a> {
             // PyObject None is a singleton, not bare 0; detect syntactically since type widens.
             let is_none_lit = |e: &Expr| matches!(e.kind, crate::parser::ast::ExprKind::Null);
             let py_operand = if is_none_lit(right) && matches!(l_ty, Type::PyObject) {
-                Some(left)
+                Some((left, true))
             } else if is_none_lit(left) && matches!(r_ty, Type::PyObject) {
-                Some(right)
+                Some((right, false))
             } else {
                 None
             };
-            if let Some(operand) = py_operand {
+            if let Some((operand, is_left)) = py_operand {
                 let v = self.lower_expr_as_copy(operand);
                 let is_none = self.new_local(Type::Bool, None, false);
                 self.push_statement(
@@ -117,11 +119,16 @@ impl<'a> MirBuilder<'a> {
                             func: Operand::Constant(Constant::Function(
                                 "__olive_py_is_none".to_string(),
                             )),
-                            args: vec![v],
+                            args: vec![v.clone()],
                         },
                     ),
                     span,
                 );
+                self.last_cmp_operands = Some(if is_left {
+                    (v, Operand::Constant(Constant::None))
+                } else {
+                    (Operand::Constant(Constant::None), v)
+                });
                 if matches!(op, crate::parser::BinOp::Eq) {
                     return self.operand_for_local(is_none);
                 }
@@ -136,11 +143,11 @@ impl<'a> MirBuilder<'a> {
                 return self.operand_for_local(neg);
             }
             let any_operand = match (&l_ty, &r_ty) {
-                (Type::Any, Type::Null) => Some(left),
-                (Type::Null, Type::Any) => Some(right),
+                (Type::Any, Type::Null) => Some((left, true)),
+                (Type::Null, Type::Any) => Some((right, false)),
                 _ => None,
             };
-            if let Some(operand) = any_operand {
+            if let Some((operand, is_left)) = any_operand {
                 let v = self.lower_expr_as_copy(operand);
                 let is_null = self.new_local(Type::Bool, None, false);
                 self.push_statement(
@@ -150,11 +157,16 @@ impl<'a> MirBuilder<'a> {
                             func: Operand::Constant(Constant::Function(
                                 "__olive_any_is_null".to_string(),
                             )),
-                            args: vec![v],
+                            args: vec![v.clone()],
                         },
                     ),
                     span,
                 );
+                self.last_cmp_operands = Some(if is_left {
+                    (v, Operand::Constant(Constant::None))
+                } else {
+                    (Operand::Constant(Constant::None), v)
+                });
                 if matches!(op, crate::parser::BinOp::Eq) {
                     return self.operand_for_local(is_null);
                 }
@@ -196,11 +208,16 @@ impl<'a> MirBuilder<'a> {
             if l_null && r_null {
                 self.lower_expr_as_copy(left);
                 self.lower_expr_as_copy(right);
+                self.last_cmp_operands = Some((
+                    Operand::Constant(Constant::None),
+                    Operand::Constant(Constant::None),
+                ));
                 return Operand::Constant(Constant::Bool(matches!(op, crate::parser::BinOp::Eq)));
             }
             if (l_null && is_scalar(&r_ty)) || (r_null && is_scalar(&l_ty)) {
-                self.lower_expr_as_copy(left);
-                self.lower_expr_as_copy(right);
+                let l_op = self.lower_expr_as_copy(left);
+                let r_op = self.lower_expr_as_copy(right);
+                self.last_cmp_operands = Some((l_op, r_op));
                 return Operand::Constant(Constant::Bool(!matches!(op, crate::parser::BinOp::Eq)));
             }
             // Comparing a pointer-backed value against `None` is a raw null
@@ -208,7 +225,13 @@ impl<'a> MirBuilder<'a> {
             // pointer against 0 directly and never dereference it.
             if l_null || r_null {
                 let operand = if l_null { right } else { left };
+                let operand_is_left = !l_null;
                 let v = self.lower_expr_as_copy(operand);
+                self.last_cmp_operands = Some(if operand_is_left {
+                    (v.clone(), Operand::Constant(Constant::None))
+                } else {
+                    (Operand::Constant(Constant::None), v.clone())
+                });
                 // Raw-int reinterpret before the 0 test; a PyObject-typed operand
                 // would route through Python eq (boxes the 0, compares identity).
                 let raw = self.new_local(Type::Int, None, false);
@@ -260,6 +283,7 @@ impl<'a> MirBuilder<'a> {
             if needs_structural(&l_ty) || needs_structural(&r_ty) {
                 let l_op = self.lower_expr_as_copy(left);
                 let r_op = self.lower_expr_as_copy(right);
+                self.last_cmp_operands = Some((l_op.clone(), r_op.clone()));
                 let call_tmp = self.new_local(Type::Bool, None, false);
                 self.push_statement(
                     StatementKind::Assign(
@@ -624,6 +648,12 @@ impl<'a> MirBuilder<'a> {
                 span,
             );
             return self.operand_for_local(tmp);
+        }
+        if matches!(
+            op,
+            BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq
+        ) {
+            self.last_cmp_operands = Some((l.clone(), r.clone()));
         }
         let tmp = self.new_local(self.get_type(expr_id), None, false);
         self.push_statement(

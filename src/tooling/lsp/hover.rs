@@ -1,15 +1,32 @@
-//! `textDocument/hover`: type of the smallest AST node covering the cursor.
+//! `textDocument/hover`: type of the smallest AST node covering the cursor,
+//! plus (E13.4) the `///` doc comment on whatever it resolves to, the same
+//! text `pit doc` renders -- one extraction function, two consumers.
 
 use super::locate::find_expr_at;
 use crate::compile::diagnose::DiagnoseOutput;
 use crate::span::Span;
+use crate::tooling::doc_comments::extract_for_item;
 
-/// Type and span at `offset`, or `None` if the cursor isn't over a typed expression.
+/// Type (plus doc comment, if the hovered name resolves to a documented
+/// definition) and span at `offset`, or `None` if the cursor isn't over a
+/// typed expression.
 pub fn hover_at(output: &DiagnoseOutput, file_id: usize, offset: usize) -> Option<(String, Span)> {
     let program = output.program.as_ref()?;
     let expr = find_expr_at(program, file_id, offset)?;
     let ty = output.expr_types.get(&expr.id)?;
-    Some((ty.to_string(), expr.span))
+    let mut text = ty.to_string();
+
+    if let Some(def_span) = output.def_sites.get(&expr.id)
+        && let Some((_, content)) = output.sources.get(&def_span.file_id)
+    {
+        let lines: Vec<&str> = content.lines().collect();
+        if let Some(doc) = extract_for_item(&lines, def_span.line) {
+            text.push_str("\n\n");
+            text.push_str(&doc);
+        }
+    }
+
+    Some((text, expr.span))
 }
 
 #[cfg(test)]
@@ -41,6 +58,23 @@ mod tests {
         let offset = src.rfind("count)").unwrap() + 1; // inside the second `count`
         let (ty, _) = hover_at(&out, file_id, offset).expect("hover result");
         assert_eq!(ty, "int");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn hover_on_documented_function_call_includes_doc_comment() {
+        let src = "/// Adds one to `x`.\nfn inc(x: int) -> int:\n    return x + 1\n\nfn main():\n    print(inc(1))\n";
+        let path = write_temp("hover_doc.liv", src);
+        let out = diagnose(path.to_str().unwrap());
+        let file_id = out
+            .sources
+            .iter()
+            .find(|(_, (p, _))| p == path.to_str().unwrap())
+            .map(|(id, _)| *id)
+            .unwrap();
+        let offset = src.rfind("inc(1)").unwrap() + 1; // inside "inc"
+        let (text, _) = hover_at(&out, file_id, offset).expect("hover result");
+        assert!(text.contains("Adds one to `x`."), "hover text: {text}");
         std::fs::remove_file(&path).ok();
     }
 

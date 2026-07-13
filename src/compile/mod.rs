@@ -31,7 +31,7 @@ fn run_jit_to_exit_code(
     write_profile: bool,
     explain_copies: bool,
 ) -> i32 {
-    let out = match run_pipeline_opt(filename, release, None, explain_copies) {
+    let mut out = match run_pipeline_opt(filename, release, None, explain_copies) {
         Ok(o) => o,
         Err(_) => return 1,
     };
@@ -45,6 +45,11 @@ fn run_jit_to_exit_code(
             println!("{:#?}", f);
         }
     }
+
+    // E13.2: a fault mid-call-chain prints every frame back to `main`, not
+    // just the caret at the fault site. JIT (this pipeline) only -- AOT
+    // release never calls this, so it stays caret-only there at zero cost.
+    crate::mir::shadow_stack::instrument(&mut out.functions, &out.file_names);
 
     // `write_profile` gates PGO for this run entirely: a build script isn't
     // the program PGO is meant to capture, so it neither reads nor writes one.
@@ -366,6 +371,157 @@ pub fn compile_and_test(filename: &str, _show_time: bool, release: bool, _explai
     );
     if failed > 0 {
         process::exit(1);
+    }
+}
+
+/// Untimed calls before sampling starts, letting the JIT's tier-up and the
+/// CPU's caches/branch predictor settle so the first sample isn't cold.
+const BENCH_WARMUP_ITERS: usize = 5;
+/// Fixed sample count -- the "statistical stop rule" is simply "stop here",
+/// not an adaptive one, so two runs of the same bench are directly
+/// comparable instead of each picking its own sample count.
+const BENCH_SAMPLE_ITERS: usize = 30;
+
+struct BenchStats {
+    name: String,
+    mean_ns: f64,
+    stddev_ns: f64,
+    min_ns: f64,
+    samples: usize,
+}
+
+fn summarize_bench(name: &str, samples_ns: &[f64]) -> BenchStats {
+    let n = samples_ns.len() as f64;
+    let mean = samples_ns.iter().sum::<f64>() / n;
+    let variance = if samples_ns.len() > 1 {
+        samples_ns.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (n - 1.0)
+    } else {
+        0.0
+    };
+    let min = samples_ns.iter().copied().fold(f64::INFINITY, f64::min);
+    BenchStats {
+        name: name.to_string(),
+        mean_ns: mean,
+        stddev_ns: variance.sqrt(),
+        min_ns: min,
+        samples: samples_ns.len(),
+    }
+}
+
+fn print_bench_human(stats: &[BenchStats]) {
+    for s in stats {
+        println!(
+            "bench {} ... mean: {}, stddev: {}, min: {} ({} samples)",
+            s.name,
+            format_duration_ns(s.mean_ns),
+            format_duration_ns(s.stddev_ns),
+            format_duration_ns(s.min_ns),
+            s.samples
+        );
+    }
+    println!(
+        "\nbenchmark result: \x1b[1;32mok\x1b[0m. {} benchmarked",
+        stats.len()
+    );
+}
+
+fn format_duration_ns(ns: f64) -> String {
+    if ns >= 1_000_000_000.0 {
+        format!("{:.3}s", ns / 1_000_000_000.0)
+    } else if ns >= 1_000_000.0 {
+        format!("{:.3}ms", ns / 1_000_000.0)
+    } else if ns >= 1_000.0 {
+        format!("{:.3}µs", ns / 1_000.0)
+    } else {
+        format!("{:.0}ns", ns)
+    }
+}
+
+fn print_bench_json(stats: &[BenchStats]) {
+    let mut out = String::from("[\n");
+    for (i, s) in stats.iter().enumerate() {
+        out.push_str(&format!(
+            "  {{\"name\": \"{}\", \"mean_ns\": {:.3}, \"stddev_ns\": {:.3}, \"min_ns\": {:.3}, \"samples\": {}}}",
+            s.name.replace('\\', "\\\\").replace('"', "\\\""),
+            s.mean_ns,
+            s.stddev_ns,
+            s.min_ns,
+            s.samples
+        ));
+        if i + 1 < stats.len() {
+            out.push(',');
+        }
+        out.push('\n');
+    }
+    out.push(']');
+    println!("{out}");
+}
+
+/// Roadmap E13.3: discovery mirrors `compile_and_test` (`#[bench]` in place
+/// of `#[test]`), always at release optimization -- a debug-pipeline number
+/// would mislead as much as a wall-clock eyeball would. Each bench runs a
+/// fixed warmup then a fixed sample count (`BENCH_WARMUP_ITERS`/
+/// `BENCH_SAMPLE_ITERS`), timed from the Rust host side with
+/// `std::time::Instant` exactly like `compile_and_test` already times a
+/// whole test: the harness is driving compiled function calls, not
+/// computing elapsed time from inside Olive itself, so the precision the
+/// timing needs belongs on the Rust side.
+pub fn compile_and_bench(filename: &str, json: bool) {
+    let out = match run_pipeline_opt(filename, true, None, false) {
+        Ok(o) => o,
+        Err(_) => std::process::exit(1),
+    };
+
+    let mut codegen = CraneliftCodegen::new_jit(
+        out.functions,
+        out.struct_fields.clone(),
+        out.field_types.clone(),
+        out.enum_defs.clone(),
+        out.vtables.clone(),
+        out.global_vars.clone(),
+        out.file_names.clone(),
+        &out.native_libs,
+        true,
+    );
+    codegen.generate();
+    codegen.finalize();
+
+    if !json {
+        println!("\x1b[1;34mRunning benchmarks...\x1b[0m\n");
+    }
+
+    let mut stats = Vec::new();
+    for stmt in &out.program.stmts {
+        if let parser::StmtKind::Fn {
+            name, decorators, ..
+        } = &stmt.kind
+            && decorators
+                .iter()
+                .any(|d| d.name == "bench" && d.is_directive)
+        {
+            let Some(func_ptr) = codegen.get_function(name) else {
+                eprintln!("error: bench function `{name}` not found in compiled output");
+                std::process::exit(1);
+            };
+            let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(func_ptr) };
+
+            for _ in 0..BENCH_WARMUP_ITERS {
+                func();
+            }
+            let mut samples_ns = Vec::with_capacity(BENCH_SAMPLE_ITERS);
+            for _ in 0..BENCH_SAMPLE_ITERS {
+                let start = std::time::Instant::now();
+                func();
+                samples_ns.push(start.elapsed().as_nanos() as f64);
+            }
+            stats.push(summarize_bench(name, &samples_ns));
+        }
+    }
+
+    if json {
+        print_bench_json(&stats);
+    } else {
+        print_bench_human(&stats);
     }
 }
 

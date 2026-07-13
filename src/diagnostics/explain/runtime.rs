@@ -5,12 +5,12 @@ pub(super) const ENTRIES: &[Explanation] = &[
         code: "E0700",
         title: "panic",
         summary: "The generic runtime fault for an explicitly signalled unrecoverable \
-                  state: an `assert` failed, or `int()`/`float()` was given a string that \
-                  doesn't parse (`int(\"abc\")`).",
-        wrong: "fn main():\n    let x = 1\n    assert x == 2",
-        fixed: "fn main():\n    let x = 2\n    assert x == 2",
+                  state: an explicit `panic(...)` call, or `int()`/`float()` was given a \
+                  string that doesn't parse (`int(\"abc\")`). A failed `assert` is E0712, \
+                  a separate code.",
+        wrong: "fn main():\n    let n = int(\"abc\")\n    print(n)",
+        fixed: "fn main():\n    let s = \"abc\"\n    let n = s.to_int() ?? 0\n    print(n)",
         notes: &[
-            "Assert only what must always hold; return a result for expected failures.",
             "For a string that might not parse, use `.to_int()`/`.to_float()` \
              (-> `int | None` / `float | None`) instead of `int()`/`float()`.",
         ],
@@ -134,5 +134,20 @@ pub(super) const ENTRIES: &[Explanation] = &[
         wrong: "fn main():\n    let d: {str: int} = {\"a\": 1}\n    print(d[\"nope\"])",
         fixed: "fn main():\n    let d: {str: int} = {\"a\": 1}\n    print(d.get(\"nope\", 0))",
         notes: &["`d.get(k, default)` never faults; `k in d` checks presence first."],
+    },
+    Explanation {
+        code: "E0712",
+        title: "assertion failed",
+        summary: "An `assert` condition was false at runtime. When the asserted \
+                  expression is a top-level comparison (`==`, `!=`, `<`, `<=`, `>`, \
+                  `>=`), the fault also reports the actual `left`/`right` values, not \
+                  just the source text.",
+        wrong: "fn main():\n    let x = 1\n    assert x == 2",
+        fixed: "fn main():\n    let x = 2\n    assert x == 2",
+        notes: &[
+            "Assert only what must always hold; return a result for expected failures.",
+            "The `left`/`right` values only show for a top-level comparison; wrap a \
+             more complex condition in one, or add a custom message, for the same detail.",
+        ],
     },
 ];

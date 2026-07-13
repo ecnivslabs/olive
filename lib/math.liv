@@ -1,6 +1,8 @@
+/// Sine of `x`, in radians.
 fn sin(x: float) -> float:
     return __olive_math_sin(x)
 
+/// Cosine of `x`, in radians.
 fn cos(x: float) -> float:
     return __olive_math_cos(x)
 
@@ -34,6 +36,14 @@ const TAU = 6.283185307179586
 const INF = 1.0e308
 const _SQRT2 = 1.4142135623730951
 
+/// Absolute value of `x`.
+///
+/// ```olive
+/// import math
+///
+/// fn main():
+///     print(math.abs(-3.5))
+/// ```
 fn abs(x: float) -> float:
     if x < 0.0:
         return -x

@@ -124,6 +124,13 @@ enum Commands {
         #[arg(long)]
         release: bool,
     },
+    Bench {
+        #[arg(long)]
+        json: bool,
+    },
+    Doc {
+        file: Option<String>,
+    },
     Shell,
     Lsp,
     Add {
@@ -197,6 +204,8 @@ fn main() {
         Commands::Fix { file, dry_run } => commands::fix::execute_fix(file.as_ref(), dry_run),
         Commands::Explain { code } => commands::explain::execute_explain(&code),
         Commands::Test { time, release } => commands::build::execute_test(time, release, false),
+        Commands::Bench { json } => commands::bench::execute_bench(json),
+        Commands::Doc { file } => commands::doc::execute_doc(file.as_deref()),
         Commands::Shell => commands::project::execute_shell(),
         Commands::Lsp => tooling::lsp::run_lsp(),
         Commands::Add { pod } => commands::deps::execute_add(&pod),

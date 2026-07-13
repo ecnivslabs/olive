@@ -46,6 +46,7 @@ pub mod random;
 pub mod regex;
 pub mod requests;
 pub mod result;
+pub mod shadow_stack;
 pub mod slab;
 pub mod string_slab;
 pub mod sys;

@@ -5,6 +5,7 @@ use crate::parser::{ExprKind, Stmt, StmtKind};
 use crate::semantic::types::Type;
 use crate::span::Span;
 
+mod assert;
 mod assign;
 mod functions;
 #[cfg(test)]
@@ -879,27 +880,7 @@ impl<'a> MirBuilder<'a> {
             }
 
             StmtKind::Assert { test, msg } => {
-                let raw = self.lower_expr(test);
-                let test_ty = self.get_type(test.id);
-                let test_op = self.truthify(raw, &test_ty, test.span);
-                if let Some(m) = msg {
-                    self.lower_expr(m);
-                }
-                let pass_bb = self.new_block();
-                let fail_bb = self.new_block();
-                if let Some(bb) = self.current_block {
-                    self.terminate_block(
-                        bb,
-                        TerminatorKind::SwitchInt {
-                            discr: test_op,
-                            targets: vec![(1, pass_bb)],
-                            otherwise: fail_bb,
-                        },
-                        test.span,
-                    );
-                }
-                self.terminate_block(fail_bb, TerminatorKind::Unreachable, Span::default());
-                self.current_block = Some(pass_bb);
+                self.lower_assert_stmt(test, msg);
             }
 
             StmtKind::Struct {

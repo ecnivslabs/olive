@@ -31,6 +31,13 @@ The `pit` toolchain is the unified compiler, package manager, and project manage
   * `-t, --time`: Emit performance timings.
   * `--release`: Run tests with optimizations enabled.
 
+* `pit bench`
+  Runs every `#[bench]`-tagged function in the current project: a fixed warmup, then a fixed number of timed samples, always at release optimization. Reports mean, standard deviation, and minimum per bench.
+  * `--json`: Emit the results as a JSON array instead of the human-readable table.
+
+* `pit doc [file]`
+  Renders one module's public `fn`/`struct`/`enum` signatures and `///` doc comments as markdown into `target/doc/<module>.md`. No file given defaults to the current project's pod entry. A fenced Olive block inside a doc comment is compile-checked; a broken one is a warning, not a hard failure.
+
 * `pit fmt [file]`
   Formats the current project or a specified file according to the standard Olive style guidelines. By default it rewrites files in place.
   * `--check`: Exit non-zero if any file is not already formatted, without writing changes.

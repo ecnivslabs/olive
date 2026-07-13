@@ -56,6 +56,8 @@ pub(super) const ENTRIES: &[Explanation] = &[
                   dropped and the function runs exactly as if it were absent.",
         wrong: "@cache\nfn slow(n: int) -> int:\n    return n\n\nfn main():\n    print(slow(1))",
         fixed: "@memo\nfn slow(n: int) -> int:\n    return n\n\nfn main():\n    print(slow(1))",
-        notes: &["Recognized decorators are `@memo`, `#[test]`, and `@safe`; remove the rest."],
+        notes: &[
+            "Recognized decorators are `@memo`, `#[test]`, `#[bench]`, and `@safe`; remove the rest.",
+        ],
     },
 ];

@@ -1,5 +1,7 @@
+pub mod bench;
 pub mod build;
 pub mod deps;
+pub mod doc;
 pub mod explain;
 pub mod fix;
 pub mod project;

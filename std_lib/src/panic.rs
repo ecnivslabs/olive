@@ -80,6 +80,11 @@ const DICT_KEY: Fault = Fault {
     ),
     note: None,
 };
+const ASSERT_FAILED: Fault = Fault {
+    code: "E0712",
+    help: Some("check the operands, or fix the logic that produces them"),
+    note: None,
+};
 
 /// Aborts when a Python value cannot be converted to the required native scalar.
 pub fn abort_py_coerce(msg: &str) -> ! {
@@ -206,6 +211,7 @@ fn render_fault(out: &mut impl Write, fault: &Fault, msg: &str, loc: Option<&str
         };
         let _ = writeln!(out, "{dim}  ╭─[{reset} {where_} {dim}]{reset}");
         render_source(out, parsed, color);
+        crate::shadow_stack::render(out, dim, reset, color);
         if let Some(help) = fault.help {
             let _ = writeln!(out, "{dim}  │{reset}");
             let _ = writeln!(out, "{dim}  │{reset} {help_c}help{reset}: {help}");
@@ -347,6 +353,17 @@ pub extern "C" fn olive_key_fail(key: i64, loc: i64) -> i64 {
         crate::KeyClass::Raw(_) => "key not found".to_string(),
     };
     abort_with(&DICT_KEY, &msg, loc.as_deref())
+}
+
+/// Raised when an `assert` condition is false. `msg` is fully built by the
+/// MIR builder (`assertion failed`, plus `left`/`right` operand values for a
+/// top-level comparison, plus the user's own message if given); this only
+/// renders and aborts.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_assert_fail(msg: i64, loc: i64) -> i64 {
+    let loc = (loc != 0).then(|| olive_str_from_ptr(loc));
+    let msg = olive_str_from_ptr(msg);
+    abort_with(&ASSERT_FAILED, &msg, loc.as_deref())
 }
 
 #[cfg(test)]
