@@ -88,7 +88,7 @@ const ASSERT_FAILED: Fault = Fault {
 const OVERFLOW: Fault = Fault {
     code: "E0713",
     help: Some("use a wider type, or guard the operands so the result stays in range"),
-    note: Some("i64 arithmetic that would silently wrap instead faults here"),
+    note: Some("i64/u64 arithmetic that would silently wrap instead faults here"),
 };
 
 /// Aborts when a Python value cannot be converted to the required native scalar.

@@ -1332,17 +1332,14 @@ impl TypeChecker {
                 self.expect_truthy(&cond_ty, cond, cond.span);
                 let then_ty = self.check_expr(then);
                 let else_ty = self.check_expr(otherwise);
-                let result = self.fresh_var();
-                self.unify(&result, &then_ty, then.span);
-                self.unify(&result, &else_ty, otherwise.span);
-                self.apply_subst(result)
+                self.join_branch_ty(then_ty, else_ty, otherwise.span)
             }
             ExprKind::Match { expr, cases } => {
                 let mut match_ty = self.check_expr(expr);
                 while let Type::Ref(inner) | Type::MutRef(inner) = match_ty {
                     match_ty = *inner;
                 }
-                let return_ty = self.fresh_var();
+                let mut joined: Option<Type> = None;
 
                 let mut matched_variants = std::collections::HashSet::new();
                 let mut matched_null = false;
@@ -1402,7 +1399,10 @@ impl TypeChecker {
                         .iter()
                         .any(|s| matches!(s.kind, crate::parser::StmtKind::Return(_)));
                     if !branch_returns {
-                        self.unify(&return_ty, &case_ty, expr.span);
+                        joined = Some(match joined.take() {
+                            None => self.apply_subst(case_ty),
+                            Some(acc) => self.join_branch_ty(acc, case_ty, expr.span),
+                        });
                     }
 
                     self.leave_scope();
@@ -1476,7 +1476,7 @@ impl TypeChecker {
                     }
                 }
 
-                return_ty
+                joined.unwrap_or(Type::Never)
             }
 
             ExprKind::Try(inner) => {

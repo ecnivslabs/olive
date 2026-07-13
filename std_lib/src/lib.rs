@@ -319,6 +319,12 @@ pub extern "C" fn olive_print(val: i64) -> i64 {
     0
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_print_u64(val: i64) -> i64 {
+    println!("{}", val as u64);
+    0
+}
+
 /// Formats a float the way Python's `repr` does: a finite value with no
 /// fractional or exponent part still shows a trailing `.0` so it reads as a
 /// float, not an int.
@@ -516,6 +522,12 @@ pub extern "C" fn olive_write_int(val: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn olive_write_u64(val: i64) -> i64 {
+    print!("{}", val as u64);
+    0
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn olive_write_bool(val: i64) -> i64 {
     if val == 0 {
         print!("False");
@@ -573,6 +585,11 @@ pub extern "C" fn olive_print_obj(ptr: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str(val: i64) -> i64 {
     olive_str_internal(&val.to_string())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_str_u64(val: i64) -> i64 {
+    olive_str_internal(&(val as u64).to_string())
 }
 
 /// `str()` of an `Any`: renders the value's content (boxed float/bool, string,

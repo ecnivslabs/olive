@@ -38,6 +38,8 @@ enum CopySlot {
     Agg(usize),
     /// Argument `pos` of an escaping call.
     Arg(usize),
+    /// The source operand of a plain `dst = Use(op)` assignment.
+    UseVal,
 }
 
 /// Deep-copies every non-owning value stored into a container so the container
@@ -86,6 +88,20 @@ pub(super) fn insert_escape_copies(
                             hits.push((bb_idx, idx, CopySlot::Agg(pos), *l, "__olive_copy_typed"));
                         }
                     }
+                }
+                // A plain `dst = view` where `dst` is a real (non-view) owner:
+                // e.g. a match/ternary arm whose tail is exactly a narrowed
+                // binding. The view's Cast is bit-identical to its source, so
+                // without a deep copy here `dst` and the view's root end up
+                // aliasing the same buffer -- both later drop it.
+                StatementKind::Assign(dst, Rvalue::Use(Operand::Copy(l)))
+                    if needs_copy(*l)
+                        && dst.0 < heap.len()
+                        && heap[dst.0]
+                        && builder_owning[dst.0]
+                        && classes.get(dst.0) != Some(&LocalClass::View) =>
+                {
+                    hits.push((bb_idx, idx, CopySlot::UseVal, *l, "__olive_copy_typed"));
                 }
                 StatementKind::Assign(
                     _,
@@ -180,6 +196,7 @@ fn redirect_operand(kind: &mut StatementKind, slot: CopySlot, tmp: Local) {
         (CopySlot::Arg(pos), StatementKind::Assign(_, Rvalue::Call { args, .. })) => {
             args[pos] = target
         }
+        (CopySlot::UseVal, StatementKind::Assign(_, Rvalue::Use(val))) => *val = target,
         _ => {}
     }
 }

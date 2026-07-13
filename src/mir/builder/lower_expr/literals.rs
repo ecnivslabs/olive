@@ -27,8 +27,14 @@ impl<'a> MirBuilder<'a> {
             } else {
                 // `None` is a bare `0` at runtime, so a plain `str` call would
                 // dispatch to the integer path; name the null formatter directly.
+                // `u64` needs the same direct naming: codegen's generic `str`
+                // dispatch re-derives the type from the operand, which a
+                // release-only constant fold can turn into a bare `Constant::Int`
+                // carrying no u64 tag.
                 let str_fn = if ty == Type::Null {
                     "__olive_none_to_str"
+                } else if ty == Type::U64 {
+                    "__olive_str_u64"
                 } else {
                     "str"
                 };
@@ -74,6 +80,7 @@ impl<'a> MirBuilder<'a> {
             Type::Any | Type::Union(_) | Type::PyObject | Type::PyNamed(_, _) => {
                 "__olive_format_any"
             }
+            Type::U64 => "__olive_format_u64",
             _ => "__olive_format_int",
         };
         let spec_op = Operand::Constant(Constant::Str(spec.to_string()));
