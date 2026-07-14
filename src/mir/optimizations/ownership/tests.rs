@@ -715,6 +715,11 @@ fn runtime_escapes_covers_all_store_like_builtins() {
         ),
         ("__olive_obj_set", 2, "stores value pointer in object/dict"),
         ("__olive_set_add", 1, "stores value pointer in set"),
+        (
+            "__olive_set_add_typed",
+            1,
+            "typed variant stores value pointer in structural-element set",
+        ),
         // Channel: value stored in channel buffer (receiver may free)
         ("__olive_chan_send", 1, "value transfers to channel"),
         // Mutex: value stored in mutex on init or unlock

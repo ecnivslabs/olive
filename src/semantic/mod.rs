@@ -15,6 +15,13 @@ pub mod types;
 #[cfg(test)]
 mod tests_extended;
 
+/// Maximum statement/expression nesting the semantic phases walk. The parser's
+/// own guard (`parser::MAX_NESTING_DEPTH`) is higher than what these phases can
+/// survive: their per-level frames are far larger, and past ~140 nested levels
+/// on an 8 MiB stack the process aborts before any diagnostic renders. 100
+/// stays clear of that while sitting an order of magnitude above real code.
+pub(crate) const MAX_SEMANTIC_NESTING: usize = 100;
+
 pub use error::SemanticError;
 pub use resolver::Resolver;
 pub use type_checker::TypeChecker;

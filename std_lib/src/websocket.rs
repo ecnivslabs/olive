@@ -21,9 +21,15 @@ pub extern "C" fn olive_websocket_send(handle: i64, msg: i64) -> i64 {
     if handle == 0 || msg == 0 {
         return 0;
     }
+    // Length-delimited read, not CStr: a text frame containing an interior
+    // nul byte must survive the round trip.
+    let bytes = crate::string::olive_str_to_bytes(msg);
+    let text = match std::str::from_utf8(bytes) {
+        Ok(t) => t,
+        Err(_) => return 0,
+    };
     let ws = unsafe { &mut *(handle as *mut WsConn) };
-    let text = olive_str_from_ptr(msg);
-    if ws.send(Message::Text(text)).is_ok() {
+    if ws.send(Message::Text(text.to_owned())).is_ok() {
         1
     } else {
         0
@@ -53,6 +59,8 @@ pub extern "C" fn olive_websocket_recv(handle: i64) -> i64 {
         return 0;
     }
     let ws = unsafe { &mut *(handle as *mut WsConn) };
+    // A read can surface at most one queued control frame per call, so keep
+    // draining Ping/Pong until real data or an end condition arrives.
     loop {
         match ws.read() {
             Ok(Message::Text(text)) => return olive_str_internal(&text),
@@ -60,8 +68,7 @@ pub extern "C" fn olive_websocket_recv(handle: i64) -> i64 {
                 return olive_str_internal(&String::from_utf8_lossy(&data));
             }
             Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => continue,
-            Ok(Message::Close(_)) | Err(_) => return 0,
-            Ok(_) => return 0,
+            Ok(Message::Close(_)) | Err(_) | Ok(Message::Frame(_)) => return 0,
         }
     }
 }
@@ -81,8 +88,7 @@ pub extern "C" fn olive_websocket_recv_binary(handle: i64) -> i64 {
                 return crate::bytes::new_buf(text.into_bytes());
             }
             Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => continue,
-            Ok(Message::Close(_)) | Err(_) => return 0,
-            Ok(_) => return 0,
+            Ok(Message::Close(_)) | Err(_) | Ok(Message::Frame(_)) => return 0,
         }
     }
 }

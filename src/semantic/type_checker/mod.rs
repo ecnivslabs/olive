@@ -104,6 +104,9 @@ fn collect_alias_deps(
 pub struct TypeChecker {
     pub(super) substitutions: HashMap<usize, Type>,
     pub expr_types: HashMap<usize, Type>,
+    /// Statement/expression recursion depth, guarding `check_stmt`/
+    /// `check_expr` against overflowing the native stack.
+    check_depth: usize,
     pub type_env: Vec<HashMap<String, Type>>,
     pub(super) current_return_type: Option<Type>,
     pub errors: Vec<SemanticError>,
@@ -574,6 +577,7 @@ impl TypeChecker {
 
         Self {
             substitutions: HashMap::default(),
+            check_depth: 0,
             expr_types: HashMap::default(),
             type_env: vec![global_env],
             current_return_type: None,

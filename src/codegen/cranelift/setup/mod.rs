@@ -850,11 +850,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 continue;
             }
             let decl_name = if self.aot {
-                super::SYMBOL_MAP
-                    .iter()
-                    .find(|&&(k, _)| k == name)
-                    .map(|&(_, v)| std::str::from_utf8(&v[..v.len() - 1]).unwrap())
-                    .unwrap_or(name)
+                super::symbol_map_lookup(name).unwrap_or(name)
             } else {
                 name
             };
@@ -1160,11 +1156,12 @@ impl<M: Module> CraneliftCodegen<M> {
             }
         }
 
-        let funcs_for_strings = self.functions.clone();
-        for func in &funcs_for_strings {
+        let mut funcs = std::mem::take(&mut self.functions);
+        for func in &funcs {
             self.collect_strings(func);
             self.collect_locs(func);
         }
+        self.functions = std::mem::take(&mut funcs);
 
         self.generate_global_vars();
         self.generate_vtables();
@@ -1172,24 +1169,24 @@ impl<M: Module> CraneliftCodegen<M> {
         self.generate_dispatch_cells();
         self.generate_kind_history();
 
-        let func_count = self.functions.len();
-        for i in 0..func_count {
-            let func = self.functions[i].clone();
+        let funcs = std::mem::take(&mut self.functions);
+        for func in &funcs {
             if func.is_async {
-                if let Some(await_points) = Self::analyze_async_sm(&func) {
-                    self.translate_async_sm_poll(&func, &await_points);
-                    self.generate_sm_wrapper(&func);
+                if let Some(await_points) = Self::analyze_async_sm(func) {
+                    self.translate_async_sm_poll(func, &await_points);
+                    self.generate_sm_wrapper(func);
                 } else {
                     let mut body_func = func.clone();
                     body_func.name = format!("{}__async_body", func.name);
                     body_func.is_async = false;
                     self.translate_function(&body_func);
-                    self.generate_async_wrapper(&func);
+                    self.generate_async_wrapper(func);
                 }
             } else {
-                self.translate_function(&func);
+                self.translate_function(func);
             }
         }
+        self.functions = funcs;
 
         let var_entries: Vec<(String, i64, String, String)> = self
             .extern_var_ptrs

@@ -21,6 +21,10 @@ const RUNTIME_ESCAPES: &[(&str, usize)] = &[
     ("__olive_obj_setdefault", 2),
     ("__olive_obj_setdefault_typed", 2),
     ("__olive_set_add", 1),
+    // The `_typed` variant (`add` on a structural-element set) delegates to
+    // `olive_set_add` under `with_key_descriptor`, storing the same word; see
+    // `hash_typed.rs`.
+    ("__olive_set_add_typed", 1),
     ("__olive_chan_send", 1),
     ("__olive_mutex_new", 0),
     ("__olive_mutex_unlock", 1),

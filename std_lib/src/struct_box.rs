@@ -22,6 +22,17 @@ thread_local! {
         const { UnsafeCell::new(GenSlab::new(std::mem::size_of::<OliveStructBox>())) };
 }
 
+fn with_struct_box_slab<T>(f: impl FnOnce(&mut GenSlab) -> T) -> T {
+    unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null() {
+            f(&mut (*active).struct_box)
+        } else {
+            STRUCT_BOX_SLAB.with(|sl| f(&mut *sl.get()))
+        }
+    }
+}
+
 /// Boxes an owned struct pointer with its `D_STRUCT` descriptor. The box
 /// takes ownership; freeing it deep-frees the struct through the descriptor.
 /// Descriptor constants arrive as tagged string words; the tag bit is
@@ -29,8 +40,8 @@ thread_local! {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_struct_box(ptr: i64, desc: i64) -> i64 {
     let desc = crate::string_slab::str_body(desc);
-    STRUCT_BOX_SLAB.with(|sl| {
-        let (body, _) = unsafe { &mut *sl.get() }.alloc();
+    with_struct_box_slab(|sl| {
+        let (body, _) = sl.alloc();
         unsafe {
             std::ptr::write(
                 body as *mut OliveStructBox,
@@ -49,12 +60,31 @@ pub extern "C" fn olive_struct_box(ptr: i64, desc: i64) -> i64 {
 /// released before the inner struct is walked so a data cycle terminates at
 /// the generation guard.
 pub(crate) fn free_struct_box(val: i64) {
+    if !crate::slab::slot_is_live(val) {
+        return;
+    }
     let (desc, inner) = {
         let b = unsafe { &*(val as *const OliveStructBox) };
         (b.desc, b.ptr)
     };
-    STRUCT_BOX_SLAB.with(|sl| unsafe { &mut *sl.get() }.free(val as *mut u8));
+    match crate::slab::slab_membership(val) {
+        Some(true) => crate::slab::with_escape_arena(|| free_struct_box_local(val)),
+        _ => free_struct_box_local(val),
+    }
     crate::free_typed::olive_free_typed(inner, desc);
+}
+
+fn free_struct_box_local(val: i64) {
+    with_struct_box_slab(|sl| sl.free(val as *mut u8));
+}
+
+/// Releases just the box shell, leaving the inner struct alone. The
+/// generation check inside `slab::free` absorbs a stale double free.
+fn free_struct_box_shell(val: i64) {
+    match crate::slab::slab_membership(val) {
+        Some(true) => crate::slab::with_escape_arena(|| free_struct_box_local(val)),
+        _ => free_struct_box_local(val),
+    }
 }
 
 /// Allocates a box shell for the deep-copy walk; the inner pointer is patched
@@ -90,7 +120,7 @@ pub extern "C" fn olive_struct_unbox_take(val: i64) -> i64 {
         return 0;
     }
     let inner = unsafe { (*(val as *const OliveStructBox)).ptr };
-    STRUCT_BOX_SLAB.with(|sl| unsafe { &mut *sl.get() }.free(val as *mut u8));
+    free_struct_box_shell(val);
     inner
 }
 

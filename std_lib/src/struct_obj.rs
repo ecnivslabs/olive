@@ -188,7 +188,11 @@ pub extern "C" fn olive_free_fatptr(ptr: i64) {
         let data = *words.add(1);
         let shim = *words.add(3);
         if shim != 0 && data != 0 {
-            let shim_fn: extern "C" fn(i64) -> i64 = std::mem::transmute(shim as usize);
+            // The record stores the shim's code address as an integer word,
+            // so it must go through a raw pointer; a `usize -> fn`
+            // transmute would be rejected outright under stricter checkers.
+            let shim_fn: extern "C" fn(i64) -> i64 =
+                std::mem::transmute::<usize, extern "C" fn(i64) -> i64>(shim as usize);
             shim_fn(data);
         }
     }

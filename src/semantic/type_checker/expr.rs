@@ -1,4 +1,4 @@
-use super::super::types::Type;
+use super::super::{SemanticError, types::Type};
 use super::TypeChecker;
 use crate::parser::{AugOp, BinOp, CallArg, Expr, ExprKind, UnaryOp};
 use crate::span::Span;
@@ -43,10 +43,29 @@ fn pattern_matches_null(pattern: &crate::parser::ast::MatchPattern) -> bool {
 
 impl TypeChecker {
     pub(super) fn check_expr(&mut self, expr: &Expr) -> Type {
-        let ty = self.infer_expr(expr);
+        if self.check_depth >= crate::semantic::MAX_SEMANTIC_NESTING {
+            self.errors.push(SemanticError::rich(
+                crate::compile::errors::Diagnostic::error(
+                    "E0201",
+                    "expression nested too deeply",
+                    expr.span,
+                )
+                .label(format!("nesting exceeds the limit of {}", crate::semantic::MAX_SEMANTIC_NESTING))
+                .help("flatten the expression by binding sub-expressions to names"),
+            ));
+            return Type::Any;
+        }
+        self.check_depth += 1;
+        let ty = self.check_expr_inner(expr);
+        self.check_depth -= 1;
         let final_ty = self.apply_subst(ty);
         self.expr_types.insert(expr.id, final_ty.clone());
         final_ty
+    }
+
+    fn check_expr_inner(&mut self, expr: &Expr) -> Type {
+        let ty = self.infer_expr(expr);
+        ty
     }
 
     /// Checks `expr` against an expected type, so a collection literal can adopt
@@ -79,9 +98,32 @@ impl TypeChecker {
                     while let Type::Ref(inner) | Type::MutRef(inner) = &current {
                         current = *inner.clone();
                     }
-                    let type_name = match &current {
-                        Type::Struct(sname, _, _) => Some(sname.as_str()),
-                        Type::Enum(ename, _) => Some(ename.as_str()),
+                    let type_name: Option<String> = match &current {
+                        Type::Struct(sname, _, _) => Some(sname.clone()),
+                        Type::Enum(ename, _) => Some(ename.clone()),
+                        Type::Union(members) => {
+                            // A union receiver dispatches at runtime to the
+                            // struct member's impl, so it is a method only
+                            // when exactly one struct member provides one.
+                            let mut provider: Option<String> = None;
+                            let mut count = 0;
+                            for member in members {
+                                if let Type::Struct(sname, _, _) = member
+                                    && matches!(
+                                        self.lookup_type(&format!("{}::{}", sname, attr)),
+                                        Some(Type::Fn(..))
+                                    )
+                                {
+                                    count += 1;
+                                    provider = Some(sname.clone());
+                                }
+                            }
+                            if count == 1 {
+                                provider
+                            } else {
+                                None
+                            }
+                        }
                         _ => None,
                     };
                     if let Some(type_name) = type_name {
@@ -1221,6 +1263,201 @@ impl TypeChecker {
                     inner_obj = *inner.clone();
                 }
 
+                // A union receiver resolves its method from its struct
+                // members: exactly one member providing `{S}::{attr}` is the
+                // runtime dispatch target (the MIR side narrows with
+                // `__olive_any_is_struct_box` before calling it, so the impl
+                // still sees the plain struct). Falling through to
+                // `fresh_var()` here left `l.addr()` on `TcpListener | int`
+                // unchecked -- the call then mangled the variable name into
+                // an FFI symbol at codegen.
+                let mut union_provider: Option<(String, Type)> = None;
+                let mut union_ambiguous = false;
+                if let Type::Union(members) = &inner_obj {
+                    for member in members {
+                        if let Type::Struct(sname, _, _) = member
+                            && self
+                                .lookup_type(&format!("{}::{}", sname, attr))
+                                .is_some()
+                        {
+                            if union_provider.is_some() {
+                                union_ambiguous = true;
+                                break;
+                            }
+                            union_provider = Some((sname.clone(), member.clone()));
+                        }
+                    }
+                }
+                if let Some((provider, member_ty)) = &union_provider
+                    && !union_ambiguous
+                {
+                    let mangled = format!("{}::{}", provider, attr);
+                    let instantiated =
+                        self.instantiate(self.lookup_type(&mangled).unwrap());
+                    if let Type::Fn(params, _, _) = &instantiated
+                        && !params.is_empty()
+                    {
+                        let mut auto_ref_member = member_ty.clone();
+                        if let Type::MutRef(inner) = &params[0] {
+                            if auto_ref_member == **inner {
+                                auto_ref_member = Type::MutRef(Box::new(auto_ref_member));
+                            }
+                        } else if let Type::Ref(inner) = &params[0]
+                            && auto_ref_member == **inner
+                        {
+                            auto_ref_member = Type::Ref(Box::new(auto_ref_member));
+                        }
+                        self.unify(&params[0], &auto_ref_member, expr.span);
+                    }
+                    return instantiated;
+                }
+                if union_ambiguous {
+                    // Two struct members implement `{attr}` with no static
+                    // way to pick one: dispatching would need a runtime
+                    // descriptor-name comparison on every call. Rejecting
+                    // here replaces a guaranteed FFI-symbol panic at codegen.
+                    self.errors.push(super::super::error::SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0422",
+                            format!(
+                                "method `{attr}` is provided by multiple members of `{resolved_obj}`"
+                            ),
+                            expr.span,
+                        )
+                        .label("ambiguous method")
+                        .help("narrow the union first so the receiver type is known"),
+                    ));
+                    return self.fresh_var();
+                }
+                if let Type::Union(members) = &inner_obj {
+                    let any_method = members.iter().any(|m| {
+                        matches!(m, Type::Struct(sname, _, _)
+                            if self.lookup_type(&format!("{}::{}", sname, attr)).is_some())
+                    });
+                    let builtin_like = members.iter().any(|m| {
+                        matches!(m, Type::Str | Type::Dict(_, _) | Type::Any)
+                    });
+                    if !any_method && !builtin_like && !resolved_obj.is_py_value() {
+                        self.errors.push(super::super::error::SemanticError::rich(
+                            crate::compile::errors::Diagnostic::error(
+                                "E0422",
+                                format!("no method `{attr}` on type `{resolved_obj}`"),
+                                expr.span,
+                            )
+                            .label("method not found")
+                            .help(format!(
+                                "narrow the union first (`match` on the value or compare against a variant) so `{attr}` can resolve"
+                            )),
+                        ));
+                        return self.fresh_var();
+                    }
+                }
+
+                // A union receiver resolves its method from its struct
+                // members: exactly one member providing `{S}::{attr}` is the
+                // runtime dispatch target (the MIR side narrows with
+                // `__olive_any_is_struct_box` before calling it, so the impl
+                // still sees the plain struct). Falling through to
+                // `fresh_var()` here left `l.addr()` on `TcpListener | int`
+                // unchecked -- the call then mangled the variable name into
+                // an FFI symbol at codegen.
+                let mut union_provider: Option<(String, Type)> = None;
+                let mut union_ambiguous = false;
+                if let Type::Union(members) = &inner_obj {
+                    for member in members {
+                        if let Type::Struct(sname, _, _) = member
+                            && self
+                                .lookup_type(&format!("{}::{}", sname, attr))
+                                .is_some()
+                        {
+                            if union_provider.is_some() {
+                                union_ambiguous = true;
+                                break;
+                            }
+                            union_provider = Some((sname.clone(), member.clone()));
+                        }
+                    }
+                }
+                if let Some((provider, member_ty)) = union_provider
+                    && !union_ambiguous
+                {
+                    let mangled = format!("{}::{}", provider, attr);
+                    let instantiated =
+                        self.instantiate(self.lookup_type(&mangled).unwrap());
+                    if let Type::Fn(params, _, _) = &instantiated
+                        && !params.is_empty()
+                    {
+                        let mut auto_ref_member = member_ty;
+                        if let Type::MutRef(inner) = &params[0] {
+                            if auto_ref_member == **inner {
+                                auto_ref_member = Type::MutRef(Box::new(auto_ref_member));
+                            }
+                        } else if let Type::Ref(inner) = &params[0]
+                            && auto_ref_member == **inner
+                        {
+                            auto_ref_member = Type::Ref(Box::new(auto_ref_member));
+                        }
+                        self.unify(&params[0], &auto_ref_member, expr.span);
+                    }
+                    return instantiated;
+                }
+
+                let mut union_has_method = false;
+                let mut union_builtin_like = false;
+                if let Type::Union(members) = &inner_obj {
+                    for member in members {
+                        match member {
+                            Type::Struct(sname, _, _)
+                                if self
+                                    .lookup_type(&format!("{}::{}", sname, attr))
+                                    .is_some() =>
+                            {
+                                union_has_method = true;
+                            }
+                            Type::Str | Type::Dict(_, _) | Type::Any => {
+                                union_builtin_like = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                if union_ambiguous {
+                    // Two struct members implement `{attr}` with no static
+                    // way to pick one: dispatching would need a runtime
+                    // descriptor-name comparison on every call. Rejecting
+                    // here replaces a guaranteed FFI-symbol panic at codegen.
+                    self.errors.push(super::super::error::SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0422",
+                            format!(
+                                "method `{attr}` is provided by multiple members of `{resolved_obj}`"
+                            ),
+                            expr.span,
+                        )
+                        .label("ambiguous method")
+                        .help("narrow the union first so the receiver type is known"),
+                    ));
+                    return self.fresh_var();
+                }
+                if let Type::Union(_) = &inner_obj
+                    && !union_has_method
+                    && !union_builtin_like
+                    && !resolved_obj.is_py_value()
+                {
+                    self.errors.push(super::super::error::SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0422",
+                            format!("no method `{attr}` on type `{resolved_obj}`"),
+                            expr.span,
+                        )
+                        .label("method not found")
+                        .help(format!(
+                            "narrow the union first (`match` on the value or compare against a variant) so `{attr}` can resolve"
+                        )),
+                    ));
+                    return self.fresh_var();
+                }
+
                 if let Type::Struct(ref struct_name, ref type_args, _) = inner_obj {
                     let mangled = format!("{}::{}", struct_name, attr);
                     if let Some(ty) = self.lookup_type(&mangled) {
@@ -2240,6 +2477,7 @@ impl TypeChecker {
                         ));
                     }
                 }
+                self.check_scalar_comparison(&l_resolved, &r_resolved, span);
                 Type::Bool
             }
             BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => {
@@ -2260,6 +2498,7 @@ impl TypeChecker {
                         .label("ordering not supported for this struct"),
                     ));
                 }
+                self.check_scalar_comparison(&l_resolved, &r_resolved, span);
                 Type::Bool
             }
             BinOp::In | BinOp::NotIn => Type::Bool,
@@ -2296,6 +2535,71 @@ impl TypeChecker {
                 }
             }
         }
+    }
+
+    /// Codegen lowers a comparison by sniffing one operand's static kind and
+    /// applying that lowering to both sides raw (fcmp for float, `__olive_str_eq`
+    /// for str, word icmp otherwise), so a mixed-kind pair either miscompiles
+    /// (int bits fed to fcmp, a string pointer fed to str_eq) or silently
+    /// compares unrelated words. Scalar operands must therefore agree in kind:
+    /// int-like with int-like (any width, plus bool's 0/1 word) or str with
+    /// str. An unsuffixed int literal widens to the float side instead of
+    /// being rejected, so `2.5 > 1` keeps working; every other cross rejects.
+    /// Python-side values, `Any`, unions, and `None` keep their existing
+    /// dynamic handling.
+    fn check_scalar_comparison(&mut self, l: &Type, r: &Type, span: Span) {
+        fn scalar_kind(t: &Type) -> Option<u8> {
+            match t {
+                Type::Int
+                | Type::I8
+                | Type::I16
+                | Type::I32
+                | Type::U8
+                | Type::U16
+                | Type::U32
+                | Type::U64
+                | Type::Usize
+                | Type::Bool
+                | Type::IntegerLiteral(_) => Some(0),
+                Type::Float | Type::F32 | Type::FloatLiteral(_) => Some(1),
+                Type::Str => Some(2),
+                _ => None,
+            }
+        }
+        let (Some(l_kind), Some(r_kind)) = (scalar_kind(l), scalar_kind(r)) else {
+            return;
+        };
+        if l_kind == r_kind {
+            return;
+        }
+        // Only the int/float cross keeps working: an unsuffixed int literal
+        // widens to the float side -- the same binding `let x: float = 5`
+        // performs -- so `2.5 > 1` stays legal and MIR lowers the literal as
+        // a float constant instead of feeding raw int bits to an fcmp.
+        // Everything else (bool vs float, str vs number, float literal vs
+        // concrete int) miscompiles at codegen and rejects, matching
+        // arithmetic's strictness (`1 + 1.5`).
+        let int_lit = match (l_kind, r_kind) {
+            (0, 1) => l,
+            (1, 0) => r,
+            _ => {
+                self.errors.push(super::super::error::SemanticError::rich(
+                    crate::compile::errors::Diagnostic::error("E0400", "mismatched types", span)
+                        .label(format!("cannot compare `{l}` with `{r}`"))
+                        .help("cast one side so both operands share a type"),
+                ));
+                return;
+            }
+        };
+        if let Type::IntegerLiteral(id) = int_lit {
+            self.substitutions.insert(*id, Type::Float);
+            return;
+        }
+        self.errors.push(super::super::error::SemanticError::rich(
+            crate::compile::errors::Diagnostic::error("E0400", "mismatched types", span)
+                .label(format!("cannot compare `{l}` with `{r}`"))
+                .help("cast one side so both operands share a type"),
+        ));
     }
 
     pub(super) fn check_aug_op(

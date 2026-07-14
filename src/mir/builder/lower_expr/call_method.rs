@@ -130,6 +130,10 @@ impl<'a> MirBuilder<'a> {
             return op;
         }
 
+        if let Some(op) = self.lower_scalar_cast_method(obj, attr, &arg_ops, span, expr_id) {
+            return op;
+        }
+
         if let ExprKind::Identifier(name) = &obj.kind {
             let obj_ty = self.get_type(obj.id);
             let mut current_obj_ty = obj_ty.clone();
@@ -141,6 +145,33 @@ impl<'a> MirBuilder<'a> {
                 Type::Struct(_, _, _) | Type::Enum(_, _) | Type::TraitObject(_, _) | Type::Any
             ) && self.lookup_var(name).is_some();
             if !is_struct_var {
+                if let Type::Union(members) = &current_obj_ty {
+                    let providers: Vec<&Type> = members
+                        .iter()
+                        .filter(|m| match m {
+                            Type::Struct(sname, _, _) => {
+                                self.fn_meta.contains_key(&format!("{sname}::{attr}"))
+                            }
+                            _ => false,
+                        })
+                        .collect();
+                    // Exactly one mirrors the checker's resolution; multiple
+                    // can never reach here (the Attr arm rejects them as
+                    // ambiguous).
+                    if let [provider] = providers.as_slice() {
+                        return self.lower_union_method_dispatch(
+                            callee,
+                            obj,
+                            attr,
+                            provider,
+                            arg_ops.clone(),
+                            arg_tys.clone(),
+                            span,
+                            expr_id,
+                        );
+                    }
+                }
+
                 let mangled = format!("{}::{}", name, attr);
 
                 let variant_info = self.enum_variants.get(&mangled).cloned();
@@ -383,6 +414,251 @@ impl<'a> MirBuilder<'a> {
                 );
             }
             self.operand_for_local(tmp)
+        }
+    }
+
+    /// Runtime variant dispatch for a union-typed receiver: the checker
+    /// resolved `x.m()` to the single struct member's impl (see the Attr
+    /// arm's union path), so at runtime the value must first be narrowed to
+    /// that member -- a struct inside a multi-member union is boxed (the
+    /// coercion site's `__olive_struct_box`), which `__olive_any_is_struct_box`
+    /// detects without any name comparison -- then peeled out of the box via
+    /// the Cast-to-Struct peel before the impl sees a plain receiver.
+    /// A non-struct payload here means the program called a struct-only
+    /// method on e.g. the error side of the union; that is a real runtime
+    /// type fault, reported with the call site attached instead of the
+    /// variable-name FFI-symbol panic this path used to produce.
+    #[allow(clippy::too_many_arguments)]
+    fn lower_union_method_dispatch(
+        &mut self,
+        callee: &Expr,
+        obj: &Expr,
+        attr: &str,
+        provider: &Type,
+        arg_ops: Vec<Operand>,
+        arg_tys: Vec<Type>,
+        span: Span,
+        expr_id: usize,
+    ) -> Operand {
+        let Type::Struct(struct_name, type_args, _) = provider else {
+            unreachable!("union dispatch requires a struct provider from the checker")
+        };
+        let base_method_name = format!("{}::{}", struct_name, attr);
+        let method_name = if !type_args.is_empty() {
+            self.monomorphize(&base_method_name, type_args)
+        } else {
+            base_method_name
+        };
+
+        let result_tmp = self.new_local(self.get_type(expr_id), None, false);
+        let view_tmp = self.new_local(provider.clone(), None, false);
+
+        self.emit_set_fault_loc(span);
+        let obj_op = self.lower_expr_as_copy(obj);
+        let is_box = self.new_local(Type::Bool, None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                is_box,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(
+                        "__olive_any_is_struct_box".to_string(),
+                    )),
+                    args: vec![obj_op.clone()],
+                },
+            ),
+            span,
+        );
+
+        let ok_bb = self.new_block();
+        let fail_bb = self.new_block();
+        let done_bb = self.new_block();
+        if let Some(bb) = self.current_block {
+            self.terminate_block(
+                bb,
+                TerminatorKind::SwitchInt {
+                    discr: Operand::Copy(is_box),
+                    targets: vec![(1, ok_bb)],
+                    otherwise: fail_bb,
+                },
+                span,
+            );
+        }
+
+        self.current_block = Some(ok_bb);
+        // Retag the union word as its struct member: codegen peels the box
+        // for this shape (Cast to Struct from a multi-member union local).
+        self.push_statement(
+            StatementKind::Assign(
+                view_tmp,
+                Rvalue::Cast(obj_op, provider.clone()),
+            ),
+            span,
+        );
+        let callee_ty = self.get_type(callee.id).clone();
+        let coerced: Vec<Operand> = match &callee_ty {
+            Type::Fn(ptys, _, _) => arg_ops
+                .iter()
+                .enumerate()
+                .map(|(i, op)| {
+                    let from = arg_tys.get(i).cloned().unwrap_or(Type::Any);
+                    let to = ptys.get(i + 1).cloned().unwrap_or(Type::Any);
+                    self.coerce(op.clone(), &from, &to, span)
+                })
+                .collect(),
+            _ => arg_ops.clone(),
+        };
+        let mut method_args = vec![Operand::Copy(view_tmp)];
+        method_args.extend(coerced);
+        self.fill_trailing_defaults(&method_name, &mut method_args, callee.id, span);
+        self.push_statement(
+            StatementKind::Assign(
+                result_tmp,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(method_name)),
+                    args: method_args,
+                },
+            ),
+            span,
+        );
+        if let Some(bb) = self.current_block {
+            self.terminate_block(
+                bb,
+                TerminatorKind::Goto { target: done_bb },
+                span,
+            );
+        }
+
+        self.current_block = Some(fail_bb);
+        let msg = format!("method `{attr}` called on a non-struct member of the union");
+        let msg_local = self.new_local(Type::Str, None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                msg_local,
+                Rvalue::Use(Operand::Constant(Constant::Str(msg))),
+            ),
+            span,
+        );
+        let sink = self.new_local(Type::Null, None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                sink,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("__olive_panic".to_string())),
+                    args: vec![Operand::Copy(msg_local)],
+                },
+            ),
+            span,
+        );
+        if let Some(bb) = self.current_block {
+            self.terminate_block(bb, TerminatorKind::Unreachable, Span::default());
+        }
+
+        self.current_block = Some(done_bb);
+        self.operand_for_local(result_tmp)
+    }
+
+    /// Lowers the checker's builtin conversion methods (`x.str()`,
+    /// `f.int()`, `n.bool()`, width casts) on a non-struct receiver. These
+    /// are checked for every receiver type in the Attr arm but have no user
+    /// impl to call, so without this route they fell through to the
+    /// identifier mangle below and panicked at codegen as FFI symbols like
+    /// `x::str`. The bare-name calls reuse exactly the free-form
+    /// `str(x)`/`int(x)` resolution; width casts lower like `as` casts.
+    fn lower_scalar_cast_method(
+        &mut self,
+        obj: &Expr,
+        attr: &str,
+        arg_ops: &[Operand],
+        span: Span,
+        expr_id: usize,
+    ) -> Option<Operand> {
+        if !arg_ops.is_empty() {
+            return None;
+        }
+        let obj_ty = self.get_type(obj.id);
+        if matches!(
+            obj_ty,
+            Type::Struct(_, _, _)
+                | Type::Enum(_, _)
+                | Type::TraitObject(_, _)
+                | Type::Union(_)
+                | Type::List(_)
+                | Type::Dict(_, _)
+                | Type::Set(_)
+                | Type::Tuple(_)
+                | Type::Fn(_, _, _)
+        ) || obj_ty.is_py_value()
+        {
+            return None;
+        }
+        match self.get_type(expr_id) {
+            Type::Str => {
+                let op = self.lower_expr_as_copy(obj);
+                let tmp = self.new_local(Type::Str, None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        tmp,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function("str".to_string())),
+                            args: vec![op],
+                        },
+                    ),
+                    span,
+                );
+                Some(self.operand_for_local(tmp))
+            }
+            // `x.bool()` means truthiness like the free `bool(x)`, not the
+            // bit-reinterpretation an `as`-style Cast would give a scalar.
+            Type::Bool if attr == "bool" => {
+                let op = self.lower_expr_as_copy(obj);
+                let tmp = self.new_local(Type::Bool, None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        tmp,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function("bool".to_string())),
+                            args: vec![op],
+                        },
+                    ),
+                    span,
+                );
+                Some(self.operand_for_local(tmp))
+            }
+            target @ (Type::Int
+            | Type::I8
+            | Type::I16
+            | Type::I32
+            | Type::U8
+            | Type::U16
+            | Type::U32
+            | Type::U64
+            | Type::Float
+            | Type::F32)
+                if matches!(
+                    attr,
+                    "int"
+                        | "i64"
+                        | "i32"
+                        | "i16"
+                        | "i8"
+                        | "u64"
+                        | "u32"
+                        | "u16"
+                        | "u8"
+                        | "float"
+                        | "f64"
+                        | "f32"
+                ) =>
+            {
+                let op = self.lower_expr_as_copy(obj);
+                let tmp = self.new_local(target.clone(), None, false);
+                self.push_statement(
+                    StatementKind::Assign(tmp, Rvalue::Cast(op, target)),
+                    span,
+                );
+                Some(self.operand_for_local(tmp))
+            }
+            _ => None,
         }
     }
 

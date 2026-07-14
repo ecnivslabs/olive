@@ -27,6 +27,12 @@ unsafe impl Sync for ChunkSpan {}
 
 static CHUNK_TABLE: AtomicPtr<Vec<ChunkSpan>> = AtomicPtr::new(std::ptr::null_mut());
 static CHUNK_WRITER: Mutex<()> = Mutex::new(());
+// Bumped on every register/unregister. Cached ChunkSpans capture raw pointers
+// into chunk memory; when a GenSlab drops (task teardown deallocates its
+// chunks) a stale cache entry would classify a recycled address as a live
+// slot, so readers compare their cache's epoch against this and re-search on
+// mismatch.
+static CHUNK_EPOCH: AtomicU64 = AtomicU64::new(0);
 
 // Superset of all chunk addresses, never shrunk: a miss outside it skips the
 // table search, which is the common case for literals and foreign pointers.
@@ -61,6 +67,7 @@ fn register_chunk(
         },
     );
     CHUNK_TABLE.store(Box::into_raw(Box::new(next)), Ordering::Release);
+    CHUNK_EPOCH.fetch_add(1, Ordering::Release);
 }
 
 fn unregister_chunk(start: usize) {
@@ -77,6 +84,7 @@ fn unregister_chunk(start: usize) {
         }
     }
     CHUNK_TABLE.store(Box::into_raw(Box::new(next)), Ordering::Release);
+    CHUNK_EPOCH.fetch_add(1, Ordering::Release);
 }
 
 thread_local! {
@@ -87,28 +95,29 @@ thread_local! {
     // lands on the "wrong" slot in turn), turning what should be two
     // read-only checks into a write per call. Both slots are read-only on a
     // hit; only a genuine miss writes, round-robining which slot it fills.
-    static LAST_CHUNKS: std::cell::Cell<([Option<ChunkSpan>; 2], bool)> =
-        const { std::cell::Cell::new(([None, None], false)) };
+    // The epoch rides along because a cached span holds raw pointers into
+    // chunk memory: when a GenSlab drops its chunks (task teardown), stale
+    // entries would classify recycled addresses as live slots.
+    static LAST_CHUNKS: std::cell::Cell<([Option<ChunkSpan>; 2], bool, u64)> =
+        const { std::cell::Cell::new(([None, None], false, 0)) };
 }
 
 fn find_chunk_for_addr(addr: usize) -> Option<ChunkSpan> {
     if addr < SPAN_MIN.load(Ordering::Relaxed) || addr >= SPAN_MAX.load(Ordering::Relaxed) {
         return None;
     }
-    let (cached, next_slot) = LAST_CHUNKS.with(|cache| cache.get());
-    if let Some(c) = cached[0]
-        && addr >= c.start
-        && addr < c.end
-    {
-        return Some(c);
-    }
-    if let Some(c) = cached[1]
-        && addr >= c.start
-        && addr < c.end
-    {
-        return Some(c);
-    }
     let table = CHUNK_TABLE.load(Ordering::Acquire);
+    let epoch = CHUNK_EPOCH.load(Ordering::Acquire);
+    let (cached, next_slot, cached_epoch) = LAST_CHUNKS.with(|cache| cache.get());
+    if cached_epoch == epoch {
+        for c in cached.iter().flatten() {
+            if addr >= c.start && addr < c.end {
+                return Some(*c);
+            }
+        }
+    } else if cached[0].is_some() || cached[1].is_some() {
+        LAST_CHUNKS.with(|cache| cache.set(([None, None], false, epoch)));
+    }
     if table.is_null() {
         return None;
     }
@@ -121,7 +130,7 @@ fn find_chunk_for_addr(addr: usize) -> Option<ChunkSpan> {
     if addr >= c.start && addr < c.end {
         let mut next = cached;
         next[next_slot as usize] = Some(c);
-        LAST_CHUNKS.with(|cache| cache.set((next, !next_slot)));
+        LAST_CHUNKS.with(|cache| cache.set((next, !next_slot, epoch)));
         Some(c)
     } else {
         None
@@ -666,8 +675,12 @@ pub struct SlabSet {
     pub obj: GenSlab,
     pub set: GenSlab,
     pub enum_slab: GenSlab,
+    pub boxed: GenSlab,
+    pub result: GenSlab,
+    pub iter: GenSlab,
     pub str_slabs: [Option<GenSlab>; 32],
     pub struct_slabs: crate::struct_obj::StructSlabs,
+    pub struct_box: GenSlab,
 }
 
 impl Default for SlabSet {
@@ -683,12 +696,14 @@ impl SlabSet {
             obj: GenSlab::new(std::mem::size_of::<crate::OliveObj>()),
             set: GenSlab::new(std::mem::size_of::<crate::OliveHashSet>()),
             enum_slab: GenSlab::new(std::mem::size_of::<crate::OliveEnum>()),
-            str_slabs: [
-                None, None, None, None, None, None, None, None, None, None, None, None, None, None,
-                None, None, None, None, None, None, None, None, None, None, None, None, None, None,
-                None, None, None, None,
-            ],
+            boxed: GenSlab::new(std::mem::size_of::<crate::boxed::OliveBoxed>()),
+            result: GenSlab::new(std::mem::size_of::<crate::result::OliveResult>()),
+            iter: GenSlab::new(std::mem::size_of::<crate::list::OliveIter>()),
+            str_slabs: std::array::from_fn(|_| None),
             struct_slabs: crate::struct_obj::StructSlabs::new(),
+            struct_box: GenSlab::new(std::mem::size_of::<
+                crate::struct_box::OliveStructBox,
+            >()),
         }
     }
 }
@@ -711,12 +726,19 @@ pub fn chunk_is_global(addr: usize) -> bool {
 }
 
 /// Redirects ACTIVE_SLABS to the locked global arena for the duration of `f`.
+/// The guard is a MutexGuard held across the call, so an unwinding `f` still
+/// unlocks; the restore closure keeps the redirect itself from leaking on
+/// unwind (release builds abort, but tests and debug builds unwind).
 pub fn with_escape_arena<T>(f: impl FnOnce() -> T) -> T {
     let mut guard = GLOBAL_SLABS.lock().unwrap();
     let slabs_ptr = &mut *guard as *mut SlabSet;
     let old = ACTIVE_SLABS.get();
     ACTIVE_SLABS.set(slabs_ptr);
-    let result = f();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
     ACTIVE_SLABS.set(old);
-    result
+    drop(guard);
+    match result {
+        Ok(v) => v,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
 }

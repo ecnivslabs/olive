@@ -89,6 +89,13 @@ pub(crate) unsafe fn call_kw_v_core_safe(
             1 + pos_len,
             &mut pairs,
         ) {
+            // The failing segment released its own slots; the positional
+            // ones converted earlier are still ours to drop.
+            for slot in &buf[1..1 + pos_len] {
+                if !slot.is_null() {
+                    PY_DEC_REF(*slot);
+                }
+            }
             return conversion_err();
         }
         let nargsf = pos_len | PY_VECTORCALL_ARGUMENTS_OFFSET;
@@ -186,6 +193,14 @@ pub(crate) unsafe fn call_kw_v_method_core_safe(
             2 + pos_len,
             &mut pairs,
         ) {
+            // The failing segment released its own slots; the positional
+            // ones converted earlier are still ours to drop (`buf[1]` is
+            // the caller's `self` and stays theirs).
+            for slot in &buf[2..2 + pos_len] {
+                if !slot.is_null() {
+                    PY_DEC_REF(*slot);
+                }
+            }
             return conversion_err();
         }
         let nargsf = (pos_len + 1) | PY_VECTORCALL_ARGUMENTS_OFFSET;

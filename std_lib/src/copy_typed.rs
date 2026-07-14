@@ -70,6 +70,8 @@ pub extern "C" fn olive_list_concat_typed(l: i64, r: i64, desc: i64) -> i64 {
     COPY_VISITED.with(|v| {
         let mut visited = v.borrow_mut();
         visited.clear();
+        // One map across both operands: an element appearing on each side
+        // (`a + a`) must copy once and alias, matching Python's `[x] + [x]`.
         let mut out = 0i64;
         for (_, eptr, elen) in [ls, rs].into_iter().flatten() {
             for i in 0..elen {
@@ -427,7 +429,10 @@ fn copy_struct(
 /// A resource-owning struct (source defines `__drop__`) is not safe to
 /// duplicate field-by-field: two independent copies would each release the
 /// same underlying resource. "Copying" it means sharing the one allocation
-/// and bumping its refcount instead (`struct_share.rs`).
+/// and bumping its refcount instead (`struct_share.rs`). Deliberately not
+/// registered in `visited`: the walk never recurses into fields, so a cycle
+/// cannot form here, and every occurrence of the word in one copy creates
+/// one more live reference that needs its own retain.
 fn copy_shared_struct(val: i64, desc: *const u8, pos: &mut usize) -> i64 {
     skip_lp(desc, pos);
     let n = unsafe { byte(desc, *pos) } as usize - 13;

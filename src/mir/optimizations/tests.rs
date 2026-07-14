@@ -266,13 +266,16 @@ mod optimization_tests {
         );
     }
 
+    // `x / x` faults for `x == 0`, so folding it to 1 would delete a runtime
+    // fault; the pipeline must leave it as a division (see peephole's
+    // `div_self_preserved`).
     #[test]
     fn simplification_div_self() {
         let fns = build_and_optimize("fn f(x: i64) -> i64:\n    return x / x\n");
         let f = find_fn(&fns, "f");
         assert!(
-            has_operand(f, |op| matches!(op, Operand::Constant(Constant::Int(1)))),
-            "x/x should become 1"
+            has_rvalue(f, |rval| matches!(rval, Rvalue::BinaryOp(BinOp::Div, _, _))),
+            "x/x must stay a division: it faults when x == 0"
         );
     }
 

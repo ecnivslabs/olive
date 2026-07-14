@@ -71,8 +71,11 @@ pub(crate) unsafe fn legacy_call_method_kw(
     kw_coll_tags: i64,
 ) -> PyObject {
     unsafe {
-        let bound = with_gil(|| {
-            if use_interned_names() {
+        // One GIL region covers lookup, call, and release -- each piece takes
+        // the GIL itself when nested, but on an unfused call site separate
+        // regions would pay three full acquire/release cycles per call.
+        with_gil(|| {
+            let bound = if use_interned_names() {
                 let name = interned_attr(crate::string_slab::str_body(attr) as *const c_char);
                 if name.is_null() {
                     std::ptr::null_mut()
@@ -81,21 +84,21 @@ pub(crate) unsafe fn legacy_call_method_kw(
                 }
             } else {
                 PY_OBJECT_GET_ATTR_STRING(obj, crate::string_slab::str_body(attr) as *const c_char)
+            };
+            if bound.is_null() {
+                handle_py_error();
             }
-        });
-        if bound.is_null() {
-            with_gil(|| handle_py_error());
-        }
-        let res = legacy_call_kw(
-            bound,
-            args_list,
-            coll_tags,
-            kwnames_key,
-            kwvals_list,
-            kw_coll_tags,
-        );
-        with_gil(|| PY_DEC_REF(bound));
-        res
+            let res = legacy_call_kw(
+                bound,
+                args_list,
+                coll_tags,
+                kwnames_key,
+                kwvals_list,
+                kw_coll_tags,
+            );
+            PY_DEC_REF(bound);
+            res
+        })
     }
 }
 
@@ -109,8 +112,8 @@ pub(crate) unsafe fn legacy_call_method_kw_safe(
     kw_coll_tags: i64,
 ) -> i64 {
     unsafe {
-        let bound = with_gil(|| {
-            if use_interned_names() {
+        with_gil(|| {
+            let bound = if use_interned_names() {
                 let name = interned_attr(crate::string_slab::str_body(attr) as *const c_char);
                 if name.is_null() {
                     std::ptr::null_mut()
@@ -119,24 +122,23 @@ pub(crate) unsafe fn legacy_call_method_kw_safe(
                 }
             } else {
                 PY_OBJECT_GET_ATTR_STRING(obj, crate::string_slab::str_body(attr) as *const c_char)
+            };
+            if bound.is_null() {
+                let err_str_ptr = catch_py_exception_msg()
+                    .unwrap_or_else(|| "attribute lookup failed".to_string());
+                return crate::result::olive_result_err(crate::olive_str_internal(&err_str_ptr));
             }
-        });
-        if bound.is_null() {
-            let err_str_ptr = with_gil(|| {
-                catch_py_exception_msg().unwrap_or_else(|| "attribute lookup failed".to_string())
-            });
-            return crate::result::olive_result_err(crate::olive_str_internal(&err_str_ptr));
-        }
-        let res = legacy_call_kw_safe(
-            bound,
-            args_list,
-            coll_tags,
-            kwnames_key,
-            kwvals_list,
-            kw_coll_tags,
-        );
-        with_gil(|| PY_DEC_REF(bound));
-        res
+            let res = legacy_call_kw_safe(
+                bound,
+                args_list,
+                coll_tags,
+                kwnames_key,
+                kwvals_list,
+                kw_coll_tags,
+            );
+            PY_DEC_REF(bound);
+            res
+        })
     }
 }
 

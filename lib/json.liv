@@ -2,6 +2,10 @@ import bytes
 
 const _HEX_DIGITS = "0123456789abcdef"
 
+// Matches the compiler expression nesting limit; recursion past this would
+// exhaust the native stack, so parsing fails instead of crashing.
+const _MAX_DEPTH = 500
+
 fn _codepoint_str(cp: int) -> str:
     let buf = bytes.new(0)
     if cp < 128:
@@ -62,9 +66,11 @@ fn _parse_string(buf: int, n: int, mut i: int) -> [Any]:
     i = i + 1
     let mut parts: [str] = []
     let mut run = i
+    let mut closed = 0
     while i < n:
         let b = bytes.get(buf, i)
         if b == 34:
+            closed = 1
             break
         if b != 92:
             i = i + 1
@@ -116,7 +122,9 @@ fn _parse_string(buf: int, n: int, mut i: int) -> [Any]:
         run = i
     if i > run:
         parts.append(_slice_str(buf, run, i))
-    return ["".join(parts), i + 1]
+    if closed == 0:
+        return [None, i, 1]
+    return ["".join(parts), i + 1, 0]
 
 fn _is_num_byte(b: int) -> bool:
     if b >= 48 and b <= 57:
@@ -134,82 +142,123 @@ fn _parse_number(buf: int, n: int, mut i: int) -> [Any]:
             is_float = True
         i = i + 1
     if i == start:
-        return [None, i + 1]
+        return [None, i, 1]
     let val_str = _slice_str(buf, start, i)
     if is_float:
-        return [val_str.to_float() ?? 0.0, i]
-    return [val_str.to_int() ?? 0, i]
+        return [val_str.to_float() ?? 0.0, i, 0]
+    return [val_str.to_int() ?? 0, i, 0]
 
-fn _parse_array(buf: int, n: int, mut i: int) -> [Any]:
+fn _parse_array(buf: int, n: int, mut i: int, depth: int) -> [Any]:
     i = i + 1
     let mut arr = []
     i = _skip_ws(buf, n, i)
     if i < n and bytes.get(buf, i) == 93:
-        return [arr, i + 1]
+        return [arr, i + 1, 0]
     while i < n:
-        let parsed = _parse_value(buf, n, i)
+        if bytes.get(buf, i) == 93:
+            return [None, i, 1]
+        let parsed = _parse_value(buf, n, i, depth)
+        if parsed[2] != 0:
+            return [None, i, 1]
         arr.append(parsed[0])
         i = _skip_ws(buf, n, parsed[1])
         if i >= n:
-            break
+            return [None, i, 1]
         let b = bytes.get(buf, i)
         if b == 93:
-            return [arr, i + 1]
+            return [arr, i + 1, 0]
         if b == 44:
             i = i + 1
-        else:
-            break
-    return [arr, i]
+            continue
+        return [None, i, 1]
+    return [None, i, 1]
 
-fn _parse_object(buf: int, n: int, mut i: int) -> [Any]:
+fn _parse_object(buf: int, n: int, mut i: int, depth: int) -> [Any]:
     i = i + 1
     let mut obj = {}
     i = _skip_ws(buf, n, i)
     if i < n and bytes.get(buf, i) == 125:
-        return [obj, i + 1]
+        return [obj, i + 1, 0]
     while i < n:
         i = _skip_ws(buf, n, i)
+        if i >= n or bytes.get(buf, i) != 34:
+            return [None, i, 1]
         let parsed_key = _parse_string(buf, n, i)
+        if parsed_key[2] != 0:
+            return [None, i, 1]
         let key = parsed_key[0]
         i = _skip_ws(buf, n, parsed_key[1])
+        if i >= n or bytes.get(buf, i) != 58:
+            return [None, i, 1]
         i = i + 1
-        let parsed_val = _parse_value(buf, n, i)
+        let parsed_val = _parse_value(buf, n, i, depth)
+        if parsed_val[2] != 0:
+            return [None, i, 1]
         obj[key] = parsed_val[0]
         i = _skip_ws(buf, n, parsed_val[1])
         if i >= n:
-            break
+            return [None, i, 1]
         let b = bytes.get(buf, i)
         if b == 125:
-            return [obj, i + 1]
+            return [obj, i + 1, 0]
         if b == 44:
             i = i + 1
-        else:
-            break
-    return [obj, i]
+            continue
+        return [None, i, 1]
+    return [None, i, 1]
 
-fn _parse_value(buf: int, n: int, mut i: int) -> [Any]:
+fn _match_lit(buf: int, n: int, i: int, word: str) -> bool:
+    let w = bytes.from_str(word)
+    let wn = bytes.len(w)
+    let mut ok = i + wn <= n
+    if ok:
+        let mut j = 0
+        while j < wn:
+            if bytes.get(buf, i + j) != bytes.get(w, j):
+                ok = False
+                break
+            j = j + 1
+    bytes.free(w)
+    return ok
+
+fn _parse_value(buf: int, n: int, mut i: int, depth: int) -> [Any]:
     i = _skip_ws(buf, n, i)
+    if depth > _MAX_DEPTH:
+        return [None, i, 1]
     if i >= n:
-        return [None, i + 1]
+        return [None, i, 1]
     let b = bytes.get(buf, i)
     if b == 34:
-        return _parse_string(buf, n, i)
+        let r = _parse_string(buf, n, i)
+        return [r[0], r[1], r[2]]
     if b == 91:
-        return _parse_array(buf, n, i)
+        return _parse_array(buf, n, i, depth + 1)
     if b == 123:
-        return _parse_object(buf, n, i)
+        return _parse_object(buf, n, i, depth + 1)
     if b == 116:
-        return [True, i + 4]
+        if _match_lit(buf, n, i, "true"):
+            return [True, i + 4, 0]
+        return [None, i, 1]
     if b == 102:
-        return [False, i + 5]
+        if _match_lit(buf, n, i, "false"):
+            return [False, i + 5, 0]
+        return [None, i, 1]
     if b == 110:
-        return [None, i + 4]
-    return _parse_number(buf, n, i)
+        if _match_lit(buf, n, i, "null"):
+            return [None, i + 4, 0]
+        return [None, i, 1]
+    let num = _parse_number(buf, n, i)
+    return [num[0], num[1], num[2]]
 
+// Returns None when the text is not a single valid JSON value.
 fn loads(s: str) -> Any:
     let buf = bytes.from_str(s)
-    let res = _parse_value(buf, bytes.len(buf), 0)
+    let n = bytes.len(buf)
+    let res = _parse_value(buf, n, 0, 0)
+    let end = _skip_ws(buf, n, res[1])
     bytes.free(buf)
+    if res[2] != 0 or end < n:
+        return None
     return res[0]
 
 fn _escape_string(s: str) -> str:

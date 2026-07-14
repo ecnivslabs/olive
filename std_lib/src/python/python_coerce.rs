@@ -377,13 +377,22 @@ pub unsafe fn to_py_deep(val: i64) -> PyObject {
                     let key = crate::olive_list_get(keys, i);
                     let value = crate::olive_obj_get(val, key);
                     let py_value = to_py_deep(value);
-                    PY_DICT_SET_ITEM_STRING(
-                        py_dict,
-                        crate::string_slab::str_body(key) as *const c_char,
-                        py_value,
-                    );
+                    if py_value.is_null() {
+                        continue;
+                    }
+                    // `PyUnicode_FromStringAndSize` fails on a key holding an
+                    // embedded NUL; skip that entry rather than hand NULL to
+                    // the C API.
+                    if !crate::olive_str_to_bytes(key).contains(&0) {
+                        PY_DICT_SET_ITEM_STRING(
+                            py_dict,
+                            crate::string_slab::str_body(key) as *const c_char,
+                            py_value,
+                        );
+                    }
                     PY_DEC_REF(py_value);
                 }
+                crate::olive_free_list(keys);
                 py_dict
             }
             crate::KIND_LIST | crate::KIND_ANY_LIST => {
@@ -429,12 +438,19 @@ pub unsafe fn py_to_olive_internal(py_val: PyObject) -> i64 {
             return if PY_LONG_AS_LONG(py_val) != 0 { 1 } else { 0 };
         }
         if ty == PY_LONG_TYPE {
+            // An exact `int` can still overflow `c_long` (`10**30`); keep the
+            // value as a PyObject handle instead of returning the error-sentinel.
             let v = PY_LONG_AS_LONG(py_val);
+            if !PY_ERR_OCCURRED().is_null() {
+                PY_ERR_CLEAR();
+                return olive_py_wrap(py_val) as i64;
+            }
             #[cfg(windows)]
             let v = v as i64;
             return v;
         }
         if ty == PY_FLOAT_TYPE {
+            // An exact float's conversion cannot fail (no `nb_float` dispatch).
             return PY_FLOAT_AS_DOUBLE(py_val).to_bits() as i64;
         }
         if ty == PY_UNICODE_TYPE {
@@ -474,7 +490,14 @@ pub unsafe fn py_to_olive_internal(py_val: PyObject) -> i64 {
         if is_subtype(PY_LONG_TYPE)
             || foreign_cache_scan(&INT_LIKE_CACHE, &INT_LIKE_LEN, ty as usize)
         {
+            // A subclass's `__index__`/`__int__` can raise, and any
+            // int-like can overflow; keep the object rather than the
+            // error-sentinel `-1`.
             let v = PY_LONG_AS_LONG(py_val);
+            if !PY_ERR_OCCURRED().is_null() {
+                PY_ERR_CLEAR();
+                return olive_py_wrap(py_val) as i64;
+            }
             #[cfg(windows)]
             let v = v as i64;
             return v;
@@ -482,7 +505,12 @@ pub unsafe fn py_to_olive_internal(py_val: PyObject) -> i64 {
         if is_subtype(PY_FLOAT_TYPE)
             || foreign_cache_scan(&FLOAT_LIKE_CACHE, &FLOAT_LIKE_LEN, ty as usize)
         {
-            return PY_FLOAT_AS_DOUBLE(py_val).to_bits() as i64;
+            let d = PY_FLOAT_AS_DOUBLE(py_val);
+            if !PY_ERR_OCCURRED().is_null() {
+                PY_ERR_CLEAR();
+                return olive_py_wrap(py_val) as i64;
+            }
+            return d.to_bits() as i64;
         }
         if is_subtype(PY_UNICODE_TYPE) {
             return py_str_to_olive(py_val);
@@ -515,19 +543,32 @@ pub unsafe fn py_to_olive_internal(py_val: PyObject) -> i64 {
                 } else if name.contains("float") {
                     is_float_like = true;
                 }
+            } else if !PY_ERR_OCCURRED().is_null() {
+                PY_ERR_CLEAR();
             }
             PY_DEC_REF(ty_name_attr);
+        } else if !PY_ERR_OCCURRED().is_null() {
+            PY_ERR_CLEAR();
         }
         if is_int_like {
             foreign_cache_insert(&INT_LIKE_CACHE, &INT_LIKE_LEN, ty as usize);
             let v = PY_LONG_AS_LONG(py_val);
+            if !PY_ERR_OCCURRED().is_null() {
+                PY_ERR_CLEAR();
+                return olive_py_wrap(py_val) as i64;
+            }
             #[cfg(windows)]
             let v = v as i64;
             return v;
         }
         if is_float_like {
             foreign_cache_insert(&FLOAT_LIKE_CACHE, &FLOAT_LIKE_LEN, ty as usize);
-            return PY_FLOAT_AS_DOUBLE(py_val).to_bits() as i64;
+            let d = PY_FLOAT_AS_DOUBLE(py_val);
+            if !PY_ERR_OCCURRED().is_null() {
+                PY_ERR_CLEAR();
+                return olive_py_wrap(py_val) as i64;
+            }
+            return d.to_bits() as i64;
         }
 
         // Unknown objects stay PyObject; `__len__`-heuristic wrongly listifies spaCy Tokens etc.
@@ -562,13 +603,24 @@ pub unsafe fn py_to_any_internal(py_val: PyObject) -> i64 {
                 });
             }
             if is_sub(PY_LONG_TYPE) {
+                // Overflow or a raising `__index__` keeps the value as a
+                // handle instead of boxing the error-sentinel `-1`.
                 let v = PY_LONG_AS_LONG(py_val);
+                if !PY_ERR_OCCURRED().is_null() {
+                    PY_ERR_CLEAR();
+                    return py_to_olive_internal(py_val);
+                }
                 #[cfg(windows)]
                 let v = v as i64;
                 return crate::boxed::olive_box_int(v);
             }
             if is_sub(PY_FLOAT_TYPE) {
-                return crate::boxed::olive_box_float(PY_FLOAT_AS_DOUBLE(py_val));
+                let d = PY_FLOAT_AS_DOUBLE(py_val);
+                if !PY_ERR_OCCURRED().is_null() {
+                    PY_ERR_CLEAR();
+                    return py_to_olive_internal(py_val);
+                }
+                return crate::boxed::olive_box_float(d);
             }
             if is_sub(PY_LIST_TYPE) || is_sub(PY_TUPLE_TYPE) {
                 return olive_py_to_list_internal(py_val, true);
@@ -617,27 +669,23 @@ pub unsafe fn olive_py_to_list_internal(obj: PyObject, boxed: bool) -> i64 {
         if len > 0 {
             let sv = &mut *(list_ptr as *mut crate::StableVec);
             for i in 0..len {
+                // Both accessors return borrowed references; take our own
+                // strong reference so the conversion can consume it. A null
+                // item (out of range) must skip the conversion entirely --
+                // passing null would make the exact-type dispatch read
+                // through it.
                 let py_item = if from_real_list {
-                    let item = PY_LIST_GET_ITEM(source, i as isize);
-                    if !item.is_null() {
-                        PY_INC_REF(item);
-                    }
-                    item
+                    PY_LIST_GET_ITEM(source, i as isize)
                 } else {
-                    let item = PY_TUPLE_GET_ITEM(source, i as isize);
-                    if !item.is_null() {
-                        PY_INC_REF(item);
-                    }
-                    item
+                    PY_TUPLE_GET_ITEM(source, i as isize)
                 };
-                *sv.ptr.add(i) = if boxed {
+                *sv.ptr.add(i) = if py_item.is_null() {
+                    0
+                } else if boxed {
                     py_to_any_internal(py_item)
                 } else {
                     py_to_olive_internal(py_item)
                 };
-                if !py_item.is_null() {
-                    PY_DEC_REF(py_item);
-                }
             }
         }
         if !materialized.is_null() {

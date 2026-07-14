@@ -1,11 +1,14 @@
 use crate::python::*;
 use std::ffi::CStr;
-use std::os::raw::c_long;
 
 thread_local! {
     /// `file:line:col` of the Olive call site currently invoking Python, so an
     /// uncaught Python exception can be traced back to the exact Olive source line.
-    static PY_CALL_LOC: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    /// Held as the call site's `Constant::Str` pointer -- compiler-deduplicated
+    /// static rodata, stable for the process's life -- so recording a call site
+    /// copies one word instead of rebuilding the string; it is decoded only when
+    /// an abort actually needs it.
+    static PY_CALL_LOC: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
 }
 
 /// Writes the Olive call site into the thread-local directly -- shared by
@@ -13,8 +16,7 @@ thread_local! {
 /// R7/R9/R15 fast-path entry points, which call this as their first action
 /// instead of paying a separate runtime call for it.
 pub(crate) fn set_py_call_loc(ptr: i64) {
-    let loc = crate::olive_str_from_ptr(ptr);
-    PY_CALL_LOC.with(|l| *l.borrow_mut() = loc);
+    PY_CALL_LOC.with(|l| l.set(ptr));
 }
 
 /// Records the Olive call site about to invoke a Python callable. Emitted by the
@@ -25,7 +27,12 @@ pub extern "C" fn olive_py_set_loc(ptr: i64) {
 }
 
 pub(crate) fn py_call_loc() -> String {
-    PY_CALL_LOC.with(|l| l.borrow().clone())
+    let ptr = PY_CALL_LOC.with(|l| l.get());
+    if ptr == 0 {
+        String::new()
+    } else {
+        crate::olive_str_from_ptr(ptr)
+    }
 }
 
 pub unsafe fn fetch_py_traceback() -> String {
@@ -59,10 +66,14 @@ pub unsafe fn fetch_py_traceback() -> String {
                                 PY_DEC_REF(code_obj);
                             }
                         }
+                        // The fetched triplet stays alive until process exit;
+                        // nothing after `exit` runs, so no decref is owed.
                         std::process::exit(exit_code);
                     }
                 }
                 PY_DEC_REF(name_obj);
+            } else if !PY_ERR_OCCURRED().is_null() {
+                PY_ERR_CLEAR();
             }
         }
 
@@ -76,50 +87,52 @@ pub unsafe fn fetch_py_traceback() -> String {
                 pvalue = std::ptr::null_mut();
                 args
             } else {
+                // Legacy three-argument form; each slot needs its own
+                // reference because `PyTuple_SetItem` steals.
                 let args = PY_TUPLE_NEW(3);
-                let safe_type = if !ptype.is_null() {
-                    ptype
-                } else {
-                    PY_INC_REF(_PY_NONE_STRUCT);
-                    _PY_NONE_STRUCT
-                };
-                PY_INC_REF(_PY_NONE_STRUCT);
-                let safe_value = _PY_NONE_STRUCT;
-                let safe_tb = if !ptraceback.is_null() {
-                    ptraceback
-                } else {
-                    PY_INC_REF(_PY_NONE_STRUCT);
-                    _PY_NONE_STRUCT
-                };
-                PY_TUPLE_SET_ITEM(args, 0, safe_type);
-                PY_TUPLE_SET_ITEM(args, 1, safe_value);
-                PY_TUPLE_SET_ITEM(args, 2, safe_tb);
-                ptype = std::ptr::null_mut();
-                ptraceback = std::ptr::null_mut();
+                if !args.is_null() {
+                    let inc_none = || {
+                        PY_INC_REF(_PY_NONE_STRUCT);
+                        _PY_NONE_STRUCT
+                    };
+                    PY_TUPLE_SET_ITEM(args, 0, if ptype.is_null() { inc_none() } else { ptype });
+                    PY_TUPLE_SET_ITEM(args, 1, inc_none());
+                    PY_TUPLE_SET_ITEM(
+                        args,
+                        2,
+                        if ptraceback.is_null() { inc_none() } else { ptraceback },
+                    );
+                    ptype = std::ptr::null_mut();
+                    ptraceback = std::ptr::null_mut();
+                }
                 args
             };
 
-            PY_ERR_CLEAR();
-            let py_list = PY_OBJECT_CALL_OBJECT(fmt_func, py_args);
-            if py_list.is_null() {
-                PY_ERR_PRINT();
+            if py_args.is_null() {
+                PY_ERR_CLEAR();
             } else {
-                let len = PY_OBJECT_LENGTH(py_list) as usize;
-                for i in 0..len {
-                    let idx_obj = PY_LONG_FROM_LONG(i as c_long);
-                    let py_item = PY_OBJECT_GET_ITEM(py_list, idx_obj);
-                    if !py_item.is_null() {
-                        let s = PY_UNICODE_AS_UTF8(py_item);
-                        if !s.is_null() {
-                            tb_msg.push_str(&CStr::from_ptr(s).to_string_lossy());
+                PY_ERR_CLEAR();
+                let py_list = PY_OBJECT_CALL_OBJECT(fmt_func, py_args);
+                PY_DEC_REF(py_args);
+                if py_list.is_null() {
+                    PY_ERR_CLEAR();
+                } else {
+                    // A list's elements are borrowed (`PyList_GetItem`
+                    // semantics), so read them directly -- no PyLong key and
+                    // no generic `__getitem__` dispatch per line.
+                    let len = PY_OBJECT_LENGTH(py_list).max(0) as usize;
+                    for i in 0..len {
+                        let py_item = PY_LIST_GET_ITEM(py_list, i as isize);
+                        if !py_item.is_null() {
+                            let s = PY_UNICODE_AS_UTF8(py_item);
+                            if !s.is_null() {
+                                tb_msg.push_str(&CStr::from_ptr(s).to_string_lossy());
+                            }
                         }
-                        PY_DEC_REF(py_item);
                     }
-                    PY_DEC_REF(idx_obj);
+                    PY_DEC_REF(py_list);
                 }
-                PY_DEC_REF(py_list);
             }
-            PY_DEC_REF(py_args);
         }
 
         if tb_msg.is_empty() {
@@ -132,6 +145,8 @@ pub unsafe fn fetch_py_traceback() -> String {
                         err_msg = CStr::from_ptr(utf8_ptr).to_string_lossy().into_owned();
                     }
                     PY_DEC_REF(str_obj);
+                } else if !PY_ERR_OCCURRED().is_null() {
+                    PY_ERR_CLEAR();
                 }
             }
             tb_msg = format!("Python Exception: {}", err_msg);

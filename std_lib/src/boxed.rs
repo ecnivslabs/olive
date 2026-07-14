@@ -22,6 +22,17 @@ thread_local! {
         const { UnsafeCell::new(GenSlab::new(std::mem::size_of::<OliveBoxed>())) };
 }
 
+fn with_boxed_slab<T>(f: impl FnOnce(&mut GenSlab) -> T) -> T {
+    unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null() {
+            f(&mut (*active).boxed)
+        } else {
+            BOXED_SLAB.with(|sl| f(&mut *sl.get()))
+        }
+    }
+}
+
 /// Low-bit tag selecting an inline immediate. Heap pointers use `0`, strings
 /// use bit `0`; these three are the remaining even, non-zero patterns.
 pub const TAG_INT: i64 = 2;
@@ -43,8 +54,7 @@ pub struct OliveBoxed {
 }
 
 fn heap_box(kind: i64, bits: i64) -> i64 {
-    BOXED_SLAB.with(|sl| {
-        let sl = unsafe { &mut *sl.get() };
+    with_boxed_slab(|sl| {
         let (body, _) = sl.alloc();
         unsafe {
             std::ptr::write(body as *mut OliveBoxed, OliveBoxed { kind, bits });
@@ -185,11 +195,20 @@ pub extern "C" fn olive_any_truthy(v: i64) -> i64 {
 
 /// Frees a heap scalar from `heap_box`; inline immediates own nothing.
 pub fn olive_free_boxed(ptr: i64) {
-    if ptr != 0 && ptr & TAG_MASK == 0 && crate::slab::ptr_in_slab_span(ptr) {
-        BOXED_SLAB.with(|sl| {
-            unsafe { &mut *sl.get() }.free(ptr as *mut u8);
-        });
+    if ptr == 0 || ptr & TAG_MASK != 0 || !crate::slab::ptr_in_slab_span(ptr) {
+        return;
     }
+    match crate::slab::slab_membership(ptr) {
+        None => {}
+        Some(true) => crate::slab::with_escape_arena(|| free_boxed_local(ptr)),
+        Some(false) => free_boxed_local(ptr),
+    }
+}
+
+fn free_boxed_local(ptr: i64) {
+    with_boxed_slab(|sl| {
+        sl.free(ptr as *mut u8);
+    });
 }
 
 /// Borrows `v` as a heap-boxed scalar if it is one.

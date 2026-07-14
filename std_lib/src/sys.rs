@@ -14,8 +14,10 @@ pub extern "C" fn olive_sys_hostname() -> i64 {
         }
     }
     #[cfg(windows)]
-    if let Ok(name) = std::env::var("COMPUTERNAME") {
-        return olive_str_internal(&name);
+    {
+        if let Ok(name) = std::env::var("COMPUTERNAME") {
+            return olive_str_internal(&name);
+        }
     }
     olive_str_internal("unknown")
 }
@@ -42,16 +44,7 @@ pub extern "C" fn olive_sys_arch() -> i64 {
     olive_str_internal(std::env::consts::ARCH)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_sys_memory_total() -> i64 {
-    read_meminfo_field("MemTotal:")
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_sys_memory_free() -> i64 {
-    read_meminfo_field("MemAvailable:").max(read_meminfo_field("MemFree:"))
-}
-
+#[cfg(target_os = "linux")]
 fn read_meminfo_field(field: &str) -> i64 {
     let content = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
     for line in content.lines() {
@@ -68,11 +61,41 @@ fn read_meminfo_field(field: &str) -> i64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn olive_sys_memory_total() -> i64 {
+    #[cfg(target_os = "linux")]
+    {
+        read_meminfo_field("MemTotal:")
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        0
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_sys_memory_free() -> i64 {
+    #[cfg(target_os = "linux")]
+    {
+        read_meminfo_field("MemAvailable:").max(read_meminfo_field("MemFree:"))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        0
+    }
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn olive_sys_uptime() -> f64 {
-    if let Ok(content) = std::fs::read_to_string("/proc/uptime") {
-        let uptime_str = content.split_whitespace().next().unwrap_or("0");
-        uptime_str.parse::<f64>().unwrap_or(0.0)
-    } else {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(content) = std::fs::read_to_string("/proc/uptime") {
+            let uptime_str = content.split_whitespace().next().unwrap_or("0");
+            return uptime_str.parse::<f64>().unwrap_or(0.0);
+        }
+        0.0
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
         0.0
     }
 }

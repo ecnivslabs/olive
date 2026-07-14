@@ -125,8 +125,8 @@ pub extern "C" fn olive_obj_get_default(obj_ptr: i64, attr: i64, default: i64) -
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_remove(obj_ptr: i64, attr: i64) -> i64 {
-    if obj_ptr == 0 {
-        panic!("Null pointer dereference: attempted to remove attribute from a null object");
+    if obj_ptr == 0 || !crate::slab::ptr_is_slab_body(obj_ptr) {
+        return 0;
     }
     let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
     match m.fields.remove_entry(&OliveStringKey(attr)) {
@@ -143,7 +143,7 @@ pub extern "C" fn olive_obj_remove(obj_ptr: i64, attr: i64) -> i64 {
 /// `d.pop(k)`: removes and returns the value, faulting if `k` is absent.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_pop_checked(obj_ptr: i64, attr: i64, loc: i64) -> i64 {
-    if obj_ptr == 0 {
+    if obj_ptr == 0 || !crate::slab::ptr_is_slab_body(obj_ptr) {
         crate::panic::olive_nil_index_fail(loc);
     }
     let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
@@ -164,7 +164,7 @@ pub extern "C" fn olive_obj_pop_checked(obj_ptr: i64, attr: i64, loc: i64) -> i6
 /// `d.pop(k, default)`: non-faulting, returns `default` when `k` is absent.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_pop_default(obj_ptr: i64, attr: i64, default: i64) -> i64 {
-    if obj_ptr == 0 {
+    if obj_ptr == 0 || !crate::slab::ptr_is_slab_body(obj_ptr) {
         return default;
     }
     let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
@@ -198,9 +198,13 @@ pub extern "C" fn olive_obj_setdefault(obj_ptr: i64, attr: i64, default: i64) ->
 /// words here, see `olive_obj_update_typed` for heap-owning values.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_update(obj_ptr: i64, other_ptr: i64) -> i64 {
-    if obj_ptr == 0 || other_ptr == 0 {
+    if obj_ptr == 0 || other_ptr == 0 || !crate::slab::ptr_is_slab_body(other_ptr) {
         return obj_ptr;
     }
+    // Snapshotted before inserting: `olive_obj_set` can rehash `obj_ptr`'s
+    // map, and when the two arguments alias (or a key copy allocates while
+    // both maps share state through re-entrant codegen paths) an iterator
+    // left live across the inserts reads freed buckets.
     let entries: Vec<(i64, i64)> = {
         let om = unsafe { &*(other_ptr as *const OliveObj) };
         om.fields.iter().map(|(k, &v)| (k.0, v)).collect()
@@ -259,20 +263,22 @@ pub extern "C" fn olive_free_obj(ptr: i64) {
     if ptr == 0 {
         return;
     }
-    let is_ours = unsafe {
-        let active = crate::slab::ACTIVE_SLABS.get();
-        if !active.is_null() {
-            (*active).obj.owns_addr(ptr as usize)
-        } else {
-            OBJ_SLAB.with(|sl| (*sl.get()).owns_addr(ptr as usize))
-        }
+    let Some(is_global) = crate::slab::slab_membership(ptr) else {
+        return;
+    };
+    // Ownership is checked against the arena the slot actually lives in: a
+    // dict received over a channel sits in the global escape arena, and a
+    // purely local owns_addr scan would leak it (plus every field it owns).
+    // The check itself stays because a struct slot's header word is a field
+    // count that collides with KIND_OBJ.
+    let is_ours = if is_global {
+        crate::slab::with_escape_arena(|| obj_slab_owns(ptr))
+    } else {
+        obj_slab_owns(ptr)
     };
     if !is_ours {
         return;
     }
-    let Some(is_global) = crate::slab::slab_membership(ptr) else {
-        return;
-    };
     if crate::slab::slot_is_live(ptr) {
         unsafe {
             let obj = &mut *(ptr as *mut OliveObj);
@@ -292,6 +298,17 @@ pub extern "C" fn olive_free_obj(ptr: i64) {
         }
     }
     free_obj_slot_raw_with(ptr, Some(is_global));
+}
+
+fn obj_slab_owns(ptr: i64) -> bool {
+    unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null() {
+            (*active).obj.owns_addr(ptr as usize)
+        } else {
+            OBJ_SLAB.with(|sl| (*sl.get()).owns_addr(ptr as usize))
+        }
+    }
 }
 
 pub(crate) fn free_obj_slot_raw(ptr: i64) {

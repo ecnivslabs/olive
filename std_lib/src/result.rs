@@ -17,9 +17,19 @@ thread_local! {
         const { UnsafeCell::new(GenSlab::new(std::mem::size_of::<OliveResult>())) };
 }
 
+fn with_result_slab<T>(f: impl FnOnce(&mut GenSlab) -> T) -> T {
+    unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null() {
+            f(&mut (*active).result)
+        } else {
+            RESULT_SLAB.with(|sl| f(&mut *sl.get()))
+        }
+    }
+}
+
 fn make_result(ok: bool, payload: i64) -> i64 {
-    RESULT_SLAB.with(|sl| {
-        let sl = unsafe { &mut *sl.get() };
+    with_result_slab(|sl| {
         let (body, _) = sl.alloc();
         unsafe {
             std::ptr::write(
@@ -46,8 +56,16 @@ pub extern "C" fn olive_free_result(ptr: i64) {
             crate::olive_free_any(payload);
         }
     }
-    RESULT_SLAB.with(|sl| {
-        unsafe { &mut *sl.get() }.free(ptr as *mut u8);
+    match crate::slab::slab_membership(ptr) {
+        None => {}
+        Some(true) => crate::slab::with_escape_arena(|| free_result_slot_local(ptr)),
+        Some(false) => free_result_slot_local(ptr),
+    }
+}
+
+fn free_result_slot_local(ptr: i64) {
+    with_result_slab(|sl| {
+        sl.free(ptr as *mut u8);
     });
 }
 

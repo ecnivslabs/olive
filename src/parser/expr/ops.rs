@@ -281,22 +281,33 @@ impl Parser {
 
     pub(crate) fn parse_unary(&mut self) -> ParseResult<Expr> {
         match self.peek().kind {
+            TokenKind::Try
+            | TokenKind::Await
+            | TokenKind::Ampersand
+            | TokenKind::Tilde
+            | TokenKind::Star
+            | TokenKind::Minus
+            | TokenKind::Plus => self.enter_nested(|p| p.parse_unary_prefix()),
+            _ => self.parse_power(),
+        }
+    }
+
+    fn parse_unary_prefix(&mut self) -> ParseResult<Expr> {
+        let start = self.peek().clone();
+        match self.peek().kind {
             TokenKind::Try => {
-                let start = self.peek().clone();
                 self.advance();
                 let operand = self.parse_unary()?;
                 let span = self.span_from(&start);
                 Ok(Expr::new(ExprKind::Try(Box::new(operand)), span))
             }
             TokenKind::Await => {
-                let start = self.peek().clone();
                 self.advance();
                 let operand = self.parse_unary()?;
                 let span = self.span_from(&start);
                 Ok(Expr::new(ExprKind::Await(Box::new(operand)), span))
             }
             TokenKind::Ampersand => {
-                let start = self.peek().clone();
                 self.advance();
                 if self.peek().kind == TokenKind::Mut {
                     self.advance();
@@ -310,7 +321,6 @@ impl Parser {
                 }
             }
             TokenKind::Tilde => {
-                let start = self.peek().clone();
                 self.advance();
                 let operand = self.parse_unary()?;
                 let span = self.span_from(&start);
@@ -323,14 +333,12 @@ impl Parser {
                 ))
             }
             TokenKind::Star => {
-                let start = self.peek().clone();
                 self.advance();
                 let operand = self.parse_unary()?;
                 let span = self.span_from(&start);
                 Ok(Expr::new(ExprKind::Deref(Box::new(operand)), span))
             }
             TokenKind::Minus => {
-                let start = self.peek().clone();
                 self.advance();
                 let operand = self.parse_unary()?;
                 let span = self.span_from(&start);
@@ -343,7 +351,6 @@ impl Parser {
                 ))
             }
             TokenKind::Plus => {
-                let start = self.peek().clone();
                 self.advance();
                 let operand = self.parse_unary()?;
                 let span = self.span_from(&start);
@@ -363,7 +370,7 @@ impl Parser {
         let base = self.parse_postfix()?;
         if self.peek().kind == TokenKind::DoubleStar {
             self.advance();
-            let exp = self.parse_unary()?;
+            let exp = self.enter_nested(|p| p.parse_unary())?;
             let span = base.span.merge(exp.span);
             Ok(Expr::new(
                 ExprKind::BinOp {

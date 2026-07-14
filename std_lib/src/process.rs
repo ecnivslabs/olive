@@ -3,7 +3,7 @@ use rustc_hash::FxHashMap as HashMap;
 use std::io::{Read, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 pub const STDIO_PIPE: i64 = 0;
@@ -20,16 +20,22 @@ pub const WAIT_TIMEOUT: i64 = -2;
 /// more than this before the caller reads keeps the newest bytes and drops
 /// the rest, so a runaway child cannot exhaust host memory.
 const MAX_BUFFERED_BYTES: usize = 64 * 1024 * 1024;
+/// Longest a pipe read blocks for a chunk of output before re-checking
+/// `done`; keeps a lost reader-thread wakeup from hanging the caller forever.
+const PIPE_WAIT_SLICE: Duration = Duration::from_millis(50);
+/// Interval between exit probes in `wait_timeout`.
 const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 struct PipeBuf {
     data: Mutex<Vec<u8>>,
+    cvar: Condvar,
 }
 
 impl PipeBuf {
     fn new() -> Arc<Self> {
         Arc::new(PipeBuf {
             data: Mutex::new(Vec::new()),
+            cvar: Condvar::new(),
         })
     }
 
@@ -41,17 +47,30 @@ impl PipeBuf {
         let room = MAX_BUFFERED_BYTES - buf.len();
         let take = chunk.len().min(room);
         buf.extend_from_slice(&chunk[..take]);
+        if take > 0 {
+            self.cvar.notify_all();
+        }
+    }
+
+    /// Blocks until at least one byte is buffered or the stream's reader has
+    /// finished, whichever comes first. Bounded waits guard against a reader
+    /// thread that died without flipping `done`.
+    fn wait_for_data(&self, done: &AtomicU32) {
+        let mut buf = self.data.lock().unwrap();
+        while buf.is_empty() && done.load(Ordering::SeqCst) == 0 {
+            let (b, _) = self.cvar.wait_timeout(buf, PIPE_WAIT_SLICE).unwrap();
+            buf = b;
+        }
     }
 
     fn take(&self) -> Vec<u8> {
         std::mem::take(&mut self.data.lock().unwrap())
     }
 
-    fn take_all_blocking(&self, done: &AtomicU32) -> Vec<u8> {
-        // Drains whatever is already buffered; the reader thread keeps
-        // appending until `done` flips, which callers check separately.
-        let _ = done;
-        self.take()
+    /// Wakes `wait_for_data` sleepers when the reader finishes with the pipe
+    /// still empty (child produced nothing).
+    fn notify_drained(&self) {
+        self.cvar.notify_all();
     }
 }
 
@@ -66,6 +85,7 @@ fn spawn_reader(mut src: impl Read + Send + 'static, buf: Arc<PipeBuf>, done: Ar
             }
         }
         done.store(1, Ordering::SeqCst);
+        buf.notify_drained();
     });
 }
 
@@ -269,6 +289,8 @@ pub extern "C" fn olive_process_wait(handle: i64) -> i64 {
 pub extern "C" fn olive_process_wait_timeout(handle: i64, ms: i64) -> i64 {
     let deadline = Instant::now() + Duration::from_millis(ms.max(0) as u64);
 
+    // Lock only for each try_wait probe; sleeping happens with the global
+    // table lock released so waits on one handle never stall others.
     loop {
         {
             let mut table = table().lock().unwrap();
@@ -295,39 +317,60 @@ pub extern "C" fn olive_process_wait_timeout(handle: i64, ms: i64) -> i64 {
             return WAIT_TIMEOUT;
         }
 
-        std::thread::sleep(WAIT_POLL_INTERVAL.min(deadline - Instant::now()));
+        std::thread::sleep(WAIT_POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())));
     }
+}
+
+/// Snapshot of one pipe's buffers taken while the table lock was held.
+struct PipeSnapshot {
+    buf: Arc<PipeBuf>,
+    done: Arc<AtomicU32>,
+    exited: bool,
+}
+
+fn pipe_snapshot(handle: i64, stderr: bool) -> Option<PipeSnapshot> {
+    let table = table().lock().unwrap();
+    let e = table.get(&handle)?;
+    Some(PipeSnapshot {
+        buf: (if stderr { &e.stderr_buf } else { &e.stdout_buf }).clone(),
+        done: (if stderr { &e.stderr_done } else { &e.stdout_done }).clone(),
+        exited: e.exit_code.is_some(),
+    })
+}
+
+fn drain_pipe(snap: &PipeSnapshot) -> Vec<u8> {
+    // Block briefly for the first chunk when the child is still running, so a
+    // read right after spawn sees early output; never hold the table lock
+    // while waiting, or spawn/poll/close of any other handle would stall.
+    if !snap.exited {
+        snap.buf.wait_for_data(&snap.done);
+    }
+    snap.buf.take()
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_process_read_stdout(handle: i64) -> i64 {
-    let table = table().lock().unwrap();
-    match table.get(&handle) {
-        Some(e) => {
-            let bytes = e.stdout_buf.take_all_blocking(&e.stdout_done);
-            if bytes.is_empty() {
-                0
-            } else {
-                olive_str_internal(&String::from_utf8_lossy(&bytes))
-            }
-        }
-        None => 0,
+    let Some(snap) = pipe_snapshot(handle, false) else {
+        return 0;
+    };
+    let bytes = drain_pipe(&snap);
+    if bytes.is_empty() {
+        0
+    } else {
+        olive_str_internal(&String::from_utf8_lossy(&bytes))
     }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_process_read_stderr(handle: i64) -> i64 {
-    let table = table().lock().unwrap();
-    match table.get(&handle) {
-        Some(e) => {
-            let bytes = e.stderr_buf.take_all_blocking(&e.stderr_done);
-            if bytes.is_empty() {
-                0
-            } else {
-                olive_str_internal(&String::from_utf8_lossy(&bytes))
-            }
-        }
-        None => 0,
+    let Some(snap) = pipe_snapshot(handle, true) else {
+        return 0;
+    };
+    let bytes = drain_pipe(&snap);
+    if bytes.is_empty() {
+        0
+    } else {
+        olive_str_internal(&String::from_utf8_lossy(&bytes))
     }
 }
 
@@ -435,8 +478,11 @@ pub extern "C" fn olive_process_signal_code(handle: i64) -> i64 {
 /// persistent shell session, say) may never do that. Reap it if it has
 /// already exited; otherwise kill it first, then wait, which is bounded.
 pub extern "C" fn olive_process_close(handle: i64) {
-    let mut table = table().lock().unwrap();
-    if let Some(mut entry) = table.remove(&handle)
+    let mut entry = {
+        let mut table = table().lock().unwrap();
+        table.remove(&handle)
+    };
+    if let Some(ref mut entry) = entry
         && entry.exit_code.is_none()
     {
         if matches!(entry.child.try_wait(), Ok(None)) {

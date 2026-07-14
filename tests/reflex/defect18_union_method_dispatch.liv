@@ -1,0 +1,19 @@
+struct P:
+    x: int
+
+    fn get(self) -> int:
+        return self.x
+
+    fn add_to(self, n: int) -> int:
+        return self.x + n
+
+fn make() -> P | int:
+    return P(7)
+
+fn main():
+    let v = make()
+    print(v.get())
+    print(v.add_to(5))
+    print(5.str())
+    let f = 2.5
+    print(f.int())

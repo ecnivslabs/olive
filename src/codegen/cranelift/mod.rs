@@ -590,7 +590,6 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_any_to_str", b"olive_any_to_str\0"),
     ("__olive_none_to_str", b"olive_none_to_str\0"),
     ("__olive_bool_to_str", b"olive_bool_to_str\0"),
-    ("__olive_str", b"olive_str\0"),
     ("__olive_py_call", b"olive_py_call\0"),
     ("__olive_py_call_kw", b"olive_py_call_kw\0"),
     ("__olive_py_call_kw_safe", b"olive_py_call_kw_safe\0"),
@@ -1057,7 +1056,25 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_dlpack_bits", b"olive_dlpack_bits\0"),
     ("__olive_dlpack_device_type", b"olive_dlpack_device_type\0"),
     ("__olive_dlpack_release", b"olive_dlpack_release\0"),
+    ("__olive_clear_typed", b"olive_clear_typed\0"),
+    ("__olive_list_new_reuse", b"olive_list_new_reuse\0"),
+    ("__olive_dict_new_reuse", b"olive_dict_new_reuse\0"),
+    ("__olive_set_new_reuse", b"olive_set_new_reuse\0"),
+    ("__olive_enum_new_reuse", b"olive_enum_new_reuse\0"),
 ];
+
+fn symbol_map_lookup(jit_name: &str) -> Option<&'static str> {
+    use std::sync::OnceLock;
+    static MAP: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+    let map = MAP.get_or_init(|| {
+        SYMBOL_MAP
+            .iter()
+            .map(|&(k, v)| (k, std::str::from_utf8(&v[..v.len() - 1]).unwrap()))
+            .collect()
+    });
+    map.get(jit_name).copied()
+}
+
 pub(super) const POLL_PENDING: i64 = i64::MIN;
 
 const ASYNC_RUNTIME_SYMS: &[&str] = &[

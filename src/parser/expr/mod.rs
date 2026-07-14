@@ -98,20 +98,24 @@ impl Parser {
     pub(crate) fn parse_expr(&mut self) -> ParseResult<Expr> {
         let start = self.parse_range()?;
         // Conditional expression `value if cond else other` (Python ternary).
+        // The `else` arm recurses back into `parse_expr`, so guard it: a chain
+        // of `a if c else b if c else ...` is unbounded right recursion.
         if self.peek().kind == crate::lexer::TokenKind::If {
-            self.advance();
-            let cond = self.parse_or()?;
-            self.expect(crate::lexer::TokenKind::Else)?;
-            let otherwise = self.parse_expr()?;
-            let span = start.span.merge(otherwise.span);
-            return Ok(Expr::new(
-                ExprKind::Ternary {
-                    cond: Box::new(cond),
-                    then: Box::new(start),
-                    otherwise: Box::new(otherwise),
-                },
-                span,
-            ));
+            return self.enter_nested(|p| {
+                p.advance();
+                let cond = p.parse_or()?;
+                p.expect(crate::lexer::TokenKind::Else)?;
+                let otherwise = p.parse_expr()?;
+                let span = start.span.merge(otherwise.span);
+                Ok(Expr::new(
+                    ExprKind::Ternary {
+                        cond: Box::new(cond),
+                        then: Box::new(start),
+                        otherwise: Box::new(otherwise),
+                    },
+                    span,
+                ))
+            });
         }
         Ok(start)
     }

@@ -430,7 +430,8 @@ unsafe fn sync_list(pair: &WritebackPair) {
 
 /// Reads a Python dict key as an Olive string, stringifying non-`str` keys
 /// the same way `olive_py_to_dict_internal` does. `0` on a decode failure (a
-/// non-UTF-8 key, or `str()` itself raising), which the caller skips.
+/// non-UTF-8 key, or `str()` itself raising), which the caller skips. The
+/// result is always a fresh heap allocation owned by the caller.
 unsafe fn dict_key_olive(key_obj: PyObject) -> i64 {
     unsafe {
         let key_ty = raw_ob_type(key_obj);
@@ -450,12 +451,34 @@ unsafe fn dict_key_olive(key_obj: PyObject) -> i64 {
     }
 }
 
-unsafe fn sync_dict(pair: &WritebackPair) {
+/// Syncs one dict-shaped pair in place: clears the Olive side, decodes every
+/// entry, inserts each distinct key exactly once, then frees every decoded
+/// key string. The dedupe pass exists because Python dicts can hold keys
+/// that stringify to the same text (`"1"` and `1`), while `olive_obj_set`
+/// stores an *absent* tagged key by pointer but keeps the already-stored copy
+/// when present -- so free-after-set per entry would free the live stored key
+/// of any duplicate. Deduping first makes every insert land on the keep-copy
+/// path with exactly one owner per key to release at the end.
+///
+/// A duplicate's replaced value is freed here too: it never becomes
+/// reachable from the map, so waiting for a later clear would leak it.
+unsafe fn sync_dict_entries(
+    pair: &WritebackPair,
+    decode_val: impl Fn(PyObject, i64) -> i64,
+) {
     unsafe {
         crate::olive_obj_clear(pair.olive_ptr);
+
         let mut pos: isize = 0;
         let mut key_obj: PyObject = std::ptr::null_mut();
         let mut val_obj: PyObject = std::ptr::null_mut();
+        // (decoded key ptr, decoded value word), first-occurrence order
+        let mut entries: Vec<(i64, i64)> = Vec::new();
+        // Decoded-key-ptr -> index into `entries`. Keys are compared by
+        // content (`OliveStringKey`), so the map's own hasher is exactly the
+        // dedupe test and lookup stays O(1).
+        let mut index_of: rustc_hash::FxHashMap<crate::OliveStringKey, usize> =
+            rustc_hash::FxHashMap::default();
         while PY_DICT_NEXT(pair.py_obj, &mut pos, &mut key_obj, &mut val_obj) != 0 {
             if key_obj.is_null() {
                 continue;
@@ -464,9 +487,37 @@ unsafe fn sync_dict(pair: &WritebackPair) {
             if key_ptr == 0 {
                 continue;
             }
-            let olive_val = py_to_any_internal(val_obj);
+            let olive_val = decode_val(val_obj, key_ptr);
+            let keyed = crate::OliveStringKey(key_ptr);
+            match index_of.entry(keyed) {
+                std::collections::hash_map::Entry::Occupied(occ) => {
+                    let idx = *occ.get();
+                    let prev_val = entries[idx].1;
+                    if crate::is_active_object(prev_val) {
+                        crate::olive_free_any(prev_val);
+                    }
+                    entries[idx].1 = olive_val;
+                    crate::string_slab::str_free(key_ptr);
+                }
+                std::collections::hash_map::Entry::Vacant(vac) => {
+                    vac.insert(entries.len());
+                    entries.push((key_ptr, olive_val));
+                }
+            }
+        }
+
+        for &(key_ptr, olive_val) in &entries {
             crate::olive_obj_set(pair.olive_ptr, key_ptr, olive_val);
         }
+        for &(key_ptr, _) in &entries {
+            crate::string_slab::str_free(key_ptr);
+        }
+    }
+}
+
+unsafe fn sync_dict(pair: &WritebackPair) {
+    unsafe {
+        sync_dict_entries(pair, |val_obj, _key| py_to_any_internal(val_obj));
     }
 }
 
@@ -476,28 +527,14 @@ unsafe fn sync_dict(pair: &WritebackPair) {
 /// actually uses.
 unsafe fn sync_dict_typed(pair: &WritebackPair) {
     unsafe {
-        crate::olive_obj_clear(pair.olive_ptr);
         let kind = scalar_kind(pair.tag);
-        let mut pos: isize = 0;
-        let mut key_obj: PyObject = std::ptr::null_mut();
-        let mut val_obj: PyObject = std::ptr::null_mut();
-        while PY_DICT_NEXT(pair.py_obj, &mut pos, &mut key_obj, &mut val_obj) != 0 {
-            if key_obj.is_null() {
-                continue;
+        sync_dict_entries(pair, |val_obj, key_ptr| match decode_scalar(val_obj, kind) {
+            Ok(v) => v,
+            Err(actual) => {
+                let key_str = crate::olive_str_from_ptr(key_ptr);
+                writeback_type_fail(&format!("value at key \"{key_str}\""), pair.tag, &actual)
             }
-            let key_ptr = dict_key_olive(key_obj);
-            if key_ptr == 0 {
-                continue;
-            }
-            let olive_val = match decode_scalar(val_obj, kind) {
-                Ok(v) => v,
-                Err(actual) => {
-                    let key_str = crate::olive_str_from_ptr(key_ptr);
-                    writeback_type_fail(&format!("value at key \"{key_str}\""), pair.tag, &actual)
-                }
-            };
-            crate::olive_obj_set(pair.olive_ptr, key_ptr, olive_val);
-        }
+        });
     }
 }
 

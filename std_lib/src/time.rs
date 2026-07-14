@@ -1,23 +1,25 @@
 use std::sync::OnceLock;
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_time_now() -> f64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs_f64()
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(d) => d.as_secs_f64(),
+        // Clock set before the epoch: report the negative offset instead of
+        // panicking the way `unwrap` did.
+        Err(e) => -e.duration().as_secs_f64(),
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_time_monotonic() -> f64 {
-    static START: OnceLock<SystemTime> = OnceLock::new();
-    let start = START.get_or_init(SystemTime::now);
-    SystemTime::now()
-        .duration_since(*start)
-        .unwrap()
-        .as_secs_f64()
+    // Anchored at process start on the monotonic clock. The previous
+    // implementation stored a SystemTime anchor and diffed SystemTime again,
+    // so NTP steps or manual clock changes jumped the "monotonic" value.
+    static START: OnceLock<Instant> = OnceLock::new();
+    let start = START.get_or_init(Instant::now);
+    start.elapsed().as_secs_f64()
 }
 
 #[unsafe(no_mangle)]

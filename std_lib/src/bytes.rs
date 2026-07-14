@@ -297,7 +297,7 @@ pub extern "C" fn olive_buf_push_u32_le(buf: i64, val: i64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_buf_get(buf: i64, idx: i64) -> i64 {
-    if buf == 0 {
+    if buf == 0 || idx < 0 {
         return -1;
     }
     let b = unsafe { &*(buf as *const OliveBytes) };
@@ -309,11 +309,11 @@ pub extern "C" fn olive_buf_get(buf: i64, idx: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_buf_set(buf: i64, idx: i64, val: i64) {
-    if buf == 0 {
+    if buf == 0 || idx < 0 {
         return;
     }
     let b = unsafe { &mut *(buf as *mut OliveBytes) };
-    if idx >= 0 && idx < b.len {
+    if idx < b.len {
         b.as_mut_slice()[idx as usize] = (val & 0xFF) as u8;
     }
 }
@@ -467,10 +467,14 @@ fn read_bytes<const N: usize>(buf: i64, offset: i64) -> Option<[u8; N]> {
         return None;
     }
     let b = unsafe { &*(buf as *const OliveBytes) };
+    // checked_add: an extreme offset must miss the bounds check, not wrap
+    // into a small in-range index.
+    let end = offset.checked_add(N as i64)?;
+    if end > b.len {
+        return None;
+    }
     let off = offset as usize;
-    b.as_slice()
-        .get(off..off + N)
-        .map(|s| s.try_into().unwrap())
+    Some(b.as_slice()[off..off + N].try_into().unwrap())
 }
 
 #[unsafe(no_mangle)]
@@ -504,13 +508,19 @@ pub extern "C" fn olive_buf_read_u64_be(buf: i64, offset: i64) -> i64 {
 }
 
 fn write_bytes(buf: i64, offset: i64, data: &[u8]) {
-    if buf == 0 || offset < 0 {
+    // The length cap keeps every later widening (offset + len, usize casts)
+    // exact even where usize is 32-bit.
+    if buf == 0 || offset < 0 || data.len() > i32::MAX as usize {
         return;
     }
+    let end = match offset.checked_add(data.len() as i64) {
+        Some(e) => e,
+        None => return,
+    };
     let b = unsafe { &mut *(buf as *mut OliveBytes) };
     let off = offset as usize;
-    let end = off + data.len();
-    if end as i64 <= b.len {
+    let end = end as usize;
+    if end <= b.len as usize {
         b.as_mut_slice()[off..end].copy_from_slice(data);
     } else {
         b.with_vec(|v| {
@@ -673,6 +683,50 @@ mod tests {
         assert_eq!(out, "ell");
         olive_buf_free(b);
         olive_buf_free(sl);
+    }
+
+    #[test]
+    fn buf_read_out_of_range_offsets() {
+        let b = olive_buf_from_str(s("hello"));
+        assert_eq!(olive_buf_read_u32_le(b, 2), -1);
+        assert_eq!(olive_buf_read_u32_le(b, 4), -1);
+        assert_eq!(olive_buf_read_u16_le(b, 4), -1);
+        // i64::MAX offset must fail the bounds check, not wrap into range.
+        assert_eq!(
+            olive_buf_read_u32_le(b, i64::MAX),
+            -1,
+            "overflowed offset passed bounds check"
+        );
+        olive_buf_free(b);
+    }
+
+    #[test]
+    fn buf_write_grows_on_overrun() {
+        let b = olive_buf_new_zeroed(4);
+        olive_buf_write_u64_le(b, 2, 0x0102030405060708);
+        assert_eq!(olive_buf_len(b), 10);
+        assert_eq!(olive_buf_get(b, 2), 0x08);
+        olive_buf_free(b);
+    }
+
+    #[test]
+    fn buf_write_overflow_offset_is_noop() {
+        let b = olive_buf_new_zeroed(4);
+        // offset + 8 overflows i64: must no-op, not wrap into a small index.
+        olive_buf_write_u64_le(b, i64::MAX, 1);
+        assert_eq!(olive_buf_len(b), 4);
+        assert_eq!(olive_buf_read_u32_le(b, 0), 0);
+        olive_buf_free(b);
+    }
+
+    #[test]
+    fn buf_negative_index_rejected() {
+        let b = olive_buf_new(2);
+        olive_buf_push(b, 9);
+        assert_eq!(olive_buf_get(b, -1), -1);
+        olive_buf_set(b, -1, 5);
+        assert_eq!(olive_buf_get(b, 0), 9);
+        olive_buf_free(b);
     }
 
     #[test]

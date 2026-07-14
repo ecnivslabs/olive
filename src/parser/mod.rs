@@ -3,9 +3,19 @@ pub mod error;
 
 use crate::lexer::Token;
 
+/// Maximum expression/type/statement nesting depth before parsing is rejected.
+/// Bounds recursive-descent stack use so adversarial input (`((((...1...))))`,
+/// 500-deep `if` pyramids) fails with E0200 instead of overflowing the native
+/// stack and aborting the process. Sized to the *debug* build, whose frames are
+/// several times fatter than release's: each paren level costs ~12 nested
+/// parser calls, and past ~144 levels on an 8 MiB stack debug builds abort.
+/// The semantic phases carry their own tighter guard (`MAX_SEMANTIC_NESTING`).
+pub(crate) const MAX_NESTING_DEPTH: usize = 100;
+
 pub struct Parser {
     pub(crate) tokens: Vec<Token>,
     pub(crate) pos: usize,
+    pub(crate) depth: usize,
 }
 
 mod base;
@@ -27,7 +37,11 @@ mod mod_tests {
     #[test]
     fn parser_struct_accessible() {
         let tokens = crate::lexer::Lexer::new("", 0).tokenise().unwrap();
-        let p = Parser { tokens, pos: 0 };
+        let p = Parser {
+            tokens,
+            pos: 0,
+            depth: 0,
+        };
         assert_eq!(p.pos, 0);
     }
 

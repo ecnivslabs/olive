@@ -12,6 +12,7 @@ pub extern "C" fn olive_py_iter(obj: PyObject) -> PyObject {
         if it.is_null() {
             handle_py_error();
         }
+        // `handle_py_error` never returns, so `it` is non-null here.
         olive_py_wrap_owned(it)
     })
 }
@@ -55,6 +56,8 @@ pub extern "C" fn olive_py_iter_safe(obj: PyObject) -> i64 {
             let err = crate::olive_str_internal(&msg);
             return crate::result::olive_result_err(err);
         }
+        // The iterator's own reference moves into the handle; nothing else
+        // owns it, so a null iterator must stay null rather than be wrapped.
         let wrapped = olive_py_wrap_owned(it);
         crate::result::olive_result_ok(wrapped as i64)
     })

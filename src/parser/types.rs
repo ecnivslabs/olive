@@ -29,17 +29,22 @@ impl Parser {
                     parts.push(self.expect(TokenKind::Identifier)?.value);
                 }
                 if self.peek().kind == TokenKind::LBracket {
-                    self.advance();
-                    let mut args = Vec::new();
-                    while self.peek().kind != TokenKind::RBracket {
-                        args.push(self.parse_type_expr()?);
-                        if self.peek().kind == TokenKind::Comma {
-                            self.advance();
-                        } else {
-                            break;
+                    let args = self.enter_nested(|p| {
+                        p.advance();
+                        let mut args = Vec::new();
+                        while p.peek().kind != TokenKind::RBracket
+                            && p.peek().kind != TokenKind::Eof
+                        {
+                            args.push(p.parse_type_expr()?);
+                            if p.peek().kind == TokenKind::Comma {
+                                p.advance();
+                            } else {
+                                break;
+                            }
                         }
-                    }
-                    self.expect(TokenKind::RBracket)?;
+                        p.expect(TokenKind::RBracket)?;
+                        Ok(args)
+                    })?;
                     let span = self.span_from(&start);
                     Ok(TypeExpr::new(
                         TypeExprKind::Generic(parts.join("::"), args),
@@ -54,17 +59,20 @@ impl Parser {
                 }
             }
             TokenKind::LParen => {
-                self.advance();
-                let mut types = Vec::new();
-                while self.peek().kind != TokenKind::RParen {
-                    types.push(self.parse_type_expr()?);
-                    if self.peek().kind == TokenKind::Comma {
-                        self.advance();
-                    } else {
-                        break;
+                let types = self.enter_nested(|p| {
+                    p.advance();
+                    let mut types = Vec::new();
+                    while p.peek().kind != TokenKind::RParen && p.peek().kind != TokenKind::Eof {
+                        types.push(p.parse_type_expr()?);
+                        if p.peek().kind == TokenKind::Comma {
+                            p.advance();
+                        } else {
+                            break;
+                        }
                     }
-                }
-                self.expect(TokenKind::RParen)?;
+                    p.expect(TokenKind::RParen)?;
+                    Ok(types)
+                })?;
                 let span = self.span_from(&start);
                 Ok(TypeExpr::new(TypeExprKind::Tuple(types), span))
             }
@@ -119,20 +127,23 @@ impl Parser {
                 Ok(TypeExpr::new(TypeExprKind::Ptr(Box::new(inner)), span))
             }
             TokenKind::Fn => {
-                self.advance();
-                self.expect(TokenKind::LParen)?;
-                let mut params = Vec::new();
-                while self.peek().kind != TokenKind::RParen {
-                    params.push(self.parse_type_expr()?);
-                    if self.peek().kind == TokenKind::Comma {
-                        self.advance();
-                    } else {
-                        break;
+                let (params, ret) = self.enter_nested(|p| {
+                    p.advance();
+                    p.expect(TokenKind::LParen)?;
+                    let mut params = Vec::new();
+                    while p.peek().kind != TokenKind::RParen && p.peek().kind != TokenKind::Eof {
+                        params.push(p.parse_type_expr()?);
+                        if p.peek().kind == TokenKind::Comma {
+                            p.advance();
+                        } else {
+                            break;
+                        }
                     }
-                }
-                self.expect(TokenKind::RParen)?;
-                self.expect(TokenKind::Arrow)?;
-                let ret = self.parse_type_expr()?;
+                    p.expect(TokenKind::RParen)?;
+                    p.expect(TokenKind::Arrow)?;
+                    let ret = p.parse_type_expr()?;
+                    Ok((params, ret))
+                })?;
                 let span = self.span_from(&start);
                 Ok(TypeExpr::new(
                     TypeExprKind::Fn {

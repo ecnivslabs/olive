@@ -3,6 +3,11 @@
 use serde_json::Value;
 use std::io::{self, BufRead, Write};
 
+// The body buffer is sized directly from the client-supplied header, so an
+// oversized claim (garbled framing, hostile input) must be rejected up front
+// rather than passed to `vec![0u8; len]`, where it aborts the process.
+const MAX_BODY_LEN: usize = 64 * 1024 * 1024;
+
 /// `Ok(None)` on clean EOF (client closed stdin).
 pub fn read_message<R: BufRead>(reader: &mut R) -> io::Result<Option<Value>> {
     let mut content_length: Option<usize> = None;
@@ -34,6 +39,12 @@ pub fn read_message<R: BufRead>(reader: &mut R) -> io::Result<Option<Value>> {
     let len = content_length.ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidData, "missing Content-Length header")
     })?;
+    if len > MAX_BODY_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Content-Length {} exceeds limit of {} bytes", len, MAX_BODY_LEN),
+        ));
+    }
     let mut body = vec![0u8; len];
     reader.read_exact(&mut body)?;
     let value =
@@ -118,5 +129,15 @@ mod tests {
     fn missing_content_length_is_an_error() {
         let mut cursor = Cursor::new(b"\r\n".to_vec());
         assert!(read_message(&mut cursor).is_err());
+    }
+
+    #[test]
+    fn oversized_content_length_is_rejected_without_allocating() {
+        let mut raw = Vec::new();
+        write!(raw, "Content-Length: {}\r\n\r\n", usize::MAX).unwrap();
+        let mut cursor = Cursor::new(raw);
+        let err = read_message(&mut cursor).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("exceeds limit"));
     }
 }

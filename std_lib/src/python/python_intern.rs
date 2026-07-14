@@ -31,10 +31,12 @@ pub(crate) fn use_interned_names() -> bool {
 
 /// Interns `attr` into a persistent Python `str`, reusing it across every
 /// access that shares the same literal pointer. Returns null if
-/// `PyUnicode_InternFromString` itself fails (caller treats it like any
-/// other null from a C-API call). The interned object is never decref'd --
-/// like a Python module's own compiled string constants, it lives for the
-/// process, not for one call. Caller must hold the process-wide GIL.
+/// `PyUnicode_InternFromString` itself fails -- clearing the error indicator,
+/// since callers treat null here as "no fast path, take the string-based
+/// fallback", not as a pending exception. The interned object is never
+/// decref'd -- like a Python module's own compiled string constants, it
+/// lives for the process, not for one call. Caller must hold the
+/// process-wide GIL.
 pub(crate) unsafe fn interned_attr(attr: *const c_char) -> PyObject {
     let key = attr as usize;
     unsafe {
@@ -51,6 +53,8 @@ pub(crate) unsafe fn interned_attr(attr: *const c_char) -> PyObject {
         if !interned.is_null() {
             cache.insert(key, interned as usize);
             *ATTR_MRU.get() = (key, interned as usize);
+        } else if !PY_ERR_OCCURRED().is_null() {
+            PY_ERR_CLEAR();
         }
         interned
     }

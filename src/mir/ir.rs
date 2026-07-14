@@ -134,7 +134,7 @@ pub struct LocalDecl {
     pub is_owning: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MirFunction {
     pub name: String,
     pub locals: Vec<LocalDecl>,

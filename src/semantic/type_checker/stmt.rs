@@ -148,6 +148,24 @@ impl TypeChecker {
     }
 
     pub(super) fn check_stmt(&mut self, stmt: &Stmt) {
+        if self.check_depth >= crate::semantic::MAX_SEMANTIC_NESTING {
+            self.errors.push(SemanticError::rich(
+                crate::compile::errors::Diagnostic::error(
+                    "E0201",
+                    "statement block nested too deeply",
+                    stmt.span,
+                )
+                .label(format!("nesting exceeds the limit of {}", crate::semantic::MAX_SEMANTIC_NESTING))
+                .help("flatten the nesting: extract inner blocks into functions"),
+            ));
+            return;
+        }
+        self.check_depth += 1;
+        self.check_stmt_inner(stmt);
+        self.check_depth -= 1;
+    }
+
+    fn check_stmt_inner(&mut self, stmt: &Stmt) {
         match &stmt.kind {
             StmtKind::Let {
                 name,

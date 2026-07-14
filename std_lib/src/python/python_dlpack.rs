@@ -265,10 +265,15 @@ pub extern "C" fn olive_dlpack_export(
 /// Olive-callable entry point for import: returns an opaque handle (the
 /// underlying `DLManagedTensor` pointer, 0 if the object isn't
 /// DLPack-capable) to be read via `olive_dlpack_*` accessors below and
-/// finally consumed exactly once via `olive_dlpack_release`.
+/// finally consumed exactly once via `olive_dlpack_release`. Accepts either
+/// a raw PyObject or a wrapped handle, matching every other ingest entry.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_dlpack_import(obj: PyObject) -> i64 {
-    crate::python::with_gil(|| unsafe { dlpack_import(obj).map_or(0, |d| d.dlmt as i64) })
+    let raw = unsafe { olive_py_unwrap(obj) };
+    if raw.is_null() {
+        return 0;
+    }
+    crate::python::with_gil(|| unsafe { dlpack_import(raw).map_or(0, |d| d.dlmt as i64) })
 }
 
 #[unsafe(no_mangle)]
@@ -360,6 +365,10 @@ pub unsafe fn dlpack_import(obj: PyObject) -> Option<ImportedDlpack> {
         let method_name = std::ffi::CString::new("__dlpack__").ok()?;
         let method = PY_OBJECT_GET_ATTR_STRING(obj, method_name.as_ptr());
         if method.is_null() {
+            // A missing `__dlpack__` is an ordinary "not DLPack-capable"
+            // answer here, but the failed lookup left the error indicator
+            // set; leaving it would fault the next C-API call that checks it.
+            PY_ERR_CLEAR();
             return None;
         }
         let empty_args = PY_TUPLE_NEW(0);
@@ -367,6 +376,10 @@ pub unsafe fn dlpack_import(obj: PyObject) -> Option<ImportedDlpack> {
         PY_DEC_REF(empty_args);
         PY_DEC_REF(method);
         if capsule.is_null() {
+            // The exporter raised (or returned null): same hygiene. This
+            // entry point reports incapability rather than propagating the
+            // exception, so swallow it after noting the failure.
+            PY_ERR_CLEAR();
             return None;
         }
         if PY_CAPSULE_IS_VALID(capsule, DLTENSOR_NAME.as_ptr() as *const c_char) == 0 {

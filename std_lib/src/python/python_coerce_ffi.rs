@@ -226,8 +226,8 @@ pub extern "C" fn olive_py_to_bytes(obj: PyObject) -> i64 {
         let bytes_obj = PY_BYTES_FROM_OBJECT(unwrapped_obj);
         if bytes_obj.is_null() {
             handle_py_error();
-            return crate::bytes::new_buf(Vec::new());
         }
+        // `handle_py_error` never returns, so `bytes_obj` is non-null here.
         let ptr = PY_BYTES_AS_STRING(bytes_obj);
         let len = PY_BYTES_SIZE(bytes_obj);
         let data = if ptr.is_null() || len <= 0 {
@@ -368,6 +368,7 @@ pub extern "C" fn olive_py_setitem(obj: PyObject, key: PyObject, val: PyObject) 
         if res == -1 {
             handle_py_error();
         }
+        // `handle_py_error` never returns, so `res` is 0 here.
     });
 }
 
@@ -448,6 +449,7 @@ pub extern "C" fn olive_py_setitem_int(obj: PyObject, key: i64, val: PyObject) {
         if res == -1 {
             handle_py_error();
         }
+        // `handle_py_error` never returns, so `res` is 0 here.
     });
 }
 
@@ -534,11 +536,9 @@ pub extern "C" fn olive_py_getattr(obj: PyObject, attr: i64) -> PyObject {
     let attr_ptr = crate::string_slab::str_body(attr) as *const c_char;
     with_gil(|| unsafe {
         let a = if use_interned_names() {
-            let name = interned_attr(attr_ptr);
-            if name.is_null() {
-                std::ptr::null_mut()
-            } else {
-                PY_OBJECT_GET_ATTR(unwrapped_obj, name)
+            match interned_attr(attr_ptr) {
+                name if !name.is_null() => PY_OBJECT_GET_ATTR(unwrapped_obj, name),
+                _ => PY_OBJECT_GET_ATTR_STRING(unwrapped_obj, attr_ptr),
             }
         } else {
             PY_OBJECT_GET_ATTR_STRING(unwrapped_obj, attr_ptr)
@@ -567,18 +567,17 @@ pub extern "C" fn olive_py_getattr_ret(obj: PyObject, attr: i64, ret_tag: i64) -
     let attr_ptr = crate::string_slab::str_body(attr) as *const c_char;
     with_gil(|| unsafe {
         let a = if use_interned_names() {
-            let name = interned_attr(attr_ptr);
-            if name.is_null() {
-                std::ptr::null_mut()
-            } else {
-                PY_OBJECT_GET_ATTR(unwrapped_obj, name)
+            match interned_attr(attr_ptr) {
+                name if !name.is_null() => PY_OBJECT_GET_ATTR(unwrapped_obj, name),
+                _ => PY_OBJECT_GET_ATTR_STRING(unwrapped_obj, attr_ptr),
             }
         } else {
             PY_OBJECT_GET_ATTR_STRING(unwrapped_obj, attr_ptr)
         };
-        if a.is_null() || !PY_ERR_OCCURRED().is_null() {
+        if a.is_null() {
             handle_py_error();
         }
+        // `handle_py_error` never returns, so no exception can linger here.
         finish_ret(a, ret_tag)
     })
 }
@@ -594,19 +593,17 @@ pub extern "C" fn olive_py_setattr(obj: PyObject, attr: i64, val: i64) -> PyObje
     with_gil(|| unsafe {
         let py_val = olive_to_py_checked(val);
         let res = if use_interned_names() {
-            let name = interned_attr(attr_ptr);
-            if name.is_null() {
-                -1
-            } else {
-                PY_OBJECT_SET_ATTR(unwrapped_obj, name, py_val)
+            match interned_attr(attr_ptr) {
+                name if !name.is_null() => PY_OBJECT_SET_ATTR(unwrapped_obj, name, py_val),
+                _ => PY_OBJECT_SET_ATTR_STRING(unwrapped_obj, attr_ptr, py_val),
             }
         } else {
             PY_OBJECT_SET_ATTR_STRING(unwrapped_obj, attr_ptr, py_val)
         };
+        PY_DEC_REF(py_val);
         if res == -1 {
             handle_py_error();
         }
-        PY_DEC_REF(py_val);
         obj
     })
 }
@@ -667,14 +664,13 @@ pub extern "C" fn olive_py_getslice(
         PY_DEC_REF(py_step);
         if slice.is_null() {
             handle_py_error();
-            return 0;
         }
         let result = PY_OBJECT_GET_ITEM(obj, slice);
         PY_DEC_REF(slice);
         if result.is_null() {
             handle_py_error();
-            return 0;
         }
+        // `handle_py_error` never returns, so `result` is non-null here.
         olive_py_wrap_owned(result) as i64
     })
 }

@@ -88,7 +88,13 @@ pub extern "C" fn olive_strbuf_clear(buf_ptr: i64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_strbuf_free(buf_ptr: i64) {
-    if buf_ptr == 0 {
+    if buf_ptr == 0 || !crate::slab::ptr_in_slab_span(buf_ptr) {
+        return;
+    }
+    // Only a slot of this thread's own slab may reach `free`: any other
+    // in-span address would splice foreign memory into the free-list.
+    let is_ours = STRBUF_SLAB.with(|sl| unsafe { (*sl.get()).owns_addr(buf_ptr as usize) });
+    if !is_ours {
         return;
     }
     if crate::slab::slot_is_live(buf_ptr) {

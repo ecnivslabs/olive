@@ -11,7 +11,9 @@ thread_local! {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_set_new(capacity: i64) -> i64 {
-    let cap = capacity as usize;
+    // A negative capacity wraps to a huge usize; clamp to the empty vector
+    // instead of tripping a capacity overflow.
+    let cap = capacity.max(0) as usize;
     let mut v: Vec<i64> = Vec::with_capacity(cap);
     let ptr = v.as_mut_ptr();
     let v_cap = v.capacity();
@@ -113,7 +115,7 @@ pub extern "C" fn olive_set_new_reuse(old_ptr: i64, capacity: i64, bump: i64) ->
         }
     }
     let s = unsafe { &mut *(old_ptr as *mut OliveHashSet) };
-    let cap = capacity as usize;
+    let cap = capacity.max(0) as usize;
     unsafe {
         if s.ptr.is_null() || s.cap < cap {
             let mut v = if s.ptr.is_null() {
@@ -156,8 +158,12 @@ pub extern "C" fn olive_set_add(set_ptr: i64, val: i64) {
     }
     unsafe {
         let s = &mut *(set_ptr as *mut OliveHashSet);
-        let hs = &mut *s.inner;
-        if hs.insert(OliveStringKey(val)) {
+        // Insert before touching the vector: a structurally-equal key
+        // already present must take the overwrite path (`OliveStringKey`'s
+        // PartialEq), and the caller's generated code frees the displaced
+        // value after this returns. Appending first would leave both the
+        // shadowed element and the new one in the snapshot vector.
+        if (*s.inner).insert(OliveStringKey(val)) {
             let mut v = Vec::from_raw_parts(s.ptr, s.len, s.cap);
             v.push(val);
             s.ptr = v.as_mut_ptr();
