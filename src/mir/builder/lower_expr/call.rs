@@ -84,13 +84,18 @@ impl<'a> MirBuilder<'a> {
         arg_ops: Vec<Operand>,
         arg_kw_names: Vec<Option<String>>,
         span: Span,
+        expr_id: usize,
     ) -> Operand {
         let call_args = self.build_py_call_args(args, arg_ops, arg_kw_names, span);
+        // See the identical comment in `call_method.rs`'s `is_py_value()`
+        // branch: the real declared type lets `emit_py_call` fuse a scalar
+        // result, with the caller's later `coerce_pyobj_if_needed` becoming a
+        // harmless identity cast in that case.
         self.emit_py_call(
             callee_op,
             call_args,
             super::py_call::PyCallFlavor::Unsafe,
-            Type::PyObject,
+            self.get_type(expr_id),
             span,
         )
     }

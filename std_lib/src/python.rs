@@ -12,6 +12,7 @@ pub mod python_iter;
 pub mod python_lifecycle;
 pub mod python_math;
 pub mod python_noop;
+pub mod python_ret;
 pub mod python_safe;
 pub mod python_writeback;
 
@@ -27,6 +28,7 @@ pub use python_iter::*;
 pub use python_lifecycle::*;
 pub use python_math::*;
 pub use python_noop::*;
+pub(crate) use python_ret::*;
 pub use python_safe::*;
 pub(crate) use python_writeback::*;
 

@@ -23,6 +23,20 @@ const ARG_ANY: i64 = 5;
 const ARG_NONE: i64 = 6;
 const ARG_BYTES: i64 = 7;
 
+/// Result-fusion tag: how a call's Python return converts directly into the
+/// scalar the checker already knows it produces, instead of wrapping a
+/// handle and paying a second boundary crossing to unwrap it. Mirrors
+/// `python_ret::RET_*` in the runtime crate exactly; packed into the top 4
+/// bits of the same `arg_tags` word the arity-specialized entry points pass
+/// (arity 0-4 never uses more than the low 16 bits for real argument tags).
+const RET_HANDLE: i64 = 0;
+const RET_INT: i64 = 1;
+const RET_FLOAT: i64 = 2;
+const RET_STR: i64 = 3;
+const RET_BOOL: i64 = 4;
+const RET_ANY: i64 = 5;
+const RET_NONE: i64 = 6;
+
 /// Which family of py-call entry point a call site wants: `Result`-returning
 /// (inside a `try`-propagating expression) or the plain form that aborts on
 /// an uncaught Python exception.
@@ -149,6 +163,24 @@ impl<'a> MirBuilder<'a> {
             Type::Bytes => ARG_BYTES,
             Type::Null => ARG_NONE,
             _ => ARG_ANY,
+        }
+    }
+
+    /// The result-fusion tag and locally-typed result for a call's declared
+    /// result type, or `None` when it isn't one of the scalars R10 fuses --
+    /// the caller keeps `RET_HANDLE`/`Type::PyObject` in that case, exactly
+    /// the pre-R10 behavior. `Type::Null` covers both a genuinely `None`-typed
+    /// stub and a statement-position call whose result is discarded
+    /// (`lower_py_call_discard` forces the declared type to `Null` for that).
+    pub(super) fn py_ret_tag(ty: &Type) -> (i64, Type) {
+        match ty {
+            t if Self::is_int_ty(t) => (RET_INT, t.clone()),
+            Type::Float | Type::F32 => (RET_FLOAT, ty.clone()),
+            Type::Str => (RET_STR, Type::Str),
+            Type::Bool => (RET_BOOL, Type::Bool),
+            Type::Null => (RET_NONE, Type::Null),
+            Type::Any => (RET_ANY, Type::Any),
+            _ => (RET_HANDLE, Type::PyObject),
         }
     }
 
@@ -320,7 +352,11 @@ impl<'a> MirBuilder<'a> {
             }
         };
 
-        let result = self.new_local(result_ty, None, true);
+        // This path (the list-based `_t`/kwargs entries) never fuses the
+        // result -- only the arity-specialized shells above do -- so the
+        // assigned local is always a plain handle regardless of what
+        // `result_ty` the caller passed for a potential arity fusion.
+        let result = self.new_local(Type::PyObject, None, true);
         self.push_statement(
             StatementKind::Assign(
                 result,
@@ -336,9 +372,15 @@ impl<'a> MirBuilder<'a> {
 
     /// Emits a call through `__olive_py_call{0..4}(_safe)`, `pos_ops`
     /// passed straight as call registers -- no `args_list` aggregate, so no
-    /// list allocation for this call site at all. `olive_py_call0` takes no
-    /// tag words (there is nothing to tag); every other arity takes the same
-    /// `coll_tags`/`arg_tags` pair `olive_py_call_t` does.
+    /// list allocation for this call site at all. `olive_py_call0` takes an
+    /// `arg_tags` word purely to carry `ret_tag`; every other arity shares it
+    /// with the real per-argument tags `olive_py_call_t` also uses.
+    ///
+    /// `result_ty` only drives fusion for the `Unsafe` flavor: `Safe`'s
+    /// result is a `Result` wire value (its `result_ty` is always `Type::Any`,
+    /// a placeholder for that wire, not a real target type), so ret_tag stays
+    /// `RET_HANDLE` there and the assigned local keeps `result_ty` as given,
+    /// unchanged from before R10.
     fn emit_py_call_arity(
         &mut self,
         callee_op: Operand,
@@ -363,14 +405,22 @@ impl<'a> MirBuilder<'a> {
             (n, _) => unreachable!("emit_py_call_arity: arity {n} out of range"),
         };
 
+        let (ret_tag, local_ty) = match flavor {
+            PyCallFlavor::Unsafe => Self::py_ret_tag(&result_ty),
+            PyCallFlavor::Safe => (RET_HANDLE, result_ty),
+        };
+        let tagged_arg_tags = arg_tags | (ret_tag << 60);
+
         let mut call_operands = vec![callee_op];
-        if !pos_ops.is_empty() {
+        if pos_ops.is_empty() {
+            call_operands.push(Operand::Constant(Constant::Int(tagged_arg_tags)));
+        } else {
             call_operands.push(Operand::Constant(Constant::Int(coll_tags)));
-            call_operands.push(Operand::Constant(Constant::Int(arg_tags)));
+            call_operands.push(Operand::Constant(Constant::Int(tagged_arg_tags)));
             call_operands.extend(pos_ops);
         }
 
-        let result = self.new_local(result_ty, None, true);
+        let result = self.new_local(local_ty, None, true);
         self.push_statement(
             StatementKind::Assign(
                 result,
@@ -428,8 +478,8 @@ impl<'a> MirBuilder<'a> {
     /// Emits a call through `__olive_py_call_method{0..4}(_safe)`: `obj` and
     /// `attr` go straight in as call registers alongside `pos_ops`, no
     /// `args_list` aggregate and no separate getattr call. Mirrors
-    /// `emit_py_call_arity`'s shape exactly, with the receiver and attribute
-    /// name as two extra leading operands.
+    /// `emit_py_call_arity`'s shape and fusion rules exactly, with the
+    /// receiver and attribute name as two extra leading operands.
     fn emit_py_call_method_arity(
         &mut self,
         obj_op: Operand,
@@ -459,14 +509,22 @@ impl<'a> MirBuilder<'a> {
             (n, _) => unreachable!("emit_py_call_method_arity: arity {n} out of range"),
         };
 
+        let (ret_tag, local_ty) = match flavor {
+            PyCallFlavor::Unsafe => Self::py_ret_tag(&result_ty),
+            PyCallFlavor::Safe => (RET_HANDLE, result_ty),
+        };
+        let tagged_arg_tags = arg_tags | (ret_tag << 60);
+
         let mut call_operands = vec![obj_op, Operand::Constant(Constant::Str(attr))];
-        if !pos_ops.is_empty() {
+        if pos_ops.is_empty() {
+            call_operands.push(Operand::Constant(Constant::Int(tagged_arg_tags)));
+        } else {
             call_operands.push(Operand::Constant(Constant::Int(coll_tags)));
-            call_operands.push(Operand::Constant(Constant::Int(arg_tags)));
+            call_operands.push(Operand::Constant(Constant::Int(tagged_arg_tags)));
             call_operands.extend(pos_ops);
         }
 
-        let result = self.new_local(result_ty, None, true);
+        let result = self.new_local(local_ty, None, true);
         self.push_statement(
             StatementKind::Assign(
                 result,
@@ -480,7 +538,11 @@ impl<'a> MirBuilder<'a> {
         self.operand_for_local(result)
     }
 
-    pub(super) fn is_py_call(&self, expr: &Expr) -> bool {
+    /// `pub(in crate::mir::builder)`, not `pub(super)`: `lower_stmt`'s
+    /// statement-position call lowering (a sibling of `lower_expr`, not a
+    /// descendant of it) needs this too, to route a discarded Python call
+    /// through `lower_py_call_discard` instead of the ordinary expression path.
+    pub(in crate::mir::builder) fn is_py_call(&self, expr: &Expr) -> bool {
         if let ExprKind::Call { callee, .. } = &expr.kind {
             let callee_ty = self.get_type(callee.id);
             if callee_ty.is_py_value() {
@@ -491,6 +553,45 @@ impl<'a> MirBuilder<'a> {
             }
         }
         false
+    }
+
+    /// Lowers a Python call in statement position whose result is never
+    /// read: forces `RET_NONE` (`Type::Null`) regardless of the call's own
+    /// declared return type, so the runtime decrefs the result immediately
+    /// instead of building a handle this statement was always going to throw
+    /// away. Only `is_py_call(expr)` shapes reach here (checked by the
+    /// caller in `lower_stmt`); anything else keeps the args/kwargs list
+    /// fallback exactly as before (unfused, same as any non-arity call).
+    pub(in crate::mir::builder) fn lower_py_call_discard(&mut self, expr: &Expr) -> Operand {
+        let ExprKind::Call { callee, args } = &expr.kind else {
+            return self.lower_expr(expr);
+        };
+
+        let (arg_ops, arg_kw_names, _arg_tys) = self.lower_call_args(args, callee, expr.span);
+        let call_args = self.build_py_call_args(args, arg_ops, arg_kw_names, expr.span);
+
+        if let ExprKind::Attr { obj, attr } = &callee.kind
+            && self.get_type(obj.id).is_py_value()
+        {
+            let obj_op = self.lower_expr_as_copy(obj);
+            return self.emit_py_method_call(
+                obj_op,
+                attr.clone(),
+                call_args,
+                PyCallFlavor::Unsafe,
+                Type::Null,
+                expr.span,
+            );
+        }
+
+        let callee_op = self.lower_expr_as_copy(callee);
+        self.emit_py_call(
+            callee_op,
+            call_args,
+            PyCallFlavor::Unsafe,
+            Type::Null,
+            expr.span,
+        )
     }
 
     pub(super) fn lower_py_call_safe(&mut self, expr: &Expr) -> Operand {

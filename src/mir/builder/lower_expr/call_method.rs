@@ -96,12 +96,18 @@ impl<'a> MirBuilder<'a> {
         if obj_ty.is_py_value() {
             let obj_op = self.lower_expr_as_copy(obj);
             let call_args = self.build_py_call_args(args, arg_ops, arg_kw_names, span);
+            // The real declared result type, not always `PyObject`: when it's
+            // one of the scalars R10 fuses, `emit_py_method_call` converts
+            // inside the call itself and returns an already-realized operand
+            // of exactly that type, making the `coerce_pyobj_if_needed` below
+            // a no-op identity cast (its target and the operand's actual type
+            // already agree) instead of a second boundary crossing.
             let raw = self.emit_py_method_call(
                 obj_op,
                 attr.to_string(),
                 call_args,
                 super::py_call::PyCallFlavor::Unsafe,
-                Type::PyObject,
+                self.get_type(expr_id),
                 span,
             );
             return self.coerce_pyobj_if_needed(raw, expr_id, span);

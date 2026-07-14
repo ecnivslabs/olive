@@ -189,9 +189,14 @@ pub extern "C" fn olive_py_call_t(
 /// these for a positional-only call with 0-4 arguments (the common case),
 /// passing each argument straight in a register -- no Olive list allocation
 /// per call at all. Thin shells over `call_with_raw_args`; no logic lives
-/// here beyond assembling the fixed-size local array.
+/// here beyond assembling the fixed-size local array and finishing the
+/// result per `ret_tag` (packed into `arg_tags`'s top 4 bits -- `olive_py_call0`
+/// has no real argument tags to share that word with, so it takes one just to
+/// carry `ret_tag`). A fused (non-`RET_HANDLE`) result is converted and
+/// decref'd before the GIL releases; `RET_HANDLE` keeps wrapping after
+/// release exactly as before, so the unfused path pays nothing extra.
 #[unsafe(no_mangle)]
-pub extern "C" fn olive_py_call0(func: PyObject) -> PyObject {
+pub extern "C" fn olive_py_call0(func: PyObject, arg_tags: i64) -> PyObject {
     check_python_loaded();
     let unwrapped_func = unsafe { olive_py_unwrap(func) };
     if unwrapped_func.is_null() {
@@ -200,8 +205,14 @@ pub extern "C" fn olive_py_call0(func: PyObject) -> PyObject {
     unsafe {
         let gil = PY_GILSTATE_ENSURE();
         let res = call_with_raw_args(unwrapped_func, 0, 0, &mut []);
+        let ret_tag = ret_tag_of(arg_tags);
+        if ret_tag == RET_HANDLE {
+            PY_GILSTATE_RELEASE(gil);
+            return olive_py_wrap_owned(res);
+        }
+        let out = finish_ret(res, ret_tag);
         PY_GILSTATE_RELEASE(gil);
-        olive_py_wrap_owned(res)
+        out as PyObject
     }
 }
 
@@ -221,8 +232,14 @@ pub extern "C" fn olive_py_call1(
         let gil = PY_GILSTATE_ENSURE();
         let mut args = [a0];
         let res = call_with_raw_args(unwrapped_func, coll_tags, arg_tags, &mut args);
+        let ret_tag = ret_tag_of(arg_tags);
+        if ret_tag == RET_HANDLE {
+            PY_GILSTATE_RELEASE(gil);
+            return olive_py_wrap_owned(res);
+        }
+        let out = finish_ret(res, ret_tag);
         PY_GILSTATE_RELEASE(gil);
-        olive_py_wrap_owned(res)
+        out as PyObject
     }
 }
 
@@ -243,8 +260,14 @@ pub extern "C" fn olive_py_call2(
         let gil = PY_GILSTATE_ENSURE();
         let mut args = [a0, a1];
         let res = call_with_raw_args(unwrapped_func, coll_tags, arg_tags, &mut args);
+        let ret_tag = ret_tag_of(arg_tags);
+        if ret_tag == RET_HANDLE {
+            PY_GILSTATE_RELEASE(gil);
+            return olive_py_wrap_owned(res);
+        }
+        let out = finish_ret(res, ret_tag);
         PY_GILSTATE_RELEASE(gil);
-        olive_py_wrap_owned(res)
+        out as PyObject
     }
 }
 
@@ -266,8 +289,14 @@ pub extern "C" fn olive_py_call3(
         let gil = PY_GILSTATE_ENSURE();
         let mut args = [a0, a1, a2];
         let res = call_with_raw_args(unwrapped_func, coll_tags, arg_tags, &mut args);
+        let ret_tag = ret_tag_of(arg_tags);
+        if ret_tag == RET_HANDLE {
+            PY_GILSTATE_RELEASE(gil);
+            return olive_py_wrap_owned(res);
+        }
+        let out = finish_ret(res, ret_tag);
         PY_GILSTATE_RELEASE(gil);
-        olive_py_wrap_owned(res)
+        out as PyObject
     }
 }
 
@@ -290,8 +319,14 @@ pub extern "C" fn olive_py_call4(
         let gil = PY_GILSTATE_ENSURE();
         let mut args = [a0, a1, a2, a3];
         let res = call_with_raw_args(unwrapped_func, coll_tags, arg_tags, &mut args);
+        let ret_tag = ret_tag_of(arg_tags);
+        if ret_tag == RET_HANDLE {
+            PY_GILSTATE_RELEASE(gil);
+            return olive_py_wrap_owned(res);
+        }
+        let out = finish_ret(res, ret_tag);
         PY_GILSTATE_RELEASE(gil);
-        olive_py_wrap_owned(res)
+        out as PyObject
     }
 }
 
@@ -607,7 +642,7 @@ mod tests {
                 )
             });
 
-            let r0 = olive_py_call0(h0);
+            let r0 = olive_py_call0(h0, 0);
             assert_eq!(with_gil(|| PY_LONG_AS_LONG(olive_py_unwrap(r0))), 111);
             olive_py_decref(r0);
 
