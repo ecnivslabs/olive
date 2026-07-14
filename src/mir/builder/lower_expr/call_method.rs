@@ -140,10 +140,13 @@ impl<'a> MirBuilder<'a> {
             while let Type::Ref(inner) | Type::MutRef(inner) = current_obj_ty {
                 current_obj_ty = *inner;
             }
+            // Module globals live in `globals`, not var_map, so lookup_var
+            // alone misses them and a method call on one would be mangled
+            // under the variable name (`r::area`) instead of the type name.
             let is_struct_var = matches!(
                 current_obj_ty,
                 Type::Struct(_, _, _) | Type::Enum(_, _) | Type::TraitObject(_, _) | Type::Any
-            ) && self.lookup_var(name).is_some();
+            ) && (self.lookup_var(name).is_some() || self.globals.contains_key(name));
             if !is_struct_var {
                 if let Type::Union(members) = &current_obj_ty {
                     let providers: Vec<&Type> = members
@@ -915,7 +918,15 @@ impl<'a> MirBuilder<'a> {
         } else {
             call_args.extend_from_slice(arg_ops);
         }
-        let tmp = self.new_local(self.get_type(expr_id), None, false);
+        // Void mutators never write `tmp`; typing it as the receiver leaves an
+        // owning local holding an uninitialized copy of the list pointer, whose
+        // scope-end Drop would free the caller's list. A `Null` dummy drops
+        // nothing, like every other discarded runtime-call destination.
+        let tmp = if returns_elem {
+            self.new_local(self.get_type(expr_id), None, false)
+        } else {
+            self.new_local(Type::Null, None, false)
+        };
         self.push_statement(
             StatementKind::Assign(
                 tmp,
@@ -967,7 +978,14 @@ impl<'a> MirBuilder<'a> {
             "clear" => ("__olive_list_clear", vec![obj_op.clone()]),
             _ => return None,
         };
-        let tmp = self.new_local(self.get_type(expr_id), None, false);
+        // `clear`'s returned pointer is discarded here (the receiver operand
+        // stands in for the expression value), so the destination must not own
+        // a second reference to the list shell.
+        let tmp = if attr == "clear" {
+            self.new_local(Type::Null, None, false)
+        } else {
+            self.new_local(self.get_type(expr_id), None, false)
+        };
         self.push_statement(
             StatementKind::Assign(
                 tmp,
@@ -998,7 +1016,9 @@ impl<'a> MirBuilder<'a> {
     ) -> Option<Operand> {
         if matches!(attr, "clear") {
             let obj_op = self.lower_expr_as_copy(obj);
-            let tmp = self.new_local(self.get_type(expr_id), None, false);
+            // Discarded result: a Null dummy avoids an owning local aliasing
+            // the receiver (same reasoning as list clear).
+            let tmp = self.new_local(Type::Null, None, false);
             self.push_statement(
                 StatementKind::Assign(
                     tmp,
@@ -1056,7 +1076,13 @@ impl<'a> MirBuilder<'a> {
         if attr == "remove" {
             call_args.push(self.index_loc_operand(span));
         }
-        let tmp = self.new_local(self.get_type(expr_id), None, false);
+        // `add` is void and yields the receiver operand; only remove/discard/
+        // contains genuinely produce a value in `tmp`.
+        let tmp = if attr == "add" {
+            self.new_local(Type::Null, None, false)
+        } else {
+            self.new_local(self.get_type(expr_id), None, false)
+        };
         self.push_statement(
             StatementKind::Assign(
                 tmp,
@@ -1098,29 +1124,52 @@ impl<'a> MirBuilder<'a> {
         // `==` derives; the `_typed` variants set the descriptor `hash_typed`
         // consults, synthesized at codegen time from this call's own key
         // argument (arg position 1), same pattern as set add/remove/contains.
-        let runtime = match (attr, key_structural) {
-            ("keys", _) => "__olive_obj_keys",
-            ("values", _) => "__olive_obj_values",
-            ("items", _) => "__olive_obj_items",
-            ("get", false) if arg_ops.len() == 2 => "__olive_obj_get_default",
-            ("get", true) if arg_ops.len() == 2 => "__olive_obj_get_default_typed",
-            ("get", false) => "__olive_obj_get",
-            ("get", true) => "__olive_obj_get_typed",
-            ("remove", _) => "__olive_obj_remove",
-            _ => return None,
-        };
         let val_ty = match &recv_ty {
             Type::Dict(_, v) => (**v).clone(),
             Type::Any => Type::Any,
             _ => return None,
         };
+        // When the read feeds a tag-encoded slot (`Any`, or a scalar union
+        // like `int | str`), a hit on a raw stored word must come back
+        // self-describing — same contract as values entering an Any-valued
+        // dict at `set`. The `_boxed` runtime variants box the hit; the
+        // caller boxes the default itself.
+        let result_ty = self.get_type(expr_id);
+        let needs_boxing = val_ty == Type::Any
+            || matches!(val_ty, Type::Union(_))
+            || result_ty.is_tag_encoded_union()
+            || result_ty == Type::Any;
+        let runtime = match (attr, key_structural) {
+            ("keys", _) => "__olive_obj_keys",
+            ("values", _) => "__olive_obj_values",
+            ("items", _) => "__olive_obj_items",
+            ("get", _) if arg_ops.len() == 2 => {
+                if needs_boxing && key_structural {
+                    "__olive_obj_get_default_boxed_typed"
+                } else if key_structural {
+                    "__olive_obj_get_default_typed"
+                } else if needs_boxing {
+                    "__olive_obj_get_default_boxed"
+                } else {
+                    "__olive_obj_get_default"
+                }
+            }
+            ("get", _) if needs_boxing && !key_structural => "__olive_obj_get_boxed",
+            ("get", false) => "__olive_obj_get",
+            ("get", true) => "__olive_obj_get_typed",
+            ("remove", _) => "__olive_obj_remove",
+            _ => return None,
+        };
         let obj_op = self.lower_expr_as_copy(obj);
         let mut call_args = vec![obj_op];
-        if runtime == "__olive_obj_get_default" {
-            // Default must be boxed into Any so it reads back the same as stored values.
+        if runtime.starts_with("__olive_obj_get_default") {
             call_args.push(arg_ops[0].clone());
             let default = arg_ops[1].clone();
-            if val_ty == Type::Any {
+            if needs_boxing && !matches!(val_ty, Type::Union(_)) {
+                // The stored words are raw; the default must be boxed to
+                // match what a hit would return. A mixed-union-valued dict
+                // already stores tagged words, so pass the default through
+                // its own union repr instead.
                 let from_ty = arg_tys.get(1).cloned().unwrap_or(Type::Any);
                 call_args.push(self.box_into_any(default, &from_ty, span));
             } else {
@@ -1129,7 +1178,7 @@ impl<'a> MirBuilder<'a> {
         } else {
             call_args.extend_from_slice(arg_ops);
         }
-        let tmp = self.new_local(self.get_type(expr_id), None, false);
+        let tmp = self.new_local(result_ty, None, false);
         self.push_statement(
             StatementKind::Assign(
                 tmp,
@@ -1220,7 +1269,14 @@ impl<'a> MirBuilder<'a> {
             }
             _ => return None,
         };
-        let tmp = self.new_local(self.get_type(expr_id), None, false);
+        // clear/update yield the receiver operand and never store into `tmp`;
+        // a typed owning destination would alias the dict shell and double-free
+        // it at scope end.
+        let tmp = if matches!(attr, "clear" | "update") {
+            self.new_local(Type::Null, None, false)
+        } else {
+            self.new_local(self.get_type(expr_id), None, false)
+        };
         self.push_statement(
             StatementKind::Assign(
                 tmp,
@@ -1234,6 +1290,22 @@ impl<'a> MirBuilder<'a> {
         if matches!(attr, "clear" | "update") {
             Some(obj_op)
         } else {
+            // pop/setdefault return stored words raw; a tag-encoded result
+            // slot needs the hit boxed, same contract as get's `_boxed`
+            // variants (which also box the caller-passed default).
+            let result_ty = self.current_locals[tmp.0].ty.clone();
+            if matches!(attr, "pop" | "setdefault")
+                && val_ty != Type::Any
+                && !matches!(val_ty, Type::Union(_))
+                && result_ty.is_tag_encoded_union()
+                && !runtime.ends_with("_typed")
+                && !runtime.contains("checked")
+            {
+                let boxed = self.box_into_any(self.operand_for_local(tmp), &Type::Any, span);
+                let out = self.new_local(result_ty, None, false);
+                self.push_statement(StatementKind::Assign(out, Rvalue::Use(boxed)), span);
+                return Some(self.operand_for_local(out));
+            }
             Some(self.operand_for_local(tmp))
         }
     }
@@ -1659,6 +1731,9 @@ impl<'a> MirBuilder<'a> {
         span: Span,
         expr_id: usize,
     ) -> Operand {
+        if let Some((fields, size)) = self.c_struct_layouts.get(struct_name).cloned() {
+            return self.lower_c_struct_construct(struct_name, &fields, size, arg_ops, arg_tys, span);
+        }
         // Unbox Python scalars supplied for concrete native fields, and tag
         // scalars landing in scalar-union fields; generic (`Param`) fields
         // fall through `coerce` untouched.
@@ -1734,6 +1809,62 @@ impl<'a> MirBuilder<'a> {
             span,
         );
 
+        Operand::Copy(obj_tmp)
+    }
+
+    /// Constructing an import-block struct: a zeroed C-layout block filled
+    /// field by field. `SetAttr` on a struct whose name is in codegen's
+    /// `c_struct_offsets` compiles to an offset store (with narrowing and
+    /// bitfield packing), so no dedicated store instruction is needed here.
+    /// The checker has already validated argument count and types against
+    /// the declared fields; kwargs arrive pre-reordered through
+    /// `expr_kwarg_maps`.
+    pub(super) fn lower_c_struct_construct(
+        &mut self,
+        struct_name: &str,
+        fields: &[String],
+        size: i64,
+        arg_ops: Vec<Operand>,
+        arg_tys: Vec<Type>,
+        span: Span,
+    ) -> Operand {
+        let obj_tmp = self.new_unscoped_local(Type::Struct(struct_name.to_string(), vec![], true));
+        self.push_statement(
+            StatementKind::Assign(
+                obj_tmp,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("__olive_calloc".to_string())),
+                    args: vec![Operand::Constant(Constant::Int(size))],
+                },
+            ),
+            span,
+        );
+        for (i, field) in fields.iter().enumerate() {
+            if i >= arg_ops.len() {
+                break;
+            }
+            // The kwarg reordering pads an omitted member's slot with
+            // `Constant::Int(0)` typed `Type::Any` (real arguments always
+            // carry a concrete type); storing the pad would clobber a real
+            // member of a union (members share bytes), so skip padding slots
+            // entirely -- the block is already zeroed.
+            if arg_tys.get(i) == Some(&Type::Any)
+                && arg_ops[i] == Operand::Constant(Constant::Int(0))
+            {
+                continue;
+            }
+            let from_ty = arg_tys.get(i).cloned().unwrap_or(Type::Any);
+            let field_ty = self
+                .struct_field_types
+                .get(&(struct_name.to_string(), field.clone()))
+                .cloned()
+                .unwrap_or(Type::Int);
+            let op = self.coerce(arg_ops[i].clone(), &from_ty, &field_ty, span);
+            self.push_statement(
+                StatementKind::SetAttr(Operand::Copy(obj_tmp), field.clone(), op),
+                span,
+            );
+        }
         Operand::Copy(obj_tmp)
     }
 

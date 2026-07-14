@@ -95,7 +95,7 @@ pub(crate) fn drop_descriptor_type<'a>(
     }
 }
 
-static KNOWN_RUNTIME_IMPORTS: [&str; 656] = [
+static KNOWN_RUNTIME_IMPORTS: [&str; 660] = [
     "__olive_alloc",
     "__olive_any_add",
     "__olive_any_div",
@@ -179,6 +179,7 @@ static KNOWN_RUNTIME_IMPORTS: [&str; 656] = [
     "__olive_cache_has_tuple",
     "__olive_cache_set",
     "__olive_cache_set_tuple",
+    "__olive_calloc",
     "__olive_cancel_future",
     "__olive_chan_close",
     "__olive_chan_free",
@@ -403,8 +404,10 @@ static KNOWN_RUNTIME_IMPORTS: [&str; 656] = [
     "__olive_none_to_str",
     "__olive_obj_clear",
     "__olive_obj_get",
+    "__olive_obj_get_boxed",
     "__olive_obj_get_checked",
     "__olive_obj_get_default",
+    "__olive_obj_get_default_boxed",
     "__olive_obj_items",
     "__olive_obj_keys",
     "__olive_obj_len",
@@ -621,6 +624,7 @@ static KNOWN_RUNTIME_IMPORTS: [&str; 656] = [
     "__olive_set_index_any",
     "__olive_set_intersection",
     "__olive_set_mode",
+    "__olive_set_mtime",
     "__olive_set_new",
     "__olive_set_remove",
     "__olive_set_remove_checked",
@@ -751,7 +755,7 @@ static KNOWN_RUNTIME_IMPORTS: [&str; 656] = [
     "__olive_yaml_parse",
     "__olive_yaml_stringify",
     "__olive_zstd_compress",
-    "__olive_zstd_decompress"
+    "__olive_zstd_decompress",
 ];
 
 pub(crate) fn resolve_builtin_import(

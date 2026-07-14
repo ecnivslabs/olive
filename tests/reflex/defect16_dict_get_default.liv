@@ -1,0 +1,16 @@
+fn main():
+    let d = {"a": 1, "b": 2}
+    print(str(d.get("b", -1)))
+    print(str(d.get("zz", -1)))
+    let m = {"a": 1}
+    print(str(m.get("a", "s")))
+    print(str(m.get("zz", "s")))
+    let v = m.get("zz", "s")
+    if v == "s":
+        print("narrow-ok")
+    let t: {str: int} = {"x": 7}
+    print(str(t.get("x")))
+    print(str(t.get("q", -1)))
+    print(str(d.pop("missing", -9)))
+    print(str(d.setdefault("c", 3)))
+    print(str(d.get("c")))

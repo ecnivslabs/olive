@@ -281,7 +281,14 @@ impl<'a> MirBuilder<'a> {
             }
 
             StmtKind::ExprStmt(expr) => {
-                if is_tail {
+                // A None-typed `_return` means the checker resolved this
+                // function to return no value (e.g. it contains a bare
+                // `return`), so a trailing expression is effect-only. Assigning
+                // its operand anyway would alias the callee's state into
+                // `_return` — for method calls the operand is the *receiver*,
+                // handing the caller a pointer it will drop while the callee's
+                // caller still owns it.
+                if is_tail && self.current_locals[0].ty != Type::Null {
                     let ret_ty = self.current_locals[0].ty.clone();
                     let (mut rval, expr_ty) = match self.lower_py_scalar_hint(expr, &ret_ty) {
                         Some(op) => (op, ret_ty.clone()),
@@ -931,13 +938,21 @@ impl<'a> MirBuilder<'a> {
                     return;
                 }
 
+                // `fn_meta` was pre-seeded from every impl block in the
+                // registration pass, so this also sees an `__init__` declared
+                // in a separate `impl R` -- including one the builder hasn't
+                // reached yet (or will reach again while re-running top-level
+                // statements for `__module_init__`). Scanning only `body`
+                // here let the field-copy default below overwrite the user's
+                // `__init__` (finish_function replaces by name) with a
+                // wider-arity function call sites then mis-called.
                 let has_user_init = body.iter().any(|s| {
                     if let StmtKind::Fn { name: fn_name, .. } = &s.kind {
                         fn_name == "__init__"
                     } else {
                         false
                     }
-                });
+                }) || self.fn_meta.contains_key(&format!("{}::__init__", name));
 
                 if !has_user_init {
                     let init_name = format!("{}::__init__", name);

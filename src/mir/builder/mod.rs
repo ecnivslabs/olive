@@ -86,6 +86,11 @@ pub struct MirBuilder<'a> {
     pub(super) defer_stack: Vec<crate::parser::Expr>,
     pub(super) py_exit_stack: Vec<(Local, Span)>,
     pub c_ffi_fns: HashSet<String>,
+    /// Import-block structs: name → (field names, C size in bytes). Drives
+    /// construction as a raw `__olive_alloc` block with per-field stores;
+    /// such structs never enter `struct_fields`, which codegen reads as
+    /// "slab-allocated".
+    pub c_struct_layouts: HashMap<String, (Vec<String>, i64)>,
     pub vtables: HashMap<String, Vec<String>>,
     pub global_vars: Vec<String>,
     /// file_id → source filename, used to locate runtime FFI errors. Empty when
@@ -154,6 +159,7 @@ impl<'a> MirBuilder<'a> {
             defer_stack: Vec::new(),
             py_exit_stack: Vec::new(),
             c_ffi_fns,
+            c_struct_layouts: HashMap::default(),
             vtables: HashMap::default(),
             global_vars: Vec::new(),
             file_names: HashMap::default(),

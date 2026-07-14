@@ -229,6 +229,7 @@ impl<M: Module> CraneliftCodegen<M> {
                     Some(1usize)
                 }
                 "__olive_obj_get_default_typed"
+                | "__olive_obj_get_default_boxed_typed"
                 | "__olive_list_index_typed"
                 | "__olive_set_remove_checked_typed"
                 | "__olive_obj_pop_checked_typed"
@@ -398,50 +399,50 @@ impl<M: Module> CraneliftCodegen<M> {
                                 }
                             } else {
                                 if size <= 8 {
-                                    let has_float = layout.iter().any(|(_, _, ty_name, _)| {
-                                        ty_name == "float" || ty_name == "f32" || ty_name == "f64"
-                                    });
-                                    let ty = if has_float {
-                                        if size <= 4 { types::F32 } else { types::F64 }
-                                    } else {
-                                        if size <= 1 {
-                                            types::I8
-                                        } else if size <= 2 {
-                                            types::I16
-                                        } else if size <= 4 {
-                                            types::I32
+                                    let eightbyte_ty = |idx: usize,
+                                                        small: cranelift::prelude::Type|
+                                     -> cranelift::prelude::Type {
+                                        if crate::semantic::abi::eightbyte_is_sse(layout, idx) {
+                                            if crate::semantic::abi::c_abi_eightbyte_size(
+                                                layout, idx,
+                                            ) <= 4
+                                            {
+                                                types::F32
+                                            } else {
+                                                types::F64
+                                            }
+                                        } else {
+                                            small
+                                        }
+                                    };
+                                    let ty = eightbyte_ty(
+                                        0,
+                                        match size {
+                                            1 => types::I8,
+                                            2 => types::I16,
+                                            3 | 4 => types::I32,
+                                            _ => types::I64,
+                                        },
+                                    );
+                                    let val = builder.ins().load(ty, MemFlags::trusted(), arg, 0);
+                                    final_args.push(val);
+                                } else if size <= 16 {
+                                    let eightbyte_ty = |idx: usize| -> cranelift::prelude::Type {
+                                        if crate::semantic::abi::eightbyte_is_sse(layout, idx) {
+                                            if crate::semantic::abi::c_abi_eightbyte_size(
+                                                layout, idx,
+                                            ) <= 4
+                                            {
+                                                types::F32
+                                            } else {
+                                                types::F64
+                                            }
                                         } else {
                                             types::I64
                                         }
                                     };
-                                    let val = builder.ins().load(ty, MemFlags::trusted(), arg, 0);
-                                    final_args.push(val);
-                                } else if size <= 16 {
-                                    let first_has_float =
-                                        layout.iter().any(|(_, offset, ty_name, _)| {
-                                            *offset < 8
-                                                && (ty_name == "float"
-                                                    || ty_name == "f32"
-                                                    || ty_name == "f64")
-                                        });
-                                    let second_has_float =
-                                        layout.iter().any(|(_, offset, ty_name, _)| {
-                                            *offset >= 8
-                                                && (ty_name == "float"
-                                                    || ty_name == "f32"
-                                                    || ty_name == "f64")
-                                        });
-
-                                    let first_ty = if first_has_float {
-                                        types::F64
-                                    } else {
-                                        types::I64
-                                    };
-                                    let second_ty = if second_has_float {
-                                        types::F64
-                                    } else {
-                                        types::I64
-                                    };
+                                    let first_ty = eightbyte_ty(0);
+                                    let second_ty = eightbyte_ty(1);
 
                                     let val1 =
                                         builder.ins().load(first_ty, MemFlags::trusted(), arg, 0);
@@ -669,8 +670,32 @@ impl<M: Module> CraneliftCodegen<M> {
                     builder.ins().call(snap, &[]);
                 }
 
+                // An sret return wrote straight into our frame; hand the value
+                // out as an owning heap copy for the same reason as below.
                 let mut ret_val = if let Some(ptr) = sret_ptr {
-                    ptr
+                    if is_ffi {
+                        let ret_name = ffi_entry.and_then(|e| e.ret.as_ref()).unwrap();
+                        let size = *c_struct_sizes.get(ret_name).unwrap_or(&8);
+                        let heap_id = func_ids
+                            .get("__olive_alloc")
+                            .copied()
+                            .expect("missing __olive_alloc");
+                        let local_alloc = module.declare_func_in_func(heap_id, builder.func);
+                        let size_val = builder.ins().iconst(types::I64, size);
+                        let alloc_inst = builder.ins().call(local_alloc, &[size_val]);
+                        let heap_ptr = builder.inst_results(alloc_inst)[0];
+                        let copy_size =
+                            builder.ins().iconst(module.isa().pointer_type(), size as i64);
+                        builder.call_memcpy(
+                            module.isa().frontend_config(),
+                            heap_ptr,
+                            ptr,
+                            copy_size,
+                        );
+                        heap_ptr
+                    } else {
+                        ptr
+                    }
                 } else {
                     let results = builder.inst_results(inst).to_vec();
                     if is_ffi
@@ -678,29 +703,33 @@ impl<M: Module> CraneliftCodegen<M> {
                         && let Some(ref r) = entry.ret
                         && c_struct_sizes.contains_key(r)
                     {
+                        // A C-struct return lives in caller registers; it must
+                        // land in a heap block before it becomes a live Olive
+                        // value, because scope exit frees C structs with
+                        // `__olive_free_c_struct` and the frame slot below dies
+                        // with the function.
                         let size = *c_struct_sizes.get(r).unwrap_or(&8);
-                        let slot = builder.create_sized_stack_slot(StackSlotData::new(
-                            StackSlotKind::ExplicitSlot,
-                            size as u32,
-                            3,
-                        ));
-                        let stack_ptr =
-                            builder
-                                .ins()
-                                .stack_addr(module.isa().pointer_type(), slot, 0);
+                        let heap_id = func_ids
+                            .get("__olive_alloc")
+                            .copied()
+                            .expect("missing __olive_alloc");
+                        let local_alloc = module.declare_func_in_func(heap_id, builder.func);
+                        let size_val = builder.ins().iconst(types::I64, size as i64);
+                        let alloc_inst = builder.ins().call(local_alloc, &[size_val]);
+                        let heap_ptr = builder.inst_results(alloc_inst)[0];
                         if results.len() == 1 {
                             builder
                                 .ins()
-                                .store(MemFlags::trusted(), results[0], stack_ptr, 0);
+                                .store(MemFlags::trusted(), results[0], heap_ptr, 0);
                         } else if results.len() == 2 {
                             builder
                                 .ins()
-                                .store(MemFlags::trusted(), results[0], stack_ptr, 0);
+                                .store(MemFlags::trusted(), results[0], heap_ptr, 0);
                             builder
                                 .ins()
-                                .store(MemFlags::trusted(), results[1], stack_ptr, 8);
+                                .store(MemFlags::trusted(), results[1], heap_ptr, 8);
                         }
-                        stack_ptr
+                        heap_ptr
                     } else {
                         if results.is_empty() {
                             builder.ins().iconst(types::I64, 0)

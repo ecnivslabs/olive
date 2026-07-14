@@ -164,6 +164,21 @@ enum Commands {
 }
 
 fn main() {
+    // Compilation recurses over the AST in every phase (resolver, type
+    // checker, MIR lowering, optimizers, codegen), and deeply nested source
+    // can exhaust the OS default main-thread stack -- 1 MB on Windows, where
+    // even moderate nesting aborts the process. Run everything on a thread
+    // with generous headroom so pathological input meets the parser's depth
+    // limit instead of a stack overflow.
+    let child = std::thread::Builder::new()
+        .stack_size(256 * 1024 * 1024)
+        .spawn(compiler_main)
+        .expect("spawn compiler main thread");
+    let code = child.join().unwrap_or(1);
+    std::process::exit(code);
+}
+
+fn compiler_main() -> i32 {
     let cli = Cli::parse();
 
     if !matches!(
@@ -177,8 +192,14 @@ fn main() {
     }
 
     match cli.command {
-        Commands::New { name, lib } => commands::project::execute_new(&name, lib),
-        Commands::Init { name, lib } => commands::project::execute_init(name, lib),
+        Commands::New { name, lib } => {
+            commands::project::execute_new(&name, lib);
+            0
+        }
+        Commands::Init { name, lib } => {
+            commands::project::execute_init(name, lib);
+            0
+        }
         Commands::Build {
             path,
             output,
@@ -188,16 +209,19 @@ fn main() {
             pymodule,
             module_name,
             explain_copies,
-        } => commands::build::execute_build(
-            path.as_ref(),
-            output.as_ref(),
-            time,
-            release,
-            pgo.as_deref(),
-            pymodule,
-            module_name.as_deref(),
-            explain_copies,
-        ),
+        } => {
+            commands::build::execute_build(
+                path.as_ref(),
+                output.as_ref(),
+                time,
+                release,
+                pgo.as_deref(),
+                pymodule,
+                module_name.as_deref(),
+                explain_copies,
+            );
+            0
+        }
         Commands::Run {
             file,
             time,
@@ -208,37 +232,88 @@ fn main() {
             hybrid,
             release,
             explain_copies,
-        } => commands::run::execute_run(
-            file.as_ref(),
-            time,
-            emit_ast,
-            emit_mir,
-            jit,
-            aot,
-            hybrid,
-            release,
-            explain_copies,
-        ),
+        } => {
+            commands::run::execute_run(
+                file.as_ref(),
+                time,
+                emit_ast,
+                emit_mir,
+                jit,
+                aot,
+                hybrid,
+                release,
+                explain_copies,
+            );
+            0
+        }
         Commands::Fmt {
             file,
             check,
             diff,
             stdin,
-        } => commands::project::execute_fmt(file.as_ref(), check, diff, stdin),
-        Commands::Fix { file, dry_run } => commands::fix::execute_fix(file.as_ref(), dry_run),
-        Commands::Explain { code } => commands::explain::execute_explain(&code),
-        Commands::Test { time, release } => commands::build::execute_test(time, release, false),
-        Commands::Bench { json } => commands::bench::execute_bench(json),
-        Commands::Doc { file } => commands::doc::execute_doc(file.as_deref()),
-        Commands::Shell => commands::project::execute_shell(),
-        Commands::Lsp => tooling::lsp::run_lsp(),
-        Commands::Dap => tooling::dap::server::run_dap(),
-        Commands::Debug { file } => tooling::dap::headless::run(&file),
-        Commands::Add { pod } => commands::deps::execute_add(&pod),
-        Commands::Remove { pod } => commands::deps::execute_remove(&pod),
-        Commands::Install => commands::deps::execute_install(),
-        Commands::Update { pod } => commands::deps::execute_update(pod.as_ref()),
-        Commands::Publish => commands::project::execute_publish(),
-        Commands::Upgrade => commands::project::execute_upgrade(),
+        } => {
+            commands::project::execute_fmt(file.as_ref(), check, diff, stdin);
+            0
+        }
+        Commands::Fix { file, dry_run } => {
+            commands::fix::execute_fix(file.as_ref(), dry_run);
+            0
+        }
+        Commands::Explain { code } => {
+            commands::explain::execute_explain(&code);
+            0
+        }
+        Commands::Test { time, release } => {
+            commands::build::execute_test(time, release, false);
+            0
+        }
+        Commands::Bench { json } => {
+            commands::bench::execute_bench(json);
+            0
+        }
+        Commands::Doc { file } => {
+            commands::doc::execute_doc(file.as_deref());
+            0
+        }
+        Commands::Shell => {
+            commands::project::execute_shell();
+            0
+        }
+        Commands::Lsp => {
+            tooling::lsp::run_lsp();
+            0
+        }
+        Commands::Dap => {
+            tooling::dap::server::run_dap();
+            0
+        }
+        Commands::Debug { file } => {
+            tooling::dap::headless::run(&file);
+            0
+        }
+        Commands::Add { pod } => {
+            commands::deps::execute_add(&pod);
+            0
+        }
+        Commands::Remove { pod } => {
+            commands::deps::execute_remove(&pod);
+            0
+        }
+        Commands::Install => {
+            commands::deps::execute_install();
+            0
+        }
+        Commands::Update { pod } => {
+            commands::deps::execute_update(pod.as_ref());
+            0
+        }
+        Commands::Publish => {
+            commands::project::execute_publish();
+            0
+        }
+        Commands::Upgrade => {
+            commands::project::execute_upgrade();
+            0
+        }
     }
 }

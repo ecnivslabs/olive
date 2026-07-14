@@ -8,6 +8,8 @@ use crate::span::Span;
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
+        // The lexer always terminates the stream with an Eof token, so
+        // `enter_nested` can anchor a depth error at any position.
         Self {
             tokens,
             pos: 0,

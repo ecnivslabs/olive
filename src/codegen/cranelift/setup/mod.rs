@@ -1,5 +1,6 @@
 use super::CraneliftCodegen;
 use super::imports;
+use crate::semantic::abi::c_abi_eightbyte_size;
 use crate::mir::{Constant, Operand, Rvalue, StatementKind};
 use cranelift::codegen::ir::ArgumentPurpose;
 use cranelift::prelude::*;
@@ -17,7 +18,10 @@ mod strings;
 mod tests;
 impl<M: Module> CraneliftCodegen<M> {
     pub fn generate(&mut self) {
-        let needed = imports::collect_needed_imports(&self.functions);
+        let needed = imports::collect_needed_imports(
+            &self.functions,
+            !self.c_struct_sizes.is_empty(),
+        );
 
         let mk_sig = |params: &[cranelift::prelude::Type], returns: &[cranelift::prelude::Type]| {
             let mut sig = self.module.make_signature();
@@ -76,6 +80,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_write_char", &sig_i64_i64),
             ("__olive_write_nl", &sig_void_i64),
             ("__olive_alloc", &sig_i64_i64),
+            ("__olive_calloc", &sig_i64_i64),
             ("__olive_fatptr_alloc", &sig_void_i64),
             ("__olive_free_fatptr", &sig_i64_void),
             ("__olive_box_int", &sig_i64_i64),
@@ -251,6 +256,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_obj_get_typed", &sig_3i64_i64),
             ("__olive_obj_get_checked_typed", &sig_4i64_i64),
             ("__olive_obj_get_default_typed", &sig_4i64_i64),
+            ("__olive_obj_get_default_boxed_typed", &sig_4i64_i64),
             ("__olive_set_add_typed", &sig_i64_i64_i64_void),
             ("__olive_set_contains_typed", &sig_3i64_i64),
             ("__olive_set_remove_typed", &sig_3i64_i64),
@@ -407,8 +413,10 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_net_udp_set_timeout", &sig_i64_f64_i64),
             ("__olive_next", &sig_i64_i64),
             ("__olive_obj_get", &sig_i64_i64_i64),
+            ("__olive_obj_get_boxed", &sig_i64_i64_i64),
             ("__olive_obj_get_checked", &sig_3i64_i64),
             ("__olive_obj_get_default", &sig_3i64_i64),
+            ("__olive_obj_get_default_boxed", &sig_3i64_i64),
             ("__olive_obj_keys", &sig_i64_i64),
             ("__olive_obj_items", &sig_i64_i64),
             ("__olive_obj_len", &sig_i64_i64),
@@ -450,6 +458,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_walk", &sig_i64_i64),
             ("__olive_copy_dir", &sig_i64_i64_i64),
             ("__olive_set_mode", &sig_i64_i64_i64),
+            ("__olive_set_mtime", &sig_i64_i64_i64),
             ("__olive_pool_run", &sig_i64_i64_i64),
             ("__olive_pool_run_sync", &sig_i64_i64_i64),
             ("__olive_pool_size", &sig_void_i64),
@@ -837,7 +846,10 @@ impl<M: Module> CraneliftCodegen<M> {
         for &(name, sig) in import_table {
             let always_needed = super::ASYNC_RUNTIME_SYMS.contains(&name);
             let needed_for_c_or_traits =
-                ((name == "__olive_alloc" || name == "__olive_free_c_struct") && has_c_structs)
+                ((name == "__olive_alloc"
+                    || name == "__olive_calloc"
+                    || name == "__olive_free_c_struct")
+                    && has_c_structs)
                     || ((name == "__olive_fatptr_alloc" || name == "__olive_free_fatptr")
                         && !self.vtables.is_empty());
             let needed_for_debug_dual_variant =
@@ -883,8 +895,22 @@ impl<M: Module> CraneliftCodegen<M> {
             for param_name in &entry.params {
                 if let Some(layout) = self.c_struct_offsets.get(param_name) {
                     let size = self.c_struct_sizes.get(param_name).cloned().unwrap_or(8);
+                    let eightbyte_ty =
+                        |idx: usize, small: cranelift::prelude::Type| -> cranelift::prelude::Type {
+                            if crate::semantic::abi::eightbyte_is_sse(layout, idx) {
+                                if c_abi_eightbyte_size(layout, idx) <= 4 {
+                                    types::F32
+                                } else {
+                                    types::F64
+                                }
+                            } else {
+                                small
+                            }
+                        };
                     if is_windows {
                         if size == 1 || size == 2 || size == 4 || size == 8 {
+                            // Win64 passes small aggregates as their natural
+                            // int-width value regardless of member classes.
                             let ty = match size {
                                 1 => types::I8,
                                 2 => types::I16,
@@ -898,46 +924,19 @@ impl<M: Module> CraneliftCodegen<M> {
                         }
                     } else {
                         if size <= 8 {
-                            let has_float = layout.iter().any(|(_, _, ty_name, _)| {
-                                ty_name == "float" || ty_name == "f32" || ty_name == "f64"
-                            });
-                            let ty = if has_float {
-                                if size <= 4 { types::F32 } else { types::F64 }
-                            } else {
-                                if size <= 1 {
-                                    types::I8
-                                } else if size <= 2 {
-                                    types::I16
-                                } else if size <= 4 {
-                                    types::I32
-                                } else {
-                                    types::I64
-                                }
-                            };
+                            let ty = eightbyte_ty(
+                                0,
+                                match size {
+                                    1 => types::I8,
+                                    2 => types::I16,
+                                    3 | 4 => types::I32,
+                                    _ => types::I64,
+                                },
+                            );
                             sig.params.push(AbiParam::new(ty));
                         } else if size <= 16 {
-                            let first_has_float = layout.iter().any(|(_, offset, ty_name, _)| {
-                                *offset < 8
-                                    && (ty_name == "float" || ty_name == "f32" || ty_name == "f64")
-                            });
-                            let second_has_float = layout.iter().any(|(_, offset, ty_name, _)| {
-                                *offset >= 8
-                                    && (ty_name == "float" || ty_name == "f32" || ty_name == "f64")
-                            });
-
-                            let first_ty = if first_has_float {
-                                types::F64
-                            } else {
-                                types::I64
-                            };
-                            let second_ty = if second_has_float {
-                                types::F64
-                            } else {
-                                types::I64
-                            };
-
-                            sig.params.push(AbiParam::new(first_ty));
-                            sig.params.push(AbiParam::new(second_ty));
+                            sig.params.push(AbiParam::new(eightbyte_ty(0, types::I64)));
+                            sig.params.push(AbiParam::new(eightbyte_ty(1, types::I64)));
                         } else {
                             sig.params
                                 .push(AbiParam::new(self.module.isa().pointer_type()));
@@ -960,8 +959,20 @@ impl<M: Module> CraneliftCodegen<M> {
                 if ret_name != "void" {
                     if let Some(layout) = self.c_struct_offsets.get(ret_name) {
                         let size = self.c_struct_sizes.get(ret_name).cloned().unwrap_or(8);
+                        let eightbyte_ty = |idx: usize| -> cranelift::prelude::Type {
+                            if crate::semantic::abi::eightbyte_is_sse(layout, idx) {
+                                if c_abi_eightbyte_size(layout, idx) <= 4 {
+                                    types::F32
+                                } else {
+                                    types::F64
+                                }
+                            } else {
+                                types::I64
+                            }
+                        };
                         if is_windows {
                             if size == 1 || size == 2 || size == 4 || size == 8 {
+                                // Win64: small aggregates return as natural int width.
                                 let ty = match size {
                                     1 => types::I8,
                                     2 => types::I16,
@@ -974,52 +985,10 @@ impl<M: Module> CraneliftCodegen<M> {
                             }
                         } else {
                             if size <= 8 {
-                                let has_float = layout.iter().any(|(_, _, ty_name, _)| {
-                                    ty_name == "float" || ty_name == "f32" || ty_name == "f64"
-                                });
-                                let ty = if has_float {
-                                    if size <= 4 { types::F32 } else { types::F64 }
-                                } else {
-                                    if size <= 1 {
-                                        types::I8
-                                    } else if size <= 2 {
-                                        types::I16
-                                    } else if size <= 4 {
-                                        types::I32
-                                    } else {
-                                        types::I64
-                                    }
-                                };
-                                sig.returns.push(AbiParam::new(ty));
+                                sig.returns.push(AbiParam::new(eightbyte_ty(0)));
                             } else if size <= 16 {
-                                let first_has_float =
-                                    layout.iter().any(|(_, offset, ty_name, _)| {
-                                        *offset < 8
-                                            && (ty_name == "float"
-                                                || ty_name == "f32"
-                                                || ty_name == "f64")
-                                    });
-                                let second_has_float =
-                                    layout.iter().any(|(_, offset, ty_name, _)| {
-                                        *offset >= 8
-                                            && (ty_name == "float"
-                                                || ty_name == "f32"
-                                                || ty_name == "f64")
-                                    });
-
-                                let first_ty = if first_has_float {
-                                    types::F64
-                                } else {
-                                    types::I64
-                                };
-                                let second_ty = if second_has_float {
-                                    types::F64
-                                } else {
-                                    types::I64
-                                };
-
-                                sig.returns.push(AbiParam::new(first_ty));
-                                sig.returns.push(AbiParam::new(second_ty));
+                                sig.returns.push(AbiParam::new(eightbyte_ty(0)));
+                                sig.returns.push(AbiParam::new(eightbyte_ty(1)));
                             } else {
                                 sig.returns.push(AbiParam::new(types::I64));
                             }

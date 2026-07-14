@@ -308,7 +308,7 @@ impl<'a> MirBuilder<'a> {
             let is_struct_or_self = matches!(
                 current_obj_ty,
                 Type::Struct(_, _, _) | Type::Any | Type::Var(_)
-            ) && self.lookup_var(name).is_some();
+            ) && (self.lookup_var(name).is_some() || self.globals.contains_key(name));
             if !is_struct_or_self && !obj_ty.is_py_value() && !current_obj_ty.is_py_value() {
                 let mangled = format!("{}::{}", name, attr);
                 if let Some(local) = self.lookup_var(&mangled) {

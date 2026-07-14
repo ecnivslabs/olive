@@ -102,6 +102,12 @@ impl Optimizer {
                 functions,
             ),
             param_escapes: crate::mir::optimizations::ownership::compute_param_escapes(functions),
+            vtable_methods: self
+                .vtables
+                .values()
+                .flatten()
+                .cloned()
+                .collect::<HashSet<String>>(),
             explain_copies: self.explain_copies,
             copy_sites: RefCell::new(Vec::new()),
         };

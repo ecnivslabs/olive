@@ -7,7 +7,7 @@ mod linker;
 pub(crate) mod lints;
 pub(crate) mod loader;
 pub(crate) mod pgo;
-pub(crate) mod pipeline;
+pub mod pipeline;
 #[cfg(test)]
 mod tests;
 
@@ -339,6 +339,16 @@ pub fn compile_and_test(filename: &str, _show_time: bool, release: bool, _explai
     codegen.generate();
     codegen.finalize();
 
+    // Module-level `const`/`let` initializers (e.g. `const XS = [1, 2]`) are
+    // lowered as runtime statements, not folded to compile-time constants --
+    // only a bare scalar literal is. `pit run` gets this for free by calling
+    // `__main__`, but a test binary never calls `main()`; without this, any
+    // `#[test]` reading such a global sees its zero-initialized state.
+    if let Some(init_ptr) = codegen.get_function(crate::mir::builder::MirBuilder::MODULE_INIT_FN) {
+        let init_fn: extern "C" fn() -> i64 = unsafe { std::mem::transmute(init_ptr) };
+        init_fn();
+    }
+
     println!("\x1b[1;34mRunning tests...\x1b[0m\n");
     let mut passed = 0;
     let mut failed = 0;
@@ -496,6 +506,14 @@ pub fn compile_and_bench(filename: &str, json: bool) {
     );
     codegen.generate();
     codegen.finalize();
+
+    // See compile_and_test's identical call: module-level `const`/`let`
+    // initializers only run as part of `__main__`, which a bench binary
+    // never calls.
+    if let Some(init_ptr) = codegen.get_function(crate::mir::builder::MirBuilder::MODULE_INIT_FN) {
+        let init_fn: extern "C" fn() -> i64 = unsafe { std::mem::transmute(init_ptr) };
+        init_fn();
+    }
 
     if !json {
         println!("\x1b[1;34mRunning benchmarks...\x1b[0m\n");

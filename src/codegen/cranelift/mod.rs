@@ -60,7 +60,7 @@ pub(super) fn is_specializable_any_binop(op: &crate::parser::BinOp) -> bool {
     )
 }
 
-pub(super) type FfiStructFieldLayout = (String, i32, String, Option<(u8, u8)>);
+pub(super) type FfiStructFieldLayout = crate::semantic::abi::FfiFieldLayout;
 pub(super) type FfiLibInfo = (
     String,
     String,
@@ -71,6 +71,7 @@ pub(super) type FfiLibInfo = (
 
 pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_alloc", b"olive_alloc\0"),
+    ("__olive_calloc", b"olive_calloc\0"),
     ("__olive_async_file_read", b"olive_async_file_read\0"),
     ("__olive_async_file_write", b"olive_async_file_write\0"),
     ("__olive_atexit", b"olive_atexit\0"),
@@ -280,6 +281,10 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
         "__olive_obj_get_default_typed",
         b"olive_obj_get_default_typed\0",
     ),
+    (
+        "__olive_obj_get_default_boxed_typed",
+        b"olive_obj_get_default_boxed_typed\0",
+    ),
     ("__olive_set_add_typed", b"olive_set_add_typed\0"),
     ("__olive_set_contains_typed", b"olive_set_contains_typed\0"),
     ("__olive_set_remove_typed", b"olive_set_remove_typed\0"),
@@ -475,8 +480,10 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ),
     ("__olive_next", b"olive_next\0"),
     ("__olive_obj_get", b"olive_obj_get\0"),
+    ("__olive_obj_get_boxed", b"olive_obj_get_boxed\0"),
     ("__olive_obj_get_checked", b"olive_obj_get_checked\0"),
     ("__olive_obj_get_default", b"olive_obj_get_default\0"),
+    ("__olive_obj_get_default_boxed", b"olive_obj_get_default_boxed\0"),
     ("__olive_obj_keys", b"olive_obj_keys\0"),
     ("__olive_obj_items", b"olive_obj_items\0"),
     ("__olive_obj_len", b"olive_obj_len\0"),
@@ -544,6 +551,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_walk", b"olive_walk\0"),
     ("__olive_copy_dir", b"olive_copy_dir\0"),
     ("__olive_set_mode", b"olive_set_mode\0"),
+    ("__olive_set_mtime", b"olive_set_mtime\0"),
     ("__olive_pool_run", b"olive_pool_run\0"),
     ("__olive_pool_run_sync", b"olive_pool_run_sync\0"),
     ("__olive_pool_size", b"olive_pool_size\0"),
@@ -1187,120 +1195,7 @@ pub struct CraneliftCodegen<M: Module> {
 // under the `Mutex` that wraps it, never concurrently.
 unsafe impl Send for CraneliftCodegen<JITModule> {}
 
-fn c_prim_layout(ty: &str) -> (i32, i32) {
-    match ty {
-        "f64" | "i64" | "u64" | "ptr" => (8, 8),
-        "f32" | "i32" | "u32" => (4, 4),
-        "i16" | "u16" => (2, 2),
-        "i8" | "u8" | "bool" => (1, 1),
-        _ if ty.starts_with('[') => {
-            if let Some(semi) = ty.find(';') {
-                let elem = &ty[1..semi];
-                let n: i32 = ty[semi + 1..ty.len() - 1].parse().unwrap_or(1);
-                let (elem_size, elem_align) = c_prim_layout(elem);
-                (elem_size * n, elem_align)
-            } else {
-                (8, 8)
-            }
-        }
-        _ => (8, 8),
-    }
-}
-
-fn c_abi_layout(
-    fields: &[crate::parser::ast::FfiStructField],
-    is_union: bool,
-) -> (Vec<FfiStructFieldLayout>, i64) {
-    if is_union {
-        let mut max_size = 0i32;
-        let mut max_align = 1i32;
-        let mut layout = Vec::new();
-        for field in fields {
-            let ty = type_expr_to_name(&field.ty);
-            let (size, align) = c_prim_layout(&ty);
-            max_align = max_align.max(align);
-            max_size = max_size.max(size);
-            layout.push((field.name.clone(), 0, ty.clone(), None));
-        }
-        let total = if max_align > 0 {
-            let r = max_size % max_align;
-            if r == 0 {
-                max_size
-            } else {
-                max_size + max_align - r
-            }
-        } else {
-            max_size
-        };
-        return (layout, total as i64);
-    }
-    let mut offset = 0i32;
-    let mut layout = Vec::new();
-    let mut max_align = 1i32;
-    let mut current_bit_offset = 0i32;
-    let mut last_bitfield_size = 0i32;
-
-    for field in fields {
-        let ty = type_expr_to_name(&field.ty);
-        let (size, align) = c_prim_layout(&ty);
-        max_align = max_align.max(align);
-
-        if let Some(bits) = field.bits {
-            if current_bit_offset == 0
-                || (current_bit_offset + (bits as i32) > last_bitfield_size * 8)
-                || size != last_bitfield_size
-            {
-                let padding = (align - (offset % align)) % align;
-                offset += padding;
-                layout.push((field.name.clone(), offset, ty.clone(), Some((0u8, bits))));
-                last_bitfield_size = size;
-                current_bit_offset = bits as i32;
-                offset += size;
-            } else {
-                let word_offset = offset - last_bitfield_size;
-                let bit_off = current_bit_offset as u8;
-                layout.push((
-                    field.name.clone(),
-                    word_offset,
-                    ty.clone(),
-                    Some((bit_off, bits)),
-                ));
-                current_bit_offset += bits as i32;
-            }
-        } else {
-            current_bit_offset = 0;
-            last_bitfield_size = 0;
-            let padding = (align - (offset % align)) % align;
-            offset += padding;
-            layout.push((field.name.clone(), offset, ty.clone(), None));
-            offset += size;
-        }
-    }
-    let total = if max_align > 0 {
-        let r = offset % max_align;
-        if r == 0 {
-            offset
-        } else {
-            offset + max_align - r
-        }
-    } else {
-        offset
-    };
-    (layout, total as i64)
-}
-
-fn type_expr_to_name(t: &crate::parser::ast::TypeExpr) -> String {
-    match &t.kind {
-        crate::parser::ast::TypeExprKind::Name(n) => n.clone(),
-        crate::parser::ast::TypeExprKind::Ref(inner)
-        | crate::parser::ast::TypeExprKind::MutRef(inner) => type_expr_to_name(inner),
-        crate::parser::ast::TypeExprKind::Ptr(_) => "ptr".to_string(),
-        crate::parser::ast::TypeExprKind::FixedArray(inner, n) => {
-            format!("[{};{}]", type_expr_to_name(inner), n)
-        }
-        _ => "int".to_string(),
-    }
-}
+use crate::semantic::abi::{c_abi_layout, type_expr_to_name};
 
 pub(super) fn ffi_cl_type(name: &str) -> cranelift::prelude::Type {
     use cranelift::prelude::types;
@@ -1368,7 +1263,10 @@ impl CraneliftCodegen<JITModule> {
             builder.symbol(name, ptr);
         }
 
-        let needed = imports::collect_needed_imports(&functions);
+        let has_c_structs = native_lib_paths
+            .iter()
+            .any(|(_, _, _, structs, _)| !structs.is_empty());
+        let needed = imports::collect_needed_imports(&functions, has_c_structs);
         let has_async = functions.iter().any(|f| f.is_async);
 
         let mut libs: Vec<libloading::Library> = Vec::new();
@@ -1380,9 +1278,6 @@ impl CraneliftCodegen<JITModule> {
         let mut c_struct_names: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         let mut c_struct_destructors: HashMap<String, String> = HashMap::default();
-        let has_c_structs = native_lib_paths
-            .iter()
-            .any(|(_, _, _, structs, _)| !structs.is_empty());
         let mut extern_var_ptrs: HashMap<String, (i64, String, String)> = HashMap::default();
 
         let has_traits = !vtables.is_empty();
@@ -1407,6 +1302,19 @@ impl CraneliftCodegen<JITModule> {
                     c_struct_destructors.insert(type_name, dtor_jit);
                 }
             }
+            // Signature type names are declared unqualified (`p: Pair`) but
+            // layouts are keyed by the mangled struct name (`shim::Pair`);
+            // resolve them here so by-value marshalling and sret detection
+            // see the C size.
+            let resolve_name = |name: &str| -> String {
+                if c_struct_names.contains(name) {
+                    name.to_string()
+                } else if c_struct_names.contains(&format!("{}::{}", alias, name)) {
+                    format!("{}::{}", alias, name)
+                } else {
+                    name.to_string()
+                }
+            };
             if let Ok(lib) = unsafe { libloading::Library::new(path) } {
                 native_aliases.insert(alias.clone());
                 for var in ffi_vars {
@@ -1463,7 +1371,7 @@ impl CraneliftCodegen<JITModule> {
                         }
                         let mut use_sret = false;
                         if let Some(ret_type) = &sig.ret {
-                            let ret_name = type_expr_to_name(ret_type);
+                            let ret_name = resolve_name(&type_expr_to_name(ret_type));
                             if c_struct_sizes.get(&ret_name).is_some_and(|&size| size > 16) {
                                 use_sret = true;
                             }
@@ -1474,9 +1382,9 @@ impl CraneliftCodegen<JITModule> {
                             params: sig
                                 .params
                                 .iter()
-                                .map(|p| type_expr_to_name(&p.ty))
+                                .map(|p| resolve_name(&type_expr_to_name(&p.ty)))
                                 .collect(),
-                            ret: sig.ret.as_ref().map(type_expr_to_name),
+                            ret: sig.ret.as_ref().map(|t| resolve_name(&type_expr_to_name(t))),
                             is_vararg: sig.is_vararg,
                             n_fixed: sig.params.len(),
                             call_conv: sig.call_conv.clone(),
@@ -1620,6 +1528,19 @@ impl CraneliftCodegen<ObjectModule> {
                     c_struct_destructors.insert(type_name, dtor_jit);
                 }
             }
+            // Signature type names are declared unqualified (`p: Pair`) but
+            // layouts are keyed by the mangled struct name (`shim::Pair`);
+            // resolve them here so by-value marshalling and sret detection
+            // see the C size.
+            let resolve_name = |name: &str| -> String {
+                if c_struct_names.contains(name) {
+                    name.to_string()
+                } else if c_struct_names.contains(&format!("{}::{}", alias, name)) {
+                    format!("{}::{}", alias, name)
+                } else {
+                    name.to_string()
+                }
+            };
             for var in ffi_vars {
                 let ty_str = type_expr_to_name(&var.ty);
                 let jit_name = format!("{}::{}", alias, var.name);
@@ -1628,7 +1549,7 @@ impl CraneliftCodegen<ObjectModule> {
             for sig in ffi_sigs {
                 let mut use_sret = false;
                 if let Some(ret_name) = &sig.ret {
-                    let ret_ty_name = type_expr_to_name(ret_name);
+                    let ret_ty_name = resolve_name(&type_expr_to_name(ret_name));
                     if c_struct_sizes
                         .get(&ret_ty_name)
                         .is_some_and(|&size| size > 16)
@@ -1642,9 +1563,12 @@ impl CraneliftCodegen<ObjectModule> {
                     params: sig
                         .params
                         .iter()
-                        .map(|p| type_expr_to_name(&p.ty))
+                        .map(|p| resolve_name(&type_expr_to_name(&p.ty)))
                         .collect(),
-                    ret: sig.ret.as_ref().map(type_expr_to_name),
+                    ret: sig
+                        .ret
+                        .as_ref()
+                        .map(|t| resolve_name(&type_expr_to_name(t))),
                     is_vararg: sig.is_vararg,
                     n_fixed: sig.params.len(),
                     call_conv: sig.call_conv.clone(),

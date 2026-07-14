@@ -108,7 +108,9 @@ pub(super) fn register_runtime_symbols(
     unsafe {
         for &(jit_name, c_name) in SYMBOL_MAP {
             let is_async_needed = has_async && ASYNC_RUNTIME_SYMS.contains(&jit_name);
-            let needed_for_c = (jit_name == "__olive_alloc" || jit_name == "__olive_free_c_struct")
+            let needed_for_c = (jit_name == "__olive_alloc"
+                || jit_name == "__olive_calloc"
+                || jit_name == "__olive_free_c_struct")
                 && has_c_structs;
             if !needed.contains(jit_name) && !is_async_needed && !needed_for_c {
                 continue;

@@ -1,5 +1,6 @@
 use super::summaries::{runtime_escape, task_boundary_escape};
 use super::{LocalClass, push_local};
+use crate::mir::liveness::Liveness;
 use crate::mir::*;
 use crate::span::Span;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
@@ -190,9 +191,19 @@ pub(super) fn py_call_tag_for_pos(src: &PyCallTagSource, pos: usize) -> i64 {
 
 /// Deep-copies every non-owning value stored into a container so the container
 /// owns an independent copy. No value is ever shared between two owners: an
-/// owning path transfers by move, a non-owning path deep-copies. Eliminates
-/// alias marks (no SHARED_BIT, no RC) and the quarantine leak with them.
-/// When `explain_copies` is true, records each copy site into `sites`.
+/// owning path transfers by move, a non-owning path deep-copies. A hit whose
+/// source dies at the store is a last use instead -- the operand becomes a
+/// Move (transfer) and no copy materializes. Eliminates alias marks (no
+/// SHARED_BIT, no RC) and the quarantine leak with them.
+/// When `explain_copies` is true, records each remaining copy site into `sites`.
+///
+/// The Move rewrite only applies to a *pure* param or capture word stored
+/// into this frame's own containers. "Dead as a word" alone is not enough:
+/// a temp assigned from an index/attr read (or any other borrow-shaped
+/// definition) aliases storage its root still owns and drops -- moving it
+/// would leave two owners. A pure param word, by contrast, arrived under
+/// the caller-side escaping-arg contract (moved or defensively copied at
+/// every call site), so it is the unique owner of its allocation.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn insert_escape_copies(
     func: &mut MirFunction,
@@ -201,9 +212,36 @@ pub(super) fn insert_escape_copies(
     heap: &[bool],
     param_escapes: &HashMap<String, Vec<bool>>,
     _reassign: &HashSet<Local>,
+    vtable_methods: &HashSet<String>,
     explain_copies: bool,
     sites: &RefCell<Vec<CopySite>>,
 ) -> bool {
+    // A vtable-dispatched trait method's params arrive as raw caller words
+    // (call_indirect has no name for the summaries to key on), so its
+    // in-callee defensive copies are the only copy-in that exists and the
+    // Move rewrite must stay off entirely.
+    let indirect_target = vtable_methods.contains(&func.name);
+
+    // Computed here rather than carried from the top of `run`: flag
+    // insertion, return-site handling, drop guards, and reassign drops all
+    // split blocks and insert statements ahead of this pass, so the earlier
+    // snapshot's block and statement indices no longer address this layout.
+    let liveness = Liveness::compute(func);
+
+    // Params and captures occupy locals `1..=arg_count` with no defining
+    // assignment; anything else that is non-owning was made so by the
+    // builder after some defining statement (an alias, an index read, a
+    // boxing step), which makes its provenance borrow-shaped. Only the pure
+    // form qualifies for the last-use Move rewrite.
+    let pure_params: HashSet<Local> = if func.arg_count > 0 && !func.basic_blocks.is_empty() {
+        (1..=func.arg_count)
+            .map(Local)
+            .filter(|l| !builder_owning[l.0])
+            .collect()
+    } else {
+        HashSet::default()
+    };
+
     let needs_copy = |l: Local| -> bool {
         l.0 != 0
             && l.0 < heap.len()
@@ -311,8 +349,36 @@ pub(super) fn insert_escape_copies(
         return false;
     }
 
+    // A pure param/capture hit (never an `Any` view, which aliases live
+    // storage regardless) that is dead at the store is at its last use: the
+    // word holds the sole reference under the caller-side escaping-arg
+    // contract and the builder emitted no Drop for it, so rewriting the
+    // operand to Move transfers the value instead of deep-copying it and
+    // stranding the original. This is the hot path -- a constructor whose
+    // fresh arguments were moved in and die at the field stores would
+    // otherwise deep-copy every iteration while nothing ever frees them.
+    //
+    // Views and Mixed locals keep the defensive copy: a View's root still
+    // owns the buffer and drops it, and a Mixed local may still own on other
+    // paths where its guarded Drop runs. An owning source never reaches this
+    // loop as a last-use escape anyway -- `collect_assigns` already promoted
+    // those to Moves upstream.
     let mut plan: CopyPlan = HashMap::default();
-    for (bb_idx, idx, slot, l, copy_fn) in hits {
+    let mut moved: HashSet<Local> = HashSet::default();
+    let mut scheduled = Vec::with_capacity(hits.len());
+    for (bb_idx, idx, slot, l, copy_fn) in hits.into_iter().rev() {
+        let is_pure_param = !indirect_target
+            && pure_params.contains(&l)
+            && !is_any_view(l)
+            && classes.get(l.0) == Some(&LocalClass::External);
+        if is_pure_param
+            && !moved.contains(&l)
+            && !liveness.live_after[bb_idx][idx + 1].contains(&l)
+        {
+            redirect_to_move(&mut func.basic_blocks[bb_idx].statements[idx].kind, slot, l);
+            moved.insert(l);
+            continue;
+        }
         let tmp = push_local(func, func.locals[l.0].ty.clone());
         if explain_copies {
             sites.borrow_mut().push(CopySite {
@@ -322,6 +388,10 @@ pub(super) fn insert_escape_copies(
                 function: func.name.clone(),
             });
         }
+        scheduled.push((bb_idx, idx, slot, l, tmp, copy_fn));
+    }
+
+    for (bb_idx, idx, slot, l, tmp, copy_fn) in scheduled.into_iter().rev() {
         plan.entry((bb_idx, idx))
             .or_default()
             .push((slot, l, tmp, copy_fn));
@@ -351,6 +421,27 @@ pub(super) fn insert_escape_copies(
         bb.statements = rebuilt;
     }
     true
+}
+
+/// Rewrites one operand of a store statement from `Copy(l)` to `Move(l)`.
+/// The inverse of `redirect_operand`: mirrors its slot vocabulary so dead
+/// pure-param sources are promoted to Moves across all escaping positions.
+fn redirect_to_move(kind: &mut StatementKind, slot: CopySlot, l: Local) {
+    match (slot, kind) {
+        (CopySlot::Val, StatementKind::SetIndex(_, _, val, _))
+        | (CopySlot::Val, StatementKind::SetAttr(_, _, val))
+        | (CopySlot::Val, StatementKind::PtrStore(_, val)) => *val = Operand::Move(l),
+        (CopySlot::Agg(pos), StatementKind::Assign(_, Rvalue::Aggregate(_, ops))) => {
+            ops[pos] = Operand::Move(l)
+        }
+        (CopySlot::Arg(pos), StatementKind::Assign(_, Rvalue::Call { args, .. })) => {
+            args[pos] = Operand::Move(l)
+        }
+        (CopySlot::UseVal, StatementKind::Assign(_, Rvalue::Use(val))) => {
+            *val = Operand::Move(l)
+        }
+        _ => {}
+    }
 }
 
 /// `Any`-typed locals holding a borrowed view of a container's storage: any

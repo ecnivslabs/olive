@@ -217,6 +217,16 @@ impl<'a> MirBuilder<'a> {
 
     pub(super) fn lower_try_py(&mut self, inner: &Expr, span: Span) -> Operand {
         let result_op = self.lower_py_call_safe(inner);
+        // The safe call's wire value is consumed, not dropped: every branch
+        // below hands the payload (unwrap's Ok value, err_msg's message
+        // string) to a new owner and releases the slot itself. The temp must
+        // therefore never take a scope-exit Drop -- `Drop` would route through
+        // `olive_free_result` after the payload was already handed off, and
+        // the freed handle word then aliases whatever the PYOBJ slab hands
+        // out next.
+        if let Operand::Copy(local) | Operand::Move(local) = &result_op {
+            self.current_locals[local.0].is_owning = false;
+        }
 
         let is_ok_tmp = self.new_local(Type::Int, None, false);
         self.push_statement(
