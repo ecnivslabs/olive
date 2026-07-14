@@ -1,6 +1,7 @@
 use crate::python::*;
 use std::ffi::CString;
 use std::os::raw::c_char;
+use std::sync::atomic::Ordering;
 
 /// Err result for a failed olive-to-Python argument conversion.
 unsafe fn conversion_err() -> i64 {
@@ -204,7 +205,8 @@ pub extern "C" fn olive_py_call_kw_safe(
     })
 }
 
-/// R5 tagged fast path, `Result`-returning; see `olive_py_call_t`.
+/// R5 tagged fast path, `Result`-returning; see `olive_py_call_t`. R6:
+/// vectorcall-aware, same as the non-safe twin.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_call_t_safe(
     func: PyObject,
@@ -224,41 +226,89 @@ pub extern "C" fn olive_py_call_t_safe(
     }
     with_gil(|| unsafe {
         let mut pairs = Vec::new();
-        let mut py_args = std::ptr::null_mut();
-        if args_list != 0 {
-            let sv = &*(args_list as *const crate::StableVec);
-            py_args = PY_TUPLE_NEW(sv.len as isize);
-            for i in 0..sv.len {
-                let coll_tag = tag_at(coll_tags, i);
-                let arg_tag = arg_tag_at(arg_tags, i);
-                let v = *sv.ptr.add(i);
-                let py_v = convert_arg_tagged(v, coll_tag, arg_tag, &mut pairs);
-                // The compiler aliased a tagged slot from the caller's own
-                // allocation (not a defensive copy) so `sync_back` mutates
-                // the value the caller keeps using; zero it here, before
-                // any early return, so this list's own drop -- which frees
-                // every live-looking `Any` element -- doesn't also free the
-                // caller's copy out from under it.
-                if coll_tag != TAG_NONE {
-                    *sv.ptr.add(i) = 0;
-                }
-                if py_v.is_null() || !PY_ERR_OCCURRED().is_null() {
-                    if !py_v.is_null() {
-                        PY_DEC_REF(py_v);
-                    }
-                    PY_DEC_REF(py_args);
-                    abandon_pairs(&pairs);
-                    return conversion_err();
-                }
-                PY_TUPLE_SET_ITEM(py_args, i as isize, py_v);
-            }
-        }
 
-        let res = PY_OBJECT_CALL_OBJECT(unwrapped_func, py_args);
+        let res = if HAS_VECTORCALL.load(Ordering::Relaxed) {
+            let mut buf: [PyObject; 17] = [std::ptr::null_mut(); 17];
+            let mut nargs = 0usize;
+            if args_list != 0 {
+                let sv = &*(args_list as *const crate::StableVec);
+                for i in 0..sv.len {
+                    let coll_tag = tag_at(coll_tags, i);
+                    let arg_tag = arg_tag_at(arg_tags, i);
+                    let v = *sv.ptr.add(i);
+                    let py_v = convert_arg_tagged(v, coll_tag, arg_tag, &mut pairs);
+                    // See `olive_py_call_safe`: zero a tagged, aliased slot
+                    // before any early return, ahead of this list's own drop.
+                    if coll_tag != TAG_NONE {
+                        *sv.ptr.add(i) = 0;
+                    }
+                    if py_v.is_null() || !PY_ERR_OCCURRED().is_null() {
+                        if !py_v.is_null() {
+                            PY_DEC_REF(py_v);
+                        }
+                        for slot in &buf[1..=i] {
+                            if !slot.is_null() {
+                                PY_DEC_REF(*slot);
+                            }
+                        }
+                        abandon_pairs(&pairs);
+                        return conversion_err();
+                    }
+                    buf[i + 1] = py_v;
+                }
+                nargs = sv.len;
+            }
+            let nargsf = nargs | PY_VECTORCALL_ARGUMENTS_OFFSET;
+            let r = PY_VECTORCALL(
+                unwrapped_func,
+                buf.as_ptr().add(1),
+                nargsf,
+                std::ptr::null_mut(),
+            );
+            for slot in &buf[1..=nargs] {
+                if !slot.is_null() {
+                    PY_DEC_REF(*slot);
+                }
+            }
+            r
+        } else {
+            let mut py_args = std::ptr::null_mut();
+            if args_list != 0 {
+                let sv = &*(args_list as *const crate::StableVec);
+                py_args = PY_TUPLE_NEW(sv.len as isize);
+                for i in 0..sv.len {
+                    let coll_tag = tag_at(coll_tags, i);
+                    let arg_tag = arg_tag_at(arg_tags, i);
+                    let v = *sv.ptr.add(i);
+                    let py_v = convert_arg_tagged(v, coll_tag, arg_tag, &mut pairs);
+                    // The compiler aliased a tagged slot from the caller's own
+                    // allocation (not a defensive copy) so `sync_back` mutates
+                    // the value the caller keeps using; zero it here, before
+                    // any early return, so this list's own drop -- which frees
+                    // every live-looking `Any` element -- doesn't also free the
+                    // caller's copy out from under it.
+                    if coll_tag != TAG_NONE {
+                        *sv.ptr.add(i) = 0;
+                    }
+                    if py_v.is_null() || !PY_ERR_OCCURRED().is_null() {
+                        if !py_v.is_null() {
+                            PY_DEC_REF(py_v);
+                        }
+                        PY_DEC_REF(py_args);
+                        abandon_pairs(&pairs);
+                        return conversion_err();
+                    }
+                    PY_TUPLE_SET_ITEM(py_args, i as isize, py_v);
+                }
+            }
+            let r = PY_OBJECT_CALL_OBJECT(unwrapped_func, py_args);
+            if !py_args.is_null() {
+                PY_DEC_REF(py_args);
+            }
+            r
+        };
+
         sync_back(&pairs);
-        if !py_args.is_null() {
-            PY_DEC_REF(py_args);
-        }
 
         if res.is_null()
             && let Some(err_msg) = catch_py_exception_msg()

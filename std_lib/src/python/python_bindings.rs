@@ -1,5 +1,6 @@
 use crate::python::*;
 use std::os::raw::{c_char, c_double, c_int, c_long, c_void};
+use std::sync::atomic::AtomicBool;
 
 pub static INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub static mut LIBPYTHON: *mut c_void = std::ptr::null_mut();
@@ -140,3 +141,21 @@ pub static mut PY_OBJECT_RICHCOMPAREBOOL: unsafe extern "C" fn(PyObject, PyObjec
     crate::python::python_noop::noop_richcomparebool;
 pub static mut PY_SLICE_NEW: unsafe extern "C" fn(PyObject, PyObject, PyObject) -> PyObject =
     crate::python::python_noop::noop_slice_new;
+
+/// R6: `PyObject_Vectorcall`/`PyObject_VectorcallMethod`, dlsym'd when the
+/// loaded libpython has them (CPython 3.9+). `HAS_VECTORCALL` gates every
+/// call site -- a missing symbol is never invoked, it just leaves the flag
+/// false and callers keep using the tuple-call path.
+pub static mut PY_VECTORCALL: unsafe extern "C" fn(
+    PyObject,
+    *const PyObject,
+    usize,
+    PyObject,
+) -> PyObject = noop_vectorcall;
+pub static mut PY_VECTORCALL_METHOD: unsafe extern "C" fn(
+    PyObject,
+    *const PyObject,
+    usize,
+    PyObject,
+) -> PyObject = noop_vectorcall;
+pub static HAS_VECTORCALL: AtomicBool = AtomicBool::new(false);
