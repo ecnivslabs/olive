@@ -163,10 +163,20 @@ impl<'a> MirBuilder<'a> {
         }
     }
 
-    /// True while building `__main__` (top-level statements). A `let` there
-    /// needs real global storage; inside a function it must stay a local.
+    /// Synthesized function running only the module's top-level statements
+    /// (globals, `const` initializers) -- no user `main()` call. `pit test`
+    /// and `pit bench` call this instead of `__main__`: they must run a
+    /// module-level `const XS = [...]` initializer (lowered as a runtime
+    /// `PtrStore` into `GlobalData`, not a compile-time constant, since only
+    /// scalar literals fold to `Operand::Constant`) before any `#[test]` or
+    /// `#[bench]` function reads it, but must never invoke `main()` itself.
+    pub const MODULE_INIT_FN: &'static str = "__module_init__";
+
+    /// True while building `__main__` or `__module_init__` (top-level
+    /// statements). A `let` there needs real global storage; inside a
+    /// function it must stay a local.
     pub(super) fn at_module_scope(&self) -> bool {
-        self.current_name == "__main__"
+        self.current_name == "__main__" || self.current_name == Self::MODULE_INIT_FN
     }
 
     /// True for Python runtime ops that surface an exception via `handle_py_error`,
@@ -312,6 +322,31 @@ impl<'a> MirBuilder<'a> {
                     Span::default(),
                 );
                 self.lower_stmt(&main_call_stmt);
+            }
+        }
+
+        if let Some(bb) = self.current_block {
+            self.terminate_block(bb, TerminatorKind::Return, Span::default());
+        }
+        self.finish_function();
+
+        self.build_module_init(program);
+    }
+
+    /// Rebuilds just the top-level statements (skipping `Fn`/`Impl`/`Trait`
+    /// defs, already registered above) into their own function, so a caller
+    /// that must not invoke `main()` -- `pit test`, `pit bench` -- can still
+    /// run global/`const` initialization first. Globals resolve to the same
+    /// `GlobalData` slot `__main__` writes (`store_module_global`/the
+    /// `StmtKind::Const` arm key by name, not by function), so running this
+    /// instead of `__main__` populates the exact storage a `#[test]` reads.
+    fn build_module_init(&mut self, program: &Program) {
+        self.start_function(Self::MODULE_INIT_FN.to_string(), 0, Type::Int);
+
+        for stmt in &program.stmts {
+            match &stmt.kind {
+                StmtKind::Fn { .. } | StmtKind::Impl { .. } | StmtKind::Trait { .. } => {}
+                _ => self.lower_stmt(stmt),
             }
         }
 
