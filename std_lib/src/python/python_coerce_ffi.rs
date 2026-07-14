@@ -1,6 +1,7 @@
 use crate::python::*;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_double, c_long};
+use std::sync::atomic::Ordering;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_from_int(v: i64) -> PyObject {
@@ -474,8 +475,18 @@ pub extern "C" fn olive_py_getattr(obj: PyObject, attr: i64) -> PyObject {
     if unwrapped_obj.is_null() {
         return std::ptr::null_mut();
     }
+    let attr_ptr = (attr & !1) as *const c_char;
     with_gil(|| unsafe {
-        let a = PY_OBJECT_GET_ATTR_STRING(unwrapped_obj, (attr & !1) as *const c_char);
+        let a = if HAS_INTERN.load(Ordering::Relaxed) {
+            let name = interned_attr(attr_ptr);
+            if name.is_null() {
+                std::ptr::null_mut()
+            } else {
+                PY_OBJECT_GET_ATTR(unwrapped_obj, name)
+            }
+        } else {
+            PY_OBJECT_GET_ATTR_STRING(unwrapped_obj, attr_ptr)
+        };
         if a.is_null() {
             handle_py_error();
         }
@@ -490,9 +501,19 @@ pub extern "C" fn olive_py_setattr(obj: PyObject, attr: i64, val: i64) -> PyObje
     if unwrapped_obj.is_null() {
         return obj;
     }
+    let attr_ptr = (attr & !1) as *const c_char;
     with_gil(|| unsafe {
         let py_val = olive_to_py_checked(val);
-        let res = PY_OBJECT_SET_ATTR_STRING(unwrapped_obj, (attr & !1) as *const c_char, py_val);
+        let res = if HAS_INTERN.load(Ordering::Relaxed) {
+            let name = interned_attr(attr_ptr);
+            if name.is_null() {
+                -1
+            } else {
+                PY_OBJECT_SET_ATTR(unwrapped_obj, name, py_val)
+            }
+        } else {
+            PY_OBJECT_SET_ATTR_STRING(unwrapped_obj, attr_ptr, py_val)
+        };
         if res == -1 {
             handle_py_error();
         }

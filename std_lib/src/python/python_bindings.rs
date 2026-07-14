@@ -159,3 +159,16 @@ pub static mut PY_VECTORCALL_METHOD: unsafe extern "C" fn(
     PyObject,
 ) -> PyObject = noop_vectorcall;
 pub static HAS_VECTORCALL: AtomicBool = AtomicBool::new(false);
+
+/// `PyUnicode_InternFromString`/`PyObject_GetAttr`/`PyObject_SetAttr`, dlsym'd
+/// when present. `HAS_INTERN` gates the interned-name attribute path; a
+/// missing symbol leaves it false and callers keep using
+/// `PyObject_GetAttrString`/`SetAttrString`, which rebuild the name string
+/// every call.
+pub static mut PY_UNICODE_INTERN_FROM_STRING: unsafe extern "C" fn(*const c_char) -> PyObject =
+    noop_from_string;
+pub static mut PY_OBJECT_GET_ATTR: unsafe extern "C" fn(PyObject, PyObject) -> PyObject =
+    noop_getitem;
+pub static mut PY_OBJECT_SET_ATTR: unsafe extern "C" fn(PyObject, PyObject, PyObject) -> c_int =
+    noop_setitem;
+pub static HAS_INTERN: AtomicBool = AtomicBool::new(false);

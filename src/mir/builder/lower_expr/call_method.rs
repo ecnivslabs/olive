@@ -95,22 +95,10 @@ impl<'a> MirBuilder<'a> {
 
         if obj_ty.is_py_value() {
             let obj_op = self.lower_expr_as_copy(obj);
-            let attr_local = self.new_local(Type::PyObject, None, true);
-            self.push_statement(
-                StatementKind::Assign(
-                    attr_local,
-                    Rvalue::Call {
-                        func: Operand::Constant(Constant::Function(
-                            "__olive_py_getattr".to_string(),
-                        )),
-                        args: vec![obj_op, Operand::Constant(Constant::Str(attr.to_string()))],
-                    },
-                ),
-                span,
-            );
             let call_args = self.build_py_call_args(args, arg_ops, arg_kw_names, span);
-            let raw = self.emit_py_call(
-                Operand::Copy(attr_local),
+            let raw = self.emit_py_method_call(
+                obj_op,
+                attr.to_string(),
                 call_args,
                 super::py_call::PyCallFlavor::Unsafe,
                 Type::PyObject,

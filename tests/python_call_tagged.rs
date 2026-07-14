@@ -313,8 +313,12 @@ main()
         !mir.contains("__olive_py_from_int") && !mir.contains("__olive_py_from_float"),
         "fast-path scalar args must not go through the legacy per-arg conversion calls:\n{mir}"
     );
+    // `h.identity(x)`'s callee is `Attr{obj: h, attr: identity}` with `h` a
+    // raw Python value, so this now dispatches through the fused
+    // method-call entry point (R9) rather than the plain arity-specialized
+    // one -- still the tagged fast path, still no legacy conversion calls.
     assert!(
-        mir.contains("__olive_py_call1"),
+        mir.contains("__olive_py_call_method1"),
         "expected the tagged fast-path entry point in the emitted MIR:\n{mir}"
     );
     std::fs::remove_dir_all(&dir).ok();

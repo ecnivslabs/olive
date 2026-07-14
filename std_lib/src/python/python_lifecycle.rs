@@ -244,6 +244,9 @@ pub extern "C" fn olive_py_initialize() {
         PY_ITER_CHECK = compat_dlsym(handle, "PyIter_Check");
         PY_VECTORCALL = compat_dlsym(handle, "PyObject_Vectorcall");
         PY_VECTORCALL_METHOD = compat_dlsym(handle, "PyObject_VectorcallMethod");
+        PY_UNICODE_INTERN_FROM_STRING = compat_dlsym(handle, "PyUnicode_InternFromString");
+        PY_OBJECT_GET_ATTR = compat_dlsym(handle, "PyObject_GetAttr");
+        PY_OBJECT_SET_ATTR = compat_dlsym(handle, "PyObject_SetAttr");
 
         _PY_NONE_STRUCT = compat_dlsym(handle, "_Py_NoneStruct");
 
@@ -342,6 +345,10 @@ pub extern "C" fn olive_py_initialize() {
             PY_VECTORCALL = noop_vectorcall;
             PY_VECTORCALL_METHOD = noop_vectorcall;
             HAS_VECTORCALL.store(false, Ordering::SeqCst);
+            PY_UNICODE_INTERN_FROM_STRING = noop_from_string;
+            PY_OBJECT_GET_ATTR = noop_getitem;
+            PY_OBJECT_SET_ATTR = noop_setitem;
+            HAS_INTERN.store(false, Ordering::SeqCst);
             return;
         }
 
@@ -355,6 +362,15 @@ pub extern "C" fn olive_py_initialize() {
             vectorcall_present && !vectorcall_disabled_for_test,
             Ordering::SeqCst,
         );
+
+        // Core CPython API since 2.x; only missing on an exotic or crippled
+        // build. A test-only override exercises the GetAttrString fallback.
+        let intern_present =
+            !std::mem::transmute::<_, *const ()>(PY_UNICODE_INTERN_FROM_STRING).is_null()
+                && !std::mem::transmute::<_, *const ()>(PY_OBJECT_GET_ATTR).is_null()
+                && !std::mem::transmute::<_, *const ()>(PY_OBJECT_SET_ATTR).is_null();
+        let intern_disabled_for_test = std::env::var("OLIVE_PY_NO_INTERN").as_deref() == Ok("1");
+        HAS_INTERN.store(intern_present && !intern_disabled_for_test, Ordering::SeqCst);
 
         PY_INITIALIZE();
 
