@@ -1,8 +1,8 @@
-//! R6: `olive_py_call_t`/`_safe` route through `PyObject_Vectorcall` when the
+//! `olive_py_call_t`/`_safe` route through `PyObject_Vectorcall` when the
 //! loaded libpython exports it, tuple-free. This file proves the fallback
 //! path (`OLIVE_PY_NO_VECTORCALL=1`, forced off for a build that does have
 //! it) produces byte-identical output to the default vectorcall path for
-//! the same programs R5's tag scheme already covers -- the dispatch is an
+//! the same programs the tag scheme already covers -- the dispatch is an
 //! internal runtime choice, invisible from the language side. Both
 //! pipelines (JIT `pit run`, AOT release).
 

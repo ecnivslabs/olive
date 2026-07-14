@@ -4,7 +4,7 @@ use std::os::raw::c_char;
 use std::sync::atomic::Ordering;
 
 /// Err result for a failed olive-to-Python argument conversion.
-unsafe fn conversion_err() -> i64 {
+pub(crate) unsafe fn conversion_err() -> i64 {
     let msg = unsafe { catch_py_exception_msg() }
         .unwrap_or_else(|| "argument conversion failed".to_string());
     crate::result::olive_result_err(crate::olive_str_internal(&msg))
@@ -205,8 +205,122 @@ pub extern "C" fn olive_py_call_kw_safe(
     })
 }
 
-/// R5 tagged fast path, `Result`-returning; see `olive_py_call_t`. R6:
-/// vectorcall-aware, same as the non-safe twin.
+/// `Result`-returning counterpart to `python_call::call_with_raw_args`,
+/// shared by `olive_py_call_t_safe` and the arity-specialized
+/// `olive_py_call0..4_safe` shells. `Err` means argument conversion failed
+/// before the Python call ever ran: every partially-converted slot has
+/// already been released and `pairs` abandoned, so the caller need only
+/// propagate the encoded error.
+unsafe fn call_with_raw_args_safe(
+    unwrapped_func: PyObject,
+    coll_tags: i64,
+    arg_tags: i64,
+    args: &mut [i64],
+) -> Result<PyObject, i64> {
+    unsafe {
+        let mut pairs = Vec::new();
+
+        let res = if HAS_VECTORCALL.load(Ordering::Relaxed) {
+            let mut buf: [PyObject; 17] = [std::ptr::null_mut(); 17];
+            for (i, slot) in args.iter_mut().enumerate() {
+                let coll_tag = tag_at(coll_tags, i);
+                let arg_tag = arg_tag_at(arg_tags, i);
+                let py_v = convert_arg_tagged(*slot, coll_tag, arg_tag, &mut pairs);
+                // See `olive_py_call_safe`: zero a tagged, aliased slot
+                // before any early return, ahead of this list's own drop.
+                if coll_tag != TAG_NONE {
+                    *slot = 0;
+                }
+                if py_v.is_null() || !PY_ERR_OCCURRED().is_null() {
+                    if !py_v.is_null() {
+                        PY_DEC_REF(py_v);
+                    }
+                    for s in &buf[1..=i] {
+                        if !s.is_null() {
+                            PY_DEC_REF(*s);
+                        }
+                    }
+                    abandon_pairs(&pairs);
+                    return Err(conversion_err());
+                }
+                buf[i + 1] = py_v;
+            }
+            let nargsf = args.len() | PY_VECTORCALL_ARGUMENTS_OFFSET;
+            let r = PY_VECTORCALL(
+                unwrapped_func,
+                buf.as_ptr().add(1),
+                nargsf,
+                std::ptr::null_mut(),
+            );
+            for slot in &buf[1..=args.len()] {
+                if !slot.is_null() {
+                    PY_DEC_REF(*slot);
+                }
+            }
+            r
+        } else {
+            let py_args = PY_TUPLE_NEW(args.len() as isize);
+            for (i, slot) in args.iter_mut().enumerate() {
+                let coll_tag = tag_at(coll_tags, i);
+                let arg_tag = arg_tag_at(arg_tags, i);
+                let py_v = convert_arg_tagged(*slot, coll_tag, arg_tag, &mut pairs);
+                // The compiler aliased a tagged slot from the caller's own
+                // allocation (not a defensive copy) so `sync_back` mutates
+                // the value the caller keeps using; zero it here, before
+                // any early return, so this list's own drop -- which frees
+                // every live-looking `Any` element -- doesn't also free the
+                // caller's copy out from under it.
+                if coll_tag != TAG_NONE {
+                    *slot = 0;
+                }
+                if py_v.is_null() || !PY_ERR_OCCURRED().is_null() {
+                    if !py_v.is_null() {
+                        PY_DEC_REF(py_v);
+                    }
+                    PY_DEC_REF(py_args);
+                    abandon_pairs(&pairs);
+                    return Err(conversion_err());
+                }
+                PY_TUPLE_SET_ITEM(py_args, i as isize, py_v);
+            }
+            let r = PY_OBJECT_CALL_OBJECT(unwrapped_func, py_args);
+            PY_DEC_REF(py_args);
+            r
+        };
+
+        sync_back(&pairs);
+        Ok(res)
+    }
+}
+
+/// Wraps a `call_with_raw_args_safe` outcome into the `Result<PyObject, ()>`
+/// wire encoding every `_safe` py-call entry point returns.
+unsafe fn finish_call_safe(outcome: Result<PyObject, i64>) -> i64 {
+    unsafe {
+        let res = match outcome {
+            Ok(res) => res,
+            Err(err) => return err,
+        };
+        if res.is_null()
+            && let Some(err_msg) = catch_py_exception_msg()
+        {
+            let err_str_ptr = crate::olive_str_internal(&err_msg);
+            return crate::result::olive_result_err(err_str_ptr);
+        }
+        // A successful call must not leave the Python error indicator set; some
+        // libraries (e.g. yt-dlp) raise and handle exceptions internally yet
+        // leave it lingering, which would derail the next C-API call.
+        if !PY_ERR_OCCURRED().is_null() {
+            PY_ERR_CLEAR();
+        }
+        let wrapped = olive_py_wrap_owned(res);
+        crate::result::olive_result_ok(wrapped as i64)
+    }
+}
+
+/// Tagged fast path, `Result`-returning; see `olive_py_call_t`. Vectorcall-
+/// aware, same as the non-safe twin. Kept for arity 5-16; arity 0-4 uses
+/// `olive_py_call0..4_safe` instead.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_call_t_safe(
     func: PyObject,
@@ -225,111 +339,139 @@ pub extern "C" fn olive_py_call_t_safe(
         return crate::result::olive_result_err(err_str_ptr);
     }
     with_gil(|| unsafe {
-        let mut pairs = Vec::new();
-
-        let res = if HAS_VECTORCALL.load(Ordering::Relaxed) {
-            let mut buf: [PyObject; 17] = [std::ptr::null_mut(); 17];
-            let mut nargs = 0usize;
-            if args_list != 0 {
-                let sv = &*(args_list as *const crate::StableVec);
-                for i in 0..sv.len {
-                    let coll_tag = tag_at(coll_tags, i);
-                    let arg_tag = arg_tag_at(arg_tags, i);
-                    let v = *sv.ptr.add(i);
-                    let py_v = convert_arg_tagged(v, coll_tag, arg_tag, &mut pairs);
-                    // See `olive_py_call_safe`: zero a tagged, aliased slot
-                    // before any early return, ahead of this list's own drop.
-                    if coll_tag != TAG_NONE {
-                        *sv.ptr.add(i) = 0;
-                    }
-                    if py_v.is_null() || !PY_ERR_OCCURRED().is_null() {
-                        if !py_v.is_null() {
-                            PY_DEC_REF(py_v);
-                        }
-                        for slot in &buf[1..=i] {
-                            if !slot.is_null() {
-                                PY_DEC_REF(*slot);
-                            }
-                        }
-                        abandon_pairs(&pairs);
-                        return conversion_err();
-                    }
-                    buf[i + 1] = py_v;
-                }
-                nargs = sv.len;
-            }
-            let nargsf = nargs | PY_VECTORCALL_ARGUMENTS_OFFSET;
-            let r = PY_VECTORCALL(
-                unwrapped_func,
-                buf.as_ptr().add(1),
-                nargsf,
-                std::ptr::null_mut(),
-            );
-            for slot in &buf[1..=nargs] {
-                if !slot.is_null() {
-                    PY_DEC_REF(*slot);
-                }
-            }
-            r
+        let outcome = if args_list != 0 {
+            let sv = &*(args_list as *const crate::StableVec);
+            let args = std::slice::from_raw_parts_mut(sv.ptr, sv.len);
+            call_with_raw_args_safe(unwrapped_func, coll_tags, arg_tags, args)
         } else {
-            let mut py_args = std::ptr::null_mut();
-            if args_list != 0 {
-                let sv = &*(args_list as *const crate::StableVec);
-                py_args = PY_TUPLE_NEW(sv.len as isize);
-                for i in 0..sv.len {
-                    let coll_tag = tag_at(coll_tags, i);
-                    let arg_tag = arg_tag_at(arg_tags, i);
-                    let v = *sv.ptr.add(i);
-                    let py_v = convert_arg_tagged(v, coll_tag, arg_tag, &mut pairs);
-                    // The compiler aliased a tagged slot from the caller's own
-                    // allocation (not a defensive copy) so `sync_back` mutates
-                    // the value the caller keeps using; zero it here, before
-                    // any early return, so this list's own drop -- which frees
-                    // every live-looking `Any` element -- doesn't also free the
-                    // caller's copy out from under it.
-                    if coll_tag != TAG_NONE {
-                        *sv.ptr.add(i) = 0;
-                    }
-                    if py_v.is_null() || !PY_ERR_OCCURRED().is_null() {
-                        if !py_v.is_null() {
-                            PY_DEC_REF(py_v);
-                        }
-                        PY_DEC_REF(py_args);
-                        abandon_pairs(&pairs);
-                        return conversion_err();
-                    }
-                    PY_TUPLE_SET_ITEM(py_args, i as isize, py_v);
-                }
-            }
-            let r = PY_OBJECT_CALL_OBJECT(unwrapped_func, py_args);
-            if !py_args.is_null() {
-                PY_DEC_REF(py_args);
-            }
-            r
+            call_with_raw_args_safe(unwrapped_func, coll_tags, arg_tags, &mut [])
         };
-
-        sync_back(&pairs);
-
-        if res.is_null()
-            && let Some(err_msg) = catch_py_exception_msg()
-        {
-            let err_str_ptr = crate::olive_str_internal(&err_msg);
-            return crate::result::olive_result_err(err_str_ptr);
-        }
-
-        // A successful call must not leave the Python error indicator set; some
-        // libraries (e.g. yt-dlp) raise and handle exceptions internally yet
-        // leave it lingering, which would derail the next C-API call.
-        if !PY_ERR_OCCURRED().is_null() {
-            PY_ERR_CLEAR();
-        }
-
-        let wrapped = olive_py_wrap_owned(res);
-        crate::result::olive_result_ok(wrapped as i64)
+        finish_call_safe(outcome)
     })
 }
 
-/// R5 tagged fast path, `Result`-returning; see `olive_py_call_kw_t`.
+/// `Result`-returning arity-specialized shells; see `olive_py_call0..4`.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_call0_safe(func: PyObject) -> i64 {
+    if !is_python_available() {
+        let err_str_ptr =
+            crate::olive_str_internal("Python interop unavailable: libpython3 could not be loaded");
+        return crate::result::olive_result_err(err_str_ptr);
+    }
+    let unwrapped_func = unsafe { olive_py_unwrap(func) };
+    if unwrapped_func.is_null() {
+        let err_str_ptr = crate::olive_str_internal("Null function pointer");
+        return crate::result::olive_result_err(err_str_ptr);
+    }
+    with_gil(|| unsafe {
+        let outcome = call_with_raw_args_safe(unwrapped_func, 0, 0, &mut []);
+        finish_call_safe(outcome)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_call1_safe(
+    func: PyObject,
+    coll_tags: i64,
+    arg_tags: i64,
+    a0: i64,
+) -> i64 {
+    if !is_python_available() {
+        let err_str_ptr =
+            crate::olive_str_internal("Python interop unavailable: libpython3 could not be loaded");
+        return crate::result::olive_result_err(err_str_ptr);
+    }
+    let unwrapped_func = unsafe { olive_py_unwrap(func) };
+    if unwrapped_func.is_null() {
+        let err_str_ptr = crate::olive_str_internal("Null function pointer");
+        return crate::result::olive_result_err(err_str_ptr);
+    }
+    with_gil(|| unsafe {
+        let mut args = [a0];
+        let outcome = call_with_raw_args_safe(unwrapped_func, coll_tags, arg_tags, &mut args);
+        finish_call_safe(outcome)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_call2_safe(
+    func: PyObject,
+    coll_tags: i64,
+    arg_tags: i64,
+    a0: i64,
+    a1: i64,
+) -> i64 {
+    if !is_python_available() {
+        let err_str_ptr =
+            crate::olive_str_internal("Python interop unavailable: libpython3 could not be loaded");
+        return crate::result::olive_result_err(err_str_ptr);
+    }
+    let unwrapped_func = unsafe { olive_py_unwrap(func) };
+    if unwrapped_func.is_null() {
+        let err_str_ptr = crate::olive_str_internal("Null function pointer");
+        return crate::result::olive_result_err(err_str_ptr);
+    }
+    with_gil(|| unsafe {
+        let mut args = [a0, a1];
+        let outcome = call_with_raw_args_safe(unwrapped_func, coll_tags, arg_tags, &mut args);
+        finish_call_safe(outcome)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_call3_safe(
+    func: PyObject,
+    coll_tags: i64,
+    arg_tags: i64,
+    a0: i64,
+    a1: i64,
+    a2: i64,
+) -> i64 {
+    if !is_python_available() {
+        let err_str_ptr =
+            crate::olive_str_internal("Python interop unavailable: libpython3 could not be loaded");
+        return crate::result::olive_result_err(err_str_ptr);
+    }
+    let unwrapped_func = unsafe { olive_py_unwrap(func) };
+    if unwrapped_func.is_null() {
+        let err_str_ptr = crate::olive_str_internal("Null function pointer");
+        return crate::result::olive_result_err(err_str_ptr);
+    }
+    with_gil(|| unsafe {
+        let mut args = [a0, a1, a2];
+        let outcome = call_with_raw_args_safe(unwrapped_func, coll_tags, arg_tags, &mut args);
+        finish_call_safe(outcome)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_call4_safe(
+    func: PyObject,
+    coll_tags: i64,
+    arg_tags: i64,
+    a0: i64,
+    a1: i64,
+    a2: i64,
+    a3: i64,
+) -> i64 {
+    if !is_python_available() {
+        let err_str_ptr =
+            crate::olive_str_internal("Python interop unavailable: libpython3 could not be loaded");
+        return crate::result::olive_result_err(err_str_ptr);
+    }
+    let unwrapped_func = unsafe { olive_py_unwrap(func) };
+    if unwrapped_func.is_null() {
+        let err_str_ptr = crate::olive_str_internal("Null function pointer");
+        return crate::result::olive_result_err(err_str_ptr);
+    }
+    with_gil(|| unsafe {
+        let mut args = [a0, a1, a2, a3];
+        let outcome = call_with_raw_args_safe(unwrapped_func, coll_tags, arg_tags, &mut args);
+        finish_call_safe(outcome)
+    })
+}
+
+/// Tagged fast path, `Result`-returning; see `olive_py_call_kw_t`.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_call_kw_t_safe(
     func: PyObject,
@@ -587,5 +729,101 @@ mod tests {
                 "no exception may stay pending to poison later calls"
             );
         });
+    }
+
+    /// Forces `HAS_VECTORCALL` to `want` for the duration of `f`, restoring
+    /// the previous value after. Mirrors `python_call::tests`'s helper of the
+    /// same name; must run under `pyobject_slab_test_lock`.
+    fn with_forced_vectorcall<R>(want: bool, f: impl FnOnce() -> R) -> R {
+        let prev = HAS_VECTORCALL.load(Ordering::SeqCst);
+        HAS_VECTORCALL.store(want, Ordering::SeqCst);
+        let r = f();
+        HAS_VECTORCALL.store(prev, Ordering::SeqCst);
+        r
+    }
+
+    #[test]
+    fn arity_safe_shells_round_trip_scalars() {
+        let _guard = crate::python::python_coerce::pyobject_slab_test_lock();
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        unsafe {
+            let c_src = CString::new(
+                "def __t_safe_h0():\n    return 5\ndef __t_safe_h2(a, b):\n    return a * b\n",
+            )
+            .unwrap();
+            let (h0, h2) = with_gil(|| {
+                PY_RUN_SIMPLE_STRING(c_src.as_ptr());
+                let main_mod = PY_IMPORT_IMPORT_MODULE(b"__main__\0".as_ptr() as *const _);
+                let f0 = PY_OBJECT_GET_ATTR_STRING(main_mod, b"__t_safe_h0\0".as_ptr() as *const _);
+                let f2 = PY_OBJECT_GET_ATTR_STRING(main_mod, b"__t_safe_h2\0".as_ptr() as *const _);
+                PY_DEC_REF(main_mod);
+                (olive_py_wrap_owned(f0), olive_py_wrap_owned(f2))
+            });
+
+            let r0 = olive_py_call0_safe(h0);
+            assert_eq!(crate::result::olive_result_is_err(r0), 0);
+            let ok0 = crate::result::olive_result_unwrap(r0);
+            assert_eq!(
+                with_gil(|| PY_LONG_AS_LONG(olive_py_unwrap(ok0 as PyObject))),
+                5
+            );
+            olive_py_decref(ok0 as PyObject);
+
+            let tags2 = ARG_INT | (ARG_INT << 4);
+            let r2 = olive_py_call2_safe(h2, 0, tags2, 6, 7);
+            assert_eq!(crate::result::olive_result_is_err(r2), 0);
+            let ok2 = crate::result::olive_result_unwrap(r2);
+            assert_eq!(
+                with_gil(|| PY_LONG_AS_LONG(olive_py_unwrap(ok2 as PyObject))),
+                42
+            );
+            olive_py_decref(ok2 as PyObject);
+
+            olive_py_decref(h0);
+            olive_py_decref(h2);
+        }
+    }
+
+    #[test]
+    fn arity1_safe_rejects_bad_str_arg_and_clears_error() {
+        let _guard = crate::python::python_coerce::pyobject_slab_test_lock();
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        for &forced in &[true, false] {
+            with_forced_vectorcall(forced, || unsafe {
+                let bad = crate::string_slab::str_alloc(&[0xe0]);
+                let func = with_gil(|| {
+                    let builtins = PY_IMPORT_IMPORT_MODULE(b"builtins\0".as_ptr() as *const _);
+                    let f = PY_OBJECT_GET_ATTR_STRING(builtins, b"len\0".as_ptr() as *const _);
+                    PY_DEC_REF(builtins);
+                    olive_py_wrap_owned(f)
+                });
+
+                let res = olive_py_call1_safe(func, 0, ARG_STR, bad);
+                assert_eq!(
+                    crate::result::olive_result_is_err(res),
+                    1,
+                    "corrupt argument must fail the call via {} path",
+                    if forced { "vectorcall" } else { "tuple" }
+                );
+                let msg = crate::olive_str_from_ptr(crate::result::olive_result_err_msg(res));
+                assert!(
+                    msg.contains("UnicodeDecodeError") || msg.contains("utf-8"),
+                    "error names the decode failure: {msg}"
+                );
+                with_gil(|| {
+                    assert!(
+                        PY_ERR_OCCURRED().is_null(),
+                        "no exception may stay pending to poison later calls"
+                    );
+                });
+                olive_py_decref(func);
+            });
+        }
     }
 }

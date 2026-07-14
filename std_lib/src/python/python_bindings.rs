@@ -142,7 +142,7 @@ pub static mut PY_OBJECT_RICHCOMPAREBOOL: unsafe extern "C" fn(PyObject, PyObjec
 pub static mut PY_SLICE_NEW: unsafe extern "C" fn(PyObject, PyObject, PyObject) -> PyObject =
     crate::python::python_noop::noop_slice_new;
 
-/// R6: `PyObject_Vectorcall`/`PyObject_VectorcallMethod`, dlsym'd when the
+/// `PyObject_Vectorcall`/`PyObject_VectorcallMethod`, dlsym'd when the
 /// loaded libpython has them (CPython 3.9+). `HAS_VECTORCALL` gates every
 /// call site -- a missing symbol is never invoked, it just leaves the flag
 /// false and callers keep using the tuple-call path.

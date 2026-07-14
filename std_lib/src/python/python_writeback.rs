@@ -84,7 +84,7 @@ pub(crate) unsafe fn convert_arg(val: i64, tag: i64, pairs: &mut Vec<WritebackPa
     }
 }
 
-/// The collection-realize half of `convert_arg`, factored out so the R5
+/// The collection-realize half of `convert_arg`, factored out so the
 /// tagged fast path (`convert_arg_tagged`) can reuse it without duplicating
 /// the dedupe-and-track logic.
 unsafe fn convert_collection_arg(val: i64, tag: i64, pairs: &mut Vec<WritebackPair>) -> PyObject {
@@ -153,8 +153,9 @@ pub(crate) fn arg_tag_at(tags: i64, i: usize) -> i64 {
 }
 
 /// Decodes one raw, unconverted call argument by its compiler-supplied
-/// static tag. The R5 fast path: no pre-conversion, no handle allocation,
-/// one C-API call per scalar, all under the call's single GIL region.
+/// static tag. The tagged fast path: no pre-conversion, no handle
+/// allocation, one C-API call per scalar, all under the call's single GIL
+/// region.
 unsafe fn decode_scalar_arg(val: i64, tag: i64) -> PyObject {
     unsafe {
         match tag {
@@ -181,7 +182,7 @@ unsafe fn decode_scalar_arg(val: i64, tag: i64) -> PyObject {
     }
 }
 
-/// The R5 tagged-argument counterpart to `convert_arg`: `coll_tag` still
+/// The tagged-argument counterpart to `convert_arg`: `coll_tag` still
 /// selects copy-out exactly as before, but a non-collection slot decodes by
 /// `arg_tag` instead of falling through to `olive_to_py`'s raw-word
 /// heuristic. Used only by the `_t` call entry points; the legacy entry
