@@ -1,6 +1,7 @@
 use crate::python::*;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_double, c_long, c_void};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -19,6 +20,27 @@ unsafe impl Sync for OlivePyObject {}
 pub(crate) fn pyobject_slab_test_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// A tagged Olive-string pointer for a test method/attr name, valid for the
+/// rest of the process -- `interned_attr`'s cache is keyed by this address,
+/// which real compiled code satisfies with a literal's static rodata
+/// address. `olive_str_internal` allocates from the string slab instead,
+/// whose address gets freed and reused by a later test; a name interned
+/// under that stale address then leaks into whichever unrelated call next
+/// reuses the same memory. Leaking a fresh, allocator-aligned buffer per
+/// name avoids both hazards.
+#[cfg(test)]
+pub(crate) fn static_attr_name(name: &str) -> i64 {
+    let len = name.len();
+    let layout = std::alloc::Layout::from_size_align(len + 1, 8).unwrap();
+    unsafe {
+        let ptr = std::alloc::alloc(layout);
+        assert!(!ptr.is_null());
+        std::ptr::copy_nonoverlapping(name.as_ptr(), ptr, len);
+        *ptr.add(len) = 0;
+        (ptr as i64) | 1
+    }
 }
 
 /// Whether `ptr` is a live PyObject handle: a live slab body whose kind is
@@ -113,6 +135,48 @@ pub(crate) unsafe fn raw_ob_type(obj: PyObject) -> PyObject {
     }
 }
 
+/// Foreign numeric type cache (numpy scalars, etc): once a type's
+/// `__name__` heuristic classifies it as int-like/float-like, later objects
+/// of that same exact type skip straight to the raw conversion instead of
+/// re-fetching `__name__` and re-matching the string. Append-only and
+/// bounded -- a full cache just means the slow path keeps running for any
+/// further new type, never a correctness issue.
+const FOREIGN_TYPE_CACHE_SIZE: usize = 16;
+static INT_LIKE_CACHE: [AtomicUsize; FOREIGN_TYPE_CACHE_SIZE] =
+    [const { AtomicUsize::new(0) }; FOREIGN_TYPE_CACHE_SIZE];
+static INT_LIKE_LEN: AtomicUsize = AtomicUsize::new(0);
+static FLOAT_LIKE_CACHE: [AtomicUsize; FOREIGN_TYPE_CACHE_SIZE] =
+    [const { AtomicUsize::new(0) }; FOREIGN_TYPE_CACHE_SIZE];
+static FLOAT_LIKE_LEN: AtomicUsize = AtomicUsize::new(0);
+
+fn foreign_cache_scan(
+    cache: &[AtomicUsize; FOREIGN_TYPE_CACHE_SIZE],
+    len: &AtomicUsize,
+    ty: usize,
+) -> bool {
+    let n = len.load(Ordering::Acquire).min(FOREIGN_TYPE_CACHE_SIZE);
+    cache[..n]
+        .iter()
+        .any(|slot| slot.load(Ordering::Relaxed) == ty)
+}
+
+/// Racing inserts of the same brand-new type may duplicate a slot rather
+/// than dedupe -- harmless, `foreign_cache_scan` just finds the first copy.
+fn foreign_cache_insert(
+    cache: &[AtomicUsize; FOREIGN_TYPE_CACHE_SIZE],
+    len: &AtomicUsize,
+    ty: usize,
+) {
+    let idx = len.fetch_add(1, Ordering::AcqRel);
+    if idx < FOREIGN_TYPE_CACHE_SIZE {
+        cache[idx].store(ty, Ordering::Release);
+    }
+}
+
+/// Reachable only for a raw dynamic-`Any` word with no static type at all
+/// (the `olive_to_py` direction) -- every R5+ tagged fast path for a
+/// statically typed scalar decodes by its own `ARG_*`/`RET_*` tag and never
+/// reaches this heuristic.
 fn looks_like_float(val: i64) -> bool {
     let f = f64::from_bits(val as u64);
     if f.is_nan() || f.is_infinite() || f.is_subnormal() {
@@ -278,6 +342,51 @@ pub unsafe fn py_to_olive_internal(py_val: PyObject) -> i64 {
             return 0;
         }
 
+        // Exact-type fast path: a pointer compare against each concrete
+        // CPython type object, skipping `PyType_IsSubtype` and the
+        // `__name__` heuristic entirely for the overwhelmingly common case
+        // (a real `bool`/`int`/`float`/`str`/`list`/`dict`/`set`/`bytes`,
+        // not a subclass or a foreign numeric type). Bool is checked first:
+        // `bool` subtypes `int` in CPython, but exact-type equality can't
+        // conflate the two regardless of order (`True`'s type is
+        // `PyBool_Type`, never `PyLong_Type`), so this ordering is for
+        // clarity, not correctness.
+        if ty == PY_BOOL_TYPE {
+            return if PY_LONG_AS_LONG(py_val) != 0 { 1 } else { 0 };
+        }
+        if ty == PY_LONG_TYPE {
+            let v = PY_LONG_AS_LONG(py_val);
+            #[cfg(windows)]
+            let v = v as i64;
+            return v;
+        }
+        if ty == PY_FLOAT_TYPE {
+            return PY_FLOAT_AS_DOUBLE(py_val).to_bits() as i64;
+        }
+        if ty == PY_UNICODE_TYPE {
+            let s = PY_UNICODE_AS_UTF8(py_val);
+            return if !s.is_null() {
+                let r_str = CStr::from_ptr(s).to_string_lossy();
+                crate::olive_str_internal(&r_str)
+            } else {
+                0
+            };
+        }
+        if ty == PY_LIST_TYPE {
+            return olive_py_to_list_internal(py_val, false);
+        }
+        if ty == PY_DICT_TYPE {
+            return olive_py_to_dict_internal(py_val, false);
+        }
+        if ty == PY_SET_TYPE {
+            return olive_py_to_set_internal(py_val, false);
+        }
+        if ty == PY_BYTES_TYPE {
+            return olive_py_to_bytes_internal(py_val);
+        }
+
+        // Slow path: an actual subclass, or a foreign type (numpy scalars
+        // and the like) this scheme only recognizes by its `__name__`.
         let is_subtype = |expected: PyObject| {
             if expected.is_null() {
                 false
@@ -287,70 +396,78 @@ pub unsafe fn py_to_olive_internal(py_val: PyObject) -> i64 {
         };
 
         if is_subtype(PY_BOOL_TYPE) {
-            if PY_LONG_AS_LONG(py_val) != 0 { 1 } else { 0 }
-        } else if is_subtype(PY_LONG_TYPE) || {
-            let ty_name_attr =
-                PY_OBJECT_GET_ATTR_STRING(ty, b"__name__\0".as_ptr() as *const c_char);
-            let mut is_int_like = false;
-            if !ty_name_attr.is_null() {
-                let s = PY_UNICODE_AS_UTF8(ty_name_attr);
-                if !s.is_null() {
-                    let name = CStr::from_ptr(s).to_string_lossy();
-                    if name.contains("int") {
-                        is_int_like = true;
-                    }
-                }
-                PY_DEC_REF(ty_name_attr);
-            }
-            is_int_like
-        } {
-            {
-                let v = PY_LONG_AS_LONG(py_val);
-                #[cfg(windows)]
-                let v = v as i64;
-                v
-            }
-        } else if is_subtype(PY_FLOAT_TYPE) || {
-            let ty_name_attr =
-                PY_OBJECT_GET_ATTR_STRING(ty, b"__name__\0".as_ptr() as *const c_char);
-            let mut is_float_like = false;
-            if !ty_name_attr.is_null() {
-                let s = PY_UNICODE_AS_UTF8(ty_name_attr);
-                if !s.is_null() {
-                    let name = CStr::from_ptr(s).to_string_lossy();
-                    if name.contains("float") {
-                        is_float_like = true;
-                    }
-                }
-                PY_DEC_REF(ty_name_attr);
-            }
-            is_float_like
-        } {
-            let f = PY_FLOAT_AS_DOUBLE(py_val);
-            f.to_bits() as i64
-        } else if is_subtype(PY_UNICODE_TYPE) {
+            return if PY_LONG_AS_LONG(py_val) != 0 { 1 } else { 0 };
+        }
+        if is_subtype(PY_LONG_TYPE)
+            || foreign_cache_scan(&INT_LIKE_CACHE, &INT_LIKE_LEN, ty as usize)
+        {
+            let v = PY_LONG_AS_LONG(py_val);
+            #[cfg(windows)]
+            let v = v as i64;
+            return v;
+        }
+        if is_subtype(PY_FLOAT_TYPE)
+            || foreign_cache_scan(&FLOAT_LIKE_CACHE, &FLOAT_LIKE_LEN, ty as usize)
+        {
+            return PY_FLOAT_AS_DOUBLE(py_val).to_bits() as i64;
+        }
+        if is_subtype(PY_UNICODE_TYPE) {
             let s = PY_UNICODE_AS_UTF8(py_val);
-            if !s.is_null() {
+            return if !s.is_null() {
                 let r_str = CStr::from_ptr(s).to_string_lossy();
                 crate::olive_str_internal(&r_str)
             } else {
                 0
-            }
-        } else if is_subtype(PY_LIST_TYPE) {
-            olive_py_to_list_internal(py_val, false)
-        } else if is_subtype(PY_DICT_TYPE) {
-            olive_py_to_dict_internal(py_val, false)
-        } else if is_subtype(PY_SET_TYPE) {
-            olive_py_to_set_internal(py_val, false)
-        } else if is_subtype(PY_BYTES_TYPE) {
-            olive_py_to_bytes_internal(py_val)
-        } else {
-            // Unknown objects stay PyObject; `__len__`-heuristic wrongly listifies spaCy Tokens etc.
-            if !PY_ERR_OCCURRED().is_null() {
-                PY_ERR_CLEAR();
-            }
-            olive_py_wrap(py_val) as i64
+            };
         }
+        if is_subtype(PY_LIST_TYPE) {
+            return olive_py_to_list_internal(py_val, false);
+        }
+        if is_subtype(PY_DICT_TYPE) {
+            return olive_py_to_dict_internal(py_val, false);
+        }
+        if is_subtype(PY_SET_TYPE) {
+            return olive_py_to_set_internal(py_val, false);
+        }
+        if is_subtype(PY_BYTES_TYPE) {
+            return olive_py_to_bytes_internal(py_val);
+        }
+
+        // Neither a known subtype nor cached: one `__name__` fetch checks
+        // both "int-like" and "float-like" in a single string match (the
+        // pre-R11 code ran this heuristic twice, once per candidate).
+        let ty_name_attr = PY_OBJECT_GET_ATTR_STRING(ty, b"__name__\0".as_ptr() as *const c_char);
+        let mut is_int_like = false;
+        let mut is_float_like = false;
+        if !ty_name_attr.is_null() {
+            let s = PY_UNICODE_AS_UTF8(ty_name_attr);
+            if !s.is_null() {
+                let name = CStr::from_ptr(s).to_string_lossy();
+                if name.contains("int") {
+                    is_int_like = true;
+                } else if name.contains("float") {
+                    is_float_like = true;
+                }
+            }
+            PY_DEC_REF(ty_name_attr);
+        }
+        if is_int_like {
+            foreign_cache_insert(&INT_LIKE_CACHE, &INT_LIKE_LEN, ty as usize);
+            let v = PY_LONG_AS_LONG(py_val);
+            #[cfg(windows)]
+            let v = v as i64;
+            return v;
+        }
+        if is_float_like {
+            foreign_cache_insert(&FLOAT_LIKE_CACHE, &FLOAT_LIKE_LEN, ty as usize);
+            return PY_FLOAT_AS_DOUBLE(py_val).to_bits() as i64;
+        }
+
+        // Unknown objects stay PyObject; `__len__`-heuristic wrongly listifies spaCy Tokens etc.
+        if !PY_ERR_OCCURRED().is_null() {
+            PY_ERR_CLEAR();
+        }
+        olive_py_wrap(py_val) as i64
     }
 }
 
@@ -567,6 +684,124 @@ pub extern "C" fn olive_py_decref(obj: PyObject) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn numpy_available() -> bool {
+        if !is_python_available() {
+            return false;
+        }
+        unsafe {
+            with_gil(|| {
+                let name = std::ffi::CString::new("numpy").unwrap();
+                let m = PY_IMPORT_IMPORT_MODULE(name.as_ptr());
+                if m.is_null() {
+                    if !PY_ERR_OCCURRED().is_null() {
+                        PY_ERR_CLEAR();
+                    }
+                    false
+                } else {
+                    PY_DEC_REF(m);
+                    true
+                }
+            })
+        }
+    }
+
+    /// Builds `numpy.<type_name>(arg)`, consuming `arg`'s reference (it goes
+    /// into the call's argument tuple, which steals it like any tuple slot).
+    unsafe fn make_numpy_scalar(type_name: &str, arg: PyObject) -> PyObject {
+        unsafe {
+            let mod_name = std::ffi::CString::new("numpy").unwrap();
+            let np_mod = PY_IMPORT_IMPORT_MODULE(mod_name.as_ptr());
+            let attr_name = std::ffi::CString::new(type_name).unwrap();
+            let ty = PY_OBJECT_GET_ATTR_STRING(np_mod, attr_name.as_ptr());
+            let args = PY_TUPLE_NEW(1);
+            PY_TUPLE_SET_ITEM(args, 0, arg);
+            let scalar = PY_OBJECT_CALL_OBJECT(ty, args);
+            PY_DEC_REF(args);
+            PY_DEC_REF(ty);
+            PY_DEC_REF(np_mod);
+            scalar
+        }
+    }
+
+    /// `bool` is a `PyLong` subtype in CPython; the exact-type fast path in
+    /// `py_to_olive_internal` must still route a real `bool` through the
+    /// bool arm (truthiness), not the int arm (the underlying integer value,
+    /// which happens to agree for `True`/`False` but would not for a
+    /// hypothetical future bool-like value -- this test pins the dispatch,
+    /// not just the coincidental output).
+    #[test]
+    fn bool_vs_int_discrimination_preserved_through_exact_type_dispatch() {
+        let _guard = pyobject_slab_test_lock();
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        unsafe {
+            with_gil(|| {
+                let true_obj = PY_BOOL_FROM_LONG(1);
+                let five_obj = PY_LONG_FROM_LONG(5);
+                assert_eq!(py_to_olive_internal(true_obj), 1);
+                assert_eq!(py_to_olive_internal(five_obj), 5);
+                PY_DEC_REF(true_obj);
+                PY_DEC_REF(five_obj);
+            });
+        }
+    }
+
+    #[test]
+    fn numpy_scalar_conversion_still_works_for_int_and_float() {
+        let _guard = pyobject_slab_test_lock();
+        if !numpy_available() {
+            eprintln!("numpy not available, skipping test");
+            return;
+        }
+        unsafe {
+            with_gil(|| {
+                let int_scalar = make_numpy_scalar("int64", PY_LONG_FROM_LONG(7));
+                assert_eq!(py_to_olive_internal(int_scalar), 7);
+                PY_DEC_REF(int_scalar);
+
+                let float_scalar = make_numpy_scalar("float64", PY_FLOAT_FROM_DOUBLE(2.5));
+                assert_eq!(
+                    f64::from_bits(py_to_olive_internal(float_scalar) as u64),
+                    2.5
+                );
+                PY_DEC_REF(float_scalar);
+
+                // Same exact foreign type again: exercises the cache hit
+                // path (`foreign_cache_scan`), not the `__name__` heuristic.
+                let int_scalar2 = make_numpy_scalar("int64", PY_LONG_FROM_LONG(9));
+                assert_eq!(py_to_olive_internal(int_scalar2), 9);
+                PY_DEC_REF(int_scalar2);
+            });
+        }
+    }
+
+    #[test]
+    fn foreign_type_cache_concurrency() {
+        let _guard = pyobject_slab_test_lock();
+        if !numpy_available() {
+            eprintln!("numpy not available, skipping test");
+            return;
+        }
+        let mut handles = Vec::new();
+        for i in 0..8i64 {
+            handles.push(std::thread::spawn(move || unsafe {
+                with_gil(|| {
+                    for j in 0..200i64 {
+                        let v = i * 1000 + j;
+                        let scalar = make_numpy_scalar("int64", PY_LONG_FROM_LONG(v as c_long));
+                        assert_eq!(py_to_olive_internal(scalar), v);
+                        PY_DEC_REF(scalar);
+                    }
+                });
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+    }
 
     #[test]
     fn wrap_unwrap_round_trips() {

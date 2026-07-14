@@ -227,24 +227,6 @@ pub extern "C" fn olive_py_to_bytes(obj: PyObject) -> i64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_py_from_list(s: i64) -> PyObject {
-    check_python_loaded();
-    if s == 0 {
-        return std::ptr::null_mut();
-    }
-    with_gil(|| unsafe {
-        let sv = &*(s as *const crate::StableVec);
-        let pyl = PY_LIST_NEW(sv.len as isize);
-        for i in 0..sv.len {
-            let v = *sv.ptr.add(i);
-            let py_v = olive_to_py_checked(v);
-            PY_LIST_SET_ITEM(pyl, i as isize, py_v);
-        }
-        olive_py_wrap_owned(pyl)
-    })
-}
-
 /// `[T]` target with a concrete native `T`: elements land as raw native words.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_to_list(obj: PyObject) -> i64 {

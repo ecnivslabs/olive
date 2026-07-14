@@ -43,7 +43,7 @@ pub(crate) unsafe fn interned_attr(attr: *const c_char) -> PyObject {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::python::python_coerce::pyobject_slab_test_lock;
+    use crate::python::python_coerce::{pyobject_slab_test_lock, static_attr_name};
     use std::sync::atomic::Ordering;
 
     fn with_forced_intern<R>(want: bool, f: impl FnOnce() -> R) -> R {
@@ -113,7 +113,7 @@ mod tests {
                 let d = PY_DICT_NEW();
                 olive_py_wrap_owned(d)
             });
-            let attr_ptr = crate::olive_str_internal("clear") | 1;
+            let attr_ptr = static_attr_name("clear");
 
             let via_intern = with_forced_intern(true, || {
                 crate::python::python_coerce_ffi::olive_py_getattr(obj, attr_ptr)

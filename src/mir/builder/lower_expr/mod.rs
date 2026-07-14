@@ -1076,28 +1076,14 @@ impl<'a> MirBuilder<'a> {
         {
             return op;
         }
-        match &declared_ty {
-            Type::Float
-            | Type::F32
-            | Type::Int
-            | Type::I8
-            | Type::I16
-            | Type::I32
-            | Type::U8
-            | Type::U16
-            | Type::U32
-            | Type::U64
-            | Type::Usize
-            | Type::Bool => {
-                let coerced = self.new_local(declared_ty.clone(), None, false);
-                self.push_statement(
-                    StatementKind::Assign(coerced, Rvalue::Cast(op, declared_ty)),
-                    span,
-                );
-                self.operand_for_local(coerced)
-            }
-            _ => op,
-        }
+        // The general `coerce`'s `PyObject -> native` realize branch already
+        // covers every target `py_realize_target` names (str, bytes, tuple,
+        // list, dict, every numeric width, bool) through the one shared,
+        // fault-location-tracked path -- delegate instead of re-special-
+        // casing only the numeric subset here and silently no-oping on the
+        // rest, which left a fused-less `str`/`bytes`/`list`/`dict`/`tuple`
+        // result crossing this branch as a raw, unconverted handle.
+        self.coerce(op, &Type::PyObject, &declared_ty, span)
     }
 
     /// Converts a value crossing into Python by its static type. A raw word

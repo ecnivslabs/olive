@@ -117,12 +117,14 @@ impl<'a> MirBuilder<'a> {
                 type_ann,
                 ..
             } => {
-                let mut rval = self.lower_expr(value);
-                let val_ty = self.get_type(value.id).clone();
                 let ty = if let Some(ann) = type_ann {
                     self.resolve_type_expr(ann)
                 } else {
-                    val_ty.clone()
+                    self.get_type(value.id).clone()
+                };
+                let (mut rval, val_ty) = match self.lower_py_call_scalar_hint(value, &ty) {
+                    Some(op) => (op, ty.clone()),
+                    None => (self.lower_expr(value), self.get_type(value.id).clone()),
                 };
                 rval = self.coerce(rval, &val_ty, &ty, value.span);
 
@@ -280,9 +282,11 @@ impl<'a> MirBuilder<'a> {
 
             StmtKind::ExprStmt(expr) => {
                 if is_tail {
-                    let mut rval = self.lower_expr(expr);
-                    let expr_ty = self.get_type(expr.id).clone();
                     let ret_ty = self.current_locals[0].ty.clone();
+                    let (mut rval, expr_ty) = match self.lower_py_call_scalar_hint(expr, &ret_ty) {
+                        Some(op) => (op, ret_ty.clone()),
+                        None => (self.lower_expr(expr), self.get_type(expr.id).clone()),
+                    };
                     rval = self.coerce(rval, &expr_ty, &ret_ty, expr.span);
                     let exclude = match rval {
                         Operand::Copy(l) | Operand::Move(l) => Some(l),
@@ -425,9 +429,11 @@ impl<'a> MirBuilder<'a> {
             }
 
             StmtKind::Return(Some(expr)) => {
-                let mut rval = self.lower_expr(expr);
-                let expr_ty = self.get_type(expr.id).clone();
                 let ret_ty = self.current_locals[0].ty.clone();
+                let (mut rval, expr_ty) = match self.lower_py_call_scalar_hint(expr, &ret_ty) {
+                    Some(op) => (op, ret_ty.clone()),
+                    None => (self.lower_expr(expr), self.get_type(expr.id).clone()),
+                };
                 rval = self.coerce(rval, &expr_ty, &ret_ty, stmt.span);
                 let exclude = match rval {
                     Operand::Copy(l) | Operand::Move(l) => Some(l),
