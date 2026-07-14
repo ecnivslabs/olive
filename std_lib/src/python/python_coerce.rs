@@ -1,9 +1,6 @@
 use crate::python::*;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_double, c_long, c_void};
-use std::sync::RwLock;
-
-const CHUNK_CAP: usize = 512;
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -12,174 +9,69 @@ pub struct OlivePyObject {
     pub py_ptr: PyObject,
 }
 
-struct Chunk {
-    data: Box<[std::mem::MaybeUninit<OlivePyObject>; CHUNK_CAP]>,
-    live: Box<[u64; CHUNK_CAP / 64]>,
-    free: Vec<usize>,
-    used: usize,
-}
+unsafe impl Send for OlivePyObject {}
+unsafe impl Sync for OlivePyObject {}
 
-impl Chunk {
-    fn new() -> Self {
-        Chunk {
-            data: Box::new(unsafe { std::mem::MaybeUninit::uninit().assume_init() }),
-            live: Box::new([0; CHUNK_CAP / 64]),
-            free: Vec::new(),
-            used: 0,
-        }
-    }
-
-    fn alloc(&mut self, obj: OlivePyObject) -> *mut OlivePyObject {
-        let idx = if let Some(i) = self.free.pop() {
-            i
-        } else if self.used < CHUNK_CAP {
-            let i = self.used;
-            self.used += 1;
-            i
-        } else {
-            return std::ptr::null_mut();
-        };
-        self.live[idx / 64] |= 1 << (idx % 64);
-        unsafe {
-            let slot = self.data[idx].as_mut_ptr();
-            slot.write(obj);
-            slot
-        }
-    }
-
-    fn slot_index(&self, ptr: usize) -> Option<usize> {
-        let base = self.data.as_ptr() as usize;
-        let end = base + CHUNK_CAP * std::mem::size_of::<OlivePyObject>();
-        if ptr < base
-            || ptr >= end
-            || !(ptr - base).is_multiple_of(std::mem::size_of::<OlivePyObject>())
-        {
-            return None;
-        }
-        Some((ptr - base) / std::mem::size_of::<OlivePyObject>())
-    }
-
-    fn free_slot(&mut self, ptr: *mut OlivePyObject) {
-        if let Some(idx) = self.slot_index(ptr as usize)
-            && self.live[idx / 64] & (1 << (idx % 64)) != 0
-        {
-            self.live[idx / 64] &= !(1 << (idx % 64));
-            self.free.push(idx);
-        }
-    }
-
-    fn contains(&self, ptr: usize) -> bool {
-        let base = self.data.as_ptr() as usize;
-        let end = base + CHUNK_CAP * std::mem::size_of::<OlivePyObject>();
-        ptr >= base && ptr < end
-    }
-
-    fn slot_live(&self, ptr: usize) -> bool {
-        match self.slot_index(ptr) {
-            Some(idx) => self.live[idx / 64] & (1 << (idx % 64)) != 0,
-            None => false,
-        }
-    }
-}
-
-struct Arena {
-    chunks: Vec<Chunk>,
-}
-
-impl Arena {
-    fn new() -> Self {
-        Arena {
-            chunks: vec![Chunk::new()],
-        }
-    }
-
-    fn alloc(&mut self, obj: OlivePyObject) -> *mut OlivePyObject {
-        for chunk in self.chunks.iter_mut() {
-            let ptr = chunk.alloc(obj);
-            if !ptr.is_null() {
-                return ptr;
-            }
-        }
-        let mut chunk = Chunk::new();
-        let ptr = chunk.alloc(obj);
-        self.chunks.push(chunk);
-        ptr
-    }
-
-    /// Claims a live slot for release: clears the live bit and returns the
-    /// held py pointer, or None when the slot is already free (double drop).
-    fn take(&mut self, ptr: *mut OlivePyObject) -> Option<PyObject> {
-        for chunk in self.chunks.iter_mut() {
-            if chunk.contains(ptr as usize) {
-                if !chunk.slot_live(ptr as usize) {
-                    return None;
-                }
-                let py_ptr = unsafe { (*ptr).py_ptr };
-                chunk.free_slot(ptr);
-                return Some(py_ptr);
-            }
-        }
-        None
-    }
-
-    fn contains(&self, ptr: usize) -> bool {
-        for chunk in &self.chunks {
-            if chunk.contains(ptr) {
-                return true;
-            }
-        }
-        false
-    }
-}
-
-static ARENA: std::sync::OnceLock<RwLock<Arena>> = std::sync::OnceLock::new();
-
-/// Serializes arena-liveness tests: cargo runs test fns on separate threads,
-/// and a freed slot can be reallocated by another test between free and check.
+/// Serializes tests that assert slot liveness after a free: cargo runs test
+/// fns on separate threads sharing the one global pyobject slab, and a freed
+/// slot can be reallocated by another test between free and check.
 #[cfg(test)]
-pub(crate) fn arena_test_lock() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn pyobject_slab_test_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-unsafe impl Send for OlivePyObject {}
-unsafe impl Sync for OlivePyObject {}
-
-fn arena() -> &'static RwLock<Arena> {
-    ARENA.get_or_init(|| RwLock::new(Arena::new()))
-}
-
+/// Whether `ptr` is a live PyObject handle: a live slab body whose kind is
+/// `KIND_PYOBJECT`. Lock-free -- distinct slabs never share addresses, so a
+/// live body found here can only be a pyobject slot.
 #[inline]
 pub(crate) fn is_arena_ptr(ptr: usize) -> bool {
-    if let Ok(a) = arena().read() {
-        a.contains(ptr)
-    } else {
-        false
-    }
+    crate::slab::ptr_is_slab_body(ptr as i64)
+        && unsafe { *(ptr as *const i64) == crate::KIND_PYOBJECT }
 }
 
-/// Whether `ptr` is a live arena handle. False before the arena exists,
-/// so non-Python programs pay one static load.
-pub(crate) fn arena_slot_live(ptr: usize) -> bool {
-    let Some(lock) = ARENA.get() else {
-        return false;
-    };
-    match lock.read() {
-        Ok(a) => a.chunks.iter().any(|c| c.slot_live(ptr)),
-        Err(_) => false,
-    }
+/// Allocates a handle in the process-lifetime global slab (see
+/// `SlabSet::pyobject`), never a task-local one.
+fn alloc_pyobject_handle(py_ptr: PyObject) -> *mut OlivePyObject {
+    crate::slab::with_escape_arena(|| unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        let (body, _fresh) = (*active).pyobject.alloc();
+        let o = body as *mut OlivePyObject;
+        std::ptr::write(
+            o,
+            OlivePyObject {
+                kind: crate::KIND_PYOBJECT,
+                py_ptr,
+            },
+        );
+        o
+    })
+}
+
+/// Frees a handle, returning the held py pointer, or `None` when the slot
+/// is already free (double drop) -- the slab's generation check absorbs it.
+/// Liveness check, payload read and free all run under the one global lock
+/// so a concurrent free of the same handle can't race the payload read.
+fn free_pyobject_handle(ptr: *mut OlivePyObject) -> Option<PyObject> {
+    crate::slab::with_escape_arena(|| unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !is_arena_ptr(ptr as usize) {
+            return None;
+        }
+        let py_ptr = (*ptr).py_ptr;
+        if (*active).pyobject.free(ptr as *mut u8) {
+            Some(py_ptr)
+        } else {
+            None
+        }
+    })
 }
 
 pub unsafe fn olive_py_wrap_owned(py_ptr: PyObject) -> PyObject {
     if py_ptr.is_null() {
         return std::ptr::null_mut();
     }
-    let obj = OlivePyObject {
-        kind: crate::KIND_PYOBJECT,
-        py_ptr,
-    };
-    let raw = arena().write().unwrap().alloc(obj);
-    raw as PyObject
+    alloc_pyobject_handle(py_ptr) as PyObject
 }
 
 pub unsafe fn olive_py_wrap_borrowed(py_ptr: PyObject) -> PyObject {
@@ -660,14 +552,141 @@ pub extern "C" fn olive_py_decref(obj: PyObject) {
     if obj.is_null() {
         return;
     }
-    // Claiming under the write lock makes a double drop a no-op: the second
-    // caller finds the slot already free instead of decrefing a stale pointer.
-    let taken = arena().write().unwrap().take(obj as *mut OlivePyObject);
+    // Claiming under the slab's generation check makes a double drop a
+    // no-op: the second caller finds the slot already free.
+    let taken = free_pyobject_handle(obj as *mut OlivePyObject);
     if let Some(py_ptr) = taken
         && !py_ptr.is_null()
     {
         with_gil(|| unsafe {
             PY_DEC_REF(py_ptr);
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wrap_unwrap_round_trips() {
+        let _guard = pyobject_slab_test_lock();
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        unsafe {
+            let py_val = with_gil(|| PY_LONG_FROM_LONG(42));
+            let handle = olive_py_wrap_owned(py_val);
+            assert!(!handle.is_null());
+            assert!(is_arena_ptr(handle as usize));
+            assert_eq!(olive_py_unwrap(handle), py_val);
+            olive_py_decref(handle);
+        }
+    }
+
+    #[test]
+    fn double_decref_is_absorbed() {
+        let _guard = pyobject_slab_test_lock();
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        unsafe {
+            // Value outside CPython's small-int cache, so a real over-release
+            // (rather than an interned singleton's huge refcount) would show up.
+            let py_val = with_gil(|| PY_LONG_FROM_LONG(654_321));
+            let handle = olive_py_wrap_owned(py_val);
+            olive_py_decref(handle);
+            // The slot is already free; this must be a no-op, not a second
+            // PY_DEC_REF on an already-released reference.
+            olive_py_decref(handle);
+        }
+    }
+
+    #[test]
+    fn unwrap_of_freed_handle_does_not_read_stale_memory() {
+        let _guard = pyobject_slab_test_lock();
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        unsafe {
+            let py_val = with_gil(|| PY_LONG_FROM_LONG(99));
+            let handle = olive_py_wrap_owned(py_val);
+            olive_py_decref(handle);
+            // Liveness check first: a dead slot is never read as a live
+            // OlivePyObject, freed or recycled underneath it.
+            assert!(!is_arena_ptr(handle as usize));
+            assert_eq!(
+                olive_py_unwrap(handle),
+                handle,
+                "dead handle passes through unchanged, not read as a payload"
+            );
+        }
+    }
+
+    #[test]
+    fn foreign_raw_pointer_passes_through() {
+        let _guard = pyobject_slab_test_lock();
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        unsafe {
+            let py_val = with_gil(|| PY_LONG_FROM_LONG(5));
+            // Never wrapped: a raw CPython pointer must unwrap to itself.
+            assert_eq!(olive_py_unwrap(py_val), py_val);
+            with_gil(|| PY_DEC_REF(py_val));
+        }
+    }
+
+    #[test]
+    fn null_handle_is_null() {
+        unsafe {
+            assert!(olive_py_wrap_owned(std::ptr::null_mut()).is_null());
+            assert!(olive_py_unwrap(std::ptr::null_mut()).is_null());
+        }
+        olive_py_decref(std::ptr::null_mut());
+    }
+
+    #[test]
+    fn threaded_wrap_decref_and_membership() {
+        let _guard = pyobject_slab_test_lock();
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let checker_stop = stop.clone();
+        let checker = std::thread::spawn(move || {
+            // Pure lock-free membership reads racing concurrent wrap/decref.
+            while !checker_stop.load(Ordering::Relaxed) {
+                let _ = crate::is_active_object(0x1234);
+                let _ = is_arena_ptr(0x1234);
+            }
+        });
+
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            handles.push(std::thread::spawn(move || {
+                for j in 0..500 {
+                    let py_val =
+                        with_gil(|| unsafe { PY_LONG_FROM_LONG((i * 10_000 + j) as c_long) });
+                    let handle = unsafe { olive_py_wrap_owned(py_val) };
+                    assert!(is_arena_ptr(handle as usize));
+                    assert_eq!(unsafe { olive_py_unwrap(handle) }, py_val);
+                    olive_py_decref(handle);
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        stop.store(true, Ordering::Relaxed);
+        checker.join().unwrap();
     }
 }

@@ -77,7 +77,7 @@ mod tests {
 
     #[test]
     fn test_any_to_py_unboxes_but_raw_passes_through() {
-        let _guard = crate::python::python_coerce::arena_test_lock();
+        let _guard = crate::python::python_coerce::pyobject_slab_test_lock();
         if !is_python_available() {
             eprintln!("Python not available, skipping test");
             return;
@@ -98,7 +98,7 @@ mod tests {
 
     #[test]
     fn test_dict_get_default_on_pyobject() {
-        let _guard = crate::python::python_coerce::arena_test_lock();
+        let _guard = crate::python::python_coerce::pyobject_slab_test_lock();
         if !is_python_available() {
             eprintln!("Python not available, skipping test");
             return;
@@ -155,7 +155,7 @@ mod tests {
 
     #[test]
     fn test_unbox_float_int_on_pyobject_in_any() {
-        let _guard = crate::python::python_coerce::arena_test_lock();
+        let _guard = crate::python::python_coerce::pyobject_slab_test_lock();
         if !is_python_available() {
             eprintln!("Python not available, skipping test");
             return;
@@ -172,7 +172,7 @@ mod tests {
 
     #[test]
     fn test_get_index_any_on_pyobject_nested_list() {
-        let _guard = crate::python::python_coerce::arena_test_lock();
+        let _guard = crate::python::python_coerce::pyobject_slab_test_lock();
         if !is_python_available() {
             eprintln!("Python not available, skipping test");
             return;
@@ -210,7 +210,7 @@ mod tests {
 
     #[test]
     fn test_realize_makes_real_dict() {
-        let _guard = crate::python::python_coerce::arena_test_lock();
+        let _guard = crate::python::python_coerce::pyobject_slab_test_lock();
         if !is_python_available() {
             eprintln!("Python not available, skipping test");
             return;
@@ -243,7 +243,7 @@ mod tests {
     /// mutation is simply not observed back on the Olive side.
     #[test]
     fn test_boundary_realizes() {
-        let _guard = crate::python::python_coerce::arena_test_lock();
+        let _guard = crate::python::python_coerce::pyobject_slab_test_lock();
         if !is_python_available() {
             eprintln!("Python not available, skipping test");
             return;
@@ -317,7 +317,7 @@ mod tests {
     /// Python's own `isinstance` builtin.
     #[test]
     fn test_boundary_isinstance_true() {
-        let _guard = crate::python::python_coerce::arena_test_lock();
+        let _guard = crate::python::python_coerce::pyobject_slab_test_lock();
         if !is_python_available() {
             eprintln!("Python not available, skipping test");
             return;
@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn test_interop_leak_prevention() {
-        let _guard = crate::python::python_coerce::arena_test_lock();
+        let _guard = crate::python::python_coerce::pyobject_slab_test_lock();
         if !is_python_available() {
             eprintln!("Python not available, skipping test");
             return;
