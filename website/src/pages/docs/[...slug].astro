@@ -1,7 +1,7 @@
 ---
-import { getCollection, getEntry, render } from 'astro:content';
+import { getCollection, render } from 'astro:content';
 import DocsShell from '../../components/DocsShell.astro';
-import { parseDocsNav } from '../../lib/docsNav';
+import { buildDocsNav } from '../../lib/docsNav';
 
 export async function getStaticPaths() {
   const entries = await getCollection('docs', ({ id }) => id !== 'index');
@@ -14,8 +14,8 @@ export async function getStaticPaths() {
 const { entry } = Astro.props;
 const { Content, headings } = await render(entry);
 
-const indexEntry = await getEntry('docs', 'index');
-const nav = indexEntry ? parseDocsNav(indexEntry.body ?? '') : [];
+const allEntries = await getCollection('docs');
+const nav = buildDocsNav(allEntries);
 
 const title = headings.find((h) => h.depth === 1)?.text ?? entry.id;
 ---

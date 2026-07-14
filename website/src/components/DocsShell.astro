@@ -1,12 +1,12 @@
 ---
 import BaseLayout from './BaseLayout.astro';
-import type { DocsNavGroup } from '../lib/docsNav';
+import type { DocsNavLink } from '../lib/docsNav';
 
 interface Props {
   title: string;
   description: string;
   current: string;
-  nav: DocsNavGroup[];
+  nav: DocsNavLink[];
 }
 const { title, description, current, nav } = Astro.props;
 const base = import.meta.env.BASE_URL;
@@ -14,13 +14,8 @@ const base = import.meta.env.BASE_URL;
 <BaseLayout title={title} description={description} active="docs">
   <div class="body">
     <aside class="sidebar">
-      {nav.map(group => (
-        <div class="group">
-          <p class="group-h">{group.heading}</p>
-          {group.links.map(link => (
-            <a href={`${base}docs/${link.slug}/`} class={link.slug === current ? 'current' : ''} aria-current={link.slug === current ? 'page' : undefined}>{link.label}</a>
-          ))}
-        </div>
+      {nav.map(link => (
+        <a href={`${base}docs/${link.slug}/`} class={link.slug === current ? 'current' : ''} aria-current={link.slug === current ? 'page' : undefined}>{link.label}</a>
       ))}
     </aside>
     <div class="content">
@@ -33,13 +28,8 @@ const base = import.meta.env.BASE_URL;
 <style>
   .body { display: grid; grid-template-columns: 260px 1fr; }
   .sidebar { border-right: 1px solid var(--border); padding: 40px 32px; }
-  .group { margin-bottom: 30px; }
-  .group-h {
-    font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em;
-    text-transform: uppercase; color: var(--ink-muted); margin: 0 0 12px;
-  }
-  .group a { display: block; font-size: 14px; color: var(--ink-body); padding: 6px 0; }
-  .group a.current { color: var(--accent); font-weight: 500; }
+  .sidebar a { display: block; font-size: 14px; color: var(--ink-body); padding: 6px 0; }
+  .sidebar a.current { color: var(--accent); font-weight: 500; }
 
   .content { padding: 56px 64px; min-width: 0; }
   .crumb { font-family: var(--font-mono); font-size: 12px; color: var(--ink-muted); margin: 0 0 18px; }

@@ -1,11 +1,11 @@
 ---
-import { getEntry, render } from 'astro:content';
+import { getCollection, getEntry, render } from 'astro:content';
 import DocsShell from '../../components/DocsShell.astro';
-import { parseDocsNav } from '../../lib/docsNav';
+import { buildDocsNav } from '../../lib/docsNav';
 
 const introEntry = await getEntry('docs', 'introduction');
-const indexEntry = await getEntry('docs', 'index');
-const nav = indexEntry ? parseDocsNav(indexEntry.body ?? '') : [];
+const allEntries = await getCollection('docs');
+const nav = buildDocsNav(allEntries);
 
 if (!introEntry) {
   throw new Error('docs/introduction.md is missing: the docs landing page has nothing to show.');
