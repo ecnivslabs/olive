@@ -108,101 +108,15 @@ impl<'a> MirBuilder<'a> {
                 ),
                 span,
             );
-            let has_splat = args
-                .iter()
-                .any(|a| matches!(a, CallArg::Splat(_) | CallArg::KwSplat(_)));
-            let mut pos_ops = Vec::new();
-            let mut kw_ops = Vec::new();
-            let mut pos_tags: Vec<i64> = Vec::new();
-            let mut kw_tags: Vec<i64> = Vec::new();
-            for (i, (op, kw_name)) in arg_ops.into_iter().zip(arg_kw_names).enumerate() {
-                let arg_ty = args
-                    .get(i)
-                    .map(|a| match a {
-                        CallArg::Positional(e)
-                        | CallArg::Splat(e)
-                        | CallArg::KwSplat(e)
-                        | CallArg::Keyword(_, e) => self.get_type(e.id),
-                    })
-                    .unwrap_or(Type::Any);
-                if let Some(name) = kw_name {
-                    let py_op = self.emit_to_py_arg(op, &arg_ty, span);
-                    kw_ops.push(Operand::Constant(Constant::Str(name)));
-                    kw_ops.push(py_op);
-                    kw_tags.push(Self::py_collection_tag(&arg_ty));
-                } else {
-                    pos_ops.push(self.emit_to_py_arg(op, &arg_ty, span));
-                    pos_tags.push(Self::py_collection_tag(&arg_ty));
-                }
-            }
-            let coll_tags = if has_splat {
-                0
-            } else {
-                Self::pack_coll_tags(&pos_tags)
-            };
-            let kw_coll_tags = if has_splat {
-                0
-            } else {
-                Self::pack_coll_tags(&kw_tags)
-            };
-
-            let args_list = self.new_local(Type::List(Box::new(Type::Any)), None, true);
-            self.push_statement(
-                StatementKind::Assign(args_list, Rvalue::Aggregate(AggregateKind::List, pos_ops)),
+            let call_args = self.build_py_call_args(args, arg_ops, arg_kw_names, span);
+            let raw = self.emit_py_call(
+                Operand::Copy(attr_local),
+                call_args,
+                super::py_call::PyCallFlavor::Unsafe,
+                Type::PyObject,
                 span,
             );
-
-            if kw_ops.is_empty() {
-                let result = self.new_local(Type::PyObject, None, true);
-                self.push_statement(
-                    StatementKind::Assign(
-                        result,
-                        Rvalue::Call {
-                            func: Operand::Constant(Constant::Function(
-                                "__olive_py_call".to_string(),
-                            )),
-                            args: vec![
-                                Operand::Copy(attr_local),
-                                Operand::Copy(args_list),
-                                Operand::Constant(Constant::Int(coll_tags)),
-                            ],
-                        },
-                    ),
-                    span,
-                );
-                let raw = self.operand_for_local(result);
-                return self.coerce_pyobj_if_needed(raw, expr_id, span);
-            } else {
-                let kwargs_list = self.new_local(Type::List(Box::new(Type::Any)), None, true);
-                self.push_statement(
-                    StatementKind::Assign(
-                        kwargs_list,
-                        Rvalue::Aggregate(AggregateKind::List, kw_ops),
-                    ),
-                    span,
-                );
-                let result = self.new_local(Type::PyObject, None, true);
-                self.push_statement(
-                    StatementKind::Assign(
-                        result,
-                        Rvalue::Call {
-                            func: Operand::Constant(Constant::Function(
-                                "__olive_py_call_kw".to_string(),
-                            )),
-                            args: vec![
-                                Operand::Copy(attr_local),
-                                Operand::Copy(args_list),
-                                Operand::Constant(Constant::Int(coll_tags)),
-                                Operand::Copy(kwargs_list),
-                                Operand::Constant(Constant::Int(kw_coll_tags)),
-                            ],
-                        },
-                    ),
-                    span,
-                );
-                let raw = self.operand_for_local(result);
-                return self.coerce_pyobj_if_needed(raw, expr_id, span);
-            }
+            return self.coerce_pyobj_if_needed(raw, expr_id, span);
         }
 
         if let Some(op) = self.lower_dict_method(obj, attr, &arg_ops, &arg_tys, span, expr_id) {

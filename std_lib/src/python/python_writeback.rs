@@ -80,6 +80,15 @@ pub(crate) unsafe fn convert_arg(val: i64, tag: i64, pairs: &mut Vec<WritebackPa
         if tag == TAG_NONE || !crate::is_active_object(val) {
             return olive_to_py(val);
         }
+        convert_collection_arg(val, tag, pairs)
+    }
+}
+
+/// The collection-realize half of `convert_arg`, factored out so the R5
+/// tagged fast path (`convert_arg_tagged`) can reuse it without duplicating
+/// the dedupe-and-track logic.
+unsafe fn convert_collection_arg(val: i64, tag: i64, pairs: &mut Vec<WritebackPair>) -> PyObject {
+    unsafe {
         if let Some(existing) = pairs.iter().find(|p| p.olive_ptr == val) {
             PY_INC_REF(existing.py_obj);
             return existing.py_obj;
@@ -106,6 +115,88 @@ pub(crate) unsafe fn convert_arg(val: i64, tag: i64, pairs: &mut Vec<WritebackPa
             tag,
         });
         py_obj
+    }
+}
+
+/// Static-type encoding for a py-call argument's raw word, orthogonal to the
+/// `TAG_*` collection vocabulary above (which says whether/how an arg copies
+/// out, not how its bits decode). Chosen by the compiler from the argument's
+/// *declared* type so a raw word that would otherwise collide -- `0` as
+/// `int` vs `None`, a bit pattern as `int` vs `float`, `0`/`1` as `int` vs
+/// `bool` -- decodes exactly, with no runtime guessing (the old fallback,
+/// `olive_to_py`'s `looks_like_float` heuristic, is unsound on adversarial
+/// bit patterns and always wrong for `bool`/`None`). A collection-tagged slot
+/// ignores this word entirely; see `convert_arg_tagged`.
+pub(crate) const ARG_PYOBJECT: i64 = 0;
+pub(crate) const ARG_INT: i64 = 1;
+pub(crate) const ARG_FLOAT: i64 = 2;
+pub(crate) const ARG_STR: i64 = 3;
+pub(crate) const ARG_BOOL: i64 = 4;
+/// A genuinely dynamic value (`Any`, or any type this scheme doesn't name
+/// individually): decode via the same inline-tag-aware path a boxed `Any`
+/// slot always used, `olive_any_to_py`.
+pub(crate) const ARG_ANY: i64 = 5;
+pub(crate) const ARG_NONE: i64 = 6;
+pub(crate) const ARG_BYTES: i64 = 7;
+
+/// Reads arg `i`'s 4-bit encode tag out of a packed word. Mirrors `tag_at`;
+/// a call with more than 16 args never reaches the tagged fast path at all
+/// (the compiler keeps it on the legacy, pre-converted entry points), so an
+/// out-of-range index here is unreachable in practice -- `ARG_ANY` is the
+/// safe default if it's ever hit anyway, since `olive_any_to_py` is a
+/// correct (if slower) decode for every representable value.
+pub(crate) fn arg_tag_at(tags: i64, i: usize) -> i64 {
+    if i >= 16 {
+        return ARG_ANY;
+    }
+    (tags >> (i * 4)) & 0xF
+}
+
+/// Decodes one raw, unconverted call argument by its compiler-supplied
+/// static tag. The R5 fast path: no pre-conversion, no handle allocation,
+/// one C-API call per scalar, all under the call's single GIL region.
+unsafe fn decode_scalar_arg(val: i64, tag: i64) -> PyObject {
+    unsafe {
+        match tag {
+            ARG_PYOBJECT => {
+                let p = olive_py_unwrap(val as PyObject);
+                if p.is_null() {
+                    return p;
+                }
+                PY_INC_REF(p);
+                p
+            }
+            ARG_INT => raw_scalar_to_py(val, TAG_INT_LIST),
+            ARG_FLOAT => raw_scalar_to_py(val, TAG_FLOAT_LIST),
+            ARG_STR => raw_scalar_to_py(val, TAG_STR_LIST),
+            ARG_BOOL => raw_scalar_to_py(val, TAG_BOOL_LIST),
+            ARG_NONE => {
+                let none = _PY_NONE_STRUCT as PyObject;
+                PY_INC_REF(none);
+                none
+            }
+            ARG_BYTES => olive_to_py(val),
+            _ => olive_any_to_py_checked(val),
+        }
+    }
+}
+
+/// The R5 tagged-argument counterpart to `convert_arg`: `coll_tag` still
+/// selects copy-out exactly as before, but a non-collection slot decodes by
+/// `arg_tag` instead of falling through to `olive_to_py`'s raw-word
+/// heuristic. Used only by the `_t` call entry points; the legacy entry
+/// points keep calling `convert_arg` unchanged.
+pub(crate) unsafe fn convert_arg_tagged(
+    val: i64,
+    coll_tag: i64,
+    arg_tag: i64,
+    pairs: &mut Vec<WritebackPair>,
+) -> PyObject {
+    unsafe {
+        if coll_tag != TAG_NONE && crate::is_active_object(val) {
+            return convert_collection_arg(val, coll_tag, pairs);
+        }
+        decode_scalar_arg(val, arg_tag)
     }
 }
 

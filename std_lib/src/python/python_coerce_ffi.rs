@@ -45,18 +45,6 @@ pub extern "C" fn olive_py_conv_to_olive(py_val: PyObject) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn olive_py_from_float_bits(val: i64) -> PyObject {
-    check_python_loaded();
-    unsafe {
-        let f = f64::from_bits(val as u64);
-        with_gil(|| {
-            let r = PY_FLOAT_FROM_DOUBLE(f as c_double);
-            olive_py_wrap_owned(r)
-        })
-    }
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn olive_py_eq(l: PyObject, r: PyObject) -> i64 {
     check_python_loaded();
     let un_l = unsafe { olive_py_unwrap(l) };
