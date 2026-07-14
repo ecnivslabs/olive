@@ -1,0 +1,6 @@
+import py "re" as re
+
+let s = "cat cot cut bat"
+let found: [str] = re.findall("c[aeiou]t", s)
+print(len(found))
+print("-".join(found))

@@ -8,6 +8,7 @@
 //! undetected here and left to the gencheck runtime backstop (E0707).
 
 use super::block_preds;
+use super::escape_copies::{py_call_coll_tags, py_call_tag_for_pos};
 use crate::mir::*;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -128,14 +129,27 @@ fn params_escaping(func: &MirFunction, escapes: &HashMap<String, Vec<bool>>) -> 
         }
     };
     for bb in &func.basic_blocks {
-        for stmt in &bb.statements {
+        for (idx, stmt) in bb.statements.iter().enumerate() {
             match &stmt.kind {
                 StatementKind::SetAttr(_, _, val) => mark(val, &taint, &mut mask),
                 StatementKind::SetIndex(_, _, val, _) => mark(val, &taint, &mut mask),
                 StatementKind::PtrStore(_, val) => mark(val, &taint, &mut mask),
-                StatementKind::Assign(_, rval) => match rval {
+                StatementKind::Assign(dst, rval) => match rval {
                     Rvalue::Aggregate(_, ops) => {
-                        for op in ops {
+                        // A tagged position aliases into a py-call's
+                        // `args_list`/`kwargs_list` for the call's duration
+                        // only (R2b's copy-out contract): it never actually
+                        // escapes into a longer-lived container, so a
+                        // parameter feeding one here must not be marked
+                        // escaping, or the caller would defensively copy the
+                        // exact allocation `sync_back` needs to mutate.
+                        let py_tags = py_call_coll_tags(&bb.statements, idx, *dst);
+                        for (pos, op) in ops.iter().enumerate() {
+                            if let Some(src) = &py_tags
+                                && py_call_tag_for_pos(src, pos) != 0
+                            {
+                                continue;
+                            }
                             mark(op, &taint, &mut mask);
                         }
                     }

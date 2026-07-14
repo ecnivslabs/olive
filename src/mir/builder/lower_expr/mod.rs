@@ -1076,6 +1076,81 @@ impl<'a> MirBuilder<'a> {
         self.coerce(op, resolved, &Type::PyObject, span)
     }
 
+    /// The scalar-kind tag (2/3/4/5, matching `python_writeback`'s
+    /// `TAG_*_LIST` constants) for a concrete scalar element/value type, or
+    /// `None` when it's `Any`/anything else needing the boxed path.
+    fn py_scalar_kind(ty: &Type) -> Option<i64> {
+        match ty {
+            t if Self::is_int_ty(t) => Some(2),
+            Type::Float | Type::F32 => Some(3),
+            Type::Bool => Some(4),
+            Type::Str => Some(5),
+            _ => None,
+        }
+    }
+
+    /// The 4-bit copy-out tag for a py-call argument's static type: which
+    /// sync routine `sync_back` runs on it after the call, chosen from the
+    /// argument's *declared* Olive type since the runtime cannot recover an
+    /// element type from a raw list word alone. A concretely-typed dict/set
+    /// (`{str: int}`, `set[int]`) stores its values raw, the same as a typed
+    /// list, so it gets its own tag distinct from an Any-valued one (`{str:
+    /// Any}` boxes every value) -- see the tag table in `python_writeback.rs`.
+    ///
+    /// A container whose element/value is itself a concrete container (a
+    /// `[[int]]`, `{str: [int]}`, ...) gets `0` (no copy-out attempted, same
+    /// as an untagged argument): the Any-boxed recursive path (tag 1/6/7)
+    /// only matches a genuinely dynamic `Any` slot, whose runtime decode
+    /// (`py_to_any_internal`) always boxes what it finds -- applying that to
+    /// a concretely-typed inner container would rebuild it with boxed
+    /// elements the outer type never declared, corrupting it exactly like
+    /// the untyped-dict/set bug this tag scheme exists to avoid. Expressing
+    /// "sync a concretely nested container" correctly needs a real, per-level
+    /// type descriptor (the `type_descriptor`/`*_typed` machinery elsewhere
+    /// already builds these for hashing/eq/copy); that is follow-up work, not
+    /// this phase's flat tag word.
+    ///
+    /// Not a collection -> `0`.
+    pub(super) fn py_collection_tag(ty: &Type) -> i64 {
+        match ty {
+            Type::List(elem) => match Self::py_scalar_kind(elem) {
+                Some(k) => k,
+                None if elem.as_ref() == &Type::Any => 1,
+                None => 0,
+            },
+            Type::Dict(_, val) => match Self::py_scalar_kind(val) {
+                Some(2) => 8,
+                Some(3) => 9,
+                Some(4) => 10,
+                Some(5) => 11,
+                _ if val.as_ref() == &Type::Any => 6,
+                _ => 0,
+            },
+            Type::Set(elem) => match Self::py_scalar_kind(elem) {
+                Some(2) => 12,
+                Some(3) => 13,
+                Some(4) => 14,
+                Some(5) => 15,
+                _ if elem.as_ref() == &Type::Any => 7,
+                _ => 0,
+            },
+            _ => 0,
+        }
+    }
+
+    /// Packs up to 16 per-argument copy-out tags into one `i64`, 4 bits per
+    /// arg, little-endian. More than 16 args (or a splat call, whose real
+    /// arity isn't known here) packs `0` for every slot: no copy-out is
+    /// attempted, the same as an argument that was never a collection.
+    pub(super) fn pack_coll_tags(tags: &[i64]) -> i64 {
+        if tags.len() > 16 {
+            return 0;
+        }
+        tags.iter()
+            .enumerate()
+            .fold(0i64, |acc, (i, &t)| acc | (t << (i * 4)))
+    }
+
     pub(super) fn is_int_ty(ty: &Type) -> bool {
         matches!(
             ty,
@@ -1234,8 +1309,13 @@ impl<'a> MirBuilder<'a> {
             .map(|(i, (op, kw))| (op, kw, i))
             .collect();
 
+        let has_splat = args
+            .iter()
+            .any(|a| matches!(a, CallArg::Splat(_) | CallArg::KwSplat(_)));
         let mut pos_ops: Vec<Operand> = Vec::new();
         let mut kw_ops: Vec<Operand> = Vec::new();
+        let mut pos_tags: Vec<i64> = Vec::new();
+        let mut kw_tags: Vec<i64> = Vec::new();
         for (op, kw_name, i) in zipped {
             let arg_ty = args
                 .get(i)
@@ -1250,10 +1330,22 @@ impl<'a> MirBuilder<'a> {
                 let py_op = self.emit_to_py_arg(op, &arg_ty, expr.span);
                 kw_ops.push(Operand::Constant(Constant::Str(name)));
                 kw_ops.push(py_op);
+                kw_tags.push(Self::py_collection_tag(&arg_ty));
             } else {
                 pos_ops.push(self.emit_to_py_arg(op, &arg_ty, expr.span));
+                pos_tags.push(Self::py_collection_tag(&arg_ty));
             }
         }
+        let coll_tags = if has_splat {
+            0
+        } else {
+            Self::pack_coll_tags(&pos_tags)
+        };
+        let kw_coll_tags = if has_splat {
+            0
+        } else {
+            Self::pack_coll_tags(&kw_tags)
+        };
 
         let args_list = self.new_local(Type::List(Box::new(Type::Any)), None, true);
         self.push_statement(
@@ -1290,7 +1382,11 @@ impl<'a> MirBuilder<'a> {
                         func: Operand::Constant(Constant::Function(
                             "__olive_py_call_safe".to_string(),
                         )),
-                        args: vec![func_op, Operand::Copy(args_list)],
+                        args: vec![
+                            func_op,
+                            Operand::Copy(args_list),
+                            Operand::Constant(Constant::Int(coll_tags)),
+                        ],
                     },
                 ),
                 expr.span,
@@ -1311,7 +1407,9 @@ impl<'a> MirBuilder<'a> {
                         args: vec![
                             func_op,
                             Operand::Copy(args_list),
+                            Operand::Constant(Constant::Int(coll_tags)),
                             Operand::Copy(kwargs_list),
+                            Operand::Constant(Constant::Int(kw_coll_tags)),
                         ],
                     },
                 ),

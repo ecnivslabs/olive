@@ -212,7 +212,7 @@ pub unsafe fn olive_py_unwrap(val: PyObject) -> PyObject {
 }
 
 #[inline]
-unsafe fn raw_ob_type(obj: PyObject) -> PyObject {
+pub(crate) unsafe fn raw_ob_type(obj: PyObject) -> PyObject {
     unsafe {
         if obj.is_null() {
             return std::ptr::null_mut();

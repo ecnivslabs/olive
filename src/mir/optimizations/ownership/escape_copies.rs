@@ -42,6 +42,94 @@ enum CopySlot {
     UseVal,
 }
 
+/// Runtime entry points whose `args`/`kwargs` `[Any]` aggregate is consumed
+/// then handed back to the caller's own allocation, never retained: a
+/// collection argument tagged for copy-out (a non-zero nibble in the packed
+/// tag word) must reach the runtime as the caller's own pointer, not a
+/// defensive copy, or `sync_back` mutates a throwaway clone instead of the
+/// value the caller keeps using. See `python_writeback.rs`'s tag vocabulary.
+const PY_CALL_FNS: &[&str] = &[
+    "__olive_py_call",
+    "__olive_py_call_safe",
+    "__olive_py_call_kw",
+    "__olive_py_call_kw_safe",
+];
+
+/// The `args_list` aggregate holds one slot per positional argument, so its
+/// packed tag word indexes 1:1 with the aggregate's element positions. The
+/// `kwargs_list` aggregate instead alternates a constant name string and a
+/// value per keyword argument, so its tag word (one nibble per *keyword*,
+/// per `pack_coll_tags` on the compiler side) indexes the value at ops
+/// position `2*n + 1`, not position `n`.
+pub(super) enum PyCallTagSource {
+    Args(i64),
+    Kwargs(i64),
+}
+
+/// If `stmts[idx]` builds the `[Any]` aggregate `dst` that a later
+/// `__olive_py_call*` statement in the same basic block consumes as its
+/// `args_list` or `kwargs_list`, returns that call's matching packed
+/// collection-tag word. `dst` is a fresh temp created solely for this one
+/// call (never a user-named binding reused elsewhere), so scanning the rest
+/// of the straight-line block for the first call that references it is
+/// exact, not a heuristic guess -- the callee-name/attr-getattr bookkeeping
+/// lowering emits ahead of the call (`__olive_py_getattr`, `__olive_py_set_loc`,
+/// their own temps) means the real gap is not a fixed statement count.
+pub(super) fn py_call_coll_tags(
+    stmts: &[Statement],
+    idx: usize,
+    dst: Local,
+) -> Option<PyCallTagSource> {
+    let is_dst = |op: &Operand| matches!(op, Operand::Copy(l) | Operand::Move(l) if *l == dst);
+    for stmt in &stmts[idx + 1..] {
+        let StatementKind::Assign(
+            _,
+            Rvalue::Call {
+                func: Operand::Constant(Constant::Function(name)),
+                args,
+            },
+        ) = &stmt.kind
+        else {
+            continue;
+        };
+        if !PY_CALL_FNS.contains(&name.as_str()) {
+            continue;
+        }
+        if args.len() > 2
+            && is_dst(&args[1])
+            && let Operand::Constant(Constant::Int(tags)) = &args[2]
+        {
+            return Some(PyCallTagSource::Args(*tags));
+        }
+        if args.len() > 4
+            && is_dst(&args[3])
+            && let Operand::Constant(Constant::Int(tags)) = &args[4]
+        {
+            return Some(PyCallTagSource::Kwargs(*tags));
+        }
+    }
+    None
+}
+
+/// Reads argument `i`'s 4-bit tag from a packed collection-tag word. Mirrors
+/// `python_writeback::tag_at` (a different crate, no shared dependency).
+fn tag_at(tags: i64, i: usize) -> i64 {
+    if i >= 16 {
+        return 0;
+    }
+    (tags >> (i * 4)) & 0xF
+}
+
+/// The effective copy-out tag for aggregate element `pos`, translating a
+/// `kwargs_list`'s interleaved name/value layout back to a keyword index.
+pub(super) fn py_call_tag_for_pos(src: &PyCallTagSource, pos: usize) -> i64 {
+    match src {
+        PyCallTagSource::Args(tags) => tag_at(*tags, pos),
+        PyCallTagSource::Kwargs(tags) if pos % 2 == 1 => tag_at(*tags, pos / 2),
+        PyCallTagSource::Kwargs(_) => 0,
+    }
+}
+
 /// Deep-copies every non-owning value stored into a container so the container
 /// owns an independent copy. No value is ever shared between two owners: an
 /// owning path transfers by move, a non-owning path deep-copies. Eliminates
@@ -78,10 +166,16 @@ pub(super) fn insert_escape_copies(
                 {
                     hits.push((bb_idx, idx, CopySlot::Val, *l, "__olive_copy_typed"));
                 }
-                StatementKind::Assign(_, Rvalue::Aggregate(kind, ops))
+                StatementKind::Assign(dst, Rvalue::Aggregate(kind, ops))
                     if *kind != AggregateKind::FatPtr =>
                 {
+                    let py_tags = py_call_coll_tags(&bb.statements, idx, *dst);
                     for (pos, op) in ops.iter().enumerate() {
+                        if let Some(src) = &py_tags
+                            && py_call_tag_for_pos(src, pos) != 0
+                        {
+                            continue;
+                        }
                         if let Operand::Copy(l) = op
                             && needs_copy(*l)
                         {

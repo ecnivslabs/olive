@@ -1,0 +1,6 @@
+import py "statistics" as statistics
+
+let xs: [int] = [2, 4, 4, 4, 5, 5, 7, 9]
+print(statistics.mean(xs))
+let sd: float = statistics.stdev(xs)
+print(round(sd, 4))

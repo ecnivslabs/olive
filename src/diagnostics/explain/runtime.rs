@@ -165,4 +165,21 @@ pub(super) const ENTRIES: &[Explanation] = &[
         fixed: "fn main():\n    let max: i64 = 9223372036854775807\n    let one: i64 = 1\n    if max <= 9223372036854775807 - one:\n        print(max + one)\n    else:\n        print(max)",
         notes: &["Guard the operands so the result stays in range, or use a wider type."],
     },
+    Explanation {
+        code: "E0714",
+        title: "writeback type mismatch",
+        summary: "A Python function mutated a list Olive passed it, and the copy-out sync \
+                  found an element whose type doesn't match the list's declared element \
+                  type (e.g. a `[int]` list after the Python side assigned a `str` into \
+                  it). The mutation is synced back in place after every call so \
+                  `xs.sort()`/`random.shuffle(xs)` behave like Python; a type that no \
+                  longer fits the Olive list's static representation can't be synced.",
+        wrong: "import py \"heapq\" as heapq\n\nfn main():\n    let xs: [int] = [3, 1, 2]\n    heapq.heappush(xs, \"oops\")",
+        fixed: "fn main():\n    let xs: [int] = [3, 1, 2]\n    xs.sort()\n    print(xs)",
+        notes: &[
+            "Keep the Python side assigning the same element type the Olive list declares.",
+            "An untyped `[Any]` list accepts any Python value; only concrete element \
+             types (`[int]`, `[float]`, `[bool]`, `[str]`) can mismatch this way.",
+        ],
+    },
 ];

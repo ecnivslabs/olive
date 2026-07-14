@@ -16,7 +16,7 @@ pub extern "C" fn olive_py_set_loc(ptr: i64) {
     PY_CALL_LOC.with(|l| *l.borrow_mut() = loc);
 }
 
-fn py_call_loc() -> String {
+pub(crate) fn py_call_loc() -> String {
     PY_CALL_LOC.with(|l| l.borrow().clone())
 }
 

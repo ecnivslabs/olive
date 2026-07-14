@@ -75,7 +75,7 @@ Going the other direction, Olive primitives are automatically converted when pas
 | `glm.vec3` etc. | native Python object | Tracked type; erased to `PyObject` at runtime boundary |
 | opaque Python object | live handle | `KIND_PYOBJECT`; passed through, never copied |
 
-Python-side mutation of a passed collection during the call is not yet observed back in Olive in this release; see the changelog for when copy-out lands.
+Python-side mutation of a passed `list`/`dict`/`set` during the call syncs back into the same Olive allocation in place, on both the success path and a raised-exception path (`xs.sort()`, `random.shuffle(xs)`, `d.update(...)` all behave exactly like the equivalent Python code, no extra syntax needed). Mutation performed by Python *after* the call has returned is not visible: the boundary is value semantics past the call, there is no live link once the call ends. Passing the same Olive list to two argument positions of one call aliases a single Python object, matching Python's own aliasing; nested collection *identity* is not preserved across a sync, only the top-level argument's identity is.
 
 When an Olive value is assigned to a native-typed slot (`i64`, `f64`, `str`, struct field, collection element), the compiler inserts the correct runtime unboxer automatically. No manual coercion call needed. The reverse (native to PyObject) is also automatic when passing native values to Python functions.
 
