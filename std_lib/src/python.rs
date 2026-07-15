@@ -8,7 +8,9 @@ pub mod python_call_method_safe;
 pub mod python_coerce;
 pub mod python_coerce_ffi;
 pub mod python_compat;
+pub mod python_dlpack;
 pub mod python_error;
+pub mod python_export_buffer;
 pub mod python_intern;
 pub mod python_iter;
 pub mod python_kwnames;
@@ -48,6 +50,18 @@ std::thread_local! {
     static GIL_TOKEN: std::cell::Cell<std::os::raw::c_int> = const { std::cell::Cell::new(0) };
 }
 
+/// Releases the GIL state (and resets `GIL_DEPTH`) on drop, so a panic
+/// inside `with_gil`'s closure still restores both -- otherwise one
+/// failing assertion anywhere under `with_gil` leaves the GIL held
+/// forever and every other thread's next `with_gil` call hangs.
+struct GilGuard(std::os::raw::c_int);
+impl Drop for GilGuard {
+    fn drop(&mut self) {
+        GIL_DEPTH.set(0);
+        unsafe { PY_GILSTATE_RELEASE(self.0) };
+    }
+}
+
 pub fn with_gil<R, F: FnOnce() -> R>(f: F) -> R {
     if GIL_DEPTH.get() > 0 {
         f()
@@ -55,10 +69,8 @@ pub fn with_gil<R, F: FnOnce() -> R>(f: F) -> R {
         unsafe {
             let gil = PY_GILSTATE_ENSURE();
             GIL_DEPTH.set(1);
-            let res = f();
-            GIL_DEPTH.set(0);
-            PY_GILSTATE_RELEASE(gil);
-            res
+            let _guard = GilGuard(gil);
+            f()
         }
     }
 }

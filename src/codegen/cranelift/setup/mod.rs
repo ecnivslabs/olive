@@ -665,6 +665,16 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_zstd_compress", &sig_i64_i64),
             ("__olive_zstd_decompress", &sig_i64_i64),
             ("__olive_signal_install_sigint", &sig_i64_i64),
+            ("__olive_export_buffer_view", &sig_7i64_i64),
+            ("__olive_dlpack_export", &sig_7i64_i64),
+            ("__olive_dlpack_import", &sig_i64_i64),
+            ("__olive_dlpack_data_ptr", &sig_i64_i64),
+            ("__olive_dlpack_ndim", &sig_i64_i64),
+            ("__olive_dlpack_shape_at", &sig_i64_i64_i64),
+            ("__olive_dlpack_dtype_code", &sig_i64_i64),
+            ("__olive_dlpack_bits", &sig_i64_i64),
+            ("__olive_dlpack_device_type", &sig_i64_i64),
+            ("__olive_dlpack_release", &sig_i64_void),
         ];
 
         let has_async = self.functions.iter().any(|f| f.is_async);

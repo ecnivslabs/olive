@@ -159,6 +159,29 @@ pub unsafe extern "C" fn noop_get_buffer(_: PyObject, _: *mut c_void, _: c_int) 
 }
 pub unsafe extern "C" fn noop_buffer_release(_: *mut c_void) {}
 
+pub unsafe extern "C" fn noop_capsule_new(
+    _: *mut c_void,
+    _: *const c_char,
+    _: Option<unsafe extern "C" fn(PyObject)>,
+) -> PyObject {
+    std::ptr::null_mut()
+}
+pub unsafe extern "C" fn noop_capsule_get_pointer(_: PyObject, _: *const c_char) -> *mut c_void {
+    std::ptr::null_mut()
+}
+pub unsafe extern "C" fn noop_capsule_name_check(_: PyObject, _: *const c_char) -> c_int {
+    -1
+}
+pub unsafe extern "C" fn noop_type_from_spec(
+    _: *mut crate::python::python_bindings::PyTypeSpec,
+) -> PyObject {
+    std::ptr::null_mut()
+}
+pub unsafe extern "C" fn noop_type_generic_alloc(_: PyObject, _: isize) -> PyObject {
+    std::ptr::null_mut()
+}
+pub unsafe extern "C" fn noop_object_free(_: *mut c_void) {}
+
 #[cfg(target_os = "windows")]
 unsafe extern "system" {
     pub fn LoadLibraryA(lpLibFileName: *const u8) -> *mut c_void;

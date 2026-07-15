@@ -250,6 +250,13 @@ pub extern "C" fn olive_py_initialize() {
         PY_UNICODE_INTERN_FROM_STRING = compat_dlsym(handle, "PyUnicode_InternFromString");
         PY_OBJECT_GET_ATTR = compat_dlsym(handle, "PyObject_GetAttr");
         PY_OBJECT_SET_ATTR = compat_dlsym(handle, "PyObject_SetAttr");
+        PY_CAPSULE_NEW = compat_dlsym(handle, "PyCapsule_New");
+        PY_CAPSULE_GET_POINTER = compat_dlsym(handle, "PyCapsule_GetPointer");
+        PY_CAPSULE_IS_VALID = compat_dlsym(handle, "PyCapsule_IsValid");
+        PY_CAPSULE_SET_NAME = compat_dlsym(handle, "PyCapsule_SetName");
+        PY_TYPE_FROM_SPEC = compat_dlsym(handle, "PyType_FromSpec");
+        PY_TYPE_GENERIC_ALLOC = compat_dlsym(handle, "PyType_GenericAlloc");
+        PY_OBJECT_FREE = compat_dlsym(handle, "PyObject_Free");
 
         _PY_NONE_STRUCT = compat_dlsym(handle, "_Py_NoneStruct");
 
@@ -356,6 +363,15 @@ pub extern "C" fn olive_py_initialize() {
             PY_OBJECT_GET_ATTR = noop_getitem;
             PY_OBJECT_SET_ATTR = noop_setitem;
             HAS_INTERN.store(false, Ordering::SeqCst);
+            PY_CAPSULE_NEW = crate::python::python_noop::noop_capsule_new;
+            PY_CAPSULE_GET_POINTER = crate::python::python_noop::noop_capsule_get_pointer;
+            PY_CAPSULE_IS_VALID = crate::python::python_noop::noop_capsule_name_check;
+            PY_CAPSULE_SET_NAME = crate::python::python_noop::noop_capsule_name_check;
+            PY_TYPE_FROM_SPEC = crate::python::python_noop::noop_type_from_spec;
+            PY_TYPE_GENERIC_ALLOC = crate::python::python_noop::noop_type_generic_alloc;
+            PY_OBJECT_FREE = crate::python::python_noop::noop_object_free;
+            HAS_CAPSULE.store(false, Ordering::SeqCst);
+            HAS_TYPE_FROMSPEC.store(false, Ordering::SeqCst);
             return;
         }
 
@@ -388,6 +404,27 @@ pub extern "C" fn olive_py_initialize() {
                 && !std::mem::transmute::<_, *const ()>(PY_OBJECT_CHECK_BUFFER).is_null();
         let buffer_disabled_for_test = std::env::var("OLIVE_PY_NO_BUFFER").as_deref() == Ok("1");
         HAS_BUFFER.store(buffer_present && !buffer_disabled_for_test, Ordering::SeqCst);
+
+        // Missing on exotic builds without capsule/dynamic-type support. A
+        // test-only override exercises the copy-based fallback on a build
+        // that does have it (R16).
+        let capsule_present = !std::mem::transmute::<_, *const ()>(PY_CAPSULE_NEW).is_null()
+            && !std::mem::transmute::<_, *const ()>(PY_CAPSULE_GET_POINTER).is_null()
+            && !std::mem::transmute::<_, *const ()>(PY_CAPSULE_IS_VALID).is_null()
+            && !std::mem::transmute::<_, *const ()>(PY_CAPSULE_SET_NAME).is_null();
+        let capsule_disabled_for_test = std::env::var("OLIVE_PY_NO_CAPSULE").as_deref() == Ok("1");
+        HAS_CAPSULE.store(capsule_present && !capsule_disabled_for_test, Ordering::SeqCst);
+
+        let type_fromspec_present =
+            !std::mem::transmute::<_, *const ()>(PY_TYPE_FROM_SPEC).is_null()
+                && !std::mem::transmute::<_, *const ()>(PY_TYPE_GENERIC_ALLOC).is_null()
+                && !std::mem::transmute::<_, *const ()>(PY_OBJECT_FREE).is_null();
+        let type_fromspec_disabled_for_test =
+            std::env::var("OLIVE_PY_NO_TYPE_FROMSPEC").as_deref() == Ok("1");
+        HAS_TYPE_FROMSPEC.store(
+            type_fromspec_present && !type_fromspec_disabled_for_test,
+            Ordering::SeqCst,
+        );
 
         PY_INITIALIZE();
 
