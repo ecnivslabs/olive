@@ -89,8 +89,17 @@ pub(crate) unsafe fn call_method_with_raw_args(
 /// `olive_py_call_method0` takes the word purely to carry it, having no real
 /// argument tags of its own). Arity 5+ and any kwargs call keep the original
 /// separate getattr-then-call path, always unfused.
+///
+/// `loc` (R17): see `olive_py_call0`'s doc comment -- same fold-in, same
+/// first-action-of-the-function contract.
 #[unsafe(no_mangle)]
-pub extern "C" fn olive_py_call_method0(obj: PyObject, name: i64, arg_tags: i64) -> PyObject {
+pub extern "C" fn olive_py_call_method0(
+    obj: PyObject,
+    name: i64,
+    arg_tags: i64,
+    loc: i64,
+) -> PyObject {
+    set_py_call_loc(loc);
     check_python_loaded();
     let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
     if unwrapped_obj.is_null() {
@@ -118,7 +127,9 @@ pub extern "C" fn olive_py_call_method1(
     coll_tags: i64,
     arg_tags: i64,
     a0: i64,
+    loc: i64,
 ) -> PyObject {
+    set_py_call_loc(loc);
     check_python_loaded();
     let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
     if unwrapped_obj.is_null() {
@@ -149,7 +160,9 @@ pub extern "C" fn olive_py_call_method2(
     arg_tags: i64,
     a0: i64,
     a1: i64,
+    loc: i64,
 ) -> PyObject {
+    set_py_call_loc(loc);
     check_python_loaded();
     let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
     if unwrapped_obj.is_null() {
@@ -181,7 +194,9 @@ pub extern "C" fn olive_py_call_method3(
     a0: i64,
     a1: i64,
     a2: i64,
+    loc: i64,
 ) -> PyObject {
+    set_py_call_loc(loc);
     check_python_loaded();
     let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
     if unwrapped_obj.is_null() {
@@ -214,7 +229,9 @@ pub extern "C" fn olive_py_call_method4(
     a1: i64,
     a2: i64,
     a3: i64,
+    loc: i64,
 ) -> PyObject {
+    set_py_call_loc(loc);
     check_python_loaded();
     let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
     if unwrapped_obj.is_null() {
@@ -282,30 +299,30 @@ mod tests {
                 });
 
                 let n0 = static_attr_name("m0");
-                let r0 = olive_py_call_method0(obj, n0, 0);
+                let r0 = olive_py_call_method0(obj, n0, 0, 0);
                 assert_eq!(with_gil(|| PY_LONG_AS_LONG(olive_py_unwrap(r0))), 111);
                 olive_py_decref(r0);
 
                 let n1 = static_attr_name("m1");
-                let r1 = olive_py_call_method1(obj, n1, 0, ARG_INT, 41);
+                let r1 = olive_py_call_method1(obj, n1, 0, ARG_INT, 41, 0);
                 assert_eq!(with_gil(|| PY_LONG_AS_LONG(olive_py_unwrap(r1))), 42);
                 olive_py_decref(r1);
 
                 let n2 = static_attr_name("m2");
                 let tags2 = ARG_INT | (ARG_INT << 4);
-                let r2 = olive_py_call_method2(obj, n2, 0, tags2, 10, 20);
+                let r2 = olive_py_call_method2(obj, n2, 0, tags2, 10, 20, 0);
                 assert_eq!(with_gil(|| PY_LONG_AS_LONG(olive_py_unwrap(r2))), 30);
                 olive_py_decref(r2);
 
                 let n3 = static_attr_name("m3");
                 let tags3 = ARG_INT | (ARG_INT << 4) | (ARG_INT << 8);
-                let r3 = olive_py_call_method3(obj, n3, 0, tags3, 1, 2, 3);
+                let r3 = olive_py_call_method3(obj, n3, 0, tags3, 1, 2, 3, 0);
                 assert_eq!(with_gil(|| PY_LONG_AS_LONG(olive_py_unwrap(r3))), 6);
                 olive_py_decref(r3);
 
                 let n4 = static_attr_name("m4");
                 let tags4 = ARG_INT | (ARG_INT << 4) | (ARG_INT << 8) | (ARG_INT << 12);
-                let r4 = olive_py_call_method4(obj, n4, 0, tags4, 1, 2, 3, 4);
+                let r4 = olive_py_call_method4(obj, n4, 0, tags4, 1, 2, 3, 4, 0);
                 assert_eq!(with_gil(|| PY_LONG_AS_LONG(olive_py_unwrap(r4))), 10);
                 olive_py_decref(r4);
 
@@ -338,7 +355,7 @@ mod tests {
 
                 for _ in 0..100_000 {
                     let res =
-                        olive_py_call_method1(obj, name, 0, ARG_PYOBJECT, target_handle as i64);
+                        olive_py_call_method1(obj, name, 0, ARG_PYOBJECT, target_handle as i64, 0);
                     olive_py_decref(res);
                 }
 
@@ -375,7 +392,7 @@ mod tests {
             crate::olive_list_append(xs, 2i64);
 
             let name = static_attr_name("sort_arg");
-            let res = olive_py_call_method1(obj, name, TAG_INT_LIST, ARG_PYOBJECT, xs);
+            let res = olive_py_call_method1(obj, name, TAG_INT_LIST, ARG_PYOBJECT, xs, 0);
             olive_py_decref(res);
 
             assert_eq!(crate::olive_list_len(xs), 3);
@@ -408,12 +425,12 @@ mod tests {
                 });
 
                 let n0 = static_attr_name("r0");
-                let r0 = olive_py_call_method0(obj, n0, RET_INT << 60);
+                let r0 = olive_py_call_method0(obj, n0, RET_INT << 60, 0);
                 assert_eq!(r0 as i64, 111);
 
                 let n_area = static_attr_name("area");
                 let tags2 = ARG_INT | (ARG_INT << 4) | (RET_FLOAT << 60);
-                let area = olive_py_call_method2(obj, n_area, 0, tags2, 3, 4);
+                let area = olive_py_call_method2(obj, n_area, 0, tags2, 3, 4, 0);
                 assert_eq!(f64::from_bits(area as u64), 12.0);
 
                 olive_py_decref(obj);

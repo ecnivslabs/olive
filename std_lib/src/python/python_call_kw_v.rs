@@ -102,6 +102,9 @@ unsafe fn stable_vec(list: i64) -> (*mut i64, usize) {
 /// tagged-fast-path `StableVec` aggregates (positional values, keyword
 /// values respectively -- keyword *names* live only in `kwnames_key`, a
 /// packed constant `kwnames_tuple` resolves once and caches forever).
+///
+/// `loc` (R17): the call site's `file:line:col` constant, written to the
+/// error-reporting thread-local as the first action -- see `olive_py_call0`.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_call_kw_v(
     func: PyObject,
@@ -112,7 +115,9 @@ pub extern "C" fn olive_py_call_kw_v(
     kwvals_list: i64,
     kw_coll_tags: i64,
     kw_arg_tags: i64,
+    loc: i64,
 ) -> PyObject {
+    set_py_call_loc(loc);
     check_python_loaded();
     let unwrapped_func = unsafe { olive_py_unwrap(func) };
     if unwrapped_func.is_null() {
@@ -258,6 +263,8 @@ pub extern "C" fn olive_py_call_kw_v_safe(
 /// `__olive_py_call{0..4}`: `PyObject_VectorcallMethod` resolves the bound
 /// method and calls it in one step, `self` passed straight through
 /// (borrowed, never decref'd -- it stays owned by the caller's own local).
+///
+/// `loc` (R17): see `olive_py_call_kw_v`'s doc comment.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_call_method_kw_v(
     obj: PyObject,
@@ -269,7 +276,9 @@ pub extern "C" fn olive_py_call_method_kw_v(
     kwvals_list: i64,
     kw_coll_tags: i64,
     kw_arg_tags: i64,
+    loc: i64,
 ) -> PyObject {
+    set_py_call_loc(loc);
     check_python_loaded();
     let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
     if unwrapped_obj.is_null() {
@@ -631,7 +640,7 @@ mod tests {
             let kwvals = make_int_list(&[1, 2]);
             let kwnames = static_attr_name("a,b");
             let kw_arg_tags = ARG_INT | (ARG_INT << 4);
-            let res = olive_py_call_kw_v(func, 0, 0, 0, kwnames, kwvals, 0, kw_arg_tags);
+            let res = olive_py_call_kw_v(func, 0, 0, 0, kwnames, kwvals, 0, kw_arg_tags, 0);
             assert!(!res.is_null());
             let a_val = with_gil(|| {
                 let unwrapped = olive_py_unwrap(res);
@@ -681,6 +690,7 @@ mod tests {
                 kwvals,
                 0,
                 ARG_INT,
+                0,
             );
             assert!(!res.is_null());
             let val = with_gil(|| PY_FLOAT_AS_DOUBLE(olive_py_unwrap(res)));
@@ -719,6 +729,7 @@ mod tests {
                 kwvals,
                 0,
                 ARG_INT,
+                0,
             );
             assert!(!res.is_null());
             let out = with_gil(|| {
@@ -750,7 +761,7 @@ mod tests {
             let first_tuple = with_gil(|| kwnames_tuple((kwnames & !1) as *const c_char));
             for _ in 0..1000 {
                 let kwvals = make_int_list(&[7]);
-                let res = olive_py_call_kw_v(func, 0, 0, 0, kwnames, kwvals, 0, ARG_INT);
+                let res = olive_py_call_kw_v(func, 0, 0, 0, kwnames, kwvals, 0, ARG_INT, 0);
                 assert!(!res.is_null());
                 olive_py_decref(res);
             }
@@ -780,7 +791,7 @@ mod tests {
             });
             let kwvals = make_int_list(&[42]);
             let kwnames = static_attr_name("fallback_key");
-            let res = olive_py_call_kw_v(func, 0, 0, 0, kwnames, kwvals, 0, 0);
+            let res = olive_py_call_kw_v(func, 0, 0, 0, kwnames, kwvals, 0, 0, 0);
             assert!(!res.is_null());
             let val = with_gil(|| {
                 let unwrapped = olive_py_unwrap(res);

@@ -171,24 +171,21 @@ impl<'a> MirBuilder<'a> {
 
     /// True for Python runtime ops that surface an exception via `handle_py_error`,
     /// so the Olive call site must be recorded before them.
+    ///
+    /// R17: the R7/R9/R15 fast-path entry points (`__olive_py_call{0..4}`,
+    /// `__olive_py_call_method{0..4}`, `__olive_py_call_kw_v`,
+    /// `__olive_py_call_method_kw_v`) are deliberately absent -- they take
+    /// the call-site location as a trailing argument of their own emission
+    /// (`emit_py_call_arity`/`emit_py_call_method_arity`/`emit_py_call`/
+    /// `emit_py_call_method_kw_v` in `py_call.rs`) instead of needing this
+    /// auto-inserted statement. Only the legacy list-based path still goes
+    /// through it.
     pub(super) fn is_raising_py_op(name: &str) -> bool {
         matches!(
             name,
             "__olive_py_call"
                 | "__olive_py_call_kw"
                 | "__olive_py_call_t"
-                | "__olive_py_call_kw_v"
-                | "__olive_py_call_method_kw_v"
-                | "__olive_py_call0"
-                | "__olive_py_call1"
-                | "__olive_py_call2"
-                | "__olive_py_call3"
-                | "__olive_py_call4"
-                | "__olive_py_call_method0"
-                | "__olive_py_call_method1"
-                | "__olive_py_call_method2"
-                | "__olive_py_call_method3"
-                | "__olive_py_call_method4"
                 | "__olive_py_getattr"
                 | "__olive_py_getitem"
                 | "__olive_py_getitem_int"

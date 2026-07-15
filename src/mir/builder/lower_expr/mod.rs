@@ -1155,13 +1155,21 @@ impl<'a> MirBuilder<'a> {
         (h.finish() & 0x7FFF_FFFF_FFFF_FFFF) as i64
     }
 
+    /// The `file:line:col` string for `span`, shared by every call-site
+    /// location mechanism: the legacy `emit_py_set_loc` statement pair and
+    /// the R17 fast-path entry points, which take it as a plain trailing
+    /// call argument instead.
+    pub(super) fn call_loc_str(&self, span: Span) -> String {
+        match self.file_names.get(&span.file_id) {
+            Some(file) => format!("{}:{}:{}", file, span.line, span.col),
+            None => format!("{}:{}", span.line, span.col),
+        }
+    }
+
     /// Records the Olive call site just before a Python call so an uncaught
     /// Python exception can be reported against the exact source line.
     pub(super) fn emit_py_set_loc(&mut self, span: Span) {
-        let loc = match self.file_names.get(&span.file_id) {
-            Some(file) => format!("{}:{}:{}", file, span.line, span.col),
-            None => format!("{}:{}", span.line, span.col),
-        };
+        let loc = self.call_loc_str(span);
         let loc_local = self.new_local(Type::Str, None, false);
         self.push_statement(
             StatementKind::Assign(

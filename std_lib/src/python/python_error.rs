@@ -8,12 +8,20 @@ thread_local! {
     static PY_CALL_LOC: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
 }
 
-/// Records the Olive call site about to invoke a Python callable. Emitted by the
-/// MIR builder immediately before every Python call.
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_py_set_loc(ptr: i64) {
+/// Writes the Olive call site into the thread-local directly -- shared by
+/// `olive_py_set_loc` (legacy calls, still a separate MIR statement) and the
+/// R7/R9/R15 fast-path entry points, which call this as their first action
+/// instead of paying a separate runtime call for it.
+pub(crate) fn set_py_call_loc(ptr: i64) {
     let loc = crate::olive_str_from_ptr(ptr);
     PY_CALL_LOC.with(|l| *l.borrow_mut() = loc);
+}
+
+/// Records the Olive call site about to invoke a Python callable. Emitted by the
+/// MIR builder immediately before a legacy (non-fast-path) Python call.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_set_loc(ptr: i64) {
+    set_py_call_loc(ptr);
 }
 
 pub(crate) fn py_call_loc() -> String {
