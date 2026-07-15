@@ -259,6 +259,19 @@ pub extern "C" fn olive_py_initialize() {
         PY_TYPE_FROM_SPEC = compat_dlsym(handle, "PyType_FromSpec");
         PY_TYPE_GENERIC_ALLOC = compat_dlsym(handle, "PyType_GenericAlloc");
         PY_OBJECT_FREE = compat_dlsym(handle, "PyObject_Free");
+        PY_CFUNCTION_NEW_EX = compat_dlsym(handle, "PyCFunction_NewEx");
+        PY_ERR_SET_STRING = compat_dlsym(handle, "PyErr_SetString");
+        // Unlike `PyBool_Type`/`_Py_NoneStruct` (plain struct values, whose
+        // own address already is the `PyObject*` we want), `PyExc_TypeError`
+        // is declared `PyObject *PyExc_TypeError` in CPython -- a pointer
+        // *variable*. `dlsym` gives that variable's address; one more read
+        // gets the exception object it actually points to.
+        let exc_type_error_slot: *const PyObject = compat_dlsym(handle, "PyExc_TypeError");
+        PY_EXC_TYPE_ERROR = if exc_type_error_slot.is_null() {
+            std::ptr::null_mut()
+        } else {
+            *exc_type_error_slot
+        };
 
         _PY_NONE_STRUCT = compat_dlsym(handle, "_Py_NoneStruct");
 
@@ -378,6 +391,9 @@ pub extern "C" fn olive_py_initialize() {
             PY_OBJECT_FREE = crate::python::python_noop::noop_object_free;
             HAS_CAPSULE.store(false, Ordering::SeqCst);
             HAS_TYPE_FROMSPEC.store(false, Ordering::SeqCst);
+            PY_CFUNCTION_NEW_EX = crate::python::python_noop::noop_cfunction_new_ex;
+            PY_ERR_SET_STRING = crate::python::python_noop::noop_err_set_string;
+            PY_EXC_TYPE_ERROR = std::ptr::null_mut();
             return;
         }
 

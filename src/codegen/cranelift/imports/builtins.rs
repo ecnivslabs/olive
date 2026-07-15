@@ -589,6 +589,7 @@ pub(crate) fn resolve_builtin_import(
             "__olive_py_to_bytes" => Some("__olive_py_to_bytes"),
             "__olive_py_to_any" => Some("__olive_py_to_any"),
             "__olive_to_pyobject" => Some("__olive_to_pyobject"),
+            "__olive_py_make_callable" => Some("__olive_py_make_callable"),
             "__olive_py_from_int" => Some("__olive_py_from_int"),
             "__olive_py_from_float" => Some("__olive_py_from_float"),
             "__olive_py_from_str" => Some("__olive_py_from_str"),

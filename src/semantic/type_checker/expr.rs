@@ -564,6 +564,23 @@ impl TypeChecker {
                             })
                         })
                         .collect();
+                    // R19: an argument crossing directly into a Python call
+                    // never unifies against `Type::PyObject` (the call is
+                    // dynamically typed, any arg type is accepted), so a
+                    // function-typed one needs its own shape check here --
+                    // `unify`'s `PyObject` arm only fires for an
+                    // assignment/return context, not a py-call argument.
+                    for (a, ty) in args.iter().zip(arg_tys.iter()) {
+                        if let Type::Fn(params, ret, _) = self.apply_subst(ty.clone()) {
+                            let arg_span = match a {
+                                CallArg::Positional(e)
+                                | CallArg::Keyword(_, e)
+                                | CallArg::Splat(e)
+                                | CallArg::KwSplat(e) => e.span,
+                            };
+                            self.check_py_callable_shape(&params, &ret, arg_span);
+                        }
+                    }
                     if let ExprKind::Attr { obj, attr } = &callee.kind {
                         if let ExprKind::Identifier(module_name) = &obj.kind {
                             let all_positional =

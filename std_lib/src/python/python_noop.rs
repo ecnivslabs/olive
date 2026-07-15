@@ -188,6 +188,15 @@ pub unsafe extern "C" fn noop_type_generic_alloc(_: PyObject, _: isize) -> PyObj
 }
 pub unsafe extern "C" fn noop_object_free(_: *mut c_void) {}
 
+pub unsafe extern "C" fn noop_cfunction_new_ex(
+    _: *mut crate::python::python_bindings::PyMethodDef,
+    _: PyObject,
+    _: PyObject,
+) -> PyObject {
+    std::ptr::null_mut()
+}
+pub unsafe extern "C" fn noop_err_set_string(_: PyObject, _: *const c_char) {}
+
 #[cfg(target_os = "windows")]
 unsafe extern "system" {
     pub fn LoadLibraryA(lpLibFileName: *const u8) -> *mut c_void;

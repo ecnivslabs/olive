@@ -159,7 +159,7 @@ pub(crate) fn arg_tag_at(tags: i64, i: usize) -> i64 {
 /// static tag. The tagged fast path: no pre-conversion, no handle
 /// allocation, one C-API call per scalar, all under the call's single GIL
 /// region.
-unsafe fn decode_scalar_arg(val: i64, tag: i64) -> PyObject {
+pub(crate) unsafe fn decode_scalar_arg(val: i64, tag: i64) -> PyObject {
     unsafe {
         match tag {
             ARG_PYOBJECT => {

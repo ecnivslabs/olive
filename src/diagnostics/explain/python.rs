@@ -34,6 +34,25 @@ pub(super) const ENTRIES: &[Explanation] = &[
         notes: &["Match the parameter list Olive read from the module at compile time."],
     },
     Explanation {
+        code: "E0603",
+        title: "function can't cross into a Python callable",
+        summary: "An Olive function value was assigned to a `PyObject` slot or passed as \
+                  an argument to a Python call (`sorted(xs, key=f)`, `dataset.map(f)`, a \
+                  callback parameter on an imported module). Exporting it as a real \
+                  `PyCFunction` needs at most 4 parameters, and every parameter and the \
+                  return type must be a scalar (`int`, `float`, `bool`), `str`, or \
+                  `PyObject` -- the runtime trampoline that decodes Python's call \
+                  arguments only knows those shapes.",
+        wrong: "fn process(xs: [int]) -> int:\n    return xs[0]\n\nfn main():\n    let cb: PyObject = process",
+        fixed: "fn process(x: int) -> int:\n    return x\n\nfn main():\n    let cb: PyObject = process",
+        notes: &[
+            "Unwrap or flatten a list/dict/struct parameter into scalars before handing \
+             the function to Python.",
+            "A function with more than 4 parameters can't cross either; wrap it in a \
+             smaller adapter first.",
+        ],
+    },
+    Explanation {
         code: "W0601",
         title: "module could not be introspected (python3 missing)",
         summary: "`python3` was not found on PATH, so the imported module could not be \

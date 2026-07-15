@@ -197,6 +197,69 @@ impl<'a> MirBuilder<'a> {
         }
     }
 
+    /// R19: the `ARG_*` tag for a value crossing into a `PyCFunction` --
+    /// exactly `py_arg_tag`'s scalar/str/PyObject cases, since those are
+    /// the only shapes the trampoline's fixed `ARG_*` dispatch decodes.
+    /// Anything else is unreachable here: the E0603 checker
+    /// (`unify.rs::check_py_callable_shape`) already rejected it before
+    /// this ever lowers.
+    fn py_callable_tag(ty: &Type) -> i64 {
+        if ty.is_py_value() {
+            return ARG_PYOBJECT;
+        }
+        match ty {
+            t if Self::is_int_ty(t) => ARG_INT,
+            Type::Float | Type::F32 => ARG_FLOAT,
+            Type::Str => ARG_STR,
+            Type::Bool => ARG_BOOL,
+            _ => unreachable!("py_callable_tag: `{ty}` should have been rejected by E0603"),
+        }
+    }
+
+    /// R19: converts a closure-record operand (built by `build_closure_value`
+    /// for any `Type::Fn` value, capturing or not -- every such value is
+    /// uniformly a record pointer) into a genuine Python callable. The
+    /// record's own `__thunk`/`__desc` fields (offsets 8/16,
+    /// `closures.rs::build_closure_value`'s layout) are read back at
+    /// runtime by `olive_py_make_callable`, so this just packs the arg/ret
+    /// tags and emits the call. `RUNTIME_ESCAPES` marks position 0 of this
+    /// call as escaping: ownership of the record transfers into the
+    /// returned capsule, so the caller must not (and, per the ownership
+    /// pass, will not) drop it afterward.
+    pub(super) fn emit_fn_to_py_callable(
+        &mut self,
+        op: Operand,
+        params: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Operand {
+        let mut tags: i64 = (params.len() as i64) << 56;
+        for (i, p) in params.iter().enumerate() {
+            tags |= Self::py_callable_tag(p) << (i * 4);
+        }
+        let ret_tag = if *ret == Type::Null {
+            ARG_NONE
+        } else {
+            Self::py_callable_tag(ret)
+        };
+        tags |= ret_tag << 60;
+
+        let tmp = self.new_local(Type::PyObject, None, true);
+        self.push_statement(
+            StatementKind::Assign(
+                tmp,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(
+                        "__olive_py_make_callable".to_string(),
+                    )),
+                    args: vec![op, Operand::Constant(Constant::Int(tags))],
+                },
+            ),
+            span,
+        );
+        self.operand_for_local(tmp)
+    }
+
     /// Builds the raw positional/keyword operands and both tag words for one
     /// py-call: shared by `lower_py_call_safe`, `lower_pyobject_call`, and
     /// the attr-call branch in `call_method.rs`, the three places a call into
@@ -234,6 +297,19 @@ impl<'a> MirBuilder<'a> {
                     | CallArg::Keyword(_, e) => self.get_type(e.id),
                 })
                 .unwrap_or(Type::Any);
+            // R19: a function-typed argument (e.g. `mod.apply(my_fn)`) never
+            // reaches the ordinary `emit_to_py_arg`/`coerce` path below --
+            // the fast path (no kwargs, arity <= 4) skips that call
+            // entirely and would otherwise pass the raw closure-record
+            // pointer straight through as an untagged `Any` word. Convert
+            // it to a real `PyCFunction` up front, uniformly for both paths.
+            let (op, arg_ty) = match &arg_ty {
+                Type::Fn(params, ret, _) => {
+                    let converted = self.emit_fn_to_py_callable(op, params, ret, span);
+                    (converted, Type::PyObject)
+                }
+                _ => (op, arg_ty),
+            };
             let coll_tag = Self::py_collection_tag(&arg_ty);
             // A collection-tagged slot's decode is entirely driven by
             // `coll_tag` at the runtime end (`convert_arg_tagged` checks it
@@ -1007,6 +1083,73 @@ mod tests {
         assert!(
             has_set_loc_call(f),
             "arity-5 legacy call must still emit __olive_py_set_loc"
+        );
+    }
+
+    fn has_call_to(f: &crate::mir::ir::MirFunction, target: &str) -> bool {
+        f.basic_blocks.iter().any(|bb| {
+            bb.statements.iter().any(|s| {
+                matches!(
+                    &s.kind,
+                    StatementKind::Assign(
+                        _,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(name)),
+                            ..
+                        },
+                    ) if name == target
+                )
+            })
+        })
+    }
+
+    /// R19: a function-typed argument passed straight to a py-call (the
+    /// tagged fast path, no kwargs, arity <= 4 -- which never runs
+    /// `emit_to_py_arg`/`coerce`) must still route through
+    /// `__olive_py_make_callable`, not reach the call as a raw,
+    /// mistagged closure-record pointer.
+    #[test]
+    fn fn_typed_fast_path_arg_becomes_callable() {
+        let src = "import py \"math\" as math\n\nfn cb(x: int) -> int:\n    return x\n\nfn f():\n    math.apply(cb)\n\nf()\n";
+        let fns = build(src);
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        assert!(
+            has_call_to(f, "__olive_py_make_callable"),
+            "a Type::Fn fast-path argument must be converted via __olive_py_make_callable"
+        );
+        assert_eq!(
+            call_target(f).as_deref(),
+            Some("__olive_py_call_method1"),
+            "the callable conversion must still leave the call on the arity-1 fast path"
+        );
+    }
+
+    /// R19: a function-typed keyword argument (the shape `sorted(xs,
+    /// key=f)`-into-Python actually needs) goes through the kwargs
+    /// vectorcall path, which also bypasses `emit_to_py_arg` -- same fix,
+    /// different call shape.
+    #[test]
+    fn fn_typed_kwarg_becomes_callable() {
+        let src = "import py \"math\" as math\n\nfn cb(x: int) -> int:\n    return x\n\nfn f():\n    math.apply(key=cb)\n\nf()\n";
+        let fns = build(src);
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        assert!(
+            has_call_to(f, "__olive_py_make_callable"),
+            "a Type::Fn keyword argument must be converted via __olive_py_make_callable"
+        );
+    }
+
+    /// R19: `let cb: PyObject = my_fn` (no py-call in sight, a general
+    /// assignment) routes through `coerce`'s new `Type::Fn` arm, the other
+    /// integration point besides the py-call-argument one above.
+    #[test]
+    fn fn_assigned_to_pyobject_let_becomes_callable() {
+        let src = "fn cb(x: int) -> int:\n    return x\n\nfn f():\n    let handle: PyObject = cb\n\nf()\n";
+        let fns = build(src);
+        let f = fns.iter().find(|f| f.name == "f").unwrap();
+        assert!(
+            has_call_to(f, "__olive_py_make_callable"),
+            "assigning a Type::Fn value to a PyObject-typed let must convert via __olive_py_make_callable"
         );
     }
 }

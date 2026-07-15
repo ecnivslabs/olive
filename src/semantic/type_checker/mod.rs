@@ -1160,6 +1160,81 @@ mod tests {
     }
 
     #[test]
+    fn py_callable_too_many_params_rejected() {
+        let tc = pipeline(
+            "fn f(a: int, b: int, c: int, d: int, e: int) -> int:\n    return a\n\nfn main():\n    let cb: PyObject = f\n",
+        );
+        assert!(
+            tc.errors.iter().any(|e| matches!(e, super::super::error::SemanticError::Rich(d) if d.code() == Some("E0603"))),
+            "5-param function assigned to PyObject must reject with E0603: {:?}",
+            tc.errors
+        );
+    }
+
+    #[test]
+    fn py_callable_unsupported_param_type_rejected() {
+        let tc = pipeline(
+            "fn f(xs: [int]) -> int:\n    return xs[0]\n\nfn main():\n    let cb: PyObject = f\n",
+        );
+        assert!(
+            tc.errors.iter().any(|e| matches!(e, super::super::error::SemanticError::Rich(d) if d.code() == Some("E0603"))),
+            "a list-typed param must reject with E0603: {:?}",
+            tc.errors
+        );
+    }
+
+    #[test]
+    fn py_callable_unsupported_return_type_rejected() {
+        let tc = pipeline(
+            "fn f(x: int) -> [int]:\n    return [x]\n\nfn main():\n    let cb: PyObject = f\n",
+        );
+        assert!(
+            tc.errors.iter().any(|e| matches!(e, super::super::error::SemanticError::Rich(d) if d.code() == Some("E0603"))),
+            "a list-typed return must reject with E0603: {:?}",
+            tc.errors
+        );
+    }
+
+    #[test]
+    fn py_callable_valid_shapes_accepted() {
+        let tc = pipeline(
+            "fn f(a: int, b: float, c: bool, d: str) -> str:\n    return d\n\nfn main():\n    let cb: PyObject = f\n",
+        );
+        assert!(
+            tc.errors.is_empty(),
+            "int/float/bool/str params and a str return must type-check cleanly: {:?}",
+            tc.errors
+        );
+    }
+
+    #[test]
+    fn py_callable_void_return_accepted() {
+        let tc = pipeline("fn f(x: int):\n    print(x)\n\nfn main():\n    let cb: PyObject = f\n");
+        assert!(
+            tc.errors.is_empty(),
+            "a void-returning function must type-check cleanly: {:?}",
+            tc.errors
+        );
+    }
+
+    #[test]
+    fn py_callable_capturing_closure_accepted() {
+        // Captures aren't visible at the `Type::Fn` level (only param/return
+        // types are), and the runtime mechanism supports them generically
+        // (the uniform closure record carries captures alongside the
+        // thunk), so a capturing closure with an in-range signature must
+        // type-check exactly like a non-capturing one.
+        let tc = pipeline(
+            "fn make_adder(n: int) -> fn(int) -> int:\n    fn adder(x: int) -> int:\n        return x + n\n    return adder\n\nfn main():\n    let add5 = make_adder(5)\n    let cb: PyObject = add5\n",
+        );
+        assert!(
+            tc.errors.is_empty(),
+            "a capturing closure with a valid shape must type-check cleanly: {:?}",
+            tc.errors
+        );
+    }
+
+    #[test]
     fn match_error_variant_in_union_ok() {
         // `Error` is a built-in enum, so `case Error(e)` on `T | Error` resolves
         // instead of erroring with "expected Enum or Union type".
