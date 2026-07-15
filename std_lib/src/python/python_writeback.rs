@@ -223,7 +223,7 @@ unsafe fn raw_scalar_to_py(val: i64, kind: i64) -> PyObject {
             TAG_INT_LIST => PY_LONG_FROM_LONG(val as std::os::raw::c_long),
             TAG_FLOAT_LIST => PY_FLOAT_FROM_DOUBLE(f64::from_bits(val as u64)),
             TAG_BOOL_LIST => PY_BOOL_FROM_LONG(val as std::os::raw::c_long),
-            TAG_STR_LIST => PY_UNICODE_FROM_STRING((val & !1) as *const c_char),
+            TAG_STR_LIST => olive_str_to_py(val),
             _ => unreachable!("raw_scalar_to_py: {kind} is not a scalar kind"),
         }
     }
@@ -351,12 +351,11 @@ unsafe fn decode_scalar(item: PyObject, kind: i64) -> Result<i64, String> {
             }
             TAG_STR_LIST => {
                 if is_sub(PY_UNICODE_TYPE) {
-                    let s = PY_UNICODE_AS_UTF8(item);
-                    if s.is_null() {
+                    let r = py_str_to_olive(item);
+                    if r == 0 {
                         return Err("str (invalid utf-8)".to_string());
                     }
-                    let r = CStr::from_ptr(s).to_string_lossy();
-                    return Ok(crate::olive_str_internal(&r));
+                    return Ok(r);
                 }
                 Err(py_type_name(ty))
             }
@@ -410,30 +409,25 @@ unsafe fn sync_list(pair: &WritebackPair) {
     }
 }
 
-/// Reads a Python dict key as a UTF-8 string, stringifying non-`str` keys
-/// the same way `olive_py_to_dict_internal` does. `None` on a decode failure
-/// (a non-UTF-8 key, or `str()` itself raising), which the caller skips.
-unsafe fn dict_key_str(key_obj: PyObject) -> Option<String> {
+/// Reads a Python dict key as an Olive string, stringifying non-`str` keys
+/// the same way `olive_py_to_dict_internal` does. `0` on a decode failure (a
+/// non-UTF-8 key, or `str()` itself raising), which the caller skips.
+unsafe fn dict_key_olive(key_obj: PyObject) -> i64 {
     unsafe {
         let key_ty = raw_ob_type(key_obj);
         let is_unicode = !key_ty.is_null()
             && !PY_UNICODE_TYPE.is_null()
             && (key_ty == PY_UNICODE_TYPE || PY_TYPE_IS_SUBTYPE(key_ty, PY_UNICODE_TYPE) != 0);
-        let key_utf8 = if is_unicode {
-            PY_UNICODE_AS_UTF8(key_obj)
-        } else {
-            let str_obj = PY_OBJECT_STR(key_obj);
-            if str_obj.is_null() {
-                return None;
-            }
-            let utf8 = PY_UNICODE_AS_UTF8(str_obj);
-            PY_DEC_REF(str_obj);
-            utf8
-        };
-        if key_utf8.is_null() {
-            return None;
+        if is_unicode {
+            return py_str_to_olive(key_obj);
         }
-        Some(CStr::from_ptr(key_utf8).to_string_lossy().into_owned())
+        let str_obj = PY_OBJECT_STR(key_obj);
+        if str_obj.is_null() {
+            return 0;
+        }
+        let r = py_str_to_olive(str_obj);
+        PY_DEC_REF(str_obj);
+        r
     }
 }
 
@@ -447,10 +441,10 @@ unsafe fn sync_dict(pair: &WritebackPair) {
             if key_obj.is_null() {
                 continue;
             }
-            let Some(key_str) = dict_key_str(key_obj) else {
+            let key_ptr = dict_key_olive(key_obj);
+            if key_ptr == 0 {
                 continue;
-            };
-            let key_ptr = crate::olive_str_internal(&key_str);
+            }
             let olive_val = py_to_any_internal(val_obj);
             crate::olive_obj_set(pair.olive_ptr, key_ptr, olive_val);
         }
@@ -472,13 +466,14 @@ unsafe fn sync_dict_typed(pair: &WritebackPair) {
             if key_obj.is_null() {
                 continue;
             }
-            let Some(key_str) = dict_key_str(key_obj) else {
+            let key_ptr = dict_key_olive(key_obj);
+            if key_ptr == 0 {
                 continue;
-            };
-            let key_ptr = crate::olive_str_internal(&key_str);
+            }
             let olive_val = match decode_scalar(val_obj, kind) {
                 Ok(v) => v,
                 Err(actual) => {
+                    let key_str = crate::olive_str_from_ptr(key_ptr);
                     writeback_type_fail(&format!("value at key \"{key_str}\""), pair.tag, &actual)
                 }
             };

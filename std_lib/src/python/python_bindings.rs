@@ -232,4 +232,19 @@ pub static mut PY_OBJECT_GET_ATTR: unsafe extern "C" fn(PyObject, PyObject) -> P
     noop_getitem;
 pub static mut PY_OBJECT_SET_ATTR: unsafe extern "C" fn(PyObject, PyObject, PyObject) -> c_int =
     noop_setitem;
+
+/// `PyUnicode_FromStringAndSize`/`PyUnicode_AsUTF8AndSize`, dlsym'd when
+/// present (R18). `HAS_STR_AND_SIZE` gates the single-pass, length-carrying
+/// string crossing path; a missing symbol leaves it false and callers keep
+/// using the strlen-based `PyUnicode_FromString`/`PyUnicode_AsUTF8`, which
+/// also means embedded NULs stay truncated on that fallback.
+pub static mut PY_UNICODE_FROM_STRING_AND_SIZE: unsafe extern "C" fn(
+    *const c_char,
+    isize,
+) -> PyObject = crate::python::python_noop::noop_from_string_and_size;
+pub static mut PY_UNICODE_AS_UTF8_AND_SIZE: unsafe extern "C" fn(
+    PyObject,
+    *mut isize,
+) -> *const c_char = crate::python::python_noop::noop_as_utf8_and_size;
+pub static HAS_STR_AND_SIZE: AtomicBool = AtomicBool::new(false);
 pub static HAS_INTERN: AtomicBool = AtomicBool::new(false);

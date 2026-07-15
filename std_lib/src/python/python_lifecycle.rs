@@ -184,6 +184,8 @@ pub extern "C" fn olive_py_initialize() {
         PY_NUMBER_LONG = compat_dlsym(handle, "PyNumber_Long");
         PY_FLOAT_AS_DOUBLE = compat_dlsym(handle, "PyFloat_AsDouble");
         PY_UNICODE_AS_UTF8 = compat_dlsym(handle, "PyUnicode_AsUTF8");
+        PY_UNICODE_AS_UTF8_AND_SIZE = compat_dlsym(handle, "PyUnicode_AsUTF8AndSize");
+        PY_UNICODE_FROM_STRING_AND_SIZE = compat_dlsym(handle, "PyUnicode_FromStringAndSize");
         PY_LONG_FROM_LONG = compat_dlsym(handle, "PyLong_FromLong");
         PY_BOOL_FROM_LONG = compat_dlsym(handle, "PyBool_FromLong");
         PY_FLOAT_FROM_DOUBLE = compat_dlsym(handle, "PyFloat_FromDouble");
@@ -307,6 +309,10 @@ pub extern "C" fn olive_py_initialize() {
             PY_NUMBER_LONG = noop_number_long;
             PY_FLOAT_AS_DOUBLE = noop_as_double;
             PY_UNICODE_AS_UTF8 = noop_as_utf8;
+            PY_UNICODE_AS_UTF8_AND_SIZE = crate::python::python_noop::noop_as_utf8_and_size;
+            PY_UNICODE_FROM_STRING_AND_SIZE =
+                crate::python::python_noop::noop_from_string_and_size;
+            HAS_STR_AND_SIZE.store(false, Ordering::SeqCst);
             PY_LONG_FROM_LONG = noop_from_long;
             PY_BOOL_FROM_LONG = noop_from_long;
             PY_FLOAT_FROM_DOUBLE = noop_from_double;
@@ -423,6 +429,19 @@ pub extern "C" fn olive_py_initialize() {
             std::env::var("OLIVE_PY_NO_TYPE_FROMSPEC").as_deref() == Ok("1");
         HAS_TYPE_FROMSPEC.store(
             type_fromspec_present && !type_fromspec_disabled_for_test,
+            Ordering::SeqCst,
+        );
+
+        // Present since CPython 3.3; missing only on exotic or crippled
+        // builds. A test-only override exercises the strlen-based fallback
+        // (and its embedded-NUL truncation) on a build that does have it.
+        let str_and_size_present =
+            !std::mem::transmute::<_, *const ()>(PY_UNICODE_FROM_STRING_AND_SIZE).is_null()
+                && !std::mem::transmute::<_, *const ()>(PY_UNICODE_AS_UTF8_AND_SIZE).is_null();
+        let str_and_size_disabled_for_test =
+            std::env::var("OLIVE_PY_NO_STR_AND_SIZE").as_deref() == Ok("1");
+        HAS_STR_AND_SIZE.store(
+            str_and_size_present && !str_and_size_disabled_for_test,
             Ordering::SeqCst,
         );
 

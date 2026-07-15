@@ -1,4 +1,5 @@
 use crate::python::*;
+#[cfg(test)]
 use std::ffi::CString;
 use std::os::raw::c_char;
 use std::sync::atomic::Ordering;
@@ -174,8 +175,6 @@ pub(crate) unsafe fn call_kw_dict_safe(
                 let key = *sv.ptr.add(i);
                 let tag = tag_at(kw_coll_tags, kw_i);
                 let val = *sv.ptr.add(i + 1);
-                let k_str = crate::olive_str_from_ptr(key);
-                let k_cstr = CString::new(k_str).unwrap();
                 let py_v = convert_arg(val, tag, &mut pairs);
                 if tag != TAG_NONE {
                     *sv.ptr.add(i + 1) = 0;
@@ -191,7 +190,8 @@ pub(crate) unsafe fn call_kw_dict_safe(
                     abandon_pairs(&pairs);
                     return conversion_err();
                 }
-                PY_DICT_SET_ITEM_STRING(py_kwargs, k_cstr.as_ptr(), py_v);
+                // Olive strings are always NUL-terminated at their raw address; no copy needed.
+                PY_DICT_SET_ITEM_STRING(py_kwargs, (key & !1) as *const c_char, py_v);
                 PY_DEC_REF(py_v);
                 i += 2;
                 kw_i += 1;
