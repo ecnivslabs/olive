@@ -22,8 +22,8 @@ const base = import.meta.env.BASE_URL;
       <div class="why-grid">
         <div class="why-item">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8" stroke="var(--accent)" stroke-width="1.4"/><circle cx="12" cy="12" r="2" fill="var(--accent)"/></svg>
-          <p class="why-h">No garbage collector</p>
-          <p class="why-p">Ownership is inferred at compile time. Every value is freed at its last use, deterministically, with no lifetime syntax to write.</p>
+          <p class="why-h">No silent corruption</p>
+          <p class="why-p">A borrow the compiler cannot prove safe gets a generation check at runtime. Use-after-free faults at the access site, not somewhere downstream.</p>
         </div>
         <div class="why-item">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><line x1="4" y1="6" x2="20" y2="6" stroke="var(--accent)" stroke-width="1.4"/><line x1="8" y1="12" x2="20" y2="12" stroke="var(--accent)" stroke-width="1.4"/><line x1="12" y1="18" x2="20" y2="18" stroke="var(--accent)" stroke-width="1.4"/></svg>
@@ -41,7 +41,7 @@ const base = import.meta.env.BASE_URL;
     <section class="codesec">
       <div class="codesec-inner">
         <h2>Inferred ownership. No lifetime syntax.</h2>
-        <p class="lede">Every value has a single owner. Storing a value moves or copies automatically—no hidden sharing, and no borrow-checker friction for values.</p>
+        <p class="lede">Every value has a single owner. Storing a value moves or copies automatically. No hidden sharing, no borrow-checker friction for values.</p>
         <div class="card">
           <pre><code><span class="kw">fn</span> <span class="fn">main</span>():
     <span class="kw">let mut</span> a = [1, 2]
