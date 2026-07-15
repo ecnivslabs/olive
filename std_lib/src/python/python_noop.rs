@@ -154,6 +154,10 @@ pub unsafe extern "C" fn noop_vectorcall(
 ) -> PyObject {
     std::ptr::null_mut()
 }
+pub unsafe extern "C" fn noop_get_buffer(_: PyObject, _: *mut c_void, _: c_int) -> c_int {
+    -1
+}
+pub unsafe extern "C" fn noop_buffer_release(_: *mut c_void) {}
 
 #[cfg(target_os = "windows")]
 unsafe extern "system" {

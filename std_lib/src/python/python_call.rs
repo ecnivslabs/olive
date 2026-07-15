@@ -16,7 +16,7 @@ pub extern "C" fn olive_py_call(func: PyObject, args_list: i64, coll_tags: i64) 
         return std::ptr::null_mut();
     }
     unsafe {
-        let gil = PY_GILSTATE_ENSURE();
+        olive_py_gil_begin();
 
         let mut pairs = Vec::new();
         let mut py_args = std::ptr::null_mut();
@@ -56,7 +56,7 @@ pub extern "C" fn olive_py_call(func: PyObject, args_list: i64, coll_tags: i64) 
         if !py_args.is_null() {
             PY_DEC_REF(py_args);
         }
-        PY_GILSTATE_RELEASE(gil);
+        olive_py_gil_end();
         olive_py_wrap_owned(res)
     }
 }
@@ -171,7 +171,7 @@ pub extern "C" fn olive_py_call_t(
         return std::ptr::null_mut();
     }
     unsafe {
-        let gil = PY_GILSTATE_ENSURE();
+        olive_py_gil_begin();
         let res = if args_list != 0 {
             let sv = &*(args_list as *const crate::StableVec);
             let args = std::slice::from_raw_parts_mut(sv.ptr, sv.len);
@@ -179,7 +179,7 @@ pub extern "C" fn olive_py_call_t(
         } else {
             call_with_raw_args(unwrapped_func, coll_tags, arg_tags, &mut [])
         };
-        PY_GILSTATE_RELEASE(gil);
+        olive_py_gil_end();
         olive_py_wrap_owned(res)
     }
 }
@@ -203,15 +203,15 @@ pub extern "C" fn olive_py_call0(func: PyObject, arg_tags: i64) -> PyObject {
         return std::ptr::null_mut();
     }
     unsafe {
-        let gil = PY_GILSTATE_ENSURE();
+        olive_py_gil_begin();
         let res = call_with_raw_args(unwrapped_func, 0, 0, &mut []);
         let ret_tag = ret_tag_of(arg_tags);
         if ret_tag == RET_HANDLE {
-            PY_GILSTATE_RELEASE(gil);
+            olive_py_gil_end();
             return olive_py_wrap_owned(res);
         }
         let out = finish_ret(res, ret_tag);
-        PY_GILSTATE_RELEASE(gil);
+        olive_py_gil_end();
         out as PyObject
     }
 }
@@ -229,16 +229,16 @@ pub extern "C" fn olive_py_call1(
         return std::ptr::null_mut();
     }
     unsafe {
-        let gil = PY_GILSTATE_ENSURE();
+        olive_py_gil_begin();
         let mut args = [a0];
         let res = call_with_raw_args(unwrapped_func, coll_tags, arg_tags, &mut args);
         let ret_tag = ret_tag_of(arg_tags);
         if ret_tag == RET_HANDLE {
-            PY_GILSTATE_RELEASE(gil);
+            olive_py_gil_end();
             return olive_py_wrap_owned(res);
         }
         let out = finish_ret(res, ret_tag);
-        PY_GILSTATE_RELEASE(gil);
+        olive_py_gil_end();
         out as PyObject
     }
 }
@@ -257,16 +257,16 @@ pub extern "C" fn olive_py_call2(
         return std::ptr::null_mut();
     }
     unsafe {
-        let gil = PY_GILSTATE_ENSURE();
+        olive_py_gil_begin();
         let mut args = [a0, a1];
         let res = call_with_raw_args(unwrapped_func, coll_tags, arg_tags, &mut args);
         let ret_tag = ret_tag_of(arg_tags);
         if ret_tag == RET_HANDLE {
-            PY_GILSTATE_RELEASE(gil);
+            olive_py_gil_end();
             return olive_py_wrap_owned(res);
         }
         let out = finish_ret(res, ret_tag);
-        PY_GILSTATE_RELEASE(gil);
+        olive_py_gil_end();
         out as PyObject
     }
 }
@@ -286,16 +286,16 @@ pub extern "C" fn olive_py_call3(
         return std::ptr::null_mut();
     }
     unsafe {
-        let gil = PY_GILSTATE_ENSURE();
+        olive_py_gil_begin();
         let mut args = [a0, a1, a2];
         let res = call_with_raw_args(unwrapped_func, coll_tags, arg_tags, &mut args);
         let ret_tag = ret_tag_of(arg_tags);
         if ret_tag == RET_HANDLE {
-            PY_GILSTATE_RELEASE(gil);
+            olive_py_gil_end();
             return olive_py_wrap_owned(res);
         }
         let out = finish_ret(res, ret_tag);
-        PY_GILSTATE_RELEASE(gil);
+        olive_py_gil_end();
         out as PyObject
     }
 }
@@ -316,16 +316,16 @@ pub extern "C" fn olive_py_call4(
         return std::ptr::null_mut();
     }
     unsafe {
-        let gil = PY_GILSTATE_ENSURE();
+        olive_py_gil_begin();
         let mut args = [a0, a1, a2, a3];
         let res = call_with_raw_args(unwrapped_func, coll_tags, arg_tags, &mut args);
         let ret_tag = ret_tag_of(arg_tags);
         if ret_tag == RET_HANDLE {
-            PY_GILSTATE_RELEASE(gil);
+            olive_py_gil_end();
             return olive_py_wrap_owned(res);
         }
         let out = finish_ret(res, ret_tag);
-        PY_GILSTATE_RELEASE(gil);
+        olive_py_gil_end();
         out as PyObject
     }
 }
@@ -344,7 +344,29 @@ pub extern "C" fn olive_py_call_kw(
         return std::ptr::null_mut();
     }
     unsafe {
-        let gil = PY_GILSTATE_ENSURE();
+        call_kw_dict(
+            unwrapped_func,
+            args_list,
+            coll_tags,
+            kwargs_dict,
+            kw_coll_tags,
+        )
+    }
+}
+
+/// Dict-building kwargs call, shared by `olive_py_call_kw` and the R15
+/// vectorcall entry points' fallback lane (missing vectorcall/interning,
+/// or a kwnames tuple that failed to build). `unwrapped_func` is already
+/// unwrapped and checked non-null.
+pub(crate) unsafe fn call_kw_dict(
+    unwrapped_func: PyObject,
+    args_list: i64,
+    coll_tags: i64,
+    kwargs_dict: i64,
+    kw_coll_tags: i64,
+) -> PyObject {
+    unsafe {
+        olive_py_gil_begin();
 
         let mut pairs = Vec::new();
         let py_args = if args_list != 0 {
@@ -411,97 +433,7 @@ pub extern "C" fn olive_py_call_kw(
             PY_DEC_REF(py_kwargs);
         }
 
-        PY_GILSTATE_RELEASE(gil);
-        olive_py_wrap_owned(res)
-    }
-}
-
-/// Tagged fast path for a keyword call; see `olive_py_call_t`. Positional
-/// and keyword raw words each carry their own encode-tag word, mirroring the
-/// legacy pair's separate `coll_tags`/`kw_coll_tags`.
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_py_call_kw_t(
-    func: PyObject,
-    args_list: i64,
-    coll_tags: i64,
-    arg_tags: i64,
-    kwargs_dict: i64,
-    kw_coll_tags: i64,
-    kw_arg_tags: i64,
-) -> PyObject {
-    check_python_loaded();
-    let unwrapped_func = unsafe { olive_py_unwrap(func) };
-    if unwrapped_func.is_null() {
-        return std::ptr::null_mut();
-    }
-    unsafe {
-        let gil = PY_GILSTATE_ENSURE();
-
-        let mut pairs = Vec::new();
-        let py_args = if args_list != 0 {
-            let sv = &*(args_list as *const crate::StableVec);
-            let args = PY_TUPLE_NEW(sv.len as isize);
-            for i in 0..sv.len {
-                let coll_tag = tag_at(coll_tags, i);
-                let arg_tag = arg_tag_at(arg_tags, i);
-                let v = *sv.ptr.add(i);
-                let py_v = convert_arg_tagged(v, coll_tag, arg_tag, &mut pairs);
-                if py_v.is_null() || !PY_ERR_OCCURRED().is_null() {
-                    handle_py_error();
-                }
-                PY_TUPLE_SET_ITEM(args, i as isize, py_v);
-                if coll_tag != TAG_NONE {
-                    *sv.ptr.add(i) = 0;
-                }
-            }
-            args
-        } else {
-            PY_TUPLE_NEW(0)
-        };
-
-        let mut py_kwargs = std::ptr::null_mut();
-        if kwargs_dict != 0 {
-            let sv = &*(kwargs_dict as *const crate::StableVec);
-            py_kwargs = PY_DICT_NEW();
-            for (kw_i, i) in (0..sv.len).step_by(2).enumerate() {
-                let k_ptr = *sv.ptr.add(i);
-                let coll_tag = tag_at(kw_coll_tags, kw_i);
-                let arg_tag = arg_tag_at(kw_arg_tags, kw_i);
-                let v = *sv.ptr.add(i + 1);
-
-                let k_str = crate::olive_str_from_ptr(k_ptr);
-                let k_cstr = CString::new(k_str).unwrap();
-                let py_v = convert_arg_tagged(v, coll_tag, arg_tag, &mut pairs);
-                if py_v.is_null() || !PY_ERR_OCCURRED().is_null() {
-                    handle_py_error();
-                }
-
-                PY_DICT_SET_ITEM_STRING(py_kwargs, k_cstr.as_ptr(), py_v);
-                PY_DEC_REF(py_v);
-                if coll_tag != TAG_NONE {
-                    *sv.ptr.add(i + 1) = 0;
-                }
-            }
-        }
-
-        let res = PY_OBJECT_CALL(unwrapped_func, py_args, py_kwargs);
-        sync_back(&pairs);
-
-        if res.is_null() {
-            handle_py_error();
-        } else if !PY_ERR_OCCURRED().is_null() {
-            // Some libraries handle exceptions internally yet leave the indicator set.
-            PY_ERR_CLEAR();
-        }
-
-        if !py_args.is_null() {
-            PY_DEC_REF(py_args);
-        }
-        if !py_kwargs.is_null() {
-            PY_DEC_REF(py_kwargs);
-        }
-
-        PY_GILSTATE_RELEASE(gil);
+        olive_py_gil_end();
         olive_py_wrap_owned(res)
     }
 }

@@ -209,6 +209,10 @@ pub extern "C" fn olive_py_to_bytes(obj: PyObject) -> i64 {
     if unwrapped_obj.is_null() {
         return crate::bytes::new_buf(Vec::new());
     }
+    let fast = crate::python::python_buffer::buffer_to_bytes(unwrapped_obj);
+    if fast != 0 {
+        return fast;
+    }
     with_gil(|| unsafe {
         let bytes_obj = PY_BYTES_FROM_OBJECT(unwrapped_obj);
         if bytes_obj.is_null() {
@@ -229,11 +233,17 @@ pub extern "C" fn olive_py_to_bytes(obj: PyObject) -> i64 {
 
 /// `[T]` target with a concrete native `T`: elements land as raw native words.
 #[unsafe(no_mangle)]
-pub extern "C" fn olive_py_to_list(obj: PyObject) -> i64 {
+pub extern "C" fn olive_py_to_list(obj: PyObject, elem_tag: i64) -> i64 {
     check_python_loaded();
     let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
     if unwrapped_obj.is_null() {
         return 0;
+    }
+    if elem_tag != 0 {
+        let fast = crate::python::python_buffer::olive_py_buffer_to_list(obj, elem_tag);
+        if fast != 0 {
+            return fast;
+        }
     }
     with_gil(|| unsafe { olive_py_to_list_internal(unwrapped_obj, false) })
 }

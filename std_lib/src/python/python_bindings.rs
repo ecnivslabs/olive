@@ -160,6 +160,16 @@ pub static mut PY_VECTORCALL_METHOD: unsafe extern "C" fn(
 ) -> PyObject = noop_vectorcall;
 pub static HAS_VECTORCALL: AtomicBool = AtomicBool::new(false);
 
+/// `PyObject_GetBuffer`/`PyBuffer_Release`/`PyObject_CheckBuffer`, dlsym'd
+/// when present (R14). `HAS_BUFFER` gates the zero-copy buffer ingest path;
+/// a missing symbol leaves it false and callers keep using the per-element
+/// conversion loop.
+pub static mut PY_OBJECT_GET_BUFFER: unsafe extern "C" fn(PyObject, *mut c_void, c_int) -> c_int =
+    noop_get_buffer;
+pub static mut PY_BUFFER_RELEASE: unsafe extern "C" fn(*mut c_void) = noop_buffer_release;
+pub static mut PY_OBJECT_CHECK_BUFFER: unsafe extern "C" fn(PyObject) -> c_int = noop_check_int;
+pub static HAS_BUFFER: AtomicBool = AtomicBool::new(false);
+
 /// `PyUnicode_InternFromString`/`PyObject_GetAttr`/`PyObject_SetAttr`, dlsym'd
 /// when present. `HAS_INTERN` gates the interned-name attribute path; a
 /// missing symbol leaves it false and callers keep using

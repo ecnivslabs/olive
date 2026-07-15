@@ -33,6 +33,7 @@ impl<M: Module> CraneliftCodegen<M> {
         let sig_6i64_i64 = mk_sig(&[types::I64; 6], &[types::I64]);
         let sig_7i64_i64 = mk_sig(&[types::I64; 7], &[types::I64]);
         let sig_8i64_i64 = mk_sig(&[types::I64; 8], &[types::I64]);
+        let sig_9i64_i64 = mk_sig(&[types::I64; 9], &[types::I64]);
         let sig_6i64_f64 = mk_sig(&[types::I64; 6], &[types::I64]);
         let sig_f64_f64 = mk_sig(&[types::F64], &[types::F64]);
         let sig_f64_f64_f64 = mk_sig(&[types::F64, types::F64], &[types::F64]);
@@ -432,8 +433,10 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_py_call_safe", &sig_3i64_i64),
             ("__olive_py_call_t", &sig_4i64_i64),
             ("__olive_py_call_t_safe", &sig_4i64_i64),
-            ("__olive_py_call_kw_t", &sig_7i64_i64),
-            ("__olive_py_call_kw_t_safe", &sig_7i64_i64),
+            ("__olive_py_call_kw_v", &sig_8i64_i64),
+            ("__olive_py_call_kw_v_safe", &sig_8i64_i64),
+            ("__olive_py_call_method_kw_v", &sig_9i64_i64),
+            ("__olive_py_call_method_kw_v_safe", &sig_9i64_i64),
             // `func, arg_tags` -- `arg_tags` carries only `ret_tag` (R10),
             // no real per-argument tags since there are no arguments.
             ("__olive_py_call0", &sig_i64_i64_i64),
@@ -475,6 +478,8 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_py_mod", &sig_i64_i64_i64),
             ("__olive_py_pow", &sig_i64_i64_i64),
             ("__olive_py_finalize", &sig_void_void),
+            ("__olive_py_gil_begin", &sig_void_void),
+            ("__olive_py_gil_end", &sig_void_void),
             ("__olive_py_from_float", &sig_f64_i64),
             ("__olive_py_from_int", &sig_i64_i64),
             ("__olive_py_from_str", &sig_i64_i64),
@@ -507,7 +512,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_py_to_dict", &sig_i64_i64),
             ("__olive_py_to_float", &sig_i64_f64),
             ("__olive_py_to_int", &sig_i64_i64),
-            ("__olive_py_to_list", &sig_i64_i64),
+            ("__olive_py_to_list", &sig_i64_i64_i64),
             ("__olive_py_to_str", &sig_i64_i64),
             ("__olive_py_to_any", &sig_i64_i64),
             ("__olive_to_pyobject", &sig_i64_i64),

@@ -51,24 +51,30 @@ enum CopySlot {
 pub(super) enum PyCallTagSource {
     Args(i64),
     Kwargs(i64),
+    /// R15's `kwvals_list`: values only, no interleaved name constant, so
+    /// tag index `n` is aggregate position `n` directly.
+    KwargsFlat(i64),
 }
 
 /// Operand positions of one `__olive_py_call*` entry point's `args_list` and
 /// packed collection-tag constant, plus (for a kwargs-taking variant) the
-/// same pair for `kwargs_list`.
+/// same pair for `kwargs_list`. `kw_flat` is true when that aggregate holds
+/// values only (R15's `kwvals_list`) rather than interleaved name/value
+/// pairs (every shape before it).
 struct PyCallShape {
     args_list_pos: usize,
     coll_tags_pos: usize,
     kwargs: Option<(usize, usize)>,
+    kw_flat: bool,
 }
 
 /// Every `__olive_py_call*` runtime entry point this file must recognize,
 /// with its exact operand positions. R5 added a tagged-fast-path shape
-/// (`__olive_py_call_t*`/`__olive_py_call_kw_t*`) with an extra `arg_tags`
-/// word ahead of `kwargs_list`, shifting its positions relative to the
-/// legacy shape -- an exact per-name lookup, not a positional heuristic,
-/// is what keeps a future signature change from silently desyncing this
-/// analysis from the real call.
+/// (`__olive_py_call_t*`) with an extra `arg_tags` word ahead of
+/// `kwargs_list`, shifting its positions relative to the legacy shape -- an
+/// exact per-name lookup, not a positional heuristic, is what keeps a
+/// future signature change from silently desyncing this analysis from the
+/// real call.
 ///
 /// `args`/`kwargs` `[Any]` aggregates these functions consume are handed
 /// back to the caller's own allocation, never retained: a collection
@@ -85,16 +91,29 @@ fn py_call_shape(name: &str) -> Option<PyCallShape> {
             args_list_pos: 1,
             coll_tags_pos: 2,
             kwargs: None,
+            kw_flat: false,
         }),
         "__olive_py_call_kw" | "__olive_py_call_kw_safe" => Some(PyCallShape {
             args_list_pos: 1,
             coll_tags_pos: 2,
             kwargs: Some((3, 4)),
+            kw_flat: false,
         }),
-        "__olive_py_call_kw_t" | "__olive_py_call_kw_t_safe" => Some(PyCallShape {
+        // R15: `kwvals_list` holds values only (names are a compile-time
+        // packed constant, not a runtime aggregate), so its tag word
+        // indexes 1:1 with its own positions, unlike `_kw`'s interleaved
+        // `2*n + 1` stride.
+        "__olive_py_call_kw_v" | "__olive_py_call_kw_v_safe" => Some(PyCallShape {
             args_list_pos: 1,
             coll_tags_pos: 2,
-            kwargs: Some((4, 5)),
+            kwargs: Some((5, 6)),
+            kw_flat: true,
+        }),
+        "__olive_py_call_method_kw_v" | "__olive_py_call_method_kw_v_safe" => Some(PyCallShape {
+            args_list_pos: 2,
+            coll_tags_pos: 3,
+            kwargs: Some((6, 7)),
+            kw_flat: true,
         }),
         _ => None,
     }
@@ -140,7 +159,11 @@ pub(super) fn py_call_coll_tags(
             && is_dst(&args[kw_list_pos])
             && let Operand::Constant(Constant::Int(tags)) = &args[kw_coll_pos]
         {
-            return Some(PyCallTagSource::Kwargs(*tags));
+            return Some(if shape.kw_flat {
+                PyCallTagSource::KwargsFlat(*tags)
+            } else {
+                PyCallTagSource::Kwargs(*tags)
+            });
         }
     }
     None
@@ -159,7 +182,7 @@ fn tag_at(tags: i64, i: usize) -> i64 {
 /// `kwargs_list`'s interleaved name/value layout back to a keyword index.
 pub(super) fn py_call_tag_for_pos(src: &PyCallTagSource, pos: usize) -> i64 {
     match src {
-        PyCallTagSource::Args(tags) => tag_at(*tags, pos),
+        PyCallTagSource::Args(tags) | PyCallTagSource::KwargsFlat(tags) => tag_at(*tags, pos),
         PyCallTagSource::Kwargs(tags) if pos % 2 == 1 => tag_at(*tags, pos / 2),
         PyCallTagSource::Kwargs(_) => 0,
     }

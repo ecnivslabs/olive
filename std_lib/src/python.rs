@@ -1,6 +1,8 @@
 pub mod python_async;
 pub mod python_bindings;
+pub mod python_buffer;
 pub mod python_call;
+pub mod python_call_kw_v;
 pub mod python_call_method;
 pub mod python_call_method_safe;
 pub mod python_coerce;
@@ -9,6 +11,7 @@ pub mod python_compat;
 pub mod python_error;
 pub mod python_intern;
 pub mod python_iter;
+pub mod python_kwnames;
 pub mod python_lifecycle;
 pub mod python_math;
 pub mod python_noop;
@@ -37,24 +40,60 @@ use std::os::raw::c_void;
 pub type PyObject = *mut c_void;
 
 std::thread_local! {
-    pub static GIL_HELD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    // Depth of nested GIL regions on this thread. Zero means the thread holds
+    // no GIL state of its own; `with_gil` and `olive_py_gil_begin` both bump
+    // it, so calls made while a fused region (R13) is open skip the real
+    // ensure/release pair and just run.
+    pub static GIL_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static GIL_TOKEN: std::cell::Cell<std::os::raw::c_int> = const { std::cell::Cell::new(0) };
 }
 
 pub fn with_gil<R, F: FnOnce() -> R>(f: F) -> R {
-    GIL_HELD.with(|held| {
-        if held.get() {
-            f()
-        } else {
-            held.set(true);
-            unsafe {
-                let gil = PY_GILSTATE_ENSURE();
-                let res = f();
-                PY_GILSTATE_RELEASE(gil);
-                held.set(false);
-                res
-            }
+    if GIL_DEPTH.get() > 0 {
+        f()
+    } else {
+        unsafe {
+            let gil = PY_GILSTATE_ENSURE();
+            GIL_DEPTH.set(1);
+            let res = f();
+            GIL_DEPTH.set(0);
+            PY_GILSTATE_RELEASE(gil);
+            res
         }
-    })
+    }
+}
+
+/// Opens a fused GIL region (R13): the MIR gil-fusion pass wraps a run of
+/// consecutive `__olive_py_*` calls with one begin/end pair instead of one
+/// pair per call. Every `__olive_py_*` entry point still calls this same
+/// depth counter itself, so it composes with hand-written `with_gil` uses
+/// and with re-fusion of an already-fused, inlined region.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_gil_begin() {
+    // Unlike every other `__olive_py_*` entry point, this one has no
+    // per-call argument to unwrap first, so it's the one place that must
+    // check explicitly: called before Python's ever touched, `PY_GILSTATE_ENSURE`
+    // is still the no-op stub, and the depth counter would rise without the
+    // GIL ever actually being held.
+    check_python_loaded();
+    let depth = GIL_DEPTH.get();
+    if depth == 0 {
+        let gil = unsafe { PY_GILSTATE_ENSURE() };
+        GIL_TOKEN.set(gil);
+    }
+    GIL_DEPTH.set(depth + 1);
+}
+
+/// Closes one level opened by `olive_py_gil_begin`. A fault inside a fused
+/// region aborts the process (Olive faults never unwind), so an unmatched
+/// begin can never leak the GIL into continued execution.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_gil_end() {
+    let depth = GIL_DEPTH.get().saturating_sub(1);
+    GIL_DEPTH.set(depth);
+    if depth == 0 {
+        unsafe { PY_GILSTATE_RELEASE(GIL_TOKEN.get()) };
+    }
 }
 
 pub fn is_readable_ptr(ptr: *const c_void) -> bool {
@@ -389,5 +428,34 @@ mod tests {
                 ptr
             );
         }
+    }
+
+    // R13 gate measurement: cost of one PyGILState_Ensure/Release pair
+    // against the py_binop bench's per-iteration time (~198ns, baseline
+    // olive_mean 0.198035s / 1e6 iters), which already pays one such pair
+    // per loop iteration. Not a correctness test; prints its verdict.
+    #[test]
+    fn bench_gil_ensure_release_pair_cost() {
+        let _guard = crate::python::python_coerce::pyobject_slab_test_lock();
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        const ITERS: u32 = 1_000_000;
+        // Warm up: first ensure/release pair pays one-time thread-state setup.
+        for _ in 0..1_000 {
+            with_gil(|| ());
+        }
+        let start = std::time::Instant::now();
+        for _ in 0..ITERS {
+            with_gil(|| ());
+        }
+        let elapsed = start.elapsed();
+        let ns_per_pair = elapsed.as_nanos() as f64 / ITERS as f64;
+        let py_binop_iter_ns = 198.035_f64;
+        let pct_of_loop_iter = 100.0 * ns_per_pair / py_binop_iter_ns;
+        eprintln!(
+            "GIL ensure/release pair: {ns_per_pair:.2}ns ({pct_of_loop_iter:.1}% of py_binop's {py_binop_iter_ns:.2}ns/iter)"
+        );
     }
 }
