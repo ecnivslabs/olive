@@ -33,9 +33,13 @@ jobs:
         run: python -m pip install --upgrade pip numpy
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        # pit's AOT backend only ever speaks MinGW's `cc`/`ld` on Windows (see
+        # src/compile/linker.rs) -- rustup's default host there is MSVC, so
+        # pin the GNU host explicitly to keep compiled objects and the linker
+        # driver on the same ABI. Other platforms just take the default host.
+        uses: dtolnay/rust-toolchain@master
         with:
-          targets: ${{ matrix.os == 'windows-latest' && 'x86_64-pc-windows-msvc' || '' }}
+          toolchain: ${{ matrix.os == 'windows-latest' && 'stable-x86_64-pc-windows-gnu' || 'stable' }}
 
       - name: Get rustc host triple
         id: rustc-host
