@@ -82,15 +82,25 @@ fn detect_python_libraries() -> Vec<String> {
 }
 
 fn find_active_python_library() -> Option<String> {
+    // ctypes.util.find_library is the standard, platform-correct way to
+    // resolve an embeddable shared library name (it understands macOS
+    // Framework layouts and the dylib/dyld cache, unlike a raw sysconfig
+    // LIBDIR/LDLIBRARY join, which on Framework builds often names the
+    // *static* .a import lib -- a file that exists on disk but that
+    // dlopen can never load).
     for cmd in &["python3", "python"] {
         if let Ok(output) = std::process::Command::new(cmd)
             .args([
                 "-c",
-                "import sys, os, sysconfig; \
-                 libdir = sysconfig.get_config_var('LIBDIR'); \
-                 ldlibrary = sysconfig.get_config_var('LDLIBRARY'); \
-                 path = os.path.join(libdir or '', ldlibrary or '') if libdir and ldlibrary else ''; \
-                 print(path if os.path.exists(path) else (ldlibrary or ''))",
+                "import sys, os, sysconfig, ctypes.util; \
+                 ver = f'{sys.version_info.major}.{sys.version_info.minor}'; \
+                 name = ctypes.util.find_library('python' + ver) or ctypes.util.find_library('python3'); \
+                 libdir = sysconfig.get_config_var('LIBDIR') or ''; \
+                 ldlibrary = sysconfig.get_config_var('LDLIBRARY') or ''; \
+                 fallback = os.path.join(libdir, ldlibrary) if libdir and ldlibrary else ''; \
+                 shared_ext = ('.dylib',) if sys.platform == 'darwin' else ('.so',); \
+                 fallback = fallback if fallback.endswith(shared_ext) and os.path.exists(fallback) else ''; \
+                 print(name or fallback)",
             ])
             .output()
             && output.status.success() {
@@ -180,7 +190,10 @@ pub extern "C" fn olive_py_initialize() {
         }
 
         if handle.is_null() {
-            eprintln!("Warning: could not load libpython3. Python interop will not work.");
+            eprintln!(
+                "Warning: could not load libpython3 ({}). Python interop will not work.",
+                compat_dl_error()
+            );
             return;
         }
         LIBPYTHON = handle;

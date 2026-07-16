@@ -32,6 +32,27 @@ pub unsafe fn compat_dlopen(name: &str) -> *mut c_void {
     }
 }
 
+/// Last dynamic-loader error, for diagnostics when every load attempt fails.
+/// Unix reports this via `dlerror()`, not `errno`; Windows via the
+/// thread-local Win32 last-error code set by `LoadLibraryA`.
+pub unsafe fn compat_dl_error() -> String {
+    unsafe {
+        #[cfg(target_os = "windows")]
+        {
+            std::io::Error::last_os_error().to_string()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let msg = libc::dlerror();
+            if msg.is_null() {
+                "unknown error".to_string()
+            } else {
+                std::ffi::CStr::from_ptr(msg).to_string_lossy().into_owned()
+            }
+        }
+    }
+}
+
 pub unsafe fn compat_dlsym<T>(handle: *mut c_void, name: &str) -> T {
     unsafe {
         let cname = CString::new(name).unwrap();
