@@ -135,7 +135,12 @@ pub(crate) unsafe fn raw_py_to_int(raw: PyObject) -> i64 {
             PY_ERR_CLEAR();
             crate::panic::abort_py_coerce("cannot convert this Python value to an integer");
         }
-        result
+        // c_long is 32 bits on Windows (LLP64), 64 on Unix -- this cast is a
+        // no-op there but a real widen on Windows.
+        #[allow(clippy::unnecessary_cast)]
+        {
+            result as i64
+        }
     }
 }
 

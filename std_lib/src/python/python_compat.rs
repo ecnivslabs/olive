@@ -6,7 +6,7 @@ pub unsafe fn compat_dlopen_current_process() -> *mut c_void {
         #[cfg(target_os = "windows")]
         {
             // On Windows, use GetModuleHandle(NULL) for the current process
-            extern "system" {
+            unsafe extern "system" {
                 fn GetModuleHandleA(lpModuleName: *const u8) -> *mut c_void;
             }
             GetModuleHandleA(std::ptr::null())

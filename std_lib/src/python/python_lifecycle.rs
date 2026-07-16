@@ -111,10 +111,14 @@ pub extern "C" fn olive_py_initialize() {
 
         // Host process (R20): when loaded as a CPython extension module,
         // libpython is already loaded. Check via RTLD_DEFAULT first.
+        #[cfg(not(target_os = "windows"))]
         let host_py_isinit = libc::dlsym(
-            std::ptr::null_mut(),
+            libc::RTLD_DEFAULT,
             b"Py_IsInitialized\0".as_ptr() as *const c_char,
         );
+        #[cfg(target_os = "windows")]
+        let host_py_isinit: *mut c_void =
+            compat_dlsym(compat_dlopen_current_process(), "Py_IsInitialized");
         if !host_py_isinit.is_null() {
             let is_init: unsafe extern "C" fn() -> c_int = std::mem::transmute(host_py_isinit);
             if is_init() != 0 {
@@ -125,12 +129,11 @@ pub extern "C" fn olive_py_initialize() {
             }
         }
 
-        if handle.is_null() {
-            if let Ok(env_path) =
+        if handle.is_null()
+            && let Ok(env_path) =
                 std::env::var("OLIVE_PYTHON_PATH").or_else(|_| std::env::var("PYTHON_LIBRARY"))
-            {
-                handle = compat_dlopen(&env_path);
-            }
+        {
+            handle = compat_dlopen(&env_path);
         }
 
         if handle.is_null()

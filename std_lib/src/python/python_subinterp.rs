@@ -143,8 +143,7 @@ pub unsafe fn pool_init() {
                     .map(|n| n.get() as i32)
                     .unwrap_or(4)
             })
-            .min(MAX_POOL)
-            .max(1);
+            .clamp(1, MAX_POOL);
 
         let config = PyInterpreterConfig {
             use_main_obmalloc: 0,
