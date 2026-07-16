@@ -283,6 +283,16 @@ pub extern "C" fn olive_py_initialize() {
         PY_OBJECT_FREE = compat_dlsym(handle, "PyObject_Free");
         PY_CFUNCTION_NEW_EX = compat_dlsym(handle, "PyCFunction_NewEx");
         PY_ERR_SET_STRING = compat_dlsym(handle, "PyErr_SetString");
+        PY_EVAL_ACQUIRE_THREAD = compat_dlsym(handle, "PyEval_AcquireThread");
+        PY_EVAL_RELEASE_THREAD = compat_dlsym(handle, "PyEval_ReleaseThread");
+        PY_NEW_INTERPRETER_FROM_CONFIG = compat_dlsym(handle, "Py_NewInterpreterFromConfig");
+        PY_END_INTERPRETER = compat_dlsym(handle, "Py_EndInterpreter");
+        PY_THREAD_STATE_NEW = compat_dlsym(handle, "PyThreadState_New");
+        PY_THREAD_STATE_CLEAR = compat_dlsym(handle, "PyThreadState_Clear");
+        PY_THREAD_STATE_DELETE = compat_dlsym(handle, "PyThreadState_Delete");
+        PY_THREAD_STATE_SWAP = compat_dlsym(handle, "PyThreadState_Swap");
+        PY_INTERPRETER_STATE_GET = compat_dlsym(handle, "PyInterpreterState_Get");
+        PY_THREAD_STATE_GET = compat_dlsym(handle, "PyThreadState_Get");
         // Unlike `PyBool_Type`/`_Py_NoneStruct` (plain struct values, whose
         // own address already is the `PyObject*` we want), `PyExc_TypeError`
         // is declared `PyObject *PyExc_TypeError` in CPython -- a pointer
@@ -420,6 +430,16 @@ pub extern "C" fn olive_py_initialize() {
             PY_CFUNCTION_NEW_EX = crate::python::python_noop::noop_cfunction_new_ex;
             PY_ERR_SET_STRING = crate::python::python_noop::noop_err_set_string;
             PY_EXC_TYPE_ERROR = std::ptr::null_mut();
+            PY_EVAL_ACQUIRE_THREAD = crate::python::python_noop::noop_acquire_thread;
+            PY_EVAL_RELEASE_THREAD = crate::python::python_noop::noop_release_thread;
+            PY_NEW_INTERPRETER_FROM_CONFIG = crate::python::python_noop::noop_new_interpreter;
+            PY_END_INTERPRETER = crate::python::python_noop::noop_end_interpreter;
+            PY_THREAD_STATE_NEW = crate::python::python_noop::noop_thread_state_new;
+            PY_THREAD_STATE_CLEAR = crate::python::python_noop::noop_thread_state_clear;
+            PY_THREAD_STATE_DELETE = crate::python::python_noop::noop_thread_state_delete;
+            PY_THREAD_STATE_SWAP = crate::python::python_noop::noop_thread_state_swap;
+            PY_INTERPRETER_STATE_GET = crate::python::python_noop::noop_interpreter_state_get;
+            PY_THREAD_STATE_GET = crate::python::python_noop::noop_thread_state_get;
             return;
         }
 
@@ -535,6 +555,12 @@ pub extern "C" fn olive_py_initialize() {
         }
 
         if !already_initialized {
+            // R21: initialize subinterpreter pool while main GIL is held.
+            // Must happen before PY_EVAL_SAVE_THREAD releases the GIL.
+            if std::env::var("OLIVE_PY_SUBINTERP").as_deref() == Ok("1") {
+                crate::python::python_subinterp::pool_init();
+            }
+
             let save_ptr: *const () = PY_EVAL_SAVE_THREAD as *const ();
             if !save_ptr.is_null() && save_ptr != (noop_save_thread as *const ()) {
                 MAIN_THREAD_STATE = PY_EVAL_SAVE_THREAD();
@@ -554,9 +580,12 @@ pub extern "C" fn olive_py_finalize() {
                 && !MAIN_THREAD_STATE.is_null()
             {
                 PY_EVAL_RESTORE_THREAD(MAIN_THREAD_STATE);
+                // R21: finalize subinterpreter pool while main GIL is held.
+                crate::python::python_subinterp::pool_finalize();
                 MAIN_THREAD_STATE = std::ptr::null_mut();
             } else {
                 let _gil = PY_GILSTATE_ENSURE();
+                crate::python::python_subinterp::pool_finalize();
             }
             if !PY_TRACEBACK_FORMAT_EXCEPTION.is_null() {
                 PY_DEC_REF(PY_TRACEBACK_FORMAT_EXCEPTION);

@@ -214,6 +214,34 @@ pub unsafe extern "C" fn noop_module_add_object(
     -1
 }
 
+pub unsafe extern "C" fn noop_acquire_thread(_: *mut c_void) {}
+pub unsafe extern "C" fn noop_release_thread(_: *mut c_void) {}
+pub unsafe extern "C" fn noop_new_interpreter(
+    _: *mut *mut c_void,
+    _: *const crate::python::python_bindings::PyInterpreterConfig,
+) -> crate::python::python_bindings::PyStatus {
+    crate::python::python_bindings::PyStatus {
+        _type: -1,
+        _func: std::ptr::null(),
+        _err_msg: std::ptr::null(),
+    }
+}
+pub unsafe extern "C" fn noop_end_interpreter(_: *mut c_void) {}
+pub unsafe extern "C" fn noop_thread_state_new(_: *mut c_void) -> *mut c_void {
+    std::ptr::null_mut()
+}
+pub unsafe extern "C" fn noop_thread_state_clear(_: *mut c_void) {}
+pub unsafe extern "C" fn noop_thread_state_delete(_: *mut c_void) {}
+pub unsafe extern "C" fn noop_thread_state_swap(_: *mut c_void) -> *mut c_void {
+    std::ptr::null_mut()
+}
+pub unsafe extern "C" fn noop_interpreter_state_get() -> *mut c_void {
+    std::ptr::null_mut()
+}
+pub unsafe extern "C" fn noop_thread_state_get() -> *mut c_void {
+    std::ptr::null_mut()
+}
+
 #[cfg(target_os = "windows")]
 unsafe extern "system" {
     pub fn LoadLibraryA(lpLibFileName: *const u8) -> *mut c_void;

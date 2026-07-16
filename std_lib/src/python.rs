@@ -21,6 +21,7 @@ pub mod python_noop;
 pub mod python_pymodule;
 pub mod python_ret;
 pub mod python_safe;
+pub(crate) mod python_subinterp;
 pub mod python_writeback;
 
 pub use python_async::*;
@@ -57,11 +58,17 @@ std::thread_local! {
 /// inside `with_gil`'s closure still restores both -- otherwise one
 /// failing assertion anywhere under `with_gil` leaves the GIL held
 /// forever and every other thread's next `with_gil` call hangs.
+/// `-1` means the subinterpreter pool was used; `>=0` is a `PyGILState`
+/// token.
 struct GilGuard(std::os::raw::c_int);
 impl Drop for GilGuard {
     fn drop(&mut self) {
         GIL_DEPTH.set(0);
-        unsafe { PY_GILSTATE_RELEASE(self.0) };
+        if self.0 == -1 {
+            unsafe { python_subinterp::pool_release() };
+        } else {
+            unsafe { PY_GILSTATE_RELEASE(self.0) };
+        }
     }
 }
 
@@ -70,11 +77,22 @@ pub fn with_gil<R, F: FnOnce() -> R>(f: F) -> R {
         f()
     } else {
         unsafe {
-            let gil = PY_GILSTATE_ENSURE();
+            let token = gil_acquire();
             GIL_DEPTH.set(1);
-            let _guard = GilGuard(gil);
+            let _guard = GilGuard(token);
             f()
         }
+    }
+}
+
+/// Acquire the GIL, routing through the subinterpreter pool when active.
+/// Returns `-1` for subinterp mode (token not needed) or the `PyGILState`
+/// token for main-GIL mode.
+unsafe fn gil_acquire() -> std::os::raw::c_int {
+    if python_subinterp::pool_is_active() && unsafe { python_subinterp::pool_ensure() } {
+        -1
+    } else {
+        unsafe { PY_GILSTATE_ENSURE() }
     }
 }
 
@@ -85,16 +103,11 @@ pub fn with_gil<R, F: FnOnce() -> R>(f: F) -> R {
 /// and with re-fusion of an already-fused, inlined region.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_gil_begin() {
-    // Unlike every other `__olive_py_*` entry point, this one has no
-    // per-call argument to unwrap first, so it's the one place that must
-    // check explicitly: called before Python's ever touched, `PY_GILSTATE_ENSURE`
-    // is still the no-op stub, and the depth counter would rise without the
-    // GIL ever actually being held.
     check_python_loaded();
     let depth = GIL_DEPTH.get();
     if depth == 0 {
-        let gil = unsafe { PY_GILSTATE_ENSURE() };
-        GIL_TOKEN.set(gil);
+        let token = unsafe { gil_acquire() };
+        GIL_TOKEN.set(token);
     }
     GIL_DEPTH.set(depth + 1);
 }
@@ -107,7 +120,12 @@ pub extern "C" fn olive_py_gil_end() {
     let depth = GIL_DEPTH.get().saturating_sub(1);
     GIL_DEPTH.set(depth);
     if depth == 0 {
-        unsafe { PY_GILSTATE_RELEASE(GIL_TOKEN.get()) };
+        let token = GIL_TOKEN.get();
+        if token == -1 {
+            unsafe { python_subinterp::pool_release() };
+        } else {
+            unsafe { PY_GILSTATE_RELEASE(token) };
+        }
     }
 }
 
