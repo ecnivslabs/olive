@@ -10,6 +10,7 @@ mod dispatch;
 mod extern_vars;
 mod kind_history;
 mod profiling;
+mod pymodule;
 mod strings;
 
 #[cfg(test)]
@@ -522,6 +523,9 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_py_to_any", &sig_i64_i64),
             ("__olive_to_pyobject", &sig_i64_i64),
             ("__olive_py_make_callable", &sig_i64_i64_i64),
+            ("__olive_py_make_export", &sig_i64_i64_i64),
+            ("__olive_py_create_module", &sig_i64_i64),
+            ("__olive_py_module_add_object", &sig_3i64_i64),
             ("__olive_random_get", &sig_void_f64),
             ("__olive_random_int", &sig_i64_i64_i64),
             ("__olive_random_seed", &sig_i64_void),
@@ -1038,7 +1042,12 @@ impl<M: Module> CraneliftCodegen<M> {
             }
         }
 
-        if self.aot {
+        if self.aot && self.pymodule {
+            let name = self.pymodule_name.clone();
+            if let Some(ref n) = name {
+                self.emit_pymodule_init(n);
+            }
+        } else if self.aot {
             self.emit_aot_main();
         }
     }

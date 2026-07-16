@@ -131,7 +131,10 @@ impl<M: Module> CraneliftCodegen<M> {
     }
 
     /// Declares a void->void runtime function resolved from SYMBOL_MAP. Returns cached id.
-    fn declare_runtime_void_fn(&mut self, name: &str) -> Option<cranelift_module::FuncId> {
+    pub(super) fn declare_runtime_void_fn(
+        &mut self,
+        name: &str,
+    ) -> Option<cranelift_module::FuncId> {
         if let Some(&id) = self.func_ids.get(name) {
             return Some(id);
         }
@@ -140,6 +143,36 @@ impl<M: Module> CraneliftCodegen<M> {
             .find(|&&(k, _)| k == name)
             .map(|&(_, v)| std::str::from_utf8(&v[..v.len() - 1]).unwrap())?;
         let sig = self.module.make_signature();
+        let id = self
+            .module
+            .declare_function(decl_name, Linkage::Import, &sig)
+            .ok()?;
+        self.func_ids.insert(name.to_string(), id);
+        Some(id)
+    }
+
+    /// Declares a runtime function with given Cranelift param/return types,
+    /// resolved from SYMBOL_MAP. Returns cached id.
+    pub(super) fn declare_runtime_fn(
+        &mut self,
+        name: &str,
+        param_types: &[cranelift::prelude::Type],
+        return_types: &[cranelift::prelude::Type],
+    ) -> Option<cranelift_module::FuncId> {
+        if let Some(&id) = self.func_ids.get(name) {
+            return Some(id);
+        }
+        let decl_name = super::super::SYMBOL_MAP
+            .iter()
+            .find(|&&(k, _)| k == name)
+            .map(|&(_, v)| std::str::from_utf8(&v[..v.len() - 1]).unwrap())?;
+        let mut sig = self.module.make_signature();
+        for &p in param_types {
+            sig.params.push(AbiParam::new(p));
+        }
+        for &r in return_types {
+            sig.returns.push(AbiParam::new(r));
+        }
         let id = self
             .module
             .declare_function(decl_name, Linkage::Import, &sig)

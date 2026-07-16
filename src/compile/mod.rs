@@ -13,7 +13,7 @@ mod tests;
 
 use crate::codegen::cranelift::CraneliftCodegen;
 use crate::parser;
-use linker::{ensure_dir, exec_binary, link_object};
+use linker::{ensure_dir, exec_binary, link_object, link_shared_object};
 use pipeline::run_pipeline_opt;
 use std::{fs, path::Path, process};
 
@@ -166,6 +166,8 @@ pub fn compile_and_emit(
     show_time: bool,
     release: bool,
     pgo: Option<&str>,
+    pymodule: bool,
+    module_name: Option<&str>,
     explain_copies: bool,
 ) {
     // Loaded early: feeds both the inliner's hot-function threshold below
@@ -196,6 +198,8 @@ pub fn compile_and_emit(
         &out.native_libs,
         release,
     );
+    codegen.pymodule = pymodule;
+    codegen.pymodule_name = module_name.map(|s| s.to_string());
     // Must run before `generate()` -- seeds `specialize_sites` for translation.
     if let Some(profile) = &profile {
         let applied = codegen.apply_profile(profile);
@@ -226,7 +230,11 @@ pub fn compile_and_emit(
         process::exit(1);
     });
 
-    link_object(&obj_path, output, &out.native_libs);
+    if pymodule {
+        link_shared_object(&obj_path, output, &out.native_libs);
+    } else {
+        link_object(&obj_path, output, &out.native_libs);
+    }
     let link_duration = link_start.elapsed();
 
     println!("\x1b[1;32mFinished\x1b[0m build `{}` successfully.", output);
@@ -257,6 +265,8 @@ pub fn compile_hybrid(filename: &str, show_time: bool, release: bool, explain_co
         show_time,
         release,
         pgo_arg.as_deref(),
+        false,
+        None,
         explain_copies,
     );
     cache::record(&target);
@@ -300,6 +310,8 @@ pub fn compile_and_run_aot(filename: &str, show_time: bool, release: bool, expla
         binary_path,
         show_time,
         release,
+        None,
+        false,
         None,
         explain_copies,
     );

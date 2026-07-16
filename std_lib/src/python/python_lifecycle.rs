@@ -1,7 +1,7 @@
 use crate::python::python_compat::*;
 use crate::python::*;
 use std::ffi::CString;
-use std::os::raw::{c_char, c_void};
+use std::os::raw::{c_char, c_int, c_void};
 use std::sync::atomic::Ordering;
 
 /// Extract the Python minor version from a `libpython3.X.so` filename.
@@ -109,10 +109,28 @@ pub extern "C" fn olive_py_initialize() {
     ONCE.call_once(|| unsafe {
         let mut handle: *mut c_void = std::ptr::null_mut();
 
-        if let Ok(env_path) =
-            std::env::var("OLIVE_PYTHON_PATH").or_else(|_| std::env::var("PYTHON_LIBRARY"))
-        {
-            handle = compat_dlopen(&env_path);
+        // Host process (R20): when loaded as a CPython extension module,
+        // libpython is already loaded. Check via RTLD_DEFAULT first.
+        let host_py_isinit = libc::dlsym(
+            std::ptr::null_mut(),
+            b"Py_IsInitialized\0".as_ptr() as *const c_char,
+        );
+        if !host_py_isinit.is_null() {
+            let is_init: unsafe extern "C" fn() -> c_int = std::mem::transmute(host_py_isinit);
+            if is_init() != 0 {
+                // Python is already running; use the host process handle
+                // to resolve symbols rather than loading a duplicate
+                // libpython.
+                handle = compat_dlopen_current_process();
+            }
+        }
+
+        if handle.is_null() {
+            if let Ok(env_path) =
+                std::env::var("OLIVE_PYTHON_PATH").or_else(|_| std::env::var("PYTHON_LIBRARY"))
+            {
+                handle = compat_dlopen(&env_path);
+            }
         }
 
         if handle.is_null()
@@ -217,6 +235,10 @@ pub extern "C" fn olive_py_initialize() {
         PY_ERR_NORMALIZE_EXCEPTION = compat_dlsym(handle, "PyErr_NormalizeException");
         PY_ERR_CLEAR = compat_dlsym(handle, "PyErr_Clear");
         PY_ERR_PRINT = compat_dlsym(handle, "PyErr_Print");
+        PY_IS_INITIALIZED = compat_dlsym(handle, "Py_IsInitialized");
+        PY_MODULE_NEW = compat_dlsym(handle, "PyModule_New");
+        PY_MODULE_ADD_OBJECT = compat_dlsym(handle, "PyModule_AddObject");
+        PY_MODULE_CREATE2 = compat_dlsym(handle, "PyModule_Create2");
         PY_RUN_SIMPLE_STRING = compat_dlsym(handle, "PyRun_SimpleString");
 
         PY_BOOL_TYPE = compat_dlsym(handle, "PyBool_Type");
@@ -363,6 +385,10 @@ pub extern "C" fn olive_py_initialize() {
             PY_OBJECT_GET_ITER = noop_get_iter;
             PY_ITER_NEXT = noop_iter_next;
             PY_OBJECT_RICHCOMPAREBOOL = crate::python::python_noop::noop_richcomparebool;
+            PY_IS_INITIALIZED = noop_is_initialized;
+            PY_MODULE_NEW = noop_module_new;
+            PY_MODULE_ADD_OBJECT = noop_module_add_object;
+            PY_MODULE_CREATE2 = noop_module_create2;
             PY_CORO_CHECK_EXACT = noop_check_int;
             PY_ITER_CHECK = noop_check_int;
             PY_DICT_NEXT = noop_dict_next;
@@ -461,16 +487,23 @@ pub extern "C" fn olive_py_initialize() {
             Ordering::SeqCst,
         );
 
-        PY_INITIALIZE();
+        let already_initialized = {
+            let is_init_ptr: *const () = PY_IS_INITIALIZED as *const ();
+            !is_init_ptr.is_null()
+                && is_init_ptr != (noop_is_initialized as *const ())
+                && PY_IS_INITIALIZED() != 0
+        };
+        if !already_initialized {
+            PY_INITIALIZE();
 
-        // Prepend '' (cwd) to sys.path so project-local Python modules take
-        // priority over any same-named files in site-packages. Embedded Python
-        // does not add '' automatically unlike interactive/script mode.
-        PY_RUN_SIMPLE_STRING(b"import sys; sys.path.insert(0, '')\0".as_ptr() as *const c_char);
+            PY_RUN_SIMPLE_STRING(
+                b"import sys; sys.path.insert(0, '')\0".as_ptr() as *const c_char,
+            );
 
-        let init_ptr: *const () = PY_EVAL_INIT_THREADS as *const ();
-        if !init_ptr.is_null() && init_ptr != (noop_initialize as *const ()) {
-            PY_EVAL_INIT_THREADS();
+            let init_ptr: *const () = PY_EVAL_INIT_THREADS as *const ();
+            if !init_ptr.is_null() && init_ptr != (noop_initialize as *const ()) {
+                PY_EVAL_INIT_THREADS();
+            }
         }
 
         {
@@ -501,9 +534,11 @@ pub extern "C" fn olive_py_initialize() {
             PY_DEC_REF(tb_mod);
         }
 
-        let save_ptr: *const () = PY_EVAL_SAVE_THREAD as *const ();
-        if !save_ptr.is_null() && save_ptr != (noop_save_thread as *const ()) {
-            MAIN_THREAD_STATE = PY_EVAL_SAVE_THREAD();
+        if !already_initialized {
+            let save_ptr: *const () = PY_EVAL_SAVE_THREAD as *const ();
+            if !save_ptr.is_null() && save_ptr != (noop_save_thread as *const ()) {
+                MAIN_THREAD_STATE = PY_EVAL_SAVE_THREAD();
+            }
         }
         INITIALIZED.store(true, Ordering::SeqCst);
     });

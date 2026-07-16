@@ -80,6 +80,10 @@ enum Commands {
         #[arg(long)]
         pgo: Option<String>,
         #[arg(long)]
+        pymodule: bool,
+        #[arg(long)]
+        module_name: Option<String>,
+        #[arg(long)]
         explain_copies: bool,
     },
     Run {
@@ -165,6 +169,8 @@ fn main() {
             time,
             release,
             pgo,
+            pymodule,
+            module_name,
             explain_copies,
         } => commands::build::execute_build(
             path.as_ref(),
@@ -172,6 +178,8 @@ fn main() {
             time,
             release,
             pgo.as_deref(),
+            pymodule,
+            module_name.as_deref(),
             explain_copies,
         ),
         Commands::Run {
