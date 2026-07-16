@@ -2,14 +2,6 @@ use cranelift_jit::JITBuilder;
 
 use super::{ASYNC_RUNTIME_SYMS, SYMBOL_MAP};
 
-#[cfg(target_family = "unix")]
-unsafe extern "C" {
-    fn dlsym(
-        handle: *mut std::ffi::c_void,
-        symbol: *const std::ffi::c_char,
-    ) -> *mut std::ffi::c_void;
-}
-
 pub(super) fn register_runtime_symbols(
     builder: &mut JITBuilder,
     needed: &std::collections::HashSet<&str>,
@@ -101,7 +93,7 @@ pub(super) fn register_runtime_symbols(
 
             #[cfg(target_family = "unix")]
             let ptr = {
-                let p = dlsym(std::ptr::null_mut(), c_name.as_ptr() as *const _);
+                let p = libc::dlsym(libc::RTLD_DEFAULT, c_name.as_ptr() as *const _);
                 if p.is_null() {
                     loaded_lib
                         .as_ref()

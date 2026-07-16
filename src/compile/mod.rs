@@ -144,15 +144,13 @@ pub fn run_script(filename: &str, show_time: bool, release: bool) -> i32 {
 /// Calls `olive_py_finalize` via `dlsym(RTLD_DEFAULT)`, working whether
 /// `olive_std` is linked statically or loaded by the JIT.
 fn finalize_python_runtime() {
+    // RTLD_DEFAULT is NULL on Linux but -2 on macOS/BSD -- passing a bare
+    // null handle here silently fails to resolve the symbol on macOS, so
+    // Py_Finalize (and therefore CPython's own buffered-stdout flush) never
+    // runs and any output from a Python-side `print()` is lost.
     #[cfg(unix)]
     unsafe {
-        unsafe extern "C" {
-            fn dlsym(
-                handle: *mut std::ffi::c_void,
-                symbol: *const std::ffi::c_char,
-            ) -> *mut std::ffi::c_void;
-        }
-        let sym = dlsym(std::ptr::null_mut(), c"olive_py_finalize".as_ptr());
+        let sym = libc::dlsym(libc::RTLD_DEFAULT, c"olive_py_finalize".as_ptr());
         if !sym.is_null() {
             let f: extern "C" fn() = std::mem::transmute(sym);
             f();
