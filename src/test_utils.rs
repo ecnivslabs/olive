@@ -10,7 +10,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 
 /// Runtime registry is process-global; serialize exec so concurrent JIT'd
 /// programs don't corrupt each other's registry. Compilation stays parallel.
-fn exec_lock() -> MutexGuard<'static, ()> {
+pub(crate) fn exec_lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
         .lock()
@@ -102,6 +102,50 @@ pub fn compile_minimal_aot(src: &str) -> CraneliftCodegen<ObjectModule> {
         &[],
         false,
     )
+}
+
+/// Instruments `src`'s MIR with the debugger hooks (lean pipeline, same as
+/// a real debug session) before JIT codegen, for tests that need a running
+/// program rather than just the MIR shape `debug_hooks::instrument` leaves behind.
+pub fn compile_instrumented(src: &str) -> (JitInstance, crate::mir::debug_hooks::DebugProgramInfo) {
+    let tokens = Lexer::new(src, 0).tokenise().unwrap();
+    let mut prog = Parser::new(tokens).parse_program().unwrap();
+    crate::semantic::desugar::desugar_trait_defaults(&mut prog);
+    crate::semantic::desugar::desugar_bare_variants(&mut prog);
+    let mut r = Resolver::new();
+    r.resolve_program(&prog);
+    assert!(r.errors.is_empty(), "resolver errors: {:?}", r.errors);
+    let mut tc = TypeChecker::new();
+    tc.check_program(&prog);
+    assert!(tc.errors.is_empty(), "type errors: {:?}", tc.errors);
+    let mut builder = MirBuilder::new(
+        &tc.expr_types,
+        &tc.expr_kwarg_maps,
+        &tc.type_env[0],
+        tc.struct_fields.clone(),
+        &tc.traits,
+        HashSet::default(),
+        tc.enum_defs.clone(),
+    );
+    builder.struct_field_types = tc.field_types.clone();
+    builder.build_program(&prog);
+    builder.monomorphize_drop_fns();
+    Optimizer::minimal().run(&mut builder.functions);
+    let program = crate::mir::debug_hooks::instrument(&mut builder.functions);
+    let mut cg = CraneliftCodegen::new_jit(
+        builder.functions,
+        builder.struct_fields,
+        tc.field_types.clone(),
+        tc.enum_defs.clone(),
+        builder.vtables.clone(),
+        builder.global_vars,
+        builder.file_names.clone(),
+        &[],
+        false,
+    );
+    cg.generate();
+    cg.finalize();
+    (JitInstance(Some(cg)), program)
 }
 
 fn compile_with(src: &str, opt: Optimizer, profile: bool, release_backend: bool) -> JitInstance {

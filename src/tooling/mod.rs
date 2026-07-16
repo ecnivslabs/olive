@@ -1,3 +1,4 @@
+pub mod dap;
 pub mod doc_blocks;
 pub mod doc_comments;
 pub mod installer;
