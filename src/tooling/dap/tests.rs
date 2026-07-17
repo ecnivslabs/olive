@@ -479,3 +479,44 @@ fn mutating_a_list_element_is_visible_after_a_step() {
     run_to_exit(&session);
     std::fs::remove_file(&path).ok();
 }
+
+/// `set_local_cell` on an `f32` cell round-trips through `debug_load`'s
+/// special bitcast path (`translate.rs`) without corrupting the JIT'd
+/// function or crashing it: the reload compiles and runs to a clean exit
+/// with the patched value still legible through the debugger afterward.
+/// Doesn't assert the patched value survives into further `f32` arithmetic
+/// or a printed result -- `pit run` confirms (independent of any debug
+/// session) that `f32` cast, comparison, and call-argument passing all have
+/// pre-existing bugs of their own, so any assertion built on those would be
+/// pinning compiler defects unrelated to `setVariable`, not this feature.
+#[test]
+fn set_local_cell_on_f32_reloads_without_corrupting_the_session() {
+    let _guard = exec_lock();
+    let src = "fn main():\n    let mut f: f32 = 1.0\n    print(1)\n";
+    let path = temp_file(src);
+    let session = launch(path.to_str().unwrap(), false).unwrap();
+
+    let result = session.set_breakpoints(0, &[3]);
+    assert_eq!(result, vec![(3, true)]);
+
+    session.cont();
+    match session.events().recv().unwrap() {
+        DebugEvent::Stopped { .. } => {}
+        other => panic!("expected Stopped, got {other:?}"),
+    }
+
+    let f_idx = session
+        .fn_cells(session.frame_cells(0).unwrap().0)
+        .iter()
+        .position(|c| c.name == "f")
+        .unwrap();
+    let patched = 2.75f32.to_bits() as i64;
+    assert!(session.set_local_cell(0, f_idx, patched));
+    assert_eq!(
+        var(&values::frame_variables(&session, 0), "f").value,
+        "2.75"
+    );
+
+    run_to_exit(&session);
+    std::fs::remove_file(&path).ok();
+}

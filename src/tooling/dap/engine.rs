@@ -128,10 +128,18 @@ pub struct EngineShared {
     /// a real `pit debug` launch, but keeps every call site a graceful no-op
     /// rather than a panic if it ever does).
     variant_table: OnceLock<DebugVariantTable>,
+    /// `(cell_idx, raw)` writes from `set_local_cell`, queued while parked
+    /// and drained by the debuggee thread into its own TLS mirror right
+    /// after `park()` returns (`hooks::apply_pending_patches`) -- the
+    /// debuggee thread's frame stack is `thread_local!`, unreachable from
+    /// here directly. Always targets the frame that was actually parked
+    /// (`set_local_cell` rejects anything else), so nothing needs to track
+    /// which frame a given entry belongs to.
+    pending_patches: Mutex<Vec<(usize, i64)>>,
 }
 
 /// Names resolved once at launch into `EngineShared::runtime_syms`.
-const RUNTIME_SYM_NAMES: [&str; 9] = [
+const RUNTIME_SYM_NAMES: [&str; 13] = [
     "olive_format_typed",
     "olive_debug_seq_len",
     "olive_debug_seq_get",
@@ -141,6 +149,10 @@ const RUNTIME_SYM_NAMES: [&str; 9] = [
     "olive_debug_enum_tag",
     "olive_debug_enum_payload",
     "olive_debug_str_bytes",
+    "olive_debug_seq_set",
+    "olive_debug_dict_set",
+    "olive_debug_enum_set",
+    "olive_debug_str_new",
 ];
 
 fn pack(file_id: usize, line: u32) -> i64 {
@@ -191,6 +203,7 @@ impl EngineShared {
             var_store: VarStore::new(),
             runtime_syms: OnceLock::new(),
             variant_table: OnceLock::new(),
+            pending_patches: Mutex::new(Vec::new()),
         })
     }
 
@@ -467,6 +480,42 @@ impl EngineShared {
             .parked_frames
             .get(n.checked_sub(1)?.checked_sub(frame_idx)?)?;
         Some((f.fn_id, f.cells.clone()))
+    }
+
+    /// `setVariable`/`setExpression` write path for a top-level named local.
+    /// Only the innermost (`frame_idx == 0`) frame is writable: it's the
+    /// only frame whose real storage the debuggee thread will reload from
+    /// the mirror before it next uses that local (`debug_load` fires right
+    /// after the exact `park()` call this frame is blocked in; an outer
+    /// frame isn't parked inside its own `debug_stmt` call at all, it's
+    /// mid-call into whatever's currently innermost, so it has no reload
+    /// point to apply a patch at until it becomes innermost again). Updates
+    /// the inspector-visible snapshot immediately either way, then queues
+    /// the mirror write for the debuggee thread to pick up on resume.
+    pub(crate) fn set_local_cell(&self, frame_idx: usize, cell_idx: usize, raw: i64) -> bool {
+        if frame_idx != 0 {
+            return false;
+        }
+        let mut ctl = self.control.lock().unwrap();
+        if !ctl.parked {
+            return false;
+        }
+        let Some(frame) = ctl.parked_frames.last_mut() else {
+            return false;
+        };
+        let Some(slot) = frame.cells.get_mut(cell_idx) else {
+            return false;
+        };
+        *slot = raw;
+        drop(ctl);
+        self.pending_patches.lock().unwrap().push((cell_idx, raw));
+        true
+    }
+
+    /// Drains every queued `set_local_cell` write, for the debuggee thread
+    /// to apply to its own TLS mirror right after resuming from `park()`.
+    pub(crate) fn take_pending_patches(&self) -> Vec<(usize, i64)> {
+        std::mem::take(&mut *self.pending_patches.lock().unwrap())
     }
 
     pub(crate) fn cell_desc(&self, fn_id: u32, cell_idx: usize) -> &std::ffi::CStr {

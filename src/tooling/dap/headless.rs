@@ -10,6 +10,7 @@ use super::engine::{BpSpec, DebugEvent, StopReason};
 use super::eval;
 use super::launch::{self, DebugSession};
 use super::redirect::Redirect;
+use super::setvar;
 use super::values;
 use rustc_hash::FxHashMap;
 use serde_json::{Value, json};
@@ -114,6 +115,7 @@ fn handle(state: &mut HeadlessState, msg: Value) -> bool {
         "stack" => handle_stack(state, id),
         "vars" => handle_vars(state, id, &msg),
         "eval" => handle_eval(state, id, &msg),
+        "setVar" => handle_set_var(state, id, &msg),
         "quit" => {
             if let Some(session) = state.session.take() {
                 drop(session);
@@ -300,6 +302,75 @@ fn handle_eval(state: &HeadlessState, id: Option<i64>, args: &Value) {
     };
     let frame = args.get("frame").and_then(Value::as_i64).unwrap_or(0) as usize;
     match eval::evaluate(session, frame, expr) {
+        Ok(v) => ok(
+            state,
+            id,
+            json!({"value": v.value, "type": v.type_name, "ref": v.reference}),
+        ),
+        Err(msg) => err(state, id, &msg),
+    }
+}
+
+/// `{"frame":N,"ref":M,"name":"x","value":"5"}` sets a top-level local
+/// (`ref` omitted or `0`) or a child of a previous `vars`/`eval` reference;
+/// `{"frame":N,"expr":"xs[1]","value":"5"}` resolves a full path instead,
+/// same grammar `eval` accepts. Either way `value` is parsed against the
+/// target's own static type -- `true`/`false`, `None`, an int or float
+/// literal, or a string (quoted or bare). Responds with the freshly
+/// re-read value, same shape as `vars`/`eval`.
+fn handle_set_var(state: &HeadlessState, id: Option<i64>, args: &Value) {
+    let Some(session) = &state.session else {
+        err(state, id, "no active session");
+        return;
+    };
+    let Some(value_text) = args.get("value").and_then(Value::as_str) else {
+        err(state, id, "missing 'value'");
+        return;
+    };
+    let frame = args.get("frame").and_then(Value::as_i64).unwrap_or(0) as usize;
+    let expr = args.get("expr").and_then(Value::as_str);
+    let name = args.get("name").and_then(Value::as_str);
+    let reference = args.get("ref").and_then(Value::as_i64).unwrap_or(0);
+
+    let resolved = match (expr, name) {
+        (Some(expr), _) => setvar::resolve_lvalue(session, frame, expr),
+        (None, Some(name)) if reference == 0 => setvar::target_for_local(session, frame, name),
+        (None, Some(name)) => setvar::target_for_child(session, reference, name),
+        (None, None) => Err("missing 'name' or 'expr'".to_string()),
+    };
+    let (target, ty) = match resolved {
+        Ok(t) => t,
+        Err(msg) => {
+            err(state, id, &msg);
+            return;
+        }
+    };
+    let raw = match setvar::encode_literal(session, &ty, value_text) {
+        Ok(r) => r,
+        Err(msg) => {
+            err(state, id, &msg);
+            return;
+        }
+    };
+    if let Err(msg) = setvar::write_value(session, target, raw) {
+        err(state, id, &msg);
+        return;
+    }
+
+    let rendered = match expr {
+        Some(expr) => eval::evaluate(session, frame, expr),
+        None => {
+            let vars = if reference == 0 {
+                values::frame_variables(session, frame)
+            } else {
+                values::children(session, reference)
+            };
+            vars.into_iter()
+                .find(|v| Some(v.name.as_str()) == name)
+                .ok_or_else(|| "write succeeded but the new value could not be re-read".to_string())
+        }
+    };
+    match rendered {
         Ok(v) => ok(
             state,
             id,

@@ -1,10 +1,12 @@
-//! Variable inspection requests: `scopes`, `variables`, `evaluate`,
-//! `exceptionInfo`. Split out of `server.rs` to keep that file under the
-//! line-count cap; these handlers are as much a part of the request dispatch
-//! as anything left there, just grouped separately.
+//! Variable inspection and mutation requests: `scopes`, `variables`,
+//! `evaluate`, `exceptionInfo`, `setVariable`, `setExpression`. Split out of
+//! `server.rs` to keep that file under the line-count cap; these handlers
+//! are as much a part of the request dispatch as anything left there, just
+//! grouped separately.
 
 use super::{ServerState, send_error, send_response};
 use crate::tooling::dap::eval;
+use crate::tooling::dap::setvar;
 use crate::tooling::dap::values;
 use serde_json::{Value, json};
 
@@ -81,6 +83,121 @@ pub(super) fn handle_evaluate(state: &ServerState, request_seq: i64, args: &Valu
             json!({"result": v.value, "type": v.type_name, "variablesReference": v.reference}),
         ),
         Err(msg) => send_error(state, request_seq, "evaluate", &msg),
+    }
+}
+
+pub(super) fn handle_set_variable(state: &ServerState, request_seq: i64, args: &Value) {
+    let Some(session) = &state.session else {
+        send_error(state, request_seq, "setVariable", "no active session");
+        return;
+    };
+    let Some(reference) = args.get("variablesReference").and_then(Value::as_i64) else {
+        send_error(
+            state,
+            request_seq,
+            "setVariable",
+            "missing variablesReference",
+        );
+        return;
+    };
+    let Some(name) = args.get("name").and_then(Value::as_str) else {
+        send_error(state, request_seq, "setVariable", "missing name");
+        return;
+    };
+    let Some(value_text) = args.get("value").and_then(Value::as_str) else {
+        send_error(state, request_seq, "setVariable", "missing value");
+        return;
+    };
+    let is_scope = reference >= SCOPE_REF_BASE;
+
+    let resolved = if is_scope {
+        setvar::target_for_local(session, (reference - SCOPE_REF_BASE) as usize, name)
+    } else {
+        setvar::target_for_child(session, reference, name)
+    };
+    let (target, ty) = match resolved {
+        Ok(t) => t,
+        Err(msg) => {
+            send_error(state, request_seq, "setVariable", &msg);
+            return;
+        }
+    };
+    let raw = match setvar::encode_literal(session, &ty, value_text) {
+        Ok(r) => r,
+        Err(msg) => {
+            send_error(state, request_seq, "setVariable", &msg);
+            return;
+        }
+    };
+    if let Err(msg) = setvar::write_value(session, target, raw) {
+        send_error(state, request_seq, "setVariable", &msg);
+        return;
+    }
+
+    let updated = if is_scope {
+        values::frame_variables(session, (reference - SCOPE_REF_BASE) as usize)
+    } else {
+        values::children(session, reference)
+    };
+    let Some(v) = updated.into_iter().find(|v| v.name == name) else {
+        send_error(
+            state,
+            request_seq,
+            "setVariable",
+            "write succeeded but the new value could not be re-read",
+        );
+        return;
+    };
+    send_response(
+        state,
+        request_seq,
+        "setVariable",
+        json!({"value": v.value, "type": v.type_name, "variablesReference": v.reference}),
+    );
+}
+
+pub(super) fn handle_set_expression(state: &ServerState, request_seq: i64, args: &Value) {
+    let Some(session) = &state.session else {
+        send_error(state, request_seq, "setExpression", "no active session");
+        return;
+    };
+    let Some(expr) = args.get("expression").and_then(Value::as_str) else {
+        send_error(state, request_seq, "setExpression", "missing expression");
+        return;
+    };
+    let Some(value_text) = args.get("value").and_then(Value::as_str) else {
+        send_error(state, request_seq, "setExpression", "missing value");
+        return;
+    };
+    let frame_idx = args.get("frameId").and_then(Value::as_i64).unwrap_or(0) as usize;
+
+    let (target, ty) = match setvar::resolve_lvalue(session, frame_idx, expr) {
+        Ok(t) => t,
+        Err(msg) => {
+            send_error(state, request_seq, "setExpression", &msg);
+            return;
+        }
+    };
+    let raw = match setvar::encode_literal(session, &ty, value_text) {
+        Ok(r) => r,
+        Err(msg) => {
+            send_error(state, request_seq, "setExpression", &msg);
+            return;
+        }
+    };
+    if let Err(msg) = setvar::write_value(session, target, raw) {
+        send_error(state, request_seq, "setExpression", &msg);
+        return;
+    }
+
+    match eval::evaluate(session, frame_idx, expr) {
+        Ok(v) => send_response(
+            state,
+            request_seq,
+            "setExpression",
+            json!({"value": v.value, "type": v.type_name, "variablesReference": v.reference}),
+        ),
+        Err(msg) => send_error(state, request_seq, "setExpression", &msg),
     }
 }
 

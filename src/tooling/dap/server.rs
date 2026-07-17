@@ -118,6 +118,8 @@ fn handle_message(state: &mut ServerState, msg: Value) -> bool {
                     "supportsBreakpointLocationsRequest": true,
                     "supportsTerminateRequest": true,
                     "supportsRestartRequest": true,
+                    "supportsSetVariable": true,
+                    "supportsSetExpression": true,
                     "exceptionBreakpointFilters": [
                         {"filter": "faults", "label": "Runtime Faults", "default": true}
                     ],
@@ -146,6 +148,8 @@ fn handle_message(state: &mut ServerState, msg: Value) -> bool {
         "scopes" => inspect::handle_scopes(state, request_seq, &args),
         "variables" => inspect::handle_variables(state, request_seq, &args),
         "evaluate" => inspect::handle_evaluate(state, request_seq, &args),
+        "setVariable" => inspect::handle_set_variable(state, request_seq, &args),
+        "setExpression" => inspect::handle_set_expression(state, request_seq, &args),
         "exceptionInfo" => inspect::handle_exception_info(state, request_seq),
         "setExceptionBreakpoints" => {
             let stop_on_faults = args

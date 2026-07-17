@@ -415,8 +415,24 @@ impl<M: Module> CraneliftCodegen<M> {
                     _ => false,
                 };
                 let rval_is_ptr_load = matches!(rval, crate::mir::ir::Rvalue::PtrLoad(_));
+                // `__olive_debug_load`'s C ABI is `fn(i64) -> i64` for every
+                // cell type uniformly (matching `__olive_debug_store`'s own
+                // encoding); an `F32` target's bits arrive zero-extended in
+                // the low word, same convention `PtrLoad` already uses here.
+                let rval_is_debug_load = matches!(
+                    rval,
+                    crate::mir::ir::Rvalue::Call {
+                        func: crate::mir::ir::Operand::Constant(
+                            crate::mir::Constant::Function(name)
+                        ),
+                        ..
+                    } if name == "__olive_debug_load"
+                );
                 let val = if val_ty != decl_ty {
-                    if rval_is_ptr_load && val_ty == types::I64 && decl_ty == types::F32 {
+                    if (rval_is_ptr_load || rval_is_debug_load)
+                        && val_ty == types::I64
+                        && decl_ty == types::F32
+                    {
                         let low = builder.ins().ireduce(types::I32, val);
                         builder.ins().bitcast(types::F32, MemFlags::new(), low)
                     } else if rval_is_pyobj && decl_ty == types::F64 {

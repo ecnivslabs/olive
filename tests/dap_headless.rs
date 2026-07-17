@@ -184,6 +184,57 @@ fn launch_break_stack_vars_eval_continue_output_and_exit() {
     std::fs::remove_file(&path).ok();
 }
 
+/// `setVar` parity with the DAP frontend's `setVariable`/`setExpression`:
+/// a top-level local write (`name`+`ref:0`) that changes continued
+/// execution, and a path write (`expr`) into a list element, both through
+/// the one headless command.
+#[test]
+fn set_var_changes_execution_and_writes_a_list_element() {
+    let src = "fn main():\n    let mut i = 0\n    let xs = [10, 20, 30]\n    while i < 5:\n        i = i + 1\n    print(i)\n    print(xs[1])\n";
+    let path = write_program(src, "setvar");
+    let mut session = Session::start(&path);
+
+    let resp = session.request("launch", json!({"program": path.to_str().unwrap()}));
+    assert_eq!(resp["ok"], true, "launch failed: {resp}");
+
+    let resp = session.request(
+        "break",
+        json!({"source": path.to_str().unwrap(), "lines": [{"line": 5, "cond": "i == 2"}]}),
+    );
+    assert_eq!(resp["ok"], true);
+
+    session.fire("continue");
+    let stopped = session.read_event("stopped");
+    assert_eq!(stopped["reason"], "breakpoint");
+
+    let resp = session.request("setVar", json!({"frame": 0, "name": "i", "value": "100"}));
+    assert_eq!(resp["ok"], true, "setVar failed: {resp}");
+    assert_eq!(resp["value"], "100");
+
+    let resp = session.request(
+        "setVar",
+        json!({"frame": 0, "expr": "xs[1]", "value": "99"}),
+    );
+    assert_eq!(resp["ok"], true, "setVar(expr) failed: {resp}");
+    assert_eq!(resp["value"], "99");
+
+    session.fire("continue");
+    session.read_event("exited");
+
+    let stdout = session.stdout_so_far();
+    assert!(
+        stdout.contains("101"),
+        "the loop should exit one iteration after the patched i crossed 5: {stdout:?}"
+    );
+    assert!(stdout.contains("99"), "stdout so far: {stdout:?}");
+
+    let quit = session.request("quit", json!({}));
+    assert_eq!(quit["ok"], true);
+    let status = session.child.wait().expect("pit debug exits");
+    assert!(status.success());
+    std::fs::remove_file(&path).ok();
+}
+
 #[test]
 fn fault_path_emits_fault_event_then_process_exits_1() {
     let src = "fn get(xs: [int], i: int) -> int:\n    return xs[i]\nfn main():\n    let xs = [1, 2, 3]\n    print(get(xs, 9))\n";

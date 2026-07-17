@@ -627,6 +627,7 @@ pub(crate) fn resolve_builtin_import(
             "__olive_debug_enter" => Some("__olive_debug_enter"),
             "__olive_debug_store" => Some("__olive_debug_store"),
             "__olive_debug_exit" => Some("__olive_debug_exit"),
+            "__olive_debug_load" => Some("__olive_debug_load"),
             "__olive_py_setattr" => Some("__olive_py_setattr"),
             "__olive_py_setattr_safe" => Some("__olive_py_setattr_safe"),
             "__olive_py_bitor" => Some("__olive_py_bitor"),

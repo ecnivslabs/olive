@@ -218,11 +218,7 @@ fn resolve_tokens(shared: &EngineShared, top: &Frame, tokens: &[Token]) -> Resul
     let mut ty = cells[idx].ty.clone();
 
     for tok in &tokens[1..] {
-        let key = match tok {
-            Token::Ident(name) => name.clone(),
-            Token::Index(i) => i.to_string(),
-            Token::Key(s) => format!("\"{s}\""),
-        };
+        let key = eval::token_key(tok);
         let (_, cval, cty) = values::children_raw(shared, raw, &ty)
             .into_iter()
             .find(|(n, _, _)| *n == key)

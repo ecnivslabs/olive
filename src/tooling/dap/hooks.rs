@@ -253,6 +253,29 @@ fn stmt_slow_path(packed: i64) {
     };
     let snapshot = FRAMES.with_borrow(|frames| frames.clone());
     shared.park(reason, snapshot);
+    apply_pending_patches(&shared);
+}
+
+/// Applies writes queued by `EngineShared::set_local_cell` (a `setVariable`/
+/// `setExpression` request handled while this frame was parked) into the
+/// mirror the frame's own `debug_load` calls read from right after. Those
+/// calls only ever target the innermost frame -- the one that was actually
+/// blocked inside `park()` -- so the frame that just resumed here is always
+/// the right one; no cell/frame identity check is needed.
+fn apply_pending_patches(shared: &EngineShared) {
+    let patches = shared.take_pending_patches();
+    if patches.is_empty() {
+        return;
+    }
+    FRAMES.with_borrow_mut(|frames| {
+        if let Some(top) = frames.last_mut() {
+            for (cell_idx, raw) in patches {
+                if let Some(slot) = top.cells.get_mut(cell_idx) {
+                    *slot = raw;
+                }
+            }
+        }
+    });
 }
 
 /// Cached cell count. Checks the TLS cache before falling back to
@@ -314,6 +337,27 @@ pub extern "C" fn debug_exit() {
     });
 }
 
+/// Reload hook emitted right after every `__olive_debug_stmt` call
+/// (`mir::debug_hooks::make_stmt_conditional`): returns the mirror's current
+/// value for `cell_idx`, which `apply_pending_patches` just updated if a
+/// `setVariable`/`setExpression` request landed while this frame was
+/// parked. `debug_store` already keeps the mirror equal to the real local at
+/// every hook point, so reassigning the local from it here is a no-op
+/// whenever nothing patched it -- correct unconditionally, not just in the
+/// patched case.
+pub extern "C" fn debug_load(cell_idx: i64) -> i64 {
+    if !DEBUGGEE_ENABLED.get() {
+        return 0;
+    }
+    FRAMES.with_borrow(|frames| {
+        frames
+            .last()
+            .and_then(|f| f.cells.get(cell_idx as usize))
+            .copied()
+            .unwrap_or(0)
+    })
+}
+
 /// Installed once at launch via `olive_debug_set_fault_hook`, called from
 /// inside `abort_with` on whatever thread panicked (the debuggee thread in
 /// this single-session model). Parks like a breakpoint hit, using the same
@@ -334,12 +378,13 @@ pub extern "C" fn debug_fault_hook(code_ptr: i64, msg_ptr: i64, _loc_ptr: i64) {
     };
     let snapshot = FRAMES.with_borrow(|frames| frames.clone());
     shared.park(StopReason::Fault { code, message }, snapshot);
+    apply_pending_patches(&shared);
 }
 
 /// Symbols registered unconditionally into every JIT module. Nothing calls
 /// through them unless a debug session instrumented the MIR first, so a
 /// registered-but-unused symbol costs nothing at runtime.
-pub fn jit_symbols() -> [(&'static str, *const u8); 5] {
+pub fn jit_symbols() -> [(&'static str, *const u8); 6] {
     [
         (
             "__olive_debug_should_check_stmt",
@@ -349,6 +394,7 @@ pub fn jit_symbols() -> [(&'static str, *const u8); 5] {
         ("__olive_debug_enter", debug_enter as *const u8),
         ("__olive_debug_store", debug_store as *const u8),
         ("__olive_debug_exit", debug_exit as *const u8),
+        ("__olive_debug_load", debug_load as *const u8),
     ]
 }
 

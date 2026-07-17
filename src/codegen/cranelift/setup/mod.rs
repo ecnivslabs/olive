@@ -511,6 +511,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_debug_enter", &sig_i64_void),
             ("__olive_debug_store", &sig_i64_i64_void),
             ("__olive_debug_exit", &sig_void_void),
+            ("__olive_debug_load", &sig_i64_i64),
             ("__olive_py_setattr", &sig_3i64_i64),
             ("__olive_py_setattr_safe", &sig_3i64_i64),
             ("__olive_py_setitem", &sig_i64_i64_i64_void),
@@ -701,12 +702,13 @@ impl<M: Module> CraneliftCodegen<M> {
         // loop has neither an arg-store nor a safepoint in its clean body),
         // the scan above would never see it and `func_ids` would be missing
         // an entry `install_debug_variant`'s `translate_function` needs.
-        const DEBUG_HOOK_SYMS: [&str; 5] = [
+        const DEBUG_HOOK_SYMS: [&str; 6] = [
             "__olive_debug_should_check_stmt",
             "__olive_debug_stmt",
             "__olive_debug_enter",
             "__olive_debug_store",
             "__olive_debug_exit",
+            "__olive_debug_load",
         ];
         for &(name, sig) in import_table {
             let always_needed = super::ASYNC_RUNTIME_SYMS.contains(&name);
