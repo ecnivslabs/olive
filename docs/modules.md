@@ -79,25 +79,77 @@ import utils
 // utils._secret()  // Error: cannot access private member `_secret`
 ```
 
-## Project Organization
+## Project Organization and Directory Modules
 
-A typical project layout:
+Olive supports both single-file modules and directory modules:
 
 ```text
 my_project/
 ├── main.liv
 ├── models.liv
+├── math_pkg/
+│   ├── mod.liv
+│   └── helpers.liv
 └── utils/
-    ├── __init__.liv (optional)
-    └── network.liv
+    ├── network.liv
+    └── crypto.liv
+```
+
+### Directory Modules with `mod.liv`
+
+When a directory contains `mod.liv`, that file acts as the package entry point and facade:
+
+```olive
+// In math_pkg/mod.liv
+struct Vector2:
+    x: int
+    y: int
+
+fn add(a: int, b: int) -> int:
+    return a + b
 ```
 
 In `main.liv`:
 
 ```olive
-import models
-import utils.network
+import math_pkg
+
+fn main():
+    let v = math_pkg.Vector2(10, 20)
+    let total = math_pkg.add(v.x, v.y)
 ```
+
+Inside `mod.liv`, the built-in constant `__name__` evaluates to the parent directory name (`"math_pkg"`).
+
+`mod.liv` can also re-export functions or structs from submodules using from-imports:
+
+```olive
+// In math_pkg/mod.liv
+from helpers import compute_norm
+```
+
+### Optional `mod.liv` and Submodule Chaining
+
+`mod.liv` is optional. If a directory contains `.liv` submodules without a `mod.liv`, importing the directory makes all submodules available via chained attribute access:
+
+```olive
+import utils
+
+fn main():
+    utils.network.connect("127.0.0.1")
+    utils.crypto.hash("data")
+```
+
+Individual submodules can also be imported directly:
+
+```olive
+import utils.network
+from utils.crypto import hash
+```
+
+### Module Ambiguity (`E0302`)
+
+If both a file `<name>.liv` and a directory `<name>/mod.liv` exist in the same search path, the compiler halts with diagnostic `E0302` (`ambiguous module definition`) to prevent conflicting definitions.
 
 ## Standard Library
 

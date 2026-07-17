@@ -57,7 +57,7 @@ mod tests {
     /// fails the build if any of these lacks an explanation, so a newly added
     /// code cannot ship without one.
     const KNOWN_CODES: &[&str] = &[
-        "E0001", "E0002", "E0003", "E0004", "E0006", "E0100", "E0200", "E0300", "E0301", "E0400",
+        "E0001", "E0002", "E0003", "E0004", "E0006", "E0100", "E0200", "E0300", "E0301", "E0302", "E0400",
         "E0401", "E0402", "E0403", "E0404", "E0405", "E0406", "E0407", "E0408", "E0409", "E0410",
         "E0411", "E0412", "E0413", "E0414", "E0415", "E0416", "E0417", "E0418", "E0419", "E0420",
         "E0421", "E0422", "E0424", "E0425", "E0426", "E0427", "E0428", "E0429", "E0430", "E0431",
@@ -120,7 +120,7 @@ mod tests {
     /// Codes whose `fixed` example depends on something outside a self-contained
     /// compile: an external Olive module, the Python interpreter, or FFI linkage.
     const SKIP_FIXED: &[&str] = &[
-        "E0300", "E0004", "E0408", "E0409", "E0600", "E0601", "E0602", "E0705", "E0706", "W0601",
+        "E0300", "E0302", "E0004", "E0408", "E0409", "E0600", "E0601", "E0602", "E0705", "E0706", "W0601",
         "W0602", "W0630",
     ];
     /// Codes whose `wrong` example does not fail this in-process compile: runtime
@@ -147,7 +147,7 @@ mod tests {
     /// bare `Starred` node, so ordinary source cannot reach it either.
     const SKIP_WRONG: &[&str] = &[
         "E0700", "E0701", "E0702", "E0703", "E0704", "E0705", "E0706", "E0707", "E0708", "E0709",
-        "E0710", "E0711", "E0712", "E0713", "E0714", "E0301", "E0004", "E0406", "E0420", "E0432",
+        "E0710", "E0711", "E0712", "E0713", "E0714", "E0301", "E0302", "E0004", "E0406", "E0420", "E0432",
         "E0501", "E0502", "E0503", "E0504", "E0505", "E0507", "E0408", "E0409", "E0600", "E0601",
         "E0602", "W0601", "W0602", "W0610", "W0620", "W0630", "W0640", "W0650", "W0660",
     ];

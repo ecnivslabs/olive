@@ -253,6 +253,7 @@ pub(crate) fn c_abi_eightbyte_size(layout: &[FfiFieldLayout], eightbyte_index: u
 mod eightbyte_tests {
     use super::*;
 
+    #[allow(dead_code)]
     fn layout(fields: &[(&str, &str)]) -> Vec<FfiFieldLayout> {
         fields
             .iter()

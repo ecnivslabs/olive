@@ -257,6 +257,27 @@ impl Expr {
             span,
         }
     }
+
+    pub fn unroll_attr_chain(&self) -> Option<(&str, Vec<&str>)> {
+        let mut attrs = Vec::new();
+        let mut curr = self;
+        loop {
+            match &curr.kind {
+                ExprKind::Identifier(root) => {
+                    if attrs.is_empty() {
+                        return None;
+                    }
+                    attrs.reverse();
+                    return Some((root.as_str(), attrs));
+                }
+                ExprKind::Attr { obj, attr } => {
+                    attrs.push(attr.as_str());
+                    curr = obj;
+                }
+                _ => return None,
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

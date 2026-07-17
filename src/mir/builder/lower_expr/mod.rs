@@ -899,8 +899,7 @@ impl<'a> MirBuilder<'a> {
         }
 
         if let ExprKind::Attr { obj, attr } = &callee.kind
-            && let ExprKind::Identifier(name) = &obj.kind
-            && self.has_native_module_fn(name, attr)
+            && self.has_native_callee(callee)
         {
             return self.lower_attr_method_call_section(
                 callee,
