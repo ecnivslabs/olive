@@ -1,4 +1,4 @@
-//! E2 flow-narrowing regression tests (roadmap.md Phase E2, steps 1-3).
+//! Flow-narrowing regression tests.
 #[cfg(test)]
 use crate::test_utils::{call_i64, call_i64_1, call_i64_2, check_codes, compile};
 

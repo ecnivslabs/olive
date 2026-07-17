@@ -1,4 +1,4 @@
-//! Roadmap E13.4: `///` above a `fn`/`struct`/`enum`/module binds
+//! `///` above a `fn`/`struct`/`enum`/module binds
 //! documentation to it. Comments never enter the token stream (the lexer
 //! collects them on the side as trivia, see `lexer::Comment`), and every
 //! item's `Span` already carries a source line -- so matching a doc comment

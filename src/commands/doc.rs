@@ -111,10 +111,10 @@ fn render_module(module_name: &str, program: &crate::parser::Program, lines: &[&
     md
 }
 
-/// Roadmap E13.4: a fenced Olive block inside a doc comment compiles under
-/// the same machinery E10.3 already uses for `docs/*.md` (`tooling::
-/// doc_blocks`, shared with `tests/doc_blocks.rs`) -- typecheck only, not a
-/// full JIT run: a `pit doc` invocation renders documentation, it doesn't
+/// A fenced Olive block inside a doc comment compiles under the same
+/// machinery already used for `docs/*.md` (`tooling::doc_blocks`, shared
+/// with `tests/doc_blocks.rs`) -- typecheck only, not a full JIT run: a
+/// `pit doc` invocation renders documentation, it doesn't
 /// execute arbitrary snippets embedded in it as a side effect. A broken
 /// example is a warning, not a hard failure -- one bad snippet in a doc
 /// comment shouldn't block docs for every other item in the module.

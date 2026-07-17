@@ -1,4 +1,4 @@
-//! E2 optional-chaining (`?.`) regression tests (roadmap.md Phase E2, step 4).
+//! Optional-chaining (`?.`) regression tests.
 #[cfg(test)]
 use crate::test_utils::{call_i64_1, check_codes, compile};
 

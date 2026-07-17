@@ -1,4 +1,4 @@
-//! E2 type alias regression tests (roadmap.md Phase E2, step 8).
+//! Type alias regression tests.
 #[cfg(test)]
 use crate::test_utils::{call_i64, check_codes, compile};
 

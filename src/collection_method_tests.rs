@@ -1,4 +1,4 @@
-//! E3.6 list/dict/set method regression tests (roadmap.md Phase E3.6).
+//! List/dict/set method regression tests.
 #[cfg(test)]
 use crate::test_utils::{call_i64, check_codes, compile};
 

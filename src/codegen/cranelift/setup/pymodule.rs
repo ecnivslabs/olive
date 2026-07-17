@@ -63,7 +63,7 @@ impl<M: Module> CraneliftCodegen<M> {
             tags |= ret_tag << 60;
             let mut ok = true;
             for i in 0..func.arg_count {
-                let param_ty = &func.locals[i as usize + 1].ty;
+                let param_ty = &func.locals[i + 1].ty;
                 match type_to_arg_tag(param_ty) {
                     Some(tag) => {
                         tags |= tag << (i as u32 * 4);
@@ -104,7 +104,7 @@ impl<M: Module> CraneliftCodegen<M> {
 
         let mut sig = self.module.make_signature();
         for i in 0..func.arg_count {
-            let ty = &func.locals[i as usize + 1].ty;
+            let ty = &func.locals[i + 1].ty;
             sig.params
                 .push(AbiParam::new(super::super::imports::cl_type(ty)));
         }
@@ -133,7 +133,7 @@ impl<M: Module> CraneliftCodegen<M> {
         builder.switch_to_block(block);
         builder.seal_block(block);
 
-        let n_params = func.arg_count as usize;
+        let n_params = func.arg_count;
         let params: Vec<Value> = builder.block_params(block)[..n_params].to_vec();
 
         let real_ref = self.module.declare_func_in_func(real_id, builder.func);
@@ -158,7 +158,7 @@ impl<M: Module> CraneliftCodegen<M> {
         let mut data_ctx = DataDescription::new();
         let mut bytes = s.as_bytes().to_vec();
         bytes.push(0);
-        if bytes.len() % 2 != 0 {
+        if !bytes.len().is_multiple_of(2) {
             bytes.push(0);
         }
         data_ctx.define(bytes.into_boxed_slice());

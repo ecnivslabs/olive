@@ -3,15 +3,16 @@
 //! named-local values and per-line stop points instead of a call shadow
 //! stack. Never runs outside a debug session, so hook-off programs carry
 //! no trace of it -- see `tooling::dap::hooks` for the runtime side.
+//!
+//! `main.rs` doesn't call into this yet, so the bin target sees the whole
+//! module as unreachable; the tests below already exercise it in full.
+#![cfg_attr(not(test), allow(dead_code))]
 
 use super::ir::*;
 use crate::semantic::types::Type;
 use crate::span::Span;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
-// D2 (the debug engine) is the first production caller of this module;
-// until then these are exercised only by the tests below.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub struct CellInfo {
     pub name: String,
@@ -19,7 +20,6 @@ pub struct CellInfo {
     pub ty: Type,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub struct DebugFnInfo {
     pub name: String,
@@ -27,7 +27,6 @@ pub struct DebugFnInfo {
     pub cells: Vec<CellInfo>,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Default)]
 pub struct DebugProgramInfo {
     pub functions: Vec<DebugFnInfo>,
@@ -38,7 +37,6 @@ pub struct DebugProgramInfo {
 /// Rewrites every instrumentable function with enter/store/stmt/exit hook
 /// calls so a debug session can capture frames and locals. `fn_id` is the
 /// function's position in `functions`, stable for the whole session.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn instrument(functions: &mut [MirFunction]) -> DebugProgramInfo {
     let mut program = DebugProgramInfo::default();
     for (fn_id, func) in functions.iter_mut().enumerate() {
@@ -58,14 +56,12 @@ pub fn instrument(functions: &mut [MirFunction]) -> DebugProgramInfo {
 
 /// A function whose statements are all `Span::default()` is compiler-
 /// synthesized (the `__main__` wrapper), with no source line to stop at.
-#[cfg_attr(not(test), allow(dead_code))]
 fn has_real_span(func: &MirFunction) -> bool {
     func.basic_blocks
         .iter()
         .any(|bb| bb.statements.iter().any(|s| s.span != Span::default()))
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 fn named_cells(func: &MirFunction) -> Vec<CellInfo> {
     func.locals
         .iter()
@@ -79,7 +75,6 @@ fn named_cells(func: &MirFunction) -> Vec<CellInfo> {
         .collect()
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 fn instrument_function(
     func: &mut MirFunction,
     fn_id: u32,
@@ -151,7 +146,6 @@ fn instrument_function(
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 fn build_entry_prelude(
     func: &mut MirFunction,
     fn_id: u32,
@@ -180,7 +174,6 @@ fn build_entry_prelude(
     out
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 fn call_stmt(func: &mut MirFunction, name: &str, args: Vec<Operand>, span: Span) -> Statement {
     let sink = alloc_sink(func);
     Statement {
@@ -195,7 +188,6 @@ fn call_stmt(func: &mut MirFunction, name: &str, args: Vec<Operand>, span: Span)
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 fn alloc_sink(func: &mut MirFunction) -> Local {
     let id = func.locals.len();
     func.locals.push(LocalDecl {
@@ -208,7 +200,6 @@ fn alloc_sink(func: &mut MirFunction) -> Local {
     Local(id)
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 fn pack_line(span: &Span) -> i64 {
     ((span.file_id as i64) << 32) | (span.line as i64)
 }

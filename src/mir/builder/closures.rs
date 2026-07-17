@@ -184,9 +184,9 @@ impl<'a> MirBuilder<'a> {
     /// cap0, cap1, ...]` allocated through the ordinary struct allocator,
     /// paired with a lazily-generated calling thunk, cast to `info`'s own
     /// `Type::Fn`. A non-capturing function gets the same record shape with
-    /// zero captures -- see the E5.2/E5.3 design note in roadmap.md for why:
-    /// one uniform representation means every indirect call site (E5.3) and
-    /// every generic drop/copy site (below) has exactly one shape to handle.
+    /// zero captures: one uniform representation means every indirect call
+    /// site and every generic drop/copy site (below) has exactly one shape
+    /// to handle.
     pub(super) fn build_closure_value(
         &mut self,
         info: &NestedFnInfo,

@@ -2,6 +2,7 @@ use super::utils::{load_config, maybe_install_deps, run_build_script};
 use crate::compile::{cache, compile_and_emit, compile_and_test, pgo};
 use std::path::Path;
 
+#[allow(clippy::too_many_arguments)]
 pub fn execute_build(
     path: Option<&String>,
     output: Option<&String>,
@@ -24,7 +25,7 @@ pub fn execute_build(
             } else {
                 None
             };
-            let module_name = module_name.or_else(|| default_module_name.as_deref());
+            let module_name = module_name.or(default_module_name.as_deref());
             match output {
                 Some(o) => compile_and_emit(
                     p,

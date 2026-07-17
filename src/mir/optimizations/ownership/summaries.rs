@@ -45,8 +45,7 @@ pub(crate) fn runtime_escape(name: &str, pos: usize) -> bool {
 /// down (`executor_drive`) while a plain same-arena copy is still
 /// referenced by the channel/mutex. `__olive_pool_run`/`__olive_pool_run_sync`
 /// are deliberately excluded: their `arg`/return are raw `int`, not a
-/// generic `[T]`, so there's no static type here to build a descriptor
-/// from -- see the E5.6 write-up in roadmap.md.
+/// generic `[T]`, so there's no static type here to build a descriptor from.
 const TASK_BOUNDARY_ESCAPES: &[(&str, usize)] = &[
     ("__olive_chan_send", 1),
     ("__olive_mutex_new", 0),

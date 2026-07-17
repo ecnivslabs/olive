@@ -1,6 +1,6 @@
-//! E7.1 regression tests (roadmap.md Phase E7.1): `str.to_int()`/`str.to_float()`
-//! share the same parsing grammar as `int()`/`float()`'s runtime, but yield
-//! `None` on a parse failure instead of panicking.
+//! Regression tests: `str.to_int()`/`str.to_float()` share the same parsing
+//! grammar as `int()`/`float()`'s runtime, but yield `None` on a parse
+//! failure instead of panicking.
 #[cfg(test)]
 use crate::test_utils::{call_i64, check_codes, compile};
 
@@ -30,7 +30,7 @@ fn to_int_malformed_is_none() {
 
 #[test]
 fn to_int_float_string_is_none() {
-    // "1.5".to_int() is None -- roadmap E7.1 acceptance example.
+    // "1.5".to_int() is None, not an error -- a float string doesn't parse as int.
     let mut cg = compile(concat!(
         "fn f() -> int:\n",
         "    let r = \"1.5\".to_int()\n",
@@ -68,7 +68,7 @@ fn to_int_empty_is_none() {
 #[test]
 fn to_int_leading_plus_and_whitespace_match_int_builtin() {
     // Whitespace tolerance and a `+` prefix must match `int()`'s own
-    // grammar exactly (roadmap: "match, don't decide").
+    // grammar exactly, not a separately-decided one.
     let mut cg = compile(concat!(
         "fn f() -> int:\n",
         "    let a = \"  7  \".to_int()\n",

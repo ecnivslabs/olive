@@ -603,12 +603,10 @@ pub extern "C" fn olive_chan_new() -> i64 {
 /// `val` must already be relocated into the shared escape arena by the
 /// caller (`chan_send[T]` in `lib/aio.liv` does this via
 /// `__olive_relocate_typed`, a compiler-recognized call the same way
-/// `__olive_copy_typed` is -- E5.6). This function used to relocate `val`
-/// itself via a runtime kind-tag guess on word 0, which is not sound for a
-/// struct or closure record (word 0 is that value's own field count, which
-/// routinely collides with an unrelated `KIND_*` constant) -- see the E5.6
-/// write-up in roadmap.md for the full story, including the first,
-/// reverted attempt at this fix.
+/// `__olive_copy_typed` is). This function used to relocate `val` itself
+/// via a runtime kind-tag guess on word 0, which is not sound for a struct
+/// or closure record (word 0 is that value's own field count, which
+/// routinely collides with an unrelated `KIND_*` constant).
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_chan_send(chan: i64, val: i64) -> i64 {
     if chan == 0 {

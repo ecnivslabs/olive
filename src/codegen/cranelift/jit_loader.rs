@@ -1,6 +1,32 @@
-use cranelift_jit::JITBuilder;
+use cranelift_jit::{JITBuilder, JITModule};
 
-use super::{ASYNC_RUNTIME_SYMS, SYMBOL_MAP};
+use super::{ASYNC_RUNTIME_SYMS, CraneliftCodegen, SYMBOL_MAP};
+
+impl CraneliftCodegen<JITModule> {
+    /// Resolves a runtime symbol by name for the debugger (fault-stop
+    /// reporting, value-formatting calls): `dlsym(RTLD_DEFAULT)` first, then
+    /// the libraries retained in `_libs`, because libloading opens olive_std
+    /// `RTLD_LOCAL` and bare `RTLD_DEFAULT` can miss it.
+    #[allow(dead_code)] // no caller wired up yet
+    pub fn runtime_symbol(&self, name: &str) -> Option<*const u8> {
+        let c_name = std::ffi::CString::new(name).ok()?;
+        #[cfg(target_family = "unix")]
+        {
+            let p = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c_name.as_ptr()) };
+            if !p.is_null() {
+                return Some(p as *const u8);
+            }
+        }
+        for lib in &self._libs {
+            if let Ok(sym) =
+                unsafe { lib.get::<unsafe extern "C" fn()>(c_name.as_bytes_with_nul()) }
+            {
+                return Some(*sym as *const u8);
+            }
+        }
+        None
+    }
+}
 
 pub(super) fn register_runtime_symbols(
     builder: &mut JITBuilder,

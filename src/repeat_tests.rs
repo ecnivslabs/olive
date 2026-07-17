@@ -1,4 +1,4 @@
-//! E3.4 repetition operator regression tests (roadmap.md Phase E3.4).
+//! Repetition operator regression tests.
 #[cfg(test)]
 use crate::test_utils::{call_i64, compile};
 

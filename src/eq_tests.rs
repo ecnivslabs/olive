@@ -1,4 +1,4 @@
-//! E2 derived structural equality regression tests (roadmap.md Phase E2, step 5).
+//! Derived structural equality regression tests.
 #[cfg(test)]
 use crate::test_utils::{call_i64, check_codes, compile};
 
