@@ -1,7 +1,7 @@
 //! Scripted stdin session against the real `pit debug <file>` binary: plain
 //! newline-delimited JSON, no framing, the agent-facing contract this file
-//! exists to pin down (the schema in `dap.md`'s D8 section is the source of
-//! truth for field names).
+//! exists to pin down (`dap.md`'s headless section is the source of truth
+//! for field names).
 
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
@@ -201,8 +201,8 @@ fn fault_path_emits_fault_event_then_process_exits_1() {
     assert_eq!(fault["file"], path.to_str().unwrap());
 
     // Resuming past a fault means `abort_with` runs to completion and the
-    // whole `pit debug` process exits 1, same D5 contract as the DAP
-    // frontend -- don't wait for a response, the process may die first.
+    // whole `pit debug` process exits 1, same as the DAP frontend -- don't
+    // wait for a response, the process may die first.
     session.fire("continue");
     let status = session.child.wait().expect("pit debug exits");
     assert_eq!(status.code(), Some(1));

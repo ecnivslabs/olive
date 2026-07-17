@@ -1,7 +1,7 @@
-//! D7's data requests: `scopes`, `variables`, `evaluate`, `exceptionInfo`.
-//! Split out of `server.rs` to keep that file under the line-count cap;
-//! these handlers are as much a part of the request dispatch as anything
-//! left there, just grouped separately.
+//! Variable inspection requests: `scopes`, `variables`, `evaluate`,
+//! `exceptionInfo`. Split out of `server.rs` to keep that file under the
+//! line-count cap; these handlers are as much a part of the request dispatch
+//! as anything left there, just grouped separately.
 
 use super::{ServerState, send_error, send_response};
 use crate::tooling::dap::eval;

@@ -1,18 +1,20 @@
-// VSCode client for `pit lsp`. Spawns the server as a child process over
-// stdio, exactly what `pit lsp` speaks -- no custom transport, just the
-// standard vscode-languageclient wiring every LSP extension uses.
+// VSCode client for `pit lsp` and `pit dap`. Both spawn as a child process
+// over stdio -- the language server and the debug adapter need no custom
+// transport, just the standard client wiring each protocol already expects.
 
-const { workspace } = require("vscode");
+const vscode = require("vscode");
+const { workspace } = vscode;
 const { LanguageClient, TransportKind } = require("vscode-languageclient/node");
 
 let client;
 
-function activate(context) {
-  const config = workspace.getConfiguration("olive");
-  const serverPath = config.get("serverPath") || "pit";
+function pitPath() {
+  return workspace.getConfiguration("olive").get("serverPath") || "pit";
+}
 
+function activate(context) {
   const serverOptions = {
-    command: serverPath,
+    command: pitPath(),
     args: ["lsp"],
     transport: TransportKind.stdio,
   };
@@ -30,6 +32,14 @@ function activate(context) {
 
   context.subscriptions.push(client);
   client.start();
+
+  context.subscriptions.push(
+    vscode.debug.registerDebugAdapterDescriptorFactory("olive", {
+      createDebugAdapterDescriptor() {
+        return new vscode.DebugAdapterExecutable(pitPath(), ["dap"]);
+      },
+    })
+  );
 }
 
 function deactivate() {

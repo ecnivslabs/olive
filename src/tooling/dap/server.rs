@@ -6,7 +6,7 @@
 
 mod inspect;
 
-use super::engine::{DebugEvent, FrameSnapshot, StopReason};
+use super::engine::{BpSpec, DebugEvent, FrameSnapshot, StopReason};
 use super::launch::{self, DebugSession};
 use super::protocol::{Seq, error_response, event, read_message, response, write_message};
 use super::redirect::Redirect;
@@ -288,23 +288,18 @@ fn handle_set_breakpoints(state: &mut ServerState, request_seq: i64, args: &Valu
         send_error(state, request_seq, "setBreakpoints", "missing source.path");
         return;
     };
-    let lines: Vec<u32> = args
+    let specs: Vec<BpSpec> = args
         .get("breakpoints")
         .and_then(Value::as_array)
-        .map(|bps| {
-            bps.iter()
-                .filter_map(|bp| bp.get("line").and_then(Value::as_u64))
-                .map(|l| l as u32)
-                .collect()
-        })
+        .map(|bps| bps.iter().filter_map(bp_spec).collect())
         .unwrap_or_default();
 
     let Some(file_id) = file_id_for(state, path) else {
         // Unknown source file (e.g. a library the client set a breakpoint
         // in before it was ever loaded): every requested line is unverified.
-        let body: Vec<Value> = lines
+        let body: Vec<Value> = specs
             .iter()
-            .map(|&l| json!({"line": l, "verified": false}))
+            .map(|s| json!({"line": s.line, "verified": false}))
             .collect();
         send_response(
             state,
@@ -315,7 +310,7 @@ fn handle_set_breakpoints(state: &mut ServerState, request_seq: i64, args: &Valu
         return;
     };
 
-    let resolved = session.set_breakpoints(file_id, &lines);
+    let resolved = session.set_breakpoints_with(file_id, &specs);
     let body: Vec<Value> = resolved
         .into_iter()
         .map(|(line, verified)| json!({"line": line, "verified": verified}))
@@ -326,6 +321,24 @@ fn handle_set_breakpoints(state: &mut ServerState, request_seq: i64, args: &Valu
         "setBreakpoints",
         json!({"breakpoints": body}),
     );
+}
+
+fn bp_spec(bp: &Value) -> Option<BpSpec> {
+    Some(BpSpec {
+        line: bp.get("line").and_then(Value::as_u64)? as u32,
+        condition: bp
+            .get("condition")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        hit_condition: bp
+            .get("hitCondition")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        log_message: bp
+            .get("logMessage")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
 }
 
 fn handle_stack_trace(state: &ServerState, request_seq: i64) {
@@ -398,6 +411,9 @@ fn run_monitor(
                     *last_exception.lock().unwrap() = Some((code.clone(), message.clone()));
                 }
                 emit("stopped", stopped_body(&reason));
+            }
+            DebugEvent::Output(text) => {
+                emit("output", json!({"category": "console", "output": text}));
             }
             DebugEvent::Exited(code) => {
                 redirect.restore();

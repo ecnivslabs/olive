@@ -34,10 +34,65 @@
         "olive.serverPath": {
           "type": "string",
           "default": "pit",
-          "description": "Path to the pit executable used to launch the language server (`pit lsp`)."
+          "description": "Path to the pit executable used to launch the language server (`pit lsp`) and the debug adapter (`pit dap`)."
         }
       }
-    }
+    },
+    "breakpoints": [
+      {
+        "language": "olive"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "olive",
+        "label": "Olive",
+        "languages": [
+          "olive"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "program"
+            ],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Path to the .liv file to run.",
+                "default": "${file}"
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "description": "Stop before the first statement of main.",
+                "default": false
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "olive",
+            "request": "launch",
+            "name": "Run current file",
+            "program": "${file}",
+            "stopOnEntry": false
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Olive: Launch current file",
+            "description": "Run and debug the file open in the editor.",
+            "body": {
+              "type": "olive",
+              "request": "launch",
+              "name": "Run current file",
+              "program": "^\"\\${file}\"",
+              "stopOnEntry": false
+            }
+          }
+        ]
+      }
+    ]
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1"
