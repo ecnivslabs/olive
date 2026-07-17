@@ -2,11 +2,6 @@
 //! JIT, and a spawned debuggee thread. Mirrors `compile::run_jit_to_exit_code`
 //! minus PGO, tier-up, and shadow-stack instrumentation, which the debugger's
 //! own frames and fault-hook support supersede.
-//!
-//! `main.rs` doesn't call into this subsystem yet, so most of it is
-//! unreachable from the bin target's `main`; `tests.rs` already exercises
-//! it in full.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use super::engine::{DebugEvent, EngineShared};
 use super::hooks;
@@ -44,7 +39,7 @@ impl std::error::Error for LaunchError {}
 /// debuggee thread handle.
 pub struct DebugSession {
     shared: Arc<EngineShared>,
-    events_rx: Receiver<DebugEvent>,
+    events_rx: Option<Receiver<DebugEvent>>,
     codegen: CraneliftCodegen<JITModule>,
     debuggee: Option<JoinHandle<()>>,
 }
@@ -57,8 +52,22 @@ impl Deref for DebugSession {
 }
 
 impl DebugSession {
+    /// Used by tests and by callers that don't hand the session off to a
+    /// forwarder thread; `server`/`headless` use `take_events` instead.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn events(&self) -> &Receiver<DebugEvent> {
-        &self.events_rx
+        self.events_rx
+            .as_ref()
+            .expect("events receiver already taken")
+    }
+
+    /// Hands ownership of the event stream to a dedicated forwarder thread
+    /// (`tooling::dap::server`, `tooling::dap::headless`); callers that need
+    /// `events()` after this must not call it again. Panics if called twice.
+    pub(crate) fn take_events(&mut self) -> Receiver<DebugEvent> {
+        self.events_rx
+            .take()
+            .expect("events receiver already taken")
     }
 
     /// Resolves a runtime (`std_lib`) symbol for value rendering and the
@@ -137,7 +146,7 @@ pub fn launch(program: &str, stop_on_entry: bool) -> Result<DebugSession, Launch
 
     Ok(DebugSession {
         shared,
-        events_rx: rx,
+        events_rx: Some(rx),
         codegen,
         debuggee: Some(debuggee),
     })

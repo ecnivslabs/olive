@@ -137,6 +137,10 @@ enum Commands {
     },
     Shell,
     Lsp,
+    Dap,
+    Debug {
+        file: String,
+    },
     Add {
         pod: String,
     },
@@ -154,7 +158,10 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
 
-    if !matches!(cli.command, Commands::Shell | Commands::Lsp) {
+    if !matches!(
+        cli.command,
+        Commands::Shell | Commands::Lsp | Commands::Dap | Commands::Debug { .. }
+    ) {
         ctrlc::set_handler(move || {
             std::process::exit(130);
         })
@@ -216,6 +223,8 @@ fn main() {
         Commands::Doc { file } => commands::doc::execute_doc(file.as_deref()),
         Commands::Shell => commands::project::execute_shell(),
         Commands::Lsp => tooling::lsp::run_lsp(),
+        Commands::Dap => tooling::dap::server::run_dap(),
+        Commands::Debug { file } => tooling::dap::headless::run(&file),
         Commands::Add { pod } => commands::deps::execute_add(&pod),
         Commands::Remove { pod } => commands::deps::execute_remove(&pod),
         Commands::Install => commands::deps::execute_install(),

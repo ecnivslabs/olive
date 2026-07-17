@@ -7,11 +7,6 @@
 //!
 //! Process-global state lives only in this file; `engine`/`launch` reach it
 //! through the `pub(crate)` functions below, never through a bare static.
-//!
-//! `main.rs` doesn't call into this subsystem yet, so most of it is
-//! unreachable from the bin target's `main`; `tests.rs` already exercises
-//! it in full.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use super::engine::{EngineShared, StopReason};
 use rustc_hash::FxHashSet;

@@ -3,11 +3,6 @@
 //! frontend, or a test). One instance per live session, held behind `Arc`
 //! so both sides can reach it without the process-global statics in
 //! `hooks` leaking any mutable state outside that file.
-//!
-//! `main.rs` doesn't call into this subsystem yet, so most of it is
-//! unreachable from the bin target's `main`; `tests.rs` already exercises
-//! it in full.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use super::hooks::{self, Frame};
 use super::values::VarStore;
@@ -54,6 +49,9 @@ pub enum StopReason {
 
 #[derive(Debug, Clone)]
 pub struct FrameSnapshot {
+    /// Read by frame-identity tests (recursion showing repeated frames);
+    /// neither frontend's wire schema needs it.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn_id: u32,
     pub name: String,
     pub file: String,
@@ -347,6 +345,10 @@ impl EngineShared {
 
     pub(crate) fn enum_defs(&self) -> &EnumDefs {
         &self.enum_defs
+    }
+
+    pub(crate) fn file_names(&self) -> &FxHashMap<usize, String> {
+        &self.file_names
     }
 
     /// `depth` is the caller's live frame-stack length (TLS-local, so it has
