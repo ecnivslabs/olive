@@ -4,8 +4,12 @@
 //! stack. Never runs outside a debug session, so hook-off programs carry
 //! no trace of it -- see `tooling::dap::hooks` for the runtime side.
 //!
-//! `main.rs` doesn't call into this yet, so the bin target sees the whole
-//! module as unreachable; the tests below already exercise it in full.
+//! `instrument` produces the fully-instrumented `$debug` body; `instrument_clean`
+//! produces the default body a debug session runs when nothing is
+//! watching it -- same per-line `debug_stmt`/`should_check_stmt` safepoint
+//! coverage as `instrument` (precise stepping/pause can't regress), but
+//! every `debug_store` is deferred to the rare taken branch of that check
+//! instead of running eagerly after each assignment.
 #![cfg_attr(not(test), allow(dead_code))]
 
 use super::ir::*;
@@ -32,6 +36,10 @@ pub struct DebugProgramInfo {
     pub functions: Vec<DebugFnInfo>,
     /// Packed `(file_id << 32) | line` keys for every stop point inserted.
     pub lines: HashSet<i64>,
+    /// Which function a given stop point belongs to, so a debug session
+    /// can compute "which functions currently own an active breakpoint" and
+    /// swap only those into their `$debug` variant (`tooling::dap::engine`).
+    pub line_to_fn: HashMap<i64, u32>,
 }
 
 /// Rewrites every instrumentable function with enter/store/stmt/exit hook
@@ -44,7 +52,14 @@ pub fn instrument(functions: &mut [MirFunction]) -> DebugProgramInfo {
             continue;
         }
         let cells = named_cells(func);
-        instrument_function(func, fn_id as u32, &cells, &mut program.lines);
+        instrument_function(
+            func,
+            fn_id as u32,
+            &cells,
+            &mut program.lines,
+            &mut program.line_to_fn,
+            false,
+        );
         program.functions.push(DebugFnInfo {
             name: func.name.clone(),
             fn_id: fn_id as u32,
@@ -54,9 +69,54 @@ pub fn instrument(functions: &mut [MirFunction]) -> DebugProgramInfo {
     program
 }
 
+/// Rewrites every instrumentable function the same way `instrument`
+/// does -- same `__olive_debug_stmt` call at every distinct source line, so
+/// every stepping/pause/breakpoint safepoint `instrument`'s output has, this
+/// has too -- except `__olive_debug_store` calls aren't emitted eagerly
+/// after each assignment. They're deferred to the rare taken branch of the
+/// per-line conditional check instead, flushing every named local at once
+/// right before the line actually parks. A first cut of this tried skipping
+/// per-line checks entirely except at loop back-edges (only ~1 safepoint per
+/// iteration instead of one per statement); it broke `step_out` returning
+/// into straight-line code after a call with no further loop or call to
+/// safepoint on, since a function's dispatch cell only resolves once, at the
+/// call that invoked it -- no on-stack replacement, so a mid-flight clean
+/// invocation can't be steered onto a fresh instrumented body no matter when
+/// the cell flips. Precise stepping isn't optional, so this keeps the same
+/// per-line granularity and only cuts the store cost -- the smaller, safe
+/// half of the original idle-tax finding still holds (`dap.md`).
+///
+/// `fn_id` numbering must match `instrument`'s (same functions slice, same
+/// enumeration order) so `debug_enter`'s fn_id -> cell_count lookup resolves
+/// identically whichever variant is currently live behind the dispatch cell.
+pub fn instrument_clean(functions: &[MirFunction]) -> Vec<MirFunction> {
+    functions
+        .iter()
+        .enumerate()
+        .map(|(fn_id, func)| {
+            if func.is_async || !has_real_span(func) {
+                return func.clone();
+            }
+            let cells = named_cells(func);
+            let mut clean = func.clone();
+            let mut lines = HashSet::default();
+            let mut line_to_fn = HashMap::default();
+            instrument_function(
+                &mut clean,
+                fn_id as u32,
+                &cells,
+                &mut lines,
+                &mut line_to_fn,
+                true,
+            );
+            clean
+        })
+        .collect()
+}
+
 /// A function whose statements are all `Span::default()` is compiler-
 /// synthesized (the `__main__` wrapper), with no source line to stop at.
-fn has_real_span(func: &MirFunction) -> bool {
+pub(crate) fn has_real_span(func: &MirFunction) -> bool {
     func.basic_blocks
         .iter()
         .any(|bb| bb.statements.iter().any(|s| s.span != Span::default()))
@@ -75,11 +135,18 @@ fn named_cells(func: &MirFunction) -> Vec<CellInfo> {
         .collect()
 }
 
+/// `defer_stores`: `instrument`'s ordinary mode (`false`) emits
+/// `__olive_debug_store` right after each assignment, same as always.
+/// `instrument_clean`'s mode (`true`) skips those and instead has
+/// `make_stmt_conditional` flush every named local from the hook block,
+/// once per line actually taken, instead of once per assignment.
 fn instrument_function(
     func: &mut MirFunction,
     fn_id: u32,
     cells: &[CellInfo],
     lines: &mut HashSet<i64>,
+    line_to_fn: &mut HashMap<i64, u32>,
+    defer_stores: bool,
 ) {
     let cell_of: HashMap<usize, usize> = cells
         .iter()
@@ -89,15 +156,21 @@ fn instrument_function(
 
     // Phase 1: Instrument all blocks with debug hooks (same as before).
     let mut stmt_sites: Vec<(usize, usize, i64)> = Vec::new();
-    let mut entry_prelude = Some(build_entry_prelude(func, fn_id, func.arg_count, &cell_of));
+    let mut entry_prelude = Some(build_entry_prelude(
+        func,
+        fn_id,
+        func.arg_count,
+        &cell_of,
+        defer_stores,
+    ));
 
     for bb_idx in 0..func.basic_blocks.len() {
         let original = std::mem::take(&mut func.basic_blocks[bb_idx].statements);
         let mut rebuilt = entry_prelude.take().unwrap_or_default();
         let mut last_line: Option<i64> = None;
-        // Track original stmt index → position in instrumented block for
-        // D13a inlining: each debug_stmt call at `stmt_site` in the
-        // instrumented block will be wrapped with a conditional check.
+        // Track original stmt index → position in instrumented block: each
+        // debug_stmt call at `stmt_site` in the instrumented block gets
+        // wrapped with a conditional check below.
         let _stmt_start = rebuilt.len();
 
         for stmt in original {
@@ -105,6 +178,7 @@ fn instrument_function(
                 let packed = pack_line(&stmt.span);
                 if last_line != Some(packed) {
                     lines.insert(packed);
+                    line_to_fn.insert(packed, fn_id);
                     rebuilt.push(call_stmt(
                         func,
                         "__olive_debug_stmt",
@@ -116,12 +190,14 @@ fn instrument_function(
                 }
             }
 
-            let store = match &stmt.kind {
-                StatementKind::Assign(local, _) => cell_of
-                    .get(&local.0)
-                    .map(|&cell_idx| (cell_idx, *local, stmt.span)),
-                _ => None,
-            };
+            let store = (!defer_stores)
+                .then(|| match &stmt.kind {
+                    StatementKind::Assign(local, _) => cell_of
+                        .get(&local.0)
+                        .map(|&cell_idx| (cell_idx, *local, stmt.span)),
+                    _ => None,
+                })
+                .flatten();
 
             rebuilt.push(stmt);
 
@@ -152,16 +228,17 @@ fn instrument_function(
         }
     }
 
-    // Phase 2 (D13a): Replace each `__olive_debug_stmt` call with a
-    // conditional sequence that checks `__olive_debug_should_check_stmt()`
-    // first. Process blocks in reverse so block indices stay valid.
+    // Replace each `__olive_debug_stmt` call with a conditional sequence
+    // that checks `__olive_debug_should_check_stmt()` first. Process
+    // blocks in reverse so block indices stay valid.
+    let flush = defer_stores.then_some((cells, &cell_of));
     stmt_sites.reverse();
     for &(bb_idx, stmt_pos, packed) in &stmt_sites {
-        make_stmt_conditional(func, bb_idx, stmt_pos, packed);
+        make_stmt_conditional(func, bb_idx, stmt_pos, packed, flush);
     }
 }
 
-/// D13a: Replace the `__olive_debug_stmt(packed)` call at `stmt_pos`
+/// Replace the `__olive_debug_stmt(packed)` call at `stmt_pos`
 /// in basic block `bb_idx` with a conditional dispatch:
 ///
 ///   _check = __olive_debug_should_check_stmt()
@@ -169,13 +246,24 @@ fn instrument_function(
 ///       0 -> cont
 ///       _ -> hook_block
 ///   hook_block:
+///       [__olive_debug_store(cell, local) for every named cell, if deferred]
 ///       __olive_debug_stmt(packed)
 ///       goto cont
 ///   cont:
 ///       (rest of the original block after stmt_pos)
 ///
-/// The original block's terminator moves to the `cont` block.
-fn make_stmt_conditional(func: &mut MirFunction, bb_idx: usize, stmt_pos: usize, packed: i64) {
+/// The original block's terminator moves to the `cont` block. `flush`
+/// (set by `instrument_clean`) adds the bracketed stores: since that mode
+/// never runs a store eagerly at the assignment site, the rare taken branch
+/// has to flush every named local's current value before parking, or a
+/// stop here would report whatever the last flush (or entry) left behind.
+fn make_stmt_conditional(
+    func: &mut MirFunction,
+    bb_idx: usize,
+    stmt_pos: usize,
+    packed: i64,
+    flush: Option<(&[CellInfo], &HashMap<usize, usize>)>,
+) {
     let span = Span::default();
     let statements = std::mem::take(&mut func.basic_blocks[bb_idx].statements);
     let old_terminator = func.basic_blocks[bb_idx].terminator.take();
@@ -187,17 +275,34 @@ fn make_stmt_conditional(func: &mut MirFunction, bb_idx: usize, stmt_pos: usize,
     let after: Vec<Statement> = after.iter().skip(1).cloned().collect();
 
     let check_local = alloc_sink(func);
-    let hook_stmt = call_stmt(
+    let mut hook_stmts = Vec::new();
+    if let Some((cells, cell_of)) = flush {
+        for cell in cells {
+            let cell_idx = *cell_of
+                .get(&cell.local)
+                .expect("cell_of has every named local");
+            hook_stmts.push(call_stmt(
+                func,
+                "__olive_debug_store",
+                vec![
+                    Operand::Constant(Constant::Int(cell_idx as i64)),
+                    Operand::Copy(Local(cell.local)),
+                ],
+                span,
+            ));
+        }
+    }
+    hook_stmts.push(call_stmt(
         func,
         "__olive_debug_stmt",
         vec![Operand::Constant(Constant::Int(packed))],
         span,
-    );
+    ));
 
-    // -- hook_block: just the __olive_debug_stmt call, then goto cont --
+    // -- hook_block: the flush (if any) + __olive_debug_stmt, then goto cont --
     let hook_bb = BasicBlockId(func.basic_blocks.len());
     func.basic_blocks.push(BasicBlock {
-        statements: vec![hook_stmt],
+        statements: hook_stmts,
         terminator: None,
     });
 
@@ -245,11 +350,17 @@ fn make_stmt_conditional(func: &mut MirFunction, bb_idx: usize, stmt_pos: usize,
     });
 }
 
+/// `defer_stores` (set by `instrument_clean`): skips the per-arg stores below
+/// -- the first line's own conditional flush (`make_stmt_conditional`)
+/// covers every named local, args included, the first time anything is
+/// actually watching this call. Between entry and that first check, nothing
+/// can observe the frame anyway (no statement has executed yet).
 fn build_entry_prelude(
     func: &mut MirFunction,
     fn_id: u32,
     arg_count: usize,
     cell_of: &HashMap<usize, usize>,
+    defer_stores: bool,
 ) -> Vec<Statement> {
     let mut out = vec![call_stmt(
         func,
@@ -257,6 +368,9 @@ fn build_entry_prelude(
         vec![Operand::Constant(Constant::Int(fn_id as i64))],
         Span::default(),
     )];
+    if defer_stores {
+        return out;
+    }
     for local_idx in 1..=arg_count {
         if let Some(&cell_idx) = cell_of.get(&local_idx) {
             out.push(call_stmt(
@@ -521,5 +635,155 @@ mod tests {
         assert_eq!(before.basic_blocks, after.basic_blocks);
         assert_eq!(before.locals, after.locals);
         assert!(!program.functions.iter().any(|f| f.name == "fetch"));
+    }
+
+    fn clean(src: &str) -> Vec<MirFunction> {
+        let mut functions = crate::test_utils::build_mir(src);
+        Optimizer::minimal().run(&mut functions);
+        instrument_clean(&functions)
+    }
+
+    #[test]
+    fn clean_straight_line_fn_has_a_check_per_distinct_line_no_eager_stores() {
+        let functions =
+            clean("fn add(a: int, b: int) -> int:\n    let total = a + b\n    return total\n");
+        let add = find(&functions, "add");
+        let names = call_names(add);
+        assert_eq!(
+            names
+                .iter()
+                .filter(|&&n| n == "__olive_debug_enter")
+                .count(),
+            1
+        );
+        assert_eq!(
+            names.iter().filter(|&&n| n == "__olive_debug_exit").count(),
+            1
+        );
+        // Same per-line coverage as `instrument`: one check + one stmt hook
+        // per distinct source line (the assign and the return).
+        assert_eq!(
+            names.iter().filter(|&&n| n == "__olive_debug_stmt").count(),
+            2
+        );
+        assert_eq!(
+            names
+                .iter()
+                .filter(|&&n| n == "__olive_debug_should_check_stmt")
+                .count(),
+            2,
+        );
+        // No eager per-assignment stores: only the flush inside each line's
+        // taken branch, one store per named cell per line, nothing from the
+        // entry prelude itself.
+        let named = named_cells(add);
+        assert_eq!(
+            names
+                .iter()
+                .filter(|&&n| n == "__olive_debug_store")
+                .count(),
+            2 * named.len(),
+        );
+    }
+
+    #[test]
+    fn clean_loop_checks_every_line_same_as_instrument() {
+        let src = concat!(
+            "fn count(n: int) -> int:\n",
+            "    let mut total = 0\n",
+            "    let mut i = 0\n",
+            "    while i < n:\n",
+            "        total = total + i\n",
+            "        i = i + 1\n",
+            "    return total\n",
+        );
+        let mut functions = crate::test_utils::build_mir(src);
+        Optimizer::minimal().run(&mut functions);
+        let clean_fns = instrument_clean(&functions);
+        let mut full_fns = functions.clone();
+        instrument(&mut full_fns);
+        let full_count = find(&full_fns, "count");
+        let full_checks = call_names(full_count)
+            .iter()
+            .filter(|&&n| n == "__olive_debug_should_check_stmt")
+            .count();
+        let clean_count = find(&clean_fns, "count");
+        let clean_checks = call_names(clean_count)
+            .iter()
+            .filter(|&&n| n == "__olive_debug_should_check_stmt")
+            .count();
+
+        assert_eq!(
+            clean_checks, full_checks,
+            "clean and fully-instrumented variants must safepoint on the same lines"
+        );
+        assert!(
+            clean_checks > 1,
+            "loop condition and body are distinct lines"
+        );
+    }
+
+    #[test]
+    fn clean_and_instrumented_assign_the_same_fn_id() {
+        let src = "fn helper(x: int) -> int:\n    return x\nfn main():\n    print(helper(1))\n";
+        let mut functions = crate::test_utils::build_mir(src);
+        Optimizer::minimal().run(&mut functions);
+        let full = instrument(&mut functions.clone());
+        let clean_fns = instrument_clean(&functions);
+
+        let full_id = full
+            .functions
+            .iter()
+            .find(|f| f.name == "helper")
+            .unwrap()
+            .fn_id;
+
+        let helper_clean = find(&clean_fns, "helper");
+        let enter_call = helper_clean
+            .basic_blocks
+            .iter()
+            .flat_map(|bb| &bb.statements)
+            .find_map(|s| match &s.kind {
+                StatementKind::Assign(
+                    _,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function(name)),
+                        args,
+                    },
+                ) if name == "__olive_debug_enter" => match &args[0] {
+                    Operand::Constant(Constant::Int(id)) => Some(*id as u32),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("helper's clean variant has an enter hook");
+        assert_eq!(enter_call, full_id);
+    }
+
+    #[test]
+    fn clean_variant_runs_to_the_same_output_as_plain() {
+        use crate::test_utils::exec_lock;
+        let src = concat!(
+            "fn sum_to(n: int) -> int:\n",
+            "    let mut total = 0\n",
+            "    let mut i = 0\n",
+            "    while i < n:\n",
+            "        total = total + i\n",
+            "        i = i + 1\n",
+            "    return total\n",
+            "\n",
+            "fn main():\n",
+            "    print(sum_to(10))\n",
+        );
+        let functions = clean(src);
+        assert!(functions.iter().any(|f| f.name == "sum_to"));
+        let mut jit = crate::test_utils::compile_prebuilt(functions);
+        let ptr = jit.get_function("__main__").expect("__main__ not found");
+        let main_fn: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
+        let _guard = exec_lock();
+        // DEBUGGEE_ENABLED defaults off outside a real `pit debug` session,
+        // so the safepoint/enter/exit hooks all take their early-return --
+        // this must behave exactly like an uninstrumented sum_to(10) == 45.
+        assert_eq!(main_fn(), 0);
     }
 }

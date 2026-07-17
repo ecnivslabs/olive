@@ -25,7 +25,7 @@ thread_local! {
     /// Per-thread call stack. Only the debuggee thread ever pushes to this;
     /// a snapshot is cloned into the parked engine state on a stop.
     static FRAMES: RefCell<Vec<Frame>> = const { RefCell::new(Vec::new()) };
-    /// D13d: Cache of `(fn_id → cell_count)` populated on first visit per
+    /// Cache of `(fn_id → cell_count)` populated on first visit per
     /// fn_id. Avoids the session slot lookup in `debug_enter` for loops
     /// where the same fn_id repeats.
     static CELL_COUNT_CACHE: RefCell<FxHashMap<u32, usize>> =
@@ -42,7 +42,7 @@ pub(crate) struct Frame {
     pub(crate) cells: Vec<i64>,
 }
 
-// D13b: Combined session + breakpoint snapshot. Replaces two separate
+// Combined session + breakpoint snapshot. Replaces two separate
 // RwLocks (session_slot + breakpoint_set) with a single snapshot so
 // stmt_slow_path acquires one lock instead of two.
 struct SessionSnapshot {
@@ -62,8 +62,8 @@ static FORCE_CHECK: AtomicBool = AtomicBool::new(false);
 /// session that never touches `setExceptionBreakpoints` keeps today's
 /// stop-on-fault behavior.
 static STOP_ON_FAULT: AtomicBool = AtomicBool::new(true);
-/// D13f: True when any data watchpoint is active. Always false until D19
-/// implements the watch table; reserves the checkpoint so `debug_store`
+/// True when any data watchpoint is active. Always false until the watch
+/// table lands; reserves the checkpoint so `debug_store`
 /// skips its body when no watchers exist.
 static WATCH_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// Fast-path breakpoint set, synced with `SessionSnapshot::breakpoints`.
@@ -160,7 +160,7 @@ pub(crate) fn contains_breakpoint(packed: i64) -> bool {
         .read()
         .unwrap()
         .as_ref()
-        .map_or(false, |s| s.breakpoints.contains(&packed))
+        .is_some_and(|s| s.breakpoints.contains(&packed))
 }
 
 pub(crate) fn set_force_check(v: bool) {
@@ -179,7 +179,7 @@ pub(crate) fn disable_debuggee() {
     DEBUGGEE_ENABLED.set(false);
 }
 
-/// D13a: Inline stmt-check helper. Called from JIT'd code before every
+/// Inline stmt-check helper. Called from JIT'd code before every
 /// `debug_stmt` call. Returns 0 when this specific statement can be
 /// skipped (no breakpoint on this line and no stepping is active).
 /// Combined zero-check + per-line breakpoint check in one function so
@@ -211,7 +211,7 @@ pub extern "C" fn debug_should_check_stmt(packed: i64) -> i64 {
     0
 }
 
-/// Called from JIT code when the inline check (D13a) determines this
+/// Called from JIT code when the inline check above determines this
 /// statement actually needs a stop. Only called for lines that are either
 /// a breakpoint or being stepped through, so it goes directly to the
 /// slow path without re-checking.
@@ -223,7 +223,7 @@ pub extern "C" fn debug_stmt(packed: i64) {
 }
 
 fn stmt_slow_path(packed: i64) {
-    // D13e: Update line without cloning the frame yet.
+    // Update line without cloning the frame yet.
     FRAMES.with_borrow_mut(|frames| {
         if let Some(top) = frames.last_mut() {
             top.line = packed;
@@ -231,8 +231,8 @@ fn stmt_slow_path(packed: i64) {
     });
     let depth = FRAMES.with_borrow(|frames| frames.len());
 
-    // Check breakpoint membership before cloning the frame (D13e).
-    // Use the combined snapshot (D13b) to check both session and bp set.
+    // Check breakpoint membership before cloning the frame.
+    // Use the combined snapshot to check both session and bp set.
     let state = session_state().read().unwrap();
     let Some(snap) = state.as_ref() else {
         return;
@@ -255,7 +255,7 @@ fn stmt_slow_path(packed: i64) {
     shared.park(reason, snapshot);
 }
 
-/// D13d: Cached cell count. Checks the TLS cache before falling back to
+/// Cached cell count. Checks the TLS cache before falling back to
 /// the session slot. Loops calling the same fn_id hit the cache after
 /// the first entry.
 pub extern "C" fn debug_enter(fn_id: i64) {
@@ -286,15 +286,15 @@ pub extern "C" fn debug_enter(fn_id: i64) {
     });
 }
 
-/// D13f: Fast path that reserves the WATCH_ACTIVE check point. The watch
-/// table body is empty until D19; the frame write always runs since
-/// variable inspection needs current cell values.
+/// Fast path that reserves the WATCH_ACTIVE check point. The watch
+/// table body is empty until data breakpoints land; the frame write always
+/// runs since variable inspection needs current cell values.
 pub extern "C" fn debug_store(cell_idx: i64, value: i64) {
     if !DEBUGGEE_ENABLED.get() {
         return;
     }
     if WATCH_ACTIVE.load(Ordering::Relaxed) {
-        // D19 will add watch table lookup here.
+        // Watch table lookup goes here once data breakpoints exist.
     }
     FRAMES.with_borrow_mut(|frames| {
         if let Some(top) = frames.last_mut()

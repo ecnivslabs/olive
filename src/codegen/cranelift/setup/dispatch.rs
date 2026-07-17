@@ -11,8 +11,12 @@ impl<M: Module> CraneliftCodegen<M> {
     /// site (`count_any_add_sites`) -- narrower than "contains a loop" since
     /// `retier` no longer re-optimizes, so specialization is the only payoff.
     /// A loop with no such site gets no cell: pure indirection tax otherwise.
+    ///
+    /// `debug_dual_variant` widens this to every debug-instrumentable
+    /// function, Any-add sites or not: `tooling::dap::launch` needs a cell
+    /// on each one to swap between its clean and `$debug` compiled bodies.
     pub(super) fn generate_dispatch_cells(&mut self) {
-        if !self.profile {
+        if !self.profile && !self.debug_dual_variant {
             return;
         }
         let (_, any_add_ranges) = self.count_any_add_sites();
@@ -21,9 +25,10 @@ impl<M: Module> CraneliftCodegen<M> {
             .iter()
             .filter(|f| {
                 !f.is_async
-                    && any_add_ranges
+                    && (any_add_ranges
                         .get(&f.name)
                         .is_some_and(|&(start, end)| end > start)
+                        || (self.debug_dual_variant && crate::mir::debug_hooks::has_real_span(f)))
             })
             .map(|f| f.name.clone())
             .collect();

@@ -1,4 +1,5 @@
 mod async_sm;
+pub(crate) mod debug_variant;
 mod imports;
 mod jit_loader;
 pub(crate) mod profile;
@@ -862,6 +863,12 @@ pub struct CraneliftCodegen<M: Module> {
     /// tier-up recompiler can retarget the cell without touching call sites. Populated
     /// only when `profile` is set (JIT); AOT keeps today's direct calls.
     pub(super) dispatch_ids: HashMap<String, DataId>,
+    /// When set, `generate_dispatch_cells` installs a cell for every
+    /// debug-instrumentable function (not just the Any-add-site subset),
+    /// so `tooling::dap::launch` can swap each one between its clean and
+    /// `$debug` compiled bodies. Only ever set for a `pit debug` session's
+    /// codegen; `pit run` never touches this.
+    pub(crate) debug_dual_variant: bool,
     /// One 1-byte kind-history cell per `Any`-typed `+` call site in source order,
     /// allocated by `generate_kind_history` (counts sites first, then allocates).
     /// `translate_binop.rs` consumes them via `any_add_site_cursor` in the same
@@ -1228,6 +1235,7 @@ impl CraneliftCodegen<JITModule> {
             profile: true,
             hotcount_ids: HashMap::default(),
             dispatch_ids: HashMap::default(),
+            debug_dual_variant: false,
             any_add_site_ids: Vec::new(),
             any_add_site_cursor: 0,
             any_add_site_ranges: HashMap::default(),
@@ -1383,6 +1391,7 @@ impl CraneliftCodegen<ObjectModule> {
             profile: false,
             hotcount_ids: HashMap::default(),
             dispatch_ids: HashMap::default(),
+            debug_dual_variant: false,
             any_add_site_ids: Vec::new(),
             any_add_site_cursor: 0,
             any_add_site_ranges: HashMap::default(),
