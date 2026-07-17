@@ -259,6 +259,12 @@ impl EngineShared {
         self.resume(RunMode::Pause, true);
     }
 
+    /// Toggles whether a runtime fault parks the debuggee before the process
+    /// exits, per the client's `faults` exception-breakpoint filter.
+    pub(crate) fn set_stop_on_faults(&self, v: bool) {
+        hooks::set_stop_on_fault(v);
+    }
+
     /// Runs to the next stmt hook at the same or a shallower frame on a
     /// different line: steps over a call without stopping inside it.
     pub fn next(&self) {

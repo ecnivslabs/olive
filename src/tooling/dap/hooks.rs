@@ -43,6 +43,11 @@ static BP_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// True whenever a stop condition doesn't depend on the breakpoint set
 /// (pending stop-on-entry, an active pause request).
 static FORCE_CHECK: AtomicBool = AtomicBool::new(false);
+/// Whether a runtime fault parks the debuggee before the process exits, per
+/// the client's `faults` exception-breakpoint filter. Defaults to on so a
+/// session that never touches `setExceptionBreakpoints` keeps today's
+/// stop-on-fault behavior.
+static STOP_ON_FAULT: AtomicBool = AtomicBool::new(true);
 
 fn session_slot() -> &'static RwLock<Option<Arc<EngineShared>>> {
     static SESSION: OnceLock<RwLock<Option<Arc<EngineShared>>>> = OnceLock::new();
@@ -65,6 +70,7 @@ pub(crate) fn install_session(shared: Arc<EngineShared>) -> Result<(), ()> {
     }
     replace_breakpoints(FxHashSet::default());
     set_force_check(shared.wants_stop_on_entry());
+    set_stop_on_fault(true);
     *slot = Some(shared);
     Ok(())
 }
@@ -85,6 +91,10 @@ pub(crate) fn replace_breakpoints(keys: FxHashSet<i64>) {
 
 pub(crate) fn set_force_check(v: bool) {
     FORCE_CHECK.store(v, Ordering::Relaxed);
+}
+
+pub(crate) fn set_stop_on_fault(v: bool) {
+    STOP_ON_FAULT.store(v, Ordering::Relaxed);
 }
 
 pub(crate) fn enable_debuggee() {
@@ -173,7 +183,7 @@ pub extern "C" fn debug_exit() {
 /// `FRAMES` snapshot `debug_stmt` would: nothing was popped, since a fault
 /// aborts mid-statement rather than returning cleanly.
 pub extern "C" fn debug_fault_hook(code_ptr: i64, msg_ptr: i64, _loc_ptr: i64) {
-    if !DEBUGGEE_ENABLED.get() {
+    if !DEBUGGEE_ENABLED.get() || !STOP_ON_FAULT.load(Ordering::Relaxed) {
         return;
     }
     let code = unsafe { CStr::from_ptr(code_ptr as *const c_char) }
