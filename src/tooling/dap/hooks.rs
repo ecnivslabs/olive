@@ -9,11 +9,12 @@
 //! through the `pub(crate)` functions below, never through a bare static.
 
 use super::engine::{EngineShared, StopReason};
+use rustc_hash::FxHashMap;
 use rustc_hash::FxHashSet;
 use std::cell::{Cell, RefCell};
 use std::ffi::CStr;
 use std::os::raw::c_char;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
 thread_local! {
@@ -24,6 +25,11 @@ thread_local! {
     /// Per-thread call stack. Only the debuggee thread ever pushes to this;
     /// a snapshot is cloned into the parked engine state on a stop.
     static FRAMES: RefCell<Vec<Frame>> = const { RefCell::new(Vec::new()) };
+    /// D13d: Cache of `(fn_id → cell_count)` populated on first visit per
+    /// fn_id. Avoids the session slot lookup in `debug_enter` for loops
+    /// where the same fn_id repeats.
+    static CELL_COUNT_CACHE: RefCell<FxHashMap<u32, usize>> =
+        RefCell::new(FxHashMap::default());
 }
 
 /// Raw captured frame: `line` is the packed `(file_id << 32) | line` value
@@ -34,6 +40,14 @@ pub(crate) struct Frame {
     pub(crate) fn_id: u32,
     pub(crate) line: i64,
     pub(crate) cells: Vec<i64>,
+}
+
+// D13b: Combined session + breakpoint snapshot. Replaces two separate
+// RwLocks (session_slot + breakpoint_set) with a single snapshot so
+// stmt_slow_path acquires one lock instead of two.
+struct SessionSnapshot {
+    shared: Option<Arc<EngineShared>>,
+    breakpoints: FxHashSet<i64>,
 }
 
 /// Nonzero whenever any breakpoint is set anywhere in the program; checked
@@ -48,15 +62,23 @@ static FORCE_CHECK: AtomicBool = AtomicBool::new(false);
 /// session that never touches `setExceptionBreakpoints` keeps today's
 /// stop-on-fault behavior.
 static STOP_ON_FAULT: AtomicBool = AtomicBool::new(true);
+/// D13f: True when any data watchpoint is active. Always false until D19
+/// implements the watch table; reserves the checkpoint so `debug_store`
+/// skips its body when no watchers exist.
+static WATCH_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// Fast-path breakpoint set, synced with `SessionSnapshot::breakpoints`.
+/// Read directly by `debug_stmt` to avoid the `session_state()` indirection
+/// (OnceLock + RwLock<Option<...>> + as_ref) on every statement.
+static FAST_BP_SET: OnceLock<RwLock<FxHashSet<i64>>> = OnceLock::new();
+/// Single-breakpoint fast path: when exactly one breakpoint is set, stores
+/// its packed line here so `should_check_stmt` can check it with one
+/// relaxed atomic load instead of acquiring a RwLock. -1 = no breakpoints,
+/// i64::MAX = multiple breakpoints (fall back to FAST_BP_SET).
+static SINGLE_BP_LINE: AtomicI64 = AtomicI64::new(-1);
 
-fn session_slot() -> &'static RwLock<Option<Arc<EngineShared>>> {
-    static SESSION: OnceLock<RwLock<Option<Arc<EngineShared>>>> = OnceLock::new();
-    SESSION.get_or_init(|| RwLock::new(None))
-}
-
-fn breakpoint_set() -> &'static RwLock<FxHashSet<i64>> {
-    static SET: OnceLock<RwLock<FxHashSet<i64>>> = OnceLock::new();
-    SET.get_or_init(|| RwLock::new(FxHashSet::default()))
+fn session_state() -> &'static RwLock<Option<SessionSnapshot>> {
+    static STATE: OnceLock<RwLock<Option<SessionSnapshot>>> = OnceLock::new();
+    STATE.get_or_init(|| RwLock::new(None))
 }
 
 /// Installs the process's one live session. Errors if a session is already
@@ -64,29 +86,81 @@ fn breakpoint_set() -> &'static RwLock<FxHashSet<i64>> {
 /// packed keys (file ids are only unique within a single compile) never leak
 /// into the new one.
 pub(crate) fn install_session(shared: Arc<EngineShared>) -> Result<(), ()> {
-    let mut slot = session_slot().write().unwrap();
-    if slot.is_some() {
+    let mut state = session_state().write().unwrap();
+    if state.is_some() {
         return Err(());
     }
-    replace_breakpoints(FxHashSet::default());
     set_force_check(shared.wants_stop_on_entry());
     set_stop_on_fault(true);
-    *slot = Some(shared);
+    WATCH_ACTIVE.store(false, Ordering::Relaxed);
+    SINGLE_BP_LINE.store(-1, Ordering::Relaxed);
+    *FAST_BP_SET
+        .get_or_init(|| RwLock::new(FxHashSet::default()))
+        .write()
+        .unwrap() = FxHashSet::default();
+    *state = Some(SessionSnapshot {
+        breakpoints: FxHashSet::default(),
+        shared: Some(shared),
+    });
+    BP_COUNT.store(0, Ordering::Relaxed);
     Ok(())
 }
 
 pub(crate) fn clear_session() {
-    *session_slot().write().unwrap() = None;
+    *session_state().write().unwrap() = None;
     set_force_check(false);
+    WATCH_ACTIVE.store(false, Ordering::Relaxed);
+    SINGLE_BP_LINE.store(-1, Ordering::Relaxed);
+    if let Some(bp) = FAST_BP_SET.get() {
+        *bp.write().unwrap() = FxHashSet::default();
+    }
 }
 
-pub(crate) fn is_breakpoint(packed: i64) -> bool {
-    breakpoint_set().read().unwrap().contains(&packed)
+/// Returns a clone of the engine shared reference, if the session is active.
+pub(crate) fn session_shared() -> Option<Arc<EngineShared>> {
+    session_state()
+        .read()
+        .unwrap()
+        .as_ref()
+        .and_then(|s| s.shared.clone())
 }
 
 pub(crate) fn replace_breakpoints(keys: FxHashSet<i64>) {
     BP_COUNT.store(keys.len(), Ordering::Relaxed);
-    *breakpoint_set().write().unwrap() = keys;
+    let mut state = session_state().write().unwrap();
+    if let Some(snap) = state.as_mut() {
+        snap.breakpoints = keys.clone();
+    }
+    // Sync SINGLE_BP_LINE for the lock-free single-breakpoint fast path.
+    match keys.len() {
+        0 => SINGLE_BP_LINE.store(-1, Ordering::Relaxed),
+        1 => {
+            if let Some(&line) = keys.iter().next() {
+                SINGLE_BP_LINE.store(line, Ordering::Relaxed);
+            }
+        }
+        _ => SINGLE_BP_LINE.store(i64::MAX, Ordering::Relaxed),
+    }
+    *FAST_BP_SET
+        .get_or_init(|| RwLock::new(FxHashSet::default()))
+        .write()
+        .unwrap() = keys;
+}
+
+fn fast_bp_contains(packed: i64) -> bool {
+    FAST_BP_SET
+        .get()
+        .map(|set| set.read().unwrap().contains(&packed))
+        .unwrap_or(false)
+}
+
+/// Read-only access to the breakpoint set. Used only by `stop_reason_for`.
+pub(crate) fn contains_breakpoint(packed: i64) -> bool {
+    session_state()
+        .read()
+        .unwrap()
+        .as_ref()
+        .map_or(false, |s| s.breakpoints.contains(&packed))
 }
 
 pub(crate) fn set_force_check(v: bool) {
@@ -105,30 +179,75 @@ pub(crate) fn disable_debuggee() {
     DEBUGGEE_ENABLED.set(false);
 }
 
+/// D13a: Inline stmt-check helper. Called from JIT'd code before every
+/// `debug_stmt` call. Returns 0 when this specific statement can be
+/// skipped (no breakpoint on this line and no stepping is active).
+/// Combined zero-check + per-line breakpoint check in one function so
+/// the MIR conditional ONLY dispatches to `debug_stmt` when there's
+/// genuinely a reason to stop.
+///
+/// Uses three-tier fast path:
+/// 1. No breakpoints + not stepping → return 0 (2 relaxed atomics, no lock)
+/// 2. Singe breakpoint → compare `SINGLE_BP_LINE` directly (1 atomic load)
+/// 3. Multi breakpoint → fall back to `FAST_BP_SET` RwLock
+pub extern "C" fn debug_should_check_stmt(packed: i64) -> i64 {
+    if FORCE_CHECK.load(Ordering::Relaxed) {
+        return 1;
+    }
+    let count = BP_COUNT.load(Ordering::Relaxed);
+    if count == 0 {
+        return 0;
+    }
+    // Single-breakpoint fast path: compare against the cached line.
+    if count == 1 {
+        let single = SINGLE_BP_LINE.load(Ordering::Relaxed);
+        // single == -1 is the clear-session sentinel; safe to compare.
+        return if single == packed { 1 } else { 0 };
+    }
+    // Multiple breakpoints: fall back to the hash set.
+    if fast_bp_contains(packed) {
+        return 1;
+    }
+    0
+}
+
+/// Called from JIT code when the inline check (D13a) determines this
+/// statement actually needs a stop. Only called for lines that are either
+/// a breakpoint or being stepped through, so it goes directly to the
+/// slow path without re-checking.
 pub extern "C" fn debug_stmt(packed: i64) {
     if !DEBUGGEE_ENABLED.get() {
-        return;
-    }
-    if BP_COUNT.load(Ordering::Relaxed) == 0 && !FORCE_CHECK.load(Ordering::Relaxed) {
         return;
     }
     stmt_slow_path(packed);
 }
 
 fn stmt_slow_path(packed: i64) {
-    let (depth, top) = FRAMES.with_borrow_mut(|frames| {
+    // D13e: Update line without cloning the frame yet.
+    FRAMES.with_borrow_mut(|frames| {
         if let Some(top) = frames.last_mut() {
             top.line = packed;
         }
-        (frames.len(), frames.last().cloned())
     });
+    let depth = FRAMES.with_borrow(|frames| frames.len());
+
+    // Check breakpoint membership before cloning the frame (D13e).
+    // Use the combined snapshot (D13b) to check both session and bp set.
+    let state = session_state().read().unwrap();
+    let Some(snap) = state.as_ref() else {
+        return;
+    };
+    let Some(shared) = snap.shared.clone() else {
+        return;
+    };
+    // Delay frame clone until after we know there's a reason to stop.
+    // We need the top frame for stop_reason_for's condition evaluation.
+    let top: Option<Frame> = FRAMES.with_borrow(|frames| frames.last().cloned());
     let Some(top) = top else {
         return;
     };
+    drop(state);
 
-    let Some(shared) = session_slot().read().unwrap().clone() else {
-        return;
-    };
     let Some(reason) = shared.stop_reason_for(packed, depth, &top) else {
         return;
     };
@@ -136,28 +255,46 @@ fn stmt_slow_path(packed: i64) {
     shared.park(reason, snapshot);
 }
 
+/// D13d: Cached cell count. Checks the TLS cache before falling back to
+/// the session slot. Loops calling the same fn_id hit the cache after
+/// the first entry.
 pub extern "C" fn debug_enter(fn_id: i64) {
     if !DEBUGGEE_ENABLED.get() {
         return;
     }
-    let cell_count = session_slot()
-        .read()
-        .unwrap()
-        .as_ref()
-        .and_then(|s| s.cell_count(fn_id as u32))
-        .unwrap_or(0);
+    let fid = fn_id as u32;
+    let cell_count = CELL_COUNT_CACHE.with_borrow_mut(|cache| {
+        if let Some(&count) = cache.get(&fid) {
+            return count;
+        }
+        let count = session_state()
+            .read()
+            .unwrap()
+            .as_ref()
+            .and_then(|s| s.shared.as_ref())
+            .and_then(|s| s.cell_count(fid))
+            .unwrap_or(0);
+        cache.insert(fid, count);
+        count
+    });
     FRAMES.with_borrow_mut(|frames| {
         frames.push(Frame {
-            fn_id: fn_id as u32,
+            fn_id: fid,
             line: 0,
             cells: vec![0; cell_count],
         });
     });
 }
 
+/// D13f: Fast path that reserves the WATCH_ACTIVE check point. The watch
+/// table body is empty until D19; the frame write always runs since
+/// variable inspection needs current cell values.
 pub extern "C" fn debug_store(cell_idx: i64, value: i64) {
     if !DEBUGGEE_ENABLED.get() {
         return;
+    }
+    if WATCH_ACTIVE.load(Ordering::Relaxed) {
+        // D19 will add watch table lookup here.
     }
     FRAMES.with_borrow_mut(|frames| {
         if let Some(top) = frames.last_mut()
@@ -192,7 +329,7 @@ pub extern "C" fn debug_fault_hook(code_ptr: i64, msg_ptr: i64, _loc_ptr: i64) {
     let message = unsafe { CStr::from_ptr(msg_ptr as *const c_char) }
         .to_string_lossy()
         .into_owned();
-    let Some(shared) = session_slot().read().unwrap().clone() else {
+    let Some(shared) = session_shared() else {
         return;
     };
     let snapshot = FRAMES.with_borrow(|frames| frames.clone());
@@ -202,8 +339,12 @@ pub extern "C" fn debug_fault_hook(code_ptr: i64, msg_ptr: i64, _loc_ptr: i64) {
 /// Symbols registered unconditionally into every JIT module. Nothing calls
 /// through them unless a debug session instrumented the MIR first, so a
 /// registered-but-unused symbol costs nothing at runtime.
-pub fn jit_symbols() -> [(&'static str, *const u8); 4] {
+pub fn jit_symbols() -> [(&'static str, *const u8); 5] {
     [
+        (
+            "__olive_debug_should_check_stmt",
+            debug_should_check_stmt as *const u8,
+        ),
         ("__olive_debug_stmt", debug_stmt as *const u8),
         ("__olive_debug_enter", debug_enter as *const u8),
         ("__olive_debug_store", debug_store as *const u8),

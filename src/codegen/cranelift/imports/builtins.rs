@@ -622,6 +622,7 @@ pub(crate) fn resolve_builtin_import(
             "__olive_assert_fail" => Some("__olive_assert_fail"),
             "__olive_shadow_push" => Some("__olive_shadow_push"),
             "__olive_shadow_pop" => Some("__olive_shadow_pop"),
+            "__olive_debug_should_check_stmt" => Some("__olive_debug_should_check_stmt"),
             "__olive_debug_stmt" => Some("__olive_debug_stmt"),
             "__olive_debug_enter" => Some("__olive_debug_enter"),
             "__olive_debug_store" => Some("__olive_debug_store"),

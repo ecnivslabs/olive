@@ -87,12 +87,18 @@ fn instrument_function(
         .map(|(cell_idx, c)| (c.local, cell_idx))
         .collect();
 
+    // Phase 1: Instrument all blocks with debug hooks (same as before).
+    let mut stmt_sites: Vec<(usize, usize, i64)> = Vec::new();
     let mut entry_prelude = Some(build_entry_prelude(func, fn_id, func.arg_count, &cell_of));
 
     for bb_idx in 0..func.basic_blocks.len() {
         let original = std::mem::take(&mut func.basic_blocks[bb_idx].statements);
         let mut rebuilt = entry_prelude.take().unwrap_or_default();
         let mut last_line: Option<i64> = None;
+        // Track original stmt index → position in instrumented block for
+        // D13a inlining: each debug_stmt call at `stmt_site` in the
+        // instrumented block will be wrapped with a conditional check.
+        let _stmt_start = rebuilt.len();
 
         for stmt in original {
             if stmt.span != Span::default() {
@@ -105,6 +111,7 @@ fn instrument_function(
                         vec![Operand::Constant(Constant::Int(packed))],
                         stmt.span,
                     ));
+                    stmt_sites.push((bb_idx, rebuilt.len() - 1, packed));
                     last_line = Some(packed);
                 }
             }
@@ -144,6 +151,98 @@ fn instrument_function(
             func.basic_blocks[bb_idx].statements.push(exit_call);
         }
     }
+
+    // Phase 2 (D13a): Replace each `__olive_debug_stmt` call with a
+    // conditional sequence that checks `__olive_debug_should_check_stmt()`
+    // first. Process blocks in reverse so block indices stay valid.
+    stmt_sites.reverse();
+    for &(bb_idx, stmt_pos, packed) in &stmt_sites {
+        make_stmt_conditional(func, bb_idx, stmt_pos, packed);
+    }
+}
+
+/// D13a: Replace the `__olive_debug_stmt(packed)` call at `stmt_pos`
+/// in basic block `bb_idx` with a conditional dispatch:
+///
+///   _check = __olive_debug_should_check_stmt()
+///   switchint _check:
+///       0 -> cont
+///       _ -> hook_block
+///   hook_block:
+///       __olive_debug_stmt(packed)
+///       goto cont
+///   cont:
+///       (rest of the original block after stmt_pos)
+///
+/// The original block's terminator moves to the `cont` block.
+fn make_stmt_conditional(func: &mut MirFunction, bb_idx: usize, stmt_pos: usize, packed: i64) {
+    let span = Span::default();
+    let statements = std::mem::take(&mut func.basic_blocks[bb_idx].statements);
+    let old_terminator = func.basic_blocks[bb_idx].terminator.take();
+
+    // Split: statements before the hook call stay in the original block.
+    let (before, after) = statements.split_at(stmt_pos);
+    let before: Vec<Statement> = before.to_vec();
+    // The first element of `after` is the debug_stmt call; skip it.
+    let after: Vec<Statement> = after.iter().skip(1).cloned().collect();
+
+    let check_local = alloc_sink(func);
+    let hook_stmt = call_stmt(
+        func,
+        "__olive_debug_stmt",
+        vec![Operand::Constant(Constant::Int(packed))],
+        span,
+    );
+
+    // -- hook_block: just the __olive_debug_stmt call, then goto cont --
+    let hook_bb = BasicBlockId(func.basic_blocks.len());
+    func.basic_blocks.push(BasicBlock {
+        statements: vec![hook_stmt],
+        terminator: None,
+    });
+
+    // -- cont block: remaining original statements + original terminator --
+    let cont_bb = BasicBlockId(func.basic_blocks.len());
+    func.basic_blocks.push(BasicBlock {
+        statements: after,
+        terminator: old_terminator,
+    });
+
+    // -- Set hook block's terminator to goto cont --
+    func.basic_blocks[hook_bb.0].terminator = Some(Terminator {
+        kind: TerminatorKind::Goto { target: cont_bb },
+        span,
+    });
+
+    // -- Original block: check + switchint --
+    let mut new_statements = before;
+    new_statements.push(Statement {
+        kind: StatementKind::Assign(
+            check_local,
+            Rvalue::Call {
+                func: Operand::Constant(Constant::Function(
+                    "__olive_debug_should_check_stmt".to_string(),
+                )),
+                args: vec![Operand::Constant(Constant::Int(packed))],
+            },
+        ),
+        span,
+    });
+    // Insert the __olive_debug_should_check_stmt import so the codegen
+    // can find it. The call_stmt helper already adds the function constant
+    // as part of the call; we just need to make sure the import table
+    // picks it up. Since collect_needed_imports scans all Rvalue::Calls,
+    // the reference above is enough.
+
+    func.basic_blocks[bb_idx].statements = new_statements;
+    func.basic_blocks[bb_idx].terminator = Some(Terminator {
+        kind: TerminatorKind::SwitchInt {
+            discr: Operand::Copy(check_local),
+            targets: vec![(0, cont_bb)],
+            otherwise: hook_bb,
+        },
+        span,
+    });
 }
 
 fn build_entry_prelude(

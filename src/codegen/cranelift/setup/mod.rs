@@ -506,6 +506,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_set_fault_loc", &sig_i64_void),
             ("__olive_shadow_push", &sig_i64_i64_void),
             ("__olive_shadow_pop", &sig_void_void),
+            ("__olive_debug_should_check_stmt", &sig_i64_i64),
             ("__olive_debug_stmt", &sig_i64_void),
             ("__olive_debug_enter", &sig_i64_void),
             ("__olive_debug_store", &sig_i64_i64_void),
