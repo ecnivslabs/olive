@@ -18,10 +18,6 @@ autoexamples = false
 name = "pit"
 path = "src/lib.rs"
 
-[[bin]]
-name = "dap_bench_drive"
-path = "benchmark/scripts/dap_bench_drive.rs"
-
 [dependencies]
 ariadne = "0.6.0"
 clap = { version = "4.6.1", features = ["derive"] }
