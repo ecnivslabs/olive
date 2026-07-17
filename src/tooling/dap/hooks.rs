@@ -13,9 +13,11 @@
 //! it in full.
 #![cfg_attr(not(test), allow(dead_code))]
 
-use super::engine::EngineShared;
+use super::engine::{EngineShared, StopReason};
 use rustc_hash::FxHashSet;
 use std::cell::{Cell, RefCell};
+use std::ffi::CStr;
+use std::os::raw::c_char;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -165,6 +167,28 @@ pub extern "C" fn debug_exit() {
     FRAMES.with_borrow_mut(|frames| {
         frames.pop();
     });
+}
+
+/// Installed once at launch via `olive_debug_set_fault_hook`, called from
+/// inside `abort_with` on whatever thread panicked (the debuggee thread in
+/// this single-session model). Parks like a breakpoint hit, using the same
+/// `FRAMES` snapshot `debug_stmt` would: nothing was popped, since a fault
+/// aborts mid-statement rather than returning cleanly.
+pub extern "C" fn debug_fault_hook(code_ptr: i64, msg_ptr: i64, _loc_ptr: i64) {
+    if !DEBUGGEE_ENABLED.get() {
+        return;
+    }
+    let code = unsafe { CStr::from_ptr(code_ptr as *const c_char) }
+        .to_string_lossy()
+        .into_owned();
+    let message = unsafe { CStr::from_ptr(msg_ptr as *const c_char) }
+        .to_string_lossy()
+        .into_owned();
+    let Some(shared) = session_slot().read().unwrap().clone() else {
+        return;
+    };
+    let snapshot = FRAMES.with_borrow(|frames| frames.clone());
+    shared.park(StopReason::Fault { code, message }, snapshot);
 }
 
 /// Symbols registered unconditionally into every JIT module. Nothing calls

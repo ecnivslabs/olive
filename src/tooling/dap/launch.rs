@@ -45,7 +45,7 @@ impl std::error::Error for LaunchError {}
 pub struct DebugSession {
     shared: Arc<EngineShared>,
     events_rx: Receiver<DebugEvent>,
-    _codegen: CraneliftCodegen<JITModule>,
+    codegen: CraneliftCodegen<JITModule>,
     debuggee: Option<JoinHandle<()>>,
 }
 
@@ -59,6 +59,12 @@ impl Deref for DebugSession {
 impl DebugSession {
     pub fn events(&self) -> &Receiver<DebugEvent> {
         &self.events_rx
+    }
+
+    /// Resolves a runtime (`std_lib`) symbol for value rendering and the
+    /// fault hook. Only valid while this session is alive.
+    pub(crate) fn runtime_symbol(&self, name: &str) -> Option<*const u8> {
+        self.codegen.runtime_symbol(name)
     }
 }
 
@@ -99,8 +105,21 @@ pub fn launch(program: &str, stop_on_entry: bool) -> Result<DebugSession, Launch
     };
 
     let (tx, rx) = mpsc::channel();
-    let shared = EngineShared::new(program_info, out.file_names.clone(), stop_on_entry, tx);
+    let shared = EngineShared::new(
+        program_info,
+        out.file_names.clone(),
+        stop_on_entry,
+        tx,
+        out.struct_fields.clone(),
+        out.field_types.clone(),
+        out.enum_defs.clone(),
+    );
     hooks::install_session(shared.clone()).map_err(|_| LaunchError::SessionActive)?;
+
+    if let Some(setter) = codegen.runtime_symbol("olive_debug_set_fault_hook") {
+        let install: extern "C" fn(i64) = unsafe { std::mem::transmute(setter) };
+        install(hooks::debug_fault_hook as *const () as i64);
+    }
 
     let main_fn: extern "C" fn() -> i64 = unsafe { std::mem::transmute(main_ptr) };
     let debuggee_shared = shared.clone();
@@ -119,7 +138,7 @@ pub fn launch(program: &str, stop_on_entry: bool) -> Result<DebugSession, Launch
     Ok(DebugSession {
         shared,
         events_rx: rx,
-        _codegen: codegen,
+        codegen,
         debuggee: Some(debuggee),
     })
 }

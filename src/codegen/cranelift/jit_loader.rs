@@ -7,7 +7,6 @@ impl CraneliftCodegen<JITModule> {
     /// reporting, value-formatting calls): `dlsym(RTLD_DEFAULT)` first, then
     /// the libraries retained in `_libs`, because libloading opens olive_std
     /// `RTLD_LOCAL` and bare `RTLD_DEFAULT` can miss it.
-    #[allow(dead_code)] // no caller wired up yet
     pub fn runtime_symbol(&self, name: &str) -> Option<*const u8> {
         let c_name = std::ffi::CString::new(name).ok()?;
         #[cfg(target_family = "unix")]
