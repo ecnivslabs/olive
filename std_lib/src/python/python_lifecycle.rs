@@ -8,7 +8,10 @@ use std::sync::atomic::Ordering;
 /// Tolerates abiflags (`libpython3.14t.so`) and versioned sonames
 /// (`libpython3.12.so.1.0`), the layout runtime-only installs ship.
 fn extract_python_minor(name: &str) -> u64 {
-    let Some(rest) = name.strip_prefix("libpython3").and_then(|r| r.strip_prefix('.')) else {
+    let Some(rest) = name
+        .strip_prefix("libpython3")
+        .and_then(|r| r.strip_prefix('.'))
+    else {
         return 0;
     };
     let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();

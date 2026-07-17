@@ -100,7 +100,11 @@ pub unsafe fn fetch_py_traceback() -> String {
                     PY_TUPLE_SET_ITEM(
                         args,
                         2,
-                        if ptraceback.is_null() { inc_none() } else { ptraceback },
+                        if ptraceback.is_null() {
+                            inc_none()
+                        } else {
+                            ptraceback
+                        },
                     );
                     ptype = std::ptr::null_mut();
                     ptraceback = std::ptr::null_mut();

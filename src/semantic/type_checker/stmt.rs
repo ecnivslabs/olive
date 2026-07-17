@@ -155,7 +155,10 @@ impl TypeChecker {
                     "statement block nested too deeply",
                     stmt.span,
                 )
-                .label(format!("nesting exceeds the limit of {}", crate::semantic::MAX_SEMANTIC_NESTING))
+                .label(format!(
+                    "nesting exceeds the limit of {}",
+                    crate::semantic::MAX_SEMANTIC_NESTING
+                ))
                 .help("flatten the nesting: extract inner blocks into functions"),
             ));
             return;
@@ -1175,8 +1178,7 @@ impl TypeChecker {
                         false,
                     );
                     self.c_ffi_structs.insert(type_name.clone());
-                    self.c_struct_is_union
-                        .insert(type_name.clone(), s.is_union);
+                    self.c_struct_is_union.insert(type_name.clone(), s.is_union);
                     let mut field_names = Vec::with_capacity(s.fields.len());
                     for field in &s.fields {
                         let resolved = self.resolve_type_expr(&field.ty);

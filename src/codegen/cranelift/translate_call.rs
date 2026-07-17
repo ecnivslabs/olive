@@ -684,8 +684,9 @@ impl<M: Module> CraneliftCodegen<M> {
                         let size_val = builder.ins().iconst(types::I64, size);
                         let alloc_inst = builder.ins().call(local_alloc, &[size_val]);
                         let heap_ptr = builder.inst_results(alloc_inst)[0];
-                        let copy_size =
-                            builder.ins().iconst(module.isa().pointer_type(), size as i64);
+                        let copy_size = builder
+                            .ins()
+                            .iconst(module.isa().pointer_type(), size as i64);
                         builder.call_memcpy(
                             module.isa().frontend_config(),
                             heap_ptr,

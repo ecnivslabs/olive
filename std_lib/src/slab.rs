@@ -701,9 +701,7 @@ impl SlabSet {
             iter: GenSlab::new(std::mem::size_of::<crate::list::OliveIter>()),
             str_slabs: std::array::from_fn(|_| None),
             struct_slabs: crate::struct_obj::StructSlabs::new(),
-            struct_box: GenSlab::new(std::mem::size_of::<
-                crate::struct_box::OliveStructBox,
-            >()),
+            struct_box: GenSlab::new(std::mem::size_of::<crate::struct_box::OliveStructBox>()),
         }
     }
 }

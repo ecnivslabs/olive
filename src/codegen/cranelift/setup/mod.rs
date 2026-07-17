@@ -1,7 +1,7 @@
 use super::CraneliftCodegen;
 use super::imports;
-use crate::semantic::abi::c_abi_eightbyte_size;
 use crate::mir::{Constant, Operand, Rvalue, StatementKind};
+use crate::semantic::abi::c_abi_eightbyte_size;
 use cranelift::codegen::ir::ArgumentPurpose;
 use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
@@ -18,10 +18,8 @@ mod strings;
 mod tests;
 impl<M: Module> CraneliftCodegen<M> {
     pub fn generate(&mut self) {
-        let needed = imports::collect_needed_imports(
-            &self.functions,
-            !self.c_struct_sizes.is_empty(),
-        );
+        let needed =
+            imports::collect_needed_imports(&self.functions, !self.c_struct_sizes.is_empty());
 
         let mk_sig = |params: &[cranelift::prelude::Type], returns: &[cranelift::prelude::Type]| {
             let mut sig = self.module.make_signature();
@@ -845,13 +843,12 @@ impl<M: Module> CraneliftCodegen<M> {
         ];
         for &(name, sig) in import_table {
             let always_needed = super::ASYNC_RUNTIME_SYMS.contains(&name);
-            let needed_for_c_or_traits =
-                ((name == "__olive_alloc"
-                    || name == "__olive_calloc"
-                    || name == "__olive_free_c_struct")
-                    && has_c_structs)
-                    || ((name == "__olive_fatptr_alloc" || name == "__olive_free_fatptr")
-                        && !self.vtables.is_empty());
+            let needed_for_c_or_traits = ((name == "__olive_alloc"
+                || name == "__olive_calloc"
+                || name == "__olive_free_c_struct")
+                && has_c_structs)
+                || ((name == "__olive_fatptr_alloc" || name == "__olive_free_fatptr")
+                    && !self.vtables.is_empty());
             let needed_for_debug_dual_variant =
                 self.debug_dual_variant && DEBUG_HOOK_SYMS.contains(&name);
             if !(needed.contains(name)

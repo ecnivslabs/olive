@@ -805,6 +805,14 @@ impl<'a> MirBuilder<'a> {
         local
     }
 
+    pub(super) fn transfer_temp_ownership(&mut self, op: &Operand) {
+        if let Operand::Copy(l) | Operand::Move(l) = op {
+            if self.current_locals[l.0].name.is_none() {
+                self.current_locals[l.0].is_owning = false;
+            }
+        }
+    }
+
     pub(super) fn new_block(&mut self) -> BasicBlockId {
         let id = self.current_blocks.len();
         self.current_blocks.push(BasicBlock {

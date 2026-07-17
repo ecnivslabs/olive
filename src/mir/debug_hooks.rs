@@ -306,9 +306,7 @@ fn instrument_function(
                 in_ctx[b] = new_in;
                 changed = true;
             }
-            let new_out = tail_line[b]
-                .map(RunCtx::Line)
-                .unwrap_or(in_ctx[b]);
+            let new_out = tail_line[b].map(RunCtx::Line).unwrap_or(in_ctx[b]);
             if new_out != out_ctx[b] {
                 out_ctx[b] = new_out;
                 changed = true;

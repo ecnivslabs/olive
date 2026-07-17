@@ -147,16 +147,10 @@ pub fn run_pipeline_opt(
     // exactly the block the field stores (and later FFI calls) expect.
     let mut native_struct_sizes: HashMap<&str, i64> = HashMap::default();
     for stmt in &program.stmts {
-        if let crate::parser::StmtKind::NativeImport {
-            alias,
-            structs,
-            ..
-        } = &stmt.kind
-        {
+        if let crate::parser::StmtKind::NativeImport { alias, structs, .. } = &stmt.kind {
             for s in structs {
                 let type_name: String = format!("{}::{}", alias, s.name);
-                let (_, total) =
-                    crate::semantic::abi::c_abi_layout(&s.fields, s.is_union);
+                let (_, total) = crate::semantic::abi::c_abi_layout(&s.fields, s.is_union);
                 native_struct_sizes.insert(type_name.leak(), total);
             }
         }

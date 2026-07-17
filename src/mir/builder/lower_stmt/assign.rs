@@ -200,6 +200,7 @@ impl<'a> MirBuilder<'a> {
             None => (self.lower_expr(value), self.get_type(value.id).clone()),
         };
         rval = self.coerce(rval, &value_ty, &target_ty, value.span);
+        self.transfer_temp_ownership(&rval);
         match &target.kind {
             ExprKind::Identifier(name) => {
                 if let Some(local) = self.lookup_var(name) {
@@ -228,7 +229,7 @@ impl<'a> MirBuilder<'a> {
                     // `rval` was already coerced to `target_ty` above; key the
                     // to-Python conversion off that so a float isn't wrapped twice.
                     let py_rval = self.emit_to_py_arg(rval, &target_ty, target.span);
-                    let dummy = self.new_local(Type::Any, None, false);
+                    let dummy = self.new_unscoped_local_with_owning(Type::Any, false);
                     self.push_statement(
                         StatementKind::Assign(
                             dummy,
@@ -266,7 +267,7 @@ impl<'a> MirBuilder<'a> {
                     } else {
                         "__olive_py_setitem"
                     };
-                    let dummy = self.new_local(Type::Any, None, false);
+                    let dummy = self.new_unscoped_local_with_owning(Type::Any, false);
                     self.push_statement(
                         StatementKind::Assign(
                             dummy,

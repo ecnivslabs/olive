@@ -50,7 +50,10 @@ impl TypeChecker {
                     "expression nested too deeply",
                     expr.span,
                 )
-                .label(format!("nesting exceeds the limit of {}", crate::semantic::MAX_SEMANTIC_NESTING))
+                .label(format!(
+                    "nesting exceeds the limit of {}",
+                    crate::semantic::MAX_SEMANTIC_NESTING
+                ))
                 .help("flatten the expression by binding sub-expressions to names"),
             ));
             return Type::Any;
@@ -118,11 +121,7 @@ impl TypeChecker {
                                     provider = Some(sname.clone());
                                 }
                             }
-                            if count == 1 {
-                                provider
-                            } else {
-                                None
-                            }
+                            if count == 1 { provider } else { None }
                         }
                         _ => None,
                     };
@@ -1287,9 +1286,7 @@ impl TypeChecker {
                 if let Type::Union(members) = &inner_obj {
                     for member in members {
                         if let Type::Struct(sname, _, _) = member
-                            && self
-                                .lookup_type(&format!("{}::{}", sname, attr))
-                                .is_some()
+                            && self.lookup_type(&format!("{}::{}", sname, attr)).is_some()
                         {
                             if union_provider.is_some() {
                                 union_ambiguous = true;
@@ -1303,8 +1300,7 @@ impl TypeChecker {
                     && !union_ambiguous
                 {
                     let mangled = format!("{}::{}", provider, attr);
-                    let instantiated =
-                        self.instantiate(self.lookup_type(&mangled).unwrap());
+                    let instantiated = self.instantiate(self.lookup_type(&mangled).unwrap());
                     if let Type::Fn(params, _, _) = &instantiated
                         && !params.is_empty()
                     {
@@ -1345,9 +1341,9 @@ impl TypeChecker {
                         matches!(m, Type::Struct(sname, _, _)
                             if self.lookup_type(&format!("{}::{}", sname, attr)).is_some())
                     });
-                    let builtin_like = members.iter().any(|m| {
-                        matches!(m, Type::Str | Type::Dict(_, _) | Type::Any)
-                    });
+                    let builtin_like = members
+                        .iter()
+                        .any(|m| matches!(m, Type::Str | Type::Dict(_, _) | Type::Any));
                     if !any_method && !builtin_like && !resolved_obj.is_py_value() {
                         self.errors.push(super::super::error::SemanticError::rich(
                             crate::compile::errors::Diagnostic::error(
@@ -1377,9 +1373,7 @@ impl TypeChecker {
                 if let Type::Union(members) = &inner_obj {
                     for member in members {
                         if let Type::Struct(sname, _, _) = member
-                            && self
-                                .lookup_type(&format!("{}::{}", sname, attr))
-                                .is_some()
+                            && self.lookup_type(&format!("{}::{}", sname, attr)).is_some()
                         {
                             if union_provider.is_some() {
                                 union_ambiguous = true;
@@ -1393,8 +1387,7 @@ impl TypeChecker {
                     && !union_ambiguous
                 {
                     let mangled = format!("{}::{}", provider, attr);
-                    let instantiated =
-                        self.instantiate(self.lookup_type(&mangled).unwrap());
+                    let instantiated = self.instantiate(self.lookup_type(&mangled).unwrap());
                     if let Type::Fn(params, _, _) = &instantiated
                         && !params.is_empty()
                     {
@@ -1419,9 +1412,7 @@ impl TypeChecker {
                     for member in members {
                         match member {
                             Type::Struct(sname, _, _)
-                                if self
-                                    .lookup_type(&format!("{}::{}", sname, attr))
-                                    .is_some() =>
+                                if self.lookup_type(&format!("{}::{}", sname, attr)).is_some() =>
                             {
                                 union_has_method = true;
                             }

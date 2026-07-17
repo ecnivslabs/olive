@@ -19,10 +19,7 @@ static UNIQUE: AtomicU64 = AtomicU64::new(0);
 
 fn run_src(src: &str) -> (String, String) {
     let id = UNIQUE.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "olive_agg_elem_{}_{id}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("olive_agg_elem_{}_{id}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("main.liv");
     let mut f = std::fs::File::create(&path).unwrap();
@@ -153,10 +150,7 @@ fn struct_dict_through_two_frames_survives_churn() {
 #[test]
 fn cross_module_dict_survives_churn() {
     let id = UNIQUE.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "olive_agg_mod_{}_{id}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("olive_agg_mod_{}_{id}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("auth.liv"),
@@ -223,7 +217,6 @@ fn nested_dict_literal_with_keys_iteration_survives_churn() {
         "Bearer public",
     );
 }
-
 
 /// A for-loop variable over a container borrows the container's element
 /// storage (`__olive_next` returns the raw slot pointer, no incref), so

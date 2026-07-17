@@ -864,8 +864,7 @@ impl<'a> MirBuilder<'a> {
             // `usize::MAX` marks a field no argument supplies; `position` on
             // the sentinel never matches, leaving that slot padded.
             for (i, op) in arg_ops.iter().enumerate() {
-                if let Some(target_idx) =
-                    kwarg_map.iter().position(|&x| x == i && x != usize::MAX)
+                if let Some(target_idx) = kwarg_map.iter().position(|&x| x == i && x != usize::MAX)
                 {
                     new_arg_ops[target_idx] = op.clone();
                     if let Some(ty) = arg_tys.get(i) {

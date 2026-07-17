@@ -173,8 +173,10 @@ fn concrete_c_struct_name(ty: &OliveType) -> &str {
     loop {
         match t {
             OliveType::Union(members) => {
-                let non_null: Vec<&OliveType> =
-                    members.iter().filter(|m| !matches!(m, OliveType::Null)).collect();
+                let non_null: Vec<&OliveType> = members
+                    .iter()
+                    .filter(|m| !matches!(m, OliveType::Null))
+                    .collect();
                 match non_null.as_slice() {
                     [single] => t = single,
                     _ => panic!("multi-member union has no single C struct layout"),

@@ -159,10 +159,7 @@ struct File:
             return ""
         if __olive_file_seek(self.handle, 0, 0) < 0:
             return ""
-        let content = __olive_file_read_n(self.handle, size)
-        if content == 0 or content == 1:
-            return ""
-        return content
+        return __olive_file_read_n(self.handle, size)
 
     fn write(self, data: str) -> bool:
         return __olive_file_write_str(self.handle, data) == 1
@@ -229,11 +226,8 @@ struct BufWriter:
         return _bufwrite_flush(self.handle)
 
 // Constructor functions
-fn open(path: str, mode: str = "r") -> File | None:
-    let h = __olive_file_open(path, mode)
-    if h == 0:
-        return None
-    return File(h)
+fn open(path: str, mode: str = "r") -> File:
+    return File(__olive_file_open(path, mode))
 
 fn bufread(path: str) -> BufReader | None:
     let h = _bufread_open(path)

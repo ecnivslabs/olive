@@ -176,7 +176,8 @@ fn dominance_sets(cfg: &Cfg, num_blocks: usize) -> Vec<HashSet<BasicBlockId>> {
         }
     }
 
-    let mut sets: Vec<HashSet<BasicBlockId>> = (0..num_blocks).map(|_| HashSet::default()).collect();
+    let mut sets: Vec<HashSet<BasicBlockId>> =
+        (0..num_blocks).map(|_| HashSet::default()).collect();
     for b in 0..num_blocks {
         let mut cur = b;
         loop {

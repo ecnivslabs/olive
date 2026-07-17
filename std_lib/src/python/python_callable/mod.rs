@@ -19,8 +19,8 @@
 mod dispatch;
 
 use crate::python::python_writeback::{
-    ARG_ANY, ARG_ANY_LIST, ARG_BOOL, ARG_BOOL_LIST, ARG_BYTES, ARG_FLOAT, ARG_FLOAT_LIST,
-    ARG_INT, ARG_INT_LIST, ARG_NONE, ARG_PYOBJECT, ARG_STR, ARG_STR_LIST, decode_scalar_arg,
+    ARG_ANY, ARG_ANY_LIST, ARG_BOOL, ARG_BOOL_LIST, ARG_BYTES, ARG_FLOAT, ARG_FLOAT_LIST, ARG_INT,
+    ARG_INT_LIST, ARG_NONE, ARG_PYOBJECT, ARG_STR, ARG_STR_LIST, decode_scalar_arg,
 };
 use crate::python::*;
 use std::os::raw::{c_char, c_void};

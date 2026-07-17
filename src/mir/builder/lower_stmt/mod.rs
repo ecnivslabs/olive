@@ -138,6 +138,7 @@ impl<'a> MirBuilder<'a> {
                 if self.is_collection_index(value) {
                     self.current_locals[local.0].is_owning = false;
                 }
+                self.transfer_temp_ownership(&rval);
                 self.push_statement(StatementKind::Assign(local, Rvalue::Use(rval)), stmt.span);
             }
 
@@ -373,7 +374,7 @@ impl<'a> MirBuilder<'a> {
                         if obj_ty.is_py_value() {
                             let rval =
                                 self.emit_to_py_arg(Operand::Copy(tmp), &target_ty, stmt.span);
-                            let dummy = self.new_local(Type::Any, None, false);
+                            let dummy = self.new_unscoped_local_with_owning(Type::Any, false);
                             self.push_statement(
                                 StatementKind::Assign(
                                     dummy,
@@ -404,7 +405,7 @@ impl<'a> MirBuilder<'a> {
                         if obj_ty.is_py_value() {
                             let rval =
                                 self.emit_to_py_arg(Operand::Copy(tmp), &target_ty, stmt.span);
-                            let dummy = self.new_local(Type::Any, None, false);
+                            let dummy = self.new_unscoped_local_with_owning(Type::Any, false);
                             self.push_statement(
                                 StatementKind::Assign(
                                     dummy,

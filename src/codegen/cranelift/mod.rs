@@ -483,7 +483,10 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_obj_get_boxed", b"olive_obj_get_boxed\0"),
     ("__olive_obj_get_checked", b"olive_obj_get_checked\0"),
     ("__olive_obj_get_default", b"olive_obj_get_default\0"),
-    ("__olive_obj_get_default_boxed", b"olive_obj_get_default_boxed\0"),
+    (
+        "__olive_obj_get_default_boxed",
+        b"olive_obj_get_default_boxed\0",
+    ),
     ("__olive_obj_keys", b"olive_obj_keys\0"),
     ("__olive_obj_items", b"olive_obj_items\0"),
     ("__olive_obj_len", b"olive_obj_len\0"),
@@ -1384,7 +1387,10 @@ impl CraneliftCodegen<JITModule> {
                                 .iter()
                                 .map(|p| resolve_name(&type_expr_to_name(&p.ty)))
                                 .collect(),
-                            ret: sig.ret.as_ref().map(|t| resolve_name(&type_expr_to_name(t))),
+                            ret: sig
+                                .ret
+                                .as_ref()
+                                .map(|t| resolve_name(&type_expr_to_name(t))),
                             is_vararg: sig.is_vararg,
                             n_fixed: sig.params.len(),
                             call_conv: sig.call_conv.clone(),

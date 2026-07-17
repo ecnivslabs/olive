@@ -317,7 +317,9 @@ pub extern "C" fn olive_process_wait_timeout(handle: i64, ms: i64) -> i64 {
             return WAIT_TIMEOUT;
         }
 
-        std::thread::sleep(WAIT_POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())));
+        std::thread::sleep(
+            WAIT_POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())),
+        );
     }
 }
 
@@ -333,7 +335,12 @@ fn pipe_snapshot(handle: i64, stderr: bool) -> Option<PipeSnapshot> {
     let e = table.get(&handle)?;
     Some(PipeSnapshot {
         buf: (if stderr { &e.stderr_buf } else { &e.stdout_buf }).clone(),
-        done: (if stderr { &e.stderr_done } else { &e.stdout_done }).clone(),
+        done: (if stderr {
+            &e.stderr_done
+        } else {
+            &e.stdout_done
+        })
+        .clone(),
         exited: e.exit_code.is_some(),
     })
 }

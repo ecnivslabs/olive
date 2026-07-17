@@ -502,7 +502,7 @@ mod parser_tests {
 #[cfg(test)]
 mod nesting_limit_tests {
     use crate::lexer::Lexer;
-    use crate::parser::{Parser, MAX_NESTING_DEPTH};
+    use crate::parser::{MAX_NESTING_DEPTH, Parser};
 
     /// Parsing near the depth limit costs several KB of stack per level
     /// (measured ~12 KB worst case for parenthesised expressions), far more
@@ -513,9 +513,7 @@ mod nesting_limit_tests {
             .stack_size(64 * 1024 * 1024)
             .spawn(move || {
                 let tokens = Lexer::new(&src, 0).tokenise().expect("lex error");
-                Parser::new(tokens)
-                    .parse_program()
-                    .map_err(|e| e.message)
+                Parser::new(tokens).parse_program().map_err(|e| e.message)
             })
             .expect("spawn test thread")
             .join()

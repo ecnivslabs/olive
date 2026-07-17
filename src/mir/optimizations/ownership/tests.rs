@@ -879,7 +879,11 @@ fn pure_param_escaping_arg_call_redirects_to_move() {
         is_async: false,
     };
     pass().run(&mut f);
-    assert_eq!(copy_calls(&f), 0, "dead pure param must transfer as move without copy");
+    assert_eq!(
+        copy_calls(&f),
+        0,
+        "dead pure param must transfer as move without copy"
+    );
     assert!(
         matches!(
             &f.basic_blocks[0].statements[1].kind,
@@ -933,5 +937,9 @@ fn pure_param_twice_escaping_arg_call_copies_then_moves() {
         is_async: false,
     };
     pass().run(&mut f);
-    assert_eq!(copy_calls(&f), 1, "first escape must copy, second escape can move");
+    assert_eq!(
+        copy_calls(&f),
+        1,
+        "first escape must copy, second escape can move"
+    );
 }

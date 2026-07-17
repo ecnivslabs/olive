@@ -462,10 +462,7 @@ unsafe fn dict_key_olive(key_obj: PyObject) -> i64 {
 ///
 /// A duplicate's replaced value is freed here too: it never becomes
 /// reachable from the map, so waiting for a later clear would leak it.
-unsafe fn sync_dict_entries(
-    pair: &WritebackPair,
-    decode_val: impl Fn(PyObject, i64) -> i64,
-) {
+unsafe fn sync_dict_entries(pair: &WritebackPair, decode_val: impl Fn(PyObject, i64) -> i64) {
     unsafe {
         crate::olive_obj_clear(pair.olive_ptr);
 
@@ -528,11 +525,13 @@ unsafe fn sync_dict(pair: &WritebackPair) {
 unsafe fn sync_dict_typed(pair: &WritebackPair) {
     unsafe {
         let kind = scalar_kind(pair.tag);
-        sync_dict_entries(pair, |val_obj, key_ptr| match decode_scalar(val_obj, kind) {
-            Ok(v) => v,
-            Err(actual) => {
-                let key_str = crate::olive_str_from_ptr(key_ptr);
-                writeback_type_fail(&format!("value at key \"{key_str}\""), pair.tag, &actual)
+        sync_dict_entries(pair, |val_obj, key_ptr| {
+            match decode_scalar(val_obj, kind) {
+                Ok(v) => v,
+                Err(actual) => {
+                    let key_str = crate::olive_str_from_ptr(key_ptr);
+                    writeback_type_fail(&format!("value at key \"{key_str}\""), pair.tag, &actual)
+                }
             }
         });
     }

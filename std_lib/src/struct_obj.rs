@@ -70,7 +70,7 @@ pub extern "C" fn olive_struct_alloc(n_fields: i64) -> i64 {
         // release codegen emits on `field = value` stores read the prior
         // word. The typed free path also nulls fields it releases; this
         // covers every other path to a slot.
-        std::ptr::write_bytes(body.add(8), 0, n_fields as usize);
+        std::ptr::write_bytes(body.add(8) as *mut i64, 0, n_fields as usize);
         *(body as *mut i64) = n_fields;
     }
     body as i64
@@ -235,6 +235,19 @@ mod tests {
         assert_ne!(ptr, 0);
         let n = unsafe { *(ptr as *const i64) };
         assert_eq!(n, 100);
+        olive_free_struct(ptr);
+    }
+
+    #[test]
+    fn alloc_struct_zeroes_all_fields() {
+        let ptr = olive_struct_alloc(16);
+        assert_ne!(ptr, 0);
+        unsafe {
+            let fields = (ptr + 8) as *const i64;
+            for i in 0..16 {
+                assert_eq!(*fields.add(i), 0);
+            }
+        }
         olive_free_struct(ptr);
     }
 
