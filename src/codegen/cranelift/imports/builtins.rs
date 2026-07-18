@@ -613,6 +613,7 @@ pub(crate) fn resolve_builtin_import(
             "__olive_py_finalize" => Some("__olive_py_finalize"),
             "__olive_py_gil_begin" => Some("__olive_py_gil_begin"),
             "__olive_py_gil_end" => Some("__olive_py_gil_end"),
+            "__olive_py_gil_checkpoint" => Some("__olive_py_gil_checkpoint"),
             "__olive_py_to_list" => Some("__olive_py_to_list"),
             "__olive_py_to_dict" => Some("__olive_py_to_dict"),
             "__olive_py_to_any_list" => Some("__olive_py_to_any_list"),

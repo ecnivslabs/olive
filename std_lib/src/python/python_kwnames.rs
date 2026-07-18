@@ -8,34 +8,42 @@
 use crate::python::*;
 use rustc_hash::FxHashMap;
 use std::os::raw::c_char;
-use std::sync::RwLock;
 
 // Same invariant as `python_intern.rs`'s `ATTR_CACHE`: a packed name-list
 // constant is a `Constant::Str` the compiler deduplicates into one static
 // rodata blob, so every call site sharing a name list shares one stable
 // address for the process's life -- safe to key by address alone.
-static KWNAMES_CACHE: std::sync::LazyLock<RwLock<FxHashMap<usize, usize>>> =
-    std::sync::LazyLock::new(|| RwLock::new(FxHashMap::default()));
+// GIL-guarded, not locked: every caller sits inside `with_gil` on a path
+// already gated by `use_interned_names()`, which is false in
+// subinterpreter-pool mode.
+static KWNAMES_CACHE: GilCell<Option<FxHashMap<usize, usize>>> = GilCell::new(None);
+static KWNAMES_MRU: GilCell<(usize, usize)> = GilCell::new((0, 0));
 
 /// Builds (or reuses) the interned-name tuple for `packed`, a comma-joined
 /// C string of keyword names (`"training,verbose"`, or an empty string for
 /// zero keyword arguments). Returns null if any step fails (an interning
 /// call, a tuple allocation); the caller treats that exactly like a missing
-/// vectorcall symbol and falls back to the dict-building path.
+/// vectorcall symbol and falls back to the dict-building path. Caller must
+/// hold the process-wide GIL.
 pub(crate) unsafe fn kwnames_tuple(packed: *const c_char) -> PyObject {
     let key = packed as usize;
-    if let Some(&cached) = KWNAMES_CACHE.read().unwrap().get(&key) {
-        return cached as PyObject;
+    unsafe {
+        let (mru_key, mru_val) = *KWNAMES_MRU.get();
+        if mru_key == key {
+            return mru_val as PyObject;
+        }
+        let cache = (*KWNAMES_CACHE.get()).get_or_insert_with(FxHashMap::default);
+        if let Some(&cached) = cache.get(&key) {
+            *KWNAMES_MRU.get() = (key, cached);
+            return cached as PyObject;
+        }
+        let tuple = build_kwnames_tuple(packed);
+        if !tuple.is_null() {
+            cache.insert(key, tuple as usize);
+            *KWNAMES_MRU.get() = (key, tuple as usize);
+        }
+        tuple
     }
-    let mut cache = KWNAMES_CACHE.write().unwrap();
-    if let Some(&cached) = cache.get(&key) {
-        return cached as PyObject;
-    }
-    let tuple = unsafe { build_kwnames_tuple(packed) };
-    if !tuple.is_null() {
-        cache.insert(key, tuple as usize);
-    }
-    tuple
 }
 
 unsafe fn build_kwnames_tuple(packed: *const c_char) -> PyObject {

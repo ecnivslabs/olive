@@ -10,34 +10,50 @@
 use crate::python::*;
 use rustc_hash::FxHashMap;
 use std::os::raw::c_char;
-use std::sync::RwLock;
 
-// Values are `PyObject` cast to `usize`: a raw pointer isn't `Send`/`Sync`,
-// so it can't sit in a shared static directly. Cast back at the single read
-// site below.
-static ATTR_CACHE: std::sync::LazyLock<RwLock<FxHashMap<usize, usize>>> =
-    std::sync::LazyLock::new(|| RwLock::new(FxHashMap::default()));
+// Values are `PyObject` cast to `usize`. GIL-guarded rather than locked:
+// every caller sits inside `with_gil`, and interning is bypassed entirely
+// in subinterpreter-pool mode (an interned object belongs to one
+// interpreter and must not leak into another), so the process-wide GIL
+// serializes all access. `MRU` short-circuits the map probe for the loop
+// case where one hot site repeats the same name.
+static ATTR_CACHE: GilCell<Option<FxHashMap<usize, usize>>> = GilCell::new(None);
+static ATTR_MRU: GilCell<(usize, usize)> = GilCell::new((0, 0));
+
+/// Whether the interned-name fast path may run: the intern/getattr symbols
+/// exist and one process-wide GIL guards the caches. Pool mode always takes
+/// the string-based paths -- an interned object is per-interpreter and the
+/// GIL no longer serializes the cache.
+#[inline]
+pub(crate) fn use_interned_names() -> bool {
+    HAS_INTERN.load(std::sync::atomic::Ordering::Relaxed) && crate::python::gil_process_wide()
+}
 
 /// Interns `attr` into a persistent Python `str`, reusing it across every
 /// access that shares the same literal pointer. Returns null if
 /// `PyUnicode_InternFromString` itself fails (caller treats it like any
 /// other null from a C-API call). The interned object is never decref'd --
 /// like a Python module's own compiled string constants, it lives for the
-/// process, not for one call.
+/// process, not for one call. Caller must hold the process-wide GIL.
 pub(crate) unsafe fn interned_attr(attr: *const c_char) -> PyObject {
     let key = attr as usize;
-    if let Some(&cached) = ATTR_CACHE.read().unwrap().get(&key) {
-        return cached as PyObject;
+    unsafe {
+        let (mru_key, mru_val) = *ATTR_MRU.get();
+        if mru_key == key {
+            return mru_val as PyObject;
+        }
+        let cache = (*ATTR_CACHE.get()).get_or_insert_with(FxHashMap::default);
+        if let Some(&cached) = cache.get(&key) {
+            *ATTR_MRU.get() = (key, cached);
+            return cached as PyObject;
+        }
+        let interned = PY_UNICODE_INTERN_FROM_STRING(attr);
+        if !interned.is_null() {
+            cache.insert(key, interned as usize);
+            *ATTR_MRU.get() = (key, interned as usize);
+        }
+        interned
     }
-    let mut cache = ATTR_CACHE.write().unwrap();
-    if let Some(&cached) = cache.get(&key) {
-        return cached as PyObject;
-    }
-    let interned = unsafe { PY_UNICODE_INTERN_FROM_STRING(attr) };
-    if !interned.is_null() {
-        cache.insert(key, interned as usize);
-    }
-    interned
 }
 
 #[cfg(test)]

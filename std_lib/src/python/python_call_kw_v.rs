@@ -16,7 +16,7 @@ use std::sync::atomic::Ordering;
 /// Whether the vectorcall fast path can run at all: `kwnames_tuple` itself
 /// needs interning (R8) to build its tuple.
 fn has_kw_vectorcall() -> bool {
-    HAS_VECTORCALL.load(Ordering::Relaxed) && HAS_INTERN.load(Ordering::Relaxed)
+    HAS_VECTORCALL.load(Ordering::Relaxed) && use_interned_names()
 }
 
 /// Converts `len` raw tagged words at `sv_ptr` into `buf[base..base+len]`.
@@ -506,7 +506,7 @@ unsafe fn legacy_call_method_kw(
 ) -> PyObject {
     unsafe {
         let bound = with_gil(|| {
-            if HAS_INTERN.load(Ordering::Relaxed) {
+            if use_interned_names() {
                 let name = interned_attr((attr & !1) as *const c_char);
                 if name.is_null() {
                     std::ptr::null_mut()
@@ -544,7 +544,7 @@ unsafe fn legacy_call_method_kw_safe(
 ) -> i64 {
     unsafe {
         let bound = with_gil(|| {
-            if HAS_INTERN.load(Ordering::Relaxed) {
+            if use_interned_names() {
                 let name = interned_attr((attr & !1) as *const c_char);
                 if name.is_null() {
                     std::ptr::null_mut()

@@ -45,6 +45,34 @@ use std::os::raw::c_void;
 
 pub type PyObject = *mut c_void;
 
+/// Shared state guarded by the process-wide GIL instead of a Rust lock.
+/// Sound only while `gil_process_wide()` holds: every access must happen
+/// with the GIL held, which then serializes all readers and writers.
+pub(crate) struct GilCell<T>(std::cell::UnsafeCell<T>);
+
+unsafe impl<T> Sync for GilCell<T> {}
+
+impl<T> GilCell<T> {
+    pub(crate) const fn new(v: T) -> Self {
+        Self(std::cell::UnsafeCell::new(v))
+    }
+
+    /// Caller must hold the process-wide GIL for the whole use of the
+    /// returned pointer.
+    pub(crate) const unsafe fn get(&self) -> *mut T {
+        self.0.get()
+    }
+}
+
+/// Whether one process-wide GIL serializes every Python-touching thread.
+/// False once the subinterpreter pool has initialized: each subinterpreter
+/// owns its own GIL, so holding "the" GIL no longer excludes other threads
+/// and GIL-guarded state must fall back to real locks.
+#[inline]
+pub(crate) fn gil_process_wide() -> bool {
+    !python_subinterp::pool_ever_active()
+}
+
 std::thread_local! {
     // Depth of nested GIL regions on this thread. Zero means the thread holds
     // no GIL state of its own; `with_gil` and `olive_py_gil_begin` both bump
@@ -110,6 +138,27 @@ pub extern "C" fn olive_py_gil_begin() {
         GIL_TOKEN.set(token);
     }
     GIL_DEPTH.set(depth + 1);
+}
+
+std::thread_local! {
+    static GIL_CHECKPOINT_TICK: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Yield point on the back edge of a loop-held GIL region: every 1024th
+/// pass releases and immediately reacquires the GIL so threads waiting on
+/// it get scheduled, bounding how long one hot loop can monopolize Python.
+/// CPython's own handoff protocol makes the release a real switch when
+/// someone is waiting; uncontended, the cycle costs one ensure/release pair
+/// amortized over 1024 iterations. Skipped at nested depth -- releasing
+/// there would tear a region some caller still relies on.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_gil_checkpoint() {
+    let tick = GIL_CHECKPOINT_TICK.get().wrapping_add(1);
+    GIL_CHECKPOINT_TICK.set(tick);
+    if tick & 1023 == 0 && GIL_DEPTH.get() == 1 {
+        olive_py_gil_end();
+        olive_py_gil_begin();
+    }
 }
 
 /// Closes one level opened by `olive_py_gil_begin`. A fault inside a fused
@@ -461,6 +510,179 @@ mod tests {
                 ptr
             );
         }
+    }
+
+    // Component measurement for the attr-read FFI cycle: full
+    // getattr+decref per iteration, alone and inside a held GIL region
+    // (what loop-level fusion would produce). Prints ns/op; not a
+    // correctness test.
+    #[test]
+    fn bench_getattr_cycle_cost() {
+        let _guard = crate::python::python_coerce::pyobject_slab_test_lock();
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        use crate::python::python_coerce::static_attr_name;
+        let obj = unsafe {
+            with_gil(|| {
+                let d = PY_DICT_NEW();
+                let v = PY_LONG_FROM_LONG(42);
+                PY_DICT_SET_ITEM_STRING(d, b"value\0".as_ptr() as *const _, v);
+                PY_DEC_REF(v);
+                let types = PY_IMPORT_IMPORT_MODULE(b"types\0".as_ptr() as *const _);
+                let ns_ty =
+                    PY_OBJECT_GET_ATTR_STRING(types, b"SimpleNamespace\0".as_ptr() as *const _);
+                let args = PY_TUPLE_NEW(0);
+                let ns = PY_OBJECT_CALL(ns_ty, args, d);
+                PY_DEC_REF(args);
+                PY_DEC_REF(ns_ty);
+                PY_DEC_REF(types);
+                PY_DEC_REF(d);
+                olive_py_wrap_owned(ns)
+            })
+        };
+        let attr = static_attr_name("value");
+        const ITERS: u32 = 200_000;
+        for _ in 0..1_000 {
+            let h = crate::python::python_coerce_ffi::olive_py_getattr(obj, attr);
+            crate::python::olive_py_decref(h);
+        }
+        let t = std::time::Instant::now();
+        for _ in 0..ITERS {
+            let h = crate::python::python_coerce_ffi::olive_py_getattr(obj, attr);
+            crate::python::olive_py_decref(h);
+        }
+        let solo = t.elapsed().as_nanos() as f64 / ITERS as f64;
+        let t = std::time::Instant::now();
+        olive_py_gil_begin();
+        for _ in 0..ITERS {
+            let h = crate::python::python_coerce_ffi::olive_py_getattr(obj, attr);
+            crate::python::olive_py_decref(h);
+        }
+        olive_py_gil_end();
+        let fused = t.elapsed().as_nanos() as f64 / ITERS as f64;
+        let t = std::time::Instant::now();
+        olive_py_gil_begin();
+        for _ in 0..ITERS {
+            unsafe {
+                let raw = olive_py_unwrap(obj);
+                let name = crate::python::python_intern::interned_attr((attr & !1) as *const _);
+                let a = PY_OBJECT_GET_ATTR(raw, name);
+                PY_DEC_REF(a);
+            }
+        }
+        olive_py_gil_end();
+        let bare = t.elapsed().as_nanos() as f64 / ITERS as f64;
+        eprintln!(
+            "getattr+decref cycle: solo {solo:.1}ns, in held region {fused:.1}ns, bare C-API {bare:.1}ns"
+        );
+        crate::python::olive_py_decref(obj);
+    }
+
+    // Component measurement for `bytes` crossing the boundary and back:
+    // isolates raw memcpy bandwidth from allocator/refcount overhead so a
+    // claim that this path is "memory-bandwidth-bound" is measured, not
+    // assumed. Prints ms/op per stage; not a correctness test.
+    #[test]
+    fn bench_bytes_roundtrip_components() {
+        let _guard = crate::python::python_coerce::pyobject_slab_test_lock();
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        const SIZE: usize = 16 * 1024 * 1024;
+        const ITERS: u32 = 50;
+
+        let src = vec![7u8; SIZE];
+        let t = std::time::Instant::now();
+        for _ in 0..ITERS {
+            let a = src.clone();
+            let b = a.clone();
+            std::hint::black_box(&b);
+        }
+        let raw_memcpy_ms = t.elapsed().as_secs_f64() * 1000.0 / ITERS as f64;
+
+        let buf = crate::bytes::new_buf(vec![7u8; SIZE]);
+        for _ in 0..3 {
+            let py = with_gil(|| unsafe {
+                let b = &*(buf as *const crate::bytes::OliveBytes);
+                let s = b.as_slice();
+                PY_BYTES_FROM_STRING_AND_SIZE(s.as_ptr(), s.len() as isize)
+            });
+            with_gil(|| unsafe { PY_DEC_REF(py) });
+        }
+        let t = std::time::Instant::now();
+        for _ in 0..ITERS {
+            let py = with_gil(|| unsafe {
+                let b = &*(buf as *const crate::bytes::OliveBytes);
+                let s = b.as_slice();
+                PY_BYTES_FROM_STRING_AND_SIZE(s.as_ptr(), s.len() as isize)
+            });
+            with_gil(|| unsafe { PY_DEC_REF(py) });
+        }
+        let to_py_ms = t.elapsed().as_secs_f64() * 1000.0 / ITERS as f64;
+
+        let py_bytes = with_gil(|| unsafe {
+            let b = &*(buf as *const crate::bytes::OliveBytes);
+            let s = b.as_slice();
+            PY_BYTES_FROM_STRING_AND_SIZE(s.as_ptr(), s.len() as isize)
+        });
+        let t = std::time::Instant::now();
+        for _ in 0..ITERS {
+            let back = with_gil(|| unsafe {
+                crate::python::python_coerce::olive_py_to_bytes_internal(py_bytes)
+            });
+            crate::olive_free_any(back);
+        }
+        let from_py_ms = t.elapsed().as_secs_f64() * 1000.0 / ITERS as f64;
+        with_gil(|| unsafe { PY_DEC_REF(py_bytes) });
+
+        eprintln!(
+            "bytes roundtrip components (16MiB, {ITERS} iters): raw_rust_memcpy_x2={raw_memcpy_ms:.2}ms/op olive_to_py={to_py_ms:.2}ms/op py_to_olive={from_py_ms:.2}ms/op sum={:.2}ms/op",
+            to_py_ms + from_py_ms
+        );
+        crate::olive_free_any(buf);
+    }
+
+    // Component measurement for the list-index-then-cast FFI cycle used by
+    // `for i in range(n): xs[i]` style loops: full getitem_int+to_int per
+    // iteration, inside a held GIL region. Prints ns/op; not a correctness
+    // test.
+    #[test]
+    fn bench_getitem_int_to_int_cycle_cost() {
+        let _guard = crate::python::python_coerce::pyobject_slab_test_lock();
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        let list = unsafe {
+            with_gil(|| {
+                let l = PY_LIST_NEW(1_000_000);
+                for i in 0..1_000_000i64 {
+                    PY_LIST_SET_ITEM(l, i as isize, PY_LONG_FROM_LONG(i as std::os::raw::c_long));
+                }
+                olive_py_wrap_owned(l)
+            })
+        };
+        const ITERS: i64 = 1_000_000;
+        for i in 0..1000 {
+            let h = crate::python::python_coerce_ffi::olive_py_getitem_int(list, i);
+            let _ = crate::python::python_coerce_ffi::olive_py_to_int(h);
+            crate::python::olive_py_decref(h);
+        }
+        let t = std::time::Instant::now();
+        olive_py_gil_begin();
+        let mut sum = 0i64;
+        for i in 0..ITERS {
+            let h = crate::python::python_coerce_ffi::olive_py_getitem_int(list, i);
+            sum += crate::python::python_coerce_ffi::olive_py_to_int(h);
+            crate::python::olive_py_decref(h);
+        }
+        olive_py_gil_end();
+        let per_op = t.elapsed().as_nanos() as f64 / ITERS as f64;
+        eprintln!("getitem_int+to_int cycle in held region: {per_op:.1}ns (sum={sum})");
+        crate::python::olive_py_decref(list);
     }
 
     // R13 gate measurement: cost of one PyGILState_Ensure/Release pair

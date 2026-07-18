@@ -7,6 +7,10 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 const MAX_POOL: i32 = 64;
 
 static POOL_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// Set once by `pool_init`, never cleared: `gil_process_wide` keys off it,
+/// and lock-vs-GIL guard choices made before finalize must stay valid for
+/// frees that arrive during shutdown.
+static POOL_EVER: AtomicBool = AtomicBool::new(false);
 static POOL_SIZE: AtomicI32 = AtomicI32::new(0);
 static NEXT_SLOT: AtomicI32 = AtomicI32::new(0);
 
@@ -56,6 +60,11 @@ macro_rules! noop_eq {
 
 pub fn pool_is_active() -> bool {
     POOL_ACTIVE.load(Ordering::Acquire)
+}
+
+#[inline]
+pub(crate) fn pool_ever_active() -> bool {
+    POOL_EVER.load(Ordering::Relaxed)
 }
 
 fn assign_slot() -> i32 {
@@ -185,6 +194,7 @@ pub unsafe fn pool_init() {
         }
 
         POOL_SIZE.store(size, Ordering::Release);
+        POOL_EVER.store(true, Ordering::Release);
         POOL_ACTIVE.store(true, Ordering::Release);
     }
 }

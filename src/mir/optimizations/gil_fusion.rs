@@ -12,18 +12,37 @@
 //! re-enter Python. A fault inside a fused region aborts the process
 //! (Olive faults never unwind), so an unmatched begin can never leak the
 //! GIL into continued execution.
+//!
+//! Loops get the same treatment one level up: a natural loop whose every
+//! statement is fusable holds the GIL across all its iterations
+//! (`gil_begin` in a fresh preheader, `gil_end` on every exit edge) instead
+//! of paying one ensure/release pair per iteration. Each latch gains a
+//! `__olive_py_gil_checkpoint` so a long-held region still yields to other
+//! GIL-waiting threads periodically, mirroring CPython's own switch
+//! interval. Any statement the block-local classifier would call opaque
+//! disqualifies the whole loop -- nothing that could block, spawn, or run
+//! arbitrary native code for long stretches ever sits inside a held region.
 
 use super::Transform;
 use crate::mir::ir::*;
+use crate::mir::loop_utils;
 use crate::semantic::types::Type as OliveType;
 use crate::span::Span;
+use rustc_hash::FxHashSet;
 
 const EXCLUDED_PY_CALLS: &[&str] = &[
     "__olive_py_gil_begin",
     "__olive_py_gil_end",
+    "__olive_py_gil_checkpoint",
     "__olive_py_initialize",
     "__olive_py_finalize",
 ];
+
+/// Compiler-emitted intrinsics with a name the MIR builder always writes
+/// verbatim (never a user or FFI symbol), each a single thread-local write
+/// or read with no possibility of blocking or touching Python. Safe to
+/// bridge across the same as a `Neutral` statement.
+const SAFE_NON_PY_CALLS: &[&str] = &["__olive_set_fault_loc"];
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum StmtClass {
@@ -71,6 +90,11 @@ impl GilFusion {
                         && !EXCLUDED_PY_CALLS.contains(&name.as_str()) =>
                 {
                     StmtClass::PyTouch
+                }
+                Operand::Constant(Constant::Function(name))
+                    if SAFE_NON_PY_CALLS.contains(&name.as_str()) =>
+                {
+                    StmtClass::Neutral
                 }
                 _ => StmtClass::Opaque,
             },
@@ -122,6 +146,12 @@ impl GilFusion {
                     StmtClass::PyTouch
                 } else if !ty.is_move_type() {
                     // No codegen is emitted at all for a non-move-type drop.
+                    StmtClass::Neutral
+                } else if matches!(ty, OliveType::Str | OliveType::Bytes) {
+                    // Always routes to the runtime's own string/bytes free
+                    // path (`__olive_free_str`/`__olive_buf_free`) -- never
+                    // a struct's FFI destructor, so it's as safe to bridge
+                    // as any other runtime call.
                     StmtClass::Neutral
                 } else {
                     // Every other move-type drop may hit a struct's custom
@@ -201,6 +231,150 @@ impl GilFusion {
         }
     }
 
+    /// Retargets every occurrence of `from` in `bb`'s terminator to `to`.
+    fn retarget(bb: &mut BasicBlock, from: BasicBlockId, to: BasicBlockId) {
+        if let Some(term) = &mut bb.terminator {
+            match &mut term.kind {
+                TerminatorKind::Goto { target } => {
+                    if *target == from {
+                        *target = to;
+                    }
+                }
+                TerminatorKind::SwitchInt {
+                    targets, otherwise, ..
+                } => {
+                    for (_, t) in targets.iter_mut() {
+                        if *t == from {
+                            *t = to;
+                        }
+                    }
+                    if *otherwise == from {
+                        *otherwise = to;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn block_successors(bb: &BasicBlock) -> Vec<BasicBlockId> {
+        match &bb.terminator {
+            Some(t) => match &t.kind {
+                TerminatorKind::Goto { target } => vec![*target],
+                TerminatorKind::SwitchInt {
+                    targets, otherwise, ..
+                } => {
+                    let mut s: Vec<_> = targets.iter().map(|(_, b)| *b).collect();
+                    s.push(*otherwise);
+                    s
+                }
+                _ => vec![],
+            },
+            None => vec![],
+        }
+    }
+
+    /// Every statement in the loop body is fusable and at least one really
+    /// touches Python.
+    fn loop_qualifies(func: &MirFunction, body: &FxHashSet<BasicBlockId>) -> bool {
+        let mut has_py = false;
+        for &bb in body {
+            for stmt in &func.basic_blocks[bb.0].statements {
+                match Self::classify(func, stmt) {
+                    StmtClass::Opaque => return false,
+                    StmtClass::PyTouch => has_py = true,
+                    StmtClass::Neutral => {}
+                }
+            }
+        }
+        has_py
+    }
+
+    /// Wraps qualifying loops in one held GIL region each. Returns the union
+    /// of wrapped bodies so block-local fusion skips them.
+    fn fuse_loops(func: &mut MirFunction) -> FxHashSet<BasicBlockId> {
+        let mut wrapped: FxHashSet<BasicBlockId> = FxHashSet::default();
+        let loops = loop_utils::find_loops(func);
+        if loops.is_empty() {
+            return wrapped;
+        }
+
+        // One entry per header: `find_loops` reports one loop per back edge,
+        // so `continue` statements produce several loops sharing a header.
+        let mut merged: Vec<(BasicBlockId, FxHashSet<BasicBlockId>, Vec<BasicBlockId>)> =
+            Vec::new();
+        for l in loops {
+            if let Some(entry) = merged.iter_mut().find(|(h, _, _)| *h == l.header) {
+                entry.1.extend(l.body.iter().copied());
+                entry.2.extend(l.latches.iter().copied());
+            } else {
+                merged.push((l.header, l.body.iter().copied().collect(), l.latches));
+            }
+        }
+
+        // Outermost first; a loop overlapping an already-wrapped one (its
+        // inner loops, in particular) stays unwrapped -- the outer region
+        // already covers it.
+        merged.sort_by_key(|(_, body, _)| std::cmp::Reverse(body.len()));
+
+        for (header, body, latches) in merged {
+            // A header at the function entry has no edge a preheader could
+            // intercept.
+            if header.0 == 0
+                || body.iter().any(|b| wrapped.contains(b))
+                || !Self::loop_qualifies(func, &body)
+            {
+                continue;
+            }
+
+            let span = Span::default();
+            let pre = BasicBlockId(func.basic_blocks.len());
+            let sink = Self::new_sink(func);
+            func.basic_blocks.push(BasicBlock {
+                statements: vec![Self::gil_call(sink, "__olive_py_gil_begin")],
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Goto { target: header },
+                    span,
+                }),
+            });
+            for i in 0..pre.0 {
+                if !body.contains(&BasicBlockId(i)) {
+                    Self::retarget(&mut func.basic_blocks[i], header, pre);
+                }
+            }
+
+            for &b in &body {
+                let outside: Vec<BasicBlockId> = Self::block_successors(&func.basic_blocks[b.0])
+                    .into_iter()
+                    .filter(|s| !body.contains(s))
+                    .collect();
+                for s in outside {
+                    let tramp = BasicBlockId(func.basic_blocks.len());
+                    let sink = Self::new_sink(func);
+                    func.basic_blocks.push(BasicBlock {
+                        statements: vec![Self::gil_call(sink, "__olive_py_gil_end")],
+                        terminator: Some(Terminator {
+                            kind: TerminatorKind::Goto { target: s },
+                            span,
+                        }),
+                    });
+                    Self::retarget(&mut func.basic_blocks[b.0], s, tramp);
+                }
+            }
+
+            let latch_set: FxHashSet<BasicBlockId> = latches.into_iter().collect();
+            for latch in latch_set {
+                let sink = Self::new_sink(func);
+                func.basic_blocks[latch.0]
+                    .statements
+                    .push(Self::gil_call(sink, "__olive_py_gil_checkpoint"));
+            }
+
+            wrapped.extend(body);
+        }
+        wrapped
+    }
+
     fn fuse_block(func: &mut MirFunction, bb_idx: usize) -> bool {
         let classes: Vec<StmtClass> = func.basic_blocks[bb_idx]
             .statements
@@ -241,8 +415,12 @@ impl GilFusion {
 
 impl Transform for GilFusion {
     fn run(&self, func: &mut MirFunction) -> bool {
-        let mut changed = false;
+        let wrapped = Self::fuse_loops(func);
+        let mut changed = !wrapped.is_empty();
         for bb_idx in 0..func.basic_blocks.len() {
+            if wrapped.contains(&BasicBlockId(bb_idx)) {
+                continue;
+            }
             changed |= Self::fuse_block(func, bb_idx);
         }
         changed
@@ -411,5 +589,146 @@ mod tests {
         ]);
         let changed = GilFusion.run(&mut func);
         assert!(!changed);
+    }
+
+    /// `block0 -> block1(header) -> block2(body, latch) -> block1`, exit to
+    /// `block3`. Mirrors `loop_utils`'s own `loop_exits_detected` shape.
+    fn loop_func(body_statements: Vec<Statement>) -> MirFunction {
+        use crate::semantic::types::Type;
+        let span = Span::default();
+        let mut locals = vec![decl(Type::PyObject), decl(Type::PyObject)];
+        locals.push(LocalDecl {
+            ty: Type::Bool,
+            name: None,
+            span,
+            is_mut: true,
+            is_owning: false,
+        });
+        let cond = Local(2);
+        MirFunction {
+            name: "test_fn".to_string(),
+            locals,
+            basic_blocks: vec![
+                BasicBlock {
+                    statements: vec![],
+                    terminator: Some(Terminator {
+                        kind: TerminatorKind::Goto {
+                            target: BasicBlockId(1),
+                        },
+                        span,
+                    }),
+                },
+                BasicBlock {
+                    statements: vec![],
+                    terminator: Some(Terminator {
+                        kind: TerminatorKind::SwitchInt {
+                            discr: Operand::Copy(cond),
+                            targets: vec![(1, BasicBlockId(2))],
+                            otherwise: BasicBlockId(3),
+                        },
+                        span,
+                    }),
+                },
+                BasicBlock {
+                    statements: body_statements,
+                    terminator: Some(Terminator {
+                        kind: TerminatorKind::Goto {
+                            target: BasicBlockId(1),
+                        },
+                        span,
+                    }),
+                },
+                BasicBlock {
+                    statements: vec![],
+                    terminator: Some(Terminator {
+                        kind: TerminatorKind::Return,
+                        span,
+                    }),
+                },
+            ],
+            arg_count: 0,
+            vararg_idx: None,
+            kwarg_idx: None,
+            param_names: vec![],
+            is_async: false,
+        }
+    }
+
+    #[test]
+    fn wraps_a_qualifying_loop_body_in_one_held_region() {
+        let mut func = loop_func(vec![py_call_stmt(Local(0), "__olive_py_call0")]);
+        let changed = GilFusion.run(&mut func);
+        assert!(changed);
+        assert_eq!(count_gil_calls(&func, "__olive_py_gil_begin"), 1);
+        assert_eq!(count_gil_calls(&func, "__olive_py_gil_end"), 1);
+        assert_eq!(count_gil_calls(&func, "__olive_py_gil_checkpoint"), 1);
+    }
+
+    #[test]
+    fn does_not_wrap_a_loop_with_no_python_touch() {
+        let mut func = loop_func(vec![stmt(StatementKind::StorageLive(Local(0)))]);
+        let changed = GilFusion.run(&mut func);
+        assert!(!changed);
+        assert_eq!(count_gil_calls(&func, "__olive_py_gil_begin"), 0);
+    }
+
+    #[test]
+    fn does_not_wrap_a_loop_containing_an_opaque_call() {
+        let mut func = loop_func(vec![
+            py_call_stmt(Local(0), "__olive_py_call0"),
+            py_call_stmt(Local(1), "__olive_unrecognized_call"),
+        ]);
+        let changed = GilFusion.run(&mut func);
+        assert!(!changed);
+        assert_eq!(count_gil_calls(&func, "__olive_py_gil_begin"), 0);
+    }
+
+    #[test]
+    fn treats_str_and_bytes_drops_inside_a_loop_as_bridgeable() {
+        use crate::semantic::types::Type;
+        let mut func = loop_func(vec![
+            py_call_stmt(Local(0), "__olive_py_call0"),
+            stmt(StatementKind::Drop(Local(3))),
+        ]);
+        func.locals.push(decl(Type::Str));
+        let changed = GilFusion.run(&mut func);
+        assert!(changed);
+        assert_eq!(count_gil_calls(&func, "__olive_py_gil_begin"), 1);
+    }
+
+    #[test]
+    fn does_not_wrap_a_loop_dropping_a_struct() {
+        use crate::semantic::types::Type;
+        let mut func = loop_func(vec![
+            py_call_stmt(Local(0), "__olive_py_call0"),
+            stmt(StatementKind::Drop(Local(3))),
+        ]);
+        func.locals
+            .push(decl(Type::Struct("Foo".to_string(), vec![], false)));
+        let changed = GilFusion.run(&mut func);
+        assert!(!changed);
+        assert_eq!(count_gil_calls(&func, "__olive_py_gil_begin"), 0);
+    }
+
+    #[test]
+    fn treats_set_fault_loc_inside_a_loop_as_bridgeable() {
+        let mut func = loop_func(vec![
+            py_call_stmt(Local(0), "__olive_set_fault_loc"),
+            py_call_stmt(Local(1), "__olive_py_call0"),
+        ]);
+        let changed = GilFusion.run(&mut func);
+        assert!(changed);
+        assert_eq!(count_gil_calls(&func, "__olive_py_gil_begin"), 1);
+    }
+
+    #[test]
+    fn checkpoint_call_itself_does_not_disqualify_a_loop_on_a_second_pass() {
+        // Running fusion twice must be idempotent -- the checkpoint/begin/end
+        // calls a first pass inserts must not themselves look Opaque to a
+        // second pass over the same function.
+        let mut func = loop_func(vec![py_call_stmt(Local(0), "__olive_py_call0")]);
+        assert!(GilFusion.run(&mut func));
+        let changed_again = GilFusion.run(&mut func);
+        assert!(!changed_again);
     }
 }

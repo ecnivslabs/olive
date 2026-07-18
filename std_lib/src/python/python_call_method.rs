@@ -19,7 +19,7 @@ pub(crate) unsafe fn call_method_with_raw_args(
     args: &mut [i64],
 ) -> PyObject {
     unsafe {
-        if HAS_VECTORCALL.load(Ordering::Relaxed) && HAS_INTERN.load(Ordering::Relaxed) {
+        if HAS_VECTORCALL.load(Ordering::Relaxed) && use_interned_names() {
             let name = interned_attr(attr);
             let mut pairs = Vec::new();
             let res = if name.is_null() {
@@ -60,7 +60,7 @@ pub(crate) unsafe fn call_method_with_raw_args(
             }
             res
         } else {
-            let bound = if HAS_INTERN.load(Ordering::Relaxed) {
+            let bound = if use_interned_names() {
                 let name = interned_attr(attr);
                 if name.is_null() {
                     std::ptr::null_mut()
