@@ -9,20 +9,25 @@ use cranelift_module::{DataId, FuncId, Module};
 use rustc_hash::FxHashMap as HashMap;
 
 impl<M: Module> CraneliftCodegen<M> {
-    /// Whether the callee's declared parameter at `arg_index` is a float, read
-    /// from its signature so float args reach float-typed builtins intact.
-    fn callee_param_is_float(
+    /// Exact float width the callee's declared parameter expects, if any.
+    /// Both f32 and f64 args land in the same XMM register class, so
+    /// cranelift's call lowering never widens/narrows on its own -- passing
+    /// an f32 value where the callee's signature declares an f64 param (or
+    /// vice versa) used to reach the call unconverted, and the callee reads
+    /// the wrong bit width straight out of the register.
+    fn callee_param_float_ty(
         builder: &FunctionBuilder,
         callee: cranelift::codegen::ir::FuncRef,
         arg_index: usize,
         has_sret: bool,
-    ) -> bool {
+    ) -> Option<types::Type> {
         let sig = builder.func.dfg.ext_funcs[callee].signature;
         let pidx = arg_index + if has_sret { 1 } else { 0 };
         builder.func.dfg.signatures[sig]
             .params
             .get(pidx)
-            .is_some_and(|p| p.value_type == types::F64 || p.value_type == types::F32)
+            .map(|p| p.value_type)
+            .filter(|t| *t == types::F64 || *t == types::F32)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -468,45 +473,51 @@ impl<M: Module> CraneliftCodegen<M> {
                     if (ffi_entry.is_some() || is_aot_vararg) && is_str_arg {
                         final_args.push(builder.ins().band_imm(arg, -2));
                     } else if is_builtin && builder.func.dfg.value_type(arg) == types::F64 {
-                        let expects_float = if let Some(entry) = ffi_entry {
-                            if i < entry.params.len() {
-                                entry.params[i] == "float"
-                                    || entry.params[i] == "f64"
-                                    || entry.params[i] == "f32"
-                            } else {
-                                false
+                        let expected_float_ty = if let Some(entry) = ffi_entry {
+                            match entry.params.get(i).map(String::as_str) {
+                                Some("f32") => Some(types::F32),
+                                Some("float") | Some("f64") => Some(types::F64),
+                                _ => None,
                             }
                         } else {
-                            Self::callee_param_is_float(builder, local_func, i, sret_ptr.is_some())
+                            Self::callee_param_float_ty(builder, local_func, i, sret_ptr.is_some())
                         };
-                        if !expects_float {
+                        if expected_float_ty == Some(types::F32) {
+                            final_args.push(builder.ins().fdemote(types::F32, arg));
+                        } else if expected_float_ty == Some(types::F64) {
+                            final_args.push(arg);
+                        } else {
                             final_args.push(builder.ins().bitcast(
                                 types::I64,
                                 MemFlags::new(),
                                 arg,
                             ));
-                        } else {
-                            final_args.push(arg);
                         }
                     } else if is_builtin && builder.func.dfg.value_type(arg) == types::F32 {
-                        let expects_float = if let Some(entry) = ffi_entry {
-                            if i < entry.params.len() {
-                                entry.params[i] == "float"
-                                    || entry.params[i] == "f64"
-                                    || entry.params[i] == "f32"
-                            } else {
-                                false
+                        let expected_float_ty = if let Some(entry) = ffi_entry {
+                            match entry.params.get(i).map(String::as_str) {
+                                Some("f32") => Some(types::F32),
+                                Some("float") | Some("f64") => Some(types::F64),
+                                _ => None,
                             }
                         } else {
-                            Self::callee_param_is_float(builder, local_func, i, sret_ptr.is_some())
+                            Self::callee_param_float_ty(builder, local_func, i, sret_ptr.is_some())
                         };
 
-                        if !expects_float {
+                        if expected_float_ty == Some(types::F64) {
+                            // The f32->f64 gap: an f32 value reaching a
+                            // param the callee's signature declares as f64
+                            // (e.g. `__olive_float_to_int`'s `f64` param)
+                            // used to be passed through unconverted, landing
+                            // a 32-bit value where the callee reads a full
+                            // 64-bit double out of the same XMM register.
+                            final_args.push(builder.ins().fpromote(types::F64, arg));
+                        } else if expected_float_ty == Some(types::F32) {
+                            final_args.push(arg);
+                        } else {
                             let bitcast_val =
                                 builder.ins().bitcast(types::I32, MemFlags::new(), arg);
                             final_args.push(builder.ins().uextend(types::I64, bitcast_val));
-                        } else {
-                            final_args.push(arg);
                         }
                     } else {
                         let arg_ty = builder.func.dfg.value_type(arg);

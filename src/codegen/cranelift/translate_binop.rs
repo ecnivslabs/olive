@@ -38,6 +38,22 @@ impl<M: Module> CraneliftCodegen<M> {
     ) -> Value {
         let l = Self::translate_operand(builder, lhs, vars, string_ids, module, func_ids);
         let r = Self::translate_operand(builder, rhs, vars, string_ids, module, func_ids);
+
+        // f32 locals and untyped float constants (always emitted as f64 by
+        // `translate_operand`) can reach the same binop with mismatched
+        // cranelift widths -- `fadd`/`fcmp`/etc require identical operand
+        // types, so an unwidened f32 operand here silently produced wrong
+        // results (e.g. `f32_var < 10.0` always false) rather than a crash.
+        let l_ty = builder.func.dfg.value_type(l);
+        let r_ty = builder.func.dfg.value_type(r);
+        let (l, r) = if l_ty == types::F32 && r_ty == types::F64 {
+            (builder.ins().fpromote(types::F64, l), r)
+        } else if l_ty == types::F64 && r_ty == types::F32 {
+            (l, builder.ins().fpromote(types::F64, r))
+        } else {
+            (l, r)
+        };
+
         use crate::parser::BinOp::*;
 
         let is_py = is_pyobj_op(func_mir, lhs) || is_pyobj_op(func_mir, rhs);
