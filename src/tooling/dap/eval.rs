@@ -151,10 +151,16 @@ mod tests {
     /// through setup -- returning it alongside the session keeps it alive.
     fn stopped_session() -> (DebugSession, std::sync::MutexGuard<'static, ()>) {
         let guard = crate::test_utils::exec_lock();
+        let thread_name: String = std::thread::current()
+            .name()
+            .unwrap_or("t")
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
         let path = std::env::temp_dir().join(format!(
             "olive_eval_test_{}_{}.liv",
             std::process::id(),
-            std::thread::current().name().unwrap_or("t")
+            thread_name
         ));
         std::fs::write(&path, SRC).unwrap();
         let session = launch(path.to_str().unwrap(), false).expect("launch failed");
