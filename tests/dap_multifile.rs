@@ -12,6 +12,12 @@ fn pit_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_pit"))
 }
 
+fn same_path(a: &str, b: &str) -> bool {
+    let p_a = std::fs::canonicalize(a).unwrap_or_else(|_| PathBuf::from(a));
+    let p_b = std::fs::canonicalize(b).unwrap_or_else(|_| PathBuf::from(b));
+    p_a == p_b
+}
+
 /// Writes `stem.liv` verbatim, no filename mangling -- unlike the other
 /// dap_*.rs harnesses' `write_program`, the stem here doubles as the
 /// `from <stem> import ...` module name, so it has to stay a valid
@@ -19,7 +25,7 @@ fn pit_bin() -> PathBuf {
 fn write_module(stem: &str, src: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("{stem}.liv"));
     std::fs::write(&path, src).unwrap();
-    path
+    std::fs::canonicalize(&path).unwrap_or(path)
 }
 
 struct Session {
@@ -181,24 +187,21 @@ fn breakpoints_and_stepping_cross_a_local_import_boundary() {
     assert_eq!(stopped["reason"], "step");
     assert_eq!(stopped["fn"], "add");
     assert_eq!(stopped["line"], 2);
-    assert_eq!(
-        stopped["file"],
-        helper_path.to_str().unwrap(),
+    assert!(
+        same_path(stopped["file"].as_str().unwrap(), helper_path.to_str().unwrap()),
         "stepping into add() should resolve to the helper file, not main: {stopped}"
     );
 
     let resp = session.request("stack", json!({}));
     let frames = resp["frames"].as_array().unwrap();
     assert_eq!(frames[0]["fn"], "add");
-    assert_eq!(
-        frames[0]["file"],
-        helper_path.to_str().unwrap(),
+    assert!(
+        same_path(frames[0]["file"].as_str().unwrap(), helper_path.to_str().unwrap()),
         "stepping into add() should resolve to the helper file, not main: {resp}"
     );
     assert_eq!(frames[1]["fn"], "main");
-    assert_eq!(
-        frames[1]["file"],
-        main_path.to_str().unwrap(),
+    assert!(
+        same_path(frames[1]["file"].as_str().unwrap(), main_path.to_str().unwrap()),
         "caller frame should still resolve to main, not the helper it stepped into: {resp}"
     );
 
@@ -209,7 +212,7 @@ fn breakpoints_and_stepping_cross_a_local_import_boundary() {
     assert_eq!(stopped["reason"], "breakpoint");
     assert_eq!(stopped["fn"], "add");
     assert_eq!(stopped["line"], 3);
-    assert_eq!(stopped["file"], helper_path.to_str().unwrap());
+    assert!(same_path(stopped["file"].as_str().unwrap(), helper_path.to_str().unwrap()));
 
     session.fire("continue");
     session.read_event("exited");
