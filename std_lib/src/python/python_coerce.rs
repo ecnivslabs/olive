@@ -291,11 +291,9 @@ pub fn olive_to_py(val: i64) -> PyObject {
                         }
                         pys
                     }
-                    crate::KIND_BYTES => {
-                        let b = &*(ptr as *const crate::bytes::OliveBytes);
-                        let s = b.as_slice();
-                        PY_BYTES_FROM_STRING_AND_SIZE(s.as_ptr(), s.len() as isize)
-                    }
+                    crate::KIND_BYTES => crate::python::python_bytes_backing::bytes_to_py(
+                        ptr as *mut crate::bytes::OliveBytes,
+                    ),
                     crate::KIND_PYOBJECT => {
                         let py_obj = &*(ptr as *const OlivePyObject);
                         PY_INC_REF(py_obj.py_ptr);
@@ -443,6 +441,11 @@ pub unsafe fn py_to_olive_internal(py_val: PyObject) -> i64 {
             return olive_py_to_set_internal(py_val, false);
         }
         if ty == PY_BYTES_TYPE {
+            if let Some(wrapped) =
+                crate::python::python_bytes_backing::olive_py_bytes_wrap_exact(py_val)
+            {
+                return wrapped;
+            }
             return olive_py_to_bytes_internal(py_val);
         }
 

@@ -578,10 +578,7 @@ fn copy_any_node(
             let bits = unsafe { (*(val as *const crate::boxed::OliveBoxed)).bits };
             crate::boxed::olive_box_int(bits)
         }
-        KIND_BYTES => {
-            let bytes = unsafe { &*(val as *const crate::bytes::OliveBytes) };
-            crate::bytes::new_buf(bytes.as_slice().to_vec())
-        }
+        KIND_BYTES => crate::bytes::clone_buf(val),
         // Wrap a fresh handle rather than incref in place; that would clobber the kind field (CPython's ob_refcnt slot).
         KIND_PYOBJECT => {
             let py_ptr = unsafe { (*(val as *const crate::python::OlivePyObject)).py_ptr };

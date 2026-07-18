@@ -202,13 +202,21 @@ pub extern "C" fn olive_py_to_str(obj: PyObject) -> i64 {
     with_gil(|| unsafe { raw_py_to_str(unwrapped_obj) })
 }
 
-/// Materializes a Python bytes-like object into a native buffer; non-bytes-like raises.
+/// Converts a Python bytes-like object into an Olive `bytes` value.
+/// An exact `PyBytes` is wrapped zero-copy; every other bytes-like
+/// (bytearray, memoryview, subclasses) is materialized by copy since a
+/// mutable or overridden source must never share its buffer.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_to_bytes(obj: PyObject) -> i64 {
     check_python_loaded();
     let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
     if unwrapped_obj.is_null() {
         return crate::bytes::new_buf(Vec::new());
+    }
+    if let Some(wrapped) =
+        with_gil(|| unsafe { crate::python::olive_py_bytes_wrap_exact(unwrapped_obj) })
+    {
+        return wrapped;
     }
     let fast = crate::python::python_buffer::buffer_to_bytes(unwrapped_obj);
     if fast != 0 {
