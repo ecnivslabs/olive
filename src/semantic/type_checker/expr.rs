@@ -971,10 +971,45 @@ impl TypeChecker {
                     _ => current_obj_ty.clone(),
                 };
                 match indexed_ty {
-                    // `f[int](..)` indexes a function by a type: this is an
-                    // explicit type argument, which inference already handles, so
-                    // the result is just the function itself.
-                    Type::Fn(_, _, _) => indexed_ty,
+                    // `f[int](..)` indexes a function by a type: an explicit
+                    // generic type argument. Bind the callee's sole type
+                    // param directly to the resolved type rather than
+                    // leaving it unconstrained -- otherwise nothing ties it
+                    // back to the bracketed type, so e.g. `chan[int]()`
+                    // produced a `Chan[?]` var no one ever pinned to `int`.
+                    // A bare identifier callee (`first[int]`) hasn't been
+                    // instantiated yet, so its type param is still a
+                    // `Param`; an attr-qualified one (`aio.chan[int]`) was
+                    // already instantiated when the `.chan` access was
+                    // resolved, so it shows up as a fresh `Var` instead.
+                    Type::Fn(params, ret, fn_type_args) => match fn_type_args.as_slice() {
+                        [Type::Param(name)] => {
+                            match self.resolve_type_from_expr(index) {
+                                Some(concrete) => {
+                                    let mut subst = std::collections::HashMap::default();
+                                    subst.insert(name.clone(), concrete.clone());
+                                    let bound_params = params
+                                        .into_iter()
+                                        .map(|p| self.replace_params_with_vars(p, &subst))
+                                        .collect();
+                                    let bound_ret = self.replace_params_with_vars(*ret, &subst);
+                                    // Keeps the resolved type argument (rather
+                                    // than clearing it) so MIR lowering's
+                                    // monomorphization check, which keys off
+                                    // this slot being non-empty, still sees it.
+                                    Type::Fn(bound_params, Box::new(bound_ret), vec![concrete])
+                                }
+                                None => Type::Fn(params, ret, fn_type_args),
+                            }
+                        }
+                        [Type::Var(id)] => {
+                            if let Some(concrete) = self.resolve_type_from_expr(index) {
+                                self.unify(&Type::Var(*id), &concrete, expr.span);
+                            }
+                            Type::Fn(params, ret, fn_type_args)
+                        }
+                        _ => Type::Fn(params, ret, fn_type_args),
+                    },
                     Type::List(inner) => {
                         self.unify(&Type::Int, &idx_ty, expr.span);
                         *inner

@@ -42,7 +42,7 @@ impl Parser {
                     self.expect(TokenKind::RBracket)?;
                     let span = self.span_from(&start);
                     Ok(TypeExpr::new(
-                        TypeExprKind::Generic(parts.join("."), args),
+                        TypeExprKind::Generic(parts.join("::"), args),
                         span,
                     ))
                 } else if parts.len() > 1 {

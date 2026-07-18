@@ -1058,12 +1058,26 @@ impl<'a> MirBuilder<'a> {
         // possibly holding a lambda/closure value) is never a real function
         // symbol under its own bare name -- fall through to `lower_expr`,
         // which resolves it the same way any other read of that global does.
-        let func = if let ExprKind::Identifier(name) = &callee.kind
+        // `f[int](..)`/`mod.f[int](..)`: an explicit generic type argument
+        // wraps the real callee in an `Index`. The bracketed type has
+        // already done its job during type-checking (pinning the checked
+        // type this call resolves to); by codegen all that's left is the
+        // same bare/module-qualified function name `lower_general_call_path`
+        // would derive from the unwrapped shape, which is what lets its
+        // existing monomorphize step below key off `self.generic_fns`
+        // correctly instead of falling through to `lower_expr` and losing
+        // the callee's identity as a function reference entirely.
+        let index_inner = match &callee.kind {
+            ExprKind::Index { obj, .. } => Some(obj.as_ref()),
+            _ => None,
+        };
+        let name_callee = index_inner.unwrap_or(callee);
+        let func = if let ExprKind::Identifier(name) = &name_callee.kind
             && self.lookup_var(name).is_none()
             && !self.globals.contains_key(name)
         {
             Operand::Constant(Constant::Function(name.clone()))
-        } else if let ExprKind::Attr { obj, attr } = &callee.kind
+        } else if let ExprKind::Attr { obj, attr } = &name_callee.kind
             && let ExprKind::Identifier(obj_name) = &obj.kind
             && self.lookup_var(obj_name).is_none()
         {

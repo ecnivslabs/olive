@@ -1,7 +1,7 @@
 use super::super::error::SemanticError;
 use super::super::types::Type;
 use super::TypeChecker;
-use crate::parser::{TypeExpr, TypeExprKind};
+use crate::parser::{Expr, ExprKind, TypeExpr, TypeExprKind};
 use crate::span::Span;
 
 impl TypeChecker {
@@ -417,16 +417,16 @@ impl TypeChecker {
             }
 
             (other, Type::Union(members)) | (Type::Union(members), other) => {
-                // Struct satisfies union if it implements one of the union's trait-object members.
-                let implements_member = if let Type::Struct(sname, _, _) = other {
-                    members.iter().any(|m| {
-                        matches!(m, Type::TraitObject(tname, _)
-                            if self.type_traits.contains(&(sname.clone(), tname.clone())))
-                    })
-                } else {
-                    false
-                };
-                if !members.contains(other) && !implements_member {
+                // Try real unification against each member so unresolved type
+                // vars (e.g. a freshly constructed generic struct's param)
+                // get bound to the member's type instead of failing on a
+                // structural `==` that can never see them as equal. This also
+                // covers the struct-implements-trait-object-member case, since
+                // unify already handles that pair directly.
+                let other = other.clone();
+                let members = members.clone();
+                let matched = members.iter().any(|m| self.unify_silently(&other, m, span));
+                if !matched {
                     self.errors.push(SemanticError::rich(
                         crate::compile::errors::Diagnostic::error(
                             "E0400",
@@ -703,6 +703,61 @@ impl TypeChecker {
                     .collect(),
             ),
             _ => ty,
+        }
+    }
+
+    /// Resolves an index-position `Expr` to a `Type`, for explicit generic
+    /// type-argument call syntax (`chan[int]()`, `first[int](xs)`). The
+    /// grammar reuses value-index syntax for this rather than a dedicated
+    /// type-expr position, so the index arrives as an `Expr`, not a
+    /// `TypeExpr`; this mirrors `resolve_type_expr`'s name table over that
+    /// shape instead.
+    pub(super) fn resolve_type_from_expr(&self, e: &Expr) -> Option<Type> {
+        match &e.kind {
+            ExprKind::Identifier(name) => Some(match name.as_str() {
+                "int" | "i64" => Type::Int,
+                "i32" => Type::I32,
+                "i16" => Type::I16,
+                "i8" => Type::I8,
+                "u64" => Type::U64,
+                "u32" => Type::U32,
+                "u16" => Type::U16,
+                "u8" => Type::U8,
+                "float" | "f64" => Type::Float,
+                "f32" => Type::F32,
+                "str" => Type::Str,
+                "bytes" => Type::Bytes,
+                "bool" => Type::Bool,
+                "None" => Type::Null,
+                "Any" => Type::Any,
+                "PyObject" => Type::PyObject,
+                "list" => Type::List(Box::new(Type::Any)),
+                "set" => Type::Set(Box::new(Type::Any)),
+                "dict" => Type::Dict(Box::new(Type::Any), Box::new(Type::Any)),
+                _ => {
+                    return self.lookup_type(name).filter(|t| {
+                        matches!(t, Type::Struct(..) | Type::Enum(..) | Type::TraitObject(..))
+                    });
+                }
+            }),
+            ExprKind::Index { obj, index } => {
+                let inner = self.resolve_type_from_expr(index)?;
+                let ExprKind::Identifier(name) = &obj.kind else {
+                    return None;
+                };
+                match name.as_str() {
+                    "list" => Some(Type::List(Box::new(inner))),
+                    "set" => Some(Type::Set(Box::new(inner))),
+                    _ => match self.lookup_type(name) {
+                        Some(Type::Enum(enum_name, _)) => Some(Type::Enum(enum_name, vec![inner])),
+                        Some(Type::Struct(struct_name, _, is_ffi)) => {
+                            Some(Type::Struct(struct_name, vec![inner], is_ffi))
+                        }
+                        _ => None,
+                    },
+                }
+            }
+            _ => None,
         }
     }
 
