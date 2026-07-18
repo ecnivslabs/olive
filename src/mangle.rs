@@ -1,13 +1,34 @@
-use crate::parser::{CallArg, Expr, ExprKind, Stmt, StmtKind, TypeExpr, TypeExprKind};
+use crate::parser::{CallArg, CompClause, Expr, ExprKind, ForTarget, MatchPattern, Stmt, StmtKind};
+use std::borrow::Cow;
 use std::collections::HashSet;
 
+/// Qualifies an imported module's own top-level definitions with `prefix`
+/// (`chan` -> `aio::chan`) and rewrites every reference to one of them
+/// throughout the module, so a flat, single-namespace MIR/codegen layer
+/// never collides two modules' same-named symbols.
+///
+/// A reference is only rewritten while it is actually visible under that
+/// name -- a parameter, a `let`, a `for` target, a match binding, or a
+/// nested `fn`/`struct`/`enum` that happens to share a top-level symbol's
+/// name shadows it for the rest of that lexical scope, mirroring the
+/// resolver's own scope discipline. Without this, a function whose own
+/// parameter is named the same as some unrelated sibling top-level
+/// definition would have every read of that parameter rewritten into a
+/// call to the sibling instead.
 pub fn mangle_statements(stmts: &mut [Stmt], prefix: &str, names: &HashSet<String>) {
     for stmt in stmts {
-        mangle_stmt(stmt, prefix, names);
+        mangle_stmt(stmt, prefix, names, true);
     }
 }
 
-pub fn mangle_stmt(stmt: &mut Stmt, prefix: &str, names: &HashSet<String>) {
+/// Mangles one statement. `is_top_level` is true only for a statement
+/// sitting directly in the list `mangle_statements` was called with --
+/// only there does a `fn`/`struct`/`enum`/`let`/`const`/import declare a
+/// genuine module-level symbol whose own name gets qualified. The same
+/// statement shapes reached while descending into a body are always
+/// local bindings, so their own name is left alone; only shadowing them
+/// changes what gets mangled inside that body.
+fn mangle_stmt(stmt: &mut Stmt, prefix: &str, names: &HashSet<String>, is_top_level: bool) {
     match &mut stmt.kind {
         StmtKind::Fn {
             name,
@@ -16,10 +37,10 @@ pub fn mangle_stmt(stmt: &mut Stmt, prefix: &str, names: &HashSet<String>) {
             return_type,
             ..
         } => {
-            if names.contains(name) {
+            if is_top_level && names.contains(name) {
                 *name = format!("{}::{}", prefix, name);
             }
-            for p in params {
+            for p in params.iter_mut() {
                 if let Some(ty) = &mut p.type_ann {
                     mangle_type_expr(ty, prefix, names);
                 }
@@ -27,14 +48,13 @@ pub fn mangle_stmt(stmt: &mut Stmt, prefix: &str, names: &HashSet<String>) {
             if let Some(ty) = return_type {
                 mangle_type_expr(ty, prefix, names);
             }
-            for s in body {
-                mangle_stmt(s, prefix, names);
-            }
+            let param_names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+            mangle_scoped(body, prefix, names, &param_names);
         }
         StmtKind::Struct {
             name, body, fields, ..
         } => {
-            if names.contains(name) {
+            if is_top_level && names.contains(name) {
                 *name = format!("{}::{}", prefix, name);
             }
             for f in fields {
@@ -43,7 +63,7 @@ pub fn mangle_stmt(stmt: &mut Stmt, prefix: &str, names: &HashSet<String>) {
                 }
             }
             for s in body {
-                mangle_stmt(s, prefix, names);
+                mangle_stmt(s, prefix, names, false);
             }
         }
         StmtKind::Impl {
@@ -55,16 +75,16 @@ pub fn mangle_stmt(stmt: &mut Stmt, prefix: &str, names: &HashSet<String>) {
                 *n = format!("{}::{}", prefix, n);
             }
             for s in body {
-                mangle_stmt(s, prefix, names);
+                mangle_stmt(s, prefix, names, false);
             }
         }
         StmtKind::Trait { .. } => {}
         StmtKind::Enum { name, variants, .. } => {
-            if names.contains(name) {
+            if is_top_level && names.contains(name) {
                 *name = format!("{}::{}", prefix, name);
             }
             for variant in variants {
-                if names.contains(&variant.name) {
+                if is_top_level && names.contains(&variant.name) {
                     variant.name = format!("{}::{}", prefix, variant.name);
                 }
                 for ty in &mut variant.types {
@@ -79,19 +99,13 @@ pub fn mangle_stmt(stmt: &mut Stmt, prefix: &str, names: &HashSet<String>) {
             condition,
         } => {
             mangle_expr(condition, prefix, names);
-            for s in then_body {
-                mangle_stmt(s, prefix, names);
-            }
+            mangle_scoped(then_body, prefix, names, &[]);
             for (cond, body) in elif_clauses {
                 mangle_expr(cond, prefix, names);
-                for s in body {
-                    mangle_stmt(s, prefix, names);
-                }
+                mangle_scoped(body, prefix, names, &[]);
             }
             if let Some(body) = else_body {
-                for s in body {
-                    mangle_stmt(s, prefix, names);
-                }
+                mangle_scoped(body, prefix, names, &[]);
             }
         }
         StmtKind::While {
@@ -100,29 +114,22 @@ pub fn mangle_stmt(stmt: &mut Stmt, prefix: &str, names: &HashSet<String>) {
             else_body,
         } => {
             mangle_expr(condition, prefix, names);
-            for s in body {
-                mangle_stmt(s, prefix, names);
-            }
+            mangle_scoped(body, prefix, names, &[]);
             if let Some(body) = else_body {
-                for s in body {
-                    mangle_stmt(s, prefix, names);
-                }
+                mangle_scoped(body, prefix, names, &[]);
             }
         }
         StmtKind::For {
+            target,
             iter,
             body,
             else_body,
-            ..
         } => {
             mangle_expr(iter, prefix, names);
-            for s in body {
-                mangle_stmt(s, prefix, names);
-            }
+            let target_names = for_target_names(target);
+            mangle_scoped(body, prefix, names, &target_names);
             if let Some(body) = else_body {
-                for s in body {
-                    mangle_stmt(s, prefix, names);
-                }
+                mangle_scoped(body, prefix, names, &[]);
             }
         }
         StmtKind::Let {
@@ -137,7 +144,7 @@ pub fn mangle_stmt(stmt: &mut Stmt, prefix: &str, names: &HashSet<String>) {
             type_ann,
             ..
         } => {
-            if names.contains(name) {
+            if is_top_level && names.contains(name) {
                 *name = format!("{}::{}", prefix, name);
             }
             if let Some(ty) = type_ann {
@@ -157,9 +164,11 @@ pub fn mangle_stmt(stmt: &mut Stmt, prefix: &str, names: &HashSet<String>) {
             type_ann,
             ..
         } => {
-            for name in var_names {
-                if names.contains(name) {
-                    *name = format!("{}::{}", prefix, name);
+            if is_top_level {
+                for name in var_names {
+                    if names.contains(name) {
+                        *name = format!("{}::{}", prefix, name);
+                    }
                 }
             }
             if let Some(ty) = type_ann {
@@ -182,7 +191,7 @@ pub fn mangle_stmt(stmt: &mut Stmt, prefix: &str, names: &HashSet<String>) {
         }
         StmtKind::UnsafeBlock(body) => {
             for s in body {
-                mangle_stmt(s, prefix, names);
+                mangle_stmt(s, prefix, names, false);
             }
         }
         StmtKind::Defer(expr) => {
@@ -192,12 +201,12 @@ pub fn mangle_stmt(stmt: &mut Stmt, prefix: &str, names: &HashSet<String>) {
             let name = alias
                 .as_deref()
                 .unwrap_or_else(|| module.last().unwrap().as_str());
-            if names.contains(name) {
+            if is_top_level && names.contains(name) {
                 *alias = Some(format!("{}::{}", prefix, name));
             }
         }
         StmtKind::PyImport { alias, .. } | StmtKind::NativeImport { alias, .. }
-            if names.contains(alias) =>
+            if is_top_level && names.contains(alias) =>
         {
             *alias = format!("{}::{}", prefix, alias);
         }
@@ -205,15 +214,183 @@ pub fn mangle_stmt(stmt: &mut Stmt, prefix: &str, names: &HashSet<String>) {
             names: import_names,
             ..
         } => {
-            for (name, alias) in import_names {
-                let bound = alias.as_deref().unwrap_or(name.as_str());
-                if names.contains(bound) {
-                    *alias = Some(format!("{}::{}", prefix, bound));
+            if is_top_level {
+                for (name, alias) in import_names {
+                    let bound = alias.as_deref().unwrap_or(name.as_str());
+                    if names.contains(bound) {
+                        *alias = Some(format!("{}::{}", prefix, bound));
+                    }
                 }
             }
         }
         _ => {}
     }
+}
+
+/// Mangles a nested body that opens its own lexical scope (an `if`/`while`/
+/// `for` body, a fn's own body, a match case's body, ...), given any names
+/// that scope binds up front (a `for` target, a fn's params, ...). Nothing
+/// shadowed here escapes back to the caller's own active set.
+fn mangle_scoped(stmts: &mut [Stmt], prefix: &str, names: &HashSet<String>, shadow: &[&str]) {
+    let active = shadow_names(names, shadow.iter().copied());
+    mangle_block_inline(stmts, prefix, active);
+}
+
+/// Mangles a statement sequence that shares one lexical scope with its
+/// caller (a fn body, or an `unsafe:` block spliced transparently into its
+/// parent): each `let`/`const`/nested `fn`/`struct`/`enum` shadows the rest
+/// of the sequence but never what came before it, matching the resolver's
+/// own hoist-then-execute-in-order discipline.
+fn mangle_block_inline(stmts: &mut [Stmt], prefix: &str, mut active: Cow<HashSet<String>>) {
+    for s in stmts.iter() {
+        if let Some(n) = hoisted_name(&s.kind)
+            && active.contains(n)
+        {
+            active.to_mut().remove(n);
+        }
+    }
+    for s in stmts.iter_mut() {
+        if let StmtKind::UnsafeBlock(body) = &mut s.kind {
+            // Transparent to scoping (mirrors the resolver: no new scope),
+            // so its bindings keep shadowing the rest of this same sequence.
+            let taken = std::mem::take(&mut active).into_owned();
+            active = Cow::Owned(mangle_unsafe_block(body, prefix, taken));
+            continue;
+        }
+        mangle_stmt(s, prefix, &active, false);
+        for n in sequential_bound_names(&s.kind) {
+            if active.contains(n) {
+                active.to_mut().remove(n);
+            }
+        }
+    }
+}
+
+/// Runs `mangle_block_inline` over an `unsafe:` block's own statements and
+/// hands back the (possibly further-shadowed) active set, since bindings
+/// made inside it are visible to whatever follows it in the parent block.
+fn mangle_unsafe_block(
+    body: &mut [Stmt],
+    prefix: &str,
+    active: HashSet<String>,
+) -> HashSet<String> {
+    let mut remaining = active;
+    for s in body.iter() {
+        if let Some(n) = hoisted_name(&s.kind) {
+            remaining.remove(n);
+        }
+    }
+    for s in body.iter_mut() {
+        mangle_stmt(s, prefix, &remaining, false);
+        for n in sequential_bound_names(&s.kind) {
+            remaining.remove(n);
+        }
+    }
+    remaining
+}
+
+fn shadow_names<'a>(
+    names: &'a HashSet<String>,
+    shadow: impl Iterator<Item = &'a str>,
+) -> Cow<'a, HashSet<String>> {
+    let mut active = Cow::Borrowed(names);
+    for n in shadow {
+        if active.contains(n) {
+            active.to_mut().remove(n);
+        }
+    }
+    active
+}
+
+fn hoisted_name(kind: &StmtKind) -> Option<&str> {
+    match kind {
+        StmtKind::Fn { name, .. } | StmtKind::Struct { name, .. } | StmtKind::Enum { name, .. } => {
+            Some(name.as_str())
+        }
+        _ => None,
+    }
+}
+
+fn sequential_bound_names(kind: &StmtKind) -> Vec<&str> {
+    match kind {
+        StmtKind::Let { name, .. } | StmtKind::Const { name, .. } => vec![name.as_str()],
+        StmtKind::MultiLet { names, .. } | StmtKind::MultiConst { names, .. } => {
+            names.iter().map(String::as_str).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn for_target_names(target: &ForTarget) -> Vec<&str> {
+    match target {
+        ForTarget::Name(name, _) => vec![name.as_str()],
+        ForTarget::Tuple(items) => items.iter().map(|(n, _)| n.as_str()).collect(),
+    }
+}
+
+fn pattern_bound_names(pattern: &MatchPattern) -> Vec<&str> {
+    let mut out = Vec::new();
+    collect_pattern_names(pattern, &mut out);
+    out
+}
+
+fn collect_pattern_names<'a>(pattern: &'a MatchPattern, out: &mut Vec<&'a str>) {
+    match pattern {
+        MatchPattern::Identifier(name, _) => out.push(name.as_str()),
+        MatchPattern::Variant(_, args) | MatchPattern::Tuple(args) => {
+            for p in args {
+                collect_pattern_names(p, out);
+            }
+        }
+        MatchPattern::StructFields(_, fields, _) => {
+            for (_, p) in fields {
+                collect_pattern_names(p, out);
+            }
+        }
+        MatchPattern::List {
+            before,
+            rest,
+            after,
+        } => {
+            for p in before.iter().chain(after) {
+                collect_pattern_names(p, out);
+            }
+            if let Some((name, _)) = rest {
+                out.push(name.as_str());
+            }
+        }
+        MatchPattern::Or(alts) => {
+            // Every alternative binds the same names (checker-enforced), so
+            // the first alternative alone is representative.
+            if let Some(first) = alts.first() {
+                collect_pattern_names(first, out);
+            }
+        }
+        MatchPattern::Literal(_) | MatchPattern::Wildcard | MatchPattern::Range(..) => {}
+    }
+}
+
+/// Mangles a comprehension's clauses left to right, each clause's target
+/// shadowing the rest for later clauses and for the final element/key/value
+/// expression, the same cascading visibility a chain of nested `for`s has.
+fn mangle_comp_clauses<'a>(
+    clauses: &'a mut [CompClause],
+    prefix: &str,
+    names: &'a HashSet<String>,
+) -> Cow<'a, HashSet<String>> {
+    let mut active = Cow::Borrowed(names);
+    for clause in clauses.iter_mut() {
+        mangle_expr(&mut clause.iter, prefix, &active);
+        for n in for_target_names(&clause.target) {
+            if active.contains(n) {
+                active.to_mut().remove(n);
+            }
+        }
+        if let Some(cond) = &mut clause.condition {
+            mangle_expr(cond, prefix, &active);
+        }
+    }
+    active
 }
 
 pub fn mangle_expr(expr: &mut Expr, prefix: &str, names: &HashSet<String>) {
@@ -282,47 +459,46 @@ pub fn mangle_expr(expr: &mut Expr, prefix: &str, names: &HashSet<String>) {
         } => {
             mangle_expr(match_expr, prefix, names);
             for case in cases {
+                let bound = pattern_bound_names(&case.pattern);
+                let active = shadow_names(names, bound.into_iter());
                 if let Some(g) = &mut case.guard {
-                    mangle_expr(g, prefix, names);
+                    mangle_expr(g, prefix, &active);
                 }
-                for stmt in &mut case.body {
-                    mangle_stmt(stmt, prefix, names);
-                }
+                mangle_block_inline(&mut case.body, prefix, active);
             }
         }
         ExprKind::ListComp { elt, clauses } | ExprKind::SetComp { elt, clauses } => {
-            mangle_expr(elt, prefix, names);
-            for clause in clauses {
-                mangle_expr(&mut clause.iter, prefix, names);
-                if let Some(cond) = &mut clause.condition {
-                    mangle_expr(cond, prefix, names);
-                }
-            }
+            let active = mangle_comp_clauses(clauses, prefix, names);
+            mangle_expr(elt, prefix, &active);
         }
         ExprKind::DictComp {
             key,
             value,
             clauses,
         } => {
-            mangle_expr(key, prefix, names);
-            mangle_expr(value, prefix, names);
-            for clause in clauses {
-                mangle_expr(&mut clause.iter, prefix, names);
-                if let Some(cond) = &mut clause.condition {
-                    mangle_expr(cond, prefix, names);
-                }
-            }
+            let active = mangle_comp_clauses(clauses, prefix, names);
+            mangle_expr(key, prefix, &active);
+            mangle_expr(value, prefix, &active);
         }
         ExprKind::AsyncBlock(body) => {
-            for stmt in body {
-                mangle_stmt(stmt, prefix, names);
+            mangle_block_inline(body, prefix, Cow::Borrowed(names));
+        }
+        ExprKind::Lambda { params, body } => {
+            for p in params.iter_mut() {
+                if let Some(ty) = &mut p.type_ann {
+                    mangle_type_expr(ty, prefix, names);
+                }
             }
+            let param_names = params.iter().map(|p| p.name.as_str());
+            let active = shadow_names(names, param_names);
+            mangle_expr(body, prefix, &active);
         }
         _ => {}
     }
 }
 
-pub fn mangle_type_expr(ty: &mut TypeExpr, prefix: &str, names: &HashSet<String>) {
+pub fn mangle_type_expr(ty: &mut crate::parser::TypeExpr, prefix: &str, names: &HashSet<String>) {
+    use crate::parser::TypeExprKind;
     match &mut ty.kind {
         TypeExprKind::Qualified(_) => {}
         TypeExprKind::Name(name) => {
@@ -440,24 +616,35 @@ mod tests {
         })
     }
 
+    fn param(name: &str) -> Param {
+        Param {
+            name: name.into(),
+            type_ann: None,
+            default: None,
+            kind: ParamKind::Regular,
+            is_mut: false,
+            span: sp(),
+        }
+    }
+
     #[test]
     fn mangle_fn_name() {
         let mut s = fn_stmt("f", vec![]);
-        mangle_stmt(&mut s, "m", &ids(&["f"]));
+        mangle_stmt(&mut s, "m", &ids(&["f"]), true);
         assert_eq!(name_of(&s), "m::f");
     }
 
     #[test]
     fn mangle_fn_skip_nonmatch() {
         let mut s = fn_stmt("g", vec![]);
-        mangle_stmt(&mut s, "m", &ids(&["f"]));
+        mangle_stmt(&mut s, "m", &ids(&["f"]), true);
         assert_eq!(name_of(&s), "g");
     }
 
     #[test]
     fn mangle_fn_body_cascades() {
         let mut s = fn_stmt("f", vec![stmt(StmtKind::ExprStmt(val("x")))]);
-        mangle_stmt(&mut s, "m", &ids(&["x"]));
+        mangle_stmt(&mut s, "m", &ids(&["x"]), true);
         let body = match s.kind {
             StmtKind::Fn { body, .. } => body,
             _ => unreachable!(),
@@ -470,6 +657,220 @@ mod tests {
     }
 
     #[test]
+    fn mangle_fn_nested_name_not_renamed() {
+        // A nested fn is a local binding, not a second export -- its own
+        // name must never be qualified even if it collides with a sibling
+        // top-level definition.
+        let mut s = fn_stmt("outer", vec![fn_stmt("chan", vec![])]);
+        mangle_stmt(&mut s, "m", &ids(&["chan"]), true);
+        let body = match s.kind {
+            StmtKind::Fn { body, .. } => body,
+            _ => unreachable!(),
+        };
+        assert_eq!(name_of(&body[0]), "chan");
+    }
+
+    #[test]
+    fn mangle_param_shadows_body_reference() {
+        // A parameter named the same as an unrelated top-level `chan`
+        // function must shadow it for the whole body, not get treated as
+        // a reference to that function.
+        let mut s = stmt(StmtKind::Fn {
+            name: "_chan_len".into(),
+            type_params: vec![],
+            params: vec![param("chan")],
+            return_type: None,
+            body: vec![stmt(StmtKind::Return(Some(val("chan"))))],
+            decorators: vec![],
+            is_async: false,
+        });
+        mangle_stmt(&mut s, "aio", &ids(&["chan", "_chan_len"]), true);
+        let body = match s.kind {
+            StmtKind::Fn { body, .. } => body,
+            _ => unreachable!(),
+        };
+        let e = match &body[0].kind {
+            StmtKind::Return(Some(e)) => e,
+            _ => unreachable!(),
+        };
+        assert_eq!(as_id(e), "chan");
+    }
+
+    #[test]
+    fn mangle_let_local_shadows_and_keeps_its_own_name() {
+        // Inside a body, `let chan = ...` is a local, not a redeclaration
+        // of the top-level `chan` -- its own name stays plain, and it
+        // shadows later references in the same body.
+        let mut s = fn_stmt(
+            "f",
+            vec![
+                stmt(StmtKind::Let {
+                    name: "chan".into(),
+                    name_span: sp(),
+                    type_ann: None,
+                    value: val("5"),
+                    is_mut: false,
+                }),
+                stmt(StmtKind::ExprStmt(val("chan"))),
+            ],
+        );
+        mangle_stmt(&mut s, "m", &ids(&["chan"]), true);
+        let body = match s.kind {
+            StmtKind::Fn { body, .. } => body,
+            _ => unreachable!(),
+        };
+        assert_eq!(name_of(&body[0]), "chan");
+        let e = match &body[1].kind {
+            StmtKind::ExprStmt(e) => e,
+            _ => unreachable!(),
+        };
+        assert_eq!(as_id(e), "chan");
+    }
+
+    #[test]
+    fn mangle_let_before_shadow_still_mangled() {
+        // A reference before the shadowing `let` still refers to the
+        // top-level symbol.
+        let mut s = fn_stmt(
+            "f",
+            vec![
+                stmt(StmtKind::ExprStmt(val("chan"))),
+                stmt(StmtKind::Let {
+                    name: "chan".into(),
+                    name_span: sp(),
+                    type_ann: None,
+                    value: val("5"),
+                    is_mut: false,
+                }),
+            ],
+        );
+        mangle_stmt(&mut s, "m", &ids(&["chan"]), true);
+        let body = match s.kind {
+            StmtKind::Fn { body, .. } => body,
+            _ => unreachable!(),
+        };
+        let e = match &body[0].kind {
+            StmtKind::ExprStmt(e) => e,
+            _ => unreachable!(),
+        };
+        assert_eq!(as_id(e), "m::chan");
+    }
+
+    #[test]
+    fn mangle_for_target_shadows_body() {
+        let mut s = stmt(StmtKind::For {
+            target: ForTarget::Name("x".into(), sp()),
+            iter: val("xs"),
+            body: vec![stmt(StmtKind::ExprStmt(val("x")))],
+            else_body: None,
+        });
+        mangle_stmt(&mut s, "m", &ids(&["x", "xs"]), true);
+        let body = match s.kind {
+            StmtKind::For { body, .. } => body,
+            _ => unreachable!(),
+        };
+        let e = match &body[0].kind {
+            StmtKind::ExprStmt(e) => e,
+            _ => unreachable!(),
+        };
+        assert_eq!(as_id(e), "x");
+    }
+
+    #[test]
+    fn mangle_if_scope_does_not_leak() {
+        // A `let` inside one `if` branch must not shadow a sibling branch.
+        let mut s = stmt(StmtKind::If {
+            condition: val("c"),
+            then_body: vec![
+                stmt(StmtKind::Let {
+                    name: "chan".into(),
+                    name_span: sp(),
+                    type_ann: None,
+                    value: val("1"),
+                    is_mut: false,
+                }),
+                stmt(StmtKind::ExprStmt(val("chan"))),
+            ],
+            elif_clauses: vec![],
+            else_body: Some(vec![stmt(StmtKind::ExprStmt(val("chan")))]),
+        });
+        mangle_stmt(&mut s, "m", &ids(&["chan"]), true);
+        let (then_body, else_body) = match s.kind {
+            StmtKind::If {
+                then_body,
+                else_body,
+                ..
+            } => (then_body, else_body.unwrap()),
+            _ => unreachable!(),
+        };
+        let then_ref = match &then_body[1].kind {
+            StmtKind::ExprStmt(e) => e,
+            _ => unreachable!(),
+        };
+        assert_eq!(as_id(then_ref), "chan");
+        let else_ref = match &else_body[0].kind {
+            StmtKind::ExprStmt(e) => e,
+            _ => unreachable!(),
+        };
+        assert_eq!(as_id(else_ref), "m::chan");
+    }
+
+    #[test]
+    fn mangle_lambda_param_shadows_body() {
+        let mut e = expr(ExprKind::Lambda {
+            params: vec![param("chan")],
+            body: bx("chan"),
+        });
+        mangle_expr(&mut e, "m", &ids(&["chan"]));
+        let body = match &e.kind {
+            ExprKind::Lambda { body, .. } => body,
+            _ => unreachable!(),
+        };
+        assert_eq!(as_id(body), "chan");
+    }
+
+    #[test]
+    fn mangle_match_binding_shadows_case_body() {
+        let mut e = expr(ExprKind::Match {
+            expr: bx("scrutinee"),
+            cases: vec![MatchCase {
+                pattern: MatchPattern::Identifier("chan".into(), sp()),
+                guard: None,
+                body: vec![stmt(StmtKind::ExprStmt(val("chan")))],
+                span: sp(),
+            }],
+        });
+        mangle_expr(&mut e, "m", &ids(&["chan", "scrutinee"]));
+        let cases = match &e.kind {
+            ExprKind::Match { cases, .. } => cases,
+            _ => unreachable!(),
+        };
+        let e = match &cases[0].body[0].kind {
+            StmtKind::ExprStmt(e) => e,
+            _ => unreachable!(),
+        };
+        assert_eq!(as_id(e), "chan");
+    }
+
+    #[test]
+    fn mangle_listcomp_target_shadows_element() {
+        let mut e = expr(ExprKind::ListComp {
+            elt: bx("chan"),
+            clauses: vec![CompClause {
+                target: ForTarget::Name("chan".into(), sp()),
+                iter: val("xs"),
+                condition: None,
+            }],
+        });
+        mangle_expr(&mut e, "m", &ids(&["chan", "xs"]));
+        let elt = match &e.kind {
+            ExprKind::ListComp { elt, .. } => elt,
+            _ => unreachable!(),
+        };
+        assert_eq!(as_id(elt), "chan");
+    }
+
+    #[test]
     fn mangle_struct() {
         let mut s = stmt(StmtKind::Struct {
             name: "P".into(),
@@ -478,7 +879,7 @@ mod tests {
             body: vec![],
             decorators: vec![],
         });
-        mangle_stmt(&mut s, "m", &ids(&["P"]));
+        mangle_stmt(&mut s, "m", &ids(&["P"]), true);
         assert_eq!(name_of(&s), "m::P");
     }
 
@@ -491,7 +892,7 @@ mod tests {
             body: vec![],
             decorators: vec![],
         });
-        mangle_stmt(&mut s, "m", &ids(&["O"]));
+        mangle_stmt(&mut s, "m", &ids(&["O"]), true);
         assert_eq!(name_of(&s), "m::O");
     }
 
@@ -508,7 +909,7 @@ mod tests {
             body: vec![],
             decorators: vec![],
         });
-        mangle_stmt(&mut s, "m", &ids(&["V"]));
+        mangle_stmt(&mut s, "m", &ids(&["V"]), true);
         let vs = match s.kind {
             StmtKind::Enum { variants, .. } => variants,
             _ => unreachable!(),
@@ -525,7 +926,7 @@ mod tests {
             type_ann: None,
             is_mut: false,
         });
-        mangle_stmt(&mut s, "m", &ids(&["x"]));
+        mangle_stmt(&mut s, "m", &ids(&["x"]), true);
         assert_eq!(name_of(&s), "m::x");
     }
 
@@ -540,7 +941,7 @@ mod tests {
             },
             body: vec![],
         });
-        mangle_stmt(&mut s, "m", &ids(&["F"]));
+        mangle_stmt(&mut s, "m", &ids(&["F"]), true);
         let tn = match s.kind {
             StmtKind::Impl { type_name, .. } => type_name,
             _ => unreachable!(),
@@ -556,7 +957,7 @@ mod tests {
             elif_clauses: vec![],
             else_body: None,
         });
-        mangle_stmt(&mut s, "m", &ids(&["c"]));
+        mangle_stmt(&mut s, "m", &ids(&["c"]), true);
         let c = match s.kind {
             StmtKind::If { condition, .. } => condition,
             _ => unreachable!(),
@@ -571,7 +972,7 @@ mod tests {
             body: vec![],
             else_body: None,
         });
-        mangle_stmt(&mut s, "m", &ids(&["c"]));
+        mangle_stmt(&mut s, "m", &ids(&["c"]), true);
         let c = match s.kind {
             StmtKind::While { condition, .. } => condition,
             _ => unreachable!(),
@@ -585,7 +986,7 @@ mod tests {
             target: val("a"),
             value: val("b"),
         });
-        mangle_stmt(&mut s, "m", &ids(&["a", "b"]));
+        mangle_stmt(&mut s, "m", &ids(&["a", "b"]), true);
         let (t, v) = match s.kind {
             StmtKind::Assign { target, value } => (target, value),
             _ => unreachable!(),
@@ -668,14 +1069,14 @@ mod tests {
             module: vec!["foo".into()],
             alias: None,
         });
-        mangle_stmt(&mut s, "m", &ids(&["foo"]));
+        mangle_stmt(&mut s, "m", &ids(&["foo"]), true);
         assert!(matches!(s.kind, StmtKind::Import { alias, .. } if alias == Some("m::foo".into())));
     }
 
     #[test]
     fn mangle_defer() {
         let mut s = stmt(StmtKind::Defer(val("x")));
-        mangle_stmt(&mut s, "m", &ids(&["x"]));
+        mangle_stmt(&mut s, "m", &ids(&["x"]), true);
         let e = match s.kind {
             StmtKind::Defer(e) => e,
             _ => unreachable!(),
@@ -689,7 +1090,7 @@ mod tests {
             test: val("t"),
             msg: Some(val("m")),
         });
-        mangle_stmt(&mut s, "m", &ids(&["t", "m"]));
+        mangle_stmt(&mut s, "m", &ids(&["t", "m"]), true);
         let (t, msg) = match s.kind {
             StmtKind::Assert { test, msg } => (test, msg),
             _ => unreachable!(),
@@ -706,7 +1107,7 @@ mod tests {
             value: val("1"),
             type_ann: None,
         });
-        mangle_stmt(&mut s, "m", &ids(&["C"]));
+        mangle_stmt(&mut s, "m", &ids(&["C"]), true);
         assert_eq!(name_of(&s), "m::C");
     }
 
@@ -715,7 +1116,7 @@ mod tests {
         let mut s = stmt(StmtKind::UnsafeBlock(vec![stmt(StmtKind::ExprStmt(val(
             "x",
         )))]));
-        mangle_stmt(&mut s, "m", &ids(&["x"]));
+        mangle_stmt(&mut s, "m", &ids(&["x"]), true);
         let body = match s.kind {
             StmtKind::UnsafeBlock(b) => b,
             _ => unreachable!(),
@@ -737,7 +1138,7 @@ mod tests {
             is_mut: false,
             starred: None,
         });
-        mangle_stmt(&mut s, "m", &ids(&["a"]));
+        mangle_stmt(&mut s, "m", &ids(&["a"]), true);
         let names = match s.kind {
             StmtKind::MultiLet { names, .. } => names,
             _ => unreachable!(),
