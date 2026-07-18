@@ -1,6 +1,0 @@
-import py "random" as random
-
-let mut xs: [int] = [1, 2, 3, 4, 5]
-random.seed(0)
-random.shuffle(xs)
-print(xs)

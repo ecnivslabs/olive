@@ -1,4 +1,0 @@
-let s = "hello world foo"
-let parts = s.split(" ")
-let joined = "-".join(parts)
-print(joined.upper())

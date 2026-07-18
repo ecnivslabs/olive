@@ -1,4 +1,0 @@
-let mut config: {str: int} = {"width": 100, "height": 50, "depth": 1}
-config["height"] = 75
-config["depth"] = 3
-print(config["width"] * config["height"] * config["depth"])

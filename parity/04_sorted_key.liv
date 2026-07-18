@@ -1,6 +1,0 @@
-fn neg(x: int) -> int:
-    return -x
-
-let xs: [int] = [5, 3, 8, 1, 9, 2]
-let ys = sorted(xs, key=neg)
-print(ys)
