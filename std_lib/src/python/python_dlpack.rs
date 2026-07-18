@@ -461,7 +461,7 @@ mod tests {
             let data_ptr_method = PY_OBJECT_GET_ATTR_STRING(tensor, data_ptr_name.as_ptr());
             let empty_args = PY_TUPLE_NEW(0);
             let ptr_result = PY_OBJECT_CALL_OBJECT(data_ptr_method, empty_args);
-            let torch_ptr = PY_LONG_AS_LONG(ptr_result) as usize;
+            let torch_ptr = py_long_as_i64(ptr_result) as usize;
             assert_eq!(
                 torch_ptr, ptr as usize,
                 "torch must see the same backing pointer"
@@ -507,7 +507,7 @@ mod tests {
             let data_ptr_method = PY_OBJECT_GET_ATTR_STRING(tensor, data_ptr_name.as_ptr());
             let empty_args = PY_TUPLE_NEW(0);
             let ptr_result = PY_OBJECT_CALL_OBJECT(data_ptr_method, empty_args);
-            let torch_ptr = PY_LONG_AS_LONG(ptr_result) as usize;
+            let torch_ptr = py_long_as_i64(ptr_result) as usize;
 
             let imported = dlpack_import(tensor).expect("torch tensor must expose __dlpack__");
             assert_eq!(imported.data_ptr() as usize, torch_ptr);
@@ -578,7 +578,7 @@ mod tests {
             let data_ptr_method = PY_OBJECT_GET_ATTR_STRING(tensor, data_ptr_name.as_ptr());
             let empty_args = PY_TUPLE_NEW(0);
             let ptr_result = PY_OBJECT_CALL_OBJECT(data_ptr_method, empty_args);
-            let torch_ptr = PY_LONG_AS_LONG(ptr_result) as usize;
+            let torch_ptr = py_long_as_i64(ptr_result) as usize;
             assert_eq!(
                 torch_ptr, ptr as usize,
                 "4096x4096 export must stay pointer-identical, never a silent copy"

@@ -309,7 +309,7 @@ mod tests {
             // not a copy -- the actual zero-copy claim, not just "no crash".
             let ctypes_attr = getattr(arr, "ctypes");
             let data_attr = getattr(ctypes_attr, "data");
-            let np_ptr = PY_LONG_AS_LONG(data_attr) as usize;
+            let np_ptr = py_long_as_i64(data_attr) as usize;
             assert_eq!(
                 np_ptr, ptr as usize,
                 "numpy must see the same backing pointer"

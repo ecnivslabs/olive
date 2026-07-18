@@ -66,6 +66,9 @@ pub unsafe extern "C" fn noop_incref(_: PyObject) {}
 pub unsafe extern "C" fn noop_as_long(_: PyObject) -> c_long {
     0
 }
+pub unsafe extern "C" fn noop_as_long_long(_: PyObject) -> i64 {
+    0
+}
 pub unsafe extern "C" fn noop_number_long(_: PyObject) -> PyObject {
     std::ptr::null_mut()
 }
@@ -76,6 +79,9 @@ pub unsafe extern "C" fn noop_as_utf8(_: PyObject) -> *const c_char {
     b"\0".as_ptr() as _
 }
 pub unsafe extern "C" fn noop_from_long(_: c_long) -> PyObject {
+    std::ptr::null_mut()
+}
+pub unsafe extern "C" fn noop_from_long_long(_: i64) -> PyObject {
     std::ptr::null_mut()
 }
 pub unsafe extern "C" fn noop_from_double(_: c_double) -> PyObject {

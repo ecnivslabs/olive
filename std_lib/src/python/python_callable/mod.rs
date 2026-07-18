@@ -105,10 +105,7 @@ unsafe fn decode_py_arg(obj: PyObject, tag: i64) -> i64 {
         match tag {
             ARG_INT | ARG_BOOL => {
                 if raw_ob_type(obj) == PY_LONG_TYPE {
-                    let v = PY_LONG_AS_LONG(obj);
-                    #[cfg(windows)]
-                    let v = v as i64;
-                    v
+                    py_long_as_i64(obj)
                 } else {
                     raw_py_to_int(obj)
                 }
@@ -502,13 +499,13 @@ mod tests {
                 let res = PY_OBJECT_CALL_OBJECT(callable, args);
                 PY_DEC_REF(args);
                 assert!(!res.is_null());
-                let v = PY_LONG_AS_LONG(res);
+                let v = py_long_as_i64(res);
                 PY_DEC_REF(res);
                 v
             });
             // `add_one_thunk(env) = env + 1`, called with env = the
             // record's own address: just checks the call reaches the thunk.
-            assert_eq!(result as i64, record + 1);
+            assert_eq!(result, record + 1);
             olive_py_decref(handle);
         }
     }
@@ -594,7 +591,7 @@ mod tests {
                 let res = PY_OBJECT_CALL_OBJECT(callable, args);
                 PY_DEC_REF(args);
                 assert!(!res.is_null());
-                let v = PY_LONG_AS_LONG(res);
+                let v = py_long_as_i64(res);
                 PY_DEC_REF(res);
                 v
             });

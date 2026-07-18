@@ -74,13 +74,13 @@ unsafe fn eligible_len(view: &PyBuffer) -> Option<usize> {
 unsafe fn convert_int(view: &PyBuffer, len: usize) -> i64 {
     unsafe {
         match (view.itemsize, format_code(view)) {
-            (8, b'q' | b'l') => {
+            (8, b'q' | b'l' | b'n') => {
                 let list_ptr = crate::olive_list_new(len as i64);
                 let sv = &mut *(list_ptr as *mut crate::StableVec);
                 std::ptr::copy_nonoverlapping(view.buf as *const i64, sv.ptr, len);
                 list_ptr
             }
-            (4, b'i') => {
+            (4, b'i' | b'l') => {
                 let list_ptr = crate::olive_list_new(len as i64);
                 let sv = &mut *(list_ptr as *mut crate::StableVec);
                 let src = view.buf as *const i32;
