@@ -195,7 +195,7 @@ impl<'a> MirBuilder<'a> {
         }
 
         let target_ty = self.get_type(target.id).clone();
-        let (mut rval, value_ty) = match self.lower_py_call_scalar_hint(value, &target_ty) {
+        let (mut rval, value_ty) = match self.lower_py_scalar_hint(value, &target_ty) {
             Some(op) => (op, target_ty.clone()),
             None => (self.lower_expr(value), self.get_type(value.id).clone()),
         };

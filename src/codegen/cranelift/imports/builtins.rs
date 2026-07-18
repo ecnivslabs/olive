@@ -550,6 +550,7 @@ pub(crate) fn resolve_builtin_import(
             "__olive_py_import" => Some("__olive_py_import"),
             "__olive_py_import_safe" => Some("__olive_py_import_safe"),
             "__olive_py_getattr" => Some("__olive_py_getattr"),
+            "__olive_py_getattr_ret" => Some("__olive_py_getattr_ret"),
             "__olive_py_getattr_safe" => Some("__olive_py_getattr_safe"),
             "__olive_py_call" => Some("__olive_py_call"),
             "__olive_py_call_safe" => Some("__olive_py_call_safe"),
@@ -561,6 +562,66 @@ pub(crate) fn resolve_builtin_import(
             "__olive_py_call_kw_v_safe" => Some("__olive_py_call_kw_v_safe"),
             "__olive_py_call_method_kw_v" => Some("__olive_py_call_method_kw_v"),
             "__olive_py_call_method_kw_v_safe" => Some("__olive_py_call_method_kw_v_safe"),
+            "__olive_py_call_kw_v_p0_k1" => Some("__olive_py_call_kw_v_p0_k1"),
+            "__olive_py_call_kw_v_p0_k1_safe" => Some("__olive_py_call_kw_v_p0_k1_safe"),
+            "__olive_py_call_kw_v_p0_k2" => Some("__olive_py_call_kw_v_p0_k2"),
+            "__olive_py_call_kw_v_p0_k2_safe" => Some("__olive_py_call_kw_v_p0_k2_safe"),
+            "__olive_py_call_kw_v_p0_k3" => Some("__olive_py_call_kw_v_p0_k3"),
+            "__olive_py_call_kw_v_p0_k3_safe" => Some("__olive_py_call_kw_v_p0_k3_safe"),
+            "__olive_py_call_kw_v_p0_k4" => Some("__olive_py_call_kw_v_p0_k4"),
+            "__olive_py_call_kw_v_p0_k4_safe" => Some("__olive_py_call_kw_v_p0_k4_safe"),
+            "__olive_py_call_kw_v_p1_k1" => Some("__olive_py_call_kw_v_p1_k1"),
+            "__olive_py_call_kw_v_p1_k1_safe" => Some("__olive_py_call_kw_v_p1_k1_safe"),
+            "__olive_py_call_kw_v_p1_k2" => Some("__olive_py_call_kw_v_p1_k2"),
+            "__olive_py_call_kw_v_p1_k2_safe" => Some("__olive_py_call_kw_v_p1_k2_safe"),
+            "__olive_py_call_kw_v_p1_k3" => Some("__olive_py_call_kw_v_p1_k3"),
+            "__olive_py_call_kw_v_p1_k3_safe" => Some("__olive_py_call_kw_v_p1_k3_safe"),
+            "__olive_py_call_kw_v_p2_k1" => Some("__olive_py_call_kw_v_p2_k1"),
+            "__olive_py_call_kw_v_p2_k1_safe" => Some("__olive_py_call_kw_v_p2_k1_safe"),
+            "__olive_py_call_kw_v_p2_k2" => Some("__olive_py_call_kw_v_p2_k2"),
+            "__olive_py_call_kw_v_p2_k2_safe" => Some("__olive_py_call_kw_v_p2_k2_safe"),
+            "__olive_py_call_kw_v_p3_k1" => Some("__olive_py_call_kw_v_p3_k1"),
+            "__olive_py_call_kw_v_p3_k1_safe" => Some("__olive_py_call_kw_v_p3_k1_safe"),
+            "__olive_py_call_method_kw_v_p0_k1" => Some("__olive_py_call_method_kw_v_p0_k1"),
+            "__olive_py_call_method_kw_v_p0_k1_safe" => {
+                Some("__olive_py_call_method_kw_v_p0_k1_safe")
+            }
+            "__olive_py_call_method_kw_v_p0_k2" => Some("__olive_py_call_method_kw_v_p0_k2"),
+            "__olive_py_call_method_kw_v_p0_k2_safe" => {
+                Some("__olive_py_call_method_kw_v_p0_k2_safe")
+            }
+            "__olive_py_call_method_kw_v_p0_k3" => Some("__olive_py_call_method_kw_v_p0_k3"),
+            "__olive_py_call_method_kw_v_p0_k3_safe" => {
+                Some("__olive_py_call_method_kw_v_p0_k3_safe")
+            }
+            "__olive_py_call_method_kw_v_p0_k4" => Some("__olive_py_call_method_kw_v_p0_k4"),
+            "__olive_py_call_method_kw_v_p0_k4_safe" => {
+                Some("__olive_py_call_method_kw_v_p0_k4_safe")
+            }
+            "__olive_py_call_method_kw_v_p1_k1" => Some("__olive_py_call_method_kw_v_p1_k1"),
+            "__olive_py_call_method_kw_v_p1_k1_safe" => {
+                Some("__olive_py_call_method_kw_v_p1_k1_safe")
+            }
+            "__olive_py_call_method_kw_v_p1_k2" => Some("__olive_py_call_method_kw_v_p1_k2"),
+            "__olive_py_call_method_kw_v_p1_k2_safe" => {
+                Some("__olive_py_call_method_kw_v_p1_k2_safe")
+            }
+            "__olive_py_call_method_kw_v_p1_k3" => Some("__olive_py_call_method_kw_v_p1_k3"),
+            "__olive_py_call_method_kw_v_p1_k3_safe" => {
+                Some("__olive_py_call_method_kw_v_p1_k3_safe")
+            }
+            "__olive_py_call_method_kw_v_p2_k1" => Some("__olive_py_call_method_kw_v_p2_k1"),
+            "__olive_py_call_method_kw_v_p2_k1_safe" => {
+                Some("__olive_py_call_method_kw_v_p2_k1_safe")
+            }
+            "__olive_py_call_method_kw_v_p2_k2" => Some("__olive_py_call_method_kw_v_p2_k2"),
+            "__olive_py_call_method_kw_v_p2_k2_safe" => {
+                Some("__olive_py_call_method_kw_v_p2_k2_safe")
+            }
+            "__olive_py_call_method_kw_v_p3_k1" => Some("__olive_py_call_method_kw_v_p3_k1"),
+            "__olive_py_call_method_kw_v_p3_k1_safe" => {
+                Some("__olive_py_call_method_kw_v_p3_k1_safe")
+            }
             "__olive_py_call0" => Some("__olive_py_call0"),
             "__olive_py_call0_safe" => Some("__olive_py_call0_safe"),
             "__olive_py_call1" => Some("__olive_py_call1"),

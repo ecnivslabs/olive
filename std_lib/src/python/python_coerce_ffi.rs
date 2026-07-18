@@ -542,6 +542,39 @@ pub extern "C" fn olive_py_getattr(obj: PyObject, attr: i64) -> PyObject {
     })
 }
 
+/// Fused variant of `olive_py_getattr` (R10's call-scalar-fusion technique
+/// applied to a plain attribute read): decodes the attribute value directly
+/// into the scalar `ret_tag` names instead of wrapping a handle first and
+/// paying a second boundary crossing to unwrap it. The compiler only emits
+/// this entry point when the checker's target type fused to a concrete
+/// scalar (`lower_py_getattr_scalar_hint`); `ret_tag` is never `RET_HANDLE`
+/// here -- that shape stays on the plain `olive_py_getattr` path above.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_getattr_ret(obj: PyObject, attr: i64, ret_tag: i64) -> i64 {
+    check_python_loaded();
+    let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
+    if unwrapped_obj.is_null() {
+        return 0;
+    }
+    let attr_ptr = (attr & !1) as *const c_char;
+    with_gil(|| unsafe {
+        let a = if use_interned_names() {
+            let name = interned_attr(attr_ptr);
+            if name.is_null() {
+                std::ptr::null_mut()
+            } else {
+                PY_OBJECT_GET_ATTR(unwrapped_obj, name)
+            }
+        } else {
+            PY_OBJECT_GET_ATTR_STRING(unwrapped_obj, attr_ptr)
+        };
+        if a.is_null() || !PY_ERR_OCCURRED().is_null() {
+            handle_py_error();
+        }
+        finish_ret(a, ret_tag)
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_setattr(obj: PyObject, attr: i64, val: i64) -> PyObject {
     check_python_loaded();

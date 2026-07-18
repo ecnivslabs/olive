@@ -1,4 +1,5 @@
 use super::super::{MirBuilder, NestedFnInfo};
+use super::py_call::RET_HANDLE;
 use crate::mir::AggregateKind;
 use crate::mir::ir::*;
 use crate::parser::{Expr, ExprKind};
@@ -353,6 +354,55 @@ impl<'a> MirBuilder<'a> {
             span,
         );
         self.operand_for_local(tmp)
+    }
+
+    /// GetAttr analogue of `lower_py_call_scalar_hint` (R10): `obj.attr` on
+    /// a `PyObject` `obj` types as bare `PyObject` at the checker level (a
+    /// dynamic module/object attribute has no static type of its own), so
+    /// `lower_attr_expr` above always wraps a handle -- even when the
+    /// surrounding context (a `let` annotation, an already-typed
+    /// reassignment target, a declared return type) already knows the
+    /// result must be a concrete scalar. Called from the same four
+    /// statement sites `lower_py_call_scalar_hint` is (see
+    /// `lower_py_scalar_hint`), fuses straight to `olive_py_getattr_ret`
+    /// instead of `olive_py_getattr` plus a second boundary-crossing
+    /// realize. `None` falls through to the plain `lower_expr` + `coerce`
+    /// path, unchanged.
+    pub(in crate::mir::builder) fn lower_py_getattr_scalar_hint(
+        &mut self,
+        expr: &Expr,
+        hint: &Type,
+    ) -> Option<Operand> {
+        if self.get_type(expr.id) != Type::PyObject || Self::py_ret_tag(hint).0 == RET_HANDLE {
+            return None;
+        }
+        let ExprKind::Attr { obj, attr } = &expr.kind else {
+            return None;
+        };
+        if !self.get_type(obj.id).is_py_value() {
+            return None;
+        }
+
+        let obj_op = self.lower_expr_as_copy(obj);
+        let (ret_tag, local_ty) = Self::py_ret_tag(hint);
+        let result = self.new_local(local_ty, None, true);
+        self.push_statement(
+            StatementKind::Assign(
+                result,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(
+                        "__olive_py_getattr_ret".to_string(),
+                    )),
+                    args: vec![
+                        obj_op,
+                        Operand::Constant(Constant::Str(attr.clone())),
+                        Operand::Constant(Constant::Int(ret_tag)),
+                    ],
+                },
+            ),
+            expr.span,
+        );
+        Some(self.operand_for_local(result))
     }
 
     /// `obj?.attr`: null-tests `obj`, skipping the field read entirely (no

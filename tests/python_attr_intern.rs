@@ -243,6 +243,32 @@ main()
     );
 }
 
+/// `total = p.x` (a plain reassignment into an already-`int`-typed local)
+/// fuses straight to `olive_py_getattr_ret` instead of wrapping a handle
+/// and realizing it separately -- unlike the tests above, which read the
+/// attribute inside a call argument or an arithmetic expression, neither of
+/// which supplies a scalar hint. Runs the fusion 2000 times in a loop so
+/// any refcount or GIL-region mistake in the fused path would surface.
+#[test]
+fn direct_scalar_attr_read_fuses_and_still_works() {
+    assert_identical_on_all_four_lanes(
+        r#"import py "attrhelper" as h
+
+fn main():
+    let p = h.make_point(7, 8)
+    let mut total: int = 0
+    let mut i = 0
+    while i < 2000:
+        total = p.x
+        i = i + 1
+    print(total)
+
+main()
+"#,
+        "7\n",
+    );
+}
+
 #[test]
 fn missing_attr_raises_with_unchanged_message() {
     assert_fails_identically_on_all_four_lanes(
@@ -251,6 +277,25 @@ fn missing_attr_raises_with_unchanged_message() {
 fn main():
     let p = h.make_point(1, 2)
     print(p.does_not_exist)
+
+main()
+"#,
+        "does_not_exist",
+    );
+}
+
+/// Same missing-attribute check, but through the fused `olive_py_getattr_ret`
+/// entry point (`direct_scalar_attr_read_fuses_and_still_works`'s shape) --
+/// the fused path's own `handle_py_error` call must still fire correctly.
+#[test]
+fn missing_attr_raises_with_unchanged_message_on_the_fused_path() {
+    assert_fails_identically_on_all_four_lanes(
+        r#"import py "attrhelper" as h
+
+fn main():
+    let p = h.make_point(1, 2)
+    let n: int = p.does_not_exist
+    print(n)
 
 main()
 "#,
