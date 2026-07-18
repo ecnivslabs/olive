@@ -110,7 +110,18 @@ impl Session {
 }
 
 fn file_uri(path: &std::path::Path) -> String {
-    format!("file://{}", path.to_string_lossy())
+    let raw = path.to_string_lossy();
+    if cfg!(windows) {
+        let slashed = raw.replace('\\', "/");
+        let with_leading = if slashed.starts_with('/') {
+            slashed
+        } else {
+            format!("/{slashed}")
+        };
+        format!("file://{with_leading}")
+    } else {
+        format!("file://{raw}")
+    }
 }
 
 #[test]
