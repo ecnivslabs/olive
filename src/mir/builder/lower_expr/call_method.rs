@@ -1032,9 +1032,17 @@ impl<'a> MirBuilder<'a> {
             self.new_local(self.get_type(expr_id), None, false)
         };
 
+        // A synthesized call (with-exit, defer) carries no checked callee
+        // expr; fall back to the declared signature so args still coerce to
+        // the real param types instead of a boxing Any default.
         let callee_ty = self.get_type(callee.id).clone();
         let param_tys = if let Type::Fn(ptys, _, _) = callee_ty {
             ptys
+        } else if let Some(Type::Fn(ptys, _, _)) = call_fn_name
+            .as_deref()
+            .and_then(|name| self.global_types.get(name))
+        {
+            ptys.clone()
         } else {
             Vec::new()
         };

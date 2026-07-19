@@ -241,6 +241,56 @@ fn mixed_union_none_zero_empty_distinct() {
 }
 
 #[test]
+fn struct_union_none_zero_struct_distinct() {
+    // The historical struct-union defect: a 1-field struct's header word
+    // read as KIND_LIST on free, and int 0 read as None.
+    let mut cg = compile(concat!(
+        "struct Dog:\n    name: str\n",
+        "fn m(v: int | Dog | None) -> int:\n    match v:\n        case None:\n            return 0\n        case 0:\n            return 1\n        case _:\n            return 2\n",
+        "fn f_zero() -> int:\n    let v: int | Dog | None = 0\n    return m(v)\n",
+        "fn f_none() -> int:\n    let v: int | Dog | None = None\n    return m(v)\n",
+        "fn f_dog() -> int:\n    let v: int | Dog | None = Dog(\"rex\")\n    return m(v)\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f_zero"), 1);
+    assert_eq!(call_i64(&mut cg, "f_none"), 0);
+    assert_eq!(call_i64(&mut cg, "f_dog"), 2);
+}
+
+#[test]
+fn struct_union_eq_is_content_equality() {
+    let mut cg = compile(concat!(
+        "struct Dog:\n    name: str\n",
+        "fn f() -> int:\n    let a: int | Dog = Dog(\"rex\")\n    let b: int | Dog = Dog(\"rex\")\n    let c: int | Dog = Dog(\"max\")\n    let d: int | Dog = 5\n    if a == c:\n        return -1\n    if a == d:\n        return -2\n    if a == b and d == 5:\n        return 1\n    return 0\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 1);
+}
+
+#[test]
+fn struct_only_union_drops_safely() {
+    // Dog has 1 field, Cat also 1: raw headers would both misread as
+    // KIND_LIST when freed through the erased union path.
+    let mut cg = compile(concat!(
+        "struct Dog:\n    name: str\n",
+        "struct Cat:\n    lives: int\n",
+        "fn f(n: int) -> int:\n    let mut i = 0\n    while i < n:\n        let v: Dog | Cat = Dog(\"a\")\n        let w: Dog | Cat = Cat(9)\n        i = i + 1\n    return i\n",
+    ));
+    assert_eq!(call_i64_1(&mut cg, "f", 500), 500);
+}
+
+#[test]
+fn list_union_zero_is_not_none() {
+    let mut cg = compile(concat!(
+        "fn m(v: int | [int] | None) -> int:\n    if v == None:\n        return -1\n    return 1\n",
+        "fn f_zero() -> int:\n    let v: int | [int] | None = 0\n    return m(v)\n",
+        "fn f_none() -> int:\n    let v: int | [int] | None = None\n    return m(v)\n",
+        "fn f_list() -> int:\n    let v: int | [int] | None = [1, 2]\n    return m(v)\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f_zero"), 1);
+    assert_eq!(call_i64(&mut cg, "f_none"), -1);
+    assert_eq!(call_i64(&mut cg, "f_list"), 1);
+}
+
+#[test]
 fn mixed_union_float_str_distinct() {
     let mut cg = compile(concat!(
         "fn m(v: float | str) -> int:\n    match v:\n        case 2.5:\n            return 1\n        case \"2.5\":\n            return 2\n        case _:\n            return 3\n",

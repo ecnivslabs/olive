@@ -584,6 +584,19 @@ fn copy_any_node(
             let py_ptr = unsafe { (*(val as *const crate::python::OlivePyObject)).py_ptr };
             unsafe { crate::python::olive_py_wrap_borrowed(py_ptr) as i64 }
         }
+        crate::struct_box::KIND_STRUCT_BOX => {
+            let (desc, inner) = {
+                let b = unsafe { &*(val as *const crate::struct_box::OliveStructBox) };
+                (b.desc, b.ptr)
+            };
+            // Shell first so a cycle back through this box resolves to it.
+            let new = crate::struct_box::alloc_shell(desc);
+            visited.insert(val, new);
+            let mut pos = 0usize;
+            let copied = copy_val(inner, desc as *const u8, &mut pos, visited);
+            crate::struct_box::set_inner(new, copied);
+            new
+        }
         _ => val,
     }
 }

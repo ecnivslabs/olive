@@ -241,6 +241,7 @@ fn decode_value(shared: &EngineShared, raw: i64, ty: &Type) -> Result<Value, Str
             2 => Ok(Value::Bool(payload != 0)),
             3 => Ok(Value::Float(f64::from_bits(payload as u64))),
             4 => Ok(Value::Str(values::str_value(shared, payload))),
+            5 => Err("cannot use a struct or collection union member in a condition".to_string()),
             _ => Ok(Value::Int(payload)),
         };
     }

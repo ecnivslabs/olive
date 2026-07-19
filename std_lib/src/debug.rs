@@ -183,8 +183,9 @@ pub extern "C" fn olive_debug_str_new(bytes: *const u8, len: i64) -> i64 {
 /// Decodes a tag-encoded union word for the debugger: writes the payload
 /// through `out` and returns the kind (0 = None, 1 = int, 2 = bool,
 /// 3 = float where `out` holds the f64 bit pattern, 4 = str where `out`
-/// holds the tagged str word itself). Layout knowledge stays here, next to
-/// boxed.rs, instead of leaking into pit.
+/// holds the tagged str word itself, 5 = opaque heap member such as a boxed
+/// struct or container where `out` holds the word). Layout knowledge stays
+/// here, next to boxed.rs, instead of leaking into pit.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_debug_any_decode(val: i64, out: *mut i64) -> i64 {
     let (kind, payload) = match val & crate::boxed::TAG_MASK {
@@ -192,14 +193,15 @@ pub extern "C" fn olive_debug_any_decode(val: i64, out: *mut i64) -> i64 {
         crate::boxed::TAG_BOOL => (2, val >> 3),
         crate::boxed::TAG_NULL => (0, 0),
         _ if val & 1 == 1 => (4, val),
-        _ => {
-            let b = unsafe { &*(val as *const crate::boxed::OliveBoxed) };
-            if b.kind == crate::KIND_FLOAT {
-                (3, b.bits)
-            } else {
-                (1, b.bits)
-            }
-        }
+        _ => match unsafe { *(val as *const i64) } {
+            crate::KIND_FLOAT => (3, unsafe {
+                (*(val as *const crate::boxed::OliveBoxed)).bits
+            }),
+            crate::KIND_INT => (1, unsafe {
+                (*(val as *const crate::boxed::OliveBoxed)).bits
+            }),
+            _ => (5, val),
+        },
     };
     unsafe { *out = payload };
     kind
