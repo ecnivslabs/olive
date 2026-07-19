@@ -747,3 +747,37 @@ fn regression_union_optional_chaining_not_flagged() {
         check_codes("struct P:\n    a: i64\n\nfn f(x: P | None) -> i64:\n    return x?.a ?? -1\n");
     assert!(!codes.contains(&"E0428".to_string()), "codes: {codes:?}");
 }
+
+#[test]
+fn regression_generic_struct_body_method_call() {
+    let mut cg = compile(
+        "struct Holder[T]:\n    val: T\n    fn __init__(self, val: T):\n        self.val = val\n    fn get(self) -> T:\n        return self.val\n\nfn f() -> i64:\n    let h = Holder(5)\n    return h.get()\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 5);
+}
+
+#[test]
+fn regression_explicit_type_arg_fn_call() {
+    let mut cg = compile(
+        "fn first[T](items: [T]) -> T:\n    return items[0]\n\nfn f() -> i64:\n    return first[int]([7, 8, 9])\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 7);
+}
+
+#[test]
+fn regression_explicit_type_arg_struct_ctor() {
+    let mut cg = compile(
+        "struct Holder[T]:\n    val: T\n\nfn f() -> i64:\n    let h = Holder[int](3)\n    return h.val\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 3);
+}
+
+#[test]
+fn regression_f32_literal_arg_to_user_fn() {
+    // An untyped float literal lowers as f64; passing it straight to a
+    // user fn with an f32 param used to land f64 bits in the f32 slot.
+    let mut cg = compile(
+        "fn bump(x: f32) -> f32:\n    return x + 1.0\n\nfn f() -> i64:\n    if bump(1.5) == 2.5:\n        return 1\n    return 0\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 1);
+}

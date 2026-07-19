@@ -941,6 +941,15 @@ impl TypeChecker {
                         _ => Type::List(Box::new(Type::Any)),
                     };
                 }
+                // `Holder[int](..)`: brackets on a struct name are explicit
+                // type application, not a value index. The name guard keeps
+                // instance indexing on the normal path below.
+                if let ExprKind::Identifier(name) = &obj.kind
+                    && let Some(applied) = self.resolve_type_from_expr(expr)
+                    && matches!(&applied, Type::Struct(n, args, _) if n == name && !args.is_empty())
+                {
+                    return applied;
+                }
                 // `T | None` must be narrowed (or accessed via `?.`) before it
                 // can be indexed: silently reducing to `T` here would let
                 // `x[i]` compile against an un-narrowed nullable and read

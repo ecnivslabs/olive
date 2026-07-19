@@ -538,6 +538,13 @@ impl<M: Module> CraneliftCodegen<M> {
                                         builder.ins().bitcast(types::I32, MemFlags::new(), arg);
                                     final_args.push(builder.ins().uextend(types::I64, i32_val));
                                 }
+                            } else if expected == Some(types::F32) && arg_ty == types::F64 {
+                                // Untyped float literals lower as f64; an f32
+                                // param reads the low half as garbage without
+                                // an explicit demote.
+                                final_args.push(builder.ins().fdemote(types::F32, arg));
+                            } else if expected == Some(types::F64) && arg_ty == types::F32 {
+                                final_args.push(builder.ins().fpromote(types::F64, arg));
                             } else {
                                 final_args.push(arg);
                             }
