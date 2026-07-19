@@ -683,7 +683,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_str_zfill", &sig_i64_i64_i64),
             ("__olive_str_to_float", &sig_i64_f64),
             ("__olive_str_to_int", &sig_i64_i64),
-            ("__olive_str_to_float_opt", &sig_i64_f64),
+            ("__olive_str_to_float_opt", &sig_i64_i64),
             ("__olive_str_to_int_opt", &sig_i64_i64),
             ("__olive_str_trim", &sig_i64_i64),
             ("__olive_str_trim_end", &sig_i64_i64),

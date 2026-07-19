@@ -185,8 +185,18 @@ pub(crate) fn children_raw(
     }
 }
 
+/// Display type: tag-encoded scalar unions keep their union identity so the
+/// Any descriptor decodes them; everything else collapses as before.
+pub(crate) fn render_ty(ty: &Type) -> &Type {
+    if ty.is_scalar_nullable_union() {
+        ty
+    } else {
+        concrete_ty(ty)
+    }
+}
+
 fn describe_fresh(session: &EngineShared, name: String, ty: &Type, raw: i64) -> Variable {
-    let desc = build_descriptor(session, concrete_ty(ty));
+    let desc = build_descriptor(session, render_ty(ty));
     describe_with(session, name, ty, raw, &desc)
 }
 
@@ -197,7 +207,7 @@ fn describe_with(
     raw: i64,
     desc: &CStr,
 ) -> Variable {
-    let concrete = concrete_ty(ty);
+    let concrete = render_ty(ty);
     let coerced = coerce_bits(concrete, raw);
     let value = format_typed(session, coerced, desc);
     let reference = if is_expandable(concrete) {
@@ -217,7 +227,7 @@ fn describe_with(
 }
 
 fn render_value(session: &EngineShared, ty: &Type, raw: i64) -> String {
-    let concrete = concrete_ty(ty);
+    let concrete = render_ty(ty);
     let desc = build_descriptor(session, concrete);
     format_typed(session, coerce_bits(concrete, raw), &desc)
 }
@@ -325,6 +335,24 @@ fn enum_tag(session: &EngineShared, val: i64) -> i64 {
 
 fn enum_payload(session: &EngineShared, val: i64, idx: i64) -> i64 {
     call2(session, "olive_debug_enum_payload", val, idx)
+}
+
+/// Decodes a tag-encoded scalar-union word via the runtime, so the box
+/// layout stays defined in one place. Returns `(kind, payload)` following
+/// `olive_debug_any_decode`'s numbering.
+pub(crate) fn any_decode(session: &EngineShared, val: i64) -> Option<(i64, i64)> {
+    let ptr = session.runtime_symbol("olive_debug_any_decode")?;
+    let f: extern "C" fn(i64, *mut i64) -> i64 = unsafe { std::mem::transmute(ptr) };
+    let mut payload: i64 = 0;
+    let kind = f(val, &mut payload as *mut i64);
+    Some((kind, payload))
+}
+
+/// Inverse of `any_decode`, for `setVariable` writes into scalar unions.
+pub(crate) fn any_encode(session: &EngineShared, kind: i64, payload: i64) -> Option<i64> {
+    let ptr = session.runtime_symbol("olive_debug_any_encode")?;
+    let f: extern "C" fn(i64, i64) -> i64 = unsafe { std::mem::transmute(ptr) };
+    Some(f(kind, payload))
 }
 
 /// Raw UTF-8 text of a string value, for `conditions.rs`'s string literal

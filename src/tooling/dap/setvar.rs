@@ -160,6 +160,23 @@ pub(crate) fn target_for_child(
 /// `True`/`False`/`None` casing.
 pub(crate) fn encode_literal(session: &EngineShared, ty: &Type, text: &str) -> Result<i64, String> {
     let text = text.trim();
+    // Tag-encoded scalar unions: parse per the debugger grammar, then
+    // encode through the runtime so a written 0 stays distinct from None.
+    if ty.is_scalar_nullable_union() {
+        let (kind, payload) = if text == "None" {
+            (0, 0)
+        } else if text == "true" || text == "false" {
+            (2, (text == "true") as i64)
+        } else if let Ok(n) = text.parse::<i64>() {
+            (1, n)
+        } else if let Ok(f) = text.parse::<f64>() {
+            (3, f.to_bits() as i64)
+        } else {
+            return Err(format!("invalid literal '{text}' for {ty}"));
+        };
+        return values::any_encode(session, kind, payload)
+            .ok_or_else(|| "runtime encoder unavailable".to_string());
+    }
     match concrete_ty(ty) {
         Type::Bool => match text {
             "true" => Ok(1),

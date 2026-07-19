@@ -145,6 +145,8 @@ impl<'a> MirBuilder<'a> {
             let any_operand = match (&l_ty, &r_ty) {
                 (Type::Any, Type::Null) => Some((left, true)),
                 (Type::Null, Type::Any) => Some((right, false)),
+                (t, Type::Null) if t.is_scalar_nullable_union() => Some((left, true)),
+                (Type::Null, t) if t.is_scalar_nullable_union() => Some((right, false)),
                 _ => None,
             };
             if let Some((operand, is_left)) = any_operand {
@@ -260,6 +262,44 @@ impl<'a> MirBuilder<'a> {
                     span,
                 );
                 return self.operand_for_local(neg);
+            }
+
+            // A tag-encoded union compared by value: raw word equality would
+            // compare float or wide-int box pointers. Box a bare scalar on
+            // the other side so both words decode under the same rules.
+            let l_su = l_ty.is_scalar_nullable_union();
+            let r_su = r_ty.is_scalar_nullable_union();
+            if l_su || r_su {
+                let l_op = self.lower_expr_as_copy(left);
+                let r_op = self.lower_expr_as_copy(right);
+                self.last_cmp_operands = Some((l_op.clone(), r_op.clone()));
+                let l_box = if l_su || l_ty == Type::Any {
+                    l_op
+                } else {
+                    self.box_into_any(l_op, &l_ty, span)
+                };
+                let r_box = if r_su || r_ty == Type::Any {
+                    r_op
+                } else {
+                    self.box_into_any(r_op, &r_ty, span)
+                };
+                let eq_fn = if matches!(op, crate::parser::BinOp::Eq) {
+                    "__olive_any_eq"
+                } else {
+                    "__olive_any_ne"
+                };
+                let res = self.new_local(Type::Bool, None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        res,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(eq_fn.to_string())),
+                            args: vec![l_box, r_box],
+                        },
+                    ),
+                    span,
+                );
+                return self.operand_for_local(res);
             }
         }
 
@@ -390,10 +430,35 @@ impl<'a> MirBuilder<'a> {
             let l = self.lower_expr(left);
 
             if matches!(op, crate::parser::BinOp::Coalesce) {
-                self.push_statement(StatementKind::Assign(tmp, Rvalue::Use(l.clone())), span);
-                // Null check: for `Any` use runtime check, otherwise compare against 0.
                 let l_ty = self.get_type(left.id);
-                let null_check = if matches!(l_ty, Type::Any) {
+                let tmp_ty = self.get_type(expr_id);
+                // A tag-encoded union result must decode into a scalar slot;
+                // unboxers treat the null word as 0, safe before the check.
+                let l_val = self.coerce(l.clone(), &l_ty, &tmp_ty, span);
+                self.push_statement(StatementKind::Assign(tmp, Rvalue::Use(l_val)), span);
+                // A flow-narrowed scalar can never hold None; a raw 0 test
+                // here would swallow a real zero. The left value wins.
+                let never_null = matches!(
+                    l_ty,
+                    Type::Int
+                        | Type::I8
+                        | Type::I16
+                        | Type::I32
+                        | Type::U8
+                        | Type::U16
+                        | Type::U32
+                        | Type::U64
+                        | Type::Usize
+                        | Type::Float
+                        | Type::F32
+                        | Type::Bool
+                );
+                if never_null {
+                    return self.operand_for_local(tmp);
+                }
+                // Null check: boxed encodings use the runtime check, raw
+                // words compare against 0.
+                let null_check = if matches!(l_ty, Type::Any) || l_ty.is_scalar_nullable_union() {
                     let is_null = self.new_local(Type::Bool, None, false);
                     self.push_statement(
                         StatementKind::Assign(
@@ -443,7 +508,8 @@ impl<'a> MirBuilder<'a> {
 
                 self.current_block = Some(rhs_bb);
                 let r = self.lower_expr(right);
-                self.push_statement(StatementKind::Assign(tmp, Rvalue::Use(r)), span);
+                let r_val = self.coerce(r, &r_ty, &tmp_ty, span);
+                self.push_statement(StatementKind::Assign(tmp, Rvalue::Use(r_val)), span);
                 if let Some(bb) = self.current_block {
                     self.terminate_block(bb, TerminatorKind::Goto { target: merge_bb }, span);
                 }

@@ -7,12 +7,10 @@ use crate::span::Span;
 
 impl<'a> MirBuilder<'a> {
     fn write_func_name(ty: &Type) -> &'static str {
-        // `T | None` for a scalar `T` has no boxed/tagged representation
-        // (the design decision is a raw sentinel, not an `Any`-style box --
-        // see `narrow_tests.rs`), so it must dispatch on `T` here the same
-        // as a bare `T` would; falling through to `__olive_write_any` below
-        // misreads the raw bits (a real bug this call site had: printing a
-        // `float | None` read its bit pattern as if boxed).
+        // Scalar T | None is Any-tag encoded, so the Any writer decodes it.
+        if ty.is_scalar_nullable_union() {
+            return "__olive_write_any";
+        }
         let ty = crate::semantic::type_descriptor::concrete_ty(ty);
         match ty {
             Type::Str | Type::Null => "__olive_write_str",

@@ -51,6 +51,38 @@ impl Type {
         }
     }
 
+    /// Scalar members plus None. Stored Any-tag encoded so a real zero
+    /// stays distinct from None at runtime.
+    pub fn is_scalar_nullable_union(&self) -> bool {
+        let is_scalar = |m: &Type| {
+            matches!(
+                m,
+                Type::Int
+                    | Type::I8
+                    | Type::I16
+                    | Type::I32
+                    | Type::U8
+                    | Type::U16
+                    | Type::U32
+                    | Type::U64
+                    | Type::Usize
+                    | Type::Float
+                    | Type::F32
+                    | Type::Bool
+            )
+        };
+        match self {
+            Type::Union(members) => {
+                members.iter().any(|m| matches!(m, Type::Null))
+                    && members.iter().any(is_scalar)
+                    && members
+                        .iter()
+                        .all(|m| matches!(m, Type::Null) || is_scalar(m))
+            }
+            _ => false,
+        }
+    }
+
     pub fn is_move_type(&self) -> bool {
         !matches!(
             self,

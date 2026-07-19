@@ -55,6 +55,9 @@ impl<'a> MirBuilder<'a> {
         if from_ty.is_py_value() && !matches!(elem_ty, Type::Any | Type::PyObject) {
             return self.coerce(op, &from_ty, elem_ty, elem.span);
         }
+        if elem_ty.is_scalar_nullable_union() {
+            return self.coerce(op, &from_ty, elem_ty, elem.span);
+        }
         if *elem_ty != Type::Any {
             return op;
         }
@@ -263,6 +266,18 @@ impl<'a> MirBuilder<'a> {
 
         // Inverse of the widening above: narrowing back to a concrete scalar.
         if *from_ty == Type::Any
+            && let Some(unboxed) = self.unbox_from_any(op.clone(), to_ty, span)
+        {
+            return unboxed;
+        }
+
+        // Scalar unions use the Any tag encoding: a raw word cannot tell a
+        // real zero from None. Box on entry, unbox on narrowing. An Any or
+        // same-encoded union source is already tagged and passes through.
+        if to_ty.is_scalar_nullable_union() && !matches!(from_ty, Type::Union(_) | Type::Any) {
+            return self.box_into_any(op, from_ty, span);
+        }
+        if from_ty.is_scalar_nullable_union()
             && let Some(unboxed) = self.unbox_from_any(op.clone(), to_ty, span)
         {
             return unboxed;
