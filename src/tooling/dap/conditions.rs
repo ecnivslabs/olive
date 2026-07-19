@@ -230,9 +230,9 @@ fn resolve_tokens(shared: &EngineShared, top: &Frame, tokens: &[Token]) -> Resul
 }
 
 fn decode_value(shared: &EngineShared, raw: i64, ty: &Type) -> Result<Value, String> {
-    // Tag-encoded scalar unions decode via the runtime, keeping the box
-    // layout out of pit.
-    if ty.is_scalar_nullable_union() {
+    // Tag-encoded unions decode via the runtime, keeping the box layout
+    // out of pit.
+    if ty.is_tag_encoded_union() {
         let Some((kind, payload)) = values::any_decode(shared, raw) else {
             return Err("runtime decoder unavailable".to_string());
         };
@@ -240,6 +240,7 @@ fn decode_value(shared: &EngineShared, raw: i64, ty: &Type) -> Result<Value, Str
             0 => Err("value is None".to_string()),
             2 => Ok(Value::Bool(payload != 0)),
             3 => Ok(Value::Float(f64::from_bits(payload as u64))),
+            4 => Ok(Value::Str(values::str_value(shared, payload))),
             _ => Ok(Value::Int(payload)),
         };
     }

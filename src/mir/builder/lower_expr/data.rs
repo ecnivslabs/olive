@@ -99,8 +99,8 @@ impl<'a> MirBuilder<'a> {
             // gives it a second reference to fold through.
             let narrowed = self.get_type(expr_id);
             if matches!(ty, Type::Union(_)) && narrowed != ty {
-                // Tag-encoded scalar unions must decode, not reinterpret.
-                if ty.is_scalar_nullable_union()
+                // Tag-encoded unions must decode, not reinterpret.
+                if ty.is_tag_encoded_union()
                     && let Some(unboxed) =
                         self.unbox_from_any(Operand::Copy(local), &narrowed, Span::default())
                 {
@@ -435,7 +435,7 @@ impl<'a> MirBuilder<'a> {
 
         let obj_op = self.lower_expr(obj);
         let obj_ty = self.get_type(obj.id);
-        let is_null = if matches!(obj_ty, Type::Any) || obj_ty.is_scalar_nullable_union() {
+        let is_null = if matches!(obj_ty, Type::Any) || obj_ty.is_tag_encoded_union() {
             let is_null = self.new_local(Type::Bool, None, false);
             self.push_statement(
                 StatementKind::Assign(

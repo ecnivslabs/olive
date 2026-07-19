@@ -193,6 +193,8 @@ pub(crate) fn resolve_builtin_import(
             "__olive_any_ge" => Some("__olive_any_ge"),
             "__olive_any_eq" => Some("__olive_any_eq"),
             "__olive_any_ne" => Some("__olive_any_ne"),
+            "__olive_any_eq_strict" => Some("__olive_any_eq_strict"),
+            "__olive_any_ne_strict" => Some("__olive_any_ne_strict"),
             "__olive_list_concat" => Some("__olive_list_concat"),
             "__olive_list_concat_typed" => Some("__olive_list_concat_typed"),
             "__olive_list_getslice_typed" => Some("__olive_list_getslice_typed"),
@@ -755,9 +757,9 @@ pub(crate) fn resolve_builtin_import(
 }
 
 pub(crate) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&'static str> {
-    // Tag-encoded scalar unions must keep their union identity here; the
+    // Tag-encoded unions must keep their union identity here; the
     // concrete_ty collapse would route them to raw-word helpers.
-    let current_ty = if arg_ty.is_scalar_nullable_union() {
+    let current_ty = if arg_ty.is_tag_encoded_union() {
         arg_ty
     } else {
         concrete_ty(arg_ty)
@@ -820,9 +822,7 @@ pub(crate) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
             OliveType::Float | OliveType::F32 => Some("__olive_float_to_str"),
             OliveType::PyObject => Some("__olive_py_to_str"),
             OliveType::Any => Some("__olive_any_to_str"),
-            OliveType::Union(_) if current_ty.is_scalar_nullable_union() => {
-                Some("__olive_any_to_str")
-            }
+            OliveType::Union(_) if current_ty.is_tag_encoded_union() => Some("__olive_any_to_str"),
             OliveType::Null => Some("__olive_none_to_str"),
             OliveType::Bool => Some("__olive_bool_to_str"),
             OliveType::U64 => Some("__olive_str_u64"),
@@ -833,9 +833,7 @@ pub(crate) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
             OliveType::Str => Some("__olive_str_to_int"),
             OliveType::PyObject => Some("__olive_py_to_int"),
             OliveType::Any => Some("__olive_unbox_int"),
-            OliveType::Union(_) if current_ty.is_scalar_nullable_union() => {
-                Some("__olive_unbox_int")
-            }
+            OliveType::Union(_) if current_ty.is_tag_encoded_union() => Some("__olive_unbox_int"),
             _ => Some("__olive_int"),
         },
         "float" => match current_ty {
@@ -844,15 +842,13 @@ pub(crate) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
             OliveType::Str => Some("__olive_str_to_float"),
             OliveType::PyObject => Some("__olive_py_to_float"),
             OliveType::Any => Some("__olive_unbox_float"),
-            OliveType::Union(_) if current_ty.is_scalar_nullable_union() => {
-                Some("__olive_unbox_float")
-            }
+            OliveType::Union(_) if current_ty.is_tag_encoded_union() => Some("__olive_unbox_float"),
             _ => Some("__olive_float"),
         },
         "bool" => {
             if matches!(current_ty, OliveType::Float | OliveType::F32) {
                 Some("__olive_bool_from_float")
-            } else if current_ty.is_scalar_nullable_union() {
+            } else if current_ty.is_tag_encoded_union() {
                 Some("__olive_any_truthy")
             } else {
                 Some("__olive_bool")

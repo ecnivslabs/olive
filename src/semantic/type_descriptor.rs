@@ -109,7 +109,7 @@ fn encode_descriptor(
         // descriptor. Pointer T | None stores T raw with 0 as None; its
         // copy/free leaves already treat 0 as a no-op. A mixed multi-member
         // union has no single raw shape and stays Any-style.
-        OliveType::Union(_) if ty.is_scalar_nullable_union() => out.push(6),
+        OliveType::Union(_) if ty.is_tag_encoded_union() => out.push(6),
         OliveType::Union(members) => {
             let non_null: Vec<&OliveType> =
                 members.iter().filter(|m| **m != OliveType::Null).collect();

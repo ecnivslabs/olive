@@ -160,9 +160,10 @@ pub(crate) fn target_for_child(
 /// `True`/`False`/`None` casing.
 pub(crate) fn encode_literal(session: &EngineShared, ty: &Type, text: &str) -> Result<i64, String> {
     let text = text.trim();
-    // Tag-encoded scalar unions: parse per the debugger grammar, then
-    // encode through the runtime so a written 0 stays distinct from None.
-    if ty.is_scalar_nullable_union() {
+    // Tag-encoded unions: parse per the debugger grammar, then encode
+    // through the runtime so a written 0 stays distinct from None. A str
+    // word is already a valid tag-encoded member, no re-encode needed.
+    if ty.is_tag_encoded_union() {
         let (kind, payload) = if text == "None" {
             (0, 0)
         } else if text == "true" || text == "false" {
@@ -171,6 +172,8 @@ pub(crate) fn encode_literal(session: &EngineShared, ty: &Type, text: &str) -> R
             (1, n)
         } else if let Ok(f) = text.parse::<f64>() {
             (3, f.to_bits() as i64)
+        } else if matches!(ty, Type::Union(members) if members.contains(&Type::Str)) {
+            return encode_str(session, text);
         } else {
             return Err(format!("invalid literal '{text}' for {ty}"));
         };

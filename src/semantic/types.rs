@@ -51,9 +51,9 @@ impl Type {
         }
     }
 
-    /// Scalar members plus None. Stored Any-tag encoded so a real zero
-    /// stays distinct from None at runtime.
-    pub fn is_scalar_nullable_union(&self) -> bool {
+    /// Union of scalars, str, and None with at least one scalar member.
+    /// Stored Any-tag encoded so zero, None, and str words stay distinct.
+    pub fn is_tag_encoded_union(&self) -> bool {
         let is_scalar = |m: &Type| {
             matches!(
                 m,
@@ -73,11 +73,10 @@ impl Type {
         };
         match self {
             Type::Union(members) => {
-                members.iter().any(|m| matches!(m, Type::Null))
-                    && members.iter().any(is_scalar)
+                members.iter().any(is_scalar)
                     && members
                         .iter()
-                        .all(|m| matches!(m, Type::Null) || is_scalar(m))
+                        .all(|m| matches!(m, Type::Null | Type::Str) || is_scalar(m))
             }
             _ => false,
         }

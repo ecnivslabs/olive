@@ -258,3 +258,33 @@ fn ffi_errno_reads_snapshot_not_live_errno() {
     unsafe { *loc = 0 };
     assert_eq!(olive_ffi_errno(), 13);
 }
+
+#[test]
+fn any_eq_strict_kinds() {
+    assert_eq!(olive_any_eq_strict(boxed::olive_box_int(7), s("7")), 0);
+    assert_eq!(olive_any_eq_strict(s("7"), s("7")), 1);
+    assert_eq!(olive_any_eq_strict(s("a"), s("b")), 0);
+    assert_eq!(
+        olive_any_eq_strict(boxed::olive_box_int(7), boxed::olive_box_int(7)),
+        1
+    );
+    assert_eq!(
+        olive_any_eq_strict(boxed::olive_box_int(7), boxed::olive_box_float(7.0)),
+        1
+    );
+    assert_eq!(
+        olive_any_eq_strict(boxed::olive_box_null(), boxed::olive_box_int(0)),
+        0
+    );
+    assert_eq!(olive_any_eq_strict(boxed::olive_box_null(), s("")), 0);
+    assert_eq!(
+        olive_any_eq_strict(boxed::olive_box_null(), boxed::olive_box_null()),
+        1
+    );
+    let wide = 1i64 << 61;
+    assert_eq!(
+        olive_any_eq_strict(boxed::olive_box_int(wide), boxed::olive_box_int(wide)),
+        1
+    );
+    assert_eq!(olive_any_ne_strict(boxed::olive_box_int(1), s("1")), 1);
+}

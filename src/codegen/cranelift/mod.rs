@@ -822,6 +822,8 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_any_eq_profiled", b"olive_any_eq_profiled\0"),
     ("__olive_any_ne", b"olive_any_ne\0"),
     ("__olive_any_ne_profiled", b"olive_any_ne_profiled\0"),
+    ("__olive_any_eq_strict", b"olive_any_eq_strict\0"),
+    ("__olive_any_ne_strict", b"olive_any_ne_strict\0"),
     ("__olive_str_capitalize", b"olive_str_capitalize\0"),
     ("__olive_str_center", b"olive_str_center\0"),
     ("__olive_str_contains", b"olive_str_contains\0"),

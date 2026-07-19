@@ -911,6 +911,33 @@ any_profiled!(olive_any_ge_profiled, olive_any_ge);
 any_profiled!(olive_any_eq_profiled, olive_any_eq);
 any_profiled!(olive_any_ne_profiled, olive_any_ne);
 
+/// Kind-respecting equality for tag-encoded union words. None only equals
+/// None, a string only equals an equal string, numerics compare by value
+/// with float promotion. A string never parses as a number here.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_any_eq_strict(a: i64, b: i64) -> i64 {
+    if a == boxed::TAG_NULL || b == boxed::TAG_NULL {
+        return (a == b) as i64;
+    }
+    let a_str = any_is_str(a);
+    let b_str = any_is_str(b);
+    if a_str || b_str {
+        if a_str && b_str {
+            return olive_str_eq(a, b);
+        }
+        return 0;
+    }
+    if any_is_float(a) || any_is_float(b) {
+        return (boxed::olive_unbox_float(a) == boxed::olive_unbox_float(b)) as i64;
+    }
+    (boxed::olive_unbox_int(a) == boxed::olive_unbox_int(b)) as i64
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_any_ne_strict(a: i64, b: i64) -> i64 {
+    (olive_any_eq_strict(a, b) == 0) as i64
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_concat(l: i64, r: i64) -> i64 {
     let l_bytes = olive_str_to_bytes(l);
