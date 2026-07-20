@@ -82,15 +82,20 @@ fn unregister_chunk(start: usize) {
 thread_local! {
     // Two ways: hot loops often alternate between two chunks (a large
     // accumulator and a small-class source), which a single entry thrashes.
-    static LAST_CHUNKS: std::cell::Cell<[Option<ChunkSpan>; 2]> =
-        const { std::cell::Cell::new([None, None]) };
+    // Deliberately not an LRU: promoting a slot-1 hit to slot 0 would write
+    // the cache on every lookup under strict two-way alternation (each hit
+    // lands on the "wrong" slot in turn), turning what should be two
+    // read-only checks into a write per call. Both slots are read-only on a
+    // hit; only a genuine miss writes, round-robining which slot it fills.
+    static LAST_CHUNKS: std::cell::Cell<([Option<ChunkSpan>; 2], bool)> =
+        const { std::cell::Cell::new(([None, None], false)) };
 }
 
 fn find_chunk_for_addr(addr: usize) -> Option<ChunkSpan> {
     if addr < SPAN_MIN.load(Ordering::Relaxed) || addr >= SPAN_MAX.load(Ordering::Relaxed) {
         return None;
     }
-    let cached = LAST_CHUNKS.with(|cache| cache.get());
+    let (cached, next_slot) = LAST_CHUNKS.with(|cache| cache.get());
     if let Some(c) = cached[0]
         && addr >= c.start
         && addr < c.end
@@ -101,7 +106,6 @@ fn find_chunk_for_addr(addr: usize) -> Option<ChunkSpan> {
         && addr >= c.start
         && addr < c.end
     {
-        LAST_CHUNKS.with(|cache| cache.set([Some(c), cached[0]]));
         return Some(c);
     }
     let table = CHUNK_TABLE.load(Ordering::Acquire);
@@ -115,7 +119,9 @@ fn find_chunk_for_addr(addr: usize) -> Option<ChunkSpan> {
     }
     let c = chunks[i - 1];
     if addr >= c.start && addr < c.end {
-        LAST_CHUNKS.with(|cache| cache.set([Some(c), cached[0]]));
+        let mut next = cached;
+        next[next_slot as usize] = Some(c);
+        LAST_CHUNKS.with(|cache| cache.set((next, !next_slot)));
         Some(c)
     } else {
         None
