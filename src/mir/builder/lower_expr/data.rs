@@ -571,25 +571,6 @@ impl<'a> MirBuilder<'a> {
             );
         }
 
-        if current_obj_ty == Type::Str {
-            let o = self.lower_expr_as_copy(obj);
-            let i = self.lower_expr(index);
-            let loc = self.index_loc_operand(span);
-            let tmp = self.new_local(Type::Str, None, false);
-            self.push_statement(
-                StatementKind::Assign(
-                    tmp,
-                    Rvalue::Call {
-                        func: Operand::Constant(Constant::Function(
-                            "__olive_str_get_checked".to_string(),
-                        )),
-                        args: vec![o, i, loc],
-                    },
-                ),
-                span,
-            );
-            return self.operand_for_local(tmp);
-        }
         let o = self.lower_expr_as_copy(obj);
         let i_raw = self.lower_expr(index);
         let ty = self.get_type(expr_id);
