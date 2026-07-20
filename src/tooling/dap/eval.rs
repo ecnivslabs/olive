@@ -165,7 +165,7 @@ mod tests {
         std::fs::write(&path, SRC).unwrap();
         let session = launch(path.to_str().unwrap(), false).expect("launch failed");
         session.set_breakpoints(0, &[12]);
-        session.cont();
+        session.cont(1);
         session.events().recv().unwrap();
         std::fs::remove_file(&path).ok();
         (session, guard)

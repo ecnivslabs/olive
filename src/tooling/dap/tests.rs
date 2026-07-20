@@ -1,4 +1,5 @@
 use super::engine::{DebugEvent, StopReason};
+use super::hooks;
 use super::launch::{DebugSession, launch};
 use super::values::{self, Variable};
 use crate::test_utils::exec_lock;
@@ -15,12 +16,13 @@ fn temp_file(src: &str) -> std::path::PathBuf {
 /// Resumes past whatever the session is currently doing until it exits,
 /// draining and re-continuing past any breakpoint that fires along the way.
 fn run_to_exit(session: &DebugSession) {
-    session.cont();
+    session.cont(1);
     loop {
         match session.events().recv().unwrap() {
             DebugEvent::Exited(_) => return,
-            DebugEvent::Stopped { .. } => session.cont(),
+            DebugEvent::Stopped { .. } => session.cont(1),
             DebugEvent::Output(_) => {}
+            DebugEvent::ThreadStarted { .. } | DebugEvent::ThreadExited { .. } => {}
         }
     }
 }
@@ -34,9 +36,9 @@ fn breakpoint_stops_at_correct_line_and_function() {
     let result = session.set_breakpoints(0, &[3]);
     assert_eq!(result, vec![(3, true)]);
 
-    session.cont();
+    session.cont(1);
     match session.events().recv().unwrap() {
-        DebugEvent::Stopped { reason, frame } => {
+        DebugEvent::Stopped { reason, frame, .. } => {
             assert_eq!(reason, StopReason::Breakpoint);
             assert_eq!(frame.line, 3);
             assert_eq!(frame.name, "main");
@@ -45,7 +47,7 @@ fn breakpoint_stops_at_correct_line_and_function() {
         other => panic!("expected Stopped, got {other:?}"),
     }
 
-    let stack = session.stack();
+    let stack = session.stack(1);
     assert_eq!(stack.len(), 1);
     assert_eq!(stack[0].line, 3);
     assert_eq!(stack[0].name, "main");
@@ -61,7 +63,7 @@ fn cont_with_no_breakpoints_runs_to_exit_code_zero() {
     let path = temp_file("fn main():\n    print(1)\n");
     let session = launch(path.to_str().unwrap(), false).unwrap();
 
-    session.cont();
+    session.cont(1);
     match session.events().recv().unwrap() {
         DebugEvent::Exited(code) => assert_eq!(code, 0),
         other => panic!("expected Exited, got {other:?}"),
@@ -105,13 +107,13 @@ fn three_deep_call_chain_shows_three_frames() {
     let result = session.set_breakpoints(0, &[2]); // `return 1` inside b()
     assert_eq!(result, vec![(2, true)]);
 
-    session.cont();
+    session.cont(1);
     match session.events().recv().unwrap() {
         DebugEvent::Stopped { .. } => {}
         other => panic!("expected Stopped, got {other:?}"),
     }
 
-    let stack = session.stack();
+    let stack = session.stack(1);
     let names: Vec<&str> = stack.iter().map(|f| f.name.as_str()).collect();
     assert_eq!(names, vec!["b", "a", "main"]);
 
@@ -129,13 +131,13 @@ fn recursion_shows_repeated_frames() {
     let result = session.set_breakpoints(0, &[3]); // base-case `return 0`
     assert_eq!(result, vec![(3, true)]);
 
-    session.cont();
+    session.cont(1);
     match session.events().recv().unwrap() {
         DebugEvent::Stopped { .. } => {}
         other => panic!("expected Stopped, got {other:?}"),
     }
 
-    let stack = session.stack();
+    let stack = session.stack(1);
     let countdown: Vec<_> = stack.iter().filter(|f| f.name == "countdown").collect();
     assert_eq!(countdown.len(), 4, "n=3,2,1,0 each push a countdown frame");
     assert!(
@@ -157,7 +159,7 @@ fn stop_on_entry_halts_before_first_statement() {
 
     // Releases the initial start barrier; stop-on-entry re-stops immediately
     // at the first real statement rather than letting the program run.
-    session.cont();
+    session.cont(1);
     match session.events().recv().unwrap() {
         DebugEvent::Stopped { reason, .. } => assert_eq!(reason, StopReason::Entry),
         other => panic!("expected Stopped(Entry), got {other:?}"),
@@ -176,12 +178,12 @@ fn next_over_a_call_lands_on_the_next_line_not_inside_it() {
 
     let result = session.set_breakpoints(0, &[4]); // `helper()`
     assert_eq!(result, vec![(4, true)]);
-    session.cont();
+    session.cont(1);
     session.events().recv().unwrap();
 
-    session.next();
+    session.next(1);
     match session.events().recv().unwrap() {
-        DebugEvent::Stopped { reason, frame } => {
+        DebugEvent::Stopped { reason, frame, .. } => {
             assert_eq!(reason, StopReason::Step);
             assert_eq!(frame.name, "main");
             assert_eq!(frame.line, 5);
@@ -202,12 +204,12 @@ fn step_in_lands_on_the_callees_first_line() {
 
     let result = session.set_breakpoints(0, &[4]); // `helper()`
     assert_eq!(result, vec![(4, true)]);
-    session.cont();
+    session.cont(1);
     session.events().recv().unwrap();
 
-    session.step_in();
+    session.step_in(1);
     match session.events().recv().unwrap() {
-        DebugEvent::Stopped { reason, frame } => {
+        DebugEvent::Stopped { reason, frame, .. } => {
             assert_eq!(reason, StopReason::Step);
             assert_eq!(frame.name, "helper");
             assert_eq!(frame.line, 2);
@@ -228,12 +230,12 @@ fn step_out_returns_to_the_callers_line() {
 
     let result = session.set_breakpoints(0, &[2]); // `let z = 1` inside helper
     assert_eq!(result, vec![(2, true)]);
-    session.cont();
+    session.cont(1);
     session.events().recv().unwrap();
 
-    session.step_out();
+    session.step_out(1);
     match session.events().recv().unwrap() {
-        DebugEvent::Stopped { reason, frame } => {
+        DebugEvent::Stopped { reason, frame, .. } => {
             assert_eq!(reason, StopReason::Step);
             assert_eq!(frame.name, "main");
             assert_eq!(frame.line, 5);
@@ -253,10 +255,10 @@ fn stepping_past_the_last_line_of_main_yields_exited() {
 
     let result = session.set_breakpoints(0, &[2]);
     assert_eq!(result, vec![(2, true)]);
-    session.cont();
+    session.cont(1);
     session.events().recv().unwrap();
 
-    session.next();
+    session.next(1);
     match session.events().recv().unwrap() {
         DebugEvent::Exited(code) => assert_eq!(code, 0),
         other => panic!("expected Exited, got {other:?}"),
@@ -271,11 +273,11 @@ fn pause_during_a_long_loop_stops_inside_it() {
     let path = temp_file(src);
     let session = launch(path.to_str().unwrap(), false).unwrap();
 
-    session.cont();
+    session.cont(1);
     std::thread::sleep(std::time::Duration::from_millis(50));
-    session.pause();
+    session.pause(1);
     match session.events().recv().unwrap() {
-        DebugEvent::Stopped { reason, frame } => {
+        DebugEvent::Stopped { reason, frame, .. } => {
             assert_eq!(reason, StopReason::Pause);
             assert_eq!(frame.name, "main");
             // Pause stops at whichever stmt hook fires next -- the loop
@@ -295,7 +297,7 @@ fn relaunch_while_active_errors() {
     let path = temp_file("fn main():\n    let x = 1\n    print(x)\n");
     let session = launch(path.to_str().unwrap(), false).unwrap();
     session.set_breakpoints(0, &[2]);
-    session.cont();
+    session.cont(1);
     session.events().recv().unwrap(); // parked at breakpoint, session still active
 
     let path2 = temp_file("fn main():\n    print(2)\n");
@@ -359,7 +361,7 @@ fn frame_variables_render_every_scalar_and_collection_kind() {
 
     let result = session.set_breakpoints(0, &[22]); // `print(n)`
     assert_eq!(result, vec![(22, true)]);
-    session.cont();
+    session.cont(1);
     session.events().recv().unwrap();
 
     let vars = values::frame_variables(&session, 0);
@@ -433,7 +435,7 @@ fn f32_local_renders_correctly_despite_narrow_width() {
 
     let result = session.set_breakpoints(0, &[3]);
     assert_eq!(result, vec![(3, true)]);
-    session.cont();
+    session.cont(1);
     session.events().recv().unwrap();
 
     let vars = values::frame_variables(&session, 0);
@@ -452,7 +454,7 @@ fn mutating_a_list_element_is_visible_after_a_step() {
 
     let result = session.set_breakpoints(0, &[3]); // `xs[0] = 99`, xs already assigned
     assert_eq!(result, vec![(3, true)]);
-    session.cont();
+    session.cont(1);
     session.events().recv().unwrap();
 
     let xs = var(&values::frame_variables(&session, 0), "xs").reference;
@@ -464,7 +466,7 @@ fn mutating_a_list_element_is_visible_after_a_step() {
         vec!["1", "2", "3"]
     );
 
-    session.next();
+    session.next(1);
     session.events().recv().unwrap();
 
     let xs = var(&values::frame_variables(&session, 0), "xs").reference;
@@ -499,7 +501,7 @@ fn set_local_cell_on_f32_reloads_without_corrupting_the_session() {
     let result = session.set_breakpoints(0, &[3]);
     assert_eq!(result, vec![(3, true)]);
 
-    session.cont();
+    session.cont(1);
     match session.events().recv().unwrap() {
         DebugEvent::Stopped { .. } => {}
         other => panic!("expected Stopped, got {other:?}"),
@@ -518,5 +520,81 @@ fn set_local_cell_on_f32_reloads_without_corrupting_the_session() {
     );
 
     run_to_exit(&session);
+    std::fs::remove_file(&path).ok();
+}
+
+/// A second traced thread, running real instrumented olive code, gets its
+/// own DAP identity end to end: registration, a breakpoint hit reporting
+/// its own `threadId`, an independent parked stack, and clean resume --
+/// exactly what `aio`'s executor/spawn_task/pool_run threads rely on
+/// (`hooks::enable_debuggee_thread`, the same entry point `spawn_traced`
+/// calls in `olive_std`). Drives `helper` directly via `raw_fn` on a
+/// manually spawned thread rather than through a real `async fn`, so this
+/// covers the session/threading machinery in isolation from `aio`'s own
+/// scheduling behavior. `main` is deliberately never resumed (no `cont(1)`
+/// is ever sent): it stays parked in `wait_for_start`, which keeps the
+/// session alive for the whole test without a real race against it running
+/// to completion and tearing the session down first.
+#[test]
+fn a_manually_spawned_worker_thread_hits_its_own_breakpoint_independently_of_main() {
+    let _guard = exec_lock();
+    let src = "fn helper(n: int) -> int:\n    let x = n + 1\n    print(x)\n    return x\nfn main():\n    print(1)\n";
+    let path = temp_file(src);
+    let mut session = launch(path.to_str().unwrap(), false).expect("launch failed");
+
+    let result = session.set_breakpoints(0, &[2]); // `let x = n + 1` inside helper
+    assert_eq!(result, vec![(2, true)]);
+
+    let helper_ptr = session.raw_fn("helper").expect("helper compiled");
+    let helper_fn: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(helper_ptr) };
+    let worker = std::thread::Builder::new()
+        .name("worker".to_string())
+        .spawn(move || {
+            hooks::enable_debuggee_thread("worker");
+            let result = helper_fn(5);
+            hooks::disable_debuggee_thread();
+            result
+        })
+        .expect("spawn worker");
+
+    let worker_id = loop {
+        match session.events().recv().unwrap() {
+            DebugEvent::ThreadStarted { .. } => continue,
+            DebugEvent::Stopped {
+                reason,
+                frame,
+                thread_id,
+            } => {
+                assert_eq!(reason, StopReason::Breakpoint);
+                assert_eq!(frame.name, "helper");
+                assert_eq!(frame.line, 2);
+                assert_ne!(thread_id, 1, "helper runs on the worker thread, not main");
+                break thread_id;
+            }
+            other => panic!("expected ThreadStarted or Stopped, got {other:?}"),
+        }
+    };
+
+    let worker_stack = session.stack(worker_id);
+    assert_eq!(worker_stack.len(), 1);
+    assert_eq!(worker_stack[0].name, "helper");
+
+    // Main never ran a single statement (no `cont(1)` was ever sent), so it
+    // has no parked frames of its own -- proof that inspecting one thread's
+    // stack never borrows or fabricates another's.
+    assert!(session.stack(1).is_empty());
+
+    let threads = session.threads_snapshot();
+    assert!(
+        threads
+            .iter()
+            .any(|&(id, ref name)| id == 1 && name == "main")
+    );
+    assert!(threads.iter().any(|&(id, _)| id == worker_id));
+
+    session.cont(worker_id);
+    assert_eq!(worker.join().unwrap(), 6);
+
+    drop(session);
     std::fs::remove_file(&path).ok();
 }

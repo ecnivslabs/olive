@@ -135,25 +135,31 @@ fn handle_message(state: &mut ServerState, msg: Value) -> bool {
         "configurationDone" => {
             send_response(state, request_seq, command, json!({}));
             if let Some(session) = &state.session {
-                session.cont();
+                // Starting a launched program runs its main thread, always
+                // id 1; configurationDone carries no threadId of its own.
+                session.cont(1);
             }
         }
         "threads" => {
-            send_response(
-                state,
-                request_seq,
-                command,
-                json!({"threads": [{"id": 1, "name": "main"}]}),
-            );
+            let threads = state
+                .session
+                .as_ref()
+                .map(|s| s.threads_snapshot())
+                .unwrap_or_default();
+            let body: Vec<Value> = threads
+                .into_iter()
+                .map(|(id, name)| json!({"id": id, "name": name}))
+                .collect();
+            send_response(state, request_seq, command, json!({"threads": body}));
         }
-        "stackTrace" => handle_stack_trace(state, request_seq),
+        "stackTrace" => handle_stack_trace(state, request_seq, &args),
         "scopes" => inspect::handle_scopes(state, request_seq, &args),
         "variables" => inspect::handle_variables(state, request_seq, &args),
         "evaluate" => inspect::handle_evaluate(state, request_seq, &args),
         "setVariable" => inspect::handle_set_variable(state, request_seq, &args),
         "setExpression" => inspect::handle_set_expression(state, request_seq, &args),
         "completions" => inspect::handle_completions(state, request_seq, &args),
-        "exceptionInfo" => inspect::handle_exception_info(state, request_seq),
+        "exceptionInfo" => inspect::handle_exception_info(state, request_seq, &args),
         "setExceptionBreakpoints" => {
             let stop_on_faults = args
                 .get("filters")
@@ -167,34 +173,37 @@ fn handle_message(state: &mut ServerState, msg: Value) -> bool {
         }
         "continue" => {
             if let Some(session) = &state.session {
+                let thread_id = thread_id_of(&args);
                 // `continued` has to be on the wire before `cont()` can wake
                 // the debuggee: a store-granularity stop (a data breakpoint
                 // on a tight loop, in particular) can re-park within
                 // microseconds, and `resume()`'s own `notify_all()` races a
                 // send on this thread that hasn't happened yet -- sending
                 // first makes the ordering deterministic, not probabilistic.
+                // Stopping is per-thread (`allThreadsStopped: false`), so
+                // continuing is too: only `thread_id` was ever parked.
                 send_response(
                     state,
                     request_seq,
                     command,
-                    json!({"allThreadsContinued": true}),
+                    json!({"allThreadsContinued": false}),
                 );
                 send_event(
                     state,
                     "continued",
-                    json!({"threadId": 1, "allThreadsContinued": true}),
+                    json!({"threadId": thread_id, "allThreadsContinued": false}),
                 );
-                session.cont();
+                session.cont(thread_id);
             } else {
                 send_error(state, request_seq, command, "no active session");
             }
         }
-        "next" => step(state, request_seq, command, |s| s.next()),
-        "stepIn" => step(state, request_seq, command, |s| s.step_in()),
-        "stepOut" => step(state, request_seq, command, |s| s.step_out()),
+        "next" => step(state, request_seq, command, &args, |s, t| s.next(t)),
+        "stepIn" => step(state, request_seq, command, &args, |s, t| s.step_in(t)),
+        "stepOut" => step(state, request_seq, command, &args, |s, t| s.step_out(t)),
         "pause" => {
             if let Some(session) = &state.session {
-                session.pause();
+                session.pause(thread_id_of(&args));
                 send_response(state, request_seq, command, json!({}));
             } else {
                 send_error(state, request_seq, command, "no active session");
@@ -230,18 +239,32 @@ fn handle_message(state: &mut ServerState, msg: Value) -> bool {
 
 /// Same ordering constraint as the `continue` handler: `continued` must be
 /// sent before `run` can wake the debuggee, not after.
-fn step(state: &ServerState, request_seq: i64, command: &str, run: impl FnOnce(&DebugSession)) {
+fn step(
+    state: &ServerState,
+    request_seq: i64,
+    command: &str,
+    args: &Value,
+    run: impl FnOnce(&DebugSession, i64),
+) {
     if let Some(session) = &state.session {
+        let thread_id = thread_id_of(args);
         send_response(state, request_seq, command, json!({}));
         send_event(
             state,
             "continued",
-            json!({"threadId": 1, "allThreadsContinued": true}),
+            json!({"threadId": thread_id, "allThreadsContinued": false}),
         );
-        run(session);
+        run(session, thread_id);
     } else {
         send_error(state, request_seq, command, "no active session");
     }
+}
+
+/// `threadId` from a request's arguments, defaulting to the main thread --
+/// always id 1 -- since every non-thread-aware caller (headless, most test
+/// harnesses, a client that never sends one) means exactly that.
+fn thread_id_of(args: &Value) -> i64 {
+    args.get("threadId").and_then(Value::as_i64).unwrap_or(1)
 }
 
 fn handle_restart(state: &mut ServerState, request_seq: i64, args: &Value) {
@@ -552,17 +575,13 @@ fn handle_breakpoint_locations(state: &ServerState, request_seq: i64, args: &Val
     );
 }
 
-fn handle_stack_trace(state: &ServerState, request_seq: i64) {
+fn handle_stack_trace(state: &ServerState, request_seq: i64, args: &Value) {
     let Some(session) = &state.session else {
         send_error(state, request_seq, "stackTrace", "no active session");
         return;
     };
-    let frames = session.stack();
-    let body: Vec<Value> = frames
-        .iter()
-        .enumerate()
-        .map(|(idx, f)| stack_frame(idx, f))
-        .collect();
+    let frames = session.stack(thread_id_of(args));
+    let body: Vec<Value> = frames.iter().map(stack_frame).collect();
     send_response(
         state,
         request_seq,
@@ -571,13 +590,13 @@ fn handle_stack_trace(state: &ServerState, request_seq: i64) {
     );
 }
 
-fn stack_frame(idx: usize, f: &FrameSnapshot) -> Value {
+fn stack_frame(f: &FrameSnapshot) -> Value {
     let name = Path::new(&f.file)
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| f.file.clone());
     json!({
-        "id": idx,
+        "id": f.frame_id,
         "name": f.name,
         "source": {"path": f.file, "name": name},
         "line": f.line,
@@ -585,7 +604,10 @@ fn stack_frame(idx: usize, f: &FrameSnapshot) -> Value {
     })
 }
 
-fn stopped_body(reason: &StopReason) -> Value {
+/// `allThreadsStopped` is always `false`: a stop only ever parks the thread
+/// that hit it (`EngineShared::park_on`), never the rest of the process, so
+/// nothing else is actually stopped for the client to reflect.
+fn stopped_body(reason: &StopReason, thread_id: i64) -> Value {
     let (reason_str, text) = match reason {
         StopReason::Entry => ("entry", None),
         StopReason::Breakpoint => ("breakpoint", None),
@@ -594,7 +616,11 @@ fn stopped_body(reason: &StopReason) -> Value {
         StopReason::DataBreakpoint => ("data breakpoint", None),
         StopReason::Fault { message, .. } => ("exception", Some(message.clone())),
     };
-    let mut body = json!({"reason": reason_str, "threadId": 1, "allThreadsStopped": true});
+    let mut body = json!({
+        "reason": reason_str,
+        "threadId": thread_id,
+        "allThreadsStopped": false,
+    });
     if let Some(t) = text {
         body["text"] = json!(t);
     }
@@ -618,11 +644,13 @@ fn run_monitor(
     };
     for ev in events_rx.iter() {
         match ev {
-            DebugEvent::Stopped { reason, .. } => {
+            DebugEvent::Stopped {
+                reason, thread_id, ..
+            } => {
                 if let StopReason::Fault { code, message } = &reason {
                     *last_exception.lock().unwrap() = Some((code.clone(), message.clone()));
                 }
-                emit("stopped", stopped_body(&reason));
+                emit("stopped", stopped_body(&reason, thread_id));
             }
             DebugEvent::Output(text) => {
                 emit("output", json!({"category": "console", "output": text}));
@@ -632,6 +660,12 @@ fn run_monitor(
                 emit("exited", json!({"exitCode": code}));
                 emit("terminated", json!({}));
                 break;
+            }
+            DebugEvent::ThreadStarted { id } => {
+                emit("thread", json!({"reason": "started", "threadId": id}));
+            }
+            DebugEvent::ThreadExited { id } => {
+                emit("thread", json!({"reason": "exited", "threadId": id}));
             }
         }
     }

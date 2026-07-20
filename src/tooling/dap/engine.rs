@@ -5,6 +5,7 @@
 //! `hooks` leaking any mutable state outside that file.
 
 mod breakpoints;
+mod threads;
 mod variants;
 mod watch;
 
@@ -16,12 +17,14 @@ use crate::semantic::types::Type;
 use breakpoints::BpTable;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::ffi::CString;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
+use threads::{MODE_CONTINUE, MODE_PAUSE, MODE_STEP_IN, MODE_STEP_OUT, MODE_STEP_OVER};
 use watch::WatchTable;
 
 pub use breakpoints::BpSpec;
+pub(crate) use threads::{ThreadControl, any_force_check};
 pub(crate) use variants::DebugVariantTable;
 pub use watch::WatchSpec;
 
@@ -67,6 +70,12 @@ pub struct FrameSnapshot {
     pub name: String,
     pub file: String,
     pub line: u32,
+    /// Packed `(thread_id, local frame index)`, opaque to both frontends --
+    /// the same value comes back as a request's `frameId` and is decoded
+    /// only by `EngineShared::frame_cells`/`set_local_cell`. Zero for a
+    /// snapshot built outside `EngineShared::stack` (a fault's frame, before
+    /// any stack request assigns it a real id).
+    pub frame_id: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -74,42 +83,30 @@ pub enum DebugEvent {
     Stopped {
         reason: StopReason,
         frame: FrameSnapshot,
+        thread_id: i64,
     },
     Exited(i32),
     /// A logpoint firing, or a one-time conditional-breakpoint evaluation
     /// error -- text for an `output` event, never a stop.
     Output(String),
+    /// Carries only the id: the DAP `thread` event body has no room for a
+    /// name either, and anything that wants one already has `threads_snapshot`.
+    ThreadStarted {
+        id: i64,
+    },
+    ThreadExited {
+        id: i64,
+    },
 }
-
-struct Control {
-    mode: RunMode,
-    parked: bool,
-    parked_frames: Vec<Frame>,
-    run_token: u64,
-    /// Set by `detach()` on session teardown so a `park()` call that's
-    /// already past its stop decision, racing the teardown's own resume
-    /// signal, still never blocks: the check happens under the same lock
-    /// `detach()` writes under, so one side or the other always wins cleanly.
-    detached: bool,
-}
-
-// Atomic-encoded RunMode variant, checked in `stop_reason_for`
-// before touching the control mutex. The full `Control` struct still holds
-// the authoritative mode + parked_frames for the rare multi-field write.
-const MODE_CONTINUE: u8 = 0;
-const MODE_STEP_OVER: u8 = 1;
-const MODE_STEP_IN: u8 = 2;
-const MODE_STEP_OUT: u8 = 3;
-const MODE_PAUSE: u8 = 4;
 
 pub struct EngineShared {
-    control: Mutex<Control>,
-    resume_cv: Condvar,
-    /// Atomic-mode fields so `stop_reason_for` reads the mode
-    /// without acquiring the control mutex on every statement.
-    mode_variant: AtomicU8,
-    step_depth: AtomicUsize,
-    step_line: AtomicI64,
+    /// Every traced thread for the life of this session, keyed by its
+    /// stable DAP id. The main debuggee thread is always id 1, pre-created
+    /// in `launch.rs` before that thread spawns; aio worker threads
+    /// self-register the first time they call an instrumented function
+    /// (`hooks::enable_debuggee_thread`).
+    threads: Mutex<FxHashMap<i64, Arc<ThreadControl>>>,
+    next_thread_id: AtomicI64,
     entry_pending: AtomicBool,
     breakpoints: Mutex<BpTable>,
     watchpoints: Mutex<WatchTable>,
@@ -133,14 +130,22 @@ pub struct EngineShared {
     /// a real `pit debug` launch, but keeps every call site a graceful no-op
     /// rather than a panic if it ever does).
     variant_table: OnceLock<DebugVariantTable>,
-    /// `(cell_idx, raw)` writes from `set_local_cell`, queued while parked
-    /// and drained by the debuggee thread into its own TLS mirror right
-    /// after `park()` returns (`hooks::apply_pending_patches`) -- the
-    /// debuggee thread's frame stack is `thread_local!`, unreachable from
-    /// here directly. Always targets the frame that was actually parked
-    /// (`set_local_cell` rejects anything else), so nothing needs to track
-    /// which frame a given entry belongs to.
-    pending_patches: Mutex<Vec<(usize, i64)>>,
+}
+
+/// Packs a stable frame identity into the single opaque `usize` both DAP
+/// frontends pass around as `frameId`. Subtracting 1 from `thread_id` makes
+/// the main thread's (always id 1) frame ids identical to the plain local
+/// index scheme this used to be -- `frameId: 0` still means "innermost frame
+/// of the main thread" exactly as it did before threads existed, so every
+/// existing single-thread request (most callers never send a real threadId
+/// at all) keeps working unchanged.
+const fn pack_frame(thread_id: i64, local_idx: usize) -> usize {
+    (((thread_id - 1) as u64) << 32 | (local_idx as u64 & 0xFFFF_FFFF)) as usize
+}
+
+const fn unpack_frame(frame_id: usize) -> (i64, usize) {
+    let raw = frame_id as u64;
+    ((raw >> 32) as i64 + 1, (raw & 0xFFFF_FFFF) as usize)
 }
 
 /// Names resolved once at launch into `EngineShared::runtime_syms`.
@@ -185,17 +190,8 @@ impl EngineShared {
             }
         }
         std::sync::Arc::new(Self {
-            control: Mutex::new(Control {
-                mode: RunMode::Continue,
-                parked: false,
-                parked_frames: Vec::new(),
-                run_token: 0,
-                detached: false,
-            }),
-            resume_cv: Condvar::new(),
-            mode_variant: AtomicU8::new(MODE_CONTINUE),
-            step_depth: AtomicUsize::new(0),
-            step_line: AtomicI64::new(0),
+            threads: Mutex::new(FxHashMap::default()),
+            next_thread_id: AtomicI64::new(1),
             entry_pending: AtomicBool::new(stop_on_entry),
             breakpoints: Mutex::new(FxHashMap::default()),
             watchpoints: Mutex::new(FxHashMap::default()),
@@ -209,8 +205,75 @@ impl EngineShared {
             var_store: VarStore::new(),
             runtime_syms: OnceLock::new(),
             variant_table: OnceLock::new(),
-            pending_patches: Mutex::new(Vec::new()),
         })
+    }
+
+    /// Registers a new traced thread and assigns it a stable DAP id (the
+    /// first-ever registration, always the main debuggee thread, gets id 1).
+    /// Purely bookkeeping -- no `ThreadStarted` event, since the main
+    /// thread's own registration (`launch.rs`, before that thread starts,
+    /// so `wait_for_start`'s first `cont()` never races an unregistered
+    /// thread 1) isn't a "new thread appeared mid-session" a client needs
+    /// telling about; a self-registering aio worker announces itself
+    /// separately (`announce_thread_started`), right where that's true.
+    pub(crate) fn register_thread(&self, name: &str) -> Arc<ThreadControl> {
+        let id = self.next_thread_id.fetch_add(1, Ordering::Relaxed);
+        let ctl = Arc::new(ThreadControl::new(id, name.to_string()));
+        self.threads.lock().unwrap().insert(id, ctl.clone());
+        ctl
+    }
+
+    /// Removes a thread from the registry once it's run to completion. Pure
+    /// bookkeeping, same as `register_thread` -- see `announce_thread_exited`
+    /// for the event a client actually cares about. `detach()`s the outgoing
+    /// control first: a thread that exits mid-step (its function returns
+    /// past the frame a step was armed in, with no further stop to clear
+    /// `force_check` naturally) would otherwise leak an armed count into
+    /// `threads::FORCE_CHECK_COUNT` forever, forcing every other thread's
+    /// statement hook onto the slow path for the rest of the session.
+    pub(crate) fn deregister_thread(&self, id: i64) {
+        if let Some(ctl) = self.threads.lock().unwrap().remove(&id) {
+            ctl.detach();
+        }
+    }
+
+    /// A traced thread appeared mid-session (an aio worker, never the main
+    /// thread -- that one exists before any client could have asked about
+    /// threads at all, so announcing it would just be noise ahead of the
+    /// first real event).
+    pub(crate) fn announce_thread_started(&self, id: i64) {
+        let _ = self
+            .events_tx
+            .lock()
+            .unwrap()
+            .send(DebugEvent::ThreadStarted { id });
+    }
+
+    /// The aio-worker counterpart to `announce_thread_started`.
+    pub(crate) fn announce_thread_exited(&self, id: i64) {
+        let _ = self
+            .events_tx
+            .lock()
+            .unwrap()
+            .send(DebugEvent::ThreadExited { id });
+    }
+
+    pub(crate) fn thread_control(&self, id: i64) -> Option<Arc<ThreadControl>> {
+        self.threads.lock().unwrap().get(&id).cloned()
+    }
+
+    /// `(id, name)` per currently-registered thread, sorted by id -- the
+    /// `threads` DAP request's whole answer.
+    pub fn threads_snapshot(&self) -> Vec<(i64, String)> {
+        let mut v: Vec<(i64, String)> = self
+            .threads
+            .lock()
+            .unwrap()
+            .values()
+            .map(|t| (t.id, t.name.clone()))
+            .collect();
+        v.sort_unstable_by_key(|&(id, _)| id);
+        v
     }
 
     /// Installs the session's dual-variant dispatch table, once, at launch.
@@ -298,57 +361,13 @@ impl EngineShared {
             .map(|&addr| addr as *const u8)
     }
 
-    /// Encode `RunMode` into the atomic mode fields so
-    /// `stop_reason_for` can read them without locking the control mutex.
-    fn set_mode_atomic(&self, mode: &RunMode) {
-        match *mode {
-            RunMode::Continue => {
-                self.mode_variant.store(MODE_CONTINUE, Ordering::Relaxed);
-            }
-            RunMode::StepOver { depth, line } => {
-                self.mode_variant.store(MODE_STEP_OVER, Ordering::Relaxed);
-                self.step_depth.store(depth, Ordering::Relaxed);
-                self.step_line.store(line, Ordering::Relaxed);
-            }
-            RunMode::StepIn { depth, line } => {
-                self.mode_variant.store(MODE_STEP_IN, Ordering::Relaxed);
-                self.step_depth.store(depth, Ordering::Relaxed);
-                self.step_line.store(line, Ordering::Relaxed);
-            }
-            RunMode::StepOut { depth } => {
-                self.mode_variant.store(MODE_STEP_OUT, Ordering::Relaxed);
-                self.step_depth.store(depth, Ordering::Relaxed);
-            }
-            RunMode::Pause => {
-                self.mode_variant.store(MODE_PAUSE, Ordering::Relaxed);
-            }
-        }
+    /// Resolves `main`'s `ThreadControl` -- always id 1, pre-registered by
+    /// `launch.rs` before the debuggee thread spawns.
+    fn main_thread(&self) -> Option<Arc<ThreadControl>> {
+        self.thread_control(1)
     }
 
-    /// Sets the run mode, bumps the token so a parked debuggee's wait loop
-    /// wakes, and arms `force_check` so the stmt hook takes the slow path
-    /// even with zero breakpoints set.
-    fn resume(&self, mode: RunMode, force_check: bool) {
-        self.set_mode_atomic(&mode);
-        let mut ctl = self.control.lock().unwrap();
-        ctl.mode = mode;
-        ctl.run_token = ctl.run_token.wrapping_add(1);
-        drop(ctl);
-        hooks::set_force_check(force_check);
-        self.var_store.clear();
-        self.resume_cv.notify_all();
-    }
-
-    /// The depth/line of the frame the debuggee is currently parked in,
-    /// source for every step mode's starting point.
-    fn stopped_depth_line(&self) -> (usize, i64) {
-        let ctl = self.control.lock().unwrap();
-        let depth = ctl.parked_frames.len();
-        let line = ctl.parked_frames.last().map(|f| f.line).unwrap_or(0);
-        (depth, line)
-    }
-
-    pub fn cont(&self) {
+    pub fn cont(&self, thread_id: i64) {
         // A pending stop-on-entry must still force the next `debug_stmt`
         // slow path even though we're leaving Pause/the initial barrier;
         // clearing this unconditionally would let entry_pending go unread
@@ -363,46 +382,43 @@ impl EngineShared {
         if !entry_pending {
             self.sync_variants_to_breakpoints();
         }
-        self.resume(RunMode::Continue, entry_pending);
-    }
-
-    /// Session teardown (`disconnect`/`quit`, `DebugSession::drop`): clears
-    /// every stop condition and marks the session detached so the debuggee
-    /// is guaranteed to run to completion, never parking again even if it's
-    /// mid-decision on a stop nobody will resume from once the caller moves
-    /// on to `join()`-ing the debuggee thread.
-    pub(crate) fn detach(&self) {
-        self.entry_pending.store(false, Ordering::Relaxed);
-        self.mode_variant.store(MODE_CONTINUE, Ordering::Relaxed);
-        self.step_depth.store(0, Ordering::Relaxed);
-        self.step_line.store(0, Ordering::Relaxed);
-        hooks::replace_breakpoints(FxHashSet::default());
-        self.deactivate_all_variants();
-        let mut ctl = self.control.lock().unwrap();
-        ctl.detached = true;
-        ctl.mode = RunMode::Continue;
-        ctl.run_token = ctl.run_token.wrapping_add(1);
-        drop(ctl);
-        hooks::set_force_check(false);
         self.var_store.clear();
-        self.resume_cv.notify_all();
-    }
-
-    /// Blocks the debuggee thread until the first `cont()`, so breakpoints
-    /// and stop-on-entry set up between `launch()` returning and the
-    /// caller's first `cont()` are guaranteed to be in place before any
-    /// user code runs -- without this, a short program can race past a
-    /// breakpoint the caller hasn't finished installing yet.
-    pub(crate) fn wait_for_start(&self) {
-        let mut ctl = self.control.lock().unwrap();
-        while ctl.run_token == 0 {
-            ctl = self.resume_cv.wait(ctl).unwrap();
+        if let Some(t) = self.thread_control(thread_id) {
+            t.resume(RunMode::Continue, entry_pending);
         }
     }
 
-    pub fn pause(&self) {
+    /// Session teardown (`disconnect`/`quit`, `DebugSession::drop`): clears
+    /// every stop condition and detaches every registered thread, so each
+    /// is guaranteed to run to completion, never parking again even if one
+    /// is mid-decision on a stop nobody will resume from once the caller
+    /// moves on to `join()`-ing the debuggee thread.
+    pub(crate) fn detach(&self) {
+        self.entry_pending.store(false, Ordering::Relaxed);
+        hooks::replace_breakpoints(FxHashSet::default());
+        self.deactivate_all_variants();
+        for t in self.threads.lock().unwrap().values() {
+            t.detach();
+        }
+        self.var_store.clear();
+    }
+
+    /// Blocks the main debuggee thread until the first `cont()`, so
+    /// breakpoints and stop-on-entry set up between `launch()` returning and
+    /// the caller's first `cont()` are guaranteed to be in place before any
+    /// user code runs -- without this, a short program can race past a
+    /// breakpoint the caller hasn't finished installing yet.
+    pub(crate) fn wait_for_start(&self) {
+        if let Some(main) = self.main_thread() {
+            main.wait_until_resumed(0);
+        }
+    }
+
+    pub fn pause(&self, thread_id: i64) {
         self.activate_all_variants();
-        self.resume(RunMode::Pause, true);
+        if let Some(t) = self.thread_control(thread_id) {
+            t.resume(RunMode::Pause, true);
+        }
     }
 
     /// Toggles whether a runtime fault parks the debuggee before the process
@@ -413,39 +429,51 @@ impl EngineShared {
 
     /// Runs to the next stmt hook at the same or a shallower frame on a
     /// different line: steps over a call without stopping inside it.
-    pub fn next(&self) {
+    pub fn next(&self, thread_id: i64) {
         self.activate_all_variants();
-        let (depth, line) = self.stopped_depth_line();
-        self.resume(RunMode::StepOver { depth, line }, true);
+        if let Some(t) = self.thread_control(thread_id) {
+            let (depth, line) = t.stopped_depth_line();
+            t.resume(RunMode::StepOver { depth, line }, true);
+        }
     }
 
     /// Runs to the next stmt hook that's either a different line at the
     /// same depth or any line at a deeper frame: follows into a call.
-    pub fn step_in(&self) {
+    pub fn step_in(&self, thread_id: i64) {
         self.activate_all_variants();
-        let (depth, line) = self.stopped_depth_line();
-        self.resume(RunMode::StepIn { depth, line }, true);
+        if let Some(t) = self.thread_control(thread_id) {
+            let (depth, line) = t.stopped_depth_line();
+            t.resume(RunMode::StepIn { depth, line }, true);
+        }
     }
 
     /// Runs until the frame stack drops below the depth it started at:
     /// finishes the current frame and stops back in the caller.
-    pub fn step_out(&self) {
+    pub fn step_out(&self, thread_id: i64) {
         self.activate_all_variants();
-        let (depth, _) = self.stopped_depth_line();
-        self.resume(RunMode::StepOut { depth }, true);
+        if let Some(t) = self.thread_control(thread_id) {
+            let (depth, _) = t.stopped_depth_line();
+            t.resume(RunMode::StepOut { depth }, true);
+        }
     }
 
-    /// Valid only while stopped; returns the empty stack otherwise. Index 0
-    /// is the innermost (currently executing) frame.
-    pub fn stack(&self) -> Vec<FrameSnapshot> {
-        let ctl = self.control.lock().unwrap();
-        if !ctl.parked {
+    /// Valid only while `thread_id` is parked; the empty stack otherwise.
+    /// Each frame's `frame_id` packs `thread_id` with its position so a
+    /// later `scopes`/`evaluate`/`setVariable` request naming that id routes
+    /// straight back to this thread's storage, without a threadId of its own.
+    pub fn stack(&self, thread_id: i64) -> Vec<FrameSnapshot> {
+        let Some(thread) = self.thread_control(thread_id) else {
             return Vec::new();
-        }
-        ctl.parked_frames
+        };
+        thread
+            .stack_frames()
             .iter()
-            .rev()
-            .map(|f| self.snapshot(f))
+            .enumerate()
+            .map(|(i, f)| {
+                let mut snap = self.snapshot(f);
+                snap.frame_id = pack_frame(thread_id, i);
+                snap
+            })
             .collect()
     }
 
@@ -465,6 +493,7 @@ impl EngineShared {
             name,
             file,
             line,
+            frame_id: 0,
         }
     }
 
@@ -487,55 +516,38 @@ impl EngineShared {
             .unwrap_or(&[])
     }
 
-    /// `(fn_id, raw cell bits)` for the frame at `frame_idx`, `0` being the
-    /// innermost frame -- the same indexing `stack()` returns. `None` while
-    /// not parked or past the bottom of the stack.
-    pub(crate) fn frame_cells(&self, frame_idx: usize) -> Option<(u32, Vec<i64>)> {
-        let ctl = self.control.lock().unwrap();
-        if !ctl.parked {
-            return None;
-        }
-        let n = ctl.parked_frames.len();
-        let f = ctl
-            .parked_frames
-            .get(n.checked_sub(1)?.checked_sub(frame_idx)?)?;
-        Some((f.fn_id, f.cells.clone()))
+    /// `(fn_id, raw cell bits)` for the packed `frame_id` -- the same value
+    /// `stack()` handed back. `None` while that frame's owning thread isn't
+    /// parked or the local index is past the bottom of its stack.
+    pub(crate) fn frame_cells(&self, frame_id: usize) -> Option<(u32, Vec<i64>)> {
+        let (thread_id, local_idx) = unpack_frame(frame_id);
+        self.thread_control(thread_id)?.frame_at(local_idx)
+    }
+
+    /// Whether `frame_id` names the innermost frame of its thread -- the one
+    /// frame whose real storage that thread will reload from the mirror
+    /// before it next uses that local (`debug_load` fires right after the
+    /// exact `park()` call this frame is blocked in; an outer frame isn't
+    /// parked inside its own `debug_stmt` call at all, it's mid-call into
+    /// whatever's currently innermost, so it has no reload point to apply a
+    /// patch at until it becomes innermost again).
+    pub(crate) fn is_innermost_frame(&self, frame_id: usize) -> bool {
+        unpack_frame(frame_id).1 == 0
     }
 
     /// `setVariable`/`setExpression` write path for a top-level named local.
-    /// Only the innermost (`frame_idx == 0`) frame is writable: it's the
-    /// only frame whose real storage the debuggee thread will reload from
-    /// the mirror before it next uses that local (`debug_load` fires right
-    /// after the exact `park()` call this frame is blocked in; an outer
-    /// frame isn't parked inside its own `debug_stmt` call at all, it's
-    /// mid-call into whatever's currently innermost, so it has no reload
-    /// point to apply a patch at until it becomes innermost again). Updates
-    /// the inspector-visible snapshot immediately either way, then queues
-    /// the mirror write for the debuggee thread to pick up on resume.
-    pub(crate) fn set_local_cell(&self, frame_idx: usize, cell_idx: usize, raw: i64) -> bool {
-        if frame_idx != 0 {
+    /// Updates the inspector-visible snapshot immediately, then queues the
+    /// mirror write for that frame's owning thread to pick up on resume.
+    /// Callers must have already checked `is_innermost_frame`.
+    pub(crate) fn set_local_cell(&self, frame_id: usize, cell_idx: usize, raw: i64) -> bool {
+        let (thread_id, local_idx) = unpack_frame(frame_id);
+        if local_idx != 0 {
             return false;
         }
-        let mut ctl = self.control.lock().unwrap();
-        if !ctl.parked {
-            return false;
-        }
-        let Some(frame) = ctl.parked_frames.last_mut() else {
+        let Some(thread) = self.thread_control(thread_id) else {
             return false;
         };
-        let Some(slot) = frame.cells.get_mut(cell_idx) else {
-            return false;
-        };
-        *slot = raw;
-        drop(ctl);
-        self.pending_patches.lock().unwrap().push((cell_idx, raw));
-        true
-    }
-
-    /// Drains every queued `set_local_cell` write, for the debuggee thread
-    /// to apply to its own TLS mirror right after resuming from `park()`.
-    pub(crate) fn take_pending_patches(&self) -> Vec<(usize, i64)> {
-        std::mem::take(&mut *self.pending_patches.lock().unwrap())
+        thread.set_local_cell(cell_idx, raw)
     }
 
     pub(crate) fn cell_desc(&self, fn_id: u32, cell_idx: usize) -> &std::ffi::CStr {
@@ -564,8 +576,11 @@ impl EngineShared {
     /// to be passed in rather than read here) at the point of this hit);
     /// `top` is the frame the hook just captured, the source for any
     /// condition or logpoint evaluation this line's breakpoint needs.
+    /// `thread` is the hitting thread's own control -- its step state, never
+    /// another thread's, decides whether this is a step stop.
     pub(crate) fn stop_reason_for(
         &self,
+        thread: &ThreadControl,
         packed: i64,
         depth: usize,
         top: &Frame,
@@ -573,10 +588,10 @@ impl EngineShared {
         if self.entry_pending.swap(false, Ordering::AcqRel) {
             return Some(StopReason::Entry);
         }
-        // Check atomic mode first, avoiding the control mutex on
-        // every statement. Only fall back to the mutex when the atomic
-        // fast path can't decide (step modes need depth/line).
-        let variant = self.mode_variant.load(Ordering::Relaxed);
+        // Check the atomic mode first, avoiding the park mutex on every
+        // statement. Only fall back to depth/line when the atomic fast path
+        // can't decide (step modes need them).
+        let variant = thread.mode_variant();
         if variant == MODE_PAUSE {
             return Some(StopReason::Pause);
         }
@@ -587,9 +602,8 @@ impl EngineShared {
             }
             return None;
         }
-        // Step modes need depth/line from the atomic fields.
-        let step_depth = self.step_depth.load(Ordering::Relaxed);
-        let step_line = self.step_line.load(Ordering::Relaxed);
+        let step_depth = thread.step_depth();
+        let step_line = thread.step_line();
         if hooks::contains_breakpoint(packed) && self.check_breakpoint(packed, top) {
             return Some(StopReason::Breakpoint);
         }
@@ -601,12 +615,13 @@ impl EngineShared {
         }
     }
 
-    /// Called from the debuggee thread on a stop condition. Records the
-    /// frame snapshot, emits `Stopped`, then blocks until `cont()`/`pause()`
-    /// bumps the run token. A no-op once `detach()` has run: that call and
-    /// this one's first lock acquisition race on the same mutex, so whichever
-    /// wins, the debuggee never blocks with no one left to resume it.
-    pub(crate) fn park(&self, reason: StopReason, frames: Vec<Frame>) {
+    /// Called from a traced thread on a stop condition. Records the frame
+    /// snapshot, emits `Stopped` tagged with `thread`'s id, then blocks that
+    /// thread until its own `cont()`/`pause()` bumps its run token. A no-op
+    /// once `detach()` has run on this thread: that call and this one's
+    /// first lock acquisition race on the same mutex, so whichever wins,
+    /// the thread never blocks with no one left to resume it.
+    pub(crate) fn park_on(&self, thread: &ThreadControl, reason: StopReason, frames: Vec<Frame>) {
         let top = frames
             .last()
             .map(|f| self.snapshot(f))
@@ -615,28 +630,20 @@ impl EngineShared {
                 name: String::new(),
                 file: String::new(),
                 line: 0,
+                frame_id: 0,
             });
 
-        let mut ctl = self.control.lock().unwrap();
-        if ctl.detached {
+        let Some(token) = thread.begin_park(frames) else {
             return;
-        }
-        let token = ctl.run_token;
-        ctl.parked = true;
-        ctl.parked_frames = frames;
-        drop(ctl);
+        };
 
-        let _ = self
-            .events_tx
-            .lock()
-            .unwrap()
-            .send(DebugEvent::Stopped { reason, frame: top });
+        let _ = self.events_tx.lock().unwrap().send(DebugEvent::Stopped {
+            reason,
+            frame: top,
+            thread_id: thread.id,
+        });
 
-        let mut ctl = self.control.lock().unwrap();
-        while ctl.run_token == token {
-            ctl = self.resume_cv.wait(ctl).unwrap();
-        }
-        ctl.parked = false;
+        thread.wait_until_resumed(token);
     }
 
     pub(crate) fn send_exited(&self, code: i32) {

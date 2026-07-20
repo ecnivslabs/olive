@@ -23,6 +23,7 @@ extern crate libc;
 use std::sync::{Mutex, OnceLock};
 
 pub mod aio;
+pub mod aio_sync;
 pub mod boxed;
 pub mod bytes;
 pub mod compress;
