@@ -119,6 +119,15 @@ fn run_aot(dir: &Path, liv_path: &Path) -> Output {
 /// Runs `src` under both pipelines and asserts each succeeds with stdout
 /// exactly `expected`.
 fn assert_both_succeed(src: &str, expected: &str) {
+    assert_both_succeed_with(src, |stdout, pipeline, stderr| {
+        assert_eq!(stdout, expected, "{pipeline} stderr: {stderr}");
+    });
+}
+
+/// Runs `src` under both pipelines and hands each stdout to `check`. Use this
+/// over `assert_both_succeed` when the output embeds a printed dict, whose
+/// entry order follows the hash and is not a property worth pinning.
+fn assert_both_succeed_with(src: &str, check: impl Fn(&str, &str, &str)) {
     if !python_available() {
         eprintln!("Python not available, skipping test");
         return;
@@ -131,11 +140,10 @@ fn assert_both_succeed(src: &str, expected: &str) {
         "pit run failed: {}",
         String::from_utf8_lossy(&jit.stderr)
     );
-    assert_eq!(
-        String::from_utf8_lossy(&jit.stdout),
-        expected,
-        "jit stderr: {}",
-        String::from_utf8_lossy(&jit.stderr)
+    check(
+        &String::from_utf8_lossy(&jit.stdout),
+        "jit",
+        &String::from_utf8_lossy(&jit.stderr),
     );
 
     let aot = run_aot(&dir, &liv_path);
@@ -144,11 +152,10 @@ fn assert_both_succeed(src: &str, expected: &str) {
         "AOT binary failed: {}",
         String::from_utf8_lossy(&aot.stderr)
     );
-    assert_eq!(
-        String::from_utf8_lossy(&aot.stdout),
-        expected,
-        "aot stderr: {}",
-        String::from_utf8_lossy(&aot.stderr)
+    check(
+        &String::from_utf8_lossy(&aot.stdout),
+        "aot",
+        &String::from_utf8_lossy(&aot.stderr),
     );
 
     std::fs::remove_dir_all(&dir).ok();
@@ -217,7 +224,7 @@ main()
 
 #[test]
 fn dict_update_mutates_the_passed_dict() {
-    assert_both_succeed(
+    assert_both_succeed_with(
         r#"import py "wbhelper" as h
 
 fn main():
@@ -228,7 +235,16 @@ fn main():
 
 main()
 "#,
-        "{\"a\": 1, \"b\": 2, \"c\": 3}\n",
+        |stdout, pipeline, stderr| {
+            let printed = stdout.trim_end();
+            for entry in ["\"a\": 1", "\"b\": 2", "\"c\": 3"] {
+                assert!(
+                    printed.contains(entry),
+                    "{pipeline}: {printed:?} missing {entry}, stderr: {stderr}"
+                );
+            }
+            assert_eq!(printed.matches(": ").count(), 3, "{pipeline}: {printed:?}");
+        },
     );
 }
 
