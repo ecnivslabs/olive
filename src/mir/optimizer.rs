@@ -8,7 +8,8 @@ use crate::mir::optimizations::{
     Transform, algebraic::AlgebraicSimplification, bounds_check_elim::BoundsCheckElim,
     const_fold::ConstantFolding, const_prop::ConstantPropagation, copy_prop::CopyPropagation,
     cse::CommonSubexpressionElimination, dce::DeadCodeElimination, devirtualize::Devirtualize,
-    drop_hooks, gencheck::GenCheckInsertion, gil_fusion::GilFusion, gvn::GlobalValueNumbering,
+    devirtualize_closure::DevirtualizeClosures, drop_hooks, gencheck::GenCheckInsertion,
+    gil_fusion::GilFusion, gvn::GlobalValueNumbering,
     inliner::Inliner, licm::Licm, loop_unroll::LoopUnroll, move_elision::MoveElision,
     ownership::OwnershipInference, peephole::PeepholeOptimize, scalarize::ScalarizeStructs,
     simplify_cfg::SimplifyCfg, strength_reduction::StrengthReduction, tail_call::TailCallOpt,
@@ -151,11 +152,18 @@ impl Optimizer {
 
             self.inliner.inline_function(func, &fn_map, 12);
 
+            // Inlining can leave an orphaned block behind (an unused
+            // continuation from splitting a callee's return site). Pruning
+            // it here keeps single-def analysis in the devirtualize passes
+            // from seeing a dead second definition and refusing to fire.
+            SimplifyCfg.run(func);
+
             let devirt = Devirtualize {
                 vtables: &self.vtables,
                 has_drop: &has_drop,
             };
-            if devirt.run(func) {
+            let devirt_closures = DevirtualizeClosures.run(func);
+            if devirt.run(func) || devirt_closures {
                 self.inliner.inline_function(func, &fn_map, 12);
             }
 

@@ -143,7 +143,7 @@ impl Transform for Devirtualize<'_> {
                                 reads.push(l);
                             }
                         }
-                        _ => Self::rvalue_locals(rval, &mut reads),
+                        _ => super::rvalue_operand_locals(rval, &mut reads),
                     },
                     StatementKind::Drop(_) => {}
                     StatementKind::SetIndex(o, i, v, _) => {
@@ -263,45 +263,5 @@ impl Transform for Devirtualize<'_> {
         }
 
         changed
-    }
-}
-
-impl Devirtualize<'_> {
-    fn rvalue_locals(rval: &Rvalue, out: &mut Vec<Local>) {
-        match rval {
-            Rvalue::Use(op)
-            | Rvalue::UnaryOp(_, op)
-            | Rvalue::Cast(op, _)
-            | Rvalue::GetAttr(op, _)
-            | Rvalue::GetTag(op)
-            | Rvalue::GetTypeId(op)
-            | Rvalue::VectorSplat(op, _)
-            | Rvalue::VectorReduce(_, op, _)
-            | Rvalue::PtrLoad(op)
-            | Rvalue::GenOf(op)
-            | Rvalue::FatPtrData(op)
-            | Rvalue::VTableLoad { vtable: op, .. } => out.extend(operand_local(op)),
-            Rvalue::BinaryOp(_, a, b) | Rvalue::GetIndex(a, b, _) | Rvalue::VectorLoad(a, b, _) => {
-                out.extend(operand_local(a));
-                out.extend(operand_local(b));
-            }
-            Rvalue::VectorFMA(a, b, c) => {
-                out.extend(operand_local(a));
-                out.extend(operand_local(b));
-                out.extend(operand_local(c));
-            }
-            Rvalue::Call { func, args } => {
-                out.extend(operand_local(func));
-                for a in args {
-                    out.extend(operand_local(a));
-                }
-            }
-            Rvalue::Aggregate(_, ops) => {
-                for op in ops {
-                    out.extend(operand_local(op));
-                }
-            }
-            Rvalue::Ref(l) | Rvalue::MutRef(l) => out.push(*l),
-        }
     }
 }
