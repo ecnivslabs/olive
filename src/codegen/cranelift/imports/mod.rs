@@ -191,6 +191,9 @@ pub(super) fn scan_rvalue_imports(
             if name == "__olive_list_concat_typed" {
                 needed.insert("__olive_list_concat_typed");
             }
+            if name == "__olive_list_concat_move" {
+                needed.insert("__olive_list_concat_move");
+            }
             if name == "__olive_list_getslice_typed" {
                 needed.insert("__olive_list_getslice_typed");
             }

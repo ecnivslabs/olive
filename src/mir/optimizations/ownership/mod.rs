@@ -134,6 +134,33 @@ impl Transform for OwnershipInference {
                     *l_op = Operand::Move(l);
                     moved_from.push((bb_idx, idx, l));
                 }
+                // List concat whose operands both die here reuses the left
+                // list's storage and steals the right's elements, skipping
+                // the deep copy entirely. E0500 already rejects reassigning
+                // a borrowed list, so no live view can observe the reuse.
+                if let StatementKind::Assign(_, Rvalue::Call { func: f, args }) = &mut stmt.kind
+                    && matches!(&*f, Operand::Constant(Constant::Function(n))
+                        if n == "__olive_list_concat_typed" || n == "__olive_list_concat")
+                    && let [Operand::Copy(l), Operand::Copy(r)] = args.as_slice()
+                {
+                    let (l, r) = (*l, *r);
+                    if l.0 < heap.len()
+                        && r.0 < heap.len()
+                        && heap[l.0]
+                        && builder_owning[l.0]
+                        && builder_owning[r.0]
+                        && matches!(func.locals[l.0].ty, Type::List(_))
+                        && matches!(func.locals[r.0].ty, Type::List(_))
+                        && !liveness.live_after[bb_idx][idx + 1].contains(&l)
+                        && !liveness.live_after[bb_idx][idx + 1].contains(&r)
+                    {
+                        *f = Operand::Constant(Constant::Function(
+                            "__olive_list_concat_move".to_string(),
+                        ));
+                        args[0] = Operand::Move(l);
+                        moved_from.push((bb_idx, idx, l));
+                    }
+                }
             }
         }
 
