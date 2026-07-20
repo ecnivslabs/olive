@@ -766,11 +766,10 @@ impl<M: Module> CraneliftCodegen<M> {
         ];
         for &(name, sig) in import_table {
             let always_needed = super::ASYNC_RUNTIME_SYMS.contains(&name);
-            let needed_for_c_or_traits = ((name == "__olive_alloc"
-                || name == "__olive_free_c_struct")
-                && has_c_structs)
-                || ((name == "__olive_fatptr_alloc" || name == "__olive_free_fatptr")
-                    && !self.vtables.is_empty());
+            let needed_for_c_or_traits =
+                ((name == "__olive_alloc" || name == "__olive_free_c_struct") && has_c_structs)
+                    || ((name == "__olive_fatptr_alloc" || name == "__olive_free_fatptr")
+                        && !self.vtables.is_empty());
             let needed_for_debug_dual_variant =
                 self.debug_dual_variant && DEBUG_HOOK_SYMS.contains(&name);
             if !(needed.contains(name)

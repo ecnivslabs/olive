@@ -63,6 +63,6 @@ pub mod string_method_tests;
 pub mod test_utils;
 #[cfg(test)]
 pub mod trait_object_tests;
-pub mod vectorize_reduction_tests;
 #[cfg(test)]
 pub mod type_alias_tests;
+pub mod vectorize_reduction_tests;

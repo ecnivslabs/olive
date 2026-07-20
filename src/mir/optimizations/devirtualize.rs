@@ -206,9 +206,8 @@ impl Transform for Devirtualize<'_> {
                             )
                         })
                     }
-                    StatementKind::Assign(dest, Rvalue::FatPtrData(op)) => operand_local(op)
-                        .and_then(|l| live_root(&l))
-                        .map(|root| {
+                    StatementKind::Assign(dest, Rvalue::FatPtrData(op)) => {
+                        operand_local(op).and_then(|l| live_root(&l)).map(|root| {
                             let data = roots[&root].data.clone();
                             let src = operand_local(&data).unwrap();
                             // The raw struct pointer must dispatch by its
@@ -217,7 +216,8 @@ impl Transform for Devirtualize<'_> {
                                 retypes.push((*dest, src));
                             }
                             StatementKind::Assign(*dest, Rvalue::Use(Operand::Copy(src)))
-                        }),
+                        })
+                    }
                     StatementKind::Assign(dest, Rvalue::Aggregate(AggregateKind::FatPtr, _))
                         if roots.contains_key(dest) =>
                     {
