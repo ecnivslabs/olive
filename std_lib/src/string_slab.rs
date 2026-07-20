@@ -87,13 +87,13 @@ pub fn str_alloc(bytes: &[u8]) -> i64 {
 /// A literal (not in any chunk) and an already free slot are no-ops.
 pub fn str_free(ptr: i64) {
     let body = ptr & !1;
-    if body == 0 || !ptr_in_slab_span(body) {
+    if body == 0 {
         return;
     }
-    if crate::slab::chunk_is_global(body as usize) {
-        crate::slab::with_escape_arena(|| str_free_local(ptr));
-    } else {
-        str_free_local(ptr);
+    match crate::slab::slab_membership(body) {
+        None => {}
+        Some(true) => crate::slab::with_escape_arena(|| str_free_local(ptr)),
+        Some(false) => str_free_local(ptr),
     }
 }
 
