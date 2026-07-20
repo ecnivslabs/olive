@@ -22,6 +22,27 @@ pub extern "C" fn olive_str_len(s: i64) -> i64 {
     olive_str_to_bytes(s).len() as i64
 }
 
+/// Interned single-byte strings, NUL-terminated like any literal. Indexing
+/// and per-char iteration return these instead of allocating, and the free
+/// path already ignores pointers outside the slab span.
+#[repr(align(2))]
+struct CharTable([[u8; 2]; 256]);
+
+// Even alignment keeps every entry clear of the heap-str tag bit.
+static CHAR_STRS: CharTable = {
+    let mut t = [[0u8; 2]; 256];
+    let mut i = 0;
+    while i < 256 {
+        t[i][0] = i as u8;
+        i += 1;
+    }
+    CharTable(t)
+};
+
+pub(crate) fn char_str(byte: u8) -> i64 {
+    CHAR_STRS.0[byte as usize].as_ptr() as i64
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_get(s: i64, i: i64) -> i64 {
     if s == 0 {
@@ -32,7 +53,7 @@ pub extern "C" fn olive_str_get(s: i64, i: i64) -> i64 {
     if byte == 0 {
         return 0;
     }
-    crate::string_slab::str_alloc(&[byte])
+    char_str(byte)
 }
 
 #[unsafe(no_mangle)]
@@ -40,10 +61,9 @@ pub extern "C" fn olive_str_char(s: i64, i: i64) -> i64 {
     olive_str_get(s, i)
 }
 
-/// Bounds-checked single-character index. Scans at most to `i`, stopping at the
-/// terminator so it never reads past the allocation, and panics with the source
-/// location on a null receiver or an out-of-range index. One pass, no separate
-/// `strlen`.
+/// Bounds-checked single-character index. Length comes from the slab header
+/// (or strlen for literals), so the read is O(1); panics with the source
+/// location on a null receiver or an out-of-range index.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_get_checked(s: i64, i: i64, loc: i64) -> i64 {
     if s == 0 {
@@ -51,22 +71,12 @@ pub extern "C" fn olive_str_get_checked(s: i64, i: i64, loc: i64) -> i64 {
     }
     let len = olive_str_len(s);
     let idx = if i < 0 { i + len } else { i };
-    if idx < 0 {
-        crate::panic::olive_bounds_fail(idx, len, loc);
+    if idx < 0 || idx >= len {
+        crate::panic::olive_bounds_fail(i, len, loc);
     }
     let ptr = (s & !1) as *const u8;
-    let target = idx as usize;
-    let mut j = 0usize;
-    loop {
-        let byte = unsafe { *ptr.add(j) };
-        if byte == 0 {
-            crate::panic::olive_bounds_fail(i, j as i64, loc);
-        }
-        if j == target {
-            return crate::string_slab::str_alloc(&[byte]);
-        }
-        j += 1;
-    }
+    let byte = unsafe { *ptr.add(idx as usize) };
+    char_str(byte)
 }
 
 #[unsafe(no_mangle)]
