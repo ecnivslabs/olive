@@ -201,6 +201,69 @@ pub(super) fn handle_set_expression(state: &ServerState, request_seq: i64, args:
     }
 }
 
+/// `completions` request: reuses `eval::evaluate`'s path resolver for the
+/// base expression before a trailing `.`, then lists that value's children
+/// the same way `variables` would -- no separate type-resolution path.
+pub(super) fn handle_completions(state: &ServerState, request_seq: i64, args: &Value) {
+    let Some(session) = &state.session else {
+        send_error(state, request_seq, "completions", "no active session");
+        return;
+    };
+    let Some(text) = args.get("text").and_then(Value::as_str) else {
+        send_error(state, request_seq, "completions", "missing text");
+        return;
+    };
+    let frame_idx = args.get("frameId").and_then(Value::as_i64).unwrap_or(0) as usize;
+    let chars: Vec<char> = text.chars().collect();
+    let column = args
+        .get("column")
+        .and_then(Value::as_i64)
+        .unwrap_or(chars.len() as i64 + 1);
+    let cursor = (column - 1).clamp(0, chars.len() as i64) as usize;
+
+    let mut prefix_start = cursor;
+    while prefix_start > 0 && eval::is_ident_char(chars[prefix_start - 1]) {
+        prefix_start -= 1;
+    }
+    let prefix: String = chars[prefix_start..cursor].iter().collect();
+
+    let items: Vec<(String, &str)> = if prefix_start > 0 && chars[prefix_start - 1] == '.' {
+        let base_expr: String = chars[..prefix_start - 1].iter().collect();
+        match eval::evaluate(session, frame_idx, &base_expr) {
+            Ok(v) if v.reference != 0 => values::children(session, v.reference)
+                .into_iter()
+                .map(|c| (c.name, "field"))
+                .collect(),
+            _ => Vec::new(),
+        }
+    } else {
+        values::frame_variables(session, frame_idx)
+            .into_iter()
+            .map(|v| (v.name, "variable"))
+            .collect()
+    };
+
+    let targets: Vec<Value> = items
+        .into_iter()
+        .filter(|(name, _)| name.starts_with(&prefix))
+        .map(|(name, kind)| {
+            json!({
+                "label": name,
+                "type": kind,
+                "start": prefix_start,
+                "length": prefix.chars().count(),
+            })
+        })
+        .collect();
+
+    send_response(
+        state,
+        request_seq,
+        "completions",
+        json!({"targets": targets}),
+    );
+}
+
 pub(super) fn handle_exception_info(state: &ServerState, request_seq: i64) {
     let Some(session) = &state.session else {
         send_error(state, request_seq, "exceptionInfo", "no active session");

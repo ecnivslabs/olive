@@ -625,7 +625,11 @@ mod tests {
     fn heap_str_copy_is_independent() {
         let a = s("hello");
         let b = olive_copy_typed(a, desc(&[D_STR]));
-        assert_ne!(crate::string_slab::str_body(a), crate::string_slab::str_body(b), "distinct heap slots");
+        assert_ne!(
+            crate::string_slab::str_body(a),
+            crate::string_slab::str_body(b),
+            "distinct heap slots"
+        );
         crate::olive_free_str(a);
         assert_eq!(read(b), "hello", "copy survives source free");
         crate::olive_free_str(b);
@@ -687,7 +691,11 @@ mod tests {
         let cp = olive_copy_typed(src, d);
         let items = crate::set::olive_set_items(cp);
         let copied = olive_list_get(items, 0);
-        assert_ne!(crate::string_slab::str_body(copied), crate::string_slab::str_body(elem), "element is a fresh heap slot");
+        assert_ne!(
+            crate::string_slab::str_body(copied),
+            crate::string_slab::str_body(elem),
+            "element is a fresh heap slot"
+        );
         olive_free_typed(src, d);
         assert_eq!(read(copied), "a", "copied element survives source free");
         olive_free_typed(cp, d);

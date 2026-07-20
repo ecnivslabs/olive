@@ -62,9 +62,10 @@ static FORCE_CHECK: AtomicBool = AtomicBool::new(false);
 /// session that never touches `setExceptionBreakpoints` keeps today's
 /// stop-on-fault behavior.
 static STOP_ON_FAULT: AtomicBool = AtomicBool::new(true);
-/// True when any data watchpoint is active. Always false until the watch
-/// table lands; reserves the checkpoint so `debug_store`
-/// skips its body when no watchers exist.
+/// True when any data breakpoint is active, so `debug_store` skips the
+/// tiered watch-key check entirely on the overwhelmingly common case of no
+/// watchers. Deliberately NOT consulted by `debug_should_check_stmt` --
+/// see that function's doc comment for why forcing it there was reverted.
 static WATCH_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// Fast-path breakpoint set, synced with `SessionSnapshot::breakpoints`.
 /// Read directly by `debug_stmt` to avoid the `session_state()` indirection
@@ -75,6 +76,15 @@ static FAST_BP_SET: OnceLock<RwLock<FxHashSet<i64>>> = OnceLock::new();
 /// relaxed atomic load instead of acquiring a RwLock. -1 = no breakpoints,
 /// i64::MAX = multiple breakpoints (fall back to FAST_BP_SET).
 static SINGLE_BP_LINE: AtomicI64 = AtomicI64::new(-1);
+/// Same three-tier shape as `BP_COUNT`/`SINGLE_BP_LINE`/`FAST_BP_SET`,
+/// keyed by `pack_watch(fn_id, cell_idx)` instead of a packed line. Without
+/// this, every `debug_store` in the program would pay a `session_shared()`
+/// lock + `Arc` clone + frame clone + watch-table mutex on every write,
+/// whether or not it's the cell actually being watched -- measured 1.6x
+/// slower on a hot loop with an unrelated watchpoint set elsewhere.
+static WATCH_COUNT: AtomicUsize = AtomicUsize::new(0);
+static SINGLE_WATCH_KEY: AtomicI64 = AtomicI64::new(-1);
+static FAST_WATCH_SET: OnceLock<RwLock<FxHashSet<i64>>> = OnceLock::new();
 
 fn session_state() -> &'static RwLock<Option<SessionSnapshot>> {
     static STATE: OnceLock<RwLock<Option<SessionSnapshot>>> = OnceLock::new();
@@ -94,7 +104,13 @@ pub(crate) fn install_session(shared: Arc<EngineShared>) -> Result<(), ()> {
     set_stop_on_fault(true);
     WATCH_ACTIVE.store(false, Ordering::Relaxed);
     SINGLE_BP_LINE.store(-1, Ordering::Relaxed);
+    SINGLE_WATCH_KEY.store(-1, Ordering::Relaxed);
+    WATCH_COUNT.store(0, Ordering::Relaxed);
     *FAST_BP_SET
+        .get_or_init(|| RwLock::new(FxHashSet::default()))
+        .write()
+        .unwrap() = FxHashSet::default();
+    *FAST_WATCH_SET
         .get_or_init(|| RwLock::new(FxHashSet::default()))
         .write()
         .unwrap() = FxHashSet::default();
@@ -111,8 +127,13 @@ pub(crate) fn clear_session() {
     set_force_check(false);
     WATCH_ACTIVE.store(false, Ordering::Relaxed);
     SINGLE_BP_LINE.store(-1, Ordering::Relaxed);
+    SINGLE_WATCH_KEY.store(-1, Ordering::Relaxed);
+    WATCH_COUNT.store(0, Ordering::Relaxed);
     if let Some(bp) = FAST_BP_SET.get() {
         *bp.write().unwrap() = FxHashSet::default();
+    }
+    if let Some(w) = FAST_WATCH_SET.get() {
+        *w.write().unwrap() = FxHashSet::default();
     }
 }
 
@@ -154,6 +175,41 @@ fn fast_bp_contains(packed: i64) -> bool {
         .unwrap_or(false)
 }
 
+/// `cell_idx` is realistically always small (a function's own local count),
+/// so it fits the low 32 bits the same way `pack`'s line number does.
+pub(crate) fn pack_watch(fn_id: u32, cell_idx: usize) -> i64 {
+    ((fn_id as i64) << 32) | (cell_idx as i64)
+}
+
+/// Same three-tier sync `replace_breakpoints` does for `FAST_BP_SET`,
+/// applied to the watch set. Also drives `WATCH_ACTIVE`, so there's a
+/// single call site (`EngineShared::set_data_breakpoints`) for the whole
+/// active/count/fast-path state instead of a separate toggle.
+pub(crate) fn replace_watchpoints(keys: FxHashSet<i64>) {
+    WATCH_ACTIVE.store(!keys.is_empty(), Ordering::Relaxed);
+    WATCH_COUNT.store(keys.len(), Ordering::Relaxed);
+    match keys.len() {
+        0 => SINGLE_WATCH_KEY.store(-1, Ordering::Relaxed),
+        1 => {
+            if let Some(&key) = keys.iter().next() {
+                SINGLE_WATCH_KEY.store(key, Ordering::Relaxed);
+            }
+        }
+        _ => SINGLE_WATCH_KEY.store(i64::MAX, Ordering::Relaxed),
+    }
+    *FAST_WATCH_SET
+        .get_or_init(|| RwLock::new(FxHashSet::default()))
+        .write()
+        .unwrap() = keys;
+}
+
+fn fast_watch_contains(key: i64) -> bool {
+    FAST_WATCH_SET
+        .get()
+        .map(|set| set.read().unwrap().contains(&key))
+        .unwrap_or(false)
+}
+
 /// Read-only access to the breakpoint set. Used only by `stop_reason_for`.
 pub(crate) fn contains_breakpoint(packed: i64) -> bool {
     session_state()
@@ -190,45 +246,55 @@ pub(crate) fn disable_debuggee() {
 /// 1. No breakpoints + not stepping → return 0 (2 relaxed atomics, no lock)
 /// 2. Singe breakpoint → compare `SINGLE_BP_LINE` directly (1 atomic load)
 /// 3. Multi breakpoint → fall back to `FAST_BP_SET` RwLock
+///
+/// Deliberately NOT forced by `WATCH_ACTIVE`: `mir::debug_hooks` pairs every
+/// `debug_stmt` call with an unconditional reload of *every* named local
+/// from the frame mirror (`make_stmt_conditional`'s doc comment), built and
+/// tested only for the rare, deliberate frequency of an actual breakpoint
+/// or step hit. Forcing it on every statement so a data-breakpoint-only
+/// stop's line stays current was tried and reverted: it reassigns a
+/// reassigned/moved local (a fresh `let` inside a loop, a container append)
+/// from a stale mirror value outside the ownership system's own writes,
+/// and reliably corrupts a real program (`matrix_mult` benchmark, E0707
+/// "stale reference" within a few hundred iterations). A data-breakpoint
+/// stop's reported line is therefore only as current as the last real
+/// `debug_stmt` hit in that function -- accurate when a line breakpoint or
+/// step is active alongside the watch, otherwise it lags to that point.
 pub extern "C" fn debug_should_check_stmt(packed: i64) -> i64 {
     if FORCE_CHECK.load(Ordering::Relaxed) {
         return 1;
     }
-    let count = BP_COUNT.load(Ordering::Relaxed);
-    if count == 0 {
-        return 0;
+    if bp_fast_match(packed) { 1 } else { 0 }
+}
+
+/// The same lock-free tiered breakpoint check `debug_should_check_stmt`
+/// uses, factored out so `debug_stmt`'s own gate (below) can reuse it
+/// without a second copy of the three-tier logic.
+fn bp_fast_match(packed: i64) -> bool {
+    match BP_COUNT.load(Ordering::Relaxed) {
+        0 => false,
+        1 => SINGLE_BP_LINE.load(Ordering::Relaxed) == packed,
+        _ => fast_bp_contains(packed),
     }
-    // Single-breakpoint fast path: compare against the cached line.
-    if count == 1 {
-        let single = SINGLE_BP_LINE.load(Ordering::Relaxed);
-        // single == -1 is the clear-session sentinel; safe to compare.
-        return if single == packed { 1 } else { 0 };
-    }
-    // Multiple breakpoints: fall back to the hash set.
-    if fast_bp_contains(packed) {
-        return 1;
-    }
-    0
 }
 
 /// Called from JIT code when the inline check above determines this
 /// statement actually needs a stop. Only called for lines that are either
-/// a breakpoint or being stepped through, so it goes directly to the
-/// slow path without re-checking.
+/// a breakpoint or being stepped through, so it goes directly to the full
+/// check without re-checking.
 pub extern "C" fn debug_stmt(packed: i64) {
     if !DEBUGGEE_ENABLED.get() {
         return;
     }
-    stmt_slow_path(packed);
-}
-
-fn stmt_slow_path(packed: i64) {
-    // Update line without cloning the frame yet.
     FRAMES.with_borrow_mut(|frames| {
         if let Some(top) = frames.last_mut() {
             top.line = packed;
         }
     });
+    stmt_full_check(packed);
+}
+
+fn stmt_full_check(packed: i64) {
     let depth = FRAMES.with_borrow(|frames| frames.len());
 
     // Check breakpoint membership before cloning the frame.
@@ -309,23 +375,60 @@ pub extern "C" fn debug_enter(fn_id: i64) {
     });
 }
 
-/// Fast path that reserves the WATCH_ACTIVE check point. The watch
-/// table body is empty until data breakpoints land; the frame write always
-/// runs since variable inspection needs current cell values.
+/// The frame write always runs, since variable inspection needs current
+/// cell values regardless of whether anything is watching this cell. The
+/// tiered key check below only runs after the write lands, so a data
+/// breakpoint's condition sees the new value, not the one being overwritten.
 pub extern "C" fn debug_store(cell_idx: i64, value: i64) {
     if !DEBUGGEE_ENABLED.get() {
         return;
     }
-    if WATCH_ACTIVE.load(Ordering::Relaxed) {
-        // Watch table lookup goes here once data breakpoints exist.
-    }
-    FRAMES.with_borrow_mut(|frames| {
-        if let Some(top) = frames.last_mut()
-            && let Some(slot) = top.cells.get_mut(cell_idx as usize)
-        {
+    let fn_id = FRAMES.with_borrow_mut(|frames| {
+        let top = frames.last_mut()?;
+        if let Some(slot) = top.cells.get_mut(cell_idx as usize) {
             *slot = value;
         }
+        Some(top.fn_id)
     });
+    let Some(fn_id) = fn_id else {
+        return;
+    };
+    if WATCH_ACTIVE.load(Ordering::Relaxed) && watch_matches(fn_id, cell_idx) {
+        watch_slow_path(cell_idx as usize);
+    }
+}
+
+/// Same three-tier shape as `debug_should_check_stmt`: a program with a
+/// watchpoint set somewhere else entirely must not pay more than a couple
+/// of relaxed loads on every other cell's write.
+fn watch_matches(fn_id: u32, cell_idx: i64) -> bool {
+    let key = pack_watch(fn_id, cell_idx as usize);
+    match WATCH_COUNT.load(Ordering::Relaxed) {
+        0 => false,
+        1 => SINGLE_WATCH_KEY.load(Ordering::Relaxed) == key,
+        _ => fast_watch_contains(key),
+    }
+}
+
+/// Mirrors `stmt_slow_path`'s shape, keyed by `(fn_id, cell_idx)` instead of
+/// a packed line -- a write can trigger a stop between statement
+/// boundaries, which `debug_stmt` never sees. Only reached once
+/// `watch_matches` has already confirmed this cell is actually watched, so
+/// the `session_shared()`/frame-clone cost here is paid only on a real hit.
+fn watch_slow_path(cell_idx: usize) {
+    let Some(shared) = session_shared() else {
+        return;
+    };
+    let top: Option<Frame> = FRAMES.with_borrow(|frames| frames.last().cloned());
+    let Some(top) = top else {
+        return;
+    };
+    let Some(reason) = shared.stop_reason_for_watch(top.fn_id, cell_idx, &top) else {
+        return;
+    };
+    let snapshot = FRAMES.with_borrow(|frames| frames.clone());
+    shared.park(reason, snapshot);
+    apply_pending_patches(&shared);
 }
 
 pub extern "C" fn debug_exit() {

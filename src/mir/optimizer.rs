@@ -11,9 +11,9 @@ use crate::mir::optimizations::{
     devirtualize_closure::DevirtualizeClosures, drop_hooks, gencheck::GenCheckInsertion,
     gil_fusion::GilFusion, gvn::GlobalValueNumbering, inliner::Inliner, licm::Licm,
     list_append::ListAppend, loop_unroll::LoopUnroll, move_elision::MoveElision,
-    ownership::OwnershipInference,
-    peephole::PeepholeOptimize, scalarize::ScalarizeStructs, simplify_cfg::SimplifyCfg,
-    strength_reduction::StrengthReduction, tail_call::TailCallOpt, vectorize::LoopVectorizer,
+    ownership::OwnershipInference, peephole::PeepholeOptimize, scalarize::ScalarizeStructs,
+    simplify_cfg::SimplifyCfg, strength_reduction::StrengthReduction, tail_call::TailCallOpt,
+    vectorize::LoopVectorizer,
 };
 
 pub struct Optimizer {

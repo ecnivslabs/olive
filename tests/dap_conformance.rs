@@ -158,6 +158,7 @@ fn handshake(session: &mut Session) {
     assert_eq!(body["supportsBreakpointLocationsRequest"], true);
     assert_eq!(body["supportsTerminateRequest"], true);
     assert_eq!(body["supportsRestartRequest"], true);
+    assert_eq!(body["supportsCompletionsRequest"], true);
 }
 
 fn launch_program(session: &mut Session, path: &Path, stop_on_entry: bool) {
@@ -326,6 +327,71 @@ fn evaluate_resolves_a_path_expression() {
     let seq = session.request("evaluate", json!({"expression": "xs[1]", "frameId": 0}));
     let resp = session.read_response(seq);
     assert_eq!(resp["body"]["result"], "2");
+
+    disconnect(&mut session);
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn completions_lists_local_names_matching_prefix() {
+    let mut session = Session::start();
+    handshake(&mut session);
+
+    let src =
+        "fn main():\n    let xs = [1, 2, 3]\n    let x_total = 6\n    let y = 9\n    print(y)\n";
+    let path = write_program(src, "completions_local");
+    launch_program(&mut session, &path, false);
+    set_breakpoints(&mut session, &path, &[5]);
+    configuration_done(&mut session);
+    session.read_event("stopped");
+
+    let seq = session.request(
+        "completions",
+        json!({"frameId": 0, "text": "x", "column": 2}),
+    );
+    let resp = session.read_response(seq);
+    let labels: Vec<&str> = resp["body"]["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["label"].as_str().unwrap())
+        .collect();
+    assert!(labels.contains(&"xs"), "targets: {labels:?}");
+    assert!(labels.contains(&"x_total"), "targets: {labels:?}");
+    assert!(!labels.contains(&"y"), "targets: {labels:?}");
+
+    disconnect(&mut session);
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn completions_lists_struct_fields_after_dot() {
+    let mut session = Session::start();
+    handshake(&mut session);
+
+    let src = "struct Point:\n    x: int\n    y: int\n    fn __init__(self, x: int, y: int):\n        self.x = x\n        self.y = y\n\nfn main():\n    let p = Point(1, 2)\n    print(p)\n";
+    let path = write_program(src, "completions_field");
+    launch_program(&mut session, &path, false);
+    set_breakpoints(&mut session, &path, &[9]);
+    configuration_done(&mut session);
+    session.read_event("stopped");
+
+    let seq = session.request(
+        "completions",
+        json!({"frameId": 0, "text": "p.", "column": 3}),
+    );
+    let resp = session.read_response(seq);
+    let targets = resp["body"]["targets"].as_array().unwrap();
+    let labels: Vec<&str> = targets
+        .iter()
+        .map(|t| t["label"].as_str().unwrap())
+        .collect();
+    assert!(labels.contains(&"x"), "targets: {labels:?}");
+    assert!(labels.contains(&"y"), "targets: {labels:?}");
+    let x = targets.iter().find(|t| t["label"] == "x").unwrap();
+    assert_eq!(x["type"], "field");
+    assert_eq!(x["start"], 2);
+    assert_eq!(x["length"], 0);
 
     disconnect(&mut session);
     std::fs::remove_file(&path).ok();

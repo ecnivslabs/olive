@@ -6,7 +6,7 @@
 
 mod inspect;
 
-use super::engine::{BpSpec, DebugEvent, FrameSnapshot, StopReason};
+use super::engine::{BpSpec, DebugEvent, FrameSnapshot, StopReason, WatchSpec};
 use super::launch::{self, DebugSession};
 use super::protocol::{Seq, error_response, event, read_message, response, write_message};
 use super::redirect::{FdFile, Redirect};
@@ -118,6 +118,8 @@ fn handle_message(state: &mut ServerState, msg: Value) -> bool {
                     "supportsRestartRequest": true,
                     "supportsSetVariable": true,
                     "supportsSetExpression": true,
+                    "supportsCompletionsRequest": true,
+                    "supportsDataBreakpoints": true,
                     "exceptionBreakpointFilters": [
                         {"filter": "faults", "label": "Runtime Faults", "default": true}
                     ],
@@ -127,6 +129,8 @@ fn handle_message(state: &mut ServerState, msg: Value) -> bool {
         "launch" => handle_launch(state, request_seq, command, &args),
         "restart" => handle_restart(state, request_seq, &args),
         "setBreakpoints" => handle_set_breakpoints(state, request_seq, &args),
+        "dataBreakpointInfo" => handle_data_breakpoint_info(state, request_seq, &args),
+        "setDataBreakpoints" => handle_set_data_breakpoints(state, request_seq, &args),
         "breakpointLocations" => handle_breakpoint_locations(state, request_seq, &args),
         "configurationDone" => {
             send_response(state, request_seq, command, json!({}));
@@ -148,6 +152,7 @@ fn handle_message(state: &mut ServerState, msg: Value) -> bool {
         "evaluate" => inspect::handle_evaluate(state, request_seq, &args),
         "setVariable" => inspect::handle_set_variable(state, request_seq, &args),
         "setExpression" => inspect::handle_set_expression(state, request_seq, &args),
+        "completions" => inspect::handle_completions(state, request_seq, &args),
         "exceptionInfo" => inspect::handle_exception_info(state, request_seq),
         "setExceptionBreakpoints" => {
             let stop_on_faults = args
@@ -162,7 +167,12 @@ fn handle_message(state: &mut ServerState, msg: Value) -> bool {
         }
         "continue" => {
             if let Some(session) = &state.session {
-                session.cont();
+                // `continued` has to be on the wire before `cont()` can wake
+                // the debuggee: a store-granularity stop (a data breakpoint
+                // on a tight loop, in particular) can re-park within
+                // microseconds, and `resume()`'s own `notify_all()` races a
+                // send on this thread that hasn't happened yet -- sending
+                // first makes the ordering deterministic, not probabilistic.
                 send_response(
                     state,
                     request_seq,
@@ -174,6 +184,7 @@ fn handle_message(state: &mut ServerState, msg: Value) -> bool {
                     "continued",
                     json!({"threadId": 1, "allThreadsContinued": true}),
                 );
+                session.cont();
             } else {
                 send_error(state, request_seq, command, "no active session");
             }
@@ -217,15 +228,17 @@ fn handle_message(state: &mut ServerState, msg: Value) -> bool {
     true
 }
 
+/// Same ordering constraint as the `continue` handler: `continued` must be
+/// sent before `run` can wake the debuggee, not after.
 fn step(state: &ServerState, request_seq: i64, command: &str, run: impl FnOnce(&DebugSession)) {
     if let Some(session) = &state.session {
-        run(session);
         send_response(state, request_seq, command, json!({}));
         send_event(
             state,
             "continued",
             json!({"threadId": 1, "allThreadsContinued": true}),
         );
+        run(session);
     } else {
         send_error(state, request_seq, command, "no active session");
     }
@@ -387,6 +400,109 @@ fn bp_spec(bp: &Value) -> Option<BpSpec> {
     })
 }
 
+/// `dataBreakpointInfo` only resolves a top-level named local of a frame
+/// (a bare `name`, no `variablesReference`) -- `debug_store` only ever
+/// fires for a named cell's own slot, so a container child genuinely has
+/// no watchable target; spec allows `dataId: null` for exactly this case.
+fn handle_data_breakpoint_info(state: &ServerState, request_seq: i64, args: &Value) {
+    let Some(session) = &state.session else {
+        send_error(
+            state,
+            request_seq,
+            "dataBreakpointInfo",
+            "no active session",
+        );
+        return;
+    };
+    let Some(name) = args.get("name").and_then(Value::as_str) else {
+        send_error(state, request_seq, "dataBreakpointInfo", "missing name");
+        return;
+    };
+    if args
+        .get("variablesReference")
+        .and_then(Value::as_i64)
+        .is_some()
+    {
+        send_response(
+            state,
+            request_seq,
+            "dataBreakpointInfo",
+            json!({
+                "dataId": Value::Null,
+                "description": "only a top-level local can be watched, not a container's field or element",
+            }),
+        );
+        return;
+    }
+    let frame_idx = args.get("frameId").and_then(Value::as_i64).unwrap_or(0) as usize;
+    match session.data_id_for(frame_idx, name) {
+        Some(data_id) => send_response(
+            state,
+            request_seq,
+            "dataBreakpointInfo",
+            json!({
+                "dataId": data_id,
+                "description": format!("{name} (write)"),
+                "accessTypes": ["write"],
+            }),
+        ),
+        None => send_response(
+            state,
+            request_seq,
+            "dataBreakpointInfo",
+            json!({"dataId": Value::Null, "description": format!("no such variable: {name}")}),
+        ),
+    }
+}
+
+fn handle_set_data_breakpoints(state: &ServerState, request_seq: i64, args: &Value) {
+    let Some(session) = &state.session else {
+        send_error(
+            state,
+            request_seq,
+            "setDataBreakpoints",
+            "no active session",
+        );
+        return;
+    };
+    let specs: Vec<WatchSpec> = args
+        .get("breakpoints")
+        .and_then(Value::as_array)
+        .map(|bps| bps.iter().filter_map(watch_spec).collect())
+        .unwrap_or_default();
+    let results = session.set_data_breakpoints(&specs);
+    let body: Vec<Value> = results
+        .into_iter()
+        .map(|(verified, message)| {
+            let mut v = json!({"verified": verified});
+            if let Some(m) = message {
+                v["message"] = json!(m);
+            }
+            v
+        })
+        .collect();
+    send_response(
+        state,
+        request_seq,
+        "setDataBreakpoints",
+        json!({"breakpoints": body}),
+    );
+}
+
+fn watch_spec(bp: &Value) -> Option<WatchSpec> {
+    Some(WatchSpec {
+        data_id: bp.get("dataId").and_then(Value::as_str)?.to_string(),
+        condition: bp
+            .get("condition")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        hit_condition: bp
+            .get("hitCondition")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
+}
+
 fn handle_breakpoint_locations(state: &ServerState, request_seq: i64, args: &Value) {
     let Some(session) = &state.session else {
         send_error(
@@ -475,6 +591,7 @@ fn stopped_body(reason: &StopReason) -> Value {
         StopReason::Breakpoint => ("breakpoint", None),
         StopReason::Step => ("step", None),
         StopReason::Pause => ("pause", None),
+        StopReason::DataBreakpoint => ("data breakpoint", None),
         StopReason::Fault { message, .. } => ("exception", Some(message.clone())),
     };
     let mut body = json!({"reason": reason_str, "threadId": 1, "allThreadsStopped": true});
