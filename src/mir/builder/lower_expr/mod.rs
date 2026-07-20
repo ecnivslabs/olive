@@ -924,6 +924,14 @@ impl<'a> MirBuilder<'a> {
                 return op;
             }
 
+            // Olive strings are immutable, so `str(s)` on a string is the
+            // identity. Codegen would otherwise map it to `__olive_copy` and
+            // allocate. Yielding the operand produces an alias, a shape
+            // ownership already handles from plain `let a = b`.
+            if name == "str" && arg_ops.len() == 1 && arg_tys.first() == Some(&Type::Str) {
+                return arg_ops[0].clone();
+            }
+
             // `str(x)` on a `u64` must name `__olive_str_u64` here, at
             // build time: codegen's generic dispatch re-derives the arg's
             // type from the MIR operand, and a release-only constant fold
