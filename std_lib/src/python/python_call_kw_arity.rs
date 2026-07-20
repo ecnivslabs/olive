@@ -82,7 +82,7 @@ macro_rules! define_kw_arity_call {
                     return res;
                 }
                 with_gil(|| {
-                    let kwnames = kwnames_tuple((kwnames_key & !1) as *const c_char);
+                    let kwnames = kwnames_tuple(crate::string_slab::str_body(kwnames_key) as *const c_char);
                     if kwnames.is_null() {
                         let args_list = regs_to_list(&[$($pn),*]);
                         let kwvals_list = regs_to_list(&[$($kn),*]);
@@ -139,7 +139,7 @@ macro_rules! define_kw_arity_call {
                     return res;
                 }
                 with_gil(|| {
-                    let kwnames = kwnames_tuple((kwnames_key & !1) as *const c_char);
+                    let kwnames = kwnames_tuple(crate::string_slab::str_body(kwnames_key) as *const c_char);
                     if kwnames.is_null() {
                         let args_list = regs_to_list(&[$($pn),*]);
                         let kwvals_list = regs_to_list(&[$($kn),*]);
@@ -199,7 +199,7 @@ macro_rules! define_kw_arity_method_call {
                     return res;
                 }
                 with_gil(|| {
-                    let name = interned_attr((attr & !1) as *const c_char);
+                    let name = interned_attr(crate::string_slab::str_body(attr) as *const c_char);
                     if name.is_null() {
                         let args_list = regs_to_list(&[$($pn),*]);
                         let kwvals_list = regs_to_list(&[$($kn),*]);
@@ -211,7 +211,7 @@ macro_rules! define_kw_arity_method_call {
                         free_regs_list(kwvals_list);
                         return res;
                     }
-                    let kwnames = kwnames_tuple((kwnames_key & !1) as *const c_char);
+                    let kwnames = kwnames_tuple(crate::string_slab::str_body(kwnames_key) as *const c_char);
                     if kwnames.is_null() {
                         let args_list = regs_to_list(&[$($pn),*]);
                         let kwvals_list = regs_to_list(&[$($kn),*]);
@@ -269,7 +269,7 @@ macro_rules! define_kw_arity_method_call {
                     return res;
                 }
                 with_gil(|| {
-                    let name = interned_attr((attr & !1) as *const c_char);
+                    let name = interned_attr(crate::string_slab::str_body(attr) as *const c_char);
                     if name.is_null() {
                         let args_list = regs_to_list(&[$($pn),*]);
                         let kwvals_list = regs_to_list(&[$($kn),*]);
@@ -281,7 +281,7 @@ macro_rules! define_kw_arity_method_call {
                         free_regs_list(kwvals_list);
                         return res;
                     }
-                    let kwnames = kwnames_tuple((kwnames_key & !1) as *const c_char);
+                    let kwnames = kwnames_tuple(crate::string_slab::str_body(kwnames_key) as *const c_char);
                     if kwnames.is_null() {
                         let args_list = regs_to_list(&[$($pn),*]);
                         let kwvals_list = regs_to_list(&[$($kn),*]);

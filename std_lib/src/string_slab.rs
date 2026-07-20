@@ -1,11 +1,34 @@
 //! Size-classed generational slab for heap strings. A slot's body holds the
 //! nul-terminated bytes inline, so a string pointer is the body address with
-//! the low tag bit set. Literals live in read-only data and never enter a
-//! slab, so the chunk classifier frees and marks them as no-ops.
+//! the string and heap tag bits set. Literals live in read-only data, never
+//! enter a slab, and carry only the string bit, so freeing one is a no-op.
 
-use crate::slab::{GenSlab, ptr_in_slab_span};
+use crate::slab::GenSlab;
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Marks a word as an Olive string pointer rather than a raw scalar.
+pub const STR_TAG: i64 = 1;
+
+/// Marks a string pointer as slab-allocated, so it carries a header at
+/// body-16 and frees through a slab. Stamped once by the allocator, which
+/// already knows the answer, so the hot paths read a bit instead of running
+/// a chunk-table lookup to rediscover it. Literals and foreign pointers keep
+/// this clear: codegen aligns literal data to 4 and the interned char table
+/// strides by 4, so no untagged string address can set it by accident.
+pub const STR_HEAP: i64 = 2;
+
+/// Strips the tag bits, yielding the address of the string bytes.
+#[inline]
+pub fn str_body(ptr: i64) -> i64 {
+    ptr & !(STR_TAG | STR_HEAP)
+}
+
+/// Whether `ptr` is slab-allocated (has a header, frees through a slab).
+#[inline]
+pub fn str_is_heap(ptr: i64) -> bool {
+    ptr & STR_HEAP != 0
+}
 
 /// Byte capacity class for `need` content-plus-nul bytes, one machine word min.
 #[inline]
@@ -82,7 +105,7 @@ pub fn str_alloc(bytes: &[u8]) -> i64 {
             let cap_idx = cap.trailing_zeros() as usize;
             let header_val = len | (cap_idx << 48);
             *(body as *mut usize).sub(2) = header_val;
-            body as i64 | 1
+            body as i64 | STR_TAG | STR_HEAP
         }
     })
 }
@@ -101,7 +124,7 @@ fn str_alloc_two(a: &[u8], b: &[u8]) -> i64 {
             let cap_idx = cap.trailing_zeros() as usize;
             let header_val = len | (cap_idx << 48);
             *(body as *mut usize).sub(2) = header_val;
-            body as i64 | 1
+            body as i64 | STR_TAG | STR_HEAP
         }
     })
 }
@@ -109,10 +132,12 @@ fn str_alloc_two(a: &[u8], b: &[u8]) -> i64 {
 /// Frees a tagged string pointer. O(1) — capacity read from header at body-16.
 /// A literal (not in any chunk) and an already free slot are no-ops.
 pub fn str_free(ptr: i64) {
-    let body = ptr & !1;
-    if body == 0 {
+    let body = str_body(ptr);
+    if body == 0 || !str_is_heap(ptr) {
         return;
     }
+    // Which arena the body lives in is still a lookup: only the rare global
+    // case needs it, and freeing is not on the hot path the tag bit targets.
     match crate::slab::slab_membership(body) {
         None => {}
         Some(true) => crate::slab::with_escape_arena(|| str_free_local(ptr)),
@@ -121,7 +146,7 @@ pub fn str_free(ptr: i64) {
 }
 
 fn str_free_local(ptr: i64) {
-    let body = ptr & !1;
+    let body = str_body(ptr);
     let header_val = unsafe { *(body as *const usize).sub(2) };
     let cap_idx = header_val >> 48;
     unsafe {
@@ -151,17 +176,16 @@ pub fn str_concat_inplace(l: i64, l_bytes: &[u8], r_bytes: &[u8]) -> Option<i64>
     str_concat_inplace_with(l, l_bytes, r_bytes, None)
 }
 
-/// Same as `str_concat_inplace`, but skips the chunk classification when the
-/// caller already knows whether `l` is heap-backed (e.g. `olive_str_concat`
-/// just classified it to fetch `l`'s byte slice a moment ago).
+/// Same as `str_concat_inplace`, but takes the caller's already-known
+/// heap-vs-literal answer for `l` when it has one.
 pub fn str_concat_inplace_with(
     l: i64,
     l_bytes: &[u8],
     r_bytes: &[u8],
     known_heap: Option<bool>,
 ) -> Option<i64> {
-    let body = l & !1;
-    if body == 0 || !known_heap.unwrap_or_else(|| ptr_in_slab_span(body)) {
+    let body = str_body(l);
+    if body == 0 || !known_heap.unwrap_or_else(|| str_is_heap(l)) {
         return None;
     }
     let l_len = l_bytes.len();
@@ -196,8 +220,8 @@ pub fn str_concat_inplace_with(
 /// sentinel; `olive_str_gen_stale` reads that back as "never stale".
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_gen_of(ptr: i64) -> i64 {
-    let body = ptr & !1;
-    if body == 0 || !ptr_in_slab_span(body) {
+    let body = str_body(ptr);
+    if body == 0 || !str_is_heap(ptr) {
         return 0;
     }
     unsafe { (*((body - 8) as *const AtomicU64)).load(Ordering::Relaxed) as i64 }
@@ -208,8 +232,8 @@ pub extern "C" fn olive_str_gen_of(ptr: i64) -> i64 {
 /// is stale once its generation moved (ignoring the shared bit) or its slot died.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_gen_stale(ptr: i64, generation: i64) -> i64 {
-    let body = ptr & !1;
-    if body == 0 || generation == 0 || !ptr_in_slab_span(body) {
+    let body = str_body(ptr);
+    if body == 0 || generation == 0 || !str_is_heap(ptr) {
         return 0;
     }
     let cur = unsafe { (*((body - 8) as *const AtomicU64)).load(Ordering::Relaxed) as i64 };
@@ -240,7 +264,7 @@ mod tests {
         let a = str_alloc(b"abcd");
         str_free(a);
         let b = str_alloc(b"wxyz");
-        assert_eq!(a & !1, b & !1, "same class slot recycles");
+        assert_eq!(str_body(a), str_body(b), "same class slot recycles");
         str_free(b);
     }
 
@@ -282,7 +306,7 @@ mod tests {
         let g = olive_str_gen_of(a);
         str_free(a);
         let b = str_alloc(b"bbbb");
-        assert_eq!(a & !1, b & !1, "same slot recycles");
+        assert_eq!(str_body(a), str_body(b), "same slot recycles");
         assert_eq!(olive_str_gen_stale(a, g), 1);
         str_free(b);
     }
@@ -326,7 +350,7 @@ mod tests {
         assert_eq!(a, res, "must mutate in-place when capacity fits");
         assert_eq!(crate::string::olive_str_from_ptr(res).len(), 6);
         unsafe {
-            let s = std::ffi::CStr::from_ptr((res & !1) as *const std::ffi::c_char).to_bytes();
+            let s = std::ffi::CStr::from_ptr(crate::string_slab::str_body(res) as *const std::ffi::c_char).to_bytes();
             assert_eq!(s, b"abcdef");
         }
         str_free(res);
@@ -339,7 +363,7 @@ mod tests {
         assert_ne!(a, res, "must reallocate when new capacity exceeds old");
         assert_eq!(crate::string::olive_str_from_ptr(res).len(), 9);
         unsafe {
-            let s = std::ffi::CStr::from_ptr((res & !1) as *const std::ffi::c_char).to_bytes();
+            let s = std::ffi::CStr::from_ptr(crate::string_slab::str_body(res) as *const std::ffi::c_char).to_bytes();
             assert_eq!(s, b"abcdefghi");
         }
         str_free(res);
@@ -374,14 +398,14 @@ mod tests {
         str_free(warm);
 
         let a = crate::slab::with_escape_arena(|| str_alloc(b"x"));
-        assert!(crate::slab::chunk_is_global((a & !1) as usize));
+        assert!(crate::slab::chunk_is_global(crate::string_slab::str_body(a) as usize));
 
         let tail = vec![b'y'; 64];
         let grown = str_concat_inplace(a, b"x", &tail).expect("capacity must grow");
         assert_ne!(a, grown);
 
         let probe = str_alloc(b"z");
-        assert_ne!(probe & !1, a & !1, "local alloc must not recycle a global-arena slot");
+        assert_ne!(str_body(probe), str_body(a), "local alloc must not recycle a global-arena slot");
 
         str_free(grown);
         str_free(probe);

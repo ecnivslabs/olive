@@ -143,7 +143,7 @@ pub extern "C" fn olive_py_call_kw_v(
         with_gil(|| {
             let (pos_ptr, pos_len) = stable_vec(args_list);
             let (kw_ptr, kw_len) = stable_vec(kwvals_list);
-            let kwnames = kwnames_tuple((kwnames_key & !1) as *const c_char);
+            let kwnames = kwnames_tuple(crate::string_slab::str_body(kwnames_key) as *const c_char);
             if kwnames.is_null() {
                 return legacy_call_kw(
                     unwrapped_func,
@@ -206,7 +206,7 @@ pub extern "C" fn olive_py_call_kw_v_safe(
         with_gil(|| {
             let (pos_ptr, pos_len) = stable_vec(args_list);
             let (kw_ptr, kw_len) = stable_vec(kwvals_list);
-            let kwnames = kwnames_tuple((kwnames_key & !1) as *const c_char);
+            let kwnames = kwnames_tuple(crate::string_slab::str_body(kwnames_key) as *const c_char);
             if kwnames.is_null() {
                 return legacy_call_kw_safe(
                     unwrapped_func,
@@ -272,7 +272,7 @@ pub extern "C" fn olive_py_call_method_kw_v(
             );
         }
         with_gil(|| {
-            let name = interned_attr((attr & !1) as *const c_char);
+            let name = interned_attr(crate::string_slab::str_body(attr) as *const c_char);
             if name.is_null() {
                 return legacy_call_method_kw(
                     unwrapped_obj,
@@ -286,7 +286,7 @@ pub extern "C" fn olive_py_call_method_kw_v(
             }
             let (pos_ptr, pos_len) = stable_vec(args_list);
             let (kw_ptr, kw_len) = stable_vec(kwvals_list);
-            let kwnames = kwnames_tuple((kwnames_key & !1) as *const c_char);
+            let kwnames = kwnames_tuple(crate::string_slab::str_body(kwnames_key) as *const c_char);
             if kwnames.is_null() {
                 return legacy_call_method_kw(
                     unwrapped_obj,
@@ -351,7 +351,7 @@ pub extern "C" fn olive_py_call_method_kw_v_safe(
             );
         }
         with_gil(|| {
-            let name = interned_attr((attr & !1) as *const c_char);
+            let name = interned_attr(crate::string_slab::str_body(attr) as *const c_char);
             if name.is_null() {
                 return legacy_call_method_kw_safe(
                     unwrapped_obj,
@@ -365,7 +365,7 @@ pub extern "C" fn olive_py_call_method_kw_v_safe(
             }
             let (pos_ptr, pos_len) = stable_vec(args_list);
             let (kw_ptr, kw_len) = stable_vec(kwvals_list);
-            let kwnames = kwnames_tuple((kwnames_key & !1) as *const c_char);
+            let kwnames = kwnames_tuple(crate::string_slab::str_body(kwnames_key) as *const c_char);
             if kwnames.is_null() {
                 return legacy_call_method_kw_safe(
                     unwrapped_obj,
@@ -553,14 +553,14 @@ mod tests {
                 ))
             });
             let kwnames = static_attr_name("repeat_key");
-            let first_tuple = with_gil(|| kwnames_tuple((kwnames & !1) as *const c_char));
+            let first_tuple = with_gil(|| kwnames_tuple(crate::string_slab::str_body(kwnames) as *const c_char));
             for _ in 0..1000 {
                 let kwvals = make_int_list(&[7]);
                 let res = olive_py_call_kw_v(func, 0, 0, 0, kwnames, kwvals, 0, ARG_INT, 0);
                 assert!(!res.is_null());
                 olive_py_decref(res);
             }
-            let same_tuple = with_gil(|| kwnames_tuple((kwnames & !1) as *const c_char));
+            let same_tuple = with_gil(|| kwnames_tuple(crate::string_slab::str_body(kwnames) as *const c_char));
             assert_eq!(
                 first_tuple, same_tuple,
                 "1000 calls sharing one kwnames key must reuse the same cached tuple"

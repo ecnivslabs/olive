@@ -423,7 +423,7 @@ pub(crate) unsafe fn call_kw_dict(
                 }
 
                 // Olive strings are always NUL-terminated at their raw address; no copy needed.
-                PY_DICT_SET_ITEM_STRING(py_kwargs, (k_ptr & !1) as *const c_char, py_v);
+                PY_DICT_SET_ITEM_STRING(py_kwargs, crate::string_slab::str_body(k_ptr) as *const c_char, py_v);
                 PY_DEC_REF(py_v);
                 if tag != TAG_NONE {
                     *sv.ptr.add(i + 1) = 0;

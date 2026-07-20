@@ -19,7 +19,7 @@ pub extern "C" fn olive_py_import_safe(name: i64) -> i64 {
         return crate::result::olive_result_err(err_str_ptr);
     }
     with_gil(|| unsafe {
-        let m = PY_IMPORT_IMPORT_MODULE((name & !1) as *const c_char);
+        let m = PY_IMPORT_IMPORT_MODULE(crate::string_slab::str_body(name) as *const c_char);
         if m.is_null()
             && let Some(err_msg) = catch_py_exception_msg()
         {
@@ -191,7 +191,7 @@ pub(crate) unsafe fn call_kw_dict_safe(
                     return conversion_err();
                 }
                 // Olive strings are always NUL-terminated at their raw address; no copy needed.
-                PY_DICT_SET_ITEM_STRING(py_kwargs, (key & !1) as *const c_char, py_v);
+                PY_DICT_SET_ITEM_STRING(py_kwargs, crate::string_slab::str_body(key) as *const c_char, py_v);
                 PY_DEC_REF(py_v);
                 i += 2;
                 kw_i += 1;
@@ -513,7 +513,7 @@ pub extern "C" fn olive_py_getattr_safe(obj: PyObject, attr: i64) -> i64 {
         let err_str_ptr = crate::olive_str_internal("Null object pointer");
         return crate::result::olive_result_err(err_str_ptr);
     }
-    let attr_ptr = (attr & !1) as *const c_char;
+    let attr_ptr = crate::string_slab::str_body(attr) as *const c_char;
     with_gil(|| unsafe {
         let r = if use_interned_names() {
             let name = interned_attr(attr_ptr);
@@ -548,7 +548,7 @@ pub extern "C" fn olive_py_setattr_safe(obj: PyObject, attr: i64, val: i64) -> i
         let err_str_ptr = crate::olive_str_internal("Null object pointer");
         return crate::result::olive_result_err(err_str_ptr);
     }
-    let attr_ptr = (attr & !1) as *const c_char;
+    let attr_ptr = crate::string_slab::str_body(attr) as *const c_char;
     with_gil(|| unsafe {
         let py_val = olive_to_py(val);
         if py_val.is_null() || !PY_ERR_OCCURRED().is_null() {

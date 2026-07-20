@@ -227,7 +227,7 @@ unsafe fn free_closure_record(record_ptr: i64) {
             return;
         }
         let desc_tagged = *((record_ptr as *const i64).add(2));
-        let desc_ptr = desc_tagged & !1;
+        let desc_ptr = crate::string_slab::str_body(desc_tagged);
         crate::free_typed::olive_free_typed(record_ptr, desc_ptr);
     }
 }

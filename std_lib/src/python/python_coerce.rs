@@ -234,7 +234,7 @@ pub(crate) unsafe fn olive_str_to_py(val: i64) -> PyObject {
             let bytes = crate::olive_str_to_bytes(val);
             PY_UNICODE_FROM_STRING_AND_SIZE(bytes.as_ptr() as *const c_char, bytes.len() as isize)
         } else {
-            PY_UNICODE_FROM_STRING((val & !1) as *const c_char)
+            PY_UNICODE_FROM_STRING(crate::string_slab::str_body(val) as *const c_char)
         }
     }
 }
@@ -372,7 +372,7 @@ pub unsafe fn to_py_deep(val: i64) -> PyObject {
                     let key = crate::olive_list_get(keys, i);
                     let value = crate::olive_obj_get(val, key);
                     let py_value = to_py_deep(value);
-                    PY_DICT_SET_ITEM_STRING(py_dict, (key & !1) as *const c_char, py_value);
+                    PY_DICT_SET_ITEM_STRING(py_dict, crate::string_slab::str_body(key) as *const c_char, py_value);
                     PY_DEC_REF(py_value);
                 }
                 py_dict

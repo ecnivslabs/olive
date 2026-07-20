@@ -105,7 +105,7 @@ pub extern "C" fn olive_py_call_method0(
     if unwrapped_obj.is_null() {
         return std::ptr::null_mut();
     }
-    let attr_ptr = (name & !1) as *const c_char;
+    let attr_ptr = crate::string_slab::str_body(name) as *const c_char;
     unsafe {
         olive_py_gil_begin();
         let res = call_method_with_raw_args(unwrapped_obj, attr_ptr, 0, 0, &mut []);
@@ -135,7 +135,7 @@ pub extern "C" fn olive_py_call_method1(
     if unwrapped_obj.is_null() {
         return std::ptr::null_mut();
     }
-    let attr_ptr = (name & !1) as *const c_char;
+    let attr_ptr = crate::string_slab::str_body(name) as *const c_char;
     unsafe {
         olive_py_gil_begin();
         let mut args = [a0];
@@ -168,7 +168,7 @@ pub extern "C" fn olive_py_call_method2(
     if unwrapped_obj.is_null() {
         return std::ptr::null_mut();
     }
-    let attr_ptr = (name & !1) as *const c_char;
+    let attr_ptr = crate::string_slab::str_body(name) as *const c_char;
     unsafe {
         olive_py_gil_begin();
         let mut args = [a0, a1];
@@ -202,7 +202,7 @@ pub extern "C" fn olive_py_call_method3(
     if unwrapped_obj.is_null() {
         return std::ptr::null_mut();
     }
-    let attr_ptr = (name & !1) as *const c_char;
+    let attr_ptr = crate::string_slab::str_body(name) as *const c_char;
     unsafe {
         olive_py_gil_begin();
         let mut args = [a0, a1, a2];
@@ -237,7 +237,7 @@ pub extern "C" fn olive_py_call_method4(
     if unwrapped_obj.is_null() {
         return std::ptr::null_mut();
     }
-    let attr_ptr = (name & !1) as *const c_char;
+    let attr_ptr = crate::string_slab::str_body(name) as *const c_char;
     unsafe {
         olive_py_gil_begin();
         let mut args = [a0, a1, a2, a3];

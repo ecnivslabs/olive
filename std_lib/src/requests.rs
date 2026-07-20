@@ -4,7 +4,7 @@ fn url_from_ptr(ptr: i64) -> String {
     if ptr == 0 {
         return String::new();
     }
-    let p = ptr & !1;
+    let p = crate::string_slab::str_body(ptr);
     let c_str = unsafe { std::ffi::CStr::from_ptr(p as *const std::ffi::c_char) };
     c_str.to_string_lossy().into_owned()
 }

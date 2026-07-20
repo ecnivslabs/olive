@@ -28,7 +28,7 @@ thread_local! {
 /// stripped so the stored pointer reads as raw bytes.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_struct_box(ptr: i64, desc: i64) -> i64 {
-    let desc = desc & !1;
+    let desc = crate::string_slab::str_body(desc);
     STRUCT_BOX_SLAB.with(|sl| {
         let (body, _) = unsafe { &mut *sl.get() }.alloc();
         unsafe {
