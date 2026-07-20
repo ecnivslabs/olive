@@ -4,11 +4,19 @@ use crate::*;
 /// Converts an Olive string pointer (tagged or untagged) to a byte slice.
 /// O(1) for slab-backed strings; O(N) fallback via CStr for literals.
 pub fn olive_str_to_bytes<'a>(ptr: i64) -> &'a [u8] {
+    olive_str_to_bytes_with(ptr, None)
+}
+
+/// Same as `olive_str_to_bytes`, but skips the chunk classification when the
+/// caller already knows `ptr`'s heap-vs-literal status (e.g. it just checked
+/// `ptr_in_slab_span` itself a moment ago).
+pub fn olive_str_to_bytes_with<'a>(ptr: i64, known_heap: Option<bool>) -> &'a [u8] {
     if ptr == 0 {
         return b"";
     }
     let p = ptr & !1;
-    if ptr_in_slab_span(p) {
+    let is_heap = known_heap.unwrap_or_else(|| ptr_in_slab_span(p));
+    if is_heap {
         let header_val = unsafe { *(p as *const usize).sub(2) };
         let len = header_val & 0xFFFFFFFFFFFF;
         unsafe { std::slice::from_raw_parts(p as *const u8, len) }

@@ -125,8 +125,20 @@ fn str_free_local(ptr: i64) {
 /// Optimizes concatenation in-place when the buffer fits. Capacity and length
 /// read from header at body-16; no strlen. No sharing exists (all escapes deep-copy).
 pub fn str_concat_inplace(l: i64, l_bytes: &[u8], r_bytes: &[u8]) -> Option<i64> {
+    str_concat_inplace_with(l, l_bytes, r_bytes, None)
+}
+
+/// Same as `str_concat_inplace`, but skips the chunk classification when the
+/// caller already knows whether `l` is heap-backed (e.g. `olive_str_concat`
+/// just classified it to fetch `l`'s byte slice a moment ago).
+pub fn str_concat_inplace_with(
+    l: i64,
+    l_bytes: &[u8],
+    r_bytes: &[u8],
+    known_heap: Option<bool>,
+) -> Option<i64> {
     let body = l & !1;
-    if body == 0 || !ptr_in_slab_span(body) {
+    if body == 0 || !known_heap.unwrap_or_else(|| ptr_in_slab_span(body)) {
         return None;
     }
     let l_len = l_bytes.len();
