@@ -1,6 +1,7 @@
 use super::CraneliftCodegen;
 use super::translate::{attr_symbol, c_struct_field_info};
 use crate::mir::{AggregateKind, Constant, Local, MirFunction, Operand, Rvalue};
+use crate::parser::BinOp;
 use crate::semantic::types::Type as OliveType;
 use cranelift::prelude::*;
 use cranelift_module::{DataId, FuncId, Module};
@@ -861,11 +862,30 @@ impl<M: Module> CraneliftCodegen<M> {
             Rvalue::VectorLoad(obj, idx, width) => {
                 let o = Self::translate_operand(builder, obj, vars, string_ids, module, func_ids);
                 let i = Self::translate_operand(builder, idx, vars, string_ids, module, func_ids);
-                let data_ptr = builder.ins().load(types::I64, MemFlags::trusted(), o, 8);
+                let data_ptr =
+                    builder
+                        .ins()
+                        .load(types::I64, MemFlags::trusted().with_readonly(), o, 8);
                 let offset = builder.ins().imul_imm(i, 8);
                 let addr = builder.ins().iadd(data_ptr, offset);
                 let vec_ty = types::I64.by(*width as u32).unwrap();
                 builder.ins().load(vec_ty, MemFlags::trusted(), addr, 0)
+            }
+            Rvalue::VectorReduce(op, vec_op, width) => {
+                let v = Self::translate_operand(builder, vec_op, vars, string_ids, module, func_ids);
+                let mut acc = builder.ins().extractlane(v, 0);
+                for lane in 1..*width {
+                    let lane_val = builder.ins().extractlane(v, lane as u8);
+                    acc = match op {
+                        BinOp::Add => builder.ins().iadd(acc, lane_val),
+                        BinOp::Mul => builder.ins().imul(acc, lane_val),
+                        BinOp::BitAnd => builder.ins().band(acc, lane_val),
+                        BinOp::BitOr => builder.ins().bor(acc, lane_val),
+                        BinOp::BitXor => builder.ins().bxor(acc, lane_val),
+                        _ => unreachable!("non-associative op in VectorReduce"),
+                    };
+                }
+                acc
             }
             Rvalue::VectorFMA(a_op, b_op, c_op) => {
                 let a = Self::translate_operand(builder, a_op, vars, string_ids, module, func_ids);

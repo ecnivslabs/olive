@@ -9,13 +9,17 @@ pub struct LoopVectorizer;
 
 impl Transform for LoopVectorizer {
     fn run(&self, func: &mut MirFunction) -> bool {
+        // One find_loops snapshot, every loop tried: a transformed loop's new
+        // blocks are appended, so sibling and outer loop ids stay valid, and
+        // the already-vectorized guard keeps nested re-entry out.
         let loops = loop_utils::find_loops(func);
+        let mut changed = false;
         for lp in loops {
             if self.try_vectorize(func, &lp) {
-                return true;
+                changed = true;
             }
         }
-        false
+        changed
     }
 }
 
@@ -24,6 +28,43 @@ struct VectorizationPlan {
     limit: Operand,
     width: usize,
     loads: Vec<(Local, Operand)>,
+    reductions: Vec<Reduction>,
+}
+
+/// `tmp = acc op src; acc = tmp` where `src` is a vectorized lane: the
+/// accumulator becomes a vector of partials folded once at loop exit.
+struct Reduction {
+    acc: Local,
+    op: crate::parser::BinOp,
+    src: Local,
+    tmp: Local,
+}
+
+/// Int ops that reassociate freely; float reductions change rounding order
+/// and are never vectorized.
+fn reduction_identity(op: &crate::parser::BinOp) -> Option<i64> {
+    use crate::parser::BinOp::*;
+    match op {
+        Add | BitOr | BitXor => Some(0),
+        Mul => Some(1),
+        BitAnd => Some(-1),
+        _ => None,
+    }
+}
+
+fn is_int_lane(ty: &OliveType) -> bool {
+    matches!(
+        ty,
+        OliveType::Int
+            | OliveType::U64
+            | OliveType::Usize
+            | OliveType::I32
+            | OliveType::U32
+            | OliveType::I16
+            | OliveType::U16
+            | OliveType::I8
+            | OliveType::U8
+    )
 }
 
 /// A type is vectorizable only if it lowers to a Cranelift SIMD lane type.
@@ -81,6 +122,7 @@ fn rvalue_reads(rval: &Rvalue, out: &mut Vec<Local>) {
         | Rvalue::GetTag(op)
         | Rvalue::GetTypeId(op)
         | Rvalue::VectorSplat(op, _)
+        | Rvalue::VectorReduce(_, op, _)
         | Rvalue::PtrLoad(op)
         | Rvalue::GenOf(op)
         | Rvalue::FatPtrData(op)
@@ -125,30 +167,52 @@ impl LoopVectorizer {
                     StatementKind::Assign(_, Rvalue::VectorLoad(..))
                     | StatementKind::Assign(_, Rvalue::VectorSplat(..))
                     | StatementKind::Assign(_, Rvalue::VectorFMA(..))
+                    | StatementKind::Assign(_, Rvalue::VectorReduce(..))
                     | StatementKind::VectorStore(..) => return None,
                     _ => {}
                 }
             }
         }
 
+        // The step lowers either directly (`i = i + 1`) or through a temp
+        // (`t = i + 1; i = t`); both advance one induction variable by 1.
         let mut induction = None;
         for &latch_id in &lp.latches {
             let latch = &func.basic_blocks[latch_id.0];
-            for stmt in &latch.statements {
-                if let StatementKind::Assign(
-                    local,
+            for (idx, stmt) in latch.statements.iter().enumerate() {
+                let StatementKind::Assign(
+                    dest,
                     Rvalue::BinaryOp(
                         crate::parser::BinOp::Add,
                         Operand::Copy(src),
                         Operand::Constant(Constant::Int(1)),
                     ),
                 ) = &stmt.kind
-                    && *src == *local
-                {
+                else {
+                    continue;
+                };
+                let found = if src == dest {
+                    Some(*dest)
+                } else {
+                    let followup = latch.statements[idx + 1..].iter().find(|s| {
+                        !matches!(
+                            s.kind,
+                            StatementKind::StorageLive(_) | StatementKind::StorageDead(_)
+                        )
+                    });
+                    match followup {
+                        Some(Statement {
+                            kind: StatementKind::Assign(iv, Rvalue::Use(Operand::Copy(t))),
+                            ..
+                        }) if t == dest && iv == src => Some(*iv),
+                        _ => None,
+                    }
+                };
+                if let Some(iv) = found {
                     if induction.is_some() {
                         return None;
                     }
-                    induction = Some(*local);
+                    induction = Some(iv);
                 }
             }
         }
@@ -214,6 +278,50 @@ impl LoopVectorizer {
             return None;
         }
 
+        // Accumulator updates lower as `tmp = acc op src; acc = tmp`. Both
+        // sides of the pair stay out of the vector-value closure so the
+        // scalar accumulator survives for the exit-time fold.
+        let mut red_pairs: Vec<Reduction> = Vec::new();
+        for &bb_id in &lp.body {
+            let stmts = &func.basic_blocks[bb_id.0].statements;
+            for (idx, stmt) in stmts.iter().enumerate() {
+                let StatementKind::Assign(
+                    tmp,
+                    Rvalue::BinaryOp(op, Operand::Copy(l), Operand::Copy(r)),
+                ) = &stmt.kind
+                else {
+                    continue;
+                };
+                let followup = stmts[idx + 1..].iter().find(|s| {
+                    !matches!(
+                        s.kind,
+                        StatementKind::StorageLive(_) | StatementKind::StorageDead(_)
+                    )
+                });
+                let Some(Statement {
+                    kind: StatementKind::Assign(acc, Rvalue::Use(Operand::Copy(t))),
+                    ..
+                }) = followup
+                else {
+                    continue;
+                };
+                if t != tmp || (acc != l && acc != r) || l == r {
+                    continue;
+                }
+                let src = if l == acc { *r } else { *l };
+                red_pairs.push(Reduction {
+                    acc: *acc,
+                    op: op.clone(),
+                    src,
+                    tmp: *tmp,
+                });
+            }
+        }
+        let red_dests: rustc_hash::FxHashSet<Local> = red_pairs
+            .iter()
+            .flat_map(|red| [red.acc, red.tmp])
+            .collect();
+
         // Build the set of locals that will become vectors: the loaded lanes
         // plus any value derived from them through elementwise binary ops.
         let mut vec_locals: rustc_hash::FxHashSet<Local> = loads.iter().map(|(d, _)| *d).collect();
@@ -227,6 +335,7 @@ impl LoopVectorizer {
                     ) = &stmt.kind
                         && (vec_locals.contains(l) || vec_locals.contains(r))
                         && !vec_locals.contains(dest)
+                        && !red_dests.contains(dest)
                     {
                         if simd_lane_bits(&func.locals[dest.0].ty) != Some(lane_bits) {
                             return None;
@@ -239,6 +348,104 @@ impl LoopVectorizer {
             if !changed {
                 break;
             }
+        }
+
+        // Validate every reduction candidate that consumes a vectorized lane;
+        // one bad shape keeps the whole loop scalar. Candidates whose source
+        // never became a vector value stay plain scalar statements.
+        let doms = loop_utils::dominators(func);
+        let mut reductions: Vec<Reduction> = Vec::new();
+        for red in red_pairs {
+            if !vec_locals.contains(&red.src) {
+                continue;
+            }
+            if reduction_identity(&red.op).is_none()
+                || !is_int_lane(&func.locals[red.acc.0].ty)
+                || simd_lane_bits(&func.locals[red.acc.0].ty) != Some(lane_bits)
+                || red.acc == i
+                || reductions.iter().any(|prev| prev.acc == red.acc)
+            {
+                return None;
+            }
+            // Locate the pair again to anchor the ordering and dominance checks.
+            let mut anchor = None;
+            for &bb_id in &lp.body {
+                for (idx, stmt) in func.basic_blocks[bb_id.0].statements.iter().enumerate() {
+                    if let StatementKind::Assign(d, Rvalue::BinaryOp(..)) = &stmt.kind
+                        && *d == red.tmp
+                    {
+                        anchor = Some((bb_id, idx));
+                    }
+                }
+            }
+            let (red_bb, red_idx) = anchor?;
+            // The fold runs once per iteration only if its block is on every
+            // path to the backedge.
+            if !lp
+                .latches
+                .iter()
+                .all(|latch| doms[latch.0].contains(&red_bb))
+            {
+                return None;
+            }
+            // The lane source must already hold its vector value when the
+            // fold executes: same block, defined earlier.
+            let stmts = &func.basic_blocks[red_bb.0].statements;
+            let src_def_before = stmts[..red_idx]
+                .iter()
+                .any(|s| matches!(&s.kind, StatementKind::Assign(d, _) if *d == red.src));
+            if !src_def_before {
+                return None;
+            }
+            // The scalar accumulator and the pair's temp are stale inside the
+            // loop; any other read or write would observe partial state.
+            for &other_bb in &lp.body {
+                for (other_idx, other) in
+                    func.basic_blocks[other_bb.0].statements.iter().enumerate()
+                {
+                    let is_pair_stmt = other_bb == red_bb
+                        && (other_idx == red_idx
+                            || matches!(
+                                &other.kind,
+                                StatementKind::Assign(d, Rvalue::Use(Operand::Copy(t)))
+                                    if *d == red.acc && *t == red.tmp
+                            ));
+                    if is_pair_stmt {
+                        continue;
+                    }
+                    let mut used: Vec<Local> = Vec::new();
+                    match &other.kind {
+                        StatementKind::Assign(d, rval) => {
+                            if *d == red.acc || *d == red.tmp {
+                                return None;
+                            }
+                            rvalue_reads(rval, &mut used);
+                        }
+                        StatementKind::SetIndex(o, ix, v, _) => {
+                            for op in [o, ix, v] {
+                                used.extend(operand_local(op));
+                            }
+                        }
+                        StatementKind::SetAttr(o, _, v) | StatementKind::PtrStore(o, v) => {
+                            for op in [o, v] {
+                                used.extend(operand_local(op));
+                            }
+                        }
+                        _ => {}
+                    }
+                    if used.contains(&red.acc) || used.contains(&red.tmp) {
+                        return None;
+                    }
+                }
+                if let Some(term) = &func.basic_blocks[other_bb.0].terminator
+                    && let TerminatorKind::SwitchInt { discr, .. } = &term.kind
+                    && let Some(dl) = operand_local(discr)
+                    && (dl == red.acc || dl == red.tmp)
+                {
+                    return None;
+                }
+            }
+            reductions.push(red);
         }
 
         // The transform only knows how to rewrite three shapes that touch a
@@ -257,7 +464,11 @@ impl LoopVectorizer {
                     StatementKind::Assign(
                         dest,
                         Rvalue::BinaryOp(_, Operand::Copy(_), Operand::Copy(_)),
-                    ) if vec_locals.contains(dest) => true,
+                    ) if vec_locals.contains(dest)
+                        || reductions.iter().any(|red| red.tmp == *dest) =>
+                    {
+                        true
+                    }
                     StatementKind::SetIndex(_, Operand::Copy(idx), _, _) if *idx == i => true,
                     _ => {
                         let mut reads = Vec::new();
@@ -336,11 +547,37 @@ impl LoopVectorizer {
             }
         }
 
+        // The exit-time fold hangs off the header's exit edge; a `break`
+        // leaving from any other block would skip it and lose the partials.
+        if !reductions.is_empty() {
+            for &bb_id in &lp.body {
+                if bb_id == lp.header {
+                    continue;
+                }
+                if let Some(term) = &func.basic_blocks[bb_id.0].terminator {
+                    let leaves = match &term.kind {
+                        TerminatorKind::Goto { target } => !lp.body.contains(target),
+                        TerminatorKind::SwitchInt {
+                            targets, otherwise, ..
+                        } => {
+                            targets.iter().any(|(_, t)| !lp.body.contains(t))
+                                || !lp.body.contains(otherwise)
+                        }
+                        _ => true,
+                    };
+                    if leaves {
+                        return None;
+                    }
+                }
+            }
+        }
+
         Some(VectorizationPlan {
             induction: i,
             limit,
             width,
             loads,
+            reductions,
         })
     }
 
@@ -368,24 +605,89 @@ impl LoopVectorizer {
             is_owning: true,
         });
 
-        let pre_header_id = BasicBlockId(func.basic_blocks.len());
-        func.basic_blocks.push(BasicBlock {
-            statements: vec![Statement {
+        // Each reduction gets a vector of partials seeded with the op's
+        // identity, so a loop that never runs folds back to the identity.
+        let mut red_vecs: FxHashMap<Local, Local> = FxHashMap::default();
+        let mut pre_stmts = vec![Statement {
+            kind: StatementKind::Assign(
+                vec_limit_local,
+                Rvalue::BinaryOp(
+                    crate::parser::BinOp::Sub,
+                    plan.limit.clone(),
+                    Operand::Constant(Constant::Int((width - 1) as i64)),
+                ),
+            ),
+            span: Span::default(),
+        }];
+        for red in &plan.reductions {
+            let vacc = self.alloc_vector_local(func, red.acc, width);
+            red_vecs.insert(red.acc, vacc);
+            let identity = reduction_identity(&red.op).expect("validated in analyze");
+            pre_stmts.push(Statement {
                 kind: StatementKind::Assign(
-                    vec_limit_local,
-                    Rvalue::BinaryOp(
-                        crate::parser::BinOp::Sub,
-                        plan.limit.clone(),
-                        Operand::Constant(Constant::Int((width - 1) as i64)),
-                    ),
+                    vacc,
+                    Rvalue::VectorSplat(Operand::Constant(Constant::Int(identity)), width),
                 ),
                 span: Span::default(),
-            }],
+            });
+        }
+
+        let pre_header_id = BasicBlockId(func.basic_blocks.len());
+        func.basic_blocks.push(BasicBlock {
+            statements: pre_stmts,
             terminator: Some(Terminator {
                 kind: TerminatorKind::Goto { target: lp.header },
                 span: Span::default(),
             }),
         });
+
+        // Folds the partial vectors into the scalar accumulators on the one
+        // edge that leaves the vector loop, before the scalar epilogue.
+        let exit_target = if plan.reductions.is_empty() {
+            epilogue_header
+        } else {
+            let mut stmts = Vec::new();
+            for red in &plan.reductions {
+                let vacc = red_vecs[&red.acc];
+                let partial = Local(func.locals.len());
+                func.locals.push(LocalDecl {
+                    ty: func.locals[red.acc.0].ty.clone(),
+                    name: None,
+                    span: Span::default(),
+                    is_mut: false,
+                    is_owning: true,
+                });
+                stmts.push(Statement {
+                    kind: StatementKind::Assign(
+                        partial,
+                        Rvalue::VectorReduce(red.op.clone(), Operand::Copy(vacc), width),
+                    ),
+                    span: Span::default(),
+                });
+                stmts.push(Statement {
+                    kind: StatementKind::Assign(
+                        red.acc,
+                        Rvalue::BinaryOp(
+                            red.op.clone(),
+                            Operand::Copy(red.acc),
+                            Operand::Copy(partial),
+                        ),
+                    ),
+                    span: Span::default(),
+                });
+            }
+            let reduce_bb = BasicBlockId(func.basic_blocks.len());
+            func.basic_blocks.push(BasicBlock {
+                statements: stmts,
+                terminator: Some(Terminator {
+                    kind: TerminatorKind::Goto {
+                        target: epilogue_header,
+                    },
+                    span: Span::default(),
+                }),
+            });
+            reduce_bb
+        };
 
         for bb_idx in 0..pre_header_id.0 {
             let bb_id = BasicBlockId(bb_idx);
@@ -455,7 +757,7 @@ impl LoopVectorizer {
             if let Some(term) = &mut header.terminator
                 && let TerminatorKind::SwitchInt { otherwise, .. } = &mut term.kind
             {
-                *otherwise = epilogue_header;
+                *otherwise = exit_target;
             }
         } else {
             return false;
@@ -483,6 +785,35 @@ impl LoopVectorizer {
                             span: stmt.span,
                         });
                     }
+
+                    StatementKind::Assign(dest, Rvalue::BinaryOp(..))
+                        if plan.reductions.iter().any(|red| red.tmp == *dest) =>
+                    {
+                        let red = plan
+                            .reductions
+                            .iter()
+                            .find(|red| red.tmp == *dest)
+                            .expect("guarded above");
+                        let vacc = red_vecs[&red.acc];
+                        let vsrc = vector_locals[&red.src];
+                        new_stmts.push(Statement {
+                            kind: StatementKind::Assign(
+                                vacc,
+                                Rvalue::BinaryOp(
+                                    red.op.clone(),
+                                    Operand::Copy(vacc),
+                                    Operand::Copy(vsrc),
+                                ),
+                            ),
+                            span: stmt.span,
+                        });
+                    }
+
+                    StatementKind::Assign(dest, Rvalue::Use(Operand::Copy(t)))
+                        if plan
+                            .reductions
+                            .iter()
+                            .any(|red| red.acc == *dest && red.tmp == *t) => {}
 
                     StatementKind::Assign(
                         dest,
@@ -544,26 +875,49 @@ impl LoopVectorizer {
 
         for &latch_id in &lp.latches {
             let latch = &mut func.basic_blocks[latch_id.0];
-            for stmt in &mut latch.statements {
-                if let StatementKind::Assign(
-                    local,
+            let mut step_idxs = Vec::new();
+            for (idx, stmt) in latch.statements.iter().enumerate() {
+                let StatementKind::Assign(
+                    dest,
                     Rvalue::BinaryOp(
                         crate::parser::BinOp::Add,
                         Operand::Copy(src),
                         Operand::Constant(Constant::Int(1)),
                     ),
-                ) = &mut stmt.kind
-                    && *local == i
-                    && *src == i
+                ) = &stmt.kind
+                else {
+                    continue;
+                };
+                if *src != i {
+                    continue;
+                }
+                let feeds_induction = *dest == i
+                    || latch.statements[idx + 1..]
+                        .iter()
+                        .find(|s| {
+                            !matches!(
+                                s.kind,
+                                StatementKind::StorageLive(_) | StatementKind::StorageDead(_)
+                            )
+                        })
+                        .is_some_and(|s| {
+                            matches!(
+                                &s.kind,
+                                StatementKind::Assign(iv, Rvalue::Use(Operand::Copy(t)))
+                                    if *iv == i && t == dest
+                            )
+                        });
+                if feeds_induction {
+                    step_idxs.push(idx);
+                }
+            }
+            for idx in step_idxs {
+                if let StatementKind::Assign(
+                    _,
+                    Rvalue::BinaryOp(_, _, step @ Operand::Constant(Constant::Int(1))),
+                ) = &mut latch.statements[idx].kind
                 {
-                    stmt.kind = StatementKind::Assign(
-                        i,
-                        Rvalue::BinaryOp(
-                            crate::parser::BinOp::Add,
-                            Operand::Copy(i),
-                            Operand::Constant(Constant::Int(width as i64)),
-                        ),
-                    );
+                    *step = Operand::Constant(Constant::Int(width as i64));
                 }
             }
         }

@@ -680,6 +680,7 @@ fn stmt_uses(stmt: &Statement) -> Vec<Local> {
             | Rvalue::GetTag(o)
             | Rvalue::GetTypeId(o)
             | Rvalue::VectorSplat(o, _)
+            | Rvalue::VectorReduce(_, o, _)
             | Rvalue::PtrLoad(o)
             | Rvalue::GenOf(o)
             | Rvalue::FatPtrData(o)

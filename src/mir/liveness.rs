@@ -137,7 +137,7 @@ impl Liveness {
             }
             Rvalue::PtrLoad(op) => Self::use_op(live, op),
             Rvalue::VTableLoad { vtable, .. } => Self::use_op(live, vtable),
-            Rvalue::VectorSplat(op, _) => Self::use_op(live, op),
+            Rvalue::VectorSplat(op, _) | Rvalue::VectorReduce(_, op, _) => Self::use_op(live, op),
             Rvalue::VectorLoad(obj, idx, _) => {
                 Self::use_op(live, obj);
                 Self::use_op(live, idx);

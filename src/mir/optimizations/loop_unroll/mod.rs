@@ -283,7 +283,10 @@ fn body_is_unrollable(work: &[Statement], induction: Local) -> bool {
                 }
                 if matches!(
                     rval,
-                    Rvalue::VectorLoad(..) | Rvalue::VectorSplat(..) | Rvalue::VectorFMA(..)
+                    Rvalue::VectorLoad(..)
+                    | Rvalue::VectorSplat(..)
+                    | Rvalue::VectorFMA(..)
+                    | Rvalue::VectorReduce(..)
                 ) {
                     return false;
                 }

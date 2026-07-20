@@ -72,6 +72,7 @@ fn rvalue_reads(rval: &Rvalue, x: Local) -> bool {
         | Rvalue::GetTag(op)
         | Rvalue::GetTypeId(op)
         | Rvalue::VectorSplat(op, _)
+        | Rvalue::VectorReduce(_, op, _)
         | Rvalue::PtrLoad(op)
         | Rvalue::FatPtrData(op)
         | Rvalue::GenOf(op) => hits(op),
