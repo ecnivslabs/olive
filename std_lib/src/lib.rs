@@ -98,7 +98,7 @@ pub struct OliveStringKey(pub i64);
 /// pattern is bit-identical to a valid raw concrete int of the same value,
 /// which a tag check cannot tell apart.
 enum KeyClass {
-    Str(&'static str),
+    Str(&'static [u8]),
     Scalar(i64, i64),
     Raw(i64),
 }
@@ -113,7 +113,10 @@ pub(crate) fn is_tagged_str_key(v: i64) -> bool {
 
 fn classify_key(v: i64) -> KeyClass {
     if is_tagged_str_key(v) {
-        return KeyClass::Str(olive_str_as_str(v).unwrap_or(""));
+        // Bytes, not `&str`: keys hash and compare exactly as `olive_str_eq`
+        // does, without an O(n) revalidation of already-valid UTF-8 and
+        // without collapsing a byte-fragment key from `s[i]` to empty.
+        return KeyClass::Str(olive_str_to_bytes(v));
     }
     if is_active_object(v) {
         let kind = unsafe { *(v as *const i64) };

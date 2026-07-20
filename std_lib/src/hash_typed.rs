@@ -216,14 +216,12 @@ fn commutative(parts: impl IntoIterator<Item = u64>) -> u64 {
 }
 
 fn hash_str(val: i64) -> u64 {
-    match crate::olive_str_as_str(val) {
-        Some(s) => {
-            let mut h = FxHasher::default();
-            h.write(s.as_bytes());
-            h.finish()
-        }
-        None => one(val as u64),
+    if val == 0 {
+        return one(val as u64);
     }
+    let mut h = FxHasher::default();
+    h.write(crate::olive_str_to_bytes(val));
+    h.finish()
 }
 
 fn hash_any(val: i64) -> u64 {
