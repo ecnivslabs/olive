@@ -8,7 +8,7 @@ use rustc_hash::FxHashMap as HashMap;
 
 impl<M: Module> CraneliftCodegen<M> {
     /// Increfs a borrowed `PyObject` element; the container decrefs it on drop.
-    fn translate_aggregate_elem(
+    pub(super) fn translate_aggregate_elem(
         func_mir: &MirFunction,
         builder: &mut FunctionBuilder,
         vars: &HashMap<Local, Variable>,

@@ -394,4 +394,79 @@ mod optimization_tests {
         });
         assert!(has_self_call, "recursive function should still call itself");
     }
+
+    fn calls(f: &MirFunction, name: &str) -> usize {
+        f.basic_blocks
+            .iter()
+            .flat_map(|bb| bb.statements.iter())
+            .filter(|st| {
+                matches!(&st.kind, StatementKind::Assign(_, Rvalue::Call { func, .. })
+                    if matches!(func, Operand::Constant(Constant::Function(n)) if n == name))
+            })
+            .count()
+    }
+
+    fn list_literals(f: &MirFunction) -> usize {
+        f.basic_blocks
+            .iter()
+            .flat_map(|bb| bb.statements.iter())
+            .filter(|st| {
+                matches!(
+                    &st.kind,
+                    StatementKind::Assign(_, Rvalue::Aggregate(crate::mir::AggregateKind::List, _))
+                )
+            })
+            .count()
+    }
+
+    // Only lists whose elements need a deep copy lower the concat to a call,
+    // which is what ownership rewrites to `concat_move` and the fold matches.
+    // Scalar-element lists keep the raw `BinaryOp` path and are left alone.
+    #[test]
+    fn self_append_folds_literal_into_push() {
+        let fns = build_and_optimize(
+            "fn f():\n    let mut xs = []\n    let mut i = 0\n    while i < 3:\n        xs = xs + [str(i)]\n        i = i + 1\n",
+        );
+        let f = find_fn(&fns, "f");
+        assert_eq!(calls(f, "__olive_list_push"), 1);
+        assert_eq!(calls(f, "__olive_list_concat_move"), 0);
+        // Only the initial `[]` survives; the per-iteration literal is gone.
+        assert_eq!(list_literals(f), 1);
+    }
+
+    #[test]
+    fn multi_element_append_pushes_each() {
+        let fns = build_and_optimize(
+            "fn f():\n    let mut xs = []\n    xs = xs + [str(1), str(2), str(3)]\n",
+        );
+        let f = find_fn(&fns, "f");
+        assert_eq!(calls(f, "__olive_list_push"), 3);
+        assert_eq!(calls(f, "__olive_list_concat_move"), 0);
+    }
+
+    #[test]
+    fn append_element_is_moved_not_copied() {
+        // A `Copy` here would leave the source local's drop live and free the
+        // string the list just took.
+        let fns = build_and_optimize(
+            "fn f():\n    let mut xs = []\n    let mut i = 0\n    while i < 3:\n        xs = xs + [str(i)]\n        i = i + 1\n",
+        );
+        let f = find_fn(&fns, "f");
+        let moved = f.basic_blocks.iter().flat_map(|bb| bb.statements.iter()).any(|st| {
+            matches!(&st.kind, StatementKind::Assign(_, Rvalue::Call { func, args })
+                if matches!(func, Operand::Constant(Constant::Function(n)) if n == "__olive_list_push")
+                    && matches!(args.get(1), Some(Operand::Move(_))))
+        });
+        assert!(moved, "pushed element must transfer ownership");
+    }
+
+    #[test]
+    fn non_self_concat_is_left_alone() {
+        // `ys` keeps its own storage, so nothing may be pushed into it.
+        let fns = build_and_optimize(
+            "fn f():\n    let ys = [str(9)]\n    let zs = ys + [str(8)]\n    print(len(ys))\n    print(len(zs))\n",
+        );
+        let f = find_fn(&fns, "f");
+        assert_eq!(calls(f, "__olive_list_push"), 0);
+    }
 }

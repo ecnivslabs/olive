@@ -10,7 +10,8 @@ use crate::mir::optimizations::{
     cse::CommonSubexpressionElimination, dce::DeadCodeElimination, devirtualize::Devirtualize,
     devirtualize_closure::DevirtualizeClosures, drop_hooks, gencheck::GenCheckInsertion,
     gil_fusion::GilFusion, gvn::GlobalValueNumbering, inliner::Inliner, licm::Licm,
-    loop_unroll::LoopUnroll, move_elision::MoveElision, ownership::OwnershipInference,
+    list_append::ListAppend, loop_unroll::LoopUnroll, move_elision::MoveElision,
+    ownership::OwnershipInference,
     peephole::PeepholeOptimize, scalarize::ScalarizeStructs, simplify_cfg::SimplifyCfg,
     strength_reduction::StrengthReduction, tail_call::TailCallOpt, vectorize::LoopVectorizer,
 };
@@ -106,6 +107,9 @@ impl Optimizer {
         };
         for func in functions.iter_mut() {
             ownership.run(func);
+            // Runs before drop lowering so the temporary list literal it
+            // deletes still has a plain `Drop` to delete alongside it.
+            ListAppend.run(func);
         }
         let has_drop = drop_hooks::collect_struct_has_drop(functions);
         for func in functions.iter_mut() {
