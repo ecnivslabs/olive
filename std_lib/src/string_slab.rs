@@ -48,13 +48,33 @@ thread_local! {
     static STR_SLABS: UnsafeCell<StrSlabs> = const { UnsafeCell::new(StrSlabs::new()) };
 }
 
+/// Runs `f` against the `cap`-byte class slab for the current escape-arena
+/// context: the shared global arena when a value is crossing a task/thread
+/// boundary, this thread's own pool otherwise. Every heap-string allocation
+/// site must go through this so a body's slab always matches its later free.
+fn with_class_slab<T>(cap: usize, f: impl FnOnce(&mut GenSlab) -> T) -> T {
+    unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null() {
+            let idx = class_index(cap);
+            assert!(idx < 32, "olive: string size class limit exceeded");
+            if (*active).str_slabs[idx].is_none() {
+                (*active).str_slabs[idx] = Some(GenSlab::new(cap));
+            }
+            f((*active).str_slabs[idx].as_mut().unwrap_unchecked())
+        } else {
+            STR_SLABS.with(|s| f((&mut *s.get()).slab(cap)))
+        }
+    }
+}
+
 /// Allocates a heap string from `bytes`, which must not contain an interior
 /// nul. Stores capacity class and length at body-16 for O(1) free. Returns the
 /// body pointer tagged with the low string bit.
 pub fn str_alloc(bytes: &[u8]) -> i64 {
     let len = bytes.len();
     let cap = class_bytes(len + 1);
-    let slab_alloc = |slab: &mut GenSlab| {
+    with_class_slab(cap, |slab| {
         let (body, _) = slab.alloc();
         unsafe {
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), body, len);
@@ -64,23 +84,26 @@ pub fn str_alloc(bytes: &[u8]) -> i64 {
             *(body as *mut usize).sub(2) = header_val;
             body as i64 | 1
         }
-    };
-    unsafe {
-        let active = crate::slab::ACTIVE_SLABS.get();
-        if !active.is_null() {
-            let idx = class_index(cap);
-            assert!(idx < 32, "olive: string size class limit exceeded");
-            if (*active).str_slabs[idx].is_none() {
-                (*active).str_slabs[idx] = Some(GenSlab::new(cap));
-            }
-            slab_alloc((*active).str_slabs[idx].as_mut().unwrap_unchecked())
-        } else {
-            STR_SLABS.with(|s| {
-                let s = &mut *s.get();
-                slab_alloc(s.slab(cap))
-            })
+    })
+}
+
+/// Same as `str_alloc`, but writes two slices back to back without first
+/// concatenating them into an intermediate buffer.
+fn str_alloc_two(a: &[u8], b: &[u8]) -> i64 {
+    let len = a.len() + b.len();
+    let cap = class_bytes(len + 1);
+    with_class_slab(cap, |slab| {
+        let (body, _) = slab.alloc();
+        unsafe {
+            std::ptr::copy_nonoverlapping(a.as_ptr(), body, a.len());
+            std::ptr::copy_nonoverlapping(b.as_ptr(), body.add(a.len()), b.len());
+            *body.add(len) = 0;
+            let cap_idx = cap.trailing_zeros() as usize;
+            let header_val = len | (cap_idx << 48);
+            *(body as *mut usize).sub(2) = header_val;
+            body as i64 | 1
         }
-    }
+    })
 }
 
 /// Frees a tagged string pointer. O(1) — capacity read from header at body-16.
@@ -157,24 +180,14 @@ pub fn str_concat_inplace_with(
         }
         Some(l)
     } else {
-        STR_SLABS.with(|s| {
-            let s = unsafe { &mut *s.get() };
-            let (new_body, _) = s.slab(new_cap).alloc();
-            unsafe {
-                std::ptr::copy_nonoverlapping(l_bytes.as_ptr(), new_body, l_len);
-                std::ptr::copy_nonoverlapping(r_bytes.as_ptr(), new_body.add(l_len), r_len);
-                *new_body.add(new_len) = 0;
-                let new_cap_idx = new_cap.trailing_zeros() as usize;
-                let new_header = new_len | (new_cap_idx << 48);
-                *(new_body as *mut usize).sub(2) = new_header;
-            }
-            if cap_idx < 32
-                && let Some(ref mut slab) = s.classes[cap_idx]
-            {
-                slab.free(body as *mut u8);
-            }
-            Some(new_body as i64 | 1)
-        })
+        // The new buffer follows the current escape-arena context; the old
+        // body must free through whichever arena it actually lives in, which
+        // may differ from the current context (`l` can be a global-arena
+        // string a relocated task is still holding). str_alloc_two/str_free
+        // each resolve that independently instead of assuming they match.
+        let new_ptr = str_alloc_two(l_bytes, r_bytes);
+        str_free(l);
+        Some(new_ptr)
     }
 }
 
@@ -351,6 +364,27 @@ mod tests {
         let p = str_alloc(&big);
         assert_eq!(crate::string::olive_str_from_ptr(p).len(), 1_000_000);
         str_free(p);
+    }
+
+    #[test]
+    fn grow_concat_of_global_arena_string_does_not_corrupt_local_pool() {
+        // Warm this thread's local class-8 slab so its free-list is live
+        // before the escape-arena alloc below shares the same size class.
+        let warm = str_alloc(b"w");
+        str_free(warm);
+
+        let a = crate::slab::with_escape_arena(|| str_alloc(b"x"));
+        assert!(crate::slab::chunk_is_global((a & !1) as usize));
+
+        let tail = vec![b'y'; 64];
+        let grown = str_concat_inplace(a, b"x", &tail).expect("capacity must grow");
+        assert_ne!(a, grown);
+
+        let probe = str_alloc(b"z");
+        assert_ne!(probe & !1, a & !1, "local alloc must not recycle a global-arena slot");
+
+        str_free(grown);
+        str_free(probe);
     }
 
     #[test]
