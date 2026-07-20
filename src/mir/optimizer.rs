@@ -7,8 +7,8 @@ use std::cell::RefCell;
 use crate::mir::optimizations::{
     Transform, algebraic::AlgebraicSimplification, bounds_check_elim::BoundsCheckElim,
     const_fold::ConstantFolding, const_prop::ConstantPropagation, copy_prop::CopyPropagation,
-    cse::CommonSubexpressionElimination, dce::DeadCodeElimination, drop_hooks,
-    gencheck::GenCheckInsertion, gil_fusion::GilFusion, gvn::GlobalValueNumbering,
+    cse::CommonSubexpressionElimination, dce::DeadCodeElimination, devirtualize::Devirtualize,
+    drop_hooks, gencheck::GenCheckInsertion, gil_fusion::GilFusion, gvn::GlobalValueNumbering,
     inliner::Inliner, licm::Licm, loop_unroll::LoopUnroll, move_elision::MoveElision,
     ownership::OwnershipInference, peephole::PeepholeOptimize, scalarize::ScalarizeStructs,
     simplify_cfg::SimplifyCfg, strength_reduction::StrengthReduction, tail_call::TailCallOpt,
@@ -21,6 +21,7 @@ pub struct Optimizer {
     inliner: Inliner,
     release: bool,
     explain_copies: bool,
+    vtables: HashMap<String, Vec<String>>,
 }
 
 impl Default for Optimizer {
@@ -79,11 +80,17 @@ impl Optimizer {
             inliner: Inliner::with_hot_functions(hot_functions),
             release,
             explain_copies: false,
+            vtables: HashMap::default(),
         }
     }
 
     pub fn set_explain_copies(&mut self, val: bool) {
         self.explain_copies = val;
+    }
+
+    /// Trait vtables from the MIR builder; enables devirtualization.
+    pub fn set_vtables(&mut self, vtables: HashMap<String, Vec<String>>) {
+        self.vtables = vtables;
     }
 
     pub fn run(&self, functions: &mut [MirFunction]) -> (Vec<Diagnostic>, Vec<CopySite>) {
@@ -143,6 +150,14 @@ impl Optimizer {
             }
 
             self.inliner.inline_function(func, &fn_map, 12);
+
+            let devirt = Devirtualize {
+                vtables: &self.vtables,
+                has_drop: &has_drop,
+            };
+            if devirt.run(func) {
+                self.inliner.inline_function(func, &fn_map, 12);
+            }
 
             let mut changed = true;
             let mut iterations = 0;

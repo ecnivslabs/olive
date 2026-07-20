@@ -268,6 +268,21 @@ impl TypeChecker {
             }
 
             ExprKind::BinOp { left, op, right } => {
+                // Concat: a list literal adopts the other operand's element
+                // type, so struct elements widen into a trait-object list.
+                if matches!(op, BinOp::Add)
+                    && matches!(left.kind, ExprKind::List(_))
+                    && !matches!(right.kind, ExprKind::List(_))
+                {
+                    let r_ty = self.check_expr(right);
+                    let r_res = self.apply_subst(r_ty.clone());
+                    let l_ty = if matches!(r_res, Type::List(_)) {
+                        self.check_expr_expecting(left, &r_res)
+                    } else {
+                        self.check_expr(left)
+                    };
+                    return self.check_binop(op, &l_ty, &r_ty, expr.span);
+                }
                 let l_ty = self.check_expr(left);
                 let r_ty = if matches!(op, BinOp::And) {
                     let (true_facts, _) = self.narrow_facts(left);
@@ -276,6 +291,13 @@ impl TypeChecker {
                     let r_ty = self.check_expr(right);
                     self.leave_scope();
                     r_ty
+                } else if matches!(op, BinOp::Add) && matches!(right.kind, ExprKind::List(_)) {
+                    let l_res = self.apply_subst(l_ty.clone());
+                    if matches!(l_res, Type::List(_)) {
+                        self.check_expr_expecting(right, &l_res)
+                    } else {
+                        self.check_expr(right)
+                    }
                 } else {
                     self.check_expr(right)
                 };

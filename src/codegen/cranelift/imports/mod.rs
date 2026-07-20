@@ -72,6 +72,9 @@ pub(super) fn collect_needed_imports(
                                 OliveType::PyObject | OliveType::PyNamed(_, _) => {
                                     needed.insert("__olive_py_decref");
                                 }
+                                OliveType::TraitObject(..) => {
+                                    needed.insert("__olive_free_fatptr");
+                                }
                                 // The closure record's per-instance descriptor
                                 // is loaded from the value itself at runtime
                                 // (`translate.rs`'s `Drop` arm), not looked up
@@ -497,6 +500,10 @@ pub(super) fn scan_rvalue_imports(
                 AggregateKind::EnumVariant(_, _) => {
                     needed.insert("__olive_enum_new");
                     needed.insert("__olive_enum_set");
+                }
+                AggregateKind::FatPtr => {
+                    needed.insert("__olive_fatptr_alloc");
+                    needed.insert("__olive_free_fatptr");
                 }
                 _ => {
                     needed.insert("__olive_list_new");

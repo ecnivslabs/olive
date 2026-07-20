@@ -76,6 +76,8 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_write_char", &sig_i64_i64),
             ("__olive_write_nl", &sig_void_i64),
             ("__olive_alloc", &sig_i64_i64),
+            ("__olive_fatptr_alloc", &sig_void_i64),
+            ("__olive_free_fatptr", &sig_i64_void),
             ("__olive_box_int", &sig_i64_i64),
             ("__olive_box_float", &sig_f64_i64),
             ("__olive_box_bool", &sig_i64_i64),
@@ -763,9 +765,11 @@ impl<M: Module> CraneliftCodegen<M> {
         ];
         for &(name, sig) in import_table {
             let always_needed = super::ASYNC_RUNTIME_SYMS.contains(&name);
-            let needed_for_c_or_traits = (name == "__olive_alloc")
-                && (has_c_structs || !self.vtables.is_empty())
-                || (name == "__olive_free_c_struct" && has_c_structs);
+            let needed_for_c_or_traits = ((name == "__olive_alloc"
+                || name == "__olive_free_c_struct")
+                && has_c_structs)
+                || ((name == "__olive_fatptr_alloc" || name == "__olive_free_fatptr")
+                    && !self.vtables.is_empty());
             let needed_for_debug_dual_variant =
                 self.debug_dual_variant && DEBUG_HOOK_SYMS.contains(&name);
             if !(needed.contains(name)

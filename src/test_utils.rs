@@ -148,7 +148,7 @@ pub fn compile_instrumented(src: &str) -> (JitInstance, crate::mir::debug_hooks:
     (JitInstance(Some(cg)), program)
 }
 
-fn compile_with(src: &str, opt: Optimizer, profile: bool, release_backend: bool) -> JitInstance {
+fn compile_with(src: &str, mut opt: Optimizer, profile: bool, release_backend: bool) -> JitInstance {
     let tokens = Lexer::new(src, 0).tokenise().unwrap();
     let mut prog = Parser::new(tokens).parse_program().unwrap();
     crate::semantic::desugar::desugar_trait_defaults(&mut prog);
@@ -171,6 +171,7 @@ fn compile_with(src: &str, opt: Optimizer, profile: bool, release_backend: bool)
     builder.struct_field_types = tc.field_types.clone();
     builder.build_program(&prog);
     builder.monomorphize_drop_fns();
+    opt.set_vtables(builder.vtables.clone());
     let (_diags, _copy_sites) = opt.run(&mut builder.functions);
     let mut cg = CraneliftCodegen::new_jit(
         builder.functions,
