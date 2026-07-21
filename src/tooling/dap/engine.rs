@@ -24,7 +24,7 @@ use threads::{MODE_CONTINUE, MODE_PAUSE, MODE_STEP_IN, MODE_STEP_OUT, MODE_STEP_
 use watch::WatchTable;
 
 pub use breakpoints::BpSpec;
-pub(crate) use threads::{ThreadControl, any_force_check};
+pub(crate) use threads::{StepStash, ThreadControl, any_force_check};
 pub(crate) use variants::DebugVariantTable;
 pub use watch::WatchSpec;
 
@@ -149,7 +149,7 @@ const fn unpack_frame(frame_id: usize) -> (i64, usize) {
 }
 
 /// Names resolved once at launch into `EngineShared::runtime_syms`.
-const RUNTIME_SYM_NAMES: [&str; 19] = [
+const RUNTIME_SYM_NAMES: [&str; 20] = [
     "olive_format_typed",
     "olive_debug_seq_len",
     "olive_debug_seq_get",
@@ -173,7 +173,18 @@ const RUNTIME_SYM_NAMES: [&str; 19] = [
     "olive_obj_set_typed",
     "olive_struct_alloc",
     "olive_enum_new",
+    // Async-stack reconstruction: the executor's own await graph, read to
+    // walk from a stopped `async fn` frame up through the suspended frames
+    // parked awaiting it (`EngineShared::async_parents`).
+    "olive_debug_sm_awaiter_frame",
 ];
+
+/// High bit of a `frame_id`'s local-index field, flagging a synthesized
+/// async-caller frame (`EngineShared::stack` appends these after a stopped
+/// `async fn`'s native frames). Its cells come from the parked frame's
+/// persistent shadow (`hooks::sm_frame_snapshot`), not this thread's live
+/// shadow stack, so `frame_cells` routes it to `async_frame_at` instead.
+const ASYNC_FRAME_FLAG: usize = 0x8000_0000;
 
 fn pack(file_id: usize, line: u32) -> i64 {
     ((file_id as i64) << 32) | (line as i64)
@@ -475,8 +486,8 @@ impl EngineShared {
         let Some(thread) = self.thread_control(thread_id) else {
             return Vec::new();
         };
-        thread
-            .stack_frames()
+        let native = thread.stack_frames();
+        let mut out: Vec<FrameSnapshot> = native
             .iter()
             .enumerate()
             .map(|(i, f)| {
@@ -484,22 +495,75 @@ impl EngineShared {
                 snap.frame_id = pack_frame(thread_id, i);
                 snap
             })
-            .collect()
+            .collect();
+
+        // If the outermost native frame is a state-machine `async fn` poll,
+        // continue the stack up the executor's await graph: each logical
+        // caller is a different task's `async fn` frame, suspended on the
+        // `await` that's waiting on this one, its state living in that frame's
+        // persistent shadow rather than on any live native stack.
+        let async_parents = native
+            .last()
+            .map(|outer| self.async_parents(outer.sm_frame_ptr))
+            .unwrap_or_default();
+        for (i, (fn_id, line, _)) in async_parents.iter().enumerate() {
+            let mut snap = self.snapshot_of(*fn_id, *line);
+            snap.frame_id = pack_frame(thread_id, ASYNC_FRAME_FLAG | i);
+            out.push(snap);
+        }
+        thread.set_async_frames(async_parents);
+        out
+    }
+
+    /// Walks the executor's await graph from the state-machine frame at
+    /// `frame_ptr` up through every suspended `async fn` frame parked awaiting
+    /// it, innermost caller first. Empty when `frame_ptr` is 0 (not a state
+    /// machine) or the frame has no awaiter (a root task). The bound guards
+    /// against a corrupt graph looping forever; a real await chain is short.
+    fn async_parents(&self, frame_ptr: i64) -> Vec<(u32, i64, Vec<i64>)> {
+        let mut out = Vec::new();
+        if frame_ptr == 0 {
+            return out;
+        }
+        let Some(sym) = self.runtime_symbol("olive_debug_sm_awaiter_frame") else {
+            return out;
+        };
+        let awaiter_of: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(sym) };
+        let mut fp = frame_ptr;
+        for _ in 0..4096 {
+            let parent = awaiter_of(fp);
+            if parent == 0 {
+                return out;
+            }
+            let Some(snap) = hooks::sm_frame_snapshot(parent) else {
+                return out;
+            };
+            out.push(snap);
+            fp = parent;
+        }
+        out
     }
 
     fn snapshot(&self, frame: &Frame) -> FrameSnapshot {
+        self.snapshot_of(frame.fn_id, frame.line)
+    }
+
+    /// A `FrameSnapshot` from a raw `fn_id` and packed line, for both a live
+    /// `Frame` (`snapshot`) and a synthesized async-caller frame, which has no
+    /// live `Frame` -- only the `(fn_id, line)` its persistent shadow recorded.
+    fn snapshot_of(&self, fn_id: u32, packed_line: i64) -> FrameSnapshot {
         let name = self
             .program
             .functions
             .iter()
-            .find(|f| f.fn_id == frame.fn_id)
+            .find(|f| f.fn_id == fn_id)
             .map(|f| f.name.clone())
             .unwrap_or_default();
-        let file_id = (frame.line >> 32) as usize;
-        let line = (frame.line & 0xFFFF_FFFF) as u32;
+        let file_id = (packed_line >> 32) as usize;
+        let line = (packed_line & 0xFFFF_FFFF) as u32;
         let file = self.file_names.get(&file_id).cloned().unwrap_or_default();
         FrameSnapshot {
-            fn_id: frame.fn_id,
+            fn_id,
             name,
             file,
             line,
@@ -531,7 +595,11 @@ impl EngineShared {
     /// parked or the local index is past the bottom of its stack.
     pub(crate) fn frame_cells(&self, frame_id: usize) -> Option<(u32, Vec<i64>)> {
         let (thread_id, local_idx) = unpack_frame(frame_id);
-        self.thread_control(thread_id)?.frame_at(local_idx)
+        let thread = self.thread_control(thread_id)?;
+        if local_idx & ASYNC_FRAME_FLAG != 0 {
+            return thread.async_frame_at(local_idx & !ASYNC_FRAME_FLAG);
+        }
+        thread.frame_at(local_idx)
     }
 
     /// Whether `frame_id` names the innermost frame of its thread -- the one

@@ -5,6 +5,14 @@ use cranelift::prelude::*;
 use cranelift_module::{FuncId, Module};
 use rustc_hash::FxHashMap as HashMap;
 
+/// Packed `(file_id << 32) | line` of the `await` statement an await point
+/// sits on, so `debug_sm_suspend` can record where the frame parked -- the
+/// same packing `mir::debug_hooks` uses for a breakpoint key.
+fn sm_await_line(func: &MirFunction, ap: &SmAwaitPoint) -> i64 {
+    let span = func.basic_blocks[ap.bb_idx].statements[ap.stmt_idx].span;
+    ((span.file_id as i64) << 32) | (span.line as i64)
+}
+
 impl<M: Module> CraneliftCodegen<M> {
     pub(super) fn analyze_async_sm(func: &MirFunction) -> Option<Vec<SmAwaitPoint>> {
         let n_bbs = func.basic_blocks.len();
@@ -69,11 +77,33 @@ impl<M: Module> CraneliftCodegen<M> {
         }
     }
 
+    /// Debug `fn_id` for `func` when this is a `pit debug` session's codegen,
+    /// so its poll can drive the persistent-shadow-frame hooks. `None` on a
+    /// plain `pit run`/AOT build, where the SM poll stays hook-free and the
+    /// state machine compiles byte-for-byte as before.
+    fn sm_debug_fn_id(&self, func: &MirFunction) -> Option<u32> {
+        if !self.debug_dual_variant {
+            return None;
+        }
+        let base = func.name.strip_suffix("$debug").unwrap_or(&func.name);
+        self.debug_sm_fn_ids.get(base).copied()
+    }
+
+    fn emit_debug_call(&mut self, builder: &mut FunctionBuilder, name: &str, args: &[Value]) {
+        let id = *self
+            .func_ids
+            .get(name)
+            .unwrap_or_else(|| panic!("missing {name}"));
+        let r = self.module.declare_func_in_func(id, builder.func);
+        builder.ins().call(r, args);
+    }
+
     pub(super) fn translate_async_sm_poll(
         &mut self,
         func: &MirFunction,
         await_points: &[SmAwaitPoint],
     ) {
+        let debug_fn_id = self.sm_debug_fn_id(func);
         let poll_name = format!("{}__sm_poll", func.name);
         let poll_id = *self.func_ids.get(&poll_name).expect("missing func");
         let num_locals = func.locals.len();
@@ -119,6 +149,10 @@ impl<M: Module> CraneliftCodegen<M> {
             builder.def_var(vars[&Local(i)], z);
         }
         builder.def_var(frame_var, frame_ptr);
+        if let Some(fid) = debug_fn_id {
+            let fidv = builder.ins().iconst(types::I64, fid as i64);
+            self.emit_debug_call(&mut builder, "__olive_debug_sm_resume", &[frame_ptr, fidv]);
+        }
         builder.ins().jump(dispatch_blk, &[]);
         builder.switch_to_block(dispatch_blk);
         builder.seal_block(dispatch_blk);
@@ -182,6 +216,11 @@ impl<M: Module> CraneliftCodegen<M> {
 
                 builder.seal_block(pend_blk);
                 builder.switch_to_block(pend_blk);
+                if debug_fn_id.is_some() {
+                    let fp = builder.use_var(frame_var);
+                    let line = builder.ins().iconst(types::I64, sm_await_line(func, ap));
+                    self.emit_debug_call(&mut builder, "__olive_debug_sm_suspend", &[fp, line]);
+                }
                 builder.ins().return_(&[pend_c]);
 
                 builder.seal_block(cont_blk);
@@ -261,6 +300,14 @@ impl<M: Module> CraneliftCodegen<M> {
                     builder.ins().store(mf, sub_fv, frame_sw, 8);
                     let new_st = builder.ins().iconst(types::I64, (ap_idx + 1) as i64);
                     builder.ins().store(mf, new_st, frame_sw, 0);
+                    if debug_fn_id.is_some() {
+                        let line = builder.ins().iconst(types::I64, sm_await_line(func, ap));
+                        self.emit_debug_call(
+                            &mut builder,
+                            "__olive_debug_sm_suspend",
+                            &[frame_sw, line],
+                        );
+                    }
                     let pv = builder.ins().iconst(types::I64, POLL_PENDING);
                     builder.ins().return_(&[pv]);
                 } else {
@@ -270,6 +317,20 @@ impl<M: Module> CraneliftCodegen<M> {
                             let frame_r = builder.use_var(frame_var);
                             let done_s = builder.ins().iconst(types::I64, -1i64);
                             builder.ins().store(mf, done_s, frame_r, 0);
+                            // Cache the result in the now-free sub-future slot so
+                            // a resuming caller that re-polls this completed
+                            // machine through `__olive_sm_poll` harvests the real
+                            // value (`done_blk` returns it), not a zero. The
+                            // executor only reads slot 8 on a Pending return, so
+                            // overwriting it on completion is safe.
+                            builder.ins().store(mf, ret_val, frame_r, 8);
+                            if debug_fn_id.is_some() {
+                                self.emit_debug_call(
+                                    &mut builder,
+                                    "__olive_debug_sm_done",
+                                    &[frame_r],
+                                );
+                            }
                             builder.ins().return_(&[ret_val]);
                         }
                         Some(TerminatorKind::Goto { target }) => {
@@ -313,9 +374,13 @@ impl<M: Module> CraneliftCodegen<M> {
             }
         }
 
+        // A re-poll of an already-completed machine (a resuming caller
+        // harvesting its result) returns the value cached in slot 8 by the
+        // completion path above, not zero.
         builder.switch_to_block(done_blk);
-        let z = builder.ins().iconst(types::I64, 0);
-        builder.ins().return_(&[z]);
+        let frame_done = builder.use_var(frame_var);
+        let cached = builder.ins().load(types::I64, mf, frame_done, 8);
+        builder.ins().return_(&[cached]);
 
         for seg_row in &seg_blks {
             for &blk in seg_row {

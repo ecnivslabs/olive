@@ -189,6 +189,39 @@ struct OliveSmFuture {
     cancelled: i64,
 }
 
+/// Debugger-only: the heap-frame pointer of the task logically awaiting the
+/// state-machine task whose own frame is `frame_ptr`, or 0 if none (the
+/// awaited task is a root, spawned rather than awaited). Lets a debug
+/// session reconstruct the async call stack -- the chain of suspended `async
+/// fn` frames parked on an `await` up from wherever the debuggee stopped --
+/// out of the executor's existing wait graph (`sm_waiters`), which already
+/// records exactly who is waiting on whom. Read-only, called from the
+/// controller thread while the debuggee is parked; clones the awaiter's
+/// `Arc` and drops the map lock before reading its frame so it never nests
+/// the two locks the executor itself takes in the opposite order.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_debug_sm_awaiter_frame(frame_ptr: i64) -> i64 {
+    let Some(ex) = EXECUTOR.get() else {
+        return 0;
+    };
+    let awaiter = {
+        let map = ex.task_map.lock().unwrap();
+        let task = map.values().find(|t| {
+            let sf = unsafe { &*(t.sm_future as *const OliveSmFuture) };
+            sf.frame == frame_ptr
+        });
+        let Some(task) = task else {
+            return 0;
+        };
+        task.sm_waiters.lock().unwrap().first().cloned()
+    };
+    let Some(w) = awaiter else {
+        return 0;
+    };
+    let wf = unsafe { &*(w.sm_future as *const OliveSmFuture) };
+    wf.frame
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_sm_poll(future: i64) -> i64 {
     if future == 0 {

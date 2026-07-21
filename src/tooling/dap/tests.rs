@@ -658,3 +658,138 @@ fn no_await_async_fn_hits_its_breakpoint_on_its_spawned_thread() {
     }
     std::fs::remove_file(&path).ok();
 }
+
+// A three-level async chain: `outer` awaits `inner` awaits `leaf`. `leaf`
+// has no await of its own (a non-SM spawn-task future), so the two
+// state-machine frames are `outer` and `inner`, each suspended on an await
+// of the next -- exactly the shape the executor's await graph links up.
+const SM_ASYNC_SRC: &str = concat!(
+    "import aio\n\n",                // 1, 2
+    "async fn leaf() -> int:\n",     // 3
+    "    return 7\n\n",              // 4, 5
+    "async fn inner() -> int:\n",    // 6
+    "    let mid = await leaf()\n",  // 7
+    "    return mid + 4\n\n",        // 8, 9
+    "async fn outer() -> int:\n",    // 10
+    "    let base = 100\n",          // 11
+    "    let got = await inner()\n", // 12
+    "    return base + got\n\n",     // 13, 14
+    "fn main():\n",                  // 15
+    "    let f = outer()\n",         // 16
+    "    let r = aio.run(f)\n",      // 17
+    "    print(r)\n",                // 18
+);
+
+/// Resumes whichever thread stopped until the process exits -- a state
+/// machine runs on executor worker threads, so the id to resume is never a
+/// fixed 1.
+fn drain_to_exit(session: &DebugSession) {
+    loop {
+        match session.events().recv().unwrap() {
+            DebugEvent::Exited(_) => return,
+            DebugEvent::Stopped { thread_id, .. } => session.cont(thread_id),
+            DebugEvent::Output(_)
+            | DebugEvent::ThreadStarted { .. }
+            | DebugEvent::ThreadExited { .. } => {}
+        }
+    }
+}
+
+/// End-to-end state-machine `async fn` debugging in one session -- the whole
+/// point of the SM shadow-frame work, exercised the way it runs in
+/// production. A single session (the `aio` executor pool is process-global
+/// and attaches to whichever session first spins it up, so one session per
+/// process is the real shape -- see the "Limitations" note in the debugger
+/// docs) drives the `outer` -> `inner` -> `leaf` chain and verifies, in the
+/// order they occur:
+///
+/// 1. A breakpoint fires inside `inner`, an `await`-containing async fn that
+///    lowers to a heap-frame state machine (breakpoints never used to reach
+///    such a body at all).
+/// 2. From that stop the call stack continues up the executor's await graph
+///    into `outer`, the logically-suspended frame parked on `await inner()`
+///    -- a frame on no live native stack, only in its own persistent shadow
+///    -- and that suspended frame's own local (`base`) is readable there.
+/// 3. Resuming, a breakpoint fires inside `outer` after it resumes past the
+///    await, with `base` intact across the suspend/resume and `got` holding
+///    the value the await produced.
+#[test]
+fn state_machine_async_debugging_end_to_end() {
+    let _guard = exec_lock();
+    let path = temp_file(SM_ASYNC_SRC);
+    let session = launch(path.to_str().unwrap(), false).expect("launch failed");
+
+    let verified = session.set_breakpoints(0, &[8, 13]);
+    assert_eq!(
+        verified,
+        vec![(8, true), (13, true)],
+        "both await-containing async fns' lines verify now"
+    );
+
+    // First stop: inside `inner`, at `return mid + 4`.
+    session.cont(1);
+    let inner_tid = loop {
+        match session.events().recv().unwrap() {
+            DebugEvent::Stopped {
+                reason,
+                frame,
+                thread_id,
+            } => {
+                assert_eq!(reason, StopReason::Breakpoint);
+                assert_eq!(frame.name, "inner");
+                assert_eq!(frame.line, 8);
+                break thread_id;
+            }
+            DebugEvent::ThreadStarted { .. }
+            | DebugEvent::ThreadExited { .. }
+            | DebugEvent::Output(_) => {}
+            other => panic!("unexpected {other:?}"),
+        }
+    };
+
+    let stack = session.stack(inner_tid);
+    assert!(
+        stack.len() >= 2,
+        "inner's frame plus its awaiting outer frame, got {stack:?}"
+    );
+    assert_eq!(stack[0].name, "inner");
+    assert_eq!(stack[0].line, 8);
+    assert_eq!(stack[1].name, "outer");
+    assert_eq!(stack[1].line, 12, "outer is parked on `await inner()`");
+    let outer_vars = values::frame_variables(&session, stack[1].frame_id);
+    assert_eq!(
+        var(&outer_vars, "base").value,
+        "100",
+        "the suspended awaiting frame's own local is readable"
+    );
+
+    // Second stop: back in `outer`, resumed past the await.
+    session.cont(inner_tid);
+    let outer_tid = loop {
+        match session.events().recv().unwrap() {
+            DebugEvent::Stopped {
+                frame, thread_id, ..
+            } => {
+                assert_eq!(frame.name, "outer");
+                assert_eq!(frame.line, 13);
+                break thread_id;
+            }
+            DebugEvent::ThreadStarted { .. }
+            | DebugEvent::ThreadExited { .. }
+            | DebugEvent::Output(_) => {}
+            other => panic!("unexpected {other:?}"),
+        }
+    };
+    let outer_frame = session.stack(outer_tid)[0].frame_id;
+    let vars = values::frame_variables(&session, outer_frame);
+    assert_eq!(var(&vars, "base").value, "100", "base survived the await");
+    assert_eq!(
+        var(&vars, "got").value,
+        "11",
+        "got holds the awaited result"
+    );
+
+    session.cont(outer_tid);
+    drain_to_exit(&session);
+    std::fs::remove_file(&path).ok();
+}

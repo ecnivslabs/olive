@@ -24,15 +24,55 @@ impl CraneliftCodegen<JITModule> {
         }
         let variant_name = format!("{}$debug", debug_func.name);
 
-        // `dispatch_ids` only ever holds a non-state-machine async fn here
-        // (a state-machine one never gets a cell, `setup/dispatch.rs`), so
-        // this is always the fallback shape: real body compiled separately,
-        // wrapped in a spawn-task wrapper -- exactly what `generate()`'s own
-        // async branch does for the clean variant. Compiling `debug_func`
-        // straight through `translate_function` under the `$debug` name (the
-        // old behavior here) produced the *raw body*, not a wrapper, so
-        // activating it made a call to the function run inline on whichever
-        // thread called it instead of on its own spawned thread.
+        // A state-machine `async fn` (a real `await` in its body) compiles to
+        // a heap-frame poll plus a wrapper that hands that poll to the
+        // executor. Its `$debug` variant is the same shape, only the poll is
+        // translated with the shadow-frame hooks (`sm_debug_fn_id` gates that
+        // on `debug_sm_fn_ids`), and the wrapper baked to hand the executor
+        // the `$debug` poll. The cell on the wrapper (`setup/dispatch.rs`)
+        // swaps callers between this and the clean wrapper.
+        if debug_func.is_async
+            && let Some(await_points) = Self::analyze_async_sm(debug_func)
+        {
+            let mut variant = debug_func.clone();
+            variant.name = variant_name.clone();
+
+            let poll_name = format!("{variant_name}__sm_poll");
+            let mut poll_sig = self.module.make_signature();
+            poll_sig.params.push(AbiParam::new(types::I64));
+            poll_sig.returns.push(AbiParam::new(types::I64));
+            let poll_id = self
+                .module
+                .declare_function(&poll_name, Linkage::Local, &poll_sig)
+                .unwrap();
+            self.func_ids.insert(poll_name, poll_id);
+
+            let mut wrapper_sig = self.module.make_signature();
+            for i in 0..variant.arg_count {
+                let ty = &variant.locals[i + 1].ty;
+                wrapper_sig
+                    .params
+                    .push(AbiParam::new(super::imports::cl_type(ty)));
+            }
+            wrapper_sig.returns.push(AbiParam::new(types::I64));
+            let wrapper_id = self
+                .module
+                .declare_function(&variant_name, Linkage::Local, &wrapper_sig)
+                .unwrap();
+            self.func_ids.insert(variant_name, wrapper_id);
+
+            self.translate_async_sm_poll(&variant, &await_points);
+            self.generate_sm_wrapper(&variant);
+            return Some(());
+        }
+
+        // A non-state-machine async fn (no `await` in its own body): real body
+        // compiled separately, wrapped in a spawn-task wrapper -- exactly what
+        // `generate()`'s own async branch does for the clean variant.
+        // Compiling `debug_func` straight through `translate_function` under
+        // the `$debug` name (an old behavior here) produced the *raw body*,
+        // not a wrapper, so activating it made a call to the function run
+        // inline on whichever thread called it instead of on its own thread.
         if debug_func.is_async {
             let body_name = format!("{variant_name}__async_body");
             let mut body = debug_func.clone();
@@ -169,17 +209,33 @@ mod tests {
     }
 
     #[test]
-    fn install_debug_variant_refuses_function_without_a_cell() {
+    fn install_debug_variant_compiles_a_state_machine_async_fn() {
         // `fetch` really awaits something, so it's state-machine-lowered
-        // (`analyze_async_sm` finds a real await point) and never gets a
-        // dispatch cell -- unlike a no-await async fn, which does now.
-        let src = "async fn inner() -> int:\n    return 1\nasync fn fetch() -> int:\n    let x = await inner()\n    return x\nfn main():\n    print(1)\n";
+        // (`analyze_async_sm` finds a real await point). It now gets a
+        // dispatch cell on its wrapper and its `$debug` variant compiles as a
+        // shadow-frame-instrumented poll plus a wrapper baked to that poll, so
+        // `tooling::dap::launch` can swap it in for breakpoints/stepping
+        // inside the state machine (end-to-end: `tooling::dap::tests::
+        // state_machine_async_debugging_end_to_end`).
+        let src = "async fn leaf() -> int:\n    return 1\nasync fn fetch() -> int:\n    let x = await leaf()\n    return x\nfn main():\n    print(1)\n";
         let mut cg = debug_dual_variant_codegen(src);
+        assert!(
+            cg.dispatch_ids.contains_key("fetch"),
+            "a state-machine async fn gets a wrapper cell under debug_dual_variant"
+        );
         let mut functions = build_mir(src);
         Optimizer::minimal().run(&mut functions);
         crate::mir::debug_hooks::instrument(&mut functions);
         let fetch = functions.iter().find(|f| f.name == "fetch").unwrap();
-        assert!(cg.install_debug_variant(fetch).is_none());
+        assert!(cg.install_debug_variant(fetch).is_some());
+        cg.finalize();
+
+        let clean_addr = cg.clean_variant_addr("fetch").unwrap();
+        let debug_addr = cg.debug_variant_addr("fetch").unwrap();
+        assert_ne!(
+            clean_addr, debug_addr,
+            "the $debug wrapper is a distinct body from the clean one"
+        );
     }
 
     #[test]

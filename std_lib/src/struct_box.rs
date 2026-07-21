@@ -67,6 +67,19 @@ pub(crate) fn set_inner(shell: i64, inner: i64) {
     unsafe { (*(shell as *mut OliveStructBox)).ptr = inner };
 }
 
+/// Narrowing a tag-encoded union back to its struct member: peel the box off
+/// and hand back the raw struct pointer, the same non-consuming peek
+/// `olive_unbox_int`/`olive_unbox_float` do for their own member types. The
+/// box itself is left alone; it drops normally through the union local that
+/// still owns it.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_struct_unbox(val: i64) -> i64 {
+    if val == 0 {
+        return 0;
+    }
+    unsafe { (*(val as *const OliveStructBox)).ptr }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

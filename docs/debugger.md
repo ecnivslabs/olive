@@ -174,18 +174,40 @@ stack, breakpoints, and stepping, entirely independent of the main thread's
 (the DAP protocol's `threads` request and the headless `threads` command list
 every one; a `stopped` event names exactly which thread hit it).
 
+## Async functions
+
+An `async fn` that `await`s something compiles to a heap-frame state machine:
+its body suspends back to the executor at every `await` and resumes later,
+possibly on a different executor thread. Breakpoints, stepping, variable
+inspection, `setVariable`, and fault stops all work inside such a function
+just as they do in ordinary code. Named locals persist across a suspend --
+a value set before an `await` reads back correctly after it -- because the
+frame's shadow travels with the state machine rather than living on any one
+native call stack.
+
+The call stack of a stopped `async fn` continues past its own frames up the
+chain of callers that are suspended awaiting it: each is another `async fn`
+frame, parked on its own `await`, shown at the line it suspended on with its
+own locals readable. This is the logical async stack (reconstructed from the
+executor's await graph), not the executor's physical worker-thread stack.
+
+A step that crosses an `await` follows the frame across the suspension: a
+`next` over a line that awaits stops on the following line once the awaited
+work resolves and the frame is polled again. A `step out` finishes the
+`async fn` and stops wherever its own completion runs, not in the logical
+awaiter -- that frame resumes as an independent executor task.
+
 ## Limitations
 
-* An `async fn` that itself `await`s something compiles to a heap-allocated
-  state machine whose suspend/resume-across-poll frame shape the debugger's
-  shadow-call-stack model can't represent yet, so breakpoints and stepping
-  inside one don't fire and its locals aren't visible. An `async fn` with no
-  `await` in its own body runs on a real spawned OS thread with no such
-  restriction -- it's instrumented exactly like ordinary code, see "Multi-
-  threaded programs" above. Non-async code calling into either steps over
-  the call like any other.
 * One debug session per `pit` process. Launching a second session in the
   same process while one is active fails; end the first with `disconnect`
   (DAP) or `quit` (headless) first, or start a second `pit dap`/`pit debug`
   process for a genuinely concurrent session -- the same thing every DAP
-  client (including VS Code) already does per debug session.
+  client (including VS Code) already does per debug session. This is intrinsic
+  to the process-global, zero-overhead hook design, not a gap to close: the
+  runtime hooks a debug session installs are process-wide, and threading a
+  per-session handle through every statement hook would tax the hot path for
+  a concurrency every real client already gets by running one process per
+  session. `aio`'s executor pool is likewise process-global and binds to
+  whichever session first spins it up, so a single session per process is the
+  shape the whole model assumes.

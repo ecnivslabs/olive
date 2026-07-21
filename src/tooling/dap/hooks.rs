@@ -49,6 +49,12 @@ pub(crate) struct Frame {
     pub(crate) fn_id: u32,
     pub(crate) line: i64,
     pub(crate) cells: Vec<i64>,
+    /// Nonzero only for the shadow frame of a state-machine `async fn` poll:
+    /// the heap-frame pointer that identifies its suspended state across
+    /// polls, so a stack request can walk the executor's await graph up into
+    /// the logical callers that are parked waiting on this one (`engine`'s
+    /// async-stack reconstruction). Zero for every ordinary frame.
+    pub(crate) sm_frame_ptr: i64,
 }
 
 // Combined session + breakpoint snapshot. Replaces two separate
@@ -107,6 +113,7 @@ pub(crate) fn install_session(shared: Arc<EngineShared>) -> Result<(), ()> {
         return Err(());
     }
     set_stop_on_fault(true);
+    clear_sm_frames();
     WATCH_ACTIVE.store(false, Ordering::Relaxed);
     SINGLE_BP_LINE.store(-1, Ordering::Relaxed);
     SINGLE_WATCH_KEY.store(-1, Ordering::Relaxed);
@@ -129,6 +136,7 @@ pub(crate) fn install_session(shared: Arc<EngineShared>) -> Result<(), ()> {
 
 pub(crate) fn clear_session() {
     *session_state().write().unwrap() = None;
+    clear_sm_frames();
     WATCH_ACTIVE.store(false, Ordering::Relaxed);
     SINGLE_BP_LINE.store(-1, Ordering::Relaxed);
     SINGLE_WATCH_KEY.store(-1, Ordering::Relaxed);
@@ -463,6 +471,7 @@ pub extern "C" fn debug_enter(fn_id: i64) {
             fn_id: fid,
             line: 0,
             cells: vec![0; cell_count],
+            sm_frame_ptr: 0,
         });
     });
 }
@@ -556,6 +565,144 @@ pub extern "C" fn debug_load(cell_idx: i64) -> i64 {
     })
 }
 
+/// The persistent shadow frame of one state-machine `async fn` poll,
+/// keyed by its heap-frame pointer in `SM_FRAMES`. Its whole reason to exist
+/// is that such a frame's locals outlive any single native call: the poll
+/// returns to the executor at every `await`, unwinding the native stack (and
+/// the thread-local `FRAMES` with it), then resumes on a later, possibly
+/// different, executor thread. This carries the named-cell mirror, current
+/// line, and any in-flight step across that gap so the frame looks continuous
+/// to the debugger even though its native call stack is torn down and rebuilt
+/// on every poll.
+struct SmDebugFrame {
+    fn_id: u32,
+    line: i64,
+    cells: Vec<i64>,
+    /// A step that was mid-flight when this frame last suspended, re-armed on
+    /// the resuming thread by `debug_sm_resume`.
+    saved_step: Option<super::engine::StepStash>,
+}
+
+/// Live SM poll frames, keyed by heap-frame pointer. Present only during a
+/// debug session; every entry is created lazily on a frame's first poll and
+/// removed when its `async fn` completes (`debug_sm_done`) or the session
+/// tears down (`clear_session`). Keyed by the frame pointer the poll already
+/// carries, so no frame-layout change and no per-future header word is needed.
+static SM_FRAMES: OnceLock<RwLock<FxHashMap<i64, SmDebugFrame>>> = OnceLock::new();
+
+fn sm_frames() -> &'static RwLock<FxHashMap<i64, SmDebugFrame>> {
+    SM_FRAMES.get_or_init(|| RwLock::new(FxHashMap::default()))
+}
+
+/// Pushes a state-machine `async fn` frame's persistent shadow onto this
+/// thread's `FRAMES` for the duration of one poll, creating it on the first
+/// poll (sized from `fn_id`'s cell count, exactly as `debug_enter` sizes an
+/// ordinary frame). The instrumented poll body's own `debug_stmt`/`store`/
+/// `load` hooks then operate on it as the current top frame, unchanged from
+/// how they treat any frame. `debug_sm_suspend`/`debug_sm_done` write it back
+/// and pop it. Emitted by codegen at the top of every poll, so unlike
+/// `debug_enter` (once per logical call) it runs once per poll invocation --
+/// the frame's continuity lives in `SM_FRAMES`, not in a matched enter/exit.
+pub extern "C" fn debug_sm_resume(frame_ptr: i64, fn_id: i64) {
+    if !DEBUGGEE_ENABLED.get() {
+        return;
+    }
+    // A completed poll (state word `-1`) is still re-polled inline when a
+    // resuming caller harvests its result through `__olive_sm_poll`; that
+    // re-entry runs no body and must not push a frame, or the caller's own
+    // poll would resume on top of a stale sub-frame. Nothing to track once
+    // the machine is done.
+    if unsafe { *(frame_ptr as *const i64) } < 0 {
+        return;
+    }
+    let fid = fn_id as u32;
+    let mut map = sm_frames().write().unwrap();
+    let sf = map.entry(frame_ptr).or_insert_with(|| {
+        let cell_count = session_state()
+            .read()
+            .unwrap()
+            .as_ref()
+            .and_then(|s| s.shared.as_ref())
+            .and_then(|s| s.cell_count(fid))
+            .unwrap_or(0);
+        SmDebugFrame {
+            fn_id: fid,
+            line: 0,
+            cells: vec![0; cell_count],
+            saved_step: None,
+        }
+    });
+    let frame = Frame {
+        fn_id: sf.fn_id,
+        line: sf.line,
+        cells: sf.cells.clone(),
+        sm_frame_ptr: frame_ptr,
+    };
+    let step = sf.saved_step.take();
+    drop(map);
+    FRAMES.with_borrow_mut(|frames| frames.push(frame));
+    if let Some(stash) = step
+        && let Some(ctl) = my_thread_ctl()
+    {
+        ctl.restore_step_stash(stash);
+    }
+}
+
+/// Writes the just-polled SM frame's mirror back into `SM_FRAMES` and pops it
+/// off `FRAMES`, called before every `POLL_PENDING` return in the poll. If
+/// this thread was mid-step, the step is captured here and re-armed by
+/// `debug_sm_resume` on the next poll, so a `next`/`step` that spans an
+/// `await` follows the frame across the suspension instead of leaking onto
+/// whatever unrelated task this executor thread runs next.
+pub extern "C" fn debug_sm_suspend(frame_ptr: i64, packed_line: i64) {
+    if !DEBUGGEE_ENABLED.get() {
+        return;
+    }
+    let popped = FRAMES.with_borrow_mut(|frames| frames.pop());
+    let stash = my_thread_ctl().and_then(|ctl| ctl.take_step_stash());
+    if let Some(top) = popped {
+        let mut map = sm_frames().write().unwrap();
+        if let Some(sf) = map.get_mut(&frame_ptr) {
+            // The await's own source line, so a caller walking the async
+            // stack sees this frame parked exactly on the `await` -- the
+            // per-line `debug_stmt` hook only runs its update on a
+            // breakpoint/step hit, which a plain suspend isn't.
+            sf.line = packed_line;
+            sf.cells = top.cells;
+            sf.saved_step = stash;
+        }
+    }
+}
+
+/// Pops the completed SM frame off `FRAMES` and drops its `SM_FRAMES` entry,
+/// called on the poll's real return (the `async fn` ran to completion). No
+/// write-back: nothing polls this frame again.
+pub extern "C" fn debug_sm_done(frame_ptr: i64) {
+    if !DEBUGGEE_ENABLED.get() {
+        return;
+    }
+    FRAMES.with_borrow_mut(|frames| {
+        frames.pop();
+    });
+    sm_frames().write().unwrap().remove(&frame_ptr);
+}
+
+/// A suspended SM frame's `(fn_id, line, cells)`, read by `engine`'s
+/// async-stack reconstruction to render a logical caller that's parked
+/// awaiting the frame the debuggee actually stopped in. `None` if the frame
+/// isn't tracked (already completed, or never a debug-variant future).
+pub(crate) fn sm_frame_snapshot(frame_ptr: i64) -> Option<(u32, i64, Vec<i64>)> {
+    let map = sm_frames().read().unwrap();
+    let sf = map.get(&frame_ptr)?;
+    Some((sf.fn_id, sf.line, sf.cells.clone()))
+}
+
+fn clear_sm_frames() {
+    if let Some(m) = SM_FRAMES.get() {
+        m.write().unwrap().clear();
+    }
+}
+
 /// Installed once at launch via `olive_debug_set_fault_hook`, called from
 /// inside `abort_with` on whatever thread panicked -- the main debuggee
 /// thread or a traced aio worker, either way `MY_THREAD_CTL` names it. Parks
@@ -586,7 +733,7 @@ pub extern "C" fn debug_fault_hook(code_ptr: i64, msg_ptr: i64, _loc_ptr: i64) {
 /// Symbols registered unconditionally into every JIT module. Nothing calls
 /// through them unless a debug session instrumented the MIR first, so a
 /// registered-but-unused symbol costs nothing at runtime.
-pub fn jit_symbols() -> [(&'static str, *const u8); 6] {
+pub fn jit_symbols() -> [(&'static str, *const u8); 9] {
     [
         (
             "__olive_debug_should_check_stmt",
@@ -597,6 +744,9 @@ pub fn jit_symbols() -> [(&'static str, *const u8); 6] {
         ("__olive_debug_store", debug_store as *const u8),
         ("__olive_debug_exit", debug_exit as *const u8),
         ("__olive_debug_load", debug_load as *const u8),
+        ("__olive_debug_sm_resume", debug_sm_resume as *const u8),
+        ("__olive_debug_sm_suspend", debug_sm_suspend as *const u8),
+        ("__olive_debug_sm_done", debug_sm_done as *const u8),
     ]
 }
 

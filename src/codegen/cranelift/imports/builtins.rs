@@ -196,6 +196,7 @@ pub(crate) fn resolve_builtin_import(
             "__olive_any_eq_strict" => Some("__olive_any_eq_strict"),
             "__olive_any_ne_strict" => Some("__olive_any_ne_strict"),
             "__olive_struct_box" => Some("__olive_struct_box"),
+            "__olive_struct_unbox" => Some("__olive_struct_unbox"),
             "__olive_list_concat" => Some("__olive_list_concat"),
             "__olive_list_concat_typed" => Some("__olive_list_concat_typed"),
             "__olive_list_getslice_typed" => Some("__olive_list_getslice_typed"),
