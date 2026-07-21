@@ -4,53 +4,31 @@ use std::fs;
 use flate2::read::GzDecoder;
 use tar::Archive;
 
+use crate::tooling::target;
+
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 fn get_repo() -> String {
     env::var("PIT_UPSTREAM_REPO").unwrap_or_else(|_| "ecnivslabs/olive".to_string())
 }
 
-fn target_triple() -> Option<&'static str> {
-    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        Some("pit-linux-x86_64")
-    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
-        Some("pit-linux-aarch64")
-    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
-        Some("pit-macos-x86_64")
-    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        Some("pit-macos-aarch64")
-    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        Some("pit-windows-x86_64.exe")
+/// Release asset name for the `pit` binary itself on this host, e.g.
+/// `pit-linux-x86_64` or `pit-windows-x86_64.exe`. Distinct from
+/// `target::asset_name`, which names a shared library, not an executable.
+fn target_triple() -> Option<String> {
+    let key = target::host()?;
+    Some(if key == "windows-x86_64" {
+        format!("pit-{key}.exe")
     } else {
-        None
-    }
+        format!("pit-{key}")
+    })
 }
 
-fn target_lib_triple() -> Option<&'static str> {
-    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        Some("libolive_std-linux-x86_64.so")
-    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
-        Some("libolive_std-linux-aarch64.so")
-    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
-        Some("libolive_std-macos-x86_64.dylib")
-    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        Some("libolive_std-macos-aarch64.dylib")
-    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        Some("libolive_std-windows-x86_64.dll")
-    } else {
-        None
-    }
+fn target_lib_triple() -> Option<String> {
+    target::asset_name("olive_std", target::host()?)
 }
 
-fn target_lib_file() -> Option<&'static str> {
-    if cfg!(target_os = "linux") {
-        Some("libolive_std.so")
-    } else if cfg!(target_os = "macos") {
-        Some("libolive_std.dylib")
-    } else if cfg!(target_os = "windows") {
-        Some("libolive_std.dll")
-    } else {
-        None
-    }
+fn target_lib_file() -> Option<String> {
+    target::local_name("olive_std")
 }
 
 fn fetch_latest_tag() -> Result<String, String> {
@@ -164,14 +142,14 @@ pub fn upgrade() -> Result<(), String> {
         repo, latest, artifact
     );
     let bin_buf = download_artifact(&client, &bin_url)?;
-    verify_blake3(&bin_buf, artifact, &checksums)?;
+    verify_blake3(&bin_buf, &artifact, &checksums)?;
 
     let lib_url = format!(
         "https://github.com/{}/releases/download/{}/{}",
         repo, latest, lib_artifact
     );
     let lib_buf = download_artifact(&client, &lib_url)?;
-    verify_blake3(&lib_buf, lib_artifact, &checksums)?;
+    verify_blake3(&lib_buf, &lib_artifact, &checksums)?;
 
     let src_artifact = "olive-src.tar.gz";
     let source_url = format!(
@@ -205,7 +183,7 @@ pub fn upgrade() -> Result<(), String> {
 
     fs::create_dir_all(&lib_dir).map_err(|e| format!("could not create lib directory: {}", e))?;
 
-    let lib_path = lib_dir.join(lib_file);
+    let lib_path = lib_dir.join(&lib_file);
     let lib_tmp = lib_path.with_extension("tmp");
     fs::write(&lib_tmp, &lib_buf).map_err(|e| format!("could not write lib tmp file: {}", e))?;
 
