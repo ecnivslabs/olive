@@ -1,31 +1,22 @@
 //! Conditional breakpoints, hit counts, and logpoints. Parsed once when a
 //! breakpoint is set (`engine::EngineShared::set_breakpoints_with`), then
 //! evaluated inside the stmt hook's stop path, only after the packed-line
-//! hash has already matched a set breakpoint. Path operands reuse `eval.rs`'s
-//! tokenizer; descending through a container reuses `values.rs`'s type
-//! dispatch. Neither needs a parked session: the frame handed in here is the
+//! hash has already matched a set breakpoint. Operands are `eval.rs`'s
+//! arithmetic expressions (paths, literals, `+ - * / %`, parens); this
+//! module adds only the boolean layer (`and`/`or`/`not`/comparisons) on
+//! top. Neither needs a parked session: the frame handed in here is the
 //! raw snapshot the hook just captured, read before any stop decision.
 
 use super::engine::EngineShared;
-use super::eval::{self, Token};
+use super::eval::{self, AExpr, ArithParser, Value};
 use super::hooks::Frame;
-use super::values;
-use crate::semantic::type_descriptor::concrete_ty;
-use crate::semantic::types::Type;
 
 pub(crate) enum Expr {
     Or(Box<Expr>, Box<Expr>),
     And(Box<Expr>, Box<Expr>),
     Not(Box<Expr>),
-    Cmp(Operand, CmpOp, Operand),
-    Truthy(Operand),
-}
-
-pub(crate) enum Operand {
-    Path(Vec<Token>),
-    Int(i64),
-    Bool(bool),
-    Str(String),
+    Cmp(AExpr, CmpOp, AExpr),
+    Truthy(AExpr),
 }
 
 #[derive(Clone, Copy)]
@@ -47,27 +38,9 @@ const CMP_OPS: [(&str, CmpOp); 6] = [
     (">", CmpOp::Gt),
 ];
 
-enum Value {
-    Int(i64),
-    Float(f64),
-    Bool(bool),
-    Str(String),
-}
-
-impl std::fmt::Display for Value {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Value::Int(n) => write!(f, "{n}"),
-            Value::Float(n) => write!(f, "{n}"),
-            Value::Bool(b) => write!(f, "{b}"),
-            Value::Str(s) => write!(f, "{s}"),
-        }
-    }
-}
-
 pub(crate) enum LogPart {
     Text(String),
-    Expr(Vec<Token>),
+    Expr(AExpr),
 }
 
 pub(crate) type LogTemplate = Vec<LogPart>;
@@ -114,12 +87,10 @@ pub(crate) fn parse_hit_condition(s: &str) -> Result<HitCondition, String> {
 
 pub(crate) fn parse_condition(src: &str) -> Result<Expr, String> {
     let mut p = Parser {
-        chars: src.chars().collect(),
-        pos: 0,
+        arith: ArithParser::new(src),
     };
     let e = p.parse_or()?;
-    p.skip_ws();
-    if p.pos != p.chars.len() {
+    if !p.arith.at_end() {
         return Err(format!("unexpected trailing input in condition '{src}'"));
     }
     Ok(e)
@@ -145,7 +116,7 @@ pub(crate) fn parse_log_template(template: &str) -> Result<LogTemplate, String> 
                     return Err(format!("unterminated '{{' in log message '{template}'"));
                 }
                 let inner: String = chars[start..i].iter().collect();
-                parts.push(LogPart::Expr(eval::tokenize(inner.trim())?));
+                parts.push(LogPart::Expr(eval::parse_arith(inner.trim())?));
                 i += 1;
             }
             '}' => return Err(format!("unmatched '}}' in log message '{template}'")),
@@ -166,7 +137,7 @@ pub(crate) fn render_log(shared: &EngineShared, top: &Frame, template: &LogTempl
     for part in template {
         match part {
             LogPart::Text(t) => out.push_str(t),
-            LogPart::Expr(tokens) => match resolve_tokens(shared, top, tokens) {
+            LogPart::Expr(expr) => match eval::eval_arith(shared, top.fn_id, &top.cells, expr) {
                 Ok(v) => out.push_str(&v.to_string()),
                 Err(e) => out.push_str(&format!("<{e}>")),
             },
@@ -182,84 +153,14 @@ pub(crate) fn eval_expr(shared: &EngineShared, top: &Frame, expr: &Expr) -> Resu
         Expr::And(l, r) => Ok(eval_expr(shared, top, l)? && eval_expr(shared, top, r)?),
         Expr::Not(e) => Ok(!eval_expr(shared, top, e)?),
         Expr::Cmp(a, op, b) => {
-            let av = resolve_operand(shared, top, a)?;
-            let bv = resolve_operand(shared, top, b)?;
+            let av = eval::eval_arith(shared, top.fn_id, &top.cells, a)?;
+            let bv = eval::eval_arith(shared, top.fn_id, &top.cells, b)?;
             compare(*op, av, bv)
         }
-        Expr::Truthy(a) => match resolve_operand(shared, top, a)? {
+        Expr::Truthy(a) => match eval::eval_arith(shared, top.fn_id, &top.cells, a)? {
             Value::Bool(b) => Ok(b),
             other => Err(format!("expected a bool condition, found {other}")),
         },
-    }
-}
-
-fn resolve_operand(shared: &EngineShared, top: &Frame, op: &Operand) -> Result<Value, String> {
-    match op {
-        Operand::Int(n) => Ok(Value::Int(*n)),
-        Operand::Bool(b) => Ok(Value::Bool(*b)),
-        Operand::Str(s) => Ok(Value::Str(s.clone())),
-        Operand::Path(tokens) => resolve_tokens(shared, top, tokens),
-    }
-}
-
-/// Root + descent for a path operand, against the frame the hook just
-/// captured rather than the "parked" state `eval.rs`'s `evaluate` reads --
-/// this runs before any stop decision, so nothing has parked yet.
-fn resolve_tokens(shared: &EngineShared, top: &Frame, tokens: &[Token]) -> Result<Value, String> {
-    let Some(Token::Ident(root)) = tokens.first() else {
-        return Err("empty path".to_string());
-    };
-    let cells = shared.fn_cells(top.fn_id);
-    let idx = cells
-        .iter()
-        .position(|c| c.name == *root)
-        .ok_or_else(|| format!("no such variable: {root}"))?;
-    let mut raw = top.cells.get(idx).copied().unwrap_or(0);
-    let mut ty = cells[idx].ty.clone();
-
-    for tok in &tokens[1..] {
-        let key = eval::token_key(tok);
-        let (_, cval, cty) = values::children_raw(shared, raw, &ty)
-            .into_iter()
-            .find(|(n, _, _)| *n == key)
-            .ok_or_else(|| format!("no such member: {key}"))?;
-        raw = cval;
-        ty = cty;
-    }
-    decode_value(shared, raw, &ty)
-}
-
-fn decode_value(shared: &EngineShared, raw: i64, ty: &Type) -> Result<Value, String> {
-    // Tag-encoded unions decode via the runtime, keeping the box layout
-    // out of pit.
-    if ty.is_tag_encoded_union() {
-        let Some((kind, payload)) = values::any_decode(shared, raw) else {
-            return Err("runtime decoder unavailable".to_string());
-        };
-        return match kind {
-            0 => Err("value is None".to_string()),
-            2 => Ok(Value::Bool(payload != 0)),
-            3 => Ok(Value::Float(f64::from_bits(payload as u64))),
-            4 => Ok(Value::Str(values::str_value(shared, payload))),
-            5 => Err("cannot use a struct or collection union member in a condition".to_string()),
-            _ => Ok(Value::Int(payload)),
-        };
-    }
-    match concrete_ty(ty) {
-        Type::Bool => Ok(Value::Bool(raw != 0)),
-        Type::Str => Ok(Value::Str(values::str_value(shared, raw))),
-        Type::F32 => Ok(Value::Float(f32::from_bits(raw as u32) as f64)),
-        Type::Float => Ok(Value::Float(f64::from_bits(raw as u64))),
-        Type::Int
-        | Type::I8
-        | Type::I16
-        | Type::I32
-        | Type::U8
-        | Type::U16
-        | Type::U32
-        | Type::U64
-        | Type::Usize => Ok(Value::Int(raw)),
-        other => Err(format!("cannot use a {other} value in a condition")),
     }
 }
 
@@ -286,44 +187,17 @@ fn apply<T: PartialOrd>(op: CmpOp, a: T, b: T) -> bool {
     }
 }
 
+/// The boolean layer (`or`/`and`/`not`/comparisons) wrapped around
+/// `eval.rs`'s arithmetic-expression parser, sharing its character
+/// position so both grammars scan one continuous input.
 struct Parser {
-    chars: Vec<char>,
-    pos: usize,
+    arith: ArithParser,
 }
 
 impl Parser {
-    fn skip_ws(&mut self) {
-        while matches!(self.chars.get(self.pos), Some(c) if c.is_whitespace()) {
-            self.pos += 1;
-        }
-    }
-
-    fn peek_word(&mut self, word: &str) -> bool {
-        self.skip_ws();
-        let w: Vec<char> = word.chars().collect();
-        if self.pos + w.len() > self.chars.len() {
-            return false;
-        }
-        if self.chars[self.pos..self.pos + w.len()] != w[..] {
-            return false;
-        }
-        self.chars
-            .get(self.pos + w.len())
-            .is_none_or(|&c| !eval::is_ident_char(c))
-    }
-
-    fn eat_word(&mut self, word: &str) -> bool {
-        if self.peek_word(word) {
-            self.pos += word.chars().count();
-            true
-        } else {
-            false
-        }
-    }
-
     fn parse_or(&mut self) -> Result<Expr, String> {
         let mut lhs = self.parse_and()?;
-        while self.eat_word("or") {
+        while self.arith.eat_word("or") {
             lhs = Expr::Or(Box::new(lhs), Box::new(self.parse_and()?));
         }
         Ok(lhs)
@@ -331,138 +205,36 @@ impl Parser {
 
     fn parse_and(&mut self) -> Result<Expr, String> {
         let mut lhs = self.parse_not()?;
-        while self.eat_word("and") {
+        while self.arith.eat_word("and") {
             lhs = Expr::And(Box::new(lhs), Box::new(self.parse_not()?));
         }
         Ok(lhs)
     }
 
     fn parse_not(&mut self) -> Result<Expr, String> {
-        if self.eat_word("not") {
+        if self.arith.eat_word("not") {
             return Ok(Expr::Not(Box::new(self.parse_not()?)));
         }
         self.parse_comparison()
     }
 
     fn parse_comparison(&mut self) -> Result<Expr, String> {
-        let lhs = self.parse_operand()?;
-        self.skip_ws();
+        let lhs = self.arith.parse_add_sub()?;
+        self.arith.skip_ws();
         match self.try_cmp_op() {
-            Some(op) => Ok(Expr::Cmp(lhs, op, self.parse_operand()?)),
+            Some(op) => Ok(Expr::Cmp(lhs, op, self.arith.parse_add_sub()?)),
             None => Ok(Expr::Truthy(lhs)),
         }
     }
 
     fn try_cmp_op(&mut self) -> Option<CmpOp> {
         for (text, op) in CMP_OPS {
-            let t: Vec<char> = text.chars().collect();
-            if self.chars[self.pos..].starts_with(&t[..]) {
-                self.pos += t.len();
+            if self.arith.remaining_starts_with(text) {
+                self.arith.advance(text.chars().count());
                 return Some(op);
             }
         }
         None
-    }
-
-    fn parse_operand(&mut self) -> Result<Operand, String> {
-        self.skip_ws();
-        match self.chars.get(self.pos) {
-            Some('"') => self.parse_string_literal().map(Operand::Str),
-            Some(c) if c.is_ascii_digit() => self.parse_int_literal().map(Operand::Int),
-            Some('-')
-                if self
-                    .chars
-                    .get(self.pos + 1)
-                    .is_some_and(char::is_ascii_digit) =>
-            {
-                self.parse_int_literal().map(Operand::Int)
-            }
-            Some(&c) if eval::is_ident_char(c) => {
-                if self.eat_word("true") {
-                    return Ok(Operand::Bool(true));
-                }
-                if self.eat_word("false") {
-                    return Ok(Operand::Bool(false));
-                }
-                self.parse_path().map(Operand::Path)
-            }
-            _ => Err(format!(
-                "unexpected input at position {} in condition",
-                self.pos
-            )),
-        }
-    }
-
-    fn parse_int_literal(&mut self) -> Result<i64, String> {
-        let start = self.pos;
-        if self.chars.get(self.pos) == Some(&'-') {
-            self.pos += 1;
-        }
-        while matches!(self.chars.get(self.pos), Some(c) if c.is_ascii_digit()) {
-            self.pos += 1;
-        }
-        let text: String = self.chars[start..self.pos].iter().collect();
-        text.parse()
-            .map_err(|_| format!("invalid integer literal '{text}'"))
-    }
-
-    fn parse_string_literal(&mut self) -> Result<String, String> {
-        self.pos += 1;
-        let mut s = String::new();
-        loop {
-            match self.chars.get(self.pos) {
-                None => return Err("unterminated string literal".to_string()),
-                Some('"') => {
-                    self.pos += 1;
-                    break;
-                }
-                Some('\\') if self.chars.get(self.pos + 1).is_some() => {
-                    s.push(self.chars[self.pos + 1]);
-                    self.pos += 2;
-                }
-                Some(&c) => {
-                    s.push(c);
-                    self.pos += 1;
-                }
-            }
-        }
-        Ok(s)
-    }
-
-    /// Scans an `ident ('.' ident | '[' ... ']')*` span out of the larger
-    /// expression, then hands it to `eval::tokenize` so the tokens it
-    /// produces are identical to the `evaluate` request's.
-    fn parse_path(&mut self) -> Result<Vec<Token>, String> {
-        let start = self.pos;
-        while matches!(self.chars.get(self.pos), Some(&c) if eval::is_ident_char(c)) {
-            self.pos += 1;
-        }
-        loop {
-            match self.chars.get(self.pos) {
-                Some('.') => {
-                    self.pos += 1;
-                    while matches!(self.chars.get(self.pos), Some(&c) if eval::is_ident_char(c)) {
-                        self.pos += 1;
-                    }
-                }
-                Some('[') => {
-                    self.pos += 1;
-                    let mut in_str = false;
-                    while let Some(&c) = self.chars.get(self.pos) {
-                        self.pos += 1;
-                        match c {
-                            '\\' if in_str => self.pos += 1,
-                            '"' => in_str = !in_str,
-                            ']' if !in_str => break,
-                            _ => {}
-                        }
-                    }
-                }
-                _ => break,
-            }
-        }
-        let text: String = self.chars[start..self.pos].iter().collect();
-        eval::tokenize(&text)
     }
 }
 
@@ -477,6 +249,13 @@ mod tests {
         assert!(parse_condition("not flag or i < 10").is_ok());
         assert!(parse_condition("name == \"bob\"").is_ok());
         assert!(parse_condition("xs[0].x >= 5").is_ok());
+    }
+
+    #[test]
+    fn parses_arithmetic_in_operands() {
+        assert!(parse_condition("i + 1 == 500").is_ok());
+        assert!(parse_condition("i == count * 2 - 1").is_ok());
+        assert!(parse_condition("(i + 1) % 2 == 0").is_ok());
     }
 
     #[test]
@@ -503,5 +282,10 @@ mod tests {
         let t = parse_log_template("i is {i}, done").unwrap();
         assert_eq!(t.len(), 3);
         assert!(parse_log_template("unterminated {i").is_err());
+    }
+
+    #[test]
+    fn log_template_expr_accepts_arithmetic() {
+        assert!(parse_log_template("i+1 is {i + 1}").is_ok());
     }
 }

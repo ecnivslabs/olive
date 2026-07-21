@@ -59,6 +59,16 @@ pub extern "C" fn olive_int_abs(x: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn olive_math_wrapping_mul(a: i64, b: i64) -> i64 {
+    a.wrapping_mul(b)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_math_wrapping_add(a: i64, b: i64) -> i64 {
+    a.wrapping_add(b)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn olive_math_round_to_int(x: f64) -> i64 {
     x.round() as i64
 }

@@ -598,3 +598,63 @@ fn a_manually_spawned_worker_thread_hits_its_own_breakpoint_independently_of_mai
     drop(session);
     std::fs::remove_file(&path).ok();
 }
+
+/// A real `async fn` with no reachable `await` in its own body compiles
+/// through the ordinary path and runs on its own `olive_spawn_task` thread
+/// (`mir::debug_hooks::is_state_machine_async` is false for it), so it now
+/// gets full instrumentation like any other function -- breakpoints,
+/// stepping, and locals all work exactly as they would if `worker` weren't
+/// `async` at all. `main` calls `aio.run` to block on the future so the
+/// process can't exit before the spawned thread reaches its breakpoint.
+#[test]
+fn no_await_async_fn_hits_its_breakpoint_on_its_spawned_thread() {
+    let _guard = exec_lock();
+    let src = "import aio\n\nasync fn worker(n: int) -> int:\n    let x = n + 1\n    print(x)\n    return x\n\nfn main():\n    let f = worker(5)\n    let r = aio.run(f)\n    print(r)\n";
+    let path = temp_file(src);
+    let session = launch(path.to_str().unwrap(), false).expect("launch failed");
+
+    let result = session.set_breakpoints(0, &[5]); // `print(x)` inside worker
+    assert_eq!(
+        result,
+        vec![(5, true)],
+        "worker's line should verify now that non-SM async fns are instrumented"
+    );
+
+    session.cont(1);
+    let worker_id = loop {
+        match session.events().recv().unwrap() {
+            DebugEvent::ThreadStarted { .. } => continue,
+            DebugEvent::Stopped {
+                reason,
+                frame,
+                thread_id,
+            } => {
+                assert_eq!(reason, StopReason::Breakpoint);
+                assert_eq!(frame.name, "worker");
+                assert_eq!(frame.line, 5);
+                assert_ne!(
+                    thread_id, 1,
+                    "worker runs on its own spawned thread, not main"
+                );
+                break thread_id;
+            }
+            other => panic!("expected ThreadStarted or Stopped, got {other:?}"),
+        }
+    };
+
+    let frame_id = session.stack(worker_id)[0].frame_id;
+    let vars = values::frame_variables(&session, frame_id);
+    assert_eq!(var(&vars, "x").value, "6");
+
+    session.cont(worker_id);
+    loop {
+        match session.events().recv().unwrap() {
+            DebugEvent::Exited(_) => break,
+            DebugEvent::Stopped { .. } => session.cont(1),
+            DebugEvent::Output(_)
+            | DebugEvent::ThreadStarted { .. }
+            | DebugEvent::ThreadExited { .. } => {}
+        }
+    }
+    std::fs::remove_file(&path).ok();
+}

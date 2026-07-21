@@ -23,18 +23,50 @@ impl CraneliftCodegen<JITModule> {
             return None;
         }
         let variant_name = format!("{}$debug", debug_func.name);
+
+        // `dispatch_ids` only ever holds a non-state-machine async fn here
+        // (a state-machine one never gets a cell, `setup/dispatch.rs`), so
+        // this is always the fallback shape: real body compiled separately,
+        // wrapped in a spawn-task wrapper -- exactly what `generate()`'s own
+        // async branch does for the clean variant. Compiling `debug_func`
+        // straight through `translate_function` under the `$debug` name (the
+        // old behavior here) produced the *raw body*, not a wrapper, so
+        // activating it made a call to the function run inline on whichever
+        // thread called it instead of on its own spawned thread.
+        if debug_func.is_async {
+            let body_name = format!("{variant_name}__async_body");
+            let mut body = debug_func.clone();
+            body.name = body_name.clone();
+            body.is_async = false;
+
+            let body_sig = self.own_signature(&body);
+            let body_id = self
+                .module
+                .declare_function(&body_name, Linkage::Local, &body_sig)
+                .unwrap();
+            self.func_ids.insert(body_name, body_id);
+            self.translate_function(&body);
+
+            let mut wrapper_sig = self.module.make_signature();
+            for i in 0..debug_func.arg_count {
+                let ty = &debug_func.locals[i + 1].ty;
+                wrapper_sig
+                    .params
+                    .push(AbiParam::new(super::imports::cl_type(ty)));
+            }
+            wrapper_sig.returns.push(AbiParam::new(types::I64));
+            let wrapper_id = self
+                .module
+                .declare_function(&variant_name, Linkage::Local, &wrapper_sig)
+                .unwrap();
+            self.func_ids.insert(variant_name, wrapper_id);
+            self.generate_async_wrapper_body(debug_func, body_id, wrapper_id);
+            return Some(());
+        }
+
         let mut variant = debug_func.clone();
         variant.name = variant_name.clone();
-
-        let mut sig = self.module.make_signature();
-        for i in 0..variant.arg_count {
-            let ty = &variant.locals[i + 1].ty;
-            sig.params.push(AbiParam::new(super::imports::cl_type(ty)));
-        }
-        sig.returns.push(AbiParam::new(super::imports::cl_type(
-            &variant.locals[0].ty,
-        )));
-
+        let sig = self.own_signature(&variant);
         let func_id = self
             .module
             .declare_function(&variant_name, Linkage::Local, &sig)
@@ -42,6 +74,21 @@ impl CraneliftCodegen<JITModule> {
         self.func_ids.insert(variant_name, func_id);
         self.translate_function(&variant);
         Some(())
+    }
+
+    /// `func`'s own signature (param types, real return type) -- the shape
+    /// both the ordinary variant and a non-SM async fn's inner body compile
+    /// under (the body still returns `T`, only the wrapper around it
+    /// returns a `Future[T]` handle).
+    fn own_signature(&self, func: &MirFunction) -> Signature {
+        let mut sig = self.module.make_signature();
+        for i in 0..func.arg_count {
+            let ty = &func.locals[i + 1].ty;
+            sig.params.push(AbiParam::new(super::imports::cl_type(ty)));
+        }
+        sig.returns
+            .push(AbiParam::new(super::imports::cl_type(&func.locals[0].ty)));
+        sig
     }
 
     /// Address of `func_name`'s clean (default) compiled body. Must be
@@ -123,12 +170,42 @@ mod tests {
 
     #[test]
     fn install_debug_variant_refuses_function_without_a_cell() {
-        let src = "async fn fetch() -> int:\n    return 1\nfn main():\n    print(1)\n";
+        // `fetch` really awaits something, so it's state-machine-lowered
+        // (`analyze_async_sm` finds a real await point) and never gets a
+        // dispatch cell -- unlike a no-await async fn, which does now.
+        let src = "async fn inner() -> int:\n    return 1\nasync fn fetch() -> int:\n    let x = await inner()\n    return x\nfn main():\n    print(1)\n";
         let mut cg = debug_dual_variant_codegen(src);
         let mut functions = build_mir(src);
         Optimizer::minimal().run(&mut functions);
         crate::mir::debug_hooks::instrument(&mut functions);
         let fetch = functions.iter().find(|f| f.name == "fetch").unwrap();
         assert!(cg.install_debug_variant(fetch).is_none());
+    }
+
+    #[test]
+    fn install_debug_variant_wraps_a_non_sm_async_fn_as_a_spawning_wrapper() {
+        // A no-await async fn now gets a real cell and its `$debug` variant
+        // must compile (as a spawn-task wrapper, not the raw body -- an
+        // end-to-end run confirming it actually spawns rather than running
+        // inline is `tooling::dap::tests::
+        // no_await_async_fn_hits_its_breakpoint_on_its_spawned_thread`,
+        // which has the full runtime symbols a real call needs).
+        let src = "async fn worker(n: int) -> int:\n    return n + 1\nfn main():\n    print(1)\n";
+        let mut cg = debug_dual_variant_codegen(src);
+        assert!(
+            cg.dispatch_ids.contains_key("worker"),
+            "a no-await async fn should get a dispatch cell now"
+        );
+
+        let mut functions = build_mir(src);
+        Optimizer::minimal().run(&mut functions);
+        crate::mir::debug_hooks::instrument(&mut functions);
+        let worker_debug = functions.iter().find(|f| f.name == "worker").unwrap();
+        assert!(cg.install_debug_variant(worker_debug).is_some());
+        cg.finalize();
+
+        let clean_addr = cg.clean_variant_addr("worker").unwrap();
+        let debug_addr = cg.debug_variant_addr("worker").unwrap();
+        assert_ne!(clean_addr, debug_addr);
     }
 }

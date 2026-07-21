@@ -410,6 +410,8 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ),
     ("__olive_math_sin", b"olive_math_sin\0"),
     ("__olive_math_tan", b"olive_math_tan\0"),
+    ("__olive_math_wrapping_add", b"olive_math_wrapping_add\0"),
+    ("__olive_math_wrapping_mul", b"olive_math_wrapping_mul\0"),
     ("__olive_memo_get", b"olive_memo_get\0"),
     ("__olive_mutex_free", b"olive_mutex_free\0"),
     ("__olive_mutex_lock", b"olive_mutex_lock\0"),

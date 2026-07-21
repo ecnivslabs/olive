@@ -278,6 +278,8 @@ pub(crate) fn resolve_builtin_import(
             "__olive_math_sin" => Some("__olive_math_sin"),
             "__olive_math_cos" => Some("__olive_math_cos"),
             "__olive_math_tan" => Some("__olive_math_tan"),
+            "__olive_math_wrapping_mul" => Some("__olive_math_wrapping_mul"),
+            "__olive_math_wrapping_add" => Some("__olive_math_wrapping_add"),
             "__olive_math_asin" => Some("__olive_math_asin"),
             "__olive_math_acos" => Some("__olive_math_acos"),
             "__olive_math_atan" => Some("__olive_math_atan"),

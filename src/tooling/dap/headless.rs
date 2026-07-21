@@ -105,14 +105,15 @@ fn handle(state: &mut HeadlessState, msg: Value) -> bool {
     match cmd {
         "launch" => handle_launch(state, id, &msg),
         "break" => handle_break(state, id, &msg),
-        // Headless has no concept of threads; every control command targets
-        // the main debuggee thread, always id 1.
-        "continue" => run_control(state, id, |s| s.cont(1)),
-        "next" => run_control(state, id, |s| s.next(1)),
-        "stepIn" => run_control(state, id, |s| s.step_in(1)),
-        "stepOut" => run_control(state, id, |s| s.step_out(1)),
-        "pause" => run_control(state, id, |s| s.pause(1)),
-        "stack" => handle_stack(state, id),
+        // Every control command targets a thread id, defaulting to the main
+        // debuggee thread (always id 1) when the request omits one.
+        "continue" => run_control(state, id, &msg, |s, t| s.cont(t)),
+        "next" => run_control(state, id, &msg, |s, t| s.next(t)),
+        "stepIn" => run_control(state, id, &msg, |s, t| s.step_in(t)),
+        "stepOut" => run_control(state, id, &msg, |s, t| s.step_out(t)),
+        "pause" => run_control(state, id, &msg, |s, t| s.pause(t)),
+        "threads" => handle_threads(state, id),
+        "stack" => handle_stack(state, id, &msg),
         "vars" => handle_vars(state, id, &msg),
         "eval" => handle_eval(state, id, &msg),
         "setVar" => handle_set_var(state, id, &msg),
@@ -131,13 +132,38 @@ fn handle(state: &mut HeadlessState, msg: Value) -> bool {
     true
 }
 
-fn run_control(state: &HeadlessState, id: Option<i64>, run: impl FnOnce(&DebugSession)) {
+fn run_control(
+    state: &HeadlessState,
+    id: Option<i64>,
+    args: &Value,
+    run: impl FnOnce(&DebugSession, i64),
+) {
     let Some(session) = &state.session else {
         err(state, id, "no active session");
         return;
     };
-    run(session);
+    let thread = args.get("thread").and_then(Value::as_i64).unwrap_or(1);
+    run(session, thread);
     ok(state, id, json!({}));
+}
+
+/// `{"threads":[{"id":1,"name":"main"}, ...]}` -- every currently traced OS
+/// thread, main plus any `aio` executor/spawn/pool worker that's called into
+/// instrumented code. A `stack`/`vars`/`eval`/`setVar` request's `frame` id
+/// already encodes which of these it belongs to (`engine::pack_frame`), so
+/// nothing else needs a `thread` argument once you have a frame id from
+/// `stack`.
+fn handle_threads(state: &HeadlessState, id: Option<i64>) {
+    let Some(session) = &state.session else {
+        err(state, id, "no active session");
+        return;
+    };
+    let body: Vec<Value> = session
+        .threads_snapshot()
+        .into_iter()
+        .map(|(tid, name)| json!({"id": tid, "name": name}))
+        .collect();
+    ok(state, id, json!({"threads": body}));
 }
 
 fn handle_launch(state: &mut HeadlessState, id: Option<i64>, args: &Value) {
@@ -258,16 +284,20 @@ fn bp_spec(entry: &Value) -> Option<BpSpec> {
     })
 }
 
-fn handle_stack(state: &HeadlessState, id: Option<i64>) {
+/// `id` in each frame is the packed `(thread, local index)` value
+/// `vars`/`eval`/`setVar`'s `frame` argument expects back -- for the main
+/// thread this is numerically identical to the plain 0-based index this
+/// used to return, so a single-threaded session sees no change at all.
+fn handle_stack(state: &HeadlessState, id: Option<i64>, args: &Value) {
     let Some(session) = &state.session else {
         err(state, id, "no active session");
         return;
     };
+    let thread = args.get("thread").and_then(Value::as_i64).unwrap_or(1);
     let frames: Vec<Value> = session
-        .stack(1)
+        .stack(thread)
         .iter()
-        .enumerate()
-        .map(|(idx, f)| json!({"id": idx, "fn": f.name, "file": f.file, "line": f.line}))
+        .map(|f| json!({"id": f.frame_id, "fn": f.name, "file": f.file, "line": f.line}))
         .collect();
     ok(state, id, json!({"frames": frames}));
 }
@@ -345,7 +375,7 @@ fn handle_set_var(state: &HeadlessState, id: Option<i64>, args: &Value) {
             return;
         }
     };
-    let raw = match setvar::encode_literal(session, &ty, value_text) {
+    let raw = match setvar::encode_value(session, frame, &ty, value_text) {
         Ok(r) => r,
         Err(msg) => {
             err(state, id, &msg);
@@ -386,7 +416,11 @@ fn handle_set_var(state: &HeadlessState, id: Option<i64>, args: &Value) {
 fn run_monitor(events_rx: Receiver<DebugEvent>, redirect: Redirect, proto: Arc<Mutex<FdFile>>) {
     for ev in events_rx.iter() {
         match ev {
-            DebugEvent::Stopped { reason, frame, .. } => {
+            DebugEvent::Stopped {
+                reason,
+                frame,
+                thread_id,
+            } => {
                 let reason_str = match &reason {
                     StopReason::Entry => "entry",
                     StopReason::Breakpoint => "breakpoint",
@@ -400,6 +434,7 @@ fn run_monitor(events_rx: Receiver<DebugEvent>, redirect: Redirect, proto: Arc<M
                     &json!({
                         "event": "stopped",
                         "reason": reason_str,
+                        "thread": thread_id,
                         "fn": frame.name,
                         "file": frame.file,
                         "line": frame.line,
@@ -429,9 +464,12 @@ fn run_monitor(events_rx: Receiver<DebugEvent>, redirect: Redirect, proto: Arc<M
                 emit(&proto, &json!({"event": "exited", "code": code}));
                 break;
             }
-            // Headless has no per-thread surface; thread lifecycle is only
-            // ever observable through the real DAP protocol's `threads`.
-            DebugEvent::ThreadStarted { .. } | DebugEvent::ThreadExited { .. } => {}
+            DebugEvent::ThreadStarted { id: tid } => {
+                emit(&proto, &json!({"event": "threadStarted", "thread": tid}));
+            }
+            DebugEvent::ThreadExited { id: tid } => {
+                emit(&proto, &json!({"event": "threadExited", "thread": tid}));
+            }
         }
     }
 }

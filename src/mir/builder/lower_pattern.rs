@@ -55,7 +55,7 @@ impl<'a> MirBuilder<'a> {
                         self.enum_variants.get(&mangled).map(|(_, tag)| {
                             (
                                 enum_name.clone(),
-                                crate::mir::MirBuilder::enum_type_id(enum_name),
+                                crate::mir::enum_type_id(enum_name),
                                 *tag as i64,
                             )
                         })
@@ -64,11 +64,7 @@ impl<'a> MirBuilder<'a> {
                         if let Type::Enum(en, _) = ty {
                             let mangled = format!("{}::{}", en, v_name);
                             self.enum_variants.get(&mangled).map(|(_, tag)| {
-                                (
-                                    en.clone(),
-                                    crate::mir::MirBuilder::enum_type_id(en),
-                                    *tag as i64,
-                                )
+                                (en.clone(), crate::mir::enum_type_id(en), *tag as i64)
                             })
                         } else {
                             None

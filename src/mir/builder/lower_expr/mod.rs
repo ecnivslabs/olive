@@ -1212,20 +1212,6 @@ impl<'a> MirBuilder<'a> {
         )
     }
 
-    pub(super) fn enum_type_id(enum_name: &str) -> i64 {
-        use std::hash::{Hash, Hasher};
-        let mut h = rustc_hash::FxHasher::default();
-        enum_name.hash(&mut h);
-        (h.finish() & 0x7FFF_FFFF_FFFF_FFFF) as i64
-    }
-
-    pub(super) fn struct_type_id(struct_name: &str) -> i64 {
-        use std::hash::{Hash, Hasher};
-        let mut h = rustc_hash::FxHasher::default();
-        struct_name.hash(&mut h);
-        (h.finish() & 0x7FFF_FFFF_FFFF_FFFF) as i64
-    }
-
     /// The `file:line:col` string for `span`, shared by every call-site
     /// location mechanism: the legacy `emit_py_set_loc` statement pair and
     /// the R17 fast-path entry points, which take it as a plain trailing

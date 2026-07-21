@@ -389,7 +389,7 @@ fn set_variable_on_an_outer_frame_local_is_rejected() {
 /// general expression evaluator and heap allocator this debugger doesn't
 /// have) -- rejected with a clear error, not silently truncated or ignored.
 #[test]
-fn set_variable_rejects_whole_list_replacement() {
+fn set_variable_replaces_a_whole_list_with_a_fresh_one() {
     let mut session = Session::start();
     handshake(&mut session);
 
@@ -408,13 +408,165 @@ fn set_variable_rejects_whole_list_replacement() {
 
     let seq = session.request(
         "setVariable",
-        json!({"variablesReference": scope, "name": "xs", "value": "[4, 5, 6]"}),
+        json!({"variablesReference": scope, "name": "xs", "value": "[4, 5, 6, 7]"}),
     );
     let resp = session.read_response(seq);
     assert_eq!(
-        resp["success"], false,
-        "whole-list replacement must not be reported as successful: {resp}"
+        resp["success"], true,
+        "whole-list replacement failed: {resp}"
     );
+    assert_eq!(resp["body"]["value"], "[4, 5, 6, 7]");
+
+    let seq = session.request("continue", json!({"threadId": 1}));
+    session.read_response(seq);
+    session.read_event("continued");
+    session.read_event("exited");
+
+    let stdout = session.stdout_so_far();
+    assert!(stdout.contains("[4, 5, 6, 7]"), "stdout so far: {stdout:?}");
+
+    disconnect(&mut session);
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn set_variable_replaces_a_whole_struct_and_dict() {
+    let mut session = Session::start();
+    handshake(&mut session);
+
+    let src = "struct Point:\n    x: int\n    y: int\n\nfn main():\n    let mut p = Point(1, 2)\n    let mut d = {\"a\": 1}\n    print(p)\n    print(d)\n";
+    let path = write_program(src, "composite2");
+    launch_program(&mut session, &path);
+    set_breakpoints(&mut session, &path, &[json!({"line": 8})]);
+    configuration_done(&mut session);
+    let stopped = session.read_event("stopped");
+    assert_eq!(stopped["body"]["reason"], "breakpoint");
+
+    let seq = session.request("stackTrace", json!({"threadId": 1}));
+    let resp = session.read_response(seq);
+    let frame_id = resp["body"]["stackFrames"][0]["id"].as_i64().unwrap();
+    let scope = scope_ref(&mut session, frame_id);
+
+    let seq = session.request(
+        "setVariable",
+        json!({"variablesReference": scope, "name": "p", "value": "Point(10, 20)"}),
+    );
+    let resp = session.read_response(seq);
+    assert_eq!(
+        resp["success"], true,
+        "whole-struct replacement failed: {resp}"
+    );
+    assert_eq!(resp["body"]["value"], "Point(x=10, y=20)");
+
+    let seq = session.request(
+        "setVariable",
+        json!({"variablesReference": scope, "name": "d", "value": "{\"b\": 2, \"c\": 3}"}),
+    );
+    let resp = session.read_response(seq);
+    assert_eq!(
+        resp["success"], true,
+        "whole-dict replacement failed: {resp}"
+    );
+
+    let seq = session.request("continue", json!({"threadId": 1}));
+    session.read_response(seq);
+    session.read_event("continued");
+    session.read_event("exited");
+
+    let stdout = session.stdout_so_far();
+    assert!(
+        stdout.contains("Point(x=10, y=20)"),
+        "stdout so far: {stdout:?}"
+    );
+    assert!(
+        stdout.contains('2') && stdout.contains('3'),
+        "stdout so far: {stdout:?}"
+    );
+
+    disconnect(&mut session);
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn set_variable_replaces_a_whole_enum_with_a_different_variant() {
+    let mut session = Session::start();
+    handshake(&mut session);
+
+    let src = "enum Shape:\n    Circle(float)\n    Square(int, int)\n\nfn main():\n    let mut sh = Circle(2.5)\n    print(sh)\n";
+    let path = write_program(src, "composite3");
+    launch_program(&mut session, &path);
+    set_breakpoints(&mut session, &path, &[json!({"line": 7})]);
+    configuration_done(&mut session);
+    let stopped = session.read_event("stopped");
+    assert_eq!(stopped["body"]["reason"], "breakpoint");
+
+    let seq = session.request("stackTrace", json!({"threadId": 1}));
+    let resp = session.read_response(seq);
+    let frame_id = resp["body"]["stackFrames"][0]["id"].as_i64().unwrap();
+    let scope = scope_ref(&mut session, frame_id);
+
+    let seq = session.request(
+        "setVariable",
+        json!({"variablesReference": scope, "name": "sh", "value": "Square(3, 4)"}),
+    );
+    let resp = session.read_response(seq);
+    assert_eq!(
+        resp["success"], true,
+        "whole-enum replacement failed: {resp}"
+    );
+    assert_eq!(resp["body"]["value"], "Square(3, 4)");
+
+    let seq = session.request("continue", json!({"threadId": 1}));
+    session.read_response(seq);
+    session.read_event("continued");
+    session.read_event("exited");
+
+    let stdout = session.stdout_so_far();
+    assert!(stdout.contains("Square(3, 4)"), "stdout so far: {stdout:?}");
+
+    disconnect(&mut session);
+    std::fs::remove_file(&path).ok();
+}
+
+/// A whole-value replacement's aggregate literal isn't limited to constant
+/// elements -- arithmetic and paths inside it resolve against the frame
+/// being edited in, same as any other expression.
+#[test]
+fn set_variable_whole_list_can_reference_a_live_local() {
+    let mut session = Session::start();
+    handshake(&mut session);
+
+    let src = "fn main():\n    let n = 10\n    let xs = [1, 2, 3]\n    print(xs)\n    print(n)\n";
+    let path = write_program(src, "composite4");
+    launch_program(&mut session, &path);
+    set_breakpoints(&mut session, &path, &[json!({"line": 4})]);
+    configuration_done(&mut session);
+    let stopped = session.read_event("stopped");
+    assert_eq!(stopped["body"]["reason"], "breakpoint");
+
+    let seq = session.request("stackTrace", json!({"threadId": 1}));
+    let resp = session.read_response(seq);
+    let frame_id = resp["body"]["stackFrames"][0]["id"].as_i64().unwrap();
+    let scope = scope_ref(&mut session, frame_id);
+
+    let seq = session.request(
+        "setVariable",
+        json!({"variablesReference": scope, "name": "xs", "value": "[n, n + 1, n * 2]"}),
+    );
+    let resp = session.read_response(seq);
+    assert_eq!(
+        resp["success"], true,
+        "whole-list replacement failed: {resp}"
+    );
+    assert_eq!(resp["body"]["value"], "[10, 11, 20]");
+
+    let seq = session.request("continue", json!({"threadId": 1}));
+    session.read_response(seq);
+    session.read_event("continued");
+    session.read_event("exited");
+
+    let stdout = session.stdout_so_far();
+    assert!(stdout.contains("[10, 11, 20]"), "stdout so far: {stdout:?}");
 
     disconnect(&mut session);
     std::fs::remove_file(&path).ok();

@@ -44,8 +44,11 @@ more control:
 Breakpoints support VS Code's standard condition, hit count, and log
 message fields (right-click a breakpoint in the gutter to set them):
 
-* **Condition** -- an expression like `i == 500` or `name == "bob" and not
-  done`. The breakpoint only stops when it evaluates to `true`.
+* **Condition** -- an expression like `i == 500`, `i + 1 == count * 2`, or
+  `name == "bob" and not done`: paths, `int`/`float`/`bool`/string literals,
+  `+ - * / %`, parens, and `and`/`or`/`not`/comparisons -- the same
+  arithmetic olive source itself uses. The breakpoint only stops when it
+  evaluates to `true`.
 * **Hit Count** -- `%10` stops on every 10th hit, `>=5` stops from the 5th
   hit onward, a bare number stops on that exact hit.
 * **Log Message** -- text with `{expr}` interpolations, printed as an output
@@ -55,29 +58,32 @@ message fields (right-click a breakpoint in the gutter to set them):
 
 While stopped, `setVariable` (edit a value directly in the Variables panel)
 and `setExpression` (edit via a watch-style expression, e.g. `xs[1]` or
-`p.x`) both work for any scalar -- `int`, `float`, `f32`, `bool`, `str`, or
-`None` -- at any depth: a top-level local, or a field/element/entry inside
-a struct, list, tuple, dict, or enum payload.
+`p.x`) work at any depth: a top-level local, or a field/element/entry
+inside a struct, list, tuple, dict, or enum payload.
 
-The new value is parsed against the target's own type: `true`/`false` for
-`bool`, `None` for a nullable slot, a plain number for `int`/`float`/`f32`,
-and either a quoted `"..."` string (backslash-escaping the next character)
-or the bare text itself for `str`.
+A scalar target (`int`, `float`, `f32`, `bool`, `str`, or `None`) parses the
+new value against its own type: `true`/`false` for `bool`, `None` for a
+nullable slot, a plain number for `int`/`float`/`f32`, and either a quoted
+`"..."` string (backslash-escaping the next character) or the bare text
+itself for `str`.
 
-Two things are deliberately out of scope, both reported as a normal failed
-request rather than silently accepted:
+A list, vector, set, tuple, dict, struct, or enum target replaces the
+*whole* value with a fresh one built from real olive expression syntax --
+`[1, 2, 3]`, `(1, 2)`, `{"a": 1}`, `Point(1, 2)`, `Some(5)` -- arithmetic
+and paths work inside it too (`[n, n + 1]`), resolved against the frame
+you're editing in. A struct or enum constructor's name must match the
+target's own type; a struct write fills every field (a reused heap slot
+isn't zeroed, so a partial write would leak old data through) and an enum
+write can freely switch which variant is active.
 
-* **Whole-value replacement of a list, dict, struct, tuple, or enum** --
-  setting `xs` to a brand new `[1, 2, 3]` would need a general expression
-  evaluator and heap allocator this debugger doesn't have. Setting a
-  *scalar inside* one of those, at any depth, works fine.
-* **A local in a frame other than the topmost one.** A struct/list/dict
-  edit is a direct write into shared heap memory, so it's real and
-  immediate regardless of which frame you're editing through. A top-level
-  local's storage isn't memory the debugger can address directly (the JIT
-  is free to keep it in a register); the write instead rides along with
-  that same local's next real read, which only the frame actually parked
-  right now is guaranteed to reach before it matters.
+One thing is deliberately out of scope, reported as a normal failed request
+rather than silently accepted: **a local in a frame other than the topmost
+one.** A container edit is a direct write into shared heap memory, so it's
+real and immediate regardless of which frame you're editing through. A
+top-level local's storage isn't memory the debugger can address directly
+(the JIT is free to keep it in a register); the write instead rides along
+with that same local's next real read, which only the frame actually
+parked right now is guaranteed to reach before it matters.
 
 ## `pit debug` for scripts and agents
 
@@ -99,14 +105,25 @@ Requests:
   bare line number or an object with `line` plus any of `cond`, `hits`,
   `log`. Responds with `{"id":2,"ok":true,"lines":[{"line":6,"verified":true},...]}`.
 * `{"cmd":"continue"}`, `{"cmd":"next"}`, `{"cmd":"stepIn"}`,
-  `{"cmd":"stepOut"}`, `{"cmd":"pause"}` -- no `id`, no response.
-* `{"id":3,"cmd":"stack"}` -- `{"id":3,"ok":true,"frames":[{"id":0,"fn":"main","file":"foo.liv","line":6},...]}`,
-  innermost frame first.
+  `{"cmd":"stepOut"}`, `{"cmd":"pause"}` -- no `id`, no response. Each takes
+  an optional `"thread":N`, defaulting to `1` (the main debuggee thread);
+  target whichever thread a `stopped` event named.
+* `{"id":9,"cmd":"threads"}` -- every currently traced OS thread: the main
+  thread plus any `aio` executor/spawn/pool worker that's called into
+  instrumented code. `{"id":9,"ok":true,"threads":[{"id":1,"name":"main"},{"id":2,"name":"olive-spawn-task"}]}`.
+* `{"id":3,"cmd":"stack"}` (optionally `"thread":N`) --
+  `{"id":3,"ok":true,"frames":[{"id":0,"fn":"main","file":"foo.liv","line":6},...]}`,
+  innermost frame first. Each frame's `id` already encodes which thread it
+  belongs to, so `vars`/`eval`/`setVar`'s `frame` argument never needs a
+  `thread` of its own once you have one from here.
 * `{"id":4,"cmd":"vars","frame":0,"ref":0}` -- named locals of frame 0
   (`ref:0` means "the frame itself"); pass a nonzero `ref` from a previous
   response to expand that value's children. `{"id":4,"ok":true,"vars":[{"name":"xs","type":"[int]","value":"[1, 2, 3]","ref":7},...]}`.
 * `{"id":5,"cmd":"eval","frame":0,"expr":"xs[1].name"}` -- evaluates a
-  path expression (`ident`, `.field`, `[index]`, `["key"]`, chained).
+  path (`ident`, `.field`, `[index]`, `["key"]`, chained) or an arithmetic
+  expression over paths and literals (`n + 1`, `(a - b) * 2`, `xs[0] % 2`).
+  A bare path stays expandable (`ref` nonzero for a struct/list/dict/enum);
+  anything with an operator resolves to a plain scalar (`ref` always `0`).
   `{"id":5,"ok":true,"value":"...","type":"...","ref":0}`.
 * `{"id":6,"cmd":"setVar","frame":0,"name":"i","value":"5"}` -- sets a
   top-level local (`ref` omitted or `0`) or, with a nonzero `ref` from a
@@ -115,8 +132,8 @@ Requests:
   "name":"x","value":"99"}` for a struct field). `{"cmd":"setVar","frame":0,
   "expr":"xs[1]","value":"99"}` does the same through a path instead of a
   reference. `value` is parsed against the target's own type -- see
-  "Editing variables" above for the grammar and the two things this
-  deliberately doesn't support. Responds with the freshly re-read value,
+  "Editing variables" above for the full grammar, scalar and whole-aggregate
+  alike. Responds with the freshly re-read value,
   same shape as `vars`/`eval`: `{"id":6,"ok":true,"value":"5","type":"int","ref":0}`.
 * `{"id":7,"cmd":"quit"}` -- ends the session; the process exits after
   responding.
@@ -132,6 +149,9 @@ Events:
   logpoint firing or a one-time condition-evaluation error.
 * `{"event":"exited","code":0}` -- the debuggee ran to completion (or
   resumed past a fault, in which case `code` is 1).
+* `{"event":"threadStarted","thread":2}` / `{"event":"threadExited","thread":2}`
+  -- an `aio` executor/spawn/pool worker thread began or finished running
+  instrumented code.
 
 ## Fault stops
 
@@ -144,13 +164,28 @@ inspect locals up the call stack before deciding to resume. Resuming means
 the process runs `abort_with` to completion and exits 1, same as an
 undebugged crash.
 
+## Multi-threaded programs
+
+`aio`'s executor pool, a no-`await` `async fn` call (which runs via
+`olive_spawn_task`), and `pool_run`/`pool_run_sync` all run real
+olive-compiled code on their own OS thread; each one becomes a
+traced thread the first time it enters instrumented code, with its own call
+stack, breakpoints, and stepping, entirely independent of the main thread's
+(the DAP protocol's `threads` request and the headless `threads` command list
+every one; a `stopped` event names exactly which thread hit it).
+
 ## Limitations
 
-* Async functions are not instrumented: breakpoints and stepping inside an
-  `async fn` don't fire, and its locals aren't visible. Non-async code
-  calling into one steps over it like any other call.
-* The debuggee always reports as a single thread named `main`, regardless
-  of how many OS threads your program actually spawns.
-* One debug session per process. Launching a second session while one is
-  active fails; end the first with `disconnect` (DAP) or `quit` (headless)
-  first.
+* An `async fn` that itself `await`s something compiles to a heap-allocated
+  state machine whose suspend/resume-across-poll frame shape the debugger's
+  shadow-call-stack model can't represent yet, so breakpoints and stepping
+  inside one don't fire and its locals aren't visible. An `async fn` with no
+  `await` in its own body runs on a real spawned OS thread with no such
+  restriction -- it's instrumented exactly like ordinary code, see "Multi-
+  threaded programs" above. Non-async code calling into either steps over
+  the call like any other.
+* One debug session per `pit` process. Launching a second session in the
+  same process while one is active fails; end the first with `disconnect`
+  (DAP) or `quit` (headless) first, or start a second `pit dap`/`pit debug`
+  process for a genuinely concurrent session -- the same thing every DAP
+  client (including VS Code) already does per debug session.

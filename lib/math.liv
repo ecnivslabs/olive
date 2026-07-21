@@ -54,6 +54,16 @@ fn _iabs(x: int) -> int:
         return -x
     return x
 
+/// `a * b` reduced mod 2**64, for PRNGs/hashes that rely on intentional
+/// overflow -- `*` itself always faults on overflow under `pit run`.
+fn wrapping_mul(a: int, b: int) -> int:
+    return __olive_math_wrapping_mul(a, b)
+
+/// `a + b` reduced mod 2**64, for PRNGs/hashes that rely on intentional
+/// overflow -- `+` itself always faults on overflow under `pit run`.
+fn wrapping_add(a: int, b: int) -> int:
+    return __olive_math_wrapping_add(a, b)
+
 fn floor(x: float) -> int:
     let i = int(x)
     if x < 0.0 and float(i) != x:

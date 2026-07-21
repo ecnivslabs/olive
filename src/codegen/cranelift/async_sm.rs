@@ -2,7 +2,7 @@ use super::imports::{cl_type, type_descriptor};
 use super::{CraneliftCodegen, KIND_SM_FUTURE, POLL_PENDING, SmAwaitPoint};
 use crate::mir::{Constant, Local, MirFunction, Operand, StatementKind, TerminatorKind};
 use cranelift::prelude::*;
-use cranelift_module::Module;
+use cranelift_module::{FuncId, Module};
 use rustc_hash::FxHashMap as HashMap;
 
 impl<M: Module> CraneliftCodegen<M> {
@@ -389,7 +389,23 @@ impl<M: Module> CraneliftCodegen<M> {
     pub(super) fn generate_async_wrapper(&mut self, func: &MirFunction) {
         let body_name = format!("{}__async_body", func.name);
         let body_func_id = *self.func_ids.get(&body_name).expect("missing func");
+        let wrapper_id = *self.func_ids.get(&func.name).expect("missing func");
+        self.generate_async_wrapper_body(func, body_func_id, wrapper_id);
+    }
 
+    /// Builds the heap-callback-and-`olive_spawn_task` wrapper for `func`,
+    /// under whichever already-declared `wrapper_id` symbol the caller
+    /// wants it compiled as -- `generate_async_wrapper` uses this for a
+    /// function's plain exported name, `debug_variant::install_debug_variant`
+    /// for its `$debug` name, so a non-state-machine async fn's debug
+    /// variant is a real spawn-and-run wrapper too, not the raw body called
+    /// inline on whichever thread is calling it.
+    pub(super) fn generate_async_wrapper_body(
+        &mut self,
+        func: &MirFunction,
+        body_func_id: FuncId,
+        wrapper_id: FuncId,
+    ) {
         let mut ctx = self.module.make_context();
         for i in 0..func.arg_count {
             let ty = &func.locals[i + 1].ty;
@@ -462,7 +478,6 @@ impl<M: Module> CraneliftCodegen<M> {
         builder.ins().return_(&[future_ptr]);
         builder.finalize();
 
-        let wrapper_id = *self.func_ids.get(&func.name).expect("missing func");
         self.module.define_function(wrapper_id, &mut ctx).unwrap();
     }
 }
