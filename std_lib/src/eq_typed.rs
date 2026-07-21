@@ -16,7 +16,8 @@
 //! for `copy_typed`'s pointer-remap map, just keyed by the compared pair.
 
 use crate::format::{
-    D_ANY, D_BACKREF, D_BYTES, D_DICT, D_ENUM, D_LIST, D_SET, D_STR, D_STRUCT, D_TUPLE, byte, skip,
+    D_ANY, D_BACKREF, D_BYTES, D_DICT, D_ENUM, D_LIST, D_SET, D_STR, D_STRUCT, D_STRUCT_SHARED,
+    D_TUPLE, byte, skip,
 };
 use crate::slab::slot_is_live;
 use crate::{OliveEnum, OliveHashSet, OliveObj, StableVec};
@@ -72,7 +73,7 @@ pub(crate) fn eq_val(
         D_SET => eq_set(a, b, desc, pos, visited),
         D_TUPLE => eq_tuple(a, b, desc, pos, visited),
         D_DICT => eq_dict(a, b, desc, pos, visited),
-        D_STRUCT => eq_struct(a, b, desc, pos, visited),
+        D_STRUCT | D_STRUCT_SHARED => eq_struct(a, b, desc, pos, visited),
         D_ENUM => eq_enum(a, b, desc, pos, visited),
         D_BACKREF => {
             // Purely a descriptor-size bound for a recursive *type*

@@ -3,9 +3,11 @@
 
 use crate::boxed::TAG_MASK;
 use crate::format::{
-    D_ANY, D_BACKREF, D_BYTES, D_DICT, D_ENUM, D_LIST, D_SET, D_STR, D_STRUCT, D_TUPLE, byte, skip,
+    D_ANY, D_BACKREF, D_BYTES, D_DICT, D_ENUM, D_LIST, D_SET, D_STR, D_STRUCT, D_STRUCT_SHARED,
+    D_TUPLE, byte, skip,
 };
 use crate::slab::slot_is_live;
+use crate::struct_share::retain_struct;
 use crate::{
     KIND_ANY_LIST, KIND_BYTES, KIND_ENUM, KIND_FLOAT, KIND_INT, KIND_LIST, KIND_OBJ, KIND_PYOBJECT,
     KIND_SET, OliveEnum, OliveHashSet, OliveObj, OliveStringKey, StableVec,
@@ -246,6 +248,7 @@ fn copy_val(val: i64, desc: *const u8, pos: &mut usize, visited: &mut FxHashMap<
         D_TUPLE => copy_tuple(val, desc, pos, visited),
         D_DICT => copy_dict(val, desc, pos, visited),
         D_STRUCT => copy_struct(val, desc, pos, visited),
+        D_STRUCT_SHARED => copy_shared_struct(val, desc, pos),
         D_ENUM => copy_enum(val, desc, pos, visited),
         D_BACKREF => {
             let hi = unsafe { byte(desc, *pos) } as usize;
@@ -409,6 +412,24 @@ fn copy_struct(
         }
     }
     new
+}
+
+/// A resource-owning struct (source defines `__drop__`) is not safe to
+/// duplicate field-by-field: two independent copies would each release the
+/// same underlying resource. "Copying" it means sharing the one allocation
+/// and bumping its refcount instead (`struct_share.rs`).
+fn copy_shared_struct(val: i64, desc: *const u8, pos: &mut usize) -> i64 {
+    skip_lp(desc, pos);
+    let n = unsafe { byte(desc, *pos) } as usize - 13;
+    *pos += 1;
+    for _ in 0..n {
+        skip_lp(desc, pos);
+        skip(desc, pos);
+    }
+    if val == 0 || !slot_is_live(val) {
+        return val;
+    }
+    retain_struct(val)
 }
 
 fn copy_enum(val: i64, desc: *const u8, pos: &mut usize, visited: &mut FxHashMap<i64, i64>) -> i64 {

@@ -832,6 +832,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_any_ne_strict", b"olive_any_ne_strict\0"),
     ("__olive_struct_box", b"olive_struct_box\0"),
     ("__olive_struct_unbox", b"olive_struct_unbox\0"),
+    ("__olive_struct_gate", b"olive_struct_gate\0"),
     ("__olive_str_capitalize", b"olive_str_capitalize\0"),
     ("__olive_str_center", b"olive_str_center\0"),
     ("__olive_str_contains", b"olive_str_contains\0"),
@@ -1358,6 +1359,10 @@ impl CraneliftCodegen<JITModule> {
 
         let module = JITModule::new(builder);
 
+        crate::semantic::type_descriptor::set_has_drop_structs(
+            crate::mir::optimizations::drop_hooks::collect_struct_has_drop(&functions),
+        );
+
         Self {
             functions,
             module,
@@ -1514,6 +1519,10 @@ impl CraneliftCodegen<ObjectModule> {
                 });
             }
         }
+
+        crate::semantic::type_descriptor::set_has_drop_structs(
+            crate::mir::optimizations::drop_hooks::collect_struct_has_drop(&functions),
+        );
 
         Self {
             functions,

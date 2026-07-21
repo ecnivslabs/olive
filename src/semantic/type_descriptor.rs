@@ -6,6 +6,30 @@
 
 use crate::semantic::types::Type as OliveType;
 use rustc_hash::FxHashMap as HashMap;
+use std::cell::RefCell;
+use std::collections::HashSet;
+
+thread_local! {
+    /// Struct names with a user `__drop__`, populated once per compilation
+    /// (`CraneliftCodegen::new`/`new_aot`) before any descriptor gets built.
+    /// A struct managing an external resource this way isn't safe for the
+    /// compiler to duplicate field-by-field when it inserts an implicit copy
+    /// (async task-arg marshalling, ownership escape-copies): two
+    /// independent copies would each release the same resource. Such a
+    /// struct is tagged `D_STRUCT_SHARED` instead of `D_STRUCT`, which routes
+    /// copy/free through refcounted sharing (`struct_share.rs`) rather than
+    /// duplication.
+    static HAS_DROP_STRUCTS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+}
+
+/// Populates the has-drop struct set consulted by `encode_descriptor`.
+pub(crate) fn set_has_drop_structs(names: HashSet<String>) {
+    HAS_DROP_STRUCTS.with(|s| *s.borrow_mut() = names);
+}
+
+fn struct_has_drop(name: &str) -> bool {
+    HAS_DROP_STRUCTS.with(|s| s.borrow().contains(name))
+}
 
 /// Peels `Ref`/`MutRef` wrappers and reduces a `T | None` union to its single
 /// non-null member `T`, since that member's raw representation is exactly
@@ -149,11 +173,13 @@ fn encode_descriptor(
             out.push((target_idx >> 8) as u8);
             out.push((target_idx & 0xff) as u8);
         }
-        OliveType::Struct(name, _, _) if struct_fields.contains_key(name) => {
+        OliveType::Struct(name, type_args, _) if struct_fields.contains_key(name) => {
             let start_idx = out.len();
             visiting.insert(name.clone(), start_idx);
             let fields = &struct_fields[name];
-            out.push(12);
+            let mono_name =
+                crate::mir::optimizations::drop_hooks::monomorphized_name(name, type_args);
+            out.push(if struct_has_drop(&mono_name) { 16 } else { 12 });
             push_len_prefixed(out, name);
             out.push((fields.len() + 13) as u8);
             for f in fields {
