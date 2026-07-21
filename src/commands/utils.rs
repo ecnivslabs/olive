@@ -121,9 +121,34 @@ pub fn load_config() -> Config {
     }
 }
 
+/// Writes `config.dependencies` back into `pit.toml`, touching only the
+/// `[dependencies]` table.
+///
+/// This is called only after `pit add`/`pit remove` mutate `Config.dependencies`
+/// in memory; every other table (`[pod]`, `[native]`, `[workspace]`, `[profile]`,
+/// `[fmt]`, and any table this version of `Config` doesn't know about) is left
+/// exactly as it was on disk. A full `toml::to_string(config)` round-trip would
+/// silently drop comments and any table not represented in `Config`.
 pub fn save_config(config: &Config) {
-    let content = toml::to_string(config).unwrap();
-    fs::write("pit.toml", content).unwrap();
+    let content = fs::read_to_string("pit.toml").unwrap_or_default();
+    let mut doc: toml_edit::DocumentMut = content.parse().unwrap_or_else(|e| {
+        eprintln!("error: could not parse pit.toml: {}", e);
+        process::exit(1);
+    });
+
+    if config.dependencies.is_empty() {
+        doc.as_table_mut().remove("dependencies");
+    } else {
+        let mut names: Vec<&String> = config.dependencies.keys().collect();
+        names.sort();
+        let mut table = toml_edit::Table::new();
+        for name in names {
+            table[name] = toml_edit::value(config.dependencies[name].clone());
+        }
+        doc["dependencies"] = toml_edit::Item::Table(table);
+    }
+
+    fs::write("pit.toml", doc.to_string()).unwrap();
 }
 
 pub fn maybe_install_deps(deps: &HashMap<String, String>) {
