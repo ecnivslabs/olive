@@ -42,7 +42,7 @@ impl Transform for Devirtualize<'_> {
                 if let StatementKind::Assign(dest, rval) = &stmt.kind {
                     *def_counts.entry(*dest).or_insert(0) += 1;
                     if let Rvalue::Aggregate(AggregateKind::FatPtr, ops) = rval
-                        && let [data, Operand::Constant(Constant::GlobalData(vt)), _] =
+                        && let [data, Operand::Constant(Constant::GlobalData(vt)), _, _] =
                             ops.as_slice()
                         && self.vtables.contains_key(vt.as_str())
                     {

@@ -216,6 +216,10 @@ fn encode_descriptor(
             visiting.remove(name);
         }
         OliveType::Struct(_, _, _) | OliveType::Enum(_, _) => out.push(11),
+        // A trait object is a fat-pointer record owning its concrete struct;
+        // its descriptor is a bare tag, the concrete one rides in the record
+        // so copy/free recurse through that (`D_FATPTR` in std_lib's format).
+        OliveType::TraitObject(_, _) => out.push(17),
         // An inference variable that never got bound could hold anything;
         // claiming a scalar here would skip frees and print raw words.
         OliveType::Var(_) => out.push(6),

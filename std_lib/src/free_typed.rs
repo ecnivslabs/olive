@@ -13,8 +13,8 @@
 
 use crate::boxed::TAG_MASK;
 use crate::format::{
-    D_ANY, D_BACKREF, D_BYTES, D_DICT, D_ENUM, D_LIST, D_SET, D_STR, D_STRUCT, D_STRUCT_SHARED,
-    D_TUPLE, byte, skip,
+    D_ANY, D_BACKREF, D_BYTES, D_DICT, D_ENUM, D_FATPTR, D_LIST, D_SET, D_STR, D_STRUCT,
+    D_STRUCT_SHARED, D_TUPLE, byte, skip,
 };
 use crate::slab::slot_is_live;
 use crate::struct_share::release_struct;
@@ -162,6 +162,7 @@ fn free_val(val: i64, desc: *const u8, pos: &mut usize) {
         D_DICT => free_dict(val, desc, pos),
         D_STRUCT => free_struct(val, desc, pos),
         D_STRUCT_SHARED => free_shared_struct(val, desc, pos),
+        D_FATPTR => crate::struct_obj::olive_free_fatptr(val),
         D_ENUM => free_enum(val, desc, pos),
         D_BACKREF => {
             let hi = unsafe { byte(desc, *pos) } as usize;
@@ -416,7 +417,16 @@ fn free_enum(val: i64, desc: *const u8, pos: &mut usize) {
 fn elem_owns(desc: *const u8, pos: usize) -> bool {
     matches!(
         unsafe { byte(desc, pos) },
-        D_ANY | D_BACKREF | D_BYTES | D_LIST | D_SET | D_TUPLE | D_DICT | D_STRUCT | D_ENUM
+        D_ANY
+            | D_BACKREF
+            | D_BYTES
+            | D_LIST
+            | D_SET
+            | D_TUPLE
+            | D_DICT
+            | D_STRUCT
+            | D_FATPTR
+            | D_ENUM
     )
 }
 

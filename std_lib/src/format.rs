@@ -21,6 +21,10 @@ pub(crate) const D_BYTES: u8 = 15;
 /// `__drop__`: an implicit compiler copy of it shares the allocation and
 /// bumps a refcount instead of duplicating fields (`struct_share.rs`).
 pub(crate) const D_STRUCT_SHARED: u8 = 16;
+/// A trait object (fat pointer). The value is a record whose concrete
+/// descriptor lives in the record itself, so copy/free recurse through that
+/// rather than any bytes following this tag.
+pub(crate) const D_FATPTR: u8 = 17;
 
 /// Renders a value through a full descriptor starting at its first byte, for
 /// callers holding a runtime descriptor pointer (struct boxes).

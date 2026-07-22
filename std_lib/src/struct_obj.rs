@@ -4,9 +4,13 @@ use std::cell::UnsafeCell;
 // Body words = field count word + n_fields; sizes above this use pow2 classes.
 const FIXED_MAX_WORDS: usize = 17;
 
-/// Trait-object record: [kind, data ptr, vtable ptr, drop shim ptr].
+/// Trait-object record: [kind, data ptr, vtable ptr, drop shim ptr, concrete
+/// descriptor ptr]. The descriptor is the erased concrete struct's, kept so
+/// the copy path can deep-copy the value behind `data` the same way the drop
+/// shim deep-frees it; without it a trait object would share one allocation
+/// across owners and double-free.
 pub(crate) const KIND_FATPTR: i64 = 17;
-const FATPTR_WORDS: usize = 4;
+const FATPTR_WORDS: usize = 5;
 
 pub struct StructSlabs {
     fixed: Vec<GenSlab>,
@@ -113,6 +117,39 @@ pub extern "C" fn olive_fatptr_alloc() -> i64 {
     };
     unsafe { *(body as *mut i64) = KIND_FATPTR };
     body as i64
+}
+
+/// The concrete descriptor a trait-object record was built with (word 4),
+/// with the string tag bits stripped so it reads as a raw descriptor pointer.
+pub(crate) fn fatptr_desc(ptr: i64) -> i64 {
+    unsafe {
+        *(ptr as *const i64).add(4) & !(crate::string_slab::STR_TAG | crate::string_slab::STR_HEAP)
+    }
+}
+
+/// Builds a trait-object record from an already-owned concrete `data` and the
+/// erased type's vtable, drop shim and descriptor. Used by the copy path so a
+/// duplicated trait object owns its own concrete allocation.
+pub(crate) fn fatptr_new(data: i64, vtable: i64, drop_shim: i64, desc_word: i64) -> i64 {
+    let ptr = olive_fatptr_alloc();
+    unsafe {
+        let words = ptr as *mut i64;
+        *words.add(1) = data;
+        *words.add(2) = vtable;
+        *words.add(3) = drop_shim;
+        *words.add(4) = desc_word;
+    }
+    ptr
+}
+
+/// The raw words a copy needs to rebuild the record: (data, vtable, drop_shim,
+/// desc word as stored). `desc_word` keeps its tag bits so the rebuilt record
+/// is byte-identical to the original.
+pub(crate) fn fatptr_fields(ptr: i64) -> (i64, i64, i64, i64) {
+    unsafe {
+        let words = ptr as *const i64;
+        (*words.add(1), *words.add(2), *words.add(3), *words.add(4))
+    }
 }
 
 /// Frees the concrete value through the record's drop shim, then the record.
