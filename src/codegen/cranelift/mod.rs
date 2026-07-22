@@ -61,13 +61,7 @@ pub(super) fn is_specializable_any_binop(op: &crate::parser::BinOp) -> bool {
 }
 
 pub(super) type FfiStructFieldLayout = crate::semantic::abi::FfiFieldLayout;
-pub(super) type FfiLibInfo = (
-    String,
-    String,
-    Vec<crate::parser::ast::FfiFnSig>,
-    Vec<crate::parser::ast::FfiStructDef>,
-    Vec<crate::parser::ast::FfiVarDef>,
-);
+use crate::compile::linker::NativeLibRef;
 
 pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_alloc", b"olive_alloc\0"),
@@ -1231,7 +1225,7 @@ impl CraneliftCodegen<JITModule> {
         vtables: HashMap<String, Vec<String>>,
         global_vars: Vec<String>,
         file_names: HashMap<usize, String>,
-        native_lib_paths: &[FfiLibInfo],
+        native_lib_paths: &[NativeLibRef],
         release: bool,
     ) -> Self {
         let mut flag_builder = settings::builder();
@@ -1266,9 +1260,7 @@ impl CraneliftCodegen<JITModule> {
             builder.symbol(name, ptr);
         }
 
-        let has_c_structs = native_lib_paths
-            .iter()
-            .any(|(_, _, _, structs, _)| !structs.is_empty());
+        let has_c_structs = native_lib_paths.iter().any(|lib| !lib.structs.is_empty());
         let needed = imports::collect_needed_imports(&functions, has_c_structs);
         let has_async = functions.iter().any(|f| f.is_async);
 
@@ -1293,7 +1285,13 @@ impl CraneliftCodegen<JITModule> {
             libs.push(lib);
         }
 
-        for (alias, path, ffi_sigs, ffi_structs, ffi_vars) in native_lib_paths {
+        for lib_ref in native_lib_paths {
+            let alias = &lib_ref.alias;
+            let path = &lib_ref.path;
+            let ffi_sigs = &lib_ref.functions;
+            let ffi_structs = &lib_ref.structs;
+            let ffi_vars = &lib_ref.vars;
+
             for ffi_struct in ffi_structs {
                 let type_name = format!("{}::{}", alias, ffi_struct.name);
                 let (layout, total_size) = c_abi_layout(&ffi_struct.fields, ffi_struct.is_union);
@@ -1318,89 +1316,99 @@ impl CraneliftCodegen<JITModule> {
                     name.to_string()
                 }
             };
-            if let Ok(lib) = unsafe { libloading::Library::new(path) } {
-                native_aliases.insert(alias.clone());
-                for var in ffi_vars {
-                    let sym_bytes = format!("{}\0", var.name);
-                    if let Ok(sym) =
-                        unsafe { lib.get::<*const std::ffi::c_void>(sym_bytes.as_bytes()) }
-                    {
-                        let addr = *sym as i64;
-                        let ty_str = type_expr_to_name(&var.ty);
-                        let jit_name = format!("{}::{}", alias, var.name);
-                        extern_var_ptrs.insert(jit_name, (addr, ty_str, var.name.clone()));
+            match unsafe { libloading::Library::new(path) } {
+                Ok(lib) => {
+                    native_aliases.insert(alias.clone());
+                    for var in ffi_vars {
+                        let sym_bytes = format!("{}\0", var.name);
+                        if let Ok(sym) =
+                            unsafe { lib.get::<*const std::ffi::c_void>(sym_bytes.as_bytes()) }
+                        {
+                            let addr = *sym as i64;
+                            let ty_str = type_expr_to_name(&var.ty);
+                            let jit_name = format!("{}::{}", alias, var.name);
+                            extern_var_ptrs.insert(jit_name, (addr, ty_str, var.name.clone()));
+                        }
                     }
-                }
-                if ffi_sigs.is_empty() {
-                    let prefix = format!("{}::", alias);
-                    for func in &functions {
-                        for bb in &func.basic_blocks {
-                            for stmt in &bb.statements {
-                                if let crate::mir::StatementKind::Assign(
-                                    _,
-                                    crate::mir::Rvalue::Call {
-                                        func:
-                                            crate::mir::Operand::Constant(
-                                                crate::mir::Constant::Function(name),
-                                            ),
-                                        ..
-                                    },
-                                ) = &stmt.kind
-                                    && name.starts_with(&prefix)
-                                    && !c_struct_names.contains(name.as_str())
-                                {
-                                    let c_sym = format!("{}\0", &name[prefix.len()..]);
-                                    if let Ok(f) = unsafe {
-                                        lib.get::<unsafe extern "C" fn()>(c_sym.as_bytes())
-                                    } {
-                                        builder.symbol(name, *f as *const u8);
+                    if ffi_sigs.is_empty() {
+                        let prefix = format!("{}::", alias);
+                        for func in &functions {
+                            for bb in &func.basic_blocks {
+                                for stmt in &bb.statements {
+                                    if let crate::mir::StatementKind::Assign(
+                                        _,
+                                        crate::mir::Rvalue::Call {
+                                            func:
+                                                crate::mir::Operand::Constant(
+                                                    crate::mir::Constant::Function(name),
+                                                ),
+                                            ..
+                                        },
+                                    ) = &stmt.kind
+                                        && name.starts_with(&prefix)
+                                        && !c_struct_names.contains(name.as_str())
+                                    {
+                                        let c_sym = format!("{}\0", &name[prefix.len()..]);
+                                        if let Ok(f) = unsafe {
+                                            lib.get::<unsafe extern "C" fn()>(c_sym.as_bytes())
+                                        } {
+                                            builder.symbol(name, *f as *const u8);
+                                        }
                                     }
                                 }
                             }
                         }
+                    } else {
+                        for sig in ffi_sigs {
+                            let jit_name = format!("{}::{}", alias, sig.name);
+                            let c_sym = format!("{}\0", sig.name);
+                            if let Ok(f) =
+                                unsafe { lib.get::<unsafe extern "C" fn()>(c_sym.as_bytes()) }
+                            {
+                                if sig.is_vararg {
+                                    ffi_vararg_ptrs.insert(jit_name.clone(), *f as *const u8);
+                                } else {
+                                    builder.symbol(&jit_name, *f as *const u8);
+                                }
+                            }
+                            let mut use_sret = false;
+                            if let Some(ret_type) = &sig.ret {
+                                let ret_name = resolve_name(&type_expr_to_name(ret_type));
+                                if c_struct_sizes.get(&ret_name).is_some_and(|&size| size > 16) {
+                                    use_sret = true;
+                                }
+                            }
+                            ffi_entries.push(FfiFnEntry {
+                                jit_name,
+                                c_name: sig.name.clone(),
+                                params: sig
+                                    .params
+                                    .iter()
+                                    .map(|p| resolve_name(&type_expr_to_name(&p.ty)))
+                                    .collect(),
+                                ret: sig
+                                    .ret
+                                    .as_ref()
+                                    .map(|t| resolve_name(&type_expr_to_name(t))),
+                                is_vararg: sig.is_vararg,
+                                n_fixed: sig.params.len(),
+                                call_conv: sig.call_conv.clone(),
+                                use_sret,
+                            });
+                        }
                     }
-                } else {
-                    for sig in ffi_sigs {
-                        let jit_name = format!("{}::{}", alias, sig.name);
-                        let c_sym = format!("{}\0", sig.name);
-                        if let Ok(f) =
-                            unsafe { lib.get::<unsafe extern "C" fn()>(c_sym.as_bytes()) }
-                        {
-                            if sig.is_vararg {
-                                ffi_vararg_ptrs.insert(jit_name.clone(), *f as *const u8);
-                            } else {
-                                builder.symbol(&jit_name, *f as *const u8);
-                            }
-                        }
-                        let mut use_sret = false;
-                        if let Some(ret_type) = &sig.ret {
-                            let ret_name = resolve_name(&type_expr_to_name(ret_type));
-                            if c_struct_sizes.get(&ret_name).is_some_and(|&size| size > 16) {
-                                use_sret = true;
-                            }
-                        }
-                        ffi_entries.push(FfiFnEntry {
-                            jit_name,
-                            c_name: sig.name.clone(),
-                            params: sig
-                                .params
-                                .iter()
-                                .map(|p| resolve_name(&type_expr_to_name(&p.ty)))
-                                .collect(),
-                            ret: sig
-                                .ret
-                                .as_ref()
-                                .map(|t| resolve_name(&type_expr_to_name(t))),
-                            is_vararg: sig.is_vararg,
-                            n_fixed: sig.params.len(),
-                            call_conv: sig.call_conv.clone(),
-                            use_sret,
-                        });
+                    libs.push(lib);
+                }
+                Err(e) => {
+                    if lib_ref.from_pod {
+                        eprintln!("error: could not load native library for pod '{alias}'");
+                        eprintln!("  path: {path}");
+                        eprintln!("  {e}");
+                        std::process::exit(1);
+                    } else {
+                        eprintln!("warning: could not load native library '{path}'");
                     }
                 }
-                libs.push(lib);
-            } else {
-                eprintln!("warning: could not load native library '{}'", path);
             }
         }
 
@@ -1481,7 +1489,7 @@ impl CraneliftCodegen<ObjectModule> {
         vtables: HashMap<String, Vec<String>>,
         global_vars: Vec<String>,
         file_names: HashMap<usize, String>,
-        native_lib_paths: &[FfiLibInfo],
+        native_lib_paths: &[NativeLibRef],
         release: bool,
     ) -> Self {
         let mut flag_builder = settings::builder();
@@ -1522,7 +1530,11 @@ impl CraneliftCodegen<ObjectModule> {
 
         let mut extern_var_ptrs: HashMap<String, (i64, String, String)> = HashMap::default();
 
-        for (alias, _path, ffi_sigs, ffi_structs, ffi_vars) in native_lib_paths {
+        for lib_ref in native_lib_paths {
+            let alias = &lib_ref.alias;
+            let ffi_sigs = &lib_ref.functions;
+            let ffi_structs = &lib_ref.structs;
+            let ffi_vars = &lib_ref.vars;
             for ffi_struct in ffi_structs {
                 let type_name = format!("{}::{}", alias, ffi_struct.name);
                 let (layout, total_size) = c_abi_layout(&ffi_struct.fields, ffi_struct.is_union);

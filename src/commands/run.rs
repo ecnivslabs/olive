@@ -1,4 +1,4 @@
-use super::utils::{load_config, maybe_install_deps, run_build_script};
+use super::utils::{ensure_native_built, load_config, maybe_install_deps, run_build_script};
 use crate::compile::{compile_and_run, compile_and_run_aot, compile_hybrid};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -43,6 +43,7 @@ pub fn execute_run(
         let config = load_config();
         let all_deps = super::utils::aggregate_deps(&config);
         maybe_install_deps(&all_deps);
+        ensure_native_built(&config);
         if let Some(pod) = config.pod {
             crate::compile::loader::set_pod_meta(crate::compile::loader::PodMeta {
                 name: pod.name.clone(),

@@ -4,6 +4,7 @@ use crate::mangle::mangle_statements;
 use crate::parser::{self, Parser};
 use crate::span;
 use crate::tooling::pods::find_pod_path;
+use crate::tooling::{manifest, target};
 use rustc_hash::FxHashMap as HashMap;
 use std::{
     collections::HashSet,
@@ -15,6 +16,90 @@ std::thread_local! {
     static PROJECT_ROOT: std::cell::RefCell<PathBuf> = const { std::cell::RefCell::new(PathBuf::new()) };
     static POD_META: std::cell::RefCell<Option<PodMeta>> = const { std::cell::RefCell::new(None) };
     static SOURCE_OVERLAY: std::cell::RefCell<HashMap<String, String>> = std::cell::RefCell::new(HashMap::default());
+    static POD_NATIVE_CACHE: std::cell::RefCell<HashMap<PathBuf, Option<(PathBuf, manifest::Native)>>> =
+        std::cell::RefCell::new(HashMap::default());
+    static POD_NATIVE_RESOLVED: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::default());
+}
+
+/// True if `path` (already-resolved, absolute) was produced by
+/// [`resolve_pod_native`] rather than being a system library or an explicit
+/// path-ref import. The linker uses this to decide whether to stage and
+/// `$ORIGIN`-rpath the library (pod-relative, relocatable) rather than
+/// treating it as a fixed absolute path on this machine.
+pub fn is_pod_native_lib(path: &str) -> bool {
+    POD_NATIVE_RESOLVED.with(|s| s.borrow().contains(path))
+}
+
+/// Strips a `lib` prefix and a shared-library suffix (`.so[.N...]`,
+/// `.dylib`, `.dll`) from a native import spec to recover the stem a pod's
+/// `[native].lib` would name it by, e.g. `libtokenizer.so` -> `tokenizer`.
+/// A spec with no recognizable prefix/suffix (a bare stem already) is
+/// returned unchanged.
+fn native_lib_stem(spec: &str) -> &str {
+    let base = spec.strip_prefix("lib").unwrap_or(spec);
+    for ext in [".so", ".dylib", ".dll"] {
+        if let Some(idx) = base.find(ext) {
+            return &base[..idx];
+        }
+    }
+    base
+}
+
+/// Walks up from `file_dir` to the first `pit.toml`, returning its directory
+/// and `[native]` table if that pod declares one. Stops at the first
+/// manifest found regardless of whether it declares `[native]`, since a
+/// project's imports are never meant to resolve against some unrelated
+/// ancestor pod. Memoized per directory for the life of the process: a
+/// pod's `pit.toml` cannot change mid-compile.
+fn find_pod_native(file_dir: &Path) -> Option<(PathBuf, manifest::Native)> {
+    let canon_dir = file_dir.canonicalize().ok()?;
+    if let Some(cached) = POD_NATIVE_CACHE.with(|c| c.borrow().get(&canon_dir).cloned()) {
+        return cached;
+    }
+
+    let mut dir = canon_dir.clone();
+    let mut result = None;
+    for _ in 0..16 {
+        let pit_toml = dir.join("pit.toml");
+        if pit_toml.is_file() {
+            if let Ok(content) = fs::read_to_string(&pit_toml)
+                && let Ok(config) = toml::from_str::<manifest::Config>(&content)
+                && let Some(native) = config.native
+            {
+                result = Some((dir.clone(), native));
+            }
+            break;
+        }
+        match dir.parent() {
+            Some(p) => dir = p.to_path_buf(),
+            None => break,
+        }
+    }
+
+    POD_NATIVE_CACHE.with(|c| c.borrow_mut().insert(canon_dir, result.clone()));
+    result
+}
+
+/// Resolves a bare native import spec to the owning pod's installed artifact,
+/// if one exists: `import "libtokenizer.so"` inside a pod declaring
+/// `[native] lib = "tokenizer"` resolves to `<pod root>/native/libtokenizer.so`
+/// (extension chosen for the host, so the same source line is correct on
+/// every platform). Returns `None` for anything else - a system library like
+/// `libc.so.6`, a pod with no `[native]` table, or a stem mismatch - and the
+/// caller falls back to the existing system-wide search.
+fn resolve_pod_native(file_dir: &Path, spec: &str) -> Option<String> {
+    let stem = native_lib_stem(spec);
+    let (root, native) = find_pod_native(file_dir)?;
+    if native.lib != stem {
+        return None;
+    }
+    let local_name = target::local_name(&native.lib)?;
+    let artifact = root.join("native").join(local_name);
+    if !artifact.is_file() {
+        return None;
+    }
+    let canon = artifact.canonicalize().unwrap_or(artifact);
+    Some(canon.to_string_lossy().to_string())
 }
 
 fn overlay_key(path: &str) -> String {
@@ -201,13 +286,8 @@ fn load_module_file(
     }
     loaded.insert(path_str.clone());
 
-    let mut imported_stmts = load_and_parse_collecting(
-        &path_str,
-        false,
-        loaded,
-        file_id_counter,
-        sources,
-    )?;
+    let mut imported_stmts =
+        load_and_parse_collecting(&path_str, false, loaded, file_id_counter, sources)?;
 
     let mut defined_names = HashSet::new();
     for s in &imported_stmts {
@@ -361,6 +441,11 @@ pub fn load_and_parse_collecting(
                 } else {
                     *path = resolved.to_string_lossy().to_string();
                 }
+            } else if !p.is_absolute()
+                && let Some(resolved) = resolve_pod_native(&file_dir, path)
+            {
+                POD_NATIVE_RESOLVED.with(|s| s.borrow_mut().insert(resolved.clone()));
+                *path = resolved;
             }
         }
     }
@@ -454,24 +539,43 @@ pub fn load_and_parse_collecting(
 
                 match resolve_module_target(parent_dir, module) {
                     Ok(ResolvedModule::File(p)) | Ok(ResolvedModule::ModFile(p)) => {
-                        let stmts = load_module_file(&p, mod_prefix, loaded, file_id_counter, sources)?;
+                        let stmts =
+                            load_module_file(&p, mod_prefix, loaded, file_id_counter, sources)?;
                         all_stmts.extend(stmts);
                     }
                     Ok(ResolvedModule::Directory(_dir_path, submodules)) => {
                         for sub_path in submodules {
                             if let Some(stem) = sub_path.file_stem().and_then(|s| s.to_str()) {
                                 let sub_prefix = format!("{mod_prefix}::{stem}");
-                                let stmts = load_module_file(&sub_path, &sub_prefix, loaded, file_id_counter, sources)?;
+                                let stmts = load_module_file(
+                                    &sub_path,
+                                    &sub_prefix,
+                                    loaded,
+                                    file_id_counter,
+                                    sources,
+                                )?;
                                 all_stmts.extend(stmts);
                             }
                         }
                     }
-                    Err(ModuleResolutionError::Ambiguous { module: m, file_path, mod_path }) => {
+                    Err(ModuleResolutionError::Ambiguous {
+                        module: m,
+                        file_path,
+                        mod_path,
+                    }) => {
                         return Err(Box::new(
-                            Diagnostic::error("E0302", format!("ambiguous module `{m}`"), stmt.span)
-                                .label("imported here")
-                                .note(format!("found both `{}` and `{}`", file_path.display(), mod_path.display()))
-                                .help("remove or rename one of them to resolve the ambiguity"),
+                            Diagnostic::error(
+                                "E0302",
+                                format!("ambiguous module `{m}`"),
+                                stmt.span,
+                            )
+                            .label("imported here")
+                            .note(format!(
+                                "found both `{}` and `{}`",
+                                file_path.display(),
+                                mod_path.display()
+                            ))
+                            .help("remove or rename one of them to resolve the ambiguity"),
                         ));
                     }
                     Err(ModuleResolutionError::NotFound(m)) => {
@@ -545,12 +649,24 @@ pub fn load_and_parse_collecting(
                             }
                         }
                     }
-                    Err(ModuleResolutionError::Ambiguous { module: m, file_path, mod_path }) => {
+                    Err(ModuleResolutionError::Ambiguous {
+                        module: m,
+                        file_path,
+                        mod_path,
+                    }) => {
                         return Err(Box::new(
-                            Diagnostic::error("E0302", format!("ambiguous module `{m}`"), stmt.span)
-                                .label("imported here")
-                                .note(format!("found both `{}` and `{}`", file_path.display(), mod_path.display()))
-                                .help("remove or rename one of them to resolve the ambiguity"),
+                            Diagnostic::error(
+                                "E0302",
+                                format!("ambiguous module `{m}`"),
+                                stmt.span,
+                            )
+                            .label("imported here")
+                            .note(format!(
+                                "found both `{}` and `{}`",
+                                file_path.display(),
+                                mod_path.display()
+                            ))
+                            .help("remove or rename one of them to resolve the ambiguity"),
                         ));
                     }
                     Err(ModuleResolutionError::NotFound(m)) => {
@@ -660,6 +776,32 @@ pub fn collect_source_files(
                     }
                 }
             }
+            // A native library is part of the build's actual input: rebuilding
+            // it (a new mtime) must invalidate the AOT cache exactly like
+            // editing a .liv file does, or `pit run` would keep executing a
+            // binary linked against the previous library.
+            parser::StmtKind::NativeImport { path, .. } => {
+                let p = Path::new(path.as_str());
+                let resolved = if p.is_absolute() {
+                    Some(path.clone())
+                } else if path.contains('/') || path.contains('\\') {
+                    let joined = parent_dir.join(p);
+                    Some(
+                        joined
+                            .canonicalize()
+                            .map(|c| c.to_string_lossy().to_string())
+                            .unwrap_or_else(|_| joined.to_string_lossy().to_string()),
+                    )
+                } else {
+                    resolve_pod_native(&parent_dir, path)
+                };
+                if let Some(resolved) = resolved
+                    && Path::new(&resolved).is_file()
+                    && visited.insert(resolved.clone())
+                {
+                    collected.push(resolved);
+                }
+            }
             _ => {}
         }
     }
@@ -730,7 +872,8 @@ mod tests {
 
     #[test]
     fn test_resolve_module_target_variants() {
-        let temp_dir = std::env::temp_dir().join(format!("olive_mod_resolve_{}", std::process::id()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("olive_mod_resolve_{}", std::process::id()));
         fs::create_dir_all(&temp_dir).unwrap();
 
         // 1. Single file
@@ -808,7 +951,10 @@ mod tests {
             parser::StmtKind::Struct { name, .. } => name == "tokenizer::Tokenizer",
             _ => false,
         });
-        assert!(has_mangled_struct, "expected tokenizer::Tokenizer from mod.liv");
+        assert!(
+            has_mangled_struct,
+            "expected tokenizer::Tokenizer from mod.liv"
+        );
 
         fs::remove_dir_all(&temp_dir).ok();
     }
@@ -843,13 +989,19 @@ mod tests {
             parser::StmtKind::Fn { name, .. } => name == "tokenizer::bpe::encode",
             _ => false,
         });
-        assert!(has_bpe_fn, "expected tokenizer::bpe::encode in directory module");
+        assert!(
+            has_bpe_fn,
+            "expected tokenizer::bpe::encode in directory module"
+        );
 
         let has_tok_struct = stmts.iter().any(|s| match &s.kind {
             parser::StmtKind::Struct { name, .. } => name == "tokenizer::tokenizer::Tokenizer",
             _ => false,
         });
-        assert!(has_tok_struct, "expected tokenizer::tokenizer::Tokenizer in directory module");
+        assert!(
+            has_tok_struct,
+            "expected tokenizer::tokenizer::Tokenizer in directory module"
+        );
 
         fs::remove_dir_all(&temp_dir).ok();
     }
@@ -877,10 +1029,12 @@ mod tests {
         .unwrap();
 
         let name_const = stmts.iter().find_map(|s| match &s.kind {
-            parser::StmtKind::Const { name, value, .. } if name == "__name__" => match &value.kind {
-                parser::ExprKind::Str(val) => Some(val.clone()),
-                _ => None,
-            },
+            parser::StmtKind::Const { name, value, .. } if name == "__name__" => {
+                match &value.kind {
+                    parser::ExprKind::Str(val) => Some(val.clone()),
+                    _ => None,
+                }
+            }
             _ => None,
         });
 
@@ -913,9 +1067,18 @@ mod tests {
             &mut visited,
         );
 
-        let main_canon = fs::canonicalize(&main_path).unwrap().to_string_lossy().to_string();
-        let bpe_canon = fs::canonicalize(&bpe_path).unwrap().to_string_lossy().to_string();
-        let tok_canon = fs::canonicalize(&tok_path).unwrap().to_string_lossy().to_string();
+        let main_canon = fs::canonicalize(&main_path)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let bpe_canon = fs::canonicalize(&bpe_path)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let tok_canon = fs::canonicalize(&tok_path)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
 
         assert!(collected.contains(&main_canon));
         assert!(collected.contains(&bpe_canon));

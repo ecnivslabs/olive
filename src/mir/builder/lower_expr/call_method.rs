@@ -136,7 +136,10 @@ impl<'a> MirBuilder<'a> {
 
         let unrolled = callee.unroll_attr_chain();
         let mangled_target = unrolled.as_ref().map(|(root, chain)| {
-            std::iter::once(*root).chain(chain.iter().copied()).collect::<Vec<_>>().join("::")
+            std::iter::once(*root)
+                .chain(chain.iter().copied())
+                .collect::<Vec<_>>()
+                .join("::")
         });
 
         let is_module_call = if let Some(ref mangled) = mangled_target {
@@ -1951,7 +1954,10 @@ impl<'a> MirBuilder<'a> {
 
     pub(super) fn has_native_callee(&self, callee: &Expr) -> bool {
         if let Some((root, chain)) = callee.unroll_attr_chain() {
-            let mangled = std::iter::once(root).chain(chain).collect::<Vec<_>>().join("::");
+            let mangled = std::iter::once(root)
+                .chain(chain)
+                .collect::<Vec<_>>()
+                .join("::");
             return self.fn_meta.contains_key(&mangled)
                 || self.lookup_var(&mangled).is_some()
                 || self.globals.contains_key(&mangled)

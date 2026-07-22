@@ -3,7 +3,7 @@ pub(crate) mod diagnose;
 pub(crate) mod errors;
 pub(crate) mod fix;
 pub(crate) mod laws;
-mod linker;
+pub(crate) mod linker;
 pub(crate) mod lints;
 pub(crate) mod loader;
 pub(crate) mod pgo;

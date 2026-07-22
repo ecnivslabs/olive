@@ -62,6 +62,8 @@ let result = physics.compute_gravity(10.0, 5.0)
 
 The compiler manages symbol resolution and calling convention compliance.
 
+A bare name (`"physics.so"`, no slash) is resolved in order: the owning pod's `native/` directory when the importing file belongs to a pod that declares `[native]` with a matching stem, then the system library search. A path (`"./libfoo.so"`, `"/opt/lib/bar.so"`) is linked directly. Pod native libraries are staged beside the output so the binary stays relocatable.
+
 ## Visibility and Privacy
 
 Olive uses a naming convention for visibility:

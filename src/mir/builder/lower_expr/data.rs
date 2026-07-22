@@ -309,7 +309,10 @@ impl<'a> MirBuilder<'a> {
                     chain_root = Some(name.as_str());
                     break;
                 }
-                ExprKind::Attr { obj: inner, attr: inner_attr } => {
+                ExprKind::Attr {
+                    obj: inner,
+                    attr: inner_attr,
+                } => {
                     chain_attrs.push(inner_attr.as_str());
                     curr = inner;
                 }

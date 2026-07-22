@@ -1,4 +1,6 @@
-use super::utils::{aggregate_deps, load_config, maybe_install_deps, run_build_script};
+use super::utils::{
+    aggregate_deps, ensure_native_built, load_config, maybe_install_deps, run_build_script,
+};
 use crate::compile::compile_and_bench;
 
 /// `pit bench`: same project-discovery shape as `pit test` (workspace vs.
@@ -8,6 +10,7 @@ pub fn execute_bench(json: bool) {
     let config = load_config();
     let all_deps = aggregate_deps(&config);
     maybe_install_deps(&all_deps);
+    ensure_native_built(&config);
 
     if let Some(workspace) = config.workspace {
         for member in workspace.members {
@@ -15,6 +18,7 @@ pub fn execute_bench(json: bool) {
                 continue;
             }
             let member_config = load_config();
+            ensure_native_built(&member_config);
             if let Some(pod) = member_config.pod {
                 crate::compile::loader::set_pod_meta(crate::compile::loader::PodMeta {
                     name: pod.name.clone(),

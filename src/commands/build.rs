@@ -1,4 +1,4 @@
-use super::utils::{load_config, maybe_install_deps, run_build_script};
+use super::utils::{ensure_native_built, load_config, maybe_install_deps, run_build_script};
 use crate::compile::{cache, compile_and_emit, compile_and_test, pgo};
 use std::path::Path;
 
@@ -73,6 +73,7 @@ pub fn execute_build(
     let config = load_config();
     let all_deps = super::utils::aggregate_deps(&config);
     maybe_install_deps(&all_deps);
+    ensure_native_built(&config);
 
     if let Some(workspace) = config.workspace {
         println!("\x1b[1;32m   Compiling\x1b[0m workspace...");
@@ -82,6 +83,7 @@ pub fn execute_build(
                 continue;
             }
             let member_config = load_config();
+            ensure_native_built(&member_config);
             if let Some(pod) = member_config.pod {
                 crate::compile::loader::set_pod_meta(crate::compile::loader::PodMeta {
                     name: pod.name.clone(),
@@ -153,6 +155,7 @@ pub fn execute_test(time: bool, release: bool, _explain_copies: bool) {
     let config = load_config();
     let all_deps = super::utils::aggregate_deps(&config);
     maybe_install_deps(&all_deps);
+    ensure_native_built(&config);
 
     if let Some(workspace) = config.workspace {
         println!("\x1b[1;34mRunning tests for workspace...\x1b[0m");
@@ -161,6 +164,7 @@ pub fn execute_test(time: bool, release: bool, _explain_copies: bool) {
                 continue;
             }
             let member_config = load_config();
+            ensure_native_built(&member_config);
             if let Some(pod) = member_config.pod {
                 crate::compile::loader::set_pod_meta(crate::compile::loader::PodMeta {
                     name: pod.name.clone(),

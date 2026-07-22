@@ -51,7 +51,8 @@ fn test_mod_liv_optional_submodule_chained() {
     let bpe_src = "fn encode(s: str) -> str:\n    return \"encoded:\" + s\n";
     std::fs::write(pkg_dir.join("bpe.liv"), bpe_src).unwrap();
 
-    let model_src = "struct Config:\n    dim: int\n\nfn default_config() -> Config:\n    return Config(512)\n";
+    let model_src =
+        "struct Config:\n    dim: int\n\nfn default_config() -> Config:\n    return Config(512)\n";
     std::fs::write(pkg_dir.join("model.liv"), model_src).unwrap();
 
     let main_src = "import tokenizer\n\nfn main():\n    let e = tokenizer.bpe.encode(\"hello\")\n    let cfg = tokenizer.model.default_config()\n    print(e)\n    print(cfg.dim)\n";
@@ -69,7 +70,10 @@ fn test_mod_liv_optional_submodule_chained() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "execution failed: {stderr}");
-    assert!(stdout.contains("encoded:hello"), "stdout: {stdout}; stderr: {stderr}");
+    assert!(
+        stdout.contains("encoded:hello"),
+        "stdout: {stdout}; stderr: {stderr}"
+    );
     assert!(stdout.contains("512"), "stdout: {stdout}; stderr: {stderr}");
 }
 
@@ -82,7 +86,8 @@ fn test_mod_liv_reexport() {
     let bpe_src = "fn bpe_encode(s: str) -> str:\n    return \"bpe:\" + s\n";
     std::fs::write(pkg_dir.join("bpe.liv"), bpe_src).unwrap();
 
-    let mod_src = "from bpe import bpe_encode\n\nfn run(s: str) -> str:\n    return bpe_encode(s)\n";
+    let mod_src =
+        "from bpe import bpe_encode\n\nfn run(s: str) -> str:\n    return bpe_encode(s)\n";
     std::fs::write(pkg_dir.join("mod.liv"), mod_src).unwrap();
 
     let main_src = "import nlp\n\nfn main():\n    print(nlp.run(\"test\"))\n";
@@ -100,7 +105,11 @@ fn test_mod_liv_reexport() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "execution failed: {stderr}");
-    assert_eq!(stdout.trim(), "bpe:test", "stdout: {stdout}; stderr: {stderr}");
+    assert_eq!(
+        stdout.trim(),
+        "bpe:test",
+        "stdout: {stdout}; stderr: {stderr}"
+    );
 }
 
 #[test]
@@ -127,7 +136,11 @@ fn test_mod_liv_name_builtin() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "execution failed: {stderr}");
-    assert_eq!(stdout.trim(), "pkg_test", "stdout: {stdout}; stderr: {stderr}");
+    assert_eq!(
+        stdout.trim(),
+        "pkg_test",
+        "stdout: {stdout}; stderr: {stderr}"
+    );
 }
 
 #[test]
@@ -152,9 +165,18 @@ fn test_mod_liv_ambiguity_e0302() {
 
     let _ = std::fs::remove_dir_all(&dir);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success(), "expected failure on ambiguous module definition");
-    assert!(stderr.contains("E0302"), "expected E0302 in stderr, got: {stderr}");
-    assert!(stderr.contains("ambiguous module"), "expected ambiguous module in stderr, got: {stderr}");
+    assert!(
+        !out.status.success(),
+        "expected failure on ambiguous module definition"
+    );
+    assert!(
+        stderr.contains("E0302"),
+        "expected E0302 in stderr, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("ambiguous module"),
+        "expected ambiguous module in stderr, got: {stderr}"
+    );
 }
 
 #[test]

@@ -2,17 +2,27 @@ use rustc_hash::FxHasher;
 use std::{
     fs,
     hash::{Hash, Hasher},
+    io,
     path::{Path, PathBuf},
     process,
 };
 
-pub type FfiLibInfo = (
-    String,
-    String,
-    Vec<crate::parser::ast::FfiFnSig>,
-    Vec<crate::parser::ast::FfiStructDef>,
-    Vec<crate::parser::ast::FfiVarDef>,
-);
+/// All information the linker and JIT need about one native import.
+#[derive(Clone)]
+pub struct NativeLibRef {
+    pub alias: String,
+    /// Resolved path as rewritten by `loader::load_and_parse_collecting`.
+    /// Absolute for pod-native libs; may be bare-name or path-ref otherwise.
+    pub path: String,
+    /// True when `path` was resolved by `loader::resolve_pod_native`, meaning
+    /// it lives under a pod's `native/` directory. The linker stages it next to
+    /// the output and emits an `$ORIGIN`-relative rpath so the output binary is
+    /// relocatable. The JIT turns a failed dlopen into a hard error.
+    pub from_pod: bool,
+    pub functions: Vec<crate::parser::ast::FfiFnSig>,
+    pub structs: Vec<crate::parser::ast::FfiStructDef>,
+    pub vars: Vec<crate::parser::ast::FfiVarDef>,
+}
 
 pub fn exec_binary(path: &str) -> i32 {
     std::process::Command::new(path)
@@ -215,11 +225,11 @@ fn lib_link_arg(name: &str) -> String {
     }
 }
 
-pub fn link_object(obj_path: &str, out: &str, native_libs: &[FfiLibInfo]) {
+pub fn link_object(obj_path: &str, out: &str, native_libs: &[NativeLibRef]) {
     link_object_impl(obj_path, out, native_libs, false)
 }
 
-pub fn link_shared_object(obj_path: &str, out: &str, native_libs: &[FfiLibInfo]) {
+pub fn link_shared_object(obj_path: &str, out: &str, native_libs: &[NativeLibRef]) {
     link_object_impl(obj_path, out, native_libs, true)
 }
 
@@ -276,7 +286,7 @@ fn get_msvc_linker_cmd() -> (std::process::Command, bool) {
     (std::process::Command::new("link.exe"), true)
 }
 
-fn link_object_impl(obj_path: &str, out: &str, native_libs: &[FfiLibInfo], shared: bool) {
+fn link_object_impl(obj_path: &str, out: &str, native_libs: &[NativeLibRef], shared: bool) {
     let static_dir = find_static_library_dir();
     let used_static_link = static_dir.is_some();
     let is_msvc_env = cfg!(target_env = "msvc");
@@ -395,12 +405,73 @@ fn link_object_impl(obj_path: &str, out: &str, native_libs: &[FfiLibInfo], share
         (c, false)
     };
 
-    for (_, path, _, _, _) in native_libs {
+    let out_dir = Path::new(out).parent().unwrap_or(Path::new("."));
+    let mut unresolved_fallbacks: Vec<String> = Vec::new();
+
+    for lib in native_libs {
+        let path = &lib.path;
         let lib_path = Path::new(path.as_str());
-        // Path refs (`./libfoo.so`, `/opt/lib/bar.so`) link directly, relative
-        // ones resolved against cwd; bare names go through the `-l` forms.
         let is_path_ref = path.contains('/') || path.contains('\\');
-        if is_path_ref {
+
+        if lib.from_pod {
+            // Pod-native: stage beside the output so the binary is relocatable,
+            // then use $ORIGIN / @loader_path so it finds the copy at runtime.
+            match stage_beside_output(lib_path, out_dir) {
+                Ok(staged) => {
+                    if is_msvc {
+                        let implib = staged.with_extension("dll.lib");
+                        if !implib.exists() {
+                            eprintln!(
+                                "error: cannot link native library '{}' with the MSVC toolchain",
+                                lib.alias
+                            );
+                            eprintln!(
+                                "  the DLL is at {} but its import library is missing",
+                                staged.display()
+                            );
+                            eprintln!("  expected: {}", implib.display());
+                            eprintln!(
+                                "  reinstall the pod with `pit update {}`; if that does not help,",
+                                lib.alias
+                            );
+                            eprintln!(
+                                "  the pod did not publish an import library for windows-x86_64"
+                            );
+                            process::exit(1);
+                        }
+                        cmd.arg(&implib);
+                    } else {
+                        let filename = staged
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        let out_abs = if out_dir.is_absolute() {
+                            out_dir.to_path_buf()
+                        } else {
+                            std::env::current_dir()
+                                .map(|d| d.join(out_dir))
+                                .unwrap_or_else(|_| out_dir.to_path_buf())
+                        };
+                        cmd.arg(format!("-L{}", out_abs.display()));
+                        if cfg!(target_os = "macos") {
+                            cmd.arg(lib_link_arg(&filename));
+                            cmd.arg("-Wl,-rpath,@loader_path");
+                        } else {
+                            cmd.arg(format!("-l:{filename}"));
+                            cmd.arg("-Wl,-rpath,$ORIGIN");
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "error: could not stage native library '{}': {e}",
+                        lib_path.display()
+                    );
+                    process::exit(1);
+                }
+            }
+        } else if is_path_ref {
+            // Explicit path ref (./libfoo.so or /opt/lib/bar.so).
             let resolved = if lib_path.is_absolute() {
                 lib_path.to_path_buf()
             } else {
@@ -428,12 +499,15 @@ fn link_object_impl(obj_path: &str, out: &str, native_libs: &[FfiLibInfo], share
             // ld64 has no equivalent to GNU ld's `-l:exact-name` linking; the
             // stem fallback is the only portable option left once the file
             // search above comes up empty.
+            unresolved_fallbacks.push(path.clone());
             cmd.arg(lib_link_arg(path));
         } else if path.contains(".so") {
             // GNU ld / MinGW ld's exact-name linking as a last resort for a
             // versioned soname neither `ldconfig` nor the search dirs found.
+            unresolved_fallbacks.push(path.clone());
             cmd.arg(format!("-l:{path}"));
         } else {
+            unresolved_fallbacks.push(path.clone());
             cmd.arg(lib_link_arg(path));
         }
     }
@@ -452,7 +526,21 @@ fn link_object_impl(obj_path: &str, out: &str, native_libs: &[FfiLibInfo], share
     fs::remove_file(obj_path).ok();
 
     if !status.success() {
+        for name in &unresolved_fallbacks {
+            eprintln!(
+                "error: native library '{}' was not found on this system",
+                name
+            );
+            eprintln!(
+                "  the linker fell back to `-l:{name}` / `-l<stem>` and could not resolve it"
+            );
+            eprintln!(
+                "  if this library comes from a pod, that pod may not publish a native artifact"
+            );
+            eprintln!("  for this platform; check with `pit search <podname>`");
+        }
         eprintln!("error: linking failed");
+        eprintln!("  linker command: {:?}", cmd);
         process::exit(1);
     }
 
@@ -484,7 +572,33 @@ pub fn ensure_dir(path: &str) {
     });
 }
 
-pub fn collect_native_libs(program: &crate::parser::Program) -> Vec<FfiLibInfo> {
+/// Copies `src` into `out_dir`, preserving the filename. The copy is
+/// content-hash gated: if the destination already has the same bytes, the
+/// file is left untouched (mtime unchanged, AOT cache stays valid). Returns
+/// the destination path so the linker can reference it.
+fn stage_beside_output(src: &Path, out_dir: &Path) -> io::Result<PathBuf> {
+    let name = src
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "source has no filename"))?;
+    let dest = out_dir.join(name);
+
+    let src_bytes = fs::read(src)?;
+
+    // Skip the write when the destination is already byte-identical.
+    if dest.is_file() {
+        if let Ok(existing) = fs::read(&dest) {
+            if existing == src_bytes {
+                return Ok(dest);
+            }
+        }
+    }
+
+    fs::create_dir_all(out_dir)?;
+    fs::write(&dest, &src_bytes)?;
+    Ok(dest)
+}
+
+pub fn collect_native_libs(program: &crate::parser::Program) -> Vec<NativeLibRef> {
     program
         .stmts
         .iter()
@@ -498,13 +612,15 @@ pub fn collect_native_libs(program: &crate::parser::Program) -> Vec<FfiLibInfo> 
                 ..
             } = &s.kind
             {
-                Some((
-                    alias.clone(),
-                    path.clone(),
-                    functions.clone(),
-                    structs.clone(),
-                    vars.clone(),
-                ))
+                let from_pod = super::loader::is_pod_native_lib(path);
+                Some(NativeLibRef {
+                    alias: alias.clone(),
+                    path: path.clone(),
+                    from_pod,
+                    functions: functions.clone(),
+                    structs: structs.clone(),
+                    vars: vars.clone(),
+                })
             } else {
                 None
             }
@@ -666,8 +782,8 @@ mod tests {
         };
         let libs = collect_native_libs(&program);
         assert_eq!(libs.len(), 1);
-        assert_eq!(libs[0].0, "foo");
-        assert_eq!(libs[0].1, "/usr/lib/libfoo.so");
+        assert_eq!(libs[0].alias, "foo");
+        assert_eq!(libs[0].path, "/usr/lib/libfoo.so");
     }
 
     #[test]
@@ -714,8 +830,8 @@ mod tests {
         };
         let libs = collect_native_libs(&program);
         assert_eq!(libs.len(), 2);
-        assert_eq!(libs[0].0, "z");
-        assert_eq!(libs[1].0, "png");
+        assert_eq!(libs[0].alias, "z");
+        assert_eq!(libs[1].alias, "png");
     }
 
     #[test]
@@ -777,6 +893,52 @@ mod tests {
         };
         let libs = collect_native_libs(&program);
         assert_eq!(libs.len(), 1);
-        assert_eq!(libs[0].0, "foo");
+        assert_eq!(libs[0].alias, "foo");
+    }
+    #[test]
+    fn stage_beside_output_copies_file() {
+        let tmp = std::env::temp_dir().join("olive_test_stage");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let src = tmp.join("libtest.so");
+        let out_dir = tmp.join("out");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        std::fs::write(&src, b"fake lib").unwrap();
+
+        let dest = stage_beside_output(&src, &out_dir).unwrap();
+        assert_eq!(dest, out_dir.join("libtest.so"));
+        assert_eq!(std::fs::read(&dest).unwrap(), b"fake lib");
+
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn stage_beside_output_skips_identical() {
+        let tmp = std::env::temp_dir().join("olive_test_stage_skip");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let src = tmp.join("libtest.so");
+        let out_dir = tmp.join("out");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        std::fs::write(&src, b"same bytes").unwrap();
+
+        let dest = stage_beside_output(&src, &out_dir).unwrap();
+        let mtime1 = std::fs::metadata(&dest).unwrap().modified().unwrap();
+
+        // Call again with identical content; dest mtime must not change.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        stage_beside_output(&src, &out_dir).unwrap();
+        let mtime2 = std::fs::metadata(&dest).unwrap().modified().unwrap();
+        assert_eq!(mtime1, mtime2, "mtime changed on identical re-stage");
+
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn stage_beside_output_error_on_missing_source() {
+        let tmp = std::env::temp_dir().join("olive_test_stage_err");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let missing = tmp.join("nonexistent.so");
+        let out_dir = tmp.join("out");
+        assert!(stage_beside_output(&missing, &out_dir).is_err());
+        std::fs::remove_dir_all(&tmp).unwrap();
     }
 }
