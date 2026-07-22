@@ -31,17 +31,29 @@ fn copy_if_different(src: &Path, dest: &Path) -> Result<bool, String> {
 }
 
 /// Builds the current project's native library and stages it into `native/`.
-///
-/// Runs only for the root project's own manifest. Never for an installed pod
-/// under `~/.pit/pods/`, where executing a build command would turn `pit add`
-/// into arbitrary code execution.
 pub fn ensure_built(native: &Native) -> Result<(), String> {
+    ensure_built_in(Path::new("."), native)
+}
+
+/// Same as [`ensure_built`], but rooted at `root` instead of the process
+/// working directory. The build command runs with `root` as its working
+/// directory (via `current_dir`, never the process-global cwd, so concurrent
+/// installs cannot race each other), and all relative paths resolve under it.
+///
+/// Used for two cases: the root project itself (`pit build`, `pit run`) and
+/// an installed pod under `~/.pit/pods/` whose engine sources shipped in its
+/// archive. The latter is how every other language does it (Cargo build
+/// scripts, node-gyp, pip sdists): consumers build native code from the
+/// published source with their own toolchain. Registry review is the trust
+/// boundary, exactly as for downloaded artifacts.
+pub fn ensure_built_in(root: &Path, native: &Native) -> Result<(), String> {
     let argv = native.build_argv();
     let (program, args) = argv
         .split_first()
         .ok_or_else(|| "invalid [native] build command: empty argv".to_string())?;
     let status = std::process::Command::new(program)
         .args(args)
+        .current_dir(root)
         .status()
         .map_err(|e| {
             let mut msg = format!(
@@ -62,7 +74,7 @@ pub fn ensure_built(native: &Native) -> Result<(), String> {
     }
 
     let built = target::built_name(&native.lib);
-    let src = Path::new(native.artifact_dir()).join(&built);
+    let src = root.join(native.artifact_dir()).join(&built);
     if !src.is_file() {
         return Err(format!(
             "error: the [native] build command did not produce the expected library\n  expected: {}\n  set [native].dir in pit.toml if your build writes somewhere else",
@@ -73,15 +85,15 @@ pub fn ensure_built(native: &Native) -> Result<(), String> {
     let local = target::local_name(&native.lib).ok_or_else(|| {
         "error: pit has no artifact naming convention for this platform".to_string()
     })?;
-    let dest = Path::new("native").join(&local);
+    let dest = root.join("native").join(&local);
     copy_if_different(&src, &dest)?;
 
     if let (Some(built_implib), Some(local_implib)) = (
         target::built_implib_name(&native.lib),
         target::local_implib_name(&native.lib),
     ) {
-        let src_implib = Path::new(native.artifact_dir()).join(&built_implib);
-        let dest_implib = Path::new("native").join(&local_implib);
+        let src_implib = root.join(native.artifact_dir()).join(&built_implib);
+        let dest_implib = root.join("native").join(&local_implib);
         if src_implib.is_file() {
             copy_if_different(&src_implib, &dest_implib)?;
         }
@@ -147,6 +159,50 @@ mod tests {
         let missing = dir.join("nonexistent.so");
         let dest = dir.join("native").join("libfoo.so");
         assert!(copy_if_different(&missing, &dest).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_built_in_runs_build_and_stages() {
+        use crate::tooling::manifest::Native;
+
+        let dir = std::env::temp_dir().join("olive_native_test_ensure");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let native = Native {
+            lib: "foo".into(),
+            build: Some(vec![
+                "sh".into(),
+                "-c".into(),
+                "mkdir -p target/release && printf fake > target/release/libfoo.so".into(),
+            ]),
+            dir: None,
+            targets: vec![],
+        };
+        ensure_built_in(&dir, &native).unwrap();
+        assert_eq!(
+            std::fs::read(dir.join("native").join("libfoo.so")).unwrap(),
+            b"fake"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_built_in_errors_when_build_produces_nothing() {
+        use crate::tooling::manifest::Native;
+
+        let dir = std::env::temp_dir().join("olive_native_test_noprod");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let native = Native {
+            lib: "foo".into(),
+            build: Some(vec!["true".into()]),
+            dir: None,
+            targets: vec![],
+        };
+        assert!(ensure_built_in(&dir, &native).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
