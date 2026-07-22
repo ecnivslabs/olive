@@ -434,22 +434,21 @@ fn copy_shared_struct(val: i64, desc: *const u8, pos: &mut usize) -> i64 {
 }
 
 /// A trait object owns the concrete struct behind its `data` word, so a copy
-/// must duplicate that struct too, not share the record. The concrete
-/// descriptor rides in the record; deep-copy `data` through it and rebuild the
-/// record around the copy, keeping the same vtable, drop shim and descriptor.
+/// must duplicate that struct too, not share the record. The record is
+/// registered in `visited` before `data` is walked, same as every other
+/// aggregate here, so a cycle back through the erased value resolves to the
+/// in-progress copy instead of recursing forever.
 fn copy_fatptr(val: i64, visited: &mut FxHashMap<i64, i64>) -> i64 {
     if val == 0 || !slot_is_live(val) {
         return val;
     }
-    if let Some(&seen) = visited.get(&val) {
-        return seen;
-    }
     let (data, vtable, drop_shim, desc_word) = crate::struct_obj::fatptr_fields(val);
+    let new = crate::struct_obj::fatptr_new(0, vtable, drop_shim, desc_word);
+    visited.insert(val, new);
     let concrete_desc = crate::struct_obj::fatptr_desc(val) as *const u8;
     let mut inner_pos = 0usize;
     let new_data = copy_val(data, concrete_desc, &mut inner_pos, visited);
-    let new = crate::struct_obj::fatptr_new(new_data, vtable, drop_shim, desc_word);
-    visited.insert(val, new);
+    crate::struct_obj::fatptr_set_data(new, new_data);
     new
 }
 
@@ -821,6 +820,30 @@ mod tests {
             "copy independent of the source's deep free"
         );
         olive_free_typed(cp, d);
+    }
+
+    #[test]
+    fn fatptr_self_cycle_resolves_instead_of_recursing_forever() {
+        // Regression: a trait object whose own concrete data cycles back to it
+        // (a Node holding a `dyn Trait` field pointing at itself) used to
+        // recurse forever, since the record was registered in `visited` only
+        // after its data had already been walked.
+        let node = crate::olive_struct_alloc(1);
+        let concrete =
+            desc_aligned(&[D_STRUCT, 13 + 1, b'N', 13 + 1, 13 + 2, b'm', b'e', D_FATPTR]);
+        let fat = crate::struct_obj::fatptr_new(node, 0, 0, concrete);
+        unsafe { *((node + 8) as *mut i64) = fat };
+
+        let d = desc(&[D_FATPTR]);
+        let cp = olive_copy_typed(fat, d);
+        let cp_data = crate::struct_obj::fatptr_fields(cp).0;
+        let inner_me = unsafe { *((cp_data + 8) as *const i64) };
+        assert_ne!(cp, fat, "record is a fresh allocation");
+        assert_ne!(cp_data, node, "concrete struct is a fresh allocation");
+        assert_eq!(
+            inner_me, cp,
+            "self-reference rewired to the copy, not the source"
+        );
     }
 
     #[test]
