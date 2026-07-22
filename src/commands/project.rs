@@ -3,7 +3,6 @@ use super::utils::{Config, Pod};
 use crate::fmt::{self, DEFAULT_WIDTH};
 use crate::tooling;
 use crate::tooling::repl::run_shell;
-use std::collections::HashMap;
 use std::{fs, path::Path, process};
 
 fn git_user_name() -> Option<String> {
@@ -44,11 +43,9 @@ fn build_config(name: &str, entry: &str) -> Config {
             author: git_user_name(),
             entry: entry.to_string(),
             olive: None,
+            include: vec![],
         }),
-        dependencies: HashMap::new(),
-        workspace: None,
-        profile: HashMap::new(),
-        fmt: None,
+        ..Config::default()
     }
 }
 

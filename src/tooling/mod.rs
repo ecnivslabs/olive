@@ -4,6 +4,7 @@ pub mod doc_comments;
 pub mod installer;
 pub mod lockfile;
 pub mod lsp;
+pub mod manifest;
 pub mod pods;
 pub mod publish;
 pub mod registry;
