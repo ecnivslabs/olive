@@ -1070,9 +1070,21 @@ impl<M: Module> CraneliftCodegen<M> {
                 } else {
                     &func.name
                 };
+                // Callers of an async fn always get back an opaque
+                // Future/SmFuture handle, never the awaited inner value --
+                // `sig`'s return type reflects that inner value (whatever the
+                // body computes internally), so the wrapper's own public
+                // signature needs its own I64 return regardless of it, or a
+                // narrower inner type (e.g. bool) truncates the real handle
+                // to its low byte at every call site.
+                let mut wrapper_sig = self.module.make_signature();
+                for &p in &sig.params {
+                    wrapper_sig.params.push(p);
+                }
+                wrapper_sig.returns.push(AbiParam::new(types::I64));
                 let wrapper_id = self
                     .module
-                    .declare_function(decl_name, Linkage::Export, &sig)
+                    .declare_function(decl_name, Linkage::Export, &wrapper_sig)
                     .unwrap();
                 self.func_ids.insert(func.name.clone(), wrapper_id);
             } else {
