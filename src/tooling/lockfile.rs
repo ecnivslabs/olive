@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -16,6 +17,11 @@ pub struct LockedPod {
     pub cksum: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dependencies: Vec<String>,
+    /// Target key -> blake3 of that target's native artifact, for every
+    /// target the pod publishes (not just the host's), so a committed
+    /// pit.lock verifies on every platform a team builds on.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub native: BTreeMap<String, String>,
 }
 
 pub fn load_lockfile(path: &Path) -> Option<Lockfile> {
@@ -43,6 +49,7 @@ mod tests {
             version: version.to_string(),
             cksum: cksum.to_string(),
             dependencies: deps.iter().map(|s| s.to_string()).collect(),
+            native: BTreeMap::new(),
         }
     }
 

@@ -55,6 +55,8 @@ pub async fn ensure_deps_installed(
     let lockfile = load_lockfile(&lock_path);
 
     let mut locked_state = HashMap::new();
+    let mut locked_native: HashMap<String, std::collections::BTreeMap<String, String>> =
+        HashMap::new();
     if let Some(lk) = &lockfile {
         for pod in &lk.pods {
             let is_unlocked = match &unlocked {
@@ -64,6 +66,9 @@ pub async fn ensure_deps_installed(
             };
             if !is_unlocked {
                 locked_state.insert(pod.name.clone(), pod.version.clone());
+                if !pod.native.is_empty() {
+                    locked_native.insert(pod.name.clone(), pod.native.clone());
+                }
             }
         }
     }
@@ -75,7 +80,10 @@ pub async fn ensure_deps_installed(
     let mut futures = Vec::new();
     for pod in &resolved_pods {
         let final_dir = installed_path(&pod.name, &pod.vers);
-        futures.push(installer::install_pod_atomic(pod, final_dir));
+        let locked = locked_native.get(&pod.name);
+        futures.push(installer::install_pod_atomic(
+            pod, final_dir, locked, offline,
+        ));
     }
 
     for res in futures::future::join_all(futures).await {
@@ -93,6 +101,15 @@ pub async fn ensure_deps_installed(
                 .into_iter()
                 .map(|d| format!("{} {}", d.name, d.req))
                 .collect(),
+            native: pod
+                .native
+                .map(|spec| {
+                    spec.artifacts
+                        .into_iter()
+                        .map(|(key, artifact)| (key, artifact.cksum))
+                        .collect()
+                })
+                .unwrap_or_default(),
         })
         .collect();
 
