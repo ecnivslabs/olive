@@ -2,6 +2,9 @@ const KIND_FUTURE: i64 = 4;
 const KIND_SM_FUTURE: i64 = 5;
 const POLL_PENDING: i64 = i64::MIN;
 
+#[cfg(test)]
+mod lifecycle_tests;
+
 use crate::StableVec;
 use std::collections::VecDeque;
 use std::sync::{
@@ -110,9 +113,6 @@ fn executor_get_or_create_task(ex: &OliveExecutor, sm_future_ptr: i64) -> Arc<Ol
     if let Some(t) = map.get(&sm_future_ptr) {
         return t.clone();
     }
-    // Caller must `std::mem::forget` the returned handle unless it stores it:
-    // these Arcs live in `task_map`, so a plain drop would decrement toward
-    // an early free while the map still holds its clone.
     let t = Arc::new(OliveTask {
         sm_future: sm_future_ptr,
         queued: AtomicBool::new(false),
@@ -244,7 +244,6 @@ fn park_after_pending(
             // Already finished but its wakeup has not been consumed yet.
             let delivered = sub_task.pending_result.lock().unwrap().take();
             if let Some(v) = delivered {
-                std::mem::forget(sub_task);
                 *task.pending_result.lock().unwrap() = Some(v);
                 return DriveOutcome::Rerun;
             }
@@ -257,13 +256,11 @@ fn park_after_pending(
             if sub_task.done.load(Ordering::SeqCst) || waiters.iter().any(|w| Arc::ptr_eq(w, task))
             {
                 drop(waiters);
-                std::mem::forget(sub_task);
                 return DriveOutcome::Rerun;
             }
             waiters.push(task.clone());
             drop(waiters);
             executor_enqueue(ex, &sub_task);
-            std::mem::forget(sub_task);
             DriveOutcome::Parked
         }
         _ => DriveOutcome::Rerun,
