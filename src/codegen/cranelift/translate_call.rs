@@ -229,6 +229,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 | "__olive_set_remove_typed"
                 | "__olive_set_contains_typed"
                 | "__olive_obj_get_typed"
+                | "__olive_obj_remove_typed"
                 | "__olive_list_count_typed"
                     if call_args.len() == 2 =>
                 {

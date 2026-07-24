@@ -197,7 +197,7 @@ impl<M: Module> CraneliftCodegen<M> {
     /// needs structural hash+eq. Shared by `SetIndex` (`collect_strings`)
     /// and `GetIndex` (`collect_type_descriptor` below).
     fn collect_dict_key_descriptor(&mut self, func: &MirFunction, obj_op: &crate::mir::Operand) {
-        use super::super::imports::{needs_structural_key, operand_static_type, type_descriptor};
+        use super::super::imports::{needs_key_descriptor, operand_static_type, type_descriptor};
         let mut ty = operand_static_type(obj_op, func);
         while let crate::semantic::types::Type::Ref(inner)
         | crate::semantic::types::Type::MutRef(inner) = ty
@@ -205,7 +205,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ty = *inner;
         }
         if let crate::semantic::types::Type::Dict(k, _) = &ty
-            && needs_structural_key(k)
+            && needs_key_descriptor(k)
         {
             let desc = type_descriptor(k, &self.struct_fields, &self.field_types, &self.enum_defs);
             self.intern_attr_string(&desc);
@@ -214,7 +214,7 @@ impl<M: Module> CraneliftCodegen<M> {
 
     fn collect_type_descriptor(&mut self, func: &MirFunction, rval: &crate::mir::Rvalue) {
         use super::super::imports::{
-            needs_structural_key, needs_type_descriptor, operand_static_type, type_descriptor,
+            needs_key_descriptor, needs_type_descriptor, operand_static_type, type_descriptor,
         };
         use crate::mir::{Constant, Operand, Rvalue};
         if let Rvalue::GetIndex(obj_op, _, _) = rval {
@@ -236,7 +236,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 _ => None,
             };
             if let Some(k) = key_ty
-                && needs_structural_key(k)
+                && needs_key_descriptor(k)
             {
                 let desc =
                     type_descriptor(k, &self.struct_fields, &self.field_types, &self.enum_defs);
@@ -256,7 +256,7 @@ impl<M: Module> CraneliftCodegen<M> {
             };
             if let Some(op) = key_pos {
                 let ty = operand_static_type(op, func);
-                if needs_structural_key(&ty) {
+                if needs_key_descriptor(&ty) {
                     let desc = type_descriptor(
                         &ty,
                         &self.struct_fields,
@@ -284,6 +284,7 @@ impl<M: Module> CraneliftCodegen<M> {
             | "__olive_set_remove_typed"
             | "__olive_set_contains_typed"
             | "__olive_obj_get_typed"
+            | "__olive_obj_remove_typed"
             | "__olive_list_count_typed"
                 if args.len() == 2 =>
             {

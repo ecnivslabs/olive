@@ -63,7 +63,10 @@ pub extern "C" fn olive_obj_set(obj_ptr: i64, attr: i64, val: i64) -> i64 {
     // A tagged string key is a caller value that will be freed at its scope
     // exit; the dict keeps a private copy so its stored key never dangles.
     // Untagged attribute names are read-only interned symbols, kept as-is.
-    if crate::is_tagged_str_key(attr) && !m.fields.contains_key(&OliveStringKey(attr)) {
+    // `key_word_is_str` consults the active key descriptor first: a raw odd
+    // int above the string-tag floor looks like a string pointer to the
+    // magnitude heuristic, and reading its bits as string bytes faults.
+    if crate::key_word_is_str(attr) && !m.fields.contains_key(&OliveStringKey(attr)) {
         let bytes = unsafe {
             std::ffi::CStr::from_ptr(crate::string_slab::str_body(attr) as *const std::ffi::c_char)
                 .to_bytes()

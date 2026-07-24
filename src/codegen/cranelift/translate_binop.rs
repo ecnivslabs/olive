@@ -543,7 +543,7 @@ impl<M: Module> CraneliftCodegen<M> {
                     let ty = super::imports::concrete_ty(&func_mir.locals[loc.0].ty);
                     if let OliveType::Dict(k, _) = ty {
                         is_obj = true;
-                        if super::imports::needs_structural_key(k) {
+                        if super::imports::needs_key_descriptor(k) {
                             structural_key = Some(k);
                         }
                     } else if matches!(ty, OliveType::Struct(_, _, _)) {
@@ -551,7 +551,7 @@ impl<M: Module> CraneliftCodegen<M> {
                     } else if matches!(ty, OliveType::Str) {
                         is_str = true;
                     } else if let OliveType::Set(e) = ty
-                        && super::imports::needs_structural_key(e)
+                        && super::imports::needs_key_descriptor(e)
                     {
                         structural_key = Some(e);
                     }

@@ -266,6 +266,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_relocate_typed", b"olive_relocate_typed\0"),
     ("__olive_eq_typed", b"olive_eq_typed\0"),
     ("__olive_obj_set_typed", b"olive_obj_set_typed\0"),
+    ("__olive_obj_remove_typed", b"olive_obj_remove_typed\0"),
     ("__olive_obj_get_typed", b"olive_obj_get_typed\0"),
     (
         "__olive_obj_get_checked_typed",

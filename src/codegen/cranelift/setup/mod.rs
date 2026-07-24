@@ -251,6 +251,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_relocate_typed", &sig_i64_i64_i64),
             ("__olive_eq_typed", &sig_3i64_i64),
             ("__olive_obj_set_typed", &sig_4i64_i64),
+            ("__olive_obj_remove_typed", &sig_3i64_i64),
             ("__olive_obj_get_typed", &sig_3i64_i64),
             ("__olive_obj_get_checked_typed", &sig_4i64_i64),
             ("__olive_obj_get_default_typed", &sig_4i64_i64),

@@ -107,15 +107,75 @@ enum KeyClass {
     Raw(i64),
 }
 
-/// A dict/set/obj key or attr word is a tagged interned-string pointer only
-/// if its low bit is set AND it is far above any raw scalar value in
-/// practice -- a small odd int (a real `1`, `5`, ...) also has the low bit
-/// set, so the magnitude guard is what tells the two apart.
+/// The descriptor-less fallback key classifier for string words: a tagged
+/// interned-string pointer has its low bit set, but so does a small odd int
+/// (a real `1`, `5`, ...), so magnitude is the only remaining signal. Sound
+/// only for words that are genuinely strings or small scalars -- concrete
+/// scalar-keyed containers must go through a `_typed` op so `classify_key`
+/// can read the key descriptor instead of this heuristic.
 pub(crate) fn is_tagged_str_key(v: i64) -> bool {
     v & 1 == 1 && (v & !1) > 0x10000
 }
 
+/// Whether a dict key word entering or leaving a container should be treated
+/// as a tagged string (owned-copy on insert, `str_free` on removal). An
+/// active key descriptor is authoritative -- the magnitude heuristic reads a
+/// raw odd int above the string-tag floor as a string pointer and would
+/// dereference the raw bits -- so a `_typed` op's descriptor overrides it.
+pub(crate) fn key_word_is_str(v: i64) -> bool {
+    let desc = hash_typed::active_key_descriptor();
+    if desc != 0 {
+        let base = desc as *const u8;
+        let first = unsafe { *base };
+        let key_tag = if first == format::D_DICT || first == format::D_SET {
+            unsafe { *base.add(1) }
+        } else {
+            first
+        };
+        return key_tag == format::D_STR;
+    }
+    is_tagged_str_key(v)
+}
+
 fn classify_key(v: i64) -> KeyClass {
+    // A `_typed` dict/set op installs its container's key descriptor (a
+    // typed `update` installs the `Dict(K, V)` descriptor, whose second
+    // byte is the key's). The descriptor is the authority on the key's
+    // class: a raw odd int above the string-tag floor is bit-identical to
+    // a tagged string pointer, and the magnitude heuristic below cannot
+    // tell the two apart -- it would misread the int as a string and
+    // dereference its raw bits. `D_ANY`-keyed containers normalize their
+    // words into inline tags and stay on the heuristic, which is exactly
+    // why a concrete key type must go through a `_typed` op.
+    let desc = hash_typed::active_key_descriptor();
+    if desc != 0 {
+        let base = desc as *const u8;
+        let first = unsafe { *base };
+        let key_tag = if first == format::D_DICT || first == format::D_SET {
+            unsafe { *base.add(1) }
+        } else {
+            first
+        };
+        match key_tag {
+            format::D_STR => return KeyClass::Str(olive_str_to_bytes(v)),
+            format::D_INT | format::D_FLOAT | format::D_BOOL | format::D_NULL => {
+                if is_active_object(v) {
+                    let kind = unsafe { *(v as *const i64) };
+                    if matches!(kind, KIND_INT | KIND_FLOAT) {
+                        let b = unsafe { &*(v as *const boxed::OliveBoxed) };
+                        return KeyClass::Scalar(kind, b.bits);
+                    }
+                }
+                let kind = if key_tag == format::D_FLOAT {
+                    KIND_FLOAT
+                } else {
+                    KIND_INT
+                };
+                return KeyClass::Scalar(kind, v);
+            }
+            _ => {}
+        }
+    }
     if is_tagged_str_key(v) {
         // Bytes, not `&str`: keys hash and compare exactly as `olive_str_eq`
         // does, without an O(n) revalidation of already-valid UTF-8 and

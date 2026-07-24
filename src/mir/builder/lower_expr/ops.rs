@@ -783,10 +783,13 @@ impl<'a> MirBuilder<'a> {
         self.operand_for_local(tmp)
     }
 
-    /// Whether a dict key / set element needs structural hash+eq (the same
-    /// rule the checker's derived `==` uses) instead of the fast raw-word
-    /// path `classify_key` already handles for scalars/strings.
-    pub(crate) fn type_needs_structural_key(ty: &Type) -> bool {
+    /// Whether a dict key / set element needs a key descriptor on the
+    /// runtime op: aggregates for the structural hash+eq the checker's
+    /// derived `==` uses, concrete scalars so `classify_key` classifies by
+    /// static type instead of its string-pointer magnitude heuristic (a raw
+    /// odd int above the string-tag floor is bit-identical to a tagged
+    /// string pointer). Only `Any`-typed keys stay on the heuristic path.
+    pub(crate) fn type_needs_key_descriptor(ty: &Type) -> bool {
         matches!(
             ty,
             Type::Struct(..)
@@ -795,6 +798,20 @@ impl<'a> MirBuilder<'a> {
                 | Type::List(_)
                 | Type::Set(_)
                 | Type::Dict(_, _)
+                | Type::Int
+                | Type::I8
+                | Type::I16
+                | Type::I32
+                | Type::U8
+                | Type::U16
+                | Type::U32
+                | Type::U64
+                | Type::Usize
+                | Type::Float
+                | Type::F32
+                | Type::Str
+                | Type::Bool
+                | Type::Null
         )
     }
 

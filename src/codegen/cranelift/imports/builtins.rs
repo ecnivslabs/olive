@@ -30,18 +30,35 @@ pub(crate) fn typed_zero(builder: &mut FunctionBuilder, ty: cranelift::prelude::
     }
 }
 
-/// Whether a dict key / set element needs the structural hash+eq derived
-/// `==` uses, instead of the fast raw-word path `classify_key` already
-/// handles for scalars and strings.
-pub(crate) fn needs_structural_key(ty: &OliveType) -> bool {
+/// Whether a dict key / set element needs a key descriptor on the runtime
+/// op: aggregates need the structural hash+eq derived `==` uses, and a
+/// concrete scalar key needs the descriptor so `classify_key` trusts the
+/// static type over its string-pointer magnitude heuristic (a raw odd int
+/// above the string-tag floor is bit-identical to a tagged string pointer).
+/// Only `Any`-typed keys stay on the heuristic path.
+pub(crate) fn needs_key_descriptor(ty: &OliveType) -> bool {
     matches!(
-        ty,
+        concrete_ty(ty),
         OliveType::Struct(..)
             | OliveType::Enum(..)
             | OliveType::Tuple(_)
             | OliveType::List(_)
             | OliveType::Set(_)
             | OliveType::Dict(_, _)
+            | OliveType::Int
+            | OliveType::I8
+            | OliveType::I16
+            | OliveType::I32
+            | OliveType::U8
+            | OliveType::U16
+            | OliveType::U32
+            | OliveType::U64
+            | OliveType::Usize
+            | OliveType::Float
+            | OliveType::F32
+            | OliveType::Str
+            | OliveType::Bool
+            | OliveType::Null
     )
 }
 
