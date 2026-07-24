@@ -302,6 +302,15 @@ pub fn load_and_parse_collecting(
                     let mod_prefix = alias
                         .as_deref()
                         .unwrap_or_else(|| module.last().unwrap().as_str());
+                    // A nested `import` module's symbols keep their canonical
+                    // module-qualified names: re-prefixing them per importer
+                    // (`a::json::loads`) breaks the second file to import the
+                    // same module, whose flattened copy is deduplicated away
+                    // and whose references then point at a name only the
+                    // first importer's chain defines. Names already holding a
+                    // `::` and import-bound module names are therefore left
+                    // out of the mangle set, so every importer resolves to
+                    // the one canonical copy.
                     let mut defined_names = HashSet::new();
                     for s in &imported_stmts {
                         match &s.kind {
@@ -310,22 +319,23 @@ pub fn load_and_parse_collecting(
                             | parser::StmtKind::Enum { name, .. }
                             | parser::StmtKind::Let { name, .. }
                             | parser::StmtKind::Const { name, .. } => {
-                                defined_names.insert(name.clone());
+                                if !name.contains("::") {
+                                    defined_names.insert(name.clone());
+                                }
                             }
                             parser::StmtKind::MultiLet { names, .. }
                             | parser::StmtKind::MultiConst { names, .. } => {
                                 for name in names {
-                                    defined_names.insert(name.clone());
+                                    if !name.contains("::") {
+                                        defined_names.insert(name.clone());
+                                    }
                                 }
                             }
                             parser::StmtKind::Impl { type_name, .. } => {
-                                defined_names.insert(type_name.to_string());
-                            }
-                            parser::StmtKind::Import { module, alias } => {
-                                let name = alias
-                                    .as_deref()
-                                    .unwrap_or_else(|| module.last().unwrap().as_str());
-                                defined_names.insert(name.to_string());
+                                let tn = type_name.to_string();
+                                if !tn.contains("::") {
+                                    defined_names.insert(tn);
+                                }
                             }
                             parser::StmtKind::PyImport { alias, .. } => {
                                 defined_names.insert(alias.clone());

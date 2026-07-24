@@ -399,9 +399,14 @@ impl<'a> MirBuilder<'a> {
             Some(m) => m,
             None => return,
         };
+        // Constructor sites type the callee as the struct, not the init fn;
+        // fall back to the declared signature so defaults coerce correctly.
         let param_tys = match self.get_type(callee_id) {
             Type::Fn(ptys, _, _) => ptys,
-            _ => Vec::new(),
+            _ => match self.global_types.get(fn_name) {
+                Some(Type::Fn(ptys, _, _)) => ptys.clone(),
+                _ => Vec::new(),
+            },
         };
         while args.len() < meta.param_names.len() {
             let i = args.len();
@@ -1433,6 +1438,9 @@ impl<'a> MirBuilder<'a> {
                 init_args.push(self.lower_expr_as_copy(default_expr));
             }
         }
+
+        // An explicit `__init__` may also declare trailing param defaults.
+        self.fill_trailing_defaults(&init_name, &mut init_args, expr_id, span);
 
         // `__init__`'s call result is a required assignment target, not a
         // meaningful value -- the constructed object is `obj_tmp`, returned

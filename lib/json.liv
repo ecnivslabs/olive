@@ -1,129 +1,250 @@
-fn _skip_whitespace(s: str, mut i: int) -> int:
-    let n = len(s)
+import bytes
+
+const _HEX_DIGITS = "0123456789abcdef"
+
+fn _codepoint_str(cp: int) -> str:
+    let buf = bytes.new(0)
+    if cp < 128:
+        bytes.push(buf, cp)
+    elif cp < 2048:
+        bytes.push(buf, 192 + cp / 64)
+        bytes.push(buf, 128 + cp % 64)
+    elif cp < 65536:
+        bytes.push(buf, 224 + cp / 4096)
+        bytes.push(buf, 128 + cp / 64 % 64)
+        bytes.push(buf, 128 + cp % 64)
+    else:
+        bytes.push(buf, 240 + cp / 262144)
+        bytes.push(buf, 128 + cp / 4096 % 64)
+        bytes.push(buf, 128 + cp / 64 % 64)
+        bytes.push(buf, 128 + cp % 64)
+    let out = bytes.to_str(buf)
+    bytes.free(buf)
+    return out
+
+fn _hex_val(b: int) -> int:
+    if b >= 48 and b <= 57:
+        return b - 48
+    if b >= 97 and b <= 102:
+        return b - 87
+    if b >= 65 and b <= 70:
+        return b - 55
+    return -1
+
+fn _parse_hex4(buf: int, n: int, i: int) -> int:
+    if i + 4 > n:
+        return -1
+    let mut v = 0
+    let mut j = i
+    while j < i + 4:
+        let d = _hex_val(bytes.get(buf, j))
+        if d < 0:
+            return -1
+        v = v * 16 + d
+        j = j + 1
+    return v
+
+fn _slice_str(buf: int, start: int, end: int) -> str:
+    let part = bytes.slice(buf, start, end)
+    let out = bytes.to_str(part)
+    bytes.free(part)
+    return out
+
+fn _skip_ws(buf: int, n: int, mut i: int) -> int:
     while i < n:
-        let c = __olive_str_char(s, i)
-        if c != " " and c != "\n" and c != "\r" and c != "\t":
+        let b = bytes.get(buf, i)
+        if b != 32 and b != 10 and b != 13 and b != 9:
             break
         i = i + 1
     return i
 
-fn _parse_string(s: str, mut i: int) -> [Any]:
+fn _parse_string(buf: int, n: int, mut i: int) -> [Any]:
     i = i + 1
-    let n = len(s)
-    let mut result = ""
+    let mut parts: [str] = []
+    let mut run = i
     while i < n:
-        let c = __olive_str_char(s, i)
-        if c == "\"":
+        let b = bytes.get(buf, i)
+        if b == 34:
             break
-        if c == "\\":
+        if b != 92:
             i = i + 1
-            let esc = __olive_str_char(s, i)
-            if esc == "\"":
-                result = result + "\""
-            elif esc == "\\":
-                result = result + "\\"
-            elif esc == "n":
-                result = result + "\n"
-            elif esc == "r":
-                result = result + "\r"
-            elif esc == "t":
-                result = result + "\t"
-            elif esc == "/":
-                result = result + "/"
-            elif esc == "b":
-                result = result + "\b"
-            elif esc == "f":
-                result = result + "\f"
-            else:
-                result = result + esc
-        else:
-            result = result + c
+            continue
+        if i > run:
+            parts.append(_slice_str(buf, run, i))
         i = i + 1
-    return [result, i + 1]
+        if i >= n:
+            run = i
+            break
+        let esc = bytes.get(buf, i)
+        if esc == 34:
+            parts.append("\"")
+        elif esc == 92:
+            parts.append("\\")
+        elif esc == 110:
+            parts.append("\n")
+        elif esc == 114:
+            parts.append("\r")
+        elif esc == 116:
+            parts.append("\t")
+        elif esc == 47:
+            parts.append("/")
+        elif esc == 98:
+            parts.append("\b")
+        elif esc == 102:
+            parts.append("\f")
+        elif esc == 117:
+            let hi = _parse_hex4(buf, n, i + 1)
+            if hi < 0:
+                parts.append("u")
+            else:
+                let mut cp = hi
+                i = i + 4
+                if cp >= 55296 and cp <= 56319 and i + 6 < n and bytes.get(buf, i + 1) == 92 and bytes.get(buf, i + 2) == 117:
+                    let lo = _parse_hex4(buf, n, i + 3)
+                    if lo >= 56320 and lo <= 57343:
+                        cp = 65536 + (cp - 55296) * 1024 + (lo - 56320)
+                        i = i + 6
+                if cp >= 55296 and cp <= 57343:
+                    cp = 65533
+                parts.append(_codepoint_str(cp))
+        else:
+            parts.append(_codepoint_str(esc))
+        i = i + 1
+        run = i
+    if i > run:
+        parts.append(_slice_str(buf, run, i))
+    return ["".join(parts), i + 1]
 
-fn _parse_number(s: str, mut i: int) -> [Any]:
+fn _is_num_byte(b: int) -> bool:
+    if b >= 48 and b <= 57:
+        return True
+    return b == 45 or b == 43 or b == 46 or b == 101 or b == 69
+
+fn _parse_number(buf: int, n: int, mut i: int) -> [Any]:
     let start = i
-    let n = len(s)
     let mut is_float = False
     while i < n:
-        let c = __olive_str_char(s, i)
-        if c == ".":
-            is_float = True
-        elif c != "-" and c != "0" and c != "1" and c != "2" and c != "3" and c != "4" and c != "5" and c != "6" and c != "7" and c != "8" and c != "9":
+        let b = bytes.get(buf, i)
+        if not _is_num_byte(b):
             break
+        if b == 46 or b == 101 or b == 69:
+            is_float = True
         i = i + 1
-    let val_str = __olive_str_slice(s, start, i)
+    if i == start:
+        return [None, i + 1]
+    let val_str = _slice_str(buf, start, i)
     if is_float:
-        return [float(val_str), i]
-    return [int(val_str), i]
+        return [val_str.to_float() ?? 0.0, i]
+    return [val_str.to_int() ?? 0, i]
 
-fn _parse_array(s: str, mut i: int) -> [Any]:
+fn _parse_array(buf: int, n: int, mut i: int) -> [Any]:
     i = i + 1
     let mut arr = []
-    let n = len(s)
-    i = _skip_whitespace(s, i)
-    if i < n and __olive_str_char(s, i) == "]":
+    i = _skip_ws(buf, n, i)
+    if i < n and bytes.get(buf, i) == 93:
         return [arr, i + 1]
     while i < n:
-        let parsed = _parse_value(s, i)
-        arr = arr + [parsed[0]]
-        i = _skip_whitespace(s, parsed[1])
-        let c = __olive_str_char(s, i)
-        if c == "]":
+        let parsed = _parse_value(buf, n, i)
+        arr.append(parsed[0])
+        i = _skip_ws(buf, n, parsed[1])
+        if i >= n:
+            break
+        let b = bytes.get(buf, i)
+        if b == 93:
             return [arr, i + 1]
-        if c == ",":
+        if b == 44:
             i = i + 1
         else:
             break
     return [arr, i]
 
-fn _parse_object(s: str, mut i: int) -> [Any]:
+fn _parse_object(buf: int, n: int, mut i: int) -> [Any]:
     i = i + 1
     let mut obj = {}
-    let n = len(s)
-    i = _skip_whitespace(s, i)
-    if i < n and __olive_str_char(s, i) == "}":
+    i = _skip_ws(buf, n, i)
+    if i < n and bytes.get(buf, i) == 125:
         return [obj, i + 1]
     while i < n:
-        i = _skip_whitespace(s, i)
-        let parsed_key = _parse_string(s, i)
+        i = _skip_ws(buf, n, i)
+        let parsed_key = _parse_string(buf, n, i)
         let key = parsed_key[0]
-        i = _skip_whitespace(s, parsed_key[1])
+        i = _skip_ws(buf, n, parsed_key[1])
         i = i + 1
-        let parsed_val = _parse_value(s, i)
+        let parsed_val = _parse_value(buf, n, i)
         obj[key] = parsed_val[0]
-        i = _skip_whitespace(s, parsed_val[1])
-        let c = __olive_str_char(s, i)
-        if c == "}":
+        i = _skip_ws(buf, n, parsed_val[1])
+        if i >= n:
+            break
+        let b = bytes.get(buf, i)
+        if b == 125:
             return [obj, i + 1]
-        if c == ",":
+        if b == 44:
             i = i + 1
         else:
             break
     return [obj, i]
 
-fn _parse_value(s: str, mut i: int) -> [Any]:
-    i = _skip_whitespace(s, i)
-    let c = __olive_str_char(s, i)
-    if c == "\"":
-        return _parse_string(s, i)
-    if c == "[":
-        return _parse_array(s, i)
-    if c == "{":
-        return _parse_object(s, i)
-    if c == "t":
+fn _parse_value(buf: int, n: int, mut i: int) -> [Any]:
+    i = _skip_ws(buf, n, i)
+    if i >= n:
+        return [None, i + 1]
+    let b = bytes.get(buf, i)
+    if b == 34:
+        return _parse_string(buf, n, i)
+    if b == 91:
+        return _parse_array(buf, n, i)
+    if b == 123:
+        return _parse_object(buf, n, i)
+    if b == 116:
         return [True, i + 4]
-    if c == "f":
+    if b == 102:
         return [False, i + 5]
-    if c == "n":
+    if b == 110:
         return [None, i + 4]
-    return _parse_number(s, i)
+    return _parse_number(buf, n, i)
 
-fn loads(s: str):
-    let res = _parse_value(s, 0)
+fn loads(s: str) -> Any:
+    let buf = bytes.from_str(s)
+    let res = _parse_value(buf, bytes.len(buf), 0)
+    bytes.free(buf)
     return res[0]
 
-fn _stringify(obj):
+fn _escape_string(s: str) -> str:
+    let buf = bytes.from_str(s)
+    let n = bytes.len(buf)
+    let mut parts: [str] = ["\""]
+    let mut run = 0
+    let mut i = 0
+    while i < n:
+        let b = bytes.get(buf, i)
+        if b == 34 or b == 92 or b < 32:
+            if i > run:
+                parts.append(_slice_str(buf, run, i))
+            if b == 34:
+                parts.append("\\\"")
+            elif b == 92:
+                parts.append("\\\\")
+            elif b == 10:
+                parts.append("\\n")
+            elif b == 13:
+                parts.append("\\r")
+            elif b == 9:
+                parts.append("\\t")
+            elif b == 8:
+                parts.append("\\b")
+            elif b == 12:
+                parts.append("\\f")
+            else:
+                parts.append("\\u00" + _HEX_DIGITS[b / 16] + _HEX_DIGITS[b % 16])
+            run = i + 1
+        i = i + 1
+    if n > run:
+        parts.append(_slice_str(buf, run, n))
+    parts.append("\"")
+    bytes.free(buf)
+    return "".join(parts)
+
+fn _stringify(obj) -> str:
     if obj == None:
         return "null"
     if type(obj) == "bool":
@@ -133,29 +254,18 @@ fn _stringify(obj):
     if type(obj) == "int" or type(obj) == "float":
         return str(obj)
     if type(obj) == "str":
-        return "\"" + obj + "\""
+        return _escape_string(obj)
     if type(obj) == "list":
-        let mut s = "["
-        let mut i = 0
-        let n = len(obj)
-        while i < n:
-            s = s + _stringify(obj[i])
-            if i < n - 1:
-                s = s + ", "
-            i = i + 1
-        return s + "]"
+        let mut parts: [str] = []
+        for item in obj:
+            parts.append(_stringify(item))
+        return "[" + ", ".join(parts) + "]"
     if type(obj) == "dict":
-        let mut s = "{"
+        let mut parts: [str] = []
         let keys = obj.keys()
-        let n = len(keys)
-        let mut i = 0
-        while i < n:
-            let k = keys[i]
-            s = s + "\"" + str(k) + "\": " + _stringify(obj[k])
-            if i < n - 1:
-                s = s + ", "
-            i = i + 1
-        return s + "}"
+        for k in keys:
+            parts.append(_escape_string(str(k)) + ": " + _stringify(obj[k]))
+        return "{" + ", ".join(parts) + "}"
     return "\"<unknown>\""
 
 fn dumps(obj) -> str:

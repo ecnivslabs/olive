@@ -726,6 +726,28 @@ impl<M: Module> CraneliftCodegen<M> {
                     _ => types::I64,
                 };
 
+                // A struct member narrowed back out of a multi-member union
+                // was boxed at the coercion site (see `coerce`'s union arm);
+                // peel the box to hand back the raw struct pointer. The box
+                // itself still belongs to the union local and drops there.
+                if matches!(ty, OliveType::Struct(_, _, _)) {
+                    let src_is_boxed_union = match op {
+                        Operand::Copy(l) | Operand::Move(l) => {
+                            matches!(&func_mir.locals[l.0].ty, OliveType::Union(members)
+                                if members.iter().filter(|m| !matches!(m, OliveType::Null)).count() > 1)
+                        }
+                        _ => false,
+                    };
+                    if src_is_boxed_union {
+                        let id = func_ids
+                            .get("__olive_struct_unbox")
+                            .expect("missing __olive_struct_unbox");
+                        let local_func = module.declare_func_in_func(*id, builder.func);
+                        let inst = builder.ins().call(local_func, &[val]);
+                        return builder.inst_results(inst)[0];
+                    }
+                }
+
                 // Narrowing `T | None` to its non-null member `T` reuses this
                 // same `Rvalue::Cast` shape (`data.rs`'s flow-narrowed read),
                 // but means something different from a real `as` cast: a

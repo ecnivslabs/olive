@@ -182,6 +182,36 @@ impl<'a> MirBuilder<'a> {
 
         self.current_block = Some(success_bb);
 
+        // The struct member of a multi-member union was boxed at the
+        // coercion site; the success value flows onward as the narrowed
+        // struct type, so peel the box here.
+        if let Type::Union(variants) = &inner_ty {
+            let non_null = variants.iter().filter(|v| !matches!(v, Type::Null)).count();
+            let non_err: Vec<&Type> = variants
+                .iter()
+                .filter(|v| !matches!(v, Type::Null) && !is_error(v))
+                .collect();
+            if non_null > 1
+                && let [narrowed] = non_err.as_slice()
+                && matches!(narrowed, Type::Struct(_, _, _))
+            {
+                let tmp = self.new_local((*narrowed).clone(), None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        tmp,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(
+                                "__olive_struct_unbox_take".to_string(),
+                            )),
+                            args: vec![inner_op.clone()],
+                        },
+                    ),
+                    span,
+                );
+                return Operand::Copy(tmp);
+            }
+        }
+
         inner_op
     }
 

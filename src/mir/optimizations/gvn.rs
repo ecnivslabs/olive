@@ -53,6 +53,7 @@ impl Transform for GlobalValueNumbering {
                 if let StatementKind::Assign(dest, rval) = &stmt.kind {
                     let dest = *dest;
                     if matches!(rval, Rvalue::BinaryOp(..) | Rvalue::UnaryOp(..))
+                        && !Self::rvalue_has_move(rval)
                         && self.operands_stable(rval, &assign_counts, func.arg_count)
                     {
                         if let Some(&(existing, _)) = value_map.get(rval) {
@@ -90,6 +91,17 @@ impl Transform for GlobalValueNumbering {
                     StatementKind::Assign(_, Rvalue::Call { .. })
                 ) {
                     value_map.clear();
+                }
+
+                // A moved-from local's storage may be consumed or mutated in
+                // place at runtime (e.g. string concat growing its left
+                // operand): any cached value numbered under that local is no
+                // longer safe to hand out as a substitute, or the runtime
+                // gets two "sole owners" of the same freed/mutated buffer.
+                let mut moved = Vec::new();
+                Self::moved_locals(&func.basic_blocks[bb_idx].statements[i].kind, &mut moved);
+                if !moved.is_empty() {
+                    value_map.retain(|_, (existing, _)| !moved.contains(existing));
                 }
 
                 i += 1;
@@ -134,6 +146,90 @@ impl GlobalValueNumbering {
 
     fn is_local(&self, op: &Operand, local: Local) -> bool {
         matches!(op, Operand::Copy(l) | Operand::Move(l) if *l == local)
+    }
+
+    /// Whether any operand of `rval` moves its source: value-numbering such
+    /// an rvalue would try to hand its single-use result to a second
+    /// destination, which the runtime consuming the moved operand makes unsound.
+    fn rvalue_has_move(rval: &Rvalue) -> bool {
+        let mut has = false;
+        Self::for_each_operand(rval, &mut |op| {
+            if matches!(op, Operand::Move(_)) {
+                has = true;
+            }
+        });
+        has
+    }
+
+    fn for_each_operand(rval: &Rvalue, f: &mut impl FnMut(&Operand)) {
+        match rval {
+            Rvalue::Use(op)
+            | Rvalue::UnaryOp(_, op)
+            | Rvalue::Cast(op, _)
+            | Rvalue::GetAttr(op, _)
+            | Rvalue::GetTag(op)
+            | Rvalue::GetTypeId(op)
+            | Rvalue::VectorSplat(op, _)
+            | Rvalue::VectorReduce(_, op, _)
+            | Rvalue::PtrLoad(op)
+            | Rvalue::GenOf(op)
+            | Rvalue::FatPtrData(op)
+            | Rvalue::VTableLoad { vtable: op, .. } => f(op),
+            Rvalue::BinaryOp(_, l, r) | Rvalue::GetIndex(l, r, _) | Rvalue::VectorLoad(l, r, _) => {
+                f(l);
+                f(r);
+            }
+            Rvalue::VectorFMA(a, b, c) => {
+                f(a);
+                f(b);
+                f(c);
+            }
+            Rvalue::Call { func, args } => {
+                f(func);
+                for arg in args {
+                    f(arg);
+                }
+            }
+            Rvalue::Aggregate(_, ops) => {
+                for op in ops {
+                    f(op);
+                }
+            }
+            Rvalue::Ref(_) | Rvalue::MutRef(_) => {}
+        }
+    }
+
+    /// Locals a statement consumes via `Operand::Move`. Any value cached
+    /// under one of these in `value_map` must be dropped: its storage may
+    /// now be freed or mutated, so it can no longer stand in for another use.
+    fn moved_locals(kind: &StatementKind, out: &mut Vec<Local>) {
+        let mut scan = |op: &Operand| {
+            if let Operand::Move(l) = op {
+                out.push(*l);
+            }
+        };
+        match kind {
+            StatementKind::Assign(_, rval) => Self::for_each_operand(rval, &mut scan),
+            StatementKind::SetAttr(obj, _, val) => {
+                scan(obj);
+                scan(val);
+            }
+            StatementKind::SetIndex(obj, idx, val, _) => {
+                scan(obj);
+                scan(idx);
+                scan(val);
+            }
+            StatementKind::VectorStore(obj, idx, val) => {
+                scan(obj);
+                scan(idx);
+                scan(val);
+            }
+            StatementKind::PtrStore(ptr, val) => {
+                scan(ptr);
+                scan(val);
+            }
+            _ => {}
+        }
     }
 }
 

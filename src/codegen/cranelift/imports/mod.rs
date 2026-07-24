@@ -538,6 +538,15 @@ pub(super) fn scan_rvalue_imports(
             }
         }
         Rvalue::Cast(op, target_ty) => {
+            // Narrowing a multi-member union back to its struct member peels
+            // the box put on at the coercion site (translate_rvalue's Cast).
+            if matches!(target_ty, OliveType::Struct(_, _, _))
+                && let Operand::Copy(src) | Operand::Move(src) = op
+                && matches!(&func_mir.locals[src.0].ty, OliveType::Union(members)
+                    if members.iter().filter(|m| !matches!(m, OliveType::Null)).count() > 1)
+            {
+                needed.insert("__olive_struct_unbox");
+            }
             if let Operand::Copy(src) | Operand::Move(src) = op
                 && matches!(func_mir.locals[src.0].ty, OliveType::PyObject)
             {

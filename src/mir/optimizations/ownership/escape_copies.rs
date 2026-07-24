@@ -40,6 +40,8 @@ enum CopySlot {
     Arg(usize),
     /// The source operand of a plain `dst = Use(op)` assignment.
     UseVal,
+    /// The left operand of a `BinaryOp`.
+    BinLhs,
 }
 
 /// The `args_list` aggregate holds one slot per positional argument, so its
@@ -213,6 +215,17 @@ pub(super) fn insert_escape_copies(
                 || classes.get(l.0) == Some(&LocalClass::Mixed))
     };
 
+    // `Any` sits outside the heap/ownership classification (`is_move_type`
+    // is false: its payload may be a raw scalar), yet an `Any` word read out
+    // of a container is still a borrow of that container's storage. When such
+    // a view outlives its owner's Drop -- returned to the caller, stored into
+    // another container, or passed to an escaping call -- the word must be
+    // deep-copied first or it dangles. `__olive_copy_typed` with the `Any`
+    // descriptor dispatches on the runtime kind, so a raw-scalar payload is
+    // returned unchanged and only heap-backed payloads allocate.
+    let any_views = collect_any_views(func);
+    let is_any_view = |l: Local| -> bool { l.0 != 0 && any_views.contains(&l) };
+
     let mut hits: Vec<(usize, usize, CopySlot, Local, &'static str)> = Vec::new();
     for (bb_idx, bb) in func.basic_blocks.iter().enumerate() {
         for (idx, stmt) in bb.statements.iter().enumerate() {
@@ -220,9 +233,16 @@ pub(super) fn insert_escape_copies(
                 StatementKind::SetIndex(_, _, Operand::Copy(l), _)
                 | StatementKind::SetAttr(_, _, Operand::Copy(l))
                 | StatementKind::PtrStore(_, Operand::Copy(l))
-                    if needs_copy(*l) =>
+                    if needs_copy(*l) || is_any_view(*l) =>
                 {
                     hits.push((bb_idx, idx, CopySlot::Val, *l, "__olive_copy_typed"));
+                }
+                // Returning an `Any` view hands the caller a pointer into a
+                // local container that the epilogue is about to drop.
+                StatementKind::Assign(dst, Rvalue::Use(Operand::Copy(l)))
+                    if dst.0 == 0 && is_any_view(*l) =>
+                {
+                    hits.push((bb_idx, idx, CopySlot::UseVal, *l, "__olive_copy_typed"));
                 }
                 StatementKind::Assign(dst, Rvalue::Aggregate(kind, ops))
                     if *kind != AggregateKind::FatPtr =>
@@ -235,7 +255,7 @@ pub(super) fn insert_escape_copies(
                             continue;
                         }
                         if let Operand::Copy(l) = op
-                            && needs_copy(*l)
+                            && (needs_copy(*l) || is_any_view(*l))
                         {
                             hits.push((bb_idx, idx, CopySlot::Agg(pos), *l, "__olive_copy_typed"));
                         }
@@ -255,6 +275,22 @@ pub(super) fn insert_escape_copies(
                 {
                     hits.push((bb_idx, idx, CopySlot::UseVal, *l, "__olive_copy_typed"));
                 }
+                // `str_concat_inplace` grows or frees its left operand's own
+                // storage: a `+` chain that ends this local's life (proven by
+                // the ownership pass promoting that use to `Move`) may run it
+                // in place, but any `Copy` reaching this point means the
+                // local is still needed afterward -- the runtime has no way
+                // to tell "sole owner" from "shared" apart, so a surviving
+                // `Copy` here must hand it an independent buffer instead.
+                StatementKind::Assign(_, Rvalue::BinaryOp(op, Operand::Copy(l), _))
+                    if *op == crate::parser::BinOp::Add
+                        && l.0 != 0
+                        && l.0 < heap.len()
+                        && heap[l.0]
+                        && func.locals[l.0].ty == crate::semantic::types::Type::Str =>
+                {
+                    hits.push((bb_idx, idx, CopySlot::BinLhs, *l, "__olive_copy_typed"));
+                }
                 StatementKind::Assign(
                     _,
                     Rvalue::Call {
@@ -269,7 +305,7 @@ pub(super) fn insert_escape_copies(
                                 .is_some_and(|v| v.get(pos) == Some(&true));
                         if escapes
                             && let Operand::Copy(l) = op
-                            && needs_copy(*l)
+                            && (needs_copy(*l) || is_any_view(*l))
                         {
                             // A value crossing a real task boundary
                             // (`chan_send`/`mutex_new`/`mutex_unlock`) needs
@@ -335,6 +371,48 @@ pub(super) fn insert_escape_copies(
     true
 }
 
+/// `Any`-typed locals holding a borrowed view of a container's storage: any
+/// local assigned (at least once) from an indexed or attribute read, plus
+/// everything a plain `Use` copies such a view into. A local that is ever
+/// view-assigned is treated as a view at every use -- copying an owned `Any`
+/// is only a cost, never a correctness problem, so the over-approximation on
+/// mixed reassignment is safe.
+fn collect_any_views(func: &MirFunction) -> HashSet<Local> {
+    let is_any = |l: Local| {
+        func.locals
+            .get(l.0)
+            .is_some_and(|d| d.ty == crate::semantic::types::Type::Any)
+    };
+    let mut views: HashSet<Local> = HashSet::default();
+    loop {
+        let before = views.len();
+        for bb in &func.basic_blocks {
+            for stmt in &bb.statements {
+                let StatementKind::Assign(dst, rv) = &stmt.kind else {
+                    continue;
+                };
+                if !is_any(*dst) {
+                    continue;
+                }
+                match rv {
+                    Rvalue::GetIndex(_, _, _) | Rvalue::GetAttr(_, _) => {
+                        views.insert(*dst);
+                    }
+                    Rvalue::Use(Operand::Copy(src)) | Rvalue::Use(Operand::Move(src))
+                        if views.contains(src) =>
+                    {
+                        views.insert(*dst);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if views.len() == before {
+            return views;
+        }
+    }
+}
+
 fn redirect_operand(kind: &mut StatementKind, slot: CopySlot, tmp: Local) {
     let target = Operand::Move(tmp);
     match (slot, kind) {
@@ -348,6 +426,7 @@ fn redirect_operand(kind: &mut StatementKind, slot: CopySlot, tmp: Local) {
             args[pos] = target
         }
         (CopySlot::UseVal, StatementKind::Assign(_, Rvalue::Use(val))) => *val = target,
+        (CopySlot::BinLhs, StatementKind::Assign(_, Rvalue::BinaryOp(_, lhs, _))) => *lhs = target,
         _ => {}
     }
 }

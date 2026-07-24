@@ -1081,6 +1081,33 @@ pub extern "C" fn olive_pow_float(base: f64, exp: f64) -> f64 {
     base.powf(exp)
 }
 
+/// `len()` on a statically-`Any` value. Unlike indexing (`olive_get_index_any`),
+/// this used to be routed unconditionally to `olive_list_len`, which reads a
+/// `StableVec` header with no kind check -- a dict, or worse a tagged scalar
+/// immediate, made it dereference garbage. Mirrors the same tag/kind dispatch
+/// `olive_get_index_any` already does, plus a clean panic for scalars instead
+/// of a segfault.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_len_any(obj: i64) -> i64 {
+    if obj == 0 {
+        return 0;
+    }
+    if obj & 1 != 0 {
+        return string::olive_str_len(obj);
+    }
+    if !is_active_object(obj) {
+        panic!("len() argument has no length (not a string, list, dict, set or bytes)");
+    }
+    let kind = unsafe { *(obj as *const i64) };
+    match kind {
+        KIND_LIST | KIND_ANY_LIST => olive_list_len(obj),
+        KIND_OBJ => obj::olive_obj_len(obj),
+        KIND_BYTES => bytes::olive_buf_len(obj),
+        KIND_PYOBJECT => python::olive_py_len(obj as python::PyObject),
+        _ => panic!("len() argument has no length (not a string, list, dict, set or bytes)"),
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_get_index_any(obj: i64, index: i64, loc: i64) -> i64 {
     if obj == 0 {

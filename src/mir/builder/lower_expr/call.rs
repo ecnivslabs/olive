@@ -181,9 +181,14 @@ impl<'a> MirBuilder<'a> {
             "__olive_obj_len"
         } else if matches!(
             current_arg_ty,
-            Type::List(_) | Type::Tuple(_) | Type::Set(_) | Type::Any
+            Type::List(_) | Type::Tuple(_) | Type::Set(_)
         ) {
             "__olive_list_len"
+        } else if current_arg_ty == Type::Any {
+            // The concrete kind isn't known until runtime (str/list/dict/bytes/
+            // pyobject all reach here), so dispatch dynamically instead of
+            // assuming a list layout -- see olive_len_any.
+            "__olive_len_any"
         } else if current_arg_ty == Type::Bytes {
             "__olive_buf_len"
         } else if current_arg_ty.is_py_value() {

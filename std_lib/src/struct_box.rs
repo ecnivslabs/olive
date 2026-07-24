@@ -80,6 +80,20 @@ pub extern "C" fn olive_struct_unbox(val: i64) -> i64 {
     unsafe { (*(val as *const OliveStructBox)).ptr }
 }
 
+/// Consuming unbox: releases the box shell and hands ownership of the inner
+/// struct to the caller. Used when narrowing transfers the value onward (the
+/// `try` success path) rather than borrowing it in place; the union local's
+/// later generation-guarded drop then sees a dead slot and does nothing.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_struct_unbox_take(val: i64) -> i64 {
+    if val == 0 {
+        return 0;
+    }
+    let inner = unsafe { (*(val as *const OliveStructBox)).ptr };
+    STRUCT_BOX_SLAB.with(|sl| unsafe { &mut *sl.get() }.free(val as *mut u8));
+    inner
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
