@@ -90,6 +90,7 @@ jobs:
         run: |
           cargo clean
           ASAN_OPTIONS="detect_leaks=0" RUSTFLAGS="-Zsanitizer=address" RUSTDOCFLAGS="-Zsanitizer=address" cargo test -p olive_std --lib -Zbuild-std --target x86_64-unknown-linux-gnu
+          ASAN_OPTIONS="detect_leaks=1" RUSTFLAGS="-Zsanitizer=address" cargo test -p olive_std --lib -Zbuild-std --target x86_64-unknown-linux-gnu -- slab:: aio::lifecycle_tests::
         env:
           RUST_MIN_STACK: "16777216"
 

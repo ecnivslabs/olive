@@ -58,6 +58,10 @@ Olive has no garbage collector. The builder lowers every use of a heap value as 
 
 The runtime backstop for what inference cannot prove. Heap objects live in generational slab allocators (`std_lib`): every slot carries a generation counter that increments on allocation and free. This pass runs after all other optimizations and inserts checks on suspect borrows: the generation is captured at borrow time and re-validated before uses a free could precede. A failed check aborts with `E0707` and a source caret. Checks are elided when a forward analysis proves no free can intervene, so well-typed hot paths pay nothing. When a must-free lattice proves staleness is certain on every path through the function, the site is promoted to a compile-time error (`E0708`) instead of a runtime check.
 
+Freed slots stay reusable, including slots in completely empty chunks. Their generation words remain intact so stale borrows cannot become valid again when a slot is recycled. A slab retains its peak chunk allocation until it is dropped; task and thread teardown release their slabs. This bounds repeated allocation waves by peak demand, but does not immediately return an idle slab's memory to the operating system.
+
+The chunk registry owns one sorted lookup table. Read guards keep chunk memory alive during generation lookups, and updates invalidate both entries of each thread's lookup cache. Removing chunks also releases excess registry capacity. CI runs the slab and async task lifetime regressions with leak detection enabled, in addition to the runtime address and thread sanitizer suites.
+
 ## 8. Codegen (`codegen/`)
 
 The final stage compiles MIR to native machine code through Cranelift.
