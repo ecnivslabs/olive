@@ -4,7 +4,16 @@ use std::cell::UnsafeCell;
 
 thread_local! {
     static ENUM_SLAB: UnsafeCell<GenSlab> =
-        const { UnsafeCell::new(GenSlab::new(std::mem::size_of::<OliveEnum>())) };
+        const { UnsafeCell::new(GenSlab::with_cleanup(std::mem::size_of::<OliveEnum>(), release_enum_storage)) };
+}
+
+pub(crate) unsafe fn release_enum_storage(body: *mut u8) {
+    let e = unsafe { &mut *(body as *mut OliveEnum) };
+    let ptr = std::mem::replace(&mut e.payload_ptr, std::ptr::null_mut());
+    let len = std::mem::take(&mut e.payload_len);
+    if !ptr.is_null() {
+        drop(unsafe { Vec::from_raw_parts(ptr, len, len) });
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -111,12 +120,7 @@ pub extern "C" fn olive_free_enum(ptr: i64) {
         return;
     }
     if crate::slab::slot_is_live(ptr) {
-        unsafe {
-            let e = &*(ptr as *const OliveEnum);
-            if e.payload_len > 0 && !e.payload_ptr.is_null() {
-                let _ = Vec::from_raw_parts(e.payload_ptr, e.payload_len, e.payload_len);
-            }
-        }
+        unsafe { release_enum_storage(ptr as *mut u8) };
     }
     free_enum_slot_raw_with(ptr, Some(is_global));
 }
@@ -139,6 +143,14 @@ pub(crate) fn free_enum_slot_raw(ptr: i64) {
 /// `known_global` skips the chunk lookup when the caller already classified
 /// `ptr` a moment ago (e.g. `olive_free_enum`'s own span check).
 pub(crate) fn free_enum_slot_raw_with(ptr: i64, known_global: Option<bool>) {
+    if !crate::slab::slot_is_live(ptr) {
+        return;
+    }
+    unsafe {
+        let e = &mut *(ptr as *mut OliveEnum);
+        e.payload_ptr = std::ptr::null_mut();
+        e.payload_len = 0;
+    }
     let is_global = known_global.unwrap_or_else(|| crate::slab::chunk_is_global(ptr as usize));
     if is_global {
         crate::slab::with_escape_arena(|| free_enum_slot_raw_local(ptr));
@@ -174,14 +186,19 @@ pub extern "C" fn olive_enum_new_reuse(
     if bump != 0 {
         unsafe {
             let gen_ptr = (old_ptr as *mut std::sync::atomic::AtomicU64).sub(1);
-            let g = (*gen_ptr).load(std::sync::atomic::Ordering::Relaxed) + 2;
+            let g = crate::slab::advance_generation(
+                (*gen_ptr).load(std::sync::atomic::Ordering::Relaxed),
+                2,
+            );
             (*gen_ptr).store(g, std::sync::atomic::Ordering::Release);
         }
     }
     let n = arg_count as usize;
     let e = unsafe { &mut *(old_ptr as *mut OliveEnum) };
     unsafe {
-        if e.payload_ptr.is_null() || e.payload_len < n {
+        // The header stores no separate capacity, so its payload allocation
+        // must have exactly the recorded length, including after shrinking.
+        if e.payload_ptr.is_null() || e.payload_len != n {
             if !e.payload_ptr.is_null() {
                 let _ = Vec::from_raw_parts(e.payload_ptr, e.payload_len, e.payload_len);
             }

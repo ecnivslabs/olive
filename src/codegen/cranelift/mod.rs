@@ -1,3 +1,4 @@
+mod async_abi;
 mod async_sm;
 pub(crate) mod debug_variant;
 mod imports;

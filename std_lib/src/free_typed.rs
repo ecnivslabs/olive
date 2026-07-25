@@ -37,23 +37,27 @@ pub extern "C" fn olive_clear_typed(val: i64, desc: i64) {
     pos += 1;
     match tag {
         D_LIST | D_TUPLE => {
-            let inner_start = pos;
-            if tag == D_LIST {
-                skip(desc_ptr, &mut pos);
+            let fields = if tag == D_LIST {
+                None
             } else {
                 let n = unsafe { byte(desc_ptr, pos) } as usize - 1;
                 pos += 1;
-                for _ in 0..n {
-                    skip(desc_ptr, &mut pos);
-                }
-            }
+                Some(n)
+            };
             let (eptr, elen) = unsafe {
                 let s = &mut *(val as *mut StableVec);
                 let res = (s.ptr, s.len);
                 s.len = 0;
                 res
             };
-            free_elems(eptr, elen, desc_ptr, inner_start);
+            if let Some(n) = fields {
+                for i in 0..n {
+                    let elem = if i < elen { unsafe { *eptr.add(i) } } else { 0 };
+                    free_val(elem, desc_ptr, &mut pos);
+                }
+            } else {
+                free_elems(eptr, elen, desc_ptr, pos);
+            }
         }
         D_SET => {
             let inner_start = pos;
@@ -204,17 +208,20 @@ fn free_list_like(val: i64, desc: *const u8, pos: &mut usize) {
     if val == 0 || !slot_is_live(val) {
         return;
     }
-    let (eptr, elen, ecap) = unsafe {
+    let (eptr, elen, ecap, release_buffer) = unsafe {
         let s = &mut *(val as *mut StableVec);
         if s.kind == crate::KIND_SET {
             // A set-typed value that reached a list descriptor (e.g. through
             // inference); elements are scalars or shared words, free storage.
-            crate::set::release_set_storage(val);
+            crate::set::release_set_storage(val as *mut u8);
             crate::set::free_set_slot_raw(val);
             return;
         }
-        let res = (s.ptr, s.len, s.cap);
-        if s.cap > crate::list::RETAIN_CAP {
+        // An element destructor can allocate a list and recycle this header
+        // before traversal finishes. Only scalar buffers are safe to retain.
+        let release_buffer = s.cap > crate::list::RETAIN_CAP || elem_owns(desc, inner_start);
+        let res = (s.ptr, s.len, s.cap, release_buffer);
+        if release_buffer {
             s.ptr = std::ptr::null_mut();
             s.cap = 0;
         }
@@ -222,7 +229,7 @@ fn free_list_like(val: i64, desc: *const u8, pos: &mut usize) {
     };
     crate::list::free_list_slot_raw(val);
     free_elems(eptr, elen, desc, inner_start);
-    if ecap > crate::list::RETAIN_CAP && !eptr.is_null() {
+    if release_buffer && !eptr.is_null() {
         let _ = unsafe { Vec::from_raw_parts(eptr, 0, ecap) };
     }
 }
@@ -245,7 +252,7 @@ fn free_elems(eptr: *const i64, elen: usize, desc: *const u8, inner_start: usize
                 crate::bytes::olive_buf_free(unsafe { *eptr.add(i) });
             }
         }
-        D_LIST | D_SET | D_TUPLE | D_DICT | D_STRUCT | D_ENUM => {
+        _ if elem_owns(desc, inner_start) => {
             for i in 0..elen {
                 let mut p = inner_start;
                 free_val(unsafe { *eptr.add(i) }, desc, &mut p);
@@ -286,10 +293,17 @@ fn free_tuple(val: i64, desc: *const u8, pos: &mut usize) {
         }
         return;
     }
-    let (eptr, elen, ecap) = unsafe {
+    let mut field_pos = *pos;
+    let owns_elements = (0..n).any(|_| {
+        let owns = elem_owns(desc, field_pos);
+        skip(desc, &mut field_pos);
+        owns
+    });
+    let (eptr, elen, ecap, release_buffer) = unsafe {
         let s = &mut *(val as *mut StableVec);
-        let res = (s.ptr, s.len, s.cap);
-        if s.cap > crate::list::RETAIN_CAP {
+        let release_buffer = s.cap > crate::list::RETAIN_CAP || owns_elements;
+        let res = (s.ptr, s.len, s.cap, release_buffer);
+        if release_buffer {
             s.ptr = std::ptr::null_mut();
             s.cap = 0;
         }
@@ -300,7 +314,7 @@ fn free_tuple(val: i64, desc: *const u8, pos: &mut usize) {
         let elem = if i < elen { unsafe { *eptr.add(i) } } else { 0 };
         free_val(elem, desc, pos);
     }
-    if ecap > crate::list::RETAIN_CAP && !eptr.is_null() {
+    if release_buffer && !eptr.is_null() {
         let _ = unsafe { Vec::from_raw_parts(eptr, 0, ecap) };
     }
 }
@@ -422,8 +436,7 @@ fn free_enum(val: i64, desc: *const u8, pos: &mut usize) {
     }
 }
 
-/// Whether elements of this descriptor class can own heap memory; scalar and
-/// string elements make the per-element walk pointless.
+/// Whether elements of this descriptor class can own heap memory.
 fn elem_owns(desc: *const u8, pos: usize) -> bool {
     matches!(
         unsafe { byte(desc, pos) },
@@ -436,10 +449,14 @@ fn elem_owns(desc: *const u8, pos: usize) -> bool {
             | D_TUPLE
             | D_DICT
             | D_STRUCT
+            | D_STRUCT_SHARED
             | D_FATPTR
             | D_ENUM
     )
 }
+
+#[cfg(test)]
+mod lifecycle_tests;
 
 #[cfg(test)]
 mod tests {

@@ -22,7 +22,7 @@ pub(super) fn insert_flags_and_marks(
     for l in ordered {
         let flag = push_local(func, Type::Bool);
         flag_of.insert(l, flag);
-        flags.push(flag);
+        flags.push((flag, l.0 <= func.arg_count && func.locals[l.0].is_owning));
     }
 
     // (bb, idx) -> flag updates to insert after that statement.
@@ -57,7 +57,7 @@ pub(super) fn insert_flags_and_marks(
         let old = std::mem::take(&mut bb.statements);
         let mut rebuilt = Vec::with_capacity(old.len() + 4);
         if bb_idx == 0 {
-            for &flag in &flags {
+            for &(flag, initially_owned) in &flags {
                 rebuilt.push(Statement {
                     kind: StatementKind::StorageLive(flag),
                     span: Span::default(),
@@ -65,7 +65,7 @@ pub(super) fn insert_flags_and_marks(
                 rebuilt.push(Statement {
                     kind: StatementKind::Assign(
                         flag,
-                        Rvalue::Use(Operand::Constant(Constant::Bool(false))),
+                        Rvalue::Use(Operand::Constant(Constant::Bool(initially_owned))),
                     ),
                     span: Span::default(),
                 });

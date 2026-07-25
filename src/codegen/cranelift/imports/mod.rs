@@ -155,9 +155,9 @@ pub(super) fn collect_needed_imports(
                 .iter()
                 .skip(1)
                 .take(func.arg_count)
-                .any(|l| l.ty.is_move_type())
+                .any(|l| l.ty.needs_drop())
         {
-            needed.insert("__olive_copy_typed");
+            needed.insert("__olive_relocate_typed");
         }
     }
     needed.insert("__olive_clear_typed");

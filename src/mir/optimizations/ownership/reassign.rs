@@ -21,6 +21,14 @@ pub(super) fn reassign_free_locals(
         view_roots.extend(srcs.iter().map(|(l, _)| *l));
     }
     let mut assigns = vec![0u32; classes.len()];
+    for (i, count) in assigns
+        .iter_mut()
+        .enumerate()
+        .take(func.arg_count + 1)
+        .skip(1)
+    {
+        *count = u32::from(func.locals[i].is_owning);
+    }
     for rec in records {
         assigns[rec.dst.0] += 1;
     }
@@ -38,7 +46,7 @@ pub(super) fn reassign_free_locals(
     for i in 0..classes.len() {
         if i != 0
             && heap[i]
-            && classes[i] == LocalClass::Owner
+            && matches!(classes[i], LocalClass::Owner | LocalClass::Mixed)
             && (assigns[i] >= 2 || in_loop_body.contains(&Local(i)))
         {
             let local = Local(i);
@@ -106,6 +114,14 @@ fn reassign_entry_state(func: &MirFunction, reassign: &HashSet<Local>) -> Vec<Ha
         changed = false;
         for bb in 0..nb {
             let mut state: HashSet<Local> = HashSet::default();
+            if bb == 0 {
+                state.extend(
+                    reassign
+                        .iter()
+                        .copied()
+                        .filter(|l| l.0 <= func.arg_count && func.locals[l.0].is_owning),
+                );
+            }
             for &p in &preds[bb] {
                 state.extend(out[p.0].iter().copied());
             }

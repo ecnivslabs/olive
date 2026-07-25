@@ -546,62 +546,12 @@ impl<M: Module> CraneliftCodegen<M> {
                         builder.inst_results(inst)[0]
                     }
                     OliveType::Any => {
-                        emit_nil_check(builder, module, func_ids, o, loc);
-                        let result_var = builder.declare_var(types::I64);
-                        let fast_block = builder.create_block();
-                        let slow_block = builder.create_block();
-                        let merge_block = builder.create_block();
-
-                        let data_ptr = builder.ins().load(
-                            types::I64,
-                            MemFlags::trusted().with_readonly(),
-                            o,
-                            8,
-                        );
-                        let kind = builder.ins().load(
-                            types::I64,
-                            MemFlags::trusted().with_readonly(),
-                            o,
-                            0,
-                        );
-                        let is_list = builder.ins().icmp_imm(IntCC::Equal, kind, 1);
-                        builder
-                            .ins()
-                            .brif(is_list, fast_block, &[], slow_block, &[]);
-
-                        builder.seal_block(fast_block);
-                        builder.switch_to_block(fast_block);
-                        let len = builder.ins().load(
-                            types::I64,
-                            MemFlags::trusted().with_readonly(),
-                            o,
-                            24,
-                        );
-                        let fast_idx = if !unchecked {
-                            emit_bounds_check(builder, module, func_ids, i, len, loc)
-                        } else {
-                            i
-                        };
-                        let offset = builder.ins().imul_imm(fast_idx, 8);
-                        let addr = builder.ins().iadd(data_ptr, offset);
-                        let fast_val = builder.ins().load(types::I64, MemFlags::trusted(), addr, 0);
-                        builder.def_var(result_var, fast_val);
-                        builder.ins().jump(merge_block, &[]);
-
-                        builder.seal_block(slow_block);
-                        builder.switch_to_block(slow_block);
                         let get_id = func_ids
                             .get("__olive_get_index_any")
                             .expect("missing __olive_get_index_any");
                         let local_func = module.declare_func_in_func(*get_id, builder.func);
                         let inst = builder.ins().call(local_func, &[o, i, loc]);
-                        let slow_val = builder.inst_results(inst)[0];
-                        builder.def_var(result_var, slow_val);
-                        builder.ins().jump(merge_block, &[]);
-
-                        builder.seal_block(merge_block);
-                        builder.switch_to_block(merge_block);
-                        builder.use_var(result_var)
+                        builder.inst_results(inst)[0]
                     }
                     OliveType::Str => {
                         emit_nil_check(builder, module, func_ids, o, loc);

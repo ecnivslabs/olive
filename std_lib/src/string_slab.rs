@@ -5,7 +5,6 @@
 
 use crate::slab::GenSlab;
 use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Marks a word as an Olive string pointer rather than a raw scalar.
 pub const STR_TAG: i64 = 1;
@@ -82,7 +81,7 @@ fn with_class_slab<T>(cap: usize, f: impl FnOnce(&mut GenSlab) -> T) -> T {
             let idx = class_index(cap);
             assert!(idx < 32, "olive: string size class limit exceeded");
             if (*active).str_slabs[idx].is_none() {
-                (*active).str_slabs[idx] = Some(GenSlab::new(cap));
+                (*active).str_slabs[idx] = Some(GenSlab::new(cap).with_global((*active).is_global));
             }
             f((*active).str_slabs[idx].as_mut().unwrap_unchecked())
         } else {
@@ -238,19 +237,19 @@ pub extern "C" fn olive_str_gen_of(ptr: i64) -> i64 {
     if body == 0 || !str_is_heap(ptr) {
         return 0;
     }
-    unsafe { (*((body - 8) as *const AtomicU64)).load(Ordering::Relaxed) as i64 }
+    crate::slab::slot_generation(body) as i64
 }
 
 /// Whether a heap string borrow captured at generation `gen` is now stale. A
-/// literal, foreign, null, or sentinel-`gen` borrow is never stale; a slab body
-/// is stale once its generation moved (ignoring the shared bit) or its slot died.
+/// literal, null, or sentinel-`gen` borrow is never stale. A captured slab
+/// generation becomes stale on reuse, free, or retirement of its arena.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_gen_stale(ptr: i64, generation: i64) -> i64 {
     let body = str_body(ptr);
     if body == 0 || generation == 0 || !str_is_heap(ptr) {
         return 0;
     }
-    let cur = unsafe { (*((body - 8) as *const AtomicU64)).load(Ordering::Relaxed) as i64 };
+    let cur = crate::slab::slot_generation(body) as i64;
     (((cur ^ generation) << 1) != 0 || cur & 1 == 0) as i64
 }
 

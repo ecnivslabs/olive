@@ -153,13 +153,13 @@ fn executor_drive(ex: &Arc<OliveExecutor>, task: &Arc<OliveTask>) -> DriveOutcom
     crate::slab::ACTIVE_SLABS.set(slabs_ptr);
 
     let sf = unsafe { &*(task.sm_future as *const OliveSmFuture) };
-    let poll_fn: fn(i64) -> i64 = unsafe { std::mem::transmute(sf.poll_fn as usize) };
+    let poll_fn: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(sf.poll_fn as usize) };
     let result = poll_fn(sf.frame);
 
     crate::slab::ACTIVE_SLABS.set(old_active);
     task.driving.store(false, Ordering::SeqCst);
 
-    if result != POLL_PENDING {
+    if unsafe { *(sf.frame as *const i64) } == -1 {
         return executor_complete(ex, task, result);
     }
     park_after_pending(ex, task, sf)
@@ -192,13 +192,13 @@ fn executor_complete_waker(ex: &Arc<OliveExecutor>, task: &Arc<OliveTask>, resul
     crate::slab::ACTIVE_SLABS.set(slabs_ptr);
 
     let sf = unsafe { &*(task.sm_future as *const OliveSmFuture) };
-    let poll_fn: fn(i64) -> i64 = unsafe { std::mem::transmute(sf.poll_fn as usize) };
+    let poll_fn: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(sf.poll_fn as usize) };
     let final_result = poll_fn(sf.frame);
 
     crate::slab::ACTIVE_SLABS.set(old_active);
     task.driving.store(false, Ordering::SeqCst);
 
-    if final_result != POLL_PENDING {
+    if unsafe { *(sf.frame as *const i64) } == -1 {
         executor_complete(ex, task, final_result);
         return;
     }
@@ -271,12 +271,25 @@ fn executor_complete(ex: &Arc<OliveExecutor>, task: &Arc<OliveTask>, result: i64
     // Relocate the result into the process-lifetime arena while this task's
     // own arena is still alive: `result` may point into it, and dropping it
     // below deallocates its chunks.
-    let delivered = crate::copy_typed::relocate_across_boundary(result);
+    let sf = unsafe { &*(task.sm_future as *const OliveSmFuture) };
+    let delivered = if sf.result_desc == 0 {
+        crate::copy_typed::relocate_across_boundary(result)
+    } else {
+        let delivered = crate::copy_typed::olive_relocate_typed(result, sf.result_desc);
+        let mut slabs = task.slabs.lock().unwrap();
+        let old_active = crate::slab::ACTIVE_SLABS.get();
+        if let Some(slabs) = slabs.as_mut() {
+            crate::slab::ACTIVE_SLABS.set(slabs.as_mut());
+        }
+        crate::free_typed::olive_free_typed(result, sf.result_desc);
+        crate::slab::ACTIVE_SLABS.set(old_active);
+        delivered
+    };
     // The compiled completion path caches the raw result in the frame's
     // sub-future slot for later re-polls (`olive_sm_poll` from gather/select,
     // or a late await). Rewrite it with the arena-independent copy so every
     // such harvester sees memory that outlives this task's arena.
-    let frame = unsafe { (*(task.sm_future as *const OliveSmFuture)).frame };
+    let frame = sf.frame;
     unsafe { *((frame + 8) as *mut i64) = delivered };
 
     for c in std::mem::take(&mut *task.completions.lock().unwrap()) {
@@ -303,6 +316,7 @@ struct OliveSmFuture {
     poll_fn: i64,
     frame: i64,
     cancelled: i64,
+    result_desc: i64,
 }
 
 /// Debugger-only: the heap-frame pointer of the task logically awaiting the
@@ -338,24 +352,30 @@ pub extern "C" fn olive_debug_sm_awaiter_frame(frame_ptr: i64) -> i64 {
     wf.frame
 }
 
+/// Returns readiness separately because every payload bit pattern is valid.
+/// A pending poll leaves the output word untouched.
 #[unsafe(no_mangle)]
-pub extern "C" fn olive_sm_poll(future: i64) -> i64 {
-    if future == 0 {
-        return 0;
-    }
-    let kind = unsafe { *(future as *const i64) };
-    if kind == KIND_SM_FUTURE {
+pub extern "C" fn olive_sm_poll(future: i64, output: i64) -> i64 {
+    let result = if future == 0 {
+        Some(0)
+    } else if unsafe { *(future as *const i64) } == KIND_SM_FUTURE {
         let f = unsafe { &*(future as *const OliveSmFuture) };
-        let poll_fn: fn(i64) -> i64 = unsafe { std::mem::transmute(f.poll_fn as usize) };
-        poll_fn(f.frame)
+        let poll_fn: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(f.poll_fn as usize) };
+        let result = poll_fn(f.frame);
+        (unsafe { *(f.frame as *const i64) } == -1).then_some(result)
     } else {
         let f = unsafe { &*(future as *const OliveFuture) };
         let shared = unsafe { &*(f.shared as *const FutureShared) };
-        let guard = shared.state.lock().unwrap();
-        match &*guard {
-            FutureState::Ready(v) => *v,
-            FutureState::Pending => POLL_PENDING,
+        match *shared.state.lock().unwrap() {
+            FutureState::Ready(v) => Some(v),
+            FutureState::Pending => None,
         }
+    };
+    if let Some(value) = result {
+        unsafe { *(output as *mut i64) = value };
+        1
+    } else {
+        0
     }
 }
 
@@ -373,57 +393,6 @@ struct FutureShared {
 struct OliveFuture {
     kind: i64,
     shared: i64, // raw ptr into Arc<FutureShared>
-}
-
-fn call_jit_fn(fn_ptr: usize, args: &[i64]) -> i64 {
-    unsafe {
-        match args.len() {
-            0 => {
-                let f: extern "C" fn() -> i64 = std::mem::transmute(fn_ptr);
-                f()
-            }
-            1 => {
-                let f: extern "C" fn(i64) -> i64 = std::mem::transmute(fn_ptr);
-                f(args[0])
-            }
-            2 => {
-                let f: extern "C" fn(i64, i64) -> i64 = std::mem::transmute(fn_ptr);
-                f(args[0], args[1])
-            }
-            3 => {
-                let f: extern "C" fn(i64, i64, i64) -> i64 = std::mem::transmute(fn_ptr);
-                f(args[0], args[1], args[2])
-            }
-            4 => {
-                let f: extern "C" fn(i64, i64, i64, i64) -> i64 = std::mem::transmute(fn_ptr);
-                f(args[0], args[1], args[2], args[3])
-            }
-            5 => {
-                let f: extern "C" fn(i64, i64, i64, i64, i64) -> i64 = std::mem::transmute(fn_ptr);
-                f(args[0], args[1], args[2], args[3], args[4])
-            }
-            6 => {
-                let f: extern "C" fn(i64, i64, i64, i64, i64, i64) -> i64 =
-                    std::mem::transmute(fn_ptr);
-                f(args[0], args[1], args[2], args[3], args[4], args[5])
-            }
-            7 => {
-                let f: extern "C" fn(i64, i64, i64, i64, i64, i64, i64) -> i64 =
-                    std::mem::transmute(fn_ptr);
-                f(
-                    args[0], args[1], args[2], args[3], args[4], args[5], args[6],
-                )
-            }
-            8 => {
-                let f: extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64) -> i64 =
-                    std::mem::transmute(fn_ptr);
-                f(
-                    args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7],
-                )
-            }
-            _ => panic!("async fn: too many arguments (max 8)"),
-        }
-    }
 }
 
 #[unsafe(no_mangle)]
@@ -486,9 +455,10 @@ pub extern "C" fn olive_spawn_task(callback: i64) -> i64 {
     let cb = callback as *const i64;
     let fn_ptr = unsafe { *cb } as usize;
     let nargs = unsafe { *cb.add(1) } as usize;
-    let args: Vec<i64> = (0..nargs).map(|i| unsafe { *cb.add(2 + i) }).collect();
+    let result_desc = unsafe { *cb.add(2) };
+    let args: Vec<i64> = (0..nargs).map(|i| unsafe { *cb.add(3 + i) }).collect();
     unsafe {
-        let layout = std::alloc::Layout::from_size_align(8 * (2 + nargs), 8).unwrap();
+        let layout = std::alloc::Layout::from_size_align(8 * (3 + nargs), 8).unwrap();
         std::alloc::dealloc(callback as *mut u8, layout);
     }
 
@@ -500,9 +470,12 @@ pub extern "C" fn olive_spawn_task(callback: i64) -> i64 {
 
     // Result handoff via Mutex/Condvar.
     crate::debug::spawn_traced("olive-spawn-task", move || {
-        let result = call_jit_fn(fn_ptr, &args);
+        let invoke: extern "C" fn(*const i64) -> i64 = unsafe { std::mem::transmute(fn_ptr) };
+        let result = invoke(args.as_ptr());
+        let delivered = crate::copy_typed::olive_relocate_typed(result, result_desc);
+        crate::free_typed::olive_free_typed(result, result_desc);
         let mut state = shared2.state.lock().unwrap();
-        *state = FutureState::Ready(result);
+        *state = FutureState::Ready(delivered);
         shared2.cvar.notify_all();
     });
 
@@ -603,6 +576,7 @@ pub extern "C" fn olive_async_file_write(path: i64, data: i64) -> i64 {
 #[repr(C)]
 struct GatherFrame {
     state: i64,
+    cached_result: i64,
     futures_list: i64,
     results: i64,
 }
@@ -611,24 +585,19 @@ struct GatherFrame {
 pub extern "C" fn olive_gather_poll(frame: i64) -> i64 {
     let f = unsafe { &mut *(frame as *mut GatherFrame) };
     if f.state == -1 {
-        return f.results;
+        return f.cached_result;
     }
 
-    let list = unsafe { &*(f.futures_list as *const StableVec) };
-    let n = list.len;
+    let list = unsafe { (f.futures_list as *const StableVec).as_ref() };
+    let n = list.map_or(0, |list| list.len);
     let results_vec = unsafe { &*(f.results as *const StableVec) };
     let results = unsafe { std::slice::from_raw_parts_mut(results_vec.ptr, n) };
 
     let mut any_pending = false;
     for (i, res) in results.iter_mut().enumerate().take(n) {
-        if *res == POLL_PENDING {
-            let fut = unsafe { *list.ptr.add(i) };
-            let r = olive_sm_poll(fut);
-            if r != POLL_PENDING {
-                *res = r;
-            } else {
-                any_pending = true;
-            }
+        let fut = unsafe { *list.unwrap().ptr.add(i) };
+        if olive_sm_poll(fut, res as *mut i64 as i64) == 0 {
+            any_pending = true;
         }
     }
 
@@ -636,22 +605,21 @@ pub extern "C" fn olive_gather_poll(frame: i64) -> i64 {
         POLL_PENDING
     } else {
         f.state = -1;
+        f.cached_result = f.results;
         f.results
     }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_gather(futures_list: i64) -> i64 {
-    if futures_list == 0 {
-        return crate::list::list_from_vec(Vec::new());
-    }
-    let list = unsafe { &*(futures_list as *const StableVec) };
-    let n = list.len;
+    let list = unsafe { (futures_list as *const StableVec).as_ref() };
+    let n = list.map_or(0, |list| list.len);
 
-    let results_list = crate::list::list_from_vec(vec![POLL_PENDING; n]);
+    let results_list = crate::list::list_from_vec(vec![0; n]);
 
     let frame = Box::into_raw(Box::new(GatherFrame {
         state: 0,
+        cached_result: 0,
         futures_list,
         results: results_list,
     })) as i64;
@@ -661,26 +629,31 @@ pub extern "C" fn olive_gather(futures_list: i64) -> i64 {
         poll_fn: olive_gather_poll as *const () as usize as i64,
         frame,
         cancelled: 0,
+        result_desc: 0,
     })) as i64
 }
 
 #[repr(C)]
 struct SelectFrame {
     state: i64,
+    cached_result: i64,
     futures_list: i64,
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_select_poll(frame: i64) -> i64 {
     let f = unsafe { &mut *(frame as *mut SelectFrame) };
+    if f.state == -1 {
+        return f.cached_result;
+    }
     let list = unsafe { &*(f.futures_list as *const StableVec) };
     let n = list.len;
 
     for i in 0..n {
         let fut = unsafe { *list.ptr.add(i) };
-        let r = olive_sm_poll(fut);
-        if r != POLL_PENDING {
-            return r;
+        if olive_sm_poll(fut, &mut f.cached_result as *mut i64 as i64) != 0 {
+            f.state = -1;
+            return f.cached_result;
         }
     }
     POLL_PENDING
@@ -693,6 +666,7 @@ pub extern "C" fn olive_select(futures_list: i64) -> i64 {
     }
     let frame = Box::into_raw(Box::new(SelectFrame {
         state: 0,
+        cached_result: 0,
         futures_list,
     })) as i64;
     Box::into_raw(Box::new(OliveSmFuture {
@@ -700,6 +674,7 @@ pub extern "C" fn olive_select(futures_list: i64) -> i64 {
         poll_fn: olive_select_poll as *const () as usize as i64,
         frame,
         cancelled: 0,
+        result_desc: 0,
     })) as i64
 }
 

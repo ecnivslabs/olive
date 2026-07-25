@@ -15,13 +15,21 @@ const FATPTR_WORDS: usize = 5;
 pub struct StructSlabs {
     fixed: Vec<GenSlab>,
     large: Vec<(usize, GenSlab)>,
+    is_global: bool,
 }
 
 impl StructSlabs {
     pub fn new() -> Self {
+        Self::with_global(false)
+    }
+
+    pub(crate) fn with_global(is_global: bool) -> Self {
         Self {
-            fixed: (0..=FIXED_MAX_WORDS).map(|w| GenSlab::new(w * 8)).collect(),
+            fixed: (0..=FIXED_MAX_WORDS)
+                .map(|w| GenSlab::new(w * 8).with_global(is_global))
+                .collect(),
             large: Vec::new(),
+            is_global,
         }
     }
 
@@ -33,7 +41,8 @@ impl StructSlabs {
         if let Some(i) = self.large.iter().position(|(w, _)| *w == class) {
             return &mut self.large[i].1;
         }
-        self.large.push((class, GenSlab::new(class * 8)));
+        self.large
+            .push((class, GenSlab::new(class * 8).with_global(self.is_global)));
         &mut self.large.last_mut().unwrap().1
     }
 }
@@ -201,18 +210,15 @@ pub extern "C" fn olive_free_fatptr(ptr: i64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_struct_gen_of(ptr: i64) -> i64 {
-    if ptr == 0 || !crate::slab::ptr_in_slab_span(ptr) {
-        return 0;
-    }
-    unsafe { *((ptr - 8) as *const i64) }
+    crate::slab::slot_generation(ptr) as i64
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_struct_gen_stale(ptr: i64, generation: i64) -> i64 {
-    if ptr == 0 || generation == 0 || !crate::slab::ptr_in_slab_span(ptr) {
+    if ptr == 0 || generation == 0 {
         return 0;
     }
-    let cur = unsafe { *((ptr - 8) as *const i64) };
+    let cur = crate::slab::slot_generation(ptr) as i64;
     (((cur ^ generation) << 1) != 0 || cur & 1 == 0) as i64
 }
 

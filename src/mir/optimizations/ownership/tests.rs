@@ -2,6 +2,8 @@ use super::*;
 use crate::mir::optimizations::Transform;
 use std::cell::RefCell;
 
+mod async_params;
+
 fn sp() -> Span {
     Span::default()
 }

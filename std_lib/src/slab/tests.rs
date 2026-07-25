@@ -1,6 +1,33 @@
 use super::*;
 
 #[test]
+fn teardown_cleans_initialized_backing_storage() {
+    use std::sync::Arc;
+
+    unsafe fn cleanup(body: *mut u8) {
+        unsafe { std::ptr::drop_in_place(body.add(8) as *mut Arc<()>) };
+    }
+
+    let owner = Arc::new(());
+    let weak = Arc::downgrade(&owner);
+    let mut slab = GenSlab::with_cleanup(8 + std::mem::size_of::<Arc<()>>(), cleanup);
+    for freed in [false, true] {
+        let body = slab.alloc().0;
+        unsafe { std::ptr::write(body.add(8) as *mut Arc<()>, owner.clone()) };
+        if freed {
+            if cfg!(debug_assertions) {
+                unsafe { cleanup(body) };
+            }
+            slab.free(body);
+        }
+    }
+    drop(owner);
+    assert!(weak.upgrade().is_some());
+    drop(slab);
+    assert!(weak.upgrade().is_none());
+}
+
+#[test]
 fn empty_bodies_have_space_for_the_free_list() {
     let mut slab = GenSlab::new(0);
     let slots: Vec<_> = (0..5000).map(|_| slab.alloc().0).collect();
@@ -114,6 +141,16 @@ fn recycle_bumps_generation() {
     assert_eq!(p, p2);
     assert!(!fresh);
     assert_eq!(slot_generation(p2 as i64), g0 + 2);
+}
+
+#[test]
+fn fresh_chunks_do_not_reuse_retired_generations() {
+    let mut generations = std::collections::HashSet::new();
+    for _ in 0..64 {
+        let mut slab = GenSlab::new(CHUNK_TARGET * 2);
+        let value = slab.alloc().0 as i64;
+        assert!(generations.insert(slot_generation(value)));
+    }
 }
 
 #[test]

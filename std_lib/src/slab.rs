@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 mod registry;
 use registry::{ChunkGuard, find_chunk_for_addr, register_chunk, unregister_chunk};
+mod generation;
+pub(crate) use generation::advance_generation;
 
 const CHUNK_TARGET: usize = 1 << 16;
 
@@ -51,8 +53,11 @@ pub struct GenSlab {
     free_head: *mut u64,
     bump: *mut u8,
     bump_end: *mut u8,
+    bump_generation: u64,
     slot_bytes: usize,
     chunks: Vec<(*mut u8, Layout)>,
+    cleanup: Option<unsafe fn(*mut u8)>,
+    is_global: bool,
 }
 
 unsafe impl Send for GenSlab {}
@@ -62,6 +67,16 @@ impl Drop for GenSlab {
         for &(chunk, layout) in &self.chunks {
             unregister_chunk(chunk as usize);
             unsafe {
+                if let Some(cleanup) = self.cleanup {
+                    for offset in (0..layout.size()).step_by(self.slot_bytes) {
+                        let slot = chunk.add(offset);
+                        let generation =
+                            (*(slot.add(8) as *const AtomicU64)).load(Ordering::Relaxed);
+                        if generation != 0 && (!cfg!(debug_assertions) || generation & 1 != 0) {
+                            cleanup(slot.add(16));
+                        }
+                    }
+                }
                 std::alloc::dealloc(chunk, layout);
             }
         }
@@ -83,9 +98,26 @@ impl GenSlab {
             free_head: std::ptr::null_mut(),
             bump: std::ptr::null_mut(),
             bump_end: std::ptr::null_mut(),
+            bump_generation: 0,
             slot_bytes,
             chunks: Vec::new(),
+            cleanup: None,
+            is_global: false,
         }
+    }
+
+    /// The callback releases backing storage for initialized slots at teardown.
+    /// In release builds it must also accept freed slots whose first word holds
+    /// the free-list link. Debug frees poison those slots and skip the callback.
+    pub(crate) const fn with_cleanup(body_bytes: usize, cleanup: unsafe fn(*mut u8)) -> Self {
+        let mut slab = Self::new(body_bytes);
+        slab.cleanup = Some(cleanup);
+        slab
+    }
+
+    pub(crate) const fn with_global(mut self, is_global: bool) -> Self {
+        self.is_global = is_global;
+        self
     }
 
     /// Returns `(body, fresh)`. A fresh body is uninitialized. A recycled body
@@ -98,7 +130,7 @@ impl GenSlab {
                 let body = (head as *mut u8).add(16);
                 self.free_head = *(body as *const *mut u64);
                 let gen_ptr = head.add(1) as *mut AtomicU64;
-                let g = (*gen_ptr).load(Ordering::Relaxed) + 1;
+                let g = advance_generation((*gen_ptr).load(Ordering::Relaxed), 1);
                 (*gen_ptr).store(g, Ordering::Release);
                 return (body, false);
             }
@@ -109,13 +141,14 @@ impl GenSlab {
         unsafe {
             let gen_ptr = self.bump.add(8) as *mut AtomicU64;
             self.bump = self.bump.add(self.slot_bytes);
-            (*gen_ptr).store(1, Ordering::Release);
+            (*gen_ptr).store(self.bump_generation, Ordering::Release);
             let body = (gen_ptr as *mut u8).add(8);
             (body, true)
         }
     }
 
     fn grow(&mut self) {
+        self.bump_generation = generation::fresh_generation();
         let slots = (CHUNK_TARGET / self.slot_bytes).max(1);
         let bytes = slots * self.slot_bytes;
         let layout = Layout::from_size_align(bytes, 8).unwrap();
@@ -133,12 +166,11 @@ impl GenSlab {
             }
         }
 
-        let is_global = is_within_global_slabs(self as *const GenSlab as usize);
         register_chunk(
             chunk as usize,
             chunk as usize + bytes,
             self.slot_bytes,
-            is_global,
+            self.is_global,
         );
         self.bump = chunk;
         self.bump_end = unsafe { chunk.add(bytes) };
@@ -155,7 +187,7 @@ impl GenSlab {
             if generation & 1 == 0 {
                 return false;
             }
-            (*gen_ptr).store(generation + 1, Ordering::Release);
+            (*gen_ptr).store(advance_generation(generation, 1), Ordering::Release);
             *(body as *mut *mut u64) = self.free_head;
             self.free_head = (body as *mut u64).sub(2);
             #[cfg(debug_assertions)]
@@ -199,16 +231,21 @@ pub fn slot_generation(body: i64) -> u64 {
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod lifecycle_tests;
+
 thread_local! {
     pub(crate) static ACTIVE_SLABS: std::cell::Cell<*mut SlabSet> = const { std::cell::Cell::new(std::ptr::null_mut()) };
 }
 
 pub struct SlabSet {
+    pub(crate) is_global: bool,
     pub list: GenSlab,
     pub obj: GenSlab,
     pub set: GenSlab,
     pub enum_slab: GenSlab,
     pub boxed: GenSlab,
+    pub bytes: GenSlab,
     pub result: GenSlab,
     pub iter: GenSlab,
     pub str_slabs: [Option<GenSlab>; 32],
@@ -224,30 +261,54 @@ impl Default for SlabSet {
 
 impl SlabSet {
     pub fn new() -> Self {
+        Self::with_global(false)
+    }
+
+    fn with_global(is_global: bool) -> Self {
         Self {
-            list: GenSlab::new(std::mem::size_of::<crate::StableVec>()),
-            obj: GenSlab::new(std::mem::size_of::<crate::OliveObj>()),
-            set: GenSlab::new(std::mem::size_of::<crate::OliveHashSet>()),
-            enum_slab: GenSlab::new(std::mem::size_of::<crate::OliveEnum>()),
-            boxed: GenSlab::new(std::mem::size_of::<crate::boxed::OliveBoxed>()),
-            result: GenSlab::new(std::mem::size_of::<crate::result::OliveResult>()),
-            iter: GenSlab::new(std::mem::size_of::<crate::list::OliveIter>()),
+            is_global,
+            list: GenSlab::with_cleanup(
+                std::mem::size_of::<crate::StableVec>(),
+                crate::list::release_list_storage,
+            )
+            .with_global(is_global),
+            obj: GenSlab::with_cleanup(
+                std::mem::size_of::<crate::OliveObj>(),
+                crate::obj::release_obj_storage,
+            )
+            .with_global(is_global),
+            set: GenSlab::with_cleanup(
+                std::mem::size_of::<crate::OliveHashSet>(),
+                crate::set::release_set_storage,
+            )
+            .with_global(is_global),
+            enum_slab: GenSlab::with_cleanup(
+                std::mem::size_of::<crate::OliveEnum>(),
+                crate::enum_obj::release_enum_storage,
+            )
+            .with_global(is_global),
+            boxed: GenSlab::new(std::mem::size_of::<crate::boxed::OliveBoxed>())
+                .with_global(is_global),
+            bytes: GenSlab::with_cleanup(
+                std::mem::size_of::<crate::bytes::OliveBytes>(),
+                crate::bytes::release_bytes_storage,
+            )
+            .with_global(is_global),
+            result: GenSlab::new(std::mem::size_of::<crate::result::OliveResult>())
+                .with_global(is_global),
+            iter: GenSlab::new(std::mem::size_of::<crate::list::OliveIter>())
+                .with_global(is_global),
             str_slabs: std::array::from_fn(|_| None),
-            struct_slabs: crate::struct_obj::StructSlabs::new(),
-            struct_box: GenSlab::new(std::mem::size_of::<crate::struct_box::OliveStructBox>()),
+            struct_slabs: crate::struct_obj::StructSlabs::with_global(is_global),
+            struct_box: GenSlab::new(std::mem::size_of::<crate::struct_box::OliveStructBox>())
+                .with_global(is_global),
         }
     }
 }
 
 /// Process-lifetime arena for values crossing a task/thread boundary; never torn down.
 static GLOBAL_SLABS: std::sync::LazyLock<Mutex<SlabSet>> =
-    std::sync::LazyLock::new(|| Mutex::new(SlabSet::new()));
-
-fn is_within_global_slabs(addr: usize) -> bool {
-    let base = (&*GLOBAL_SLABS as *const Mutex<SlabSet>) as usize;
-    let end = base + std::mem::size_of::<Mutex<SlabSet>>();
-    addr >= base && addr < end
-}
+    std::sync::LazyLock::new(|| Mutex::new(SlabSet::with_global(true)));
 
 /// Whether addr's chunk is GLOBAL_SLABS; its frees must route through that lock.
 pub fn chunk_is_global(addr: usize) -> bool {

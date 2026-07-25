@@ -59,11 +59,7 @@ pub extern "C" fn olive_free_result(ptr: i64) {
         let payload = unsafe { (*(ptr as *const OliveResult)).payload };
         crate::olive_free_any(payload);
     }
-    match crate::slab::slab_membership(ptr) {
-        None => {}
-        Some(true) => crate::slab::with_escape_arena(|| free_result_slot_local(ptr)),
-        Some(false) => free_result_slot_local(ptr),
-    }
+    free_slot(ptr);
 }
 
 fn free_result_slot_local(ptr: i64) {
@@ -146,31 +142,47 @@ pub extern "C" fn olive_result_unwrap_or(r: i64, default: i64) -> i64 {
         return default;
     }
     let obj = unsafe { &*(r as *const OliveResult) };
-    let out = if obj.tag == 1 { obj.payload } else { default };
-    free_slot(r);
-    out
+    if obj.tag == 1 {
+        let out = obj.payload;
+        free_slot(r);
+        out
+    } else {
+        olive_free_result(r);
+        default
+    }
 }
 
-/// Takes the `Err` message string and consumes the result. An `Ok` result
-/// owns nothing on this branch (its payload belongs to whoever unwraps it),
-/// so only the slot is released there.
+/// Takes the `Err` message string and consumes the result. An unused `Ok`
+/// payload is released with its result.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_result_err_msg(r: i64) -> i64 {
     if r == 0 {
         return olive_str_internal("");
     }
     let obj = unsafe { &*(r as *const OliveResult) };
-    let out = if obj.tag == 0 { obj.payload } else { 0 };
-    free_slot(r);
-    out
+    if obj.tag == 0 {
+        let out = obj.payload;
+        free_slot(r);
+        out
+    } else {
+        olive_free_result(r);
+        0
+    }
 }
 
 /// Releases the result's slot without freeing its payload -- the consuming
 /// accessor has already handed the payload to a new owner. A stale duplicate
 /// of the same result word lands here as an absorbed double-free.
 fn free_slot(ptr: i64) {
-    RESULT_SLAB.with(|sl| unsafe { &mut *sl.get() }.free(ptr as *mut u8));
+    match crate::slab::slab_membership(ptr) {
+        None => {}
+        Some(true) => crate::slab::with_escape_arena(|| free_result_slot_local(ptr)),
+        Some(false) => free_result_slot_local(ptr),
+    }
 }
+
+#[cfg(test)]
+mod lifecycle_tests;
 
 #[cfg(test)]
 mod tests {
