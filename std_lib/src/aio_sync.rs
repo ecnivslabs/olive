@@ -31,16 +31,21 @@ pub extern "C" fn olive_chan_new() -> i64 {
 /// via a runtime kind-tag guess on word 0, which is not sound for a struct
 /// or closure record (word 0 is that value's own field count, which
 /// routinely collides with an unrelated `KIND_*` constant).
+/// Admission and the closed flag are serialized under the queue mutex so a
+/// sender cannot slip an item in after close and a receiver cannot miss the
+/// close notification between its predicate check and its condvar wait.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_chan_send(chan: i64, val: i64) -> i64 {
     if chan == 0 {
         return 0;
     }
     let ch = unsafe { &*(chan as *const OliveChannel) };
+    let mut q = ch.queue.lock().unwrap();
     if ch.closed.load(Ordering::SeqCst) {
         return 0;
     }
-    ch.queue.lock().unwrap().push_back(val);
+    q.push_back(val);
+    drop(q);
     ch.cvar.notify_one();
     1
 }
@@ -81,12 +86,15 @@ pub extern "C" fn olive_chan_len(chan: i64) -> i64 {
     ch.queue.lock().unwrap().len() as i64
 }
 
+/// The closed transition holds the queue mutex so it is atomic with respect
+/// to the receiver predicate check and the sender admission check above.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_chan_close(chan: i64) {
     if chan == 0 {
         return;
     }
     let ch = unsafe { &*(chan as *const OliveChannel) };
+    let _q = ch.queue.lock().unwrap();
     ch.closed.store(true, Ordering::SeqCst);
     ch.cvar.notify_all();
 }
@@ -219,14 +227,56 @@ mod tests {
 
     #[test]
     fn chan_close_unblocks_recv() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
         let ch = olive_chan_new();
+        let started = Arc::new(AtomicBool::new(false));
+        let started_recv = started.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
         let handle = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            olive_chan_close(ch);
+            started_recv.store(true, Ordering::SeqCst);
+            let result = olive_chan_recv(ch);
+            let _ = tx.send(result);
+            olive_chan_free(ch);
         });
-        let result = olive_chan_recv(ch);
+        while !started.load(Ordering::SeqCst) {
+            std::thread::yield_now();
+        }
+        olive_chan_close(ch);
+        let result = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("recv must unblock on close");
         assert_eq!(result, 0);
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn chan_send_after_close_rejected() {
+        let ch = olive_chan_new();
+        assert_eq!(olive_chan_send(ch, 11), 1);
+        olive_chan_close(ch);
+        assert_eq!(olive_chan_send(ch, 22), 0);
+        assert_eq!(olive_chan_len(ch), 1);
+        assert_eq!(olive_chan_recv(ch), 11);
+        assert_eq!(olive_chan_recv(ch), 0);
+        assert_eq!(olive_chan_try_recv(ch), i64::MIN);
+        olive_chan_free(ch);
+    }
+
+    #[test]
+    fn chan_close_serialized_with_pending_items() {
+        let ch = olive_chan_new();
+        for v in [1, 2, 3] {
+            assert_eq!(olive_chan_send(ch, v), 1);
+        }
+        olive_chan_close(ch);
+        assert_eq!(olive_chan_send(ch, 4), 0);
+        assert_eq!(olive_chan_recv(ch), 1);
+        assert_eq!(olive_chan_recv(ch), 2);
+        assert_eq!(olive_chan_recv(ch), 3);
+        assert_eq!(olive_chan_recv(ch), 0);
         olive_chan_free(ch);
     }
 
