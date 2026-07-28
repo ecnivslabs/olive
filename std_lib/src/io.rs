@@ -56,7 +56,7 @@ pub extern "C" fn olive_file_append(path: i64, data: i64) -> i64 {
                 0
             }
         }
-        Err(_) => return 0,
+        Err(_) => 0,
     }
 }
 
