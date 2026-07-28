@@ -258,6 +258,15 @@ pub extern "C" fn olive_obj_update(obj_ptr: i64, other_ptr: i64) -> i64 {
     obj_ptr
 }
 
+#[inline]
+fn free_dict_value(val: i64) {
+    if crate::is_tagged_str_key(val) {
+        crate::olive_free_str(val);
+    } else if is_active_object(val) {
+        olive_free_any(val);
+    }
+}
+
 /// `d.clear()`: empties the dict in place (freeing owned keys and values),
 /// returns it.
 #[unsafe(no_mangle)]
@@ -267,9 +276,7 @@ pub extern "C" fn olive_obj_clear(obj_ptr: i64) -> i64 {
     }
     let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
     for &val in m.fields.values() {
-        if is_active_object(val) {
-            olive_free_any(val);
-        }
+        free_dict_value(val);
     }
     for k in m.fields.keys() {
         if crate::is_tagged_str_key(k.0) {
@@ -326,9 +333,7 @@ pub extern "C" fn olive_free_obj(ptr: i64) {
         unsafe {
             let obj = &mut *(ptr as *mut OliveObj);
             for &val in obj.fields.values() {
-                if is_active_object(val) {
-                    olive_free_any(val);
-                }
+                free_dict_value(val);
             }
             // Tagged keys are dict-owned string copies; free them so the map's own
             // keys do not outlive it. Untagged attribute names are interned symbols.
@@ -620,5 +625,31 @@ mod tests {
 
         let obj2 = olive_obj_new();
         assert_ne!(obj2, 0);
+    }
+
+    #[test]
+    fn clear_releases_string_values() {
+        let obj = olive_obj_new();
+        let a = olive_str_internal("alpha");
+        let b = olive_str_internal("beta");
+        let ga = crate::string_slab::olive_str_gen_of(a);
+        let gb = crate::string_slab::olive_str_gen_of(b);
+        olive_obj_set(obj, 1, a);
+        olive_obj_set(obj, 2, b);
+        olive_obj_clear(obj);
+        assert_eq!(olive_obj_len(obj), 0);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(a, ga), 1);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(b, gb), 1);
+        olive_free_obj(obj);
+    }
+
+    #[test]
+    fn free_releases_string_values() {
+        let obj = olive_obj_new();
+        let a = olive_str_internal("gamma");
+        let ga = crate::string_slab::olive_str_gen_of(a);
+        olive_obj_set(obj, 1, a);
+        olive_free_obj(obj);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(a, ga), 1);
     }
 }

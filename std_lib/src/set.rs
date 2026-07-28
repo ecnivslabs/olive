@@ -45,6 +45,30 @@ pub extern "C" fn olive_set_new(capacity: i64) -> i64 {
     }
 }
 
+#[inline]
+fn free_set_elem(val: i64) {
+    if crate::is_tagged_str_key(val) {
+        crate::olive_free_str(val);
+    } else if crate::is_active_object(val) {
+        crate::olive_free_any(val);
+    }
+}
+
+/// Adds an owned word to a result set under construction, releasing it when
+/// an equal element is already present. Internal set combinators pass owned
+/// copies, so a rejected copy must not leak.
+fn set_add_owned(set_ptr: i64, val: i64) {
+    let present = unsafe {
+        let s = &*(set_ptr as *const OliveHashSet);
+        (*s.inner).contains(&OliveStringKey(val))
+    };
+    if present {
+        free_set_elem(val);
+    } else {
+        olive_set_add(set_ptr, val);
+    }
+}
+
 pub(crate) fn olive_free_set(ptr: i64) {
     if ptr == 0 {
         return;
@@ -53,7 +77,13 @@ pub(crate) fn olive_free_set(ptr: i64) {
         return;
     };
     if crate::slab::slot_is_live(ptr) {
-        unsafe { release_set_storage(ptr as *mut u8) };
+        unsafe {
+            let s = &mut *(ptr as *mut OliveHashSet);
+            for i in 0..s.len {
+                free_set_elem(*s.ptr.add(i));
+            }
+            release_set_storage(ptr as *mut u8)
+        };
     }
     free_set_slot_raw_with(ptr, Some(is_global));
 }
@@ -148,6 +178,9 @@ pub extern "C" fn olive_set_new_reuse(old_ptr: i64, capacity: i64, bump: i64) ->
 }
 
 /// Snapshots a set's elements into a list, backing `for x in some_set`.
+/// Elements are deep copied so the snapshot owns its words independently of
+/// the set. Sharing the raw words would double free once both sides release
+/// owned strings through the generic element path.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_set_items(set_ptr: i64) -> i64 {
     if set_ptr == 0 {
@@ -155,9 +188,11 @@ pub extern "C" fn olive_set_items(set_ptr: i64) -> i64 {
     }
     let s = unsafe { &*(set_ptr as *const OliveHashSet) };
     let list = crate::list::olive_list_new(s.len as i64);
+    let mut visited = rustc_hash::FxHashMap::default();
     for i in 0..s.len {
         let val = unsafe { *s.ptr.add(i) };
-        crate::list::olive_list_set(list, i as i64, val);
+        let copied = crate::copy_typed::copy_any(val, &mut visited);
+        crate::list::olive_list_set(list, i as i64, copied);
     }
     list
 }
@@ -251,6 +286,9 @@ pub extern "C" fn olive_set_clear(set_ptr: i64) -> i64 {
     }
     unsafe {
         let s = &mut *(set_ptr as *mut OliveHashSet);
+        for i in 0..s.len {
+            free_set_elem(*s.ptr.add(i));
+        }
         (*s.inner).clear();
         s.len = 0;
     }
@@ -268,13 +306,16 @@ pub extern "C" fn olive_set_union(a: i64, b: i64) -> i64 {
     let sa = unsafe { &*(a as *const OliveHashSet) };
     let sb = unsafe { &*(b as *const OliveHashSet) };
     let result = olive_set_new((sa.len + sb.len) as i64);
+    let mut visited = rustc_hash::FxHashMap::default();
     for i in 0..sa.len {
         let val = unsafe { *sa.ptr.add(i) };
-        olive_set_add(result, val);
+        let copied = crate::copy_typed::copy_any(val, &mut visited);
+        set_add_owned(result, copied);
     }
     for i in 0..sb.len {
         let val = unsafe { *sb.ptr.add(i) };
-        olive_set_add(result, val);
+        let copied = crate::copy_typed::copy_any(val, &mut visited);
+        set_add_owned(result, copied);
     }
     result
 }
@@ -287,10 +328,12 @@ pub extern "C" fn olive_set_intersection(a: i64, b: i64) -> i64 {
     let sa = unsafe { &*(a as *const OliveHashSet) };
     let sb = unsafe { &*(b as *const OliveHashSet) };
     let result = olive_set_new(sa.len.min(sb.len) as i64);
+    let mut visited = rustc_hash::FxHashMap::default();
     for i in 0..sa.len {
         let val = unsafe { *sa.ptr.add(i) };
         if unsafe { (*sb.inner).contains(&OliveStringKey(val)) } {
-            olive_set_add(result, val);
+            let copied = crate::copy_typed::copy_any(val, &mut visited);
+            set_add_owned(result, copied);
         }
     }
     result
@@ -307,10 +350,12 @@ pub extern "C" fn olive_set_diff(a: i64, b: i64) -> i64 {
     let sa = unsafe { &*(a as *const OliveHashSet) };
     let sb = unsafe { &*(b as *const OliveHashSet) };
     let result = olive_set_new(sa.len as i64);
+    let mut visited = rustc_hash::FxHashMap::default();
     for i in 0..sa.len {
         let val = unsafe { *sa.ptr.add(i) };
         if !unsafe { (*sb.inner).contains(&OliveStringKey(val)) } {
-            olive_set_add(result, val);
+            let copied = crate::copy_typed::copy_any(val, &mut visited);
+            set_add_owned(result, copied);
         }
     }
     result
@@ -327,16 +372,19 @@ pub extern "C" fn olive_set_sym_diff(a: i64, b: i64) -> i64 {
     let sa = unsafe { &*(a as *const OliveHashSet) };
     let sb = unsafe { &*(b as *const OliveHashSet) };
     let result = olive_set_new((sa.len + sb.len) as i64);
+    let mut visited = rustc_hash::FxHashMap::default();
     for i in 0..sa.len {
         let val = unsafe { *sa.ptr.add(i) };
         if !unsafe { (*sb.inner).contains(&OliveStringKey(val)) } {
-            olive_set_add(result, val);
+            let copied = crate::copy_typed::copy_any(val, &mut visited);
+            set_add_owned(result, copied);
         }
     }
     for i in 0..sb.len {
         let val = unsafe { *sb.ptr.add(i) };
         if !unsafe { (*sa.inner).contains(&OliveStringKey(val)) } {
-            olive_set_add(result, val);
+            let copied = crate::copy_typed::copy_any(val, &mut visited);
+            set_add_owned(result, copied);
         }
     }
     result
@@ -392,5 +440,70 @@ mod tests {
     #[test]
     fn set_add_null_no_panic() {
         olive_set_add(0, 42);
+    }
+
+    #[test]
+    fn clear_releases_tagged_strings() {
+        let set = olive_set_new(4);
+        let a = crate::olive_str_internal("alpha");
+        let b = crate::olive_str_internal("beta");
+        let ga = crate::string_slab::olive_str_gen_of(a);
+        let gb = crate::string_slab::olive_str_gen_of(b);
+        olive_set_add(set, a);
+        olive_set_add(set, b);
+        olive_set_clear(set);
+        assert_eq!(unsafe { (*(set as *const OliveHashSet)).len }, 0);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(a, ga), 1);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(b, gb), 1);
+        olive_free_set(set);
+    }
+
+    #[test]
+    fn free_releases_tagged_strings() {
+        let set = olive_set_new(4);
+        let a = crate::olive_str_internal("gamma");
+        let ga = crate::string_slab::olive_str_gen_of(a);
+        olive_set_add(set, a);
+        olive_free_set(set);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(a, ga), 1);
+    }
+
+    #[test]
+    fn items_snapshot_owns_copies() {
+        let set = olive_set_new(4);
+        let a = crate::olive_str_internal("shared");
+        let ga = crate::string_slab::olive_str_gen_of(a);
+        olive_set_add(set, a);
+        let snapshot = olive_set_items(set);
+        let copied = crate::list::olive_list_get(snapshot, 0);
+        assert_ne!(copied, a);
+        assert_eq!(crate::olive_str_from_ptr(copied), "shared");
+        let gc = crate::string_slab::olive_str_gen_of(copied);
+        olive_free_set(set);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(a, ga), 1);
+        assert_eq!(crate::olive_str_from_ptr(copied), "shared");
+        crate::list::olive_free_list(snapshot);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(copied, gc), 1);
+    }
+
+    #[test]
+    fn union_result_owns_copies() {
+        let a = olive_set_new(4);
+        let b = olive_set_new(4);
+        let s1 = crate::olive_str_internal("one");
+        let s2 = crate::olive_str_internal("two");
+        let g1 = crate::string_slab::olive_str_gen_of(s1);
+        let g2 = crate::string_slab::olive_str_gen_of(s2);
+        olive_set_add(a, s1);
+        olive_set_add(b, s2);
+        let u = olive_set_union(a, b);
+        assert_eq!(olive_set_contains(u, s1), 1);
+        assert_eq!(olive_set_contains(u, s2), 1);
+        olive_free_set(a);
+        olive_free_set(b);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(s1, g1), 1);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(s2, g2), 1);
+        assert_eq!(unsafe { (*(u as *const OliveHashSet)).len }, 2);
+        olive_free_set(u);
     }
 }
