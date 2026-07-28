@@ -184,6 +184,7 @@ pub extern "C" fn olive_obj_update_typed(obj_ptr: i64, other_ptr: i64, desc: i64
     let mut key_pos = 1usize;
     crate::format::skip(desc as *const u8, &mut key_pos);
     let val_start = key_pos;
+    let mut displaced = Vec::new();
     COPY_VISITED.with(|v| {
         let mut visited = v.borrow_mut();
         visited.clear();
@@ -195,11 +196,26 @@ pub extern "C" fn olive_obj_update_typed(obj_ptr: i64, other_ptr: i64, desc: i64
             for (k, v) in entries {
                 let mut vp = val_start;
                 let vc = copy_val(v, desc as *const u8, &mut vp, &mut visited);
+                let old = unsafe {
+                    (*(obj_ptr as *const OliveObj))
+                        .fields
+                        .get(&OliveStringKey(k))
+                        .copied()
+                };
                 crate::obj::olive_obj_set(obj_ptr, k, vc);
+                if let Some(old) = old {
+                    displaced.push(old);
+                }
             }
         });
         visited.clear();
     });
+    // Self-update may copy shared children through several entries. Keep all
+    // old values alive until copying ends and release outside COPY_VISITED.
+    for old in displaced {
+        let mut pos = val_start;
+        crate::free_typed::free_val(old, desc as *const u8, &mut pos);
+    }
     obj_ptr
 }
 
@@ -1118,3 +1134,7 @@ mod tests {
         assert_eq!(unsafe { *(cp as *const i64) }, KIND_PYOBJECT);
     }
 }
+
+#[cfg(test)]
+#[path = "copy_typed_lifecycle_tests.rs"]
+mod lifecycle_tests;
