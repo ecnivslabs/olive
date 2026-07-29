@@ -197,18 +197,15 @@ pub extern "C" fn olive_set_items(set_ptr: i64) -> i64 {
     list
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_set_add(set_ptr: i64, val: i64) {
+/// Inserts without taking ownership on duplicate. Returns true when stored.
+/// The hash insert runs before the vector push so a structurally equal key
+/// never leaves both the old and the new word in the snapshot vector.
+pub(crate) fn set_try_add(set_ptr: i64, val: i64) -> bool {
     if set_ptr == 0 {
-        return;
+        return false;
     }
     unsafe {
         let s = &mut *(set_ptr as *mut OliveHashSet);
-        // Insert before touching the vector: a structurally-equal key
-        // already present must take the overwrite path (`OliveStringKey`'s
-        // PartialEq), and the caller's generated code frees the displaced
-        // value after this returns. Appending first would leave both the
-        // shadowed element and the new one in the snapshot vector.
         if (*s.inner).insert(OliveStringKey(val)) {
             let mut v = Vec::from_raw_parts(s.ptr, s.len, s.cap);
             v.push(val);
@@ -216,7 +213,20 @@ pub extern "C" fn olive_set_add(set_ptr: i64, val: i64) {
             s.cap = v.capacity();
             s.len = v.len();
             std::mem::forget(v);
+            true
+        } else {
+            false
         }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_set_add(set_ptr: i64, val: i64) {
+    if set_ptr == 0 {
+        return;
+    }
+    if !set_try_add(set_ptr, val) {
+        free_set_elem(val);
     }
 }
 
@@ -505,5 +515,39 @@ mod tests {
         assert_eq!(crate::string_slab::olive_str_gen_stale(s2, g2), 1);
         assert_eq!(unsafe { (*(u as *const OliveHashSet)).len }, 2);
         olive_free_set(u);
+    }
+
+    #[test]
+    fn duplicate_insert_releases_rejected_string() {
+        let set = olive_set_new(4);
+        let first = crate::olive_str_internal("dup");
+        let second = crate::olive_str_internal("dup");
+        let g1 = crate::string_slab::olive_str_gen_of(first);
+        let g2 = crate::string_slab::olive_str_gen_of(second);
+        olive_set_add(set, first);
+        olive_set_add(set, second);
+        assert_eq!(unsafe { (*(set as *const OliveHashSet)).len }, 1);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(second, g2), 1);
+        assert_eq!(crate::olive_str_from_ptr(first), "dup");
+        olive_free_set(set);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(first, g1), 1);
+    }
+
+    #[test]
+    fn duplicate_insert_typed_releases_rejected() {
+        use crate::format::D_STR;
+        let desc = [D_STR];
+        let desc_ptr = desc.as_ptr() as i64;
+        let set = olive_set_new(4);
+        let first = crate::olive_str_internal("dup-typed");
+        let second = crate::olive_str_internal("dup-typed");
+        let g1 = crate::string_slab::olive_str_gen_of(first);
+        let g2 = crate::string_slab::olive_str_gen_of(second);
+        crate::hash_typed::olive_set_add_typed(set, first, desc_ptr);
+        crate::hash_typed::olive_set_add_typed(set, second, desc_ptr);
+        assert_eq!(unsafe { (*(set as *const OliveHashSet)).len }, 1);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(second, g2), 1);
+        olive_free_set(set);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(first, g1), 1);
     }
 }
