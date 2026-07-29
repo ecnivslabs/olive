@@ -391,6 +391,21 @@ unsafe fn writeback_type_fail(loc_desc: &str, tag: i64, actual: &str) -> ! {
     crate::panic::abort_py_writeback_type(&msg, loc.as_deref())
 }
 
+/// Releases a displaced list element by collection tag. Only `Any` and
+/// `str` elements own heap values. Raw scalar lists store unboxed words.
+#[inline]
+fn free_writeback_elem(val: i64, tag: i64) {
+    if tag == TAG_ANY_LIST {
+        if crate::is_tagged_str_key(val) {
+            crate::olive_free_str(val);
+        } else if crate::is_active_object(val) {
+            crate::olive_free_any(val);
+        }
+    } else if tag == TAG_STR_LIST {
+        crate::olive_free_str(val);
+    }
+}
+
 unsafe fn sync_list(pair: &WritebackPair) {
     unsafe {
         let new_len = PY_OBJECT_LENGTH(pair.py_obj).max(0) as usize;
@@ -411,7 +426,9 @@ unsafe fn sync_list(pair: &WritebackPair) {
 
         for i in 0..overlap {
             let val = decode(i);
+            let old = crate::olive_list_get(pair.olive_ptr, i as i64);
             crate::olive_list_set(pair.olive_ptr, i as i64, val);
+            free_writeback_elem(old, pair.tag);
         }
         if new_len > old_len {
             for i in old_len..new_len {
@@ -420,7 +437,8 @@ unsafe fn sync_list(pair: &WritebackPair) {
             }
         } else if new_len < old_len {
             for _ in new_len..old_len {
-                crate::olive_list_pop(pair.olive_ptr);
+                let popped = crate::olive_list_pop(pair.olive_ptr);
+                free_writeback_elem(popped, pair.tag);
             }
         }
     }
@@ -610,5 +628,39 @@ pub(crate) unsafe fn sync_back(pairs: &[WritebackPair]) {
             }
             PY_DEC_REF(pair.py_obj);
         }
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::{TAG_ANY_LIST, TAG_INT_LIST, TAG_STR_LIST, free_writeback_elem};
+
+    #[test]
+    fn str_tag_releases_displaced() {
+        let s = crate::olive_str_internal("old");
+        let g = crate::string_slab::olive_str_gen_of(s);
+        free_writeback_elem(s, TAG_STR_LIST);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(s, g), 1);
+    }
+
+    #[test]
+    fn any_tag_releases_displaced_string() {
+        let s = crate::olive_str_internal("old-any");
+        let g = crate::string_slab::olive_str_gen_of(s);
+        free_writeback_elem(s, TAG_ANY_LIST);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(s, g), 1);
+    }
+
+    #[test]
+    fn any_tag_releases_displaced_heap_object() {
+        let list = crate::list::list_from_vec(vec![1]);
+        free_writeback_elem(list, TAG_ANY_LIST);
+        assert!(!crate::slab::slot_is_live(list));
+    }
+
+    #[test]
+    fn int_tag_keeps_raw_word() {
+        free_writeback_elem(42, TAG_INT_LIST);
+        assert_eq!(crate::olive_list_len(0), 0);
     }
 }
