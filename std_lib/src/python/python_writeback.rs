@@ -282,6 +282,7 @@ unsafe fn to_py_typed_dict(val: i64, kind: i64) -> PyObject {
             );
             PY_DEC_REF(py_value);
         }
+        crate::list::olive_free_list(keys);
         py_dict
     }
 }
