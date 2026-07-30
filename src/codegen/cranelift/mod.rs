@@ -67,6 +67,8 @@ use crate::compile::linker::NativeLibRef;
 pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_alloc", b"olive_alloc\0"),
     ("__olive_calloc", b"olive_calloc\0"),
+    ("__olive_sm_alloc", b"olive_sm_alloc\0"),
+    ("__olive_sm_free", b"olive_sm_free\0"),
     ("__olive_async_file_read", b"olive_async_file_read\0"),
     ("__olive_async_file_write", b"olive_async_file_write\0"),
     ("__olive_atexit", b"olive_atexit\0"),
@@ -1089,6 +1091,8 @@ const ASYNC_RUNTIME_SYMS: &[&str] = &[
     "__olive_await",
     "__olive_spawn_task",
     "__olive_alloc",
+    "__olive_sm_alloc",
+    "__olive_sm_free",
     "__olive_free_future",
     "__olive_sm_poll",
 ];

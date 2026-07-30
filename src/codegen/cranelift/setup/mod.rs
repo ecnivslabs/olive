@@ -79,6 +79,8 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_write_nl", &sig_void_i64),
             ("__olive_alloc", &sig_i64_i64),
             ("__olive_calloc", &sig_i64_i64),
+            ("__olive_sm_alloc", &sig_i64_i64),
+            ("__olive_sm_free", &sig_i64_i64_void),
             ("__olive_fatptr_alloc", &sig_void_i64),
             ("__olive_free_fatptr", &sig_i64_void),
             ("__olive_box_int", &sig_i64_i64),

@@ -245,6 +245,18 @@ impl<M: Module> CraneliftCodegen<M> {
                     &func.locals[ap.result_local.0].ty,
                 );
                 builder.def_var(vars[&ap.result_local], value);
+                // Ownership handoff: the awaited child was moved into this
+                // await. Its result is now harvested above, so release the
+                // child handle here. Later re-polls of a completed child
+                // serve from the handle cache, and `olive_free_future` is
+                // kind aware for plain and state machine futures alike.
+                let child = builder.ins().load(types::I64, mf, frame_c, 8);
+                let free_id = *self
+                    .func_ids
+                    .get("__olive_free_future")
+                    .expect("missing __olive_free_future");
+                let free_ref = self.module.declare_func_in_func(free_id, builder.func);
+                builder.ins().call(free_ref, &[child]);
             }
             builder.ins().jump(seg_blks[ap.bb_idx][resume_seg], &[]);
         }
@@ -433,8 +445,8 @@ impl<M: Module> CraneliftCodegen<M> {
         let mf = MemFlags::trusted();
         let alloc_id = *self
             .func_ids
-            .get("__olive_alloc")
-            .expect("missing __olive_alloc");
+            .get("__olive_sm_alloc")
+            .expect("missing __olive_sm_alloc");
         let alloc_ref = self.module.declare_func_in_func(alloc_id, builder.func);
 
         let fsz = builder.ins().iconst(types::I64, frame_size);
@@ -450,7 +462,7 @@ impl<M: Module> CraneliftCodegen<M> {
             builder.ins().store(mf, param, frame_ptr, offset);
         }
 
-        let future_sz = builder.ins().iconst(types::I64, 40);
+        let future_sz = builder.ins().iconst(types::I64, 56);
         let fut_call = builder.ins().call(alloc_ref, &[future_sz]);
         let fut_ptr = builder.inst_results(fut_call)[0];
 
@@ -473,6 +485,8 @@ impl<M: Module> CraneliftCodegen<M> {
         let local_data = self.module.declare_data_in_func(data_id, builder.func);
         let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
         builder.ins().store(mf, desc_ptr, fut_ptr, 32);
+        builder.ins().store(mf, fsz, fut_ptr, 40);
+        builder.ins().store(mf, zero, fut_ptr, 48);
 
         builder.ins().return_(&[fut_ptr]);
         builder.finalize();

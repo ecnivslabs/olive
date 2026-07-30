@@ -21,6 +21,8 @@ fn check_child_lifetime(state: ChildState) {
         frame: child_frame.as_mut_ptr() as i64,
         cancelled: 0,
         result_desc: [crate::format::D_INT].as_ptr() as i64,
+        frame_size: 16,
+        cached: 0,
     };
     let mut parent_frame = [0, &child_future as *const OliveSmFuture as i64];
     let parent_future = OliveSmFuture {
@@ -29,6 +31,8 @@ fn check_child_lifetime(state: ChildState) {
         frame: parent_frame.as_mut_ptr() as i64,
         cancelled: 0,
         result_desc: [crate::format::D_INT].as_ptr() as i64,
+        frame_size: 16,
+        cached: 0,
     };
     let parent = executor_get_or_create_task(&ex, &parent_future as *const OliveSmFuture as i64);
     let child = executor_get_or_create_task(&ex, &child_future as *const OliveSmFuture as i64);
@@ -170,6 +174,8 @@ fn completed_state_machine_releases_the_original_escape_allocation() {
         frame: frame.as_mut_ptr() as i64,
         cancelled: 0,
         result_desc: descriptor.as_ptr() as i64,
+        frame_size: 16,
+        cached: 0,
     };
     let ex = Arc::new(OliveExecutor {
         ready: Mutex::new(VecDeque::new()),
@@ -211,6 +217,7 @@ fn pending_poll_does_not_write_a_payload() {
 
 #[test]
 fn gather_and_select_accept_minimum_integer_payloads() {
+    let _guard = CANCEL_LOCK.lock().unwrap();
     let futures = [olive_make_future(i64::MIN), olive_make_future(42)];
     let list = crate::list::list_from_vec(futures.to_vec());
     let gathered = olive_gather(list);
@@ -224,12 +231,8 @@ fn gather_and_select_accept_minimum_integer_payloads() {
         assert_eq!(olive_sm_poll(selected, &mut output as *mut i64 as i64), 1);
         assert_eq!(output, i64::MIN);
     }
-    unsafe {
-        let future = Box::from_raw(gathered as *mut OliveSmFuture);
-        drop(Box::from_raw(future.frame as *mut GatherFrame));
-        let future = Box::from_raw(selected as *mut OliveSmFuture);
-        drop(Box::from_raw(future.frame as *mut SelectFrame));
-    }
+    olive_free_future(gathered);
+    olive_free_future(selected);
     crate::olive_free_list(results);
     crate::olive_free_list(list);
     for future in futures {
@@ -239,14 +242,12 @@ fn gather_and_select_accept_minimum_integer_payloads() {
 
 #[test]
 fn empty_gather_returns_a_ready_future() {
+    let _guard = CANCEL_LOCK.lock().unwrap();
     let gathered = olive_gather(0);
     let mut output = 0;
     assert_eq!(olive_sm_poll(gathered, &mut output as *mut i64 as i64), 1);
     assert_eq!(crate::olive_list_len(output), 0);
-    unsafe {
-        let future = Box::from_raw(gathered as *mut OliveSmFuture);
-        drop(Box::from_raw(future.frame as *mut GatherFrame));
-    }
+    olive_free_future(gathered);
     crate::olive_free_list(output);
 }
 
@@ -297,6 +298,8 @@ fn cancel_before_first_poll_runs_no_poll() {
         frame: frame.as_mut_ptr() as i64,
         cancelled: 0,
         result_desc: 0,
+        frame_size: 16,
+        cached: 0,
     };
     let future_ptr = &mut future as *mut OliveSmFuture as i64;
     let ex = test_executor();
@@ -320,6 +323,8 @@ fn cancel_after_suspension_runs_no_second_poll() {
         frame: frame.as_mut_ptr() as i64,
         cancelled: 0,
         result_desc: 0,
+        frame_size: 16,
+        cached: 0,
     };
     let future_ptr = &mut future as *mut OliveSmFuture as i64;
     let ex = test_executor();
@@ -343,6 +348,8 @@ fn cancel_notifies_waiter_with_zero() {
         frame: child_frame.as_mut_ptr() as i64,
         cancelled: 0,
         result_desc: 0,
+        frame_size: 16,
+        cached: 0,
     };
     let child_ptr = &mut child_future as *mut OliveSmFuture as i64;
     let mut parent_frame = [0, child_ptr];
@@ -352,6 +359,8 @@ fn cancel_notifies_waiter_with_zero() {
         frame: parent_frame.as_mut_ptr() as i64,
         cancelled: 0,
         result_desc: 0,
+        frame_size: 16,
+        cached: 0,
     };
     let parent_ptr = &mut parent_future as *mut OliveSmFuture as i64;
     let ex = test_executor();
@@ -374,4 +383,66 @@ fn cancel_plain_future_unblocks_with_zero() {
     assert_eq!(olive_sm_poll(future, &mut output as *mut i64 as i64), 1);
     assert_eq!(output, 0);
     olive_free_future(future);
+}
+
+#[test]
+fn sm_alloc_free_counts_balance() {
+    let _guard = CANCEL_LOCK.lock().unwrap();
+    let (a0, f0) = super::sm_alloc_free_counts();
+    for _ in 0..16 {
+        let list = crate::list::list_from_vec(vec![olive_make_future(1), olive_make_future(2)]);
+        let gathered = olive_gather(list);
+        let mut output: i64 = 0;
+        assert_eq!(olive_sm_poll(gathered, &mut output as *mut i64 as i64), 1);
+        crate::olive_free_list(output);
+        olive_free_future(gathered);
+        for i in 0..2 {
+            olive_free_future(crate::olive_list_get(list, i));
+        }
+        crate::olive_free_list(list);
+    }
+    let (a1, f1) = super::sm_alloc_free_counts();
+    assert_eq!(a1 - a0, f1 - f0);
+    assert_eq!(a1 - a0, 32);
+}
+
+#[test]
+fn sm_frame_reclaimed_on_executor_complete() {
+    let _guard = CANCEL_LOCK.lock().unwrap();
+    CANCEL_COUNT.store(0, Ordering::SeqCst);
+    let (a0, f0) = super::sm_alloc_free_counts();
+    let ex = test_executor();
+    let frame = olive_sm_alloc(16);
+    unsafe {
+        *(frame as *mut i64) = 0;
+        *((frame as *mut i64).add(1)) = 0;
+    }
+    let fut = olive_sm_alloc(std::mem::size_of::<OliveSmFuture>() as i64);
+    unsafe {
+        std::ptr::write(
+            fut as *mut OliveSmFuture,
+            OliveSmFuture {
+                kind: KIND_SM_FUTURE,
+                poll_fn: counting_complete as *const () as usize as i64,
+                frame,
+                cancelled: 0,
+                result_desc: 0,
+                frame_size: 16,
+                cached: 0,
+            },
+        );
+    }
+    let task = executor_get_or_create_task(&ex, fut);
+    CANCEL_COUNT.store(0, Ordering::SeqCst);
+    assert!(executor_drive(&ex, &task) == DriveOutcome::Completed);
+    assert_eq!(CANCEL_COUNT.load(Ordering::SeqCst), 1);
+    let (a1, f1) = super::sm_alloc_free_counts();
+    assert_eq!(a1 - a0, 2);
+    assert_eq!(f1 - f0, 1);
+    let mut output: i64 = 99;
+    assert_eq!(olive_sm_poll(fut, &mut output as *mut i64 as i64), 1);
+    olive_free_future(fut);
+    let (a2, f2) = super::sm_alloc_free_counts();
+    assert_eq!(a2 - a0, 2);
+    assert_eq!(f2 - f0, 2);
 }
