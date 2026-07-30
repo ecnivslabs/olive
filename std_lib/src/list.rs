@@ -288,6 +288,70 @@ pub extern "C" fn olive_list_set(list_ptr: i64, idx: i64, val: i64) {
     }
 }
 
+/// Indexed store for element-owning lists (`xs[i] = v`): releases the
+/// displaced element through `desc` (the element type's own descriptor)
+/// before storing, so overwriting a heap element does not leak it. Mirrors
+/// `__olive_set_index_any`'s replace discipline for the statically-typed
+/// path, including its self-assignment guard: storing a word over itself
+/// must not free the live value.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_set_typed(list_ptr: i64, idx: i64, val: i64, desc: i64) {
+    if list_ptr == 0 {
+        crate::free_typed::olive_free_typed(val, desc);
+        return;
+    }
+    let s = unsafe { &mut *(list_ptr as *mut StableVec) };
+    if (idx as usize) < s.len {
+        let slot = unsafe { &mut *s.ptr.add(idx as usize) };
+        let old = std::mem::replace(slot, val);
+        if old != val {
+            let mut pos = 0usize;
+            crate::free_typed::free_val(old, desc as *const u8, &mut pos);
+        }
+    } else {
+        crate::free_typed::olive_free_typed(val, desc);
+    }
+}
+
+/// Indexed store for tuples (`t[i] = v`) with a possibly dynamic index:
+/// `desc` is the whole tuple's descriptor, walked to the stored index's own
+/// element type before releasing the displaced word. Tuples share the list
+/// buffer layout, so the store itself is identical to the list path.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_tuple_set_typed(tup_ptr: i64, idx: i64, val: i64, desc: i64) {
+    if tup_ptr == 0 {
+        return;
+    }
+    let s = unsafe { &mut *(tup_ptr as *mut StableVec) };
+    if (idx as usize) >= s.len {
+        return;
+    }
+    // Tuple descriptors read `[D_TUPLE, n + 1, elem...]`; walk to the stored
+    // index's own element descriptor the same way `free_tuple` does.
+    let desc_ptr = desc as *const u8;
+    let mut elem_pos = 0usize;
+    let mut found = false;
+    unsafe {
+        if crate::format::byte(desc_ptr, 0) == crate::format::D_TUPLE {
+            let n = crate::format::byte(desc_ptr, 1) as usize - 1;
+            let mut pos = 2usize;
+            for k in 0..n {
+                if k == idx as usize {
+                    elem_pos = pos;
+                    found = true;
+                    break;
+                }
+                crate::format::skip(desc_ptr, &mut pos);
+            }
+        }
+    }
+    let slot = unsafe { &mut *s.ptr.add(idx as usize) };
+    let old = std::mem::replace(slot, val);
+    if found && old != val {
+        crate::free_typed::free_val(old, desc_ptr, &mut elem_pos);
+    }
+}
+
 /// Reverses a list in place. Element representation is irrelevant.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_list_reverse(list_ptr: i64) {
@@ -1336,5 +1400,74 @@ mod tests {
         assert_eq!(crate::olive_str_from_ptr(copied), "shared");
         olive_free_list(target);
         assert_eq!(crate::string_slab::olive_str_gen_stale(copied, gc), 1);
+    }
+
+    #[test]
+    fn set_typed_releases_displaced_string() {
+        use crate::format::D_STR;
+        let desc = [D_STR];
+        let desc_ptr = desc.as_ptr() as i64;
+        let list = olive_list_new(2);
+        let old = crate::olive_str_internal("old-elem");
+        let gold = crate::string_slab::olive_str_gen_of(old);
+        olive_list_set(list, 0, old);
+        let new = crate::olive_str_internal("new-elem");
+        let gnew = crate::string_slab::olive_str_gen_of(new);
+        olive_list_set_typed(list, 0, new, desc_ptr);
+        assert_eq!(olive_list_get(list, 0), new);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(old, gold), 1);
+        assert_eq!(crate::olive_str_from_ptr(new), "new-elem");
+        olive_free_list(list);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(new, gnew), 1);
+    }
+
+    #[test]
+    fn set_typed_self_assignment_keeps_value() {
+        use crate::format::D_STR;
+        let desc = [D_STR];
+        let desc_ptr = desc.as_ptr() as i64;
+        let list = olive_list_new(1);
+        let a = crate::olive_str_internal("same-elem");
+        let g = crate::string_slab::olive_str_gen_of(a);
+        olive_list_set(list, 0, a);
+        olive_list_set_typed(list, 0, a, desc_ptr);
+        assert_eq!(olive_list_get(list, 0), a);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(a, g), 0);
+        olive_free_list(list);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(a, g), 1);
+    }
+
+    #[test]
+    fn set_typed_out_of_bounds_frees_incoming() {
+        use crate::format::D_STR;
+        let desc = [D_STR];
+        let desc_ptr = desc.as_ptr() as i64;
+        let list = olive_list_new(1);
+        let s = crate::olive_str_internal("orphan-elem");
+        let g = crate::string_slab::olive_str_gen_of(s);
+        olive_list_set_typed(list, 99, s, desc_ptr);
+        assert_eq!(olive_list_len(list), 1);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(s, g), 1);
+        olive_free_list(list);
+    }
+
+    #[test]
+    fn tuple_set_typed_releases_displaced_by_index() {
+        use crate::format::{D_INT, D_STR, D_TUPLE};
+        let desc = [D_TUPLE, 3, D_INT, D_STR];
+        let desc_ptr = desc.as_ptr() as i64;
+        let tup = olive_list_new(2);
+        olive_list_set(tup, 0, 42);
+        let old = crate::olive_str_internal("old-tuple-elem");
+        let gold = crate::string_slab::olive_str_gen_of(old);
+        olive_list_set(tup, 1, old);
+        let new = crate::olive_str_internal("new-tuple-elem");
+        let gnew = crate::string_slab::olive_str_gen_of(new);
+        olive_tuple_set_typed(tup, 1, new, desc_ptr);
+        assert_eq!(olive_list_get(tup, 0), 42);
+        assert_eq!(olive_list_get(tup, 1), new);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(old, gold), 1);
+        olive_free_list(tup);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(new, gnew), 1);
     }
 }

@@ -54,6 +54,34 @@ pub(crate) fn new_obj_from_map(mut fields: HashMap<OliveStringKey, i64>) -> i64 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_set(obj_ptr: i64, attr: i64, val: i64) -> i64 {
+    obj_store(obj_ptr, attr, val, None)
+}
+
+/// `d[k] = v` for value-owning dicts: stores like `olive_obj_set`, releasing
+/// the displaced value through `val_desc` (the value type's own descriptor)
+/// so overwriting a heap value does not leak it. `key_desc` selects the key
+/// classification exactly like `olive_obj_set_typed`; `0` keeps the untyped
+/// heuristic. Mirrors `__olive_set_index_any`'s replace discipline, including
+/// its self-assignment guard.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_obj_set_replacing_typed(
+    obj_ptr: i64,
+    attr: i64,
+    val: i64,
+    key_desc: i64,
+    val_desc: i64,
+) -> i64 {
+    crate::hash_typed::with_key_descriptor(key_desc, || {
+        obj_store(obj_ptr, attr, val, Some(val_desc as *const u8))
+    })
+}
+
+/// Shared insert core. Returns `obj_ptr` in every case, matching
+/// `olive_obj_set`. When `val_desc` is set, a displaced value is released
+/// through it; otherwise the old value is left alone for the caller (plain
+/// `olive_obj_set`, aggregate init, and `update_typed`'s deferred-free
+/// protocol all rely on taking no action here).
+fn obj_store(obj_ptr: i64, attr: i64, val: i64, val_desc: Option<*const u8>) -> i64 {
     if obj_ptr == 0 {
         panic!("Null pointer dereference: attempted to set attribute on a null object");
     }
@@ -71,19 +99,25 @@ pub extern "C" fn olive_obj_set(obj_ptr: i64, attr: i64, val: i64) -> i64 {
     // `key_word_is_str` consults the active key descriptor first: a raw odd
     // int above the string-tag floor looks like a string pointer to the
     // magnitude heuristic, and reading its bits as string bytes faults.
-    if crate::key_word_is_str(attr) && !m.fields.contains_key(&OliveStringKey(attr)) {
+    let old = if crate::key_word_is_str(attr) && !m.fields.contains_key(&OliveStringKey(attr)) {
         let bytes = unsafe {
             std::ffi::CStr::from_ptr(crate::string_slab::str_body(attr) as *const std::ffi::c_char)
                 .to_bytes()
         };
         let owned = crate::string_slab::str_alloc(bytes);
         m.fields.insert(OliveStringKey(owned), val);
+        None
     } else {
-        m.fields.insert(OliveStringKey(attr), val);
+        m.fields.insert(OliveStringKey(attr), val)
+    };
+    if let (Some(old), Some(desc)) = (old, val_desc)
+        && old != val
+    {
+        let mut pos = 0usize;
+        crate::free_typed::free_val(old, desc, &mut pos);
     }
     obj_ptr
 }
-
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_get(obj_ptr: i64, attr: i64) -> i64 {
     if obj_ptr == 0 || !crate::slab::ptr_is_slab_body(obj_ptr) {
@@ -651,5 +685,59 @@ mod tests {
         olive_obj_set(obj, 1, a);
         olive_free_obj(obj);
         assert_eq!(crate::string_slab::olive_str_gen_stale(a, ga), 1);
+    }
+
+    #[test]
+    fn replacing_set_releases_displaced_string_value() {
+        use crate::format::D_STR;
+        let val_desc = [D_STR];
+        let desc_ptr = val_desc.as_ptr() as i64;
+        let dict = olive_obj_new();
+        let old = olive_str_internal("old-dict-val");
+        let gold = crate::string_slab::olive_str_gen_of(old);
+        olive_obj_set(dict, 1, old);
+        let new = olive_str_internal("new-dict-val");
+        let gnew = crate::string_slab::olive_str_gen_of(new);
+        olive_obj_set_replacing_typed(dict, 1, new, 0, desc_ptr);
+        assert_eq!(olive_obj_get(dict, 1), new);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(old, gold), 1);
+        assert_eq!(crate::olive_str_from_ptr(new), "new-dict-val");
+        olive_free_obj(dict);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(new, gnew), 1);
+    }
+
+    #[test]
+    fn replacing_set_self_assignment_keeps_value() {
+        use crate::format::D_STR;
+        let val_desc = [D_STR];
+        let desc_ptr = val_desc.as_ptr() as i64;
+        let dict = olive_obj_new();
+        let a = olive_str_internal("same-dict-val");
+        let g = crate::string_slab::olive_str_gen_of(a);
+        olive_obj_set(dict, 1, a);
+        olive_obj_set_replacing_typed(dict, 1, a, 0, desc_ptr);
+        assert_eq!(olive_obj_get(dict, 1), a);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(a, g), 0);
+        olive_free_obj(dict);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(a, g), 1);
+    }
+
+    #[test]
+    fn plain_set_leaves_displaced_value_for_caller() {
+        // Contract `update_typed`'s deferred-free protocol relies on: plain
+        // `olive_obj_set` takes no action on the value it displaces.
+        let dict = olive_obj_new();
+        let old = olive_str_internal("displaced-dict-val");
+        let gold = crate::string_slab::olive_str_gen_of(old);
+        olive_obj_set(dict, 1, old);
+        let new = olive_str_internal("fresh-dict-val");
+        let gnew = crate::string_slab::olive_str_gen_of(new);
+        olive_obj_set(dict, 1, new);
+        assert_eq!(olive_obj_get(dict, 1), new);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(old, gold), 0);
+        crate::olive_free_str(old);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(old, gold), 1);
+        olive_free_obj(dict);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(new, gnew), 1);
     }
 }
