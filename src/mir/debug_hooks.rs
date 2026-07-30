@@ -317,10 +317,10 @@ fn instrument_function(
         }
     }
 
-    for bb_idx in 0..n_blocks {
+    for (bb_idx, ctx) in in_ctx.iter().enumerate() {
         let original = std::mem::take(&mut func.basic_blocks[bb_idx].statements);
         let mut rebuilt = entry_prelude.take().unwrap_or_default();
-        let mut last_line: Option<i64> = match in_ctx[bb_idx] {
+        let mut last_line: Option<i64> = match *ctx {
             RunCtx::Line(l) => Some(l),
             _ => None,
         };

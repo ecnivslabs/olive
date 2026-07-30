@@ -148,15 +148,11 @@ fn collect_in_block(stmts: &[Stmt], file_id: usize, offset: usize, out: &mut Vec
                     collect_in_block(body, file_id, offset, out);
                 }
             }
-            StmtKind::UnsafeBlock(body) => {
-                if contains(stmt.span, file_id, offset) {
-                    collect_in_block(body, file_id, offset, out);
-                }
+            StmtKind::UnsafeBlock(body) if contains(stmt.span, file_id, offset) => {
+                collect_in_block(body, file_id, offset, out);
             }
-            StmtKind::Impl { body, .. } => {
-                if contains(stmt.span, file_id, offset) {
-                    collect_in_block(body, file_id, offset, out);
-                }
+            StmtKind::Impl { body, .. } if contains(stmt.span, file_id, offset) => {
+                collect_in_block(body, file_id, offset, out);
             }
             _ => {}
         }

@@ -251,7 +251,7 @@ pub fn resolve_module_target(
             if let Ok(entries) = fs::read_dir(&dir_cand) {
                 for entry in entries.flatten() {
                     let p = entry.path();
-                    if p.is_file() && p.extension().map_or(false, |ext| ext == "liv") {
+                    if p.is_file() && p.extension().is_some_and(|ext| ext == "liv") {
                         submodules.push(p);
                     }
                 }
@@ -322,12 +322,10 @@ fn load_module_file(
             parser::StmtKind::NativeImport { alias, .. } => {
                 defined_names.insert(alias.clone());
             }
-            parser::StmtKind::FromImport { names, is_star, .. } => {
-                if !*is_star {
-                    for (name, alias) in names {
-                        let bound = alias.as_deref().unwrap_or(name.as_str());
-                        defined_names.insert(bound.to_string());
-                    }
+            parser::StmtKind::FromImport { names, is_star, .. } if !*is_star => {
+                for (name, alias) in names {
+                    let bound = alias.as_deref().unwrap_or(name.as_str());
+                    defined_names.insert(bound.to_string());
                 }
             }
             _ => {}

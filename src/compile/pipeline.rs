@@ -29,6 +29,13 @@ pub struct PipelineOutput {
     pub timings: PipelineTimings,
 }
 
+/// Pipeline failure carries no payload. Diagnostics are already emitted to
+/// the caller supplied sources at each failure site, so callers only test
+/// presence (`is_err`, `map_err`, `Err(_)`). A dedicated type keeps the
+/// `Result` error channel explicit without changing that contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PipelineError;
+
 /// The set of loaded file ids that belong to the project being compiled, as
 /// opposed to the standard library or installed pods. Lints (warnings) fire only
 /// for these, the way Rust lints the local crate but not its dependencies; type
@@ -57,7 +64,7 @@ pub(super) fn first_party_files(entry: &str, sources: &super::errors::Sources) -
 /// Compiles with the full optimizing pipeline. Used by the in-process test
 /// harness so every optimizer pass stays exercised.
 #[cfg(test)]
-pub fn run_pipeline(filename: &str) -> Result<PipelineOutput, ()> {
+pub fn run_pipeline(filename: &str) -> Result<PipelineOutput, PipelineError> {
     run_pipeline_opt(filename, true, None, false)
 }
 
@@ -69,7 +76,7 @@ pub fn run_pipeline_opt(
     release: bool,
     hot_functions: Option<std::collections::HashSet<String>>,
     explain_copies: bool,
-) -> Result<PipelineOutput, ()> {
+) -> Result<PipelineOutput, PipelineError> {
     let t0 = std::time::Instant::now();
     let mut loaded = HashSet::new();
     loaded.insert(filename.to_string());
@@ -82,7 +89,8 @@ pub fn run_pipeline_opt(
         &mut loaded,
         &mut file_id_counter,
         &mut sources,
-    )?;
+    )
+    .map_err(|_| PipelineError)?;
     let mut program = parser::Program {
         stmts: combined_stmts,
     };
@@ -99,7 +107,7 @@ pub fn run_pipeline_opt(
         for e in &resolver.errors {
             e.to_diagnostic().emit(&sources);
         }
-        return Err(());
+        return Err(PipelineError);
     }
     for w in &resolver.warnings {
         if first_party.contains(&w.span().file_id) {
@@ -118,14 +126,14 @@ pub fn run_pipeline_opt(
         for e in &type_checker.errors {
             e.to_diagnostic().emit(&sources);
         }
-        return Err(());
+        return Err(PipelineError);
     }
     let closure_errors = crate::semantic::closure_check::check_closures(&program);
     if !closure_errors.is_empty() {
         for e in &closure_errors {
             e.to_diagnostic().emit(&sources);
         }
-        return Err(());
+        return Err(PipelineError);
     }
     for lint in crate::semantic::lint::lint_program(&program) {
         if first_party.contains(&lint.primary_span().file_id) {
@@ -178,7 +186,7 @@ pub fn run_pipeline_opt(
     let mir_duration = mir_start.elapsed();
 
     if super::lints::check_const_index_bounds(&mir_builder.functions, &sources) {
-        return Err(());
+        return Err(PipelineError);
     }
 
     // Borrow checking runs on the builder's MIR, before optimization:
@@ -213,7 +221,7 @@ pub fn run_pipeline_opt(
         }
     }
     if borrow_failed {
-        return Err(());
+        return Err(PipelineError);
     }
     let borrow_duration = borrow_start.elapsed();
 
@@ -253,7 +261,7 @@ pub fn run_pipeline_opt(
         for d in &gencheck_errors {
             d.emit(&sources);
         }
-        return Err(());
+        return Err(PipelineError);
     }
 
     let native_libs = collect_native_libs(&program);

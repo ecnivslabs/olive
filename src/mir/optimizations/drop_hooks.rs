@@ -128,7 +128,7 @@ pub fn lower_drop_hooks(func: &mut MirFunction, has_drop: &HashSet<String>) {
             },
         );
     }
-    union_sites.sort_unstable_by(|a, b| (b.bb, b.idx).cmp(&(a.bb, a.idx)));
+    union_sites.sort_unstable_by_key(|s| std::cmp::Reverse((s.bb, s.idx)));
     for site in union_sites {
         insert_union_drop_hook(
             func,
