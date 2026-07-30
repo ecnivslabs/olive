@@ -507,9 +507,10 @@ unsafe fn sync_dict_entries(pair: &WritebackPair, decode_val: impl Fn(PyObject, 
                 std::collections::hash_map::Entry::Occupied(occ) => {
                     let idx = *occ.get();
                     let prev_val = entries[idx].1;
-                    if crate::is_active_object(prev_val) {
-                        crate::olive_free_any(prev_val);
-                    }
+                    // The duplicate's value never becomes reachable; release
+                    // it now. Tagged strings need the dict-value path, not
+                    // the slab-only check: `is_active_object` misses them.
+                    crate::obj::free_dict_value(prev_val);
                     entries[idx].1 = olive_val;
                     crate::string_slab::str_free(key_ptr);
                 }

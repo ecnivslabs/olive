@@ -107,7 +107,9 @@ pub extern "C" fn olive_obj_get_default_boxed_typed(
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_set_add_typed(set_ptr: i64, val: i64, key_desc: i64) {
     let inserted = with_key_descriptor(key_desc, || crate::set::set_try_add(set_ptr, val));
-    if !inserted && set_ptr != 0 {
+    if !inserted {
+        // Covers duplicates and the null-set path: `add` takes ownership,
+        // so a rejected value must be released either way.
         crate::free_typed::olive_free_typed(val, key_desc);
     }
 }

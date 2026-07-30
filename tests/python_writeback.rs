@@ -48,6 +48,9 @@ def do_sort(xs):
 def do_update(d, extra):
     d.update(extra)
 
+def colliding_key_update(d):
+    d[1] = "b"
+
 def mutate_then_raise(xs):
     xs.append(999)
     raise ValueError("boom")
@@ -315,6 +318,29 @@ fn main():
 main()
 "#,
         "4\n[1, 2, 3, 1]\n",
+    );
+}
+
+#[test]
+fn dict_writeback_with_colliding_keys_keeps_last_value() {
+    assert_both_succeed_with(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let mut d: {str: str} = {"1": "a"}
+    h.colliding_key_update(d)
+    print(d)
+
+main()
+"#,
+        |stdout, pipeline, stderr| {
+            let printed = stdout.trim_end();
+            assert!(
+                printed.contains("\"1\": \"b\""),
+                "{pipeline}: {printed:?} missing colliding entry, stderr: {stderr}"
+            );
+            assert_eq!(printed.matches(": ").count(), 1, "{pipeline}: {printed:?}");
+        },
     );
 }
 
