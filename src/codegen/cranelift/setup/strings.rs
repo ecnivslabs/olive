@@ -150,21 +150,46 @@ impl<M: Module> CraneliftCodegen<M> {
                         self.collect_strings_in_operand(val_op);
                         self.collect_dict_key_descriptor(func, obj_op);
                         use super::super::imports::{
-                            concrete_ty, drop_descriptor_type, operand_static_type, type_descriptor,
+                            concrete_ty, operand_static_type, type_descriptor,
                         };
                         let op_ty = operand_static_type(obj_op, func);
                         let obj_ty = concrete_ty(&op_ty);
-                        if let crate::semantic::types::Type::List(elem_ty) = obj_ty
-                            && elem_ty.is_move_type()
-                            && let Some(desc_ty) =
-                                drop_descriptor_type(elem_ty, &self.struct_fields)
-                        {
-                            let desc = type_descriptor(
-                                desc_ty,
-                                &self.struct_fields,
-                                &self.field_types,
-                                &self.enum_defs,
-                            );
+                        // A replacing store (`xs[i] = v`, `d[k] = v`) releases
+                        // the displaced word through the stored type's own
+                        // descriptor; intern it here so codegen can pass it.
+                        // Must mirror the condition in `translate.rs` exactly.
+                        let replacing_desc: Option<String> = match obj_ty {
+                            crate::semantic::types::Type::List(elem_ty) if elem_ty.needs_drop() => {
+                                Some(type_descriptor(
+                                    elem_ty,
+                                    &self.struct_fields,
+                                    &self.field_types,
+                                    &self.enum_defs,
+                                ))
+                            }
+                            crate::semantic::types::Type::Tuple(items)
+                                if items.iter().any(|t| t.needs_drop()) =>
+                            {
+                                Some(type_descriptor(
+                                    obj_ty,
+                                    &self.struct_fields,
+                                    &self.field_types,
+                                    &self.enum_defs,
+                                ))
+                            }
+                            crate::semantic::types::Type::Dict(_, val_ty)
+                                if val_ty.needs_drop() =>
+                            {
+                                Some(type_descriptor(
+                                    val_ty,
+                                    &self.struct_fields,
+                                    &self.field_types,
+                                    &self.enum_defs,
+                                ))
+                            }
+                            _ => None,
+                        };
+                        if let Some(desc) = replacing_desc {
                             self.intern_attr_string(&desc);
                         }
                     }

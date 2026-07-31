@@ -340,6 +340,32 @@ fn test_resolve_builtin_import_builtins_with_arg() {
 }
 
 #[test]
+fn test_known_runtime_imports_sorted_unique_and_resolvable() {
+    // `resolve_builtin_import` binary-searches this table: a single
+    // misordered entry silently unregisters unrelated builtins at codegen
+    // time (every lookup past the disorder point misses).
+    let table = super::builtins::KNOWN_RUNTIME_IMPORTS;
+    let mut prev: Option<&str> = None;
+    let f = make_func(vec![]);
+    for name in table {
+        if let Some(p) = prev {
+            assert!(
+                p < name,
+                "KNOWN_RUNTIME_IMPORTS out of order: {p} before {name}"
+            );
+        }
+        prev = Some(name);
+        if name.starts_with("__olive_") {
+            assert_eq!(
+                resolve_builtin_import(&f, name, &[]),
+                Some(name),
+                "{name} must resolve to itself"
+            );
+        }
+    }
+}
+
+#[test]
 fn test_scan_rvalue_imports_get_attr() {
     let mut needed = std::collections::HashSet::new();
     let f = make_func(vec![Type::Any]);

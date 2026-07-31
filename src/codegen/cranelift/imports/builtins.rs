@@ -112,7 +112,7 @@ pub(crate) fn drop_descriptor_type<'a>(
     }
 }
 
-static KNOWN_RUNTIME_IMPORTS: [&str; 662] = [
+pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 665] = [
     "__olive_alloc",
     "__olive_any_add",
     "__olive_any_div",
@@ -369,6 +369,7 @@ static KNOWN_RUNTIME_IMPORTS: [&str; 662] = [
     "__olive_list_repeat_typed",
     "__olive_list_reverse",
     "__olive_list_set",
+    "__olive_list_set_typed",
     "__olive_list_sort_by_keys",
     "__olive_list_sort_float",
     "__olive_list_sort_int",
@@ -433,6 +434,7 @@ static KNOWN_RUNTIME_IMPORTS: [&str; 662] = [
     "__olive_obj_pop_default",
     "__olive_obj_remove",
     "__olive_obj_set",
+    "__olive_obj_set_replacing_typed",
     "__olive_obj_setdefault",
     "__olive_obj_update",
     "__olive_obj_values",
@@ -746,6 +748,7 @@ static KNOWN_RUNTIME_IMPORTS: [&str; 662] = [
     "__olive_to_pyobject",
     "__olive_toml_parse",
     "__olive_toml_stringify",
+    "__olive_tuple_set_typed",
     "__olive_typeof_str",
     "__olive_unbox_float",
     "__olive_unbox_int",
