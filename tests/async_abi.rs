@@ -275,3 +275,44 @@ fn main():
         "ok\n",
     );
 }
+
+#[test]
+fn moved_string_sent_before_sender_completes_survives() {
+    assert_both(
+        r#"import aio
+
+async fn producer(ch: aio.Chan[str]) -> bool:
+    let s = str(12345)
+    return ch.send(s)
+
+async fn consumer(ch: aio.Chan[str]) -> str:
+    return ch.recv()
+
+fn main():
+    let ch = aio.chan[str]()
+    let p = producer(ch)
+    let c = consumer(ch)
+    print(await p)
+    print(await c)
+"#,
+        "True\n12345\n",
+    );
+}
+
+#[test]
+fn moved_string_stored_in_mutex_survives_in_task() {
+    assert_both(
+        r#"import aio
+
+async fn work() -> str:
+    let s = str(777)
+    let m: aio.Mutex[str] = aio.mutex[str](s)
+    print(s)
+    return m.lock()
+
+fn main():
+    print(await work())
+"#,
+        "777\n777\n",
+    );
+}
