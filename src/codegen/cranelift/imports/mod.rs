@@ -45,6 +45,7 @@ pub(super) fn collect_needed_imports(
                         needed.insert("__olive_list_set");
                         needed.insert("__olive_list_set_typed");
                         needed.insert("__olive_tuple_set_typed");
+                        needed.insert("__olive_enum_set_typed");
                         needed.insert("__olive_obj_set");
                         needed.insert("__olive_obj_set_typed");
                         needed.insert("__olive_obj_set_replacing_typed");

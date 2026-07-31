@@ -187,6 +187,21 @@ impl<M: Module> CraneliftCodegen<M> {
                                     &self.enum_defs,
                                 ))
                             }
+                            crate::semantic::types::Type::Enum(name, _)
+                                if self.enum_defs.get(name).is_some_and(|variants| {
+                                    variants
+                                        .iter()
+                                        .flat_map(|(_, payloads)| payloads)
+                                        .any(|t| t.needs_drop())
+                                }) =>
+                            {
+                                Some(type_descriptor(
+                                    obj_ty,
+                                    &self.struct_fields,
+                                    &self.field_types,
+                                    &self.enum_defs,
+                                ))
+                            }
                             _ => None,
                         };
                         if let Some(desc) = replacing_desc {

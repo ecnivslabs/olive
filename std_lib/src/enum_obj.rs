@@ -100,6 +100,56 @@ pub extern "C" fn olive_enum_set(ptr: i64, index: i64, val: i64) {
     }
 }
 
+/// Indexed payload store for enums with heap-owning payloads (`e[i] = v`):
+/// releases the displaced payload word through the enum descriptor before
+/// storing, mirroring the tuple replacing store. `desc` is the whole enum's
+/// descriptor; the walk matches `free_enum` exactly, including its
+/// self-assignment guard.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_enum_set_typed(ptr: i64, index: i64, val: i64, desc: i64) {
+    if ptr == 0 {
+        return;
+    }
+    let (tag, pptr, plen) = unsafe {
+        let e = &*(ptr as *const OliveEnum);
+        (e.tag as usize, e.payload_ptr, e.payload_len)
+    };
+    if pptr.is_null() || (index as usize) >= plen {
+        return;
+    }
+    let desc_ptr = desc as *const u8;
+    let mut elem_pos = 0usize;
+    let mut found = false;
+    unsafe {
+        // `free_val` consumes the `D_ENUM` tag before delegating; start past
+        // it, then walk exactly like `free_enum`.
+        if crate::format::byte(desc_ptr, 0) == crate::format::D_ENUM {
+            let mut pos = 1usize;
+            crate::free_typed::skip_lp(desc_ptr, &mut pos);
+            let n = crate::format::byte(desc_ptr, pos) as usize - 13;
+            pos += 1;
+            'outer: for i in 0..n {
+                crate::free_typed::skip_lp(desc_ptr, &mut pos);
+                let np = crate::format::byte(desc_ptr, pos) as usize - 13;
+                pos += 1;
+                for j in 0..np {
+                    if i == tag && j == index as usize {
+                        elem_pos = pos;
+                        found = true;
+                        break 'outer;
+                    }
+                    crate::format::skip(desc_ptr, &mut pos);
+                }
+            }
+        }
+    }
+    let slot = unsafe { &mut *pptr.add(index as usize) };
+    let old = std::mem::replace(slot, val);
+    if found && old != val {
+        crate::free_typed::free_val(old, desc_ptr, &mut elem_pos);
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_free_enum(ptr: i64) {
     if ptr == 0 {
@@ -285,6 +335,43 @@ mod tests {
     #[test]
     fn free_enum_no_panic() {
         let e = olive_enum_new(0, 0, 3);
+        olive_free_enum(e);
+    }
+
+    #[test]
+    fn set_typed_releases_displaced_str_payload() {
+        use crate::format::{D_ENUM, D_STR};
+        // [D_ENUM, lp("E"), 1 variant, lp("V"), 1 payload, D_STR].
+        let desc = [D_ENUM, 14, b'E', 14, 14, b'V', 14, D_STR];
+        let desc_ptr = desc.as_ptr() as i64;
+        let e = olive_enum_new(1, 0, 1);
+        let old = crate::olive_str_internal("old-payload");
+        let gold = crate::string_slab::olive_str_gen_of(old);
+        olive_enum_set(e, 0, old);
+        let new = crate::olive_str_internal("new-payload");
+        let gnew = crate::string_slab::olive_str_gen_of(new);
+        olive_enum_set_typed(e, 0, new, desc_ptr);
+        assert_eq!(olive_enum_get(e, 0), new);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(old, gold), 1);
+        crate::olive_free_str(new);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(new, gnew), 1);
+        olive_free_enum(e);
+    }
+
+    #[test]
+    fn set_typed_self_assignment_keeps_payload() {
+        use crate::format::{D_ENUM, D_STR};
+        let desc = [D_ENUM, 14, b'E', 14, 14, b'V', 14, D_STR];
+        let desc_ptr = desc.as_ptr() as i64;
+        let e = olive_enum_new(1, 0, 1);
+        let a = crate::olive_str_internal("same-payload");
+        let g = crate::string_slab::olive_str_gen_of(a);
+        olive_enum_set(e, 0, a);
+        olive_enum_set_typed(e, 0, a, desc_ptr);
+        assert_eq!(olive_enum_get(e, 0), a);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(a, g), 0);
+        crate::olive_free_str(a);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(a, g), 1);
         olive_free_enum(e);
     }
 }

@@ -205,6 +205,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_enum_get", &sig_i64_i64_i64),
             ("__olive_enum_new", &sig_3i64_i64),
             ("__olive_enum_set", &sig_i64_i64_i64_void),
+            ("__olive_enum_set_typed", &sig_4i64_void),
             ("__olive_enum_tag", &sig_i64_i64),
             ("__olive_enum_type_id", &sig_i64_i64),
             ("__olive_env_get", &sig_i64_i64),

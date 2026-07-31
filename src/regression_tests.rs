@@ -108,6 +108,14 @@ fn regression_enum_single_variant() {
 }
 
 #[test]
+fn regression_enum_str_payload_overwrite_replaces_value() {
+    let mut cg = compile(
+        "enum Wrap:\n    Val(str)\n\nfn f() -> int:\n    let mut w = Val(\"a\")\n    w[0] = \"b\"\n    match w:\n        case Val(v):\n            if v == \"b\":\n                return 1\n            return 0\n",
+    );
+    assert_eq!(call_i64(&mut cg, "f"), 1);
+}
+
+#[test]
 fn regression_infinite_loop_break() {
     let mut cg = compile(
         "fn f(n: i64) -> i64:\n    let mut i = 0\n    while True:\n        if i >= n:\n            break\n        i = i + 1\n    return i\n",
