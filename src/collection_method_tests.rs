@@ -283,3 +283,17 @@ fn struct_str_field_reassign_replaces_value() {
     ));
     assert_eq!(call_i64(&mut cg, "f"), 1);
 }
+
+#[test]
+fn dict_setdefault_hit_returns_existing_and_miss_inserts() {
+    let mut cg = compile(concat!(
+        "fn f() -> int:\n",
+        "    let mut d = {\"k\": \"old\"}\n",
+        "    let hit = d.setdefault(\"k\", \"fresh\")\n",
+        "    let miss = d.setdefault(\"n\", \"inserted\")\n",
+        "    if hit == \"old\" and miss == \"inserted\" and d[\"k\"] == \"old\" and d[\"n\"] == \"inserted\":\n",
+        "        return 1\n",
+        "    return 0\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 1);
+}

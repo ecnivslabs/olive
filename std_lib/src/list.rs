@@ -512,6 +512,9 @@ pub extern "C" fn olive_check_list_min_len(ptr: i64, min_len: i64, loc: i64) -> 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_list_insert(list_ptr: i64, idx: i64, val: i64) {
     if list_ptr == 0 {
+        // `insert` takes ownership; with nowhere to store it the value is
+        // released instead of stranded.
+        crate::free_any_word(val);
         return;
     }
     unsafe {
@@ -520,13 +523,19 @@ pub extern "C" fn olive_list_insert(list_ptr: i64, idx: i64, val: i64) {
         // casting an in-range value is lossless.
         let idx = idx.max(0) as usize;
         let mut v = Vec::from_raw_parts(s.ptr, s.len, s.cap);
-        if idx <= v.len() {
+        let stored = if idx <= v.len() {
             v.insert(idx, val);
-        }
+            true
+        } else {
+            false
+        };
         s.ptr = v.as_mut_ptr();
         s.cap = v.capacity();
         s.len = v.len();
         std::mem::forget(v);
+        if !stored {
+            crate::free_any_word(val);
+        }
     }
 }
 
@@ -784,17 +793,6 @@ pub extern "C" fn olive_list_index_typed(list_ptr: i64, val: i64, loc: i64, desc
     0
 }
 
-/// Frees one generic element word, including tagged heap strings that the
-/// slab liveness check does not cover. Inline immediates stay no ops.
-#[inline]
-fn free_any_word(elem: i64) {
-    if crate::is_tagged_str_key(elem) {
-        crate::olive_free_str(elem);
-    } else if is_active_object(elem) {
-        olive_free_any(elem);
-    }
-}
-
 /// `xs.clear()`: empties the list in place (freeing owned elements), returns it.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_list_clear(ptr: i64) -> i64 {
@@ -804,7 +802,7 @@ pub extern "C" fn olive_list_clear(ptr: i64) -> i64 {
     let s = unsafe { &mut *(ptr as *mut StableVec) };
     for i in 0..s.len {
         let elem = unsafe { *s.ptr.add(i) };
-        free_any_word(elem);
+        crate::free_any_word(elem);
     }
     s.len = 0;
     ptr
@@ -848,7 +846,7 @@ pub extern "C" fn olive_free_list(ptr: i64) {
         if crate::slab::slot_is_live(ptr) {
             for i in 0..s.len {
                 let elem = *s.ptr.add(i);
-                free_any_word(elem);
+                crate::free_any_word(elem);
             }
             settle_list_buffer(ptr);
         }
@@ -1469,5 +1467,48 @@ mod tests {
         assert_eq!(crate::string_slab::olive_str_gen_stale(old, gold), 1);
         olive_free_list(tup);
         assert_eq!(crate::string_slab::olive_str_gen_stale(new, gnew), 1);
+    }
+
+    #[test]
+    fn insert_out_of_bounds_releases_value() {
+        let list = olive_list_new(1);
+        olive_list_set(list, 0, 7);
+        let s = crate::olive_str_internal("uninserted");
+        let g = crate::string_slab::olive_str_gen_of(s);
+        olive_list_insert(list, 99, s);
+        assert_eq!(olive_list_len(list), 1);
+        assert_eq!(olive_list_get(list, 0), 7);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(s, g), 1);
+        olive_free_list(list);
+    }
+
+    #[test]
+    fn insert_into_null_list_releases_value() {
+        let s = crate::olive_str_internal("null-insert");
+        let g = crate::string_slab::olive_str_gen_of(s);
+        olive_list_insert(0, 0, s);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(s, g), 1);
+    }
+
+    #[test]
+    fn insert_in_bounds_stores_value() {
+        let list = olive_list_new(1);
+        olive_list_set(list, 0, 1);
+        let s = crate::olive_str_internal("inserted");
+        let g = crate::string_slab::olive_str_gen_of(s);
+        olive_list_insert(list, 0, s);
+        assert_eq!(olive_list_len(list), 2);
+        assert_eq!(olive_list_get(list, 0), s);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(s, g), 0);
+        olive_free_list(list);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(s, g), 1);
+    }
+
+    #[test]
+    fn append_into_null_list_releases_value() {
+        let s = crate::olive_str_internal("null-append");
+        let g = crate::string_slab::olive_str_gen_of(s);
+        crate::olive_list_append(0, s);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(s, g), 1);
     }
 }

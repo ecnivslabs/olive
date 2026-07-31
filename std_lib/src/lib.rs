@@ -139,6 +139,19 @@ pub(crate) fn key_word_is_str(v: i64) -> bool {
     is_tagged_str_key(v)
 }
 
+/// Releases one generic owned word: a tagged heap string, or any live heap
+/// object through kind dispatch. Raw scalars and immediates are no-ops.
+/// Shared by every container teardown and orphan-ownership path so the
+/// classification lives in exactly one place.
+#[inline]
+pub(crate) fn free_any_word(val: i64) {
+    if is_tagged_str_key(val) {
+        olive_free_str(val);
+    } else if is_active_object(val) {
+        olive_free_any(val);
+    }
+}
+
 fn classify_key(v: i64) -> KeyClass {
     // A `_typed` dict/set op installs its container's key descriptor (a
     // typed `update` installs the `Dict(K, V)` descriptor, whose second
@@ -1108,6 +1121,9 @@ pub extern "C" fn olive_copy_float(val: f64) -> f64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_list_append(list_ptr: i64, val: i64) {
     if list_ptr == 0 {
+        // `append` takes ownership; with nowhere to store it the value is
+        // released instead of stranded.
+        free_any_word(val);
         return;
     }
     unsafe {
