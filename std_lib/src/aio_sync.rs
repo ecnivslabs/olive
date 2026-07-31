@@ -34,14 +34,22 @@ pub extern "C" fn olive_chan_new() -> i64 {
 /// Admission and the closed flag are serialized under the queue mutex so a
 /// sender cannot slip an item in after close and a receiver cannot miss the
 /// close notification between its predicate check and its condvar wait.
+/// `val` arrives owned (moved, or an escape-arena copy the caller keeps the
+/// original of); `desc` is its static type descriptor. A rejected value
+/// (null channel, or closed channel) is released through `desc` instead of
+/// stranded: shutdown races that keep sending after close would otherwise
+/// leak one arena value per rejected send.
 #[unsafe(no_mangle)]
-pub extern "C" fn olive_chan_send(chan: i64, val: i64) -> i64 {
+pub extern "C" fn olive_chan_send(chan: i64, val: i64, desc: i64) -> i64 {
     if chan == 0 {
+        crate::free_typed::olive_free_typed(val, desc);
         return 0;
     }
     let ch = unsafe { &*(chan as *const OliveChannel) };
     let mut q = ch.queue.lock().unwrap();
     if ch.closed.load(Ordering::SeqCst) {
+        drop(q);
+        crate::free_typed::olive_free_typed(val, desc);
         return 0;
     }
     q.push_back(val);
@@ -135,9 +143,12 @@ pub extern "C" fn olive_mutex_lock(m: i64) -> i64 {
 }
 
 /// See `olive_chan_send`: `new_val` must already be relocated by the caller.
+/// A null mutex cannot store it, so it is released through `desc` instead of
+/// stranded, the same rejected-ownership discipline as `olive_chan_send`.
 #[unsafe(no_mangle)]
-pub extern "C" fn olive_mutex_unlock(m: i64, new_val: i64) {
+pub extern "C" fn olive_mutex_unlock(m: i64, new_val: i64, desc: i64) {
     if m == 0 {
+        crate::free_typed::olive_free_typed(new_val, desc);
         return;
     }
     let mx = unsafe { &*(m as *const OliveMutex) };
@@ -206,11 +217,48 @@ pub extern "C" fn olive_atomic_free(ptr: i64) {
 mod tests {
     use super::*;
 
+    fn int_desc() -> i64 {
+        static DESC: [u8; 1] = [crate::format::D_INT];
+        DESC.as_ptr() as i64
+    }
+
+    fn str_desc() -> i64 {
+        static DESC: [u8; 1] = [crate::format::D_STR];
+        DESC.as_ptr() as i64
+    }
+
+    #[test]
+    fn rejected_send_releases_heap_string() {
+        let ch = olive_chan_new();
+        olive_chan_close(ch);
+        let s = crate::olive_str_internal("rejected");
+        let g = crate::string_slab::olive_str_gen_of(s);
+        assert_eq!(olive_chan_send(ch, s, str_desc()), 0);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(s, g), 1);
+        olive_chan_free(ch);
+    }
+
+    #[test]
+    fn null_send_releases_heap_string() {
+        let s = crate::olive_str_internal("null-send");
+        let g = crate::string_slab::olive_str_gen_of(s);
+        assert_eq!(olive_chan_send(0, s, str_desc()), 0);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(s, g), 1);
+    }
+
+    #[test]
+    fn null_unlock_releases_heap_string() {
+        let s = crate::olive_str_internal("null-unlock");
+        let g = crate::string_slab::olive_str_gen_of(s);
+        olive_mutex_unlock(0, s, str_desc());
+        assert_eq!(crate::string_slab::olive_str_gen_stale(s, g), 1);
+    }
+
     #[test]
     fn chan_send_recv() {
         let ch = olive_chan_new();
         let val = crate::olive_str_internal("hello");
-        assert_eq!(olive_chan_send(ch, val), 1);
+        assert_eq!(olive_chan_send(ch, val, str_desc()), 1);
         assert_eq!(olive_chan_len(ch), 1);
         let got = olive_chan_recv(ch);
         assert_eq!(crate::olive_str_from_ptr(got), "hello");
@@ -255,9 +303,9 @@ mod tests {
     #[test]
     fn chan_send_after_close_rejected() {
         let ch = olive_chan_new();
-        assert_eq!(olive_chan_send(ch, 11), 1);
+        assert_eq!(olive_chan_send(ch, 11, int_desc()), 1);
         olive_chan_close(ch);
-        assert_eq!(olive_chan_send(ch, 22), 0);
+        assert_eq!(olive_chan_send(ch, 22, int_desc()), 0);
         assert_eq!(olive_chan_len(ch), 1);
         assert_eq!(olive_chan_recv(ch), 11);
         assert_eq!(olive_chan_recv(ch), 0);
@@ -269,10 +317,10 @@ mod tests {
     fn chan_close_serialized_with_pending_items() {
         let ch = olive_chan_new();
         for v in [1, 2, 3] {
-            assert_eq!(olive_chan_send(ch, v), 1);
+            assert_eq!(olive_chan_send(ch, v, int_desc()), 1);
         }
         olive_chan_close(ch);
-        assert_eq!(olive_chan_send(ch, 4), 0);
+        assert_eq!(olive_chan_send(ch, 4, int_desc()), 0);
         assert_eq!(olive_chan_recv(ch), 1);
         assert_eq!(olive_chan_recv(ch), 2);
         assert_eq!(olive_chan_recv(ch), 3);
@@ -291,7 +339,7 @@ mod tests {
             let v = crate::olive_str_internal("from thread");
             let desc = Box::leak(vec![crate::format::D_STR].into_boxed_slice()).as_ptr() as i64;
             let relocated = crate::copy_typed::olive_relocate_typed(v, desc);
-            olive_chan_send(ch, relocated);
+            olive_chan_send(ch, relocated, str_desc());
         });
         let got = olive_chan_recv(ch);
         assert_eq!(crate::olive_str_from_ptr(got), "from thread");
@@ -304,10 +352,10 @@ mod tests {
         let m = olive_mutex_new(42);
         let val = olive_mutex_lock(m);
         assert_eq!(val, 42);
-        olive_mutex_unlock(m, 99);
+        olive_mutex_unlock(m, 99, int_desc());
         let val2 = olive_mutex_lock(m);
         assert_eq!(val2, 99);
-        olive_mutex_unlock(m, 0);
+        olive_mutex_unlock(m, 0, int_desc());
         olive_mutex_free(m);
     }
 
@@ -318,7 +366,7 @@ mod tests {
         for _ in 0..4 {
             handles.push(std::thread::spawn(move || {
                 let v = olive_mutex_lock(m);
-                olive_mutex_unlock(m, v + 1);
+                olive_mutex_unlock(m, v + 1, int_desc());
             }));
         }
         for h in handles {
@@ -326,7 +374,7 @@ mod tests {
         }
         let final_val = olive_mutex_lock(m);
         assert_eq!(final_val, 4);
-        olive_mutex_unlock(m, 0);
+        olive_mutex_unlock(m, 0, int_desc());
         olive_mutex_free(m);
     }
 
@@ -378,7 +426,7 @@ mod tests {
     fn threaded_chan_send_list_copy() {
         let ch = olive_chan_new();
         let val = crate::olive_str_internal("from_main");
-        assert_eq!(olive_chan_send(ch, val), 1);
+        assert_eq!(olive_chan_send(ch, val, str_desc()), 1);
         let got = olive_chan_recv(ch);
         assert_eq!(crate::olive_str_from_ptr(got), "from_main");
         assert_eq!(crate::olive_str_from_ptr(val), "from_main");
@@ -391,12 +439,12 @@ mod tests {
         let handle = std::thread::spawn(move || {
             let v = olive_mutex_lock(m);
             assert_eq!(v, 42);
-            olive_mutex_unlock(m, 99);
+            olive_mutex_unlock(m, 99, int_desc());
         });
         handle.join().unwrap();
         let v = olive_mutex_lock(m);
         assert_eq!(v, 99);
-        olive_mutex_unlock(m, 0);
+        olive_mutex_unlock(m, 0, int_desc());
         olive_mutex_free(m);
     }
 }

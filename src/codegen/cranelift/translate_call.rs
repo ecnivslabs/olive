@@ -219,12 +219,18 @@ impl<M: Module> CraneliftCodegen<M> {
             }
 
             // Descriptor comes from the list arg's static type; needed to deep-copy elements.
+            // `__olive_chan_send`/`__olive_mutex_unlock` take the sent value's
+            // descriptor so a rejected (closed/null) value is released instead
+            // of stranded.
             let desc_arg = match name.as_str() {
                 "__olive_list_concat_typed" if call_args.len() == 2 => Some(0usize),
                 "__olive_list_getslice_typed" if call_args.len() == 5 => Some(0usize),
                 "__olive_list_repeat_typed" if call_args.len() == 2 => Some(0usize),
                 "__olive_list_extend_typed" if call_args.len() == 2 => Some(1usize),
                 "__olive_obj_update_typed" if call_args.len() == 2 => Some(1usize),
+                "__olive_chan_send" | "__olive_mutex_unlock" if call_args.len() == 2 => {
+                    Some(1usize)
+                }
                 "__olive_set_add_typed"
                 | "__olive_set_remove_typed"
                 | "__olive_set_contains_typed"
