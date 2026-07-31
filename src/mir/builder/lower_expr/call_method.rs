@@ -1832,10 +1832,20 @@ impl<'a> MirBuilder<'a> {
             }
         }
         let obj_tmp = self.new_unscoped_local(self.get_type(expr_id));
+        // A struct managing an external resource (user `__drop__`) is shared
+        // by design across tasks and threads: its record is born in the
+        // escape arena so a task completing while shares are outstanding
+        // cannot tear it down from under them. Ordinary structs keep the
+        // task-local slab allocation.
+        let alloc_fn = if self.has_drop_structs.contains(struct_name) {
+            "__olive_shared_struct_alloc"
+        } else {
+            "__olive_struct_alloc"
+        };
         let alloc_rval = if let Some(fields) = self.struct_fields.get(struct_name) {
             let n = fields.len() as i64;
             Rvalue::Call {
-                func: Operand::Constant(Constant::Function("__olive_struct_alloc".to_string())),
+                func: Operand::Constant(Constant::Function(alloc_fn.to_string())),
                 args: vec![Operand::Constant(Constant::Int(n))],
             }
         } else {

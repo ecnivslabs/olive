@@ -85,6 +85,17 @@ pub extern "C" fn olive_struct_alloc(n_fields: i64) -> i64 {
     body as i64
 }
 
+/// Allocation for structs that manage an external resource (a user
+/// `__drop__`, `D_STRUCT_SHARED`): shared by design across tasks and threads,
+/// so the record must never sit in a task slab set that teardown reclaims
+/// while the global share count still holds references. The escape arena
+/// lives for the process; the last `release_struct` reclaims the record
+/// through the usual arena-aware free.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_shared_struct_alloc(n_fields: i64) -> i64 {
+    crate::slab::with_escape_arena(|| olive_struct_alloc(n_fields))
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_free_struct(ptr: i64) {
     if ptr == 0 {
@@ -376,5 +387,17 @@ mod tests {
 
         olive_free_struct(ptr);
         assert_eq!(olive_struct_gen_stale(ptr, generation), 1);
+    }
+
+    #[test]
+    fn shared_struct_alloc_lands_in_global_arena() {
+        let ptr = olive_shared_struct_alloc(2);
+        assert_ne!(ptr, 0);
+        assert_eq!(unsafe { *(ptr as *const i64) }, 2);
+        assert!(
+            crate::slab::chunk_is_global(ptr as usize),
+            "shared records must survive task teardown"
+        );
+        olive_free_struct(ptr);
     }
 }
