@@ -338,6 +338,14 @@ impl<M: Module> CraneliftCodegen<M> {
             {
                 Some(1usize)
             }
+            "__olive_set_union_typed"
+            | "__olive_set_intersection_typed"
+            | "__olive_set_diff_typed"
+            | "__olive_set_sym_diff_typed"
+                if args.len() == 2 =>
+            {
+                Some(0usize)
+            }
             _ => None,
         };
         if let Some(pos) = typed_list_arg {
@@ -346,6 +354,23 @@ impl<M: Module> CraneliftCodegen<M> {
             | crate::semantic::types::Type::MutRef(inner) = ty
             {
                 ty = *inner;
+            }
+            // Set combinators hash elements, not sets: describe the element
+            // type. Mirrors `translate_call` exactly.
+            if matches!(
+                name.as_str(),
+                "__olive_set_union_typed"
+                    | "__olive_set_intersection_typed"
+                    | "__olive_set_diff_typed"
+                    | "__olive_set_sym_diff_typed"
+            ) && let crate::semantic::types::Type::Set(e) = ty
+            {
+                ty = *e;
+                while let crate::semantic::types::Type::Ref(inner)
+                | crate::semantic::types::Type::MutRef(inner) = ty
+                {
+                    ty = *inner;
+                }
             }
             let desc =
                 type_descriptor(&ty, &self.struct_fields, &self.field_types, &self.enum_defs);

@@ -252,6 +252,14 @@ impl<M: Module> CraneliftCodegen<M> {
                 {
                     Some(1usize)
                 }
+                "__olive_set_union_typed"
+                | "__olive_set_intersection_typed"
+                | "__olive_set_diff_typed"
+                | "__olive_set_sym_diff_typed"
+                    if call_args.len() == 2 =>
+                {
+                    Some(0usize)
+                }
                 _ => None,
             };
             if let Some(pos) = desc_arg {
@@ -263,8 +271,20 @@ impl<M: Module> CraneliftCodegen<M> {
                 // interning exactly, which already uses this function.
                 let arg_static_ty = super::imports::operand_static_type(&args[pos], func_mir);
                 let list_ty = super::imports::concrete_ty(&arg_static_ty);
+                // Set combinators hash elements, not sets: describe the
+                // element type. Mirrors the interning below exactly.
+                let elem_ty = match (name.as_str(), list_ty) {
+                    (
+                        "__olive_set_union_typed"
+                        | "__olive_set_intersection_typed"
+                        | "__olive_set_diff_typed"
+                        | "__olive_set_sym_diff_typed",
+                        OliveType::Set(e),
+                    ) => super::imports::concrete_ty(e),
+                    _ => list_ty,
+                };
                 let desc =
-                    super::imports::type_descriptor(list_ty, struct_fields, field_types, enum_defs);
+                    super::imports::type_descriptor(elem_ty, struct_fields, field_types, enum_defs);
                 let data_id = *string_ids
                     .get(&desc)
                     .expect("typed list op descriptor not interned during collection");

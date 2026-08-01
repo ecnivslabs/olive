@@ -400,6 +400,130 @@ pub extern "C" fn olive_set_sym_diff(a: i64, b: i64) -> i64 {
     result
 }
 
+/// Deep-copies one element word through the element descriptor.
+#[inline]
+fn copy_typed_elem(
+    val: i64,
+    desc: *const u8,
+    visited: &mut rustc_hash::FxHashMap<i64, i64>,
+) -> i64 {
+    let mut pos = 0usize;
+    crate::copy_typed::copy_val(val, desc, &mut pos, visited)
+}
+
+/// Inserts an owned copy, releasing it through `desc` when an equal element
+/// is already present. Typed counterpart to `set_add_owned`.
+fn typed_add_owned(set_ptr: i64, val: i64, desc: *const u8) {
+    if !set_try_add(set_ptr, val) {
+        crate::free_typed::olive_free_typed(val, desc as i64);
+    }
+}
+
+/// Typed set algebra (`s | t`, `s & t`, `s - t`, `s ^ t` on concrete element
+/// types). `key_desc` is the element descriptor, the same contract as
+/// `olive_set_add_typed`. The untyped bodies hash through the string-pointer
+/// magnitude heuristic, which misreads a raw odd int above the tag floor (or
+/// an odd float bit pattern) as a string pointer and faults dereferencing
+/// the raw bits; the descriptor drives exact hashing, copying, and
+/// duplicate release instead. Null inputs yield empty sets (never a list).
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_set_union_typed(a: i64, b: i64, key_desc: i64) -> i64 {
+    crate::hash_typed::with_key_descriptor(key_desc, || {
+        let desc = key_desc as *const u8;
+        let total = [a, b]
+            .iter()
+            .filter(|&&s| s != 0)
+            .map(|&s| unsafe { (*(s as *const OliveHashSet)).len })
+            .sum::<usize>();
+        let result = olive_set_new(total as i64);
+        let mut visited = rustc_hash::FxHashMap::default();
+        for src in [a, b] {
+            if src == 0 {
+                continue;
+            }
+            let s = unsafe { &*(src as *const OliveHashSet) };
+            for i in 0..s.len {
+                let val = unsafe { *s.ptr.add(i) };
+                typed_add_owned(result, copy_typed_elem(val, desc, &mut visited), desc);
+            }
+        }
+        result
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_set_intersection_typed(a: i64, b: i64, key_desc: i64) -> i64 {
+    crate::hash_typed::with_key_descriptor(key_desc, || {
+        if a == 0 || b == 0 {
+            return olive_set_new(0);
+        }
+        let desc = key_desc as *const u8;
+        let (sa, sb) = unsafe { (&*(a as *const OliveHashSet), &*(b as *const OliveHashSet)) };
+        let result = olive_set_new(sa.len.min(sb.len) as i64);
+        let mut visited = rustc_hash::FxHashMap::default();
+        for i in 0..sa.len {
+            let val = unsafe { *sa.ptr.add(i) };
+            if unsafe { (*sb.inner).contains(&OliveStringKey(val)) } {
+                typed_add_owned(result, copy_typed_elem(val, desc, &mut visited), desc);
+            }
+        }
+        result
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_set_diff_typed(a: i64, b: i64, key_desc: i64) -> i64 {
+    crate::hash_typed::with_key_descriptor(key_desc, || {
+        if a == 0 {
+            return olive_set_new(0);
+        }
+        let desc = key_desc as *const u8;
+        let sa = unsafe { &*(a as *const OliveHashSet) };
+        let result = olive_set_new(sa.len as i64);
+        let mut visited = rustc_hash::FxHashMap::default();
+        for i in 0..sa.len {
+            let val = unsafe { *sa.ptr.add(i) };
+            let excluded = b != 0
+                && unsafe { (*(b as *const OliveHashSet)).inner.as_ref() }
+                    .is_some_and(|inner| inner.contains(&OliveStringKey(val)));
+            if !excluded {
+                typed_add_owned(result, copy_typed_elem(val, desc, &mut visited), desc);
+            }
+        }
+        result
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_set_sym_diff_typed(a: i64, b: i64, key_desc: i64) -> i64 {
+    crate::hash_typed::with_key_descriptor(key_desc, || {
+        let desc = key_desc as *const u8;
+        let total = [a, b]
+            .iter()
+            .filter(|&&s| s != 0)
+            .map(|&s| unsafe { (*(s as *const OliveHashSet)).len })
+            .sum::<usize>();
+        let result = olive_set_new(total as i64);
+        let mut visited = rustc_hash::FxHashMap::default();
+        for (src, other) in [(a, b), (b, a)] {
+            if src == 0 {
+                continue;
+            }
+            let s = unsafe { &*(src as *const OliveHashSet) };
+            for i in 0..s.len {
+                let val = unsafe { *s.ptr.add(i) };
+                let excluded = other != 0
+                    && unsafe { (*(other as *const OliveHashSet)).inner.as_ref() }
+                        .is_some_and(|inner| inner.contains(&OliveStringKey(val)));
+                if !excluded {
+                    typed_add_owned(result, copy_typed_elem(val, desc, &mut visited), desc);
+                }
+            }
+        }
+        result
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -515,6 +639,42 @@ mod tests {
         assert_eq!(crate::string_slab::olive_str_gen_stale(s2, g2), 1);
         assert_eq!(unsafe { (*(u as *const OliveHashSet)).len }, 2);
         olive_free_set(u);
+    }
+
+    #[test]
+    fn typed_combinators_handle_big_odd_ints() {
+        use crate::format::D_INT;
+        let desc = [D_INT];
+        let desc_ptr = desc.as_ptr() as i64;
+        let add = |s: i64, v: i64| crate::hash_typed::olive_set_add_typed(s, v, desc_ptr);
+        let contains = |s: i64, v: i64| crate::hash_typed::olive_set_contains_typed(s, v, desc_ptr);
+        let a = olive_set_new(4);
+        let b = olive_set_new(4);
+        add(a, 99999);
+        add(a, 2);
+        add(b, 99999);
+        add(b, 3);
+        let u = olive_set_union_typed(a, b, desc_ptr);
+        assert_eq!(unsafe { (*(u as *const OliveHashSet)).len }, 3);
+        assert_eq!(contains(u, 99999), 1);
+        assert_eq!(contains(u, 2), 1);
+        assert_eq!(contains(u, 3), 1);
+        let i = olive_set_intersection_typed(a, b, desc_ptr);
+        assert_eq!(unsafe { (*(i as *const OliveHashSet)).len }, 1);
+        assert_eq!(contains(i, 99999), 1);
+        let d = olive_set_diff_typed(a, b, desc_ptr);
+        assert_eq!(unsafe { (*(d as *const OliveHashSet)).len }, 1);
+        assert_eq!(contains(d, 2), 1);
+        let s = olive_set_sym_diff_typed(a, b, desc_ptr);
+        assert_eq!(unsafe { (*(s as *const OliveHashSet)).len }, 2);
+        assert_eq!(contains(s, 2), 1);
+        assert_eq!(contains(s, 3), 1);
+        olive_free_set(a);
+        olive_free_set(b);
+        olive_free_set(u);
+        olive_free_set(i);
+        olive_free_set(d);
+        olive_free_set(s);
     }
 
     #[test]
