@@ -593,9 +593,23 @@ unsafe fn sync_set(pair: &WritebackPair) {
 /// `sync_set`'s counterpart for a concretely-typed set: elements decode raw
 /// by `kind` instead of boxing through `py_to_any_internal`.
 unsafe fn sync_set_typed(pair: &WritebackPair) {
+    static INT_DESC: [u8; 1] = [crate::format::D_INT];
+    static FLOAT_DESC: [u8; 1] = [crate::format::D_FLOAT];
+    static BOOL_DESC: [u8; 1] = [crate::format::D_BOOL];
+    static STR_DESC: [u8; 1] = [crate::format::D_STR];
     unsafe {
         crate::olive_set_clear(pair.olive_ptr);
         let kind = scalar_kind(pair.tag);
+        // Raw scalar elements must hash by static type, not the
+        // string-pointer magnitude heuristic: a big odd int (or an odd float
+        // bit pattern) is bit-identical to a tagged string pointer, which the
+        // untyped op would dereference as string bytes and fault on.
+        let key_desc = match kind {
+            TAG_INT_LIST => INT_DESC.as_ptr() as i64,
+            TAG_FLOAT_LIST => FLOAT_DESC.as_ptr() as i64,
+            TAG_BOOL_LIST => BOOL_DESC.as_ptr() as i64,
+            _ => STR_DESC.as_ptr() as i64,
+        };
         let iter = PY_OBJECT_GET_ITER(pair.py_obj);
         if iter.is_null() {
             PY_ERR_CLEAR();
@@ -612,7 +626,7 @@ unsafe fn sync_set_typed(pair: &WritebackPair) {
                 Ok(v) => v,
                 Err(actual) => writeback_type_fail(&format!("element {i}"), pair.tag, &actual),
             };
-            crate::olive_set_add(pair.olive_ptr, olive_val);
+            crate::hash_typed::olive_set_add_typed(pair.olive_ptr, olive_val, key_desc);
             PY_DEC_REF(item);
             i += 1;
         }
