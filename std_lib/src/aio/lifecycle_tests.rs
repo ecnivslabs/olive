@@ -446,3 +446,53 @@ fn sm_frame_reclaimed_on_executor_complete() {
     assert_eq!(a2 - a0, 2);
     assert_eq!(f2 - f0, 2);
 }
+
+#[test]
+fn double_cancel_is_idempotent() {
+    let _guard = CANCEL_LOCK.lock().unwrap();
+    CANCEL_COUNT.store(0, Ordering::SeqCst);
+    let mut frame = [0i64, 0i64];
+    let mut future = OliveSmFuture {
+        kind: KIND_SM_FUTURE,
+        poll_fn: counting_complete as *const () as usize as i64,
+        frame: frame.as_mut_ptr() as i64,
+        cancelled: 0,
+        result_desc: 0,
+        frame_size: 16,
+        cached: 0,
+    };
+    let future_ptr = &mut future as *mut OliveSmFuture as i64;
+    let ex = test_executor();
+    let task = executor_get_or_create_task(&ex, future_ptr);
+    olive_cancel_future(future_ptr);
+    assert!(executor_drive(&ex, &task) == DriveOutcome::Completed);
+    assert_eq!(CANCEL_COUNT.load(Ordering::SeqCst), 0);
+    olive_cancel_future(future_ptr);
+    assert_eq!(CANCEL_COUNT.load(Ordering::SeqCst), 0);
+    assert_eq!(frame[0], -1);
+    assert!(!ex.task_map.lock().unwrap().contains_key(&future_ptr));
+}
+
+#[test]
+fn cancel_after_natural_completion_is_harmless() {
+    let _guard = CANCEL_LOCK.lock().unwrap();
+    CANCEL_COUNT.store(0, Ordering::SeqCst);
+    let mut frame = [0i64, 0i64];
+    let mut future = OliveSmFuture {
+        kind: KIND_SM_FUTURE,
+        poll_fn: counting_complete as *const () as usize as i64,
+        frame: frame.as_mut_ptr() as i64,
+        cancelled: 0,
+        result_desc: 0,
+        frame_size: 16,
+        cached: 0,
+    };
+    let future_ptr = &mut future as *mut OliveSmFuture as i64;
+    let ex = test_executor();
+    let task = executor_get_or_create_task(&ex, future_ptr);
+    assert!(executor_drive(&ex, &task) == DriveOutcome::Completed);
+    assert_eq!(CANCEL_COUNT.load(Ordering::SeqCst), 1);
+    olive_cancel_future(future_ptr);
+    assert_eq!(CANCEL_COUNT.load(Ordering::SeqCst), 1);
+    assert_eq!(frame[0], -1);
+}

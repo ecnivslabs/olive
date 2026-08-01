@@ -300,6 +300,22 @@ fn main():
 }
 
 #[test]
+fn moved_string_stored_in_task_created_mutex_survives() {
+    assert_both(
+        r#"import aio
+
+async fn make() -> aio.Mutex[str]:
+    return aio.mutex[str](str(777))
+
+fn main():
+    let m = await make()
+    print(m.lock())
+"#,
+        "777\n",
+    );
+}
+
+#[test]
 fn moved_string_stored_in_mutex_survives_in_task() {
     assert_both(
         r#"import aio
@@ -314,5 +330,23 @@ fn main():
     print(await work())
 "#,
         "777\n777\n",
+    );
+}
+
+#[test]
+fn send_after_close_is_rejected_and_drains_pending() {
+    assert_both(
+        r#"import aio
+
+fn main():
+    let ch: aio.Chan[str] = aio.chan[str]()
+    let ok1 = ch.send(str(1))
+    ch.close()
+    let ok2 = ch.send(str(2))
+    print(ok1)
+    print(ok2)
+    print(ch.len())
+"#,
+        "True\nFalse\n1\n",
     );
 }
