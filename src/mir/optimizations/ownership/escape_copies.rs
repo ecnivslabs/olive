@@ -393,6 +393,11 @@ pub(super) fn insert_escape_copies(
         // (Copy) or is released by the Drop below (Move).
         if copy_fn == "__olive_relocate_typed" {
             let tmp = push_local(func, func.locals[l.0].ty.clone());
+            // Relocated copies transfer straight into the runtime call below
+            // and are consumed there; they must never be reassign-dropped or
+            // treated as owned locals. Non-owning keeps every later decision
+            // (reassign, guards, transfers) off them.
+            func.locals[tmp.0].is_owning = false;
             if explain_copies {
                 sites.borrow_mut().push(CopySite {
                     span: func.basic_blocks[bb_idx].statements[idx].span,
