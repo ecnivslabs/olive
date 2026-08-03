@@ -467,7 +467,64 @@ pub(super) fn insert_escape_copies(
         }
         bb.statements = rebuilt;
     }
+    drop_tail_transfers(func);
     true
+}
+
+/// Releases a task-boundary tail's transferred value parameters at every
+/// return. The `aio` tails (`_chan_send`, `_mutex_new`, `_mutex_unlock`,
+/// all monomorphs) borrow their value parameter (relocate-copy for the
+/// runtime) while every caller transfers into them (Move, no caller Drop),
+/// so without a terminal Drop the transferred word is orphaned once per
+/// call. Scalar params need nothing (their Drops lower to no-ops) and are
+/// skipped outright. Idempotent: never adds a second Drop for a parameter
+/// that already has one.
+fn drop_tail_transfers(func: &mut MirFunction) {
+    const TAILS: &[&str] = &["_chan_send", "_mutex_new", "_mutex_unlock"];
+    let Some(base) = func.name.rsplit("::").next() else {
+        return;
+    };
+    if !func.name.starts_with("aio::") {
+        return;
+    }
+    if !TAILS
+        .iter()
+        .any(|t| *t == base || base.starts_with(&format!("{t}_")))
+    {
+        return;
+    }
+    for i in 1..=func.arg_count {
+        let local = Local(i);
+        let Some(decl) = func.locals.get(local.0) else {
+            continue;
+        };
+        if !decl.ty.needs_drop() {
+            continue;
+        }
+        let already = func
+            .basic_blocks
+            .iter()
+            .flat_map(|bb| &bb.statements)
+            .any(|s| matches!(&s.kind, StatementKind::Drop(l) if *l == local));
+        if already {
+            continue;
+        }
+        for bb in &mut func.basic_blocks {
+            let returns = matches!(
+                bb.terminator,
+                Some(Terminator {
+                    kind: TerminatorKind::Return,
+                    ..
+                })
+            );
+            if returns {
+                bb.statements.push(Statement {
+                    kind: StatementKind::Drop(local),
+                    span: Span::default(),
+                });
+            }
+        }
+    }
 }
 
 /// Rewrites one operand of a store statement from `Copy(l)` to `Move(l)`.
