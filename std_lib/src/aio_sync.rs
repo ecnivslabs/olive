@@ -109,9 +109,21 @@ pub extern "C" fn olive_chan_close(chan: i64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_chan_free(chan: i64) {
-    if chan != 0 {
-        unsafe { drop(Box::from_raw(chan as *mut OliveChannel)) };
+    if chan == 0 {
+        return;
     }
+    // Queued words are owned solely by the channel (receivers pop them out
+    // as transfers, and nothing else aliases them), so draining owns them
+    // exactly once. Unlock before freeing: element drops run user `__drop__`
+    // shims that must never execute under the queue lock.
+    let pending = unsafe {
+        let ch = &*(chan as *const OliveChannel);
+        std::mem::take(&mut *ch.queue.lock().unwrap())
+    };
+    for val in pending {
+        crate::free_any_word(val);
+    }
+    unsafe { drop(Box::from_raw(chan as *mut OliveChannel)) };
 }
 
 struct OliveMutex {
@@ -446,5 +458,32 @@ mod tests {
         assert_eq!(v, 99);
         olive_mutex_unlock(m, 0, int_desc());
         olive_mutex_free(m);
+    }
+
+    #[test]
+    fn free_with_pending_items_releases_them() {
+        let ch = olive_chan_new();
+        let a = crate::olive_str_internal("pending-a");
+        let ga = crate::string_slab::olive_str_gen_of(a);
+        let b = crate::olive_str_internal("pending-b");
+        let gb = crate::string_slab::olive_str_gen_of(b);
+        assert_eq!(olive_chan_send(ch, a, str_desc()), 1);
+        assert_eq!(olive_chan_send(ch, b, str_desc()), 1);
+        olive_chan_free(ch);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(a, ga), 1);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(b, gb), 1);
+    }
+
+    #[test]
+    fn free_after_drain_leaves_nothing_to_release() {
+        let ch = olive_chan_new();
+        let a = crate::olive_str_internal("drained");
+        let ga = crate::string_slab::olive_str_gen_of(a);
+        assert_eq!(olive_chan_send(ch, a, str_desc()), 1);
+        assert_eq!(crate::olive_str_from_ptr(olive_chan_recv(ch)), "drained");
+        olive_chan_free(ch);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(a, ga), 0);
+        crate::olive_free_str(a);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(a, ga), 1);
     }
 }
