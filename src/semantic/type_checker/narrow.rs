@@ -214,7 +214,7 @@ impl TypeChecker {
 
 /// True for raw, unboxed scalar types (as opposed to pointer-shaped types
 /// like structs, enums, and lists).
-fn is_scalar_type(t: &Type) -> bool {
+pub(super) fn is_scalar_type(t: &Type) -> bool {
     matches!(
         t,
         Type::Int
@@ -237,7 +237,7 @@ fn is_scalar_type(t: &Type) -> bool {
 
 /// The scalar `Type` a literal expression denotes, for matching against a
 /// union member. `None` for anything that isn't a plain scalar literal.
-fn scalar_literal_type(expr: &ExprKind) -> Option<Type> {
+pub(super) fn scalar_literal_type(expr: &ExprKind) -> Option<Type> {
     match expr {
         ExprKind::Integer(_) => Some(Type::Int),
         ExprKind::Float(_) => Some(Type::Float),
