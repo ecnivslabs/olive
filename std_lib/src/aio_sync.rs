@@ -172,9 +172,33 @@ pub extern "C" fn olive_mutex_unlock(m: i64, new_val: i64, desc: i64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_mutex_free(m: i64) {
-    if m != 0 {
-        unsafe { drop(Box::from_raw(m as *mut OliveMutex)) };
+    if m == 0 {
+        return;
     }
+    // The slot word is owned by the mutex exactly when no lock is
+    // outstanding: `olive_mutex_lock` hands the slot word itself (not a
+    // copy) to the caller as an owning temp, so a locked mutex's object
+    // belongs to that temp and freeing it here would double-free when the
+    // temp's scope ends. `olive_mutex_unlock` never frees the displaced
+    // word for the same reason (the pre-unlock lock result still owns it).
+    // An unlocked slot has no live aliases: the value arrived relocated
+    // (sole ownership) and every prior lock result either transferred out
+    // or was freed at its own scope end. Take under the lock, release the
+    // lock, then free: element drops run user `__drop__` shims that must
+    // never execute under the mutex.
+    let slot: Option<i64> = unsafe {
+        let mx = &*(m as *const OliveMutex);
+        let mut guard = mx.inner.lock().unwrap();
+        if guard.0 {
+            None
+        } else {
+            Some(std::mem::replace(&mut guard.1, 0))
+        }
+    };
+    if let Some(val) = slot {
+        crate::free_any_word(val);
+    }
+    unsafe { drop(Box::from_raw(m as *mut OliveMutex)) };
 }
 
 #[unsafe(no_mangle)]
@@ -338,6 +362,45 @@ mod tests {
         assert_eq!(olive_chan_recv(ch), 3);
         assert_eq!(olive_chan_recv(ch), 0);
         olive_chan_free(ch);
+    }
+
+    #[test]
+    fn mutex_free_unlocked_releases_heap_string() {
+        let s = crate::olive_str_internal("mutex-slot");
+        let g = crate::string_slab::olive_str_gen_of(s);
+        let m = olive_mutex_new(s);
+        olive_mutex_free(m);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(s, g), 1);
+    }
+
+    #[test]
+    fn mutex_free_locked_leaves_slot_to_locker() {
+        let s = crate::olive_str_internal("locked-slot");
+        let g = crate::string_slab::olive_str_gen_of(s);
+        let m = olive_mutex_new(s);
+        let v = olive_mutex_lock(m);
+        assert_eq!(v, s);
+        olive_mutex_free(m);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(s, g), 0);
+        crate::free_any_word(v);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(s, g), 1);
+    }
+
+    #[test]
+    fn mutex_free_after_unlock_releases_current_slot() {
+        let a = crate::olive_str_internal("slot-a");
+        let ga = crate::string_slab::olive_str_gen_of(a);
+        let m = olive_mutex_new(a);
+        let v = olive_mutex_lock(m);
+        assert_eq!(v, a);
+        let b = crate::olive_str_internal("slot-b");
+        let gb = crate::string_slab::olive_str_gen_of(b);
+        olive_mutex_unlock(m, b, str_desc());
+        crate::free_any_word(v);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(a, ga), 1);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(b, gb), 0);
+        olive_mutex_free(m);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(b, gb), 1);
     }
 
     #[test]
