@@ -48,6 +48,63 @@ fn drop_self_struct(func: &MirFunction) -> Option<&str> {
     func.name.strip_suffix("::__drop__")
 }
 
+struct DropSite {
+    bb: usize,
+    idx: usize,
+    drop_fn: String,
+    local: Local,
+}
+
+struct UnionDropSite {
+    bb: usize,
+    idx: usize,
+    drop_fn: String,
+    local: Local,
+    struct_ty: Type,
+}
+
+struct ListDropSite {
+    bb: usize,
+    idx: usize,
+    helper_fn: String,
+    drop_fn: String,
+    local: Local,
+}
+
+struct TupleDropSite {
+    bb: usize,
+    idx: usize,
+    local: Local,
+    elems: Vec<TupleElem>,
+}
+
+struct TupleElem {
+    pos: usize,
+    drop_fn: String,
+    is_union: bool,
+    ty: Type,
+}
+
+/// Names the `__drop__` for a struct or single-struct-union element type:
+/// `(drop_name, struct_name, is_union)`. A union follows the single-struct
+/// rule (only one member's hook can be named); anything else has no hook.
+fn hook_target(ty: &Type) -> Option<(String, String, bool)> {
+    match ty {
+        Type::Struct(name, args, _) => Some((monomorphized_name(name, args), name.clone(), false)),
+        Type::Union(members) => {
+            let struct_members: Vec<&Type> = members
+                .iter()
+                .filter(|m| matches!(m, Type::Struct(..)))
+                .collect();
+            let [Type::Struct(name, args, _)] = struct_members.as_slice() else {
+                return None;
+            };
+            Some((monomorphized_name(name, args), name.clone(), true))
+        }
+        _ => None,
+    }
+}
+
 /// After the ownership pass, replaces `Drop(local)` with a call to the
 /// struct's `__drop__` method for structs that define one. The set of
 /// such structs must be provided by `collect_struct_has_drop`.
@@ -63,29 +120,10 @@ pub fn lower_drop_hooks(func: &mut MirFunction, has_drop: &HashSet<String>) {
         return;
     }
     let self_struct = drop_self_struct(func);
-    struct DropSite {
-        bb: usize,
-        idx: usize,
-        drop_fn: String,
-        local: Local,
-    }
-    struct UnionDropSite {
-        bb: usize,
-        idx: usize,
-        drop_fn: String,
-        local: Local,
-        struct_ty: Type,
-    }
-    struct ListDropSite {
-        bb: usize,
-        idx: usize,
-        helper_fn: String,
-        drop_fn: String,
-        local: Local,
-    }
     let mut sites: Vec<DropSite> = Vec::new();
     let mut union_sites: Vec<UnionDropSite> = Vec::new();
     let mut list_sites: Vec<ListDropSite> = Vec::new();
+    let mut tuple_sites: Vec<TupleDropSite> = Vec::new();
     for (bb_idx, block) in func.basic_blocks.iter().enumerate() {
         for (idx, stmt) in block.statements.iter().enumerate() {
             let StatementKind::Drop(local) = &stmt.kind else {
@@ -127,34 +165,91 @@ pub fn lower_drop_hooks(func: &mut MirFunction, has_drop: &HashSet<String>) {
                     // of the container drop (which then frees the nulled
                     // shell): a union element follows the single-struct rule
                     // above, since only one member's hook can be named.
-                    let (drop_name, elem_name, helper_fn) = match elem.as_ref() {
-                        Type::Struct(name, args, _) => (
-                            monomorphized_name(name, args),
-                            name.clone(),
-                            "__olive_list_drop_each_struct",
-                        ),
-                        Type::Union(members) => {
-                            let struct_members: Vec<&Type> = members
-                                .iter()
-                                .filter(|m| matches!(m, Type::Struct(..)))
-                                .collect();
-                            let [Type::Struct(name, args, _)] = struct_members.as_slice()
-                            else {
-                                continue;
-                            };
-                            (
-                                monomorphized_name(name, args),
-                                name.clone(),
-                                "__olive_list_drop_each_union",
-                            )
-                        }
-                        _ => continue,
+                    let Some((drop_name, elem_name, is_union)) = hook_target(elem) else {
+                        continue;
                     };
                     if has_drop.contains(&drop_name) && self_struct != Some(elem_name.as_str()) {
                         list_sites.push(ListDropSite {
                             bb: bb_idx,
                             idx,
-                            helper_fn: helper_fn.to_string(),
+                            helper_fn: if is_union {
+                                "__olive_list_drop_each_union"
+                            } else {
+                                "__olive_list_drop_each_struct"
+                            }
+                            .to_string(),
+                            drop_fn: format!("{}::__drop__", drop_name),
+                            local: *local,
+                        });
+                    }
+                }
+                Type::Tuple(items) => {
+                    // Positions each carry their own static type (and hook),
+                    // so hooks unroll per index instead of sharing one
+                    // whole-container pass: struct positions call the hook
+                    // directly, union positions route through the guarded
+                    // single-word helper. The container `Drop` follows and
+                    // frees the consumed slots through the generation guard.
+                    let mut elems = Vec::new();
+                    for (pos, item) in items.iter().enumerate() {
+                        let Some((drop_name, elem_name, is_union)) = hook_target(item) else {
+                            continue;
+                        };
+                        if has_drop.contains(&drop_name) && self_struct != Some(elem_name.as_str())
+                        {
+                            elems.push(TupleElem {
+                                pos,
+                                drop_fn: format!("{}::__drop__", drop_name),
+                                is_union,
+                                ty: item.clone(),
+                            });
+                        }
+                    }
+                    if !elems.is_empty() {
+                        tuple_sites.push(TupleDropSite {
+                            bb: bb_idx,
+                            idx,
+                            local: *local,
+                            elems,
+                        });
+                    }
+                }
+                Type::Dict(_, val) => {
+                    // Only values can own resources (keys are interned
+                    // strings or scalars); hooked arms are zeroed in place so
+                    // the dict drop that follows frees keys alone.
+                    let Some((drop_name, elem_name, is_union)) = hook_target(val) else {
+                        continue;
+                    };
+                    if has_drop.contains(&drop_name) && self_struct != Some(elem_name.as_str()) {
+                        list_sites.push(ListDropSite {
+                            bb: bb_idx,
+                            idx,
+                            helper_fn: if is_union {
+                                "__olive_dict_drop_each_union"
+                            } else {
+                                "__olive_dict_drop_each_struct"
+                            }
+                            .to_string(),
+                            drop_fn: format!("{}::__drop__", drop_name),
+                            local: *local,
+                        });
+                    }
+                }
+                Type::Set(elem) => {
+                    let Some((drop_name, elem_name, is_union)) = hook_target(elem) else {
+                        continue;
+                    };
+                    if has_drop.contains(&drop_name) && self_struct != Some(elem_name.as_str()) {
+                        list_sites.push(ListDropSite {
+                            bb: bb_idx,
+                            idx,
+                            helper_fn: if is_union {
+                                "__olive_set_drop_each_union"
+                            } else {
+                                "__olive_set_drop_each_struct"
+                            }
+                            .to_string(),
                             drop_fn: format!("{}::__drop__", drop_name),
                             local: *local,
                         });
@@ -168,6 +263,7 @@ pub fn lower_drop_hooks(func: &mut MirFunction, has_drop: &HashSet<String>) {
         Struct(DropSite),
         Union(UnionDropSite),
         List(ListDropSite),
+        Tuple(TupleDropSite),
     }
     let mut all: Vec<(usize, usize, AnySite)> = Vec::new();
     for s in sites {
@@ -178,6 +274,9 @@ pub fn lower_drop_hooks(func: &mut MirFunction, has_drop: &HashSet<String>) {
     }
     for s in list_sites {
         all.push((s.bb, s.idx, AnySite::List(s)));
+    }
+    for s in tuple_sites {
+        all.push((s.bb, s.idx, AnySite::Tuple(s)));
     }
     all.sort_unstable_by_key(|(bb, idx, _)| std::cmp::Reverse((*bb, *idx)));
     for (_, _, site) in all {
@@ -204,7 +303,12 @@ pub fn lower_drop_hooks(func: &mut MirFunction, has_drop: &HashSet<String>) {
                     ),
                     span,
                 };
-                func.basic_blocks[s.bb].statements.insert(s.idx, helper_stmt);
+                func.basic_blocks[s.bb]
+                    .statements
+                    .insert(s.idx, helper_stmt);
+            }
+            AnySite::Tuple(s) => {
+                insert_tuple_drop_hook(func, s.bb, s.idx, s.local, s.elems);
             }
         }
     }
@@ -337,6 +441,89 @@ fn insert_struct_drop_hook(
             discr: Operand::Copy(local),
             targets: vec![(0, cont_id)],
             otherwise: drop_id,
+        },
+        span,
+    });
+}
+
+/// Unrolled per-position hooks for a tuple whose static element types carry
+/// `__drop__`, ahead of the untouched original `Drop(local)` (which frees
+/// the shell). Struct positions call the hook directly; union positions
+/// route through the guarded single-word helper. The whole sequence is
+/// skipped when the tuple word itself is null (a moved-from temp): indexing
+/// null would fault, while every other free path no-ops on it.
+fn insert_tuple_drop_hook(
+    func: &mut MirFunction,
+    bb_idx: usize,
+    drop_idx: usize,
+    local: Local,
+    elems: Vec<TupleElem>,
+) {
+    let span = func.basic_blocks[bb_idx].statements[drop_idx].span;
+    let tail = func.basic_blocks[bb_idx].statements.split_off(drop_idx);
+    let term = func.basic_blocks[bb_idx].terminator.take();
+    let cont_id = BasicBlockId(func.basic_blocks.len());
+    func.basic_blocks.push(BasicBlock {
+        statements: tail,
+        terminator: term,
+    });
+    let mut hook_stmts = Vec::new();
+    for elem in &elems {
+        let elem_tmp = push_local(func, elem.ty.clone());
+        hook_stmts.push(Statement {
+            kind: StatementKind::Assign(
+                elem_tmp,
+                Rvalue::GetIndex(
+                    Operand::Copy(local),
+                    Operand::Constant(Constant::Int(elem.pos as i64)),
+                    false,
+                ),
+            ),
+            span,
+        });
+        let sink = push_local(func, Type::Any);
+        if elem.is_union {
+            hook_stmts.push(Statement {
+                kind: StatementKind::Assign(
+                    sink,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function(
+                            "__olive_hook_union_word".to_string(),
+                        )),
+                        args: vec![
+                            Operand::Move(elem_tmp),
+                            Operand::Constant(Constant::Function(elem.drop_fn.clone())),
+                        ],
+                    },
+                ),
+                span,
+            });
+        } else {
+            hook_stmts.push(Statement {
+                kind: StatementKind::Assign(
+                    sink,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function(elem.drop_fn.clone())),
+                        args: vec![Operand::Move(elem_tmp)],
+                    },
+                ),
+                span,
+            });
+        }
+    }
+    let hook_id = BasicBlockId(func.basic_blocks.len());
+    func.basic_blocks.push(BasicBlock {
+        statements: hook_stmts,
+        terminator: Some(Terminator {
+            kind: TerminatorKind::Goto { target: cont_id },
+            span,
+        }),
+    });
+    func.basic_blocks[bb_idx].terminator = Some(Terminator {
+        kind: TerminatorKind::SwitchInt {
+            discr: Operand::Copy(local),
+            targets: vec![(0, cont_id)],
+            otherwise: hook_id,
         },
         span,
     });

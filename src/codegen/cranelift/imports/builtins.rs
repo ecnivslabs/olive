@@ -112,7 +112,7 @@ pub(crate) fn drop_descriptor_type<'a>(
     }
 }
 
-pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 673] = [
+pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 678] = [
     "__olive_alloc",
     "__olive_any_add",
     "__olive_any_div",
@@ -250,6 +250,8 @@ pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 673] = [
     "__olive_debug_should_check_stmt",
     "__olive_debug_stmt",
     "__olive_debug_store",
+    "__olive_dict_drop_each_struct",
+    "__olive_dict_drop_each_union",
     "__olive_dir_create",
     "__olive_dir_list",
     "__olive_dlpack_bits",
@@ -313,6 +315,7 @@ pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 673] = [
     "__olive_has_next",
     "__olive_hex_decode",
     "__olive_hex_encode",
+    "__olive_hook_union_word",
     "__olive_http_delete",
     "__olive_http_get",
     "__olive_http_get_status",
@@ -643,6 +646,8 @@ pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 673] = [
     "__olive_set_contains",
     "__olive_set_diff",
     "__olive_set_diff_typed",
+    "__olive_set_drop_each_struct",
+    "__olive_set_drop_each_union",
     "__olive_set_fault_loc",
     "__olive_set_index_any",
     "__olive_set_intersection",
