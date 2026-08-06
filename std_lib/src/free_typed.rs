@@ -347,10 +347,29 @@ fn free_dict(val: i64, desc: *const u8, pos: &mut usize) {
 }
 
 fn free_struct(val: i64, desc: *const u8, pos: &mut usize) {
+    // A `__drop__` reached only through the typed path (nested containers,
+    // enum payloads, `Any`) runs here; the hook consumes the value fully,
+    // so only the descriptor cursor still needs advancing afterwards. The
+    // name decode is skipped entirely when nothing registered.
+    let struct_name = if crate::drop_registry::has_registrations() {
+        let mut name_pos = *pos;
+        Some(crate::format::desc_name_at(desc, &mut name_pos))
+    } else {
+        None
+    };
     skip_lp(desc, pos);
     let n = unsafe { byte(desc, *pos) } as usize - 13;
     *pos += 1;
     if val == 0 || !slot_is_live(val) {
+        for _ in 0..n {
+            skip_lp(desc, pos);
+            skip(desc, pos);
+        }
+        return;
+    }
+    if let Some(name) = struct_name
+        && crate::drop_registry::run_registered_hook(&name, val)
+    {
         for _ in 0..n {
             skip_lp(desc, pos);
             skip(desc, pos);
@@ -379,10 +398,29 @@ fn free_struct(val: i64, desc: *const u8, pos: &mut usize) {
 /// last reference (`struct_share.rs`). Any other reference is left fully
 /// intact for whichever copy drops last.
 fn free_shared_struct(val: i64, desc: *const u8, pos: &mut usize) {
+    let struct_name = if crate::drop_registry::has_registrations() {
+        let mut name_pos = *pos;
+        Some(crate::format::desc_name_at(desc, &mut name_pos))
+    } else {
+        None
+    };
     skip_lp(desc, pos);
     let n = unsafe { byte(desc, *pos) } as usize - 13;
     *pos += 1;
     if val == 0 || !slot_is_live(val) || !release_struct(val) {
+        for _ in 0..n {
+            skip_lp(desc, pos);
+            skip(desc, pos);
+        }
+        return;
+    }
+    // Last release of a value no hook site consumed: run the registered
+    // `__drop__` (nested containers, enum payloads, `Any`). Like the MIR
+    // hook sites, the hook consumes the value fully; only the descriptor
+    // cursor still needs advancing afterwards.
+    if let Some(name) = struct_name
+        && crate::drop_registry::run_registered_hook(&name, val)
+    {
         for _ in 0..n {
             skip_lp(desc, pos);
             skip(desc, pos);

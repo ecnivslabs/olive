@@ -928,6 +928,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
         "__olive_regex_pattern_split",
         b"olive_regex_pattern_split\0",
     ),
+    ("__olive_register_drop", b"olive_register_drop\0"),
     ("__olive_result_err", b"olive_result_err\0"),
     ("__olive_result_err_msg", b"olive_result_err_msg\0"),
     ("__olive_result_is_err", b"olive_result_is_err\0"),

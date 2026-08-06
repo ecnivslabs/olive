@@ -31,6 +31,7 @@ pub mod copy_typed;
 pub mod crypto;
 pub mod datetime;
 pub mod debug;
+pub mod drop_registry;
 pub mod encoding;
 pub mod eq_typed;
 pub mod format;

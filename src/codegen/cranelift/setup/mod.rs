@@ -676,6 +676,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_regex_pattern_replace", &sig_3i64_i64),
             ("__olive_regex_pattern_replace_all", &sig_3i64_i64),
             ("__olive_regex_pattern_split", &sig_i64_i64_i64),
+            ("__olive_register_drop", &sig_i64_i64_void),
             ("__olive_result_err", &sig_i64_i64),
             ("__olive_result_err_msg", &sig_i64_i64),
             ("__olive_result_is_err", &sig_i64_i64),
