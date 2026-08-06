@@ -27,8 +27,24 @@ pub(crate) fn set_has_drop_structs(names: HashSet<String>) {
     HAS_DROP_STRUCTS.with(|s| *s.borrow_mut() = names);
 }
 
-fn struct_has_drop(name: &str) -> bool {
-    HAS_DROP_STRUCTS.with(|s| s.borrow().contains(name))
+/// Whether a struct type manages an external resource, for the
+/// `D_STRUCT_SHARED` tag. Tries the monomorphized name first (what the
+/// codegen-time collection registers), then the plain and
+/// module-unqualified names (what the builder pre-scan registers before
+/// any monomorphization exists). Builder-time encodings (union boxing) and
+/// codegen-time ones must agree, or copies and frees take different paths
+/// for the same value.
+fn struct_has_drop_for(struct_name: &str, mono_name: &str) -> bool {
+    fn stripped(name: &str) -> &str {
+        name.rsplit("::").next().unwrap_or(name)
+    }
+    HAS_DROP_STRUCTS.with(|s| {
+        let set = s.borrow();
+        set.contains(mono_name)
+            || set.contains(stripped(mono_name))
+            || set.contains(struct_name)
+            || set.contains(stripped(struct_name))
+    })
 }
 
 /// Peels `Ref`/`MutRef` wrappers and reduces a `T | None` union to its single
@@ -179,7 +195,11 @@ fn encode_descriptor(
             let fields = &struct_fields[name];
             let mono_name =
                 crate::mir::optimizations::drop_hooks::monomorphized_name(name, type_args);
-            out.push(if struct_has_drop(&mono_name) { 16 } else { 12 });
+            out.push(if struct_has_drop_for(name, &mono_name) {
+                16
+            } else {
+                12
+            });
             push_len_prefixed(out, name);
             out.push((fields.len() + 13) as u8);
             for f in fields {

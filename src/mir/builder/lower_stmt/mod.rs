@@ -454,6 +454,7 @@ impl<'a> MirBuilder<'a> {
                     self.emit_open_loop_iter_frees();
                     self.emit_open_scope_drops(0, exclude);
                     if let Some((_, _, exit_bb)) = self.memo_context {
+                        self.emit_drop_self_reclaim(stmt.span);
                         self.terminate_block(
                             bb,
                             TerminatorKind::Goto { target: exit_bb },
@@ -461,6 +462,7 @@ impl<'a> MirBuilder<'a> {
                         );
                     } else {
                         self.emit_defers();
+                        self.emit_drop_self_reclaim(stmt.span);
                         self.terminate_block(bb, TerminatorKind::Return, stmt.span);
                     }
                 }
@@ -472,6 +474,7 @@ impl<'a> MirBuilder<'a> {
                     self.emit_open_loop_iter_frees();
                     self.emit_open_scope_drops(0, None);
                     if let Some((_, _, exit_bb)) = self.memo_context {
+                        self.emit_drop_self_reclaim(stmt.span);
                         self.terminate_block(
                             bb,
                             TerminatorKind::Goto { target: exit_bb },
@@ -479,6 +482,7 @@ impl<'a> MirBuilder<'a> {
                         );
                     } else {
                         self.emit_defers();
+                        self.emit_drop_self_reclaim(stmt.span);
                         self.terminate_block(bb, TerminatorKind::Return, stmt.span);
                     }
                 }

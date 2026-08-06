@@ -343,6 +343,8 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_list_any_any", &sig_i64_i64),
             ("__olive_list_all_any", &sig_i64_i64),
             ("__olive_list_append", &sig_i64_i64_void),
+            ("__olive_list_drop_each_struct", &sig_i64_i64_void),
+            ("__olive_list_drop_each_union", &sig_i64_i64_void),
             ("__olive_list_concat", &sig_i64_i64_i64),
             ("__olive_list_concat_move", &sig_i64_i64_i64),
             ("__olive_list_push", &sig_i64_i64_i64),

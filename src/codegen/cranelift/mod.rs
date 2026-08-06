@@ -296,6 +296,14 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_list_count_typed", b"olive_list_count_typed\0"),
     ("__olive_list_index_typed", b"olive_list_index_typed\0"),
     ("__olive_list_clear", b"olive_list_clear\0"),
+    (
+        "__olive_list_drop_each_struct",
+        b"olive_list_drop_each_struct\0",
+    ),
+    (
+        "__olive_list_drop_each_union",
+        b"olive_list_drop_each_union\0",
+    ),
     ("__olive_obj_pop_checked", b"olive_obj_pop_checked\0"),
     (
         "__olive_obj_pop_checked_typed",

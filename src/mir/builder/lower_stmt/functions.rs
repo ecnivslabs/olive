@@ -147,6 +147,17 @@ impl<'a> MirBuilder<'a> {
                 );
                 self.terminate_block(skip_bb, TerminatorKind::Return, stmt.span);
                 self.current_block = Some(body_bb);
+                // From here to the end of this function every exit path must
+                // reclaim `self` (see `emit_drop_self_reclaim`): the hook
+                // consumes it but no other party releases its storage. The
+                // skip block above returns directly and stays untouched.
+                if let Some(suffix) = mangled.strip_suffix("::__drop__") {
+                    self.drop_self_reclaim = Some((
+                        mangled.clone(),
+                        self_local,
+                        suffix.to_string(),
+                    ));
+                }
             }
 
             self.nested_fns
@@ -284,10 +295,13 @@ impl<'a> MirBuilder<'a> {
 
                 if let Some(bb) = self.current_block {
                     self.emit_defers();
+                    // Defers may still read `self`; reclaim only after they run.
+                    self.emit_drop_self_reclaim(Span::default());
                     self.terminate_block(bb, TerminatorKind::Return, Span::default());
                 }
             }
 
+            self.drop_self_reclaim = None;
             self.nested_fns.pop();
             self.bound_lambdas.pop();
             self.finish_function();
@@ -383,5 +397,132 @@ impl<'a> MirBuilder<'a> {
             TypeExprKind::Generic(n, _) => n.clone(),
             _ => type_name.to_string(),
         }
+    }
+
+    /// Reclaim a `__drop__`'s `self` storage at a function exit (early return
+    /// or fall-through end), if currently lowering that hook's own body. The
+    /// hook consumes `self` but nothing else releases it: fields go through
+    /// typed free (nested resource structs recurse through their own hooks,
+    /// everything else matches what the silent container-free path would do),
+    /// then the record slot itself. A no-op anywhere else, including nested
+    /// functions and closures (which run under their own names).
+    pub(super) fn emit_drop_self_reclaim(&mut self, span: Span) {
+        let Some((fn_name, self_local, struct_name)) = self.drop_self_reclaim.clone() else {
+            return;
+        };
+        if fn_name != self.current_name {
+            return;
+        }
+        let fields = match self.struct_fields.get(&struct_name).cloned() {
+            Some(fields) => fields,
+            None => return,
+        };
+        if self.current_block.is_none() {
+            return;
+        }
+        // A zeroed `self` reaches here when a scope drops an already-moved
+        // local a second time (codegen zeroes vars after Drop): every other
+        // free path no-ops on null, and GetAttr below would fault reading
+        // field words from address 0, so skip the whole reclaim on null.
+        let reclaim_bb = self.new_block();
+        let done_bb = self.new_block();
+        self.terminate_block(
+            self.current_block.unwrap(),
+            TerminatorKind::SwitchInt {
+                discr: Operand::Copy(self_local),
+                targets: vec![(0, done_bb)],
+                otherwise: reclaim_bb,
+            },
+            span,
+        );
+        self.current_block = Some(reclaim_bb);
+        for field in &fields {
+            let field_ty = self
+                .struct_field_types
+                .get(&(struct_name.clone(), field.clone()))
+                .cloned()
+                .unwrap_or(Type::Int);
+            let desc = crate::semantic::type_descriptor::type_descriptor(
+                &field_ty,
+                &self.struct_fields,
+                &self.struct_field_types,
+                &self.enum_defs,
+            );
+            let field_tmp = self.new_unscoped_local_with_owning(Type::Any, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    field_tmp,
+                    Rvalue::GetAttr(Operand::Copy(self_local), field.clone()),
+                ),
+                span,
+            );
+            {
+                let sink = self.new_unscoped_local_with_owning(Type::Any, false);
+                let rval = match &field_ty {
+                // A nested resource struct recurses through its own hook
+                // (which reclaims it), mirroring what `lower_drop_hooks`
+                // does for a direct local of that type; anything else goes
+                // through typed free like the silent container path.
+                Type::Struct(field_struct, field_args, _) => {
+                    let mono = crate::mir::optimizations::drop_hooks::monomorphized_name(
+                        field_struct,
+                        field_args,
+                    );
+                    let stripped = field_struct.rsplit("::").next().unwrap_or(field_struct);
+                    if self.has_drop_structs.contains(field_struct)
+                        || self.has_drop_structs.contains(&mono)
+                        || self.has_drop_structs.contains(stripped)
+                    {
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(format!(
+                                "{}::__drop__",
+                                mono
+                            ))),
+                            args: vec![Operand::Move(field_tmp)],
+                        }
+                    } else {
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(
+                                "__olive_free_typed".to_string(),
+                            )),
+                            args: vec![
+                                Operand::Move(field_tmp),
+                                Operand::Constant(Constant::Str(desc)),
+                            ],
+                        }
+                    }
+                }
+                _ => Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(
+                        "__olive_free_typed".to_string(),
+                    )),
+                    args: vec![
+                        Operand::Move(field_tmp),
+                        Operand::Constant(Constant::Str(desc)),
+                    ],
+                },
+                };
+                self.push_statement(StatementKind::Assign(sink, rval), span);
+            }
+        }
+        let sink = self.new_unscoped_local_with_owning(Type::Any, false);
+        self.push_statement(
+            StatementKind::Assign(
+                sink,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(
+                        "__olive_free_struct".to_string(),
+                    )),
+                    args: vec![Operand::Copy(self_local)],
+                },
+            ),
+            span,
+        );
+        self.terminate_block(
+            self.current_block.unwrap(),
+            TerminatorKind::Goto { target: done_bb },
+            span,
+        );
+        self.current_block = Some(done_bb);
     }
 }
