@@ -11,7 +11,10 @@
 //! unlocked so nested drops that look up other hooks cannot deadlock.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{
+    Mutex, OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
 
 type DropHook = extern "C" fn(i64) -> i64;
 
@@ -19,6 +22,10 @@ fn registry() -> &'static Mutex<HashMap<String, i64>> {
     static REGISTRY: OnceLock<Mutex<HashMap<String, i64>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
+
+/// Set on the first registration; lets hot free paths skip the lock
+/// entirely when the program defines no `__drop__` at all.
+static ANY_REGISTERED: AtomicBool = AtomicBool::new(false);
 
 /// Records `hook` (a `__drop__` entry point as a word, the same
 /// `Constant::Function`-as-address convention the per-element helpers use)
@@ -31,6 +38,7 @@ pub extern "C" fn olive_register_drop(name: i64, hook: i64) {
     }
     let key = crate::olive_str_from_ptr(name);
     registry().lock().unwrap().insert(key, hook);
+    ANY_REGISTERED.store(true, Ordering::Release);
 }
 
 fn lookup(name: &str) -> Option<DropHook> {
@@ -49,10 +57,11 @@ fn lookup(name: &str) -> Option<DropHook> {
         .map(|addr| unsafe { std::mem::transmute(addr as usize) })
 }
 
-/// Whether anything registered yet: lets hot free paths skip even the name
-/// decode when the program defines no `__drop__` at all.
+/// Whether anything registered yet: a lock-free atomic on the hot free
+/// paths, so programs without `__drop__` pay one load per struct free and
+/// nothing more.
 pub(crate) fn has_registrations() -> bool {
-    !registry().lock().unwrap().is_empty()
+    ANY_REGISTERED.load(Ordering::Acquire)
 }
 
 /// Runs the registered `__drop__` for the struct named `name` on `val`, if
