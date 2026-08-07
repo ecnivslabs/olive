@@ -53,12 +53,18 @@ pub(crate) fn release_struct(ptr: i64) -> bool {
 /// Compiler-inserted gate at the start of every has-drop struct's `__drop__`
 /// (`mir/builder/lower_stmt/functions.rs`): one reference is going away, and
 /// the body -- the user's own cleanup plus `self`'s ordinary end-of-function
-/// reclaim -- must run only when this is the last one. Every other caller's
+/// reclaim -- must run only when it is the last one. Every other caller's
 /// `__drop__` invocation short-circuits to a no-op, leaving the shared
 /// allocation and whatever it owns untouched for the remaining references.
+///
+/// The liveness check comes first: a hook site can fire for a word whose
+/// slot was already consumed elsewhere (a container hook or typed free ran
+/// first and reclaimed it). Releasing a dead slot would consult a stale
+/// count and wrongly report last-ownership, running user cleanup twice on
+/// the same handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_struct_gate(ptr: i64) -> i64 {
-    release_struct(ptr) as i64
+    (crate::slab::slot_is_live(ptr) && release_struct(ptr)) as i64
 }
 
 #[cfg(test)]

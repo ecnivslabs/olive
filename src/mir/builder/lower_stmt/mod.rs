@@ -306,6 +306,10 @@ impl<'a> MirBuilder<'a> {
                     if let Some(bb) = self.current_block {
                         self.emit_open_scope_drops(0, exclude);
                         self.emit_defers();
+                        // A trailing call in a `__drop__` body (e.g. the
+                        // `_chan_free` arm of `if handle != 0`) returns here;
+                        // reclaim `self` first like every other exit path.
+                        self.emit_drop_self_reclaim(expr.span);
                         self.terminate_block(bb, TerminatorKind::Return, expr.span);
                     }
                     self.current_block = Some(self.new_block());
