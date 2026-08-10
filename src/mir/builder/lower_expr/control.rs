@@ -402,6 +402,14 @@ impl<'a> MirBuilder<'a> {
             // a catch-all binding only sees whatever the earlier arms did not
             // already carve out, so its runtime type must match what the
             // checker already promised the arm's body.
+            //
+            // Deliberately the full remaining union, never the checker's
+            // further int-sentinel narrowing: the binding owns the live
+            // value, so its `Drop` must stay on the guarded union path
+            // (`__olive_any_is_struct_box`), which is safe for whichever
+            // member is actually live. The sentinel narrowing applies
+            // per-read instead (`lower_identifier_expr` decodes through the
+            // runtime-verified struct unbox, E0715 on a violated assumption).
             let match_ty = if matches!(case.pattern, crate::parser::MatchPattern::Identifier(..)) {
                 self.narrow_match_ty(&scrutinee_ty, &matched_variants, matched_null)
             } else {

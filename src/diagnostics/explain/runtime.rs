@@ -182,4 +182,19 @@ pub(super) const ENTRIES: &[Explanation] = &[
              types (`[int]`, `[float]`, `[bool]`, `[str]`) can mismatch this way.",
         ],
     },
+    Explanation {
+        code: "E0715",
+        title: "narrowed union held another member",
+        summary: "A `match` catch-all past an int-literal arm (or an `if x != sentinel` \
+                  guard) narrowed a struct union to its struct member, but the value \
+                  still held a different member at runtime: one literal arm consumes \
+                  the sentinel value, not every integer the union can carry. The read \
+                  faults here instead of dereferencing the wrong member's bits.",
+        wrong: "struct C:\n    x: int\n\nfn f(v: C | int) -> int:\n    match v:\n        case 0:\n            return -1\n        case n:\n            return n.x\n\nfn main():\n    print(f(5))",
+        fixed: "struct C:\n    x: int\n\nfn f(v: C | int) -> int:\n    match v:\n        case 0:\n            return -1\n        case n:\n            return n.x\n\nfn main():\n    print(f(C(1)))\n    print(f(0))",
+        notes: &[
+            "Only feed the narrowed code the sentinel or the struct; any other \
+             member value needs its own arm.",
+        ],
+    },
 ];

@@ -102,26 +102,82 @@ pub(crate) fn set_inner(shell: i64, inner: i64) {
 /// `olive_unbox_int`/`olive_unbox_float` do for their own member types. The
 /// box itself is left alone; it drops normally through the union local that
 /// still owns it.
+///
+/// The peel is verified: narrowing lets a union flow into struct-typed code
+/// on the promise that only the sentinel inhabits the other member, so a
+/// non-sentinel value (or any other member) reaching here is a violated
+/// assumption, not a struct box. Dereferencing it as `OliveStructBox` would
+/// be a misaligned-pointer trap; it faults cleanly (E0715) instead.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_struct_unbox(val: i64) -> i64 {
     if val == 0 {
         return 0;
     }
-    unsafe { (*(val as *const OliveStructBox)).ptr }
+    peel_struct_box(val)
 }
 
 /// Consuming unbox: releases the box shell and hands ownership of the inner
 /// struct to the caller. Used when narrowing transfers the value onward (the
 /// `try` success path) rather than borrowing it in place; the union local's
 /// later generation-guarded drop then sees a dead slot and does nothing.
+/// Verified like the peeking unbox above: a non-box faults before the shell
+/// is touched, so a violated assumption can neither free nor hand out.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_struct_unbox_take(val: i64) -> i64 {
     if val == 0 {
         return 0;
     }
-    let inner = unsafe { (*(val as *const OliveStructBox)).ptr };
+    let inner = peel_struct_box(val);
     free_struct_box_shell(val);
     inner
+}
+
+/// Verifies `val` is a live struct box and returns its inner struct pointer,
+/// faulting (E0715) otherwise. Guards mirror `olive_any_is_struct_box` so
+/// every union member classifies without a dereference; the kind word is
+/// read only on a live slab slot, which keeps even wild words total.
+fn peel_struct_box(val: i64) -> i64 {
+    if crate::slab::slot_is_live(val) {
+        let unboxed = unsafe { &*(val as *const OliveStructBox) };
+        if unboxed.kind == KIND_STRUCT_BOX {
+            return unboxed.ptr;
+        }
+    }
+    crate::panic::abort_unbox(&format!(
+        "narrowed union holds {} where a struct was expected",
+        rejected_member_name(val)
+    ))
+}
+
+/// Names the non-struct member a narrowing check just rejected, so the E0715
+/// fault reads like the value it found instead of a bare address. Reads at
+/// most the kind word of a live slab slot; everything else classifies by
+/// tag and magnitude alone.
+fn rejected_member_name(val: i64) -> &'static str {
+    // Same magnitude heuristic the string classifier uses (`boxed::is_str`):
+    // a bare bit-0 test would misread small odd words like -1 as strings.
+    if val & 1 == 1 && (val & !1) > 0x10000 {
+        return "a string";
+    }
+    match val & crate::boxed::TAG_MASK {
+        crate::boxed::TAG_INT => return "an integer",
+        crate::boxed::TAG_BOOL => return "a boolean",
+        crate::boxed::TAG_NULL => return "null",
+        _ => {}
+    }
+    if val < 0x1000 {
+        return "a small integer";
+    }
+    if crate::slab::slot_is_live(val) {
+        match unsafe { *(val as *const i64) } {
+            crate::KIND_INT => return "an integer",
+            crate::KIND_FLOAT => return "a float",
+            _ => {}
+        }
+    } else if crate::slab::ptr_in_slab_span(val) {
+        return "a freed value";
+    }
+    "a value of another type"
 }
 
 #[cfg(test)]

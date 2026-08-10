@@ -99,7 +99,10 @@ impl<'a> MirBuilder<'a> {
             // gives it a second reference to fold through.
             let narrowed = self.get_type(expr_id);
             if matches!(ty, Type::Union(_)) && narrowed != ty {
-                // Tag-encoded unions must decode, not reinterpret.
+                // Tag-encoded unions must decode, not reinterpret. The unbox
+                // is runtime-verified: if the value is not actually the
+                // narrowed member (e.g. a non-sentinel int past an int-literal
+                // arm), it faults cleanly (E0715) instead of dereferencing.
                 if ty.is_tag_encoded_union()
                     && let Some(unboxed) =
                         self.unbox_from_any(Operand::Copy(local), &narrowed, Span::default())

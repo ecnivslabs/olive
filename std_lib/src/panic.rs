@@ -97,6 +97,15 @@ const WRITEBACK_TYPE: Fault = Fault {
     help: Some("make the Python callee assign a compatible type, or widen the list's element type"),
     note: Some("a Python call mutated a passed list with an element of the wrong type for it"),
 };
+const UNBOX: Fault = Fault {
+    code: "E0715",
+    help: Some(
+        "narrow the union against every value it can carry (match all members or compare the tag), not just the sentinel",
+    ),
+    note: Some(
+        "a `match` arm or `!=` guard narrowed this union to a struct, but it still holds another member at runtime",
+    ),
+};
 
 /// Aborts when a Python value cannot be converted to the required native scalar.
 pub fn abort_py_coerce(msg: &str) -> ! {
@@ -107,6 +116,16 @@ pub fn abort_py_coerce(msg: &str) -> ! {
 /// doesn't match the list's declared element type.
 pub fn abort_py_writeback_type(msg: &str, loc: Option<&str>) -> ! {
     abort_with(&WRITEBACK_TYPE, msg, loc)
+}
+
+/// Aborts when a narrowed union read finds a non-struct member where the
+/// static narrowing promised a struct (a `match` catch-all past an
+/// int-literal arm, or an `if x != sentinel` guard, reached with a
+/// non-sentinel value of another member). Fires before the word is
+/// dereferenced as a struct box, so the program dies with a diagnostic
+/// instead of a misaligned-pointer trap.
+pub fn abort_unbox(msg: &str) -> ! {
+    abort_with(&UNBOX, msg, None)
 }
 
 /// A parsed `file:line:col` (or `line:col`) source location.
