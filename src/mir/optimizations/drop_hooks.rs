@@ -17,12 +17,14 @@ pub fn collect_struct_has_drop(functions: &[MirFunction]) -> HashSet<String> {
 
 /// (base struct name, monomorphized name) pairs for every `__drop__`-owning
 /// struct reachable from any local's type (direct, union, and container
-/// element positions alike). The driver registers both spellings in
-/// `__main__`'s prologue so the runtime registry matches whatever name
-/// form a descriptor carries at the free site.
+/// element positions alike) or any enum variant payload. The driver
+/// registers both spellings in the program entries' prologues so the
+/// runtime registry matches whatever name form a descriptor carries at the
+/// free site.
 pub fn collect_drop_registrations(
     functions: &[MirFunction],
     has_drop: &HashSet<String>,
+    enum_defs: &rustc_hash::FxHashMap<String, Vec<(String, Vec<Type>)>>,
 ) -> Vec<(String, String)> {
     fn visit(ty: &Type, has_drop: &HashSet<String>, out: &mut HashSet<(String, String)>) {
         match ty {
@@ -50,6 +52,16 @@ pub fn collect_drop_registrations(
     for func in functions {
         for local in &func.locals {
             visit(&local.ty, has_drop, &mut pairs);
+        }
+    }
+    // Variant payloads never appear in a local's own type, so a struct used
+    // only there (e.g. a resource smuggled through an `Any`-typed slot)
+    // would otherwise miss registration entirely.
+    for variants in enum_defs.values() {
+        for (_, payloads) in variants {
+            for payload in payloads {
+                visit(payload, has_drop, &mut pairs);
+            }
         }
     }
     let mut sorted: Vec<(String, String)> = pairs.into_iter().collect();

@@ -23,6 +23,7 @@ pub struct Optimizer {
     release: bool,
     explain_copies: bool,
     vtables: HashMap<String, Vec<String>>,
+    enum_defs: HashMap<String, Vec<(String, Vec<crate::semantic::types::Type>)>>,
 }
 
 impl Default for Optimizer {
@@ -82,6 +83,7 @@ impl Optimizer {
             release,
             explain_copies: false,
             vtables: HashMap::default(),
+            enum_defs: HashMap::default(),
         }
     }
 
@@ -92,6 +94,16 @@ impl Optimizer {
     /// Trait vtables from the MIR builder; enables devirtualization.
     pub fn set_vtables(&mut self, vtables: HashMap<String, Vec<String>>) {
         self.vtables = vtables;
+    }
+
+    /// Enum variant payload types from the MIR builder; lets drop-hook
+    /// registration cover structs that only ever appear inside enum
+    /// payloads (no local ever carries their type directly).
+    pub fn set_enum_defs(
+        &mut self,
+        enum_defs: HashMap<String, Vec<(String, Vec<crate::semantic::types::Type>)>>,
+    ) {
+        self.enum_defs = enum_defs;
     }
 
     pub fn run(&self, functions: &mut [MirFunction]) -> (Vec<Diagnostic>, Vec<CopySite>) {
@@ -121,7 +133,7 @@ impl Optimizer {
         for func in functions.iter_mut() {
             drop_hooks::lower_drop_hooks(func, &has_drop);
         }
-        register_drop_hooks(functions, &has_drop);
+        register_drop_hooks(functions, &has_drop, &self.enum_defs);
         let copy_sites = ownership.copy_sites.replace(Vec::new());
 
         if !self.release {
@@ -243,11 +255,12 @@ impl Optimizer {
 fn register_drop_hooks(
     functions: &mut [MirFunction],
     has_drop: &std::collections::HashSet<String>,
+    enum_defs: &HashMap<String, Vec<(String, Vec<crate::semantic::types::Type>)>>,
 ) {
     if has_drop.is_empty() {
         return;
     }
-    let pairs = drop_hooks::collect_drop_registrations(functions, has_drop);
+    let pairs = drop_hooks::collect_drop_registrations(functions, has_drop, enum_defs);
     if pairs.is_empty() {
         return;
     }
