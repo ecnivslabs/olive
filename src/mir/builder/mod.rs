@@ -768,6 +768,24 @@ impl<'a> MirBuilder<'a> {
                 n.clone(),
                 args.iter().map(|a| self.subst_mono_type(a)).collect(),
             ),
+            Type::TraitObject(n, args) => Type::TraitObject(
+                n.clone(),
+                args.iter().map(|a| self.subst_mono_type(a)).collect(),
+            ),
+            Type::Union(members) => {
+                Type::Union(members.iter().map(|m| self.subst_mono_type(m)).collect())
+            }
+            // A callee type carries the call's own type arguments: without
+            // substituting them, a nested generic call inside a monomorphized
+            // body re-monomorphizes with the bare parameter (`_send_T`),
+            // compiling the body fully erased (every descriptor `D_ANY`).
+            Type::Fn(params, ret, args) => Type::Fn(
+                params.iter().map(|p| self.subst_mono_type(p)).collect(),
+                Box::new(self.subst_mono_type(ret)),
+                args.iter().map(|a| self.subst_mono_type(a)).collect(),
+            ),
+            Type::Vector(t, n) => Type::Vector(Box::new(self.subst_mono_type(t)), *n),
+            Type::Future(t) => Type::Future(Box::new(self.subst_mono_type(t))),
             Type::List(t) => Type::List(Box::new(self.subst_mono_type(t))),
             Type::Set(t) => Type::Set(Box::new(self.subst_mono_type(t))),
             Type::Dict(k, v) => Type::Dict(

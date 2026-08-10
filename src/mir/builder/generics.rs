@@ -201,6 +201,12 @@ impl<'a> MirBuilder<'a> {
 
                 *n = specialized_name.clone().replace("::__init__", "");
                 *tp = Vec::new();
+                // Methods lower through `lower_stmt` below with types read
+                // from the original generic `expr_types`: install the map so
+                // they specialize too, or nested generic calls inside a
+                // method body re-monomorphize with the bare parameter
+                // (`_send_T`), compiling fully erased (`D_ANY` descriptors).
+                fn_type_map = Some(type_map);
             }
             _ => {}
         }

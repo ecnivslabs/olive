@@ -317,6 +317,7 @@ impl<M: Module> CraneliftCodegen<M> {
             "__olive_list_extend_typed" if args.len() == 2 => Some(1usize),
             "__olive_obj_update_typed" if args.len() == 2 => Some(1usize),
             "__olive_chan_send" | "__olive_mutex_unlock" if args.len() == 2 => Some(1usize),
+            "__olive_mutex_new" if args.len() == 1 => Some(0usize),
             "__olive_set_add_typed"
             | "__olive_set_remove_typed"
             | "__olive_set_contains_typed"

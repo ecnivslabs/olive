@@ -10,7 +10,12 @@ use std::sync::{
 };
 
 struct OliveChannel {
-    queue: Mutex<std::collections::VecDeque<i64>>,
+    /// Pending `(value, descriptor)` pairs. The descriptor travels per slot
+    /// (not per channel) so the teardown drain frees each value through its
+    /// own static type: a raw struct's header word is a field count, not a
+    /// kind tag, so kind dispatch would misread it. Receivers ignore the
+    /// descriptor; their static type drives their own typed handling.
+    queue: Mutex<std::collections::VecDeque<(i64, i64)>>,
     cvar: Condvar,
     closed: AtomicBool,
 }
@@ -52,7 +57,7 @@ pub extern "C" fn olive_chan_send(chan: i64, val: i64, desc: i64) -> i64 {
         crate::free_typed::olive_free_typed(val, desc);
         return 0;
     }
-    q.push_back(val);
+    q.push_back((val, desc));
     drop(q);
     ch.cvar.notify_one();
     1
@@ -66,7 +71,7 @@ pub extern "C" fn olive_chan_recv(chan: i64) -> i64 {
     let ch = unsafe { &*(chan as *const OliveChannel) };
     let mut q = ch.queue.lock().unwrap();
     loop {
-        if let Some(v) = q.pop_front() {
+        if let Some((v, _)) = q.pop_front() {
             return v;
         }
         if ch.closed.load(Ordering::SeqCst) {
@@ -82,7 +87,11 @@ pub extern "C" fn olive_chan_try_recv(chan: i64) -> i64 {
         return i64::MIN;
     }
     let ch = unsafe { &*(chan as *const OliveChannel) };
-    ch.queue.lock().unwrap().pop_front().unwrap_or(i64::MIN)
+    ch.queue
+        .lock()
+        .unwrap()
+        .pop_front()
+        .map_or(i64::MIN, |(v, _)| v)
 }
 
 #[unsafe(no_mangle)]
@@ -120,22 +129,31 @@ pub extern "C" fn olive_chan_free(chan: i64) {
         let ch = &*(chan as *const OliveChannel);
         std::mem::take(&mut *ch.queue.lock().unwrap())
     };
-    for val in pending {
-        crate::free_any_word(val);
+    for (val, desc) in pending {
+        if desc != 0 {
+            crate::free_typed::olive_free_typed(val, desc);
+        } else {
+            crate::free_any_word(val);
+        }
     }
     unsafe { drop(Box::from_raw(chan as *mut OliveChannel)) };
 }
 
 struct OliveMutex {
-    inner: Mutex<(bool, i64)>,
+    /// `(locked, value, descriptor)`. The descriptor is stamped at creation
+    /// (compiler-injected, like `chan_send`'s) and refreshed on every
+    /// `unlock`, so the teardown drain frees the slot through its static
+    /// type instead of kind dispatch (see `OliveChannel::queue`).
+    inner: Mutex<(bool, i64, i64)>,
     cvar: Condvar,
 }
 
 /// See `olive_chan_send`: `val` must already be relocated by the caller.
+/// `desc` is its static type descriptor, stored for the teardown drain.
 #[unsafe(no_mangle)]
-pub extern "C" fn olive_mutex_new(val: i64) -> i64 {
+pub extern "C" fn olive_mutex_new(val: i64, desc: i64) -> i64 {
     Box::into_raw(Box::new(OliveMutex {
-        inner: Mutex::new((false, val)),
+        inner: Mutex::new((false, val, desc)),
         cvar: Condvar::new(),
     })) as i64
 }
@@ -167,6 +185,7 @@ pub extern "C" fn olive_mutex_unlock(m: i64, new_val: i64, desc: i64) {
     let mut guard = mx.inner.lock().unwrap();
     guard.0 = false;
     guard.1 = new_val;
+    guard.2 = desc;
     mx.cvar.notify_one();
 }
 
@@ -186,17 +205,23 @@ pub extern "C" fn olive_mutex_free(m: i64) {
     // or was freed at its own scope end. Take under the lock, release the
     // lock, then free: element drops run user `__drop__` shims that must
     // never execute under the mutex.
-    let slot: Option<i64> = unsafe {
+    let slot: Option<(i64, i64)> = unsafe {
         let mx = &*(m as *const OliveMutex);
         let mut guard = mx.inner.lock().unwrap();
         if guard.0 {
             None
         } else {
-            Some(std::mem::replace(&mut guard.1, 0))
+            let val = std::mem::replace(&mut guard.1, 0);
+            let desc = std::mem::replace(&mut guard.2, 0);
+            Some((val, desc))
         }
     };
-    if let Some(val) = slot {
-        crate::free_any_word(val);
+    if let Some((val, desc)) = slot {
+        if desc != 0 {
+            crate::free_typed::olive_free_typed(val, desc);
+        } else {
+            crate::free_any_word(val);
+        }
     }
     unsafe { drop(Box::from_raw(m as *mut OliveMutex)) };
 }
@@ -368,7 +393,7 @@ mod tests {
     fn mutex_free_unlocked_releases_heap_string() {
         let s = crate::olive_str_internal("mutex-slot");
         let g = crate::string_slab::olive_str_gen_of(s);
-        let m = olive_mutex_new(s);
+        let m = olive_mutex_new(s, str_desc());
         olive_mutex_free(m);
         assert_eq!(crate::string_slab::olive_str_gen_stale(s, g), 1);
     }
@@ -377,7 +402,7 @@ mod tests {
     fn mutex_free_locked_leaves_slot_to_locker() {
         let s = crate::olive_str_internal("locked-slot");
         let g = crate::string_slab::olive_str_gen_of(s);
-        let m = olive_mutex_new(s);
+        let m = olive_mutex_new(s, str_desc());
         let v = olive_mutex_lock(m);
         assert_eq!(v, s);
         olive_mutex_free(m);
@@ -390,7 +415,7 @@ mod tests {
     fn mutex_free_after_unlock_releases_current_slot() {
         let a = crate::olive_str_internal("slot-a");
         let ga = crate::string_slab::olive_str_gen_of(a);
-        let m = olive_mutex_new(a);
+        let m = olive_mutex_new(a, str_desc());
         let v = olive_mutex_lock(m);
         assert_eq!(v, a);
         let b = crate::olive_str_internal("slot-b");
@@ -424,7 +449,7 @@ mod tests {
 
     #[test]
     fn mutex_lock_unlock() {
-        let m = olive_mutex_new(42);
+        let m = olive_mutex_new(42, int_desc());
         let val = olive_mutex_lock(m);
         assert_eq!(val, 42);
         olive_mutex_unlock(m, 99, int_desc());
@@ -436,7 +461,7 @@ mod tests {
 
     #[test]
     fn mutex_threaded() {
-        let m = olive_mutex_new(0);
+        let m = olive_mutex_new(0, int_desc());
         let mut handles = vec![];
         for _ in 0..4 {
             handles.push(std::thread::spawn(move || {
@@ -510,7 +535,7 @@ mod tests {
 
     #[test]
     fn threaded_mutex_roundtrip() {
-        let m = olive_mutex_new(42);
+        let m = olive_mutex_new(42, int_desc());
         let handle = std::thread::spawn(move || {
             let v = olive_mutex_lock(m);
             assert_eq!(v, 42);

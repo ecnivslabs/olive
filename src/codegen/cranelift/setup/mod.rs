@@ -408,7 +408,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_memo_get", &sig_i64_i64_i64),
             ("__olive_mutex_free", &sig_i64_void),
             ("__olive_mutex_lock", &sig_i64_i64),
-            ("__olive_mutex_new", &sig_i64_i64),
+            ("__olive_mutex_new", &sig_i64_i64_i64),
             ("__olive_mutex_unlock", &sig_i64_i64_i64_void),
             ("__olive_net_dns_lookup", &sig_i64_i64),
             ("__olive_net_dns_lookup_all", &sig_i64_i64),
