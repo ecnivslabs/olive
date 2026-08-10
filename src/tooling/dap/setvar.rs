@@ -394,12 +394,18 @@ fn build_value(
                 ));
             }
             let type_id = crate::mir::enum_type_id(name);
-            let ptr = call_alloc3(
+            // Debugger-built enums carry the same descriptor stamp
+            // codegen-built ones do, so their payloads free precisely.
+            // The descriptor is only read during the call, so a host-side
+            // pointer is fine (same trick as `obj_set_typed` above).
+            let desc = build_descriptor(session, concrete_ty(ty));
+            let ptr = call_alloc4(
                 session,
                 "olive_enum_new",
                 type_id,
                 tag as i64,
                 payload_tys.len() as i64,
+                desc.as_ptr() as i64,
             )?;
             for (i, (pty, arg)) in payload_tys.iter().zip(args).enumerate() {
                 let raw = build_value(session, frame_idx, pty, arg)?;
@@ -539,12 +545,19 @@ fn call_alloc1(session: &EngineShared, name: &str, a: i64) -> Result<i64, String
     Ok(f(a))
 }
 
-fn call_alloc3(session: &EngineShared, name: &str, a: i64, b: i64, c: i64) -> Result<i64, String> {
+fn call_alloc4(
+    session: &EngineShared,
+    name: &str,
+    a: i64,
+    b: i64,
+    c: i64,
+    d: i64,
+) -> Result<i64, String> {
     let ptr = session
         .runtime_symbol(name)
         .ok_or_else(|| format!("runtime symbol {name} unavailable"))?;
-    let f: extern "C" fn(i64, i64, i64) -> i64 = unsafe { std::mem::transmute(ptr) };
-    Ok(f(a, b, c))
+    let f: extern "C" fn(i64, i64, i64, i64) -> i64 = unsafe { std::mem::transmute(ptr) };
+    Ok(f(a, b, c, d))
 }
 
 fn obj_set(session: &EngineShared, obj: i64, key: i64, val: i64) -> Result<(), String> {

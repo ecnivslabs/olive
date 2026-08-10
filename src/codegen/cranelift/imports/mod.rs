@@ -579,7 +579,7 @@ pub(super) fn scan_rvalue_imports(
                     needed.insert("__olive_set_add_typed");
                     needed.insert("__olive_set_new");
                 }
-                AggregateKind::EnumVariant(_, _) => {
+                AggregateKind::EnumVariant(_, _, _) => {
                     needed.insert("__olive_enum_new");
                     needed.insert("__olive_enum_set");
                 }

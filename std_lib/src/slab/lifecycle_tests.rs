@@ -7,7 +7,7 @@ fn allocation_wave(free: bool, typed: bool) {
         crate::olive_obj_set(dict, 0, 42);
         let set = crate::set::olive_set_new(4);
         crate::set::olive_set_add(set, 42);
-        let variant = crate::olive_enum_new(1, 0, 1);
+        let variant = crate::olive_enum_new(1, 0, 1, 0);
         crate::olive_enum_set(variant, 0, 42);
         if free && typed {
             crate::free_typed::olive_free_typed(dict, [D_DICT, D_INT, D_INT].as_ptr() as i64);
@@ -50,13 +50,13 @@ fn thread_teardown_releases_container_storage() {
 
 #[test]
 fn enum_reuse_handles_growing_empty_and_shrinking_payloads() {
-    let variant = crate::olive_enum_new(1, 0, 8);
+    let variant = crate::olive_enum_new(1, 0, 8, 0);
     for n in [3, 0, 9, 9, 1] {
         let old_len = unsafe { (*(variant as *const crate::OliveEnum)).payload_len };
         for i in 0..old_len {
             crate::olive_enum_set(variant, i as i64, 99);
         }
-        let reused = crate::enum_obj::olive_enum_new_reuse(variant, 2, 1, n, 1);
+        let reused = crate::enum_obj::olive_enum_new_reuse(variant, 2, 1, n, 1, 0);
         assert_eq!(reused, variant);
         assert_eq!(crate::olive_enum_type_id(variant), 2);
         assert_eq!(crate::olive_enum_tag(variant), 1);

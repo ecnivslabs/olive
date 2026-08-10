@@ -156,11 +156,13 @@ impl<'a> MirBuilder<'a> {
             let variant_info = self.enum_variants.get(&mangled).cloned();
             if let Some((enum_name, tag)) = variant_info {
                 let type_id = crate::mir::enum_type_id(&enum_name);
-                let tmp = self.new_local(self.get_type(expr_id), None, false);
+                let enum_ty = self.get_type(expr_id);
+                let desc = self.enum_variant_desc(&enum_ty);
+                let tmp = self.new_local(enum_ty, None, false);
                 self.push_statement(
                     StatementKind::Assign(
                         tmp,
-                        Rvalue::Aggregate(AggregateKind::EnumVariant(type_id, tag), arg_ops),
+                        Rvalue::Aggregate(AggregateKind::EnumVariant(type_id, tag, desc), arg_ops),
                     ),
                     span,
                 );
@@ -263,11 +265,16 @@ impl<'a> MirBuilder<'a> {
                 let variant_info = self.enum_variants.get(&mangled).cloned();
                 if let Some((enum_name, tag)) = variant_info {
                     let type_id = crate::mir::enum_type_id(&enum_name);
-                    let tmp = self.new_local(self.get_type(expr_id), None, false);
+                    let enum_ty = self.get_type(expr_id);
+                    let desc = self.enum_variant_desc(&enum_ty);
+                    let tmp = self.new_local(enum_ty, None, false);
                     self.push_statement(
                         StatementKind::Assign(
                             tmp,
-                            Rvalue::Aggregate(AggregateKind::EnumVariant(type_id, tag), arg_ops),
+                            Rvalue::Aggregate(
+                                AggregateKind::EnumVariant(type_id, tag, desc),
+                                arg_ops,
+                            ),
                         ),
                         span,
                     );

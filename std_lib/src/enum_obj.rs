@@ -17,7 +17,9 @@ pub(crate) unsafe fn release_enum_storage(body: *mut u8) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn olive_enum_new(type_id: i64, tag: i64, arg_count: i64) -> i64 {
+pub extern "C" fn olive_enum_new(type_id: i64, tag: i64, arg_count: i64, desc: i64) -> i64 {
+    // `desc` is the raw `D_ENUM` descriptor pointer (passed untagged like
+    // every other typed-free descriptor), stored for descriptor-less frees.
     let mut payload = vec![0i64; arg_count as usize];
     let payload_ptr = payload.as_mut_ptr();
     let payload_len = payload.len();
@@ -33,6 +35,7 @@ pub extern "C" fn olive_enum_new(type_id: i64, tag: i64, arg_count: i64) -> i64 
                     tag,
                     payload_ptr,
                     payload_len,
+                    desc,
                 },
             );
         }
@@ -169,6 +172,16 @@ pub extern "C" fn olive_free_enum(ptr: i64) {
     if !is_ours {
         return;
     }
+    // Descriptor-carrying enums free exactly like a typed enum free: the
+    // payload walk is descriptor-driven, so struct payloads (whose header
+    // word is a field count, not a kind) are read precisely rather than
+    // kind-dispatched. Descriptor-less values keep the legacy behavior of
+    // releasing storage alone.
+    let desc = unsafe { (*(ptr as *const OliveEnum)).desc };
+    if desc != 0 {
+        crate::free_typed::olive_free_typed(ptr, desc);
+        return;
+    }
     if crate::slab::slot_is_live(ptr) {
         unsafe { release_enum_storage(ptr as *mut u8) };
     }
@@ -229,9 +242,10 @@ pub extern "C" fn olive_enum_new_reuse(
     tag: i64,
     arg_count: i64,
     bump: i64,
+    desc: i64,
 ) -> i64 {
     if old_ptr == 0 {
-        return olive_enum_new(type_id, tag, arg_count);
+        return olive_enum_new(type_id, tag, arg_count, desc);
     }
     if bump != 0 {
         unsafe {
@@ -245,6 +259,14 @@ pub extern "C" fn olive_enum_new_reuse(
     }
     let n = arg_count as usize;
     let e = unsafe { &mut *(old_ptr as *mut OliveEnum) };
+    // A reuse normally follows `__olive_clear_typed` at the `Drop` site,
+    // which already freed the old payloads and nulled the buffer -- but a
+    // non-cleared slot still owns live words here, and overwriting them
+    // would strand those payloads. Drain through the old descriptor first;
+    // the clear path is idempotent, so a cleared slot is a no-op.
+    if !e.payload_ptr.is_null() && e.payload_len != 0 && e.desc != 0 {
+        crate::free_typed::olive_clear_typed(old_ptr, e.desc);
+    }
     unsafe {
         // The header stores no separate capacity, so its payload allocation
         // must have exactly the recorded length, including after shrinking.
@@ -262,6 +284,7 @@ pub extern "C" fn olive_enum_new_reuse(
         }
         e.type_id = type_id;
         e.tag = tag;
+        e.desc = desc;
     }
     old_ptr
 }
@@ -295,7 +318,7 @@ mod tests {
 
     #[test]
     fn new_enum_basic() {
-        let e = olive_enum_new(1, 0, 0);
+        let e = olive_enum_new(1, 0, 0, 0);
         assert_ne!(e, 0);
         assert_eq!(olive_enum_type_id(e), 1);
         assert_eq!(olive_enum_tag(e), 0);
@@ -303,7 +326,7 @@ mod tests {
 
     #[test]
     fn enum_with_payload() {
-        let e = olive_enum_new(1, 2, 3);
+        let e = olive_enum_new(1, 2, 3, 0);
         olive_enum_set(e, 0, 10);
         olive_enum_set(e, 1, 20);
         olive_enum_set(e, 2, 30);
@@ -314,28 +337,62 @@ mod tests {
 
     #[test]
     fn enum_get_out_of_bounds() {
-        let e = olive_enum_new(0, 0, 1);
+        let e = olive_enum_new(0, 0, 1, 0);
         assert_eq!(olive_enum_get(e, 10), 0);
     }
 
     #[test]
     fn enum_set_out_of_bounds_no_panic() {
-        let e = olive_enum_new(0, 0, 1);
+        let e = olive_enum_new(0, 0, 1, 0);
         olive_enum_set(e, 100, 42);
     }
 
     #[test]
     fn enum_type_id_multiple() {
-        let e1 = olive_enum_new(42, 0, 0);
-        let e2 = olive_enum_new(99, 0, 0);
+        let e1 = olive_enum_new(42, 0, 0, 0);
+        let e2 = olive_enum_new(99, 0, 0, 0);
         assert_eq!(olive_enum_type_id(e1), 42);
         assert_eq!(olive_enum_type_id(e2), 99);
     }
 
     #[test]
     fn free_enum_no_panic() {
-        let e = olive_enum_new(0, 0, 3);
+        let e = olive_enum_new(0, 0, 3, 0);
         olive_free_enum(e);
+    }
+
+    #[test]
+    fn free_enum_with_desc_frees_heap_payload() {
+        use crate::format::{D_ENUM, D_STR};
+        // [D_ENUM, lp("E"), 1 variant, lp("V"), 1 payload, D_STR].
+        let desc = [D_ENUM, 14, b'E', 14, 14, b'V', 14, D_STR];
+        let desc_ptr = desc.as_ptr() as i64;
+        let e = olive_enum_new(1, 0, 1, desc_ptr);
+        let s = crate::olive_str_internal("payload-string");
+        let g = crate::string_slab::olive_str_gen_of(s);
+        olive_enum_set(e, 0, s);
+        olive_free_enum(e);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(s, g), 1);
+    }
+
+    #[test]
+    fn free_enum_with_desc_walks_struct_payload() {
+        use crate::format::{D_ENUM, D_STR, D_STRUCT};
+        // Variant `V` holding a struct `P` with one string field: the walk
+        // must reach through the struct precisely (a kind dispatch would
+        // misread the struct header as a kind tag).
+        let desc = [
+            D_ENUM, 14, b'E', 14, 14, b'V', 14, D_STRUCT, 14, b'P', 14, 14, b'x', D_STR,
+        ];
+        let desc_ptr = desc.as_ptr() as i64;
+        let e = olive_enum_new(1, 0, 1, desc_ptr);
+        let st = crate::struct_obj::olive_struct_alloc(1);
+        let s = crate::olive_str_internal("nested-string");
+        let g = crate::string_slab::olive_str_gen_of(s);
+        unsafe { *((st + 8) as *mut i64) = s };
+        olive_enum_set(e, 0, st);
+        olive_free_enum(e);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(s, g), 1);
     }
 
     #[test]
@@ -344,7 +401,7 @@ mod tests {
         // [D_ENUM, lp("E"), 1 variant, lp("V"), 1 payload, D_STR].
         let desc = [D_ENUM, 14, b'E', 14, 14, b'V', 14, D_STR];
         let desc_ptr = desc.as_ptr() as i64;
-        let e = olive_enum_new(1, 0, 1);
+        let e = olive_enum_new(1, 0, 1, 0);
         let old = crate::olive_str_internal("old-payload");
         let gold = crate::string_slab::olive_str_gen_of(old);
         olive_enum_set(e, 0, old);
@@ -363,7 +420,7 @@ mod tests {
         use crate::format::{D_ENUM, D_STR};
         let desc = [D_ENUM, 14, b'E', 14, 14, b'V', 14, D_STR];
         let desc_ptr = desc.as_ptr() as i64;
-        let e = olive_enum_new(1, 0, 1);
+        let e = olive_enum_new(1, 0, 1, 0);
         let a = crate::olive_str_internal("same-payload");
         let g = crate::string_slab::olive_str_gen_of(a);
         olive_enum_set(e, 0, a);

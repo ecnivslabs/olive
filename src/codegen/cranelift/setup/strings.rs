@@ -432,7 +432,13 @@ impl<M: Module> CraneliftCodegen<M> {
                     self.collect_strings_in_operand(arg);
                 }
             }
-            Rvalue::Aggregate(_, ops) => {
+            Rvalue::Aggregate(kind, ops) => {
+                // Enum constructions stamp their `D_ENUM` descriptor (carried
+                // in MIR, computed by the builder): intern it here so codegen
+                // can pass it to `olive_enum_new` for descriptor-less frees.
+                if let crate::mir::AggregateKind::EnumVariant(_, _, desc) = kind {
+                    self.intern_attr_string(desc);
+                }
                 for op in ops {
                     self.collect_strings_in_operand(op);
                 }

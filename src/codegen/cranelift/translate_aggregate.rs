@@ -122,10 +122,20 @@ impl<M: Module> CraneliftCodegen<M> {
                 }
                 dict_ptr
             }
-            AggregateKind::EnumVariant(type_id, tag) => {
+            AggregateKind::EnumVariant(type_id, tag, desc) => {
                 let type_id_val = builder.ins().iconst(types::I64, *type_id);
                 let tag_val = builder.ins().iconst(types::I64, *tag as i64);
                 let count = builder.ins().iconst(types::I64, ops.len() as i64);
+                // Builder-stamped `D_ENUM` descriptor, interned with the other
+                // string constants so the bytes outlive the value. Passed raw
+                // (untagged), like every other typed-free descriptor: the
+                // value carries it so descriptor-less (`Any`) frees still
+                // walk payloads precisely.
+                let desc_id = *string_ids
+                    .get(desc)
+                    .expect("enum descriptor not interned during collection");
+                let local_desc = module.declare_data_in_func(desc_id, builder.func);
+                let desc_val = builder.ins().symbol_value(types::I64, local_desc);
                 let enum_ptr = if let Some((_, reuse_val, has_borrow)) = reuse {
                     let new_id = func_ids.get("__olive_enum_new_reuse").unwrap();
                     let new_func = module.declare_func_in_func(*new_id, builder.func);
@@ -134,7 +144,7 @@ impl<M: Module> CraneliftCodegen<M> {
                         .iconst(types::I64, if has_borrow { 1 } else { 0 });
                     let inst = builder.ins().call(
                         new_func,
-                        &[reuse_val, type_id_val, tag_val, count, bump_val],
+                        &[reuse_val, type_id_val, tag_val, count, bump_val, desc_val],
                     );
                     builder.inst_results(inst)[0]
                 } else {
@@ -142,7 +152,9 @@ impl<M: Module> CraneliftCodegen<M> {
                         .get("__olive_enum_new")
                         .expect("missing __olive_enum_new");
                     let new_func = module.declare_func_in_func(*new_id, builder.func);
-                    let inst = builder.ins().call(new_func, &[type_id_val, tag_val, count]);
+                    let inst = builder
+                        .ins()
+                        .call(new_func, &[type_id_val, tag_val, count, desc_val]);
                     builder.inst_results(inst)[0]
                 };
 

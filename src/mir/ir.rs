@@ -32,7 +32,13 @@ pub enum AggregateKind {
     List,
     Set,
     Dict,
-    EnumVariant(i64, usize),
+    /// An enum variant construction: runtime `type_id`, variant `tag`, and
+    /// the enum's `D_ENUM` descriptor bytes. The descriptor travels in MIR
+    /// (not recomputed at codegen) so every construction site stamps the
+    /// identical bytes the typed free/copy walk; codegen interns it like any
+    /// other `Constant::Str` and passes it to `olive_enum_new`, which stores
+    /// it on the value for descriptor-less (`Any`) frees.
+    EnumVariant(i64, usize, String),
     FatPtr,
 }
 
@@ -236,12 +242,12 @@ mod tests {
         assert_eq!(AggregateKind::Tuple, AggregateKind::Tuple);
         assert_eq!(AggregateKind::List, AggregateKind::List);
         assert_eq!(
-            AggregateKind::EnumVariant(1, 2),
-            AggregateKind::EnumVariant(1, 2)
+            AggregateKind::EnumVariant(1, 2, "d".to_string()),
+            AggregateKind::EnumVariant(1, 2, "d".to_string())
         );
         assert_ne!(
-            AggregateKind::EnumVariant(1, 2),
-            AggregateKind::EnumVariant(1, 3)
+            AggregateKind::EnumVariant(1, 2, "d".to_string()),
+            AggregateKind::EnumVariant(1, 3, "d".to_string())
         );
     }
 

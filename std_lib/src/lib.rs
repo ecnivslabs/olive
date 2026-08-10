@@ -260,6 +260,14 @@ pub struct OliveEnum {
     pub tag: i64,
     pub payload_ptr: *mut i64,
     pub payload_len: usize,
+    /// Raw pointer to the enum's `D_ENUM` descriptor bytes (the same string
+    /// the compiler threads through typed frees). Lets the untyped `Any`
+    /// free walk payload words precisely instead of guessing by kind -- a
+    /// raw struct payload's header is a field count, not a kind tag, so a
+    /// kind dispatch would misread it. Zero when the constructor had no
+    /// descriptor (debugger-built values, unit tests): the free then falls
+    /// back to releasing storage alone, the pre-descriptor behavior.
+    pub desc: i64,
 }
 
 #[repr(C)]

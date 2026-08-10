@@ -275,12 +275,14 @@ impl<'a> MirBuilder<'a> {
         // the built-in `Error(msg)` enum variant so the result is matchable as
         // `case Error(e)` and carries its source location.
         let located_msg = self.prepend_call_loc(err_msg_tmp, span);
-        let err_tmp = self.new_local(Type::Enum("Error".to_string(), vec![]), None, false);
+        let err_ty = Type::Enum("Error".to_string(), vec![]);
+        let err_desc = self.enum_variant_desc(&err_ty);
+        let err_tmp = self.new_local(err_ty, None, false);
         self.push_statement(
             StatementKind::Assign(
                 err_tmp,
                 Rvalue::Aggregate(
-                    AggregateKind::EnumVariant(crate::mir::enum_type_id("Error"), 0),
+                    AggregateKind::EnumVariant(crate::mir::enum_type_id("Error"), 0, err_desc),
                     vec![Operand::Copy(located_msg)],
                 ),
             ),

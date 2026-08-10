@@ -90,6 +90,21 @@ impl<'a> MirBuilder<'a> {
         op
     }
 
+    /// Descriptor bytes stamped onto an enum variant construction
+    /// (`AggregateKind::EnumVariant`), from the same encoder the typed
+    /// free/copy walks consume, so an `Any`-held enum still frees its
+    /// payloads precisely after its static type is erased. Computed here
+    /// (not at codegen) because only the builder holds the fully-applied
+    /// variant type, including generic arguments.
+    pub(super) fn enum_variant_desc(&self, ty: &Type) -> String {
+        type_descriptor(
+            ty,
+            &self.struct_fields,
+            &self.struct_field_types,
+            &self.enum_defs,
+        )
+    }
+
     /// Converts scalars, structs, and native list elements to self-describing
     /// `Any` values; other pointer representations pass through unchanged.
     pub(super) fn box_into_any(&mut self, op: Operand, from_ty: &Type, span: Span) -> Operand {

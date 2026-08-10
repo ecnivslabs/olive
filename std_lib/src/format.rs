@@ -603,6 +603,7 @@ mod tests {
                     tag,
                     payload_ptr: ptr,
                     payload_len: len,
+                    desc: 0,
                 })),
                 payload: owned,
                 payload_ptr: ptr,

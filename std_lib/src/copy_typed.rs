@@ -505,7 +505,7 @@ fn copy_enum(val: i64, desc: *const u8, pos: &mut usize, visited: &mut FxHashMap
         (0, usize::MAX, std::ptr::null_mut(), 0)
     };
     let new = if live {
-        crate::olive_enum_new(type_id, tag as i64, plen as i64)
+        crate::olive_enum_new(type_id, tag as i64, plen as i64, desc as i64)
     } else {
         0
     };
@@ -629,7 +629,7 @@ fn copy_any_node(
         }
         KIND_ENUM => {
             let e = unsafe { &*(val as *const OliveEnum) };
-            let new = crate::olive_enum_new(e.type_id, e.tag, e.payload_len as i64);
+            let new = crate::olive_enum_new(e.type_id, e.tag, e.payload_len as i64, e.desc);
             visited.insert(val, new);
             for j in (0..e.payload_len).rev() {
                 stack.push((
