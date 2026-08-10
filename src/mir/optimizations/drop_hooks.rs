@@ -140,11 +140,17 @@ struct TupleElem {
 }
 
 /// Names the `__drop__` for a struct or single-struct-union element type:
-/// `(drop_name, struct_name, is_union)`. A union follows the single-struct
-/// rule (only one member's hook can be named); anything else has no hook.
-fn hook_target(ty: &Type) -> Option<(String, String, bool)> {
+/// `(drop_name, struct_name, is_union, struct_ty)`. A union follows the
+/// single-struct rule (only one member's hook can be named); anything else
+/// has no hook.
+fn hook_target(ty: &Type) -> Option<(String, String, bool, Type)> {
     match ty {
-        Type::Struct(name, args, _) => Some((monomorphized_name(name, args), name.clone(), false)),
+        Type::Struct(name, args, _) => Some((
+            monomorphized_name(name, args),
+            name.clone(),
+            false,
+            ty.clone(),
+        )),
         Type::Union(members) => {
             let struct_members: Vec<&Type> = members
                 .iter()
@@ -153,7 +159,12 @@ fn hook_target(ty: &Type) -> Option<(String, String, bool)> {
             let [Type::Struct(name, args, _)] = struct_members.as_slice() else {
                 return None;
             };
-            Some((monomorphized_name(name, args), name.clone(), true))
+            Some((
+                monomorphized_name(name, args),
+                name.clone(),
+                true,
+                (*struct_members[0]).clone(),
+            ))
         }
         _ => None,
     }
@@ -184,9 +195,23 @@ pub fn lower_drop_hooks(func: &mut MirFunction, has_drop: &HashSet<String>) {
                 continue;
             };
             match &func.locals[local.0].ty {
-                Type::Struct(name, args, _) => {
-                    let drop_name = monomorphized_name(name, args);
-                    if has_drop.contains(&drop_name) && self_struct != Some(name.as_str()) {
+                Type::Struct(..) | Type::Union(..) => {
+                    let ty = func.locals[local.0].ty.clone();
+                    let Some((drop_name, elem_name, is_union, struct_ty)) = hook_target(&ty) else {
+                        continue;
+                    };
+                    if !has_drop.contains(&drop_name) || self_struct == Some(elem_name.as_str()) {
+                        continue;
+                    }
+                    if is_union {
+                        union_sites.push(UnionDropSite {
+                            bb: bb_idx,
+                            idx,
+                            drop_fn: format!("{}::__drop__", drop_name),
+                            local: *local,
+                            struct_ty,
+                        });
+                    } else {
                         sites.push(DropSite {
                             bb: bb_idx,
                             idx,
@@ -195,31 +220,12 @@ pub fn lower_drop_hooks(func: &mut MirFunction, has_drop: &HashSet<String>) {
                         });
                     }
                 }
-                Type::Union(members) => {
-                    let struct_members: Vec<&Type> = members
-                        .iter()
-                        .filter(|m| matches!(m, Type::Struct(..)))
-                        .collect();
-                    let [Type::Struct(name, args, _)] = struct_members.as_slice() else {
-                        continue;
-                    };
-                    let drop_name = monomorphized_name(name, args);
-                    if has_drop.contains(&drop_name) && self_struct != Some(name.as_str()) {
-                        union_sites.push(UnionDropSite {
-                            bb: bb_idx,
-                            idx,
-                            drop_fn: format!("{}::__drop__", drop_name),
-                            local: *local,
-                            struct_ty: (*struct_members[0]).clone(),
-                        });
-                    }
-                }
                 Type::List(elem) => {
                     // Elements with user cleanup get per-element hooks ahead
                     // of the container drop (which then frees the nulled
                     // shell): a union element follows the single-struct rule
                     // above, since only one member's hook can be named.
-                    let Some((drop_name, elem_name, is_union)) = hook_target(elem) else {
+                    let Some((drop_name, elem_name, is_union, _)) = hook_target(elem) else {
                         continue;
                     };
                     if has_drop.contains(&drop_name) && self_struct != Some(elem_name.as_str()) {
@@ -246,7 +252,7 @@ pub fn lower_drop_hooks(func: &mut MirFunction, has_drop: &HashSet<String>) {
                     // frees the consumed slots through the generation guard.
                     let mut elems = Vec::new();
                     for (pos, item) in items.iter().enumerate() {
-                        let Some((drop_name, elem_name, is_union)) = hook_target(item) else {
+                        let Some((drop_name, elem_name, is_union, _)) = hook_target(item) else {
                             continue;
                         };
                         if has_drop.contains(&drop_name) && self_struct != Some(elem_name.as_str())
@@ -272,7 +278,7 @@ pub fn lower_drop_hooks(func: &mut MirFunction, has_drop: &HashSet<String>) {
                     // Only values can own resources (keys are interned
                     // strings or scalars); hooked arms are zeroed in place so
                     // the dict drop that follows frees keys alone.
-                    let Some((drop_name, elem_name, is_union)) = hook_target(val) else {
+                    let Some((drop_name, elem_name, is_union, _)) = hook_target(val) else {
                         continue;
                     };
                     if has_drop.contains(&drop_name) && self_struct != Some(elem_name.as_str()) {
@@ -291,7 +297,7 @@ pub fn lower_drop_hooks(func: &mut MirFunction, has_drop: &HashSet<String>) {
                     }
                 }
                 Type::Set(elem) => {
-                    let Some((drop_name, elem_name, is_union)) = hook_target(elem) else {
+                    let Some((drop_name, elem_name, is_union, _)) = hook_target(elem) else {
                         continue;
                     };
                     if has_drop.contains(&drop_name) && self_struct != Some(elem_name.as_str()) {
