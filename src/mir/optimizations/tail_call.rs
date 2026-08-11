@@ -18,6 +18,11 @@ impl Transform for TailCallOpt {
 
         let mut changed = false;
         for bb_idx in 0..func.basic_blocks.len() {
+            // Only the tight shape (call + return-assign, nothing after)
+            // rewrites: trailing releases mean temporaries are still owned
+            // past the call, and folding them into the loop needs
+            // ownership decisions this pass cannot prove (a value forwarded
+            // into the next iteration must not be freed, a dead one must).
             let Some(args) =
                 Self::tail_call_args(&func.basic_blocks[bb_idx], &func_name, arg_count)
             else {
@@ -52,16 +57,40 @@ impl Transform for TailCallOpt {
                     span,
                 });
             }
-            for j in 0..arg_count {
+            // Overwriting a parameter strands its previous value: the loop
+            // never reaches a scope end, so nothing else releases it, and an
+            // accumulator leaks quadratically without this. Drop the old
+            // value first, exactly as a frame-end `Drop` would in unoptimized
+            // recursion. Skipped when the new argument carries the same slot
+            // forward (`Copy`/`Move` of the parameter itself): the value
+            // lives on, and dropping it here would double-free at the real
+            // scope end. Values aliasing the old parameter through other
+            // slots cannot occur: the ownership pass copies escaping views
+            // into owned values at call boundaries, so every other argument
+            // is either fresh or an owned copy. Non-owning parameters
+            // (borrows) never take a drop.
+            for (j, arg) in args.iter().enumerate() {
+                let param = Local(j + 1);
+                let carried =
+                    matches!(arg, Operand::Copy(l) | Operand::Move(l) if *l == param);
+                let old_owns = func
+                    .locals
+                    .get(param.0)
+                    .is_some_and(|d| d.is_owning && d.ty.needs_drop());
+                if !carried && old_owns {
+                    bb.statements.push(Statement {
+                        kind: StatementKind::Drop(param),
+                        span,
+                    });
+                }
                 bb.statements.push(Statement {
                     kind: StatementKind::Assign(
-                        Local(j + 1),
+                        param,
                         Rvalue::Use(Operand::Copy(Local(base_tmp + j))),
                     ),
                     span,
                 });
             }
-
             bb.terminator = Some(Terminator {
                 kind: TerminatorKind::Goto {
                     target: BasicBlockId(header),
@@ -77,7 +106,9 @@ impl Transform for TailCallOpt {
 }
 
 impl TailCallOpt {
-    /// Args of a self tail call ending `bb` (same-name call filling every param), else `None`.
+    /// Args of a self tail call ending `bb` (same-name call filling every
+    /// param), else `None`. Deliberately the tight shape only (call and
+    /// return-assign last, nothing after): see `run`.
     fn tail_call_args(bb: &BasicBlock, func_name: &str, arg_count: usize) -> Option<Vec<Operand>> {
         if !matches!(bb.terminator.as_ref()?.kind, TerminatorKind::Return) {
             return None;

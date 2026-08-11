@@ -195,3 +195,27 @@ fn main():
         "made\ndropBox\ndrop r1\n",
     );
 }
+
+#[test]
+fn tail_recursive_container_param_drops_once() {
+    assert_both(
+        r#"struct R:
+    s: str
+impl R:
+    fn __drop__(self):
+        print("drop "+self.s)
+
+fn loopit(xs: list[R], n: int) -> int:
+    if n == 0:
+        return 0
+    else:
+        return loopit(xs, n - 1)
+
+fn main():
+    let xs = [R("a"), R("b")]
+    print(loopit(xs, 5000))
+    print("done")
+"#,
+        "0\ndone\ndrop a\ndrop b\n",
+    );
+}
