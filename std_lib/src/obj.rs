@@ -100,11 +100,10 @@ fn obj_store(obj_ptr: i64, attr: i64, val: i64, val_desc: Option<*const u8>) -> 
     // int above the string-tag floor looks like a string pointer to the
     // magnitude heuristic, and reading its bits as string bytes faults.
     let old = if crate::key_word_is_str(attr) && !m.fields.contains_key(&OliveStringKey(attr)) {
-        let bytes = unsafe {
-            std::ffi::CStr::from_ptr(crate::string_slab::str_body(attr) as *const std::ffi::c_char)
-                .to_bytes()
-        };
-        let owned = crate::string_slab::str_alloc(bytes);
+        // Length-preserving copy: the key may hold an embedded NUL
+        // (Python-derived strings keep them), which a `strlen` re-copy
+        // would truncate, collapsing distinct keys.
+        let owned = crate::string_slab::str_alloc(crate::string::olive_str_to_bytes(attr));
         m.fields.insert(OliveStringKey(owned), val);
         None
     } else {

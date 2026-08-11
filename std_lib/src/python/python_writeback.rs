@@ -275,6 +275,14 @@ unsafe fn to_py_typed_dict(val: i64, kind: i64) -> PyObject {
             let key = crate::olive_list_get(keys, i);
             let value = crate::olive_obj_get(val, key);
             let py_value = raw_scalar_to_py(value, kind);
+            // Keys holding an embedded NUL cannot cross as C strings
+            // (`SET_ITEM_STRING` would truncate them into collisions);
+            // skip the entry like the deep exporter does rather than
+            // corrupt the surviving keys.
+            if crate::olive_str_to_bytes(key).contains(&0) {
+                PY_DEC_REF(py_value);
+                continue;
+            }
             PY_DICT_SET_ITEM_STRING(
                 py_dict,
                 crate::string_slab::str_body(key) as *const c_char,
@@ -338,9 +346,9 @@ fn expected_name_for_kind(kind: i64) -> &'static str {
 
 /// Decodes one Python scalar back into an Olive typed-container element by
 /// its static kind. Bool is checked before int (bool subtypes int in
-/// CPython): an int slot rejects an out-of-band `True`/`False` just like a
-/// bool slot rejects a plain `5`, each kind has exactly one accepted Python
-/// type.
+/// CPython): an int slot accepts `True`/`False` as 1/0, mirroring Python's
+/// own `int(True) == 1`, while a bool slot rejects a plain `5` -- each
+/// direction follows the language's subtyping, not a symmetric gate.
 unsafe fn decode_scalar(item: PyObject, kind: i64) -> Result<i64, String> {
     unsafe {
         let ty = raw_ob_type(item);

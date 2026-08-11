@@ -396,7 +396,25 @@ pub extern "C" fn olive_vararg_call(
     arg_vals: *const i64,
 ) -> i64 {
     use libffi::middle::{Cif, CodePtr, Type, arg};
+    // JIT-fed pointers: a null function or argument vector is a bug, not a
+    // callable shape -- fault here instead of segfaulting inside libffi.
+    assert!(
+        fn_ptr != 0,
+        "FFI vararg call through a null function pointer"
+    );
+    assert!(
+        n_total >= 0,
+        "FFI vararg call with negative arity {n_total}"
+    );
     let n = n_total as usize;
+    assert!(
+        n == 0 || !arg_types.is_null(),
+        "FFI vararg call with a null type vector"
+    );
+    assert!(
+        n == 0 || !arg_vals.is_null(),
+        "FFI vararg call with a null argument vector"
+    );
     let nf = (n_fixed as usize).max(1).min(n);
     let types: Vec<Type> = (0..n)
         .map(|i| {
