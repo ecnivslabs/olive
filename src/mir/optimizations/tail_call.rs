@@ -71,8 +71,7 @@ impl Transform for TailCallOpt {
             // (borrows) never take a drop.
             for (j, arg) in args.iter().enumerate() {
                 let param = Local(j + 1);
-                let carried =
-                    matches!(arg, Operand::Copy(l) | Operand::Move(l) if *l == param);
+                let carried = matches!(arg, Operand::Copy(l) | Operand::Move(l) if *l == param);
                 let old_owns = func
                     .locals
                     .get(param.0)

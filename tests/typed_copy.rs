@@ -57,3 +57,21 @@ fn main():
         "sent\nbig\nthree\n",
     );
 }
+
+#[test]
+fn setdefault_hit_discards_struct_default() {
+    assert_both(
+        r#"struct R:
+    s: str
+
+fn main():
+    let d: dict[int, R] = {1: R("kept")}
+    let old = d.setdefault(1, R("orphan"))
+    print(old.s)
+    let nxt = d.setdefault(2, R("fresh"))
+    print(nxt.s)
+    print(d[2].s)
+"#,
+        "kept\nfresh\nfresh\n",
+    );
+}

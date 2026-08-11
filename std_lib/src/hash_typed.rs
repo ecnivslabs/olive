@@ -166,9 +166,10 @@ pub extern "C" fn olive_obj_setdefault_typed(
     attr: i64,
     default: i64,
     key_desc: i64,
+    val_desc: i64,
 ) -> i64 {
     with_key_descriptor(key_desc, || {
-        crate::obj::olive_obj_setdefault(obj_ptr, attr, default)
+        crate::obj::olive_obj_setdefault(obj_ptr, attr, default, val_desc)
     })
 }
 

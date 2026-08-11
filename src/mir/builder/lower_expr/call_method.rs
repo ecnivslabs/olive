@@ -1333,7 +1333,13 @@ impl<'a> MirBuilder<'a> {
             "setdefault" => {
                 let key_op = arg_ops.first().cloned().unwrap_or(zero());
                 let default = box_val(self, arg_ops.get(1).cloned().unwrap_or(zero()), 1);
-                let f = if key_typed {
+                // A hit discards the default through its own descriptor: an
+                // untyped release misreads struct payloads by kind, so heap
+                // values take the typed entry even with scalar keys. `Any`
+                // values stay on the old rule: they arrive boxed, which the
+                // untyped release already handles.
+                let f = if key_typed || (val_ty != Type::Any && Self::list_elem_needs_copy(&val_ty))
+                {
                     "__olive_obj_setdefault_typed"
                 } else {
                     "__olive_obj_setdefault"

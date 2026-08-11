@@ -298,6 +298,24 @@ impl<M: Module> CraneliftCodegen<M> {
                 let local_func = module.declare_func_in_func(func_id, builder.func);
                 let mut full_args = call_args.clone();
                 full_args.push(desc_ptr);
+                // `setdefault` discards its default through the value's own
+                // descriptor on a hit, so it carries a second descriptor
+                // (mirrors the interning in `collect_type_descriptor`).
+                if name == "__olive_obj_setdefault_typed" && args.len() == 3 {
+                    let val_static_ty = super::imports::operand_static_type(&args[2], func_mir);
+                    let val_ty = super::imports::concrete_ty(&val_static_ty);
+                    let val_desc = super::imports::type_descriptor(
+                        val_ty,
+                        struct_fields,
+                        field_types,
+                        enum_defs,
+                    );
+                    let val_data_id = *string_ids
+                        .get(&val_desc)
+                        .expect("setdefault value descriptor not interned during collection");
+                    let val_local_data = module.declare_data_in_func(val_data_id, builder.func);
+                    full_args.push(builder.ins().symbol_value(types::I64, val_local_data));
+                }
                 let inst = builder.ins().call(local_func, &full_args);
                 let results = builder.inst_results(inst);
                 return if results.is_empty() {

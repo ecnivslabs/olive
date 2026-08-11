@@ -258,7 +258,12 @@ pub extern "C" fn olive_obj_pop_default(obj_ptr: i64, attr: i64, default: i64) -
 
 /// `d.setdefault(k, v)`: returns the existing value, or inserts and returns `v`.
 #[unsafe(no_mangle)]
-pub extern "C" fn olive_obj_setdefault(obj_ptr: i64, attr: i64, default: i64) -> i64 {
+pub extern "C" fn olive_obj_setdefault(
+    obj_ptr: i64,
+    attr: i64,
+    default: i64,
+    val_desc: i64,
+) -> i64 {
     if obj_ptr == 0 {
         panic!("Null pointer dereference: attempted to use setdefault on a null object");
     }
@@ -266,9 +271,16 @@ pub extern "C" fn olive_obj_setdefault(obj_ptr: i64, attr: i64, default: i64) ->
     if let Some(&v) = m.fields.get(&OliveStringKey(attr)) {
         // `default` was transferred here; the hit keeps the stored value, so
         // the orphaned default must be released (guard the pathological
-        // same-pointer pass-through, mirroring the replacing stores).
+        // same-pointer pass-through, mirroring the replacing stores). A raw
+        // struct's header word is a field count, not a kind tag, so an
+        // untyped release would misread it: free through the value
+        // descriptor when the caller supplied one.
         if default != v {
-            crate::free_any_word(default);
+            if val_desc != 0 {
+                crate::free_typed::olive_free_typed(default, val_desc);
+            } else {
+                crate::free_any_word(default);
+            }
         }
         return v;
     }
@@ -789,7 +801,7 @@ mod tests {
         olive_obj_set(dict, 1, kept);
         let dropped = olive_str_internal("dropped-val");
         let gd = crate::string_slab::olive_str_gen_of(dropped);
-        let got = olive_obj_setdefault(dict, 1, dropped);
+        let got = olive_obj_setdefault(dict, 1, dropped, 0);
         assert_eq!(got, kept);
         assert_eq!(crate::olive_str_from_ptr(got), "kept-val");
         assert_eq!(crate::string_slab::olive_str_gen_stale(dropped, gd), 1);
@@ -802,11 +814,38 @@ mod tests {
         let dict = olive_obj_new();
         let d = olive_str_internal("fresh-default");
         let g = crate::string_slab::olive_str_gen_of(d);
-        let got = olive_obj_setdefault(dict, 7, d);
+        let got = olive_obj_setdefault(dict, 7, d, 0);
         assert_eq!(got, d);
         assert_eq!(olive_obj_get(dict, 7), d);
         assert_eq!(crate::string_slab::olive_str_gen_stale(d, g), 0);
         olive_free_obj(dict);
         assert_eq!(crate::string_slab::olive_str_gen_stale(d, g), 1);
+    }
+
+    #[test]
+    fn setdefault_hit_frees_struct_default_through_desc() {
+        use crate::format::{D_DICT, D_INT, D_STR, D_STRUCT};
+        // One-field struct `P` with a string field `x`, inside
+        // `dict[int, P]`: the hit releases the orphaned default through
+        // the value descriptor instead of kind dispatch (which would read
+        // the struct's field-count header as a kind tag). Teardown goes
+        // through the typed dict free, the path compiled code uses.
+        let struct_desc = [D_STRUCT, 14, b'P', 14, 14, b'x', D_STR];
+        let dict_desc = [D_DICT, D_INT, D_STRUCT, 14, b'P', 14, 14, b'x', D_STR];
+        let dict = olive_obj_new();
+        let kept = crate::struct_obj::olive_struct_alloc(1);
+        let ks = crate::olive_str_internal("kept");
+        let gk = crate::string_slab::olive_str_gen_of(ks);
+        unsafe { *((kept + 8) as *mut i64) = ks };
+        olive_obj_set(dict, 1, kept);
+        let orphan = crate::struct_obj::olive_struct_alloc(1);
+        let s = crate::olive_str_internal("orphan-payload");
+        let g = crate::string_slab::olive_str_gen_of(s);
+        unsafe { *((orphan + 8) as *mut i64) = s };
+        let got = olive_obj_setdefault(dict, 1, orphan, struct_desc.as_ptr() as i64);
+        assert_eq!(got, kept);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(s, g), 1);
+        crate::free_typed::olive_free_typed(dict, dict_desc.as_ptr() as i64);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(ks, gk), 1);
     }
 }

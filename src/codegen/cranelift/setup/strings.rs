@@ -376,6 +376,20 @@ impl<M: Module> CraneliftCodegen<M> {
             let desc =
                 type_descriptor(&ty, &self.struct_fields, &self.field_types, &self.enum_defs);
             self.intern_attr_string(&desc);
+            // `setdefault` carries a second descriptor for its default
+            // value, computed exactly like `translate_call` does.
+            if name == "__olive_obj_setdefault_typed" && args.len() == 3 {
+                use super::super::imports::{concrete_ty, operand_static_type};
+                let val_static_ty = operand_static_type(&args[2], func);
+                let val_ty = concrete_ty(&val_static_ty);
+                let val_desc = type_descriptor(
+                    val_ty,
+                    &self.struct_fields,
+                    &self.field_types,
+                    &self.enum_defs,
+                );
+                self.intern_attr_string(&val_desc);
+            }
             return;
         }
         if name == "__olive_eq_typed" && args.len() == 2 {

@@ -320,7 +320,24 @@ impl<'a> MirBuilder<'a> {
                     self.lower_py_call_discard(expr);
                 } else {
                     let rval = self.lower_expr(expr);
-                    let tmp = self.new_local(Type::Any, None, true);
+                    // Type the discarded-value temp after the value, not
+                    // `Any`: an `Any` temp holding a raw struct misdirects
+                    // its scope-end drop through kind dispatch (a 1-field
+                    // struct reads as a list). Unresolved and borrowed shapes
+                    // keep today's `Any`.
+                    let tmp_ty = match self.get_type(expr.id) {
+                        Type::Var(_)
+                        | Type::Param(_)
+                        | Type::Never
+                        | Type::Any
+                        | Type::Ref(_)
+                        | Type::MutRef(_)
+                        | Type::Ptr(_)
+                        | Type::PyObject
+                        | Type::PyNamed(_, _) => Type::Any,
+                        ty => ty,
+                    };
+                    let tmp = self.new_local(tmp_ty, None, true);
                     self.push_statement(StatementKind::Assign(tmp, Rvalue::Use(rval)), expr.span);
                 }
             }
