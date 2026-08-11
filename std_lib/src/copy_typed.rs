@@ -360,10 +360,15 @@ fn copy_set_at(
     };
     let new = crate::set::olive_set_new(elen as i64);
     visited.insert(val, new);
+    // The element descriptor starts at `inner_start`: insert typed, so a
+    // raw scalar element (e.g. a large odd int, bit-identical to a tagged
+    // string pointer) hashes by value instead of being misread as a string.
+    // The untyped add would dereference the raw bits.
+    let elem_desc = unsafe { desc.byte_add(inner_start) } as i64;
     for i in 0..elen {
         let mut p = inner_start;
         let c = copy_val(unsafe { *eptr.add(i) }, desc, &mut p, visited);
-        crate::set::olive_set_add(new, c);
+        crate::hash_typed::olive_set_add_typed(new, c, elem_desc);
     }
     new
 }
@@ -408,12 +413,19 @@ fn copy_dict(val: i64, desc: *const u8, pos: &mut usize, visited: &mut FxHashMap
     let new = crate::obj::olive_obj_new();
     visited.insert(val, new);
     let mut fields = FxHashMap::default();
+    // Hash under the key descriptor (the same element-desc convention the
+    // typed dict stores use) so raw scalar keys hash by value; the
+    // magnitude heuristic would misread a large odd int key as a string
+    // pointer and dereference it.
+    let key_desc = unsafe { desc.byte_add(key_start) } as i64;
     for (k, &v) in obj.fields.iter() {
         let mut kp = key_start;
         let kc = copy_val(k.0, desc, &mut kp, visited);
         let mut vp = val_start;
         let vc = copy_val(v, desc, &mut vp, visited);
-        fields.insert(OliveStringKey(kc), vc);
+        crate::hash_typed::with_key_descriptor(key_desc, || {
+            fields.insert(OliveStringKey(kc), vc);
+        });
     }
     unsafe { (*(new as *mut OliveObj)).fields = fields };
     new

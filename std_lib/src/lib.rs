@@ -198,6 +198,13 @@ fn classify_key(v: i64) -> KeyClass {
         // without collapsing a byte-fragment key from `s[i]` to empty.
         return KeyClass::Str(olive_str_to_bytes(v));
     }
+    // Untagged interned chars (`s[i]`) hash by their one-character content,
+    // matching the heap-string spelling of the same text. This is
+    // classification only: ownership still treats them as static (the
+    // magnitude heuristic keeps them out of string frees).
+    if crate::string::is_interned_char(v) {
+        return KeyClass::Str(olive_str_to_bytes(v));
+    }
     if is_active_object(v) {
         let kind = unsafe { *(v as *const i64) };
         if matches!(kind, KIND_INT | KIND_FLOAT) {

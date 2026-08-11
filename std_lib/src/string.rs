@@ -54,6 +54,16 @@ pub(crate) fn char_str(byte: u8) -> i64 {
     CHAR_STRS.0[byte as usize].as_ptr() as i64
 }
 
+/// Whether a word points into the interned single-char table. These pointers
+/// are deliberately untagged (4-byte stride keeps bits 0-1 clear), so the
+/// magnitude heuristic reads them as scalars -- but for hashing and equality
+/// they are the one-character string they point at, and must classify as
+/// `Str` or cross-representation lookups (`d[s[i]]` vs `d["a"]`) miss.
+pub(crate) fn is_interned_char(v: i64) -> bool {
+    let base = CHAR_STRS.0.as_ptr() as i64;
+    v >= base && v < base + 1024
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_get(s: i64, i: i64) -> i64 {
     if s == 0 {

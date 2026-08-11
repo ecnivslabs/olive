@@ -69,3 +69,19 @@ fn main():
         },
     );
 }
+
+#[test]
+fn interned_char_key_matches_heap_spelling() {
+    assert_both(
+        r#"fn main():
+    let s = "abc"
+    let c = s[0]
+    let d: dict[Any, int] = {}
+    d[c] = 7
+    print(d["a"])
+    let e: dict[Any, int] = {"a": 42}
+    print(e[c])
+"#,
+        "7\n42\n",
+    );
+}
