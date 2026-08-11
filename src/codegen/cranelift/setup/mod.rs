@@ -292,6 +292,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_gather", &sig_i64_i64),
             ("__olive_gather_poll", &sig_i64_i64),
             ("__olive_get_index_any", &sig_3i64_i64),
+            ("__olive_getslice_any", &sig_i64_5_i64),
             ("__olive_bounds_fail", &sig_3i64_i64),
             ("__olive_nil_index_fail", &sig_i64_i64),
             ("__olive_div_zero_fail", &sig_i64_i64_i64),

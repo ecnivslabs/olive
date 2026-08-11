@@ -29,6 +29,31 @@ fn collect_matched_variants(
     }
 }
 
+/// Whether a type still mentions a generic parameter. Enum payload reads
+/// through a generic enum keep today's unconstrained variable instead of
+/// leaking a bare `Param` into lowering.
+fn type_has_param(ty: &Type) -> bool {
+    match ty {
+        Type::Param(_) => true,
+        Type::Struct(_, args, _) | Type::Enum(_, args) | Type::TraitObject(_, args) => {
+            args.iter().any(type_has_param)
+        }
+        Type::Union(members) | Type::Tuple(members) => members.iter().any(type_has_param),
+        Type::Fn(params, ret, args) => {
+            params.iter().chain(args.iter()).any(type_has_param) || type_has_param(ret)
+        }
+        Type::List(t)
+        | Type::Set(t)
+        | Type::Ref(t)
+        | Type::MutRef(t)
+        | Type::Ptr(t)
+        | Type::Vector(t, _)
+        | Type::Future(t) => type_has_param(t),
+        Type::Dict(k, v) => type_has_param(k) || type_has_param(v),
+        _ => false,
+    }
+}
+
 /// Whether a pattern matches the `None`/`null` case, recursing into
 /// or-pattern alternatives the same way `collect_matched_variants` does.
 fn pattern_matches_null(pattern: &crate::parser::ast::MatchPattern) -> bool {
@@ -1103,13 +1128,16 @@ impl TypeChecker {
                     current_obj_ty = *inner;
                 }
                 // A slice index preserves the sequence type rather than yielding
-                // an element.
+                // an element. A statically-`Any` object can hold any
+                // representation, so its slice type is honestly `Any` (the
+                // runtime dispatches); claiming `list` misroutes downstream
+                // formatting into list reads of a string's bytes.
                 if matches!(index.kind, ExprKind::Slice { .. }) {
                     return match current_obj_ty {
                         Type::List(_) | Type::Str | Type::Bytes | Type::Set(_) => current_obj_ty,
                         Type::Tuple(_) => Type::List(Box::new(Type::Any)),
                         ref t if t.is_py_value() => Type::PyObject,
-                        _ => Type::List(Box::new(Type::Any)),
+                        _ => Type::Any,
                     };
                 }
                 // `Holder[int](..)`: brackets on a struct name are explicit
@@ -1212,6 +1240,34 @@ impl TypeChecker {
                     Type::Str => {
                         self.unify(&Type::Int, &idx_ty, expr.span);
                         Type::Str
+                    }
+                    Type::Enum(en, _) => {
+                        self.unify(&Type::Int, &idx_ty, expr.span);
+                        // An enum payload read has a statically known shape:
+                        // the payload type at that position for a
+                        // single-variant enum. Without this the read types as
+                        // an unconstrained variable, and downstream member
+                        // access, slicing, and formatting all misdispatch.
+                        // Multi-variant positions keep today's variable (a
+                        // union would need value-dependent narrowing the
+                        // checker cannot prove).
+                        match (&index.kind, self.enum_defs.get(en.as_str()).cloned()) {
+                            (ExprKind::Integer(i), Some(variants)) if *i >= 0 => {
+                                let mut tys: Vec<Type> = Vec::new();
+                                for (_, p) in variants.iter() {
+                                    if let Some(t) = p.get(*i as usize).cloned()
+                                        && !tys.contains(&t)
+                                    {
+                                        tys.push(t);
+                                    }
+                                }
+                                match tys.as_slice() {
+                                    [single] if !type_has_param(single) => single.clone(),
+                                    _ => self.fresh_var(),
+                                }
+                            }
+                            _ => self.fresh_var(),
+                        }
                     }
                     Type::Bytes => {
                         self.unify(&Type::Int, &idx_ty, expr.span);

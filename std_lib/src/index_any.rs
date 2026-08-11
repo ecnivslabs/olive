@@ -5,6 +5,57 @@ fn index_type_error(loc: i64) -> ! {
     panic::abort("value does not support indexing", location.as_deref());
 }
 
+fn slice_type_error() -> ! {
+    // Slices carry no source location in the call convention (matching the
+    // typed getslice entry points), so the fault names the problem without
+    // a caret. Mirrors `index_type_error` for the slice shape.
+    panic::abort("value does not support slicing", None);
+}
+
+/// Runtime-dispatch slice for a statically-`Any` object. The builder used
+/// to route every `Any` slice to the Python slicer, segfaulting on native
+/// values (a string in an `Any` slot, an enum payload read). Dispatches on
+/// the value's own representation like `olive_get_index_any` does; anything
+/// without a slice shape faults cleanly instead of dereferencing.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_getslice_any(
+    obj: i64,
+    start: i64,
+    stop: i64,
+    step: i64,
+    flags: i64,
+) -> i64 {
+    if obj == 0 || obj & boxed::TAG_MASK == boxed::TAG_NULL {
+        slice_type_error();
+    }
+    if matches!(obj & boxed::TAG_MASK, boxed::TAG_INT | boxed::TAG_BOOL) {
+        slice_type_error();
+    }
+    if obj & 1 != 0 {
+        return string::olive_str_getslice(obj, start, stop, step, flags);
+    }
+    if !is_active_object(obj) {
+        // Untagged interned chars (`s[i]`) are static one-character
+        // strings, not heap objects: slice their single byte directly.
+        if crate::string::is_interned_char(obj) {
+            return string::olive_str_getslice(obj, start, stop, step, flags);
+        }
+        slice_type_error();
+    }
+    let kind = unsafe { *(obj as *const i64) };
+    // Tuples share the list's storage layout, so they slice the same way;
+    // sets share its `(kind, ptr, len)` prefix, which is all the slicer
+    // reads.
+    match kind {
+        KIND_LIST | KIND_ANY_LIST | KIND_SET => {
+            list::olive_list_getslice(obj, start, stop, step, flags)
+        }
+        KIND_BYTES => bytes::olive_buf_getslice(obj, start, stop, step, flags),
+        KIND_PYOBJECT => python::olive_py_getslice(obj, start, stop, step, flags),
+        _ => slice_type_error(),
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_len_any(obj: i64) -> i64 {
     if obj == 0 {

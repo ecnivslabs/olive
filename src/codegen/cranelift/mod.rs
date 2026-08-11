@@ -348,6 +348,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_struct_gen_stale", b"olive_struct_gen_stale\0"),
     ("__olive_gather", b"olive_gather\0"),
     ("__olive_get_index_any", b"olive_get_index_any\0"),
+    ("__olive_getslice_any", b"olive_getslice_any\0"),
     ("__olive_gzip_compress", b"olive_gzip_compress\0"),
     ("__olive_gzip_decompress", b"olive_gzip_decompress\0"),
     ("__olive_has_next", b"olive_has_next\0"),

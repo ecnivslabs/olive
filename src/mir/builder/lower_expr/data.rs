@@ -578,7 +578,11 @@ impl<'a> MirBuilder<'a> {
 
         if let ExprKind::Slice { start, stop, step } = &index.kind {
             let func_name = match &current_obj_ty {
-                Type::PyObject | Type::Any => "__olive_py_getslice",
+                Type::PyObject => "__olive_py_getslice",
+                // `Any` holds any representation: dispatch at runtime by the
+                // value's own kind (the Python slicer would dereference a
+                // native word as a `PyObject*`).
+                Type::Any => "__olive_getslice_any",
                 Type::Str => "__olive_str_getslice",
                 Type::Bytes => "__olive_buf_getslice",
                 Type::List(e) if Self::list_elem_needs_copy(e) => "__olive_list_getslice_typed",
