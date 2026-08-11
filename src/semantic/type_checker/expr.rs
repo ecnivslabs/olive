@@ -56,6 +56,20 @@ fn pattern_matches_int(pattern: &crate::parser::ast::MatchPattern) -> bool {
     }
 }
 
+/// Whether an (unguarded) pattern covers a struct union member: a
+/// struct-fields arm naming it, recursing into or-alternatives. Feeds
+/// union exhaustiveness (E0414): literal and range arms cover values, not
+/// the member, so they never count.
+fn pattern_covers_struct(pattern: &crate::parser::ast::MatchPattern, name: &str) -> bool {
+    match pattern {
+        crate::parser::ast::MatchPattern::StructFields(n, _, _) => n == name,
+        crate::parser::ast::MatchPattern::Or(alts) => {
+            alts.iter().any(|a| pattern_covers_struct(a, name))
+        }
+        _ => false,
+    }
+}
+
 impl TypeChecker {
     pub(super) fn check_expr(&mut self, expr: &Expr) -> Type {
         if self.check_depth >= crate::semantic::MAX_SEMANTIC_NESTING {
@@ -1909,6 +1923,46 @@ impl TypeChecker {
                                             ));
                                         }
                                     }
+                                    continue;
+                                }
+                                // A scalar (or otherwise non-destructurable)
+                                // member has no covering pattern shape: only a
+                                // wildcard or bare binding covers it, and
+                                // either would have set `has_wildcard` and
+                                // skipped this block. A struct/list/tuple
+                                // member is covered by a matching
+                                // struct/list/tuple arm; anything else (an
+                                // int arm covers one value, not the member)
+                                // leaves it unhandled at runtime, where the
+                                // match falls through with an indeterminate
+                                // result.
+                                let covered = match ty {
+                                    Type::Null => matched_null,
+                                    Type::Struct(name, _, _) => unguarded_patterns
+                                        .iter()
+                                        .any(|p| pattern_covers_struct(p, name)),
+                                    Type::List(_) => unguarded_patterns.iter().any(|p| {
+                                        matches!(p, crate::parser::ast::MatchPattern::List { .. })
+                                    }),
+                                    Type::Tuple(_) => unguarded_patterns.iter().any(|p| {
+                                        matches!(p, crate::parser::ast::MatchPattern::Tuple(_))
+                                    }),
+                                    Type::Enum(_, _) => true,
+                                    _ => false,
+                                };
+                                if !covered {
+                                    self.errors.push(super::super::error::SemanticError::rich(
+                                        crate::compile::errors::Diagnostic::error(
+                                            "E0414",
+                                            "non-exhaustive patterns",
+                                            expr.span,
+                                        )
+                                        .label(format!("`{ty}` is not covered"))
+                                        .note("a `match` over a union must handle every member")
+                                        .help(
+                                            "add a `case _:` or catch-all binding arm".to_string(),
+                                        ),
+                                    ));
                                 }
                             }
                         }

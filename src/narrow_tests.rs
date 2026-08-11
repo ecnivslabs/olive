@@ -428,3 +428,45 @@ fn match_guarded_int_arm_does_not_narrow() {
         "expected E0404 (guarded arm consumes nothing), got {codes:?}"
     );
 }
+
+#[test]
+fn match_union_missing_scalar_member_is_non_exhaustive() {
+    // Covering every enum variant still leaves the `int` member unhandled;
+    // without a wildcard the match would fall through with an indeterminate
+    // result, so it is E0414, not a silent zero.
+    let codes = check_codes(concat!(
+        "enum E:\n    A\n    B\n",
+        "fn f(x: E | int) -> int:\n    match x:\n        case A:\n            return 1\n        case B:\n            return 2\n",
+    ));
+    assert!(
+        codes.contains(&"E0414".to_string()),
+        "expected E0414 (int member uncovered), got {codes:?}"
+    );
+}
+
+#[test]
+fn match_union_struct_arm_still_needs_scalar_member() {
+    // A struct-pattern arm covers the struct member but not the sentinel:
+    // only a wildcard or catch-all binding covers `int`.
+    let codes = check_codes(concat!(
+        "struct C:\n    x: int\n",
+        "fn f(v: C | int) -> int:\n    match v:\n        case C(x=n):\n            return n\n",
+    ));
+    assert!(
+        codes.contains(&"E0414".to_string()),
+        "expected E0414 (int member uncovered), got {codes:?}"
+    );
+}
+
+#[test]
+fn match_union_wildcard_covers_scalar_member() {
+    // A wildcard covers every member, so no E0414 fires here.
+    let codes = check_codes(concat!(
+        "enum E:\n    A\n    B\n",
+        "fn f(x: E | int) -> int:\n    match x:\n        case A:\n            return 1\n        case B:\n            return 2\n        case _:\n            return -1\n",
+    ));
+    assert!(
+        !codes.contains(&"E0414".to_string()),
+        "expected no E0414 (wildcard covers all), got {codes:?}"
+    );
+}
