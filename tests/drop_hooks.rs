@@ -155,3 +155,43 @@ fn main():
         "mid\ndrop x\ndrop in\n",
     );
 }
+
+#[test]
+fn generic_drop_hook_runs_direct() {
+    assert_both(
+        r#"struct Box[T]:
+    v: T
+impl Box[T]:
+    fn __drop__(self):
+        print("dropBox")
+
+fn main():
+    let b = Box(1)
+    print("made")
+"#,
+        "made\ndropBox\n",
+    );
+}
+
+#[test]
+fn generic_drop_hook_runs_in_list_and_chains_inner() {
+    assert_both(
+        r#"struct Res:
+    s: str
+impl Res:
+    fn __drop__(self):
+        print("drop "+self.s)
+
+struct Box[T]:
+    v: T
+impl Box[T]:
+    fn __drop__(self):
+        print("dropBox")
+
+fn main():
+    let xs = [Box(Res("r1"))]
+    print("made")
+"#,
+        "made\ndropBox\ndrop r1\n",
+    );
+}

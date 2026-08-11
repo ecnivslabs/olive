@@ -179,6 +179,17 @@ impl<'a> MirBuilder<'a> {
                 }
 
                 self.replace_types_in_fn(p, rt, b, &type_map);
+                // A `Base::method` specialization resolves members through
+                // the specialized name (`Box_Res::send` reads `Box_Res`
+                // fields): mirror the layout with arguments applied, or
+                // member access and drop reclamation fall back to untyped
+                // paths. No-op when `base` is not a struct (free functions,
+                // enum methods).
+                if let Some((base, _)) = name.rsplit_once("::")
+                    && let Some((spec, _)) = specialized_name.rsplit_once("::")
+                {
+                    self.mirror_specialized_fields(base, spec, &type_map);
+                }
                 fn_type_map = Some(type_map);
             }
             StmtKind::Struct {
@@ -206,21 +217,17 @@ impl<'a> MirBuilder<'a> {
                 // they specialize too, or nested generic calls inside a
                 // method body re-monomorphize with the bare parameter
                 // (`_send_T`), compiling fully erased (`D_ANY` descriptors).
+                // Mirror the layout as well: the specialization's own
+                // methods (and its `__drop__`) resolve members through the
+                // specialized name.
+                if let Some(base) = name.strip_suffix("::__init__")
+                    && let Some(spec) = specialized_name.strip_suffix("::__init__")
+                {
+                    self.mirror_specialized_fields(base, spec, &type_map);
+                }
                 fn_type_map = Some(type_map);
             }
             _ => {}
-        }
-
-        // Mirror the generic struct's field layout under the specialized name
-        // (`Box_int`); without it, field access falls to the dynamic path and
-        // derefs a raw struct pointer as a dict. Register before lowering the body.
-        if let Some(base_struct) = name.strip_suffix("::__init__")
-            && let Some(spec_struct) = specialized_name.strip_suffix("::__init__")
-            && let Some(fields) = self.struct_fields.get(base_struct).cloned()
-        {
-            self.struct_fields
-                .entry(spec_struct.to_string())
-                .or_insert(fields);
         }
 
         // While lowering the specialized body, resolve type parameters read from

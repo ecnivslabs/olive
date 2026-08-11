@@ -411,7 +411,12 @@ impl<'a> MirBuilder<'a> {
     }
 
     /// After building all user code, monomorphize `__drop__` for each concrete
-    /// instantiation of generic structs that define a drop hook.
+    /// instantiation of generic structs that define a drop hook. Instantiations
+    /// are collected recursively (direct, union, and container element
+    /// positions alike, plus enum variant payloads), mirroring what
+    /// `collect_drop_registrations` expects: a struct reachable only through
+    /// a list would otherwise never get its hook built, and the drop site
+    /// would skip it silently.
     pub fn monomorphize_drop_fns(&mut self) {
         let generic_drop_keys: Vec<String> = self
             .generic_fns
@@ -424,18 +429,66 @@ impl<'a> MirBuilder<'a> {
             return;
         }
 
+        // `build_program` leaves the builder parked on the last function's
+        // block, which is terminated (or dangling): `lower_stmt` skips
+        // statements in terminated blocks, which would silently drop every
+        // specialized body below. Park on a fresh unterminated block instead;
+        // `lower_fn_def` takes this scratch state, so nothing leaks into the
+        // built functions.
+        self.current_blocks = vec![crate::mir::BasicBlock {
+            statements: Vec::new(),
+            terminator: None,
+        }];
+        self.current_block = Some(crate::mir::BasicBlockId(0));
+        self.current_name = String::new();
+
+        fn collect_struct_types(ty: &Type, out: &mut Vec<(String, Vec<Type>)>) {
+            match ty {
+                Type::Struct(name, args, _) => {
+                    if !args.is_empty() && !out.iter().any(|(n, a)| n == name && a == args) {
+                        out.push((name.clone(), args.clone()));
+                    }
+                    for arg in args {
+                        collect_struct_types(arg, out);
+                    }
+                }
+                Type::Union(members) | Type::Tuple(members) => {
+                    for m in members {
+                        collect_struct_types(m, out);
+                    }
+                }
+                Type::List(e) | Type::Set(e) => collect_struct_types(e, out),
+                Type::Dict(k, v) => {
+                    collect_struct_types(k, out);
+                    collect_struct_types(v, out);
+                }
+                Type::Ref(e) | Type::MutRef(e) | Type::Ptr(e) => collect_struct_types(e, out),
+                _ => {}
+            }
+        }
+
+        let mut found: Vec<(String, Vec<Type>)> = Vec::new();
+        for func in &self.functions {
+            for local in &func.locals {
+                collect_struct_types(&local.ty, &mut found);
+            }
+        }
+        // Variant payloads never appear in a local's own type.
+        for variants in self.enum_defs.values() {
+            for (_, payloads) in variants {
+                for payload in payloads {
+                    collect_struct_types(payload, &mut found);
+                }
+            }
+        }
+
         let mut work: Vec<(String, Vec<Type>)> = Vec::new();
         for drop_key in &generic_drop_keys {
             let struct_name = drop_key.strip_suffix("::__drop__").unwrap().to_string();
-            for func in &self.functions {
-                for local in &func.locals {
-                    if let Type::Struct(name, args, _) = &local.ty
-                        && *name == struct_name
-                        && !args.is_empty()
-                        && !work.iter().any(|(n, a)| n == &struct_name && a == args)
-                    {
-                        work.push((struct_name.clone(), args.clone()));
-                    }
+            for (name, args) in &found {
+                if *name == struct_name && !work.iter().any(|(n, a)| n == &struct_name && a == args)
+                {
+                    work.push((struct_name.clone(), args.clone()));
                 }
             }
         }
@@ -748,55 +801,102 @@ impl<'a> MirBuilder<'a> {
     /// parameter shows up either as `Param(n)` or, once resolved through the
     /// type checker, as a zero-arg `Struct(n)`; both map to the concrete type.
     pub(super) fn subst_mono_type(&self, ty: &Type) -> Type {
+        Self::subst_type_with_map(ty, &self.mono_type_map)
+    }
+
+    /// Substitution with an explicit map, for use while the map is still
+    /// being built (specialization field mirroring) rather than installed.
+    fn subst_type_with_map(ty: &Type, map: &HashMap<String, Type>) -> Type {
         match ty {
-            Type::Param(n) => self
-                .mono_type_map
-                .get(n)
-                .cloned()
-                .unwrap_or_else(|| ty.clone()),
-            Type::Struct(n, args, _is_ffi)
-                if args.is_empty() && self.mono_type_map.contains_key(n) =>
-            {
-                self.mono_type_map[n].clone()
+            Type::Param(n) => map.get(n).cloned().unwrap_or_else(|| ty.clone()),
+            Type::Struct(n, args, _is_ffi) if args.is_empty() && map.contains_key(n) => {
+                map[n].clone()
             }
             Type::Struct(n, args, is_ffi) => Type::Struct(
                 n.clone(),
-                args.iter().map(|a| self.subst_mono_type(a)).collect(),
+                args.iter()
+                    .map(|a| Self::subst_type_with_map(a, map))
+                    .collect(),
                 *is_ffi,
             ),
             Type::Enum(n, args) => Type::Enum(
                 n.clone(),
-                args.iter().map(|a| self.subst_mono_type(a)).collect(),
+                args.iter()
+                    .map(|a| Self::subst_type_with_map(a, map))
+                    .collect(),
             ),
             Type::TraitObject(n, args) => Type::TraitObject(
                 n.clone(),
-                args.iter().map(|a| self.subst_mono_type(a)).collect(),
+                args.iter()
+                    .map(|a| Self::subst_type_with_map(a, map))
+                    .collect(),
             ),
-            Type::Union(members) => {
-                Type::Union(members.iter().map(|m| self.subst_mono_type(m)).collect())
-            }
+            Type::Union(members) => Type::Union(
+                members
+                    .iter()
+                    .map(|m| Self::subst_type_with_map(m, map))
+                    .collect(),
+            ),
             // A callee type carries the call's own type arguments: without
             // substituting them, a nested generic call inside a monomorphized
             // body re-monomorphizes with the bare parameter (`_send_T`),
             // compiling the body fully erased (every descriptor `D_ANY`).
             Type::Fn(params, ret, args) => Type::Fn(
-                params.iter().map(|p| self.subst_mono_type(p)).collect(),
-                Box::new(self.subst_mono_type(ret)),
-                args.iter().map(|a| self.subst_mono_type(a)).collect(),
+                params
+                    .iter()
+                    .map(|p| Self::subst_type_with_map(p, map))
+                    .collect(),
+                Box::new(Self::subst_type_with_map(ret, map)),
+                args.iter()
+                    .map(|a| Self::subst_type_with_map(a, map))
+                    .collect(),
             ),
-            Type::Vector(t, n) => Type::Vector(Box::new(self.subst_mono_type(t)), *n),
-            Type::Future(t) => Type::Future(Box::new(self.subst_mono_type(t))),
-            Type::List(t) => Type::List(Box::new(self.subst_mono_type(t))),
-            Type::Set(t) => Type::Set(Box::new(self.subst_mono_type(t))),
+            Type::Vector(t, n) => Type::Vector(Box::new(Self::subst_type_with_map(t, map)), *n),
+            Type::Future(t) => Type::Future(Box::new(Self::subst_type_with_map(t, map))),
+            Type::List(t) => Type::List(Box::new(Self::subst_type_with_map(t, map))),
+            Type::Set(t) => Type::Set(Box::new(Self::subst_type_with_map(t, map))),
             Type::Dict(k, v) => Type::Dict(
-                Box::new(self.subst_mono_type(k)),
-                Box::new(self.subst_mono_type(v)),
+                Box::new(Self::subst_type_with_map(k, map)),
+                Box::new(Self::subst_type_with_map(v, map)),
             ),
-            Type::Tuple(ts) => Type::Tuple(ts.iter().map(|t| self.subst_mono_type(t)).collect()),
-            Type::Ref(t) => Type::Ref(Box::new(self.subst_mono_type(t))),
-            Type::MutRef(t) => Type::MutRef(Box::new(self.subst_mono_type(t))),
-            Type::Ptr(t) => Type::Ptr(Box::new(self.subst_mono_type(t))),
+            Type::Tuple(ts) => Type::Tuple(
+                ts.iter()
+                    .map(|t| Self::subst_type_with_map(t, map))
+                    .collect(),
+            ),
+            Type::Ref(t) => Type::Ref(Box::new(Self::subst_type_with_map(t, map))),
+            Type::MutRef(t) => Type::MutRef(Box::new(Self::subst_type_with_map(t, map))),
+            Type::Ptr(t) => Type::Ptr(Box::new(Self::subst_type_with_map(t, map))),
             _ => ty.clone(),
+        }
+    }
+
+    /// Mirrors a generic struct's field layout under a specialized name, with
+    /// type arguments applied: field names for member access, substituted
+    /// field types for drop reclamation and descriptors. Idempotent.
+    pub(super) fn mirror_specialized_fields(
+        &mut self,
+        base: &str,
+        spec: &str,
+        type_map: &HashMap<String, Type>,
+    ) {
+        let Some(fields) = self.struct_fields.get(base).cloned() else {
+            return;
+        };
+        self.struct_fields
+            .entry(spec.to_string())
+            .or_insert(fields.clone());
+        for field in &fields {
+            if let Some(fty) = self
+                .struct_field_types
+                .get(&(base.to_string(), field.clone()))
+                .cloned()
+            {
+                let sub = Self::subst_type_with_map(&fty, type_map);
+                self.struct_field_types
+                    .entry((spec.to_string(), field.clone()))
+                    .or_insert(sub);
+            }
         }
     }
 
