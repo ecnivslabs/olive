@@ -416,19 +416,47 @@ pub extern "C" fn olive_vararg_call(
         "FFI vararg call with a null argument vector"
     );
     let nf = (n_fixed as usize).max(1).min(n);
-    let types: Vec<Type> = (0..n)
-        .map(|i| {
-            if unsafe { *arg_types.add(i) } == 1 {
-                Type::f64()
-            } else {
-                Type::i64()
-            }
-        })
-        .collect();
-    let cif = Cif::new_variadic(types, nf, Type::i64());
+    let type_hash: u64 = {
+        let mut h: u64 = 1469598103934665603;
+        for i in 0..n {
+            let code: u8 = if unsafe { *arg_types.add(i) } == 1 { 1 } else { 0 };
+            h ^= u64::from(code);
+            h = h.wrapping_mul(1099511628211);
+        }
+        h
+    };
+    let cache_key: u64 = {
+        let mut k = fn_ptr as u64;
+        k = k.wrapping_mul(1099511628211) ^ (nf as u64);
+        k = k.wrapping_mul(1099511628211) ^ (n as u64);
+        k = k.wrapping_mul(1099511628211) ^ type_hash;
+        k
+    };
+    thread_local! {
+        static VARARG_CIF_CACHE: std::cell::RefCell<HashMap<u64, *mut Cif>> =
+            std::cell::RefCell::new(HashMap::default());
+    }
+    let cif_ptr = VARARG_CIF_CACHE.with(|cell| {
+        if let Some(&ptr) = cell.borrow().get(&cache_key) {
+            return ptr;
+        }
+        let types: Vec<Type> = (0..n)
+            .map(|i| {
+                if unsafe { *arg_types.add(i) } == 1 {
+                    Type::f64()
+                } else {
+                    Type::i64()
+                }
+            })
+            .collect();
+        let cif = Cif::new_variadic(types, nf, Type::i64());
+        let ptr = Box::into_raw(Box::new(cif));
+        cell.borrow_mut().insert(cache_key, ptr);
+        ptr
+    });
     let vals: Vec<i64> = (0..n).map(|i| unsafe { *arg_vals.add(i) }).collect();
     let ffi_args: Vec<_> = vals.iter().map(|v| arg(v)).collect();
-    unsafe { cif.call::<i64>(CodePtr(fn_ptr as *mut _), &ffi_args) }
+    unsafe { (*cif_ptr).call::<i64>(CodePtr(fn_ptr as *mut _), &ffi_args) }
 }
 
 #[unsafe(no_mangle)]
