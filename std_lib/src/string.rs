@@ -56,7 +56,7 @@ pub(crate) fn char_str(byte: u8) -> i64 {
 
 /// Whether a word points into the interned single-char table. These pointers
 /// are deliberately untagged (4-byte stride keeps bits 0-1 clear), so the
-/// magnitude heuristic reads them as scalars -- but for hashing and equality
+/// magnitude heuristic reads them as scalars. For hashing and equality
 /// they are the one-character string they point at, and must classify as
 /// `Str` or cross-representation lookups (`d[s[i]]` vs `d["a"]`) miss.
 pub(crate) fn is_interned_char(v: i64) -> bool {

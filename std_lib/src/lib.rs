@@ -269,7 +269,7 @@ pub struct OliveEnum {
     pub payload_len: usize,
     /// Raw pointer to the enum's `D_ENUM` descriptor bytes (the same string
     /// the compiler threads through typed frees). Lets the untyped `Any`
-    /// free walk payload words precisely instead of guessing by kind -- a
+    /// free walk payload words precisely instead of guessing by kind. A
     /// raw struct payload's header is a field count, not a kind tag, so a
     /// kind dispatch would misread it. Zero when the constructor had no
     /// descriptor (debugger-built values, unit tests): the free then falls
@@ -397,7 +397,7 @@ pub extern "C" fn olive_vararg_call(
 ) -> i64 {
     use libffi::middle::{Cif, CodePtr, Type, arg};
     // JIT-fed pointers: a null function or argument vector is a bug, not a
-    // callable shape -- fault here instead of segfaulting inside libffi.
+    // callable shape. Fault here instead of segfaulting inside libffi.
     assert!(
         fn_ptr != 0,
         "FFI vararg call through a null function pointer"

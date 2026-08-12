@@ -260,7 +260,7 @@ pub extern "C" fn olive_enum_new_reuse(
     let n = arg_count as usize;
     let e = unsafe { &mut *(old_ptr as *mut OliveEnum) };
     // A reuse normally follows `__olive_clear_typed` at the `Drop` site,
-    // which already freed the old payloads and nulled the buffer -- but a
+    // which already freed the old payloads and nulled the buffer. A
     // non-cleared slot still owns live words here, and overwriting them
     // would strand those payloads. Drain through the old descriptor first;
     // the clear path is idempotent, so a cleared slot is a no-op.

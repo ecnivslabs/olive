@@ -347,7 +347,7 @@ fn expected_name_for_kind(kind: i64) -> &'static str {
 /// Decodes one Python scalar back into an Olive typed-container element by
 /// its static kind. Bool is checked before int (bool subtypes int in
 /// CPython): an int slot accepts `True`/`False` as 1/0, mirroring Python's
-/// own `int(True) == 1`, while a bool slot rejects a plain `5` -- each
+/// own `int(True) == 1`, while a bool slot rejects a plain `5`. Each
 /// direction follows the language's subtyping, not a symmetric gate.
 unsafe fn decode_scalar(item: PyObject, kind: i64) -> Result<i64, String> {
     unsafe {
