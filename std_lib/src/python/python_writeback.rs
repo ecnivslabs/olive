@@ -510,13 +510,14 @@ unsafe fn sync_dict_entries(pair: &WritebackPair, decode_val: impl Fn(PyObject, 
     }
 }
 
-/// Inserts decoded entries, keeping the first occurrence of each key and
-/// releasing every displaced duplicate key and value. Split from
+/// Inserts decoded entries, keeping the last occurrence of each key like
+/// Python dict construction does, and releasing every displaced duplicate
+/// key and value. Split from
 /// `sync_dict_entries` so the colliding-key path is unit-testable without a
 /// live interpreter: callers pass owned decoded words with the same contract
 /// as `dict_key_olive`/`decode_val` produce them.
 fn dedupe_and_insert(obj_ptr: i64, raw: Vec<(i64, i64)>) {
-    // (decoded key ptr, decoded value word), first-occurrence order
+    // (decoded key ptr, decoded value word), first-occurrence order for keys
     let mut entries: Vec<(i64, i64)> = Vec::new();
     // Decoded-key-ptr -> index into `entries`. Keys are compared by
     // content (`OliveStringKey`), so the map's own hasher is exactly the
