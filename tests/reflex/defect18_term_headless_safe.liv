@@ -1,0 +1,6 @@
+import term
+
+fn main():
+    print(term.is_tty())
+    print(term.cols() > 0)
+    print(term.rows() > 0)

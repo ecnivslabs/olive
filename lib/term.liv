@@ -1,0 +1,100 @@
+import string
+
+fn enable_raw() -> bool:
+    return __olive_term_enable_raw() == 1
+
+fn disable_raw() -> bool:
+    return __olive_term_disable_raw() == 1
+
+fn enter_alt_screen() -> bool:
+    return __olive_term_enter_alt_screen() == 1
+
+fn leave_alt_screen() -> bool:
+    return __olive_term_leave_alt_screen() == 1
+
+fn clear() -> bool:
+    return __olive_term_clear() == 1
+
+fn cursor_hide() -> bool:
+    return __olive_term_cursor_hide() == 1
+
+fn cursor_show() -> bool:
+    return __olive_term_cursor_show() == 1
+
+fn cursor_move(x: int, y: int) -> bool:
+    return __olive_term_cursor_move(x, y) == 1
+
+fn flush() -> bool:
+    return __olive_term_flush() == 1
+
+fn write(s: str) -> bool:
+    return __olive_term_write(s) == 1
+
+fn cols() -> int:
+    return __olive_term_cols()
+
+fn rows() -> int:
+    return __olive_term_rows()
+
+fn is_tty() -> bool:
+    return __olive_term_is_tty() == 1
+
+fn enable_key_enhancement() -> bool:
+    return __olive_term_enable_key_enhancement() == 1
+
+fn disable_key_enhancement() -> bool:
+    return __olive_term_disable_key_enhancement() == 1
+
+enum Key:
+    Enter
+    ShiftEnter
+    Backspace
+    Tab
+    Escape
+    Up
+    Down
+    Left
+    Right
+    Home
+    End
+    Delete
+    Ctrl(str)
+    Char(str)
+    Resize
+    Eof
+
+fn _decode(tag: str) -> Key:
+    if tag == "enter":
+        return Enter
+    if tag == "shift+enter":
+        return ShiftEnter
+    if tag == "backspace":
+        return Backspace
+    if tag == "tab":
+        return Tab
+    if tag == "escape":
+        return Escape
+    if tag == "up":
+        return Up
+    if tag == "down":
+        return Down
+    if tag == "left":
+        return Left
+    if tag == "right":
+        return Right
+    if tag == "home":
+        return Home
+    if tag == "end":
+        return End
+    if tag == "delete":
+        return Delete
+    if tag == "resize":
+        return Resize
+    if tag == "eof":
+        return Eof
+    if string.starts_with(tag, "ctrl+"):
+        return Ctrl(tag[5:])
+    return Char(tag)
+
+fn read_key() -> Key:
+    return _decode(__olive_term_read_key())

@@ -35,7 +35,23 @@ fn split(s: str, sep: str) -> list:
     return __olive_str_split(s, sep)
 
 fn split_whitespace(s: str) -> list:
-    return __olive_str_split(s, 0)
+    let mut result = []
+    let mut current = ""
+    let chars = graphemes(s)
+    let mut i = 0
+    let n = len(chars)
+    while i < n:
+        let c = chars[i]
+        if c == " " or c == "\t" or c == "\n" or c == "\r":
+            if len(current) > 0:
+                result.append(current)
+                current = ""
+        else:
+            current = current + c
+        i = i + 1
+    if len(current) > 0:
+        result.append(current)
+    return result
 
 fn join(parts: list, sep: str) -> str:
     return __olive_str_join(parts, sep)

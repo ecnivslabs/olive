@@ -71,6 +71,12 @@ enum Commands {
         #[arg(long)]
         lib: bool,
     },
+    Init {
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        lib: bool,
+    },
     Build {
         path: Option<String>,
         #[arg(short, long)]
@@ -172,6 +178,7 @@ fn main() {
 
     match cli.command {
         Commands::New { name, lib } => commands::project::execute_new(&name, lib),
+        Commands::Init { name, lib } => commands::project::execute_init(name, lib),
         Commands::Build {
             path,
             output,

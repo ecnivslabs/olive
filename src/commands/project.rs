@@ -16,17 +16,28 @@ fn git_user_name() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-pub fn execute_new(name: &str, lib: bool) {
-    let path = Path::new(name);
-    if path.exists() {
-        eprintln!("error: directory `{}` already exists", name);
-        process::exit(1);
+fn entry_path(lib: bool) -> &'static str {
+    if lib { "src/lib.liv" } else { "src/main.liv" }
+}
+
+fn default_source(lib: bool) -> &'static str {
+    if lib {
+        "fn greet(name: str) -> str:\n    return \"Hello, \" + name + \"!\"\n"
+    } else {
+        "fn main():\n    print(\"Hello from Olive!\")\n"
     }
+}
 
-    fs::create_dir_all(path.join("src")).unwrap();
+fn pod_kind(lib: bool) -> &'static str {
+    if lib {
+        "library"
+    } else {
+        "binary (application)"
+    }
+}
 
-    let entry = if lib { "src/lib.liv" } else { "src/main.liv" };
-    let config = Config {
+fn build_config(name: &str, entry: &str) -> Config {
+    Config {
         pod: Some(Pod {
             name: name.to_string(),
             version: "0.1.0".to_string(),
@@ -38,15 +49,23 @@ pub fn execute_new(name: &str, lib: bool) {
         workspace: None,
         profile: HashMap::new(),
         fmt: None,
-    };
+    }
+}
+
+pub fn execute_new(name: &str, lib: bool) {
+    let path = Path::new(name);
+    if path.exists() {
+        eprintln!("error: directory `{}` already exists", name);
+        process::exit(1);
+    }
+
+    fs::create_dir_all(path.join("src")).unwrap();
+
+    let entry = entry_path(lib);
+    let config = build_config(name, entry);
 
     fs::write(path.join("pit.toml"), toml::to_string(&config).unwrap()).unwrap();
-    let source = if lib {
-        "fn greet(name: str) -> str:\n    return \"Hello, \" + name + \"!\"\n"
-    } else {
-        "fn main():\n    print(\"Hello from Olive!\")\n"
-    };
-    fs::write(path.join(entry), source).unwrap();
+    fs::write(path.join(entry), default_source(lib)).unwrap();
     fs::write(path.join(".gitignore"), ".env\n.env.*\n*.secret\ngrove/\n").unwrap();
 
     match std::process::Command::new("git")
@@ -58,12 +77,55 @@ pub fn execute_new(name: &str, lib: bool) {
         _ => eprintln!("warning: could not initialize git repository"),
     }
 
-    let kind = if lib {
-        "library"
+    println!("\x1b[1;32mCreated\x1b[0m {} `{}` pod", pod_kind(lib), name);
+}
+
+pub fn execute_init(name: Option<String>, lib: bool) {
+    let cwd = std::env::current_dir().unwrap();
+    let pit_toml = cwd.join("pit.toml");
+    if pit_toml.exists() {
+        eprintln!("error: pit.toml already exists in this directory");
+        process::exit(1);
+    }
+
+    let name = name.unwrap_or_else(|| {
+        cwd.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "project".to_string())
+    });
+
+    fs::create_dir_all(cwd.join("src")).unwrap();
+
+    let entry = entry_path(lib);
+    let config = build_config(&name, entry);
+    fs::write(&pit_toml, toml::to_string(&config).unwrap()).unwrap();
+
+    let entry_file = cwd.join(entry);
+    if !entry_file.exists() {
+        fs::write(&entry_file, default_source(lib)).unwrap();
+    }
+
+    let gitignore = cwd.join(".gitignore");
+    if !gitignore.exists() {
+        fs::write(&gitignore, ".env\n.env.*\n*.secret\ngrove/\n").unwrap();
     } else {
-        "binary (application)"
-    };
-    println!("\x1b[1;32mCreated\x1b[0m {} `{}` pod", kind, name);
+        let content = fs::read_to_string(&gitignore).unwrap();
+        if !content.lines().any(|line| line.trim() == "grove/") {
+            let mut updated = content;
+            if !updated.is_empty() && !updated.ends_with('\n') {
+                updated.push('\n');
+            }
+            updated.push_str("grove/\n");
+            fs::write(&gitignore, updated).unwrap();
+        }
+    }
+
+    println!(
+        "\x1b[1;32mInitialized\x1b[0m {} `{}` pod",
+        pod_kind(lib),
+        name
+    );
 }
 
 pub fn execute_publish() {
@@ -219,6 +281,123 @@ mod tests {
         assert!(!lib_content.contains("fn main()"));
 
         std::env::set_current_dir(&cwd).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn execute_init_creates_project_structure_in_cwd() {
+        let _lock = crate::commands::utils::CWD_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("olive_project_test_init");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+
+        execute_init(Some("init_proj".to_string()), false);
+
+        assert!(dir.join("pit.toml").exists());
+        assert!(dir.join("src/main.liv").exists());
+        assert!(dir.join(".gitignore").exists());
+        assert!(!dir.join(".git").exists());
+
+        let config_content = std::fs::read_to_string(dir.join("pit.toml")).unwrap();
+        let config: Config = toml::from_str(&config_content).unwrap();
+        assert_eq!(config.pod.as_ref().unwrap().name, "init_proj");
+        assert_eq!(config.pod.as_ref().unwrap().entry, "src/main.liv");
+
+        std::env::set_current_dir(&cwd).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn execute_init_defaults_name_to_dir_name() {
+        let _lock = crate::commands::utils::CWD_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("olive_project_test_init_default_name");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+
+        execute_init(None, false);
+
+        let config_content = std::fs::read_to_string(dir.join("pit.toml")).unwrap();
+        let config: Config = toml::from_str(&config_content).unwrap();
+        assert_eq!(
+            config.pod.as_ref().unwrap().name,
+            dir.file_name().unwrap().to_string_lossy()
+        );
+
+        std::env::set_current_dir(&cwd).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn execute_init_does_not_clobber_existing_entry_file() {
+        let _lock = crate::commands::utils::CWD_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("olive_project_test_init_no_clobber");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("src/main.liv"),
+            "fn main():\n    print(\"existing\")\n",
+        )
+        .unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+
+        execute_init(Some("no_clobber".to_string()), false);
+
+        let main_content = std::fs::read_to_string(dir.join("src/main.liv")).unwrap();
+        assert!(main_content.contains("existing"));
+
+        std::env::set_current_dir(&cwd).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn execute_init_appends_grove_to_existing_gitignore() {
+        let _lock = crate::commands::utils::CWD_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("olive_project_test_init_gitignore_append");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".gitignore"), "node_modules/\n").unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+
+        execute_init(Some("gitignore_append".to_string()), false);
+
+        let gitignore = std::fs::read_to_string(dir.join(".gitignore")).unwrap();
+        assert!(gitignore.contains("node_modules/"));
+        assert!(gitignore.contains("grove/"));
+
+        std::env::set_current_dir(&cwd).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn execute_init_refuses_when_pit_toml_exists() {
+        use std::process::{Command, Stdio};
+        let dir = std::env::temp_dir().join("olive_project_test_init_refuse");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("pit.toml"), "").unwrap();
+
+        let bin = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("pit");
+        let status = Command::new(bin)
+            .arg("init")
+            .current_dir(&dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+
+        assert!(!status.success());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1,0 +1,7 @@
+import term
+
+fn main():
+    term.write("no")
+    term.write("newline")
+    print("")
+    print("ok")
