@@ -631,14 +631,14 @@ impl<'a> MirBuilder<'a> {
             match target {
                 ForTarget::Tuple(names) => {
                     if let Some((an, _)) = names.first() {
-                        let a_local = self.declare_var(an.clone(), a_elem_ty, true);
+                        let a_local = self.declare_var_view(an.clone(), a_elem_ty.clone(), true);
                         self.push_statement(
                             StatementKind::Assign(a_local, Rvalue::Use(Operand::Copy(a_val))),
                             iter.span,
                         );
                     }
                     if let Some((bn, _)) = names.get(1) {
-                        let b_local = self.declare_var(bn.clone(), b_elem_ty, true);
+                        let b_local = self.declare_var_view(bn.clone(), b_elem_ty.clone(), true);
                         self.push_statement(
                             StatementKind::Assign(b_local, Rvalue::Use(Operand::Copy(b_val))),
                             iter.span,
@@ -646,8 +646,8 @@ impl<'a> MirBuilder<'a> {
                     }
                 }
                 ForTarget::Name(name, _) => {
-                    let pair_ty = Type::Tuple(vec![a_elem_ty, b_elem_ty]);
-                    let local = self.declare_var(name.clone(), pair_ty.clone(), true);
+                    let pair_ty = Type::Tuple(vec![a_elem_ty.clone(), b_elem_ty.clone()]);
+                    let local = self.declare_var_view(name.clone(), pair_ty.clone(), true);
                     let tuple_local = self.new_local(pair_ty, None, false);
                     self.push_statement(
                         StatementKind::Assign(
