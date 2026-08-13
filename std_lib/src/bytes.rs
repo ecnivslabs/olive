@@ -1,5 +1,6 @@
 use crate::slab::GenSlab;
 use crate::{KIND_BYTES, olive_str_from_ptr, olive_str_internal};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use std::cell::UnsafeCell;
 use std::os::raw::c_void;
 
@@ -545,6 +546,57 @@ pub extern "C" fn olive_buf_write_u64_be(buf: i64, offset: i64, val: i64) {
     write_bytes(buf, offset, &(val as u64).to_be_bytes());
 }
 
+/// Reads a file's raw bytes into a buf handle. Unlike `olive_file_read`,
+/// no UTF-8 validation is applied, so binary content survives intact.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_buf_read_file(path: i64) -> i64 {
+    if path == 0 {
+        return 0;
+    }
+    let path_str = olive_str_from_ptr(path);
+    match std::fs::read(&path_str) {
+        Ok(data) => new_buf(data),
+        Err(_) => 0,
+    }
+}
+
+/// Writes a buf handle's raw bytes to a file, unmediated by UTF-8.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_buf_write_file(path: i64, buf: i64) -> i64 {
+    if path == 0 || buf == 0 {
+        return 0;
+    }
+    let path_str = olive_str_from_ptr(path);
+    let b = unsafe { &*(buf as *const OliveBytes) };
+    match std::fs::write(&path_str, b.as_slice()) {
+        Ok(_) => 1,
+        Err(_) => 0,
+    }
+}
+
+/// Base64-encodes a buf's raw bytes directly, skipping any UTF-8 str hop.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_buf_to_base64(buf: i64) -> i64 {
+    if buf == 0 {
+        return olive_str_internal("");
+    }
+    let b = unsafe { &*(buf as *const OliveBytes) };
+    olive_str_internal(&STANDARD.encode(b.as_slice()))
+}
+
+/// Decodes base64 text straight into a buf handle, preserving binary content.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_buf_from_base64(s: i64) -> i64 {
+    if s == 0 {
+        return 0;
+    }
+    let text = olive_str_from_ptr(s);
+    match STANDARD.decode(text.trim().as_bytes()) {
+        Ok(data) => new_buf(data),
+        Err(_) => 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -696,5 +748,58 @@ mod tests {
         olive_buf_set(b, 1, 0x58);
         assert_eq!(olive_buf_get(b, 1), 0x58);
         olive_buf_free(b);
+    }
+
+    #[test]
+    fn buf_file_roundtrip_preserves_invalid_utf8() {
+        // PNG-style magic bytes: 0x89 and 0xFF 0xFE are not valid UTF-8 on
+        // their own, so a lossy str hop would corrupt them.
+        let raw: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0xFF, 0xFE, 0x00, 0x0D];
+        let path =
+            std::env::temp_dir().join(format!("olive_bytes_test_{}.bin", std::process::id()));
+        let path_str = path.to_str().unwrap();
+
+        let write_buf = new_buf(raw.to_vec());
+        assert_eq!(olive_buf_write_file(s(path_str), write_buf), 1);
+        olive_buf_free(write_buf);
+
+        let read_buf = olive_buf_read_file(s(path_str));
+        assert_ne!(read_buf, 0);
+        let b = unsafe { &*(read_buf as *const OliveBytes) };
+        assert_eq!(b.as_slice(), raw);
+        olive_buf_free(read_buf);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn buf_read_file_missing_returns_zero() {
+        assert_eq!(
+            olive_buf_read_file(s("/nonexistent/olive_bytes_test.bin")),
+            0
+        );
+    }
+
+    #[test]
+    fn buf_base64_roundtrip_preserves_binary() {
+        let raw: &[u8] = &[0x00, 0x89, 0x50, 0x4E, 0x47, 0xFF, 0xD8, 0xFF];
+        let buf = new_buf(raw.to_vec());
+        let encoded = olive_buf_to_base64(buf);
+        let decoded = olive_buf_from_base64(encoded);
+        let b = unsafe { &*(decoded as *const OliveBytes) };
+        assert_eq!(b.as_slice(), raw);
+        olive_buf_free(buf);
+        olive_buf_free(decoded);
+    }
+
+    #[test]
+    fn buf_to_base64_empty() {
+        let out = crate::olive_str_from_ptr(olive_buf_to_base64(0));
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn buf_from_base64_invalid() {
+        assert_eq!(olive_buf_from_base64(s("not!!valid$$base64")), 0);
     }
 }

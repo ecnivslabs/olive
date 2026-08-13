@@ -15,6 +15,12 @@ fn leave_alt_screen() -> bool:
 fn clear() -> bool:
     return __olive_term_clear() == 1
 
+fn begin_sync() -> bool:
+    return __olive_term_begin_sync() == 1
+
+fn end_sync() -> bool:
+    return __olive_term_end_sync() == 1
+
 fn cursor_hide() -> bool:
     return __olive_term_cursor_hide() == 1
 
