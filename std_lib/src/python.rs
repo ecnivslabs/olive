@@ -154,9 +154,9 @@ unsafe fn gil_acquire() -> std::os::raw::c_int {
 /// and with re-fusion of an already-fused, inlined region.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_gil_begin() {
-    check_python_loaded();
     let depth = GIL_DEPTH.get();
     if depth == 0 {
+        check_python_loaded();
         let token = unsafe { gil_acquire() };
         GIL_TOKEN.set(token);
     }
