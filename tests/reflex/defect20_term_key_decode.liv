@@ -30,6 +30,8 @@ fn describe(k: term.Key) -> str:
             return "resize"
         Eof:
             return "eof"
+        Idle:
+            return "idle"
         Ctrl(c):
             return "ctrl:" + c
         Char(c):
@@ -50,6 +52,7 @@ fn main():
     print(describe(term._decode("delete")))
     print(describe(term._decode("resize")))
     print(describe(term._decode("eof")))
+    print(describe(term._decode("idle")))
     print(describe(term._decode("ctrl+c")))
     print(describe(term._decode("ctrl+a")))
     print(describe(term._decode("x")))

@@ -68,6 +68,7 @@ enum Key:
     Char(str)
     Resize
     Eof
+    Idle
 
 fn _decode(tag: str) -> Key:
     if tag == "enter":
@@ -98,9 +99,14 @@ fn _decode(tag: str) -> Key:
         return Resize
     if tag == "eof":
         return Eof
+    if tag == "idle":
+        return Idle
     if string.starts_with(tag, "ctrl+"):
         return Ctrl(tag[5:])
     return Char(tag)
 
 fn read_key() -> Key:
     return _decode(__olive_term_read_key())
+
+fn read_key_timeout(ms: int) -> Key:
+    return _decode(__olive_term_read_key_timeout(ms))

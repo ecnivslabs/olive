@@ -12,6 +12,7 @@ end
 delete
 resize
 eof
+idle
 ctrl:c
 ctrl:a
 char:x
