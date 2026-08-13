@@ -123,6 +123,13 @@ pub extern "C" fn olive_py_copy_ref(arena_ptr: PyObject) -> PyObject {
 /// the GIL and a raw (never-wrapped) object when it needs this conversion.
 pub(crate) unsafe fn raw_py_to_int(raw: PyObject) -> i64 {
     unsafe {
+        // Exact-type fast path: most calls (math.gcd, len, int-returning
+        // builtins) already hand back a genuine PyLong, so read its digits
+        // directly instead of allocating a second long via PY_NUMBER_LONG
+        // (one alloc + one free per call) just to read the same value back.
+        if python_coerce::raw_ob_type(raw) == PY_LONG_TYPE {
+            return py_long_as_i64(raw);
+        }
         let int_obj = PY_NUMBER_LONG(raw);
         if int_obj.is_null() {
             PY_ERR_CLEAR();
