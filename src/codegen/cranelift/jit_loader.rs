@@ -17,9 +17,7 @@ impl CraneliftCodegen<JITModule> {
             }
         }
         for lib in &self._libs {
-            if let Ok(sym) =
-                unsafe { lib.get::<unsafe extern "C" fn()>(c_name.as_bytes()) }
-            {
+            if let Ok(sym) = unsafe { lib.get::<unsafe extern "C" fn()>(c_name.as_bytes()) } {
                 return Some(*sym as *const u8);
             }
         }

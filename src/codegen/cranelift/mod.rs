@@ -345,6 +345,17 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_http_poll", b"olive_http_poll\0"),
     ("__olive_http_take_result", b"olive_http_take_result\0"),
     ("__olive_http_take_error", b"olive_http_take_error\0"),
+    ("__olive_http_stream_start", b"olive_http_stream_start\0"),
+    ("__olive_http_stream_poll", b"olive_http_stream_poll\0"),
+    (
+        "__olive_http_stream_take_chunk",
+        b"olive_http_stream_take_chunk\0",
+    ),
+    (
+        "__olive_http_stream_take_error",
+        b"olive_http_stream_take_error\0",
+    ),
+    ("__olive_http_stream_close", b"olive_http_stream_close\0"),
     ("__olive_http_put", b"olive_http_put\0"),
     ("__olive_in_list", b"olive_in_list\0"),
     ("__olive_in_obj", b"olive_in_obj\0"),

@@ -361,6 +361,154 @@ pub extern "C" fn olive_http_get_with_headers(url_ptr: i64, headers_ptr: i64) ->
     }
 }
 
+struct StreamState {
+    chunk: String,
+    done: bool,
+    error: Option<String>,
+}
+
+fn stream_table() -> &'static Mutex<HashMap<i64, StreamState>> {
+    static TABLE: OnceLock<Mutex<HashMap<i64, StreamState>>> = OnceLock::new();
+    TABLE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Spawns a plain OS thread that reads the response body line by line as it
+/// arrives and appends raw SSE lines into the stream table. Like
+/// spawn_post_json_async, the thread only touches owned Rust values; parsing
+/// the "data: ..." payloads into olive values happens later on the calling
+/// olive thread via stream_take_chunk.
+fn spawn_post_json_stream(url: String, body: String, headers: Vec<(String, String)>) -> i64 {
+    let handle = next_handle();
+    stream_table().lock().unwrap().insert(
+        handle,
+        StreamState {
+            chunk: String::new(),
+            done: false,
+            error: None,
+        },
+    );
+
+    thread::spawn(move || {
+        let mut req = ureq::post(&url)
+            .timeout(REQUEST_TIMEOUT)
+            .set("Content-Type", "application/json")
+            .set("Accept", "text/event-stream");
+        for (k, v) in &headers {
+            req = req.set(k, v);
+        }
+
+        let error = match req.send_bytes(body.as_bytes()) {
+            Ok(resp) => {
+                use std::io::BufRead;
+                let mut reader = std::io::BufReader::new(resp.into_reader());
+                let mut line = String::new();
+                let mut read_err = None;
+                loop {
+                    line.clear();
+                    match reader.read_line(&mut line) {
+                        Ok(0) => break,
+                        Ok(_) => {
+                            if let Ok(mut table) = stream_table().lock() {
+                                if let Some(state) = table.get_mut(&handle) {
+                                    state.chunk.push_str(&line);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            read_err = Some(e.to_string());
+                            break;
+                        }
+                    }
+                }
+                read_err
+            }
+            Err(ureq::Error::Status(code, resp)) => {
+                Some(format!("http {} {}", code, resp.status_text()))
+            }
+            Err(e @ ureq::Error::Transport(_)) => Some(describe_error(&e)),
+        };
+
+        if let Ok(mut table) = stream_table().lock() {
+            if let Some(state) = table.get_mut(&handle) {
+                state.error = error;
+                state.done = true;
+            }
+        }
+    });
+
+    handle
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_http_stream_start(url_ptr: i64, body_ptr: i64, headers_ptr: i64) -> i64 {
+    if url_ptr == 0 {
+        return 0;
+    }
+    let url = url_from_ptr(url_ptr);
+    let body = if body_ptr == 0 {
+        String::new()
+    } else {
+        olive_str_from_ptr(body_ptr)
+    };
+
+    let mut headers = Vec::new();
+    if headers_ptr != 0 {
+        let obj = unsafe { &*(headers_ptr as *const OliveObj) };
+        for (k, &v) in &obj.fields {
+            if let Some(key_str) = crate::olive_str_as_str(k.0) {
+                let val = olive_str_from_ptr(v);
+                headers.push((key_str.to_string(), val));
+            }
+        }
+    }
+
+    spawn_post_json_stream(url, body, headers)
+}
+
+/// 0 = pending (may still gain buffered chunks), 1 = done ok, 2 = done with
+/// error, -1 = unknown handle. Buffered chunks accumulate before done is
+/// reached too, so callers should drain stream_take_chunk on every poll
+/// regardless of status.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_http_stream_poll(handle: i64) -> i64 {
+    let table = stream_table().lock().unwrap();
+    match table.get(&handle) {
+        Some(state) if !state.done => 0,
+        Some(state) if state.error.is_some() => 2,
+        Some(_) => 1,
+        None => -1,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_http_stream_take_chunk(handle: i64) -> i64 {
+    let mut table = stream_table().lock().unwrap();
+    match table.get_mut(&handle) {
+        Some(state) if !state.chunk.is_empty() => {
+            let chunk = std::mem::take(&mut state.chunk);
+            olive_str_internal(&chunk)
+        }
+        _ => 0,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_http_stream_take_error(handle: i64) -> i64 {
+    let table = stream_table().lock().unwrap();
+    match table.get(&handle) {
+        Some(state) => match &state.error {
+            Some(e) => olive_str_internal(e),
+            None => 0,
+        },
+        None => 0,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_http_stream_close(handle: i64) {
+    stream_table().lock().unwrap().remove(&handle);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
