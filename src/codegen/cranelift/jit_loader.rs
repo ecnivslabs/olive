@@ -147,6 +147,34 @@ pub(super) fn register_runtime_symbols(
                 );
             }
         }
+
+        // Not in `SYMBOL_MAP`: the only data (not function) import codegen ever
+        // emits, so it needs its own explicit registration. Left to cranelift-jit's
+        // `dlsym(RTLD_DEFAULT)` fallback it never resolves on macOS, where a
+        // dylib opened `RTLD_LOCAL` (as `loaded_lib` is) doesn't join the
+        // default namespace the way it effectively does on Linux.
+        const CHAR_TABLE_SYM: &[u8] = b"olive_char_table\0";
+        let symbol_name = CHAR_TABLE_SYM.strip_suffix(b"\0").unwrap_or(CHAR_TABLE_SYM);
+        let table_ptr = {
+            #[cfg(target_family = "unix")]
+            let p = libc::dlsym(libc::RTLD_DEFAULT, CHAR_TABLE_SYM.as_ptr() as *const _);
+            #[cfg(not(target_family = "unix"))]
+            let p = std::ptr::null_mut();
+            if p.is_null() {
+                loaded_lib
+                    .as_ref()
+                    .and_then(|lib| lib.get::<*const u8>(symbol_name).ok())
+                    .and_then(|s| s.try_as_raw_ptr())
+                    .unwrap_or(std::ptr::null_mut())
+            } else {
+                p
+            }
+        };
+        if !table_ptr.is_null() {
+            builder.symbol("olive_char_table", table_ptr as *const u8);
+        } else {
+            eprintln!("warning: could not resolve runtime symbol 'olive_char_table'");
+        }
     }
 
     loaded_lib

@@ -60,7 +60,7 @@ jobs:
         run: cargo build --workspace
 
       - name: Run tests
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
         env:
           # cranelift's ISLE-generated lowering is deeply nested and mostly
           # uninlined in debug builds; MSVC debug frames are large enough
