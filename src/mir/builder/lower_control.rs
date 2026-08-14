@@ -798,7 +798,17 @@ impl<'a> MirBuilder<'a> {
 
         match target {
             ForTarget::Name(name, _) => {
-                let local = self.declare_var(name.clone(), elem_ty, true);
+                // Non-str element: `next_val` is a view into the iterable
+                // (see `next_is_owning` above), so the loop variable must be
+                // too, or a struct returned/escaped from inside the loop
+                // body gets boxed as if uniquely owned while the iterable
+                // still thinks it owns the same element -- a use-after-free
+                // once the iterable is freed (e.g. on early return).
+                let local = if next_is_owning {
+                    self.declare_var(name.clone(), elem_ty, true)
+                } else {
+                    self.declare_var_view(name.clone(), elem_ty, true)
+                };
                 self.push_statement(
                     StatementKind::Assign(local, Rvalue::Use(Operand::Copy(next_val))),
                     iter.span,

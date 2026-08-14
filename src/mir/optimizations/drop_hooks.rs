@@ -130,7 +130,14 @@ pub fn lower_drop_hooks(func: &mut MirFunction, has_drop: &HashSet<String>) {
     }
     union_sites.sort_unstable_by(|a, b| (b.bb, b.idx).cmp(&(a.bb, a.idx)));
     for site in union_sites {
-        insert_union_drop_hook(func, site.bb, site.idx, site.drop_fn, site.local, site.struct_ty);
+        insert_union_drop_hook(
+            func,
+            site.bb,
+            site.idx,
+            site.drop_fn,
+            site.local,
+            site.struct_ty,
+        );
     }
 }
 

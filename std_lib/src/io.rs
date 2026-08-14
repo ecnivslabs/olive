@@ -143,37 +143,38 @@ pub extern "C" fn olive_file_stat(path: i64) -> i64 {
     let mut fields = HashMap::default();
     fields.insert(
         crate::OliveStringKey(olive_str_internal("size")),
-        meta.len() as i64,
+        crate::boxed::olive_box_int(meta.len() as i64),
     );
     fields.insert(
         crate::OliveStringKey(olive_str_internal("is_dir")),
-        if meta.is_dir() { 1 } else { 0 },
+        crate::boxed::olive_box_bool(meta.is_dir() as i64),
     );
     fields.insert(
         crate::OliveStringKey(olive_str_internal("is_file")),
-        if meta.is_file() { 1 } else { 0 },
+        crate::boxed::olive_box_bool(meta.is_file() as i64),
     );
     fields.insert(
         crate::OliveStringKey(olive_str_internal("is_symlink")),
-        if link_meta.map(|m| m.is_symlink()).unwrap_or(false) {
-            1
-        } else {
-            0
-        },
+        crate::boxed::olive_box_bool(
+            link_meta.map(|m| m.is_symlink()).unwrap_or(false) as i64
+        ),
     );
     fields.insert(
         crate::OliveStringKey(olive_str_internal("modified")),
-        secs(meta.modified()),
+        crate::boxed::olive_box_int(secs(meta.modified())),
     );
     fields.insert(
         crate::OliveStringKey(olive_str_internal("created")),
-        secs(meta.created()),
+        crate::boxed::olive_box_int(secs(meta.created())),
     );
     fields.insert(
         crate::OliveStringKey(olive_str_internal("accessed")),
-        secs(meta.accessed()),
+        crate::boxed::olive_box_int(secs(meta.accessed())),
     );
-    fields.insert(crate::OliveStringKey(olive_str_internal("mode")), mode);
+    fields.insert(
+        crate::OliveStringKey(olive_str_internal("mode")),
+        crate::boxed::olive_box_int(mode),
+    );
     crate::obj::new_obj_from_map(fields)
 }
 
@@ -349,7 +350,11 @@ pub extern "C" fn olive_path_hard_link(src: i64, dst: i64) -> i64 {
     }
     let s = olive_str_from_ptr(src);
     let d = olive_str_from_ptr(dst);
-    if std::fs::hard_link(&s, &d).is_ok() { 1 } else { 0 }
+    if std::fs::hard_link(&s, &d).is_ok() {
+        1
+    } else {
+        0
+    }
 }
 
 /// Bounds a recursive walk so a symlink cycle or a pathological tree cannot
@@ -434,7 +439,11 @@ pub extern "C" fn olive_copy_dir(src: i64, dst: i64) -> i64 {
     }
     let src_str = olive_str_from_ptr(src);
     let dst_str = olive_str_from_ptr(dst);
-    if copy_dir_recursive(std::path::Path::new(&src_str), std::path::Path::new(&dst_str)).is_ok()
+    if copy_dir_recursive(
+        std::path::Path::new(&src_str),
+        std::path::Path::new(&dst_str),
+    )
+    .is_ok()
     {
         1
     } else {
@@ -895,24 +904,16 @@ mod tests {
         let obj_ptr = olive_file_stat(path);
         assert_ne!(obj_ptr, 0);
         let obj = unsafe { &*(obj_ptr as *const OliveObj) };
-        assert_eq!(
-            *obj.fields
-                .get(&crate::OliveStringKey(olive_str_internal("is_file")))
-                .unwrap(),
-            1
-        );
-        assert_eq!(
-            *obj.fields
-                .get(&crate::OliveStringKey(olive_str_internal("is_dir")))
-                .unwrap(),
-            0
-        );
-        assert_eq!(
-            *obj.fields
-                .get(&crate::OliveStringKey(olive_str_internal("size")))
-                .unwrap(),
-            4
-        );
+        let field = |name: &str| {
+            crate::boxed::olive_unbox_int(
+                *obj.fields
+                    .get(&crate::OliveStringKey(olive_str_internal(name)))
+                    .unwrap(),
+            )
+        };
+        assert_eq!(field("is_file"), 1);
+        assert_eq!(field("is_dir"), 0);
+        assert_eq!(field("size"), 4);
         olive_file_delete(path);
     }
 

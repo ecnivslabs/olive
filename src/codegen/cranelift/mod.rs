@@ -492,15 +492,33 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_process_pid", b"olive_process_pid\0"),
     ("__olive_process_poll", b"olive_process_poll\0"),
     ("__olive_process_wait", b"olive_process_wait\0"),
-    ("__olive_process_wait_timeout", b"olive_process_wait_timeout\0"),
-    ("__olive_process_read_stdout", b"olive_process_read_stdout\0"),
-    ("__olive_process_read_stderr", b"olive_process_read_stderr\0"),
-    ("__olive_process_write_stdin", b"olive_process_write_stdin\0"),
-    ("__olive_process_close_stdin", b"olive_process_close_stdin\0"),
+    (
+        "__olive_process_wait_timeout",
+        b"olive_process_wait_timeout\0",
+    ),
+    (
+        "__olive_process_read_stdout",
+        b"olive_process_read_stdout\0",
+    ),
+    (
+        "__olive_process_read_stderr",
+        b"olive_process_read_stderr\0",
+    ),
+    (
+        "__olive_process_write_stdin",
+        b"olive_process_write_stdin\0",
+    ),
+    (
+        "__olive_process_close_stdin",
+        b"olive_process_close_stdin\0",
+    ),
     ("__olive_process_terminate", b"olive_process_terminate\0"),
     ("__olive_process_kill", b"olive_process_kill\0"),
     ("__olive_process_exit_code", b"olive_process_exit_code\0"),
-    ("__olive_process_signal_code", b"olive_process_signal_code\0"),
+    (
+        "__olive_process_signal_code",
+        b"olive_process_signal_code\0",
+    ),
     ("__olive_process_close", b"olive_process_close\0"),
     ("__olive_bounds_fail", b"olive_bounds_fail\0"),
     ("__olive_nil_index_fail", b"olive_nil_index_fail\0"),
@@ -829,11 +847,23 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_regex_replace_all", b"olive_regex_replace_all\0"),
     ("__olive_regex_split", b"olive_regex_split\0"),
     ("__olive_regex_compile", b"olive_regex_compile\0"),
-    ("__olive_regex_pattern_close", b"olive_regex_pattern_close\0"),
-    ("__olive_regex_pattern_matches", b"olive_regex_pattern_matches\0"),
+    (
+        "__olive_regex_pattern_close",
+        b"olive_regex_pattern_close\0",
+    ),
+    (
+        "__olive_regex_pattern_matches",
+        b"olive_regex_pattern_matches\0",
+    ),
     ("__olive_regex_pattern_find", b"olive_regex_pattern_find\0"),
-    ("__olive_regex_pattern_find_all", b"olive_regex_pattern_find_all\0"),
-    ("__olive_regex_pattern_captures", b"olive_regex_pattern_captures\0"),
+    (
+        "__olive_regex_pattern_find_all",
+        b"olive_regex_pattern_find_all\0",
+    ),
+    (
+        "__olive_regex_pattern_captures",
+        b"olive_regex_pattern_captures\0",
+    ),
     (
         "__olive_regex_pattern_captures_all",
         b"olive_regex_pattern_captures_all\0",
@@ -842,12 +872,18 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
         "__olive_regex_pattern_capture_named",
         b"olive_regex_pattern_capture_named\0",
     ),
-    ("__olive_regex_pattern_replace", b"olive_regex_pattern_replace\0"),
+    (
+        "__olive_regex_pattern_replace",
+        b"olive_regex_pattern_replace\0",
+    ),
     (
         "__olive_regex_pattern_replace_all",
         b"olive_regex_pattern_replace_all\0",
     ),
-    ("__olive_regex_pattern_split", b"olive_regex_pattern_split\0"),
+    (
+        "__olive_regex_pattern_split",
+        b"olive_regex_pattern_split\0",
+    ),
     ("__olive_result_err", b"olive_result_err\0"),
     ("__olive_result_err_msg", b"olive_result_err_msg\0"),
     ("__olive_result_is_err", b"olive_result_is_err\0"),
