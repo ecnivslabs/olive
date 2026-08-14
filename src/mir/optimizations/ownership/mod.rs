@@ -208,6 +208,36 @@ struct AssignRec {
     src_dead: bool,
 }
 
+/// Cached statement positions go stale whenever a pass step inserts or
+/// removes statements ahead of them (view-drop cleanup, flag insertion):
+/// a drop search starting from a stale index stops at the source's own
+/// definition, mistakes it for a redefinition, and leaves a dead Drop
+/// behind, which the generation checker then reads as a genuine
+/// use-after-free (E0708). These translate a cached index across one such
+/// step. Callers must apply them after every layout-changing step, before
+/// any later consumer of the cached positions.
+fn shift_after_removals(removed: &HashMap<usize, Vec<usize>>, bb: usize, idx: usize) -> usize {
+    idx - removed
+        .get(&bb)
+        .map(|v| v.iter().filter(|&&p| p < idx).count())
+        .unwrap_or(0)
+}
+
+fn shift_after_inserts(
+    base: &HashMap<usize, usize>,
+    after: &HashMap<(usize, usize), usize>,
+    bb: usize,
+    idx: usize,
+) -> usize {
+    let mut out = idx + base.get(&bb).copied().unwrap_or(0);
+    for ((b, k), n) in after {
+        if *b == bb && *k < idx {
+            out += n;
+        }
+    }
+    out
+}
+
 impl Transform for OwnershipInference {
     fn run(&self, func: &mut MirFunction) -> bool {
         if func.basic_blocks.is_empty() {
@@ -220,7 +250,7 @@ impl Transform for OwnershipInference {
         let heap: Vec<bool> = func.locals.iter().map(|d| d.ty.needs_drop()).collect();
         let builder_owning: Vec<bool> = func.locals.iter().map(|d| d.is_owning).collect();
 
-        let (records, arg_moves, direct_store_moves, agg_moves) =
+        let (mut records, arg_moves, direct_store_moves, agg_moves) =
             collect_assigns(func, &liveness, &heap, &builder_owning, &self.param_escapes);
 
         // Promoted Move hands src's value to dst; src's stale scope-end Drop must go too.
@@ -374,10 +404,28 @@ impl Transform for OwnershipInference {
         }
 
         if !view_locals.is_empty() {
-            for bb in &mut func.basic_blocks {
-                bb.statements.retain(
-                    |s| !matches!(&s.kind, StatementKind::Drop(l) if view_locals.contains(l)),
-                );
+            // View Drops carry no positions anyone caches (views never own),
+            // but their removal still shifts every statement after them, so
+            // cached record and move positions translate across it.
+            let mut removed: HashMap<usize, Vec<usize>> = HashMap::default();
+            for (bb_idx, bb) in func.basic_blocks.iter_mut().enumerate() {
+                let mut kept = Vec::with_capacity(bb.statements.len());
+                for (idx, s) in bb.statements.drain(..).enumerate() {
+                    if matches!(&s.kind, StatementKind::Drop(l) if view_locals.contains(l)) {
+                        removed.entry(bb_idx).or_default().push(idx);
+                    } else {
+                        kept.push(s);
+                    }
+                }
+                bb.statements = kept;
+            }
+            if !removed.is_empty() {
+                for rec in records.iter_mut() {
+                    rec.idx = shift_after_removals(&removed, rec.bb, rec.idx);
+                }
+                for (bb, idx, _) in moved_from.iter_mut() {
+                    *idx = shift_after_removals(&removed, *bb, *idx);
+                }
             }
         }
 
@@ -390,9 +438,21 @@ impl Transform for OwnershipInference {
             mixed_locals.insert(*l);
         }
 
-        let (did_insert, flag_of) =
+        let (did_insert, flag_of, shift) =
             insert_flags_and_marks(func, &classes, &mixed_locals, &records, &transfers);
         changed |= did_insert;
+        if did_insert {
+            // Flag initializations and updates shift every statement after
+            // them; cached record and move positions translate across, or a
+            // drop search starts mid-block and mistakes the source's own
+            // definition for a redefinition.
+            for rec in records.iter_mut() {
+                rec.idx = shift_after_inserts(&shift.base, &shift.after, rec.bb, rec.idx);
+            }
+            for (bb, idx, _) in moved_from.iter_mut() {
+                *idx = shift_after_inserts(&shift.base, &shift.after, *bb, *idx);
+            }
+        }
 
         // Same last-use promotion, for a plain `dst = src` rebind instead of a call arg.
         for (rec_idx, rec) in records.iter().enumerate() {

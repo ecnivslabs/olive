@@ -193,3 +193,22 @@ fn main():
         "saw k v\norig v\ndone\ndrop v\n",
     );
 }
+
+#[test]
+fn struct_dict_items_direct_loop_no_false_giveaway() {
+    assert_both(
+        r#"struct Res:
+    s: str
+impl Res:
+    fn __drop__(self):
+        print("drop "+self.s)
+
+fn main():
+    let d = {"k": Res("v")}
+    for p in d.items():
+        print("saw "+p[0]+" "+p[1].s)
+    print("done")
+"#,
+        "saw k v\ndone\ndrop v\n",
+    );
+}

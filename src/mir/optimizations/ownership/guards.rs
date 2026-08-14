@@ -8,13 +8,21 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 /// assignment, cleared after each borrowing one, tested at its drops).
 /// Escapes are now handled by `insert_escape_copies` (deep copy), never by
 /// alias marks, so no mark emission or flag update needed for Escape records.
+pub(super) struct IndexShift {
+    /// Statements prepended at each block's start (flag initializations).
+    pub(super) base: HashMap<usize, usize>,
+    /// Statements inserted right after the statement that sat at each old
+    /// position (flag updates).
+    pub(super) after: HashMap<(usize, usize), usize>,
+}
+
 pub(super) fn insert_flags_and_marks(
     func: &mut MirFunction,
     _classes: &[LocalClass],
     mixed: &HashSet<Local>,
     records: &[AssignRec],
     transfers: &HashSet<usize>,
-) -> (bool, HashMap<Local, Local>) {
+) -> (bool, HashMap<Local, Local>, IndexShift) {
     let mut flag_of: HashMap<Local, Local> = HashMap::default();
     let mut ordered: Vec<Local> = mixed.iter().copied().collect();
     ordered.sort_unstable_by_key(|l| l.0);
@@ -50,9 +58,20 @@ pub(super) fn insert_flags_and_marks(
     }
 
     if flags.is_empty() {
-        return (false, flag_of);
+        return (
+            false,
+            flag_of,
+            IndexShift {
+                base: HashMap::default(),
+                after: HashMap::default(),
+            },
+        );
     }
 
+    let mut shift = IndexShift {
+        base: HashMap::default(),
+        after: HashMap::default(),
+    };
     for (bb_idx, bb) in func.basic_blocks.iter_mut().enumerate() {
         let old = std::mem::take(&mut bb.statements);
         let mut rebuilt = Vec::with_capacity(old.len() + 4);
@@ -70,6 +89,7 @@ pub(super) fn insert_flags_and_marks(
                     span: Span::default(),
                 });
             }
+            shift.base.insert(0, 2 * flags.len());
         }
         for (idx, stmt) in old.into_iter().enumerate() {
             rebuilt.push(stmt);
@@ -86,12 +106,13 @@ pub(super) fn insert_flags_and_marks(
                         span: Span::default(),
                     });
                 }
+                shift.after.insert((bb_idx, idx), list.len());
             }
         }
         bb.statements = rebuilt;
     }
 
-    (true, flag_of)
+    (true, flag_of, shift)
 }
 
 /// Transitive owning roots a view might alias; `interior` marks a path that crossed an element/field borrow.

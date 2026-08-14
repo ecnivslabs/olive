@@ -945,3 +945,24 @@ fn pure_param_twice_escaping_arg_call_copies_then_moves() {
         "first escape must copy, second escape can move"
     );
 }
+
+#[test]
+fn shift_helpers_translate_cached_positions() {
+    // Removals: surviving statements shift down past deleted ones.
+    let mut removed: HashMap<usize, Vec<usize>> = HashMap::default();
+    removed.insert(0, vec![2, 5]);
+    assert_eq!(shift_after_removals(&removed, 0, 0), 0);
+    assert_eq!(shift_after_removals(&removed, 0, 3), 2);
+    assert_eq!(shift_after_removals(&removed, 0, 6), 4);
+    assert_eq!(shift_after_removals(&removed, 1, 6), 6);
+    // Insertions: base prepended per block, updates after old positions.
+    let mut base: HashMap<usize, usize> = HashMap::default();
+    base.insert(0, 6);
+    let mut after: HashMap<(usize, usize), usize> = HashMap::default();
+    after.insert((0, 9), 1);
+    after.insert((0, 12), 2);
+    assert_eq!(shift_after_inserts(&base, &after, 0, 7), 13);
+    assert_eq!(shift_after_inserts(&base, &after, 0, 9), 15);
+    assert_eq!(shift_after_inserts(&base, &after, 0, 10), 17);
+    assert_eq!(shift_after_inserts(&base, &after, 1, 10), 10);
+}
