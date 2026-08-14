@@ -1,3 +1,5 @@
+import process
+
 fn getenv(name: str) -> str:
     let val = __olive_env_get(name)
     if val == 0:
@@ -14,10 +16,17 @@ fn exit(code: int):
     __olive_os_exit(code)
 
 fn exec(cmd: str) -> str:
-    let out = __olive_os_exec(cmd)
-    if out == 0:
+    let out = process.shell(cmd)
+
+    if out == -1:
         return ""
-    return out
+
+    return out.stdout
 
 fn exec_status(cmd: str) -> int:
-    return __olive_os_exec_status(cmd)
+    let out = process.shell(cmd)
+
+    if out == -1:
+        return -1
+
+    return out.code

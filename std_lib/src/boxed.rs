@@ -85,6 +85,21 @@ pub extern "C" fn olive_any_is_null(v: i64) -> i64 {
     (v == TAG_NULL) as i64
 }
 
+/// Whether a tag-encoded union's current value is a boxed struct (as
+/// opposed to an inline scalar, a boxed str, or the null sentinel). Mirrors
+/// `olive_free_any`'s own guards so it is safe to call on any member of the
+/// union without first knowing which one is live. Lets a `Struct | T` drop
+/// site (`lower_drop_hooks`) tell whether to run the struct's `__drop__`
+/// before falling through to the ordinary free.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_any_is_struct_box(v: i64) -> i64 {
+    if v == 0 || v & 1 != 0 || v & TAG_MASK != 0 || v < 0x1000 {
+        return 0;
+    }
+    let kind = unsafe { *(v as *const i64) };
+    (kind == crate::struct_box::KIND_STRUCT_BOX) as i64
+}
+
 /// `float()` of an `Any`: unbox, parse a string, or widen an integer.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_unbox_float(v: i64) -> f64 {

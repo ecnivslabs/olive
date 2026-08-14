@@ -9,7 +9,7 @@ use std::time::Duration;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 thread_local! {
-    static LAST_ERROR: RefCell<String> = RefCell::new(String::new());
+    static LAST_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
 fn set_last_error(msg: String) {
@@ -408,10 +408,10 @@ fn spawn_post_json_stream(url: String, body: String, headers: Vec<(String, Strin
                     match reader.read_line(&mut line) {
                         Ok(0) => break,
                         Ok(_) => {
-                            if let Ok(mut table) = stream_table().lock() {
-                                if let Some(state) = table.get_mut(&handle) {
-                                    state.chunk.push_str(&line);
-                                }
+                            if let Ok(mut table) = stream_table().lock()
+                                && let Some(state) = table.get_mut(&handle)
+                            {
+                                state.chunk.push_str(&line);
                             }
                         }
                         Err(e) => {
@@ -428,11 +428,11 @@ fn spawn_post_json_stream(url: String, body: String, headers: Vec<(String, Strin
             Err(e @ ureq::Error::Transport(_)) => Some(describe_error(&e)),
         };
 
-        if let Ok(mut table) = stream_table().lock() {
-            if let Some(state) = table.get_mut(&handle) {
-                state.error = error;
-                state.done = true;
-            }
+        if let Ok(mut table) = stream_table().lock()
+            && let Some(state) = table.get_mut(&handle)
+        {
+            state.error = error;
+            state.done = true;
         }
     });
 

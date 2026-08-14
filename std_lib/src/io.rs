@@ -132,6 +132,14 @@ pub extern "C" fn olive_file_stat(path: i64) -> i64 {
         Ok(m) => m,
         Err(_) => return 0,
     };
+    let link_meta = std::fs::symlink_metadata(&path_str).ok();
+    let secs = |t: std::io::Result<std::time::SystemTime>| {
+        t.ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0)
+    };
+    let mode = file_mode(&meta);
     let mut fields = HashMap::default();
     fields.insert(
         crate::OliveStringKey(olive_str_internal("size")),
@@ -146,14 +154,292 @@ pub extern "C" fn olive_file_stat(path: i64) -> i64 {
         if meta.is_file() { 1 } else { 0 },
     );
     fields.insert(
-        crate::OliveStringKey(olive_str_internal("modified")),
-        meta.modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0),
+        crate::OliveStringKey(olive_str_internal("is_symlink")),
+        if link_meta.map(|m| m.is_symlink()).unwrap_or(false) {
+            1
+        } else {
+            0
+        },
     );
+    fields.insert(
+        crate::OliveStringKey(olive_str_internal("modified")),
+        secs(meta.modified()),
+    );
+    fields.insert(
+        crate::OliveStringKey(olive_str_internal("created")),
+        secs(meta.created()),
+    );
+    fields.insert(
+        crate::OliveStringKey(olive_str_internal("accessed")),
+        secs(meta.accessed()),
+    );
+    fields.insert(crate::OliveStringKey(olive_str_internal("mode")), mode);
     crate::obj::new_obj_from_map(fields)
+}
+
+#[cfg(unix)]
+fn file_mode(meta: &std::fs::Metadata) -> i64 {
+    use std::os::unix::fs::PermissionsExt;
+    (meta.permissions().mode() & 0o7777) as i64
+}
+
+#[cfg(not(unix))]
+fn file_mode(meta: &std::fs::Metadata) -> i64 {
+    if meta.permissions().readonly() {
+        0o444
+    } else {
+        0o644
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_set_mode(path: i64, mode: i64) -> i64 {
+    if path == 0 {
+        return 0;
+    }
+    let path_str = olive_str_from_ptr(path);
+    set_mode_impl(&path_str, mode)
+}
+
+#[cfg(unix)]
+fn set_mode_impl(path: &str, mode: i64) -> i64 {
+    use std::os::unix::fs::PermissionsExt;
+    let perms = std::fs::Permissions::from_mode(mode as u32 & 0o7777);
+    if std::fs::set_permissions(path, perms).is_ok() {
+        1
+    } else {
+        0
+    }
+}
+
+#[cfg(not(unix))]
+fn set_mode_impl(path: &str, mode: i64) -> i64 {
+    let readonly = mode & 0o200 == 0;
+    match std::fs::metadata(path) {
+        Ok(meta) => {
+            let mut perms = meta.permissions();
+            perms.set_readonly(readonly);
+            if std::fs::set_permissions(path, perms).is_ok() {
+                1
+            } else {
+                0
+            }
+        }
+        Err(_) => 0,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_path_canonicalize(path: i64) -> i64 {
+    if path == 0 {
+        return 0;
+    }
+    match std::fs::canonicalize(olive_str_from_ptr(path)) {
+        Ok(p) => olive_str_internal(&p.to_string_lossy()),
+        Err(_) => 0,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_path_join_all(parts_ptr: i64) -> i64 {
+    if parts_ptr == 0 {
+        return olive_str_internal("");
+    }
+    let v = unsafe { &*(parts_ptr as *const crate::StableVec) };
+    let items = unsafe { std::slice::from_raw_parts(v.ptr, v.len) };
+    let mut path = std::path::PathBuf::new();
+    for &p in items {
+        path.push(olive_str_from_ptr(p));
+    }
+    olive_str_internal(&path.to_string_lossy())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_path_relative(base: i64, path: i64) -> i64 {
+    if base == 0 || path == 0 {
+        return 0;
+    }
+    let base_str = olive_str_from_ptr(base);
+    let path_str = olive_str_from_ptr(path);
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let base_abs = cwd.join(&base_str);
+    let path_abs = cwd.join(&path_str);
+
+    let base_comps: Vec<_> = base_abs.components().collect();
+    let path_comps: Vec<_> = path_abs.components().collect();
+
+    let common = base_comps
+        .iter()
+        .zip(path_comps.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    let mut result = std::path::PathBuf::new();
+    for _ in common..base_comps.len() {
+        result.push("..");
+    }
+    for comp in &path_comps[common..] {
+        result.push(comp.as_os_str());
+    }
+
+    if result.as_os_str().is_empty() {
+        olive_str_internal(".")
+    } else {
+        olive_str_internal(&result.to_string_lossy())
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_path_is_symlink(path: i64) -> i64 {
+    if path == 0 {
+        return 0;
+    }
+    match std::fs::symlink_metadata(olive_str_from_ptr(path)) {
+        Ok(m) => {
+            if m.is_symlink() {
+                1
+            } else {
+                0
+            }
+        }
+        Err(_) => 0,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_path_read_link(path: i64) -> i64 {
+    if path == 0 {
+        return 0;
+    }
+    match std::fs::read_link(olive_str_from_ptr(path)) {
+        Ok(p) => olive_str_internal(&p.to_string_lossy()),
+        Err(_) => 0,
+    }
+}
+
+#[cfg(unix)]
+fn make_symlink(target: &str, link: &str) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn make_symlink(target: &str, link: &str) -> std::io::Result<()> {
+    let target_path = std::path::Path::new(target);
+    if target_path.is_dir() {
+        std::os::windows::fs::symlink_dir(target, link)
+    } else {
+        std::os::windows::fs::symlink_file(target, link)
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_path_symlink(target: i64, link: i64) -> i64 {
+    if target == 0 || link == 0 {
+        return 0;
+    }
+    let t = olive_str_from_ptr(target);
+    let l = olive_str_from_ptr(link);
+    if make_symlink(&t, &l).is_ok() { 1 } else { 0 }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_path_hard_link(src: i64, dst: i64) -> i64 {
+    if src == 0 || dst == 0 {
+        return 0;
+    }
+    let s = olive_str_from_ptr(src);
+    let d = olive_str_from_ptr(dst);
+    if std::fs::hard_link(&s, &d).is_ok() { 1 } else { 0 }
+}
+
+/// Bounds a recursive walk so a symlink cycle or a pathological tree cannot
+/// run unbounded: depth is capped, entries are capped, and each real
+/// directory (by canonical path) is visited at most once.
+const WALK_MAX_DEPTH: usize = 64;
+const WALK_MAX_ENTRIES: usize = 200_000;
+
+fn walk_dir(
+    dir: &std::path::Path,
+    depth: usize,
+    visited: &mut std::collections::HashSet<std::path::PathBuf>,
+    out: &mut Vec<String>,
+) {
+    if depth > WALK_MAX_DEPTH || out.len() >= WALK_MAX_ENTRIES {
+        return;
+    }
+    let canon = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    if !visited.insert(canon) {
+        return;
+    }
+
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    let mut children: Vec<_> = entries.flatten().collect();
+    children.sort_by_key(|e| e.file_name());
+
+    for entry in children {
+        if out.len() >= WALK_MAX_ENTRIES {
+            return;
+        }
+        let path = entry.path();
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        out.push(path.to_string_lossy().into_owned());
+        if is_dir {
+            walk_dir(&path, depth + 1, visited, out);
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_walk(root: i64) -> i64 {
+    let root_str = if root == 0 {
+        ".".to_string()
+    } else {
+        olive_str_from_ptr(root)
+    };
+    let mut out = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+    walk_dir(std::path::Path::new(&root_str), 0, &mut visited, &mut out);
+    let ptrs: Vec<i64> = out.iter().map(|s| olive_str_internal(s)).collect();
+    crate::list::list_from_vec(ptrs)
+}
+
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else if file_type.is_symlink() {
+            let target = std::fs::read_link(&src_path)?;
+            let _ = std::fs::remove_file(&dst_path);
+            make_symlink(&target.to_string_lossy(), &dst_path.to_string_lossy())?;
+        } else {
+            std::fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_copy_dir(src: i64, dst: i64) -> i64 {
+    if src == 0 || dst == 0 {
+        return 0;
+    }
+    let src_str = olive_str_from_ptr(src);
+    let dst_str = olive_str_from_ptr(dst);
+    if copy_dir_recursive(std::path::Path::new(&src_str), std::path::Path::new(&dst_str)).is_ok()
+    {
+        1
+    } else {
+        0
+    }
 }
 
 #[unsafe(no_mangle)]

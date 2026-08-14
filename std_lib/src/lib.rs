@@ -43,6 +43,7 @@ pub mod math;
 pub mod net;
 pub mod os;
 pub mod panic;
+pub mod process;
 pub mod python;
 pub mod random;
 pub mod regex;

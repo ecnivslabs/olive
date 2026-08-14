@@ -1,0 +1,160 @@
+const STDIO_PIPE = 0
+const STDIO_INHERIT = 1
+const STDIO_NULL = 2
+
+const POLL_RUNNING = 0
+const POLL_EXITED = 1
+const POLL_UNKNOWN = -1
+
+const WAIT_TIMEOUT = -2
+
+struct Output:
+    code: int
+    stdout: str
+    stderr: str
+
+struct Child:
+    handle: int
+
+    fn __init__(self, handle: int):
+        self.handle = handle
+
+    fn __drop__(self):
+        if self.handle != 0:
+            __olive_process_close(self.handle)
+            self.handle = 0
+
+    fn pid(self) -> int:
+        return __olive_process_pid(self.handle)
+
+    fn poll(self) -> int:
+        return __olive_process_poll(self.handle)
+
+    fn wait(self) -> int:
+        return __olive_process_wait(self.handle)
+
+    fn wait_timeout(self, ms: int) -> int:
+        return __olive_process_wait_timeout(self.handle, ms)
+
+    fn read_stdout(self) -> str:
+        let out = __olive_process_read_stdout(self.handle)
+        if out == 0:
+            return ""
+        return out
+
+    fn read_stderr(self) -> str:
+        let out = __olive_process_read_stderr(self.handle)
+        if out == 0:
+            return ""
+        return out
+
+    fn write_stdin(self, data: str) -> bool:
+        return __olive_process_write_stdin(self.handle, data) == 1
+
+    fn close_stdin(self) -> bool:
+        return __olive_process_close_stdin(self.handle) == 1
+
+    fn terminate(self) -> bool:
+        return __olive_process_terminate(self.handle) == 1
+
+    fn kill(self) -> bool:
+        return __olive_process_kill(self.handle) == 1
+
+    fn exit_code(self) -> int:
+        return __olive_process_exit_code(self.handle)
+
+    fn signal_code(self) -> int:
+        return __olive_process_signal_code(self.handle)
+
+struct Command:
+    program: str
+    argv: [str]
+    dir: str
+    env_vars: {str: str}
+    clear_env: bool
+    stdin_mode: int
+    stdout_mode: int
+    stderr_mode: int
+
+    fn __init__(self, program: str):
+        self.program = program
+        self.argv = [program]
+        self.dir = ""
+        self.env_vars = {}
+        self.clear_env = False
+        self.stdin_mode = STDIO_PIPE
+        self.stdout_mode = STDIO_PIPE
+        self.stderr_mode = STDIO_PIPE
+
+    fn arg(self, a: str) -> Command:
+        self.argv.append(a)
+        return self
+
+    fn args(self, a: [str]) -> Command:
+        for x in a:
+            self.argv.append(x)
+        return self
+
+    fn cwd(self, dir: str) -> Command:
+        self.dir = dir
+        return self
+
+    fn env(self, key: str, val: str) -> Command:
+        self.env_vars[key] = val
+        return self
+
+    fn env_clear(self) -> Command:
+        self.clear_env = True
+        return self
+
+    fn stdin(self, mode: int) -> Command:
+        self.stdin_mode = mode
+        return self
+
+    fn stdout(self, mode: int) -> Command:
+        self.stdout_mode = mode
+        return self
+
+    fn stderr(self, mode: int) -> Command:
+        self.stderr_mode = mode
+        return self
+
+    fn spawn(self) -> Child | int:
+        let handle = __olive_process_spawn(
+            self.argv,
+            self.dir,
+            self.env_vars,
+            1 if self.clear_env else 0,
+            self.stdin_mode,
+            self.stdout_mode,
+            self.stderr_mode,
+        )
+
+        if handle == 0:
+            return -1
+
+        return Child(handle)
+
+    fn run(self) -> Output | int:
+        let proc = self.spawn()
+
+        if proc == -1:
+            return -1
+
+        let code = proc.wait()
+        let out = proc.read_stdout()
+        let err = proc.read_stderr()
+
+        return Output(code, out, err)
+
+fn run(argv: [str]) -> Output | int:
+    if len(argv) == 0:
+        return -1
+
+    let cmd = Command(argv[0])
+    cmd.args(argv[1:])
+
+    return cmd.run()
+
+fn shell(cmd: str) -> Output | int:
+    return run(["sh", "-c", cmd])

@@ -783,6 +783,38 @@ fn regression_f32_literal_arg_to_user_fn() {
 }
 
 #[test]
+fn regression_direct_store_escape_not_dropped_early() {
+    // A struct-in-union temp stored into a field through `SetAttr` (e.g.
+    // `session.child = spawn()`) used to keep its own unconditional scope-end
+    // Drop even though the store transferred it out -- the temp got dropped
+    // out from under the field that now held the same value, corrupting or
+    // freeing a resource the field still needed. The escape site is dead and
+    // pure, so it must be promoted to a move (like a call-arg escape
+    // already was) and its own Drop must go stale, exactly as this asserts:
+    // the drop-counting `Resource` must not have run at all yet.
+    let mut cg = compile(concat!(
+        "struct Counter:\n",
+        "    n: i64\n\n",
+        "struct Resource:\n",
+        "    counter: Counter\n\n",
+        "    fn __drop__(self):\n",
+        "        self.counter.n = self.counter.n + 1\n\n",
+        "struct Holder:\n",
+        "    child: Resource | i64\n\n",
+        "fn make(counter: Counter) -> Resource | i64:\n",
+        "    return Resource(counter)\n\n",
+        "fn restart(h: Holder, counter: Counter):\n",
+        "    h.child = make(counter)\n\n",
+        "fn f() -> i64:\n",
+        "    let counter = Counter(0)\n",
+        "    let h = Holder(-1)\n",
+        "    restart(h, counter)\n",
+        "    return counter.n\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 0);
+}
+
+#[test]
 fn regression_str_concat_shared_operand_across_lets() {
     // GVN used to fold two `let`-bound `+` chains with a textually identical
     // right operand into aliases of one heap buffer, so the first chain's

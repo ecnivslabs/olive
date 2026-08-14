@@ -37,41 +37,6 @@ pub extern "C" fn olive_os_exit(code: i64) {
     std::process::exit(code as i32);
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_os_exec(cmd: i64) -> i64 {
-    if cmd == 0 {
-        return 0;
-    }
-    let cmd_str = olive_str_from_ptr(cmd);
-    let output = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(&cmd_str)
-        .output();
-    match output {
-        Ok(out) => {
-            let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-            olive_str_internal(&stdout)
-        }
-        Err(_) => 0,
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_os_exec_status(cmd: i64) -> i64 {
-    if cmd == 0 {
-        return -1;
-    }
-    let cmd_str = olive_str_from_ptr(cmd);
-    match std::process::Command::new("sh")
-        .arg("-c")
-        .arg(&cmd_str)
-        .status()
-    {
-        Ok(s) => s.code().unwrap_or(-1) as i64,
-        Err(_) => -1,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,24 +68,6 @@ mod tests {
         assert_eq!(list.kind, KIND_LIST);
         // at least the test binary name
         assert!(list.len >= 1);
-    }
-
-    #[test]
-    fn os_exec_echo() {
-        let result = olive_os_exec(s("echo hello"));
-        assert_ne!(result, 0);
-        let out = crate::olive_str_from_ptr(result);
-        assert!(out.contains("hello"));
-    }
-
-    #[test]
-    fn os_exec_status_success() {
-        assert_eq!(olive_os_exec_status(s("true")), 0);
-    }
-
-    #[test]
-    fn os_exec_status_failure() {
-        assert_ne!(olive_os_exec_status(s("false")), 0);
     }
 
     #[test]

@@ -219,9 +219,27 @@ io.path_basename(path) -> str
 io.path_ext(path) -> str
 io.path_stem(path) -> str
 io.path_is_absolute(path) -> bool
+io.canonicalize(path) -> str
+io.path_join_all(parts) -> str
+io.path_relative(base, path) -> str
+io.is_symlink(path) -> bool
+io.read_link(path) -> str
+io.symlink(target, link) -> bool
+io.hard_link(src, dst) -> bool
+io.walk(root) -> [str]
+io.copy_dir(src, dst) -> bool
+io.set_mode(path, mode) -> bool
 io.temp_dir() -> str
 io.temp_file() -> str
 ```
+
+`io.stat(path)` now also returns `created`, `accessed`, `mode`, and
+`is_symlink` alongside `size`, `is_dir`, `is_file`, `modified`.
+
+`io.walk(root) -> [str]` recursively lists every file and directory under
+`root`, depth-first, sorted per directory. Bounded to 64 levels of depth and
+200,000 entries, and revisits no real directory twice (symlink cycles are
+skipped, tracked by canonical path).
 
 **Standard input**
 
@@ -548,6 +566,115 @@ regex.replace_all(pattern, text, rep) -> str
 regex.captures(pattern, text) -> list
 regex.split(pattern, text) -> list
 regex.is_valid(pattern) -> bool
+```
+
+The free functions above compile against a shared, bounded (256-entry LRU)
+pattern cache, so calling one of them repeatedly with the same pattern string
+compiles it once, not once per call.
+
+**Compiled patterns**
+
+For a pattern reused across many calls independent of the shared cache (or
+that needs named groups / all-matches capture iteration), compile it once
+into a `Pattern`:
+
+```rust
+regex.compile(pattern) -> Pattern | int   // -1 on an invalid pattern
+```
+
+`Pattern` methods: `matches(text) -> bool`, `find(text) -> str`,
+`find_all(text) -> [str]`, `captures(text) -> [str]`,
+`captures_all(text) -> [[str]]` (every match's capture groups),
+`capture_named(text, name) -> str`, `replace(text, rep) -> str`,
+`replace_all(text, rep) -> str`, `split(text) -> [str]`.
+
+```rust
+let p = regex.compile(r"(?P<year>\d{4})-(?P<month>\d{2})")
+if p == -1:
+    print("bad pattern")
+else:
+    print(p.capture_named("2024-01", "year"))
+```
+
+### `process`
+
+Child process management -- the real subprocess API `os.exec`/`os.exec_status`
+are thin convenience wrappers over:
+
+```rust
+import process
+```
+
+```rust
+process.run(argv) -> Output | int      // spawn + wait, captures both streams
+process.shell(cmd) -> Output | int     // explicit `sh -c`, not run's default
+```
+
+`Output` fields: `code`, `stdout`, `stderr`.
+
+**Builder**
+
+```rust
+let cmd = process.Command("git")
+cmd.arg("status").arg("--short")
+cmd.cwd("/path/to/repo")
+cmd.env("GIT_PAGER", "")
+let out = cmd.run()
+```
+
+`Command` methods: `arg(a)`, `args(list)`, `cwd(dir)`, `env(key, val)`,
+`env_clear()`, `stdin(mode)`, `stdout(mode)`, `stderr(mode)` (modes:
+`process.STDIO_PIPE`, `process.STDIO_INHERIT`, `process.STDIO_NULL`),
+`spawn() -> Child | int`, `run() -> Output | int`.
+
+**Streaming / long-lived children**
+
+```rust
+let child = cmd.spawn()
+if child != -1:
+    child.write_stdin("ping\n")
+    child.close_stdin()
+    let code = child.wait_timeout(5000)   // ms; process.WAIT_TIMEOUT on timeout
+    print(child.read_stdout())
+    print(child.read_stderr())
+```
+
+`Child` methods: `pid()`, `poll()` (`process.POLL_RUNNING` /
+`process.POLL_EXITED` / `process.POLL_UNKNOWN`), `wait()`,
+`wait_timeout(ms)`, `read_stdout()`, `read_stderr()`, `write_stdin(data)`,
+`close_stdin()`, `terminate()` (SIGTERM on Unix, `TerminateProcess` on
+Windows), `kill()` (SIGKILL / the same call on Windows), `exit_code()`,
+`signal_code()`. `Child` frees the OS process handle in `__drop__`; a still
+running child is waited on to avoid leaving a zombie.
+
+Stdout and stderr are drained by background reader threads into buffers
+capped at 64 MiB each, so a child producing large output cannot block the
+Olive thread and cannot exhaust memory if the caller never reads it.
+
+### `glob`
+
+Shell-style glob matching over paths, built on `regex` and `io.walk`:
+
+```rust
+import glob
+```
+
+```rust
+glob.matches(pattern, path) -> bool
+glob.compile(pattern) -> Pattern | int   // reusable matcher, -1 if invalid
+glob.find(pattern) -> [str]              // search from "."
+glob.find_in(root, pattern) -> [str]
+```
+
+`Pattern.matches(path) -> bool`.
+
+Supports `*` (within one path segment), `**` (spans segments), `?` (one
+non-`/` character), `[abc]` / `[!abc]` character classes, and `{a,b,c}`
+brace alternation.
+
+```rust
+for f in glob.find_in("src", "**/*.liv"):
+    print(f)
 ```
 
 ### `bytes`

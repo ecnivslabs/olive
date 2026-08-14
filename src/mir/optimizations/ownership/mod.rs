@@ -18,7 +18,7 @@ pub use escape_copies::{CopyReason, CopySite};
 use guards::{apply_drop_guards, insert_flags_and_marks, process_return_sites};
 pub(crate) use reassign::REASSIGN_LIVE_BORROWS;
 use reassign::{insert_reassign_drops, reassign_free_locals};
-use summaries::runtime_escape;
+use summaries::{runtime_borrowed_return, runtime_escape};
 pub use summaries::{compute_borrowed_returns, compute_param_escapes};
 
 /// Classifies heap locals as owner, view, or dynamic, then makes drops agree.
@@ -93,7 +93,7 @@ impl Transform for OwnershipInference {
         let heap: Vec<bool> = func.locals.iter().map(|d| d.ty.is_move_type()).collect();
         let builder_owning: Vec<bool> = func.locals.iter().map(|d| d.is_owning).collect();
 
-        let (records, arg_moves) = collect_assigns(
+        let (records, arg_moves, direct_store_moves) = collect_assigns(
             func,
             &liveness,
             &heap,
@@ -114,6 +114,31 @@ impl Transform for OwnershipInference {
                 args[pos] = Operand::Move(l);
                 moved_from.push((bb, idx, l));
             }
+        }
+
+        // Same transfer for a direct store (`SetIndex`/`SetAttr`/`PtrStore`)
+        // whose source solely owns its value there and dies with the
+        // statement: the container becomes the sole owner, so the source's
+        // own scope-end Drop must go stale too, exactly as for a call arg.
+        // Without this a struct-in-union temp stored into a field (e.g.
+        // `session.child = spawn()`) keeps its own unconditional Drop,
+        // which then frees the resource out from under the field that now
+        // holds the same handle -- a use-after-free on first access.
+        for (bb, idx) in direct_store_moves {
+            let l = match &func.basic_blocks[bb].statements[idx].kind {
+                StatementKind::SetIndex(_, _, Operand::Copy(l), _) => Some(*l),
+                StatementKind::SetAttr(_, _, Operand::Copy(l)) => Some(*l),
+                StatementKind::PtrStore(_, Operand::Copy(l)) => Some(*l),
+                _ => None,
+            };
+            let Some(l) = l else { continue };
+            match &mut func.basic_blocks[bb].statements[idx].kind {
+                StatementKind::SetIndex(_, _, val, _)
+                | StatementKind::SetAttr(_, _, val)
+                | StatementKind::PtrStore(_, val) => *val = Operand::Move(l),
+                _ => unreachable!(),
+            }
+            moved_from.push((bb, idx, l));
         }
         // `str_concat_inplace` always consumes its left operand's storage; a
         // dead-after copy there is really a last use. Runs here, before any
@@ -313,6 +338,11 @@ struct EscapeSite {
     kind: SiteKind,
 }
 
+/// (bb, idx, arg position) for a call-arg escape ready for move promotion.
+type ArgMoveSite = (usize, usize, usize);
+/// (bb, idx) for a direct-store escape ready for move promotion.
+type DirectStoreMoveSite = (usize, usize);
+
 fn collect_assigns(
     func: &MirFunction,
     liveness: &Liveness,
@@ -320,7 +350,7 @@ fn collect_assigns(
     builder_owning: &[bool],
     borrowed_returns: &HashSet<String>,
     param_escapes: &HashMap<String, Vec<bool>>,
-) -> (Vec<AssignRec>, Vec<(usize, usize, usize)>) {
+) -> (Vec<AssignRec>, Vec<ArgMoveSite>, Vec<DirectStoreMoveSite>) {
     let mut records = Vec::new();
     // Escapes are deferred: a lone last-use escape of a pure owner transfers
     // outright, so it must not demote its source to dynamic ownership.
@@ -407,7 +437,9 @@ fn collect_assigns(
                 Rvalue::Call {
                     func: Operand::Constant(Constant::Function(name)),
                     ..
-                } if borrowed_returns.contains(name) => RvClass::Borrow(None),
+                } if borrowed_returns.contains(name) || runtime_borrowed_return(name) => {
+                    RvClass::Borrow(None)
+                }
                 _ => RvClass::Own,
             };
             let src_dead = match &class {
@@ -434,10 +466,12 @@ fn collect_assigns(
     // records a dynamic escape.
     let impure = solve_impurity(func, heap, builder_owning, &records, &sites);
     let mut arg_moves = Vec::new();
+    let mut direct_store_moves = Vec::new();
     for (i, s) in sites.into_iter().enumerate() {
         if s.dead && !impure[i] {
-            if let SiteKind::CallArg(pos) = s.kind {
-                arg_moves.push((s.bb, s.idx, pos));
+            match s.kind {
+                SiteKind::CallArg(pos) => arg_moves.push((s.bb, s.idx, pos)),
+                SiteKind::DirectStore => direct_store_moves.push((s.bb, s.idx)),
             }
             continue;
         }
@@ -449,7 +483,7 @@ fn collect_assigns(
             src_dead: false,
         });
     }
-    (records, arg_moves)
+    (records, arg_moves, direct_store_moves)
 }
 
 /// For each escape site, whether the source may not solely own its value
