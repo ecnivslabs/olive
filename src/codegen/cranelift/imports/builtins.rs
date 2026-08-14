@@ -112,7 +112,7 @@ pub(crate) fn drop_descriptor_type<'a>(
     }
 }
 
-pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 684] = [
+pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 687] = [
     "__olive_alloc",
     "__olive_any_add",
     "__olive_any_div",
@@ -357,6 +357,7 @@ pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 684] = [
     "__olive_list_append",
     "__olive_list_apply_order",
     "__olive_list_clear",
+    "__olive_list_clear_typed",
     "__olive_list_concat",
     "__olive_list_concat_typed",
     "__olive_list_count_typed",
@@ -429,6 +430,7 @@ pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 684] = [
     "__olive_next",
     "__olive_none_to_str",
     "__olive_obj_clear",
+    "__olive_obj_clear_typed",
     "__olive_obj_get",
     "__olive_obj_get_boxed",
     "__olive_obj_get_checked",
@@ -648,6 +650,7 @@ pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 684] = [
     "__olive_select",
     "__olive_set_add",
     "__olive_set_clear",
+    "__olive_set_clear_typed",
     "__olive_set_contains",
     "__olive_set_diff",
     "__olive_set_diff_typed",

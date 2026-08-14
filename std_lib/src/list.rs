@@ -831,6 +831,29 @@ pub extern "C" fn olive_list_clear(ptr: i64) -> i64 {
     ptr
 }
 
+/// Descriptor-driven `xs.clear()`: elements release through the list's
+/// static element type instead of kind dispatch, which misreads raw
+/// struct payloads. `list_desc` is the full `List(E)` descriptor with the
+/// element encoding at offset 1. Element hooks run through the usual
+/// typed-free registry path when the last reference goes away.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_clear_typed(ptr: i64, list_desc: i64) -> i64 {
+    if ptr == 0 {
+        return ptr;
+    }
+    let s = unsafe { &mut *(ptr as *mut StableVec) };
+    let desc = list_desc as *const u8;
+    for i in 0..s.len {
+        let elem = unsafe { *s.ptr.add(i) };
+        if elem != 0 {
+            let mut pos = 1usize;
+            crate::free_typed::free_val(elem, desc, &mut pos);
+        }
+    }
+    s.len = 0;
+    ptr
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_list_extend(target: i64, source: i64) {
     if target == 0 || source == 0 {
@@ -1710,5 +1733,23 @@ mod tests {
         let g = crate::string_slab::olive_str_gen_of(s);
         crate::olive_list_append(0, s);
         assert_eq!(crate::string_slab::olive_str_gen_stale(s, g), 1);
+    }
+
+    #[test]
+    fn clear_typed_releases_struct_elements() {
+        use crate::format::{D_LIST, D_STR, D_STRUCT_SHARED};
+        use crate::slab::slot_is_live;
+        let desc = [D_LIST, D_STRUCT_SHARED, 14, b'R', 14, 14, b's', D_STR];
+        let desc_ptr = desc.as_ptr() as i64;
+        let text = crate::olive_str_internal("typed list clear resource field");
+        let value = crate::olive_struct_alloc(1);
+        unsafe { *((value as *mut i64).add(1)) = text };
+        let list = olive_list_new(1);
+        olive_list_set(list, 0, value);
+        olive_list_clear_typed(list, desc_ptr);
+        assert!(!slot_is_live(value));
+        assert_eq!(olive_list_len(list), 0);
+        assert!(slot_is_live(list));
+        olive_free_list(list);
     }
 }

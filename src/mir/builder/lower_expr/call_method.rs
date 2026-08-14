@@ -1044,6 +1044,13 @@ impl<'a> MirBuilder<'a> {
         if !matches!(recv_ty, Type::List(_) | Type::Any) {
             return None;
         }
+        // `clear` releases through the static element type when elements
+        // own heap data (structs otherwise misread by kind dispatch),
+        // mirroring the `setdefault` value-typed dispatch.
+        let elem_needs_typed = match &recv_ty {
+            Type::List(e) => **e != Type::Any && Self::list_elem_needs_copy(e),
+            _ => false,
+        };
         let obj_op = self.lower_expr_as_copy(obj);
         let val_op = arg_ops
             .first()
@@ -1055,6 +1062,7 @@ impl<'a> MirBuilder<'a> {
                 "__olive_list_index_typed",
                 vec![obj_op.clone(), val_op, self.index_loc_operand(span)],
             ),
+            "clear" if elem_needs_typed => ("__olive_list_clear_typed", vec![obj_op.clone()]),
             "clear" => ("__olive_list_clear", vec![obj_op.clone()]),
             _ => return None,
         };
@@ -1099,11 +1107,27 @@ impl<'a> MirBuilder<'a> {
             // Discarded result: a Null dummy avoids an owning local aliasing
             // the receiver (same reasoning as list clear).
             let tmp = self.new_local(Type::Null, None, false);
+            // Struct-element (or otherwise heap-owning) sets release
+            // through the static element type; kind dispatch misreads raw
+            // struct payloads.
+            let mut clear_recv = self.get_type(obj.id);
+            while let Type::Ref(inner) | Type::MutRef(inner) = clear_recv {
+                clear_recv = *inner;
+            }
+            let elem_typed = match &clear_recv {
+                Type::Set(e) => **e != Type::Any && Self::list_elem_needs_copy(e),
+                _ => false,
+            };
+            let runtime = if elem_typed {
+                "__olive_set_clear_typed"
+            } else {
+                "__olive_set_clear"
+            };
             self.push_statement(
                 StatementKind::Assign(
                     tmp,
                     Rvalue::Call {
-                        func: Operand::Constant(Constant::Function("__olive_set_clear".into())),
+                        func: Operand::Constant(Constant::Function(runtime.into())),
                         args: vec![obj_op.clone()],
                     },
                 ),
@@ -1316,6 +1340,9 @@ impl<'a> MirBuilder<'a> {
             }
         };
         let (runtime, call_args): (&str, Vec<Operand>) = match attr {
+            "clear" if val_ty != Type::Any && Self::list_elem_needs_copy(&val_ty) => {
+                ("__olive_obj_clear_typed", vec![obj_op.clone()])
+            }
             "clear" => ("__olive_obj_clear", vec![obj_op.clone()]),
             "pop" if arg_ops.len() >= 2 => {
                 let key_op = arg_ops[0].clone();

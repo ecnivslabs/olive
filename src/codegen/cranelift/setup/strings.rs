@@ -321,6 +321,11 @@ impl<M: Module> CraneliftCodegen<M> {
                 Some(0usize)
             }
             "__olive_iter_typed" if args.len() == 1 => Some(0usize),
+            "__olive_list_clear_typed" | "__olive_set_clear_typed" | "__olive_obj_clear_typed"
+                if args.len() == 1 =>
+            {
+                Some(0usize)
+            }
             "__olive_mutex_new" if args.len() == 1 => Some(0usize),
             "__olive_set_add_typed"
             | "__olive_set_remove_typed"

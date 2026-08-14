@@ -212,3 +212,66 @@ fn main():
         "saw k v\ndone\ndrop v\n",
     );
 }
+
+#[test]
+fn struct_set_remove_runs_hook_once() {
+    assert_both(
+        r#"struct Res:
+    s: str
+impl Res:
+    fn __drop__(self):
+        print("drop "+self.s)
+
+fn main():
+    let st = {Res("a")}
+    st.remove(Res("a"))
+    print(len(st))
+    print("done")
+"#,
+        "drop a\n0\ndone\ndrop a\n",
+    );
+}
+
+#[test]
+fn struct_set_discard_runs_hook_once() {
+    assert_both(
+        r#"struct Res:
+    s: str
+impl Res:
+    fn __drop__(self):
+        print("drop "+self.s)
+
+fn main():
+    let st = {Res("a")}
+    st.discard(Res("a"))
+    print(len(st))
+    print("done")
+"#,
+        "drop a\n0\ndone\ndrop a\n",
+    );
+}
+
+#[test]
+fn struct_containers_clear_runs_hooks() {
+    assert_both(
+        r#"struct Res:
+    s: str
+impl Res:
+    fn __drop__(self):
+        print("drop "+self.s)
+
+fn main():
+    let xs = [Res("a")]
+    xs.clear()
+    print(len(xs))
+    let st = {Res("b")}
+    st.clear()
+    print(len(st))
+    let d = {"k": Res("v")}
+    d.clear()
+    print(len(d))
+    print("done")
+"#,
+        "drop a\n0\ndrop b\n0\ndrop v\n0\ndone\n",
+    );
+}

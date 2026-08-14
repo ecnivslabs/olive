@@ -121,7 +121,9 @@ pub extern "C" fn olive_set_contains_typed(set_ptr: i64, val: i64, key_desc: i64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_set_remove_typed(set_ptr: i64, val: i64, key_desc: i64) -> i64 {
-    with_key_descriptor(key_desc, || crate::set::olive_set_remove(set_ptr, val))
+    with_key_descriptor(key_desc, || {
+        crate::set::olive_set_remove_inner(set_ptr, val, Some(key_desc))
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -132,7 +134,7 @@ pub extern "C" fn olive_set_remove_checked_typed(
     key_desc: i64,
 ) -> i64 {
     with_key_descriptor(key_desc, || {
-        crate::set::olive_set_remove_checked(set_ptr, val, loc)
+        crate::set::olive_set_remove_checked_inner(set_ptr, val, loc, Some(key_desc))
     })
 }
 

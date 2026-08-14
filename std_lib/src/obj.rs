@@ -329,6 +329,37 @@ pub extern "C" fn olive_obj_clear(obj_ptr: i64) -> i64 {
     obj_ptr
 }
 
+/// Descriptor-driven `d.clear()`: values release through the dict's static
+/// value type instead of kind dispatch, which misreads raw struct payloads;
+/// keys release through the static key type the same way (identical to the
+/// tagged check for `str`/`int` keys, and exact for structural keys).
+/// `dict_desc` is the full `Dict(K, V)` descriptor. Element hooks run
+/// through the usual typed-free registry path when the last reference
+/// goes away.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_obj_clear_typed(obj_ptr: i64, dict_desc: i64) -> i64 {
+    if obj_ptr == 0 {
+        return obj_ptr;
+    }
+    let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
+    let desc = dict_desc as *const u8;
+    let mut key_pos = 1usize;
+    crate::format::skip(desc, &mut key_pos);
+    let val_start = key_pos;
+    let fields = std::mem::take(&mut m.fields);
+    for (k, v) in fields {
+        if v != 0 {
+            let mut vp = val_start;
+            crate::free_typed::free_val(v, desc, &mut vp);
+        }
+        if k.0 != 0 {
+            let mut kp = 1usize;
+            crate::free_typed::free_val(k.0, desc, &mut kp);
+        }
+    }
+    obj_ptr
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_in_obj(key: i64, obj_ptr: i64) -> i64 {
     if obj_ptr == 0 {
@@ -1001,5 +1032,31 @@ mod tests {
         assert_eq!(crate::string_slab::olive_str_gen_stale(s, g), 1);
         crate::free_typed::olive_free_typed(dict, dict_desc.as_ptr() as i64);
         assert_eq!(crate::string_slab::olive_str_gen_stale(ks, gk), 1);
+    }
+
+    #[test]
+    fn clear_typed_releases_struct_values_and_keys() {
+        use crate::format::{D_DICT, D_STR, D_STRUCT};
+        use crate::slab::slot_is_live;
+        let dict_desc = [D_DICT, D_STR, D_STRUCT, 14, b'P', 14, 14, b'x', D_STR];
+        let dict = olive_obj_new();
+        let value = crate::struct_obj::olive_struct_alloc(1);
+        let text = crate::olive_str_internal("typed dict clear payload");
+        let gt = crate::string_slab::olive_str_gen_of(text);
+        unsafe { *((value + 8) as *mut i64) = text };
+        let key = crate::olive_str_internal("typed-dict-clear-heap-key-0123456789");
+        let gk = crate::string_slab::olive_str_gen_of(key);
+        olive_obj_set(dict, key, value);
+        olive_obj_clear_typed(dict, dict_desc.as_ptr() as i64);
+        assert!(!slot_is_live(value));
+        assert_eq!(crate::string_slab::olive_str_gen_stale(text, gt), 1);
+        // The dict keeps a private copy of string keys; the caller's own
+        // key stays live until the caller frees it, like a scope exit.
+        assert_eq!(crate::string_slab::olive_str_gen_stale(key, gk), 0);
+        crate::olive_free_str(key);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(key, gk), 1);
+        assert_eq!(olive_obj_len(dict), 0);
+        assert!(slot_is_live(dict));
+        olive_free_obj(dict);
     }
 }

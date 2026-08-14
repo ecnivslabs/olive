@@ -306,6 +306,16 @@ pub extern "C" fn olive_set_contains(set_ptr: i64, val: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_set_remove(set_ptr: i64, val: i64) -> i64 {
+    olive_set_remove_inner(set_ptr, val, None)
+}
+
+/// Shared body for `remove`/`discard`: unlinks `val` and releases the
+/// stored copy. `elem_desc` (a `*const u8` cast to `i64`) frees the stored
+/// word through the set's static element type; without it the word goes
+/// through kind dispatch, which misreads raw struct payloads (a 1-field
+/// header is `KIND_LIST`). The typed entry points pass their key
+/// descriptor, which for a set *is* the element descriptor.
+pub(crate) fn olive_set_remove_inner(set_ptr: i64, val: i64, elem_desc: Option<i64>) -> i64 {
     if set_ptr == 0 {
         return 0;
     }
@@ -327,7 +337,13 @@ pub extern "C" fn olive_set_remove(set_ptr: i64, val: i64) -> i64 {
                 // stored one. When they are the same pointer the ownership
                 // returns to the caller untouched.
                 if stored != val {
-                    crate::free_any_word(stored);
+                    match elem_desc {
+                        Some(desc) => {
+                            let mut p = 0usize;
+                            crate::free_typed::free_val(stored, desc as *const u8, &mut p);
+                        }
+                        None => crate::free_any_word(stored),
+                    }
                 }
             }
             s.ptr = v.as_mut_ptr();
@@ -340,9 +356,20 @@ pub extern "C" fn olive_set_remove(set_ptr: i64, val: i64) -> i64 {
 }
 
 /// `s.remove(x)`: faults if `x` is absent (Python semantics). `discard`
-/// keeps `olive_set_remove`'s existing silent-on-absence behavior.
+/// keeps `olive_set_remove`'s existing silent-on-absence behavior. Both
+/// release through the untyped path, exact for scalar and `Any`-boxed
+/// elements; struct elements take the typed entries below.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_set_remove_checked(set_ptr: i64, val: i64, loc: i64) -> i64 {
+    olive_set_remove_checked_inner(set_ptr, val, loc, None)
+}
+
+pub(crate) fn olive_set_remove_checked_inner(
+    set_ptr: i64,
+    val: i64,
+    loc: i64,
+    elem_desc: Option<i64>,
+) -> i64 {
     if set_ptr == 0 {
         crate::panic::olive_bounds_fail(0, 0, loc);
         return 0;
@@ -356,7 +383,7 @@ pub extern "C" fn olive_set_remove_checked(set_ptr: i64, val: i64, loc: i64) -> 
         crate::panic::olive_bounds_fail(0, len, loc);
         return 0;
     }
-    olive_set_remove(set_ptr, val)
+    olive_set_remove_inner(set_ptr, val, elem_desc)
 }
 
 /// `s.clear()`: empties the set in place, returns it.
@@ -369,6 +396,32 @@ pub extern "C" fn olive_set_clear(set_ptr: i64) -> i64 {
         let s = &mut *(set_ptr as *mut OliveHashSet);
         for i in 0..s.len {
             crate::free_any_word(*s.ptr.add(i));
+        }
+        (*s.inner).clear();
+        s.len = 0;
+    }
+    set_ptr
+}
+
+/// Descriptor-driven `s.clear()`: elements release through the set's
+/// static element type instead of kind dispatch, which misreads raw
+/// struct payloads. `set_desc` is the full `Set(E)` descriptor with the
+/// element encoding at offset 1. Element hooks run through the usual
+/// typed-free registry path when the last reference goes away.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_set_clear_typed(set_ptr: i64, set_desc: i64) -> i64 {
+    if set_ptr == 0 {
+        return set_ptr;
+    }
+    unsafe {
+        let s = &mut *(set_ptr as *mut OliveHashSet);
+        let desc = set_desc as *const u8;
+        for i in 0..s.len {
+            let elem = *s.ptr.add(i);
+            if elem != 0 {
+                let mut pos = 1usize;
+                crate::free_typed::free_val(elem, desc, &mut pos);
+            }
         }
         (*s.inner).clear();
         s.len = 0;
@@ -891,5 +944,55 @@ mod tests {
         assert!(slot_is_live(value));
         crate::free_typed::olive_free_typed(set, desc_ptr);
         assert!(!slot_is_live(value));
+    }
+
+    #[test]
+    fn remove_typed_releases_stored_struct() {
+        use crate::format::{D_SET, D_STR, D_STRUCT_SHARED};
+        use crate::slab::slot_is_live;
+        let desc = [D_SET, D_STRUCT_SHARED, 14, b'R', 14, 14, b's', D_STR];
+        let mk = || {
+            let text = crate::olive_str_internal("typed remove resource field value");
+            let value = crate::olive_struct_alloc(1);
+            unsafe { *((value as *mut i64).add(1)) = text };
+            value
+        };
+        let stored = mk();
+        let set = olive_set_new(4);
+        // The typed entries carry the *element* descriptor (from the value
+        // argument), not the set descriptor: skip the D_SET tag. It also
+        // drives structural hashing, so insertion goes through the typed
+        // add like the production path.
+        let elem_desc = unsafe { desc.as_ptr().add(1) } as i64;
+        crate::hash_typed::olive_set_add_typed(set, stored, elem_desc);
+        let arg = mk();
+        let out = crate::hash_typed::with_key_descriptor(elem_desc, || {
+            olive_set_remove_inner(set, arg, Some(elem_desc))
+        });
+        assert_eq!(out, arg);
+        assert!(!slot_is_live(stored));
+        assert!(slot_is_live(arg));
+        assert_eq!(unsafe { (*(set as *const OliveHashSet)).len }, 0);
+        crate::free_typed::olive_free_typed(arg, elem_desc);
+        assert!(!slot_is_live(arg));
+        olive_free_set(set);
+    }
+
+    #[test]
+    fn clear_typed_releases_struct_elements() {
+        use crate::format::{D_SET, D_STR, D_STRUCT_SHARED};
+        use crate::slab::slot_is_live;
+        let desc = [D_SET, D_STRUCT_SHARED, 14, b'R', 14, 14, b's', D_STR];
+        let desc_ptr = desc.as_ptr() as i64;
+        let text = crate::olive_str_internal("typed clear resource field value");
+        let value = crate::olive_struct_alloc(1);
+        unsafe { *((value as *mut i64).add(1)) = text };
+        let set = olive_set_new(4);
+        assert!(set_try_add(set, value));
+        olive_set_clear_typed(set, desc_ptr);
+        assert!(!slot_is_live(value));
+        assert_eq!(unsafe { (*(set as *const OliveHashSet)).len }, 0);
+        assert!(slot_is_live(set));
+        olive_free_set(set);
     }
 }
