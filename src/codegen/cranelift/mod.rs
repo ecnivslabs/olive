@@ -1007,6 +1007,10 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_temp_file", b"olive_temp_file\0"),
     ("__olive_term_begin_sync", b"olive_term_begin_sync\0"),
     ("__olive_term_clear", b"olive_term_clear\0"),
+    (
+        "__olive_term_clipboard_write",
+        b"olive_term_clipboard_write\0",
+    ),
     ("__olive_term_end_sync", b"olive_term_end_sync\0"),
     ("__olive_term_cols", b"olive_term_cols\0"),
     ("__olive_term_cursor_hide", b"olive_term_cursor_hide\0"),
@@ -1016,11 +1020,13 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
         "__olive_term_disable_key_enhancement",
         b"olive_term_disable_key_enhancement\0",
     ),
+    ("__olive_term_disable_mouse", b"olive_term_disable_mouse\0"),
     ("__olive_term_disable_raw", b"olive_term_disable_raw\0"),
     (
         "__olive_term_enable_key_enhancement",
         b"olive_term_enable_key_enhancement\0",
     ),
+    ("__olive_term_enable_mouse", b"olive_term_enable_mouse\0"),
     ("__olive_term_enable_raw", b"olive_term_enable_raw\0"),
     (
         "__olive_term_enter_alt_screen",

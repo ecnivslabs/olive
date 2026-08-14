@@ -1,7 +1,9 @@
 use crate::{olive_str_from_ptr, olive_str_internal};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use crossterm::event::{
-    Event, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags, poll, read,
+    DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags, poll, read,
 };
 use crossterm::{cursor, execute, terminal};
 use std::io::{IsTerminal, Write, stdout};
@@ -119,6 +121,36 @@ pub extern "C" fn olive_term_disable_key_enhancement() -> i64 {
     execute!(stdout(), PopKeyboardEnhancementFlags).is_ok() as i64
 }
 
+/// Requests SGR mouse tracking (wheel + button presses) from the terminal.
+/// Without this, wheel scroll is invisible to the app entirely -- some
+/// terminals fall back to sending arrow-key codes for it, which is
+/// indistinguishable from a real key press.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_term_enable_mouse() -> i64 {
+    execute!(stdout(), EnableMouseCapture).is_ok() as i64
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_term_disable_mouse() -> i64 {
+    execute!(stdout(), DisableMouseCapture).is_ok() as i64
+}
+
+/// Writes `text` to the system clipboard via OSC 52 -- works locally, over
+/// SSH, and inside tmux/screen with clipboard passthrough enabled, with no
+/// platform-specific clipboard binary required.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_term_clipboard_write(s: i64) -> i64 {
+    if s == 0 {
+        return 0;
+    }
+    let text = olive_str_from_ptr(s);
+    let encoded = STANDARD.encode(text.as_bytes());
+    let seq = format!("\x1b]52;c;{encoded}\x07");
+    let mut out = stdout();
+    let wrote = out.write_all(seq.as_bytes()).is_ok();
+    (wrote && out.flush().is_ok()) as i64
+}
+
 /// Normalizes a crossterm key event into the token string the olive `term`
 /// module hands to callers: a named key ("enter", "backspace", "tab",
 /// "escape", "up", "down", "left", "right", "home", "end", "delete"),
@@ -144,6 +176,28 @@ fn encode_key(code: KeyCode, modifiers: KeyModifiers) -> Option<String> {
     })
 }
 
+/// Normalizes a crossterm mouse event into a token: "wheelup"/"wheeldown"
+/// for scroll, "mousedown:<col>:<row>"/"mousedrag:<col>:<row>"/
+/// "mouseup:<col>:<row>" for left-button press/move-while-held/release --
+/// together these let callers tell a plain click (down+up, no drag) apart
+/// from a text-selection drag. Other buttons are swallowed.
+fn encode_mouse(event: MouseEvent) -> Option<String> {
+    match event.kind {
+        MouseEventKind::ScrollUp => Some("wheelup".to_string()),
+        MouseEventKind::ScrollDown => Some("wheeldown".to_string()),
+        MouseEventKind::Down(MouseButton::Left) => {
+            Some(format!("mousedown:{}:{}", event.column, event.row))
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            Some(format!("mousedrag:{}:{}", event.column, event.row))
+        }
+        MouseEventKind::Up(MouseButton::Left) => {
+            Some(format!("mouseup:{}:{}", event.column, event.row))
+        }
+        _ => None,
+    }
+}
+
 /// Blocks for the next key press or terminal resize and returns a token from
 /// `encode_key`, "resize" on geometry change, or "eof" if the input stream
 /// is closed or errored -- callers must treat "eof" as a hard stop, since
@@ -159,6 +213,10 @@ pub extern "C" fn olive_term_read_key() -> i64 {
         let key = match event {
             Event::Resize(_, _) => return olive_str_internal("resize"),
             Event::Key(key) => key,
+            Event::Mouse(m) => match encode_mouse(m) {
+                Some(token) => return olive_str_internal(&token),
+                None => continue,
+            },
             _ => continue,
         };
         if key.kind == KeyEventKind::Release {
@@ -193,6 +251,10 @@ pub extern "C" fn olive_term_read_key_timeout(ms: i64) -> i64 {
         let key = match event {
             Event::Resize(_, _) => return olive_str_internal("resize"),
             Event::Key(key) => key,
+            Event::Mouse(m) => match encode_mouse(m) {
+                Some(token) => return olive_str_internal(&token),
+                None => continue,
+            },
             _ => continue,
         };
         if key.kind == KeyEventKind::Release {
@@ -309,6 +371,63 @@ mod tests {
                 KeyModifiers::CONTROL | KeyModifiers::SHIFT
             ),
             Some("ctrl+c".to_string())
+        );
+    }
+
+    fn mouse_event(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn encode_mouse_wheel_up() {
+        assert_eq!(
+            encode_mouse(mouse_event(MouseEventKind::ScrollUp, 0, 0)),
+            Some("wheelup".to_string())
+        );
+    }
+
+    #[test]
+    fn encode_mouse_wheel_down() {
+        assert_eq!(
+            encode_mouse(mouse_event(MouseEventKind::ScrollDown, 0, 0)),
+            Some("wheeldown".to_string())
+        );
+    }
+
+    #[test]
+    fn encode_mouse_left_down() {
+        assert_eq!(
+            encode_mouse(mouse_event(MouseEventKind::Down(MouseButton::Left), 12, 34)),
+            Some("mousedown:12:34".to_string())
+        );
+    }
+
+    #[test]
+    fn encode_mouse_left_drag() {
+        assert_eq!(
+            encode_mouse(mouse_event(MouseEventKind::Drag(MouseButton::Left), 5, 9)),
+            Some("mousedrag:5:9".to_string())
+        );
+    }
+
+    #[test]
+    fn encode_mouse_left_up() {
+        assert_eq!(
+            encode_mouse(mouse_event(MouseEventKind::Up(MouseButton::Left), 5, 9)),
+            Some("mouseup:5:9".to_string())
+        );
+    }
+
+    #[test]
+    fn encode_mouse_right_click_is_none() {
+        assert_eq!(
+            encode_mouse(mouse_event(MouseEventKind::Down(MouseButton::Right), 0, 0)),
+            None
         );
     }
 }

@@ -51,6 +51,15 @@ fn enable_key_enhancement() -> bool:
 fn disable_key_enhancement() -> bool:
     return __olive_term_disable_key_enhancement() == 1
 
+fn enable_mouse() -> bool:
+    return __olive_term_enable_mouse() == 1
+
+fn disable_mouse() -> bool:
+    return __olive_term_disable_mouse() == 1
+
+fn clipboard_write(s: str) -> bool:
+    return __olive_term_clipboard_write(s) == 1
+
 enum Key:
     Enter
     ShiftEnter
@@ -69,6 +78,11 @@ enum Key:
     Resize
     Eof
     Idle
+    WheelUp
+    WheelDown
+    MouseDown(int, int)
+    MouseDrag(int, int)
+    MouseUp(int, int)
 
 fn _decode(tag: str) -> Key:
     if tag == "enter":
@@ -101,6 +115,19 @@ fn _decode(tag: str) -> Key:
         return Eof
     if tag == "idle":
         return Idle
+    if tag == "wheelup":
+        return WheelUp
+    if tag == "wheeldown":
+        return WheelDown
+    if string.starts_with(tag, "mousedown:"):
+        let parts = string.split(tag[10:], ":")
+        return MouseDown(int(parts[0]), int(parts[1]))
+    if string.starts_with(tag, "mousedrag:"):
+        let parts = string.split(tag[10:], ":")
+        return MouseDrag(int(parts[0]), int(parts[1]))
+    if string.starts_with(tag, "mouseup:"):
+        let parts = string.split(tag[8:], ":")
+        return MouseUp(int(parts[0]), int(parts[1]))
     if string.starts_with(tag, "ctrl+"):
         return Ctrl(tag[5:])
     return Char(tag)
