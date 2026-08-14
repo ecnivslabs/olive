@@ -399,6 +399,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_is_obj", b"olive_is_obj\0"),
     ("__olive_is_str", b"olive_is_str\0"),
     ("__olive_iter", b"olive_iter\0"),
+    ("__olive_iter_typed", b"olive_iter_typed\0"),
     ("__olive_json_parse", b"olive_json_parse\0"),
     ("__olive_json_stringify", b"olive_json_stringify\0"),
     (
@@ -517,6 +518,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ),
     ("__olive_obj_keys", b"olive_obj_keys\0"),
     ("__olive_obj_items", b"olive_obj_items\0"),
+    ("__olive_obj_items_typed", b"olive_obj_items_typed\0"),
     ("__olive_obj_len", b"olive_obj_len\0"),
     ("__olive_len_any", b"olive_len_any\0"),
     ("__olive_obj_new", b"olive_obj_new\0"),
@@ -527,6 +529,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
         b"olive_obj_set_replacing_typed\0",
     ),
     ("__olive_obj_values", b"olive_obj_values\0"),
+    ("__olive_obj_values_typed", b"olive_obj_values_typed\0"),
     ("__olive_os_args", b"olive_os_args\0"),
     ("__olive_os_exit", b"olive_os_exit\0"),
     ("__olive_panic", b"olive_panic\0"),

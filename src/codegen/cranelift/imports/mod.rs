@@ -176,9 +176,10 @@ pub(super) fn collect_needed_imports(
 
 /// Call names whose needed-import entry is the name itself. Kept sorted for
 /// `binary_search`.
-const IDENTITY_TYPED_IMPORTS: [&str; 21] = [
+const IDENTITY_TYPED_IMPORTS: [&str; 24] = [
     "__olive_copy_typed",
     "__olive_eq_typed",
+    "__olive_iter_typed",
     "__olive_list_concat_move",
     "__olive_list_concat_typed",
     "__olive_list_count_typed",
@@ -188,11 +189,13 @@ const IDENTITY_TYPED_IMPORTS: [&str; 21] = [
     "__olive_list_push",
     "__olive_obj_get_default_typed",
     "__olive_obj_get_typed",
+    "__olive_obj_items_typed",
     "__olive_obj_pop_checked_typed",
     "__olive_obj_pop_default_typed",
     "__olive_obj_remove_typed",
     "__olive_obj_setdefault_typed",
     "__olive_obj_update_typed",
+    "__olive_obj_values_typed",
     "__olive_relocate_typed",
     "__olive_set_add_typed",
     "__olive_set_contains_typed",

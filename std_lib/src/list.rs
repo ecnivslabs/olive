@@ -1035,6 +1035,12 @@ pub struct OliveIter {
     // list_ptr was allocated for this iterator (dict keys, set items, str chars)
     // rather than borrowed from the iterated value, so freeing the iterator frees it.
     pub derived: bool,
+    // Full `Set(E)` descriptor when the derived list is a typed set snapshot
+    // (struct-element sets); 0 means the snapshot frees through the untyped
+    // kind dispatch. Stored here because the iterator local itself is
+    // `Any`-typed, so no MIR drop hook carries the element type to the free
+    // site.
+    pub snapshot_desc: i64,
 }
 
 #[unsafe(no_mangle)]
@@ -1078,6 +1084,60 @@ pub extern "C" fn olive_iter(list_ptr: i64) -> i64 {
                     py_peeked: 0,
                     has_peeked: false,
                     derived,
+                    snapshot_desc: 0,
+                },
+            );
+        }
+        body as i64
+    })
+}
+
+/// Descriptor-driven `olive_iter`: identical except a set snapshot copies
+/// elements through the set's static element type. `iter_desc` is the full
+/// iterated collection's descriptor and is only consulted for sets; every
+/// other kind iterates exactly as above.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_iter_typed(list_ptr: i64, iter_desc: i64) -> i64 {
+    let mut is_py = false;
+    let mut derived = false;
+    let mut snapshot_desc = 0i64;
+    let mut actual_list_ptr = list_ptr;
+
+    if list_ptr != 0 && (list_ptr & 1) == 1 && (list_ptr & !1) > 0x10000 {
+        actual_list_ptr = crate::string::olive_str_chars(list_ptr);
+        derived = true;
+    } else if list_ptr != 0 {
+        unsafe {
+            let kind = *(list_ptr as *const i64);
+            if kind == KIND_PYOBJECT {
+                is_py = true;
+                actual_list_ptr =
+                    crate::python::python_iter::olive_py_iter(list_ptr as *mut libc::c_void) as i64;
+            } else if kind == KIND_OBJ {
+                actual_list_ptr = crate::obj::olive_obj_keys(list_ptr);
+                derived = true;
+            } else if kind == KIND_SET {
+                actual_list_ptr = crate::set::olive_set_items_typed(list_ptr, iter_desc);
+                derived = true;
+                snapshot_desc = iter_desc;
+            }
+        }
+    }
+
+    with_iter_slab(|sl| {
+        let (body, _) = sl.alloc();
+        unsafe {
+            std::ptr::write(
+                body as *mut OliveIter,
+                OliveIter {
+                    kind: KIND_ITER,
+                    list_ptr: actual_list_ptr,
+                    index: 0,
+                    is_py,
+                    py_peeked: 0,
+                    has_peeked: false,
+                    derived,
+                    snapshot_desc,
                 },
             );
         }
@@ -1096,7 +1156,11 @@ pub extern "C" fn olive_free_iter(ptr: i64) {
             if it.is_py && it.list_ptr != 0 {
                 crate::python::olive_py_decref(it.list_ptr as *mut libc::c_void);
             } else if it.derived && it.list_ptr != 0 {
-                olive_free_list(it.list_ptr);
+                if it.snapshot_desc != 0 {
+                    free_snapshot_typed(it.list_ptr, it.snapshot_desc);
+                } else {
+                    olive_free_list(it.list_ptr);
+                }
             }
         }
     }
@@ -1104,6 +1168,39 @@ pub extern "C" fn olive_free_iter(ptr: i64) {
         None => {}
         Some(true) => crate::slab::with_escape_arena(|| free_iter_slot_local(ptr)),
         Some(false) => free_iter_slot_local(ptr),
+    }
+}
+
+/// Frees a typed set snapshot: each element releases through the set's
+/// static element type (starting at descriptor offset 1), then the list
+/// shell and its buffer release. Mirrors `free_list_like`'s detach-first
+/// order so an element destructor that allocates cannot recycle the header
+/// mid-walk.
+pub(crate) unsafe fn free_snapshot_typed(list: i64, set_desc: i64) {
+    if list == 0 || set_desc == 0 {
+        return;
+    }
+    if crate::slab::slab_membership(list).is_none() || !crate::slab::slot_is_live(list) {
+        return;
+    }
+    let desc = set_desc as *const u8;
+    let (eptr, elen, ecap) = unsafe {
+        let s = &mut *(list as *mut StableVec);
+        let res = (s.ptr, s.len, s.cap);
+        s.ptr = std::ptr::null_mut();
+        s.cap = 0;
+        res
+    };
+    free_list_slot_raw(list);
+    if !eptr.is_null() {
+        for i in 0..elen {
+            let elem = unsafe { *eptr.add(i) };
+            if elem != 0 {
+                let mut pos = 1usize;
+                crate::free_typed::free_val(elem, desc, &mut pos);
+            }
+        }
+        let _ = unsafe { Vec::from_raw_parts(eptr, 0, ecap) };
     }
 }
 

@@ -552,6 +552,43 @@ pub extern "C" fn olive_obj_items(obj_ptr: i64) -> i64 {
     outer
 }
 
+/// Descriptor-driven `items()`: values copy through the dict's static value
+/// type for the same reason as `olive_obj_values_typed` above; keys keep
+/// the untyped copy (strings and scalars classify exactly by kind).
+/// `dict_desc` is the full `Dict(K, V)` descriptor; the key part is skipped
+/// to reach the value descriptor, mirroring `olive_obj_update_typed`.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_obj_items_typed(obj_ptr: i64, dict_desc: i64) -> i64 {
+    if obj_ptr == 0 {
+        return crate::list::olive_list_new(0);
+    }
+    let m = unsafe { &*(obj_ptr as *const OliveObj) };
+    let mut visited = rustc_hash::FxHashMap::default();
+    let desc = dict_desc as *const u8;
+    let mut key_pos = 1usize;
+    crate::format::skip(desc, &mut key_pos);
+    let val_start = key_pos;
+    let pairs: Vec<(i64, i64)> = m
+        .fields
+        .iter()
+        .map(|(k, &v)| {
+            let mut pos = val_start;
+            (
+                crate::copy_typed::copy_any(k.0, &mut visited),
+                crate::copy_typed::copy_val(v, desc, &mut pos, &mut visited),
+            )
+        })
+        .collect();
+    let outer = crate::list::olive_list_new(pairs.len() as i64);
+    for (i, (k, v)) in pairs.iter().enumerate() {
+        let pair = crate::list::olive_list_new(2);
+        crate::list::olive_list_set(pair, 0, *k);
+        crate::list::olive_list_set(pair, 1, *v);
+        crate::list::olive_list_set(outer, i as i64, pair);
+    }
+    outer
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_values(obj_ptr: i64) -> i64 {
     if obj_ptr == 0 {
@@ -563,6 +600,35 @@ pub extern "C" fn olive_obj_values(obj_ptr: i64) -> i64 {
         .fields
         .values()
         .map(|&v| crate::copy_typed::copy_any(v, &mut visited))
+        .collect();
+    crate::list::list_from_vec(values)
+}
+
+/// Descriptor-driven `values()`: copies each value through the dict's static
+/// value type instead of kind dispatch. A raw struct word misreads by kind
+/// (a 1-field header is `KIND_LIST`), so struct-valued dicts must take this
+/// entry; the compiler selects it exactly when the value type owns heap
+/// data, mirroring `setdefault`'s typed dispatch. `dict_desc` is the full
+/// `Dict(K, V)` descriptor; the key part is skipped to reach the value
+/// descriptor, mirroring `olive_obj_update_typed`.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_obj_values_typed(obj_ptr: i64, dict_desc: i64) -> i64 {
+    if obj_ptr == 0 {
+        return crate::list::list_from_vec(Vec::new());
+    }
+    let m = unsafe { &*(obj_ptr as *const OliveObj) };
+    let mut visited = rustc_hash::FxHashMap::default();
+    let desc = dict_desc as *const u8;
+    let mut key_pos = 1usize;
+    crate::format::skip(desc, &mut key_pos);
+    let val_start = key_pos;
+    let values: Vec<i64> = m
+        .fields
+        .values()
+        .map(|&v| {
+            let mut pos = val_start;
+            crate::copy_typed::copy_val(v, desc, &mut pos, &mut visited)
+        })
         .collect();
     crate::list::list_from_vec(values)
 }
@@ -582,6 +648,95 @@ mod tests {
             olive_obj_set(obj, s(k), *v);
         }
         obj
+    }
+
+    #[test]
+    fn values_typed_shares_struct_value() {
+        use crate::format::{D_DICT, D_STR, D_STRUCT_SHARED};
+        use crate::slab::slot_is_live;
+        let desc = [
+            D_DICT,
+            D_STR,
+            D_STRUCT_SHARED,
+            14,
+            b'R',
+            14,
+            14,
+            b's',
+            D_STR,
+        ];
+        let desc_ptr = desc.as_ptr() as i64;
+        let text = olive_str_internal("typed dict value resource field");
+        let value = crate::olive_struct_alloc(1);
+        unsafe { *((value as *mut i64).add(1)) = text };
+        let obj = olive_obj_new();
+        olive_obj_set(obj, s("k"), value);
+        let vs = olive_obj_values_typed(obj, desc_ptr);
+        assert_eq!(crate::list::olive_list_len(vs), 1);
+        assert_eq!(crate::list::olive_list_get(vs, 0), value);
+        assert!(slot_is_live(value));
+        let list_desc = [
+            crate::format::D_LIST,
+            D_STRUCT_SHARED,
+            14,
+            b'R',
+            14,
+            14,
+            b's',
+            D_STR,
+        ];
+        crate::free_typed::olive_free_typed(vs, list_desc.as_ptr() as i64);
+        assert!(slot_is_live(value));
+        crate::free_typed::olive_free_typed(obj, desc_ptr);
+        assert!(!slot_is_live(value));
+    }
+
+    #[test]
+    fn items_typed_shares_struct_value() {
+        use crate::format::{D_DICT, D_LIST, D_STR, D_STRUCT_SHARED};
+        use crate::slab::slot_is_live;
+        let desc = [
+            D_DICT,
+            D_STR,
+            D_STRUCT_SHARED,
+            14,
+            b'R',
+            14,
+            14,
+            b's',
+            D_STR,
+        ];
+        let desc_ptr = desc.as_ptr() as i64;
+        let text = olive_str_internal("typed dict items resource field");
+        let value = crate::olive_struct_alloc(1);
+        unsafe { *((value as *mut i64).add(1)) = text };
+        let obj = olive_obj_new();
+        olive_obj_set(obj, s("k"), value);
+        let ps = olive_obj_items_typed(obj, desc_ptr);
+        assert_eq!(crate::list::olive_list_len(ps), 1);
+        let pair = crate::list::olive_list_get(ps, 0);
+        assert_eq!(
+            crate::olive_str_from_ptr(crate::list::olive_list_get(pair, 0)),
+            "k"
+        );
+        assert_eq!(crate::list::olive_list_get(pair, 1), value);
+        crate::free_typed::olive_free_typed(obj, desc_ptr);
+        assert!(slot_is_live(value));
+        let outer_desc = [
+            D_LIST,
+            crate::format::D_TUPLE,
+            3,
+            D_STR,
+            D_STRUCT_SHARED,
+            14,
+            b'R',
+            14,
+            14,
+            b's',
+            D_STR,
+        ];
+        crate::free_typed::olive_free_typed(ps, outer_desc.as_ptr() as i64);
+        assert!(!slot_is_live(value));
     }
 
     #[test]

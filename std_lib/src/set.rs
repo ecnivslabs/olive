@@ -188,6 +188,32 @@ pub extern "C" fn olive_set_items(set_ptr: i64) -> i64 {
     list
 }
 
+/// Descriptor-driven set snapshot: copies each element through the set's
+/// static element type instead of kind dispatch. A raw struct word misreads
+/// by kind (a 1-field header is `KIND_LIST`, and struct bodies are not even
+/// 8-aligned words the kind reader expects), so struct-element sets must
+/// take this entry; the compiler selects it exactly when the element type
+/// owns heap data. `set_desc` is the full `Set(E)` descriptor; the element
+/// descriptor starts at offset 1.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_set_items_typed(set_ptr: i64, set_desc: i64) -> i64 {
+    if set_ptr == 0 {
+        return crate::list::olive_list_new(0);
+    }
+    let s = unsafe { &*(set_ptr as *const OliveHashSet) };
+    let list = crate::list::olive_list_new(s.len as i64);
+    let mut visited = rustc_hash::FxHashMap::default();
+    let desc = set_desc as *const u8;
+    let elem_start = 1usize;
+    for i in 0..s.len {
+        let val = unsafe { *s.ptr.add(i) };
+        let mut pos = elem_start;
+        let copied = crate::copy_typed::copy_val(val, desc, &mut pos, &mut visited);
+        crate::list::olive_list_set(list, i as i64, copied);
+    }
+    list
+}
+
 /// A `__drop__` hook as a callable word, for per-element cleanup below.
 type ElementDropHook = extern "C" fn(i64) -> i64;
 
@@ -844,5 +870,26 @@ mod tests {
         let g = crate::string_slab::olive_str_gen_of(s);
         crate::hash_typed::olive_set_add_typed(0, s, desc_ptr);
         assert_eq!(crate::string_slab::olive_str_gen_stale(s, g), 1);
+    }
+
+    #[test]
+    fn items_typed_shares_struct_element_and_frees_once() {
+        use crate::format::{D_SET, D_STR, D_STRUCT_SHARED};
+        use crate::slab::slot_is_live;
+        let desc = [D_SET, D_STRUCT_SHARED, 14, b'R', 14, 14, b's', D_STR];
+        let desc_ptr = desc.as_ptr() as i64;
+        let text = crate::olive_str_internal("typed snapshot resource field value");
+        let value = crate::olive_struct_alloc(1);
+        unsafe { *((value as *mut i64).add(1)) = text };
+        let set = olive_set_new(4);
+        assert!(set_try_add(set, value));
+        let snapshot = olive_set_items_typed(set, desc_ptr);
+        assert_eq!(crate::list::olive_list_len(snapshot), 1);
+        assert_eq!(crate::list::olive_list_get(snapshot, 0), value);
+        assert!(slot_is_live(value));
+        unsafe { crate::list::free_snapshot_typed(snapshot, desc_ptr) };
+        assert!(slot_is_live(value));
+        crate::free_typed::olive_free_typed(set, desc_ptr);
+        assert!(!slot_is_live(value));
     }
 }

@@ -6,6 +6,21 @@ use crate::semantic::types::Type;
 use crate::span::Span;
 
 impl<'a> MirBuilder<'a> {
+    /// Whether iterating `ty` must snapshot through the static element type:
+    /// a set of concrete heap-owning elements (structs, strings, tuples...)
+    /// misreads by kind under the untyped snapshot. `Any` elements stay on
+    /// the untyped path (they arrive boxed, which kind dispatch handles).
+    fn iter_needs_typed(&self, ty: &Type) -> bool {
+        let mut t = ty;
+        while let Type::Ref(inner) | Type::MutRef(inner) = t {
+            t = inner;
+        }
+        match t {
+            Type::Set(e) => **e != Type::Any && Self::list_elem_needs_copy(e),
+            _ => false,
+        }
+    }
+
     /// Lowers a branch/loop condition to a 0/1 discriminant.
     fn lower_condition(&mut self, condition: &Expr) -> Operand {
         let op = self.lower_expr(condition);
@@ -266,11 +281,17 @@ impl<'a> MirBuilder<'a> {
             };
             let (inner_ref, _) = self.borrow_iterable(inner_expr);
             let iter_local = self.new_local(Type::Any, Some("_iter".to_string()), true);
+            let inner_ty = self.get_type(inner_expr.id);
+            let iter_fn = if self.iter_needs_typed(&inner_ty) {
+                "__olive_iter_typed"
+            } else {
+                "__olive_iter"
+            };
             self.push_statement(
                 StatementKind::Assign(
                     iter_local,
                     Rvalue::Call {
-                        func: Operand::Constant(Constant::Function("__olive_iter".to_string())),
+                        func: Operand::Constant(Constant::Function(iter_fn.to_string())),
                         args: vec![Operand::Copy(inner_ref)],
                     },
                 ),
@@ -710,11 +731,17 @@ impl<'a> MirBuilder<'a> {
         let (iter_ref, _) = self.borrow_iterable(iter);
         let iter_local = self.new_local(Type::Any, Some("_iter_obj".to_string()), true);
 
+        let iter_ty_probe = self.get_type(iter.id);
+        let iter_fn = if self.iter_needs_typed(&iter_ty_probe) {
+            "__olive_iter_typed"
+        } else {
+            "__olive_iter"
+        };
         self.push_statement(
             StatementKind::Assign(
                 iter_local,
                 Rvalue::Call {
-                    func: Operand::Constant(Constant::Function("__olive_iter".to_string())),
+                    func: Operand::Constant(Constant::Function(iter_fn.to_string())),
                     args: vec![Operand::Copy(iter_ref)],
                 },
             ),

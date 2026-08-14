@@ -75,3 +75,121 @@ fn main():
         "kept\nfresh\nfresh\n",
     );
 }
+
+#[test]
+fn struct_set_iteration_keeps_owner_alive() {
+    assert_both(
+        r#"struct Res:
+    s: str
+impl Res:
+    fn __drop__(self):
+        print("drop "+self.s)
+
+fn main():
+    let st = {Res("a")}
+    for x in st:
+        print("saw "+x.s)
+    print(len(st))
+    print("done")
+"#,
+        "saw a\n1\ndone\ndrop a\n",
+    );
+}
+
+#[test]
+fn plain_struct_set_iteration_reads_fields() {
+    assert_both(
+        r#"struct P:
+    n: int
+
+fn main():
+    let st = {P(41)}
+    for x in st:
+        print(x.n + 1)
+    print("done")
+"#,
+        "42\ndone\n",
+    );
+}
+
+#[test]
+fn struct_set_enumerate_counts_elements() {
+    assert_both(
+        r#"struct Res:
+    s: str
+impl Res:
+    fn __drop__(self):
+        print("drop "+self.s)
+
+fn main():
+    let st = {Res("a")}
+    for p in enumerate(st):
+        print("saw "+p[1].s)
+    print("done")
+"#,
+        "saw a\ndone\ndrop a\n",
+    );
+}
+
+#[test]
+fn struct_set_param_iteration_keeps_caller_alive() {
+    assert_both(
+        r#"struct Res:
+    s: str
+impl Res:
+    fn __drop__(self):
+        print("drop "+self.s)
+
+fn show(st: set[Res]):
+    for x in st:
+        print("saw "+x.s)
+
+fn main():
+    let st = {Res("a")}
+    show(st)
+    print(len(st))
+    print("done")
+"#,
+        "saw a\n1\ndone\ndrop a\n",
+    );
+}
+
+#[test]
+fn struct_dict_values_snapshot_shares_owner() {
+    assert_both(
+        r#"struct Res:
+    s: str
+impl Res:
+    fn __drop__(self):
+        print("drop "+self.s)
+
+fn main():
+    let d = {"k": Res("v")}
+    let vs = d.values()
+    print("got "+vs[0].s)
+    print("orig "+d["k"].s)
+    print("done")
+"#,
+        "got v\norig v\ndone\ndrop v\n",
+    );
+}
+
+#[test]
+fn struct_dict_items_snapshot_shares_owner() {
+    assert_both(
+        r#"struct Res:
+    s: str
+impl Res:
+    fn __drop__(self):
+        print("drop "+self.s)
+
+fn main():
+    let d = {"k": Res("v")}
+    let ps = d.items()
+    print("saw "+ps[0][0]+" "+ps[0][1].s)
+    print("orig "+d["k"].s)
+    print("done")
+"#,
+        "saw k v\norig v\ndone\ndrop v\n",
+    );
+}

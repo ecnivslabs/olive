@@ -231,6 +231,10 @@ impl<M: Module> CraneliftCodegen<M> {
                 "__olive_chan_send" | "__olive_mutex_unlock" if call_args.len() == 2 => {
                     Some(1usize)
                 }
+                "__olive_obj_values_typed" | "__olive_obj_items_typed" if call_args.len() == 1 => {
+                    Some(0usize)
+                }
+                "__olive_iter_typed" if call_args.len() == 1 => Some(0usize),
                 // `__olive_mutex_new` stores its initial value for a
                 // descriptor-driven teardown drain; the descriptor comes
                 // from the value's static type, same as the send path.

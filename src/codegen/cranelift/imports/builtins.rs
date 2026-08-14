@@ -112,7 +112,7 @@ pub(crate) fn drop_descriptor_type<'a>(
     }
 }
 
-pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 681] = [
+pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 684] = [
     "__olive_alloc",
     "__olive_any_add",
     "__olive_any_div",
@@ -345,6 +345,7 @@ pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 681] = [
     "__olive_is_obj",
     "__olive_is_str",
     "__olive_iter",
+    "__olive_iter_typed",
     "__olive_json_parse",
     "__olive_json_stringify",
     "__olive_json_stringify_pretty",
@@ -434,6 +435,7 @@ pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 681] = [
     "__olive_obj_get_default",
     "__olive_obj_get_default_boxed",
     "__olive_obj_items",
+    "__olive_obj_items_typed",
     "__olive_obj_keys",
     "__olive_obj_len",
     "__olive_obj_new",
@@ -445,6 +447,7 @@ pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 681] = [
     "__olive_obj_setdefault",
     "__olive_obj_update",
     "__olive_obj_values",
+    "__olive_obj_values_typed",
     "__olive_os_args",
     "__olive_os_exit",
     "__olive_panic",

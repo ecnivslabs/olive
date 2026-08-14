@@ -1219,9 +1219,16 @@ impl<'a> MirBuilder<'a> {
             || matches!(val_ty, Type::Union(_))
             || result_ty.is_tag_encoded_union()
             || result_ty == Type::Any;
+        // Struct-valued (or otherwise heap-owning) dicts snapshot values
+        // through the value descriptor: an untyped kind dispatch misreads
+        // raw struct words (a 1-field header is `KIND_LIST`). Mirrors the
+        // `setdefault` typed dispatch below.
+        let values_typed = val_ty != Type::Any && Self::list_elem_needs_copy(&val_ty);
         let runtime = match (attr, key_typed) {
             ("keys", _) => "__olive_obj_keys",
+            ("values", _) if values_typed => "__olive_obj_values_typed",
             ("values", _) => "__olive_obj_values",
+            ("items", _) if values_typed => "__olive_obj_items_typed",
             ("items", _) => "__olive_obj_items",
             ("get", _) if arg_ops.len() == 2 => {
                 if needs_boxing && key_typed {
