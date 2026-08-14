@@ -419,7 +419,11 @@ pub extern "C" fn olive_vararg_call(
     let type_hash: u64 = {
         let mut h: u64 = 1469598103934665603;
         for i in 0..n {
-            let code: u8 = if unsafe { *arg_types.add(i) } == 1 { 1 } else { 0 };
+            let code: u8 = if unsafe { *arg_types.add(i) } == 1 {
+                1
+            } else {
+                0
+            };
             h ^= u64::from(code);
             h = h.wrapping_mul(1099511628211);
         }

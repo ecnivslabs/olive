@@ -530,14 +530,22 @@ fn insert_tuple_drop_hook(
     let mut hook_stmts = Vec::new();
     for elem in &elems {
         let elem_tmp = push_local(func, elem.ty.clone());
+        // Take (not just read) the element: consuming the slot here is what
+        // keeps a second hook site for the same dying tuple (e.g. a `Drop`
+        // on a moved-from temp plus the `Drop` on its binding) from
+        // releasing twice. The first take gets the word, later takes see
+        // zero, and the tuple's own drop skips zeroed slots -- exactly one
+        // release per reference death, matching the list/dict/set helpers.
         hook_stmts.push(Statement {
             kind: StatementKind::Assign(
                 elem_tmp,
-                Rvalue::GetIndex(
-                    Operand::Copy(local),
-                    Operand::Constant(Constant::Int(elem.pos as i64)),
-                    false,
-                ),
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("__olive_tuple_take".to_string())),
+                    args: vec![
+                        Operand::Copy(local),
+                        Operand::Constant(Constant::Int(elem.pos as i64)),
+                    ],
+                },
             ),
             span,
         });

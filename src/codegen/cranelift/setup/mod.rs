@@ -381,6 +381,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_list_set", &sig_i64_i64_i64_void),
             ("__olive_list_set_typed", &sig_4i64_void),
             ("__olive_tuple_set_typed", &sig_4i64_void),
+            ("__olive_tuple_take", &sig_i64_i64_i64),
             ("__olive_log_clear_fields", &sig_void_void),
             ("__olive_log_debug", &sig_i64_void),
             ("__olive_log_error", &sig_i64_void),

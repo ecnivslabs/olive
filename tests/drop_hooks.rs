@@ -95,6 +95,29 @@ fn main():
 }
 
 #[test]
+fn tuple_of_loop_view_keeps_owner_alive() {
+    assert_both(
+        r#"struct Res:
+    s: str
+impl Res:
+    fn __drop__(self):
+        print("drop "+self.s)
+
+fn main():
+    let xs = [Res("a"), Res("b")]
+    for r in xs:
+        let t = (r, 1)
+        let first = t[0]
+        print("saw "+first.s)
+    print("xs0 "+xs[0].s)
+    print("xs1 "+xs[1].s)
+    print("done")
+"#,
+        "saw a\nsaw b\nxs0 a\nxs1 b\ndone\ndrop a\ndrop b\n",
+    );
+}
+
+#[test]
 fn hook_with_if_tail_reclaims_and_exits() {
     assert_both(
         r#"struct Res:

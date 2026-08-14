@@ -443,6 +443,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_list_set", b"olive_list_set\0"),
     ("__olive_list_set_typed", b"olive_list_set_typed\0"),
     ("__olive_tuple_set_typed", b"olive_tuple_set_typed\0"),
+    ("__olive_tuple_take", b"olive_tuple_take\0"),
     ("__olive_log_clear_fields", b"olive_log_clear_fields\0"),
     ("__olive_log_debug", b"olive_log_debug\0"),
     ("__olive_log_error", b"olive_log_error\0"),

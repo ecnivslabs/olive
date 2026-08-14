@@ -352,6 +352,29 @@ pub extern "C" fn olive_tuple_set_typed(tup_ptr: i64, idx: i64, val: i64, desc: 
     }
 }
 
+/// Takes (moves out) one tuple element, zeroing its slot: the takeout half
+/// of a drop-hook pair. Used by tuple-element `__drop__` lowering, which
+/// must consume the element exactly once even when several hook sites
+/// target the same dying tuple (e.g. a `Drop` on a moved-from temp plus the
+/// `Drop` on the binding it moved into): the first take gets the word and
+/// every later take sees zero, so at most one release ever fires per
+/// reference death. Bounds and liveness guarded like the read it replaces;
+/// unlike the typed replacing store above it never frees, so a skipped
+/// (shared, non-last) hook leaves no extra release behind.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_tuple_take(tup_ptr: i64, idx: i64) -> i64 {
+    if tup_ptr == 0 || !crate::slab::slot_is_live(tup_ptr) {
+        return 0;
+    }
+    let s = unsafe { &*(tup_ptr as *const StableVec) };
+    // A freed element buffer is nulled while `len` may still read stale, so
+    // gate on the pointer itself, not just the index.
+    if s.ptr.is_null() || idx < 0 || (idx as usize) >= s.len {
+        return 0;
+    }
+    unsafe { std::mem::replace(&mut *s.ptr.add(idx as usize), 0) }
+}
+
 /// Reverses a list in place. Element representation is irrelevant.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_list_reverse(list_ptr: i64) {
@@ -1510,6 +1533,23 @@ mod tests {
         assert_eq!(olive_list_len(list), 1);
         assert_eq!(crate::string_slab::olive_str_gen_stale(s, g), 1);
         olive_free_list(list);
+    }
+
+    #[test]
+    fn tuple_take_moves_word_out_and_zeroes_slot() {
+        let tup = olive_list_new(2);
+        let s = crate::olive_str_internal("take-me");
+        olive_list_set(tup, 0, s);
+        olive_list_set(tup, 1, 7);
+        assert_eq!(olive_tuple_take(tup, 0), s);
+        assert_eq!(olive_list_get(tup, 0), 0);
+        assert_eq!(olive_list_get(tup, 1), 7);
+        assert_eq!(olive_tuple_take(tup, 0), 0);
+        assert_eq!(olive_tuple_take(tup, 99), 0);
+        assert_eq!(olive_tuple_take(tup, -1), 0);
+        assert_eq!(olive_tuple_take(0, 0), 0);
+        olive_free_list(tup);
+        crate::olive_free_str(s);
     }
 
     #[test]
