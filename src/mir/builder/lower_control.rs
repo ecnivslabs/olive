@@ -6,10 +6,11 @@ use crate::semantic::types::Type;
 use crate::span::Span;
 
 impl<'a> MirBuilder<'a> {
-    /// Whether iterating `ty` must snapshot through the static element type:
-    /// a set of concrete heap-owning elements (structs, strings, tuples...)
-    /// misreads by kind under the untyped snapshot. `Any` elements stay on
-    /// the untyped path (they arrive boxed, which kind dispatch handles).
+    /// Whether iterating `ty` must snapshot through the static element
+    /// type: a set of concrete heap-owning elements, or a dict with
+    /// struct-ish keys, misreads by kind under the untyped snapshot.
+    /// `Any` elements stay on the untyped path (they arrive boxed, which
+    /// kind dispatch handles).
     fn iter_needs_typed(&self, ty: &Type) -> bool {
         let mut t = ty;
         while let Type::Ref(inner) | Type::MutRef(inner) = t {
@@ -17,6 +18,9 @@ impl<'a> MirBuilder<'a> {
         }
         match t {
             Type::Set(e) => **e != Type::Any && Self::list_elem_needs_copy(e),
+            // Dicts iterate their keys: struct-ish keys misread the same
+            // way under the untyped snapshot.
+            Type::Dict(k, _) => Self::any_needs_erase(k),
             _ => false,
         }
     }

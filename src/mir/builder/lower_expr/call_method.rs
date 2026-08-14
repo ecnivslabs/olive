@@ -1245,14 +1245,20 @@ impl<'a> MirBuilder<'a> {
             || result_ty == Type::Any;
         // Struct-valued (or otherwise heap-owning) dicts snapshot values
         // through the value descriptor: an untyped kind dispatch misreads
-        // raw struct words (a 1-field header is `KIND_LIST`). Mirrors the
-        // `setdefault` typed dispatch below.
+        // raw struct words (a 1-field header is `KIND_LIST`). Struct-ish
+        // keys snapshot the same way. Mirrors the `setdefault` typed
+        // dispatch below.
         let values_typed = val_ty != Type::Any && Self::list_elem_needs_copy(&val_ty);
+        let keys_typed = match &recv_ty {
+            Type::Dict(k, _) => Self::any_needs_erase(k),
+            _ => false,
+        };
         let runtime = match (attr, key_typed) {
+            ("keys", _) if keys_typed => "__olive_obj_keys_typed",
             ("keys", _) => "__olive_obj_keys",
             ("values", _) if values_typed => "__olive_obj_values_typed",
             ("values", _) => "__olive_obj_values",
-            ("items", _) if values_typed => "__olive_obj_items_typed",
+            ("items", _) if values_typed || keys_typed => "__olive_obj_items_typed",
             ("items", _) => "__olive_obj_items",
             ("get", _) if arg_ops.len() == 2 => {
                 if needs_boxing && key_typed {

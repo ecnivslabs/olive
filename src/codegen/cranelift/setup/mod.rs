@@ -442,6 +442,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_obj_get_default", &sig_3i64_i64),
             ("__olive_obj_get_default_boxed", &sig_3i64_i64),
             ("__olive_obj_keys", &sig_i64_i64),
+            ("__olive_obj_keys_typed", &sig_i64_i64_i64),
             ("__olive_obj_items", &sig_i64_i64),
             ("__olive_obj_len", &sig_i64_i64),
             ("__olive_len_any", &sig_i64_i64),

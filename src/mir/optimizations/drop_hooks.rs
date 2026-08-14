@@ -275,9 +275,11 @@ pub fn lower_drop_hooks(func: &mut MirFunction, has_drop: &HashSet<String>) {
                     }
                 }
                 Type::Dict(_, val) => {
-                    // Only values can own resources (keys are interned
-                    // strings or scalars); hooked arms are zeroed in place so
-                    // the dict drop that follows frees keys alone.
+                    // Values own resources; keys do too once structural
+                    // (a struct key manages its fields like any other
+                    // struct). Hooked value arms are zeroed in place so
+                    // the dict drop that follows frees keys alone; key
+                    // cleanup runs through the typed-free registry path.
                     let Some((drop_name, elem_name, is_union, _)) = hook_target(val) else {
                         continue;
                     };

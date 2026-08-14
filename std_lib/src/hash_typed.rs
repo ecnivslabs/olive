@@ -55,7 +55,9 @@ pub extern "C" fn olive_obj_set_typed(obj_ptr: i64, attr: i64, val: i64, key_des
 /// classified by type instead of the magnitude heuristic.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_remove_typed(obj_ptr: i64, attr: i64, key_desc: i64) -> i64 {
-    with_key_descriptor(key_desc, || crate::obj::olive_obj_remove(obj_ptr, attr))
+    with_key_descriptor(key_desc, || {
+        crate::obj::olive_obj_remove_inner(obj_ptr, attr, Some(key_desc))
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -146,7 +148,7 @@ pub extern "C" fn olive_obj_pop_checked_typed(
     key_desc: i64,
 ) -> i64 {
     with_key_descriptor(key_desc, || {
-        crate::obj::olive_obj_pop_checked(obj_ptr, attr, loc)
+        crate::obj::olive_obj_pop_checked_inner(obj_ptr, attr, loc, Some(key_desc))
     })
 }
 
@@ -158,7 +160,7 @@ pub extern "C" fn olive_obj_pop_default_typed(
     key_desc: i64,
 ) -> i64 {
     with_key_descriptor(key_desc, || {
-        crate::obj::olive_obj_pop_default(obj_ptr, attr, default)
+        crate::obj::olive_obj_pop_default_inner(obj_ptr, attr, default, Some(key_desc))
     })
 }
 

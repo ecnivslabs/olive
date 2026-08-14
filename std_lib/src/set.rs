@@ -200,6 +200,10 @@ pub extern "C" fn olive_set_items_typed(set_ptr: i64, set_desc: i64) -> i64 {
     if set_ptr == 0 {
         return crate::list::olive_list_new(0);
     }
+    // SAFETY: same contract as the untyped snapshot above — the compiler
+    // passes a live set of the statically described element type. Element
+    // reads stay inside the header length; copies go through the
+    // descriptor, never raw kind dispatch.
     let s = unsafe { &*(set_ptr as *const OliveHashSet) };
     let list = crate::list::olive_list_new(s.len as i64);
     let mut visited = rustc_hash::FxHashMap::default();
@@ -319,6 +323,9 @@ pub(crate) fn olive_set_remove_inner(set_ptr: i64, val: i64, elem_desc: Option<i
     if set_ptr == 0 {
         return 0;
     }
+    // SAFETY: body moved verbatim from the extern below — same contract
+    // (live set; buffer/len/cap coherent), plus an optional element
+    // descriptor for the stored-word release.
     unsafe {
         let s = &mut *(set_ptr as *mut OliveHashSet);
         let hs = &mut *s.inner;
@@ -370,6 +377,8 @@ pub(crate) fn olive_set_remove_checked_inner(
     loc: i64,
     elem_desc: Option<i64>,
 ) -> i64 {
+    // SAFETY: body moved verbatim from the extern below — same contract
+    // (live set on the checked path; reads stay inside the header).
     if set_ptr == 0 {
         crate::panic::olive_bounds_fail(0, 0, loc);
         return 0;
@@ -413,6 +422,10 @@ pub extern "C" fn olive_set_clear_typed(set_ptr: i64, set_desc: i64) -> i64 {
     if set_ptr == 0 {
         return set_ptr;
     }
+    // SAFETY: same contract as the untyped clear — the compiler passes a
+    // live set of the statically described element type. Element release
+    // goes through the descriptor; the membership table clears after every
+    // element is released, so no path reads a freed slot.
     unsafe {
         let s = &mut *(set_ptr as *mut OliveHashSet);
         let desc = set_desc as *const u8;

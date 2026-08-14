@@ -366,6 +366,10 @@ pub extern "C" fn olive_tuple_take(tup_ptr: i64, idx: i64) -> i64 {
     if tup_ptr == 0 || !crate::slab::slot_is_live(tup_ptr) {
         return 0;
     }
+    // SAFETY: liveness above proves `tup_ptr` is a live slab body, and every
+    // tuple shares the list buffer layout (`StableVec`), so the header read
+    // is valid. The slot read below is bounded by the checked length and a
+    // non-null buffer pointer.
     let s = unsafe { &*(tup_ptr as *const StableVec) };
     // A freed element buffer is nulled while `len` may still read stale, so
     // gate on the pointer itself, not just the index.
@@ -841,6 +845,10 @@ pub extern "C" fn olive_list_clear_typed(ptr: i64, list_desc: i64) -> i64 {
     if ptr == 0 {
         return ptr;
     }
+    // SAFETY: the caller passes a live list of the statically described
+    // element type (compiler-emitted descriptor); the buffer walk below is
+    // bounded by the header length. Element release goes through the
+    // descriptor, never raw kind dispatch.
     let s = unsafe { &mut *(ptr as *mut StableVec) };
     let desc = list_desc as *const u8;
     for i in 0..s.len {
@@ -1058,11 +1066,11 @@ pub struct OliveIter {
     // list_ptr was allocated for this iterator (dict keys, set items, str chars)
     // rather than borrowed from the iterated value, so freeing the iterator frees it.
     pub derived: bool,
-    // Full `Set(E)` descriptor when the derived list is a typed set snapshot
-    // (struct-element sets); 0 means the snapshot frees through the untyped
-    // kind dispatch. Stored here because the iterator local itself is
-    // `Any`-typed, so no MIR drop hook carries the element type to the free
-    // site.
+    // Full descriptor of the iterated collection (`Set(E)` or `Dict(K, V)`)
+    // when the derived list is a typed snapshot; 0 means the snapshot
+    // frees through the untyped kind dispatch. Stored here because the
+    // iterator local itself is `Any`-typed, so no MIR drop hook carries
+    // the element type to the free site.
     pub snapshot_desc: i64,
 }
 
@@ -1115,10 +1123,11 @@ pub extern "C" fn olive_iter(list_ptr: i64) -> i64 {
     })
 }
 
-/// Descriptor-driven `olive_iter`: identical except a set snapshot copies
-/// elements through the set's static element type. `iter_desc` is the full
-/// iterated collection's descriptor and is only consulted for sets; every
-/// other kind iterates exactly as above.
+/// Descriptor-driven `olive_iter`: identical except snapshots copy
+/// through the collection's static descriptor. `iter_desc` is the full
+/// iterated collection's descriptor and is only consulted for sets (via
+/// the element type) and dicts (via the key type); every other kind
+/// iterates exactly as above.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_iter_typed(list_ptr: i64, iter_desc: i64) -> i64 {
     let mut is_py = false;
@@ -1137,8 +1146,9 @@ pub extern "C" fn olive_iter_typed(list_ptr: i64, iter_desc: i64) -> i64 {
                 actual_list_ptr =
                     crate::python::python_iter::olive_py_iter(list_ptr as *mut libc::c_void) as i64;
             } else if kind == KIND_OBJ {
-                actual_list_ptr = crate::obj::olive_obj_keys(list_ptr);
+                actual_list_ptr = crate::obj::olive_obj_keys_typed(list_ptr, iter_desc);
                 derived = true;
+                snapshot_desc = iter_desc;
             } else if kind == KIND_SET {
                 actual_list_ptr = crate::set::olive_set_items_typed(list_ptr, iter_desc);
                 derived = true;
@@ -1194,9 +1204,10 @@ pub extern "C" fn olive_free_iter(ptr: i64) {
     }
 }
 
-/// Frees a typed set snapshot: each element releases through the set's
-/// static element type (starting at descriptor offset 1), then the list
-/// shell and its buffer release. Mirrors `free_list_like`'s detach-first
+/// Frees a typed iterator snapshot: each element releases through the
+/// descriptor at offset 1 of the iterated collection's descriptor (the
+/// element type for sets, the key type for dicts), then the list shell
+/// and its buffer release. Mirrors `free_list_like`'s detach-first
 /// order so an element destructor that allocates cannot recycle the header
 /// mid-walk.
 pub(crate) unsafe fn free_snapshot_typed(list: i64, set_desc: i64) {
@@ -1206,6 +1217,11 @@ pub(crate) unsafe fn free_snapshot_typed(list: i64, set_desc: i64) {
     if crate::slab::slab_membership(list).is_none() || !crate::slab::slot_is_live(list) {
         return;
     }
+    // SAFETY: membership plus liveness above prove `list` addresses a live
+    // list slot, so the header read is valid. The buffer is detached before
+    // any element release runs, so a destructor that allocates cannot
+    // recycle the header mid-walk; the detached buffer itself is released
+    // with its recorded capacity through the same allocator.
     let desc = set_desc as *const u8;
     let (eptr, elen, ecap) = unsafe {
         let s = &mut *(list as *mut StableVec);

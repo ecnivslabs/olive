@@ -1274,6 +1274,12 @@ impl TypeChecker {
                         Type::Int
                     }
                     ref t if t.is_py_value() => Type::PyObject,
+                    // Reads through `Any` stay `Any`: the slot may hold a
+                    // boxed payload (erased collections, struct boxes), and
+                    // only an explicit downstream coerce unboxes it. A fresh
+                    // variable would unify the box away at the use site and
+                    // read box bits as raw values instead.
+                    Type::Any => Type::Any,
                     _ => self.fresh_var(),
                 }
             }

@@ -275,3 +275,23 @@ fn main():
         "drop a\n0\ndrop b\n0\ndrop v\n0\ndone\n",
     );
 }
+
+#[test]
+fn dict_get_in_loop_reads_correct_values() {
+    assert_both(
+        r#"fn main():
+    let d: dict[int, int] = {}
+    let mut i = 0
+    while i < 200000:
+        d[i] = i * 2
+        i = i + 1
+    let mut acc = 0
+    let mut j = 0
+    while j < 100:
+        acc = acc + d[j]
+        j = j + 1
+    print(acc)
+"#,
+        "9900\n",
+    );
+}
