@@ -127,6 +127,36 @@ impl<'a> MirBuilder<'a> {
         {
             return self.erase_list_elements(op, element, span);
         }
+        if let Type::Set(element) = from_ty
+            && Self::any_needs_erase(element)
+        {
+            return self.erase_set_elements(op, element, span);
+        }
+        if let Type::Dict(key, value) = from_ty
+            && (Self::any_needs_erase(key) || Self::any_needs_erase(value))
+        {
+            return self.erase_dict_values(op, key, value, span);
+        }
+        if let Type::Tuple(members) = from_ty
+            && members.iter().any(Self::any_needs_erase)
+        {
+            return self.erase_tuple_elements(op, members, span);
+        }
+        if let Type::Union(members) = from_ty {
+            let non_null: Vec<&Type> = members
+                .iter()
+                .filter(|m| !matches!(m, Type::Null))
+                .collect();
+            // `T | None` stores the raw `T` with `None` as a zero
+            // sentinel: a live `T` boxes exactly as a plain `T` (which may
+            // itself recurse into the arms above), while the sentinel
+            // passes through untouched.
+            if let [single] = non_null.as_slice()
+                && Self::any_needs_erase(single)
+            {
+                return self.erase_nullable(op, single, span);
+            }
+        }
         // A raw struct pointer is ambiguous once erased (its header word is a
         // field count, not a kind), so it boxes with its descriptor. The
         // source keeps its ownership: the box takes an independent reference

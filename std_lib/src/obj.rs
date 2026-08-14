@@ -201,33 +201,66 @@ fn box_stored(v: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_remove(obj_ptr: i64, attr: i64) -> i64 {
+    olive_obj_remove_inner(obj_ptr, attr, None)
+}
+
+/// Shared body for `remove`: returns the displaced value. `key_desc` (the
+/// key type's own descriptor) releases a heap-owning displaced key through
+/// the static key type; without it only tagged strings classify and struct
+/// keys strand.
+pub(crate) fn olive_obj_remove_inner(obj_ptr: i64, attr: i64, key_desc: Option<i64>) -> i64 {
+    // SAFETY: body moved verbatim from the extern below — same contract (live dict; map ops stay inside it).
     if obj_ptr == 0 || !crate::slab::ptr_is_slab_body(obj_ptr) {
         return 0;
     }
     let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
     match m.fields.remove_entry(&OliveStringKey(attr)) {
         Some((k, v)) => {
-            if crate::is_tagged_str_key(k.0) {
-                crate::olive_free_str(k.0);
-            }
+            free_displaced_key(k.0, key_desc);
             v
         }
         None => 0,
     }
 }
 
+/// Releases a displaced dict key: odd-tagged strings free directly, and
+/// every other word classifies as a no-op (literals, immediates). With the
+/// key type's own descriptor the word releases through the static key
+/// type instead, so struct keys free exactly rather than stranding.
+pub(crate) fn free_displaced_key(key: i64, key_desc: Option<i64>) {
+    match key_desc {
+        Some(desc) => {
+            let mut pos = 0usize;
+            crate::free_typed::free_val(key, desc as *const u8, &mut pos);
+        }
+        None => {
+            if crate::is_tagged_str_key(key) {
+                crate::olive_free_str(key);
+            }
+        }
+    }
+}
+
 /// `d.pop(k)`: removes and returns the value, faulting if `k` is absent.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_pop_checked(obj_ptr: i64, attr: i64, loc: i64) -> i64 {
+    olive_obj_pop_checked_inner(obj_ptr, attr, loc, None)
+}
+
+pub(crate) fn olive_obj_pop_checked_inner(
+    obj_ptr: i64,
+    attr: i64,
+    loc: i64,
+    key_desc: Option<i64>,
+) -> i64 {
+    // SAFETY: body moved verbatim from the extern below — same contract (live dict; map ops stay inside it).
     if obj_ptr == 0 || !crate::slab::ptr_is_slab_body(obj_ptr) {
         crate::panic::olive_nil_index_fail(loc);
     }
     let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
     match m.fields.remove_entry(&OliveStringKey(attr)) {
         Some((k, v)) => {
-            if crate::is_tagged_str_key(k.0) {
-                crate::olive_free_str(k.0);
-            }
+            free_displaced_key(k.0, key_desc);
             v
         }
         None => {
@@ -240,15 +273,23 @@ pub extern "C" fn olive_obj_pop_checked(obj_ptr: i64, attr: i64, loc: i64) -> i6
 /// `d.pop(k, default)`: non-faulting, returns `default` when `k` is absent.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_pop_default(obj_ptr: i64, attr: i64, default: i64) -> i64 {
+    olive_obj_pop_default_inner(obj_ptr, attr, default, None)
+}
+
+pub(crate) fn olive_obj_pop_default_inner(
+    obj_ptr: i64,
+    attr: i64,
+    default: i64,
+    key_desc: Option<i64>,
+) -> i64 {
+    // SAFETY: body moved verbatim from the extern below — same contract (live dict; map ops stay inside it).
     if obj_ptr == 0 || !crate::slab::ptr_is_slab_body(obj_ptr) {
         return default;
     }
     let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
     match m.fields.remove_entry(&OliveStringKey(attr)) {
         Some((k, v)) => {
-            if crate::is_tagged_str_key(k.0) {
-                crate::olive_free_str(k.0);
-            }
+            free_displaced_key(k.0, key_desc);
             v
         }
         None => default,
@@ -341,6 +382,10 @@ pub extern "C" fn olive_obj_clear_typed(obj_ptr: i64, dict_desc: i64) -> i64 {
     if obj_ptr == 0 {
         return obj_ptr;
     }
+    // SAFETY: same contract as the untyped snapshot/clear above — the
+    // compiler passes a live dict of the statically described key/value
+    // types. Copies and releases go through the descriptor, never raw
+    // kind dispatch.
     let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
     let desc = dict_desc as *const u8;
     let mut key_pos = 1usize;
@@ -555,6 +600,35 @@ pub extern "C" fn olive_obj_keys(obj_ptr: i64) -> i64 {
     crate::list::list_from_vec(keys)
 }
 
+/// Descriptor-driven `keys()`: each key copies through the dict's static
+/// key type instead of kind dispatch. A raw struct key misreads by kind
+/// (a 1-field header is `KIND_LIST`), so struct-keyed dicts must take
+/// this entry; the compiler selects it exactly when the key type can
+/// hold a raw struct. `dict_desc` is the full `Dict(K, V)` descriptor
+/// with the key encoding at offset 1.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_obj_keys_typed(obj_ptr: i64, dict_desc: i64) -> i64 {
+    if obj_ptr == 0 {
+        return crate::list::list_from_vec(Vec::new());
+    }
+    // SAFETY: same contract as the untyped snapshot/clear above — the
+    // compiler passes a live dict of the statically described key/value
+    // types. Copies and releases go through the descriptor, never raw
+    // kind dispatch.
+    let m = unsafe { &*(obj_ptr as *const OliveObj) };
+    let mut visited = rustc_hash::FxHashMap::default();
+    let desc = dict_desc as *const u8;
+    let keys: Vec<i64> = m
+        .fields
+        .keys()
+        .map(|k| {
+            let mut pos = 1usize;
+            crate::copy_typed::copy_val(k.0, desc, &mut pos, &mut visited)
+        })
+        .collect();
+    crate::list::list_from_vec(keys)
+}
+
 /// Returns a list of `[key, value]` pairs, backing `for k, v in d.items()`.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_items(obj_ptr: i64) -> i64 {
@@ -593,6 +667,10 @@ pub extern "C" fn olive_obj_items_typed(obj_ptr: i64, dict_desc: i64) -> i64 {
     if obj_ptr == 0 {
         return crate::list::olive_list_new(0);
     }
+    // SAFETY: same contract as the untyped snapshot/clear above — the
+    // compiler passes a live dict of the statically described key/value
+    // types. Copies and releases go through the descriptor, never raw
+    // kind dispatch.
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
     let mut visited = rustc_hash::FxHashMap::default();
     let desc = dict_desc as *const u8;
@@ -603,10 +681,11 @@ pub extern "C" fn olive_obj_items_typed(obj_ptr: i64, dict_desc: i64) -> i64 {
         .fields
         .iter()
         .map(|(k, &v)| {
-            let mut pos = val_start;
+            let mut kp = 1usize;
+            let mut vp = val_start;
             (
-                crate::copy_typed::copy_any(k.0, &mut visited),
-                crate::copy_typed::copy_val(v, desc, &mut pos, &mut visited),
+                crate::copy_typed::copy_val(k.0, desc, &mut kp, &mut visited),
+                crate::copy_typed::copy_val(v, desc, &mut vp, &mut visited),
             )
         })
         .collect();
@@ -647,6 +726,10 @@ pub extern "C" fn olive_obj_values_typed(obj_ptr: i64, dict_desc: i64) -> i64 {
     if obj_ptr == 0 {
         return crate::list::list_from_vec(Vec::new());
     }
+    // SAFETY: same contract as the untyped snapshot/clear above — the
+    // compiler passes a live dict of the statically described key/value
+    // types. Copies and releases go through the descriptor, never raw
+    // kind dispatch.
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
     let mut visited = rustc_hash::FxHashMap::default();
     let desc = dict_desc as *const u8;
@@ -1058,5 +1141,46 @@ mod tests {
         assert_eq!(olive_obj_len(dict), 0);
         assert!(slot_is_live(dict));
         olive_free_obj(dict);
+    }
+
+    #[test]
+    fn keys_typed_copies_struct_keys() {
+        use crate::format::{D_DICT, D_INT, D_STR, D_STRUCT_SHARED};
+        use crate::slab::slot_is_live;
+        let desc = [
+            D_DICT,
+            D_STRUCT_SHARED,
+            14,
+            b'K',
+            14,
+            14,
+            b'k',
+            D_STR,
+            D_INT,
+        ];
+        let desc_ptr = desc.as_ptr() as i64;
+        let text = olive_str_internal("typed keys resource field value");
+        let key = crate::olive_struct_alloc(1);
+        unsafe { *((key as *mut i64).add(1)) = text };
+        let obj = olive_obj_new();
+        olive_obj_set(obj, key, 7);
+        let ks = olive_obj_keys_typed(obj, desc_ptr);
+        assert_eq!(crate::list::olive_list_len(ks), 1);
+        assert_eq!(crate::list::olive_list_get(ks, 0), key);
+        assert!(slot_is_live(key));
+        let list_desc = [
+            crate::format::D_LIST,
+            D_STRUCT_SHARED,
+            14,
+            b'K',
+            14,
+            14,
+            b'k',
+            D_STR,
+        ];
+        crate::free_typed::olive_free_typed(ks, list_desc.as_ptr() as i64);
+        assert!(slot_is_live(key));
+        crate::free_typed::olive_free_typed(obj, desc_ptr);
+        assert!(!slot_is_live(key));
     }
 }

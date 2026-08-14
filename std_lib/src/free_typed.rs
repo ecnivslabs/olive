@@ -320,6 +320,10 @@ fn free_tuple(val: i64, desc: *const u8, pos: &mut usize) {
 }
 
 fn free_dict(val: i64, desc: *const u8, pos: &mut usize) {
+    // The key encoding starts where this descriptor position points on
+    // entry (past the `D_DICT` tag the caller consumed): dicts nest
+    // inside other descriptors, so this is not always offset 1.
+    let key_start = *pos;
     skip(desc, pos);
     let val_start = *pos;
     skip(desc, pos);
@@ -337,11 +341,22 @@ fn free_dict(val: i64, desc: *const u8, pos: &mut usize) {
             free_val(v, desc, &mut p);
         }
     }
-    // Tagged keys are dict-owned string copies; free them. Untagged attribute
-    // names are read-only interned symbols and classify as no-ops anyway.
-    for k in fields.keys() {
-        if k.0 & 1 != 0 {
-            crate::olive_free_str(k.0);
+    // Keys release through the static key type when it can own heap data;
+    // untagged attribute names and scalars classify as no-ops, exactly
+    // like the tagged check below. Struct keys would otherwise strand
+    // (only strings classify), leaking both storage and cleanup.
+    if elem_owns(desc, key_start) {
+        for k in fields.keys() {
+            let mut p = key_start;
+            free_val(k.0, desc, &mut p);
+        }
+    } else {
+        // Tagged keys are dict-owned string copies; free them. Untagged attribute
+        // names are read-only interned symbols and classify as no-ops anyway.
+        for k in fields.keys() {
+            if k.0 & 1 != 0 {
+                crate::olive_free_str(k.0);
+            }
         }
     }
 }

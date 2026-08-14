@@ -85,3 +85,140 @@ fn interned_char_key_matches_heap_spelling() {
         "7\n42\n",
     );
 }
+
+#[test]
+fn erased_struct_set_keeps_values_and_hooks_once() {
+    assert_both(
+        r#"struct Res:
+    s: str
+impl Res:
+    fn __drop__(self):
+        print("drop "+self.s)
+
+fn main():
+    let st = {Res("a")}
+    let a: Any = st
+    st.add(Res("b"))
+    print(len(a))
+    print(len(st))
+    print("done")
+"#,
+        "1\n2\ndone\ndrop a\ndrop b\n",
+    );
+}
+
+#[test]
+fn erased_struct_dict_values_read_back() {
+    assert_both(
+        r#"struct Res:
+    s: str
+impl Res:
+    fn __drop__(self):
+        print("drop "+self.s)
+
+fn show(r: Res):
+    print("saw "+r.s)
+
+fn main():
+    let d = {"k": Res("v")}
+    let a: Any = d
+    show(a["k"])
+    print("done")
+"#,
+        "saw v\ndone\ndrop v\n",
+    );
+}
+
+#[test]
+fn erased_struct_tuple_reads_back() {
+    assert_both(
+        r#"struct Res:
+    s: str
+impl Res:
+    fn __drop__(self):
+        print("drop "+self.s)
+
+fn show(r: Res):
+    print("saw "+r.s)
+
+fn main():
+    let t: Any = (Res("a"), 1)
+    show(t[0])
+    print(t[1])
+    print("done")
+"#,
+        "saw a\n1\ndone\ndrop a\n",
+    );
+}
+
+#[test]
+fn erased_nullable_union_both_arms() {
+    assert_both(
+        r#"struct Res:
+    s: str
+impl Res:
+    fn __drop__(self):
+        print("drop "+self.s)
+
+fn maybe(b: bool) -> Res | None:
+    if b:
+        return Res("x")
+    return None
+
+fn show(r: Res):
+    print("saw "+r.s)
+
+fn main():
+    let hit: Any = maybe(True)
+    show(hit)
+    let miss: Any = maybe(False)
+    print(miss)
+    print("done")
+"#,
+        "saw x\n0\ndone\ndrop x\n",
+    );
+}
+
+#[test]
+fn erased_struct_keyed_dict_iterates() {
+    assert_both(
+        r#"struct Key:
+    k: str
+impl Key:
+    fn __drop__(self):
+        print("dropk "+self.k)
+
+fn main():
+    let d = {(Key("a")): 1}
+    let a: Any = d
+    for k in a:
+        print("iter done")
+    print("done")
+"#,
+        "iter done\ndone\ndropk a\n",
+    );
+}
+
+#[test]
+fn struct_keys_snapshot_and_iterate() {
+    assert_both(
+        r#"struct Key:
+    k: str
+impl Key:
+    fn __drop__(self):
+        print("dropk "+self.k)
+
+fn show(k: Key):
+    print("saw "+k.k)
+
+fn main():
+    let d = {(Key("a")): 1}
+    let ks = d.keys()
+    show(ks[0])
+    for k in d:
+        show(k)
+    print("done")
+"#,
+        "saw a\nsaw a\ndone\ndropk a\n",
+    );
+}

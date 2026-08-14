@@ -520,6 +520,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
         b"olive_obj_get_default_boxed\0",
     ),
     ("__olive_obj_keys", b"olive_obj_keys\0"),
+    ("__olive_obj_keys_typed", b"olive_obj_keys_typed\0"),
     ("__olive_obj_items", b"olive_obj_items\0"),
     ("__olive_obj_items_typed", b"olive_obj_items_typed\0"),
     ("__olive_obj_len", b"olive_obj_len\0"),

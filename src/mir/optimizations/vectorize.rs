@@ -107,6 +107,21 @@ fn operand_local(op: &Operand) -> Option<Local> {
     }
 }
 
+/// Only a statically-known `List` backs the flat element buffer a SIMD
+/// lane load/store can address: dicts, sets, strings, and `Any` may hold
+/// anything, and loading lanes out of them reads object headers as data
+/// (a dict get-in-a-loop miscompiled exactly this way).
+fn is_dense_base(func: &MirFunction, op: &Operand) -> bool {
+    let ty = match op {
+        Operand::Copy(l) | Operand::Move(l) => &func.locals[l.0].ty,
+        _ => return false,
+    };
+    matches!(
+        crate::semantic::type_descriptor::concrete_ty(ty),
+        OliveType::List(_)
+    )
+}
+
 /// Collects every local read by an rvalue.
 fn rvalue_reads(rval: &Rvalue, out: &mut Vec<Local>) {
     let mut push = |op: &Operand| {
@@ -247,7 +262,7 @@ impl LoopVectorizer {
                     &stmt.kind
                     && *idx == i
                 {
-                    if !is_simd_scalar(&func.locals[dest.0].ty) {
+                    if !is_simd_scalar(&func.locals[dest.0].ty) || !is_dense_base(func, obj) {
                         return None;
                     }
                     loads.push((*dest, obj.clone()));
@@ -849,7 +864,12 @@ impl LoopVectorizer {
                     StatementKind::SetIndex(obj, Operand::Copy(idx), Operand::Copy(val), _)
                         if *idx == i =>
                     {
-                        if let Some(&vval) = vector_locals.get(val) {
+                        // Stores only vectorize into a dense buffer too: a
+                        // vector lane written into a dict or set slot would
+                        // corrupt it the same way a lane load misreads one.
+                        if let Some(&vval) = vector_locals.get(val)
+                            && is_dense_base(func, obj)
+                        {
                             new_stmts.push(Statement {
                                 kind: StatementKind::VectorStore(
                                     obj.clone(),
@@ -1153,5 +1173,56 @@ mod tests {
             &stmts[0].kind,
             StatementKind::Assign(_, Rvalue::VectorFMA(..))
         ));
+    }
+}
+
+#[cfg(test)]
+mod dense_base_tests {
+    use super::*;
+
+    fn operand_of(func: &mut MirFunction, ty: OliveType) -> Operand {
+        let l = Local(func.locals.len());
+        func.locals.push(LocalDecl {
+            ty,
+            name: None,
+            span: Span::default(),
+            is_mut: false,
+            is_owning: true,
+        });
+        Operand::Copy(l)
+    }
+
+    fn empty_func() -> MirFunction {
+        MirFunction {
+            name: "f".into(),
+            locals: vec![],
+            basic_blocks: vec![],
+            arg_count: 0,
+            vararg_idx: None,
+            kwarg_idx: None,
+            param_names: vec![],
+            is_async: false,
+        }
+    }
+
+    #[test]
+    fn only_lists_are_dense_bases() {
+        let mut f = empty_func();
+        let list = operand_of(&mut f, OliveType::List(Box::new(OliveType::Int)));
+        let dict = operand_of(
+            &mut f,
+            OliveType::Dict(Box::new(OliveType::Int), Box::new(OliveType::Int)),
+        );
+        let set = operand_of(&mut f, OliveType::Set(Box::new(OliveType::Int)));
+        let str_op = operand_of(&mut f, OliveType::Str);
+        let any = operand_of(&mut f, OliveType::Any);
+        let int = operand_of(&mut f, OliveType::Int);
+        assert!(is_dense_base(&f, &list));
+        assert!(!is_dense_base(&f, &dict));
+        assert!(!is_dense_base(&f, &set));
+        assert!(!is_dense_base(&f, &str_op));
+        assert!(!is_dense_base(&f, &any));
+        assert!(!is_dense_base(&f, &int));
+        assert!(!is_dense_base(&f, &Operand::Constant(Constant::Int(0))));
     }
 }

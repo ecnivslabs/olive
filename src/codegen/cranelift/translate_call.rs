@@ -234,6 +234,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 "__olive_obj_values_typed" | "__olive_obj_items_typed" if call_args.len() == 1 => {
                     Some(0usize)
                 }
+                "__olive_obj_keys_typed" if call_args.len() == 1 => Some(0usize),
                 "__olive_iter_typed" if call_args.len() == 1 => Some(0usize),
                 "__olive_list_clear_typed"
                 | "__olive_set_clear_typed"
