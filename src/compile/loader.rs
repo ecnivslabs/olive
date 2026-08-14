@@ -45,9 +45,9 @@ pub fn clear_source_overlay(path: &str) {
 fn read_source(filename: &str) -> std::io::Result<String> {
     let key = overlay_key(filename);
     if let Some(content) = SOURCE_OVERLAY.with(|o| o.borrow().get(&key).cloned()) {
-        return Ok(content);
+        return Ok(crate::lexer::normalize_newlines(&content));
     }
-    fs::read_to_string(filename)
+    fs::read_to_string(filename).map(|s| crate::lexer::normalize_newlines(&s))
 }
 
 pub struct PodMeta {
@@ -488,7 +488,7 @@ pub fn collect_source_files(
     }
     collected.push(canonical.clone());
     let source = match fs::read_to_string(filename) {
-        Ok(s) => s,
+        Ok(s) => crate::lexer::normalize_newlines(&s),
         Err(_) => return,
     };
     let tokens = match crate::lexer::Lexer::new(&source, 0).tokenise() {

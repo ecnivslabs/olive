@@ -1,1 +1,2 @@
 *.liv linguist-language=Python
+*.liv text eol=lf
