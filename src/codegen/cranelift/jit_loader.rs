@@ -159,7 +159,7 @@ pub(super) fn register_runtime_symbols(
             #[cfg(target_family = "unix")]
             let p = libc::dlsym(libc::RTLD_DEFAULT, CHAR_TABLE_SYM.as_ptr() as *const _);
             #[cfg(not(target_family = "unix"))]
-            let p = std::ptr::null_mut();
+            let p: *mut std::ffi::c_void = std::ptr::null_mut();
             if p.is_null() {
                 loaded_lib
                     .as_ref()
