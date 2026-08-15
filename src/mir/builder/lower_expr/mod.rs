@@ -223,6 +223,87 @@ impl<'a> MirBuilder<'a> {
         Operand::Copy(tmp)
     }
 
+    pub(crate) fn union_member_needs_unerase(ty: &Type) -> bool {
+        match ty {
+            Type::List(e) => Self::list_elem_needs_unerase(e),
+            Type::Set(e) => Self::any_needs_erase(e),
+            Type::Dict(k, v) => Self::any_needs_erase(k) || Self::any_needs_erase(v),
+            Type::Tuple(ms) => ms.iter().any(Self::any_needs_erase),
+            _ => false,
+        }
+    }
+
+    fn list_elem_needs_unerase(e: &Type) -> bool {
+        match e {
+            Type::Any | Type::Str | Type::Bytes => false,
+            Type::Int
+            | Type::I8
+            | Type::I16
+            | Type::I32
+            | Type::U8
+            | Type::U16
+            | Type::U32
+            | Type::U64
+            | Type::Usize
+            | Type::Float
+            | Type::F32
+            | Type::Bool
+            | Type::Null
+            | Type::Struct(_, _, _) => true,
+            Type::List(inner) => **inner != Type::Any,
+            Type::Set(inner) => Self::any_needs_erase(inner),
+            Type::Dict(k, v) => Self::any_needs_erase(k) || Self::any_needs_erase(v),
+            Type::Tuple(ms) => ms.iter().any(Self::any_needs_erase),
+            Type::Union(members) => {
+                let non_null: Vec<&Type> = members
+                    .iter()
+                    .filter(|m| !matches!(m, Type::Null))
+                    .collect();
+                match non_null.as_slice() {
+                    [single] => Self::any_needs_erase(single),
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn union_narrow_is_erased(from_ty: &Type) -> bool {
+        if let Type::Union(members) = from_ty {
+            members.iter().filter(|m| !matches!(m, Type::Null)).count() > 1
+        } else {
+            false
+        }
+    }
+
+    pub(super) fn unerase_narrowed(&mut self, op: Operand, target: &Type, span: Span) -> Operand {
+        let func = match target {
+            Type::List(_) => "__olive_list_unerase",
+            Type::Tuple(_) => "__olive_tuple_unerase",
+            Type::Dict(_, _) => "__olive_obj_unerase",
+            Type::Set(_) => "__olive_set_unerase",
+            _ => return op,
+        };
+        let desc = type_descriptor(
+            target,
+            &self.struct_fields,
+            &self.struct_field_types,
+            &self.enum_defs,
+        );
+        let tmp = self.new_local(target.clone(), None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                tmp,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(func.to_string())),
+                    args: vec![op, Operand::Constant(Constant::Str(desc))],
+                },
+            ),
+            span,
+        );
+        Operand::Copy(tmp)
+    }
+
     pub(super) fn coerce(
         &mut self,
         op: Operand,
@@ -250,6 +331,22 @@ impl<'a> MirBuilder<'a> {
             let non_null = members.iter().filter(|m| !matches!(m, Type::Null)).count();
             if non_null > 1 {
                 return self.box_into_any(op, from_ty, span);
+            }
+        }
+
+        if let Type::Union(members) = to_ty {
+            let non_null = members.iter().filter(|m| !matches!(m, Type::Null)).count();
+            if non_null > 1 && !to_ty.is_tag_encoded_union() {
+                let needs_erase = match from_ty {
+                    Type::List(e) => **e != Type::Any,
+                    Type::Set(e) => Self::any_needs_erase(e),
+                    Type::Dict(k, v) => Self::any_needs_erase(k) || Self::any_needs_erase(v),
+                    Type::Tuple(ms) => ms.iter().any(Self::any_needs_erase),
+                    _ => false,
+                };
+                if needs_erase {
+                    return self.box_into_any(op, from_ty, span);
+                }
             }
         }
 

@@ -112,7 +112,7 @@ pub(crate) fn drop_descriptor_type<'a>(
     }
 }
 
-pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 688] = [
+pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 692] = [
     "__olive_alloc",
     "__olive_any_add",
     "__olive_any_div",
@@ -383,6 +383,7 @@ pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 688] = [
     "__olive_list_sort_float",
     "__olive_list_sort_int",
     "__olive_list_sort_str",
+    "__olive_list_unerase",
     "__olive_log_clear_fields",
     "__olive_log_debug",
     "__olive_log_error",
@@ -448,6 +449,7 @@ pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 688] = [
     "__olive_obj_set",
     "__olive_obj_set_replacing_typed",
     "__olive_obj_setdefault",
+    "__olive_obj_unerase",
     "__olive_obj_update",
     "__olive_obj_values",
     "__olive_obj_values_typed",
@@ -668,6 +670,7 @@ pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 688] = [
     "__olive_set_remove_checked",
     "__olive_set_sym_diff",
     "__olive_set_sym_diff_typed",
+    "__olive_set_unerase",
     "__olive_set_union",
     "__olive_set_union_typed",
     "__olive_shadow_pop",
@@ -772,6 +775,7 @@ pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 688] = [
     "__olive_toml_stringify",
     "__olive_tuple_set_typed",
     "__olive_tuple_take",
+    "__olive_tuple_unerase",
     "__olive_typeof_str",
     "__olive_unbox_float",
     "__olive_unbox_int",

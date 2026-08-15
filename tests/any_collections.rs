@@ -222,3 +222,26 @@ fn main():
         "saw a\nsaw a\ndone\ndropk a\n",
     );
 }
+
+#[test]
+fn erased_tuple_in_wide_union_reads_back() {
+    assert_both(
+        r#"struct Res:
+    s: str
+impl Res:
+    fn __drop__(self):
+        print("drop "+self.s)
+
+fn make(b: bool) -> (Res, int) | int:
+    if b:
+        return (Res("a"), 1)
+    return 0
+
+fn main():
+    let a: Any = make(True)
+    print(a)
+    print("done")
+"#,
+        "[Res(s=\"a\"), 1]\ndone\ndrop a\n",
+    );
+}

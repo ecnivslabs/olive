@@ -28,6 +28,22 @@ impl<'a> MirBuilder<'a> {
                 // already-non-owning payload extracted from it) rather than owning
                 // a separate value; the scrutinee's own drop releases it.
                 let discr_ty = self.current_locals[discr.0].ty.clone();
+                if Self::union_narrow_is_erased(&discr_ty)
+                    && Self::union_member_needs_unerase(match_ty)
+                {
+                    let owned = self.unerase_narrowed(Operand::Copy(discr), match_ty, expr_span);
+                    let binding_local = self.declare_var(name.clone(), match_ty.clone(), false);
+                    self.push_statement(
+                        StatementKind::Assign(binding_local, Rvalue::Use(owned)),
+                        expr_span,
+                    );
+                    self.terminate_block(
+                        self.current_block.unwrap(),
+                        TerminatorKind::Goto { target: success_bb },
+                        expr_span,
+                    );
+                    return;
+                }
                 let binding_local = self.declare_var_view(name.clone(), match_ty.clone(), true);
                 // A binding narrowed out of a tag-encoded union decodes the
                 // payload; the raw word is the encoding, not the value.

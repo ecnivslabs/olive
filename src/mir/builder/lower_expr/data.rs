@@ -99,6 +99,10 @@ impl<'a> MirBuilder<'a> {
             // gives it a second reference to fold through.
             let narrowed = self.get_type(expr_id);
             if matches!(ty, Type::Union(_)) && narrowed != ty {
+                if Self::union_narrow_is_erased(&ty) && Self::union_member_needs_unerase(&narrowed)
+                {
+                    return self.unerase_narrowed(Operand::Copy(local), &narrowed, Span::default());
+                }
                 // Tag-encoded unions must decode, not reinterpret. The unbox
                 // is runtime-verified: if the value is not actually the
                 // narrowed member (e.g. a non-sentinel int past an int-literal

@@ -107,3 +107,131 @@ fn main():
         },
     );
 }
+
+#[test]
+fn narrowed_list_of_structs_reads_exact_values() {
+    assert_both(
+        r#"struct Res:
+    s: str
+impl Res:
+    fn __drop__(self):
+        print("drop "+self.s)
+
+fn use_it(v: [Res] | int):
+    match v:
+        case 0:
+            print("zero")
+        case lst:
+            print(lst[0].s)
+            print("list arm")
+
+fn main():
+    use_it([Res("hello")])
+    use_it(0)
+    print("done")
+"#,
+        "hello\nlist arm\nzero\ndone\ndrop hello\n",
+    );
+}
+
+#[test]
+fn narrowed_list_of_ints_reads_exact_values() {
+    assert_both(
+        r#"fn use_it(v: [int] | int):
+    match v:
+        case 0:
+            print("zero")
+        case lst:
+            print(lst[0])
+            print("list arm")
+
+fn main():
+    use_it([42])
+    use_it(0)
+    print("done")
+"#,
+        "42\nlist arm\nzero\ndone\n",
+    );
+}
+
+#[test]
+fn narrowed_dict_of_structs_reads_exact_values() {
+    assert_both(
+        r#"struct Res:
+    s: str
+impl Res:
+    fn __drop__(self):
+        print("drop "+self.s)
+
+fn use_it(v: dict[str, Res] | int):
+    match v:
+        case 0:
+            print("zero")
+        case d:
+            print(d["k"].s)
+            print("dict arm")
+
+fn main():
+    use_it({"k": Res("v")})
+    use_it(0)
+    print("done")
+"#,
+        "v\ndict arm\nzero\ndone\ndrop v\n",
+    );
+}
+
+#[test]
+fn narrowed_set_of_structs_reads_exact_values() {
+    assert_both(
+        r#"struct Res:
+    s: str
+impl Res:
+    fn __drop__(self):
+        print("drop "+self.s)
+
+fn use_it(v: set[Res] | int):
+    match v:
+        case 0:
+            print("zero")
+        case s:
+            print(len(s))
+            print("set arm")
+
+fn main():
+    use_it({Res("a")})
+    use_it(0)
+    print("done")
+"#,
+        "1\nset arm\nzero\ndone\ndrop a\n",
+    );
+}
+
+#[test]
+fn narrowed_tuple_with_struct_reads_exact_values() {
+    assert_both(
+        r#"struct Res:
+    s: str
+impl Res:
+    fn __drop__(self):
+        print("drop "+self.s)
+
+fn show(r: Res):
+    print("saw "+r.s)
+
+fn use_it(v: (Res, int) | int):
+    match v:
+        case 0:
+            print("zero")
+        case t:
+            show(t[0])
+            print(t[1])
+            print("tuple arm")
+
+fn main():
+    use_it((Res("a"), 7))
+    use_it(0)
+    print("done")
+"#,
+        "saw a\n7\ntuple arm\nzero\ndone\ndrop a\n",
+    );
+}

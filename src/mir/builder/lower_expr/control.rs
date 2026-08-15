@@ -210,6 +210,12 @@ impl<'a> MirBuilder<'a> {
                 );
                 return Operand::Copy(tmp);
             }
+            if non_null > 1
+                && let [narrowed] = non_err.as_slice()
+                && Self::union_member_needs_unerase(narrowed)
+            {
+                return self.unerase_narrowed(inner_op.clone(), narrowed, span);
+            }
         }
 
         inner_op
