@@ -68,6 +68,92 @@ fn main():
 }
 
 #[test]
+fn tuple_slices_read_exact_values() {
+    assert_both(
+        r#"fn main():
+    let t = (1, 2, 3)
+    print(t[0:3])
+    print(t[1:3])
+    print(t[0:5])
+"#,
+        "[1, 2, 3]\n[2, 3]\n[1, 2, 3]\n",
+    );
+}
+
+#[test]
+fn struct_tuple_slice_runs_hooks_once() {
+    assert_both(
+        r#"struct Res:
+    s: str
+impl Res:
+    fn __drop__(self):
+        print("drop "+self.s)
+
+fn show(r: Res):
+    print("saw "+r.s)
+
+fn main():
+    let t = (Res("a"), Res("b"))
+    let s = t[0:2]
+    show(s[0])
+    show(s[1])
+    print("done")
+"#,
+        "saw a\nsaw b\ndone\ndrop a\ndrop b\n",
+    );
+}
+
+#[test]
+fn heterogeneous_tuple_slice_reads_back() {
+    assert_both(
+        r#"struct Res:
+    s: str
+impl Res:
+    fn __drop__(self):
+        print("drop "+self.s)
+
+fn show(r: Res):
+    print("saw "+r.s)
+
+fn main():
+    let t = (Res("a"), 7)
+    let s = t[0:2]
+    show(s[0])
+    print(s[1])
+    print("done")
+"#,
+        "saw a\n7\ndone\ndrop a\n",
+    );
+}
+
+#[test]
+fn dynamic_bound_heterogeneous_slice_reads_back() {
+    assert_both(
+        r#"fn f(t: (int, str), i: int, j: int):
+    return t[i:j]
+
+fn main():
+    print(f((1, "a"), 0, 2))
+"#,
+        "[1, \"a\"]\n",
+    );
+}
+
+#[test]
+fn nullable_list_slice_collapses() {
+    assert_both(
+        r#"fn f(v: [int] | None):
+    return v[0:2]
+
+fn main():
+    print(f([1, 2, 3]))
+    print(f(None))
+"#,
+        "[1, 2]\n[]\n",
+    );
+}
+
+#[test]
 fn slicing_an_int_faults_cleanly() {
     assert_both_with(
         r#"fn main():

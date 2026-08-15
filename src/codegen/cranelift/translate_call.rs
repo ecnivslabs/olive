@@ -348,7 +348,6 @@ impl<M: Module> CraneliftCodegen<M> {
                 || name == "next"
                 || name == "has_next"
                 || name == "slice"
-                || name == "len"
                 || name == "list"
                 || name == "dict"
                 || name == "keys"
@@ -356,6 +355,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 || (name == "sum" && !func_ids.contains_key("sum"))
                 || (name == "min" && !func_ids.contains_key("min"))
                 || (name == "max" && !func_ids.contains_key("max"))
+                || (name == "len" && !func_ids.contains_key("len"))
                 || name == "remove"
                 || name == "abs"
                 || name == "round"

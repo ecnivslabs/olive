@@ -29,6 +29,17 @@ pub extern "C" fn olive_str_len(s: i64) -> i64 {
     olive_str_to_bytes(s).len() as i64
 }
 
+/// Three-way lexicographic compare over raw bytes, for `<`/`<=`/`>`/`>=`.
+/// Same byte order `olive_list_sort_str` sorts by, without allocating.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_str_cmp(a: i64, b: i64) -> i64 {
+    match olive_str_to_bytes(a).cmp(olive_str_to_bytes(b)) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    }
+}
+
 /// Interned single-byte strings, NUL-terminated like any literal. Indexing
 /// and per-char iteration return these instead of allocating, and the free
 /// path already ignores pointers outside the slab span.

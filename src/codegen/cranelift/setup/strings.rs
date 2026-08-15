@@ -269,6 +269,10 @@ impl<M: Module> CraneliftCodegen<M> {
             let key_ty = match &ty {
                 crate::semantic::types::Type::Dict(k, _) => Some(k.as_ref()),
                 crate::semantic::types::Type::Set(e) => Some(e.as_ref()),
+                // Struct/enum needles on lists compare structurally under
+                // the element descriptor, mirroring the set path exactly;
+                // scalar elements skip interning via the check below.
+                crate::semantic::types::Type::List(e) => Some(e.as_ref()),
                 _ => None,
             };
             if let Some(k) = key_ty

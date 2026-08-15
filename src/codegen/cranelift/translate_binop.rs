@@ -407,6 +407,28 @@ impl<M: Module> CraneliftCodegen<M> {
                     let ne = builder.ins().icmp_imm(IntCC::Equal, eq, 0);
                     return builder.ins().uextend(types::I64, ne);
                 }
+                // Lexicographic string ordering shares `sort_str`'s byte
+                // order through a three-way compare plus an integer
+                // condition; raw pointer comparison is meaningless here.
+                if matches!(op, Lt | LtEq | Gt | GtEq)
+                    && (is_str_op(func_mir, lhs) || is_str_op(func_mir, rhs))
+                {
+                    let cmp_func_id = func_ids
+                        .get("__olive_str_cmp")
+                        .expect("missing __olive_str_cmp");
+                    let local_func = module.declare_func_in_func(*cmp_func_id, builder.func);
+                    let call = builder.ins().call(local_func, &[l, r]);
+                    let cmp = builder.inst_results(call)[0];
+                    let cc = match op {
+                        Lt => IntCC::SignedLessThan,
+                        LtEq => IntCC::SignedLessThanOrEqual,
+                        Gt => IntCC::SignedGreaterThan,
+                        GtEq => IntCC::SignedGreaterThanOrEqual,
+                        _ => unreachable!(),
+                    };
+                    let res = builder.ins().icmp_imm(cc, cmp, 0);
+                    return builder.ins().uextend(types::I64, res);
+                }
 
                 let is_py = is_pyobj_op(func_mir, lhs) || is_pyobj_op(func_mir, rhs);
                 if is_py {
@@ -553,6 +575,13 @@ impl<M: Module> CraneliftCodegen<M> {
                     } else if let OliveType::Set(e) = ty
                         && super::imports::needs_key_descriptor(e)
                     {
+                        structural_key = Some(e);
+                    } else if let OliveType::List(e) = ty
+                        && super::imports::needs_key_descriptor(e)
+                    {
+                        // Struct/enum elements compare structurally under an
+                        // active descriptor (`OliveStringKey::eq`); without
+                        // it even an identical object reads False.
                         structural_key = Some(e);
                     }
                 } else if let Operand::Constant(Constant::Str(_)) = rhs {

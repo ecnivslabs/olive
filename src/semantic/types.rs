@@ -100,6 +100,46 @@ impl Type {
         }
     }
 
+    /// Element type a tuple slice preserves raw, or `None` when the slice
+    /// must erase to self-describing words. Only non-empty tuples whose
+    /// every position holds the same scalar kind qualify: literals count
+    /// as their base kind, since storage never distinguishes them. The
+    /// checker (result typing) and MIR lowering (raw versus erase path)
+    /// must agree exactly; both call this, so neither drifts.
+    pub fn tuple_slice_elem(members: &[Type]) -> Option<Type> {
+        if members.is_empty() {
+            return None;
+        }
+        fn kind(ty: &Type) -> Option<u8> {
+            match ty {
+                Type::Int
+                | Type::I8
+                | Type::I16
+                | Type::I32
+                | Type::U8
+                | Type::U16
+                | Type::U32
+                | Type::U64
+                | Type::Usize
+                | Type::IntegerLiteral(_) => Some(0),
+                Type::Float | Type::F32 | Type::FloatLiteral(_) => Some(1),
+                Type::Bool => Some(2),
+                Type::Null => Some(3),
+                _ => None,
+            }
+        }
+        let first = kind(&members[0])?;
+        if !members.iter().all(|m| kind(m) == Some(first)) {
+            return None;
+        }
+        Some(match first {
+            0 => Type::Int,
+            1 => Type::Float,
+            2 => Type::Bool,
+            _ => Type::Null,
+        })
+    }
+
     pub fn is_move_type(&self) -> bool {
         !matches!(
             self,

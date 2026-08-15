@@ -976,6 +976,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_str_char", b"olive_str_char\0"),
     ("__olive_str_char_count", b"olive_str_char_count\0"),
     ("__olive_str_concat", b"olive_str_concat\0"),
+    ("__olive_str_cmp", b"olive_str_cmp\0"),
     ("__olive_str_concat_move", b"olive_str_concat_move\0"),
     ("__olive_strbuf_new", b"olive_strbuf_new\0"),
     ("__olive_strbuf_push", b"olive_strbuf_push\0"),

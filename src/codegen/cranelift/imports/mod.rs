@@ -466,6 +466,16 @@ pub(super) fn scan_rvalue_imports(
                     {
                         needed.insert("__olive_str_eq");
                     }
+                    if matches!(
+                        op,
+                        crate::parser::BinOp::Lt
+                            | crate::parser::BinOp::LtEq
+                            | crate::parser::BinOp::Gt
+                            | crate::parser::BinOp::GtEq
+                    ) && (is_str_op(func_mir, lhs) || is_str_op(func_mir, rhs))
+                    {
+                        needed.insert("__olive_str_cmp");
+                    }
                     let is_pyobj = is_pyobj_op(func_mir, lhs) || is_pyobj_op(func_mir, rhs);
                     if is_pyobj {
                         needed.insert("__olive_py_from_float");

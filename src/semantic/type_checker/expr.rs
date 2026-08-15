@@ -442,7 +442,69 @@ impl TypeChecker {
                         }
                         Type::Bool
                     }
-                    UnaryOp::Neg | UnaryOp::Pos | UnaryOp::BitNot => o_ty,
+                    UnaryOp::Neg | UnaryOp::BitNot => {
+                        // Lowering emits a raw integer negate / bitwise-not
+                        // (float negate for floats), so aggregates, structs,
+                        // and unnamed callables reaching here compile to bit
+                        // operations on heap pointers. Only numerics qualify;
+                        // `+x` stays identity for every type as lowering does.
+                        let resolved = self.apply_subst(o_ty.clone());
+                        let bad = match &resolved {
+                            Type::Var(_)
+                            | Type::Ref(_)
+                            | Type::MutRef(_)
+                            | Type::Ptr(_)
+                            | Type::PyObject
+                            | Type::PyNamed(..)
+                            | Type::Any => false,
+                            Type::Union(_) => {
+                                self.errors.push(
+                                    super::super::error::SemanticError::rich(
+                                        crate::compile::errors::Diagnostic::error(
+                                            "E0404",
+                                            "cannot use union type in this operation, narrow the union first",
+                                            operand.span,
+                                        )
+                                        .label("use a `match` or `x != None` check before operating on a union"),
+                                    ),
+                                );
+                                return self.apply_subst(o_ty.clone());
+                            }
+                            Type::Int
+                            | Type::I8
+                            | Type::I16
+                            | Type::I32
+                            | Type::U8
+                            | Type::U16
+                            | Type::U32
+                            | Type::U64
+                            | Type::Usize
+                            | Type::IntegerLiteral(_)
+                            | Type::Bool => false,
+                            Type::Float | Type::F32 | Type::FloatLiteral(_) => {
+                                matches!(op, UnaryOp::BitNot)
+                            }
+                            _ => true,
+                        };
+                        if bad {
+                            let sym = match op {
+                                UnaryOp::Neg => "-",
+                                _ => "~",
+                            };
+                            self.errors.push(super::super::error::SemanticError::rich(
+                                crate::compile::errors::Diagnostic::error(
+                                    "E0404",
+                                    format!(
+                                        "unary operator `{sym}` is not defined for `{resolved}`"
+                                    ),
+                                    operand.span,
+                                )
+                                .label("operator not supported for this type"),
+                            ));
+                        }
+                        o_ty
+                    }
+                    UnaryOp::Pos => o_ty,
                 }
             }
 
@@ -518,7 +580,88 @@ impl TypeChecker {
                 {
                     let raw = self.check_expr(arg);
                     let arg_ty = self.apply_subst(raw);
+                    // `sum`/`min`/`max` read raw element words. Anything that
+                    // is not a numeric list, tuple, or set miscompiles:
+                    // erased `Any` elements stay boxed, strings add
+                    // pointers, dicts read the map struct as a buffer.
+                    fn numeric(ty: &Type) -> bool {
+                        matches!(
+                            ty,
+                            Type::Int
+                                | Type::I8
+                                | Type::I16
+                                | Type::I32
+                                | Type::U8
+                                | Type::U16
+                                | Type::U32
+                                | Type::U64
+                                | Type::Usize
+                                | Type::IntegerLiteral(_)
+                                | Type::Float
+                                | Type::F32
+                                | Type::FloatLiteral(_)
+                                | Type::Bool
+                                | Type::Var(_)
+                                | Type::Param(_)
+                        )
+                    }
+                    let mut current = &arg_ty;
+                    while let Type::Ref(inner) | Type::MutRef(inner) = current {
+                        current = inner;
+                    }
+                    let ok = match current {
+                        Type::List(e) | Type::Set(e) => numeric(e),
+                        Type::Tuple(members) => members.iter().all(numeric),
+                        Type::Union(members) => {
+                            let non_null: Vec<&Type> = members
+                                .iter()
+                                .filter(|m| !matches!(m, Type::Null))
+                                .collect();
+                            match non_null.as_slice() {
+                                // `T | None` collapses like codegen: judge T.
+                                [single] => match single {
+                                    Type::List(e) | Type::Set(e) => numeric(e),
+                                    Type::Tuple(ms) => ms.iter().all(numeric),
+                                    _ => false,
+                                },
+                                // Wider unions hold whichever member is live;
+                                // narrowing selects the shape first.
+                                _ => {
+                                    self.errors.push(
+                                        super::super::error::SemanticError::rich(
+                                            crate::compile::errors::Diagnostic::error(
+                                                "E0404",
+                                                "cannot use union type in this operation, narrow the union first",
+                                                expr.span,
+                                            )
+                                            .label("use a `match` or `x != None` check before operating on a union"),
+                                        ),
+                                    );
+                                    return Type::Int;
+                                }
+                            }
+                        }
+                        _ => false,
+                    };
+                    if !ok {
+                        self.errors.push(super::super::error::SemanticError::rich(
+                            crate::compile::errors::Diagnostic::error(
+                                "E0404",
+                                format!(
+                                    "`{name}` requires a list, tuple, or set of numbers, got `{arg_ty}`"
+                                ),
+                                expr.span,
+                            )
+                            .label("expected a numeric collection"),
+                        ));
+                        return Type::Int;
+                    }
                     if let Type::List(elem) = &arg_ty {
+                        // Reducing bools yields a count, an `int`, even
+                        // though each element reads as a `bool`.
+                        if name == "sum" && matches!(**elem, Type::Bool) {
+                            return Type::Int;
+                        }
                         return (**elem).clone();
                     }
                     return Type::Int;
@@ -540,6 +683,51 @@ impl TypeChecker {
                     let b = arg_expr(&args[1]);
                     let ta = self.check_expr(a);
                     let tb = self.check_expr(b);
+                    // Two-argument `min`/`max` lower to a raw comparison, so
+                    // aggregate operands would compare pointers. Scalars keep
+                    // the legacy unify path exactly; unknowns keep it too.
+                    let ra = self.apply_subst(ta.clone());
+                    let rb = self.apply_subst(tb.clone());
+                    fn cmp_blocked(ty: &Type) -> bool {
+                        matches!(
+                            ty,
+                            Type::List(_)
+                                | Type::Tuple(_)
+                                | Type::Set(_)
+                                | Type::Dict(..)
+                                | Type::Bytes
+                                | Type::Struct(..)
+                                | Type::Enum(..)
+                                | Type::TraitObject(..)
+                                | Type::Fn(..)
+                                | Type::Future(..)
+                                | Type::Null
+                        )
+                    }
+                    if matches!(ra, Type::Union(_)) || matches!(rb, Type::Union(_)) {
+                        self.errors.push(super::super::error::SemanticError::rich(
+                            crate::compile::errors::Diagnostic::error(
+                                "E0404",
+                                "cannot use union type in this operation, narrow the union first",
+                                expr.span,
+                            )
+                            .label(
+                                "use a `match` or `x != None` check before operating on a union",
+                            ),
+                        ));
+                        return self.apply_subst(ta);
+                    }
+                    if cmp_blocked(&ra) || cmp_blocked(&rb) {
+                        self.errors.push(super::super::error::SemanticError::rich(
+                            crate::compile::errors::Diagnostic::error(
+                                "E0404",
+                                format!("`{name}` requires two comparable numbers or strings"),
+                                expr.span,
+                            )
+                            .label("expected two ints, two floats, or two strings"),
+                        ));
+                        return self.apply_subst(ta);
+                    }
                     self.unify(&ta, &tb, expr.span);
                     return self.apply_subst(ta);
                 }
@@ -547,6 +735,20 @@ impl TypeChecker {
                     && let Some(ty) = self.check_sequence_builtin_call(name, args, expr.span)
                 {
                     return ty;
+                }
+                // `len(x) -> int`: only sized collections qualify; anything
+                // else compiles to a misaligned read on the value word. The
+                // builtin table declares `len: Fn([Any])`, so this arm fires
+                // only when the visible binding is still that signature and
+                // yields to a user shadowing `len` with their own binding.
+                if let ExprKind::Identifier(name) = &callee.kind
+                    && name == "len"
+                    && args.len() == 1
+                    && let CallArg::Positional(arg) = &args[0]
+                    && self.lookup_type(name)
+                        == Some(Type::Fn(vec![Type::Any], Box::new(Type::Int), Vec::new()))
+                {
+                    return self.check_len(arg, expr.span);
                 }
                 // `enumerate`/`zip` resolve only through `check_for_iter`
                 // (a `for`-head/comprehension-clause iterable); reaching
@@ -1133,11 +1335,66 @@ impl TypeChecker {
                 // runtime dispatches); claiming `list` misroutes downstream
                 // formatting into list reads of a string's bytes.
                 if matches!(index.kind, ExprKind::Slice { .. }) {
+                    // `T | None` slices read like `T` slices (a live `None`
+                    // reads `[]` through the null checks); wider unions must
+                    // narrow first, like every other operation on them.
+                    if let Type::Union(members) = &current_obj_ty {
+                        let non_null: Vec<Type> = members
+                            .iter()
+                            .filter(|m| **m != Type::Null)
+                            .cloned()
+                            .collect();
+                        match non_null.as_slice() {
+                            [single] => {
+                                current_obj_ty = single.clone();
+                            }
+                            _ => {
+                                self.errors.push(
+                                    super::super::error::SemanticError::rich(
+                                        crate::compile::errors::Diagnostic::error(
+                                            "E0404",
+                                            "cannot use union type in this operation, narrow the union first",
+                                            expr.span,
+                                        )
+                                        .label("use a `match` or `x != None` check before operating on a union"),
+                                    ),
+                                );
+                                return Type::Any;
+                            }
+                        }
+                    }
+                    // Tuple slices keep the element type only when
+                    // `tuple_slice_elem` names a scalar kind every position
+                    // shares; anything else erases to self-describing words
+                    // at lowering, so the honest type is `List(Any)`.
+                    if let Type::Tuple(members) = &current_obj_ty
+                        && let Some(elem) = Type::tuple_slice_elem(members)
+                    {
+                        return Type::List(Box::new(elem));
+                    }
                     return match current_obj_ty {
                         Type::List(_) | Type::Str | Type::Bytes | Type::Set(_) => current_obj_ty,
                         Type::Tuple(_) => Type::List(Box::new(Type::Any)),
                         ref t if t.is_py_value() => Type::PyObject,
-                        _ => Type::Any,
+                        Type::Null => Type::Any,
+                        // Statically-`Any` objects dispatch at runtime by
+                        // value kind (verified total); that dynamism stays.
+                        Type::Any => Type::Any,
+                        _ => {
+                            self.errors.push(
+                                super::super::error::SemanticError::rich(
+                                    crate::compile::errors::Diagnostic::error(
+                                        "E0404",
+                                        format!(
+                                            "cannot slice `{current_obj_ty}`, only lists, tuples, sets, strings, and bytes support slicing"
+                                        ),
+                                        expr.span,
+                                    )
+                                    .label("this type has no slice shape"),
+                                ),
+                            );
+                            Type::Any
+                        }
                     };
                 }
                 // `Holder[int](..)`: brackets on a struct name are explicit
@@ -1442,10 +1699,11 @@ impl TypeChecker {
                         matches!(m, Type::Struct(sname, _, _)
                             if self.lookup_type(&format!("{}::{}", sname, attr)).is_some())
                     });
-                    let builtin_like = members
-                        .iter()
-                        .any(|m| matches!(m, Type::Str | Type::Dict(_, _) | Type::Any));
-                    if !any_method && !builtin_like && !resolved_obj.is_py_value() {
+                    // Builtin methods (str/dict/list/set) have no runtime
+                    // dispatch on unions: letting them through compiles to
+                    // an FFI-symbol panic at codegen. Only a struct provider
+                    // (returned above) or a Python value passes.
+                    if !any_method && !resolved_obj.is_py_value() {
                         self.errors.push(super::super::error::SemanticError::rich(
                             crate::compile::errors::Diagnostic::error(
                                 "E0422",
@@ -1508,19 +1766,12 @@ impl TypeChecker {
                 }
 
                 let mut union_has_method = false;
-                let mut union_builtin_like = false;
                 if let Type::Union(members) = &inner_obj {
                     for member in members {
-                        match member {
-                            Type::Struct(sname, _, _)
-                                if self.lookup_type(&format!("{}::{}", sname, attr)).is_some() =>
-                            {
-                                union_has_method = true;
-                            }
-                            Type::Str | Type::Dict(_, _) | Type::Any => {
-                                union_builtin_like = true;
-                            }
-                            _ => {}
+                        if let Type::Struct(sname, _, _) = member
+                            && self.lookup_type(&format!("{}::{}", sname, attr)).is_some()
+                        {
+                            union_has_method = true;
                         }
                     }
                 }
@@ -1544,7 +1795,6 @@ impl TypeChecker {
                 }
                 if let Type::Union(_) = &inner_obj
                     && !union_has_method
-                    && !union_builtin_like
                     && !resolved_obj.is_py_value()
                 {
                     self.errors.push(super::super::error::SemanticError::rich(
@@ -2543,7 +2793,15 @@ impl TypeChecker {
                     return ty;
                 }
                 // Set algebra: | & - ^ on Set types return a Set with unified element type.
-                if matches!(&l_resolved, Type::Set(_)) && matches!(&r_resolved, Type::Set(_)) {
+                // Every other operator on two sets rejects in the gate below;
+                // previously they unified and returned the left operand dead.
+                if matches!(&l_resolved, Type::Set(_))
+                    && matches!(&r_resolved, Type::Set(_))
+                    && matches!(
+                        op,
+                        BinOp::BitOr | BinOp::BitAnd | BinOp::Sub | BinOp::BitXor
+                    )
+                {
                     self.unify(l, r, span);
                     return self.apply_subst(l.clone());
                 }
@@ -2638,6 +2896,17 @@ impl TypeChecker {
                     ));
                     return self.apply_subst(l.clone());
                 }
+                // Every combination reaching the blind unify below must be
+                // one lowering implements. Anything else compiles to
+                // integer bit operations on heap pointers (faults, garbage,
+                // leaks). Only numerics (all ten), float arithmetic without
+                // bitwise or shifts, `str`/`list` concat and repeat (repeat
+                // returned above), and set algebra (returned above) qualify.
+                if let Some(diag) = Self::reject_bad_arith_op(op, &l_resolved, &r_resolved, span) {
+                    self.errors
+                        .push(super::super::error::SemanticError::rich(diag));
+                    return self.apply_subst(l.clone());
+                }
                 self.unify(l, r, span);
                 self.apply_subst(l.clone())
             }
@@ -2708,10 +2977,32 @@ impl TypeChecker {
                         .label("ordering not supported for this struct"),
                     ));
                 }
+                // Codegen compares both sides raw with one operand's kind
+                // (float compare, string compare, else word compare), so a
+                // non-scalar pair compiles to pointer ordering: arbitrary,
+                // unstable across runs. Only scalars order; everything else
+                // rejects here instead of returning pointer garbage.
+                if let Some(diag) = Self::reject_bad_ordering(op, &l_resolved, &r_resolved, span) {
+                    self.errors
+                        .push(super::super::error::SemanticError::rich(diag));
+                    return Type::Bool;
+                }
                 self.check_scalar_comparison(&l_resolved, &r_resolved, span);
                 Type::Bool
             }
-            BinOp::In | BinOp::NotIn => Type::Bool,
+            BinOp::In | BinOp::NotIn => {
+                // Membership lowering reads the haystack with one fixed
+                // layout per static kind and compares needles by word: an
+                // unsized haystack misreads as a container header, a
+                // non-string needle on a string reads arbitrary memory, and
+                // container needles never match (not even identical
+                // objects). Only shapes lowering implements pass.
+                if let Some(diag) = Self::reject_bad_membership(&l_resolved, &r_resolved, span) {
+                    self.errors
+                        .push(super::super::error::SemanticError::rich(diag));
+                }
+                Type::Bool
+            }
             BinOp::And | BinOp::Or => {
                 if is_py {
                     return Type::PyObject;
@@ -2745,6 +3036,306 @@ impl TypeChecker {
                 }
             }
         }
+    }
+
+    /// Returns a diagnostic when `(needle, haystack)` is not a membership
+    /// combination lowering implements. `None` keeps the legacy path:
+    /// unknown shapes, `None`/untyped haystacks that read `False`, and
+    /// `Any`/Python dynamism behave exactly as before.
+    fn reject_bad_membership(
+        l: &Type,
+        r: &Type,
+        span: Span,
+    ) -> Option<crate::compile::errors::Diagnostic> {
+        for t in [l, r] {
+            match t {
+                Type::Var(_)
+                | Type::Param(_)
+                | Type::Ref(_)
+                | Type::MutRef(_)
+                | Type::Ptr(_)
+                | Type::PyObject
+                | Type::PyNamed(..) => return None,
+                _ => {}
+            }
+        }
+        if matches!(l, Type::Union(_)) || matches!(r, Type::Union(_)) {
+            return Some(
+                crate::compile::errors::Diagnostic::error(
+                    "E0404",
+                    "cannot use union type in this operation, narrow the union first",
+                    span,
+                )
+                .label("use a `match` or `x != None` check before operating on a union"),
+            );
+        }
+        if matches!(l, Type::Any) || matches!(r, Type::Any) {
+            return Some(
+                crate::compile::errors::Diagnostic::error(
+                    "E0404",
+                    "cannot test membership on `Any`, narrow to a container first",
+                    span,
+                )
+                .label("match the value or check its type before using `in`"),
+            );
+        }
+        fn scalar_needle(t: &Type) -> bool {
+            matches!(
+                t,
+                Type::Int
+                    | Type::I8
+                    | Type::I16
+                    | Type::I32
+                    | Type::U8
+                    | Type::U16
+                    | Type::U32
+                    | Type::U64
+                    | Type::Usize
+                    | Type::IntegerLiteral(_)
+                    | Type::Float
+                    | Type::F32
+                    | Type::FloatLiteral(_)
+                    | Type::Bool
+                    | Type::Str
+                    | Type::Null
+            )
+        }
+        let err = |msg: String, label: &str| {
+            Some(
+                crate::compile::errors::Diagnostic::error("E0404", msg, span)
+                    .label(label.to_string()),
+            )
+        };
+        match r {
+            Type::List(_) | Type::Tuple(_) | Type::Set(_) | Type::Dict(..) | Type::Bytes => {}
+            Type::Str => {
+                if !matches!(l, Type::Str) {
+                    return err(
+                        "`in` on a string requires a string needle".to_string(),
+                        "substring search needs a string",
+                    );
+                }
+                return None;
+            }
+            // `None`, struct, function, and trait-object haystacks read
+            // `False` without touching memory; that leniency stays.
+            Type::Null
+            | Type::Struct(..)
+            | Type::Fn(..)
+            | Type::TraitObject(..)
+            | Type::Future(..) => return None,
+            _ => {
+                return err(
+                    "`in` requires a list, dict, set, tuple, string, or bytes haystack".to_string(),
+                    "expected a container on the right",
+                );
+            }
+        }
+        // Struct/enum needles compare structurally, but only where a key
+        // descriptor is active (dict keys, set elements, and now list
+        // elements); anywhere else even an identical object reads False.
+        if scalar_needle(l) {
+            return None;
+        }
+        let deep = matches!(l, Type::Struct(..) | Type::Enum(..))
+            && matches!(r, Type::Dict(..) | Type::Set(_) | Type::List(_));
+        if !deep {
+            return err(
+                format!("`in` cannot compare `{l}` needles"),
+                "membership needs a scalar needle, or a struct/enum needle on a dict, set, or list",
+            );
+        }
+        None
+    }
+
+    /// Symbol spelling of an arithmetic operator, for diagnostics.
+    fn binop_symbol(op: &BinOp) -> &'static str {
+        match op {
+            BinOp::Add => "+",
+            BinOp::Sub => "-",
+            BinOp::Mul => "*",
+            BinOp::Div => "/",
+            BinOp::Mod => "%",
+            BinOp::Pow => "**",
+            BinOp::Shl => "<<",
+            BinOp::Shr => ">>",
+            BinOp::BitOr => "|",
+            BinOp::BitAnd => "&",
+            BinOp::BitXor => "^",
+            BinOp::Lt => "<",
+            BinOp::LtEq => "<=",
+            BinOp::Gt => ">",
+            BinOp::GtEq => ">=",
+            _ => "?",
+        }
+    }
+
+    /// Returns a diagnostic when `(op, l, r)` orders a non-scalar pair.
+    /// `None` keeps the legacy path: scalars (decided by
+    /// `check_scalar_comparison`), dynamic sides, and shapes this gate
+    /// cannot judge behave exactly as before.
+    fn reject_bad_ordering(
+        op: &BinOp,
+        l: &Type,
+        r: &Type,
+        span: Span,
+    ) -> Option<crate::compile::errors::Diagnostic> {
+        fn scalar(t: &Type) -> bool {
+            matches!(
+                t,
+                Type::Int
+                    | Type::I8
+                    | Type::I16
+                    | Type::I32
+                    | Type::U8
+                    | Type::U16
+                    | Type::U32
+                    | Type::U64
+                    | Type::Usize
+                    | Type::IntegerLiteral(_)
+                    | Type::Bool
+                    | Type::Float
+                    | Type::F32
+                    | Type::FloatLiteral(_)
+                    | Type::Str
+            )
+        }
+        for t in [l, r] {
+            match t {
+                Type::Var(_)
+                | Type::Param(_)
+                | Type::Ref(_)
+                | Type::MutRef(_)
+                | Type::Ptr(_)
+                | Type::PyObject
+                | Type::PyNamed(..)
+                | Type::Any
+                | Type::Struct(..) => return None,
+                Type::Union(_) => {
+                    return Some(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0404",
+                            "cannot use union type in this operation, narrow the union first",
+                            span,
+                        )
+                        .label("use a `match` or `x != None` check before operating on a union"),
+                    );
+                }
+                _ => {}
+            }
+        }
+        if scalar(l) && scalar(r) {
+            return None;
+        }
+        let sym = Self::binop_symbol(op);
+        Some(
+            crate::compile::errors::Diagnostic::error(
+                "E0404",
+                format!("ordering `{sym}` is not defined for `{l}`"),
+                span,
+            )
+            .label("ordering not supported for this type"),
+        )
+    }
+
+    /// Returns a diagnostic when `(op, l, r)` is not a combination lowering
+    /// implements, so the program fails at compile time instead of
+    /// miscompiling to integer operations on heap pointers. `None` keeps
+    /// the legacy unify path with behavior unchanged. Both sides must
+    /// already be substitution-resolved; inference variables, references,
+    /// and raw FFI pointers skip the gate entirely.
+    fn reject_bad_arith_op(
+        op: &BinOp,
+        l: &Type,
+        r: &Type,
+        span: Span,
+    ) -> Option<crate::compile::errors::Diagnostic> {
+        fn is_int(t: &Type) -> bool {
+            matches!(
+                t,
+                Type::Int
+                    | Type::I8
+                    | Type::I16
+                    | Type::I32
+                    | Type::U8
+                    | Type::U16
+                    | Type::U32
+                    | Type::U64
+                    | Type::Usize
+                    | Type::IntegerLiteral(_)
+                    | Type::Bool
+            )
+        }
+        fn is_float(t: &Type) -> bool {
+            matches!(t, Type::Float | Type::F32 | Type::FloatLiteral(_))
+        }
+        for t in [l, r] {
+            match t {
+                Type::Var(_)
+                | Type::Param(_)
+                | Type::Ref(_)
+                | Type::MutRef(_)
+                | Type::Ptr(_)
+                | Type::PyObject
+                | Type::PyNamed(..)
+                | Type::Any
+                | Type::Union(_)
+                | Type::Struct(..) => return None,
+                _ => {}
+            }
+        }
+        let sym = Self::binop_symbol(op);
+        let err = |help: Option<&str>| {
+            let mut diag = crate::compile::errors::Diagnostic::error(
+                "E0404",
+                format!("operator `{sym}` is not defined for `{l}`"),
+                span,
+            )
+            .label("operator not supported for this type");
+            if let Some(h) = help {
+                diag = diag.help(h);
+            }
+            diag
+        };
+        if is_int(l) && is_int(r) {
+            return None;
+        }
+        if is_float(l) && is_float(r) {
+            return match op {
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Pow => None,
+                _ => Some(err(Some("floats support only `+`, `-`, `*`, `/`, `**`"))),
+            };
+        }
+        if matches!(l, Type::Str) && matches!(r, Type::Str) {
+            return match op {
+                BinOp::Add => None,
+                _ => Some(err(Some("concatenate strings with `+`, repeat with `*`"))),
+            };
+        }
+        if matches!(l, Type::List(_)) && matches!(r, Type::List(_)) {
+            return match op {
+                BinOp::Add => None,
+                _ => Some(err(Some("concatenate lists with `+`, repeat with `*`"))),
+            };
+        }
+        // Set algebra already returned above; every other set pair rejects.
+        if matches!(l, Type::Set(_)) && matches!(r, Type::Set(_)) {
+            return Some(err(Some("sets support only `|`, `&`, `-`, `^`")));
+        }
+        if matches!(l, Type::Dict(..)) && matches!(r, Type::Dict(..)) {
+            return Some(err(Some("merge dicts with `d.update(other)`")));
+        }
+        if matches!(l, Type::Tuple(..)) && matches!(r, Type::Tuple(..))
+            || matches!(l, Type::Bytes) && matches!(r, Type::Bytes)
+            || matches!(l, Type::Enum(..)) && matches!(r, Type::Enum(..))
+            || matches!(l, Type::TraitObject(..)) && matches!(r, Type::TraitObject(..))
+            || matches!(l, Type::Fn(..)) && matches!(r, Type::Fn(..))
+            || matches!(l, Type::Future(..)) && matches!(r, Type::Future(..))
+            || matches!(l, Type::Null) && matches!(r, Type::Null)
+        {
+            return Some(err(None));
+        }
+        None
     }
 
     /// Codegen lowers a comparison by sniffing one operand's static kind and
@@ -2814,7 +3405,7 @@ impl TypeChecker {
 
     pub(super) fn check_aug_op(
         &mut self,
-        _op: &AugOp,
+        op: &AugOp,
         target: &Type,
         val: &Type,
         span: Span,
@@ -2823,6 +3414,29 @@ impl TypeChecker {
         let val_resolved = self.apply_subst(val.clone());
         if target_resolved.is_py_value() || val_resolved.is_py_value() {
             return Type::PyObject;
+        }
+        // Augmented assignment lowers to the same binary operation, so the
+        // same combinations are invalid (`d |= e` on dicts miscompiled
+        // exactly like `d | e`).
+        let bin_op = match op {
+            AugOp::Add => BinOp::Add,
+            AugOp::Sub => BinOp::Sub,
+            AugOp::Mul => BinOp::Mul,
+            AugOp::Div => BinOp::Div,
+            AugOp::Mod => BinOp::Mod,
+            AugOp::Pow => BinOp::Pow,
+            AugOp::Shl => BinOp::Shl,
+            AugOp::Shr => BinOp::Shr,
+            AugOp::BitOr => BinOp::BitOr,
+            AugOp::BitAnd => BinOp::BitAnd,
+            AugOp::BitXor => BinOp::BitXor,
+        };
+        if let Some(diag) =
+            Self::reject_bad_arith_op(&bin_op, &target_resolved, &val_resolved, span)
+        {
+            self.errors
+                .push(super::super::error::SemanticError::rich(diag));
+            return self.apply_subst(target.clone());
         }
         self.unify(target, val, span);
         self.apply_subst(target.clone())

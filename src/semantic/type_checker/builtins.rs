@@ -169,6 +169,70 @@ impl TypeChecker {
         }
     }
 
+    /// `len(x) -> int`: codegen dispatches statically (`str`/`list` length,
+    /// `dict` size, shared buffer length), so anything without a size
+    /// compiles to a misaligned read on the value word. Scalars, structs,
+    /// enums, and callables reject here; wider unions dispatch on the
+    /// runtime word instead. `T | None` collapses to `T` exactly like
+    /// codegen does.
+    pub(super) fn check_len(&mut self, arg: &Expr, span: Span) -> Type {
+        let raw = self.check_expr(arg);
+        let arg_ty = self.apply_subst(raw);
+        fn sized(ty: &Type) -> bool {
+            matches!(
+                ty,
+                Type::Str
+                    | Type::List(_)
+                    | Type::Tuple(_)
+                    | Type::Dict(..)
+                    | Type::Set(_)
+                    | Type::Bytes
+            )
+        }
+        fn skip(ty: &Type) -> bool {
+            matches!(
+                ty,
+                Type::Var(_)
+                    | Type::Param(_)
+                    | Type::Ref(_)
+                    | Type::MutRef(_)
+                    | Type::Ptr(_)
+                    | Type::PyObject
+                    | Type::PyNamed(..)
+                    | Type::Any
+            )
+        }
+        if skip(&arg_ty) || sized(&arg_ty) {
+            return Type::Int;
+        }
+        if let Type::Union(members) = &arg_ty {
+            let non_null: Vec<&Type> = members
+                .iter()
+                .filter(|m| !matches!(m, Type::Null))
+                .collect();
+            match non_null.as_slice() {
+                // `T | None` collapses to `T` in lowering exactly like
+                // codegen does, so mirror its verdict for the member.
+                [single] if skip(single) || sized(single) => return Type::Int,
+                // A wider union holds whichever member is live; `len()`
+                // dispatches on the runtime word (`__olive_len_union`),
+                // faulting only for members without a size.
+                [_, _, ..] => return Type::Int,
+                _ => {}
+            }
+        }
+        self.errors
+            .push(crate::semantic::error::SemanticError::rich(
+                crate::compile::errors::Diagnostic::error(
+                    "E0404",
+                    format!("`len()` requires a sized collection, got `{arg_ty}`"),
+                    span,
+                )
+                .label("expected `str`, `list`, `tuple`, `dict`, `set`, or `bytes`"),
+            ));
+        Type::Int
+    }
+
     /// `sorted(xs, key=f) -> [T]` (E5.5): checks `f` against the list's own
     /// element type as the expected fn signature (`check_expr_expecting`),
     /// same as any other call argument's context -- an unannotated `f`

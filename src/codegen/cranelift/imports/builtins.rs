@@ -112,7 +112,7 @@ pub(crate) fn drop_descriptor_type<'a>(
     }
 }
 
-pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 692] = [
+pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 693] = [
     "__olive_alloc",
     "__olive_any_add",
     "__olive_any_div",
@@ -688,6 +688,7 @@ pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 692] = [
     "__olive_str_center",
     "__olive_str_char",
     "__olive_str_char_count",
+    "__olive_str_cmp",
     "__olive_str_concat",
     "__olive_str_concat_move",
     "__olive_str_contains",
@@ -869,8 +870,21 @@ pub(crate) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
     match name {
         "len" => match current_ty {
             OliveType::Str => Some("__olive_str_len"),
-            OliveType::Dict(_, _) | OliveType::Struct(_, _, _) | OliveType::Any => {
-                Some("__olive_obj_len")
+            OliveType::Dict(_, _) | OliveType::Struct(_, _, _) => Some("__olive_obj_len"),
+            // `Any` carries any word (a previous union narrow, an inlined
+            // relay, a dynamic slot): only the total kind dispatch reads
+            // every shape safely. `obj_len` assumes a dict header.
+            OliveType::Any => Some("__olive_len_any"),
+            // A wider union holds whichever member is live; measure by
+            // runtime kind instead of guessing a layout statically.
+            OliveType::Union(members)
+                if members
+                    .iter()
+                    .filter(|m| !matches!(m, OliveType::Null))
+                    .count()
+                    > 1 =>
+            {
+                Some("__olive_len_any")
             }
             _ => Some("__olive_list_len"),
         },

@@ -719,6 +719,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_str_char_count", &sig_i64_i64),
             ("__olive_str_concat", &sig_i64_i64_i64),
             ("__olive_str_concat_move", &sig_i64_i64_i64),
+            ("__olive_str_cmp", &sig_i64_i64_i64),
             ("__olive_strbuf_new", &sig_i64_i64),
             ("__olive_strbuf_push", &sig_i64_i64_i64),
             ("__olive_strbuf_len", &sig_i64_i64),

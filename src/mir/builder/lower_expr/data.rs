@@ -581,6 +581,7 @@ impl<'a> MirBuilder<'a> {
         }
 
         if let ExprKind::Slice { start, stop, step } = &index.kind {
+            let o = self.lower_expr_as_copy(obj);
             let func_name = match &current_obj_ty {
                 Type::PyObject => "__olive_py_getslice",
                 // `Any` holds any representation: dispatch at runtime by the
@@ -593,8 +594,27 @@ impl<'a> MirBuilder<'a> {
                 Type::List(_) | Type::Tuple(_) | Type::Set(_) => "__olive_list_getslice",
                 _ => "__olive_list_getslice",
             };
+            // Slice results split two ways, decided by the same
+            // `tuple_slice_elem` predicate the checker types with: scalar
+            // homogeneous tuples keep the direct raw copy, everything else
+            // erases to self-describing words first (boxing every position
+            // through its static member type) and slices the erased value.
+            if let Type::Tuple(members) = &current_obj_ty
+                && Type::tuple_slice_elem(members).is_none()
+            {
+                let erased = self.erase_tuple_elements(o, members, span);
+                return self.lower_slice(
+                    erased,
+                    start.as_deref(),
+                    stop.as_deref(),
+                    step.as_deref(),
+                    "__olive_getslice_any",
+                    span,
+                    expr_id,
+                );
+            }
             return self.lower_slice(
-                obj,
+                o,
                 start.as_deref(),
                 stop.as_deref(),
                 step.as_deref(),
@@ -639,7 +659,7 @@ impl<'a> MirBuilder<'a> {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn lower_slice(
         &mut self,
-        obj: &Expr,
+        obj_op: Operand,
         start: Option<&Expr>,
         stop: Option<&Expr>,
         step: Option<&Expr>,
@@ -651,7 +671,7 @@ impl<'a> MirBuilder<'a> {
         const SLICE_HAS_STOP: i64 = 2;
         const SLICE_HAS_STEP: i64 = 4;
 
-        let o = self.lower_expr_as_copy(obj);
+        let o = obj_op;
         let mut flags: i64 = 0;
         let start_op = if let Some(e) = start {
             flags |= SLICE_HAS_START;
