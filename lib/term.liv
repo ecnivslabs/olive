@@ -169,7 +169,14 @@ fn _named_or_mod(tag: str) -> Key | None:
 
     return None
 
+// A bare printable char is the overwhelmingly common case (every typed
+// character while composing a prompt) -- short-circuit it before the
+// O(mods x bases) `_named_or_mod` table walk below. Every non-char token
+// this fn recognizes is at least 2 bytes ("up", "f1", "ctrl+c", ...), so a
+// single-byte tag can only ever be a literal character.
 fn _decode(tag: str) -> Key:
+    if string.char_count(tag) == 1:
+        return Char(tag)
     if tag == "enter":
         return Enter
     if tag == "shift+enter":
