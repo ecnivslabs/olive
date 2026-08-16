@@ -2694,6 +2694,7 @@ impl TypeChecker {
                     _ => None,
                 });
                 if attr == "sort" {
+                    self.check_sort_args(args, obj.span);
                     if let Some((key_expr, key_ty)) = key_arg {
                         self.check_sort_key(elem, key_expr, key_ty, obj.span);
                     } else {

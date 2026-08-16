@@ -132,6 +132,39 @@ impl TypeChecker {
                 &[],
                 Type::Union(vec![Type::Float, Type::Null]),
             ),
+            // Pre-E3.5 surface without arity checks: a wrong count reached
+            // codegen, whose fixed signatures abort the compiler instead of
+            // reporting E0403. Return types match the main match below.
+            "upper" | "lower" => {
+                self.check_arity_and_return(attr, arg_tys, span, 0, 0, &[], Type::Str)
+            }
+            "find" => {
+                self.check_arity_and_return(attr, arg_tys, span, 1, 1, &[Type::Str], Type::Int)
+            }
+            "replace" => self.check_arity_and_return(
+                attr,
+                arg_tys,
+                span,
+                2,
+                2,
+                &[Type::Str, Type::Str],
+                Type::Str,
+            ),
+            "repeat" => {
+                self.check_arity_and_return(attr, arg_tys, span, 1, 1, &[Type::Int], Type::Str)
+            }
+            "join" => self.check_arity_and_return(
+                attr,
+                arg_tys,
+                span,
+                1,
+                1,
+                &[Type::List(Box::new(Type::Str))],
+                Type::Str,
+            ),
+            "contains" | "startswith" | "endswith" => {
+                self.check_arity_and_return(attr, arg_tys, span, 1, 1, &[Type::Str], Type::Bool)
+            }
             _ => None,
         }
     }

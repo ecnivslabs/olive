@@ -244,6 +244,50 @@ fn union_method_calls_rejected_with_narrow_help() {
 }
 
 #[test]
+fn method_arity_mismatches_rejected() {
+    assert_rejected_with(
+        "fn main():\n    let l = [1]\n    l.append()\n    print(l)\n",
+        "[E0403]",
+        "wrong number of arguments",
+    );
+    assert_rejected_with(
+        "fn main():\n    let l = [1]\n    l.insert(0)\n    print(l)\n",
+        "[E0403]",
+        "wrong number of arguments",
+    );
+    assert_rejected_with(
+        "fn main():\n    print([1, 2].pop(0))\n",
+        "[E0403]",
+        "wrong number of arguments",
+    );
+    assert_rejected_with(
+        "fn main():\n    let l = [2, 1]\n    l.sort(1)\n    print(l)\n",
+        "[E0403]",
+        "wrong number of arguments",
+    );
+    assert_rejected_with(
+        "fn main():\n    let d = {\"a\": 1}\n    d.remove()\n    print(d)\n",
+        "[E0403]",
+        "wrong number of arguments",
+    );
+    assert_rejected_with(
+        "fn main():\n    let s = {1}\n    s.add(2, 3)\n    print(s)\n",
+        "[E0403]",
+        "wrong number of arguments",
+    );
+    assert_rejected_with(
+        "fn main():\n    print(\"abc\".find())\n",
+        "[E0403]",
+        "wrong number of arguments",
+    );
+    assert_rejected_with(
+        "fn main():\n    print(\"x\".upper(1))\n",
+        "[E0403]",
+        "wrong number of arguments",
+    );
+}
+
+#[test]
 fn slice_misuse_rejected() {
     assert_rejected("fn main():\n    print({\"a\": 1}[0:1])\n", "cannot slice");
     assert_rejected("fn main():\n    print(5[0:1])\n", "cannot slice");
