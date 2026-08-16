@@ -65,6 +65,7 @@ enum Key:
     ShiftEnter
     Backspace
     Tab
+    BackTab
     Escape
     Up
     Down
@@ -73,7 +74,12 @@ enum Key:
     Home
     End
     Delete
+    PageUp
+    PageDown
+    Insert
+    F(int)
     Ctrl(str)
+    Mod(str, str)
     Char(str)
     Resize
     Eof
@@ -84,31 +90,90 @@ enum Key:
     MouseDrag(int, int)
     MouseUp(int, int)
 
+// Every modifier combo `encode_key` (std_lib/src/term.rs) can prefix onto a
+// named key, in the same fixed ctrl+alt+shift order it emits them in.
+// Index 0 (no prefix) is the bare key.
+const _MOD_PREFIXES = ["", "ctrl+", "alt+", "shift+", "ctrl+alt+", "ctrl+shift+", "alt+shift+", "ctrl+alt+shift+"]
+const _MOD_NAMES = ["", "ctrl", "alt", "shift", "ctrl+alt", "ctrl+shift", "alt+shift", "ctrl+alt+shift"]
+const _NAMED_BASES = ["up", "down", "left", "right", "home", "end", "delete", "backspace", "tab", "backtab", "escape", "pageup", "pagedown", "insert"]
+
+fn _bare_named(base: str) -> Key:
+    if base == "up":
+        return Up
+    if base == "down":
+        return Down
+    if base == "left":
+        return Left
+    if base == "right":
+        return Right
+    if base == "home":
+        return Home
+    if base == "end":
+        return End
+    if base == "delete":
+        return Delete
+    if base == "backspace":
+        return Backspace
+    if base == "tab":
+        return Tab
+    if base == "backtab":
+        return BackTab
+    if base == "escape":
+        return Escape
+    if base == "pageup":
+        return PageUp
+    if base == "pagedown":
+        return PageDown
+    return Insert
+
+// Matches `tag` against every (modifier prefix) x (named base, including
+// f1..f12) combination `encode_key` can produce. A bare match returns the
+// dedicated variant (Up, PageDown, F(5), ...); a modified one returns
+// Mod(modifier_name, base) -- e.g. Mod("shift", "up"), Mod("ctrl+alt", "f5").
+// None if `tag` isn't one of these shapes at all.
+fn _named_or_mod(tag: str) -> Key | None:
+    let mut mi = 0
+
+    while mi < len(_MOD_PREFIXES):
+        let prefix = _MOD_PREFIXES[mi]
+        let modname = _MOD_NAMES[mi]
+
+        let mut fi = 1
+
+        while fi <= 12:
+            let candidate = prefix + "f" + str(fi)
+
+            if tag == candidate:
+                if modname == "":
+                    return F(fi)
+
+                return Mod(modname, "f" + str(fi))
+
+            fi = fi + 1
+
+        let mut bi = 0
+
+        while bi < len(_NAMED_BASES):
+            let base = _NAMED_BASES[bi]
+            let candidate = prefix + base
+
+            if tag == candidate:
+                if modname == "":
+                    return _bare_named(base)
+
+                return Mod(modname, base)
+
+            bi = bi + 1
+
+        mi = mi + 1
+
+    return None
+
 fn _decode(tag: str) -> Key:
     if tag == "enter":
         return Enter
     if tag == "shift+enter":
         return ShiftEnter
-    if tag == "backspace":
-        return Backspace
-    if tag == "tab":
-        return Tab
-    if tag == "escape":
-        return Escape
-    if tag == "up":
-        return Up
-    if tag == "down":
-        return Down
-    if tag == "left":
-        return Left
-    if tag == "right":
-        return Right
-    if tag == "home":
-        return Home
-    if tag == "end":
-        return End
-    if tag == "delete":
-        return Delete
     if tag == "resize":
         return Resize
     if tag == "eof":
@@ -128,8 +193,15 @@ fn _decode(tag: str) -> Key:
     if string.starts_with(tag, "mouseup:"):
         let parts = string.split(tag[8:], ":")
         return MouseUp(int(parts[0]), int(parts[1]))
+
+    let named = _named_or_mod(tag)
+
+    if named != None:
+        return named
+
     if string.starts_with(tag, "ctrl+"):
         return Ctrl(tag[5:])
+
     return Char(tag)
 
 fn read_key() -> Key:

@@ -151,25 +151,59 @@ pub extern "C" fn olive_term_clipboard_write(s: i64) -> i64 {
     (wrote && out.flush().is_ok()) as i64
 }
 
+/// Builds the fixed-order "ctrl+alt+shift+" prefix for whichever of those
+/// three modifiers are held, empty string if none are. Kept separate from
+/// `encode_key` so a modifier combo is spelled identically no matter which
+/// named key it lands on.
+fn modifier_prefix(modifiers: KeyModifiers) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    if modifiers.contains(KeyModifiers::CONTROL) {
+        parts.push("ctrl");
+    }
+    if modifiers.contains(KeyModifiers::ALT) {
+        parts.push("alt");
+    }
+    if modifiers.contains(KeyModifiers::SHIFT) {
+        parts.push("shift");
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("{}+", parts.join("+"))
+    }
+}
+
+fn encode_named(base: &str, modifiers: KeyModifiers) -> String {
+    format!("{}{base}", modifier_prefix(modifiers))
+}
+
 /// Normalizes a crossterm key event into the token string the olive `term`
 /// module hands to callers: a named key ("enter", "backspace", "tab",
-/// "escape", "up", "down", "left", "right", "home", "end", "delete"),
-/// "ctrl+<c>" for control combos, or the literal character typed. Pure and
-/// unit-testable independent of any real terminal.
+/// "escape", "up", "down", "left", "right", "home", "end", "delete",
+/// "pageup", "pagedown", "insert", "backtab", "f1".."f12"), any of those
+/// prefixed with a fixed-order "ctrl+alt+shift+" combo when held (e.g.
+/// "shift+up", "ctrl+alt+left"), "ctrl+<c>" for a held-control character,
+/// or the literal character typed otherwise. Pure and unit-testable
+/// independent of any real terminal.
 fn encode_key(code: KeyCode, modifiers: KeyModifiers) -> Option<String> {
     Some(match code {
         KeyCode::Enter if modifiers.contains(KeyModifiers::SHIFT) => "shift+enter".to_string(),
-        KeyCode::Enter => "enter".to_string(),
-        KeyCode::Backspace => "backspace".to_string(),
-        KeyCode::Tab => "tab".to_string(),
-        KeyCode::Esc => "escape".to_string(),
-        KeyCode::Up => "up".to_string(),
-        KeyCode::Down => "down".to_string(),
-        KeyCode::Left => "left".to_string(),
-        KeyCode::Right => "right".to_string(),
-        KeyCode::Home => "home".to_string(),
-        KeyCode::End => "end".to_string(),
-        KeyCode::Delete => "delete".to_string(),
+        KeyCode::Enter => encode_named("enter", modifiers),
+        KeyCode::Backspace => encode_named("backspace", modifiers),
+        KeyCode::Tab => encode_named("tab", modifiers),
+        KeyCode::BackTab => encode_named("backtab", modifiers),
+        KeyCode::Esc => encode_named("escape", modifiers),
+        KeyCode::Up => encode_named("up", modifiers),
+        KeyCode::Down => encode_named("down", modifiers),
+        KeyCode::Left => encode_named("left", modifiers),
+        KeyCode::Right => encode_named("right", modifiers),
+        KeyCode::Home => encode_named("home", modifiers),
+        KeyCode::End => encode_named("end", modifiers),
+        KeyCode::Delete => encode_named("delete", modifiers),
+        KeyCode::PageUp => encode_named("pageup", modifiers),
+        KeyCode::PageDown => encode_named("pagedown", modifiers),
+        KeyCode::Insert => encode_named("insert", modifiers),
+        KeyCode::F(n) if (1..=12).contains(&n) => encode_named(&format!("f{n}"), modifiers),
         KeyCode::Char(c) if modifiers.contains(KeyModifiers::CONTROL) => format!("ctrl+{c}"),
         KeyCode::Char(c) => c.to_string(),
         _ => return None,
@@ -359,8 +393,84 @@ mod tests {
 
     #[test]
     fn encode_key_unhandled_code_is_none() {
-        assert_eq!(encode_key(KeyCode::F(1), KeyModifiers::NONE), None);
-        assert_eq!(encode_key(KeyCode::PageUp, KeyModifiers::NONE), None);
+        assert_eq!(encode_key(KeyCode::Null, KeyModifiers::NONE), None);
+        assert_eq!(encode_key(KeyCode::Menu, KeyModifiers::NONE), None);
+        assert_eq!(encode_key(KeyCode::F(13), KeyModifiers::NONE), None);
+    }
+
+    #[test]
+    fn encode_key_new_named_keys() {
+        assert_eq!(
+            encode_key(KeyCode::PageUp, KeyModifiers::NONE),
+            Some("pageup".to_string())
+        );
+        assert_eq!(
+            encode_key(KeyCode::PageDown, KeyModifiers::NONE),
+            Some("pagedown".to_string())
+        );
+        assert_eq!(
+            encode_key(KeyCode::Insert, KeyModifiers::NONE),
+            Some("insert".to_string())
+        );
+        assert_eq!(
+            encode_key(KeyCode::BackTab, KeyModifiers::NONE),
+            Some("backtab".to_string())
+        );
+        assert_eq!(
+            encode_key(KeyCode::F(1), KeyModifiers::NONE),
+            Some("f1".to_string())
+        );
+        assert_eq!(
+            encode_key(KeyCode::F(12), KeyModifiers::NONE),
+            Some("f12".to_string())
+        );
+    }
+
+    #[test]
+    fn encode_key_modified_named_keys() {
+        assert_eq!(
+            encode_key(KeyCode::Up, KeyModifiers::SHIFT),
+            Some("shift+up".to_string())
+        );
+        assert_eq!(
+            encode_key(KeyCode::Down, KeyModifiers::CONTROL),
+            Some("ctrl+down".to_string())
+        );
+        assert_eq!(
+            encode_key(KeyCode::Left, KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+            Some("ctrl+shift+left".to_string())
+        );
+        assert_eq!(
+            encode_key(
+                KeyCode::Right,
+                KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT
+            ),
+            Some("ctrl+alt+shift+right".to_string())
+        );
+        assert_eq!(
+            encode_key(KeyCode::F(5), KeyModifiers::ALT),
+            Some("alt+f5".to_string())
+        );
+        assert_eq!(
+            encode_key(KeyCode::Enter, KeyModifiers::CONTROL),
+            Some("ctrl+enter".to_string())
+        );
+    }
+
+    #[test]
+    fn encode_key_bare_named_keys_unchanged() {
+        assert_eq!(
+            encode_key(KeyCode::Enter, KeyModifiers::NONE),
+            Some("enter".to_string())
+        );
+        assert_eq!(
+            encode_key(KeyCode::Tab, KeyModifiers::NONE),
+            Some("tab".to_string())
+        );
+        assert_eq!(
+            encode_key(KeyCode::Backspace, KeyModifiers::NONE),
+            Some("backspace".to_string())
+        );
     }
 
     #[test]
