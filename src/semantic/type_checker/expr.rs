@@ -915,6 +915,40 @@ impl TypeChecker {
                     }
                     return Type::Str;
                 }
+                // Builtins with dedicated validation above fall through here
+                // only on wrong argument counts then (valid shapes returned
+                // early): without this they reach codegen, whose fixed
+                // signatures abort the compiler instead of reporting E0402.
+                if let ExprKind::Identifier(name) = &callee.kind
+                    && self.lookup_type(name).is_none()
+                {
+                    let valid: Option<(usize, usize)> = match name.as_str() {
+                        "sum" | "abs" | "reversed" | "any" | "all" => Some((1, 1)),
+                        "min" | "max" | "sorted" | "round" => Some((1, 2)),
+                        _ => None,
+                    };
+                    if let Some((min, max)) = valid
+                        && (args.len() < min || args.len() > max)
+                    {
+                        let expected = if min == max {
+                            format!("{min}")
+                        } else {
+                            format!("{min} to {max}")
+                        };
+                        self.errors.push(super::super::error::SemanticError::rich(
+                            crate::compile::errors::Diagnostic::error(
+                                "E0402",
+                                "function signature mismatch",
+                                expr.span,
+                            )
+                            .label(format!(
+                                "expected {expected} parameter(s), found {}",
+                                args.len()
+                            )),
+                        ));
+                        return Type::Any;
+                    }
+                }
                 if let ExprKind::Attr { obj, attr } = &callee.kind
                     && let Some(ret) = self.builtin_collection_method(obj, attr, args)
                 {

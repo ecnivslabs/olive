@@ -244,6 +244,30 @@ fn union_method_calls_rejected_with_narrow_help() {
 }
 
 #[test]
+fn builtin_arity_mismatches_rejected() {
+    assert_rejected_with(
+        "fn main():\n    print(sum())\n",
+        "[E0402]",
+        "function signature mismatch",
+    );
+    assert_rejected_with(
+        "fn main():\n    print(min(1, 2, 3))\n",
+        "[E0402]",
+        "function signature mismatch",
+    );
+    assert_rejected_with(
+        "fn main():\n    print(abs())\n",
+        "[E0402]",
+        "function signature mismatch",
+    );
+    assert_rejected_with(
+        "fn main():\n    print(sorted())\n",
+        "[E0402]",
+        "function signature mismatch",
+    );
+}
+
+#[test]
 fn method_arity_mismatches_rejected() {
     assert_rejected_with(
         "fn main():\n    let l = [1]\n    l.append()\n    print(l)\n",
