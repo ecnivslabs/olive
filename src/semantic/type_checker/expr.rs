@@ -2680,13 +2680,13 @@ impl TypeChecker {
         }
         if let Type::List(elem) = &base
             && let Some(ty) =
-                self.check_list_method_ext(&elem.clone(), attr, args.len(), obj.span, &base)
+                self.check_list_method_ext(&elem.clone(), attr, &arg_tys, obj.span, &base)
         {
             return Some(ty);
         }
-        if let Type::Dict(_, v) = &base
+        if let Type::Dict(k, v) = &base
             && let Some(ty) =
-                self.check_dict_method_ext(&v.clone(), attr, args.len(), obj.span, &base)
+                self.check_dict_method_ext(&k.clone(), &v.clone(), attr, &arg_tys, obj.span, &base)
         {
             return Some(ty);
         }
@@ -2706,7 +2706,16 @@ impl TypeChecker {
             (Type::Str | Type::Any, "split") => Some(Type::List(Box::new(Type::Str))),
             (Type::Str | Type::Any, "find") => Some(Type::Int),
             (Type::Str | Type::Any, "contains" | "startswith" | "endswith") => Some(Type::Bool),
-            (Type::List(elem), "pop" | "remove") => Some((**elem).clone()),
+            (Type::List(elem), "pop" | "remove") => {
+                // `remove(i)` takes an index: a mistyped index silently
+                // removes nothing instead of faulting.
+                if attr == "remove"
+                    && let Some(idx) = arg_tys.first()
+                {
+                    self.unify_stored(&Type::Int, idx, "remove", obj.span);
+                }
+                Some((**elem).clone())
+            }
             (Type::List(elem), "append" | "insert" | "extend" | "sort" | "reverse") => {
                 // An empty literal's element type binds at the first insertion,
                 // so drops and printing see the real element layout.
@@ -2723,6 +2732,61 @@ impl TypeChecker {
                     && matches!(self.apply_subst((**elem).clone()), Type::Var(_))
                 {
                     self.unify_silently(elem, &val_ty, obj.span);
+                }
+                // Element words are stored raw: a mistyped argument reads
+                // back as garbage (a heap pointer prints as an integer).
+                // Unions keep legacy dynamic behavior (guarded patterns in
+                // real code rely on it); everything else unifies, with
+                // `Any` into concrete slots rejected and vars binding.
+                match attr {
+                    "append" => {
+                        if let Some(a) = arg_tys.first() {
+                            self.unify_stored(elem, a, "append", obj.span);
+                        }
+                    }
+                    "insert" => {
+                        if let Some(i) = arg_tys.first() {
+                            self.unify_stored(&Type::Int, i, "insert", obj.span);
+                        }
+                        if let Some(v) = arg_tys.get(1) {
+                            self.unify_stored(elem, v, "insert", obj.span);
+                        }
+                    }
+                    "extend" => {
+                        if let Some(o) = arg_tys.first() {
+                            let ro = self.apply_subst(o.clone());
+                            match &ro {
+                                Type::List(e2) => {
+                                    self.unify_stored(elem, e2, "extend", obj.span);
+                                }
+                                Type::Tuple(ms) => {
+                                    for m in ms {
+                                        self.unify_stored(elem, m, "extend", obj.span);
+                                    }
+                                }
+                                Type::Var(_)
+                                | Type::Param(_)
+                                | Type::Ref(_)
+                                | Type::MutRef(_)
+                                | Type::Ptr(_)
+                                | Type::PyObject
+                                | Type::PyNamed(..) => {}
+                                _ => {
+                                    self.errors.push(super::super::error::SemanticError::rich(
+                                        crate::compile::errors::Diagnostic::error(
+                                            "E0404",
+                                            format!(
+                                                "`extend` requires a list argument, got `{ro}`"
+                                            ),
+                                            obj.span,
+                                        )
+                                        .label("expected a list"),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
                 }
                 let key_arg = args.iter().zip(arg_tys.iter()).find_map(|(a, t)| match a {
                     CallArg::Keyword(name, e) if name == "key" => Some((e, t.clone())),
@@ -2780,6 +2844,13 @@ impl TypeChecker {
                     && matches!(self.apply_subst(elem.clone()), Type::Var(_))
                 {
                     self.unify_silently(&elem, &val_ty, obj.span);
+                }
+                // Member words hash by value: a mistyped member corrupts
+                // the set's representation instead of faulting.
+                if attr == "add"
+                    && let Some(val_ty) = arg_tys.first()
+                {
+                    self.unify_stored(&elem, val_ty, "add", obj.span);
                 }
                 Some(if attr == "add" { base.clone() } else { elem })
             }
@@ -3182,6 +3253,47 @@ impl TypeChecker {
             );
         }
         None
+    }
+
+    /// Raw container stores keep the exact word: a dynamically-typed
+    /// argument would store its boxed form where downstream reads expect
+    /// raw words (`unify` passes `Any` silently, so it cannot catch this).
+    /// Returns true when it reported, so callers skip their unify.
+    pub(super) fn reject_any_storage(&mut self, owner: &str, ty: &Type, span: Span) -> bool {
+        if self.apply_subst(ty.clone()) == Type::Any {
+            self.errors.push(super::super::error::SemanticError::rich(
+                crate::compile::errors::Diagnostic::error(
+                    "E0404",
+                    format!("`{owner}` requires a concrete argument, got `Any`"),
+                    span,
+                )
+                .label("narrow the value or unbox it first"),
+            ));
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Unifies a value stored raw into a concretely-typed container slot.
+    /// Dynamic shapes keep legacy behavior: unions flow the way they
+    /// always have (stdlib JSON parsing appends guarded unions into
+    /// growing lists), and inference variables still bind. Only concrete
+    /// mismatches report E0400, plus `Any` into a concrete slot (boxed
+    /// words would read back as raw).
+    pub(super) fn unify_stored(&mut self, elem: &Type, arg: &Type, owner: &str, span: Span) {
+        let e = self.apply_subst(elem.clone());
+        let a = self.apply_subst(arg.clone());
+        if matches!(e, Type::Union(_)) || matches!(a, Type::Union(_)) {
+            return;
+        }
+        if matches!(a, Type::Any)
+            && !matches!(e, Type::Any | Type::Var(_) | Type::Param(_))
+            && !self.reject_any_storage(owner, arg, span)
+        {
+            return;
+        }
+        self.unify(elem, arg, span);
     }
 
     /// Symbol spelling of an arithmetic operator, for diagnostics.

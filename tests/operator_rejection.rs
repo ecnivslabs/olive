@@ -244,6 +244,45 @@ fn union_method_calls_rejected_with_narrow_help() {
 }
 
 #[test]
+fn collection_element_mismatches_rejected() {
+    assert_rejected_with(
+        "fn main():\n    let l = [1]\n    l.append(\"a\")\n    print(l)\n",
+        "[E0400]",
+        "mismatched types",
+    );
+    assert_rejected_with(
+        "fn main():\n    let l = [1, 2]\n    l.insert(\"a\", 9)\n    print(l)\n",
+        "[E0400]",
+        "mismatched types",
+    );
+    assert_rejected_with(
+        "fn main():\n    let l = [1]\n    l.extend([\"a\"])\n    print(l)\n",
+        "[E0400]",
+        "mismatched types",
+    );
+    assert_rejected_with(
+        "fn main():\n    let d = {\"a\": 1}\n    d.update({\"b\": \"x\"})\n    print(d)\n",
+        "[E0400]",
+        "mismatched types",
+    );
+    assert_rejected_with(
+        "fn main():\n    let d = {\"a\": 1}\n    print(d.setdefault(\"zz\", \"s\"))\n",
+        "[E0400]",
+        "mismatched types",
+    );
+    assert_rejected_with(
+        "fn main():\n    print([1, 2].count(\"a\"))\n",
+        "[E0400]",
+        "mismatched types",
+    );
+    assert_rejected_with(
+        "fn f(v: Any):\n    let l = [1]\n    l.append(v)\n    print(l)\nfn main():\n    f(2)\n",
+        "[E0404]",
+        "requires a concrete argument",
+    );
+}
+
+#[test]
 fn builtin_arity_mismatches_rejected() {
     assert_rejected_with(
         "fn main():\n    print(sum())\n",
