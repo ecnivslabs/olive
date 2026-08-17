@@ -440,6 +440,46 @@ fn method_arity_mismatches_rejected() {
 }
 
 #[test]
+fn iteration_misuse_rejected() {
+    assert_rejected_with(
+        "fn main():\n    for x in 5:\n        print(x)\n",
+        "[E0404]",
+        "cannot iterate over",
+    );
+    assert_rejected_with(
+        "struct S:\n    x: int\nfn main():\n    for v in S(1):\n        print(v)\n",
+        "[E0404]",
+        "cannot iterate over",
+    );
+    assert_rejected_with(
+        "fn f(v: [int] | int):\n    for x in v:\n        print(x)\nfn main():\n    f([1])\n",
+        "[E0404]",
+        "narrow the union first",
+    );
+    assert_rejected_with(
+        "fn main():\n    print([x for x in 5])\n",
+        "[E0404]",
+        "cannot iterate over",
+    );
+}
+
+#[test]
+fn iteration_edge_shapes_work() {
+    assert_accepted(
+        "fn f(v: [int] | None):\n    for x in v:\n        print(x)\nfn main():\n    f([1])\n    f(None)\n    print(\"done\")\n",
+        "1\ndone\n",
+    );
+    assert_accepted(
+        "fn main():\n    for x in \"ab\"[0]:\n        print(x)\n    print(\"done\")\n",
+        "a\ndone\n",
+    );
+    assert_accepted(
+        "fn f(v: Any):\n    for x in v:\n        print(x)\nfn main():\n    f([7])\n    f(5)\n    print(\"done\")\n",
+        "7\ndone\n",
+    );
+}
+
+#[test]
 fn slice_misuse_rejected() {
     assert_rejected("fn main():\n    print({\"a\": 1}[0:1])\n", "cannot slice");
     assert_rejected("fn main():\n    print(5[0:1])\n", "cannot slice");

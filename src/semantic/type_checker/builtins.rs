@@ -439,7 +439,67 @@ impl TypeChecker {
                 _ => {}
             }
         }
-        self.check_expr(iter)
+        let checked = self.check_expr(iter);
+        // Iterating a non-iterable compiles to a header read on the bare
+        // word: integers and bigger structs fault or read out of bounds
+        // instead of looping zero times. Only sized shapes pass; `T |
+        // None` judges by `T` exactly like the runtime null check does.
+        let resolved = self.apply_subst(checked.clone());
+        let effective = match &resolved {
+            Type::Union(members) => {
+                let non_null: Vec<&Type> = members
+                    .iter()
+                    .filter(|m| !matches!(m, Type::Null))
+                    .collect();
+                match non_null.as_slice() {
+                    [single] => (*single).clone(),
+                    _ => {
+                        self.errors
+                            .push(crate::semantic::error::SemanticError::rich(
+                            crate::compile::errors::Diagnostic::error(
+                                "E0404",
+                                "cannot use union type in this operation, narrow the union first",
+                                iter.span,
+                            )
+                            .label(
+                                "use a `match` or `x != None` check before operating on a union",
+                            ),
+                        ));
+                        return checked;
+                    }
+                }
+            }
+            other => other.clone(),
+        };
+        match &effective {
+            Type::Var(_)
+            | Type::Param(_)
+            | Type::Ref(_)
+            | Type::MutRef(_)
+            | Type::Ptr(_)
+            | Type::PyObject
+            | Type::PyNamed(..)
+            | Type::Any
+            | Type::Null
+            | Type::Str
+            | Type::List(_)
+            | Type::Set(_)
+            | Type::Dict(..)
+            | Type::Tuple(_)
+            | Type::Bytes => {}
+            _ => {
+                self.errors
+                    .push(crate::semantic::error::SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0404",
+                            format!("cannot iterate over `{resolved}`"),
+                            iter.span,
+                        )
+                        .label("expected a list, string, dict, set, tuple, or bytes"),
+                    ));
+            }
+        }
+        checked
     }
 
     /// `let a, *rest = xs` / `a, *rest = xs` (E4.4): unlike exact tuple

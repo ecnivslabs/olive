@@ -1081,10 +1081,17 @@ pub extern "C" fn olive_iter(list_ptr: i64) -> i64 {
     let mut actual_list_ptr = list_ptr;
 
     // A tagged pointer with a high address is a string: iterate its characters.
-    if list_ptr != 0 && (list_ptr & 1) == 1 && (list_ptr & !1) > 0x10000 {
+    // Untagged interned chars (`s[i]`) are static one-character strings with
+    // the same single step. Anything else that is not a live heap object
+    // (scalars, dangling words) yields an empty iterator instead of
+    // dereferencing the word as a container header.
+    if list_ptr != 0
+        && ((list_ptr & 1) == 1 && (list_ptr & !1) > 0x10000
+            || crate::string::is_interned_char(list_ptr))
+    {
         actual_list_ptr = crate::string::olive_str_chars(list_ptr);
         derived = true;
-    } else if list_ptr != 0 {
+    } else if list_ptr != 0 && crate::is_active_object(list_ptr) {
         unsafe {
             let kind = *(list_ptr as *const i64);
             if kind == KIND_PYOBJECT {
@@ -1098,8 +1105,15 @@ pub extern "C" fn olive_iter(list_ptr: i64) -> i64 {
             } else if kind == KIND_SET {
                 actual_list_ptr = crate::set::olive_set_items(list_ptr);
                 derived = true;
+            } else if !matches!(kind, KIND_LIST | KIND_ANY_LIST | KIND_BYTES | KIND_ITER) {
+                // Anything else (a struct header, an enum tag, a boxed
+                // scalar) has no sequence shape; iterating it would read
+                // the word as a container header.
+                actual_list_ptr = 0;
             }
         }
+    } else {
+        actual_list_ptr = 0;
     }
 
     with_iter_slab(|sl| {
@@ -1135,10 +1149,13 @@ pub extern "C" fn olive_iter_typed(list_ptr: i64, iter_desc: i64) -> i64 {
     let mut snapshot_desc = 0i64;
     let mut actual_list_ptr = list_ptr;
 
-    if list_ptr != 0 && (list_ptr & 1) == 1 && (list_ptr & !1) > 0x10000 {
+    if list_ptr != 0
+        && ((list_ptr & 1) == 1 && (list_ptr & !1) > 0x10000
+            || crate::string::is_interned_char(list_ptr))
+    {
         actual_list_ptr = crate::string::olive_str_chars(list_ptr);
         derived = true;
-    } else if list_ptr != 0 {
+    } else if list_ptr != 0 && crate::is_active_object(list_ptr) {
         unsafe {
             let kind = *(list_ptr as *const i64);
             if kind == KIND_PYOBJECT {
@@ -1153,8 +1170,15 @@ pub extern "C" fn olive_iter_typed(list_ptr: i64, iter_desc: i64) -> i64 {
                 actual_list_ptr = crate::set::olive_set_items_typed(list_ptr, iter_desc);
                 derived = true;
                 snapshot_desc = iter_desc;
+            } else if !matches!(kind, KIND_LIST | KIND_ANY_LIST | KIND_BYTES | KIND_ITER) {
+                // Anything else (a struct header, an enum tag, a boxed
+                // scalar) has no sequence shape; iterating it would read
+                // the word as a container header.
+                actual_list_ptr = 0;
             }
         }
+    } else {
+        actual_list_ptr = 0;
     }
 
     with_iter_slab(|sl| {
