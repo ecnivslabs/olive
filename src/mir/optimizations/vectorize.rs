@@ -5,6 +5,10 @@ use crate::semantic::types::Type as OliveType;
 use crate::span::Span;
 use rustc_hash::FxHashMap;
 
+/// Loop vectorization, release pipeline only: vectorized integer lanes
+/// wrap on overflow, matching release's wrapping arithmetic. Running this
+/// in the debug pipeline would break its checked (E0713) contract, since
+/// SIMD lanes cannot fault per element.
 pub struct LoopVectorizer;
 
 impl Transform for LoopVectorizer {
