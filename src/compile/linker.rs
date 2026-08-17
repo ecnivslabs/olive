@@ -181,42 +181,113 @@ pub fn link_shared_object(obj_path: &str, out: &str, native_libs: &[FfiLibInfo])
     link_object_impl(obj_path, out, native_libs, true)
 }
 
+fn is_gnu_link(cmd_name: &str) -> bool {
+    if let Ok(output) = std::process::Command::new(cmd_name).arg("--version").output() {
+        let text = String::from_utf8_lossy(&output.stdout);
+        if text.contains("GNU") || text.contains("coreutils") {
+            return true;
+        }
+        let text_err = String::from_utf8_lossy(&output.stderr);
+        if text_err.contains("GNU") || text_err.contains("coreutils") {
+            return true;
+        }
+    }
+    false
+}
+
+fn which_exists(cmd_name: &str) -> bool {
+    std::process::Command::new(cmd_name)
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn get_msvc_linker_cmd() -> (std::process::Command, bool) {
+    #[cfg(windows)]
+    {
+        let target = if cfg!(target_arch = "x86_64") {
+            "x86_64-pc-windows-msvc"
+        } else if cfg!(target_arch = "aarch64") {
+            "aarch64-pc-windows-msvc"
+        } else {
+            "i686-pc-windows-msvc"
+        };
+        if let Some(tool) = cc::windows_registry::find_tool(target, "link.exe") {
+            return (tool.to_command(), true);
+        }
+    }
+    if is_gnu_link("link.exe") {
+        if which_exists("lld-link.exe") || which_exists("lld-link") {
+            return (std::process::Command::new("lld-link"), true);
+        }
+        if which_exists("gcc.exe") || which_exists("gcc") {
+            return (std::process::Command::new("gcc"), false);
+        }
+        if which_exists("clang.exe") || which_exists("clang") {
+            return (std::process::Command::new("clang"), false);
+        }
+    }
+    (std::process::Command::new("link.exe"), true)
+}
+
 fn link_object_impl(obj_path: &str, out: &str, native_libs: &[FfiLibInfo], shared: bool) {
     let static_dir = find_static_library_dir();
     let used_static_link = static_dir.is_some();
-    let is_msvc = cfg!(target_env = "msvc");
+    let is_msvc_env = cfg!(target_env = "msvc");
 
-    let mut cmd = if is_msvc {
-        let mut c = std::process::Command::new("link.exe");
-        c.arg("/NOLOGO");
-        c.arg(format!("/OUT:{out}"));
-        c.arg(obj_path);
+    let (mut cmd, is_msvc) = if is_msvc_env {
+        let (mut c, is_msvc_style) = get_msvc_linker_cmd();
+        if is_msvc_style {
+            c.arg("/NOLOGO");
+            c.arg(format!("/OUT:{out}"));
+            c.arg(obj_path);
 
-        if shared {
-            c.arg("/DLL");
-        }
-
-        if let Some(dir) = static_dir {
-            c.arg("/OPT:REF");
-            c.arg("/OPT:ICF");
-            c.arg(dir.join(static_library_filename()));
-            for sys_lib in [
-                "ws2_32.lib",
-                "userenv.lib",
-                "bcrypt.lib",
-                "ntdll.lib",
-                "advapi32.lib",
-                "iphlpapi.lib",
-            ] {
-                c.arg(sys_lib);
+            if shared {
+                c.arg("/DLL");
             }
-        } else if let Some(ref dir) = find_library_dir() {
-            c.arg(format!("/LIBPATH:{}", dir.display()));
-            c.arg("olive_std.lib");
+
+            if let Some(dir) = static_dir {
+                c.arg("/OPT:REF");
+                c.arg("/OPT:ICF");
+                c.arg(dir.join(static_library_filename()));
+                for sys_lib in [
+                    "ws2_32.lib",
+                    "userenv.lib",
+                    "bcrypt.lib",
+                    "ntdll.lib",
+                    "advapi32.lib",
+                    "iphlpapi.lib",
+                ] {
+                    c.arg(sys_lib);
+                }
+            } else if let Some(ref dir) = find_library_dir() {
+                c.arg(format!("/LIBPATH:{}", dir.display()));
+                c.arg("olive_std.lib");
+            } else {
+                c.arg("olive_std.lib");
+            }
+            (c, true)
         } else {
-            c.arg("olive_std.lib");
+            c.arg(obj_path);
+            if shared {
+                c.arg("-shared");
+            }
+            if let Some(dir) = static_dir {
+                c.arg("-Wl,--gc-sections");
+                c.arg(dir.join(static_library_filename()));
+                for sys_lib in ["-lws2_32", "-luserenv", "-lbcrypt", "-lntdll"] {
+                    c.arg(sys_lib);
+                }
+            } else if let Some(ref dir) = find_library_dir() {
+                c.arg("-L");
+                c.arg(dir);
+                c.arg("-lolive_std");
+            } else {
+                c.arg("-lolive_std");
+            }
+            (c, false)
         }
-        c
     } else {
         let mut c = std::process::Command::new("cc");
 
@@ -276,7 +347,7 @@ fn link_object_impl(obj_path: &str, out: &str, native_libs: &[FfiLibInfo], share
         } else {
             c.arg("-lolive_std");
         }
-        c
+        (c, false)
     };
 
     for (_, path, _, _, _) in native_libs {
