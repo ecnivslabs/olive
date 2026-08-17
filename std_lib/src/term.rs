@@ -23,7 +23,7 @@ fn raw_stdout_file() -> File {
 
 #[cfg(windows)]
 fn raw_stdout_file() -> File {
-    extern "system" {
+    unsafe extern "system" {
         fn GetStdHandle(nStdHandle: u32) -> *mut std::ffi::c_void;
     }
     unsafe { File::from_raw_handle(GetStdHandle((-11i32) as u32)) }
