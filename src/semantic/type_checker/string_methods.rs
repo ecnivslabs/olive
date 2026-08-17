@@ -5,6 +5,7 @@
 //! `expr.rs`, which is already oversized, so this method surface lands here.
 
 use super::TypeChecker;
+use super::collection_methods::arity_error;
 use crate::semantic::types::Type;
 use crate::span::Span;
 
@@ -153,15 +154,36 @@ impl TypeChecker {
             "repeat" => {
                 self.check_arity_and_return(attr, arg_tys, span, 1, 1, &[Type::Int], Type::Str)
             }
-            "join" => self.check_arity_and_return(
-                attr,
-                arg_tys,
-                span,
-                1,
-                1,
-                &[Type::List(Box::new(Type::Str))],
-                Type::Str,
-            ),
+            "join" => {
+                if arg_tys.len() != 1 {
+                    arity_error(self, attr, span, 1, 1, arg_tys.len());
+                    return Some(Type::Str);
+                }
+                // An empty literal has no element type yet, and a dynamic
+                // list's elements are only known at runtime: neither can be
+                // judged here. Concrete non-string elements misread as
+                // string pointers at runtime (out-of-bounds reads).
+                let got = self.apply_subst(arg_tys[0].clone());
+                let ok = match &got {
+                    Type::List(e) => {
+                        matches!(&**e, Type::Str | Type::Var(_) | Type::Param(_) | Type::Any)
+                    }
+                    Type::Var(_) | Type::Param(_) | Type::Any => true,
+                    _ => false,
+                };
+                if !ok {
+                    self.errors
+                        .push(crate::semantic::error::SemanticError::rich(
+                            crate::compile::errors::Diagnostic::error(
+                                "E0404",
+                                format!("argument 1 of `join` must be `[str]`, got `{got}`"),
+                                span,
+                            )
+                            .label("expected `[str]`"),
+                        ));
+                }
+                Some(Type::Str)
+            }
             "contains" | "startswith" | "endswith" => {
                 self.check_arity_and_return(attr, arg_tys, span, 1, 1, &[Type::Str], Type::Bool)
             }

@@ -295,6 +295,24 @@ fn union_method_calls_rejected_with_narrow_help() {
 }
 
 #[test]
+fn join_element_mismatch_rejected() {
+    assert_rejected_with(
+        "fn main():\n    print(\",\".join([1, 2]))\n",
+        "[E0404]",
+        "must be `[str]`",
+    );
+    assert_rejected_with(
+        "fn main():\n    print(\",\".join(5))\n",
+        "[E0404]",
+        "must be `[str]`",
+    );
+    assert_accepted(
+        "fn main():\n    print(\",\".join([]))\n    print(\",\".join([\"a\", \"b\"]))\n",
+        "\na,b\n",
+    );
+}
+
+#[test]
 fn collection_element_mismatches_rejected() {
     assert_rejected_with(
         "fn main():\n    let l = [1]\n    l.append(\"a\")\n    print(l)\n",
