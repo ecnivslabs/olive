@@ -491,7 +491,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_pool_run", &sig_i64_i64_i64),
             ("__olive_pool_run_sync", &sig_i64_i64_i64),
             ("__olive_pool_size", &sig_void_i64),
-            ("__olive_pow", &sig_i64_i64_i64),
+            ("__olive_pow", &sig_3i64_i64),
             ("__olive_pow_float", &sig_f64_f64_f64),
             ("__olive_print", &sig_i64_i64),
             ("__olive_print_bool", &sig_i64_i64),

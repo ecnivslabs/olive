@@ -439,9 +439,11 @@ pub extern "C" fn olive_assert_fail(msg: i64, loc: i64) -> i64 {
 }
 
 /// Raised when `i64` arithmetic overflows: `+`/`-`/`*` on signed or unsigned
-/// operands (`kind` 0-5), or the two `i64::MIN / -1` / `i64::MIN % -1`
+/// operands (`kind` 0-5), the two `i64::MIN / -1` / `i64::MIN % -1`
 /// corners (`kind` 6/7), which trap in hardware rather than wrapping so they
-/// get their own kinds despite not going through the checked-op codegen path.
+/// get their own kinds despite not going through the checked-op codegen path,
+/// and integer `**` (`kind` 8 for overflow, `kind` 9 for a negative
+/// exponent, which has no integer result).
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_overflow_fail(kind: i64, lhs: i64, rhs: i64, loc: i64) -> i64 {
     let loc = (loc != 0).then(|| olive_str_from_ptr(loc));
@@ -463,6 +465,8 @@ pub extern "C" fn olive_overflow_fail(kind: i64, lhs: i64, rhs: i64, loc: i64) -
         ),
         6 => format!("integer overflow: {lhs} / {rhs} does not fit in i64"),
         7 => format!("integer overflow: {lhs} % {rhs} does not fit in i64"),
+        8 => format!("integer overflow: {lhs} ** {rhs} does not fit in i64"),
+        9 => format!("integer power with negative exponent is undefined: {lhs} ** {rhs}"),
         _ => unreachable!("olive_overflow_fail: unknown kind {kind}"),
     };
     abort_with(&OVERFLOW, &msg, loc.as_deref())

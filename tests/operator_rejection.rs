@@ -64,6 +64,15 @@ fn build_aot(path: &std::path::Path) -> (String, bool) {
 /// coded panic. Used for runtime guards where the static type cannot name
 /// the bad shape (union members, dynamic words).
 fn assert_faults_e0700(src: &str, frag: &str) {
+    assert_faults_with(src, "[E0700]", frag);
+}
+
+/// Same shape for E0713 arithmetic faults.
+fn assert_faults_e0713(src: &str, frag: &str) {
+    assert_faults_with(src, "[E0713]", frag);
+}
+
+fn assert_faults_with(src: &str, code: &str, frag: &str) {
     let path = write_src(src);
     let out = Command::new(pit_bin())
         .arg("run")
@@ -73,7 +82,7 @@ fn assert_faults_e0700(src: &str, frag: &str) {
         .expect("spawn pit run");
     assert_eq!(out.status.code(), Some(1), "jit exit");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("[E0700]"), "jit stderr: {stderr}");
+    assert!(stderr.contains(code), "jit stderr: {stderr}");
     assert!(stderr.contains(frag), "jit stderr: {stderr}");
     let out_bin = path.with_extension("bin");
     let build = Command::new(pit_bin())
@@ -96,7 +105,7 @@ fn assert_faults_e0700(src: &str, frag: &str) {
         .expect("spawn built binary");
     assert_eq!(out.status.code(), Some(1), "aot exit");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("[E0700]"), "aot stderr: {stderr}");
+    assert!(stderr.contains(code), "aot stderr: {stderr}");
     assert!(stderr.contains(frag), "aot stderr: {stderr}");
     std::fs::remove_file(&out_bin).ok();
     std::fs::remove_file(&path).ok();
@@ -322,6 +331,23 @@ fn collection_element_mismatches_rejected() {
         "[E0404]",
         "requires a concrete argument",
     );
+}
+
+/// Integer `**` is checked in both pipelines (unlike `+`/`-`/`*`, whose
+/// per-op checks cost 30-50% in release): one exponentiation pays O(log n)
+/// checked multiplies total, so there is no hot path to protect, and the
+/// old code aborted in debug while wrapping silently in release.
+#[test]
+fn int_pow_values_and_overflow() {
+    assert_accepted(
+        "fn main():\n    print(2 ** 10)\n    print(-2 ** 2)\n    print(2 ** 3 ** 2)\n    print(0 ** 0)\n    print(2 ** 62)\n    print(2.0 ** 3.0)\n",
+        "1024\n-4\n512\n1\n4611686018427387904\n8.0\n",
+    );
+    assert_faults_e0713(
+        "fn main():\n    print(10 ** 30)\n",
+        "10 ** 30 does not fit in i64",
+    );
+    assert_faults_e0713("fn main():\n    print(2 ** -1)\n", "negative exponent");
 }
 
 #[test]

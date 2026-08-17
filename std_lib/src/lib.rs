@@ -1234,9 +1234,33 @@ pub extern "C" fn olive_free_str(ptr: i64) {
     string_slab::str_free(ptr);
 }
 
+/// Integer exponentiation with the same checked arithmetic as every other
+/// integer operator: a negative exponent has no integer result, and any
+/// intermediate product that outgrows `i64` faults instead of wrapping
+/// (release builds previously wrapped silently while debug builds aborted
+/// in the core library, so the two pipelines disagreed).
 #[unsafe(no_mangle)]
-pub extern "C" fn olive_pow(base: i64, exp: i64) -> i64 {
-    base.pow(exp as u32)
+pub extern "C" fn olive_pow(base: i64, exp: i64, loc: i64) -> i64 {
+    if exp < 0 {
+        crate::panic::olive_overflow_fail(9, base, exp, loc);
+    }
+    let mut acc: i64 = 1;
+    let mut b = base;
+    let mut e = exp as u64;
+    while e > 0 {
+        if e & 1 == 1 {
+            acc = acc
+                .checked_mul(b)
+                .unwrap_or_else(|| crate::panic::olive_overflow_fail(8, base, exp, loc));
+        }
+        e >>= 1;
+        if e > 0 {
+            b = b
+                .checked_mul(b)
+                .unwrap_or_else(|| crate::panic::olive_overflow_fail(8, base, exp, loc));
+        }
+    }
+    acc
 }
 
 #[unsafe(no_mangle)]

@@ -554,8 +554,14 @@ impl<M: Module> CraneliftCodegen<M> {
                     .get(func_name)
                     .unwrap_or_else(|| panic!("missing pow fn: {}", func_name));
                 let local_func = module.declare_func_in_func(*pow_id, builder.func);
-                let inst = builder.ins().call(local_func, &[l, r]);
-                builder.inst_results(inst)[0]
+                if is_float {
+                    let inst = builder.ins().call(local_func, &[l, r]);
+                    builder.inst_results(inst)[0]
+                } else {
+                    let loc = super::translate_rvalue::loc_value(builder, module, loc_id);
+                    let inst = builder.ins().call(local_func, &[l, r, loc]);
+                    builder.inst_results(inst)[0]
+                }
             }
             In | NotIn => {
                 let mut is_obj = false;
