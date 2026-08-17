@@ -836,6 +836,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_py_add", b"olive_py_add\0"),
     ("__olive_py_sub", b"olive_py_sub\0"),
     ("__olive_py_mul", b"olive_py_mul\0"),
+    ("__olive_py_noconvert", b"olive_py_noconvert\0"),
     ("__olive_py_div", b"olive_py_div\0"),
     ("__olive_py_mod", b"olive_py_mod\0"),
     ("__olive_py_pow", b"olive_py_pow\0"),

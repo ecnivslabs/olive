@@ -275,6 +275,23 @@ pub(crate) unsafe fn py_str_to_olive(py_str_obj: PyObject) -> i64 {
     }
 }
 
+/// A struct, enum, or trait object reaching a Python boundary faults:
+///
+/// there is no representation for it on the other side, and its header
+/// word would misread as a container kind tag.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_noconvert() -> i64 {
+    py_noconvert_fault()
+}
+
+/// Structs, enums, and trait objects have no Python representation: a
+/// raw struct's header word is a field count, not a kind tag, so kind
+/// dispatch would misread it as whatever container shares the number
+/// (reading out of bounds and leaking adjacent words into Python).
+fn py_noconvert_fault() -> ! {
+    crate::panic::abort("cannot convert struct or enum to a Python value", None)
+}
+
 pub fn olive_to_py(val: i64) -> PyObject {
     if val > 0x10000 && val & 1 != 0 {
         unsafe { olive_str_to_py(val) }
@@ -313,6 +330,9 @@ pub fn olive_to_py(val: i64) -> PyObject {
                         let b = &*(ptr as *const crate::boxed::OliveBoxed);
                         PY_FLOAT_FROM_DOUBLE(f64::from_bits(b.bits as u64) as c_double)
                     }
+                    crate::struct_box::KIND_STRUCT_BOX
+                    | crate::KIND_ENUM
+                    | crate::struct_obj::KIND_FATPTR => py_noconvert_fault(),
                     _ => {
                         if looks_like_float(val) {
                             let f = f64::from_bits(val as u64);
@@ -409,6 +429,9 @@ pub unsafe fn to_py_deep(val: i64) -> PyObject {
                 }
                 py_list
             }
+            crate::struct_box::KIND_STRUCT_BOX
+            | crate::KIND_ENUM
+            | crate::struct_obj::KIND_FATPTR => py_noconvert_fault(),
             _ => olive_to_py_checked(val),
         }
     }

@@ -60,6 +60,48 @@ fn build_aot(path: &std::path::Path) -> (String, bool) {
     )
 }
 
+/// The program must fault at runtime on both pipelines: exit 1 with the
+/// coded panic. Used for runtime guards where the static type cannot name
+/// the bad shape (union members, dynamic words).
+fn assert_faults_e0700(src: &str, frag: &str) {
+    let path = write_src(src);
+    let out = Command::new(pit_bin())
+        .arg("run")
+        .arg(&path)
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn pit run");
+    assert_eq!(out.status.code(), Some(1), "jit exit");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("[E0700]"), "jit stderr: {stderr}");
+    assert!(stderr.contains(frag), "jit stderr: {stderr}");
+    let out_bin = path.with_extension("bin");
+    let build = Command::new(pit_bin())
+        .arg("build")
+        .arg("--release")
+        .arg(&path)
+        .arg("-o")
+        .arg(&out_bin)
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn pit build");
+    assert!(
+        build.status.success(),
+        "aot build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let out = Command::new(&out_bin)
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn built binary");
+    assert_eq!(out.status.code(), Some(1), "aot exit");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("[E0700]"), "aot stderr: {stderr}");
+    assert!(stderr.contains(frag), "aot stderr: {stderr}");
+    std::fs::remove_file(&out_bin).ok();
+    std::fs::remove_file(&path).ok();
+}
+
 /// The program must be rejected at compile time on both pipelines: `pit run`
 /// exits 1 with the coded diagnostic, and `pit build` fails with it too.
 fn assert_rejected_with(src: &str, code: &str, frag: &str) {
@@ -279,6 +321,22 @@ fn collection_element_mismatches_rejected() {
         "fn f(v: Any):\n    let l = [1]\n    l.append(v)\n    print(l)\nfn main():\n    f(2)\n",
         "[E0404]",
         "requires a concrete argument",
+    );
+}
+
+#[test]
+fn struct_enum_to_python_faults() {
+    assert_faults_e0700(
+        "import py \"json\" as json\nstruct S:\n    x: int\nfn main():\n    print(json.dumps(S(1)))\n",
+        "cannot convert struct or enum",
+    );
+    assert_faults_e0700(
+        "import py \"json\" as json\nenum E:\n    V(int)\nfn main():\n    print(json.dumps(V(3)))\n",
+        "cannot convert struct or enum",
+    );
+    assert_faults_e0700(
+        "import py \"json\" as json\nstruct S:\n    x: int\nfn main():\n    print(json.dumps([S(1)]))\n",
+        "cannot convert struct or enum",
     );
 }
 

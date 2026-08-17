@@ -336,6 +336,28 @@ impl<'a> MirBuilder<'a> {
                     let converted = self.emit_fn_to_py_callable(op, params, ret, span);
                     (converted, Type::PyObject)
                 }
+                // Structs (and containers holding them), enums, and trait
+                // objects have no Python representation: the fast path
+                // would pass them raw and the runtime would misread their
+                // headers as kind tags. Fault up front, on both paths.
+                t if Self::any_needs_erase(t)
+                    || matches!(t, Type::Enum(..) | Type::TraitObject(..)) =>
+                {
+                    let fault = self.new_local(Type::PyObject, None, false);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            fault,
+                            Rvalue::Call {
+                                func: Operand::Constant(Constant::Function(
+                                    "__olive_py_noconvert".to_string(),
+                                )),
+                                args: vec![],
+                            },
+                        ),
+                        span,
+                    );
+                    (op, arg_ty)
+                }
                 _ => (op, arg_ty),
             };
             let coll_tag = Self::py_collection_tag(&arg_ty);

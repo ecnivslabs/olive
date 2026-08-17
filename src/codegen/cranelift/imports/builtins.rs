@@ -112,7 +112,7 @@ pub(crate) fn drop_descriptor_type<'a>(
     }
 }
 
-pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 693] = [
+pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 694] = [
     "__olive_alloc",
     "__olive_any_add",
     "__olive_any_div",
@@ -599,6 +599,7 @@ pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 693] = [
     "__olive_py_mod",
     "__olive_py_module_add_object",
     "__olive_py_mul",
+    "__olive_py_noconvert",
     "__olive_py_none",
     "__olive_py_pow",
     "__olive_py_set_loc",

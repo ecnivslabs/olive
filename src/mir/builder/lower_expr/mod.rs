@@ -400,6 +400,31 @@ impl<'a> MirBuilder<'a> {
             return Operand::Copy(fat_ptr_tmp);
         }
 
+        // Structs (and containers holding them) have no Python
+        // representation: their field-count headers read as kind tags at
+        // the boundary, pulling out-of-bounds words into Python. Fault
+        // instead of corrupting the call. Enums and trait objects have
+        // real kind tags but no converter either.
+        if matches!(to_ty, Type::PyObject | Type::PyNamed(..))
+            && (Self::any_needs_erase(from_ty)
+                || matches!(from_ty, Type::Enum(..) | Type::TraitObject(..)))
+        {
+            let tmp = self.new_local(to_ty.clone(), None, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    tmp,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function(
+                            "__olive_py_noconvert".to_string(),
+                        )),
+                        args: vec![],
+                    },
+                ),
+                span,
+            );
+            return Operand::Copy(tmp);
+        }
+
         // Olive value -> PyObject: assigning a native or `Any` value into a
         // `PyObject` converts it to a real Python object (`1` -> a Python int),
         // the inverse of reading a `PyObject` into a native slot.
