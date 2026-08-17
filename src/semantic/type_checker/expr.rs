@@ -925,6 +925,7 @@ impl TypeChecker {
                     let valid: Option<(usize, usize)> = match name.as_str() {
                         "sum" | "abs" | "reversed" | "any" | "all" => Some((1, 1)),
                         "min" | "max" | "sorted" | "round" => Some((1, 2)),
+                        "input" => Some((0, 1)),
                         _ => None,
                     };
                     if let Some((min, max)) = valid

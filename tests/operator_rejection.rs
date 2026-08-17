@@ -265,6 +265,11 @@ fn builtin_arity_mismatches_rejected() {
         "[E0402]",
         "function signature mismatch",
     );
+    assert_rejected_with(
+        "fn main():\n    print(input(\"a\", \"b\"))\n",
+        "[E0402]",
+        "function signature mismatch",
+    );
 }
 
 #[test]
