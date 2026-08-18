@@ -451,6 +451,7 @@ impl TypeChecker {
                         let resolved = self.apply_subst(o_ty.clone());
                         let bad = match &resolved {
                             Type::Var(_)
+                            | Type::Param(_)
                             | Type::Ref(_)
                             | Type::MutRef(_)
                             | Type::Ptr(_)

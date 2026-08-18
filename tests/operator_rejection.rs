@@ -498,6 +498,14 @@ fn iteration_edge_shapes_work() {
 }
 
 #[test]
+fn generic_shapes_still_check() {
+    assert_accepted(
+        "fn neg[T](x: T) -> T:\n    return -x\nfn has[T](xs: [T], v: T) -> bool:\n    return v in xs\nfn mylen[T](xs: [T]) -> int:\n    return len(xs)\nfn lt[T](a: T, b: T) -> bool:\n    return a < b\nfn add[T](a: T, b: T) -> T:\n    return a + b\nfn main():\n    print(neg(5))\n    print(has([1, 2], 2))\n    print(mylen([1]))\n    print(lt(1, 2))\n    print(add(3, 4))\n",
+        "-5\nTrue\n1\nTrue\n7\n",
+    );
+}
+
+#[test]
 fn slice_misuse_rejected() {
     assert_rejected("fn main():\n    print({\"a\": 1}[0:1])\n", "cannot slice");
     assert_rejected("fn main():\n    print(5[0:1])\n", "cannot slice");
