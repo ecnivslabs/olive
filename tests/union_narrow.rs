@@ -207,6 +207,37 @@ fn main():
 }
 
 #[test]
+fn narrowed_struct_keyed_dict_looks_up() {
+    assert_both(
+        r#"struct Key:
+    k: str
+impl Key:
+    fn __drop__(self):
+        print("dropk "+self.k)
+struct Val:
+    v: str
+impl Val:
+    fn __drop__(self):
+        print("dropv "+self.v)
+
+fn use_it(d: dict[Key, Val] | int):
+    match d:
+        case 0:
+            print("zero")
+        case m:
+            print(m[Key("a")].v)
+            print("dict arm")
+
+fn main():
+    use_it({(Key("a")): Val("x")})
+    use_it(0)
+    print("done")
+"#,
+        "x\ndict arm\ndropk a\nzero\ndone\ndropv x\ndropk a\n",
+    );
+}
+
+#[test]
 fn narrowed_nested_list_reads_exact_values() {
     assert_both(
         r#"struct Res:

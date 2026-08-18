@@ -7,7 +7,7 @@ use crate::{
     KIND_ANY_LIST, KIND_BYTES, KIND_ENUM, KIND_FLOAT, KIND_INT, KIND_LIST, KIND_OBJ, KIND_SET,
     OliveHashSet, OliveObj, OliveStringKey, StableVec,
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 fn fault(expected: &str) -> ! {
     crate::panic::abort_unbox(&format!(
@@ -54,6 +54,45 @@ fn check_struct_desc(box_desc: i64, target: *const u8, target_pos: usize) {
     let (ttag, tname) = struct_tag_name(target, target_pos).unwrap_or_else(|| fault("a struct"));
     if btag != ttag || bname != tname {
         fault("a struct");
+    }
+}
+
+/// Mirrors `any_needs_erase` over descriptor bytes: whether values of the
+/// encoded type are boxed (or rebuilt erased) before crossing into an
+/// `Any`-shaped slot. Dict keys consult it because erasure boxes
+/// struct-ish keys but keeps scalars raw, and the two need different
+/// unerase paths (unboxing versus copying). Revisits (recursive types
+/// via back-references) answer false: reaching one means no struct was
+/// met on the way down, and only scalars can cycle without one.
+fn erase_needed(desc: *const u8, pos: usize, seen: &mut FxHashSet<usize>) -> bool {
+    if !seen.insert(pos) {
+        return false;
+    }
+    match unsafe { byte(desc, pos) } {
+        D_STRUCT | D_STRUCT_SHARED => true,
+        D_LIST | D_SET => erase_needed(desc, pos + 1, seen),
+        D_DICT => {
+            let mut p = pos + 1;
+            skip(desc, &mut p);
+            erase_needed(desc, pos + 1, seen) || erase_needed(desc, p, seen)
+        }
+        D_TUPLE => {
+            let n = unsafe { byte(desc, pos + 1) } as usize - 1;
+            let mut p = pos + 2;
+            for _ in 0..n {
+                if erase_needed(desc, p, seen) {
+                    return true;
+                }
+                skip(desc, &mut p);
+            }
+            false
+        }
+        D_BACKREF => {
+            let hi = unsafe { byte(desc, pos + 1) } as usize;
+            let lo = unsafe { byte(desc, pos + 2) } as usize;
+            erase_needed(desc, (hi << 8) | lo, seen)
+        }
+        _ => false,
     }
 }
 
@@ -270,9 +309,19 @@ fn unerase_dict_inner(
     visited.insert(erased, new);
     let mut fields = FxHashMap::default();
     let key_desc = unsafe { desc.byte_add(key_start) } as i64;
+    // Keys mirror erasure exactly: struct-ish keys arrive boxed and must
+    // unbox through the key type, while scalars arrive raw and copy. The
+    // predicate reads the key encoding, the same rule `box_into_any`
+    // applies when the dict crosses into the union.
+    let keys_erased = erase_needed(desc, key_start, &mut FxHashSet::default());
     for (k, &v) in obj.fields.iter() {
-        let mut kp = key_start;
-        let kc = crate::copy_typed::copy_val(k.0, desc, &mut kp, visited);
+        let kc = if keys_erased {
+            let mut kp = key_start;
+            unerase_any(k.0, desc, &mut kp, visited)
+        } else {
+            let mut kp = key_start;
+            crate::copy_typed::copy_val(k.0, desc, &mut kp, visited)
+        };
         let mut vp = val_start;
         let vc = unerase_any(v, desc, &mut vp, visited);
         crate::hash_typed::with_key_descriptor(key_desc, || {
@@ -375,4 +424,33 @@ pub extern "C" fn olive_set_unerase(erased: i64, target_desc: i64) -> i64 {
     let mut visited = FxHashMap::default();
     let mut pos = 1usize;
     unerase_set_inner(erased, desc, &mut pos, &mut visited)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustc_hash::FxHashSet;
+
+    fn en(desc: &[u8], pos: usize) -> bool {
+        erase_needed(desc.as_ptr(), pos, &mut FxHashSet::default())
+    }
+
+    #[test]
+    fn struct_needs_erase_int_does_not() {
+        assert!(en(&[D_STRUCT], 0));
+        assert!(en(&[D_STRUCT_SHARED], 0));
+        assert!(!en(&[D_INT], 0));
+        assert!(!en(&[D_STR], 0));
+        assert!(!en(&[D_ANY], 0));
+    }
+
+    #[test]
+    fn containers_recurse() {
+        assert!(en(&[D_LIST, D_STRUCT], 0));
+        assert!(!en(&[D_LIST, D_INT], 0));
+        assert!(en(&[D_DICT, D_INT, D_STRUCT], 0));
+        assert!(!en(&[D_DICT, D_INT, D_INT], 0));
+        assert!(en(&[D_TUPLE, 3, D_INT, D_STRUCT], 0));
+        assert!(!en(&[D_TUPLE, 3, D_INT, D_INT], 0));
+    }
 }
