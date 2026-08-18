@@ -7,7 +7,7 @@ use super::TypeChecker;
 use crate::semantic::types::Type;
 use crate::span::Span;
 
-fn arity_error(
+pub(super) fn arity_error(
     checker: &mut TypeChecker,
     name: &str,
     span: Span,
