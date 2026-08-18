@@ -207,6 +207,32 @@ fn main():
 }
 
 #[test]
+fn narrowed_nested_list_reads_exact_values() {
+    assert_both(
+        r#"struct Res:
+    s: str
+impl Res:
+    fn __drop__(self):
+        print("drop "+self.s)
+
+fn use_it(v: [[Res]] | int):
+    match v:
+        case 0:
+            print("zero")
+        case lst:
+            print(lst[0][0].s)
+            print("nested arm")
+
+fn main():
+    use_it([[Res("deep")]])
+    use_it(0)
+    print("done")
+"#,
+        "deep\nnested arm\nzero\ndone\ndrop deep\n",
+    );
+}
+
+#[test]
 fn narrowed_tuple_with_struct_reads_exact_values() {
     assert_both(
         r#"struct Res:
