@@ -25,7 +25,7 @@ fn get_registry_base() -> String {
     {
         return url;
     }
-    "https://raw.githubusercontent.com/ecnivslabs/pit-registry/main".to_string()
+    "https://raw.githubusercontent.com/ecnivslabs/pit-registry/master".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,26 +76,46 @@ pub async fn fetch_versions(name: &str, offline: bool) -> Result<Vec<PodVersion>
         }
     }
 
-    let url = registry_url(name);
+    let prefix = &name[..name.len().min(2)];
+    let api_url = format!(
+        "https://api.github.com/repos/ecnivslabs/pit-registry/contents/{}/{}",
+        prefix, name
+    );
     let client = reqwest::Client::new();
+
+    // Try GitHub API raw header first for immediate, uncached updates.
     let body = match client
-        .get(&url)
+        .get(&api_url)
         .header("User-Agent", "pit/0.1.0")
+        .header("Accept", "application/vnd.github.v3.raw")
         .send()
         .await
     {
-        Ok(resp) => {
-            if resp.status() == 404 {
-                return Err(format!("pod '{}' not found in registry", name));
+        Ok(resp) if resp.status().is_success() => resp.text().await.unwrap_or_default(),
+        _ => {
+            // Fallback to raw CDN URL
+            let url = registry_url(name);
+            match client
+                .get(&url)
+                .header("User-Agent", "pit/0.1.0")
+                .send()
+                .await
+            {
+                Ok(resp) => {
+                    if resp.status() == 404 {
+                        return Err(format!("pod '{}' not found in registry", name));
+                    }
+                    resp.text().await.map_err(|e| e.to_string())?
+                }
+                Err(e) => {
+                    if cache.exists() {
+                        let cached_body =
+                            fs::read_to_string(&cache).map_err(|ce| ce.to_string())?;
+                        return parse_versions(&cached_body);
+                    }
+                    return Err(format!("registry fetch failed: {}", e));
+                }
             }
-            resp.text().await.map_err(|e| e.to_string())?
-        }
-        Err(e) => {
-            if cache.exists() {
-                let cached_body = fs::read_to_string(&cache).map_err(|ce| ce.to_string())?;
-                return parse_versions(&cached_body);
-            }
-            return Err(format!("registry fetch failed: {}", e));
         }
     };
 

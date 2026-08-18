@@ -54,6 +54,7 @@ pub fn publish(name: &str, version: &str) -> Result<(), String> {
     let gh = GhClient::new(token);
 
     let user_repo = resolve_user_repo()?;
+    check_uncommitted_changes();
 
     println!("\x1b[1;32m  Packaging\x1b[0m {}@{}", name, version);
     let archive = build_archive(name, version)?;
@@ -66,6 +67,8 @@ pub fn publish(name: &str, version: &str) -> Result<(), String> {
     let release_id = create_release(&gh, &user_repo, name, version)?;
     let dl_url = upload_asset(&gh, &user_repo, release_id, name, archive)?;
     println!("\x1b[1;32m  Uploaded\x1b[0m {}", dl_url);
+
+    push_git_ref_and_tag(name, version);
 
     let pod = PodVersion {
         name: name.to_string(),
@@ -83,6 +86,39 @@ pub fn publish(name: &str, version: &str) -> Result<(), String> {
         name, version, pr_url
     );
     Ok(())
+}
+
+fn check_uncommitted_changes() {
+    if let Ok(out) = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .output()
+    {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        if !stdout.trim().is_empty() && std::env::var("PIT_ALLOW_DIRTY").is_err() {
+            eprintln!("\x1b[1;33mwarning:\x1b[0m uncommitted changes in git repository");
+        }
+    }
+}
+
+fn push_git_ref_and_tag(name: &str, version: &str) {
+    let tag_name = format!("v{}", version);
+    let _ = std::process::Command::new("git")
+        .args([
+            "tag",
+            "-a",
+            &tag_name,
+            "-m",
+            &format!("Release {} v{}", name, version),
+        ])
+        .output();
+    let res = std::process::Command::new("git")
+        .args(["push", "origin", "HEAD", "--tags"])
+        .output();
+    if let Ok(out) = res {
+        if out.status.success() {
+            println!("\x1b[1;32m  Pushed\x1b[0m git branch and tag {}", tag_name);
+        }
+    }
 }
 
 fn resolve_user_repo() -> Result<String, String> {
@@ -205,7 +241,22 @@ fn create_release(gh: &GhClient, repo: &str, name: &str, version: &str) -> Resul
         .json()
         .map_err(|e| e.to_string())?;
 
-    resp["id"]
+    if let Some(id) = resp["id"].as_u64() {
+        return Ok(id);
+    }
+
+    // Release already exists — fetch it by tag.
+    let existing: Value = gh
+        .get(&format!(
+            "https://api.github.com/repos/{}/releases/tags/{}",
+            repo, tag
+        ))
+        .send()
+        .map_err(|e| format!("fetch existing release failed: {}", e))?
+        .json()
+        .map_err(|e| e.to_string())?;
+
+    existing["id"]
         .as_u64()
         .ok_or_else(|| format!("unexpected GitHub response: {}", resp))
 }
@@ -218,14 +269,42 @@ fn upload_asset(
     bytes: Vec<u8>,
 ) -> Result<String, String> {
     let asset_name = format!("{}.pit.zst", name);
-    let url = format!(
+
+    // Delete the old asset if it exists so we can re-upload cleanly.
+    let assets_url = format!(
+        "https://api.github.com/repos/{}/releases/{}/assets",
+        repo, release_id
+    );
+    if let Ok(resp) = gh.get(&assets_url).send() {
+        if let Ok(assets) = resp.json::<Value>() {
+            if let Some(arr) = assets.as_array() {
+                for asset in arr {
+                    if asset["name"].as_str() == Some(&asset_name) {
+                        if let Some(id) = asset["id"].as_u64() {
+                            let _ = gh
+                                .client
+                                .delete(&format!(
+                                    "https://api.github.com/repos/{}/releases/assets/{}",
+                                    repo, id
+                                ))
+                                .header("Authorization", format!("token {}", gh.token))
+                                .header("User-Agent", "pit/0.1.0")
+                                .send();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let upload_url = format!(
         "https://uploads.github.com/repos/{}/releases/{}/assets?name={}",
         repo, release_id, asset_name
     );
 
     let resp: Value = gh
         .client
-        .post(&url)
+        .post(&upload_url)
         .header("Authorization", format!("token {}", gh.token))
         .header("User-Agent", "pit/0.1.0")
         .header("Content-Type", "application/octet-stream")
@@ -291,6 +370,49 @@ fn create_registry_pr(gh: &GhClient, pod: &PodVersion) -> Result<String, String>
     let file_path = format!("{}/{}", prefix, pod.name);
     let branch = format!("add-{}-{}", pod.name, pod.vers);
 
+    // Find out what the fork's default branch is called (could be master or main).
+    let fork_default_branch = gh
+        .get(&format!("https://api.github.com/repos/{}", fork_repo))
+        .send()
+        .ok()
+        .and_then(|r| r.json::<Value>().ok())
+        .and_then(|v| v["default_branch"].as_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| "master".to_string());
+
+    // Sync fork with upstream first so we get the latest registry state.
+    let _ = gh
+        .post(&format!(
+            "https://api.github.com/repos/{}/merge-upstream",
+            fork_repo
+        ))
+        .json(&json!({ "branch": fork_default_branch }))
+        .send();
+
+    // Retry up to 20s — a freshly created fork can take a moment to populate.
+    let base_sha = {
+        let mut sha: Option<String> = None;
+        for _ in 0..10 {
+            if let Ok(resp) = gh
+                .get(&format!(
+                    "https://api.github.com/repos/{}/branches/{}",
+                    fork_repo, fork_default_branch
+                ))
+                .send()
+            {
+                if let Ok(val) = resp.json::<Value>() {
+                    if let Some(s) = val["commit"]["sha"].as_str() {
+                        sha = Some(s.to_string());
+                        break;
+                    }
+                }
+            }
+            thread::sleep(Duration::from_secs(2));
+        }
+        sha.ok_or(
+            "could not get fork main SHA — fork may still be initializing, try again in a moment",
+        )?
+    };
+
     let (current_sha_on_fork, current_content) = match gh
         .get(&format!(
             "https://api.github.com/repos/{}/contents/{}",
@@ -324,20 +446,6 @@ fn create_registry_pr(gh: &GhClient, pod: &PodVersion) -> Result<String, String>
     } else {
         format!("{}\n{}", current_content.trim_end(), new_line)
     };
-
-    let fork_main: Value = gh
-        .get(&format!(
-            "https://api.github.com/repos/{}/git/refs/heads/main",
-            fork_repo
-        ))
-        .send()
-        .map_err(|e| format!("get fork main failed: {}", e))?
-        .json()
-        .map_err(|e| e.to_string())?;
-
-    let base_sha = fork_main["object"]["sha"]
-        .as_str()
-        .ok_or("could not get fork main SHA")?;
 
     gh.post(&format!(
         "https://api.github.com/repos/{}/git/refs",
@@ -381,7 +489,7 @@ fn create_registry_pr(gh: &GhClient, pod: &PodVersion) -> Result<String, String>
                 pod.name, pod.vers
             ),
             "head": format!("{}:{}", user, branch),
-            "base": "main",
+            "base": fork_default_branch,
         }))
         .send()
         .map_err(|e| format!("create PR failed: {}", e))?

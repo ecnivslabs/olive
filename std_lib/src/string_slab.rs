@@ -110,6 +110,15 @@ pub fn str_alloc(bytes: &[u8]) -> i64 {
     })
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_str_alloc(ptr: *const u8, len: usize) -> i64 {
+    if ptr.is_null() {
+        return 0;
+    }
+    let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
+    str_alloc(slice)
+}
+
 /// Same as `str_alloc`, but writes two slices back to back without first
 /// concatenating them into an intermediate buffer.
 fn str_alloc_two(a: &[u8], b: &[u8]) -> i64 {
