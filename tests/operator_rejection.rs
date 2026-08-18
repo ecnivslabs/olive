@@ -498,10 +498,20 @@ fn iteration_edge_shapes_work() {
 }
 
 #[test]
-fn generic_shapes_still_check() {
+fn generic_bodies_hold_sound_gate_behavior() {
+    assert_rejected_with(
+        "fn neg[T](x: T) -> T:\n    return -x\nfn main():\n    print(neg(5))\n",
+        "[E0404]",
+        "not defined for `T`",
+    );
+    assert_rejected_with(
+        "fn cond[T](x: T):\n    if x:\n        print(\"yes\")\nfn main():\n    cond(True)\n",
+        "[E0404]",
+        "cannot be used as a condition",
+    );
     assert_accepted(
-        "fn neg[T](x: T) -> T:\n    return -x\nfn has[T](xs: [T], v: T) -> bool:\n    return v in xs\nfn mylen[T](xs: [T]) -> int:\n    return len(xs)\nfn lt[T](a: T, b: T) -> bool:\n    return a < b\nfn add[T](a: T, b: T) -> T:\n    return a + b\nfn main():\n    print(neg(5))\n    print(has([1, 2], 2))\n    print(mylen([1]))\n    print(lt(1, 2))\n    print(add(3, 4))\n",
-        "-5\nTrue\n1\nTrue\n7\n",
+        "fn has[T](xs: [T], v: T) -> bool:\n    return v in xs\nfn mylen[T](xs: [T]) -> int:\n    return len(xs)\nfn lt[T](a: T, b: T) -> bool:\n    return a < b\nfn add[T](a: T, b: T) -> T:\n    return a + b\nfn main():\n    print(has([1, 2], 2))\n    print(mylen([1]))\n    print(lt(1, 2))\n    print(add(3, 4))\n",
+        "True\n1\nTrue\n7\n",
     );
 }
 
