@@ -378,19 +378,31 @@ impl GenSlab {
             true
         }
     }
+
+    /// Whether this specific GenSlab instance allocated the chunk containing `addr`.
+    #[inline]
+    pub fn owns_addr(&self, addr: usize) -> bool {
+        self.chunks.iter().any(|(chunk, layout)| {
+            let start = *chunk as usize;
+            let end = start + layout.size();
+            addr >= start && addr < end
+        })
+    }
 }
 
-/// Whether a slab slot is currently live. Only valid for pointers returned by
-/// a `GenSlab`; the caller guarantees provenance.
+/// Whether a slab slot is currently live.
 #[inline]
 pub fn slot_is_live(body: i64) -> bool {
-    unsafe { (*((body as *const AtomicU64).sub(1))).load(Ordering::Relaxed) & 1 == 1 }
+    ptr_is_slab_body(body)
 }
 
 /// Current generation word of a slab slot.
 #[inline]
 pub fn slot_generation(body: i64) -> u64 {
-    unsafe { (*((body as *const AtomicU64).sub(1))).load(Ordering::Relaxed) }
+    match slab_header_of(body) {
+        Some(header) => unsafe { (*header).load(Ordering::Relaxed) },
+        None => 0,
+    }
 }
 
 #[cfg(test)]

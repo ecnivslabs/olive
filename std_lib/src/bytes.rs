@@ -438,6 +438,10 @@ pub extern "C" fn olive_buf_free(buf: i64) {
     if buf == 0 || !crate::slab::ptr_in_slab_span(buf) {
         return;
     }
+    let is_ours = BYTES_SLAB.with(|sl| unsafe { (*sl.get()).owns_addr(buf as usize) });
+    if !is_ours {
+        return;
+    }
     if crate::slab::slot_is_live(buf) {
         unsafe {
             let b = &mut *(buf as *mut OliveBytes);

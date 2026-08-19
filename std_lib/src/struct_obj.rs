@@ -58,12 +58,21 @@ thread_local! {
 pub extern "C" fn olive_struct_alloc(n_fields: i64) -> i64 {
     let words = n_fields as usize + 1;
     let active = crate::slab::ACTIVE_SLABS.get();
-    let body = if !active.is_null() {
-        unsafe { (*active).struct_slabs.class_for(words).alloc().0 }
+    let (body, _) = if !active.is_null() {
+        unsafe { (*active).struct_slabs.class_for(words).alloc() }
     } else {
-        STRUCT_SLABS.with(|s| unsafe { (&mut *s.get()).class_for(words).alloc().0 })
+        STRUCT_SLABS.with(|s| unsafe { (&mut *s.get()).class_for(words).alloc() })
     };
-    unsafe { *(body as *mut i64) = n_fields };
+    unsafe {
+        // Field words must read as null before the first store: chunk memory
+        // is deliberately uninitialized and a recycled slot keeps stale
+        // words, while closure-record construction and the overwrite
+        // release codegen emits on `field = value` stores read the prior
+        // word. The typed free path also nulls fields it releases; this
+        // covers every other path to a slot.
+        std::ptr::write_bytes(body.add(8), 0, n_fields as usize);
+        *(body as *mut i64) = n_fields;
+    }
     body as i64
 }
 

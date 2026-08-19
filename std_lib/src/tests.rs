@@ -288,3 +288,38 @@ fn any_eq_strict_kinds() {
     );
     assert_eq!(olive_any_ne_strict(boxed::olive_box_int(1), s("1")), 1);
 }
+
+#[test]
+fn strbuf_basic() {
+    let sb = strbuf::olive_strbuf_new(0);
+    assert_eq!(strbuf::olive_strbuf_len(sb), 0);
+    assert_eq!(strbuf::olive_strbuf_char_len(sb), 0);
+
+    strbuf::olive_strbuf_push(sb, s("Hello"));
+    strbuf::olive_strbuf_push(sb, s(" "));
+    strbuf::olive_strbuf_push(sb, s("World 🚀"));
+
+    assert_eq!(from_ptr(strbuf::olive_strbuf_build(sb)), "Hello World 🚀");
+    assert_eq!(strbuf::olive_strbuf_char_len(sb), 13);
+    assert_eq!(strbuf::olive_strbuf_len(sb), 16);
+
+    strbuf::olive_strbuf_clear(sb);
+    assert_eq!(strbuf::olive_strbuf_len(sb), 0);
+    assert_eq!(strbuf::olive_strbuf_char_len(sb), 0);
+    assert_eq!(from_ptr(strbuf::olive_strbuf_build(sb)), "");
+
+    strbuf::olive_strbuf_push(sb, s("Reset"));
+    assert_eq!(from_ptr(strbuf::olive_strbuf_build(sb)), "Reset");
+
+    strbuf::olive_strbuf_free(sb);
+}
+
+#[test]
+fn str_concat_value_semantics() {
+    let a = s("hello");
+    let b = a;
+    let c = olive_str_concat(a, s(" world"));
+    assert_eq!(from_ptr(b), "hello");
+    assert_eq!(from_ptr(c), "hello world");
+    assert_eq!(from_ptr(a), "hello");
+}
