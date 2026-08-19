@@ -31,6 +31,10 @@ impl<'a> MirBuilder<'a> {
                 _ => None,
             };
             if let Some(dunder) = arith_dunder {
+                if !self.has_struct_dunder(&struct_name, dunder) {
+                    let ret_ty = self.get_type(expr_id).clone();
+                    return self.missing_dunder_fault(&struct_name, dunder, ret_ty, span);
+                }
                 let l_op = self.lower_expr(left);
                 let r_op = self.lower_expr(right);
                 let ret_ty = self.get_type(expr_id).clone();
@@ -70,7 +74,12 @@ impl<'a> MirBuilder<'a> {
             if matches!(op, BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) {
                 // `>`/`<=`/`>=` all derive from `__lt__` (checker requires
                 // it exist for a struct operand): `a>b`=`b<a`,
-                // `a<=b`=`!(b<a)`, `a>=b`=`!(a<b)`.
+                // `a<=b`=`!(b<a)`, `a>=b`=`!(a<b)`. Generic bodies skip
+                // that gate, so verify here and fault instead of emitting
+                // a dangling call that aborts codegen.
+                if !self.has_struct_dunder(&struct_name, "__lt__") {
+                    return self.missing_dunder_fault(&struct_name, "__lt__", Type::Bool, span);
+                }
                 let (l_ref, _) = self.borrow_iterable(left);
                 let (r_ref, _) = self.borrow_iterable(right);
                 let (lhs, rhs, negate) = match op {
@@ -755,8 +764,49 @@ impl<'a> MirBuilder<'a> {
         }
     }
 
+    /// Whether `struct_name`'s `dunder` method exists. `fn_meta` is
+    /// pre-seeded from every impl block under base names (concrete and
+    /// generic alike), so one base-key lookup covers all shapes, matching
+    /// the target `call_struct_dunder` emits.
+    fn has_struct_dunder(&self, struct_name: &str, dunder: &str) -> bool {
+        self.fn_meta
+            .contains_key(&format!("{struct_name}::{dunder}"))
+    }
+
+    /// Diverging fault for a struct operand whose operator dunder is
+    /// absent. Generic bodies skip the checker's dunder gate (unresolved
+    /// params), so a monomorphized instance can reach lowering with no
+    /// such method; calling it would emit a dangling reference that aborts
+    /// codegen instead of diagnosing. The message mirrors the checker's
+    /// concrete-shape wording exactly.
+    fn missing_dunder_fault(
+        &mut self,
+        struct_name: &str,
+        dunder: &str,
+        ret_ty: Type,
+        span: Span,
+    ) -> Operand {
+        let tmp = self.new_local(ret_ty, None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                tmp,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("__olive_panic".to_string())),
+                    args: vec![Operand::Constant(Constant::Str(format!(
+                        "`{struct_name}` has no `{dunder}` defined"
+                    )))],
+                },
+            ),
+            span,
+        );
+        self.operand_for_local(tmp)
+    }
+
     /// Builds an ordinary call to a struct's operator dunder, monomorphizing
     /// the mangled name first if the struct is generic (E6.1/E6.2).
+    /// The caller must have verified the method exists via
+    /// `has_struct_dunder` first: generic bodies skip the checker's dunder
+    /// gate (unresolved params), so the method can be absent here.
     pub(super) fn call_struct_dunder(
         &mut self,
         struct_name: &str,

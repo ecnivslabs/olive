@@ -497,6 +497,26 @@ fn iteration_edge_shapes_work() {
     );
 }
 
+/// A monomorphized generic body can reach lowering with a struct operand
+/// whose dunder is absent (generic bodies skip the checker's dunder gate):
+/// instead of aborting codegen, lowering faults with the checker's own
+/// wording. Concrete shapes keep their compile-time E0404.
+#[test]
+fn generic_missing_dunder_faults_cleanly() {
+    assert_faults_e0700(
+        "struct S:\n    x: int\nfn lt[T](a: T, b: T) -> bool:\n    return a < b\nfn main():\n    print(lt(S(1), S(2)))\n",
+        "`S` has no `__lt__` defined",
+    );
+    assert_faults_e0700(
+        "struct S:\n    x: int\nfn add[T](a: T, b: T) -> T:\n    return a + b\nfn main():\n    print(add(S(1), S(2)))\n",
+        "`S` has no `__add__` defined",
+    );
+    assert_accepted(
+        "struct S:\n    x: int\nimpl S:\n    fn __lt__(self: &S, other: &S) -> bool:\n        return self.x < other.x\nfn lt[T](a: T, b: T) -> bool:\n    return a < b\nfn main():\n    print(lt(S(1), S(2)))\n    print(lt(1, 2))\n",
+        "True\nTrue\n",
+    );
+}
+
 #[test]
 fn generic_bodies_hold_sound_gate_behavior() {
     assert_rejected_with(
