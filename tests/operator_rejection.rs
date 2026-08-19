@@ -501,6 +501,39 @@ fn iteration_edge_shapes_work() {
 /// whose dunder is absent (generic bodies skip the checker's dunder gate):
 /// instead of aborting codegen, lowering faults with the checker's own
 /// wording. Concrete shapes keep their compile-time E0404.
+/// A monomorphized generic body can reach lowering with a collection type
+/// the checker gate passed as an unresolved param: `sum`/`min`/`max` would
+/// read struct words with the integer reducers (a segfault once the garbage
+/// is used), and sorts would silently mis-order. Lowering faults with the
+/// checker's own wording instead. Concrete shapes keep compile-time E0404.
+#[test]
+fn generic_bad_collection_instantiation_faults() {
+    assert_faults_e0700(
+        "struct S:\n    x: int\nfn mysum[T](xs: [T]) -> T:\n    return sum(xs)\nfn main():\n    print(mysum([S(1), S(2)]))\n",
+        "`sum` requires a list, tuple, or set of numbers",
+    );
+    assert_faults_e0700(
+        "struct S:\n    x: int\nfn mymin[T](xs: [T]) -> T:\n    return min(xs)\nfn main():\n    print(mymin([S(2), S(1)]))\n",
+        "`min` requires a list, tuple, or set of numbers",
+    );
+    assert_faults_e0700(
+        "struct S:\n    x: int\nfn srt[T](xs: [T]):\n    xs.sort()\n    return xs\nfn main():\n    print(srt([S(2), S(1)]))\n",
+        "`S` has no `__lt__` defined",
+    );
+    assert_faults_e0700(
+        "struct S:\n    x: int\nfn srt[T](xs: [T]):\n    return sorted(xs)\nfn main():\n    print(srt([S(2), S(1)]))\n",
+        "`S` has no `__lt__` defined",
+    );
+    assert_accepted(
+        "fn mysum[T](xs: [T]) -> T:\n    return sum(xs)\nfn mymin[T](xs: [T]) -> T:\n    return min(xs)\nfn srt[T](xs: [T]):\n    xs.sort()\n    return xs\nfn main():\n    print(mysum([1, 2, 3]))\n    print(mymin([3, 1, 2]))\n    print(srt([3, 1, 2]))\n    print(srt([\"b\", \"a\"]))\n",
+        "6\n1\n[1, 2, 3]\n[\"a\", \"b\"]\n",
+    );
+    assert_accepted(
+        "fn sum(n: int) -> int:\n    let mut s = 0\n    let mut i = 1\n    while i <= n:\n        s = s + i\n        i = i + 1\n    return s\nfn main():\n    print(sum(10))\n    print(sum(100))\n",
+        "55\n5050\n",
+    );
+}
+
 #[test]
 fn generic_missing_dunder_faults_cleanly() {
     assert_faults_e0700(

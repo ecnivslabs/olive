@@ -958,6 +958,18 @@ impl<'a> MirBuilder<'a> {
             let obj_op = self.lower_expr_as_copy(obj);
             return Some(self.lower_sort_by_lt(obj_op, elem, span));
         }
+        // Without `__lt__` the checker rejects concrete shapes; a generic
+        // body skips that gate, so a bad instantiation faults here instead
+        // of int-sorting struct pointers into a silently wrong order.
+        if attr == "sort"
+            && !raw_args
+                .iter()
+                .any(|a| matches!(a, CallArg::Keyword(name, _) if name == "key"))
+            && let Type::Struct(struct_name, ..) = elem
+        {
+            let ret_ty = self.subst_mono_type(&self.get_type(expr_id));
+            return Some(self.missing_dunder_fault(struct_name, "__lt__", ret_ty, span));
+        }
 
         let runtime = match attr {
             "append" => "__olive_list_append",

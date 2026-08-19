@@ -212,6 +212,162 @@ impl<'a> MirBuilder<'a> {
         Some(self.operand_for_local(tmp))
     }
 
+    /// Single-argument `sum`/`min`/`max` over a collection whose substituted
+    /// element type is concrete but non-numeric. The checker gate passes
+    /// unresolved params, so a monomorphized instance (e.g. `[S]`) can reach
+    /// lowering, where import-time dispatch would read struct words with the
+    /// integer reducers (a segfault once the garbage is used as a struct).
+    /// Fully dynamic shapes (`Param`/`Var`/`Any` remnants) stay on the legacy
+    /// path; only shapes the checker would reject get the fault, with its
+    /// exact message.
+    pub(super) fn lower_checked_numeric_builtin(
+        &mut self,
+        name: &str,
+        args: &[CallArg],
+        arg_tys: &[Type],
+        span: Span,
+        expr_id: usize,
+    ) -> Option<Operand> {
+        if !matches!(name, "sum" | "min" | "max") || args.len() != 1 {
+            return None;
+        }
+        // A user-defined function shadowing the builtin (nested fn, lambda,
+        // global, or generic) takes the normal call path: the checker's own
+        // gate applies the same exclusion via `lookup_type`.
+        if self.lookup_var(name).is_some()
+            || self.globals.contains_key(name)
+            || self.fn_meta.contains_key(name)
+            || self.generic_fns.contains_key(name)
+            || self.lookup_nested_fn(name).is_some()
+            || self.lookup_bound_lambda(name).is_some()
+        {
+            return None;
+        }
+        let CallArg::Positional(arg) = &args[0] else {
+            return None;
+        };
+        let sub = self.subst_mono_type(arg_tys.first()?);
+        let mut current = sub;
+        while let Type::Ref(inner) | Type::MutRef(inner) = current {
+            current = *inner;
+        }
+        // Mirror the checker's `numeric`: `None` marks a still-dynamic leaf
+        // the checker owns (unresolved param/var, `Any`).
+        fn leaf(ty: &Type) -> Option<bool> {
+            match ty {
+                Type::Int
+                | Type::I8
+                | Type::I16
+                | Type::I32
+                | Type::U8
+                | Type::U16
+                | Type::U32
+                | Type::U64
+                | Type::Usize
+                | Type::IntegerLiteral(_)
+                | Type::Float
+                | Type::F32
+                | Type::FloatLiteral(_)
+                | Type::Bool => Some(true),
+                Type::Var(_) | Type::Param(_) | Type::Any => None,
+                _ => Some(false),
+            }
+        }
+        // `None` = dynamic (legacy path), `Some(true)` = numeric (normal
+        // path), `Some(false)` = concrete but rejected (fault).
+        fn judge(ty: &Type) -> Option<bool> {
+            match ty {
+                Type::List(e) | Type::Set(e) => leaf(e),
+                Type::Tuple(members) => {
+                    let mut ok = true;
+                    for m in members {
+                        match leaf(m) {
+                            None => return None,
+                            Some(false) => ok = false,
+                            Some(true) => {}
+                        }
+                    }
+                    Some(ok)
+                }
+                _ => leaf(ty).and(Some(false)),
+            }
+        }
+        // `T | None` judges by `T`, like codegen; wider unions narrow first.
+        // A dynamic member keeps the legacy path.
+        let verdict = match &current {
+            Type::Union(members) => {
+                let non_null: Vec<&Type> = members
+                    .iter()
+                    .filter(|m| !matches!(m, Type::Null))
+                    .collect();
+                match non_null.as_slice() {
+                    [single] => match single {
+                        Type::List(e) | Type::Set(e) => leaf(e),
+                        Type::Tuple(ms) => {
+                            let mut ok = true;
+                            for m in ms {
+                                match leaf(m) {
+                                    None => return None,
+                                    Some(false) => ok = false,
+                                    Some(true) => {}
+                                }
+                            }
+                            Some(ok)
+                        }
+                        _ => Some(false),
+                    },
+                    _ => {
+                        return self.lower_union_narrow_fault(span, expr_id);
+                    }
+                }
+            }
+            other => judge(other),
+        };
+        if verdict != Some(false) {
+            return None;
+        }
+        // Evaluate the argument first so its side effects precede the fault,
+        // matching normal call evaluation order.
+        let _ = self.lower_expr_as_copy(arg);
+        let ret_ty = self.subst_mono_type(&self.get_type(expr_id));
+        let tmp = self.new_local(ret_ty, None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                tmp,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("__olive_panic".to_string())),
+                    args: vec![Operand::Constant(Constant::Str(format!(
+                        "`{name}` requires a list, tuple, or set of numbers, got `{current}`"
+                    )))],
+                },
+            ),
+            span,
+        );
+        Some(self.operand_for_local(tmp))
+    }
+
+    /// Fault for a use of a union value that must narrow first. Generic
+    /// bodies skip that gate on unresolved params; the message mirrors the
+    /// checker's.
+    fn lower_union_narrow_fault(&mut self, span: Span, expr_id: usize) -> Option<Operand> {
+        let ret_ty = self.subst_mono_type(&self.get_type(expr_id));
+        let tmp = self.new_local(ret_ty, None, false);
+        self.push_statement(
+            StatementKind::Assign(
+                tmp,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("__olive_panic".to_string())),
+                    args: vec![Operand::Constant(Constant::Str(
+                        "cannot use union type in this operation, narrow the union first"
+                            .to_string(),
+                    ))],
+                },
+            ),
+            span,
+        );
+        Some(self.operand_for_local(tmp))
+    }
+
     pub(super) fn lower_maxmin_builtin(
         &mut self,
         name: &str,
@@ -564,6 +720,16 @@ impl<'a> MirBuilder<'a> {
             && self.fn_meta.contains_key(&format!("{struct_name}::__lt__"))
         {
             return Some(self.lower_sort_by_lt(copy_op, &elem_ty, span));
+        }
+        // Without `__lt__` the checker rejects concrete shapes; a generic
+        // body skips that gate, so a bad instantiation faults here instead
+        // of int-sorting struct pointers into a silently wrong order.
+        if name == "sorted"
+            && key_arg_expr.is_none()
+            && let Type::Struct(struct_name, ..) = &elem_ty
+        {
+            let ret_ty = self.subst_mono_type(&self.get_type(expr_id));
+            return Some(self.missing_dunder_fault(struct_name, "__lt__", ret_ty, span));
         }
 
         let apply_fn = if name == "sorted" {

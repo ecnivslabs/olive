@@ -768,7 +768,7 @@ impl<'a> MirBuilder<'a> {
     /// pre-seeded from every impl block under base names (concrete and
     /// generic alike), so one base-key lookup covers all shapes, matching
     /// the target `call_struct_dunder` emits.
-    fn has_struct_dunder(&self, struct_name: &str, dunder: &str) -> bool {
+    pub(super) fn has_struct_dunder(&self, struct_name: &str, dunder: &str) -> bool {
         self.fn_meta
             .contains_key(&format!("{struct_name}::{dunder}"))
     }
@@ -779,7 +779,7 @@ impl<'a> MirBuilder<'a> {
     /// such method; calling it would emit a dangling reference that aborts
     /// codegen instead of diagnosing. The message mirrors the checker's
     /// concrete-shape wording exactly.
-    fn missing_dunder_fault(
+    pub(super) fn missing_dunder_fault(
         &mut self,
         struct_name: &str,
         dunder: &str,

@@ -1206,6 +1206,17 @@ impl<'a> MirBuilder<'a> {
                 return op;
             }
 
+            // Single-argument `sum`/`min`/`max` over a substituted-concrete
+            // but non-numeric collection: the checker gate passes unresolved
+            // params, so a bad instantiation would otherwise read struct
+            // words with the integer reducers.
+            if matches!(name, "sum" | "min" | "max")
+                && let Some(op) =
+                    self.lower_checked_numeric_builtin(name, args, &arg_tys, expr.span, expr.id)
+            {
+                return op;
+            }
+
             if let Some(op) = self.lower_sequence_builtin(name, args, expr.span, expr.id) {
                 return op;
             }
