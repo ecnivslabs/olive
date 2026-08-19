@@ -65,6 +65,12 @@ pub struct MirBuilder<'a> {
     /// function, so types read from the original (generic) `expr_types` are
     /// resolved to the concrete instance. Empty outside monomorphization.
     pub(super) mono_type_map: HashMap<String, Type>,
+    /// Specialized (monomorphized) function signatures by specialized name.
+    /// `global_types` is an immutable borrow holding only the generic
+    /// originals, so without this `inferred_return_type` misses every
+    /// specialization and defaults `_return` to `Any`, boxing a concrete
+    /// return value that the caller then reads raw.
+    pub(super) specialized_sigs: HashMap<String, Type>,
     pub traits: &'a HashMap<String, crate::semantic::type_checker::TraitDef>,
 
     pub(super) current_name: String,
@@ -153,6 +159,7 @@ impl<'a> MirBuilder<'a> {
             enum_defs,
             closure_thunks: HashSet::default(),
             mono_type_map: HashMap::default(),
+            specialized_sigs: HashMap::default(),
             traits,
             current_name: String::new(),
             current_locals: Vec::new(),

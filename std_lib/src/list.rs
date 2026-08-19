@@ -106,6 +106,21 @@ pub extern "C" fn olive_list_new(len: i64) -> i64 {
     }
 }
 
+/// Marks a list as `KIND_ANY_LIST` so kind-dispatched consumers decode
+/// Any-boxed elements instead of misreading them as raw words. Used by
+/// MIR list erasure, which builds the erased list with `__olive_list_new`
+/// (a raw `KIND_LIST` container) and then boxes every element: without
+/// the mark, printing, indexing, and Python conversion read the boxed
+/// words as raw values. Returns the pointer for chaining; a null input
+/// passes through.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_mark_any(list_ptr: i64) -> i64 {
+    if list_ptr != 0 {
+        unsafe { (*(list_ptr as *mut StableVec)).kind = KIND_ANY_LIST };
+    }
+    list_ptr
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_range_list(start: i64, end: i64, inclusive: i64, step: i64) -> i64 {
     // Matches Python's `range(start, stop, step)` element count: derive an
@@ -1354,6 +1369,17 @@ mod tests {
         assert_ne!(ptr, 0);
         let s = unsafe { &*(ptr as *const StableVec) };
         assert_eq!(s.len, 0);
+    }
+
+    #[test]
+    fn mark_any_flips_kind_and_reads_back_boxed() {
+        let ptr = olive_list_new(2);
+        olive_list_set(ptr, 0, crate::boxed::olive_box_int(3));
+        olive_list_set(ptr, 1, crate::boxed::olive_box_int(1));
+        assert_eq!(unsafe { (*(ptr as *const StableVec)).kind }, KIND_LIST);
+        assert_eq!(olive_list_mark_any(ptr), ptr);
+        assert_eq!(unsafe { (*(ptr as *const StableVec)).kind }, KIND_ANY_LIST);
+        assert_eq!(olive_list_mark_any(0), 0);
     }
 
     #[test]

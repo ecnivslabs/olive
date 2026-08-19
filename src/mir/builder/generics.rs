@@ -179,6 +179,22 @@ impl<'a> MirBuilder<'a> {
                 }
 
                 self.replace_types_in_fn(p, rt, b, &type_map);
+                // Register the specialized signature so later lookups see
+                // concrete types: without this, `inferred_return_type` misses
+                // the specialized name and defaults `_return` to `Any`,
+                // boxing a concrete return value that the caller (typed from
+                // the checker's specialized signature) then reads raw.
+                if let Some(Type::Fn(params, ret, _)) = self.global_types.get(name).cloned() {
+                    let sub_params = params
+                        .iter()
+                        .map(|param| Self::subst_type_with_map(param, &type_map))
+                        .collect();
+                    let sub_ret = Self::subst_type_with_map(&ret, &type_map);
+                    self.specialized_sigs.insert(
+                        specialized_name.clone(),
+                        Type::Fn(sub_params, Box::new(sub_ret), Vec::new()),
+                    );
+                }
                 // A `Base::method` specialization resolves members through
                 // the specialized name (`Box_Res::send` reads `Box_Res`
                 // fields): mirror the layout with arguments applied, or

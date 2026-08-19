@@ -483,6 +483,23 @@ impl<'a> MirBuilder<'a> {
             span,
         );
         self.current_block = Some(done);
+        // The loop above stores Any-boxed elements into a raw `KIND_LIST`
+        // container; kind-dispatched consumers would misread the boxed
+        // words as raw values, so mark the result before returning it.
+        // The mark borrows (a non-owning temp): `result` keeps sole
+        // ownership and moves out to the caller.
+        let marked = self.new_unscoped_local_with_owning(Type::List(Box::new(Type::Any)), false);
+        self.push_statement(
+            StatementKind::Assign(
+                marked,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function("__olive_list_mark_any".into())),
+                    args: vec![Operand::Copy(result)],
+                },
+            ),
+            span,
+        );
+        let _ = marked;
         Operand::Copy(result)
     }
 }

@@ -517,6 +517,31 @@ fn generic_missing_dunder_faults_cleanly() {
     );
 }
 
+/// Monomorphized generic functions must return the specialized type, not
+/// `Any`: the specialization had no signature entry, so `_return` defaulted
+/// to `Any` and boxed concrete values the caller then read raw (`ident`
+/// over `[3, 1, 2]` came back `[26, 10, 18]`, floats/bools/nested garbled
+/// the same way, and even `sort` on ints mis-sorted).
+#[test]
+fn generic_container_returns_keep_concrete_values() {
+    assert_accepted(
+        "fn ident[T](xs: [T]):\n    return xs\nfn main():\n    print(ident([3, 1, 2]))\n    print(ident([1.5, 2.5]))\n    print(ident([True, False]))\n    print(ident([[1], [2]]))\n",
+        "[3, 1, 2]\n[1.5, 2.5]\n[True, False]\n[[1], [2]]\n",
+    );
+    assert_accepted(
+        "fn srt[T](xs: [T]):\n    xs.sort()\n    return xs\nfn main():\n    print(srt([3, 1, 2]))\n",
+        "[1, 2, 3]\n",
+    );
+    assert_accepted(
+        "struct Res:\n    s: str\nimpl Res:\n    fn __drop__(self):\n        print(\"drop \"+self.s)\n\nfn ident[T](xs: [T]):\n    return xs\n\nfn main():\n    let y = ident([Res(\"a\"), Res(\"b\")])\n    print(y[0].s)\n    print(y[1].s)\n    print(\"done\")\n",
+        "a\nb\ndone\ndrop a\ndrop b\n",
+    );
+    assert_accepted(
+        "fn ident[T](xs: [T]):\n    return xs\nfn main():\n    let a: Any = ident([3, 1, 2])\n    print(a)\n    print(a[0])\n",
+        "[3, 1, 2]\n3\n",
+    );
+}
+
 #[test]
 fn generic_bodies_hold_sound_gate_behavior() {
     assert_rejected_with(

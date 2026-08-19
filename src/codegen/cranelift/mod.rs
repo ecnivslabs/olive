@@ -442,6 +442,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_list_apply_order", b"olive_list_apply_order\0"),
     ("__olive_list_get", b"olive_list_get\0"),
     ("__olive_list_len", b"olive_list_len\0"),
+    ("__olive_list_mark_any", b"olive_list_mark_any\0"),
     ("__olive_list_new", b"olive_list_new\0"),
     ("__olive_range_list", b"olive_range_list\0"),
     ("__olive_list_set", b"olive_list_set\0"),

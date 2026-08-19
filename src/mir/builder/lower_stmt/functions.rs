@@ -366,9 +366,12 @@ impl<'a> MirBuilder<'a> {
     /// a `Future[T]`, but the `_return` slot holds the inner `T`. A return type
     /// left unconstrained (a bare type variable) falls back to `Any`.
     pub(crate) fn inferred_return_type(&self, name: &str, is_async: bool) -> Type {
-        let ret = match self.global_types.get(name) {
+        let ret = match self.specialized_sigs.get(name) {
             Some(Type::Fn(_, ret, _)) => (**ret).clone(),
-            _ => return Type::Any,
+            _ => match self.global_types.get(name) {
+                Some(Type::Fn(_, ret, _)) => (**ret).clone(),
+                _ => return Type::Any,
+            },
         };
         let ret = if is_async {
             match ret {

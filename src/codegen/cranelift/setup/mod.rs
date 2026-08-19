@@ -374,6 +374,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_list_get", &sig_i64_i64_i64),
             ("__olive_list_insert", &sig_i64_i64_i64_void),
             ("__olive_list_len", &sig_i64_i64),
+            ("__olive_list_mark_any", &sig_i64_i64),
             ("__olive_list_new", &sig_i64_i64),
             ("__olive_range_list", &sig_4i64_i64),
             ("__olive_list_remove", &sig_i64_i64_i64),
