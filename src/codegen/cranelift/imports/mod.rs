@@ -673,7 +673,33 @@ pub(super) fn scan_rvalue_imports(
                     OliveType::Bool => {
                         needed.insert("__olive_bool_to_str");
                     }
+                    OliveType::Any => {
+                        needed.insert("__olive_any_to_str");
+                    }
                     _ => {}
+                }
+            }
+            // An `Any` source unboxes through its builtin runtime first
+            // (translate_rvalue's Cast): without the import the call aborts.
+            if let Operand::Copy(src) | Operand::Move(src) = op
+                && matches!(func_mir.locals[src.0].ty, OliveType::Any)
+            {
+                let is_int_target = matches!(
+                    target_ty,
+                    OliveType::Int
+                        | OliveType::I8
+                        | OliveType::I16
+                        | OliveType::I32
+                        | OliveType::U8
+                        | OliveType::U16
+                        | OliveType::U32
+                        | OliveType::U64
+                        | OliveType::Usize
+                );
+                if is_int_target {
+                    needed.insert("__olive_unbox_int");
+                } else if matches!(target_ty, OliveType::Float | OliveType::F32) {
+                    needed.insert("__olive_unbox_float");
                 }
             }
         }

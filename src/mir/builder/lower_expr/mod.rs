@@ -1217,6 +1217,28 @@ impl<'a> MirBuilder<'a> {
                 return op;
             }
 
+            // Sized conversions (`i32(x)`, `f64(x)`, ...) share `as`-cast
+            // semantics: lower through the same `Rvalue::Cast` the cast form
+            // uses. Without this the call reaches codegen with no runtime
+            // entry and aborts the compiler. User shadowings keep the normal
+            // call path; the checker already validated the pair.
+            if matches!(
+                name,
+                "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "f32" | "f64"
+            ) && args.len() == 1
+                && let CallArg::Positional(arg) = &args[0]
+                && !self.is_user_callable(name)
+            {
+                let arg_op = self.lower_expr(arg);
+                let target_ty = self.get_type(expr.id);
+                let tmp = self.new_local(target_ty.clone(), None, false);
+                self.push_statement(
+                    StatementKind::Assign(tmp, Rvalue::Cast(arg_op, target_ty)),
+                    expr.span,
+                );
+                return self.operand_for_local(tmp);
+            }
+
             if let Some(op) = self.lower_sequence_builtin(name, args, expr.span, expr.id) {
                 return op;
             }

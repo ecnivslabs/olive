@@ -698,6 +698,59 @@ impl<M: Module> CraneliftCodegen<M> {
                     }
                 }
 
+                // An `Any` source arrives boxed (see `box_into_any`): peel to
+                // the runtime scalar first, or the boxed word reads as a huge
+                // integer, a garbage float, or (for strings) a wild pointer.
+                // Each target reuses its builtin's own runtime so `v as i32`
+                // agrees with `int(v)` exactly.
+                let src_is_any = match op {
+                    Operand::Copy(l) | Operand::Move(l) => {
+                        matches!(&func_mir.locals[l.0].ty, OliveType::Any)
+                    }
+                    _ => false,
+                };
+                let mut val = val;
+                let mut current_ty = current_ty;
+                if src_is_any {
+                    let is_int_target = matches!(
+                        ty,
+                        OliveType::Int
+                            | OliveType::I8
+                            | OliveType::I16
+                            | OliveType::I32
+                            | OliveType::U8
+                            | OliveType::U16
+                            | OliveType::U32
+                            | OliveType::U64
+                            | OliveType::Usize
+                    );
+                    let is_float_target = matches!(ty, OliveType::Float | OliveType::F32);
+                    if is_int_target {
+                        let id = func_ids
+                            .get("__olive_unbox_int")
+                            .expect("missing __olive_unbox_int");
+                        let local_func = module.declare_func_in_func(*id, builder.func);
+                        let inst = builder.ins().call(local_func, &[val]);
+                        val = builder.inst_results(inst)[0];
+                        current_ty = types::I64;
+                    } else if is_float_target {
+                        let id = func_ids
+                            .get("__olive_unbox_float")
+                            .expect("missing __olive_unbox_float");
+                        let local_func = module.declare_func_in_func(*id, builder.func);
+                        let inst = builder.ins().call(local_func, &[val]);
+                        val = builder.inst_results(inst)[0];
+                        current_ty = types::F64;
+                    } else if *ty == OliveType::Str {
+                        let id = func_ids
+                            .get("__olive_any_to_str")
+                            .expect("missing __olive_any_to_str");
+                        let local_func = module.declare_func_in_func(*id, builder.func);
+                        let inst = builder.ins().call(local_func, &[val]);
+                        return builder.inst_results(inst)[0];
+                    }
+                }
+
                 // Narrowing `T | None` to its non-null member `T` reuses this
                 // same `Rvalue::Cast` shape (`data.rs`'s flow-narrowed read),
                 // but means something different from a real `as` cast: a

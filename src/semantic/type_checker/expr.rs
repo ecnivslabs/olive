@@ -810,6 +810,53 @@ impl TypeChecker {
                         Type::Int
                     };
                 }
+                // Sized conversions (`i32(x)`, `f64(x)`, ...) share `as`-cast
+                // semantics exactly: the same predicate validates, and MIR
+                // lowers through the same `Rvalue::Cast`. Without this the
+                // call form reaches codegen with no runtime entry and aborts
+                // the compiler, even for valid inputs like `i32(5)`. The
+                // builtin table declares `Fn([Any])`, so a user shadowing
+                // keeps their own binding (mirrors the `len` arm).
+                if let ExprKind::Identifier(name) = &callee.kind
+                    && matches!(
+                        name.as_str(),
+                        "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "f32" | "f64"
+                    )
+                    && args.len() == 1
+                    && let CallArg::Positional(arg) = &args[0]
+                    && let Some(Type::Fn(params, ret, _)) = self.lookup_type(name)
+                    && params.len() == 1
+                    && params[0] == Type::Any
+                {
+                    let raw = self.check_expr(arg);
+                    let arg_ty = self.apply_subst(raw);
+                    let target_ty = self.apply_subst((*ret).clone());
+                    if crate::semantic::types::cast_kind(&arg_ty, &target_ty)
+                        == crate::semantic::types::CastKind::Invalid
+                    {
+                        if arg_ty == Type::Str {
+                            self.errors.push(super::super::error::SemanticError::rich(
+                                crate::compile::errors::Diagnostic::error(
+                                    "E0404",
+                                    format!("cannot cast `str` to `{target_ty}`"),
+                                    expr.span,
+                                )
+                                .label("invalid cast")
+                                .help("use `.to_int()` or `.to_float()` for fallible parsing"),
+                            ));
+                        } else {
+                            self.errors.push(super::super::error::SemanticError::rich(
+                                crate::compile::errors::Diagnostic::error(
+                                    "E0404",
+                                    format!("cannot cast `{arg_ty}` to `{target_ty}`"),
+                                    expr.span,
+                                )
+                                .label("invalid cast"),
+                            ));
+                        }
+                    }
+                    return target_ty;
+                }
                 // `enumerate`/`zip` resolve only through `check_for_iter`
                 // (a `for`-head/comprehension-clause iterable); reaching
                 // here means neither position handled this call.

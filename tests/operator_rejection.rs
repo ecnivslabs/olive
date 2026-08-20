@@ -295,6 +295,42 @@ fn union_method_calls_rejected_with_narrow_help() {
 }
 
 #[test]
+fn sized_conversion_calls_share_cast_semantics() {
+    assert_accepted(
+        "fn f[T](x: T):\n    return i32(x)\nfn main():\n    print(i32(5))\n    print(i64(300))\n    print(i8(300))\n    print(u32(0 - 1))\n    print(f64(2))\n    print(f(7))\n",
+        "5\n300\n44\n4294967295\n2.0\n7\n",
+    );
+    assert_accepted(
+        "fn f(v: Any):\n    return v as i32\nfn g(v: Any):\n    return v as float\nfn h(v: Any):\n    return v as str\nfn main():\n    print(f(7))\n    print(g(7))\n    print(h(7))\n    print(h(\"hi\"))\n",
+        "7\n7.0\n7\nhi\n",
+    );
+    assert_rejected_with(
+        "fn main():\n    print(i32(\"42\"))\n",
+        "[E0404]",
+        "cannot cast `str` to `i32`",
+    );
+    assert_rejected_with(
+        "struct S:\n    x: int\nfn main():\n    print(i32(S(1)))\n",
+        "[E0404]",
+        "cannot cast `S` to `i32`",
+    );
+    assert_rejected_with(
+        "fn main():\n    print(i32([1]))\n",
+        "[E0404]",
+        "cannot cast",
+    );
+    assert_rejected_with(
+        "fn main():\n    print(f32(1.5))\n",
+        "[E0404]",
+        "cannot cast `{float}` to `f32`",
+    );
+    assert_accepted(
+        "fn i32(x: int) -> int:\n    return x * 2\nfn main():\n    print(i32(21))\n",
+        "42\n",
+    );
+}
+
+#[test]
 fn int_float_conversion_misuse_rejected() {
     assert_rejected_with(
         "struct S:\n    x: int\nfn main():\n    print(int(S(1)))\n",
