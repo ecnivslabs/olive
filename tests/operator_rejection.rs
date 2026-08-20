@@ -660,6 +660,14 @@ fn generic_container_returns_keep_concrete_values() {
 }
 
 #[test]
+fn abs_values_unchanged() {
+    assert_accepted(
+        "fn main():\n    print(abs(0))\n    print(abs(-5))\n    print(abs(9223372036854775807))\n    print(abs(-2.5))\n",
+        "0\n5\n9223372036854775807\n2.5\n",
+    );
+}
+
+#[test]
 fn generic_bodies_hold_sound_gate_behavior() {
     assert_rejected_with(
         "fn neg[T](x: T) -> T:\n    return -x\nfn main():\n    print(neg(5))\n",

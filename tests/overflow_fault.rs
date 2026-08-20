@@ -224,6 +224,34 @@ fn mod_min_by_neg_one_faults_both_pipelines() {
     std::fs::remove_file(&path).ok();
 }
 
+/// `abs(i64::MIN)` has no representable result: it must fault `E0713`
+/// cleanly instead of aborting inside the core library (debug) or with a
+/// bare trap (release). Unlike `+`/`-`/`*`, the check holds in both
+/// pipelines: one branch on the value, like the `/ -1` corner.
+#[test]
+fn abs_min_faults_both_pipelines() {
+    let src = "fn main():\n    let min: i64 = -9223372036854775807 - 1\n    print(abs(min))\n";
+    let path = write_src(src);
+
+    let (stderr, code) = run_jit(&path);
+    assert_eq!(code, 1, "jit stderr: {stderr}");
+    assert!(stderr.contains("[E0713]"), "jit stderr: {stderr}");
+    assert!(
+        stderr.contains("abs(-9223372036854775808)"),
+        "jit stderr: {stderr}"
+    );
+
+    let (stderr, code) = run_aot(&path);
+    assert_eq!(code, 1, "aot stderr: {stderr}");
+    assert!(stderr.contains("[E0713]"), "aot stderr: {stderr}");
+    assert!(
+        stderr.contains("abs(-9223372036854775808)"),
+        "aot stderr: {stderr}"
+    );
+
+    std::fs::remove_file(&path).ok();
+}
+
 /// Ordinary in-range arithmetic is unaffected: no fault, correct result.
 #[test]
 fn in_range_arithmetic_is_silent_both_pipelines() {

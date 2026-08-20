@@ -53,9 +53,15 @@ pub extern "C" fn olive_math_abs(x: f64) -> f64 {
     x.abs()
 }
 
+/// Integer absolute value with the same checked arithmetic as every other
+/// integer operator: `abs(i64::MIN)` has no representable result, so it
+/// faults instead of aborting inside the core library (debug) or wrapping
+/// (release). `loc` names the call site, like the other checked entry
+/// points.
 #[unsafe(no_mangle)]
-pub extern "C" fn olive_int_abs(x: i64) -> i64 {
-    x.abs()
+pub extern "C" fn olive_int_abs(x: i64, loc: i64) -> i64 {
+    x.checked_abs()
+        .unwrap_or_else(|| crate::panic::olive_overflow_fail(10, x, 0, loc))
 }
 
 #[unsafe(no_mangle)]

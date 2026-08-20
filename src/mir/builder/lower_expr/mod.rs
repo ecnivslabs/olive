@@ -1217,6 +1217,41 @@ impl<'a> MirBuilder<'a> {
                 return op;
             }
 
+            // `abs` on integers faults E0713 for `i64::MIN` (no representable
+            // result) instead of aborting inside the core library, so the
+            // call carries its site like the other checked operators. Floats
+            // keep the math path. This covers user shadowings too: like the
+            // other builtins here, those calls already resolve to the
+            // builtin import, so all integer paths carry the location.
+            if name == "abs"
+                && args.len() == 1
+                && let CallArg::Positional(arg) = &args[0]
+                && let Some(first_ty) = arg_tys.first()
+            {
+                let mut sub = self.subst_mono_type(first_ty);
+                while let Type::Ref(inner) | Type::MutRef(inner) = sub {
+                    sub = *inner;
+                }
+                if !matches!(sub, Type::Float | Type::F32) {
+                    let arg_op = self.lower_expr_as_copy(arg);
+                    let loc = Operand::Constant(Constant::Str(self.call_loc_str(expr.span)));
+                    let ret_ty = self.subst_mono_type(&self.get_type(expr.id));
+                    let tmp = self.new_local(ret_ty, None, false);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            tmp,
+                            Rvalue::Call {
+                                func: Operand::Constant(Constant::Function(
+                                    "__olive_int_abs".to_string(),
+                                )),
+                                args: vec![arg_op, loc],
+                            },
+                        ),
+                        expr.span,
+                    );
+                    return self.operand_for_local(tmp);
+                }
+            }
             // Sized conversions (`i32(x)`, `f64(x)`, ...) share `as`-cast
             // semantics: lower through the same `Rvalue::Cast` the cast form
             // uses. Without this the call reaches codegen with no runtime

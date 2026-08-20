@@ -112,7 +112,7 @@ pub(crate) fn drop_descriptor_type<'a>(
     }
 }
 
-pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 697] = [
+pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 698] = [
     "__olive_alloc",
     "__olive_any_add",
     "__olive_any_div",
@@ -338,6 +338,7 @@ pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 697] = [
     "__olive_in_list",
     "__olive_in_obj",
     "__olive_int",
+    "__olive_int_abs",
     "__olive_int_to_float",
     "__olive_is_bytes",
     "__olive_is_list",

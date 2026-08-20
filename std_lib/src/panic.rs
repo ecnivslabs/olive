@@ -467,6 +467,7 @@ pub extern "C" fn olive_overflow_fail(kind: i64, lhs: i64, rhs: i64, loc: i64) -
         7 => format!("integer overflow: {lhs} % {rhs} does not fit in i64"),
         8 => format!("integer overflow: {lhs} ** {rhs} does not fit in i64"),
         9 => format!("integer power with negative exponent is undefined: {lhs} ** {rhs}"),
+        10 => format!("integer overflow: abs({lhs}) does not fit in i64"),
         _ => unreachable!("olive_overflow_fail: unknown kind {kind}"),
     };
     abort_with(&OVERFLOW, &msg, loc.as_deref())
