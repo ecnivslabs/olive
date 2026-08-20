@@ -750,6 +750,66 @@ impl TypeChecker {
                 {
                     return self.check_len(arg, expr.span);
                 }
+                // `int(x)`/`float(x)` read the value word raw: a heap
+                // aggregate has no numeric value, so its pointer leaks as a
+                // number instead of faulting. Reject definite aggregates here
+                // (dynamic shapes keep the runtime fault as backstop); the
+                // builtin table declares `Fn([Any])`, so a user shadowing
+                // keeps their own binding.
+                // builtin table declares `Fn([Any])`, so this arm fires
+                // only when the visible binding is still that signature and
+                // yields to a user shadowing `int`/`float` with their own
+                // binding (mirrors the `len` arm below).
+                if let ExprKind::Identifier(name) = &callee.kind
+                    && matches!(name.as_str(), "int" | "float")
+                    && args.len() == 1
+                    && let CallArg::Positional(arg) = &args[0]
+                    && self.lookup_type(name)
+                        == Some(if name == "float" {
+                            Type::Fn(vec![Type::Any], Box::new(Type::Float), Vec::new())
+                        } else {
+                            Type::Fn(vec![Type::Any], Box::new(Type::Int), Vec::new())
+                        })
+                {
+                    let raw = self.check_expr(arg);
+                    let arg_ty = self.apply_subst(raw);
+                    fn convertible(ty: &Type) -> bool {
+                        match ty {
+                            Type::Struct(..)
+                            | Type::Enum(..)
+                            | Type::TraitObject(..)
+                            | Type::List(_)
+                            | Type::Dict(..)
+                            | Type::Set(_)
+                            | Type::Tuple(_)
+                            | Type::Bytes
+                            | Type::Fn(..)
+                            | Type::Future(..) => false,
+                            Type::Union(members) => members
+                                .iter()
+                                .filter(|m| !matches!(m, Type::Null))
+                                .all(convertible),
+                            _ => true,
+                        }
+                    }
+                    if !convertible(&arg_ty) {
+                        self.errors.push(super::super::error::SemanticError::rich(
+                            crate::compile::errors::Diagnostic::error(
+                                "E0404",
+                                format!(
+                                    "`{name}` requires a numeric, string, or None argument, got `{arg_ty}`"
+                                ),
+                                expr.span,
+                            )
+                            .label("this type has no numeric value"),
+                        ));
+                    }
+                    return if name == "float" {
+                        Type::Float
+                    } else {
+                        Type::Int
+                    };
+                }
                 // `enumerate`/`zip` resolve only through `check_for_iter`
                 // (a `for`-head/comprehension-clause iterable); reaching
                 // here means neither position handled this call.

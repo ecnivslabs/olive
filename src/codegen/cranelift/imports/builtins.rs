@@ -112,7 +112,7 @@ pub(crate) fn drop_descriptor_type<'a>(
     }
 }
 
-pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 695] = [
+pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 697] = [
     "__olive_alloc",
     "__olive_any_add",
     "__olive_any_div",
@@ -781,7 +781,9 @@ pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 695] = [
     "__olive_tuple_unerase",
     "__olive_typeof_str",
     "__olive_unbox_float",
+    "__olive_unbox_float_checked",
     "__olive_unbox_int",
+    "__olive_unbox_int_checked",
     "__olive_url_decode",
     "__olive_url_encode",
     "__olive_uuid_is_valid",
@@ -949,8 +951,10 @@ pub(crate) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
             OliveType::Float | OliveType::F32 => Some("__olive_float_to_int"),
             OliveType::Str => Some("__olive_str_to_int"),
             OliveType::PyObject => Some("__olive_py_to_int"),
-            OliveType::Any => Some("__olive_unbox_int"),
-            OliveType::Union(_) if current_ty.is_tag_encoded_union() => Some("__olive_unbox_int"),
+            OliveType::Any => Some("__olive_unbox_int_checked"),
+            OliveType::Union(_) if current_ty.is_tag_encoded_union() => {
+                Some("__olive_unbox_int_checked")
+            }
             _ => Some("__olive_int"),
         },
         "float" => match current_ty {
@@ -958,8 +962,10 @@ pub(crate) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
             OliveType::Int => Some("__olive_int_to_float"),
             OliveType::Str => Some("__olive_str_to_float"),
             OliveType::PyObject => Some("__olive_py_to_float"),
-            OliveType::Any => Some("__olive_unbox_float"),
-            OliveType::Union(_) if current_ty.is_tag_encoded_union() => Some("__olive_unbox_float"),
+            OliveType::Any => Some("__olive_unbox_float_checked"),
+            OliveType::Union(_) if current_ty.is_tag_encoded_union() => {
+                Some("__olive_unbox_float_checked")
+            }
             _ => Some("__olive_float"),
         },
         "bool" => {

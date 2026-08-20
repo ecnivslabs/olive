@@ -113,6 +113,19 @@ pub extern "C" fn olive_any_is_struct_box(v: i64) -> i64 {
 /// `float()` of an `Any`: unbox, parse a string, or widen an integer.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_unbox_float(v: i64) -> f64 {
+    unbox_float_impl(v, false)
+}
+
+/// Checked twin used by the `float()` builtin on `Any`/tagged-union
+/// arguments: a heap aggregate has no numeric value, so fault like a bad
+/// string instead of reading the pointer as bits. The raw twin stays
+/// pass-through for white-box handle reads (async generation tests).
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_unbox_float_checked(v: i64) -> f64 {
+    unbox_float_impl(v, true)
+}
+
+fn unbox_float_impl(v: i64, checked: bool) -> f64 {
     match v & TAG_MASK {
         TAG_INT | TAG_BOOL => return (v >> 3) as f64,
         TAG_NULL => return 0.0,
@@ -130,13 +143,36 @@ pub extern "C" fn olive_unbox_float(v: i64) -> f64 {
     if is_pyobject(v) {
         return crate::python::olive_py_to_float(v as *mut std::os::raw::c_void);
     }
-    v as f64
+    if checked && is_active_object(v) {
+        let msg = crate::olive_str_internal(&format!(
+            "float() argument must be a number, got '{}' (for fallible parsing use .to_float())",
+            olive_str_from_ptr(crate::olive_typeof_str(v))
+        ));
+        crate::olive_panic(msg);
+        #[allow(unreachable_code)]
+        0.0
+    } else {
+        v as f64
+    }
 }
 
 /// `int()` of an `Any`: unbox (float truncates), parse a string, or pass an
 /// integer through.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_unbox_int(v: i64) -> i64 {
+    unbox_int_impl(v, false)
+}
+
+/// Checked twin used by the `int()` builtin on `Any`/tagged-union
+/// arguments: a heap aggregate has no integer value, so fault like a bad
+/// string instead of leaking the pointer as a number. The raw twin stays
+/// pass-through for white-box handle reads (async generation tests).
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_unbox_int_checked(v: i64) -> i64 {
+    unbox_int_impl(v, true)
+}
+
+fn unbox_int_impl(v: i64, checked: bool) -> i64 {
     match v & TAG_MASK {
         TAG_INT | TAG_BOOL => return v >> 3,
         TAG_NULL => return 0,
@@ -154,7 +190,15 @@ pub extern "C" fn olive_unbox_int(v: i64) -> i64 {
     if is_pyobject(v) {
         return crate::python::olive_py_to_int(v as *mut std::os::raw::c_void);
     }
-    v
+    if checked && is_active_object(v) {
+        let msg = crate::olive_str_internal(&format!(
+            "int() argument must be an integer, got '{}' (for fallible parsing use .to_int())",
+            olive_str_from_ptr(crate::olive_typeof_str(v))
+        ));
+        crate::olive_panic(msg)
+    } else {
+        v
+    }
 }
 
 /// Tagged Olive string pointer, not a raw scalar.

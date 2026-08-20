@@ -828,13 +828,34 @@ pub extern "C" fn olive_int(val: i64) -> i64 {
         if kind == KIND_PYOBJECT {
             return python::olive_py_to_int(val as python::PyObject);
         }
+        // A heap aggregate has no integer value: reading the pointer raw
+        // leaks addresses as numbers (and shifts under generics, where the
+        // static type cannot name the shape). Fault like a bad string does.
+        let msg = olive_str_internal(&format!(
+            "int() argument must be an integer, got '{}' (for fallible parsing use .to_int())",
+            olive_str_from_ptr(olive_typeof_str(val))
+        ));
+        olive_panic(msg);
     }
     val
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_float(val: i64) -> f64 {
-    val as f64
+    if is_active_object(val) {
+        // Same rule as `olive_int`: a heap word is not a number. Raw small
+        // words (ints, bools, `None`) and tagged strings are not slab
+        // objects and keep the legacy path below.
+        let msg = olive_str_internal(&format!(
+            "float() argument must be a number, got '{}' (for fallible parsing use .to_float())",
+            olive_str_from_ptr(olive_typeof_str(val))
+        ));
+        olive_panic(msg);
+        #[allow(unreachable_code)]
+        0.0
+    } else {
+        val as f64
+    }
 }
 
 #[unsafe(no_mangle)]

@@ -295,6 +295,46 @@ fn union_method_calls_rejected_with_narrow_help() {
 }
 
 #[test]
+fn int_float_conversion_misuse_rejected() {
+    assert_rejected_with(
+        "struct S:\n    x: int\nfn main():\n    print(int(S(1)))\n",
+        "[E0404]",
+        "`int` requires a numeric, string, or None argument",
+    );
+    assert_rejected_with(
+        "fn main():\n    print(int([1]))\n",
+        "[E0404]",
+        "`int` requires a numeric, string, or None argument",
+    );
+    assert_rejected_with(
+        "struct S:\n    x: int\nfn main():\n    print(float(S(1)))\n",
+        "[E0404]",
+        "`float` requires a numeric, string, or None argument",
+    );
+    assert_rejected_with(
+        "fn f(v: [int] | None):\n    return int(v)\nfn main():\n    print(f([1]))\n",
+        "[E0404]",
+        "`int` requires a numeric, string, or None argument",
+    );
+    assert_faults_e0700(
+        "struct S:\n    x: int\nfn f[T](x: T) -> int:\n    return int(x)\nfn main():\n    print(f(S(1)))\n",
+        "int() argument must be an integer",
+    );
+    assert_faults_e0700(
+        "struct S:\n    x: int\nfn main():\n    let a: Any = S(1)\n    print(int(a))\n",
+        "int() argument must be an integer",
+    );
+    assert_faults_e0700(
+        "fn main():\n    let a: Any = [1]\n    print(int(a))\n",
+        "int() argument must be an integer",
+    );
+    assert_accepted(
+        "fn f[T](x: T) -> int:\n    return int(x)\nfn g(v: Any) -> int:\n    return int(v)\nfn main():\n    print(int(True))\n    print(int(2.7))\n    print(int(\"42\"))\n    print(int(None))\n    print(float(3))\n    print(f(7))\n    print(g(5))\n",
+        "1\n2\n42\n0\n3.0\n7\n5\n",
+    );
+}
+
+#[test]
 fn join_element_mismatch_rejected() {
     assert_rejected_with(
         "fn main():\n    print(\",\".join([1, 2]))\n",

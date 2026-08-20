@@ -640,7 +640,12 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_any_is_null", b"olive_any_is_null\0"),
     ("__olive_any_is_struct_box", b"olive_any_is_struct_box\0"),
     ("__olive_unbox_float", b"olive_unbox_float\0"),
+    (
+        "__olive_unbox_float_checked",
+        b"olive_unbox_float_checked\0",
+    ),
     ("__olive_unbox_int", b"olive_unbox_int\0"),
+    ("__olive_unbox_int_checked", b"olive_unbox_int_checked\0"),
     ("__olive_any_truthy", b"olive_any_truthy\0"),
     ("__olive_any_to_str", b"olive_any_to_str\0"),
     ("__olive_none_to_str", b"olive_none_to_str\0"),
