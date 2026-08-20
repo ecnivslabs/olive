@@ -1055,6 +1055,22 @@ impl<'a> MirBuilder<'a> {
         None
     }
 
+    /// Whether `name` resolves to a user-defined callable (global or generic
+    /// function, nested function, bound lambda, local, or module global)
+    /// rather than a builtin. Builtin-only lowering guards must skip such
+    /// names: the call takes the normal function path, and faulting on the
+    /// builtin's rules would hijack user code (a user `fn sum` broke the
+    /// numeric-collection guard's first version, killing an in-process
+    /// codegen test).
+    pub(super) fn is_user_callable(&self, name: &str) -> bool {
+        self.lookup_var(name).is_some()
+            || self.globals.contains_key(name)
+            || self.fn_meta.contains_key(name)
+            || self.generic_fns.contains_key(name)
+            || self.lookup_nested_fn(name).is_some()
+            || self.lookup_bound_lambda(name).is_some()
+    }
+
     /// Every use is a borrow; ownership transfers are inferred later from
     /// liveness (ownership pass + MoveElision), never at the use site.
     pub(super) fn operand_for_local(&self, local: Local) -> Operand {

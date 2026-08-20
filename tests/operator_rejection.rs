@@ -517,6 +517,14 @@ fn generic_bad_collection_instantiation_faults() {
         "`min` requires a list, tuple, or set of numbers",
     );
     assert_faults_e0700(
+        "struct S:\n    x: int\nfn mm[T](a: T, b: T) -> T:\n    return min(a, b)\nfn main():\n    print(mm(S(1), S(2)))\n",
+        "`min` requires two comparable numbers or strings",
+    );
+    assert_faults_e0700(
+        "struct S:\n    x: int\nfn mm[T](a: T, b: T) -> T:\n    return max(a, b)\nfn main():\n    print(mm(S(1), S(2)))\n",
+        "`max` requires two comparable numbers or strings",
+    );
+    assert_faults_e0700(
         "struct S:\n    x: int\nfn srt[T](xs: [T]):\n    xs.sort()\n    return xs\nfn main():\n    print(srt([S(2), S(1)]))\n",
         "`S` has no `__lt__` defined",
     );

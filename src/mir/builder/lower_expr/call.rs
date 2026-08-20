@@ -234,13 +234,7 @@ impl<'a> MirBuilder<'a> {
         // A user-defined function shadowing the builtin (nested fn, lambda,
         // global, or generic) takes the normal call path: the checker's own
         // gate applies the same exclusion via `lookup_type`.
-        if self.lookup_var(name).is_some()
-            || self.globals.contains_key(name)
-            || self.fn_meta.contains_key(name)
-            || self.generic_fns.contains_key(name)
-            || self.lookup_nested_fn(name).is_some()
-            || self.lookup_bound_lambda(name).is_some()
-        {
+        if self.is_user_callable(name) {
             return None;
         }
         let CallArg::Positional(arg) = &args[0] else {
@@ -394,6 +388,60 @@ impl<'a> MirBuilder<'a> {
         let a_op = self.lower_expr_as_copy(a_expr);
         let b_op = self.lower_expr_as_copy(b_expr);
         let result_ty = self.get_type(expr_id);
+
+        // Two-argument `min`/`max` lower to a raw comparison, so aggregate
+        // operands would compare pointers. The checker rejects them for
+        // concrete shapes; generic bodies skip that gate, so a bad
+        // instantiation faults here with the checker's message instead of
+        // silently comparing addresses. User functions shadowing the name
+        // keep today's path exactly.
+        if !self.is_user_callable(name) {
+            let ta = self.subst_mono_type(&self.get_type(a_expr.id));
+            let tb = self.subst_mono_type(&self.get_type(b_expr.id));
+            fn blocked(ty: &Type) -> Option<bool> {
+                match ty {
+                    Type::List(_)
+                    | Type::Tuple(_)
+                    | Type::Set(_)
+                    | Type::Dict(..)
+                    | Type::Bytes
+                    | Type::Struct(..)
+                    | Type::Enum(..)
+                    | Type::TraitObject(..)
+                    | Type::Fn(..)
+                    | Type::Future(..)
+                    | Type::Null => Some(true),
+                    Type::Var(_) | Type::Param(_) | Type::Any => None,
+                    _ => Some(false),
+                }
+            }
+            let dynamic = [blocked(&ta), blocked(&tb)].iter().any(|b| b.is_none());
+            if !dynamic {
+                let bad = matches!(&ta, Type::Union(_)) || matches!(&tb, Type::Union(_));
+                if bad {
+                    return self.lower_union_narrow_fault(span, expr_id);
+                }
+                if blocked(&ta) == Some(true) || blocked(&tb) == Some(true) {
+                    let ret_ty = self.subst_mono_type(&result_ty);
+                    let tmp = self.new_local(ret_ty, None, false);
+                    self.push_statement(
+                        StatementKind::Assign(
+                            tmp,
+                            Rvalue::Call {
+                                func: Operand::Constant(Constant::Function(
+                                    "__olive_panic".to_string(),
+                                )),
+                                args: vec![Operand::Constant(Constant::Str(format!(
+                                    "`{name}` requires two comparable numbers or strings"
+                                )))],
+                            },
+                        ),
+                        span,
+                    );
+                    return Some(self.operand_for_local(tmp));
+                }
+            }
+        }
 
         let cmp_op = if name == "max" {
             crate::parser::BinOp::Gt
@@ -723,9 +771,11 @@ impl<'a> MirBuilder<'a> {
         }
         // Without `__lt__` the checker rejects concrete shapes; a generic
         // body skips that gate, so a bad instantiation faults here instead
-        // of int-sorting struct pointers into a silently wrong order.
+        // of int-sorting struct pointers into a silently wrong order. User
+        // functions shadowing the builtin keep today's path exactly.
         if name == "sorted"
             && key_arg_expr.is_none()
+            && !self.is_user_callable(name)
             && let Type::Struct(struct_name, ..) = &elem_ty
         {
             let ret_ty = self.subst_mono_type(&self.get_type(expr_id));
