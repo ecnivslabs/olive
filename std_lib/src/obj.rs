@@ -352,7 +352,16 @@ pub extern "C" fn olive_obj_keys(obj_ptr: i64) -> i64 {
         return crate::list::list_from_vec(Vec::new());
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
-    crate::list::list_from_vec(m.fields.keys().map(|k| k.0).collect())
+    let mut visited = rustc_hash::FxHashMap::default();
+    // Keys are Any words: a `{int: _}` dict's key is a raw integer, and
+    // olive_copy would read it as a tagged string pointer and strlen raw
+    // int bits. copy_any dispatches on the actual runtime tag.
+    let keys: Vec<i64> = m
+        .fields
+        .keys()
+        .map(|k| crate::copy_typed::copy_any(k.0, &mut visited))
+        .collect();
+    crate::list::list_from_vec(keys)
 }
 
 /// Returns a list of `[key, value]` pairs, backing `for k, v in d.items()`.
@@ -362,7 +371,17 @@ pub extern "C" fn olive_obj_items(obj_ptr: i64) -> i64 {
         return crate::list::olive_list_new(0);
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
-    let pairs: Vec<(i64, i64)> = m.fields.iter().map(|(k, v)| (k.0, *v)).collect();
+    let mut visited = rustc_hash::FxHashMap::default();
+    let pairs: Vec<(i64, i64)> = m
+        .fields
+        .iter()
+        .map(|(k, &v)| {
+            (
+                crate::copy_typed::copy_any(k.0, &mut visited),
+                crate::copy_typed::copy_any(v, &mut visited),
+            )
+        })
+        .collect();
     let outer = crate::list::olive_list_new(pairs.len() as i64);
     for (i, (k, v)) in pairs.iter().enumerate() {
         let pair = crate::list::olive_list_new(2);
@@ -379,7 +398,13 @@ pub extern "C" fn olive_obj_values(obj_ptr: i64) -> i64 {
         return crate::list::list_from_vec(Vec::new());
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
-    crate::list::list_from_vec(m.fields.values().copied().collect())
+    let mut visited = rustc_hash::FxHashMap::default();
+    let values: Vec<i64> = m
+        .fields
+        .values()
+        .map(|&v| crate::copy_typed::copy_any(v, &mut visited))
+        .collect();
+    crate::list::list_from_vec(values)
 }
 
 #[cfg(test)]
@@ -478,6 +503,19 @@ mod tests {
         assert_ne!(keys_ptr, 0);
         let s = unsafe { &*(keys_ptr as *const StableVec) };
         assert_eq!(s.len, 2);
+    }
+
+    #[test]
+    fn keys_list_int_keys() {
+        let obj = olive_obj_new();
+        olive_obj_set(obj, 2, 10);
+        olive_obj_set(obj, 4, 20);
+        let keys_ptr = olive_obj_keys(obj);
+        let s = unsafe { &*(keys_ptr as *const StableVec) };
+        assert_eq!(s.len, 2);
+        let k0 = unsafe { *s.ptr };
+        let k1 = unsafe { *s.ptr.add(1) };
+        assert!((k0 == 2 && k1 == 4) || (k0 == 4 && k1 == 2));
     }
 
     #[test]

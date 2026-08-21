@@ -35,7 +35,7 @@ fn split(s: str, sep: str) -> list:
     return __olive_str_split(s, sep)
 
 fn split_whitespace(s: str) -> list:
-    let mut result = []
+    let mut result: list = []
     let mut current = ""
     let chars = graphemes(s)
     let mut i = 0

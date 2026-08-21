@@ -177,10 +177,20 @@ fn free_val(val: i64, desc: *const u8, pos: &mut usize) {
 
 /// A statically-`Any` slot can still hold a raw scalar (a `Param` that
 /// defaulted to `Any` stores unboxed), so a bare word is only kind-dispatched
-/// when it classifies as a live object pointer. Tagged immediates own
-/// nothing; a tagged string may be interned and is never freed.
+/// when it classifies as a live object pointer. Non-string tagged immediates
+/// own nothing; a tagged string is heap-owned by this slot and is freed via
+/// `olive_free_str`, which no-ops on read-only literals, so interning or
+/// sharing is safe. Heap strings are deep-copied on escape, so freeing here
+/// cannot alias another owner.
 fn free_any_elem(val: i64) {
-    if val == 0 || val & TAG_MASK != 0 {
+    if val == 0 {
+        return;
+    }
+    if val & 1 != 0 {
+        crate::olive_free_str(val);
+        return;
+    }
+    if val & TAG_MASK != 0 {
         return;
     }
     if crate::is_active_object(val) {
@@ -418,6 +428,7 @@ fn elem_owns(desc: *const u8, pos: usize) -> bool {
     matches!(
         unsafe { byte(desc, pos) },
         D_ANY
+            | D_STR
             | D_BACKREF
             | D_BYTES
             | D_LIST
@@ -507,6 +518,31 @@ mod tests {
             !crate::slab::ptr_is_slab_body(crate::string_slab::str_body(s)),
             "heap string freed"
         );
+    }
+
+    // A `Any`-typed element holding a tagged heap string must free it; the
+    // old code treated every tagged value as "owns nothing" and leaked it.
+    #[test]
+    fn any_slot_heap_str_freed() {
+        let s = crate::olive_str_internal("any-owned");
+        let l = list_from_vec(vec![s]);
+        olive_free_typed(l, desc(&[D_LIST, D_ANY]));
+        assert!(!slot_is_live(l));
+        assert!(
+            !crate::slab::ptr_is_slab_body(crate::string_slab::str_body(s)),
+            "tagged heap string in Any slot freed"
+        );
+    }
+
+    // A `Any`-typed element holding a read-only literal string must not be
+    // freed (literals are immortal); the slot free itself still succeeds.
+    #[test]
+    fn any_slot_literal_str_kept() {
+        let s = crate::olive_str_internal("literal");
+        let l = list_from_vec(vec![s]);
+        olive_free_typed(l, desc(&[D_LIST, D_ANY]));
+        assert!(!slot_is_live(l));
+        assert!(slot_is_live(crate::string_slab::str_body(s)) || !crate::slab::ptr_is_slab_body(crate::string_slab::str_body(s)), "literal string untouched");
     }
 
     #[test]

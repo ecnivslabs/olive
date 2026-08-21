@@ -101,6 +101,34 @@ impl TypeChecker {
         }
     }
 
+    /// Whether an `obj.attr(..)` callee resolved without a struct/enum
+    /// receiver may still carry an implicit `self` parameter, so the count
+    /// mismatch `params.len() == args.len() + 1` can legitimately be healed
+    /// by dropping the first parameter. A module alias targets a free
+    /// function, and a known struct/enum receiver that did not resolve as a
+    /// method targets a function-typed field -- neither has a `self`.
+    fn attr_callee_may_carry_receiver(&mut self, obj: &Expr) -> bool {
+        if let ExprKind::Identifier(name) = &obj.kind
+            && self.imported_modules.contains(name)
+            && self.lookup_type(name).is_none()
+        {
+            return false;
+        }
+        let Some(obj_ty) = self
+            .expr_types
+            .get(&obj.id)
+            .cloned()
+            .map(|t| self.apply_subst(t))
+        else {
+            return true;
+        };
+        let mut current = obj_ty;
+        while let Type::Ref(inner) | Type::MutRef(inner) = &current {
+            current = *inner.clone();
+        }
+        !matches!(current, Type::Struct(..) | Type::Enum(..))
+    }
+
     pub(super) fn unify_silently(&mut self, a: &Type, b: &Type, span: Span) -> bool {
         let errs_before = self.errors.len();
         let subst_before = self.substitutions.clone();
@@ -928,10 +956,11 @@ impl TypeChecker {
                         ret.clone(),
                         args.clone(),
                     );
-                } else if let ExprKind::Attr { .. } = &callee.kind
+                } else if let ExprKind::Attr { obj, .. } = &callee.kind
                     && let Type::Fn(params, ret, args) = &resolved_callee
                     && !params.is_empty()
                     && params.len() == arg_types.len() + 1
+                    && self.attr_callee_may_carry_receiver(obj)
                 {
                     final_callee_ty = Type::Fn(
                         params.iter().skip(1).cloned().collect(),

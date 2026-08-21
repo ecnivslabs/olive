@@ -1,8 +1,35 @@
 use super::linker::{compute_source_hash, ensure_dir};
 use super::loader::{self, collect_source_files};
+use std::hash::{Hash, Hasher};
+use std::sync::OnceLock;
 use std::{collections::HashSet, fs, path::Path};
 
 const MANIFEST_PATH: &str = "grove/cache/manifest.json";
+
+/// Content hash of the running compiler binary. Cache keys and PGO profiles
+/// recorded by one compiler must never be applied by another: codegen passes
+/// can reorder or renumber profiling sites for identical source, so a stale
+/// profile silently specializes the wrong site (the count guard in
+/// `apply_profile` cannot see reordering). Keyed by the executable's
+/// identity so a rebuild of the compiler invalidates every cache and
+/// profile on disk.
+pub(crate) fn toolchain_fingerprint() -> u64 {
+    static FINGERPRINT: OnceLock<u64> = OnceLock::new();
+    *FINGERPRINT.get_or_init(|| {
+        let Ok(exe) = std::env::current_exe() else {
+            return 0;
+        };
+        let Ok(bytes) = fs::read(&exe) else {
+            return 0;
+        };
+        let mut hasher = rustc_hash::FxHasher::default();
+        bytes.len().hash(&mut hasher);
+        for chunk in bytes.chunks(1 << 16) {
+            hasher.write(chunk);
+        }
+        hasher.finish()
+    })
+}
 
 pub struct BuildTarget {
     pub binary_path: String,
@@ -54,7 +81,10 @@ pub fn prepare(entry: &str, release: bool) -> (BuildTarget, Vec<String>) {
     if let Ok(p) = fs::canonicalize("pit.toml") {
         all_files.push(p.to_string_lossy().into_owned());
     }
-    let hash = compute_source_hash(&all_files);
+    let mut hasher = rustc_hash::FxHasher::default();
+    compute_source_hash(&all_files).hash(&mut hasher);
+    toolchain_fingerprint().hash(&mut hasher);
+    let hash = hasher.finish();
 
     let target = BuildTarget {
         binary_path: resolve_binary_path(entry, release),
@@ -222,5 +252,26 @@ mod tests {
         let root: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(root["release"]["hash"].as_u64(), Some(111));
         assert_eq!(root["debug"]["hash"].as_u64(), Some(222));
+    }
+
+    /// The cache key must fold in the compiler fingerprint: same sources
+    /// compiled by a different toolchain build must not share a cache entry
+    /// or PGO profile, because codegen layout (and with it positional
+    /// profile sites) can differ.
+    #[test]
+    fn prepare_hash_mixes_toolchain_fingerprint() {
+        let _lock = CWD_LOCK.lock().unwrap();
+        let _scratch = ScratchDir::new("olive_cache_test_toolchain_mix");
+        fs::write("pit.toml", "[pod]\nname = \"x\"\n").unwrap();
+        fs::write("main.liv", "fn main():\n    print(1)\n").unwrap();
+
+        let (t1, _) = prepare("main.liv", false);
+        let source_only = crate::compile::linker::compute_source_hash(&["main.liv".to_string()]);
+        assert_ne!(t1.hash(), source_only);
+        assert_ne!(t1.hash(), 0);
+
+        // Same inputs, same process: stable.
+        let (t2, _) = prepare("main.liv", false);
+        assert_eq!(t1.hash(), t2.hash());
     }
 }

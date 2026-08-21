@@ -380,6 +380,17 @@ fn collect_any_views(func: &MirFunction) -> HashSet<Local> {
                     Rvalue::GetIndex(_, _, _) | Rvalue::GetAttr(_, _) => {
                         views.insert(*dst);
                     }
+                    // A runtime call with a borrowed return hands back a
+                    // pointer into storage owned elsewhere (`__olive_next`
+                    // iterates a container's raw slots, the `__olive_obj_get*`
+                    // family is dict `.get()`), so an `Any` result borrows
+                    // exactly like an indexed read.
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function(name)),
+                        ..
+                    } if name == "__olive_next" || super::summaries::runtime_borrowed_return(name) => {
+                        views.insert(*dst);
+                    }
                     Rvalue::Use(Operand::Copy(src)) | Rvalue::Use(Operand::Move(src))
                         if views.contains(src) =>
                     {

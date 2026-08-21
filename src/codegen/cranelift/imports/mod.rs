@@ -402,6 +402,11 @@ pub(super) fn scan_rvalue_imports(
                     }
                 }
                 Lt | LtEq | Gt | GtEq | NotEq => {
+                    if matches!(op, crate::parser::BinOp::NotEq)
+                        && (is_str_op(func_mir, lhs) || is_str_op(func_mir, rhs))
+                    {
+                        needed.insert("__olive_str_eq");
+                    }
                     let is_pyobj = is_pyobj_op(func_mir, lhs) || is_pyobj_op(func_mir, rhs);
                     if is_pyobj {
                         needed.insert("__olive_py_from_float");

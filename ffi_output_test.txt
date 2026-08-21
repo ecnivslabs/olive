@@ -1,0 +1,1 @@
+Written directly via libc.so.6 FFI from Olive!

@@ -93,7 +93,7 @@ impl Transform for OwnershipInference {
         let heap: Vec<bool> = func.locals.iter().map(|d| d.ty.is_move_type()).collect();
         let builder_owning: Vec<bool> = func.locals.iter().map(|d| d.is_owning).collect();
 
-        let (records, arg_moves, direct_store_moves) = collect_assigns(
+        let (records, arg_moves, direct_store_moves, agg_moves) = collect_assigns(
             func,
             &liveness,
             &heap,
@@ -112,6 +112,17 @@ impl Transform for OwnershipInference {
                 && let Operand::Copy(l) = args[pos]
             {
                 args[pos] = Operand::Move(l);
+                moved_from.push((bb, idx, l));
+            }
+        }
+
+        // Same transfer for aggregate literal operands whose owner-source dies at creation.
+        for (bb, idx, pos) in agg_moves {
+            if let StatementKind::Assign(_, Rvalue::Aggregate(_, ops)) =
+                &mut func.basic_blocks[bb].statements[idx].kind
+                && let Operand::Copy(l) = ops[pos]
+            {
+                ops[pos] = Operand::Move(l);
                 moved_from.push((bb, idx, l));
             }
         }
@@ -274,19 +285,10 @@ impl Transform for OwnershipInference {
         // Remove each now-stale Drop, descending per block so earlier indices stay valid.
         let mut drop_removals: Vec<(usize, usize)> = Vec::new();
         for (bb, idx, src) in moved_from {
-            let stmts = &func.basic_blocks[bb].statements;
-            for (j, stmt) in stmts.iter().enumerate().skip(idx + 1) {
-                match &stmt.kind {
-                    StatementKind::Drop(l) if *l == src => {
-                        drop_removals.push((bb, j));
-                        break;
-                    }
-                    StatementKind::Assign(d, _) if *d == src => break,
-                    _ => {}
-                }
-            }
+            find_drop_to_remove(func, bb, idx, src, &mut drop_removals);
         }
         drop_removals.sort_unstable_by(|a, b| b.cmp(a));
+        drop_removals.dedup();
         for (bb, idx) in drop_removals {
             func.basic_blocks[bb].statements.remove(idx);
             changed = true;
@@ -325,8 +327,10 @@ fn borrow_base(op: &Operand, heap: &[bool]) -> Option<Local> {
 enum SiteKind {
     /// Escaping argument of a call, at this lowered position.
     CallArg(usize),
-    /// Element, field, global, or aggregate store.
+    /// Element, field, or global store.
     DirectStore,
+    /// Aggregate element, at this lowered operand position.
+    AggElem(usize),
 }
 
 struct EscapeSite {
@@ -342,6 +346,8 @@ struct EscapeSite {
 type ArgMoveSite = (usize, usize, usize);
 /// (bb, idx) for a direct-store escape ready for move promotion.
 type DirectStoreMoveSite = (usize, usize);
+/// (bb, idx, operand position) for an aggregate-element escape ready for move promotion.
+type AggMoveSite = (usize, usize, usize);
 
 fn collect_assigns(
     func: &MirFunction,
@@ -350,7 +356,12 @@ fn collect_assigns(
     builder_owning: &[bool],
     borrowed_returns: &HashSet<String>,
     param_escapes: &HashMap<String, Vec<bool>>,
-) -> (Vec<AssignRec>, Vec<ArgMoveSite>, Vec<DirectStoreMoveSite>) {
+) -> (
+    Vec<AssignRec>,
+    Vec<ArgMoveSite>,
+    Vec<DirectStoreMoveSite>,
+    Vec<AggMoveSite>,
+) {
     let mut records = Vec::new();
     // Escapes are deferred: a lone last-use escape of a pure owner transfers
     // outright, so it must not demote its source to dynamic ownership.
@@ -404,8 +415,8 @@ fn collect_assigns(
                 }
                 // A fat pointer wraps a trait object without owning it.
                 Rvalue::Aggregate(kind, ops) if *kind != AggregateKind::FatPtr => {
-                    for op in ops {
-                        site(op, SiteKind::DirectStore, &mut sites);
+                    for (pos, op) in ops.iter().enumerate() {
+                        site(op, SiteKind::AggElem(pos), &mut sites);
                     }
                 }
                 _ => {}
@@ -467,11 +478,13 @@ fn collect_assigns(
     let impure = solve_impurity(func, heap, builder_owning, &records, &sites);
     let mut arg_moves = Vec::new();
     let mut direct_store_moves = Vec::new();
+    let mut agg_moves = Vec::new();
     for (i, s) in sites.into_iter().enumerate() {
         if s.dead && !impure[i] {
             match s.kind {
                 SiteKind::CallArg(pos) => arg_moves.push((s.bb, s.idx, pos)),
                 SiteKind::DirectStore => direct_store_moves.push((s.bb, s.idx)),
+                SiteKind::AggElem(pos) => agg_moves.push((s.bb, s.idx, pos)),
             }
             continue;
         }
@@ -483,7 +496,7 @@ fn collect_assigns(
             src_dead: false,
         });
     }
-    (records, arg_moves, direct_store_moves)
+    (records, arg_moves, direct_store_moves, agg_moves)
 }
 
 /// For each escape site, whether the source may not solely own its value
@@ -707,4 +720,87 @@ pub fn push_local(func: &mut MirFunction, ty: Type) -> Local {
         is_owning: true,
     });
     l
+}
+
+fn find_drop_to_remove(
+    func: &MirFunction,
+    start_bb: usize,
+    start_idx: usize,
+    src: Local,
+    drop_removals: &mut Vec<(usize, usize)>,
+) {
+    let mut visited = HashSet::default();
+    let mut queue = std::collections::VecDeque::new();
+
+    let stmts = &func.basic_blocks[start_bb].statements;
+    let mut found_in_start = false;
+    for (j, stmt) in stmts.iter().enumerate().skip(start_idx + 1) {
+        match &stmt.kind {
+            StatementKind::Drop(l) if *l == src => {
+                drop_removals.push((start_bb, j));
+                found_in_start = true;
+                break;
+            }
+            StatementKind::Assign(d, _) if *d == src => {
+                found_in_start = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    if !found_in_start {
+        visited.insert(start_bb);
+        if let Some(term) = &func.basic_blocks[start_bb].terminator {
+            for succ in term_successors(term) {
+                if visited.insert(succ) {
+                    queue.push_back(succ);
+                }
+            }
+        }
+
+        while let Some(bb) = queue.pop_front() {
+            let mut stopped = false;
+            for (j, stmt) in func.basic_blocks[bb].statements.iter().enumerate() {
+                match &stmt.kind {
+                    StatementKind::Drop(l) if *l == src => {
+                        drop_removals.push((bb, j));
+                        stopped = true;
+                        break;
+                    }
+                    StatementKind::Assign(d, _) if *d == src => {
+                        stopped = true;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            if !stopped {
+                if let Some(term) = &func.basic_blocks[bb].terminator {
+                    for succ in term_successors(term) {
+                        if visited.insert(succ) {
+                            queue.push_back(succ);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn term_successors(term: &Terminator) -> Vec<usize> {
+    match &term.kind {
+        TerminatorKind::Goto { target } => vec![target.0],
+        TerminatorKind::SwitchInt {
+            targets, otherwise, ..
+        } => {
+            let mut succs = Vec::with_capacity(targets.len() + 1);
+            for (_, t) in targets {
+                succs.push(t.0);
+            }
+            succs.push(otherwise.0);
+            succs
+        }
+        TerminatorKind::Return | TerminatorKind::Unreachable => vec![],
+    }
 }
