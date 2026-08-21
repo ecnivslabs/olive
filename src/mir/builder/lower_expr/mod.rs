@@ -128,17 +128,17 @@ impl<'a> MirBuilder<'a> {
             return self.erase_list_elements(op, element, span);
         }
         if let Type::Set(element) = from_ty
-            && Self::any_needs_erase(element)
+            && **element != Type::Any
         {
             return self.erase_set_elements(op, element, span);
         }
         if let Type::Dict(key, value) = from_ty
-            && (Self::any_needs_erase(key) || Self::any_needs_erase(value))
+            && (**value != Type::Any || Self::any_needs_erase(key))
         {
             return self.erase_dict_values(op, key, value, span);
         }
         if let Type::Tuple(members) = from_ty
-            && members.iter().any(Self::any_needs_erase)
+            && members.iter().any(|m| *m != Type::Any)
         {
             return self.erase_tuple_elements(op, members, span);
         }

@@ -295,6 +295,26 @@ fn union_method_calls_rejected_with_narrow_help() {
 }
 
 #[test]
+fn any_crossing_containers_read_exact_values() {
+    assert_accepted(
+        "fn main():\n    let v: Any = {\"x\": 100, \"y\": 200, \"z\": 300}\n    print(v)\n    print(v[\"x\"] + v[\"y\"] + v[\"z\"])\n    print(v.get(\"y\", -1))\n",
+        "{'x': 100, 'z': 300, 'y': 200}\n600\n200\n",
+    );
+    assert_accepted(
+        "fn f(v: Any):\n    v.remove(\"a\")\n    return v[\"b\"]\nfn main():\n    print(f({\"a\": 1, \"b\": 2}))\n",
+        "2\n",
+    );
+    assert_accepted(
+        "fn main():\n    let s: Any = {1.5, 1.5, 2.5}\n    print(len(s))\n    let t: Any = (1, 2)\n    print(t)\n    print(t[0] + t[1])\n",
+        "2\n[1, 2]\n3\n",
+    );
+    assert_accepted(
+        "struct Res:\n    s: str\nimpl Res:\n    fn __drop__(self):\n        print(\"drop \"+self.s)\n\nfn main():\n    let v: Any = {\"k\": Res(\"v\")}\n    print(len(v))\n    print(v)\n    print(\"done\")\n",
+        "1\n{'k': Res(s=\"v\")}\ndone\ndrop v\n",
+    );
+}
+
+#[test]
 fn any_held_nonstring_method_receivers_fault() {
     assert_faults_e0700(
         "fn f(v: Any):\n    return v.upper()\nfn main():\n    print(f(5))\n",
