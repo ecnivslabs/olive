@@ -2047,8 +2047,12 @@ impl TypeChecker {
                                 Vec::new(),
                             );
                         }
+                        // The displaced value is dynamic (whatever the live
+                        // member holds); typing it `Null` like the concrete
+                        // dict arm would strand the real word in a
+                        // `Null`-typed slot that readers misinterpret.
                         "remove" => {
-                            return Type::Fn(vec![Type::Any], Box::new(Type::Null), Vec::new());
+                            return Type::Fn(vec![Type::Any], Box::new(Type::Any), Vec::new());
                         }
                         _ => {}
                     }
@@ -2944,6 +2948,10 @@ impl TypeChecker {
                 (**v).clone(),
             ])))),
             (Type::Dict(_, v), "remove") => Some((**v).clone()),
+            // An `Any` receiver's displaced value is dynamic: typing it
+            // `Null` strands the real word in a slot readers misinterpret
+            // (a boxed value printed through a `Null` slot segfaults).
+            (Type::Any, "remove") => Some(Type::Any),
             (Type::Set(elem), "add" | "remove") => {
                 let elem = (**elem).clone();
                 if attr == "add"

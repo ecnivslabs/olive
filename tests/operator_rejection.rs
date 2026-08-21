@@ -295,6 +295,18 @@ fn union_method_calls_rejected_with_narrow_help() {
 }
 
 #[test]
+fn any_remove_returns_the_displaced_value() {
+    assert_accepted(
+        "fn f(v: Any):\n    return v.remove(\"a\")\nfn main():\n    print(f({\"a\": 1, \"b\": 2}))\n    print(f({\"a\": 1}))\n",
+        "1\n1\n",
+    );
+    assert_accepted(
+        "fn f(v: Any):\n    let r = v.remove(\"a\")\n    print(r)\n    print(type(r))\n    print(r == None)\nfn main():\n    f({\"a\": 1, \"b\": 2})\n",
+        "1\nint\nFalse\n",
+    );
+}
+
+#[test]
 fn any_crossing_containers_read_exact_values() {
     assert_accepted(
         "fn main():\n    let v: Any = {\"x\": 100, \"y\": 200, \"z\": 300}\n    print(v)\n    print(v[\"x\"] + v[\"y\"] + v[\"z\"])\n    print(v.get(\"y\", -1))\n",
