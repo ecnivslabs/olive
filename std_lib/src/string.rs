@@ -26,6 +26,7 @@ pub fn olive_str_to_bytes_with<'a>(ptr: i64, known_heap: Option<bool>) -> &'a [u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_len(s: i64) -> i64 {
+    let s = expect_str(s, "len");
     olive_str_to_bytes(s).len() as i64
 }
 
@@ -33,11 +34,27 @@ pub extern "C" fn olive_str_len(s: i64) -> i64 {
 /// Same byte order `olive_list_sort_str` sorts by, without allocating.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_cmp(a: i64, b: i64) -> i64 {
+    let a = expect_str(a, "cmp");
+    let b = expect_str(b, "cmp");
     match olive_str_to_bytes(a).cmp(olive_str_to_bytes(b)) {
         std::cmp::Ordering::Less => -1,
         std::cmp::Ordering::Equal => 0,
         std::cmp::Ordering::Greater => 1,
     }
+}
+
+/// Validates a word about to be read as a string: a tagged heap or literal
+/// pointer, or an interned char. Method calls through an `Any` receiver
+/// reach these entries with arbitrary words, which would otherwise read out
+/// of bounds (the whole surface segfaulted on an `Any`-held int). Faults
+/// instead, naming the method.
+pub(crate) fn expect_str(word: i64, method: &str) -> i64 {
+    // `0` (`None`) keeps its existing per-function behavior below; only
+    // nonzero impostors fault, so no non-crashing input changes meaning.
+    if word == 0 || is_interned_char(word) || (word & 1 == 1 && (word & !1) > 0x10000) {
+        return word;
+    }
+    crate::panic::abort(&format!("`{method}` requires a string argument"), None)
 }
 
 /// Interned single-byte strings, NUL-terminated like any literal. Indexing
@@ -77,6 +94,7 @@ pub(crate) fn is_interned_char(v: i64) -> bool {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_get(s: i64, i: i64) -> i64 {
+    let s = expect_str(s, "indexing");
     if s == 0 {
         return 0;
     }
@@ -90,6 +108,7 @@ pub extern "C" fn olive_str_get(s: i64, i: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_char(s: i64, i: i64) -> i64 {
+    let s = expect_str(s, "indexing");
     olive_str_get(s, i)
 }
 
@@ -101,6 +120,7 @@ pub extern "C" fn olive_str_get_checked(s: i64, i: i64, loc: i64) -> i64 {
     if s == 0 {
         crate::panic::olive_nil_index_fail(loc);
     }
+    let s = expect_str(s, "indexing");
     let len = olive_str_len(s);
     let idx = if i < 0 { i + len } else { i };
     if idx < 0 || idx >= len {
@@ -113,6 +133,7 @@ pub extern "C" fn olive_str_get_checked(s: i64, i: i64, loc: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_getslice(s: i64, start: i64, stop: i64, step: i64, flags: i64) -> i64 {
+    let s = expect_str(s, "slicing");
     if s == 0 {
         return olive_str_internal("");
     }
@@ -152,6 +173,7 @@ pub extern "C" fn olive_str_getslice(s: i64, start: i64, stop: i64, step: i64, f
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_slice(s: i64, start: i64, end: i64) -> i64 {
+    let s = expect_str(s, "slicing");
     let bytes = olive_str_to_bytes(s);
     let start = start as usize;
     let end = end as usize;
@@ -241,6 +263,7 @@ pub fn olive_str_as_str<'a>(ptr: i64) -> Option<&'a str> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_trim(s: i64) -> i64 {
+    let s = expect_str(s, "strip");
     if s == 0 {
         return 0;
     }
@@ -249,6 +272,7 @@ pub extern "C" fn olive_str_trim(s: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_trim_start(s: i64) -> i64 {
+    let s = expect_str(s, "lstrip");
     if s == 0 {
         return 0;
     }
@@ -257,6 +281,7 @@ pub extern "C" fn olive_str_trim_start(s: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_trim_end(s: i64) -> i64 {
+    let s = expect_str(s, "rstrip");
     if s == 0 {
         return 0;
     }
@@ -265,6 +290,7 @@ pub extern "C" fn olive_str_trim_end(s: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_upper(s: i64) -> i64 {
+    let s = expect_str(s, "upper");
     if s == 0 {
         return 0;
     }
@@ -273,6 +299,7 @@ pub extern "C" fn olive_str_upper(s: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_lower(s: i64) -> i64 {
+    let s = expect_str(s, "lower");
     if s == 0 {
         return 0;
     }
@@ -281,6 +308,9 @@ pub extern "C" fn olive_str_lower(s: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_replace(s: i64, from: i64, to: i64) -> i64 {
+    let s = expect_str(s, "replace");
+    let from = expect_str(from, "replace");
+    let to = expect_str(to, "replace");
     if s == 0 {
         return 0;
     }
@@ -292,6 +322,8 @@ pub extern "C" fn olive_str_replace(s: i64, from: i64, to: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_find(s: i64, needle: i64) -> i64 {
+    let s = expect_str(s, "find");
+    let needle = expect_str(needle, "find");
     if s == 0 || needle == 0 {
         return -1;
     }
@@ -311,6 +343,8 @@ pub extern "C" fn olive_str_find(s: i64, needle: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_contains(s: i64, needle: i64) -> i64 {
+    let s = expect_str(s, "contains");
+    let needle = expect_str(needle, "contains");
     if s == 0 || needle == 0 {
         return 0;
     }
@@ -323,6 +357,8 @@ pub extern "C" fn olive_str_contains(s: i64, needle: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_starts_with(s: i64, prefix: i64) -> i64 {
+    let s = expect_str(s, "startswith");
+    let prefix = expect_str(prefix, "startswith");
     if s == 0 || prefix == 0 {
         return 0;
     }
@@ -335,6 +371,8 @@ pub extern "C" fn olive_str_starts_with(s: i64, prefix: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_ends_with(s: i64, suffix: i64) -> i64 {
+    let s = expect_str(s, "endswith");
+    let suffix = expect_str(suffix, "endswith");
     if s == 0 || suffix == 0 {
         return 0;
     }
@@ -347,6 +385,7 @@ pub extern "C" fn olive_str_ends_with(s: i64, suffix: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_repeat(s: i64, n: i64) -> i64 {
+    let s = expect_str(s, "repeat");
     if s == 0 || n <= 0 {
         return olive_str_internal("");
     }
@@ -355,6 +394,13 @@ pub extern "C" fn olive_str_repeat(s: i64, n: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_split(s: i64, sep: i64) -> i64 {
+    // `sep == 0` is the whitespace-split sentinel, not a missing string.
+    let s = expect_str(s, "split");
+    let sep = if sep == 0 {
+        0
+    } else {
+        expect_str(sep, "split")
+    };
     let text = if s == 0 {
         String::new()
     } else {
@@ -375,6 +421,7 @@ pub extern "C" fn olive_str_join(list_ptr: i64, sep: i64) -> i64 {
     if list_ptr == 0 {
         return olive_str_internal("");
     }
+    let sep = expect_str(sep, "join");
     let s = unsafe { &*(list_ptr as *const StableVec) };
     let sep_bytes = olive_str_to_bytes(sep);
     let mut out = Vec::new();
@@ -382,7 +429,11 @@ pub extern "C" fn olive_str_join(list_ptr: i64, sep: i64) -> i64 {
         if i > 0 {
             out.extend_from_slice(sep_bytes);
         }
-        out.extend_from_slice(olive_str_to_bytes(unsafe { *s.ptr.add(i) }));
+        let elem = unsafe { *s.ptr.add(i) };
+        // A dynamically-typed list can hold non-strings: reading one as a
+        // string pointer runs out of bounds, so fault instead.
+        let elem = expect_str(elem, "join");
+        out.extend_from_slice(olive_str_to_bytes(elem));
     }
     // SAFETY: every element is a well-formed Olive string, so their
     // concatenation is valid UTF-8.
@@ -393,6 +444,8 @@ pub extern "C" fn olive_str_join(list_ptr: i64, sep: i64) -> i64 {
 /// (an empty `sub` counts every gap, `len(s) + 1` positions).
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_count(s: i64, sub: i64) -> i64 {
+    let s = expect_str(s, "count");
+    let sub = expect_str(sub, "count");
     let text = olive_str_from_ptr(s);
     let pat = olive_str_from_ptr(sub);
     text.matches(&pat).count() as i64
@@ -400,6 +453,8 @@ pub extern "C" fn olive_str_count(s: i64, sub: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_rfind(s: i64, needle: i64) -> i64 {
+    let s = expect_str(s, "rfind");
+    let needle = expect_str(needle, "rfind");
     if s == 0 || needle == 0 {
         return -1;
     }
@@ -419,6 +474,7 @@ pub extern "C" fn olive_str_rfind(s: i64, needle: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_splitlines(s: i64) -> i64 {
+    let s = expect_str(s, "splitlines");
     let text = olive_str_from_ptr(s);
     let parts: Vec<i64> = text.lines().map(olive_str_internal).collect();
     crate::list::list_from_vec(parts)
@@ -426,6 +482,7 @@ pub extern "C" fn olive_str_splitlines(s: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_title(s: i64) -> i64 {
+    let s = expect_str(s, "title");
     let text = olive_str_from_ptr(s);
     let mut out = String::with_capacity(text.len());
     let mut prev_alpha = false;
@@ -447,6 +504,7 @@ pub extern "C" fn olive_str_title(s: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_capitalize(s: i64) -> i64 {
+    let s = expect_str(s, "capitalize");
     let text = olive_str_from_ptr(s);
     let mut chars = text.chars();
     let out = match chars.next() {
@@ -463,6 +521,7 @@ pub extern "C" fn olive_str_capitalize(s: i64) -> i64 {
 /// Left-pads with `0` to `width` chars, preserving a leading `+`/`-` sign.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_zfill(s: i64, width: i64) -> i64 {
+    let s = expect_str(s, "zfill");
     let text = olive_str_from_ptr(s);
     let width = width.max(0) as usize;
     let (sign, rest) = if let Some(r) = text.strip_prefix('-') {
@@ -482,11 +541,15 @@ pub extern "C" fn olive_str_zfill(s: i64, width: i64) -> i64 {
 }
 
 fn fill_char(fill: i64) -> char {
-    olive_str_from_ptr(fill).chars().next().unwrap_or(' ')
+    olive_str_from_ptr(expect_str(fill, "fill"))
+        .chars()
+        .next()
+        .unwrap_or(' ')
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_ljust(s: i64, width: i64, fill: i64) -> i64 {
+    let s = expect_str(s, "ljust");
     let text = olive_str_from_ptr(s);
     let len = text.chars().count() as i64;
     let out = if len >= width {
@@ -500,6 +563,7 @@ pub extern "C" fn olive_str_ljust(s: i64, width: i64, fill: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_rjust(s: i64, width: i64, fill: i64) -> i64 {
+    let s = expect_str(s, "rjust");
     let text = olive_str_from_ptr(s);
     let len = text.chars().count() as i64;
     let out = if len >= width {
@@ -513,6 +577,7 @@ pub extern "C" fn olive_str_rjust(s: i64, width: i64, fill: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_center(s: i64, width: i64, fill: i64) -> i64 {
+    let s = expect_str(s, "center");
     let text = olive_str_from_ptr(s);
     let len = text.chars().count() as i64;
     let out = if len >= width {
@@ -531,6 +596,8 @@ pub extern "C" fn olive_str_center(s: i64, width: i64, fill: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_removeprefix(s: i64, prefix: i64) -> i64 {
+    let s = expect_str(s, "removeprefix");
+    let prefix = expect_str(prefix, "removeprefix");
     let text = olive_str_from_ptr(s);
     let pre = olive_str_from_ptr(prefix);
     olive_str_internal(text.strip_prefix(&pre).unwrap_or(&text))
@@ -538,6 +605,8 @@ pub extern "C" fn olive_str_removeprefix(s: i64, prefix: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_removesuffix(s: i64, suffix: i64) -> i64 {
+    let s = expect_str(s, "removesuffix");
+    let suffix = expect_str(suffix, "removesuffix");
     let text = olive_str_from_ptr(s);
     let suf = olive_str_from_ptr(suffix);
     olive_str_internal(text.strip_suffix(&suf).unwrap_or(&text))
@@ -545,24 +614,28 @@ pub extern "C" fn olive_str_removesuffix(s: i64, suffix: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_isdigit(s: i64) -> i64 {
+    let s = expect_str(s, "isdigit");
     let text = olive_str_from_ptr(s);
     (!text.is_empty() && text.chars().all(|c| c.is_numeric())) as i64
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_isalpha(s: i64) -> i64 {
+    let s = expect_str(s, "isalpha");
     let text = olive_str_from_ptr(s);
     (!text.is_empty() && text.chars().all(|c| c.is_alphabetic())) as i64
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_isspace(s: i64) -> i64 {
+    let s = expect_str(s, "isspace");
     let text = olive_str_from_ptr(s);
     (!text.is_empty() && text.chars().all(|c| c.is_whitespace())) as i64
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_isupper(s: i64) -> i64 {
+    let s = expect_str(s, "isupper");
     let text = olive_str_from_ptr(s);
     let cased: Vec<char> = text.chars().filter(|c| c.is_alphabetic()).collect();
     (!cased.is_empty() && cased.iter().all(|c| c.is_uppercase())) as i64
@@ -570,6 +643,7 @@ pub extern "C" fn olive_str_isupper(s: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_islower(s: i64) -> i64 {
+    let s = expect_str(s, "islower");
     let text = olive_str_from_ptr(s);
     let cased: Vec<char> = text.chars().filter(|c| c.is_alphabetic()).collect();
     (!cased.is_empty() && cased.iter().all(|c| c.is_lowercase())) as i64
@@ -577,6 +651,8 @@ pub extern "C" fn olive_str_islower(s: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_trim_chars(s: i64, chars: i64) -> i64 {
+    let s = expect_str(s, "strip");
+    let chars = expect_str(chars, "strip");
     let text = olive_str_from_ptr(s);
     let set: std::collections::HashSet<char> = olive_str_from_ptr(chars).chars().collect();
     olive_str_internal(text.trim_matches(|c| set.contains(&c)))
@@ -584,6 +660,8 @@ pub extern "C" fn olive_str_trim_chars(s: i64, chars: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_trim_start_chars(s: i64, chars: i64) -> i64 {
+    let s = expect_str(s, "lstrip");
+    let chars = expect_str(chars, "lstrip");
     let text = olive_str_from_ptr(s);
     let set: std::collections::HashSet<char> = olive_str_from_ptr(chars).chars().collect();
     olive_str_internal(text.trim_start_matches(|c| set.contains(&c)))
@@ -591,6 +669,8 @@ pub extern "C" fn olive_str_trim_start_chars(s: i64, chars: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_trim_end_chars(s: i64, chars: i64) -> i64 {
+    let s = expect_str(s, "rstrip");
+    let chars = expect_str(chars, "rstrip");
     let text = olive_str_from_ptr(s);
     let set: std::collections::HashSet<char> = olive_str_from_ptr(chars).chars().collect();
     olive_str_internal(text.trim_end_matches(|c| set.contains(&c)))
@@ -602,6 +682,8 @@ pub extern "C" fn olive_str_trim_end_chars(s: i64, chars: i64) -> i64 {
 /// result is built the same way a list literal is.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_partition(s: i64, sep: i64) -> i64 {
+    let s = expect_str(s, "partition");
+    let sep = expect_str(sep, "partition");
     let text = olive_str_from_ptr(s);
     let pat = olive_str_from_ptr(sep);
     let (before, mid, after) = if !pat.is_empty()
@@ -624,6 +706,7 @@ pub extern "C" fn olive_str_partition(s: i64, sep: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_fmt(template: i64, args: i64) -> i64 {
+    let template = expect_str(template, "fmt");
     if template == 0 {
         return olive_str_internal("");
     }
@@ -661,6 +744,7 @@ pub extern "C" fn olive_str_fmt(template: i64, args: i64) -> i64 {
 /// Backs `for c in s` iteration.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_chars(s: i64) -> i64 {
+    let s = expect_str(s, "chars");
     if s == 0 {
         return crate::list::olive_list_new(0);
     }
@@ -679,6 +763,7 @@ pub extern "C" fn olive_str_chars(s: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_char_count(s: i64) -> i64 {
+    let s = expect_str(s, "len");
     if s == 0 {
         return 0;
     }
@@ -687,6 +772,7 @@ pub extern "C" fn olive_str_char_count(s: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_is_ascii(s: i64) -> i64 {
+    let s = expect_str(s, "is_ascii");
     if s == 0 {
         return 1;
     }
@@ -700,6 +786,7 @@ pub extern "C" fn olive_str_is_ascii(s: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_grapheme_count(s: i64) -> i64 {
     use unicode_segmentation::UnicodeSegmentation;
+    let s = expect_str(s, "graphemes");
     if s == 0 {
         return 0;
     }
@@ -709,6 +796,7 @@ pub extern "C" fn olive_str_grapheme_count(s: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_graphemes(s: i64) -> i64 {
     use unicode_segmentation::UnicodeSegmentation;
+    let s = expect_str(s, "graphemes");
     if s == 0 {
         return crate::list::list_from_vec(Vec::new());
     }

@@ -295,6 +295,38 @@ fn union_method_calls_rejected_with_narrow_help() {
 }
 
 #[test]
+fn any_held_nonstring_method_receivers_fault() {
+    assert_faults_e0700(
+        "fn f(v: Any):\n    return v.upper()\nfn main():\n    print(f(5))\n",
+        "`upper` requires a string argument",
+    );
+    assert_faults_e0700(
+        "fn f(v: Any):\n    return v.find(\"a\")\nfn main():\n    print(f(5))\n",
+        "`find` requires a string argument",
+    );
+    assert_faults_e0700(
+        "fn f(v: Any):\n    return v.replace(\"a\", \"b\")\nfn main():\n    print(f(5))\n",
+        "`replace` requires a string argument",
+    );
+    assert_faults_e0700(
+        "fn f(v: Any):\n    return v.split(\",\")\nfn main():\n    print(f(5))\n",
+        "`split` requires a string argument",
+    );
+    assert_faults_e0700(
+        "fn main():\n    print(\",\".join([\"a\", 1]))\n",
+        "`join` requires a string argument",
+    );
+    assert_faults_e0700(
+        "fn f(v: Any):\n    return v.title()\nfn main():\n    print(f([1]))\n",
+        "`title` requires a string argument",
+    );
+    assert_accepted(
+        "fn main():\n    print(\"hi\".upper())\n    print(\"a,b\".split(\",\"))\n    print(\"a b\".split())\n    print(\",\".join([]))\n    print(\",\".join([\"a\", \"b\"]))\n    print(\"  x  \".strip())\n    print(\"hi\"[0])\n    print(\"abc\"[::2])\n",
+        "HI\n[\"a\", \"b\"]\n[\"a\", \"b\"]\n\na,b\nx\nh\nac\n",
+    );
+}
+
+#[test]
 fn sized_conversion_calls_share_cast_semantics() {
     assert_accepted(
         "fn f[T](x: T):\n    return i32(x)\nfn main():\n    print(i32(5))\n    print(i64(300))\n    print(i8(300))\n    print(u32(0 - 1))\n    print(f64(2))\n    print(f(7))\n",
