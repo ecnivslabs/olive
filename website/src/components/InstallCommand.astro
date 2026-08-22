@@ -20,10 +20,11 @@ const { id = 'install', dark = false } = Astro.props;
   </div>
   <div role="tabpanel" id={`${id}-windows`} aria-labelledby={`${id}-tab-windows`} class="install-panel" data-os="windows" hidden>
     <p class="win-steps">
-      Download <code>pit-windows-x86_64.exe</code> from the <a href="https://github.com/ecnivslabs/olive/releases/latest">releases page</a>,
+      Download <code>pit-windows-x86_64.exe</code> from the <a href="/download/">download page</a>,
       rename it to <code>pit.exe</code>, and add its folder to your <code>PATH</code>.
     </p>
   </div>
+  <p class="more-options"><a href="/download/">Direct binaries, checksums, source →</a></p>
 </div>
 
 <script>
@@ -71,6 +72,10 @@ const { id = 'install', dark = false } = Astro.props;
   .install .prompt { color: #A9BA6C; margin-right: 10px; }
   [data-dark] .install { background: var(--on-dark); color: var(--ink); }
   [data-dark] .install .prompt { color: var(--accent); }
+
+  .more-options { font-size: 12.5px; margin: 12px 0 0; }
+  .more-options a { color: var(--ink-muted); }
+  [data-dark] .more-options a { color: #8A8577; }
 
   .win-steps {
     font-size: 14px; line-height: 1.7; color: var(--ink-body); margin: 0; text-align: left;
