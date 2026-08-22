@@ -96,7 +96,10 @@ if (repo) {
   .readme-body :global(h2) { font-family: var(--font-sans); font-weight: 600; font-size: 20px; margin: 28px 0 12px; }
   .readme-body :global(p) { font-size: 15px; line-height: 1.75; color: var(--ink-body); margin: 0 0 18px; }
   .readme-body :global(code) { font-family: var(--font-mono); background: var(--surface); padding: 1px 6px; border-radius: 3px; font-size: 0.88em; }
-  .readme-body :global(pre) { border: 1px solid var(--border); border-radius: 6px; padding: 18px 20px; overflow-x: auto; margin: 0 0 20px; }
+  .readme-body :global(pre) {
+    background-color: var(--surface) !important; border: 1px solid var(--border);
+    border-radius: 6px; padding: 18px 20px; overflow-x: auto; margin: 0 0 20px;
+  }
   .readme-body :global(pre code) { background: none; padding: 0; }
   .readme-body :global(ul), .readme-body :global(ol) { color: var(--ink-body); font-size: 15px; line-height: 1.75; }
   .readme-body :global(a) { text-decoration: underline; text-underline-offset: 2px; }
