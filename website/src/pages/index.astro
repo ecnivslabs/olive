@@ -1,0 +1,107 @@
+---
+import BaseLayout from '../components/BaseLayout.astro';
+const base = import.meta.env.BASE_URL;
+---
+<BaseLayout
+  title="A language you can read"
+  description="Olive is a systems language with no garbage collector, indentation-based syntax, and native C, Rust, and Python interop."
+>
+  <main>
+    <section class="hero">
+      <p class="eyebrow">a systems language</p>
+      <h1>A language you can read.</h1>
+      <p class="sub">No braces. No semicolons. No garbage collector. Indentation defines the structure — the compiler infers ownership and frees every value it owns.</p>
+      <div class="install"><span class="prompt">$</span>curl -sSL https://raw.githubusercontent.com/ecnivslabs/olive/master/install.sh | sh</div>
+      <p class="subline">or <a href={`${base}get-started/`}>read the introduction →</a></p>
+    </section>
+
+    <section class="why">
+      <div class="why-grid">
+        <div class="why-item">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8" stroke="var(--accent)" stroke-width="1.4"/><circle cx="12" cy="12" r="2" fill="var(--accent)"/></svg>
+          <p class="why-h">No garbage collector</p>
+          <p class="why-p">Ownership is inferred at compile time. Every value is freed at its last use, deterministically — no lifetime syntax to write.</p>
+        </div>
+        <div class="why-item">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><line x1="4" y1="6" x2="20" y2="6" stroke="var(--accent)" stroke-width="1.4"/><line x1="8" y1="12" x2="20" y2="12" stroke="var(--accent)" stroke-width="1.4"/><line x1="12" y1="18" x2="20" y2="18" stroke="var(--accent)" stroke-width="1.4"/></svg>
+          <p class="why-h">Indentation is the syntax</p>
+          <p class="why-p">No braces, no semicolons. Program structure comes from indentation alone, so the page reads the way it runs.</p>
+        </div>
+        <div class="why-item">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="7" width="12" height="12" rx="2" stroke="var(--accent)" stroke-width="1.4"/><rect x="9" y="3" width="12" height="12" rx="2" stroke="var(--ink)" stroke-width="1.4"/></svg>
+          <p class="why-h">Talks to your stack</p>
+          <p class="why-p">Import C and Rust libraries through a C-compatible ABI, or call any Python module directly with zero-copy collections.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="codesec">
+      <div class="codesec-inner">
+        <h2>Value semantics, not memory management.</h2>
+        <p class="lede">This is the whole model: a store copies or moves, it never shares. Mutation after that is exactly what it looks like.</p>
+        <div class="card">
+          <pre><code><span class="kw">fn</span> <span class="fn">main</span>():
+    <span class="kw">let mut</span> a = [1, 2]
+    <span class="kw">let</span> b = [a]      <span class="cm">// b stores its own copy of a</span>
+    a[0] = 99
+    print(a[0])      <span class="cm">// 99</span>
+    print(b[0][0])   <span class="cm">// 1, unchanged</span></code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section class="cta">
+      <h2>Try it in the next minute.</h2>
+      <div class="install"><span class="prompt">$</span>curl -sSL https://raw.githubusercontent.com/ecnivslabs/olive/master/install.sh | sh</div>
+    </section>
+  </main>
+</BaseLayout>
+
+<style>
+  .hero {
+    display: flex; flex-direction: column; align-items: center; text-align: center;
+    padding: 100px 24px 84px;
+  }
+  .eyebrow {
+    font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.14em;
+    color: var(--accent); text-transform: uppercase; margin: 0 0 20px;
+  }
+  h1 {
+    font-family: var(--font-display); font-style: italic; font-size: clamp(38px, 6vw, 64px);
+    line-height: 1.08; margin: 0 0 24px; max-width: 13ch;
+  }
+  .sub { font-size: 17px; line-height: 1.7; color: var(--ink-body); max-width: 54ch; margin: 0 0 34px; }
+  .install {
+    font-family: var(--font-mono); font-size: 14px; background: var(--ink);
+    color: var(--on-dark); padding: 14px 24px; border-radius: 3px; margin-bottom: 14px;
+    max-width: 100%; white-space: pre-wrap; word-break: break-all; text-align: left;
+  }
+  .install .prompt { color: #A9BA6C; margin-right: 10px; }
+  .subline { font-size: 13px; color: var(--ink-muted); }
+
+  .why { padding: 20px 24px 90px; border-top: 1px solid var(--border); }
+  .why-grid { max-width: 1040px; margin: 60px auto 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: 48px; }
+  .why-item svg { margin-bottom: 18px; }
+  .why-h { font-family: var(--font-mono); font-size: 14px; font-weight: 500; margin: 0 0 10px; }
+  .why-p { font-size: 14.5px; line-height: 1.65; color: var(--ink-body); margin: 0; }
+
+  .codesec { padding: 20px 24px 96px; }
+  .codesec-inner { max-width: 900px; margin: 0 auto; text-align: center; }
+  .codesec h2 { font-size: 34px; margin: 0 0 14px; }
+  .codesec p.lede { font-size: 15px; color: var(--ink-body); max-width: 50ch; margin: 0 auto 40px; line-height: 1.65; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    padding: 26px 32px; text-align: left; overflow-x: auto;
+  }
+  .card pre { margin: 0; font-size: 13px; line-height: 1.85; }
+  .kw { color: var(--accent); font-weight: 500; } .fn { color: #7A6A2E; } .cm { color: #A29C82; }
+
+  .cta { background: var(--ink); color: var(--on-dark); padding: 80px 24px; text-align: center; }
+  .cta h2 { font-style: italic; font-size: 40px; margin: 0 0 30px; color: var(--on-dark); }
+  .cta .install { background: var(--on-dark); color: var(--ink); display: inline-block; }
+  .cta .install .prompt { color: var(--accent); }
+
+  @media (max-width: 780px) {
+    .why-grid { grid-template-columns: 1fr; gap: 40px; }
+  }
+</style>

@@ -8,7 +8,7 @@ Type parameters stand in for types. They are written in square brackets after th
 
 ### Generic Functions
 
-```rust
+```olive
 fn swap[T](a: T, b: T) -> (T, T):
     return (b, a)
 
@@ -22,7 +22,7 @@ Because of monomorphization, the `int` call and the `str` call compile to separa
 
 A struct can take type parameters too, which makes it a container for any type:
 
-```rust
+```olive
 struct Holder[T]:
     value: T
 
@@ -38,7 +38,7 @@ let str_holder = Holder("hi")   // T is str
 
 You rarely name the type parameter at a call. The compiler reads it from the arguments:
 
-```rust
+```olive
 fn first[T](items: [T]) -> T:
     return items[0]
 
@@ -53,7 +53,7 @@ above.
 
 You can annotate a type parameter with `: Trait` to document that the parameter must provide the trait's methods:
 
-```rust
+```olive
 trait Comparable:
     fn rank(self) -> int:
         return 0

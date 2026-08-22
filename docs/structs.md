@@ -6,7 +6,7 @@ Structs are the compound data types in Olive. They group related fields and carr
 
 A struct lists its fields, each with an explicit type. A field may give a default value, which lets it be omitted when constructing the struct. Fields with defaults must come last.
 
-```rust
+```olive
 struct User:
     username: str
     email: str
@@ -17,7 +17,7 @@ struct User:
 
 Without a custom initializer, a struct is built by passing its fields in order. Trailing fields that have a default may be left out:
 
-```rust
+```olive
 let u = User("vince", "v@example.com")          // is_active defaults to True
 let banned = User("mallory", "m@example.com", False)
 ```
@@ -26,7 +26,7 @@ let banned = User("mallory", "m@example.com", False)
 
 Methods live in an `impl` block. A method that works on an instance takes `self` as its first parameter:
 
-```rust
+```olive
 impl User:
     fn deactivate(self):
         self.is_active = False
@@ -39,7 +39,7 @@ impl User:
 
 Define `__init__` when construction needs validation or derived fields. Olive calls it when the struct is built:
 
-```rust
+```olive
 struct Rectangle:
     width: float
     height: float
@@ -61,7 +61,7 @@ With an `__init__`, the constructor takes the parameters that `__init__` declare
 
 A struct can take type parameters in `[...]`, so it can hold any type:
 
-```rust
+```olive
 struct Box[T]:
     content: T
 
@@ -77,7 +77,7 @@ let str_box = Box("item")  // T is str
 
 Olive composes structs rather than inheriting between them. A struct holds other structs to reuse their data and behavior:
 
-```rust
+```olive
 struct Admin:
     user: User
     permissions: [str]
@@ -91,7 +91,7 @@ impl Admin:
 
 A field or method whose name starts with an underscore is private. It is reachable only from within the module that defines the struct:
 
-```rust
+```olive
 struct Account:
     _balance: float
 
@@ -111,7 +111,7 @@ Both operands must be the struct's own type; there is no reflected form
 (no `__radd__`). The method consumes both operands, the same as Rust's
 `Add`:
 
-```rust
+```olive
 struct Vec2:
     x: float
     y: float
@@ -130,7 +130,7 @@ container lookup), and a by-value `self` would be freed after the first
 call. `!=`, `>`, `<=`, `>=` all derive from these two — defining one of
 those four directly is a compile error, matching name it derives from:
 
-```rust
+```olive
 impl Vec2:
     fn __eq__(self: &Vec2, other: &Vec2) -> bool:
         return self.x == other.x and self.y == other.y
@@ -150,7 +150,7 @@ struct list without one is a compile error naming the missing method.
 `str()`, and f-string interpolation; a struct without one falls back to an
 automatic field-by-field representation:
 
-```rust
+```olive
 impl Vec2:
     fn __str__(self) -> str:
         return f"({self.x}, {self.y})"
@@ -162,7 +162,7 @@ print(Vec2(1.0, 2.0))       // (1.0, 2.0)
 
 A struct can implement a trait to gain a shared set of methods. See [Traits](traits.md) for the full picture:
 
-```rust
+```olive
 trait Describable:
     fn describe(self) -> str:
         return "an object"

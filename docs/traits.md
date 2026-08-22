@@ -6,7 +6,7 @@ A trait is a set of methods that several types can share. A type takes on a trai
 
 A trait lists its methods, each with a body. That body is the default: a type that implements the trait gets it for free unless it provides its own.
 
-```rust
+```olive
 trait Drawable:
     fn draw(self):
         print("a shape")
@@ -18,7 +18,7 @@ The `self` parameter is the implementing value.
 
 Write `impl Trait for Type` and override the methods you want to change:
 
-```rust
+```olive
 struct Circle:
     radius: float
 
@@ -31,7 +31,7 @@ impl Drawable for Circle:
 
 A type that is happy with the defaults implements the trait with `pass` and inherits every method as written:
 
-```rust
+```olive
 struct Blank:
     pass
 
@@ -47,7 +47,7 @@ You can also override some methods and inherit the rest: only the methods you wr
 
 A function can take a collection typed by the trait. Each element keeps its own concrete type, and the right method runs for each one, resolved at runtime:
 
-```rust
+```olive
 fn render_all(items: [Drawable]):
     for item in items:
         item.draw()

@@ -4,7 +4,7 @@
 
 Use the `import` statement to bring in other Olive files. Dots in the module name map to directory separators:
 
-```rust
+```olive
 import math
 import utilities.network
 import physics.gravity as gravity
@@ -19,7 +19,7 @@ By default, `import math` looks for `math.liv` in the same directory as the curr
 
 `import meta` is a compile-time virtual module that synthesizes constants from the project manifest:
 
-```rust
+```olive
 import meta
 
 print(meta.NAME)       // project name from pit.toml
@@ -42,7 +42,7 @@ Olive separates imported modules from executable main scripts by placing strict 
 
 If you only need specific names from a module, use `from ... import`:
 
-```rust
+```olive
 from math import sqrt, pi
 from data.processing import clean_string as clean, parse_json as parse
 
@@ -54,7 +54,7 @@ let data = parse(clean(raw_input))
 
 If a library is written in another language (like C or Rust), it can be used in Olive by defining its interface through a native import.
 
-```rust
+```olive
 import "physics.so" as physics
 
 let result = physics.compute_gravity(10.0, 5.0)
@@ -69,7 +69,7 @@ Olive uses a naming convention for visibility:
 - **Public**: Any name that doesn't start with an underscore. Accessible from other modules.
 - **Private**: Names starting with `_` are private to the module where they're defined. The compiler enforces this.
 
-```rust
+```olive
 // In utils.liv
 fn _secret():
     pass
@@ -94,7 +94,7 @@ my_project/
 
 In `main.liv`:
 
-```rust
+```olive
 import models
 import utils.network
 ```
@@ -105,13 +105,13 @@ The standard library is implemented in Olive and resolved via the built-in modul
 
 ### `math`
 
-```rust
+```olive
 import math
 ```
 
 **Constants**
 
-```rust
+```olive
 math.PI    // 3.141592653589793
 math.E     // 2.718281828459045
 math.TAU   // 6.283185307179586
@@ -120,7 +120,7 @@ math.INF   // 1.0e308
 
 **Trigonometry** (all angles in radians)
 
-```rust
+```olive
 math.sin(x)         math.asin(x)
 math.cos(x)         math.acos(x)
 math.tan(x)         math.atan(x)
@@ -131,7 +131,7 @@ math.radians(x)     // degrees -> radians
 
 **Exponential and logarithm**
 
-```rust
+```olive
 math.exp(x)         // e^x
 math.log(x)         // natural log
 math.log10(x)       // log base 10
@@ -141,7 +141,7 @@ math.ipow(b, e)     // b^e (integers)
 
 **Roots and rounding**
 
-```rust
+```olive
 math.sqrt(x)
 math.cbrt(x)
 math.hypot(x, y)    // sqrt(x^2 + y^2)
@@ -156,7 +156,7 @@ math.copysign(x, y)
 
 **Hyperbolic**
 
-```rust
+```olive
 math.sinh(x)    math.asinh(x)
 math.cosh(x)    math.acosh(x)
 math.tanh(x)    math.atanh(x)
@@ -164,7 +164,7 @@ math.tanh(x)    math.atanh(x)
 
 **Number theory**
 
-```rust
+```olive
 math.gcd(a, b)
 math.lcm(a, b)
 math.factorial(n)
@@ -174,7 +174,7 @@ math.perm(n, k)     // n permute k
 
 **Utilities**
 
-```rust
+```olive
 math.min(a, b)
 math.max(a, b)
 math.isclose(a, b)  // abs(a - b) < 1e-9
@@ -185,13 +185,13 @@ math.erf(x)
 
 Synchronous file and directory operations:
 
-```rust
+```olive
 import io
 ```
 
 **File I/O**
 
-```rust
+```olive
 io.read_file(path) -> str
 io.write_file(path, data) -> bool
 io.append_file(path, data) -> bool
@@ -212,7 +212,7 @@ io.close(handle)
 
 **Path operations**
 
-```rust
+```olive
 io.path_join(a, b) -> str
 io.path_dirname(path) -> str
 io.path_basename(path) -> str
@@ -243,20 +243,20 @@ skipped, tracked by canonical path).
 
 **Standard input**
 
-```rust
+```olive
 io.read_stdin() -> str
 io.read_line() -> str
 ```
 
 **File struct**
 
-```rust
+```olive
 io.open(path, mode = "r") -> File
 ```
 
 The `File` struct supports the `with` statement:
 
-```rust
+```olive
 with io.open("data.txt") as f:
     let content = f.read()
 ```
@@ -265,7 +265,7 @@ File methods: `read()`, `write(data)`, `append(data)`, `close()`
 
 **Buffered I/O**
 
-```rust
+```olive
 io.bufread_open(path) -> int
 io.bufread_line(br) -> str
 io.bufread_close(br)
@@ -279,13 +279,13 @@ io.bufwrite_close(bw)
 
 Async runtime with channels, mutexes, and atomics:
 
-```rust
+```olive
 import aio
 ```
 
 **Async execution**
 
-```rust
+```olive
 aio.run(future)                         // run a future to completion
 aio.gather(futures)                     // run futures in parallel, resolve with all results in order
 aio.select(futures)                     // run futures in parallel, resolve with the first result
@@ -295,14 +295,14 @@ aio.free_future(future)                 // free a future handle
 
 **Async file I/O**
 
-```rust
+```olive
 aio.read_file(path)                     // async file read
 aio.write_file(path, data)              // async file write
 ```
 
 **Channels**
 
-```rust
+```olive
 aio.chan_new() -> int
 aio.chan_send(chan, val) -> bool
 aio.chan_recv(chan)                     // blocks until value available
@@ -314,7 +314,7 @@ aio.chan_free(chan)
 
 **Mutexes**
 
-```rust
+```olive
 aio.mutex_new(val) -> int
 aio.mutex_lock(m)
 aio.mutex_unlock(m, new_val)
@@ -323,7 +323,7 @@ aio.mutex_free(m)
 
 **Atomics**
 
-```rust
+```olive
 aio.atomic_new(val) -> int
 aio.atomic_get(ptr) -> int
 aio.atomic_set(ptr, val)
@@ -334,7 +334,7 @@ aio.atomic_free(ptr)
 
 **Worker pool**
 
-```rust
+```olive
 aio.pool_size() -> int
 aio.pool_run(fn_ptr, arg) -> int
 aio.pool_run_sync(fn_ptr, arg) -> int
@@ -344,13 +344,13 @@ aio.pool_run_sync(fn_ptr, arg) -> int
 
 TCP and UDP networking:
 
-```rust
+```olive
 import net
 ```
 
 **TCP**
 
-```rust
+```olive
 net.tcp_connect(addr) -> int
 net.tcp_send(conn, data) -> int
 net.tcp_recv(conn, max_len) -> str
@@ -365,7 +365,7 @@ net.tcp_listener_close(server)
 
 **UDP**
 
-```rust
+```olive
 net.udp_open(bind_addr) -> int
 net.udp_send(sock, addr, data) -> int
 net.udp_recv(sock, max_len)
@@ -375,7 +375,7 @@ net.udp_close(sock)
 
 **DNS**
 
-```rust
+```olive
 net.dns_lookup(hostname) -> str
 net.dns_lookup_all(hostname) -> list
 ```
@@ -384,11 +384,11 @@ net.dns_lookup_all(hostname) -> list
 
 HTTP client:
 
-```rust
+```olive
 import requests
 ```
 
-```rust
+```olive
 requests.get(url) -> str
 requests.post(url, body) -> str
 requests.post_json(url, body) -> str
@@ -402,11 +402,11 @@ requests.get_with_headers(url, headers) -> str
 
 JSON parser and serializer, fully implemented in Olive:
 
-```rust
+```olive
 import json
 ```
 
-```rust
+```olive
 json.loads(s)           // parse JSON string -> value
 json.dumps(obj) -> str  // serialize value -> JSON string
 ```
@@ -417,11 +417,11 @@ Supports parsing: strings, numbers, arrays, objects, booleans, null.
 
 YAML and TOML parsing:
 
-```rust
+```olive
 import yaml
 ```
 
-```rust
+```olive
 yaml.parse(s)                       // parse YAML string -> value
 yaml.stringify(obj) -> str          // serialize value -> YAML string
 yaml.toml_parse(s)                  // parse TOML string -> value
@@ -432,11 +432,11 @@ yaml.toml_stringify(obj) -> str     // serialize value -> TOML string
 
 Random number generation:
 
-```rust
+```olive
 import random
 ```
 
-```rust
+```olive
 random.seed(n)
 random.random() -> float        // float in [0.0, 1.0)
 random.randint(min, max) -> int // int in [min, max]
@@ -448,11 +448,11 @@ random.shuffle(lst)             // shuffle list in place
 
 Date and time functions:
 
-```rust
+```olive
 import datetime
 ```
 
-```rust
+```olive
 datetime.now() -> float
 datetime.utcnow() -> float
 datetime.parse(s) -> float
@@ -485,11 +485,11 @@ datetime.days_in_month(year, month) -> int
 
 Wall clock and monotonic time:
 
-```rust
+```olive
 import time
 ```
 
-```rust
+```olive
 time.now() -> float
 time.monotonic() -> float
 time.sleep(secs)
@@ -501,11 +501,11 @@ time.format_iso(ts) -> str
 
 Cryptographic primitives:
 
-```rust
+```olive
 import crypto
 ```
 
-```rust
+```olive
 crypto.sha256(s) -> str
 crypto.md5(s) -> str
 crypto.aes_encrypt(key, plaintext) -> str
@@ -521,11 +521,11 @@ crypto.rsa_decrypt(priv_key, data) -> str
 
 Encoding and decoding utilities:
 
-```rust
+```olive
 import encoding
 ```
 
-```rust
+```olive
 encoding.base64_encode(s) -> str
 encoding.base64_decode(s) -> str
 encoding.url_encode(s) -> str
@@ -538,11 +538,11 @@ encoding.hex_decode(s) -> str
 
 Data compression:
 
-```rust
+```olive
 import compress
 ```
 
-```rust
+```olive
 compress.gzip_compress(data) -> str
 compress.gzip_decompress(data) -> str
 compress.zstd_compress(data) -> str
@@ -553,11 +553,11 @@ compress.zstd_decompress(data) -> str
 
 Regular expressions:
 
-```rust
+```olive
 import regex
 ```
 
-```rust
+```olive
 regex.regex_match(pattern, text) -> bool
 regex.find(pattern, text) -> str
 regex.find_all(pattern, text) -> list
@@ -578,7 +578,7 @@ For a pattern reused across many calls independent of the shared cache (or
 that needs named groups / all-matches capture iteration), compile it once
 into a `Pattern`:
 
-```rust
+```olive
 regex.compile(pattern) -> Pattern | int   // -1 on an invalid pattern
 ```
 
@@ -588,7 +588,7 @@ regex.compile(pattern) -> Pattern | int   // -1 on an invalid pattern
 `capture_named(text, name) -> str`, `replace(text, rep) -> str`,
 `replace_all(text, rep) -> str`, `split(text) -> [str]`.
 
-```rust
+```olive
 let p = regex.compile(r"(?P<year>\d{4})-(?P<month>\d{2})")
 if p == -1:
     print("bad pattern")
@@ -601,11 +601,11 @@ else:
 Child process management -- the real subprocess API `os.exec`/`os.exec_status`
 are thin convenience wrappers over:
 
-```rust
+```olive
 import process
 ```
 
-```rust
+```olive
 process.run(argv) -> Output | int      // spawn + wait, captures both streams
 process.shell(cmd) -> Output | int     // explicit `sh -c`, not run's default
 ```
@@ -614,7 +614,7 @@ process.shell(cmd) -> Output | int     // explicit `sh -c`, not run's default
 
 **Builder**
 
-```rust
+```olive
 let cmd = process.Command("git")
 cmd.arg("status").arg("--short")
 cmd.cwd("/path/to/repo")
@@ -629,7 +629,7 @@ let out = cmd.run()
 
 **Streaming / long-lived children**
 
-```rust
+```olive
 let child = cmd.spawn()
 if child != -1:
     child.write_stdin("ping\n")
@@ -655,11 +655,11 @@ Olive thread and cannot exhaust memory if the caller never reads it.
 
 Shell-style glob matching over paths, built on `regex` and `io.walk`:
 
-```rust
+```olive
 import glob
 ```
 
-```rust
+```olive
 glob.matches(pattern, path) -> bool
 glob.compile(pattern) -> Pattern | int   // reusable matcher, -1 if invalid
 glob.find(pattern) -> [str]              // search from "."
@@ -672,7 +672,7 @@ Supports `*` (within one path segment), `**` (spans segments), `?` (one
 non-`/` character), `[abc]` / `[!abc]` character classes, and `{a,b,c}`
 brace alternation.
 
-```rust
+```olive
 for f in glob.find_in("src", "**/*.liv"):
     print(f)
 ```
@@ -681,11 +681,11 @@ for f in glob.find_in("src", "**/*.liv"):
 
 Byte buffer operations:
 
-```rust
+```olive
 import bytes
 ```
 
-```rust
+```olive
 bytes.new(cap) -> int
 bytes.from_str(s) -> int
 bytes.len(buf) -> int
@@ -715,11 +715,11 @@ bytes.write_u64_be(buf, offset, val)
 
 Advanced string operations:
 
-```rust
+```olive
 import string
 ```
 
-```rust
+```olive
 string.trim(s) -> str
 string.trim_start(s) -> str
 string.trim_end(s) -> str
@@ -745,11 +745,11 @@ string.graphemes(s) -> list
 
 Operating system process interface:
 
-```rust
+```olive
 import os
 ```
 
-```rust
+```olive
 os.getenv(name) -> str
 os.setenv(name, val)
 os.args() -> list
@@ -762,11 +762,11 @@ os.exec_status(cmd) -> int // run command, return exit code
 
 System information:
 
-```rust
+```olive
 import sys
 ```
 
-```rust
+```olive
 sys.hostname() -> str
 sys.pid() -> int
 sys.cpu_count() -> int
@@ -785,13 +785,13 @@ sys.chdir(path) -> bool
 
 Structured logging:
 
-```rust
+```olive
 import logging
 ```
 
 **Log levels**
 
-```rust
+```olive
 logging.DEBUG  // 0
 logging.INFO   // 1
 logging.WARN   // 2
@@ -800,7 +800,7 @@ logging.ERROR  // 3
 
 **Output formats**
 
-```rust
+```olive
 logging.PLAIN  // 0
 logging.JSON   // 1
 logging.COLOR  // 2
@@ -808,7 +808,7 @@ logging.COLOR  // 2
 
 **Functions**
 
-```rust
+```olive
 logging.set_level(level)
 logging.set_level_str(level)
 logging.set_format(fmt)
@@ -824,11 +824,11 @@ logging.clear_fields()
 
 UUID generation:
 
-```rust
+```olive
 import uuid
 ```
 
-```rust
+```olive
 uuid.v4() -> str
 uuid.nil() -> str
 uuid.is_valid(s) -> bool
@@ -839,11 +839,11 @@ uuid.to_hex(s) -> str
 
 WebSocket client:
 
-```rust
+```olive
 import websocket
 ```
 
-```rust
+```olive
 websocket.connect(url) -> int
 websocket.send(handle, msg) -> bool
 websocket.send_binary(handle, buf) -> bool
@@ -856,11 +856,11 @@ websocket.close(handle)
 
 Result type utilities for error handling:
 
-```rust
+```olive
 import result
 ```
 
-```rust
+```olive
 result.ok(val)
 result.err(msg) -> obj
 result.is_ok(r) -> bool
@@ -875,11 +875,11 @@ result.err_msg(r) -> str
 
 Runtime type introspection:
 
-```rust
+```olive
 import reflect
 ```
 
-```rust
+```olive
 reflect.typeof(val) -> str
 reflect.is_null(val) -> bool
 reflect.is_str(val) -> bool
@@ -896,11 +896,11 @@ reflect.run_exit_hooks()
 
 Raw terminal control for building full-screen interfaces:
 
-```rust
+```olive
 import term
 ```
 
-```rust
+```olive
 term.enable_raw() -> bool          // per-keystroke input, no line buffering/echo
 term.disable_raw() -> bool
 term.enter_alt_screen() -> bool    // switch to the alternate screen buffer
@@ -919,7 +919,7 @@ term.disable_key_enhancement() -> bool
 term.read_key() -> Key             // blocks for one key press or terminal event
 ```
 
-```rust
+```olive
 enum Key:
     Enter
     ShiftEnter
@@ -942,7 +942,7 @@ enum Key:
 `read_key()` blocks and returns one `Key` variant per press or event. Match
 on it exhaustively:
 
-```rust
+```olive
 match term.read_key():
     Enter:
         ...
@@ -970,10 +970,10 @@ shell is left in raw mode.
 
 Signal handling:
 
-```rust
+```olive
 import signal
 ```
 
-```rust
+```olive
 signal.install_sigint_handler(message)
 ```

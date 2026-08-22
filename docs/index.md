@@ -13,7 +13,8 @@ This is the technical reference and user guide for the Olive systems programming
 
 - [**Ownership**](ownership.md): How Olive manages memory without a garbage collector.
 - [**Generics**](generics.md): Writing flexible, reusable code with type parameters.
-- [**Structs and Enums**](structs.md): Building your own data types.
+- [**Structs**](structs.md): Building your own data types.
+- [**Enums**](enums.md): Modeling a fixed set of variants, some carrying data.
 - [**Traits**](traits.md): Defining shared behavior between different types.
 - [**Async**](async.md): Writing fast, concurrent programs with `async` and `await`.
 - [**Error Handling**](error_handling.md): How to deal with things that go wrong.
