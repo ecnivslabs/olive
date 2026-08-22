@@ -25,7 +25,7 @@ const FALLBACK_PODS: Pod[] = [
     deps: [],
     by: 'vinceswu',
     description:
-      'Terminal support — raw mode, keyboard and mouse input, cursor control, flicker-free redraws, and clipboard access via OSC 52.',
+      'Terminal support: raw mode, keyboard and mouse input, cursor control, flicker-free redraws, and clipboard access via OSC 52.',
     dl: 'https://github.com/vinceswu/term/releases/download/term-0.1.5/term.pit.zst',
   },
 ];
