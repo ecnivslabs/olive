@@ -233,10 +233,99 @@ fn instrument_function(
         is_sm,
     ));
 
-    for bb_idx in 0..func.basic_blocks.len() {
+    // Line-run context at each block's entry, via dataflow. Ownership
+    // guards split one source line's statement run across several blocks
+    // (flag switch -> cold drop block -> merge back); without this, each
+    // fragment re-emits a stop point for the same line and one breakpoint
+    // hit stops twice. A synthetic-only block (all spans default: guard
+    // plumbing, relocated drops) is transparent and passes its context
+    // through; a block with real statements ends in that statement's line.
+    // Disagreeing predecessors (a genuine join, or a loop back-edge from a
+    // different line) resolve to Conflict so the hook re-arms.
+    #[derive(Clone, Copy, PartialEq)]
+    enum RunCtx {
+        Unknown,
+        Line(i64),
+        Conflict,
+    }
+    let n_blocks = func.basic_blocks.len();
+    let tail_line: Vec<Option<i64>> = func
+        .basic_blocks
+        .iter()
+        .map(|bb| {
+            bb.statements
+                .iter()
+                .rev()
+                .find(|s| s.span != Span::default())
+                .map(|s| pack_line(&s.span))
+        })
+        .collect();
+    let mut preds: Vec<Vec<usize>> = vec![Vec::new(); n_blocks];
+    for (bb_idx, bb) in func.basic_blocks.iter().enumerate() {
+        if let Some(term) = &bb.terminator {
+            let mut succs = Vec::new();
+            match &term.kind {
+                TerminatorKind::Goto { target } => succs.push(target.0),
+                TerminatorKind::SwitchInt {
+                    targets, otherwise, ..
+                } => {
+                    succs.extend(targets.iter().map(|(_, t)| t.0));
+                    succs.push(otherwise.0);
+                }
+                _ => {}
+            }
+            for s in succs {
+                if s < preds.len() && !preds[s].contains(&bb_idx) {
+                    preds[s].push(bb_idx);
+                }
+            }
+        }
+    }
+    fn meet(a: RunCtx, b: RunCtx) -> RunCtx {
+        match (a, b) {
+            (RunCtx::Unknown, x) | (x, RunCtx::Unknown) => x,
+            (RunCtx::Conflict, _) | (_, RunCtx::Conflict) => RunCtx::Conflict,
+            (RunCtx::Line(x), RunCtx::Line(y)) if x == y => RunCtx::Line(x),
+            _ => RunCtx::Conflict,
+        }
+    }
+    let mut in_ctx: Vec<RunCtx> = vec![RunCtx::Unknown; n_blocks];
+    let mut out_ctx: Vec<RunCtx> = tail_line
+        .iter()
+        .map(|t| t.map(RunCtx::Line).unwrap_or(RunCtx::Unknown))
+        .collect();
+    // Monotone meet converges; bound at one pass per possible context change.
+    for _ in 0..(n_blocks + 2) {
+        let mut changed = false;
+        for b in 0..n_blocks {
+            let new_in = preds[b]
+                .iter()
+                .map(|&p| out_ctx[p])
+                .fold(RunCtx::Unknown, meet);
+            if new_in != in_ctx[b] {
+                in_ctx[b] = new_in;
+                changed = true;
+            }
+            let new_out = tail_line[b]
+                .map(RunCtx::Line)
+                .unwrap_or(in_ctx[b]);
+            if new_out != out_ctx[b] {
+                out_ctx[b] = new_out;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    for bb_idx in 0..n_blocks {
         let original = std::mem::take(&mut func.basic_blocks[bb_idx].statements);
         let mut rebuilt = entry_prelude.take().unwrap_or_default();
-        let mut last_line: Option<i64> = None;
+        let mut last_line: Option<i64> = match in_ctx[bb_idx] {
+            RunCtx::Line(l) => Some(l),
+            _ => None,
+        };
         // Track original stmt index → position in instrumented block: each
         // debug_stmt call at `stmt_site` in the instrumented block gets
         // wrapped with a conditional check below.

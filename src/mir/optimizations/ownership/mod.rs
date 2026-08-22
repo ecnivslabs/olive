@@ -90,7 +90,7 @@ impl Transform for OwnershipInference {
         }
 
         let liveness = Liveness::compute(func);
-        let heap: Vec<bool> = func.locals.iter().map(|d| d.ty.is_move_type()).collect();
+        let heap: Vec<bool> = func.locals.iter().map(|d| d.ty.needs_drop()).collect();
         let builder_owning: Vec<bool> = func.locals.iter().map(|d| d.is_owning).collect();
 
         let (records, arg_moves, direct_store_moves, agg_moves) = collect_assigns(

@@ -80,7 +80,7 @@ pub(super) fn emit_value_free(
     val: Value,
     ty: &OliveType,
 ) {
-    if !ty.is_move_type() {
+    if !ty.needs_drop() {
         return;
     }
     if let OliveType::Fn(..) = super::imports::concrete_ty(ty) {
@@ -847,7 +847,7 @@ impl<M: Module> CraneliftCodegen<M> {
             }
             StatementKind::Drop(local) => {
                 let ty = &func_mir.locals[local.0].ty;
-                if !ty.is_move_type() {
+                if !ty.needs_drop() {
                     return;
                 }
                 let var = vars.get(local).unwrap();

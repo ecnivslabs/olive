@@ -62,7 +62,7 @@ pub(super) fn collect_needed_imports(
                     }
                     StatementKind::Drop(local) => {
                         let ty = &func.locals[local.0].ty;
-                        if ty.is_move_type() {
+                        if ty.needs_drop() {
                             match ty {
                                 OliveType::Str => {
                                     needed.insert("__olive_free_str");
