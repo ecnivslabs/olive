@@ -48,8 +48,8 @@ const base = import.meta.env.BASE_URL;
   .content :global(p) { font-size: 15px; line-height: 1.75; color: var(--ink-body); max-width: 68ch; margin: 0 0 20px; }
   .content :global(strong) { color: var(--ink); font-weight: 600; }
   .content :global(code) { font-family: var(--font-mono); background: var(--surface); padding: 1px 6px; border-radius: 3px; font-size: 0.88em; }
-  .content :global(pre) { background: var(--ink); border-radius: 6px; padding: 20px 22px; overflow-x: auto; margin: 0 0 24px; }
-  .content :global(pre code) { background: none; padding: 0; color: #E9E5D6; }
+  .content :global(pre) { border: 1px solid var(--border); border-radius: 6px; padding: 20px 22px; overflow-x: auto; margin: 0 0 24px; }
+  .content :global(pre code) { background: none; padding: 0; }
   .content :global(ul), .content :global(ol) { color: var(--ink-body); font-size: 15px; line-height: 1.75; max-width: 68ch; }
   .content :global(a) { text-decoration: underline; text-underline-offset: 2px; }
 
