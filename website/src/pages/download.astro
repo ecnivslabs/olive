@@ -1,16 +1,11 @@
 ---
 import BaseLayout from '../components/BaseLayout.astro';
-import { fetchLatestVersion } from '../lib/version';
+import { fetchRelease } from '../lib/release';
 
-const version = await fetchLatestVersion();
-const RELEASE_BASE = 'https://github.com/ecnivslabs/olive/releases/latest/download';
-
-const archs = [
-  { id: 'linux-x86_64', os: 'unix', label: 'Linux, x86_64', bin: 'pit-linux-x86_64', lib: 'libolive_std-linux-x86_64.so' },
-  { id: 'linux-aarch64', os: 'unix', label: 'Linux, ARM64', bin: 'pit-linux-aarch64', lib: 'libolive_std-linux-aarch64.so' },
-  { id: 'macos-x86_64', os: 'unix', label: 'macOS, Intel', bin: 'pit-macos-x86_64', lib: 'libolive_std-macos-x86_64.dylib' },
-  { id: 'macos-aarch64', os: 'unix', label: 'macOS, Apple Silicon', bin: 'pit-macos-aarch64', lib: 'libolive_std-macos-aarch64.dylib' },
-];
+const release = await fetchRelease();
+const { version, checksums, source } = release;
+const unixArchs = release.archs.filter((a) => a.os === 'unix');
+const windowsArchs = release.archs.filter((a) => a.os === 'windows');
 ---
 <BaseLayout
   title="Download"
@@ -38,33 +33,50 @@ const archs = [
         <div class="install"><span class="prompt">$</span>curl -sSL https://raw.githubusercontent.com/ecnivslabs/olive/master/install.sh | sh</div>
         <p class="hint">Detects your OS and CPU architecture and installs the matching build to <code>~/.local/bin</code>.</p>
 
-        <details class="direct">
-          <summary>Prefer the binary directly?</summary>
-          <div class="arch-tablist" role="tablist" aria-label="Architecture">
-            {archs.map((a, i) => (
-              <button type="button" role="tab" aria-selected={i === 0 ? 'true' : 'false'} data-arch={a.id} class={i === 0 ? 'active' : ''}>{a.label}</button>
-            ))}
-          </div>
-          {archs.map((a, i) => (
-            <div class="arch-panel" data-arch={a.id} hidden={i !== 0}>
-              <a class="asset" href={`${RELEASE_BASE}/${a.bin}`}>{a.bin}</a>
-              <a class="asset" href={`${RELEASE_BASE}/${a.lib}`}>{a.lib}</a>
-              <p class="hint">Make it executable and put it on your <code>PATH</code>: <code>chmod +x {a.bin} &amp;&amp; mv {a.bin} ~/.local/bin/pit</code>. Put <code>{a.lib}</code> next to it in <code>~/.local/lib</code>.</p>
+        {unixArchs.length > 0 && (
+          <details class="direct">
+            <summary>Prefer the binary directly?</summary>
+            <div class="arch-tablist" role="tablist" aria-label="Architecture">
+              {unixArchs.map((a, i) => (
+                <button type="button" role="tab" aria-selected={i === 0 ? 'true' : 'false'} data-arch={a.id} class={i === 0 ? 'active' : ''}>{a.label}</button>
+              ))}
             </div>
-          ))}
-        </details>
+            {unixArchs.map((a, i) => (
+              <div class="arch-panel" data-arch={a.id} hidden={i !== 0}>
+                <a class="asset" href={a.bin.url}>{a.bin.name}</a>
+                {a.lib && <a class="asset" href={a.lib.url}>{a.lib.name}</a>}
+                <p class="hint">
+                  Make it executable and put it on your <code>PATH</code>: <code>chmod +x {a.bin.name} &amp;&amp; mv {a.bin.name} ~/.local/bin/pit</code>.
+                  {a.lib && <> Put <code>{a.lib.name}</code> next to it in <code>~/.local/lib</code>.</>}
+                </p>
+              </div>
+            ))}
+          </details>
+        )}
       </div>
 
       <div class="os-panel" data-os="windows" hidden>
-        <p class="panel-label">Windows, x86_64</p>
-        <p class="hint">Windows on Arm isn't built yet.</p>
-        <div class="win-steps">
-          <ol>
-            <li>Download <a class="asset-inline" href={`${RELEASE_BASE}/pit-windows-x86_64.exe`}>pit-windows-x86_64.exe</a></li>
-            <li>Rename it to <code>pit.exe</code></li>
-            <li>Add its folder to your <code>PATH</code></li>
-          </ol>
-        </div>
+        {windowsArchs.length === 1 && windowsArchs[0].id === 'windows-x86_64' && (
+          <p class="hint" style="margin: 0 0 16px;">Windows on Arm isn't built yet.</p>
+        )}
+        {windowsArchs.length > 1 && (
+          <div class="win-arch-tablist" role="tablist" aria-label="Architecture">
+            {windowsArchs.map((a, i) => (
+              <button type="button" role="tab" aria-selected={i === 0 ? 'true' : 'false'} data-winarch={a.id} class={i === 0 ? 'active' : ''}>{a.label}</button>
+            ))}
+          </div>
+        )}
+        {windowsArchs.map((a, i) => (
+          <div class="win-arch-panel" data-winarch={a.id} hidden={i !== 0}>
+            <div class="win-steps">
+              <ol>
+                <li>Download <a class="asset-inline" href={a.bin.url}>{a.bin.name}</a></li>
+                <li>Rename it to <code>pit.exe</code></li>
+                <li>Add its folder to your <code>PATH</code></li>
+              </ol>
+            </div>
+          </div>
+        ))}
       </div>
     </section>
 
@@ -76,13 +88,13 @@ const archs = [
           Install <code>b3sum</code> (<code>cargo install b3sum</code>) if you don't have it, then:
         </p>
         <div class="install"><span class="prompt">$</span>b3sum -c checksums.txt</div>
-        <p class="hint"><a href={`${RELEASE_BASE}/checksums.txt`}>checksums.txt</a>: one line per release asset.</p>
+        {checksums && <p class="hint"><a href={checksums.url}>{checksums.name}</a>: one line per release asset.</p>}
       </div>
       <div class="extra-item">
         <h2>Build from source</h2>
         <p>Grab the source for the current release, or clone the repository directly for the latest commit.</p>
         <div class="source-links">
-          <a class="asset" href={`${RELEASE_BASE}/olive-src.tar.gz`}>olive-src.tar.gz</a>
+          {source && <a class="asset" href={source.url}>{source.name}</a>}
           <a class="asset" href="https://github.com/ecnivslabs/olive">github.com/ecnivslabs/olive</a>
         </div>
       </div>
@@ -125,6 +137,23 @@ const archs = [
   for (const btn of archButtons) {
     btn.addEventListener('click', () => selectArch(btn.dataset.arch!));
   }
+
+  const winArchButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('.win-arch-tablist [role="tab"]'));
+  const winArchPanels = Array.from(document.querySelectorAll<HTMLElement>('.win-arch-panel'));
+
+  function selectWinArch(arch: string) {
+    for (const btn of winArchButtons) {
+      const active = btn.dataset.winarch === arch;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-selected', String(active));
+    }
+    for (const panel of winArchPanels) {
+      panel.hidden = panel.dataset.winarch !== arch;
+    }
+  }
+  for (const btn of winArchButtons) {
+    btn.addEventListener('click', () => selectWinArch(btn.dataset.winarch!));
+  }
 </script>
 
 <style>
@@ -139,13 +168,15 @@ const archs = [
 
   .panel { max-width: 640px; margin: 60px auto 0; padding: 0 24px; }
   .os-tablist { display: inline-flex; gap: 4px; margin-bottom: 20px; }
-  .os-tablist button, .arch-tablist button {
+  .os-tablist button, .arch-tablist button, .win-arch-tablist button {
     font-family: var(--font-mono); font-size: 12.5px; padding: 7px 14px; border-radius: 4px;
     background: none; border: 1px solid var(--border); color: var(--ink-muted); cursor: pointer;
   }
-  .os-tablist button.active, .arch-tablist button.active {
+  .os-tablist button.active, .arch-tablist button.active, .win-arch-tablist button.active {
     background: var(--accent); border-color: var(--accent); color: var(--on-dark);
   }
+  .win-arch-tablist { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 16px; }
+  .win-arch-panel[hidden] { display: none; }
 
   .panel-label { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted); margin: 0 0 10px; }
   .install {

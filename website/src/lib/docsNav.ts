@@ -1,35 +1,33 @@
+import type { CollectionEntry } from 'astro:content';
+
 export interface DocsNavLink {
   slug: string;
   label: string;
 }
 
-export interface DocsNavGroup {
-  heading: string;
-  links: DocsNavLink[];
+const H1_RE = /^#\s+(.+)$/m;
+
+function titleFor(entry: CollectionEntry<'docs'>): string {
+  const match = entry.body?.match(H1_RE);
+  return match ? match[1].trim() : entry.id;
 }
 
-const LINK_RE = /-\s*\[\*\*(.+?)\*\*\]\(([a-zA-Z0-9_-]+)\.md\)/g;
-
 /**
- * Parses docs/index.md's own H2 groupings and linked pages, so the site's
- * sidebar is derived from the real index rather than a second, hand-kept copy.
+ * Flat, alphabetical nav built straight from the docs collection -- no
+ * categories, no parsing docs/index.md's prose. A doc added to the olive
+ * repo shows up here on the next build with zero website changes; nothing
+ * here depends on how index.md happens to be formatted.
  */
-export function parseDocsNav(raw: string): DocsNavGroup[] {
-  const groups: DocsNavGroup[] = [];
-  const sections = raw.split(/^## /m).slice(1);
+export function buildDocsNav(entries: CollectionEntry<'docs'>[]): DocsNavLink[] {
+  const links = entries
+    .filter((e) => e.id !== 'index')
+    .map((e) => ({ slug: e.id, label: titleFor(e) }));
 
-  for (const section of sections) {
-    const [headingLine, ...rest] = section.split('\n');
-    const heading = headingLine.replace(/\?$/, '').trim();
-    const body = rest.join('\n');
-    const links: DocsNavLink[] = [];
-    let match: RegExpExecArray | null;
-    LINK_RE.lastIndex = 0;
-    while ((match = LINK_RE.exec(body)) !== null) {
-      links.push({ label: match[1], slug: match[2] });
-    }
-    if (links.length > 0) groups.push({ heading, links });
-  }
+  links.sort((a, b) => {
+    if (a.slug === 'introduction') return -1;
+    if (b.slug === 'introduction') return 1;
+    return a.label.localeCompare(b.label);
+  });
 
-  return groups;
+  return links;
 }
