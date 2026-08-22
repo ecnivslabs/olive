@@ -1,11 +1,12 @@
 ---
 import BaseLayout from '../components/BaseLayout.astro';
+import InstallCommand from '../components/InstallCommand.astro';
 
 const steps = [
   {
     h: 'Install the toolchain',
     p: '`pit` is the compiler, package manager and project runner in one binary.',
-    code: '$ curl -sSL https://raw.githubusercontent.com/ecnivslabs/olive/master/install.sh | sh',
+    code: null,
   },
   {
     h: 'Create a project',
@@ -43,7 +44,7 @@ const steps = [
           <div>
             <p class="step-h">{s.h}</p>
             <p class="step-p" set:html={s.p.replace(/`([^`]+)`/g, '<code>$1</code>')} />
-            <pre class="code">{s.code}</pre>
+            {s.code ? <pre class="code">{s.code}</pre> : <InstallCommand id={`step-${i}-install`} />}
           </div>
         </div>
       ))}

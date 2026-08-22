@@ -1,5 +1,6 @@
 ---
 import BaseLayout from '../components/BaseLayout.astro';
+import InstallCommand from '../components/InstallCommand.astro';
 const base = import.meta.env.BASE_URL;
 ---
 <BaseLayout
@@ -11,7 +12,7 @@ const base = import.meta.env.BASE_URL;
       <p class="eyebrow">a systems language</p>
       <h1>A language you can read.</h1>
       <p class="sub">No braces. No semicolons. No garbage collector. Indentation defines the structure — the compiler infers ownership and frees every value it owns.</p>
-      <div class="install"><span class="prompt">$</span>curl -sSL https://raw.githubusercontent.com/ecnivslabs/olive/master/install.sh | sh</div>
+      <InstallCommand id="hero-install" />
       <p class="subline">or <a href={`${base}get-started/`}>read the introduction →</a></p>
     </section>
 
@@ -52,7 +53,7 @@ const base = import.meta.env.BASE_URL;
 
     <section class="cta">
       <h2>Try it in the next minute.</h2>
-      <div class="install"><span class="prompt">$</span>curl -sSL https://raw.githubusercontent.com/ecnivslabs/olive/master/install.sh | sh</div>
+      <InstallCommand id="cta-install" dark />
     </section>
   </main>
 </BaseLayout>
@@ -71,13 +72,7 @@ const base = import.meta.env.BASE_URL;
     line-height: 1.08; margin: 0 0 24px; max-width: 13ch;
   }
   .sub { font-size: 17px; line-height: 1.7; color: var(--ink-body); max-width: 54ch; margin: 0 0 34px; }
-  .install {
-    font-family: var(--font-mono); font-size: 14px; background: var(--ink);
-    color: var(--on-dark); padding: 14px 24px; border-radius: 3px; margin-bottom: 14px;
-    max-width: 100%; white-space: pre-wrap; word-break: break-all; text-align: left;
-  }
-  .install .prompt { color: #A9BA6C; margin-right: 10px; }
-  .subline { font-size: 13px; color: var(--ink-muted); }
+  .subline { font-size: 13px; color: var(--ink-muted); margin-top: 14px; }
 
   .why { padding: 20px 24px 90px; border-top: 1px solid var(--border); }
   .why-grid { max-width: 1040px; margin: 60px auto 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: 48px; }
@@ -98,8 +93,6 @@ const base = import.meta.env.BASE_URL;
 
   .cta { background: var(--ink); color: var(--on-dark); padding: 80px 24px; text-align: center; }
   .cta h2 { font-style: italic; font-size: 40px; margin: 0 0 30px; color: var(--on-dark); }
-  .cta .install { background: var(--on-dark); color: var(--ink); display: inline-block; }
-  .cta .install .prompt { color: var(--accent); }
 
   @media (max-width: 780px) {
     .why-grid { grid-template-columns: 1fr; gap: 40px; }
