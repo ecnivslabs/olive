@@ -2975,8 +2975,18 @@ impl TypeChecker {
             }
             // Builtin collections and strings expose a fixed method set; any other
             // method name is a definite error. Reporting it here keeps it from
-            // falling through to the FFI path and crashing codegen.
-            (Type::List(_) | Type::Set(_) | Type::Tuple(_) | Type::Dict(_, _) | Type::Str, _) => {
+            // falling through to the FFI path and crashing codegen. `bytes`
+            // has no method surface at all (the docs use `bytes_*` functions),
+            // so every method name on it reports here.
+            (
+                Type::List(_)
+                | Type::Set(_)
+                | Type::Tuple(_)
+                | Type::Dict(_, _)
+                | Type::Str
+                | Type::Bytes,
+                _,
+            ) => {
                 self.errors.push(super::super::error::SemanticError::rich(
                     crate::compile::errors::Diagnostic::error(
                         "E0422",

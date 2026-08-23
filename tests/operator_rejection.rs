@@ -295,6 +295,29 @@ fn union_method_calls_rejected_with_narrow_help() {
 }
 
 #[test]
+fn bytes_has_no_method_surface() {
+    assert_rejected_with(
+        "fn main():\n    let b = bytes_new(0)\n    b.push(65)\n    print(b)\n",
+        "[E0422]",
+        "no method `push` on type `bytes`",
+    );
+    assert_rejected_with(
+        "fn main():\n    print(bytes_new(3).count(0))\n",
+        "[E0422]",
+        "no method `count` on type `bytes`",
+    );
+    assert_rejected_with(
+        "fn main():\n    let b = bytes_new(3)\n    b.sort()\n    print(b)\n",
+        "[E0422]",
+        "no method `sort` on type `bytes`",
+    );
+    assert_accepted(
+        "fn main():\n    print(len(bytes_new(3)))\n    print(bytes_new(3)[0])\n",
+        "3\n0\n",
+    );
+}
+
+#[test]
 fn any_receiver_methods_dispatch_by_kind() {
     assert_accepted(
         "fn f(v: Any):\n    return v.pop()\nfn g(v: Any):\n    return v.pop(\"a\")\nfn h(v: Any):\n    return v.pop(\"zz\", -1)\nfn main():\n    print(f([1, 2]))\n    print(g({\"a\": 1}))\n    print(h({\"a\": 1}))\n",
