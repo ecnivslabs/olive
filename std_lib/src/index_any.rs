@@ -12,6 +12,140 @@ fn slice_type_error() -> ! {
     panic::abort("value does not support slicing", None);
 }
 
+/// Validates a statically-`Any` method receiver against the method's kinds
+/// before the statically-dispatched implementation runs: first-match
+/// dispatch sends every `Any` receiver down one arm, so a list word reaches
+/// dict code (hanging in hash probing) and vice versa. Bitmask: 1 = list,
+/// 2 = dict, 4 = set, 8 = string. Unknown methods and `PyObject` pass
+/// through with legacy behavior; anything else faults naming the method.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_any_check_method(obj: i64, mask: i64, method: i64) -> i64 {
+    const LIST: i64 = 1;
+    const DICT: i64 = 2;
+    const SET: i64 = 4;
+    const STR: i64 = 8;
+    let name = olive_str_from_ptr(method);
+    let is_str_word =
+        crate::string::is_interned_char(obj) || (obj & 1 == 1 && (obj & !1) > 0x10000);
+    let ok = if obj != 0 && is_active_object(obj) {
+        match unsafe { *(obj as *const i64) } {
+            KIND_LIST | KIND_ANY_LIST => mask & LIST != 0,
+            KIND_OBJ => mask & DICT != 0,
+            KIND_SET => mask & SET != 0,
+            KIND_PYOBJECT => true,
+            _ => false,
+        }
+    } else {
+        mask & STR != 0 && is_str_word
+    };
+    if !ok {
+        let kind_name = olive_str_from_ptr(olive_typeof_str(obj));
+        panic::abort(&format!("no method `{name}` on `{kind_name}`"), None);
+    }
+    obj
+}
+
+/// `count` on a statically-`Any` receiver: `str` and `list` both define it,
+/// so first-match dispatch misroutes one of them (a string word read as a
+/// list header aborts). Dispatches on the value's own representation like
+/// `olive_getslice_any` does; anything else faults.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_any_count(obj: i64, needle: i64, desc: i64) -> i64 {
+    if crate::string::is_interned_char(obj) || (obj & 1 == 1 && (obj & !1) > 0x10000) {
+        return string::olive_str_count(obj, needle);
+    }
+    if obj != 0 && is_active_object(obj) {
+        match unsafe { *(obj as *const i64) } {
+            KIND_LIST | KIND_ANY_LIST => {
+                return list::olive_list_count_typed(obj, needle, desc);
+            }
+            KIND_PYOBJECT => {
+                panic::abort("no method `count` on `PyObject`", None);
+            }
+            _ => {}
+        }
+    }
+    let kind_name = olive_str_from_ptr(olive_typeof_str(obj));
+    panic::abort(&format!("no method `count` on `{kind_name}`"), None);
+}
+
+/// `clear` on a statically-`Any` receiver: lists, dicts, and sets all
+/// define it, so first-match dispatch misroutes two of the three (clearing
+/// a list through the dict implementation segfaults). Dispatches on the
+/// value's own representation; anything else faults.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_any_clear(obj: i64) -> i64 {
+    if obj != 0 && is_active_object(obj) {
+        match unsafe { *(obj as *const i64) } {
+            KIND_LIST | KIND_ANY_LIST => return list::olive_list_clear(obj),
+            KIND_OBJ => return obj::olive_obj_clear(obj),
+            KIND_SET => return set::olive_set_clear(obj),
+            KIND_PYOBJECT => {
+                panic::abort("no method `clear` on `PyObject`", None);
+            }
+            _ => {}
+        }
+    }
+    let kind_name = olive_str_from_ptr(olive_typeof_str(obj));
+    panic::abort(&format!("no method `clear` on `{kind_name}`"), None);
+}
+
+/// `pop` on a statically-`Any` receiver: lists pop the last element with
+/// no arguments, dicts pop a key with one (faulting when absent) or return
+/// a default with two. First-match dispatch hangs list words in dict hash
+/// probing, so this dispatches on the value's own representation instead.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_any_pop(obj: i64, argc: i64, a0: i64, a1: i64, loc: i64) -> i64 {
+    if obj != 0 && is_active_object(obj) {
+        match unsafe { *(obj as *const i64) } {
+            KIND_LIST | KIND_ANY_LIST => {
+                if argc != 0 {
+                    panic::abort("wrong number of arguments to `pop`", None);
+                }
+                return list::olive_list_pop(obj);
+            }
+            KIND_OBJ => {
+                if argc == 1 {
+                    return obj::olive_obj_pop_checked(obj, a0, loc);
+                }
+                if argc == 2 {
+                    return obj::olive_obj_pop_default(obj, a0, a1);
+                }
+                panic::abort("wrong number of arguments to `pop`", None);
+            }
+            _ => {}
+        }
+    }
+    let kind_name = olive_str_from_ptr(olive_typeof_str(obj));
+    panic::abort(&format!("no method `pop` on `{kind_name}`"), None);
+}
+
+/// `remove` on a statically-`Any` receiver: lists remove by index, dicts
+/// by key, sets by member (faulting when absent). First-match dispatch
+/// hangs list words in dict hash probing, so this dispatches on the
+/// value's own representation instead. Set membership compares through the
+/// descriptor (like `count` does): erased members are boxed while the
+/// needle arrives raw, so both forms travel (`arg` raw for list indices
+/// and dict keys, `arg_boxed` for set members) and each branch takes the
+/// one matching its representation.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_any_remove(obj: i64, arg: i64, arg_boxed: i64, loc: i64, desc: i64) -> i64 {
+    if obj != 0 && is_active_object(obj) {
+        match unsafe { *(obj as *const i64) } {
+            KIND_LIST | KIND_ANY_LIST => return list::olive_list_remove(obj, arg),
+            KIND_OBJ => return obj::olive_obj_remove(obj, arg),
+            KIND_SET => {
+                return crate::hash_typed::olive_set_remove_checked_typed(
+                    obj, arg_boxed, loc, desc,
+                );
+            }
+            _ => {}
+        }
+    }
+    let kind_name = olive_str_from_ptr(olive_typeof_str(obj));
+    panic::abort(&format!("no method `remove` on `{kind_name}`"), None);
+}
+
 /// Runtime-dispatch slice for a statically-`Any` object. The builder used
 /// to route every `Any` slice to the Python slicer, segfaulting on native
 /// values (a string in an `Any` slot, an enum payload read). Dispatches on

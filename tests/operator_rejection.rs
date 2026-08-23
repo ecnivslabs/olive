@@ -295,6 +295,46 @@ fn union_method_calls_rejected_with_narrow_help() {
 }
 
 #[test]
+fn any_receiver_methods_dispatch_by_kind() {
+    assert_accepted(
+        "fn f(v: Any):\n    return v.pop()\nfn g(v: Any):\n    return v.pop(\"a\")\nfn h(v: Any):\n    return v.pop(\"zz\", -1)\nfn main():\n    print(f([1, 2]))\n    print(g({\"a\": 1}))\n    print(h({\"a\": 1}))\n",
+        "2\n1\n-1\n",
+    );
+    assert_accepted(
+        "fn f(v: Any):\n    v.clear()\n    return v\nfn g(v: Any):\n    v.clear()\n    return len(v)\nfn main():\n    print(f([1, 2]))\n    print(f({\"a\": 1}))\n    print(g({1, 2}))\n",
+        "[]\n{}\n0\n",
+    );
+    assert_accepted(
+        "fn f(v: Any):\n    v.remove(0)\n    return v\nfn g(v: Any):\n    v.remove(\"a\")\n    return v\nfn h(v: Any):\n    return v.remove(1)\nfn main():\n    print(f([1, 2]))\n    print(g({\"a\": 1, \"b\": 2}))\n    print(h({1, 2}))\n",
+        "[2]\n{'b': 2}\n1\n",
+    );
+    assert_accepted(
+        "fn f(v: Any):\n    return v.count(\"a\")\nfn main():\n    print(f([\"a\", \"b\"]))\n    print(f(\"banana\"))\n",
+        "1\n3\n",
+    );
+    assert_faults_e0700(
+        "fn f(v: Any):\n    return v.pop()\nfn main():\n    print(f(\"hi\"))\n",
+        "no method `pop`",
+    );
+    assert_faults_e0700(
+        "fn f(v: Any):\n    v.clear()\n    return v\nfn main():\n    print(f(\"hi\"))\n",
+        "no method `clear`",
+    );
+    assert_faults_e0700(
+        "fn f(v: Any):\n    return v.count(\"a\")\nfn main():\n    print(f({\"a\": 1}))\n",
+        "no method `count`",
+    );
+    assert_faults_e0700(
+        "fn f(v: Any):\n    return v.index(\"a\")\nfn main():\n    print(f(\"banana\"))\n",
+        "no method `index`",
+    );
+    assert_faults_e0700(
+        "fn f(v: Any):\n    v.append(3)\n    return v\nfn main():\n    print(f(\"hi\"))\n",
+        "no method `append`",
+    );
+}
+
+#[test]
 fn any_remove_returns_the_displaced_value() {
     assert_accepted(
         "fn f(v: Any):\n    return v.remove(\"a\")\nfn main():\n    print(f({\"a\": 1, \"b\": 2}))\n    print(f({\"a\": 1}))\n",

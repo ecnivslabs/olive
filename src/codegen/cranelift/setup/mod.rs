@@ -62,6 +62,10 @@ impl<M: Module> CraneliftCodegen<M> {
             &[types::I64, types::I64, types::I64, types::I64],
             &[types::I64],
         );
+        let sig_5i64_i64 = mk_sig(
+            &[types::I64, types::I64, types::I64, types::I64, types::I64],
+            &[types::I64],
+        );
         let sig_i64_i64_void = mk_sig(&[types::I64, types::I64], &[]);
         let sig_i64_void = mk_sig(&[types::I64], &[]);
         let sig_void_f64 = mk_sig(&[], &[types::F64]);
@@ -735,6 +739,9 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_list_repeat_typed", &sig_3i64_i64),
             ("__olive_any_add", &sig_i64_i64_i64),
             ("__olive_any_add_profiled", &sig_3i64_i64),
+            ("__olive_any_check_method", &sig_3i64_i64),
+            ("__olive_any_clear", &sig_i64_i64),
+            ("__olive_any_count", &sig_3i64_i64),
             ("__olive_any_sub", &sig_i64_i64_i64),
             ("__olive_any_sub_profiled", &sig_3i64_i64),
             ("__olive_any_mul", &sig_i64_i64_i64),
@@ -757,6 +764,8 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_any_ne_profiled", &sig_3i64_i64),
             ("__olive_any_eq_strict", &sig_i64_i64_i64),
             ("__olive_any_ne_strict", &sig_i64_i64_i64),
+            ("__olive_any_pop", &sig_5i64_i64),
+            ("__olive_any_remove", &sig_5i64_i64),
             ("__olive_struct_box", &sig_i64_i64_i64),
             ("__olive_struct_unbox", &sig_i64_i64),
             ("__olive_struct_unbox_take", &sig_i64_i64),

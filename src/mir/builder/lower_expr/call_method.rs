@@ -116,6 +116,23 @@ impl<'a> MirBuilder<'a> {
             return self.coerce_pyobj_if_needed(raw, expr_id, span);
         }
 
+        // `clear`/`pop`/`remove` on a statically-`Any` receiver dispatch by
+        // runtime kind: first-match sends every `Any` receiver down the dict
+        // arm, hanging list words in hash probing. Concrete receivers keep
+        // their existing arms exactly.
+        if matches!(attr, "clear" | "pop" | "remove") {
+            let mut recv_ty = self.get_type(obj.id);
+            while let Type::Ref(inner) | Type::MutRef(inner) = recv_ty {
+                recv_ty = *inner;
+            }
+            if recv_ty == Type::Any
+                && let Some(op) =
+                    self.lower_any_method_dispatch(obj, attr, args, &arg_ops, span, expr_id)
+            {
+                return op;
+            }
+        }
+
         if let Some(op) = self.lower_dict_method(obj, attr, &arg_ops, &arg_tys, span, expr_id) {
             return op;
         }
@@ -897,6 +914,167 @@ impl<'a> MirBuilder<'a> {
         }
     }
 
+    /// `clear`/`pop`/`remove` on a statically-`Any` receiver: dispatches by
+    /// runtime kind through one entry each, since first-match would send
+    /// every shape down the dict arm. `clear` yields the receiver like the
+    /// arms do; `pop`/`remove` yield a value local typed by the checker.
+    /// A `pop` default is boxed like the dict arm boxes it, so a miss
+    /// returns a self-describing word.
+    fn lower_any_method_dispatch(
+        &mut self,
+        obj: &Expr,
+        attr: &str,
+        args: &[CallArg],
+        arg_ops: &[Operand],
+        span: Span,
+        expr_id: usize,
+    ) -> Option<Operand> {
+        let obj_op = self.lower_expr_as_copy(obj);
+        let zero = Operand::Constant(Constant::Int(0));
+        match attr {
+            "clear" => {
+                let tmp = self.new_local(Type::Null, None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        tmp,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(
+                                "__olive_any_clear".to_string(),
+                            )),
+                            args: vec![obj_op.clone()],
+                        },
+                    ),
+                    span,
+                );
+                Some(obj_op)
+            }
+            "pop" => {
+                let argc = args.len() as i64;
+                let a0 = arg_ops.first().cloned().unwrap_or(zero.clone());
+                let a1_raw = arg_ops.get(1).cloned().unwrap_or(zero.clone());
+                let a1 = if args.len() >= 2 {
+                    let from_ty = self.get_type(match &args[1] {
+                        CallArg::Positional(e)
+                        | CallArg::Keyword(_, e)
+                        | CallArg::Splat(e)
+                        | CallArg::KwSplat(e) => e.id,
+                    });
+                    self.box_into_any(a1_raw, &from_ty, span)
+                } else {
+                    a1_raw
+                };
+                let tmp = self.new_local(self.get_type(expr_id), None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        tmp,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(
+                                "__olive_any_pop".to_string(),
+                            )),
+                            args: vec![
+                                obj_op,
+                                Operand::Constant(Constant::Int(argc)),
+                                a0,
+                                a1,
+                                self.index_loc_operand(span),
+                            ],
+                        },
+                    ),
+                    span,
+                );
+                Some(self.operand_for_local(tmp))
+            }
+            "remove" => {
+                // Erased members are boxed while the needle arrives raw, and
+                // set hashing matches representations, so both forms travel
+                // (raw for list indices and dict keys, boxed for set
+                // members) and each branch takes the matching one.
+                let arg_raw = arg_ops.first().cloned().unwrap_or(zero);
+                let arg_boxed = match args.first() {
+                    Some(
+                        CallArg::Positional(e)
+                        | CallArg::Keyword(_, e)
+                        | CallArg::Splat(e)
+                        | CallArg::KwSplat(e),
+                    ) => {
+                        let arg_ty = self.get_type(e.id);
+                        self.box_into_any(arg_raw.clone(), &arg_ty, span)
+                    }
+                    None => arg_raw.clone(),
+                };
+                let tmp = self.new_local(self.get_type(expr_id), None, false);
+                let desc = crate::semantic::type_descriptor::type_descriptor(
+                    &Type::Any,
+                    &self.struct_fields,
+                    &self.struct_field_types,
+                    &self.enum_defs,
+                );
+                self.push_statement(
+                    StatementKind::Assign(
+                        tmp,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(
+                                "__olive_any_remove".to_string(),
+                            )),
+                            args: vec![
+                                obj_op,
+                                arg_raw,
+                                arg_boxed,
+                                self.index_loc_operand(span),
+                                Operand::Constant(Constant::Str(desc)),
+                            ],
+                        },
+                    ),
+                    span,
+                );
+                Some(self.operand_for_local(tmp))
+            }
+            _ => None,
+        }
+    }
+
+    /// Validates a statically-`Any` receiver against the method's kinds
+    /// before the statically-dispatched implementation runs. First-match
+    /// dispatch sends every `Any` receiver down one arm, so a list word
+    /// reaches dict code (hanging in hash probing) and vice versa. Emitted
+    /// as a discardable check call (DCE keeps all calls): the operand flows
+    /// through unchanged, so ownership, types, and non-`Any` receivers
+    /// compile exactly as before. Bitmask mirrors `olive_any_check_method`:
+    /// 1 = list, 2 = dict, 4 = set, 8 = string.
+    fn check_any_method_recv(
+        &mut self,
+        obj: &Expr,
+        obj_op: Operand,
+        attr: &str,
+        mask: i64,
+        span: Span,
+    ) -> Operand {
+        let mut recv_ty = self.get_type(obj.id);
+        while let Type::Ref(inner) | Type::MutRef(inner) = recv_ty {
+            recv_ty = *inner;
+        }
+        if recv_ty == Type::Any {
+            let sink = self.new_local(Type::Null, None, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    sink,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function(
+                            "__olive_any_check_method".to_string(),
+                        )),
+                        args: vec![
+                            obj_op.clone(),
+                            Operand::Constant(Constant::Int(mask)),
+                            Operand::Constant(Constant::Str(attr.to_string())),
+                        ],
+                    },
+                ),
+                span,
+            );
+        }
+        obj_op
+    }
+
     /// Lowers the mutating methods on a native list to their runtime calls.
     /// `append`/`insert`/`extend` mutate in place and yield the list; `pop` and
     /// `remove` return the removed element.
@@ -945,6 +1123,7 @@ impl<'a> MirBuilder<'a> {
                 _ => Type::Int,
             };
             let obj_op = self.lower_expr_as_copy(obj);
+            let obj_op = self.check_any_method_recv(obj, obj_op, attr, 1, span);
             return Some(self.lower_sort_by_key(obj_op, elem, key_op, &key_ret_ty, span));
         }
 
@@ -990,6 +1169,7 @@ impl<'a> MirBuilder<'a> {
             _ => return None,
         };
         let obj_op = self.lower_expr_as_copy(obj);
+        let obj_op = self.check_any_method_recv(obj, obj_op, attr, 1, span);
         let returns_elem = matches!(attr, "pop" | "remove");
         // A scalar stored into or matched against an `[Any]` element slot is
         // boxed the same way a list literal element is, so the stored word stays
@@ -1059,6 +1239,36 @@ impl<'a> MirBuilder<'a> {
         if !matches!(recv_ty, Type::List(_) | Type::Any) {
             return None;
         }
+        // `count` on an `Any` receiver dispatches by runtime kind: `str`
+        // and `list` both define it, so first-match dispatch misroutes one
+        // of them (a string word read as a list header aborts).
+        if attr == "count" && recv_ty == Type::Any {
+            let obj_op = self.lower_expr_as_copy(obj);
+            let needle = arg_ops
+                .first()
+                .cloned()
+                .unwrap_or(Operand::Constant(Constant::Int(0)));
+            let desc = crate::semantic::type_descriptor::type_descriptor(
+                &Type::Any,
+                &self.struct_fields,
+                &self.struct_field_types,
+                &self.enum_defs,
+            );
+            let tmp = self.new_local(self.get_type(expr_id), None, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    tmp,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function(
+                            "__olive_any_count".to_string(),
+                        )),
+                        args: vec![obj_op, needle, Operand::Constant(Constant::Str(desc))],
+                    },
+                ),
+                span,
+            );
+            return Some(self.operand_for_local(tmp));
+        }
         // `clear` releases through the static element type when elements
         // own heap data (structs otherwise misread by kind dispatch),
         // mirroring the `setdefault` value-typed dispatch.
@@ -1067,6 +1277,7 @@ impl<'a> MirBuilder<'a> {
             _ => false,
         };
         let obj_op = self.lower_expr_as_copy(obj);
+        let obj_op = self.check_any_method_recv(obj, obj_op, attr, 1, span);
         let val_op = arg_ops
             .first()
             .cloned()
@@ -1119,6 +1330,7 @@ impl<'a> MirBuilder<'a> {
     ) -> Option<Operand> {
         if matches!(attr, "clear") {
             let obj_op = self.lower_expr_as_copy(obj);
+            let obj_op = self.check_any_method_recv(obj, obj_op, attr, 4, span);
             // Discarded result: a Null dummy avoids an owning local aliasing
             // the receiver (same reasoning as list clear).
             let tmp = self.new_local(Type::Null, None, false);
@@ -1159,6 +1371,10 @@ impl<'a> MirBuilder<'a> {
         }
         let elem: Type = match &recv_ty {
             Type::Set(e) => (**e).clone(),
+            // `Any` receivers reach runtime kind dispatch below; the kind
+            // check faults wrong kinds before the untyped implementation
+            // runs (previously a codegen panic: no import was collected).
+            Type::Any => Type::Any,
             _ => return None,
         };
         // A struct/enum/tuple/collection element needs the same typed
@@ -1181,6 +1397,7 @@ impl<'a> MirBuilder<'a> {
             _ => return None,
         };
         let obj_op = self.lower_expr_as_copy(obj);
+        let obj_op = self.check_any_method_recv(obj, obj_op, attr, 4, span);
         let mut call_args = vec![obj_op.clone()];
         // An `Any`-element set boxes its scalar argument so the stored word stays
         // self-describing, the same as list elements.
@@ -1294,6 +1511,7 @@ impl<'a> MirBuilder<'a> {
             _ => return None,
         };
         let obj_op = self.lower_expr_as_copy(obj);
+        let obj_op = self.check_any_method_recv(obj, obj_op, attr, 2, span);
         let mut call_args = vec![obj_op];
         if runtime.starts_with("__olive_obj_get_default") {
             call_args.push(arg_ops[0].clone());
@@ -1351,6 +1569,7 @@ impl<'a> MirBuilder<'a> {
         };
         let key_typed = Self::type_needs_key_descriptor(&key_ty);
         let obj_op = self.lower_expr_as_copy(obj);
+        let obj_op = self.check_any_method_recv(obj, obj_op, attr, 2, span);
         let zero = || Operand::Constant(Constant::Int(0));
         let box_val = |b: &mut Self, op: Operand, idx: usize| {
             if val_ty == Type::Any {
