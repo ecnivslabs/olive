@@ -463,9 +463,13 @@ impl<M: Module> CraneliftCodegen<M> {
                 let o = Self::translate_operand(builder, obj, vars, string_ids, module, func_ids);
                 let attr_val = attr_symbol(builder, module, string_ids, attr);
 
+                // Dynamically-typed objects dispatch by representation: an
+                // erased struct carries its descriptor in a box (member read
+                // walks it), a dict reads by key, and anything else faults
+                // instead of misreading the word as a map.
                 let get_id = func_ids
-                    .get("__olive_obj_get_checked")
-                    .expect("missing __olive_obj_get_checked");
+                    .get("__olive_any_getattr")
+                    .expect("missing __olive_any_getattr");
                 let local_func = module.declare_func_in_func(*get_id, builder.func);
                 let inst = builder.ins().call(local_func, &[o, attr_val, loc]);
                 builder.inst_results(inst)[0]

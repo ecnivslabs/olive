@@ -21,6 +21,7 @@ pub(super) fn collect_needed_imports(
                     }
                     StatementKind::SetAttr(_, _, val_op) => {
                         needed.insert("__olive_obj_set");
+                        needed.insert("__olive_any_setattr");
                         needed.insert("__olive_py_setattr");
                         // A struct field overwrite releases the old value it held.
                         needed.insert("__olive_py_decref");
@@ -555,6 +556,7 @@ pub(super) fn scan_rvalue_imports(
         }
         Rvalue::GetAttr(..) => {
             needed.insert("__olive_obj_get_checked");
+            needed.insert("__olive_any_getattr");
             needed.insert("__olive_py_getattr");
         }
         Rvalue::GetTag(..) => {

@@ -318,6 +318,26 @@ fn bytes_has_no_method_surface() {
 }
 
 #[test]
+fn any_struct_member_access_round_trips() {
+    assert_accepted(
+        "struct Res:\n    s: str\nfn main():\n    let v: Any = {\"k\": Res(\"v\")}\n    print(v[\"k\"].s)\n    v[\"k\"].s = \"w\"\n    print(v[\"k\"].s)\n",
+        "\"v\"\n\"w\"\n",
+    );
+    assert_accepted(
+        "struct Res:\n    s: str\nimpl Res:\n    fn __drop__(self):\n        print(\"drop \"+self.s)\n\nfn main():\n    let v: Any = {\"k\": Res(\"v\")}\n    v[\"k\"].s = \"w\"\n    print(\"done\")\n",
+        "done\ndrop w\n",
+    );
+    assert_faults_e0700(
+        "struct Res:\n    s: str\nfn main():\n    let v: Any = {\"k\": Res(\"v\")}\n    print(v[\"k\"].zz)\n",
+        "no field or method `zz` on `Res`",
+    );
+    assert_faults_e0700(
+        "fn main():\n    let v: Any = [1]\n    print(v.s)\n",
+        "no field or method `s` on `list`",
+    );
+}
+
+#[test]
 fn any_receiver_methods_dispatch_by_kind() {
     assert_accepted(
         "fn f(v: Any):\n    return v.pop()\nfn g(v: Any):\n    return v.pop(\"a\")\nfn h(v: Any):\n    return v.pop(\"zz\", -1)\nfn main():\n    print(f([1, 2]))\n    print(g({\"a\": 1}))\n    print(h({\"a\": 1}))\n",

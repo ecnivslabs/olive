@@ -785,13 +785,18 @@ impl<M: Module> CraneliftCodegen<M> {
                 let func_name = if obj_is_pyobj {
                     "__olive_py_setattr"
                 } else {
-                    "__olive_obj_set"
+                    "__olive_any_setattr"
                 };
                 let set_id = func_ids
                     .get(func_name)
-                    .expect("missing obj_set or py_setattr");
+                    .expect("missing any_setattr or py_setattr");
                 let local_func = module.declare_func_in_func(*set_id, builder.func);
-                builder.ins().call(local_func, &[o, attr_val, v]);
+                if obj_is_pyobj {
+                    builder.ins().call(local_func, &[o, attr_val, v]);
+                } else {
+                    let loc = loc_value(builder, module, loc_id);
+                    builder.ins().call(local_func, &[o, attr_val, v, loc]);
+                }
             }
             StatementKind::SetIndex(obj, idx, val_op, unchecked) => {
                 let unchecked = *unchecked;

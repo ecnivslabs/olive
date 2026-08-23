@@ -1021,6 +1021,8 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_any_ne_profiled", b"olive_any_ne_profiled\0"),
     ("__olive_any_eq_strict", b"olive_any_eq_strict\0"),
     ("__olive_any_ne_strict", b"olive_any_ne_strict\0"),
+    ("__olive_any_getattr", b"olive_any_getattr\0"),
+    ("__olive_any_setattr", b"olive_any_setattr\0"),
     ("__olive_any_pop", b"olive_any_pop\0"),
     ("__olive_any_remove", b"olive_any_remove\0"),
     ("__olive_struct_box", b"olive_struct_box\0"),

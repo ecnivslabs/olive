@@ -146,6 +146,152 @@ pub extern "C" fn olive_any_remove(obj: i64, arg: i64, arg_boxed: i64, loc: i64,
     panic::abort(&format!("no method `remove` on `{kind_name}`"), None);
 }
 
+/// Member read on a dynamically-typed object: a struct erased into `Any`
+/// carries its descriptor in a box, so member access peels the box and
+/// reads the field by name; dicts read by key exactly as before. Anything
+/// else faults instead of misreading the word as a map (a list word hashed
+/// as a dict hangs in probing; an int word faults on a wild key).
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_any_getattr(obj: i64, attr: i64, loc: i64) -> i64 {
+    if obj != 0 && is_active_object(obj) {
+        let kind = unsafe { *(obj as *const i64) };
+        if kind == crate::struct_box::KIND_STRUCT_BOX {
+            return struct_box_member(obj, attr, loc);
+        }
+        if kind == KIND_OBJ {
+            return obj::olive_obj_get_checked(obj, attr, loc);
+        }
+    }
+    let kind_name = olive_str_from_ptr(olive_typeof_str(obj));
+    let attr_name = olive_str_from_ptr(attr);
+    let location = (loc != 0).then(|| olive_str_from_ptr(loc));
+    panic::abort(
+        &format!("no field or method `{attr_name}` on `{kind_name}`"),
+        location.as_deref(),
+    );
+}
+
+/// Member write on a dynamically-typed object: a struct erased into `Any`
+/// stores through the descriptor walk, releasing the displaced word the
+/// same way; dicts store by key exactly as before. Anything else faults
+/// instead of writing a map-shaped record into the wrong layout (which
+/// segfaulted).
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_any_setattr(obj: i64, attr: i64, val: i64, loc: i64) -> i64 {
+    if obj != 0 && is_active_object(obj) {
+        let kind = unsafe { *(obj as *const i64) };
+        if kind == crate::struct_box::KIND_STRUCT_BOX {
+            struct_box_store(obj, attr, val, loc);
+            return 0;
+        }
+        if kind == KIND_OBJ {
+            return obj::olive_obj_set(obj, attr, val);
+        }
+    }
+    let kind_name = olive_str_from_ptr(olive_typeof_str(obj));
+    let attr_name = olive_str_from_ptr(attr);
+    let location = (loc != 0).then(|| olive_str_from_ptr(loc));
+    panic::abort(
+        &format!("no field or method `{attr_name}` on `{kind_name}`"),
+        location.as_deref(),
+    );
+}
+
+/// Stores `val` into a struct-box field by name, releasing the displaced
+/// word through the field's own descriptor first (like the concrete path
+/// releases through the static field type). The new word stores as-is:
+/// the caller coerces it to the field's representation, mirroring the
+/// concrete lowering.
+fn struct_box_store(obj: i64, attr: i64, val: i64, loc: i64) {
+    let want = olive_str_to_bytes(attr);
+    let b = unsafe { &*(obj as *const crate::struct_box::OliveStructBox) };
+    let desc = b.desc as *const u8;
+    if unsafe { *desc } != crate::format::D_STRUCT
+        && unsafe { *desc } != crate::format::D_STRUCT_SHARED
+    {
+        struct_member_miss(attr, obj, loc);
+    }
+    let mut pos = 1usize;
+    let name_len = unsafe { *desc.add(pos) } as usize - 13;
+    pos += 1 + name_len;
+    let n = unsafe { *desc.add(pos) } as usize - 13;
+    pos += 1;
+    for i in 0..n {
+        let field_len = unsafe { *desc.add(pos) } as usize - 13;
+        let field_name = unsafe { std::slice::from_raw_parts(desc.add(pos + 1), field_len) };
+        pos += 1 + field_len;
+        let field_type_pos = pos;
+        if field_name == want {
+            let inner = b.ptr;
+            if inner == 0 {
+                struct_member_miss(attr, obj, loc);
+            }
+            let n_fields = unsafe { *(inner as *const i64) };
+            if (i as i64) >= n_fields {
+                struct_member_miss(attr, obj, loc);
+            }
+            let slot = (inner + 8 + 8 * i as i64) as *mut i64;
+            let old = unsafe { *slot };
+            if old != 0 {
+                let mut free_pos = field_type_pos;
+                crate::free_typed::free_val(old, desc, &mut free_pos);
+            }
+            unsafe { *slot = val };
+            return;
+        }
+        crate::format::skip(desc, &mut pos);
+    }
+    struct_member_miss(attr, obj, loc);
+}
+
+/// Reads a struct-box member by name, walking the box's descriptor for the
+/// field index (same layout `copy_struct` mirrors: name, field count biased
+/// by 13, then length-prefixed names with types). Returns the raw word, a
+/// borrow the box keeps owning, exactly like a concrete member read.
+fn struct_box_member(obj: i64, attr: i64, loc: i64) -> i64 {
+    let want = olive_str_to_bytes(attr);
+    let b = unsafe { &*(obj as *const crate::struct_box::OliveStructBox) };
+    let desc = b.desc as *const u8;
+    if unsafe { *desc } != crate::format::D_STRUCT
+        && unsafe { *desc } != crate::format::D_STRUCT_SHARED
+    {
+        struct_member_miss(attr, obj, loc);
+    }
+    let mut pos = 1usize;
+    let name_len = unsafe { *desc.add(pos) } as usize - 13;
+    pos += 1 + name_len;
+    let n = unsafe { *desc.add(pos) } as usize - 13;
+    pos += 1;
+    for i in 0..n {
+        let field_len = unsafe { *desc.add(pos) } as usize - 13;
+        let field_name = unsafe { std::slice::from_raw_parts(desc.add(pos + 1), field_len) };
+        pos += 1 + field_len;
+        crate::format::skip(desc, &mut pos);
+        if field_name == want {
+            let inner = b.ptr;
+            if inner == 0 {
+                struct_member_miss(attr, obj, loc);
+            }
+            let n_fields = unsafe { *(inner as *const i64) };
+            if (i as i64) < n_fields {
+                return unsafe { *((inner + 8 + 8 * i as i64) as *const i64) };
+            }
+            struct_member_miss(attr, obj, loc);
+        }
+    }
+    struct_member_miss(attr, obj, loc);
+}
+
+fn struct_member_miss(attr: i64, obj: i64, loc: i64) -> ! {
+    let kind_name = olive_str_from_ptr(olive_typeof_str(obj));
+    let attr_name = olive_str_from_ptr(attr);
+    let location = (loc != 0).then(|| olive_str_from_ptr(loc));
+    panic::abort(
+        &format!("no field or method `{attr_name}` on `{kind_name}`"),
+        location.as_deref(),
+    );
+}
+
 /// Runtime-dispatch slice for a statically-`Any` object. The builder used
 /// to route every `Any` slice to the Python slicer, segfaulting on native
 /// values (a string in an `Any` slot, an enum payload read). Dispatches on
