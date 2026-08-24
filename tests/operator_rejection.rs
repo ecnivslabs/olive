@@ -326,6 +326,14 @@ fn any_sets_print_and_measure() {
 }
 
 #[test]
+fn any_struct_dict_reads_and_drops() {
+    assert_accepted(
+        "struct Res:\n    s: str\nimpl Res:\n    fn __drop__(self):\n        print(\"drop \"+self.s)\n\nfn main():\n    let v: Any = {\"a\": Res(\"x\"), \"b\": Res(\"y\")}\n    print(v[\"a\"].s)\n    print(v[\"b\"].s)\n    print(v.get(\"a\", Res(\"d\")).s)\n    v.remove(\"a\")\n    print(len(v))\n    print(\"done\")\n",
+        "\"x\"\n\"y\"\n\"x\"\n1\ndone\ndrop d\ndrop y\ndrop x\n",
+    );
+}
+
+#[test]
 fn any_struct_member_access_round_trips() {
     assert_accepted(
         "struct Res:\n    s: str\nfn main():\n    let v: Any = {\"k\": Res(\"v\")}\n    print(v[\"k\"].s)\n    v[\"k\"].s = \"w\"\n    print(v[\"k\"].s)\n",
