@@ -1164,6 +1164,9 @@ impl<'a> MirBuilder<'a> {
             "sort" => match elem {
                 Type::Float | Type::F32 => "__olive_list_sort_float",
                 Type::Str => "__olive_list_sort_str",
+                // Dynamically-typed elements dispatch by runtime kind: the
+                // static `sort_int` entry misorders anything but raw ints.
+                Type::Any | Type::Var(_) | Type::Param(_) => "__olive_list_sort_any",
                 _ => "__olive_list_sort_int",
             },
             _ => return None,
@@ -1185,6 +1188,19 @@ impl<'a> MirBuilder<'a> {
             for (i, op) in arg_ops.iter().enumerate() {
                 if Some(i) == value_arg {
                     let from_ty = arg_tys.get(i).cloned().unwrap_or(Type::Any);
+                    call_args.push(self.box_into_any(op.clone(), &from_ty, span));
+                } else {
+                    call_args.push(op.clone());
+                }
+            }
+        } else if *elem == Type::Any && attr == "extend" {
+            // `extend` appends the source buffer word-for-word: a raw tuple
+            // or list source would mix raw words into `Any`-boxed storage
+            // (a raw `2` reads back as `0`), so erase it first. Idempotent
+            // when the source is already `Any`-shaped.
+            for (i, op) in arg_ops.iter().enumerate() {
+                if i == 0 {
+                    let from_ty = arg_tys.first().cloned().unwrap_or(Type::Any);
                     call_args.push(self.box_into_any(op.clone(), &from_ty, span));
                 } else {
                     call_args.push(op.clone());
@@ -1621,7 +1637,16 @@ impl<'a> MirBuilder<'a> {
                 (f, vec![obj_op.clone(), key_op, default])
             }
             "update" => {
-                let other = arg_ops.first().cloned().unwrap_or(zero());
+                let other_raw = arg_ops.first().cloned().unwrap_or(zero());
+                // An `Any`-valued target stores boxed words; a raw source
+                // dict would mix raw words into it (a raw `2` reads back as
+                // `0`), so erase it first. Idempotent when already boxed.
+                let other = if val_ty == Type::Any {
+                    let from_ty = arg_tys.first().cloned().unwrap_or(Type::Any);
+                    self.box_into_any(other_raw, &from_ty, span)
+                } else {
+                    other_raw
+                };
                 let f = if Self::list_elem_needs_copy(&val_ty) || key_typed {
                     "__olive_obj_update_typed"
                 } else {

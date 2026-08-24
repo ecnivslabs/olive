@@ -346,6 +346,26 @@ fn any_struct_member_access_round_trips() {
 }
 
 #[test]
+fn any_collection_sources_erase_into_any_targets() {
+    assert_accepted(
+        "fn f(v: Any):\n    v.extend((2, 3))\n    return v\nfn main():\n    print(f([1]))\n",
+        "[1, 2, 3]\n",
+    );
+    assert_accepted(
+        "fn f(v: Any):\n    v.extend([7, 8])\n    return v\nfn main():\n    print(f([1]))\n",
+        "[1, 7, 8]\n",
+    );
+    assert_accepted(
+        "fn f(v: Any):\n    v.update({\"b\": 2})\n    return v\nfn main():\n    print(f({\"a\": 1}))\n",
+        "{'b': 2, 'a': 1}\n",
+    );
+    assert_accepted(
+        "fn f[T](xs: [T], ys: [T]):\n    xs.extend(ys)\n    return xs\nfn main():\n    print(f([1], [2, 3]))\n",
+        "[1, 2, 3]\n",
+    );
+}
+
+#[test]
 fn any_receiver_methods_dispatch_by_kind() {
     assert_accepted(
         "fn f(v: Any):\n    return v.pop()\nfn g(v: Any):\n    return v.pop(\"a\")\nfn h(v: Any):\n    return v.pop(\"zz\", -1)\nfn main():\n    print(f([1, 2]))\n    print(g({\"a\": 1}))\n    print(h({\"a\": 1}))\n",
