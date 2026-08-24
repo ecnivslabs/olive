@@ -190,17 +190,58 @@ pub extern "C" fn olive_in_list_typed(val: i64, list_ptr: i64, key_desc: i64) ->
 }
 
 /// Structural hash for a `Raw`-classified key (a live struct/enum pointer),
-/// given the active key descriptor. Falls back to pointer identity when no
-/// descriptor is active (an untyped `Any`-keyed container, unchanged from
-/// before this existed).
+/// given the active key descriptor. A struct box carries its own descriptor,
+/// so it hashes structurally even with no active descriptor (an untyped
+/// `Any`-keyed container); otherwise falls back to pointer identity
+/// (unchanged from before this existed). Typed containers never hold boxes,
+/// so they skip the box check and keep their exact fast path.
 pub(crate) fn hash_key(v: i64) -> u64 {
     let desc = active_key_descriptor();
     if desc == 0 {
+        if let Some(h) = hash_struct_box_key(v) {
+            return h;
+        }
         return v as u64;
     }
     let mut visited = FxHashSet::default();
     let mut pos = 0usize;
     hash_val(v, desc as *const u8, &mut pos, &mut visited)
+}
+
+/// Whether `v` is a live struct box, whose embedded descriptor lets an
+/// `Any`-keyed dict hash and compare it structurally without an active key
+/// descriptor. Boxes are 8-aligned heap pointers; inline immediates, tagged
+/// strings, and small words reject on bits alone with no slab lookup.
+pub(crate) fn is_struct_box_key(v: i64) -> bool {
+    if v == 0 || v & 7 != 0 || v < 0x1000 {
+        return false;
+    }
+    crate::is_active_object(v)
+        && unsafe { *(v as *const i64) } == crate::struct_box::KIND_STRUCT_BOX
+}
+
+/// Structural hash for a struct box through its embedded descriptor, or
+/// `None` when `v` is not a live struct box. Lets two distinct boxes holding
+/// equal structs hash identically in an `Any`-keyed dict, the same rule
+/// `==` derives through `eq_typed`.
+pub(crate) fn hash_struct_box_key(v: i64) -> Option<u64> {
+    if v == 0 || v & 7 != 0 || v < 0x1000 || !crate::is_active_object(v) {
+        return None;
+    }
+    let kind = unsafe { *(v as *const i64) };
+    if kind != crate::struct_box::KIND_STRUCT_BOX {
+        return None;
+    }
+    let (desc, inner) = unsafe {
+        let b = &*(v as *const crate::struct_box::OliveStructBox);
+        (b.desc, b.ptr)
+    };
+    if desc == 0 {
+        return Some(one(v as u64));
+    }
+    let mut visited = FxHashSet::default();
+    let mut pos = 0usize;
+    Some(hash_val(inner, desc as *const u8, &mut pos, &mut visited))
 }
 
 fn hash_val(val: i64, desc: *const u8, pos: &mut usize, visited: &mut FxHashSet<i64>) -> u64 {

@@ -44,6 +44,43 @@ pub(crate) fn eq_key(a: i64, b: i64, desc: i64) -> bool {
     eq_val(a, b, desc as *const u8, &mut pos, &mut visited)
 }
 
+/// Structural equality for two struct boxes through their embedded
+/// descriptors, or `None` when either side is not a live struct box. Two
+/// distinct boxes holding equal structs compare equal in an `Any`-keyed
+/// dict, the same rule `==` derives; different struct types never match.
+pub(crate) fn eq_box_keys(a: i64, b: i64) -> Option<bool> {
+    if a == b {
+        return Some(true);
+    }
+    if a == 0 || b == 0 || !crate::is_active_object(a) || !crate::is_active_object(b) {
+        return None;
+    }
+    let (ka, kb) = unsafe { (*(a as *const i64), *(b as *const i64)) };
+    if ka != crate::struct_box::KIND_STRUCT_BOX || kb != crate::struct_box::KIND_STRUCT_BOX {
+        return None;
+    }
+    let (adesc, aptr, bdesc, bptr) = unsafe {
+        let ba = &*(a as *const crate::struct_box::OliveStructBox);
+        let bb = &*(b as *const crate::struct_box::OliveStructBox);
+        (ba.desc, ba.ptr, bb.desc, bb.ptr)
+    };
+    if adesc == 0 || bdesc == 0 {
+        return Some(false);
+    }
+    if !crate::format::desc_eq(adesc, bdesc) {
+        return Some(false);
+    }
+    let mut visited = FxHashSet::default();
+    let mut pos = 0usize;
+    Some(eq_val(
+        aptr,
+        bptr,
+        adesc as *const u8,
+        &mut pos,
+        &mut visited,
+    ))
+}
+
 pub(crate) fn eq_val(
     a: i64,
     b: i64,

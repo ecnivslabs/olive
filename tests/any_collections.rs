@@ -200,6 +200,47 @@ fn main():
 }
 
 #[test]
+fn erased_struct_keyed_dict_looks_up() {
+    assert_both(
+        r#"struct Key:
+    k: str
+fn get(d: Any, k: Any):
+    return d[k]
+fn main():
+    let d = {(Key("a")): 1, (Key("b")): 2}
+    let a: Any = d
+    print(a[Key("a")])
+    print(a[Key("b")])
+    print(a.get(Key("a"), -1))
+    let k: Any = Key("b")
+    print(get(a, k))
+    a[Key("c")] = 3
+    print(a[Key("c")])
+    print("done")
+"#,
+        "1\n2\n1\n2\n3\ndone\n",
+    );
+}
+
+#[test]
+fn erased_struct_keyed_dict_drops_exactly() {
+    assert_both(
+        r#"struct Key:
+    k: str
+impl Key:
+    fn __drop__(self):
+        print("dropk "+self.k)
+fn main():
+    let d = {(Key("a")): 1}
+    let a: Any = d
+    print(a[Key("a")])
+    print("done")
+"#,
+        "1\ndone\ndropk a\ndropk a\n",
+    );
+}
+
+#[test]
 fn struct_keys_snapshot_and_iterate() {
     assert_both(
         r#"struct Key:

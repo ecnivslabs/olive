@@ -627,11 +627,20 @@ impl<'a> MirBuilder<'a> {
         let o = self.lower_expr_as_copy(obj);
         let i_raw = self.lower_expr(index);
         let ty = self.get_type(expr_id);
+        // An `Any` dict holds struct keys boxed (see `erase_dict_values` and
+        // `coerce_to_hashable`); a raw struct pointer is ambiguous by kind
+        // and hashes by address, so a struct key into an `Any` receiver boxes
+        // here to meet the stored boxes structurally.
+        let idx_ty = self.get_type(index.id).clone();
+        let i_op = if current_obj_ty == Type::Any && Self::any_needs_erase(&idx_ty) {
+            self.box_into_any(i_raw.clone(), &idx_ty, span)
+        } else {
+            i_raw.clone()
+        };
         // A py subscript returns a fresh owned handle; a container read is a view.
         let owning = current_obj_ty.is_py_value();
         let tmp = self.new_local_with_owning(ty, None, true, owning);
         if current_obj_ty.is_py_value() {
-            let idx_ty = self.get_type(index.id).clone();
             let func_name = if Self::is_int_ty(&idx_ty) {
                 "__olive_py_getitem_int"
             } else {
@@ -649,7 +658,7 @@ impl<'a> MirBuilder<'a> {
             );
         } else {
             self.push_statement(
-                StatementKind::Assign(tmp, Rvalue::GetIndex(o, i_raw, false)),
+                StatementKind::Assign(tmp, Rvalue::GetIndex(o, i_op, false)),
                 span,
             );
         }

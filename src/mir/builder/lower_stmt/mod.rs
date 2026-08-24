@@ -420,8 +420,19 @@ impl<'a> MirBuilder<'a> {
                     }
                     ExprKind::Index { obj, index } => {
                         let obj_ty = self.get_type(obj.id).clone();
+                        let mut current_obj_ty = obj_ty.clone();
+                        while let Type::Ref(inner) | Type::MutRef(inner) = current_obj_ty {
+                            current_obj_ty = *inner;
+                        }
                         let obj_op = self.lower_expr_as_copy(obj);
                         let idx_op = self.lower_expr(index);
+                        let idx_ty = self.get_type(index.id).clone();
+                        let idx_op =
+                            if current_obj_ty == Type::Any && Self::any_needs_erase(&idx_ty) {
+                                self.box_into_any(idx_op, &idx_ty, stmt.span)
+                            } else {
+                                idx_op
+                            };
                         if obj_ty.is_py_value() {
                             let rval =
                                 self.emit_to_py_arg(Operand::Copy(tmp), &target_ty, stmt.span);

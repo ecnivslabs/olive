@@ -950,7 +950,26 @@ impl<'a> MirBuilder<'a> {
             }
             "pop" => {
                 let argc = args.len() as i64;
-                let a0 = arg_ops.first().cloned().unwrap_or(zero.clone());
+                let a0_raw = arg_ops.first().cloned().unwrap_or(zero.clone());
+                // An `Any` dict holds struct keys boxed; box a struct key so
+                // `pop` meets the stored boxes structurally. Scalars stay bare
+                // to match bare stored keys. List `pop` takes no args, so the
+                // dummy zero never reaches here as a real key.
+                let a0 = if !args.is_empty() {
+                    let from_ty = self.get_type(match &args[0] {
+                        CallArg::Positional(e)
+                        | CallArg::Keyword(_, e)
+                        | CallArg::Splat(e)
+                        | CallArg::KwSplat(e) => e.id,
+                    });
+                    if Self::any_needs_erase(&from_ty) {
+                        self.box_into_any(a0_raw, &from_ty, span)
+                    } else {
+                        a0_raw
+                    }
+                } else {
+                    a0_raw
+                };
                 let a1_raw = arg_ops.get(1).cloned().unwrap_or(zero.clone());
                 let a1 = if args.len() >= 2 {
                     let from_ty = self.get_type(match &args[1] {
@@ -1528,9 +1547,28 @@ impl<'a> MirBuilder<'a> {
         };
         let obj_op = self.lower_expr_as_copy(obj);
         let obj_op = self.check_any_method_recv(obj, obj_op, attr, 2, span);
+        // An `Any` dict holds struct keys boxed; a raw struct key would hash
+        // by address and miss. Box the key here so `.get`/`.remove` meet the
+        // stored boxes structurally. Typed receivers keep the raw key for
+        // their descriptor path.
+        let boxed_key_op =
+            if recv_ty == Type::Any && !arg_ops.is_empty() && matches!(attr, "get" | "remove") {
+                let from_ty = arg_tys.first().cloned().unwrap_or(Type::Any);
+                if Self::any_needs_erase(&from_ty) {
+                    Some(self.box_into_any(arg_ops[0].clone(), &from_ty, span))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
         let mut call_args = vec![obj_op];
         if runtime.starts_with("__olive_obj_get_default") {
-            call_args.push(arg_ops[0].clone());
+            if let Some(k) = boxed_key_op.clone() {
+                call_args.push(k);
+            } else {
+                call_args.push(arg_ops[0].clone());
+            }
             let default = arg_ops[1].clone();
             if needs_boxing && !matches!(val_ty, Type::Union(_)) {
                 // The stored words are raw; the default must be boxed to
@@ -1542,6 +1580,9 @@ impl<'a> MirBuilder<'a> {
             } else {
                 call_args.push(default);
             }
+        } else if let Some(k) = boxed_key_op {
+            call_args.push(k);
+            call_args.extend_from_slice(&arg_ops[1..]);
         } else {
             call_args.extend_from_slice(arg_ops);
         }
@@ -1595,13 +1636,25 @@ impl<'a> MirBuilder<'a> {
                 op
             }
         };
+        // An `Any` dict holds struct keys boxed; box a struct key here so
+        // `pop`/`setdefault` meet the stored boxes structurally. Typed
+        // receivers keep the raw key for their descriptor path.
+        let box_key = |b: &mut Self, op: Operand| {
+            if recv_ty == Type::Any {
+                let from_ty = arg_tys.first().cloned().unwrap_or(Type::Any);
+                if Self::any_needs_erase(&from_ty) {
+                    return b.box_into_any(op, &from_ty, span);
+                }
+            }
+            op
+        };
         let (runtime, call_args): (&str, Vec<Operand>) = match attr {
             "clear" if val_ty != Type::Any && Self::list_elem_needs_copy(&val_ty) => {
                 ("__olive_obj_clear_typed", vec![obj_op.clone()])
             }
             "clear" => ("__olive_obj_clear", vec![obj_op.clone()]),
             "pop" if arg_ops.len() >= 2 => {
-                let key_op = arg_ops[0].clone();
+                let key_op = box_key(self, arg_ops[0].clone());
                 let default = box_val(self, arg_ops[1].clone(), 1);
                 let f = if key_typed {
                     "__olive_obj_pop_default_typed"
@@ -1611,7 +1664,8 @@ impl<'a> MirBuilder<'a> {
                 (f, vec![obj_op.clone(), key_op, default])
             }
             "pop" => {
-                let key_op = arg_ops.first().cloned().unwrap_or(zero());
+                let raw_key = arg_ops.first().cloned().unwrap_or(zero());
+                let key_op = box_key(self, raw_key);
                 let loc = self.index_loc_operand(span);
                 let f = if key_typed {
                     "__olive_obj_pop_checked_typed"
@@ -1621,7 +1675,8 @@ impl<'a> MirBuilder<'a> {
                 (f, vec![obj_op.clone(), key_op, loc])
             }
             "setdefault" => {
-                let key_op = arg_ops.first().cloned().unwrap_or(zero());
+                let raw_key = arg_ops.first().cloned().unwrap_or(zero());
+                let key_op = box_key(self, raw_key);
                 let default = box_val(self, arg_ops.get(1).cloned().unwrap_or(zero()), 1);
                 // A hit discards the default through its own descriptor: an
                 // untyped release misreads struct payloads by kind, so heap

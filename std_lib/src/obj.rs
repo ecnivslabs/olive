@@ -506,11 +506,18 @@ pub extern "C" fn olive_free_obj(ptr: i64) {
             for &val in obj.fields.values() {
                 crate::free_any_word(val);
             }
-            // Tagged keys are dict-owned string copies; free them so the map's own
-            // keys do not outlive it. Untagged attribute names are interned symbols.
+            // Keys are owned words like values, but a raw struct key has no
+            // kind header (its first word is a field count), so the untyped
+            // free cannot tell it from a list or object: freeing it by kind
+            // would corrupt the heap. Tagged strings are dict-owned copies
+            // and struct boxes carry their descriptor, so those two free
+            // precisely; every other key shape leaks here exactly as before,
+            // typed drops still reclaim it through its descriptor.
             for k in obj.fields.keys() {
                 if crate::is_tagged_str_key(k.0) {
                     crate::olive_free_str(k.0);
+                } else if crate::hash_typed::is_struct_box_key(k.0) {
+                    crate::free_any_word(k.0);
                 }
             }
             obj.fields.clear();

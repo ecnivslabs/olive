@@ -334,6 +334,18 @@ fn any_struct_dict_reads_and_drops() {
 }
 
 #[test]
+fn any_struct_keyed_dict_looks_up() {
+    assert_accepted(
+        "struct Key:\n    k: str\nfn get(d: Any, k: Any):\n    return d[k]\nfn main():\n    let d = {(Key(\"a\")): 1, (Key(\"b\")): 2}\n    let a: Any = d\n    print(a[Key(\"a\")])\n    print(a[Key(\"b\")])\n    print(a.get(Key(\"a\"), -1))\n    print(a.get(Key(\"z\"), -1))\n    let k: Any = Key(\"b\")\n    print(get(a, k))\n    a[Key(\"c\")] = 3\n    print(a[Key(\"c\")])\n    a.remove(Key(\"a\"))\n    print(len(a))\n    print(a.pop(Key(\"b\"), -1))\n    print(\"done\")\n",
+        "1\n2\n1\n-1\n2\n3\n2\n2\ndone\n",
+    );
+    assert_accepted(
+        "struct Key:\n    k: str\nfn main():\n    let d: Any = {(Key(\"a\")): 1, (Key(\"b\")): 2}\n    print(d[Key(\"a\")])\n    print(d.get(Key(\"b\"), -1))\n    d[Key(\"c\")] = 3\n    print(d[Key(\"c\")])\n    print(\"done\")\n",
+        "1\n2\n3\ndone\n",
+    );
+}
+
+#[test]
 fn any_struct_member_access_round_trips() {
     assert_accepted(
         "struct Res:\n    s: str\nfn main():\n    let v: Any = {\"k\": Res(\"v\")}\n    print(v[\"k\"].s)\n    v[\"k\"].s = \"w\"\n    print(v[\"k\"].s)\n",

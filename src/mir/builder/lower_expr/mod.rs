@@ -70,7 +70,9 @@ impl<'a> MirBuilder<'a> {
     /// slot, these are hashed and compared by their raw word, and store and
     /// lookup take separate paths, so an integer stays bare to hash identically
     /// on both sides. `null` still boxes since a bare `0` key is reserved as the
-    /// runtime's "absent" sentinel.
+    /// runtime's "absent" sentinel. A struct key boxes with its descriptor so
+    /// an `Any`-keyed container hashes it structurally like the typed path
+    /// does; a raw struct pointer is ambiguous by kind and hashes by address.
     pub(super) fn coerce_to_hashable(
         &mut self,
         op: Operand,
@@ -84,7 +86,7 @@ impl<'a> MirBuilder<'a> {
         if *elem_ty != Type::Any {
             return op;
         }
-        if from_ty == Type::Null {
+        if from_ty == Type::Null || Self::any_needs_erase(&from_ty) {
             return self.box_into_any(op, &from_ty, elem.span);
         }
         op

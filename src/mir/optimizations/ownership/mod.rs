@@ -285,8 +285,25 @@ impl Transform for OwnershipInference {
         // Without this a struct-in-union temp stored into a field (e.g.
         // `session.child = spawn()`) keeps its own unconditional Drop,
         // which then frees the resource out from under the field that now
-        // holds the same handle -- a use-after-free on first access.
-        for (bb, idx) in direct_store_moves {
+        // holds the same handle, a use-after-free on first access.
+        // `SetIndex` transfers its dict key the same way: the map keeps the
+        // key word itself, so a dead-after heap key (a struct box in an
+        // erased dict) must move or its scope-end Drop frees it while the
+        // map still points at it.
+        for (bb, idx, is_key) in direct_store_moves {
+            if is_key {
+                let l = match &func.basic_blocks[bb].statements[idx].kind {
+                    StatementKind::SetIndex(_, Operand::Copy(l), _, _) => Some(*l),
+                    _ => None,
+                };
+                let Some(l) = l else { continue };
+                match &mut func.basic_blocks[bb].statements[idx].kind {
+                    StatementKind::SetIndex(_, key, _, _) => *key = Operand::Move(l),
+                    _ => unreachable!(),
+                }
+                moved_from.push((bb, idx, l));
+                continue;
+            }
             let l = match &func.basic_blocks[bb].statements[idx].kind {
                 StatementKind::SetIndex(_, _, Operand::Copy(l), _) => Some(*l),
                 StatementKind::SetAttr(_, _, Operand::Copy(l)) => Some(*l),
@@ -509,8 +526,13 @@ fn borrow_base(op: &Operand, heap: &[bool]) -> Option<Local> {
 enum SiteKind {
     /// Escaping argument of a call, at this lowered position.
     CallArg(usize),
-    /// Element, field, or global store.
-    DirectStore,
+    /// Value stored into an element, field, or global.
+    DirectStoreVal,
+    /// Dict key stored by `SetIndex`: the container keeps the key word
+    /// itself (a struct box included), so a dead-after heap key transfers
+    /// exactly like the value does. List indices are ints and never reach
+    /// here through the heap gate below.
+    DirectStoreKey,
     /// Aggregate element, at this lowered operand position.
     AggElem(usize),
 }
@@ -526,8 +548,9 @@ struct EscapeSite {
 
 /// (bb, idx, arg position) for a call-arg escape ready for move promotion.
 type ArgMoveSite = (usize, usize, usize);
-/// (bb, idx) for a direct-store escape ready for move promotion.
-type DirectStoreMoveSite = (usize, usize);
+/// (bb, idx, is_key) for a direct-store escape ready for move promotion:
+/// `false` upgrades the stored value, `true` upgrades a `SetIndex` dict key.
+type DirectStoreMoveSite = (usize, usize, bool);
 /// (bb, idx, operand position) for an aggregate-element escape ready for move promotion.
 type AggMoveSite = (usize, usize, usize);
 
@@ -568,9 +591,13 @@ fn collect_assigns(
                 }
             };
             match &stmt.kind {
-                StatementKind::SetIndex(_, _, val, _)
-                | StatementKind::SetAttr(_, _, val)
-                | StatementKind::PtrStore(_, val) => site(val, SiteKind::DirectStore, &mut sites),
+                StatementKind::SetIndex(_, idx, val, _) => {
+                    site(idx, SiteKind::DirectStoreKey, &mut sites);
+                    site(val, SiteKind::DirectStoreVal, &mut sites);
+                }
+                StatementKind::SetAttr(_, _, val) | StatementKind::PtrStore(_, val) => {
+                    site(val, SiteKind::DirectStoreVal, &mut sites)
+                }
                 _ => {}
             }
 
@@ -665,7 +692,8 @@ fn collect_assigns(
         if s.dead && !impure[i] {
             match s.kind {
                 SiteKind::CallArg(pos) => arg_moves.push((s.bb, s.idx, pos)),
-                SiteKind::DirectStore => direct_store_moves.push((s.bb, s.idx)),
+                SiteKind::DirectStoreVal => direct_store_moves.push((s.bb, s.idx, false)),
+                SiteKind::DirectStoreKey => direct_store_moves.push((s.bb, s.idx, true)),
                 SiteKind::AggElem(pos) => agg_moves.push((s.bb, s.idx, pos)),
             }
             continue;

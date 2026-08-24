@@ -186,8 +186,18 @@ impl<'a> MirBuilder<'a> {
         value: &Type,
         span: Span,
     ) -> Operand {
+        // Boxed struct keys are `Any` words (see `stored_key` below); the
+        // result keeps the static key type only when keys stay bare (scalars
+        // and other non-erased shapes) so typed hashing still applies. A
+        // `Dict(K, Any)` holding boxes under a `K=Struct` descriptor would
+        // hash the box header as a raw struct.
+        let result_key = if Self::any_needs_erase(key) {
+            Type::Any
+        } else {
+            key.clone()
+        };
         let result = self.new_local(
-            Type::Dict(Box::new(key.clone()), Box::new(Type::Any)),
+            Type::Dict(Box::new(result_key), Box::new(Type::Any)),
             None,
             false,
         );
