@@ -346,6 +346,47 @@ fn any_struct_member_access_round_trips() {
 }
 
 #[test]
+fn dynamic_sort_dispatches_by_element_kind() {
+    assert_accepted(
+        "fn srt[T](xs: [T]):\n    xs.sort()\n    return xs\nfn main():\n    print(srt([\"b\", \"a\"]))\n    print(srt([2.5, 1.5]))\n    print(srt([3, 1, 2]))\n",
+        "[\"a\", \"b\"]\n[1.5, 2.5]\n[1, 2, 3]\n",
+    );
+    assert_accepted(
+        "fn srt[T](xs: [T]):\n    return sorted(xs)\nfn main():\n    print(srt([\"b\", \"a\"]))\n    print(srt([3, 1, 2]))\n",
+        "[\"a\", \"b\"]\n[1, 2, 3]\n",
+    );
+    assert_accepted(
+        "fn main():\n    let v: Any = [\"banana\", \"apple\"]\n    print(sorted(v))\n    v.sort()\n    print(v)\n",
+        "[\"apple\", \"banana\"]\n[\"apple\", \"banana\"]\n",
+    );
+    assert_faults_e0700(
+        "fn main():\n    let v: Any = [1, \"a\"]\n    v.sort()\n    print(v)\n",
+        "`sort` requires int, float, or string elements",
+    );
+    assert_rejected_with(
+        "fn f(v: Any):\n    v.sort(key=5)\n    return v\nfn main():\n    print(f([2, 1]))\n",
+        "[E0404]",
+        "`key` must be a function",
+    );
+}
+
+#[test]
+fn dynamic_collection_arguments_are_validated() {
+    assert_faults_e0700(
+        "fn f(v: Any):\n    v.extend(5)\n    return v\nfn main():\n    print(f([1]))\n",
+        "`extend` requires a list argument",
+    );
+    assert_faults_e0700(
+        "fn f(v: Any):\n    v.update([1, 2])\n    return v\nfn main():\n    print(f({\"a\": 1}))\n",
+        "`update` requires a dict argument",
+    );
+    assert_accepted(
+        "fn f(v: Any):\n    v.extend((2, 3))\n    return v\nfn g(v: Any):\n    v.update({\"b\": 2})\n    return v\nfn main():\n    print(f([1]))\n    print(g({\"a\": 1}))\n",
+        "[1, 2, 3]\n{'b': 2, 'a': 1}\n",
+    );
+}
+
+#[test]
 fn any_collection_sources_erase_into_any_targets() {
     assert_accepted(
         "fn f(v: Any):\n    v.extend((2, 3))\n    return v\nfn main():\n    print(f([1]))\n",

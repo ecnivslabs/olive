@@ -387,6 +387,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_list_pop", &sig_i64_i64),
             ("__olive_list_reverse", &sig_i64_void),
             ("__olive_list_sort_int", &sig_i64_void),
+            ("__olive_list_sort_any", &sig_i64_i64),
             ("__olive_list_sort_float", &sig_i64_void),
             ("__olive_list_sort_str", &sig_i64_void),
             ("__olive_list_sort_by_keys", &sig_i64_i64_i64_void),

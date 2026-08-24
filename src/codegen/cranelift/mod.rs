@@ -436,6 +436,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_list_pop", b"olive_list_pop\0"),
     ("__olive_list_reverse", b"olive_list_reverse\0"),
     ("__olive_list_sort_int", b"olive_list_sort_int\0"),
+    ("__olive_list_sort_any", b"olive_list_sort_any\0"),
     ("__olive_list_sort_float", b"olive_list_sort_float\0"),
     ("__olive_list_sort_str", b"olive_list_sort_str\0"),
     ("__olive_list_sort_by_keys", b"olive_list_sort_by_keys\0"),

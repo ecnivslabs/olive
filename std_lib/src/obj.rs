@@ -336,6 +336,16 @@ pub extern "C" fn olive_obj_update(obj_ptr: i64, other_ptr: i64) -> i64 {
     if obj_ptr == 0 || other_ptr == 0 || !crate::slab::ptr_is_slab_body(other_ptr) {
         return obj_ptr;
     }
+    // Only dicts carry a field map; anything else reads the word as a map
+    // header. The checker rejects these statically; this is the dynamic
+    // backstop. (`None` keeps its historical silent no-op.)
+    if other_ptr != 0 && unsafe { *(other_ptr as *const i64) } != KIND_OBJ {
+        let kind_name = olive_str_from_ptr(olive_typeof_str(other_ptr));
+        crate::panic::abort(
+            &format!("`update` requires a dict argument, got `{kind_name}`"),
+            None,
+        );
+    }
     // Snapshotted before inserting: `olive_obj_set` can rehash `obj_ptr`'s
     // map, and when the two arguments alias (or a key copy allocates while
     // both maps share state through re-entrant codegen paths) an iterator

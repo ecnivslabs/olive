@@ -786,6 +786,7 @@ impl<'a> MirBuilder<'a> {
             match &elem_ty {
                 Type::Float | Type::F32 => "__olive_list_sort_float",
                 Type::Str => "__olive_list_sort_str",
+                Type::Any | Type::Var(_) | Type::Param(_) => "__olive_list_sort_any",
                 _ => "__olive_list_sort_int",
             }
         } else {

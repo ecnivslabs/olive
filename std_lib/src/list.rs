@@ -413,6 +413,72 @@ fn list_slice_mut<'a>(list_ptr: i64) -> Option<&'a mut [i64]> {
     Some(unsafe { std::slice::from_raw_parts_mut(s.ptr, s.len) })
 }
 
+/// Sorts a dynamically-typed list ascending, in place, dispatching on the
+/// elements' own representation: the static `sort_int` entry misorders
+/// anything but raw ints (string pointers sort by address, heap-boxed
+/// floats by address). Inline and boxed ints share one order through the
+/// unboxer, floats compare by value, strings compare by bytes. Anything
+/// else (mixed shapes, aggregates, `None`) faults: statically
+/// heterogeneous lists never reach here (the checker rejects them), so
+/// reaching it means dynamic heterogeneity with no ordering.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_sort_any(list_ptr: i64) -> i64 {
+    if list_ptr == 0 {
+        return 0;
+    }
+    let s = unsafe { &mut *(list_ptr as *mut StableVec) };
+    if s.len <= 1 {
+        return list_ptr;
+    }
+    let words = unsafe { std::slice::from_raw_parts(s.ptr, s.len) };
+    let mut has_int = false;
+    let mut has_float = false;
+    let mut has_str = false;
+    for &w in words.iter() {
+        if crate::string::is_interned_char(w) || (w & 1 == 1 && (w & !1) > 0x10000) {
+            has_str = true;
+        } else if w & crate::boxed::TAG_MASK == crate::boxed::TAG_NULL {
+            sort_unorderable(w);
+        } else if w != 0 && crate::is_active_object(w) {
+            match unsafe { *(w as *const i64) } {
+                crate::KIND_FLOAT => has_float = true,
+                crate::KIND_INT => has_int = true,
+                _ => sort_unorderable(w),
+            }
+        } else {
+            // Inline ints and bools, and raw words generally: the unboxer
+            // passes through what it cannot decode, so mixed raw/boxed
+            // integers still order by value.
+            has_int = true;
+        }
+    }
+    let slice = unsafe { std::slice::from_raw_parts_mut(s.ptr, s.len) };
+    if has_str && !has_int && !has_float {
+        slice.sort_by(|&a, &b| {
+            crate::string::olive_str_to_bytes(a).cmp(crate::string::olive_str_to_bytes(b))
+        });
+    } else if has_float && !has_int && !has_str {
+        slice.sort_by(|&a, &b| {
+            let fa = crate::boxed::olive_unbox_float(a);
+            let fb = crate::boxed::olive_unbox_float(b);
+            fa.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal)
+        });
+    } else if has_int && !has_float && !has_str {
+        slice.sort_by_key(|&a| crate::boxed::olive_unbox_int(a));
+    } else {
+        sort_unorderable(words[0]);
+    }
+    list_ptr
+}
+
+fn sort_unorderable(w: i64) -> ! {
+    let kind_name = olive_str_from_ptr(olive_typeof_str(w));
+    crate::panic::abort(
+        &format!("`sort` requires int, float, or string elements, got `{kind_name}`"),
+        None,
+    );
+}
+
 /// Sorts a list of integers ascending, in place.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_list_sort_int(list_ptr: i64) {
@@ -881,6 +947,24 @@ pub extern "C" fn olive_list_clear_typed(ptr: i64, list_desc: i64) -> i64 {
 pub extern "C" fn olive_list_extend(target: i64, source: i64) {
     if target == 0 || source == 0 {
         return;
+    }
+    // Only lists (tuples share the layout) carry a buffer here; anything
+    // else dereferences the word as a header (an int segfaults). The
+    // checker rejects these statically; this is the dynamic backstop.
+    if !is_active_object(source) {
+        let kind_name = olive_str_from_ptr(olive_typeof_str(source));
+        crate::panic::abort(
+            &format!("`extend` requires a list argument, got `{kind_name}`"),
+            None,
+        );
+    }
+    let source_kind = unsafe { *(source as *const i64) };
+    if source_kind != KIND_LIST && source_kind != KIND_ANY_LIST {
+        let kind_name = olive_str_from_ptr(olive_typeof_str(source));
+        crate::panic::abort(
+            &format!("`extend` requires a list argument, got `{kind_name}`"),
+            None,
+        );
     }
     let words: Vec<i64> = unsafe {
         if *(source as *const i64) == KIND_SET {

@@ -177,6 +177,16 @@ pub extern "C" fn olive_obj_update_typed(obj_ptr: i64, other_ptr: i64, desc: i64
     if obj_ptr == 0 || other_ptr == 0 || !slot_is_live(other_ptr) {
         return obj_ptr;
     }
+    // Only dicts carry a field map; anything else reads the word as map
+    // header. (`None` keeps its historical silent no-op via the early
+    // return above.)
+    if unsafe { *(other_ptr as *const i64) } != crate::KIND_OBJ {
+        let kind_name = crate::olive_str_from_ptr(crate::olive_typeof_str(other_ptr));
+        crate::panic::abort(
+            &format!("`update` requires a dict argument, got `{kind_name}`"),
+            None,
+        );
+    }
     let entries: Vec<(i64, i64)> = {
         let om = unsafe { &*(other_ptr as *const OliveObj) };
         om.fields.iter().map(|(k, &v)| (k.0, v)).collect()

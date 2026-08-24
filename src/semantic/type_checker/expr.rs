@@ -2807,6 +2807,20 @@ impl TypeChecker {
         {
             return Some(ty);
         }
+        // `sort` on an `Any` receiver never reaches the `List` arm below,
+        // so an invalid `key` function would reach lowering unchecked (a
+        // non-function key crashes the sort). Validate it the same way;
+        // result typing and lowering stay on the legacy path.
+        if attr == "sort"
+            && matches!(base, Type::Any)
+            && let Some((key_expr, key_ty)) =
+                args.iter().zip(arg_tys.iter()).find_map(|(a, t)| match a {
+                    CallArg::Keyword(name, e) if name == "key" => Some((e, t.clone())),
+                    _ => None,
+                })
+        {
+            self.check_sort_key(&Type::Any, key_expr, key_ty, obj.span);
+        }
         match (&base, attr) {
             // String method names are string-specific, so they type the same way
             // on a concrete `str` or on an `Any` that holds one.
