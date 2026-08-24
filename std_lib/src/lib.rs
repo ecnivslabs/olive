@@ -606,6 +606,15 @@ pub(crate) fn format_list_elem(val: i64) -> String {
                 return format!("{}", b.bits);
             }
             KIND_LIST | KIND_ANY_LIST => return format_list(val),
+            KIND_SET => {
+                let s = unsafe { &*(val as *const OliveHashSet) };
+                let mut parts = Vec::with_capacity(s.len);
+                for i in 0..s.len {
+                    let elem = unsafe { *s.ptr.add(i) };
+                    parts.push(format_list_elem(elem));
+                }
+                return format!("{{{}}}", parts.join(", "));
+            }
             KIND_OBJ => {
                 let m = unsafe { &*(val as *const OliveObj) };
                 let mut parts = Vec::with_capacity(m.fields.len());

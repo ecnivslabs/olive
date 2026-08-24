@@ -318,6 +318,14 @@ fn bytes_has_no_method_surface() {
 }
 
 #[test]
+fn any_sets_print_and_measure() {
+    assert_accepted(
+        "fn main():\n    let s: Any = {1}\n    print(s)\n    print(len(s))\n    s.add(2)\n    print(len(s))\n",
+        "{1}\n1\n2\n",
+    );
+}
+
+#[test]
 fn any_struct_member_access_round_trips() {
     assert_accepted(
         "struct Res:\n    s: str\nfn main():\n    let v: Any = {\"k\": Res(\"v\")}\n    print(v[\"k\"].s)\n    v[\"k\"].s = \"w\"\n    print(v[\"k\"].s)\n",
