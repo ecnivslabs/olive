@@ -346,6 +346,18 @@ fn any_struct_keyed_dict_looks_up() {
 }
 
 #[test]
+fn any_enum_keyed_dict_looks_up() {
+    assert_accepted(
+        "enum Shape:\n    Circle(int)\n    Square(int)\nfn get(d: Any, k: Any):\n    return d[k]\nfn main():\n    let d = {(Circle(5)): 1, (Square(2)): 2}\n    let a: Any = d\n    print(a[Circle(5)])\n    print(a[Square(2)])\n    print(a.get(Circle(5), -1))\n    print(a.get(Circle(9), -1))\n    let k: Any = Square(2)\n    print(get(a, k))\n    a[Circle(7)] = 3\n    print(a[Circle(7)])\n    a.remove(Circle(5))\n    print(len(a))\n    print(\"done\")\n",
+        "1\n2\n1\n-1\n2\n3\n2\ndone\n",
+    );
+    assert_accepted(
+        "enum Shape:\n    Circle(int)\n    Square(int)\nfn main():\n    let d: Any = {(Circle(5)): 1}\n    print(d[Circle(5)])\n    print(d.get(Circle(9), -1))\n    print(\"done\")\n",
+        "1\n-1\ndone\n",
+    );
+}
+
+#[test]
 fn any_struct_member_access_round_trips() {
     assert_accepted(
         "struct Res:\n    s: str\nfn main():\n    let v: Any = {\"k\": Res(\"v\")}\n    print(v[\"k\"].s)\n    v[\"k\"].s = \"w\"\n    print(v[\"k\"].s)\n",

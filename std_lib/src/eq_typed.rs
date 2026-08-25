@@ -52,7 +52,13 @@ pub(crate) fn eq_box_keys(a: i64, b: i64) -> Option<bool> {
     if a == b {
         return Some(true);
     }
-    if a == 0 || b == 0 || !crate::is_active_object(a) || !crate::is_active_object(b) {
+    if a == 0
+        || b == 0
+        || a & 7 != 0
+        || b & 7 != 0
+        || !crate::is_active_object(a)
+        || !crate::is_active_object(b)
+    {
         return None;
     }
     let (ka, kb) = unsafe { (*(a as *const i64), *(b as *const i64)) };
@@ -79,6 +85,44 @@ pub(crate) fn eq_box_keys(a: i64, b: i64) -> Option<bool> {
         &mut pos,
         &mut visited,
     ))
+}
+
+/// Structural equality for two raw enums through their embedded descriptors,
+/// or `None` when either side is not a descriptor-carrying enum. Two distinct
+/// enums of equal tag and payload compare equal in an `Any`-keyed dict.
+pub(crate) fn eq_enum_keys(a: i64, b: i64) -> Option<bool> {
+    if a == b {
+        return Some(true);
+    }
+    if a == 0
+        || b == 0
+        || a & 7 != 0
+        || b & 7 != 0
+        || !crate::is_active_object(a)
+        || !crate::is_active_object(b)
+    {
+        return None;
+    }
+    if unsafe { *(a as *const i64) } != crate::KIND_ENUM
+        || unsafe { *(b as *const i64) } != crate::KIND_ENUM
+    {
+        return None;
+    }
+    let (adesc, bdesc) = unsafe {
+        (
+            (*(a as *const crate::OliveEnum)).desc,
+            (*(b as *const crate::OliveEnum)).desc,
+        )
+    };
+    if adesc == 0 || bdesc == 0 {
+        return None;
+    }
+    if !crate::format::desc_eq(adesc, bdesc) {
+        return Some(false);
+    }
+    let mut visited = FxHashSet::default();
+    let mut pos = 0usize;
+    Some(eq_val(a, b, adesc as *const u8, &mut pos, &mut visited))
 }
 
 pub(crate) fn eq_val(

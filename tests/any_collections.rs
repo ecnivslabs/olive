@@ -241,6 +241,28 @@ fn main():
 }
 
 #[test]
+fn erased_enum_keyed_dict_looks_up() {
+    assert_both(
+        r#"enum Shape:
+    Circle(int)
+    Square(int)
+fn get(d: Any, k: Any):
+    return d[k]
+fn main():
+    let d = {(Circle(5)): 1, (Square(2)): 2}
+    let a: Any = d
+    print(a[Circle(5)])
+    print(a[Square(2)])
+    print(a.get(Circle(9), -1))
+    let k: Any = Square(2)
+    print(get(a, k))
+    print("done")
+"#,
+        "1\n2\n-1\n2\ndone\n",
+    );
+}
+
+#[test]
 fn struct_keys_snapshot_and_iterate() {
     assert_both(
         r#"struct Key:

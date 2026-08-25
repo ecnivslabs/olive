@@ -201,6 +201,9 @@ pub(crate) fn hash_key(v: i64) -> u64 {
         if let Some(h) = hash_struct_box_key(v) {
             return h;
         }
+        if let Some(h) = hash_enum_key(v) {
+            return h;
+        }
         return v as u64;
     }
     let mut visited = FxHashSet::default();
@@ -242,6 +245,43 @@ pub(crate) fn hash_struct_box_key(v: i64) -> Option<u64> {
     let mut visited = FxHashSet::default();
     let mut pos = 0usize;
     Some(hash_val(inner, desc as *const u8, &mut pos, &mut visited))
+}
+
+/// Whether `v` is a live enum carrying its descriptor, whose embedded type
+/// lets an `Any`-keyed dict hash and compare it structurally without an
+/// active key descriptor. Enums stamp their `D_ENUM` descriptor at
+/// construction for descriptor-less frees, so raw enum keys already carry
+/// what boxes carry separately.
+pub(crate) fn is_enum_key(v: i64) -> bool {
+    if v == 0 || v & 7 != 0 || v < 0x1000 {
+        return false;
+    }
+    if !crate::is_active_object(v) {
+        return false;
+    }
+    if unsafe { *(v as *const i64) } != crate::KIND_ENUM {
+        return false;
+    }
+    unsafe { (*(v as *const crate::OliveEnum)).desc != 0 }
+}
+
+/// Structural hash for a raw enum through its embedded descriptor, or `None`
+/// when `v` is not a descriptor-carrying enum. Lets two distinct enums of
+/// equal tag and payload hash identically in an `Any`-keyed dict.
+pub(crate) fn hash_enum_key(v: i64) -> Option<u64> {
+    if v == 0 || v & 7 != 0 || v < 0x1000 || !crate::is_active_object(v) {
+        return None;
+    }
+    if unsafe { *(v as *const i64) } != crate::KIND_ENUM {
+        return None;
+    }
+    let desc = unsafe { (*(v as *const crate::OliveEnum)).desc };
+    if desc == 0 {
+        return None;
+    }
+    let mut visited = FxHashSet::default();
+    let mut pos = 0usize;
+    Some(hash_val(v, desc as *const u8, &mut pos, &mut visited))
 }
 
 fn hash_val(val: i64, desc: *const u8, pos: &mut usize, visited: &mut FxHashSet<i64>) -> u64 {
