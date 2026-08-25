@@ -108,6 +108,23 @@ fn main():
 }
 
 #[test]
+fn erased_struct_set_remove_through_any() {
+    assert_both(
+        r#"struct P:
+    x: int
+fn main():
+    let s = {P(1), P(2)}
+    let a: Any = s
+    print(len(a))
+    a.remove(P(1))
+    print(len(a))
+    print("done")
+"#,
+        "2\n1\ndone\n",
+    );
+}
+
+#[test]
 fn erased_struct_dict_values_read_back() {
     assert_both(
         r#"struct Res:

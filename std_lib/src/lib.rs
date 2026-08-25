@@ -129,7 +129,7 @@ pub(crate) fn is_tagged_str_key(v: i64) -> bool {
 pub(crate) fn key_word_is_str(v: i64) -> bool {
     let desc = hash_typed::active_key_descriptor();
     if desc != 0 {
-        let base = desc as *const u8;
+        let base = crate::string_slab::str_body(desc) as *const u8;
         let first = unsafe { *base };
         let key_tag = if first == format::D_DICT || first == format::D_SET {
             unsafe { *base.add(1) }
@@ -166,7 +166,7 @@ fn classify_key(v: i64) -> KeyClass {
     // why a concrete key type must go through a `_typed` op.
     let desc = hash_typed::active_key_descriptor();
     if desc != 0 {
-        let base = desc as *const u8;
+        let base = crate::string_slab::str_body(desc) as *const u8;
         let first = unsafe { *base };
         let key_tag = if first == format::D_DICT || first == format::D_SET {
             unsafe { *base.add(1) }
@@ -230,14 +230,14 @@ impl PartialEq for OliveStringKey {
             (KeyClass::Str(a), KeyClass::Str(b)) => a == b,
             (KeyClass::Scalar(ka, va), KeyClass::Scalar(kb, vb)) => ka == kb && va == vb,
             // A struct/enum key under an active typed dict/set op compares
-            // structurally, the same rule `==` derives. An untyped `Any`
-            // container has no descriptor, but struct boxes, raw enums, and
-            // sequences carry their own shape, so equal values still match
-            // there; any other pair of distinct pointers already failed
-            // above. Typed containers skip those checks.
+            // structurally, the same rule `==` derives. With no static key
+            // type (an untyped `Any` container or an `Any`-descriptor set op),
+            // struct boxes, raw enums, and sequences carry their own shape,
+            // so equal values still match there; any other pair of distinct
+            // pointers already failed above. Typed containers skip those
+            // checks.
             (KeyClass::Raw(a), KeyClass::Raw(b)) => {
-                let desc = crate::hash_typed::active_key_descriptor();
-                if desc == 0 {
+                if crate::hash_typed::is_untyped_key_op() {
                     if let Some(eq) = crate::eq_typed::eq_box_keys(a, b) {
                         return eq;
                     }
@@ -251,6 +251,7 @@ impl PartialEq for OliveStringKey {
                     }
                     return false;
                 }
+                let desc = crate::hash_typed::active_key_descriptor();
                 crate::eq_typed::eq_key(a, b, desc)
             }
             _ => false,
