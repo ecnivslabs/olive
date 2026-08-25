@@ -7,6 +7,22 @@ thread_local! {
         const { UnsafeCell::new(GenSlab::with_cleanup(std::mem::size_of::<OliveEnum>(), release_enum_storage)) };
 }
 
+/// Whether `v` lives in an enum slab. Distinguishes real enums (`KIND_ENUM`)
+/// from raw structs whose field count collides with it: a 3-field struct
+/// header reads as 3 without this gate, and its fields would then be read as
+/// enum payload and descriptor words past the slot.
+pub(crate) fn owns_enum(v: i64) -> bool {
+    unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null() {
+            if (*active).enum_slab.owns_addr(v as usize) {
+                return true;
+            }
+        }
+        ENUM_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize))
+    }
+}
+
 pub(crate) unsafe fn release_enum_storage(body: *mut u8) {
     let e = unsafe { &mut *(body as *mut OliveEnum) };
     let ptr = std::mem::replace(&mut e.payload_ptr, std::ptr::null_mut());

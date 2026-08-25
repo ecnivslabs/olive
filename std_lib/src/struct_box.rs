@@ -33,6 +33,23 @@ fn with_struct_box_slab<T>(f: impl FnOnce(&mut GenSlab) -> T) -> T {
     }
 }
 
+/// Whether `v` lives in a struct-box slab (the active arena set or the
+/// thread-local one). Distinguishes real boxes (`KIND_STRUCT_BOX`) from raw
+/// structs whose field count collides with it: a 16-field struct header
+/// reads as 16 without this gate, and its fields would then be dereferenced
+/// as descriptor bytes.
+pub(crate) fn owns_struct_box(v: i64) -> bool {
+    unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null() {
+            if (*active).struct_box.owns_addr(v as usize) {
+                return true;
+            }
+        }
+        STRUCT_BOX_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize))
+    }
+}
+
 /// Boxes an owned struct pointer with its `D_STRUCT` descriptor. The box
 /// takes ownership; freeing it deep-frees the struct through the descriptor.
 /// Descriptor constants arrive as tagged string words; the tag bit is

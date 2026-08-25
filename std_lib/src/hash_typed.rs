@@ -214,9 +214,14 @@ pub(crate) fn hash_key(v: i64) -> u64 {
 /// Whether `v` is a live struct box, whose embedded descriptor lets an
 /// `Any`-keyed dict hash and compare it structurally without an active key
 /// descriptor. Boxes are 8-aligned heap pointers; inline immediates, tagged
-/// strings, and small words reject on bits alone with no slab lookup.
+/// strings, and small words reject on bits alone with no slab lookup. The
+/// slab gate comes before the kind read so a raw 16-field struct (whose
+/// header collides with the box kind) never classifies as a box.
 pub(crate) fn is_struct_box_key(v: i64) -> bool {
     if v == 0 || v & 7 != 0 || v < 0x1000 {
+        return false;
+    }
+    if !crate::struct_box::owns_struct_box(v) {
         return false;
     }
     crate::is_active_object(v)
@@ -228,7 +233,10 @@ pub(crate) fn is_struct_box_key(v: i64) -> bool {
 /// equal structs hash identically in an `Any`-keyed dict, the same rule
 /// `==` derives through `eq_typed`.
 pub(crate) fn hash_struct_box_key(v: i64) -> Option<u64> {
-    if v == 0 || v & 7 != 0 || v < 0x1000 || !crate::is_active_object(v) {
+    if v == 0 || v & 7 != 0 || v < 0x1000 {
+        return None;
+    }
+    if !crate::struct_box::owns_struct_box(v) || !crate::is_active_object(v) {
         return None;
     }
     let kind = unsafe { *(v as *const i64) };
@@ -251,9 +259,14 @@ pub(crate) fn hash_struct_box_key(v: i64) -> Option<u64> {
 /// lets an `Any`-keyed dict hash and compare it structurally without an
 /// active key descriptor. Enums stamp their `D_ENUM` descriptor at
 /// construction for descriptor-less frees, so raw enum keys already carry
-/// what boxes carry separately.
+/// what boxes carry separately. The slab gate comes before the kind read so
+/// a raw 3-field struct (whose header collides with the enum kind) never
+/// reads past its slot for payload and descriptor words.
 pub(crate) fn is_enum_key(v: i64) -> bool {
     if v == 0 || v & 7 != 0 || v < 0x1000 {
+        return false;
+    }
+    if !crate::enum_obj::owns_enum(v) {
         return false;
     }
     if !crate::is_active_object(v) {
@@ -269,7 +282,10 @@ pub(crate) fn is_enum_key(v: i64) -> bool {
 /// when `v` is not a descriptor-carrying enum. Lets two distinct enums of
 /// equal tag and payload hash identically in an `Any`-keyed dict.
 pub(crate) fn hash_enum_key(v: i64) -> Option<u64> {
-    if v == 0 || v & 7 != 0 || v < 0x1000 || !crate::is_active_object(v) {
+    if v == 0 || v & 7 != 0 || v < 0x1000 {
+        return None;
+    }
+    if !crate::enum_obj::owns_enum(v) || !crate::is_active_object(v) {
         return None;
     }
     if unsafe { *(v as *const i64) } != crate::KIND_ENUM {

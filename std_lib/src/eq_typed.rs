@@ -56,6 +56,8 @@ pub(crate) fn eq_box_keys(a: i64, b: i64) -> Option<bool> {
         || b == 0
         || a & 7 != 0
         || b & 7 != 0
+        || !crate::struct_box::owns_struct_box(a)
+        || !crate::struct_box::owns_struct_box(b)
         || !crate::is_active_object(a)
         || !crate::is_active_object(b)
     {
@@ -98,6 +100,8 @@ pub(crate) fn eq_enum_keys(a: i64, b: i64) -> Option<bool> {
         || b == 0
         || a & 7 != 0
         || b & 7 != 0
+        || !crate::enum_obj::owns_enum(a)
+        || !crate::enum_obj::owns_enum(b)
         || !crate::is_active_object(a)
         || !crate::is_active_object(b)
     {
