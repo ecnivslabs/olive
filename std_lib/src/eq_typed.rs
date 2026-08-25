@@ -178,6 +178,18 @@ fn eq_any_words(a: i64, b: i64, visited: &mut FxHashSet<(i64, i64)>) -> bool {
         }
         return false;
     }
+    if ka == crate::KIND_SET || kb == crate::KIND_SET {
+        if let Some(eq) = eq_set_keys(a, b, visited) {
+            return eq;
+        }
+        return false;
+    }
+    if ka == crate::KIND_OBJ || kb == crate::KIND_OBJ {
+        if let Some(eq) = eq_dict_keys(a, b, visited) {
+            return eq;
+        }
+        return false;
+    }
     false
 }
 
@@ -216,6 +228,97 @@ pub(crate) fn eq_seq_keys(a: i64, b: i64, visited: &mut FxHashSet<(i64, i64)>) -
         if !eq_any_words(av, bv, visited) {
             return Some(false);
         }
+    }
+    Some(true)
+}
+
+/// Structural equality for two sets through mutual containment, or `None`
+/// when either side is not a live set. Greedy first-match pairing is exact
+/// for transitive equality, matching the typed set comparison.
+pub(crate) fn eq_set_keys(a: i64, b: i64, visited: &mut FxHashSet<(i64, i64)>) -> Option<bool> {
+    if a == b {
+        return Some(true);
+    }
+    if a == 0 || b == 0 || a & 7 != 0 || b & 7 != 0 {
+        return None;
+    }
+    if !crate::set::owns_set(a)
+        || !crate::set::owns_set(b)
+        || !crate::is_active_object(a)
+        || !crate::is_active_object(b)
+    {
+        return None;
+    }
+    if unsafe { *(a as *const i64) } != crate::KIND_SET
+        || unsafe { *(b as *const i64) } != crate::KIND_SET
+    {
+        return None;
+    }
+    let (aptr, alen, bptr, blen) = unsafe {
+        let sa = &*(a as *const crate::OliveHashSet);
+        let sb = &*(b as *const crate::OliveHashSet);
+        (sa.ptr, sa.len, sb.ptr, sb.len)
+    };
+    if alen != blen {
+        return Some(false);
+    }
+    visited.insert((a, b));
+    let b_elems: Vec<i64> = (0..blen).map(|i| unsafe { *bptr.add(i) }).collect();
+    let mut used = vec![false; blen];
+    'outer: for i in 0..alen {
+        let av = unsafe { *aptr.add(i) };
+        for j in 0..blen {
+            if !used[j] && eq_any_words(av, b_elems[j], visited) {
+                used[j] = true;
+                continue 'outer;
+            }
+        }
+        return Some(false);
+    }
+    Some(true)
+}
+
+/// Structural equality for two dicts through mutual containment of entries,
+/// or `None` when either side is not a live dict.
+pub(crate) fn eq_dict_keys(a: i64, b: i64, visited: &mut FxHashSet<(i64, i64)>) -> Option<bool> {
+    if a == b {
+        return Some(true);
+    }
+    if a == 0 || b == 0 || a & 7 != 0 || b & 7 != 0 {
+        return None;
+    }
+    if !crate::obj::owns_obj(a)
+        || !crate::obj::owns_obj(b)
+        || !crate::is_active_object(a)
+        || !crate::is_active_object(b)
+    {
+        return None;
+    }
+    if unsafe { *(a as *const i64) } != crate::KIND_OBJ
+        || unsafe { *(b as *const i64) } != crate::KIND_OBJ
+    {
+        return None;
+    }
+    let (amap, bmap) = unsafe {
+        (
+            &(*(a as *const crate::OliveObj)).fields,
+            &(*(b as *const crate::OliveObj)).fields,
+        )
+    };
+    if amap.len() != bmap.len() {
+        return Some(false);
+    }
+    visited.insert((a, b));
+    let b_entries: Vec<(i64, i64)> = bmap.iter().map(|(k, &v)| (k.0, v)).collect();
+    let mut used = vec![false; b_entries.len()];
+    'outer: for (ak, av) in amap.iter().map(|(k, &v)| (k.0, v)) {
+        for (j, &(bk, bv)) in b_entries.iter().enumerate() {
+            if !used[j] && eq_any_words(ak, bk, visited) && eq_any_words(av, bv, visited) {
+                used[j] = true;
+                continue 'outer;
+            }
+        }
+        return Some(false);
     }
     Some(true)
 }

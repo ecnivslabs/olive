@@ -138,6 +138,8 @@ pub extern "C" fn olive_any_remove(obj: i64, arg: i64, arg_boxed: i64, loc: i64,
             KIND_OBJ => {
                 let key = if crate::hash_typed::is_struct_box_key(arg_boxed)
                     || crate::hash_typed::is_seq_key(arg_boxed)
+                    || crate::hash_typed::is_set_key(arg_boxed)
+                    || crate::hash_typed::is_dict_key(arg_boxed)
                 {
                     arg_boxed
                 } else {

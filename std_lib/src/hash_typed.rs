@@ -204,13 +204,12 @@ pub extern "C" fn olive_in_list_typed(val: i64, list_ptr: i64, key_desc: i64) ->
     with_key_descriptor(key_desc, || crate::olive_in_list(val, list_ptr))
 }
 
-/// Structural hash for a `Raw`-classified key (a live struct/enum pointer),
-/// given the active key descriptor. Struct boxes, raw enums, and sequences
-/// carry their own shape, so all three hash structurally even with no static
-/// key type (an untyped `Any`-keyed container or an `Any`-descriptor set op);
-/// otherwise falls back to pointer identity (unchanged from before this
-/// existed). Typed containers skip these checks and keep their exact fast
-/// path.
+/// Structural hash for a `Raw`-classified key, given the active key
+/// descriptor. Boxes, enums, sequences, sets, and dicts carry their own
+/// shape, so all hash structurally even with no static key type (an untyped
+/// `Any`-keyed container or an `Any`-descriptor set op); otherwise falls back
+/// to pointer identity (unchanged from before this existed). Typed containers
+/// skip these checks and keep their exact fast path.
 pub(crate) fn hash_key(v: i64) -> u64 {
     if is_untyped_key_op() {
         if let Some(h) = hash_struct_box_key(v) {
@@ -220,6 +219,12 @@ pub(crate) fn hash_key(v: i64) -> u64 {
             return h;
         }
         if let Some(h) = hash_seq_key(v) {
+            return h;
+        }
+        if let Some(h) = hash_set_key(v) {
+            return h;
+        }
+        if let Some(h) = hash_dict_key(v) {
             return h;
         }
         return v as u64;
@@ -345,6 +350,23 @@ fn hash_any_word(v: i64, visited: &mut FxHashSet<i64>) -> u64 {
         let parts = (0..elen).map(|i| hash_any_word(unsafe { *eptr.add(i) }, visited));
         return seq(parts);
     }
+    if kind == crate::KIND_SET && crate::set::owns_set(v) {
+        let (eptr, elen) = unsafe {
+            let s = &*(v as *const crate::OliveHashSet);
+            (s.ptr, s.len)
+        };
+        let parts = (0..elen).map(|i| hash_any_word(unsafe { *eptr.add(i) }, visited));
+        return commutative(parts);
+    }
+    if kind == crate::KIND_OBJ && crate::obj::owns_obj(v) {
+        let obj = unsafe { &*(v as *const crate::OliveObj) };
+        let parts = obj.fields.iter().map(|(k, &val)| {
+            let kh = hash_any_word(k.0, visited);
+            let vh = hash_any_word(val, visited);
+            seq([kh, vh])
+        });
+        return commutative(parts);
+    }
     one(v as u64)
 }
 
@@ -385,6 +407,77 @@ pub(crate) fn hash_seq_key(v: i64) -> Option<u64> {
     visited.insert(v);
     let parts = (0..elen).map(|i| hash_any_word(unsafe { *eptr.add(i) }, &mut visited));
     Some(seq(parts))
+}
+
+/// Whether `v` is a live set in a set slab. Gates set key reads so raw
+/// structs (whose headers collide with the set kind) never read past slots.
+pub(crate) fn is_set_key(v: i64) -> bool {
+    if v == 0 || v & 7 != 0 || v < 0x1000 {
+        return false;
+    }
+    if !crate::set::owns_set(v) || !crate::is_active_object(v) {
+        return false;
+    }
+    let kind = unsafe { *(v as *const i64) };
+    kind == crate::KIND_SET
+}
+
+/// Whether `v` is a live dict in an object slab. Gates dict key reads so raw
+/// structs (whose headers collide with the object kind) never read past slots.
+pub(crate) fn is_dict_key(v: i64) -> bool {
+    if v == 0 || v & 7 != 0 || v < 0x1000 {
+        return false;
+    }
+    if !crate::obj::owns_obj(v) || !crate::is_active_object(v) {
+        return false;
+    }
+    let kind = unsafe { *(v as *const i64) };
+    kind == crate::KIND_OBJ
+}
+
+/// Structural hash for a set key through its members, or `None` when `v` is
+/// not a live set. Commutative so insertion order never matters.
+pub(crate) fn hash_set_key(v: i64) -> Option<u64> {
+    if v == 0 || v & 7 != 0 || v < 0x1000 {
+        return None;
+    }
+    if !crate::set::owns_set(v) || !crate::is_active_object(v) {
+        return None;
+    }
+    if unsafe { *(v as *const i64) } != crate::KIND_SET {
+        return None;
+    }
+    let (eptr, elen) = unsafe {
+        let s = &*(v as *const crate::OliveHashSet);
+        (s.ptr, s.len)
+    };
+    let mut visited = FxHashSet::default();
+    visited.insert(v);
+    let parts = (0..elen).map(|i| hash_any_word(unsafe { *eptr.add(i) }, &mut visited));
+    Some(commutative(parts))
+}
+
+/// Structural hash for a dict key through its entries, or `None` when `v` is
+/// not a live dict. Commutative so entry order never matters.
+pub(crate) fn hash_dict_key(v: i64) -> Option<u64> {
+    if v == 0 || v & 7 != 0 || v < 0x1000 {
+        return None;
+    }
+    if !crate::obj::owns_obj(v) || !crate::is_active_object(v) {
+        return None;
+    }
+    if unsafe { *(v as *const i64) } != crate::KIND_OBJ {
+        return None;
+    }
+    let obj = unsafe { &*(v as *const crate::OliveObj) };
+    let mut visited = FxHashSet::default();
+    visited.insert(v);
+    let parts = obj.fields.iter().map(|(k, &val)| {
+        let kh = hash_any_word(k.0, &mut visited);
+        let vh = hash_any_word(val, &mut visited);
+        seq([kh, vh])
+    });
+    Some(commutative(parts))
 }
 
 fn hash_val(val: i64, desc: *const u8, pos: &mut usize, visited: &mut FxHashSet<i64>) -> u64 {

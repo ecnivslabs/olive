@@ -298,6 +298,20 @@ fn main():
 }
 
 #[test]
+fn erased_set_and_dict_keyed_dict_looks_up() {
+    assert_both(
+        r#"fn main():
+    let s = {({1, 2}): 10}
+    let a: Any = s
+    print(a[{1, 2}])
+    print(a.get(({2, 1}), -1))
+    print("done")
+"#,
+        "10\n10\ndone\n",
+    );
+}
+
+#[test]
 fn struct_keys_snapshot_and_iterate() {
     assert_both(
         r#"struct Key:

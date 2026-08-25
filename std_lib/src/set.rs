@@ -9,6 +9,18 @@ thread_local! {
         const { UnsafeCell::new(GenSlab::with_cleanup(std::mem::size_of::<OliveHashSet>(), release_set_storage)) };
 }
 
+/// Whether `v` lives in a set slab. Gates set key reads so raw structs
+/// (whose headers collide with the set kind) never read past their slots.
+pub(crate) fn owns_set(v: i64) -> bool {
+    unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null() && (*active).set.owns_addr(v as usize) {
+            return true;
+        }
+        SET_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize))
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_set_new(capacity: i64) -> i64 {
     // A negative capacity wraps to a huge usize; clamp to the empty vector

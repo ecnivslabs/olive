@@ -524,6 +524,12 @@ pub extern "C" fn olive_free_obj(ptr: i64) {
     free_obj_slot_raw_with(ptr, Some(is_global));
 }
 
+/// Whether `v` lives in an object slab. Gates dict key reads so raw structs
+/// (whose headers collide with the object kind) never read past their slots.
+pub(crate) fn owns_obj(v: i64) -> bool {
+    obj_slab_owns(v)
+}
+
 fn obj_slab_owns(ptr: i64) -> bool {
     unsafe {
         let active = crate::slab::ACTIVE_SLABS.get();

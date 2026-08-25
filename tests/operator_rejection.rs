@@ -370,6 +370,14 @@ fn any_tuple_keyed_dict_looks_up() {
 }
 
 #[test]
+fn any_set_and_dict_keyed_dict_looks_up() {
+    assert_accepted(
+        "fn main():\n    let s = {({1, 2}): 10}\n    let a: Any = s\n    print(a[{1, 2}])\n    print(a.get(({2, 1}), -1))\n    let m = {({1: 10}): 5}\n    let b: Any = m\n    print(b[{1: 10}])\n    print(\"done\")\n",
+        "10\n10\n5\ndone\n",
+    );
+}
+
+#[test]
 fn any_struct_member_access_round_trips() {
     assert_accepted(
         "struct Res:\n    s: str\nfn main():\n    let v: Any = {\"k\": Res(\"v\")}\n    print(v[\"k\"].s)\n    v[\"k\"].s = \"w\"\n    print(v[\"k\"].s)\n",

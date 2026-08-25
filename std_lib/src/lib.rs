@@ -232,7 +232,7 @@ impl PartialEq for OliveStringKey {
             // A struct/enum key under an active typed dict/set op compares
             // structurally, the same rule `==` derives. With no static key
             // type (an untyped `Any` container or an `Any`-descriptor set op),
-            // struct boxes, raw enums, and sequences carry their own shape,
+            // boxes, enums, sequences, sets, and dicts carry their own shape,
             // so equal values still match there; any other pair of distinct
             // pointers already failed above. Typed containers skip those
             // checks.
@@ -246,6 +246,16 @@ impl PartialEq for OliveStringKey {
                     }
                     if let Some(eq) =
                         crate::eq_typed::eq_seq_keys(a, b, &mut rustc_hash::FxHashSet::default())
+                    {
+                        return eq;
+                    }
+                    if let Some(eq) =
+                        crate::eq_typed::eq_set_keys(a, b, &mut rustc_hash::FxHashSet::default())
+                    {
+                        return eq;
+                    }
+                    if let Some(eq) =
+                        crate::eq_typed::eq_dict_keys(a, b, &mut rustc_hash::FxHashSet::default())
                     {
                         return eq;
                     }
