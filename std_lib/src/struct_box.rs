@@ -41,10 +41,8 @@ fn with_struct_box_slab<T>(f: impl FnOnce(&mut GenSlab) -> T) -> T {
 pub(crate) fn owns_struct_box(v: i64) -> bool {
     unsafe {
         let active = crate::slab::ACTIVE_SLABS.get();
-        if !active.is_null() {
-            if (*active).struct_box.owns_addr(v as usize) {
-                return true;
-            }
+        if !active.is_null() && (*active).struct_box.owns_addr(v as usize) {
+            return true;
         }
         STRUCT_BOX_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize))
     }
