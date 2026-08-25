@@ -190,11 +190,12 @@ pub extern "C" fn olive_in_list_typed(val: i64, list_ptr: i64, key_desc: i64) ->
 }
 
 /// Structural hash for a `Raw`-classified key (a live struct/enum pointer),
-/// given the active key descriptor. A struct box carries its own descriptor,
-/// so it hashes structurally even with no active descriptor (an untyped
-/// `Any`-keyed container); otherwise falls back to pointer identity
-/// (unchanged from before this existed). Typed containers never hold boxes,
-/// so they skip the box check and keep their exact fast path.
+/// given the active key descriptor. Struct boxes and raw enums carry their
+/// own descriptors, sequences hash by content, so all three hash
+/// structurally even with no active descriptor (an untyped `Any`-keyed
+/// container); otherwise falls back to pointer identity (unchanged from
+/// before this existed). Typed containers skip these checks and keep their
+/// exact fast path.
 pub(crate) fn hash_key(v: i64) -> u64 {
     let desc = active_key_descriptor();
     if desc == 0 {
@@ -202,6 +203,9 @@ pub(crate) fn hash_key(v: i64) -> u64 {
             return h;
         }
         if let Some(h) = hash_enum_key(v) {
+            return h;
+        }
+        if let Some(h) = hash_seq_key(v) {
             return h;
         }
         return v as u64;
@@ -255,32 +259,12 @@ pub(crate) fn hash_struct_box_key(v: i64) -> Option<u64> {
     Some(hash_val(inner, desc as *const u8, &mut pos, &mut visited))
 }
 
-/// Whether `v` is a live enum carrying its descriptor, whose embedded type
-/// lets an `Any`-keyed dict hash and compare it structurally without an
-/// active key descriptor. Enums stamp their `D_ENUM` descriptor at
-/// construction for descriptor-less frees, so raw enum keys already carry
-/// what boxes carry separately. The slab gate comes before the kind read so
-/// a raw 3-field struct (whose header collides with the enum kind) never
-/// reads past its slot for payload and descriptor words.
-pub(crate) fn is_enum_key(v: i64) -> bool {
-    if v == 0 || v & 7 != 0 || v < 0x1000 {
-        return false;
-    }
-    if !crate::enum_obj::owns_enum(v) {
-        return false;
-    }
-    if !crate::is_active_object(v) {
-        return false;
-    }
-    if unsafe { *(v as *const i64) } != crate::KIND_ENUM {
-        return false;
-    }
-    unsafe { (*(v as *const crate::OliveEnum)).desc != 0 }
-}
-
 /// Structural hash for a raw enum through its embedded descriptor, or `None`
 /// when `v` is not a descriptor-carrying enum. Lets two distinct enums of
-/// equal tag and payload hash identically in an `Any`-keyed dict.
+/// equal tag and payload hash identically in an `Any`-keyed dict. The slab
+/// gate comes before the kind read so a raw 3-field struct (whose header
+/// collides with the enum kind) never reads past its slot for payload and
+/// descriptor words.
 pub(crate) fn hash_enum_key(v: i64) -> Option<u64> {
     if v == 0 || v & 7 != 0 || v < 0x1000 {
         return None;
@@ -298,6 +282,94 @@ pub(crate) fn hash_enum_key(v: i64) -> Option<u64> {
     let mut visited = FxHashSet::default();
     let mut pos = 0usize;
     Some(hash_val(v, desc as *const u8, &mut pos, &mut visited))
+}
+
+/// Structural hash for an `Any` word without a descriptor, for sequence
+/// elements in untyped keys. Inline immediates and bare scalars hash by word
+/// (deterministic encodings make equal values identical words); strings by
+/// content; boxes and enums structurally through their embedded descriptors;
+/// sequences recurse; anything else falls back to word identity (a safe miss
+/// for distinct instances, never a misread).
+fn hash_any_word(v: i64, visited: &mut FxHashSet<i64>) -> u64 {
+    if v == 0 {
+        return one(0);
+    }
+    if v & 1 == 1 {
+        if (v & !1) > 0x10000 {
+            return hash_str(v);
+        }
+        return one(v as u64);
+    }
+    if v & 7 != 0 {
+        return one(v as u64);
+    }
+    if v < 0x1000 || !crate::is_active_object(v) {
+        return one(v as u64);
+    }
+    if !visited.insert(v) {
+        return 0;
+    }
+    let kind = unsafe { *(v as *const i64) };
+    if kind == crate::struct_box::KIND_STRUCT_BOX {
+        if let Some(h) = hash_struct_box_key(v) {
+            return h;
+        }
+        return one(v as u64);
+    }
+    if kind == crate::KIND_ENUM {
+        if let Some(h) = hash_enum_key(v) {
+            return h;
+        }
+        return one(v as u64);
+    }
+    if (kind == crate::KIND_LIST || kind == crate::KIND_ANY_LIST) && crate::list::owns_list(v) {
+        let (eptr, elen) = unsafe {
+            let s = &*(v as *const StableVec);
+            (s.ptr, s.len)
+        };
+        let parts = (0..elen).map(|i| hash_any_word(unsafe { *eptr.add(i) }, visited));
+        return seq(parts);
+    }
+    one(v as u64)
+}
+
+/// Whether `v` is a live sequence in a list slab, whose elements hash by
+/// content in an untyped key. The slab gate keeps raw structs (whose headers
+/// collide with the list kind) on pointer identity.
+pub(crate) fn is_seq_key(v: i64) -> bool {
+    if v == 0 || v & 7 != 0 || v < 0x1000 {
+        return false;
+    }
+    if !crate::list::owns_list(v) || !crate::is_active_object(v) {
+        return false;
+    }
+    let kind = unsafe { *(v as *const i64) };
+    kind == crate::KIND_LIST || kind == crate::KIND_ANY_LIST
+}
+
+/// Structural hash for a list or tuple key through its elements, or `None`
+/// when `v` is not a live sequence in a list slab. Lets `(1, 2)` and `[1, 2]`
+/// style keys hash by content in an `Any`-keyed dict. The slab gate keeps raw
+/// structs (whose headers collide with the list kind) on pointer identity.
+pub(crate) fn hash_seq_key(v: i64) -> Option<u64> {
+    if v == 0 || v & 7 != 0 || v < 0x1000 {
+        return None;
+    }
+    if !crate::list::owns_list(v) || !crate::is_active_object(v) {
+        return None;
+    }
+    let kind = unsafe { *(v as *const i64) };
+    if kind != crate::KIND_LIST && kind != crate::KIND_ANY_LIST {
+        return None;
+    }
+    let (eptr, elen) = unsafe {
+        let s = &*(v as *const StableVec);
+        (s.ptr, s.len)
+    };
+    let mut visited = FxHashSet::default();
+    visited.insert(v);
+    let parts = (0..elen).map(|i| hash_any_word(unsafe { *eptr.add(i) }, &mut visited));
+    Some(seq(parts))
 }
 
 fn hash_val(val: i64, desc: *const u8, pos: &mut usize, visited: &mut FxHashSet<i64>) -> u64 {

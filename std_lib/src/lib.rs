@@ -231,10 +231,10 @@ impl PartialEq for OliveStringKey {
             (KeyClass::Scalar(ka, va), KeyClass::Scalar(kb, vb)) => ka == kb && va == vb,
             // A struct/enum key under an active typed dict/set op compares
             // structurally, the same rule `==` derives. An untyped `Any`
-            // container has no descriptor, but struct boxes and raw enums
-            // carry their own, so equal values still match there; any other
-            // pair of distinct pointers already failed above. Typed
-            // containers never hold boxes, so they skip those checks.
+            // container has no descriptor, but struct boxes, raw enums, and
+            // sequences carry their own shape, so equal values still match
+            // there; any other pair of distinct pointers already failed
+            // above. Typed containers skip those checks.
             (KeyClass::Raw(a), KeyClass::Raw(b)) => {
                 let desc = crate::hash_typed::active_key_descriptor();
                 if desc == 0 {
@@ -242,6 +242,11 @@ impl PartialEq for OliveStringKey {
                         return eq;
                     }
                     if let Some(eq) = crate::eq_typed::eq_enum_keys(a, b) {
+                        return eq;
+                    }
+                    if let Some(eq) =
+                        crate::eq_typed::eq_seq_keys(a, b, &mut rustc_hash::FxHashSet::default())
+                    {
                         return eq;
                     }
                     return false;

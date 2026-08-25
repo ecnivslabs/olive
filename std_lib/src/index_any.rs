@@ -127,16 +127,18 @@ pub extern "C" fn olive_any_pop(obj: i64, argc: i64, a0: i64, a1: i64, loc: i64)
 /// descriptor (like `count` does): erased members are boxed while the
 /// needle arrives raw, so both forms travel (`arg` raw for list indices
 /// and dict keys, `arg_boxed` for set members) and each branch takes the
-/// one matching its representation. An `Any` dict holds struct keys boxed,
-/// so a struct-box needle meets the stored boxes; every other dict key
-/// stays on the raw form that matches bare stored keys.
+/// one matching its representation. An `Any` dict holds aggregate keys in
+/// `Any` form, so a boxed or sequence needle meets the stored words; every
+/// other dict key stays on the raw form that matches bare stored keys.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_any_remove(obj: i64, arg: i64, arg_boxed: i64, loc: i64, desc: i64) -> i64 {
     if obj != 0 && is_active_object(obj) {
         match unsafe { *(obj as *const i64) } {
             KIND_LIST | KIND_ANY_LIST => return list::olive_list_remove(obj, arg),
             KIND_OBJ => {
-                let key = if crate::hash_typed::is_struct_box_key(arg_boxed) {
+                let key = if crate::hash_typed::is_struct_box_key(arg_boxed)
+                    || crate::hash_typed::is_seq_key(arg_boxed)
+                {
                     arg_boxed
                 } else {
                     arg

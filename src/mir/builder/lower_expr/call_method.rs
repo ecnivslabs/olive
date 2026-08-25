@@ -951,10 +951,10 @@ impl<'a> MirBuilder<'a> {
             "pop" => {
                 let argc = args.len() as i64;
                 let a0_raw = arg_ops.first().cloned().unwrap_or(zero.clone());
-                // An `Any` dict holds struct keys boxed; box a struct key so
-                // `pop` meets the stored boxes structurally. Scalars stay bare
-                // to match bare stored keys. List `pop` takes no args, so the
-                // dummy zero never reaches here as a real key.
+                // An `Any` dict holds aggregate keys in `Any` form; meet the
+                // stored words there so `pop` hashes by content. Scalars stay
+                // bare to match bare stored keys. List `pop` takes no args,
+                // so the dummy zero never reaches here as a real key.
                 let a0 = if !args.is_empty() {
                     let from_ty = self.get_type(match &args[0] {
                         CallArg::Positional(e)
@@ -962,7 +962,7 @@ impl<'a> MirBuilder<'a> {
                         | CallArg::Splat(e)
                         | CallArg::KwSplat(e) => e.id,
                     });
-                    if Self::any_needs_erase(&from_ty) {
+                    if Self::key_needs_any_form(&from_ty) {
                         self.box_into_any(a0_raw, &from_ty, span)
                     } else {
                         a0_raw
@@ -1547,14 +1547,13 @@ impl<'a> MirBuilder<'a> {
         };
         let obj_op = self.lower_expr_as_copy(obj);
         let obj_op = self.check_any_method_recv(obj, obj_op, attr, 2, span);
-        // An `Any` dict holds struct keys boxed; a raw struct key would hash
-        // by address and miss. Box the key here so `.get`/`.remove` meet the
-        // stored boxes structurally. Typed receivers keep the raw key for
-        // their descriptor path.
+        // An `Any` dict holds aggregate keys in `Any` form; meet the stored
+        // words there so `.get`/`.remove` hash by content. Typed receivers
+        // keep the raw key for their descriptor path.
         let boxed_key_op =
             if recv_ty == Type::Any && !arg_ops.is_empty() && matches!(attr, "get" | "remove") {
                 let from_ty = arg_tys.first().cloned().unwrap_or(Type::Any);
-                if Self::any_needs_erase(&from_ty) {
+                if Self::key_needs_any_form(&from_ty) {
                     Some(self.box_into_any(arg_ops[0].clone(), &from_ty, span))
                 } else {
                     None
@@ -1636,13 +1635,13 @@ impl<'a> MirBuilder<'a> {
                 op
             }
         };
-        // An `Any` dict holds struct keys boxed; box a struct key here so
-        // `pop`/`setdefault` meet the stored boxes structurally. Typed
-        // receivers keep the raw key for their descriptor path.
+        // An `Any` dict holds aggregate keys in `Any` form; meet the stored
+        // words there so `pop`/`setdefault` hash by content. Typed receivers
+        // keep the raw key for their descriptor path.
         let box_key = |b: &mut Self, op: Operand| {
             if recv_ty == Type::Any {
                 let from_ty = arg_tys.first().cloned().unwrap_or(Type::Any);
-                if Self::any_needs_erase(&from_ty) {
+                if Self::key_needs_any_form(&from_ty) {
                     return b.box_into_any(op, &from_ty, span);
                 }
             }

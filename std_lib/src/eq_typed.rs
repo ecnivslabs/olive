@@ -129,6 +129,97 @@ pub(crate) fn eq_enum_keys(a: i64, b: i64) -> Option<bool> {
     Some(eq_val(a, b, adesc as *const u8, &mut pos, &mut visited))
 }
 
+/// Structural equality for `Any` words without a descriptor, for sequence
+/// elements in untyped keys. Equal encodings are identical words (covered by
+/// the shortcut above); strings compare by content; boxes and enums through
+/// their embedded descriptors; sequences recurse; anything else is unequal
+/// unless identical (a safe miss, never a misread).
+fn eq_any_words(a: i64, b: i64, visited: &mut FxHashSet<(i64, i64)>) -> bool {
+    if a == b {
+        return true;
+    }
+    if a == 0 || b == 0 {
+        return false;
+    }
+    let a_str = a & 1 == 1 && (a & !1) > 0x10000;
+    let b_str = b & 1 == 1 && (b & !1) > 0x10000;
+    if a_str || b_str {
+        if a_str && b_str {
+            return crate::olive_str_eq(a, b) != 0;
+        }
+        return false;
+    }
+    if a & 7 != 0 || b & 7 != 0 {
+        return false;
+    }
+    if !crate::is_active_object(a) || !crate::is_active_object(b) {
+        return false;
+    }
+    if visited.contains(&(a, b)) {
+        return true;
+    }
+    let (ka, kb) = unsafe { (*(a as *const i64), *(b as *const i64)) };
+    if ka == crate::struct_box::KIND_STRUCT_BOX || kb == crate::struct_box::KIND_STRUCT_BOX {
+        if let Some(eq) = eq_box_keys(a, b) {
+            return eq;
+        }
+        return false;
+    }
+    if ka == crate::KIND_ENUM || kb == crate::KIND_ENUM {
+        if let Some(eq) = eq_enum_keys(a, b) {
+            return eq;
+        }
+        return false;
+    }
+    let seq_kind = |k: i64| k == crate::KIND_LIST || k == crate::KIND_ANY_LIST;
+    if seq_kind(ka) || seq_kind(kb) {
+        if let Some(eq) = eq_seq_keys(a, b, visited) {
+            return eq;
+        }
+        return false;
+    }
+    false
+}
+
+/// Structural equality for two sequences through their elements, or `None`
+/// when either side is not a live sequence in a list slab.
+pub(crate) fn eq_seq_keys(a: i64, b: i64, visited: &mut FxHashSet<(i64, i64)>) -> Option<bool> {
+    if a == b {
+        return Some(true);
+    }
+    if a == 0 || b == 0 || a & 7 != 0 || b & 7 != 0 {
+        return None;
+    }
+    if !crate::list::owns_list(a)
+        || !crate::list::owns_list(b)
+        || !crate::is_active_object(a)
+        || !crate::is_active_object(b)
+    {
+        return None;
+    }
+    let (ka, kb) = unsafe { (*(a as *const i64), *(b as *const i64)) };
+    let seq_kind = |k: i64| k == crate::KIND_LIST || k == crate::KIND_ANY_LIST;
+    if !seq_kind(ka) || !seq_kind(kb) {
+        return None;
+    }
+    let (aptr, alen, bptr, blen) = unsafe {
+        let sa = &*(a as *const crate::StableVec);
+        let sb = &*(b as *const crate::StableVec);
+        (sa.ptr, sa.len, sb.ptr, sb.len)
+    };
+    if alen != blen {
+        return Some(false);
+    }
+    visited.insert((a, b));
+    for i in 0..alen {
+        let (av, bv) = unsafe { (*aptr.add(i), *bptr.add(i)) };
+        if !eq_any_words(av, bv, visited) {
+            return Some(false);
+        }
+    }
+    Some(true)
+}
+
 pub(crate) fn eq_val(
     a: i64,
     b: i64,

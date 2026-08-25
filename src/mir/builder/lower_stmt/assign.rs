@@ -261,7 +261,7 @@ impl<'a> MirBuilder<'a> {
                 let obj_op = self.lower_expr_as_copy(obj);
                 let idx_op = self.lower_expr(index);
                 let idx_ty = self.get_type(index.id).clone();
-                let idx_op = if current_obj_ty == Type::Any && Self::any_needs_erase(&idx_ty) {
+                let idx_op = if current_obj_ty == Type::Any && Self::key_needs_any_form(&idx_ty) {
                     self.box_into_any(idx_op, &idx_ty, target.span)
                 } else {
                     idx_op

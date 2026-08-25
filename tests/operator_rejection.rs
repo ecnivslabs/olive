@@ -358,6 +358,18 @@ fn any_enum_keyed_dict_looks_up() {
 }
 
 #[test]
+fn any_tuple_keyed_dict_looks_up() {
+    assert_accepted(
+        "fn get(d: Any, k: Any):\n    return d[k]\nfn main():\n    let d = {((1, 2)): 10, ((3, 4)): 20}\n    let a: Any = d\n    print(a[(1, 2)])\n    print(a[(3, 4)])\n    print(a.get((1, 2), -1))\n    print(a.get((9, 9), -1))\n    let k: Any = (3, 4)\n    print(get(a, k))\n    a[(5, 6)] = 30\n    print(a[(5, 6)])\n    a.remove((1, 2))\n    print(len(a))\n    print(\"done\")\n",
+        "10\n20\n10\n-1\n20\n30\n2\ndone\n",
+    );
+    assert_accepted(
+        "fn main():\n    let d: Any = {((1, 2)): 10}\n    print(d[(1, 2)])\n    print(d.get((9, 9), -1))\n    print(\"done\")\n",
+        "10\n-1\ndone\n",
+    );
+}
+
+#[test]
 fn any_struct_member_access_round_trips() {
     assert_accepted(
         "struct Res:\n    s: str\nfn main():\n    let v: Any = {\"k\": Res(\"v\")}\n    print(v[\"k\"].s)\n    v[\"k\"].s = \"w\"\n    print(v[\"k\"].s)\n",

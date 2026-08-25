@@ -32,6 +32,22 @@ impl<'a> MirBuilder<'a> {
         }
     }
 
+    /// Whether a dict key or set element needs the `Any`-erased form to hash
+    /// by content in an `Any`-keyed container. Structs need boxing (headerless
+    /// and ambiguous by kind); tuples, lists, sets, and dicts need elementwise
+    /// erasure so lookups meet stored keys as the same self-describing words
+    /// (bare ints versus tagged ints would otherwise hash apart). Scalars,
+    /// strings, enums, and unions keep their existing raw or tagged forms.
+    pub(crate) fn key_needs_any_form(ty: &Type) -> bool {
+        if Self::any_needs_erase(ty) {
+            return true;
+        }
+        matches!(
+            ty,
+            Type::Tuple(_) | Type::List(_) | Type::Set(_) | Type::Dict(_, _)
+        )
+    }
+
     /// Erases a tuple's elements into `Any`, rebuilding the same shape
     /// with each position boxed through `box_into_any`. A tuple holding
     /// a raw struct (directly or nested) misreads by kind on the untyped
@@ -187,11 +203,11 @@ impl<'a> MirBuilder<'a> {
         span: Span,
     ) -> Operand {
         // Boxed struct keys are `Any` words (see `stored_key` below); the
-        // result keeps the static key type only when keys stay bare (scalars
-        // and other non-erased shapes) so typed hashing still applies. A
-        // `Dict(K, Any)` holding boxes under a `K=Struct` descriptor would
-        // hash the box header as a raw struct.
-        let result_key = if Self::any_needs_erase(key) {
+        // result keeps the static key type only when keys stay bare (scalars,
+        // strings, and enums) so typed hashing still applies. Any-erased
+        // aggregate keys (tuples, lists, sets, dicts, and struct-containing
+        // shapes) go untyped as `Any`.
+        let result_key = if Self::key_needs_any_form(key) {
             Type::Any
         } else {
             key.clone()
@@ -296,12 +312,12 @@ impl<'a> MirBuilder<'a> {
         );
         // Keys are stored raw (only `str` gets a private copy inside the
         // store), and no escape rule covers the key position, so a view
-        // into the snapshot would dangle once it frees: keys that can
-        // hold heap data box (structs and collections, like values), and
-        // every other heap-owning key takes an independent copy up front.
-        // Immediates own nothing and `str` is already covered, so both
-        // stay as-is.
-        let stored_key = if Self::any_needs_erase(key) {
+        // into the snapshot would dangle once it frees: keys in `Any` form
+        // (structs boxed, aggregates elementwise erased) go through
+        // `box_into_any`, and every other heap-owning key takes an
+        // independent copy up front. Immediates own nothing and `str` is
+        // already covered, so both stay as-is.
+        let stored_key = if Self::key_needs_any_form(key) {
             self.box_into_any(Operand::Copy(key_tmp), key, span)
         } else if *key != Type::Str && Self::list_elem_needs_copy(key) {
             let dup = self.new_local(key.clone(), None, false);

@@ -65,6 +65,19 @@ pub(crate) fn list_from_vec(mut v: Vec<i64>) -> i64 {
     alloc_list_header(KIND_LIST, ptr, cap, len)
 }
 
+/// Whether `v` lives in a list slab. Gates sequence key reads so a raw
+/// 1-field struct (whose header collides with the list kind) never reads
+/// past its slot for element words.
+pub(crate) fn owns_list(v: i64) -> bool {
+    unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null() && (*active).list.owns_addr(v as usize) {
+            return true;
+        }
+        LIST_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize))
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_list_new(len: i64) -> i64 {
     let n = len as usize;

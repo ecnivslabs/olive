@@ -263,6 +263,24 @@ fn main():
 }
 
 #[test]
+fn erased_tuple_keyed_dict_looks_up() {
+    assert_both(
+        r#"fn get(d: Any, k: Any):
+    return d[k]
+fn main():
+    let d = {((1, 2)): 10, ((3, 4)): 20}
+    let a: Any = d
+    print(a[(1, 2)])
+    print(a[(3, 4)])
+    let k: Any = (3, 4)
+    print(get(a, k))
+    print("done")
+"#,
+        "10\n20\n20\ndone\n",
+    );
+}
+
+#[test]
 fn struct_keys_snapshot_and_iterate() {
     assert_both(
         r#"struct Key:

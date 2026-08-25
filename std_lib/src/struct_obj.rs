@@ -57,6 +57,33 @@ thread_local! {
     static STRUCT_SLABS: UnsafeCell<StructSlabs> = UnsafeCell::new(StructSlabs::new());
 }
 
+/// Whether `v` lives in a raw-struct slab. Raw structs carry no kind header
+/// (the first word is a field count colliding with list, object, set, enum,
+/// and box kinds), so untyped key frees must skip them and leak rather than
+/// misread by kind; typed drops still reclaim them through descriptors.
+pub(crate) fn owns_struct_raw(v: i64) -> bool {
+    fn slabs_own(slabs: &StructSlabs, addr: usize) -> bool {
+        for sl in &slabs.fixed {
+            if sl.owns_addr(addr) {
+                return true;
+            }
+        }
+        for (_, sl) in &slabs.large {
+            if sl.owns_addr(addr) {
+                return true;
+            }
+        }
+        false
+    }
+    unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null() && slabs_own(&(*active).struct_slabs, v as usize) {
+            return true;
+        }
+        STRUCT_SLABS.with(|sl| slabs_own(&*sl.get(), v as usize))
+    }
+}
+
 /// A value crossing a task boundary (E5.6) is relocated into the shared
 /// escape arena (`with_escape_arena`), which redirects `ACTIVE_SLABS` --
 /// struct allocation must consult it the same way `list`/`obj`/`set`/`enum`
