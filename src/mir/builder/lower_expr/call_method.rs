@@ -1418,8 +1418,15 @@ impl<'a> MirBuilder<'a> {
         // `hash_typed.rs`), the descriptor synthesized at codegen time from
         // this call's own value argument (arg position 1), same pattern as
         // `__olive_list_extend_typed`. `remove` faults on a miss (Python
-        // semantics), `discard` keeps the old silent behavior.
-        let typed = Self::type_needs_key_descriptor(&elem);
+        // semantics), `discard` keeps the old silent behavior. An
+        // `Any`-element set with a concrete scalar argument hashes by that
+        // scalar's static type: the magnitude heuristic reads a raw odd int
+        // above the string-tag floor as a string pointer and aborts, so the
+        // argument's own type drives the typed dispatch, mirroring dicts.
+        // Only a statically-`Any` argument stays on the heuristic path.
+        let arg_elem = arg_tys.first().cloned().unwrap_or(Type::Any);
+        let typed = Self::type_needs_key_descriptor(&elem)
+            || (elem == Type::Any && Self::scalar_needs_key_descriptor(&arg_elem));
         let runtime = match (attr, typed) {
             ("add", false) => "__olive_set_add",
             ("add", true) => "__olive_set_add_typed",
@@ -1434,12 +1441,22 @@ impl<'a> MirBuilder<'a> {
         let obj_op = self.lower_expr_as_copy(obj);
         let obj_op = self.check_any_method_recv(obj, obj_op, attr, 4, span);
         let mut call_args = vec![obj_op.clone()];
-        // An `Any`-element set boxes its scalar argument so the stored word stays
-        // self-describing, the same as list elements.
+        // Dict keys stay bare so store and lookup hash identically; set
+        // elements follow the same rule. Only an aggregate or struct element
+        // boxes into `Any` form (bare headerless or elementwise-mismatched
+        // words would hash by address). A boxed scalar would also lose its
+        // static type: codegen synthesizes the `_typed` descriptor from this
+        // argument's own type, and a boxed `Any` local reads back `D_ANY`,
+        // routing a concrete scalar onto the magnitude heuristic that
+        // misreads large odd ints as string pointers.
         if let Some(op) = arg_ops.first() {
             if elem == Type::Any {
                 let from_ty = arg_tys.first().cloned().unwrap_or(Type::Any);
-                call_args.push(self.box_into_any(op.clone(), &from_ty, span));
+                if Self::key_needs_any_form(&from_ty) {
+                    call_args.push(self.box_into_any(op.clone(), &from_ty, span));
+                } else {
+                    call_args.push(op.clone());
+                }
             } else {
                 call_args.push(op.clone());
             }
@@ -1487,8 +1504,19 @@ impl<'a> MirBuilder<'a> {
         while let Type::Ref(inner) | Type::MutRef(inner) = recv_ty {
             recv_ty = *inner;
         }
+        // An `Any`-keyed dict with a concrete scalar key hashes by the key's
+        // own static type: the magnitude heuristic reads a raw odd int above
+        // the string-tag floor as a string pointer and aborts, so the key
+        // argument's type drives the typed dispatch. Codegen synthesizes the
+        // descriptor from that same argument. Only a statically-`Any` key
+        // stays on the heuristic path.
+        let arg_key_typed = arg_tys
+            .first()
+            .is_some_and(Self::scalar_needs_key_descriptor);
         let key_typed = match &recv_ty {
-            Type::Dict(k, _) => Self::type_needs_key_descriptor(k),
+            Type::Dict(k, _) => {
+                Self::type_needs_key_descriptor(k) || (**k == Type::Any && arg_key_typed)
+            }
             _ => false,
         };
         // A struct/enum/tuple/collection key needs the typed hash+eq
@@ -1623,7 +1651,14 @@ impl<'a> MirBuilder<'a> {
             Type::Any => (Type::Any, Type::Any),
             _ => return None,
         };
-        let key_typed = Self::type_needs_key_descriptor(&key_ty);
+        // Same `Any`-keyed rule as `lower_dict_method`: a concrete scalar
+        // key argument drives the typed dispatch. `update`'s argument is a
+        // whole source dict, not a key, so it keeps the receiver-only rule.
+        let arg_key_typed = arg_tys
+            .first()
+            .is_some_and(Self::scalar_needs_key_descriptor);
+        let key_typed = Self::type_needs_key_descriptor(&key_ty)
+            || (key_ty == Type::Any && arg_key_typed && matches!(attr, "pop" | "setdefault"));
         let obj_op = self.lower_expr_as_copy(obj);
         let obj_op = self.check_any_method_recv(obj, obj_op, attr, 2, span);
         let zero = || Operand::Constant(Constant::Int(0));

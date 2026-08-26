@@ -257,6 +257,10 @@ impl<M: Module> CraneliftCodegen<M> {
                 {
                     Some(1usize)
                 }
+                // Set-`in` on a statically-`Any` haystack with a concrete
+                // scalar needle: the descriptor comes from the needle
+                // (arg 0), the haystack's own type is `Any`.
+                "__olive_in_list_typed" if call_args.len() == 2 => Some(0usize),
                 "__olive_obj_get_default_typed"
                 | "__olive_obj_get_default_boxed_typed"
                 | "__olive_list_index_typed"

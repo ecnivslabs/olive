@@ -891,14 +891,34 @@ impl<M: Module> CraneliftCodegen<M> {
                             .expect("dict value descriptor not interned during collection");
                         let val_local_data = module.declare_data_in_func(val_data_id, builder.func);
                         let val_desc_ptr = builder.ins().symbol_value(types::I64, val_local_data);
-                        let zero = builder.ins().iconst(types::I64, 0);
+                        // An `Any`-keyed dict hashes a concrete scalar index
+                        // by the index's own static type (see the plain
+                        // `Dict` arm below); only a statically-`Any` index
+                        // keeps the zero key descriptor.
+                        let idx_static = super::imports::operand_static_type(idx, func_mir);
+                        let idx_ty = super::imports::concrete_ty(&idx_static);
+                        let key_desc_ptr = if super::imports::scalar_needs_key_descriptor(idx_ty) {
+                            let desc = super::imports::type_descriptor(
+                                idx_ty,
+                                struct_fields,
+                                field_types,
+                                enum_defs,
+                            );
+                            let data_id = *string_ids.get(&desc).expect(
+                                "any-keyed replacing-setindex descriptor not interned during collection",
+                            );
+                            let local_data = module.declare_data_in_func(data_id, builder.func);
+                            builder.ins().symbol_value(types::I64, local_data)
+                        } else {
+                            builder.ins().iconst(types::I64, 0)
+                        };
                         let set_id = func_ids
                             .get("__olive_obj_set_replacing_typed")
                             .expect("missing __olive_obj_set_replacing_typed");
                         let local_func = module.declare_func_in_func(*set_id, builder.func);
                         builder
                             .ins()
-                            .call(local_func, &[o, ikey, v, zero, val_desc_ptr]);
+                            .call(local_func, &[o, ikey, v, key_desc_ptr, val_desc_ptr]);
                     }
                     OliveType::List(elem_ty) if elem_ty.needs_drop() => {
                         let desc = super::imports::type_descriptor(
@@ -960,7 +980,38 @@ impl<M: Module> CraneliftCodegen<M> {
                         let local_func = module.declare_func_in_func(*set_id, builder.func);
                         builder.ins().call(local_func, &[o, idx, v, desc_ptr]);
                     }
-                    OliveType::Dict(_, _) | OliveType::Struct(_, _, _) => {
+                    OliveType::Dict(_, _) => {
+                        // Same `Any`-keyed rule as `GetIndex`: a concrete
+                        // scalar index hashes by its own static type, or the
+                        // untyped heuristic aborts on large odd ints.
+                        let idx_static = super::imports::operand_static_type(idx, func_mir);
+                        let idx_ty = super::imports::concrete_ty(&idx_static);
+                        if super::imports::scalar_needs_key_descriptor(idx_ty) {
+                            let desc = super::imports::type_descriptor(
+                                idx_ty,
+                                struct_fields,
+                                field_types,
+                                enum_defs,
+                            );
+                            let data_id = *string_ids.get(&desc).expect(
+                                "any-keyed dict setindex descriptor not interned during collection",
+                            );
+                            let local_data = module.declare_data_in_func(data_id, builder.func);
+                            let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                            let set_id = func_ids
+                                .get("__olive_obj_set_typed")
+                                .expect("missing __olive_obj_set_typed");
+                            let local_func = module.declare_func_in_func(*set_id, builder.func);
+                            builder.ins().call(local_func, &[o, ikey, v, desc_ptr]);
+                        } else {
+                            let set_id = func_ids
+                                .get("__olive_obj_set")
+                                .expect("missing __olive_obj_set");
+                            let local_func = module.declare_func_in_func(*set_id, builder.func);
+                            builder.ins().call(local_func, &[o, ikey, v]);
+                        }
+                    }
+                    OliveType::Struct(_, _, _) => {
                         let set_id = func_ids
                             .get("__olive_obj_set")
                             .expect("missing __olive_obj_set");

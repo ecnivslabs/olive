@@ -150,8 +150,27 @@ impl<M: Module> CraneliftCodegen<M> {
                         self.collect_strings_in_operand(val_op);
                         self.collect_dict_key_descriptor(func, obj_op);
                         use super::super::imports::{
-                            concrete_ty, operand_static_type, type_descriptor,
+                            concrete_ty, needs_key_descriptor, operand_static_type, type_descriptor,
                         };
+                        // An `Any`-keyed dict stores a concrete scalar index
+                        // under the index's own descriptor (see
+                        // `translate.rs`); intern it too.
+                        let obj_static = operand_static_type(obj_op, func);
+                        let obj_plain = concrete_ty(&obj_static);
+                        if let crate::semantic::types::Type::Dict(k, _) = obj_plain
+                            && !needs_key_descriptor(k)
+                        {
+                            let idx_static = operand_static_type(idx_op, func);
+                            let idx_plain = concrete_ty(&idx_static);
+                            if needs_key_descriptor(idx_plain) {
+                                self.intern_attr_string(&type_descriptor(
+                                    idx_plain,
+                                    &self.struct_fields,
+                                    &self.field_types,
+                                    &self.enum_defs,
+                                ));
+                            }
+                        }
                         let op_ty = operand_static_type(obj_op, func);
                         let obj_ty = concrete_ty(&op_ty);
                         // A replacing store (`xs[i] = v`, `d[k] = v`) releases
@@ -253,11 +272,39 @@ impl<M: Module> CraneliftCodegen<M> {
             needs_key_descriptor, needs_type_descriptor, operand_static_type, type_descriptor,
         };
         use crate::mir::{Constant, Operand, Rvalue};
-        if let Rvalue::GetIndex(obj_op, _, _) = rval {
+        if let Rvalue::GetIndex(obj_op, idx_op, _) = rval {
             self.collect_dict_key_descriptor(func, obj_op);
+            // An `Any`-keyed dict hashes a concrete scalar index by the
+            // index's own static type (see `translate_rvalue`); intern that
+            // descriptor too or codegen panics on the missing string.
+            let mut obj_ty = operand_static_type(obj_op, func);
+            while let crate::semantic::types::Type::Ref(inner)
+            | crate::semantic::types::Type::MutRef(inner) = obj_ty
+            {
+                obj_ty = *inner;
+            }
+            if let crate::semantic::types::Type::Dict(k, _) = &obj_ty
+                && !needs_key_descriptor(k)
+            {
+                let mut idx_ty = operand_static_type(idx_op, func);
+                while let crate::semantic::types::Type::Ref(inner)
+                | crate::semantic::types::Type::MutRef(inner) = idx_ty
+                {
+                    idx_ty = *inner;
+                }
+                if needs_key_descriptor(&idx_ty) {
+                    let desc = type_descriptor(
+                        &idx_ty,
+                        &self.struct_fields,
+                        &self.field_types,
+                        &self.enum_defs,
+                    );
+                    self.intern_attr_string(&desc);
+                }
+            }
             return;
         }
-        if let Rvalue::BinaryOp(op, _lhs, rhs) = rval
+        if let Rvalue::BinaryOp(op, lhs, rhs) = rval
             && matches!(op, crate::parser::BinOp::In | crate::parser::BinOp::NotIn)
         {
             let mut ty = operand_static_type(rhs, func);
@@ -281,6 +328,35 @@ impl<M: Module> CraneliftCodegen<M> {
                 let desc =
                     type_descriptor(k, &self.struct_fields, &self.field_types, &self.enum_defs);
                 self.intern_attr_string(&desc);
+                return;
+            }
+            // An `Any`-keyed dict or set hashes a concrete scalar needle by
+            // the needle's own static type (see `translate_binop`).
+            let any_keyed = match &ty {
+                crate::semantic::types::Type::Dict(k, _) => {
+                    matches!(**k, crate::semantic::types::Type::Any)
+                }
+                crate::semantic::types::Type::Set(e) => {
+                    matches!(**e, crate::semantic::types::Type::Any)
+                }
+                _ => false,
+            };
+            if any_keyed {
+                let mut needle_ty = operand_static_type(lhs, func);
+                while let crate::semantic::types::Type::Ref(inner)
+                | crate::semantic::types::Type::MutRef(inner) = needle_ty
+                {
+                    needle_ty = *inner;
+                }
+                if needs_key_descriptor(&needle_ty) {
+                    let desc = type_descriptor(
+                        &needle_ty,
+                        &self.struct_fields,
+                        &self.field_types,
+                        &self.enum_defs,
+                    );
+                    self.intern_attr_string(&desc);
+                }
             }
             return;
         }
@@ -342,6 +418,7 @@ impl<M: Module> CraneliftCodegen<M> {
             {
                 Some(1usize)
             }
+            "__olive_in_list_typed" if args.len() == 2 => Some(0usize),
             "__olive_obj_get_default_typed"
             | "__olive_obj_get_default_boxed_typed"
             | "__olive_list_index_typed"

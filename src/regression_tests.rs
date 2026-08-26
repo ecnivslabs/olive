@@ -860,6 +860,59 @@ fn regression_str_concat_reused_left_operand() {
 }
 
 #[test]
+fn regression_any_keyed_dict_large_int_lookup() {
+    // A bare odd int above the string-tag floor is bit-identical to a
+    // tagged string pointer. An `Any`-keyed dict holding a concrete
+    // scalar key must hash by the key's own static type: the untyped
+    // heuristic misread the int as a string and aborted on the
+    // misaligned dereference.
+    let mut cg = compile(concat!(
+        "fn f() -> i64:\n",
+        "    let d: dict[Any, i64] = {99999: 10}\n",
+        "    let mut acc = d[99999]\n",
+        "    acc = acc + d.get(99999, -1)\n",
+        "    if 99999 in d:\n",
+        "        acc = acc + 1\n",
+        "    d[88888] = 20\n",
+        "    acc = acc + d[88888]\n",
+        "    d.remove(88888)\n",
+        "    acc = acc + len(d)\n",
+        "    acc = acc + d.pop(99999)\n",
+        "    acc = acc + d.setdefault(77777, 42)\n",
+        "    return acc\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 94);
+}
+
+#[test]
+fn regression_any_keyed_set_int_membership() {
+    // Same heuristic abort through set membership: the needle stays bare
+    // (dict-like, not list-boxed) and takes the typed variant keyed off
+    // its own static type.
+    let mut cg = compile(concat!(
+        "fn f() -> i64:\n",
+        "    let s: set[Any] = {5}\n",
+        "    let mut acc = 0\n",
+        "    if 5 in s:\n",
+        "        acc = acc + 1\n",
+        "    if s.contains(5):\n",
+        "        acc = acc + 10\n",
+        "    let t: set[Any] = {99999}\n",
+        "    if 99999 in t:\n",
+        "        acc = acc + 100\n",
+        "    if 88888 in t:\n",
+        "        acc = acc + 1000\n",
+        "    s.add(99999)\n",
+        "    if s.contains(99999):\n",
+        "        acc = acc + 10000\n",
+        "    s.discard(5)\n",
+        "    acc = acc + len(s)\n",
+        "    return acc\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 10112);
+}
+
+#[test]
 fn regression_float_keyed_dict_and_set_ops() {
     // Float keys and needles arrive as F64/F32 but every `__olive_*`
     // runtime signature declares i64 words. The generic call path already

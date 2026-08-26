@@ -62,6 +62,30 @@ pub(crate) fn needs_key_descriptor(ty: &OliveType) -> bool {
     )
 }
 
+/// Whether an `Any`-keyed container lookup with this index type takes the
+/// index-derived typed path. Scalars only: aggregates keep the untyped
+/// structural protocol (`Any`-form boxing plus the shape-aware hash and
+/// equality helpers), which the typed descriptor path would disagree with.
+pub(crate) fn scalar_needs_key_descriptor(ty: &OliveType) -> bool {
+    matches!(
+        concrete_ty(ty),
+        OliveType::Int
+            | OliveType::I8
+            | OliveType::I16
+            | OliveType::I32
+            | OliveType::U8
+            | OliveType::U16
+            | OliveType::U32
+            | OliveType::U64
+            | OliveType::Usize
+            | OliveType::Float
+            | OliveType::F32
+            | OliveType::Str
+            | OliveType::Bool
+            | OliveType::Null
+    )
+}
+
 /// An operand's static type for descriptor purposes: a `Copy`/`Move` reads
 /// its local's declared type; a `Constant` infers the literal's own type.
 /// Shared by codegen's call translation and the pre-pass that interns every
@@ -112,7 +136,7 @@ pub(crate) fn drop_descriptor_type<'a>(
     }
 }
 
-pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 706] = [
+pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 708] = [
     "__olive_alloc",
     "__olive_any_add",
     "__olive_any_check_method",
@@ -343,7 +367,9 @@ pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 706] = [
     "__olive_http_take_error",
     "__olive_http_take_result",
     "__olive_in_list",
+    "__olive_in_list_typed",
     "__olive_in_obj",
+    "__olive_in_obj_typed",
     "__olive_int",
     "__olive_int_abs",
     "__olive_int_to_float",

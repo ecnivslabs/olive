@@ -567,12 +567,25 @@ impl<M: Module> CraneliftCodegen<M> {
                 let mut is_obj = false;
                 let mut is_str = false;
                 let mut structural_key: Option<&OliveType> = None;
+                // An `Any`-keyed dict or set holding a concrete scalar
+                // needle hashes by the needle's own static type, or the
+                // untyped heuristic aborts on large odd ints. The MIR
+                // `in` lowering already routes `Set[Any]` scalar needles to
+                // `__olive_in_list_typed`; this covers `BinaryOp` forms
+                // that reach codegen directly.
+                let mut needle_key: Option<OliveType> = None;
                 if let Operand::Copy(loc) | Operand::Move(loc) = rhs {
                     let ty = super::imports::concrete_ty(&func_mir.locals[loc.0].ty);
                     if let OliveType::Dict(k, _) = ty {
                         is_obj = true;
                         if super::imports::needs_key_descriptor(k) {
                             structural_key = Some(k);
+                        } else if matches!(**k, OliveType::Any) {
+                            let needle_static = super::imports::operand_static_type(lhs, func_mir);
+                            let needle_ty = super::imports::concrete_ty(&needle_static);
+                            if super::imports::scalar_needs_key_descriptor(needle_ty) {
+                                needle_key = Some(needle_ty.clone());
+                            }
                         }
                     } else if matches!(ty, OliveType::Struct(_, _, _)) {
                         is_obj = true;
@@ -582,6 +595,14 @@ impl<M: Module> CraneliftCodegen<M> {
                         && super::imports::needs_key_descriptor(e)
                     {
                         structural_key = Some(e);
+                    } else if let OliveType::Set(e) = ty
+                        && matches!(**e, OliveType::Any)
+                    {
+                        let needle_static = super::imports::operand_static_type(lhs, func_mir);
+                        let needle_ty = super::imports::concrete_ty(&needle_static);
+                        if super::imports::scalar_needs_key_descriptor(needle_ty) {
+                            needle_key = Some(needle_ty.clone());
+                        }
                     } else if let OliveType::List(e) = ty
                         && super::imports::needs_key_descriptor(e)
                     {
@@ -597,12 +618,12 @@ impl<M: Module> CraneliftCodegen<M> {
                 let func_name = if is_str {
                     "__olive_str_contains"
                 } else if is_obj {
-                    if structural_key.is_some() {
+                    if structural_key.is_some() || needle_key.is_some() {
                         "__olive_in_obj_typed"
                     } else {
                         "__olive_in_obj"
                     }
-                } else if structural_key.is_some() {
+                } else if structural_key.is_some() || needle_key.is_some() {
                     "__olive_in_list_typed"
                 } else {
                     "__olive_in_list"
@@ -637,6 +658,19 @@ impl<M: Module> CraneliftCodegen<M> {
                     let data_id = *string_ids
                         .get(&desc)
                         .expect("in-operator key descriptor not interned during collection");
+                    let local_data = module.declare_data_in_func(data_id, builder.func);
+                    let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                    builder.ins().call(local_func, &[l, r, desc_ptr])
+                } else if let Some(key_ty) = needle_key.as_ref() {
+                    let desc = super::imports::type_descriptor(
+                        key_ty,
+                        struct_fields,
+                        field_types,
+                        enum_defs,
+                    );
+                    let data_id = *string_ids
+                        .get(&desc)
+                        .expect("in-operator needle descriptor not interned during collection");
                     let local_data = module.declare_data_in_func(data_id, builder.func);
                     let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
                     builder.ins().call(local_func, &[l, r, desc_ptr])

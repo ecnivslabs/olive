@@ -565,7 +565,48 @@ impl<M: Module> CraneliftCodegen<M> {
                         let inst = builder.ins().call(local_func, &[o, ikey, loc, desc_ptr]);
                         builder.inst_results(inst)[0]
                     }
-                    OliveType::Dict(_, _) | OliveType::Struct(_, _, _) => {
+                    OliveType::Dict(_, _) => {
+                        // An `Any`-keyed dict holding a concrete scalar key
+                        // hashes by the key's own static type: the untyped
+                        // heuristic reads a raw odd int above the
+                        // string-tag floor as a string pointer and aborts.
+                        // The descriptor is synthesized from the index
+                        // operand itself (mirroring `translate_call`'s
+                        // `desc_arg`), so only a statically-`Any` index
+                        // stays on the heuristic path. Lists, tuples, and
+                        // bytes never reach here with a float index (the
+                        // checker rejects those), and structs keep the
+                        // untyped struct path below.
+                        let idx_static = super::imports::operand_static_type(idx, func_mir);
+                        let idx_ty = super::imports::concrete_ty(&idx_static);
+                        if super::imports::scalar_needs_key_descriptor(idx_ty) {
+                            let desc = super::imports::type_descriptor(
+                                idx_ty,
+                                struct_fields,
+                                field_types,
+                                enum_defs,
+                            );
+                            let data_id = *string_ids.get(&desc).expect(
+                                "any-keyed dict index descriptor not interned during collection",
+                            );
+                            let local_data = module.declare_data_in_func(data_id, builder.func);
+                            let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                            let get_id = func_ids
+                                .get("__olive_obj_get_checked_typed")
+                                .expect("missing __olive_obj_get_checked_typed");
+                            let local_func = module.declare_func_in_func(*get_id, builder.func);
+                            let inst = builder.ins().call(local_func, &[o, ikey, loc, desc_ptr]);
+                            builder.inst_results(inst)[0]
+                        } else {
+                            let get_id = func_ids
+                                .get("__olive_obj_get_checked")
+                                .expect("missing __olive_obj_get_checked");
+                            let local_func = module.declare_func_in_func(*get_id, builder.func);
+                            let inst = builder.ins().call(local_func, &[o, ikey, loc]);
+                            builder.inst_results(inst)[0]
+                        }
+                    }
+                    OliveType::Struct(_, _, _) => {
                         let get_id = func_ids
                             .get("__olive_obj_get_checked")
                             .expect("missing __olive_obj_get_checked");
