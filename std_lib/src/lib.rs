@@ -1290,17 +1290,26 @@ pub extern "C" fn olive_panic(msg: i64) -> i64 {
     panic::abort(&text, None)
 }
 
-/// Runs every registered `atexit` hook once, in registration order. Shared by
-/// the normal exit path and every panic path so resources are released before
-/// the process tears down.
+/// Runs every registered `atexit` hook exactly once, in registration order.
+/// Shared by the normal exit path and every panic path so resources are
+/// released before the process tears down. The list is drained before any
+/// hook runs: a fault raised inside a hook re-enters `abort_with`, which must
+/// find an empty list rather than run the earlier hooks again.
 pub(crate) fn run_exit_hooks() {
-    if let Some(hooks) = EXIT_HOOKS.get()
-        && let Ok(list) = hooks.lock()
-    {
-        for &fn_ptr in list.iter() {
-            let f: extern "C" fn() = unsafe { std::mem::transmute(fn_ptr as usize) };
-            f();
-        }
+    let Some(hooks) = EXIT_HOOKS.get() else {
+        return;
+    };
+    let Ok(mut list) = hooks.lock() else {
+        return;
+    };
+    if list.is_empty() {
+        return;
+    }
+    let pending = std::mem::take(&mut *list);
+    drop(list);
+    for fn_ptr in pending {
+        let f: extern "C" fn() = unsafe { std::mem::transmute(fn_ptr as usize) };
+        f();
     }
 }
 
@@ -1312,19 +1321,16 @@ fn exit_hooks() -> &'static Mutex<Vec<i64>> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_atexit(fn_ptr: i64) {
-    if fn_ptr != 0 {
-        exit_hooks().lock().unwrap().push(fn_ptr);
+    if fn_ptr != 0
+        && let Ok(mut list) = exit_hooks().lock()
+    {
+        list.push(fn_ptr);
     }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_run_exit_hooks() {
-    if let Ok(list) = exit_hooks().lock() {
-        for &fn_ptr in list.iter() {
-            let f: extern "C" fn() = unsafe { std::mem::transmute(fn_ptr as usize) };
-            f();
-        }
-    }
+    run_exit_hooks();
 }
 
 #[unsafe(no_mangle)]

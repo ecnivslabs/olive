@@ -164,6 +164,31 @@ pub(super) fn collect_needed_imports(
     needed
 }
 
+/// Call names whose needed-import entry is the name itself. Kept sorted for
+/// `binary_search`.
+const IDENTITY_TYPED_IMPORTS: [&str; 20] = [
+    "__olive_copy_typed",
+    "__olive_eq_typed",
+    "__olive_list_concat_move",
+    "__olive_list_concat_typed",
+    "__olive_list_count_typed",
+    "__olive_list_extend_typed",
+    "__olive_list_getslice_typed",
+    "__olive_list_index_typed",
+    "__olive_list_push",
+    "__olive_obj_get_default_typed",
+    "__olive_obj_get_typed",
+    "__olive_obj_pop_checked_typed",
+    "__olive_obj_pop_default_typed",
+    "__olive_obj_setdefault_typed",
+    "__olive_obj_update_typed",
+    "__olive_relocate_typed",
+    "__olive_set_add_typed",
+    "__olive_set_contains_typed",
+    "__olive_set_remove_checked_typed",
+    "__olive_set_remove_typed",
+];
+
 pub(super) fn scan_rvalue_imports(
     func_mir: &MirFunction,
     rval: &Rvalue,
@@ -191,71 +216,18 @@ pub(super) fn scan_rvalue_imports(
                     "__olive_format_typed"
                 });
             }
+            if let Ok(i) = IDENTITY_TYPED_IMPORTS.binary_search(&name.as_str()) {
+                needed.insert(IDENTITY_TYPED_IMPORTS[i]);
+            }
+            // Unlike the identity imports above, the typed writer is chosen
+            // by the *argument's* type: `__olive_write_any` on a descriptor-
+            // carrying value (e.g. a list printed via variadic print) routes
+            // through `__olive_write_typed` in translate_call.
             if name == "__olive_write_any"
                 && let [Operand::Copy(l) | Operand::Move(l)] = args.as_slice()
                 && needs_type_descriptor(&func_mir.locals[l.0].ty)
             {
                 needed.insert("__olive_write_typed");
-            }
-            if name == "__olive_copy_typed" {
-                needed.insert("__olive_copy_typed");
-            }
-            if name == "__olive_relocate_typed" {
-                needed.insert("__olive_relocate_typed");
-            }
-            if name == "__olive_eq_typed" {
-                needed.insert("__olive_eq_typed");
-            }
-            if name == "__olive_list_concat_typed" {
-                needed.insert("__olive_list_concat_typed");
-            }
-            if name == "__olive_list_concat_move" {
-                needed.insert("__olive_list_concat_move");
-            }
-            if name == "__olive_list_push" {
-                needed.insert("__olive_list_push");
-            }
-            if name == "__olive_list_getslice_typed" {
-                needed.insert("__olive_list_getslice_typed");
-            }
-            if name == "__olive_list_extend_typed" {
-                needed.insert("__olive_list_extend_typed");
-            }
-            if name == "__olive_set_add_typed" {
-                needed.insert("__olive_set_add_typed");
-            }
-            if name == "__olive_set_remove_typed" {
-                needed.insert("__olive_set_remove_typed");
-            }
-            if name == "__olive_set_contains_typed" {
-                needed.insert("__olive_set_contains_typed");
-            }
-            if name == "__olive_obj_get_typed" {
-                needed.insert("__olive_obj_get_typed");
-            }
-            if name == "__olive_obj_get_default_typed" {
-                needed.insert("__olive_obj_get_default_typed");
-            }
-            if name == "__olive_list_count_typed" {
-                needed.insert("__olive_list_count_typed");
-            }
-            if name == "__olive_list_index_typed" {
-                needed.insert("__olive_list_index_typed");
-            }
-            if name == "__olive_obj_update_typed" {
-                needed.insert("__olive_obj_update_typed");
-            }
-            if name == "__olive_set_remove_checked_typed" {
-                needed.insert("__olive_set_remove_checked_typed");
-            }
-            if name == "__olive_obj_pop_checked_typed" {
-                needed.insert("__olive_obj_pop_checked_typed");
-            }
-            if name == "__olive_obj_pop_default_typed" {
-                needed.insert("__olive_obj_pop_default_typed");
-            }
-            if name == "__olive_obj_setdefault_typed" {
-                needed.insert("__olive_obj_setdefault_typed");
             }
         }
         Rvalue::Call { .. } => {}

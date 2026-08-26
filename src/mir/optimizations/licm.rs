@@ -114,6 +114,7 @@ impl Licm {
                         && !func.locals[local.0].ty.is_move_type()
                         && (self.is_invariant(rval, &defined_in_loop, &invariant_locals)
                             && self.is_safe_to_hoist(rval)
+                            && self.container_not_mutated_behind_calls(rval, func, &lp.body)
                             || self.is_hoistable_py_len_call(rval, func, &lp.body, &defined_in_loop, &invariant_locals))
                     {
                         invariant_locals.insert(*local);
@@ -171,6 +172,28 @@ impl Licm {
                 | Rvalue::BinaryOp(_, _, _)
                 | Rvalue::GetIndex(_, _, _)
         )
+    }
+
+    /// `GetIndex` reads through a pointer, so its result only stays valid
+    /// while the container is untouched. `defined_in_loop` cannot see
+    /// mutation that happens behind a call argument (`xs.append(..)` lowers
+    /// to a call taking `xs`, not to a statement naming `xs` as a target),
+    /// and list calls can also reallocate the element storage. Reuse the
+    /// py-len gate: the object local may appear in the loop body only as the
+    /// direct object of another `GetIndex` (or a pure-read call argument).
+    fn container_not_mutated_behind_calls(
+        &self,
+        rval: &Rvalue,
+        func: &MirFunction,
+        body: &HashSet<BasicBlockId>,
+    ) -> bool {
+        let Rvalue::GetIndex(obj, _, _) = rval else {
+            return true;
+        };
+        let Some(obj_local) = Self::operand_local(obj) else {
+            return false;
+        };
+        Self::pyobj_untouched_except_reads(func, body, obj_local)
     }
 
     /// A `__olive_py_len(x)` call is loop-invariant, and safe to hoist past

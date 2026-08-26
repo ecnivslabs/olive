@@ -145,37 +145,40 @@ pub fn str_free(ptr: i64) {
     if body == 0 || !str_is_heap(ptr) {
         return;
     }
-    // Which arena the body lives in is still a lookup: only the rare global
-    // case needs it, and freeing is not on the hot path the tag bit targets.
+    // Which arena the body lives in decides which pool frees it. The ambient
+    // escape-arena context must not redirect the free: a local body released
+    // while a task runs inside the arena would otherwise land on the arena's
+    // free-list, letting a later arena alloc hand out a slot the local pool
+    // also owns.
     match crate::slab::slab_membership(body) {
         None => {}
-        Some(true) => crate::slab::with_escape_arena(|| str_free_local(ptr)),
-        Some(false) => str_free_local(ptr),
+        Some(is_global) => str_free_in(ptr, is_global),
     }
 }
 
-fn str_free_local(ptr: i64) {
+fn str_free_in(ptr: i64, is_global: bool) {
     let body = str_body(ptr);
     let header_val = unsafe { *(body as *const usize).sub(2) };
     let cap_idx = header_val >> 48;
-    unsafe {
-        let active = crate::slab::ACTIVE_SLABS.get();
-        if !active.is_null() {
-            if cap_idx < 32
-                && let Some(ref mut slab) = (*active).str_slabs[cap_idx]
-            {
-                slab.free(body as *mut u8);
+    if cap_idx >= 32 {
+        return;
+    }
+    let body = body as *mut u8;
+    if is_global {
+        crate::slab::with_escape_arena(|| unsafe {
+            let active = crate::slab::ACTIVE_SLABS.get();
+            if let Some(ref mut slab) = (*active).str_slabs[cap_idx] {
+                slab.free(body);
             }
-        } else {
-            STR_SLABS.with(|s| {
-                let s = &mut *s.get();
-                if cap_idx < 32
-                    && let Some(ref mut slab) = s.classes[cap_idx]
-                {
-                    slab.free(body as *mut u8);
-                }
-            });
-        }
+        });
+    } else {
+        // Deliberately ignores ACTIVE_SLABS: the body lives in this thread's
+        // own pool even when the current context is the shared arena.
+        STR_SLABS.with(|s| unsafe {
+            if let Some(ref mut slab) = (&mut *s.get()).classes[cap_idx] {
+                slab.free(body);
+            }
+        });
     }
 }
 
@@ -208,16 +211,18 @@ pub fn str_concat_inplace_with(
         unsafe {
             std::ptr::copy_nonoverlapping(r_bytes.as_ptr(), (body as *mut u8).add(l_len), r_len);
             *(body as *mut u8).add(new_len) = 0;
+            // Keep the stored capacity class, not the grown one: the slot
+            // physically holds `old_cap` bytes, and a later free reads this
+            // word to pick which slab releases it.
             let new_header = new_len | (cap_idx << 48);
             *(body as *mut usize).sub(2) = new_header;
         }
         Some(l)
     } else {
         // The new buffer follows the current escape-arena context; the old
-        // body must free through whichever arena it actually lives in, which
-        // may differ from the current context (`l` can be a global-arena
-        // string a relocated task is still holding). str_alloc_two/str_free
-        // each resolve that independently instead of assuming they match.
+        // body frees through whichever arena it actually lives in, which may
+        // differ from the current context (`l` can be a local-pool string a
+        // task running inside the arena is still holding).
         let new_ptr = str_alloc_two(l_bytes, r_bytes);
         str_free(l);
         Some(new_ptr)
@@ -430,6 +435,39 @@ mod tests {
 
         str_free(grown);
         str_free(probe);
+    }
+
+    #[test]
+    fn free_of_local_body_inside_escape_arena_stays_local() {
+        let warm = str_alloc(b"w");
+        str_free(warm);
+
+        let local = str_alloc(b"local");
+        let born = olive_str_gen_of(local);
+
+        // Allocations and local frees inside the arena context need no lock;
+        // freeing a *global* body here would re-enter `with_escape_arena` and
+        // deadlock on GLOBAL_SLABS, so the arena probes leave unfreed.
+        let (probe_a, probe_b) = crate::slab::with_escape_arena(|| {
+            let a = str_alloc(b"a");
+            assert!(crate::slab::chunk_is_global(str_body(a) as usize));
+            // The local body must route to this thread's own pool even while
+            // the shared arena is the active context.
+            str_free(local);
+            let b = str_alloc(b"b");
+            (a, b)
+        });
+
+        assert_ne!(
+            str_body(probe_b),
+            str_body(local),
+            "arena alloc recycled a local-pool slot"
+        );
+        // The body is genuinely dead in its own pool: generation advanced.
+        assert_eq!(olive_str_gen_stale(local, born), 1);
+
+        str_free(probe_a);
+        str_free(probe_b);
     }
 
     #[test]

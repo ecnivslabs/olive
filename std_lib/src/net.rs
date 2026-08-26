@@ -32,7 +32,7 @@ pub extern "C" fn olive_net_tcp_send(stream_ptr: i64, data: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_net_tcp_recv(stream_ptr: i64, len: i64) -> i64 {
-    if stream_ptr == 0 {
+    if stream_ptr == 0 || len <= 0 {
         return 0;
     }
     let stream = unsafe { &mut *(stream_ptr as *mut TcpStream) };
@@ -113,6 +113,9 @@ pub extern "C" fn olive_net_tcp_set_timeout(stream_ptr: i64, secs: f64) -> i64 {
     if stream_ptr == 0 {
         return 0;
     }
+    if secs < 0.0 || !secs.is_finite() {
+        return 0;
+    }
     let stream = unsafe { &*(stream_ptr as *const TcpStream) };
     let dur = std::time::Duration::from_secs_f64(secs);
     let read_ok = stream.set_read_timeout(Some(dur)).is_ok();
@@ -149,7 +152,7 @@ pub extern "C" fn olive_net_udp_send(sock_ptr: i64, addr: i64, data: i64) -> i64
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_net_udp_recv(sock_ptr: i64, max_len: i64) -> i64 {
-    if sock_ptr == 0 {
+    if sock_ptr == 0 || max_len <= 0 {
         return 0;
     }
     let sock = unsafe { &*(sock_ptr as *const UdpSocket) };
@@ -178,6 +181,9 @@ pub extern "C" fn olive_net_udp_set_timeout(sock_ptr: i64, secs: f64) -> i64 {
     if sock_ptr == 0 {
         return 0;
     }
+    if secs < 0.0 || !secs.is_finite() {
+        return 0;
+    }
     let sock = unsafe { &*(sock_ptr as *const UdpSocket) };
     let dur = std::time::Duration::from_secs_f64(secs);
     if sock.set_read_timeout(Some(dur)).is_ok() {
@@ -200,8 +206,14 @@ pub extern "C" fn olive_net_dns_lookup(hostname: i64) -> i64 {
         return 0;
     }
     let host = crate::olive_str_from_ptr(hostname);
-    let addr = format!("{}:0", host);
-    match std::net::ToSocketAddrs::to_socket_addrs(&addr.as_str()) {
+    // `format!("{}:0", host)` would mangle bare IPv6 literals (an
+    // unbracketed colon is not a valid SocketAddr); bracket them instead.
+    let target = if host.contains(':') && !host.contains(']') {
+        format!("[{host}]:0")
+    } else {
+        format!("{host}:0")
+    };
+    match std::net::ToSocketAddrs::to_socket_addrs(target.as_str()) {
         Ok(mut addrs) => match addrs.next() {
             Some(addr) => olive_str_internal(&addr.ip().to_string()),
             None => 0,
@@ -217,8 +229,13 @@ pub extern "C" fn olive_net_dns_lookup_all(hostname: i64) -> i64 {
         return empty_list();
     }
     let host = crate::olive_str_from_ptr(hostname);
-    let addr = format!("{}:0", host);
-    match std::net::ToSocketAddrs::to_socket_addrs(&addr.as_str()) {
+    // Same bare-IPv6 hazard as `olive_net_dns_lookup`.
+    let target = if host.contains(':') && !host.contains(']') {
+        format!("[{host}]:0")
+    } else {
+        format!("{host}:0")
+    };
+    match std::net::ToSocketAddrs::to_socket_addrs(target.as_str()) {
         Ok(addrs) => {
             let ptrs: Vec<i64> = addrs
                 .map(|a| olive_str_internal(&a.ip().to_string()))

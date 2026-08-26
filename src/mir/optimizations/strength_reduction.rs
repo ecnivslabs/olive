@@ -39,7 +39,7 @@ impl Transform for StrengthReduction {
                     let replacement = match &*rval {
                         Rvalue::BinaryOp(Mul, op, Operand::Constant(Constant::Int(c)))
                         | Rvalue::BinaryOp(Mul, Operand::Constant(Constant::Int(c)), op)
-                            if *c > 2
+                            if *c >= 2
                                 && (*c as u64).is_power_of_two()
                                 && !is_pyobj_op(&local_types, op) =>
                         {

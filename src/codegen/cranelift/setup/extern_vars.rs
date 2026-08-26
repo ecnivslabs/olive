@@ -138,10 +138,7 @@ impl<M: Module> CraneliftCodegen<M> {
         if let Some(&id) = self.func_ids.get(name) {
             return Some(id);
         }
-        let decl_name = super::super::SYMBOL_MAP
-            .iter()
-            .find(|&&(k, _)| k == name)
-            .map(|&(_, v)| std::str::from_utf8(&v[..v.len() - 1]).unwrap())?;
+        let decl_name = super::super::symbol_map_lookup(name)?;
         let sig = self.module.make_signature();
         let id = self
             .module
@@ -162,10 +159,7 @@ impl<M: Module> CraneliftCodegen<M> {
         if let Some(&id) = self.func_ids.get(name) {
             return Some(id);
         }
-        let decl_name = super::super::SYMBOL_MAP
-            .iter()
-            .find(|&&(k, _)| k == name)
-            .map(|&(_, v)| std::str::from_utf8(&v[..v.len() - 1]).unwrap())?;
+        let decl_name = super::super::symbol_map_lookup(name)?;
         let mut sig = self.module.make_signature();
         for &p in param_types {
             sig.params.push(AbiParam::new(p));

@@ -12,6 +12,21 @@ thread_local! {
         const { UnsafeCell::new(GenSlab::new(std::mem::size_of::<OliveIter>())) };
 }
 
+/// Iterator headers follow every other kind into the active escape-arena
+/// context: one allocated while a relocated task polls lands in that task's
+/// own slab set, so a later free on another executor thread must reach the
+/// same set rather than this thread's pool.
+fn with_iter_slab<T>(f: impl FnOnce(&mut GenSlab) -> T) -> T {
+    unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null() {
+            f(&mut (*active).iter)
+        } else {
+            ITER_SLAB.with(|sl| f(&mut *sl.get()))
+        }
+    }
+}
+
 /// Allocates a list header from the slab and fills it. A recycled slot may
 /// carry a retained element buffer, which is released before overwriting.
 pub(crate) fn alloc_list_header(kind: i64, ptr: *mut i64, cap: usize, len: usize) -> i64 {
@@ -97,18 +112,20 @@ pub extern "C" fn olive_range_list(start: i64, end: i64, inclusive: i64, step: i
     // exclusive `last` from `inclusive` (direction-aware, since `..=` walks
     // toward `end` from either side), then floor-divide. Numerator and `step`
     // always share a sign for a non-empty range, so Rust's truncating `/`
-    // coincides with floor division; `max(0)` covers the empty case either way.
+    // coincides with floor division; `max(0)` covers the empty case either
+    // way. Wrapping arithmetic keeps endpoint extremes from panicking; a
+    // wrapped count lands negative and reads as the empty range.
     let count = if step > 0 {
-        let last = if inclusive != 0 { end + 1 } else { end };
-        (last - start + step - 1) / step
+        let last = if inclusive != 0 { end.wrapping_add(1) } else { end };
+        (last.wrapping_sub(start).wrapping_add(step - 1)) / step
     } else {
-        let last = if inclusive != 0 { end - 1 } else { end };
-        (last - start + step + 1) / step
+        let last = if inclusive != 0 { end.wrapping_sub(1) } else { end };
+        (last.wrapping_sub(start).wrapping_add(step + 1)) / step
     }
     .max(0);
     let list = olive_list_new(count);
     for i in 0..count {
-        olive_list_set(list, i, start + i * step);
+        olive_list_set(list, i, start.wrapping_add(i.wrapping_mul(step)));
     }
     list
 }
@@ -303,11 +320,13 @@ pub extern "C" fn olive_list_sort_float(list_ptr: i64) {
     }
 }
 
-/// Sorts a list of strings lexicographically, in place.
+/// Sorts a list of strings lexicographically, in place. Compares the raw
+/// bytes directly: `olive_str_from_ptr` would allocate a UTF-8 `String` per
+/// element (per comparison under `sort_by_key`) just to throw it away.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_list_sort_str(list_ptr: i64) {
     if let Some(slice) = list_slice_mut(list_ptr) {
-        slice.sort_by_key(|&p| crate::olive_str_from_ptr(p));
+        slice.sort_by(|&a, &b| crate::string::olive_str_to_bytes(a).cmp(crate::string::olive_str_to_bytes(b)));
     }
 }
 
@@ -342,11 +361,10 @@ pub extern "C" fn olive_list_sort_by_keys(list_ptr: i64, keys_ptr: i64, key_kind
     let n = elems.len().min(keys.len());
     let mut order: Vec<u32> = (0..n as u32).collect();
     if key_kind == KEY_STR {
-        let decoded: Vec<String> = keys[..n]
-            .iter()
-            .map(|&k| crate::olive_str_from_ptr(k))
-            .collect();
-        order.sort_by(|&i, &j| decoded[i as usize].cmp(&decoded[j as usize]));
+        order.sort_by(|&i, &j| {
+            crate::string::olive_str_to_bytes(keys[i as usize])
+                .cmp(crate::string::olive_str_to_bytes(keys[j as usize]))
+        });
     } else {
         order.sort_by(|&i, &j| cmp_key(keys[i as usize], keys[j as usize], key_kind));
     }
@@ -398,12 +416,8 @@ pub extern "C" fn olive_list_len(ptr: i64) -> i64 {
         return 0;
     }
     unsafe {
-        let raw_ptr = ptr as *const libc::c_void;
-        if python::is_readable_ptr(raw_ptr) {
-            let kind = *(ptr as *const i64);
-            if kind == KIND_PYOBJECT {
-                return python::olive_py_len(ptr as *mut libc::c_void);
-            }
+        if *(ptr as *const i64) == KIND_PYOBJECT {
+            return python::olive_py_len(ptr as *mut libc::c_void);
         }
         (*(ptr as *const StableVec)).len as i64
     }
@@ -428,7 +442,9 @@ pub extern "C" fn olive_list_insert(list_ptr: i64, idx: i64, val: i64) {
     }
     unsafe {
         let s = &mut *(list_ptr as *mut StableVec);
-        let idx = idx as usize;
+        // A negative index wraps to a huge usize and `idx <= len` rejects it;
+        // casting an in-range value is lossless.
+        let idx = idx.max(0) as usize;
         let mut v = Vec::from_raw_parts(s.ptr, s.len, s.cap);
         if idx <= v.len() {
             v.insert(idx, val);
@@ -447,7 +463,7 @@ pub extern "C" fn olive_list_remove(list_ptr: i64, idx: i64) -> i64 {
     }
     unsafe {
         let s = &mut *(list_ptr as *mut StableVec);
-        let idx = idx as usize;
+        let idx = idx.max(0) as usize;
         if idx >= s.len {
             return 0;
         }
@@ -638,7 +654,11 @@ pub extern "C" fn olive_list_repeat(ptr: i64, n: i64) -> i64 {
         return olive_list_new(0);
     }
     let v = unsafe { &*(ptr as *const StableVec) };
-    let out = olive_list_new(v.len as i64 * n);
+    let out = olive_list_new(
+        (v.len as i64)
+            .checked_mul(n)
+            .unwrap_or_else(|| crate::panic::abort("list repeat overflows length", None)),
+    );
     let ov = unsafe { &mut *(out as *mut StableVec) };
     for rep in 0..n as usize {
         for i in 0..v.len {
@@ -712,10 +732,32 @@ pub extern "C" fn olive_list_extend(target: i64, source: i64) {
     if target == 0 || source == 0 {
         return;
     }
-    let src_len = olive_list_len(source);
-    for i in 0..src_len {
-        let val = olive_list_get(source, i);
-        olive_list_append(target, val);
+    unsafe {
+        let st = &mut *(target as *mut StableVec);
+        let (sptr, slen) = if *(source as *const i64) == KIND_SET {
+            // A set's element vector is its snapshot; read it directly.
+            let s = &*(source as *const crate::OliveHashSet);
+            (s.ptr, s.len)
+        } else {
+            let s = &*(source as *const StableVec);
+            (s.ptr, s.len)
+        };
+        // Self-extend must not hand `copy_nonoverlapping` two views of one
+        // buffer; snapshotting the words keeps the growth path uniform.
+        let snapshot: Option<Vec<i64>> = if sptr == st.ptr {
+            Some(std::slice::from_raw_parts(sptr, slen).to_vec())
+        } else {
+            None
+        };
+        let mut v = Vec::from_raw_parts(st.ptr, st.len, st.cap);
+        match &snapshot {
+            Some(words) => v.extend_from_slice(words),
+            None => v.extend_from_slice(std::slice::from_raw_parts(sptr, slen)),
+        }
+        st.ptr = v.as_mut_ptr();
+        st.cap = v.capacity();
+        st.len = v.len();
+        std::mem::forget(v);
     }
 }
 
@@ -844,28 +886,23 @@ pub extern "C" fn olive_iter(list_ptr: i64) -> i64 {
         derived = true;
     } else if list_ptr != 0 {
         unsafe {
-            let raw_ptr = list_ptr as *const libc::c_void;
-            if python::is_readable_ptr(raw_ptr) {
-                let kind = *(list_ptr as *const i64);
-                if kind == KIND_PYOBJECT {
-                    is_py = true;
-                    actual_list_ptr =
-                        crate::python::python_iter::olive_py_iter(list_ptr as *mut libc::c_void)
-                            as i64;
-                } else if kind == KIND_OBJ {
-                    // A dict iterates over its keys.
-                    actual_list_ptr = crate::obj::olive_obj_keys(list_ptr);
-                    derived = true;
-                } else if kind == KIND_SET {
-                    actual_list_ptr = crate::set::olive_set_items(list_ptr);
-                    derived = true;
-                }
+            let kind = *(list_ptr as *const i64);
+            if kind == KIND_PYOBJECT {
+                is_py = true;
+                actual_list_ptr =
+                    crate::python::python_iter::olive_py_iter(list_ptr as *mut libc::c_void) as i64;
+            } else if kind == KIND_OBJ {
+                // A dict iterates over its keys.
+                actual_list_ptr = crate::obj::olive_obj_keys(list_ptr);
+                derived = true;
+            } else if kind == KIND_SET {
+                actual_list_ptr = crate::set::olive_set_items(list_ptr);
+                derived = true;
             }
         }
     }
 
-    ITER_SLAB.with(|sl| {
-        let sl = unsafe { &mut *sl.get() };
+    with_iter_slab(|sl| {
         let (body, _) = sl.alloc();
         unsafe {
             std::ptr::write(
@@ -900,8 +937,16 @@ pub extern "C" fn olive_free_iter(ptr: i64) {
             }
         }
     }
-    ITER_SLAB.with(|sl| {
-        unsafe { &mut *sl.get() }.free(ptr as *mut u8);
+    match crate::slab::slab_membership(ptr) {
+        None => {}
+        Some(true) => crate::slab::with_escape_arena(|| free_iter_slot_local(ptr)),
+        Some(false) => free_iter_slot_local(ptr),
+    }
+}
+
+fn free_iter_slot_local(ptr: i64) {
+    with_iter_slab(|sl| {
+        sl.free(ptr as *mut u8);
     });
 }
 

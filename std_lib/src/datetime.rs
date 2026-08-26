@@ -88,73 +88,98 @@ fn windows_tz_offset() -> i64 {
     }
 }
 
-fn parse_datetime_str(s: &str) -> Option<i64> {
-    let s = s.trim();
-    if s.len() >= 10 {
-        let year = s[0..4].parse::<i64>().ok()?;
-        if s.as_bytes().get(4) != Some(&b'-') {
-            return None;
-        }
-        let month = s[5..7].parse::<i64>().ok()?;
-        if s.as_bytes().get(7) != Some(&b'-') {
-            return None;
-        }
-        let day = s[8..10].parse::<i64>().ok()?;
-
-        let (h, min, sec, tz_offset) = if s.len() > 10 {
-            let sep = s.as_bytes().get(10);
-            if sep != Some(&b'T') && sep != Some(&b' ') {
-                return None;
-            }
-            if s.len() < 19 {
-                return None;
-            }
-            let h = s[11..13].parse::<i64>().ok()?;
-            if s.as_bytes().get(13) != Some(&b':') {
-                return None;
-            }
-            let min = s[14..16].parse::<i64>().ok()?;
-            if s.as_bytes().get(16) != Some(&b':') {
-                return None;
-            }
-            let sec = s[17..19].parse::<i64>().ok()?;
-            let tz_offset = if s.len() > 19 {
-                parse_tz_suffix(&s[19..])
-            } else {
-                0
-            };
-            (h, min, sec, tz_offset)
-        } else {
-            (0, 0, 0, 0)
-        };
-
-        let ts = ymd_to_unix(year, month, day, h, min, sec);
-        return Some(ts - tz_offset);
+/// Parses `width` ASCII digits starting at byte `i`. Works on raw bytes
+/// because the input is arbitrary user text that may contain multibyte
+/// characters, where `&str` slicing would panic on a non-char boundary.
+fn digits_at(bytes: &[u8], i: usize, width: usize) -> Option<i64> {
+    if i + width > bytes.len() {
+        return None;
     }
-    None
+    let mut v = 0i64;
+    for &b in &bytes[i..i + width] {
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        v = v * 10 + (b - b'0') as i64;
+    }
+    Some(v)
 }
 
-fn parse_tz_suffix(s: &str) -> i64 {
+fn parse_datetime_str(s: &str) -> Option<i64> {
     let s = s.trim();
-    if s.is_empty() || s == "Z" || s == "z" {
+    let b = s.as_bytes();
+    if b.len() < 10 {
+        return None;
+    }
+    let year = digits_at(b, 0, 4)?;
+    if b[4] != b'-' {
+        return None;
+    }
+    let month = digits_at(b, 5, 2)?;
+    if b[7] != b'-' {
+        return None;
+    }
+    let day = digits_at(b, 8, 2)?;
+
+    let (h, min, sec, tz_offset) = if b.len() > 10 {
+        if b[10] != b'T' && b[10] != b' ' {
+            return None;
+        }
+        if b.len() < 19 {
+            return None;
+        }
+        let h = digits_at(b, 11, 2)?;
+        if b[13] != b':' {
+            return None;
+        }
+        let min = digits_at(b, 14, 2)?;
+        if b[16] != b':' {
+            return None;
+        }
+        let sec = digits_at(b, 17, 2)?;
+        let tz_offset = if b.len() > 19 {
+            parse_tz_suffix(&b[19..])
+        } else {
+            0
+        };
+        (h, min, sec, tz_offset)
+    } else {
+        (0, 0, 0, 0)
+    };
+
+    let ts = ymd_to_unix(year, month, day, h, min, sec);
+    Some(ts - tz_offset)
+}
+
+fn parse_tz_suffix(s: &[u8]) -> i64 {
+    let Some(start) = s.iter().position(|b| !b.is_ascii_whitespace()) else {
+        return 0;
+    };
+    let end = s
+        .iter()
+        .rposition(|b| !b.is_ascii_whitespace())
+        .unwrap_or(start);
+    let s = &s[start..=end];
+    if s == b"Z" || s == b"z" {
         return 0;
     }
-    let sign = match s.as_bytes().first() {
+    let sign = match s.first() {
         Some(b'+') => 1i64,
         Some(b'-') => -1i64,
         _ => return 0,
     };
     let rest = &s[1..];
-    if rest.len() >= 5 {
-        let hh = rest[0..2].parse::<i64>().unwrap_or(0);
-        let mm = rest[3..5].parse::<i64>().unwrap_or(0);
-        sign * (hh * 3600 + mm * 60)
-    } else if rest.len() >= 2 {
-        let hh = rest[0..2].parse::<i64>().unwrap_or(0);
-        sign * hh * 3600
+    let hh = if rest.len() >= 2 {
+        digits_at(rest, 0, 2).unwrap_or(0)
     } else {
         0
-    }
+    };
+    let mm = if rest.len() >= 5 {
+        digits_at(rest, 3, 2).unwrap_or(0)
+    } else {
+        0
+    };
+    sign * (hh * 3600 + mm * 60)
 }
 
 #[unsafe(no_mangle)]
@@ -501,6 +526,23 @@ mod tests {
     fn parse_invalid_returns_minus_one() {
         assert_eq!(olive_datetime_parse(s("not a date")), -1.0);
         assert_eq!(olive_datetime_parse(0), -1.0);
+    }
+
+    #[test]
+    fn parse_non_ascii_returns_minus_one_not_panic() {
+        assert_eq!(olive_datetime_parse(s("ünïvérse-15")), -1.0);
+        assert_eq!(
+            olive_datetime_parse(s("2024-01-15T00:00:00+é5:00")),
+            ymd_to_unix(2024, 1, 15, 0, 0, 0) as f64
+        );
+    }
+
+    #[test]
+    fn parse_tz_suffix_variants() {
+        assert_eq!(parse_tz_suffix(b"+05:30"), 5 * 3600 + 30 * 60);
+        assert_eq!(parse_tz_suffix(b"-08"), -8 * 3600);
+        assert_eq!(parse_tz_suffix(b"Z"), 0);
+        assert_eq!(parse_tz_suffix(b"garbage"), 0);
     }
 
     fn parts_field(obj: &OliveObj, name: &str) -> i64 {

@@ -96,20 +96,20 @@ pub extern "C" fn olive_free_enum(ptr: i64) {
     if ptr == 0 {
         return;
     }
-    let is_ours = unsafe {
-        let active = crate::slab::ACTIVE_SLABS.get();
-        if !active.is_null() {
-            (*active).enum_slab.owns_addr(ptr as usize)
-        } else {
-            ENUM_SLAB.with(|sl| (*sl.get()).owns_addr(ptr as usize))
-        }
+    let Some(is_global) = crate::slab::slab_membership(ptr) else {
+        return;
+    };
+    // Same arena-aware ownership scan as `olive_free_obj`: an enum received
+    // over a channel lives in the global escape arena and a purely local
+    // owns_addr check would leak it.
+    let is_ours = if is_global {
+        crate::slab::with_escape_arena(|| enum_slab_owns(ptr))
+    } else {
+        enum_slab_owns(ptr)
     };
     if !is_ours {
         return;
     }
-    let Some(is_global) = crate::slab::slab_membership(ptr) else {
-        return;
-    };
     if crate::slab::slot_is_live(ptr) {
         unsafe {
             let e = &*(ptr as *const OliveEnum);
@@ -119,6 +119,17 @@ pub extern "C" fn olive_free_enum(ptr: i64) {
         }
     }
     free_enum_slot_raw_with(ptr, Some(is_global));
+}
+
+fn enum_slab_owns(ptr: i64) -> bool {
+    unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null() {
+            (*active).enum_slab.owns_addr(ptr as usize)
+        } else {
+            ENUM_SLAB.with(|sl| (*sl.get()).owns_addr(ptr as usize))
+        }
+    }
 }
 
 pub(crate) fn free_enum_slot_raw(ptr: i64) {

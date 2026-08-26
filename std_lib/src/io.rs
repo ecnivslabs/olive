@@ -1,6 +1,8 @@
 use crate::{olive_str_from_ptr, olive_str_internal};
 use rustc_hash::FxHashMap as HashMap;
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 fn olive_write_str_to_stdout(s: &str) {
     let stdout = std::io::stdout();
@@ -42,18 +44,19 @@ pub extern "C" fn olive_file_append(path: i64, data: i64) -> i64 {
     }
     let path_str = olive_str_from_ptr(path);
     let data_str = olive_str_from_ptr(data);
-    let mut f = match std::fs::OpenOptions::new()
+    match std::fs::OpenOptions::new()
         .append(true)
         .create(true)
         .open(&path_str)
     {
-        Ok(f) => f,
+        Ok(mut f) => {
+            if f.write_all(data_str.as_bytes()).is_ok() {
+                1
+            } else {
+                0
+            }
+        }
         Err(_) => return 0,
-    };
-    if f.write_all(data_str.as_bytes()).is_ok() {
-        1
-    } else {
-        0
     }
 }
 
@@ -570,10 +573,9 @@ pub extern "C" fn olive_temp_file() -> i64 {
     let tmp = std::env::temp_dir();
     let name = format!("olive_{}", uuid::Uuid::new_v4().simple());
     let path = tmp.join(name);
-    if std::fs::File::create(&path).is_ok() {
-        olive_str_internal(&path.to_string_lossy())
-    } else {
-        0
+    match std::fs::File::create(&path) {
+        Ok(_) => olive_str_internal(&path.to_string_lossy()),
+        Err(_) => 0,
     }
 }
 
@@ -588,19 +590,9 @@ pub extern "C" fn olive_stdin_read() -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_stdin_read_line() -> i64 {
-    let mut line = String::new();
-    match std::io::stdin().read_line(&mut line) {
-        Ok(0) => olive_str_internal(""),
-        Ok(_) => {
-            if line.ends_with('\n') {
-                line.pop();
-                if line.ends_with('\r') {
-                    line.pop();
-                }
-            }
-            olive_str_internal(&line)
-        }
-        Err(_) => olive_str_internal(""),
+    match read_line_trimmed(&mut std::io::stdin().lock()) {
+        LineRead::Line(line) => olive_str_internal(&line),
+        _ => olive_str_internal(""),
     }
 }
 
@@ -610,20 +602,50 @@ pub extern "C" fn olive_input(prompt_ptr: i64) -> i64 {
         let prompt = olive_str_from_ptr(prompt_ptr);
         olive_write_str_to_stdout(&prompt);
     }
-    let mut line = String::new();
-    match std::io::stdin().read_line(&mut line) {
-        Ok(0) => olive_str_internal(""),
-        Ok(_) => {
-            if line.ends_with('\n') {
-                line.pop();
-                if line.ends_with('\r') {
-                    line.pop();
-                }
-            }
-            olive_str_internal(&line)
-        }
-        Err(_) => olive_str_internal(""),
+    match read_line_trimmed(&mut std::io::stdin().lock()) {
+        LineRead::Line(line) => olive_str_internal(&line),
+        _ => olive_str_internal(""),
     }
+}
+
+/// Every file-handle native takes an opaque integer the language treats as a
+/// plain value, so it can be copied, stored in fields, and closed twice from
+/// two struct copies (`File.__drop__` runs on each copy that still holds a
+/// nonzero handle). A raw pointer makes any of those a double-free or
+/// use-after-free. Handles are therefore indices into this table with a
+/// generation baked into the high bits: a stale copy of a closed handle fails
+/// lookup instead of dereferencing freed memory.
+enum IoHandle {
+    File(std::fs::File),
+    BufRead(std::io::BufReader<std::fs::File>),
+    BufWrite(std::io::BufWriter<std::fs::File>),
+}
+
+const HANDLE_GEN_SHIFT: u32 = 32;
+const HANDLE_INDEX_MASK: i64 = 0x7FFF_FFFF;
+
+fn handles() -> &'static Mutex<HashMap<i64, IoHandle>> {
+    static TABLE: OnceLock<Mutex<HashMap<i64, IoHandle>>> = OnceLock::new();
+    TABLE.get_or_init(|| Mutex::new(HashMap::default()))
+}
+
+fn next_handle_id() -> i64 {
+    static NEXT: AtomicI64 = AtomicI64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed) & HANDLE_INDEX_MASK
+}
+
+fn handle_index(handle: i64) -> i64 {
+    handle & HANDLE_INDEX_MASK
+}
+
+fn register_handle(entry: IoHandle) -> i64 {
+    let id = next_handle_id();
+    handles().lock().unwrap().insert(id, entry);
+    id | ((id as u64) << HANDLE_GEN_SHIFT) as i64
+}
+
+fn take_handle(handle: i64) -> Option<IoHandle> {
+    handles().lock().unwrap().remove(&handle_index(handle))
 }
 
 #[unsafe(no_mangle)]
@@ -638,7 +660,6 @@ pub extern "C" fn olive_file_open(path: i64, mode: i64) -> i64 {
         olive_str_from_ptr(mode)
     };
     let file = match mode_str.as_str() {
-        "r" => std::fs::OpenOptions::new().read(true).open(&path_str),
         "w" => std::fs::OpenOptions::new()
             .write(true)
             .create(true)
@@ -661,7 +682,7 @@ pub extern "C" fn olive_file_open(path: i64, mode: i64) -> i64 {
         _ => std::fs::OpenOptions::new().read(true).open(&path_str),
     };
     match file {
-        Ok(f) => Box::into_raw(Box::new(f)) as i64,
+        Ok(f) => register_handle(IoHandle::File(f)),
         Err(_) => 0,
     }
 }
@@ -669,38 +690,55 @@ pub extern "C" fn olive_file_open(path: i64, mode: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_file_close(handle: i64) {
     if handle != 0 {
-        unsafe { drop(Box::from_raw(handle as *mut std::fs::File)) };
+        take_handle(handle);
     }
 }
 
+fn with_file<R>(handle: i64, f: impl FnOnce(&mut std::fs::File) -> R) -> Option<R> {
+    let mut table = handles().lock().unwrap();
+    match table.get_mut(&handle_index(handle)) {
+        Some(IoHandle::File(file)) => Some(f(file)),
+        _ => None,
+    }
+}
+
+/// Reads up to `n` bytes. Distinguishes the three outcomes the ""-only
+/// contract cannot carry: a dead/foreign handle returns null, an I/O error
+/// returns 1, and a successful read (EOF included) returns the string.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_file_read_n(handle: i64, n: i64) -> i64 {
-    if handle == 0 || n <= 0 {
-        return olive_str_internal("");
+    if handle == 0 {
+        return 0;
     }
-    let file = unsafe { &mut *(handle as *mut std::fs::File) };
-    let mut buf = vec![0u8; n as usize];
-    match file.read(&mut buf) {
-        Ok(read) => {
+    let want = if n <= 0 || n > MAX_READ_BYTES as i64 {
+        MAX_READ_BYTES as i64
+    } else {
+        n
+    };
+    let mut buf = vec![0u8; want as usize];
+    match with_file(handle, |file| file.read(&mut buf)) {
+        Some(Ok(0)) => olive_str_internal(""),
+        Some(Ok(read)) => {
             buf.truncate(read);
             let s = String::from_utf8_lossy(&buf).into_owned();
             olive_str_internal(&s)
         }
-        Err(_) => olive_str_internal(""),
+        Some(Err(_)) => 1,
+        None => 0,
     }
 }
+
+const MAX_READ_BYTES: usize = 1 << 30;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_file_write_str(handle: i64, data: i64) -> i64 {
     if handle == 0 || data == 0 {
         return 0;
     }
-    let file = unsafe { &mut *(handle as *mut std::fs::File) };
     let data_str = olive_str_from_ptr(data);
-    if file.write_all(data_str.as_bytes()).is_ok() {
-        1
-    } else {
-        0
+    match with_file(handle, |file| file.write_all(data_str.as_bytes())) {
+        Some(Ok(())) => 1,
+        _ => 0,
     }
 }
 
@@ -709,16 +747,19 @@ pub extern "C" fn olive_file_seek(handle: i64, offset: i64, whence: i64) -> i64 
     if handle == 0 {
         return -1;
     }
-    let file = unsafe { &mut *(handle as *mut std::fs::File) };
     let pos = match whence {
-        0 => SeekFrom::Start(offset as u64),
         1 => SeekFrom::Current(offset),
         2 => SeekFrom::End(offset),
-        _ => SeekFrom::Start(offset as u64),
+        _ => {
+            if offset < 0 {
+                return -1;
+            }
+            SeekFrom::Start(offset as u64)
+        }
     };
-    match file.seek(pos) {
-        Ok(new_pos) => new_pos as i64,
-        Err(_) => -1,
+    match with_file(handle, |file| file.seek(pos)) {
+        Some(Ok(new_pos)) => new_pos as i64,
+        _ => -1,
     }
 }
 
@@ -727,10 +768,9 @@ pub extern "C" fn olive_file_tell(handle: i64) -> i64 {
     if handle == 0 {
         return -1;
     }
-    let file = unsafe { &mut *(handle as *mut std::fs::File) };
-    match file.stream_position() {
-        Ok(pos) => pos as i64,
-        Err(_) => -1,
+    match with_file(handle, |file| file.stream_position()) {
+        Some(Ok(pos)) => pos as i64,
+        _ => -1,
     }
 }
 
@@ -748,10 +788,30 @@ pub extern "C" fn olive_file_read_lines(path: i64) -> i64 {
     crate::list::list_from_vec(ptrs)
 }
 
-use std::io::BufRead;
+enum LineRead {
+    Line(String),
+    Eof,
+    Err,
+}
 
-struct BufReadHandle(std::io::BufReader<std::fs::File>);
-struct BufWriteHandle(std::io::BufWriter<std::fs::File>);
+/// Shared by stdin and buffered-file line reads: strips a trailing "\r\n" or
+/// "\n" so CRLF and LF sources yield identical strings.
+fn read_line_trimmed<R: std::io::BufRead>(reader: &mut R) -> LineRead {
+    let mut line = String::new();
+    match reader.read_line(&mut line) {
+        Ok(0) => LineRead::Eof,
+        Ok(_) => {
+            if line.ends_with('\n') {
+                line.pop();
+                if line.ends_with('\r') {
+                    line.pop();
+                }
+            }
+            LineRead::Line(line)
+        }
+        Err(_) => LineRead::Err,
+    }
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_bufread_open(path: i64) -> i64 {
@@ -760,37 +820,35 @@ pub extern "C" fn olive_bufread_open(path: i64) -> i64 {
     }
     let path_str = olive_str_from_ptr(path);
     match std::fs::File::open(&path_str) {
-        Ok(f) => Box::into_raw(Box::new(BufReadHandle(std::io::BufReader::new(f)))) as i64,
+        Ok(f) => register_handle(IoHandle::BufRead(std::io::BufReader::new(f))),
         Err(_) => 0,
     }
 }
 
+/// Reads one line. Null on a dead/foreign handle or I/O error, empty string
+/// at EOF, so the canonical `while (l = read_line()) != ""` loop terminates
+/// without silently treating errors as end-of-file.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_bufread_line(br: i64) -> i64 {
     if br == 0 {
         return 0;
     }
-    let handle = unsafe { &mut *(br as *mut BufReadHandle) };
-    let mut line = String::new();
-    match handle.0.read_line(&mut line) {
-        Ok(0) => 0,
-        Ok(_) => {
-            if line.ends_with('\n') {
-                line.pop();
-                if line.ends_with('\r') {
-                    line.pop();
-                }
-            }
-            olive_str_internal(&line)
-        }
-        Err(_) => 0,
+    let mut table = handles().lock().unwrap();
+    let reader = match table.get_mut(&handle_index(br)) {
+        Some(IoHandle::BufRead(r)) => r,
+        _ => return 0,
+    };
+    match read_line_trimmed(reader) {
+        LineRead::Line(line) => olive_str_internal(&line),
+        LineRead::Eof => olive_str_internal(""),
+        LineRead::Err => 0,
     }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_bufread_close(br: i64) {
     if br != 0 {
-        unsafe { drop(Box::from_raw(br as *mut BufReadHandle)) };
+        take_handle(br);
     }
 }
 
@@ -801,7 +859,7 @@ pub extern "C" fn olive_bufwrite_open(path: i64) -> i64 {
     }
     let path_str = olive_str_from_ptr(path);
     match std::fs::File::create(&path_str) {
-        Ok(f) => Box::into_raw(Box::new(BufWriteHandle(std::io::BufWriter::new(f)))) as i64,
+        Ok(f) => register_handle(IoHandle::BufWrite(std::io::BufWriter::new(f))),
         Err(_) => 0,
     }
 }
@@ -812,12 +870,17 @@ pub extern "C" fn olive_bufwrite_write(bw: i64, data: i64) -> i64 {
         return 0;
     }
     use std::io::Write;
-    let handle = unsafe { &mut *(bw as *mut BufWriteHandle) };
     let text = olive_str_from_ptr(data);
-    if handle.0.write_all(text.as_bytes()).is_ok() {
-        1
-    } else {
-        0
+    let mut table = handles().lock().unwrap();
+    match table.get_mut(&handle_index(bw)) {
+        Some(IoHandle::BufWrite(w)) => {
+            if w.write_all(text.as_bytes()).is_ok() {
+                1
+            } else {
+                0
+            }
+        }
+        _ => 0,
     }
 }
 
@@ -827,14 +890,23 @@ pub extern "C" fn olive_bufwrite_flush(bw: i64) -> i64 {
         return 0;
     }
     use std::io::Write;
-    let handle = unsafe { &mut *(bw as *mut BufWriteHandle) };
-    if handle.0.flush().is_ok() { 1 } else { 0 }
+    let mut table = handles().lock().unwrap();
+    match table.get_mut(&handle_index(bw)) {
+        Some(IoHandle::BufWrite(w)) => {
+            if w.flush().is_ok() {
+                1
+            } else {
+                0
+            }
+        }
+        _ => 0,
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_bufwrite_close(bw: i64) {
     if bw != 0 {
-        unsafe { drop(Box::from_raw(bw as *mut BufWriteHandle)) };
+        take_handle(bw);
     }
 }
 
@@ -989,6 +1061,124 @@ mod tests {
     }
 
     #[test]
+    fn read_n_eof_vs_error_vs_dead_handle() {
+        let path = temp_path("olive_read_n_eof.txt");
+        olive_file_write(path, make_str("0123456789"));
+        let handle = olive_file_open(path, make_str("r"));
+        for expected in ["0123", "4567", "89"] {
+            let chunk = olive_file_read_n(handle, 4);
+            assert_ne!(chunk, 0);
+            assert_ne!(chunk, 1);
+            assert_eq!(from_ptr(chunk), expected);
+        }
+        assert_eq!(from_ptr(olive_file_read_n(handle, 4)), "");
+        olive_file_close(handle);
+        assert_eq!(olive_file_read_n(handle, 4), 0);
+        olive_file_delete(path);
+    }
+
+    #[test]
+    fn double_close_is_absorbed() {
+        let path = temp_path("olive_double_close.txt");
+        olive_file_write(path, make_str("x"));
+        let handle = olive_file_open(path, make_str("r"));
+        assert_ne!(handle, 0);
+        olive_file_close(handle);
+        olive_file_close(handle);
+        let again = olive_file_open(path, make_str("r"));
+        assert_ne!(again, 0);
+        assert_ne!(again & HANDLE_INDEX_MASK, handle & HANDLE_INDEX_MASK);
+        olive_file_close(again);
+        olive_file_delete(path);
+    }
+
+    #[test]
+    fn operations_on_closed_handle_fail_cleanly() {
+        let path = temp_path("olive_use_after_close.txt");
+        olive_file_write(path, make_str("x"));
+        let handle = olive_file_open(path, make_str("w+"));
+        assert_ne!(handle, 0);
+        olive_file_close(handle);
+        assert_eq!(olive_file_read_n(handle, 4), 0);
+        assert_eq!(olive_file_tell(handle), -1);
+        assert_eq!(olive_file_seek(handle, 0, 0), -1);
+        assert_eq!(olive_file_write_str(handle, make_str("y")), 0);
+        olive_file_delete(path);
+    }
+
+    #[test]
+    fn read_n_garbage_handle_returns_null() {
+        assert_eq!(olive_file_read_n(12345, 4), 0);
+        assert_eq!(olive_file_read_n(-1, 4), 0);
+        assert_eq!(olive_file_tell(12345), -1);
+        assert_eq!(olive_file_seek(12345, 0, 0), -1);
+        assert_eq!(olive_bufread_line(12345), 0);
+        assert_eq!(olive_bufwrite_flush(12345), 0);
+    }
+
+    #[test]
+    fn open_failure_leaks_no_handle() {
+        let before = handles().lock().unwrap().len();
+        for _ in 0..100 {
+            assert_eq!(
+                olive_file_open(make_str("/nonexistent_dir_xyz/f.txt"), make_str("r")),
+                0
+            );
+            assert_eq!(
+                olive_bufread_open(make_str("/nonexistent_dir_xyz/f.txt")),
+                0
+            );
+            assert_eq!(
+                olive_bufwrite_open(make_str("/nonexistent_dir_xyz/f.txt")),
+                0
+            );
+        }
+        assert_eq!(handles().lock().unwrap().len(), before);
+    }
+
+    #[test]
+    fn bufread_eof_and_partial_line() {
+        let path = temp_path("olive_bufread_eof.txt");
+        olive_file_write(path, make_str("alpha\nbeta\ngamma"));
+        let br = olive_bufread_open(path);
+        assert_ne!(br, 0);
+        for expected in ["alpha", "beta", "gamma"] {
+            let line = olive_bufread_line(br);
+            assert_ne!(line, 0);
+            assert_eq!(from_ptr(line), expected);
+        }
+        assert_eq!(from_ptr(olive_bufread_line(br)), "");
+        olive_bufread_close(br);
+        assert_eq!(olive_bufread_line(br), 0);
+        olive_file_delete(path);
+    }
+
+    #[test]
+    fn bufwrite_double_close_absorbed() {
+        let path = temp_path("olive_bw_double_close.txt");
+        let bw = olive_bufwrite_open(path);
+        assert_ne!(bw, 0);
+        assert_eq!(olive_bufwrite_write(bw, make_str("kept")), 1);
+        olive_bufwrite_close(bw);
+        olive_bufwrite_close(bw);
+        assert_eq!(olive_bufwrite_flush(bw), 0);
+        assert_eq!(from_ptr(olive_file_read(path)), "kept");
+        olive_file_delete(path);
+    }
+
+    #[test]
+    fn bufread_crlf_line_endings() {
+        let path = temp_path("olive_bufread_crlf.txt");
+        olive_file_write(path, make_str("a\r\nb\r\n"));
+        let br = olive_bufread_open(path);
+        assert_eq!(from_ptr(olive_bufread_line(br)), "a");
+        assert_eq!(from_ptr(olive_bufread_line(br)), "b");
+        assert_eq!(from_ptr(olive_bufread_line(br)), "");
+        olive_bufread_close(br);
+        olive_file_delete(path);
+    }
+
+    #[test]
     fn file_read_lines_basic() {
         let path = temp_path("olive_lines_test.txt");
         olive_file_write(path, make_str("line1\nline2\nline3"));
@@ -1027,14 +1217,28 @@ mod tests {
     #[test]
     fn bufread_line_by_line() {
         let path = temp_path("olive_bufread_test.txt");
-        olive_file_write(path, make_str("alpha\nbeta\ngamma"));
+        olive_file_write(path, make_str("alpha\nbeta\ngamma\n"));
         let br = olive_bufread_open(path);
         assert_ne!(br, 0);
         assert_eq!(from_ptr(olive_bufread_line(br)), "alpha");
         assert_eq!(from_ptr(olive_bufread_line(br)), "beta");
         assert_eq!(from_ptr(olive_bufread_line(br)), "gamma");
-        assert_eq!(olive_bufread_line(br), 0);
+        assert_ne!(olive_bufread_line(br), 0);
+        assert_eq!(from_ptr(olive_bufread_line(br)), "");
+        assert_eq!(from_ptr(olive_bufread_line(br)), "");
         olive_bufread_close(br);
+        assert_eq!(olive_bufread_line(br), 0);
+        olive_file_delete(path);
+    }
+
+    #[test]
+    fn bufwrite_flushes_on_close() {
+        let path = temp_path("olive_bw_close_flush.txt");
+        let bw = olive_bufwrite_open(path);
+        assert_ne!(bw, 0);
+        assert_eq!(olive_bufwrite_write(bw, make_str("unflushed")), 1);
+        drop(take_handle(bw));
+        assert_eq!(from_ptr(olive_file_read(path)), "unflushed");
         olive_file_delete(path);
     }
 

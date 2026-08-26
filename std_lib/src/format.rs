@@ -164,27 +164,26 @@ fn fmt_enum(val: i64, desc: *const u8, pos: &mut usize) -> String {
         let v_name = read_lp(desc, pos);
         let np = unsafe { byte(desc, *pos) } as usize - 13;
         *pos += 1;
+        if i != tag {
+            for _ in 0..np {
+                skip(desc, pos);
+            }
+            continue;
+        }
         let mut payloads = Vec::with_capacity(np);
         for j in 0..np {
-            let pval = if i == tag && j < payload_len {
+            let pval = if j < payload_len {
                 unsafe { *payload_ptr.add(j) }
             } else {
                 0
             };
-            // `fmt` advances the cursor over this payload's descriptor exactly
-            // once, for every variant, so the walk stays aligned.
-            let s = fmt(pval, desc, pos);
-            if i == tag {
-                payloads.push(s);
-            }
+            payloads.push(fmt(pval, desc, pos));
         }
-        if i == tag {
-            result = if np == 0 {
-                v_name
-            } else {
-                format!("{v_name}({})", payloads.join(", "))
-            };
-        }
+        result = if np == 0 {
+            v_name
+        } else {
+            format!("{v_name}({})", payloads.join(", "))
+        };
     }
     result
 }
@@ -549,4 +548,105 @@ pub extern "C" fn olive_write_typed(val: i64, desc: i64) -> i64 {
     let mut pos = 0usize;
     print!("{}", fmt(val, desc as *const u8, &mut pos));
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(text: &str) -> i64 {
+        crate::olive_str_internal(text)
+    }
+
+    /// Enum descriptor: name "E", 2 variants — "A" with one Int payload,
+    /// "B" with two Str payloads. Length bytes are biased by 13.
+    fn enum_desc() -> Vec<u8> {
+        let mut d = vec![D_ENUM];
+        d.push((b"E".len() + 13) as u8);
+        d.extend_from_slice(b"E");
+        d.push(2 + 13);
+        d.push((b"A".len() + 13) as u8);
+        d.extend_from_slice(b"A");
+        d.push(1 + 13);
+        d.push(D_INT);
+        d.push((b"B".len() + 13) as u8);
+        d.extend_from_slice(b"B");
+        d.push(2 + 13);
+        d.push(D_STR);
+        d.push(D_STR);
+        d
+    }
+
+    /// Owns an `OliveEnum` plus its raw payload allocation so tests exercise
+    /// the exact pointer shape `fmt_enum` reads without leaking.
+    struct EnumVal {
+        e: *mut OliveEnum,
+        payload: Vec<i64>,
+        payload_ptr: *mut i64,
+    }
+
+    impl EnumVal {
+        fn new(tag: i64, payload: &[i64]) -> Self {
+            let owned = payload.to_vec();
+            let (ptr, len) = if owned.is_empty() {
+                (std::ptr::null_mut(), 0)
+            } else {
+                let layout = std::alloc::Layout::array::<i64>(owned.len()).unwrap();
+                let ptr = unsafe { std::alloc::alloc(layout) } as *mut i64;
+                unsafe { ptr.copy_from_nonoverlapping(owned.as_ptr(), owned.len()) };
+                (ptr, owned.len())
+            };
+            EnumVal {
+                e: Box::into_raw(Box::new(OliveEnum {
+                    kind: 0,
+                    type_id: 0,
+                    tag,
+                    payload_ptr: ptr,
+                    payload_len: len,
+                })),
+                payload: owned,
+                payload_ptr: ptr,
+            }
+        }
+
+        fn val(&self) -> i64 {
+            self.e as i64
+        }
+    }
+
+    impl Drop for EnumVal {
+        fn drop(&mut self) {
+            unsafe {
+                drop(Box::from_raw(self.e));
+                if !self.payload.is_empty() {
+                    let layout = std::alloc::Layout::array::<i64>(self.payload.len()).unwrap();
+                    std::alloc::dealloc(self.payload_ptr as *mut u8, layout);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fmt_enum_renders_matching_variant_only() {
+        let d = enum_desc();
+        let v = EnumVal::new(1, &[s("x"), s("y")]);
+        assert_eq!(format_desc(v.val(), d.as_ptr() as i64), "B(\"x\", \"y\")");
+        let v = EnumVal::new(0, &[42]);
+        assert_eq!(format_desc(v.val(), d.as_ptr() as i64), "A(42)");
+        let v = EnumVal::new(0, &[]);
+        assert_eq!(format_desc(v.val(), d.as_ptr() as i64), "A(0)");
+    }
+
+    #[test]
+    fn fmt_enum_payload_shortfall_renders_zero_words() {
+        let d = enum_desc();
+        let v = EnumVal::new(1, &[]);
+        assert_eq!(format_desc(v.val(), d.as_ptr() as i64), "B(\"\", \"\")");
+    }
+
+    #[test]
+    fn fmt_enum_null_value_walks_whole_descriptor() {
+        let d = enum_desc();
+        assert_eq!(format_desc(0, d.as_ptr() as i64), "");
+    }
 }

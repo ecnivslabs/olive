@@ -1,4 +1,5 @@
 use super::{
+    MAX_NESTING_DEPTH,
     Parser,
     ast::*,
     error::{ParseError, ParseResult},
@@ -13,6 +14,24 @@ mod tests;
 
 impl Parser {
     pub(crate) fn parse_stmt(&mut self) -> ParseResult<Stmt> {
+        // Block statements recurse parse_stmt -> parse_block -> parse_stmt
+        // with no bracket token for `enter_nested` to key off, so deeply
+        // nested `if`/`while` bodies overflow the native stack before any
+        // expression is even parsed. Guard here instead.
+        if self.depth >= MAX_NESTING_DEPTH {
+            let tok = self.peek().clone();
+            return Err(self.err_at(
+                &tok,
+                format!("statement block nested too deeply (limit {MAX_NESTING_DEPTH})"),
+            ));
+        }
+        self.depth += 1;
+        let stmt = self.parse_stmt_inner();
+        self.depth -= 1;
+        stmt
+    }
+
+    fn parse_stmt_inner(&mut self) -> ParseResult<Stmt> {
         match self.peek().kind {
             TokenKind::Fn => self.parse_fn(false),
             TokenKind::Async => self.parse_async_stmt(),

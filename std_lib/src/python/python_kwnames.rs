@@ -74,10 +74,12 @@ unsafe fn build_kwnames_tuple(packed: *const c_char) -> PyObject {
             // next split name, aliasing two different interned strings.
             let interned = PY_UNICODE_INTERN_FROM_STRING(cname.as_ptr());
             if interned.is_null() {
+                PY_ERR_CLEAR();
                 PY_DEC_REF(tuple);
                 return std::ptr::null_mut();
             }
-            PY_INC_REF(interned);
+            // `PyTuple_SetItem` steals `interned`'s reference; interning
+            // already returned one, so no extra incref here.
             PY_TUPLE_SET_ITEM(tuple, i as isize, interned);
         }
         tuple

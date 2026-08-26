@@ -95,8 +95,36 @@ pub extern "C" fn olive_str_getslice(s: i64, start: i64, stop: i64, step: i64, f
     if s == 0 {
         return olive_str_internal("");
     }
-    let chars: Vec<char> = olive_str_from_ptr(s).chars().collect();
-    let idxs = crate::list::slice_indices(chars.len() as i64, start, stop, step, flags);
+    let text = olive_str_from_ptr(s);
+    let char_len = text.chars().count() as i64;
+    // The common forward-contiguous slice is one char-boundary byte range;
+    // only a stepped or backwards walk needs the per-char Vec.
+    let (nstart, nstop, nstep) = crate::list::slice_bounds(char_len, start, stop, step, flags);
+    if nstep == 1 {
+        // A reversed range (nstart >= nstop) is empty under CPython rules;
+        // slicing the bytes directly would panic instead.
+        if nstart >= nstop {
+            return olive_str_internal("");
+        }
+        let from = match nstart {
+            0 => 0,
+            _ => text
+                .char_indices()
+                .nth(nstart as usize)
+                .map(|(b, _)| b)
+                .unwrap_or(text.len()),
+        };
+        let to = text
+            .char_indices()
+            .nth(nstop as usize)
+            .map(|(b, _)| b)
+            .unwrap_or(text.len());
+        return olive_str_internal(&text[from..to]);
+    }
+    // Raw operands: slice_indices renormalizes, and a pre-normalized negative
+    // step's stop of -1 must survive as its "include index 0" sentinel.
+    let chars: Vec<char> = text.chars().collect();
+    let idxs = crate::list::slice_indices(char_len, start, stop, step, flags);
     let out: String = idxs.iter().map(|&i| chars[i]).collect();
     olive_str_internal(&out)
 }
@@ -107,7 +135,14 @@ pub extern "C" fn olive_str_slice(s: i64, start: i64, end: i64) -> i64 {
     let start = start as usize;
     let end = end as usize;
     if start <= end && end <= bytes.len() {
-        olive_str_internal(unsafe { std::str::from_utf8_unchecked(&bytes[start..end]) })
+        let sub = &bytes[start..end];
+        // Byte bounds can land inside a multi-byte char; replacement chars
+        // keep the result a valid `str` where `from_utf8_unchecked` would be
+        // undefined behavior.
+        match std::str::from_utf8(sub) {
+            Ok(valid) => olive_str_internal(valid),
+            Err(_) => olive_str_internal(&String::from_utf8_lossy(sub)),
+        }
     } else {
         0
     }
@@ -239,9 +274,15 @@ pub extern "C" fn olive_str_find(s: i64, needle: i64) -> i64 {
     if s == 0 || needle == 0 {
         return -1;
     }
-    let text = olive_str_from_ptr(s);
-    let pat = olive_str_from_ptr(needle);
-    match text.find(&pat) {
+    let text = match olive_str_as_str(s) {
+        Some(t) => t,
+        None => return -1,
+    };
+    let pat = match olive_str_as_str(needle) {
+        Some(p) => p,
+        None => return -1,
+    };
+    match text.find(pat) {
         Some(byte_idx) => text[..byte_idx].chars().count() as i64,
         None => -1,
     }
@@ -252,11 +293,11 @@ pub extern "C" fn olive_str_contains(s: i64, needle: i64) -> i64 {
     if s == 0 || needle == 0 {
         return 0;
     }
-    if olive_str_from_ptr(s).contains(&olive_str_from_ptr(needle)) {
-        1
-    } else {
-        0
-    }
+    // Byte-slice search: UTF-8 is self-synchronizing, so a byte-substring
+    // match is exactly a character-substring match, with no owned copies.
+    let hay = olive_str_to_bytes(s);
+    let pat = olive_str_to_bytes(needle);
+    (pat.is_empty() || hay.windows(pat.len()).any(|w| w == pat)) as i64
 }
 
 #[unsafe(no_mangle)]
@@ -264,7 +305,7 @@ pub extern "C" fn olive_str_starts_with(s: i64, prefix: i64) -> i64 {
     if s == 0 || prefix == 0 {
         return 0;
     }
-    if olive_str_from_ptr(s).starts_with(&olive_str_from_ptr(prefix)) {
+    if olive_str_to_bytes(s).starts_with(olive_str_to_bytes(prefix)) {
         1
     } else {
         0
@@ -276,7 +317,7 @@ pub extern "C" fn olive_str_ends_with(s: i64, suffix: i64) -> i64 {
     if s == 0 || suffix == 0 {
         return 0;
     }
-    if olive_str_from_ptr(s).ends_with(&olive_str_from_ptr(suffix)) {
+    if olive_str_to_bytes(s).ends_with(olive_str_to_bytes(suffix)) {
         1
     } else {
         0
@@ -314,15 +355,17 @@ pub extern "C" fn olive_str_join(list_ptr: i64, sep: i64) -> i64 {
         return olive_str_internal("");
     }
     let s = unsafe { &*(list_ptr as *const StableVec) };
-    let sep_str = if sep == 0 {
-        String::new()
-    } else {
-        olive_str_from_ptr(sep)
-    };
-    let parts: Vec<String> = (0..s.len)
-        .map(|i| olive_str_from_ptr(unsafe { *s.ptr.add(i) }))
-        .collect();
-    olive_str_internal(&parts.join(&sep_str))
+    let sep_bytes = olive_str_to_bytes(sep);
+    let mut out = Vec::new();
+    for i in 0..s.len {
+        if i > 0 {
+            out.extend_from_slice(sep_bytes);
+        }
+        out.extend_from_slice(olive_str_to_bytes(unsafe { *s.ptr.add(i) }));
+    }
+    // SAFETY: every element is a well-formed Olive string, so their
+    // concatenation is valid UTF-8.
+    olive_str_internal(unsafe { std::str::from_utf8_unchecked(&out) })
 }
 
 /// Non-overlapping occurrences of `sub` in `s`, Python's `str.count` semantics
@@ -339,9 +382,15 @@ pub extern "C" fn olive_str_rfind(s: i64, needle: i64) -> i64 {
     if s == 0 || needle == 0 {
         return -1;
     }
-    let text = olive_str_from_ptr(s);
-    let pat = olive_str_from_ptr(needle);
-    match text.rfind(&pat) {
+    let text = match olive_str_as_str(s) {
+        Some(t) => t,
+        None => return -1,
+    };
+    let pat = match olive_str_as_str(needle) {
+        Some(p) => p,
+        None => return -1,
+    };
+    match text.rfind(pat) {
         Some(byte_idx) => text[..byte_idx].chars().count() as i64,
         None => -1,
     }
@@ -557,30 +606,34 @@ pub extern "C" fn olive_str_fmt(template: i64, args: i64) -> i64 {
     if template == 0 {
         return olive_str_internal("");
     }
-    let tmpl = olive_str_from_ptr(template);
-    let arg_strs: Vec<String> = if args == 0 {
-        vec![]
+    let tmpl = match olive_str_as_str(template) {
+        Some(t) => t,
+        // A non-UTF-8 template keeps the historical lossy rendering.
+        None => return olive_str_internal(&olive_str_from_ptr(template)),
+    };
+    // Borrowed views: the list outlives this call and each part is only
+    // concatenated once, so no owned copy per argument is needed.
+    let arg_bytes: Vec<&[u8]> = if args == 0 {
+        Vec::new()
     } else {
         let sv = unsafe { &*(args as *const StableVec) };
         (0..sv.len)
-            .map(|i| olive_str_from_ptr(unsafe { *sv.ptr.add(i) }))
+            .map(|i| olive_str_to_bytes(unsafe { *sv.ptr.add(i) }))
             .collect()
     };
-    let mut result = String::with_capacity(tmpl.len());
+    let mut result = Vec::with_capacity(tmpl.len());
+    let mut parts = tmpl.split("{}").peekable();
     let mut arg_idx = 0;
-    let mut chars = tmpl.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '{' && chars.peek() == Some(&'}') {
-            chars.next();
-            if arg_idx < arg_strs.len() {
-                result.push_str(&arg_strs[arg_idx]);
-                arg_idx += 1;
-            }
-        } else {
-            result.push(c);
+    while let Some(part) = parts.next() {
+        result.extend_from_slice(part.as_bytes());
+        if parts.peek().is_some() && arg_idx < arg_bytes.len() {
+            result.extend_from_slice(arg_bytes[arg_idx]);
+            arg_idx += 1;
         }
     }
-    olive_str_internal(&result)
+    // SAFETY: template is valid UTF-8 and every argument is a well-formed
+    // Olive string, so the assembled bytes are valid UTF-8.
+    olive_str_internal(unsafe { std::str::from_utf8_unchecked(&result) })
 }
 
 /// Builds a list of the string's characters, each as a one-character string.
@@ -590,13 +643,15 @@ pub extern "C" fn olive_str_chars(s: i64) -> i64 {
     if s == 0 {
         return crate::list::olive_list_new(0);
     }
-    let chars: Vec<String> = olive_str_from_ptr(s)
-        .chars()
-        .map(|c| c.to_string())
-        .collect();
-    let list = crate::list::olive_list_new(chars.len() as i64);
-    for (i, c) in chars.iter().enumerate() {
-        crate::list::olive_list_set(list, i as i64, crate::olive_str_internal(c));
+    let text = olive_str_from_ptr(s);
+    let list = crate::list::olive_list_new(text.chars().count() as i64);
+    let mut buf = [0u8; 4];
+    for (i, c) in text.chars().enumerate() {
+        crate::list::olive_list_set(
+            list,
+            i as i64,
+            crate::string_slab::str_alloc(c.encode_utf8(&mut buf).as_bytes()),
+        );
     }
     list
 }
@@ -895,5 +950,56 @@ mod tests {
     #[test]
     fn fmt_no_placeholders() {
         assert_eq!(from_ptr(olive_str_fmt(s("hello"), 0)), "hello");
+    }
+
+    #[test]
+    fn getslice_char_indexed_contiguous() {
+        assert_eq!(from_ptr(olive_str_getslice(s("héllo"), 0, 2, 1, 7)), "hé");
+        assert_eq!(from_ptr(olive_str_getslice(s("héllo"), 2, 5, 1, 7)), "llo");
+        assert_eq!(from_ptr(olive_str_getslice(s("héllo"), 0, -1, 1, 7)), "héll");
+        assert_eq!(from_ptr(olive_str_getslice(s("héllo"), -3, -1, 1, 7)), "ll");
+    }
+
+    #[test]
+    fn getslice_stepped_and_reversed() {
+        assert_eq!(from_ptr(olive_str_getslice(s("abcdef"), 0, 6, 2, 7)), "ace");
+        assert_eq!(from_ptr(olive_str_getslice(s("abcdef"), 0, 6, -1, 7)), "");
+        // An explicit negative stop normalizes to len-1, so this is empty.
+        assert_eq!(from_ptr(olive_str_getslice(s("abcdef"), 3, -1, -1, 7)), "");
+        assert_eq!(from_ptr(olive_str_getslice(s("abcdef"), 5, 0, -2, 7)), "fdb");
+        // Emitter shape for `s[3::-1]`: stop omitted (flag clear, raw 0),
+        // whose normalization is the -1 sentinel meaning "down to index 0".
+        assert_eq!(from_ptr(olive_str_getslice(s("abcdef"), 3, 0, -1, 5)), "dcba");
+    }
+
+    #[test]
+    fn getslice_empty_ranges_do_not_panic() {
+        assert_eq!(from_ptr(olive_str_getslice(s("abc"), 2, 1, 1, 7)), "");
+        assert_eq!(from_ptr(olive_str_getslice(s("abc"), 3, 3, 1, 7)), "");
+        assert_eq!(from_ptr(olive_str_getslice(s(""), 0, 0, 1, 7)), "");
+    }
+
+    #[test]
+    fn getslice_omitted_bounds_default_to_full_string() {
+        // flags = SLICE_HAS_STEP only: both endpoints omitted.
+        assert_eq!(from_ptr(olive_str_getslice(s("héllo"), 0, 0, 1, 4)), "héllo");
+        assert_eq!(from_ptr(olive_str_getslice(s("héllo"), 0, 0, -1, 4)), "olléh");
+    }
+
+    #[test]
+    fn slice_mid_char_boundary_is_lossy_not_ub() {
+        let ptr = olive_str_internal("é");
+        let bytes = crate::olive_str_to_bytes(ptr);
+        let got = olive_str_slice(ptr, 0, (bytes.len() - 1) as i64);
+        assert_eq!(from_ptr(got), String::from_utf8_lossy(&bytes[..1]));
+    }
+
+    #[test]
+    fn contains_multibyte_matches_char_semantics() {
+        assert_eq!(olive_str_contains(s("aéz"), s("é")), 1);
+        assert_eq!(olive_str_contains(s("aéz"), s("ez")), 0);
+        assert_eq!(olive_str_contains(s(""), s("x")), 0);
+        // Null needle keeps the historical "absent" reading, not "".
+        assert_eq!(olive_str_contains(s("x"), 0), 0);
     }
 }

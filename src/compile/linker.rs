@@ -57,6 +57,12 @@ fn find_library_named(lib_name: &str) -> Option<PathBuf> {
         if exe_dir.join(lib_name).exists() {
             return Some(exe_dir.to_path_buf());
         }
+        // Test binaries and some cargo layouts live in `deps/`, which also
+        // holds the std lib artifacts.
+        let deps_dir = exe_dir.join("deps");
+        if deps_dir.join(lib_name).exists() {
+            return Some(deps_dir);
+        }
         if let Some(parent) = exe_dir.parent() {
             let lib_dir = parent.join("lib");
             if lib_dir.join(lib_name).exists() {

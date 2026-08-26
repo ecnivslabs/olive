@@ -1,25 +1,18 @@
 use crate::python::python_compat::*;
 use crate::python::*;
-use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_void};
 use std::sync::atomic::Ordering;
 
-/// Extract the Python minor version from a `libpython3.X.so` filename.
-/// Returns 0 for unversioned names (e.g. `libpython3.so` symlink).
+/// Extract the Python minor version from a `libpython3.X[...]so[.N.M]`
+/// filename. Returns 0 for unversioned names (e.g. `libpython3.so` symlink).
+/// Tolerates abiflags (`libpython3.14t.so`) and versioned sonames
+/// (`libpython3.12.so.1.0`), the layout runtime-only installs ship.
 fn extract_python_minor(name: &str) -> u64 {
-    let rest = match name.strip_prefix("libpython3") {
-        Some(r) => r,
-        None => return 0,
-    };
-    if rest.is_empty() {
+    let Some(rest) = name.strip_prefix("libpython3").and_then(|r| r.strip_prefix('.')) else {
         return 0;
-    }
-    let after_dot = match rest.strip_prefix('.') {
-        Some(d) => d,
-        None => return 0,
     };
-    let minor_str = after_dot.split('.').next().unwrap_or("");
-    minor_str.parse().unwrap_or(0)
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().unwrap_or(0)
 }
 
 /// Scan standard library directories for Python 3 shared libraries.
@@ -62,17 +55,16 @@ fn detect_python_libraries() -> Vec<String> {
                 let Some(name) = path.file_name() else {
                     continue;
                 };
-                let name = name.to_string_lossy();
+                let name = name.to_string_lossy().into_owned();
                 if !name.starts_with("libpython3") {
                     continue;
                 }
-                if !name.ends_with(ext) {
+                // Accept both `libpython3.X.so` and the versioned soname
+                // layout (`libpython3.X.so.1.0`) runtime-only installs ship.
+                if !(name.ends_with(ext) || (ext == "so" && name.contains(".so."))) {
                     continue;
                 }
-                candidates.push((
-                    extract_python_minor(&name),
-                    path.to_string_lossy().to_string(),
-                ));
+                candidates.push((extract_python_minor(&name), name));
             }
         }
     }
@@ -551,9 +543,14 @@ pub extern "C" fn olive_py_initialize() {
         if !already_initialized {
             PY_INITIALIZE();
 
-            PY_RUN_SIMPLE_STRING(
+            if PY_RUN_SIMPLE_STRING(
                 b"import sys; sys.path.insert(0, '')\0".as_ptr() as *const c_char,
-            );
+            ) != 0
+            {
+                // A failed embed-init script leaves the error indicator set;
+                // every later C-API call would see a bogus pending exception.
+                PY_ERR_CLEAR();
+            }
 
             let init_ptr: *const () = PY_EVAL_INIT_THREADS as *const ();
             if !init_ptr.is_null() && init_ptr != (noop_initialize as *const ()) {
@@ -563,18 +560,23 @@ pub extern "C" fn olive_py_initialize() {
 
         {
             let ver_obj = PY_SYS_GET_OBJECT(b"version_info\0".as_ptr() as *const c_char);
+            // `PySys_GetObject` returns borrowed; `version_info` is a named
+            // tuple on every CPython, so the `major` field is also readable
+            // as sequence item 0 -- no getattr and no dict protocol needed.
             if !ver_obj.is_null() {
-                let major_key = CString::new("major").unwrap();
-                let major_attr = PY_OBJECT_GET_ATTR_STRING(ver_obj, major_key.as_ptr());
-                if !major_attr.is_null() {
-                    let major = PY_LONG_AS_LONG(major_attr);
-                    PY_DEC_REF(major_attr);
-                    if major < 3 {
+                let ver_major = PY_TUPLE_GET_ITEM(ver_obj, 0);
+                if !ver_major.is_null() {
+                    let major = PY_LONG_AS_LONG(ver_major);
+                    if !PY_ERR_OCCURRED().is_null() {
+                        PY_ERR_CLEAR();
+                    } else if major < 3 {
                         eprintln!(
                             "Warning: Python {major} detected - Python interop requires Python 3. \
                              Olive Python interop will not function correctly."
                         );
                     }
+                } else if !PY_ERR_OCCURRED().is_null() {
+                    PY_ERR_CLEAR();
                 }
             }
         }
@@ -585,8 +587,12 @@ pub extern "C" fn olive_py_initialize() {
                 PY_OBJECT_GET_ATTR_STRING(tb_mod, b"format_exception\0".as_ptr() as *const c_char);
             if !fmt_fn.is_null() {
                 PY_TRACEBACK_FORMAT_EXCEPTION = fmt_fn;
+            } else {
+                PY_ERR_CLEAR();
             }
             PY_DEC_REF(tb_mod);
+        } else {
+            PY_ERR_CLEAR();
         }
 
         if !already_initialized {

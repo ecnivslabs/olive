@@ -306,7 +306,9 @@ pub fn load_and_parse_collecting(
                     ));
                 }
 
-                let path_str = mod_path.to_string_lossy().to_string();
+                let path_str = fs::canonicalize(&mod_path)
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|_| mod_path.to_string_lossy().into_owned());
 
                 if !loaded.contains(&path_str) {
                     loaded.insert(path_str.clone());
@@ -447,7 +449,9 @@ pub fn load_and_parse_collecting(
                     ));
                 }
 
-                let path_str = mod_path.to_string_lossy().to_string();
+                let path_str = fs::canonicalize(&mod_path)
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|_| mod_path.to_string_lossy().into_owned());
 
                 if !loaded.contains(&path_str) {
                     loaded.insert(path_str.clone());

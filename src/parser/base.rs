@@ -1,13 +1,37 @@
 use super::{
     Parser, Program,
     error::{ParseError, ParseResult},
+    MAX_NESTING_DEPTH,
 };
 use crate::lexer::{Token, TokenKind};
 use crate::span::Span;
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0 }
+        Self {
+            tokens,
+            pos: 0,
+            depth: 0,
+        }
+    }
+
+    /// Enters a nesting level (`(...)`, `[...]`, `{...}`, unary chains, lambdas,
+    /// type arguments) for the duration of `f`, rejecting input nested deeper
+    /// than `MAX_NESTING_DEPTH` instead of recursing until the stack overflows.
+    /// The limit sits far below any human-written program; the native stack is
+    /// exhausted around depth ~780 in release builds.
+    pub(crate) fn enter_nested<T>(&mut self, f: impl FnOnce(&mut Self) -> ParseResult<T>) -> ParseResult<T> {
+        if self.depth >= MAX_NESTING_DEPTH {
+            let tok = self.peek().clone();
+            return Err(self.err_at(
+                &tok,
+                format!("expression or type is nested too deeply (limit {MAX_NESTING_DEPTH})"),
+            ));
+        }
+        self.depth += 1;
+        let result = f(self);
+        self.depth -= 1;
+        result
     }
 
     pub(crate) fn peek(&self) -> &Token {

@@ -19,8 +19,8 @@
 mod dispatch;
 
 use crate::python::python_writeback::{
-    ARG_ANY_LIST, ARG_BOOL, ARG_BOOL_LIST, ARG_FLOAT, ARG_FLOAT_LIST, ARG_INT, ARG_INT_LIST,
-    ARG_PYOBJECT, ARG_STR, ARG_STR_LIST, decode_scalar_arg,
+    ARG_ANY, ARG_ANY_LIST, ARG_BOOL, ARG_BOOL_LIST, ARG_BYTES, ARG_FLOAT, ARG_FLOAT_LIST,
+    ARG_INT, ARG_INT_LIST, ARG_NONE, ARG_PYOBJECT, ARG_STR, ARG_STR_LIST, decode_scalar_arg,
 };
 use crate::python::*;
 use std::os::raw::{c_char, c_void};
@@ -49,6 +49,24 @@ fn ret_tag_of(tags: i64) -> i64 {
 }
 fn param_tag_at(tags: i64, i: i64) -> i64 {
     (((tags as u64) >> (i as u32 * 4)) & 0xF) as i64
+}
+
+/// Leaked static descriptor bytes for the two list ret/param tags, laid out
+/// exactly like `type_descriptor`'s encoding so `olive_free_typed` walks the
+/// same element shapes a compiled Drop does. The untyped `olive_free_list`
+/// skips tagged-string elements (`is_active_object` rejects odd words), so
+/// an `[Any]` or `[str]` decoded from a Python list would leak one heap
+/// string per element per call without this.
+fn list_desc(elem: u8) -> i64 {
+    static ANY_DESC: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+    static STR_DESC: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+    let slot = match elem {
+        crate::format::D_ANY => &ANY_DESC,
+        _ => &STR_DESC,
+    };
+    *slot.get_or_init(|| {
+        Box::leak(vec![crate::format::D_LIST, elem].into_boxed_slice()).as_ptr() as i64
+    })
 }
 
 fn methoddef(fastcall: bool) -> &'static PyMethodDef {
@@ -104,6 +122,9 @@ unsafe fn decode_py_arg(obj: PyObject, tag: i64) -> i64 {
                 }
             }
             ARG_PYOBJECT => olive_py_wrap_borrowed(obj) as i64,
+            ARG_NONE => 0,
+            ARG_BYTES => crate::python::python_coerce_ffi::olive_py_to_bytes(obj),
+            ARG_ANY => crate::python::python_coerce::py_to_any_internal(obj),
             ARG_FLOAT_LIST | ARG_INT_LIST | ARG_STR_LIST | ARG_BOOL_LIST => {
                 // Python `list` → typed Olive `[T]`. `olive_py_to_list_internal`
                 // with `boxed=false` stores each element as a raw word using
@@ -158,9 +179,11 @@ unsafe fn run_trampoline(
         }
 
         let mut args = [0i64; 4];
+        let mut param_tags = [0i64; 4];
         let mut float_mask: u8 = 0;
         for (i, slot) in args.iter_mut().enumerate().take(arity as usize) {
             let tag = param_tag_at(tags, i as i64);
+            param_tags[i] = tag;
             *slot = decode_py_arg(get_arg(i), tag);
             if tag == ARG_FLOAT {
                 float_mask |= 1 << i;
@@ -177,17 +200,55 @@ unsafe fn run_trampoline(
         );
 
         let py_result = decode_scalar_arg(raw_result, ret_tag);
+        // Thunk parameters are borrowed (every compiled fn declares its params
+        // non-owning; a returned param escapes through a deep copy), so the
+        // decoded allocations are ours to release once the call returns.
+        for i in 0..arity as usize {
+            match param_tags[i] {
+                ARG_PYOBJECT => olive_py_decref(args[i] as PyObject),
+                ARG_STR => crate::string_slab::str_free(args[i]),
+                ARG_ANY_LIST => {
+                    crate::free_typed::olive_free_typed(args[i], list_desc(crate::format::D_ANY));
+                }
+                ARG_STR_LIST => {
+                    crate::free_typed::olive_free_typed(args[i], list_desc(crate::format::D_STR));
+                }
+                ARG_FLOAT_LIST | ARG_INT_LIST | ARG_BOOL_LIST => {
+                    crate::olive_free_list(args[i]);
+                }
+                ARG_BYTES | ARG_ANY => crate::olive_free_any(args[i]),
+                _ => {}
+            }
+        }
         // The thunk's return value is an owned olive value (ordinary
         // move-return convention); `decode_scalar_arg` only ever *reads*
         // it, so the olive-side resource still needs releasing here.
         match ret_tag {
             ARG_PYOBJECT => olive_py_decref(raw_result as PyObject),
             ARG_STR => crate::string_slab::str_free(raw_result),
-            ARG_FLOAT_LIST | ARG_INT_LIST | ARG_STR_LIST | ARG_BOOL_LIST | ARG_ANY_LIST => {
+            ARG_ANY_LIST => {
+                crate::free_typed::olive_free_typed(raw_result, list_desc(crate::format::D_ANY));
+            }
+            ARG_STR_LIST => {
+                crate::free_typed::olive_free_typed(raw_result, list_desc(crate::format::D_STR));
+            }
+            ARG_FLOAT_LIST | ARG_INT_LIST | ARG_BOOL_LIST => {
                 crate::olive_free_list(raw_result);
             }
+            ARG_BYTES | ARG_ANY => crate::olive_free_any(raw_result),
             _ => {}
         }
+        // A null PyObject handle is Olive's spelling of Python `None` (every
+        // ingest path maps `Py_None` and null alike to the zero word), so a
+        // `PyObject`-returning export hands back real `None` instead of
+        // tripping the failure path below.
+        let py_result = if py_result.is_null() && ret_tag == ARG_PYOBJECT {
+            let none = _PY_NONE_STRUCT as PyObject;
+            PY_INC_REF(none);
+            none
+        } else {
+            py_result
+        };
         if py_result.is_null() {
             handle_py_error();
         }

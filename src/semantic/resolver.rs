@@ -1,3 +1,4 @@
+use super::MAX_SEMANTIC_NESTING;
 use super::error::SemanticError;
 use super::symbol_table::{ScopeKind, Symbol, SymbolKind, SymbolTable};
 use crate::parser::ast::{
@@ -18,6 +19,9 @@ pub struct Resolver {
     /// go-to-definition) can jump from a use to its definition without a
     /// separate AST pass against a symbol table whose scopes have since closed.
     pub def_sites: HashMap<usize, Span>,
+    /// Statement/expression recursion depth, guarding `resolve_stmt`/
+    /// `resolve_expr` against overflowing the native stack.
+    resolve_depth: usize,
 }
 
 impl Default for Resolver {
@@ -85,6 +89,7 @@ impl Resolver {
             warnings: Vec::new(),
             enum_variant_origins: HashMap::default(),
             def_sites: HashMap::default(),
+            resolve_depth: 0,
         }
     }
 
@@ -206,7 +211,37 @@ impl Resolver {
         }
     }
 
+    /// Bumps the nesting counter, returning false once the limit is reached so
+    /// callers can bail out with a diagnostic instead of overflowing the stack.
+    fn enter_nested(&mut self) -> bool {
+        if self.resolve_depth >= MAX_SEMANTIC_NESTING {
+            return false;
+        }
+        self.resolve_depth += 1;
+        true
+    }
+
     fn resolve_stmt(&mut self, stmt: &Stmt) {
+        if !self.enter_nested() {
+            self.errors.push(SemanticError::rich(
+                crate::compile::errors::Diagnostic::error(
+                    "E0201",
+                    "statement block nested too deeply",
+                    stmt.span,
+                )
+                .label(format!(
+                    "nesting exceeds the limit of {}",
+                    MAX_SEMANTIC_NESTING
+                ))
+                .help("flatten the nesting: extract inner blocks into functions"),
+            ));
+            return;
+        }
+        self.resolve_stmt_inner(stmt);
+        self.resolve_depth -= 1;
+    }
+
+    fn resolve_stmt_inner(&mut self, stmt: &Stmt) {
         match &stmt.kind {
             StmtKind::Let {
                 name,
@@ -538,6 +573,26 @@ impl Resolver {
     }
 
     fn resolve_expr(&mut self, expr: &Expr) {
+        if !self.enter_nested() {
+            self.errors.push(SemanticError::rich(
+                crate::compile::errors::Diagnostic::error(
+                    "E0201",
+                    "expression nested too deeply",
+                    expr.span,
+                )
+                .label(format!(
+                    "nesting exceeds the limit of {}",
+                    MAX_SEMANTIC_NESTING
+                ))
+                .help("flatten the expression by binding sub-expressions to names"),
+            ));
+            return;
+        }
+        self.resolve_expr_inner(expr);
+        self.resolve_depth -= 1;
+    }
+
+    fn resolve_expr_inner(&mut self, expr: &Expr) {
         match &expr.kind {
             ExprKind::Identifier(name) => {
                 if name.starts_with("__olive_") {
