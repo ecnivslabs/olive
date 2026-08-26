@@ -237,7 +237,8 @@ impl PartialEq for OliveStringKey {
             // pointers already failed above. Typed containers skip those
             // checks.
             (KeyClass::Raw(a), KeyClass::Raw(b)) => {
-                if crate::hash_typed::is_untyped_key_op() {
+                let desc = crate::hash_typed::active_key_descriptor();
+                if crate::hash_typed::is_untyped_desc(desc) {
                     if let Some(eq) = crate::eq_typed::eq_box_keys(a, b) {
                         return eq;
                     }
@@ -261,7 +262,6 @@ impl PartialEq for OliveStringKey {
                     }
                     return false;
                 }
-                let desc = crate::hash_typed::active_key_descriptor();
                 crate::eq_typed::eq_key(a, b, desc)
             }
             _ => false,

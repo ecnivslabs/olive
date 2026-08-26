@@ -35,14 +35,12 @@ pub(crate) fn active_key_descriptor() -> i64 {
     ACTIVE_KEY_DESC.with(|d| d.get())
 }
 
-/// Whether the current key operation carries no static key type: no active
-/// descriptor, or an `Any` descriptor (a set dispatched through `Any`, which
-/// threads `D_ANY` where a typed op would thread the element type). Both
-/// hash by content for boxes, enums, and sequences and by word otherwise.
-/// Descriptor words arrive tagged when they originate as `Str` constants;
-/// `str_body` strips the tag (a no-op for raw codegen pointers).
-pub(crate) fn is_untyped_key_op() -> bool {
-    let desc = active_key_descriptor();
+/// Whether a key descriptor carries no static key type: zero, or an `Any`
+/// descriptor (a set dispatched through `Any`, which threads `D_ANY` where a
+/// typed op would thread the element type). Descriptor words arrive tagged
+/// when they originate as `Str` constants; `str_body` strips the tag (a
+/// no-op for raw codegen pointers).
+pub(crate) fn is_untyped_desc(desc: i64) -> bool {
     if desc == 0 {
         return true;
     }
@@ -211,7 +209,8 @@ pub extern "C" fn olive_in_list_typed(val: i64, list_ptr: i64, key_desc: i64) ->
 /// to pointer identity (unchanged from before this existed). Typed containers
 /// skip these checks and keep their exact fast path.
 pub(crate) fn hash_key(v: i64) -> u64 {
-    if is_untyped_key_op() {
+    let desc = active_key_descriptor();
+    if is_untyped_desc(desc) {
         if let Some(h) = hash_struct_box_key(v) {
             return h;
         }
@@ -229,7 +228,6 @@ pub(crate) fn hash_key(v: i64) -> u64 {
         }
         return v as u64;
     }
-    let desc = active_key_descriptor();
     let mut visited = FxHashSet::default();
     let mut pos = 0usize;
     hash_val(v, desc as *const u8, &mut pos, &mut visited)
