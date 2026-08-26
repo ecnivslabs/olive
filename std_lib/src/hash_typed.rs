@@ -78,6 +78,21 @@ pub extern "C" fn olive_obj_get_default_typed(
     })
 }
 
+/// Structural-key `.get(k, d)` whose result feeds a tag-encoded slot: the
+/// hit is boxed like `olive_obj_get_default_boxed`, the caller-passed
+/// default arrives already boxed.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_obj_get_default_boxed_typed(
+    obj_ptr: i64,
+    attr: i64,
+    default: i64,
+    key_desc: i64,
+) -> i64 {
+    with_key_descriptor(key_desc, || {
+        crate::obj::olive_obj_get_default_boxed(obj_ptr, attr, default)
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_set_add_typed(set_ptr: i64, val: i64, key_desc: i64) {
     with_key_descriptor(key_desc, || crate::set::olive_set_add(set_ptr, val))

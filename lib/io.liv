@@ -88,6 +88,9 @@ fn copy_dir(src: str, dst: str) -> bool:
 fn set_mode(path: str, mode: int) -> bool:
     return __olive_set_mode(path, mode) == 1
 
+fn set_mtime(path: str, epoch_secs: int) -> bool:
+    return __olive_set_mtime(path, epoch_secs) == 1
+
 fn temp_dir() -> str:
     return __olive_temp_dir()
 

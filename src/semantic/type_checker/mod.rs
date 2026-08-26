@@ -129,6 +129,14 @@ pub struct TypeChecker {
     /// Per struct, the count of leading fields that have no default value and so
     /// must be supplied when constructing it positionally.
     pub struct_required_fields: HashMap<String, usize>,
+    /// Import-block (`native import`) structs: field names in declaration
+    /// order. Deliberately separate from `struct_fields`, which codegen reads
+    /// as "slab-allocated Olive struct" to pick free functions and field
+    /// access; a C struct is a raw malloc'd block with C-layout offsets.
+    pub c_struct_fields: HashMap<String, Vec<String>>,
+    /// Import-block unions: members alias one storage unit, so construction
+    /// may supply any single member instead of all of them.
+    pub c_struct_is_union: HashMap<String, bool>,
     pub traits: HashMap<String, TraitDef>,
     pub(super) type_traits: HashSet<(String, String)>,
     pub(super) c_ffi_structs: HashSet<String>,
@@ -594,6 +602,8 @@ impl TypeChecker {
             fn_required_args: HashMap::default(),
             struct_fields: HashMap::default(),
             struct_required_fields: HashMap::default(),
+            c_struct_fields: HashMap::default(),
+            c_struct_is_union: HashMap::default(),
             traits,
             type_traits: HashSet::default(),
             c_ffi_structs: HashSet::default(),
@@ -660,6 +670,23 @@ impl TypeChecker {
             }
         }
         None
+    }
+
+    /// Method names registered for a type, from the `Type::member` keys of
+    /// every scope. Used to suggest close spellings when an attribute misses.
+    pub(super) fn member_fns(&self, type_name: &str) -> Vec<String> {
+        let prefix = format!("{}::", type_name);
+        let mut out: Vec<String> = Vec::new();
+        for scope in &self.type_env {
+            for key in scope.keys() {
+                if key.starts_with(&prefix)
+                    && !out.contains(&key[prefix.len()..].to_string())
+                {
+                    out.push(key[prefix.len()..].to_string());
+                }
+            }
+        }
+        out
     }
 
     /// Checks `module.attr(...)` against an explicit `import py` stub, a closed
@@ -977,6 +1004,19 @@ impl TypeChecker {
                         .map(|p| Type::Param(p.clone()))
                         .collect::<Vec<_>>();
                     self.define_type(name, Type::TraitObject(name.clone(), abstract_args), false);
+                }
+                // Import-block structs are referenced unqualified in fn
+                // signatures (`fn f(p: Pair)`), so the alias must exist before
+                // `hoist_fn_signatures` resolves those parameters.
+                crate::parser::StmtKind::NativeImport { alias, structs, .. } => {
+                    for s in structs {
+                        let type_name = format!("{}::{}", alias, s.name);
+                        self.define_type(
+                            &s.name,
+                            Type::Struct(type_name, vec![], true),
+                            false,
+                        );
+                    }
                 }
                 _ => {}
             }

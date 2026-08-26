@@ -498,3 +498,66 @@ mod parser_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod nesting_limit_tests {
+    use crate::lexer::Lexer;
+    use crate::parser::{Parser, MAX_NESTING_DEPTH};
+
+    /// Parsing near the depth limit costs several KB of stack per level
+    /// (measured ~12 KB worst case for parenthesised expressions), far more
+    /// than libtest's default thread stack. Run on a dedicated thread so the
+    /// tests exercise the limit itself, not the host stack size.
+    fn parse_on_big_stack(src: String) -> Result<crate::parser::Program, String> {
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(move || {
+                let tokens = Lexer::new(&src, 0).tokenise().expect("lex error");
+                Parser::new(tokens)
+                    .parse_program()
+                    .map_err(|e| e.message)
+            })
+            .expect("spawn test thread")
+            .join()
+            .expect("parser panicked")
+    }
+
+    fn nested_ifs(depth: usize) -> String {
+        let mut src = String::from("let mut x = 0\n");
+        for i in 0..depth {
+            src.push_str(&"    ".repeat(i));
+            src.push_str("if x >= 0:\n");
+        }
+        src.push_str(&"    ".repeat(depth));
+        src.push_str("x = 1\n");
+        src
+    }
+
+    #[test]
+    fn nesting_under_limit_parses() {
+        let src = nested_ifs(50);
+        assert!(parse_on_big_stack(src).is_ok());
+    }
+
+    #[test]
+    fn nesting_past_limit_is_e0200() {
+        let src = nested_ifs(MAX_NESTING_DEPTH + 1);
+        let err = parse_on_big_stack(src).expect_err("should reject");
+        assert!(err.contains("nested too deeply"), "{err}");
+    }
+
+    #[test]
+    fn deep_parens_rejected_not_crash() {
+        let n = MAX_NESTING_DEPTH + 1;
+        let src = format!("let x = {}1{}", "(".repeat(n), ")".repeat(n));
+        let err = parse_on_big_stack(src).expect_err("should reject");
+        assert!(err.contains("nested too deeply"), "{err}");
+    }
+
+    #[test]
+    fn deep_unary_chain_rejected_not_crash() {
+        let n = MAX_NESTING_DEPTH * 4;
+        let src = format!("let x = {}1", "-".repeat(n));
+        assert!(parse_on_big_stack(src).is_err());
+    }
+}

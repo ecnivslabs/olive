@@ -290,6 +290,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 Some(1usize)
             }
             "__olive_obj_get_default_typed"
+            | "__olive_obj_get_default_boxed_typed"
             | "__olive_list_index_typed"
             | "__olive_set_remove_checked_typed"
             | "__olive_obj_pop_checked_typed"

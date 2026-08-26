@@ -232,6 +232,30 @@ fn set_mode_impl(path: &str, mode: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn olive_set_mtime(path: i64, epoch_secs: i64) -> i64 {
+    if path == 0 {
+        return 0;
+    }
+    let path_str = olive_str_from_ptr(path);
+    set_mtime_impl(&path_str, epoch_secs)
+}
+
+fn set_mtime_impl(path: &str, epoch_secs: i64) -> i64 {
+    let mtime = std::time::SystemTime::UNIX_EPOCH
+        + std::time::Duration::from_secs(epoch_secs.max(0) as u64);
+    if std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .and_then(|f| f.set_modified(mtime))
+        .is_ok()
+    {
+        1
+    } else {
+        0
+    }
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn olive_path_canonicalize(path: i64) -> i64 {
     if path == 0 {
         return 0;

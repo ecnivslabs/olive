@@ -1175,6 +1175,9 @@ impl TypeChecker {
                         false,
                     );
                     self.c_ffi_structs.insert(type_name.clone());
+                    self.c_struct_is_union
+                        .insert(type_name.clone(), s.is_union);
+                    let mut field_names = Vec::with_capacity(s.fields.len());
                     for field in &s.fields {
                         let resolved = self.resolve_type_expr(&field.ty);
                         if let Some(reason) = super::super::abi::ffi_unsafe_reason(&resolved) {
@@ -1190,7 +1193,9 @@ impl TypeChecker {
                         let field_ty = ffi_type(resolved);
                         self.field_types
                             .insert((type_name.clone(), field.name.clone()), field_ty);
+                        field_names.push(field.name.clone());
                     }
+                    self.c_struct_fields.insert(type_name, field_names);
                 }
                 for v in vars {
                     let mangled = format!("{}::{}", alias, v.name);

@@ -861,8 +861,12 @@ impl<'a> MirBuilder<'a> {
         if let Some(kwarg_map) = self.expr_kwarg_maps.get(&expr.id) {
             let mut new_arg_ops = vec![Operand::Constant(Constant::Int(0)); kwarg_map.len()];
             let mut new_arg_tys = vec![Type::Any; kwarg_map.len()];
+            // `usize::MAX` marks a field no argument supplies; `position` on
+            // the sentinel never matches, leaving that slot padded.
             for (i, op) in arg_ops.iter().enumerate() {
-                if let Some(target_idx) = kwarg_map.iter().position(|&x| x == i) {
+                if let Some(target_idx) =
+                    kwarg_map.iter().position(|&x| x == i && x != usize::MAX)
+                {
                     new_arg_ops[target_idx] = op.clone();
                     if let Some(ty) = arg_tys.get(i) {
                         new_arg_tys[target_idx] = ty.clone();

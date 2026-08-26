@@ -201,6 +201,15 @@ pub extern "C" fn olive_alloc(size: i64) -> *mut u8 {
     unsafe { std::alloc::alloc(layout) }
 }
 
+/// C struct construction needs zeroed storage: padding bytes reach C verbatim
+/// when a struct is passed by value, and `olive_alloc`'s chunk memory is
+/// deliberately uninitialized.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_calloc(size: i64) -> *mut u8 {
+    let layout = std::alloc::Layout::from_size_align(size as usize, 8).unwrap();
+    unsafe { std::alloc::alloc_zeroed(layout) }
+}
+
 /// Address of the thread-local `errno`, or null on platforms without one.
 fn errno_location() -> *mut i32 {
     #[cfg(any(target_os = "linux", target_os = "android"))]

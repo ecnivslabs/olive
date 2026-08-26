@@ -110,6 +110,24 @@ pub extern "C" fn olive_obj_get_checked(obj_ptr: i64, attr: i64, loc: i64) -> i6
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_get_default(obj_ptr: i64, attr: i64, default: i64) -> i64 {
+    get_default_impl(obj_ptr, attr, default, false)
+}
+
+/// `.get` whose result feeds a tag-encoded slot (`Any`, `int | str`, ...):
+/// a hit on a raw stored word is boxed so it reads back self-describing, the
+/// same way values entering an `Any`-valued dict are boxed at `set`. The
+/// caller passes the `default` already boxed.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_obj_get_default_boxed(obj_ptr: i64, attr: i64, default: i64) -> i64 {
+    get_default_impl(obj_ptr, attr, default, true)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_obj_get_boxed(obj_ptr: i64, attr: i64) -> i64 {
+    box_stored(olive_obj_get(obj_ptr, attr))
+}
+
+fn get_default_impl(obj_ptr: i64, attr: i64, default: i64, boxed: bool) -> i64 {
     if obj_ptr == 0 || !crate::slab::ptr_is_slab_body(obj_ptr) {
         return default;
     }
@@ -120,7 +138,24 @@ pub extern "C" fn olive_obj_get_default(obj_ptr: i64, attr: i64, default: i64) -
         return python::olive_py_dict_get_default(obj_ptr, attr, default);
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
-    *m.fields.get(&OliveStringKey(attr)).unwrap_or(&default)
+    match m.fields.get(&OliveStringKey(attr)) {
+        Some(&v) if boxed => box_stored(v),
+        Some(&v) => v,
+        None => default,
+    }
+}
+
+fn box_stored(v: i64) -> i64 {
+    // Already self-describing: heap objects (slab pointers), strings (bit-0
+    // pointers), inline immediates (TAG_INT/TAG_BOOL/TAG_NULL), or zero.
+    if crate::is_active_object(v) || v & 1 == 1 || v & boxed::TAG_MASK != 0 || v < 0x10000 {
+        return v;
+    }
+    // A raw scalar wider than the tag space from a concrete-typed dict:
+    // box it like `set` into an Any-valued dict would. Bool and None raw
+    // words are 0/1, caught by the magnitude guard, but they only share a
+    // dict with ints in the already-tagged case anyway.
+    boxed::olive_box_int(v)
 }
 
 #[unsafe(no_mangle)]

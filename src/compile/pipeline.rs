@@ -142,6 +142,26 @@ pub fn run_pipeline_opt(
     }
     let typecheck_duration = typecheck_start.elapsed();
 
+    // C sizes for every import-block struct, computed once here with the same
+    // layout function codegen uses, so builder-side construction allocates
+    // exactly the block the field stores (and later FFI calls) expect.
+    let mut native_struct_sizes: HashMap<&str, i64> = HashMap::default();
+    for stmt in &program.stmts {
+        if let crate::parser::StmtKind::NativeImport {
+            alias,
+            structs,
+            ..
+        } = &stmt.kind
+        {
+            for s in structs {
+                let type_name: String = format!("{}::{}", alias, s.name);
+                let (_, total) =
+                    crate::semantic::abi::c_abi_layout(&s.fields, s.is_union);
+                native_struct_sizes.insert(type_name.leak(), total);
+            }
+        }
+    }
+
     let mir_start = std::time::Instant::now();
     let mut mir_builder = MirBuilder::new(
         &type_checker.expr_types,
@@ -157,6 +177,15 @@ pub fn run_pipeline_opt(
         .map(|(id, (name, _))| (*id, name.clone()))
         .collect();
     mir_builder.struct_field_types = type_checker.field_types.clone();
+    for (name, fields) in &type_checker.c_struct_fields {
+        let size = native_struct_sizes
+            .get(name.as_str())
+            .copied()
+            .unwrap_or_default();
+        mir_builder
+            .c_struct_layouts
+            .insert(name.clone(), (fields.clone(), size));
+    }
 
     mir_builder.build_program(&program);
     mir_builder.monomorphize_drop_fns();

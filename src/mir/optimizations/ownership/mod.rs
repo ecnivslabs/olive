@@ -33,6 +33,12 @@ use summaries::{runtime_borrowed_return, runtime_escape};
 pub struct OwnershipInference {
     pub borrowed_returns: HashSet<String>,
     pub param_escapes: HashMap<String, Vec<bool>>,
+    /// Mangled names of every trait method reachable through a vtable
+    /// (`__vtable_{trait}_{struct}` entries). Their params arrive as raw
+    /// caller words via `call_indirect` -- the escape summaries only cover
+    /// named calls, so no caller-side copy-in exists for them and their
+    /// in-callee defensive copies must stay.
+    pub vtable_methods: HashSet<String>,
     pub explain_copies: bool,
     pub copy_sites: RefCell<Vec<CopySite>>,
 }
@@ -309,6 +315,7 @@ impl Transform for OwnershipInference {
             &heap,
             &self.param_escapes,
             &reassign,
+            &self.vtable_methods,
             self.explain_copies,
             &self.copy_sites,
         );

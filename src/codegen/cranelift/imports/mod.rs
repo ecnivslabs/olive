@@ -3,6 +3,7 @@ use crate::semantic::types::Type as OliveType;
 
 pub(super) fn collect_needed_imports(
     functions: &[MirFunction],
+    has_c_structs: bool,
 ) -> std::collections::HashSet<&'static str> {
     let mut needed = std::collections::HashSet::new();
     for func in functions {
@@ -120,6 +121,9 @@ pub(super) fn collect_needed_imports(
                                     needed.insert("__olive_free_enum");
                                     needed.insert("__olive_py_decref");
                                     needed.insert("__olive_free");
+                                    if has_c_structs {
+                                        needed.insert("__olive_free_c_struct");
+                                    }
                                 }
                                 _ => {
                                     needed.insert("__olive_free");
@@ -228,6 +232,75 @@ pub(super) fn scan_rvalue_imports(
                 && needs_type_descriptor(&func_mir.locals[l.0].ty)
             {
                 needed.insert("__olive_write_typed");
+            }
+            if name == "__olive_copy_typed" {
+                needed.insert("__olive_copy_typed");
+            }
+            if name == "__olive_relocate_typed" {
+                needed.insert("__olive_relocate_typed");
+            }
+            if name == "__olive_eq_typed" {
+                needed.insert("__olive_eq_typed");
+            }
+            if name == "__olive_list_concat_typed" {
+                needed.insert("__olive_list_concat_typed");
+            }
+            if name == "__olive_list_concat_move" {
+                needed.insert("__olive_list_concat_move");
+            }
+            if name == "__olive_list_push" {
+                needed.insert("__olive_list_push");
+            }
+            if name == "__olive_list_getslice_typed" {
+                needed.insert("__olive_list_getslice_typed");
+            }
+            if name == "__olive_list_extend_typed" {
+                needed.insert("__olive_list_extend_typed");
+            }
+            if name == "__olive_set_add_typed" {
+                needed.insert("__olive_set_add_typed");
+            }
+            if name == "__olive_set_remove_typed" {
+                needed.insert("__olive_set_remove_typed");
+            }
+            if name == "__olive_set_contains_typed" {
+                needed.insert("__olive_set_contains_typed");
+            }
+            if name == "__olive_obj_get_typed" {
+                needed.insert("__olive_obj_get_typed");
+            }
+            if name == "__olive_obj_get_default_typed" {
+                needed.insert("__olive_obj_get_default_typed");
+            }
+            if name == "__olive_obj_get_default_boxed_typed" {
+                needed.insert("__olive_obj_get_default_boxed_typed");
+            }
+            if name == "__olive_obj_get_boxed" {
+                needed.insert("__olive_obj_get_boxed");
+            }
+            if name == "__olive_obj_get_default_boxed" {
+                needed.insert("__olive_obj_get_default_boxed");
+            }
+            if name == "__olive_list_count_typed" {
+                needed.insert("__olive_list_count_typed");
+            }
+            if name == "__olive_list_index_typed" {
+                needed.insert("__olive_list_index_typed");
+            }
+            if name == "__olive_obj_update_typed" {
+                needed.insert("__olive_obj_update_typed");
+            }
+            if name == "__olive_set_remove_checked_typed" {
+                needed.insert("__olive_set_remove_checked_typed");
+            }
+            if name == "__olive_obj_pop_checked_typed" {
+                needed.insert("__olive_obj_pop_checked_typed");
+            }
+            if name == "__olive_obj_pop_default_typed" {
+                needed.insert("__olive_obj_pop_default_typed");
+            }
+            if name == "__olive_obj_setdefault_typed" {
+                needed.insert("__olive_obj_setdefault_typed");
             }
         }
         Rvalue::Call { .. } => {}

@@ -16,3 +16,4 @@ parity/bin/
 Thumbs.db
 
 grove/
+.claude/

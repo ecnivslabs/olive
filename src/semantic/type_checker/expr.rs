@@ -736,8 +736,10 @@ impl TypeChecker {
 
                 if let Type::Struct(name, type_args, is_ffi) = resolved_callee {
                     let init_name = format!("{}::__init__", name);
-                    let has_init = self.lookup_type(&init_name).is_some();
-                    let expected_fields = if has_init {
+                    let has_init = !is_ffi && self.lookup_type(&init_name).is_some();
+                    let expected_fields = if is_ffi {
+                        self.c_struct_fields.get(&name).cloned().unwrap_or_default()
+                    } else if has_init {
                         self.init_params
                             .get(&init_name)
                             .cloned()
@@ -748,7 +750,7 @@ impl TypeChecker {
 
                     let mut has_kwargs = false;
                     let mut pos_idx = 0;
-                    let mut kwarg_map = vec![0; expected_fields.len()];
+                    let mut kwarg_map = vec![usize::MAX; expected_fields.len()];
                     let mut final_args: Vec<Option<Type>> = vec![None; expected_fields.len()];
                     let mut raw_count = 0;
 
@@ -865,11 +867,20 @@ impl TypeChecker {
                             }
                         }
                     } else {
-                        let required = self
-                            .struct_required_fields
-                            .get(&name)
-                            .copied()
-                            .unwrap_or(expected_fields.len());
+                        // A union's members alias one storage unit: C lets the
+                        // programmer initialize exactly one, so any single
+                        // member (or a subset) is a valid construction.
+                        let required = if is_ffi
+                            && self.c_ffi_structs.contains(&format!("{name}"))
+                            && self.c_struct_is_union.get(&name).copied().unwrap_or(false)
+                        {
+                            0
+                        } else {
+                            self.struct_required_fields
+                                .get(&name)
+                                .copied()
+                                .unwrap_or(expected_fields.len())
+                        };
                         let too_few = if has_kwargs {
                             kw_first_gap.is_some_and(|gap| gap < required)
                         } else {
@@ -1588,6 +1599,15 @@ impl TypeChecker {
                 // A concrete scalar has no fields or methods left to try: falling
                 // through to `fresh_var()` here used to accept the access silently
                 // and crash at runtime, treating the raw scalar as an object pointer.
+                //
+                // Same rationale for a concrete struct or enum: their full surface
+                // is registered statically (methods as `Type::member`, fields in
+                // `field_types`), so a miss here is definite. Letting it fall
+                // through minted an `Any` that reached codegen as a direct call
+                // under the mangled name and panicked there as an unresolvable FFI
+                // symbol. Trait objects are excluded on purpose -- their method
+                // set is resolved dynamically, and `Any` receivers may hold
+                // anything.
                 if matches!(
                     current_obj,
                     Type::Int
@@ -1612,6 +1632,26 @@ impl TypeChecker {
                             expr.span,
                         )
                         .label("not found"),
+                    ));
+                } else if let Type::Struct(ref sname, _, _) | Type::Enum(ref sname, _) = current_obj
+                {
+                    let mut names: Vec<String> = self
+                        .field_types
+                        .keys()
+                        .filter(|(n, _)| n == sname)
+                        .map(|(_, f)| f.clone())
+                        .collect();
+                    names.extend(self.member_fns(sname));
+                    let suggestions =
+                        super::super::suggest::closest_n(attr, names.iter().map(String::as_str), 3);
+                    self.errors.push(super::super::error::SemanticError::rich(
+                        crate::compile::errors::Diagnostic::error(
+                            "E0422",
+                            format!("no field or method `{attr}` on `{current_obj}`"),
+                            expr.span,
+                        )
+                        .label("not found")
+                        .suggest_names(&suggestions),
                     ));
                 }
 
@@ -2250,7 +2290,7 @@ impl TypeChecker {
                 Some(base.clone())
             }
             (Type::Dict(_, v), "get") => {
-                let v_ty = (**v).clone();
+                let v_ty = self.apply_subst_final((**v).clone());
                 if args.is_empty() || args.len() > 2 {
                     self.errors.push(super::super::error::SemanticError::rich(
                         crate::compile::errors::Diagnostic::error(
@@ -2262,10 +2302,17 @@ impl TypeChecker {
                     ));
                     return Some(v_ty);
                 }
-                if args.len() == 2 {
-                    let default_ty = arg_tys[1].clone();
-                    if v_ty != Type::Any && default_ty != v_ty {
-                        return Some(Type::Union(vec![v_ty, default_ty]));
+                if args.len() == 2 && v_ty != Type::Any {
+                    // Both sides are finalized here (arg tys still carry
+                    // unresolved literal vars, and an unannotated dict
+                    // literal's value type is a literal var too), so equal
+                    // member types compare equal. A default that can't unify
+                    // widens the whole read to `Any` — same rule as a
+                    // heterogeneous dict literal — instead of minting a
+                    // union the runtime can't encode consistently.
+                    let default_ty = self.apply_subst_final(arg_tys[1].clone());
+                    if !self.unify_silently(&v_ty, &default_ty, obj.span) {
+                        return Some(Type::Any);
                     }
                 }
                 Some(v_ty)

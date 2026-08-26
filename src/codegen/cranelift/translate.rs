@@ -26,11 +26,18 @@ pub(super) fn c_struct_field_info<'a>(
 pub(super) fn free_func_name_for_type(
     ty: &OliveType,
     struct_fields: &HashMap<String, Vec<String>>,
+    c_struct_names: &std::collections::HashSet<String>,
 ) -> &'static str {
     match ty {
         OliveType::Str => "__olive_free_str",
         OliveType::Bytes => "__olive_buf_free",
         OliveType::List(_) | OliveType::Tuple(_) | OliveType::Set(_) => "__olive_free_list",
+        // An import-block struct is a raw `__olive_calloc` block: freeing it
+        // through a slab free (`__olive_free_struct`/`__olive_free_obj`)
+        // would corrupt the allocator's live-object tables.
+        OliveType::Struct(name, _, _) if c_struct_names.contains(name.as_str()) => {
+            "__olive_free_c_struct"
+        }
         OliveType::Struct(name, _, _) if struct_fields.contains_key(name) => "__olive_free_struct",
         OliveType::Dict(_, _) | OliveType::Struct(_, _, _) => "__olive_free_obj",
         OliveType::Enum(_, _) => "__olive_free_enum",
@@ -55,7 +62,7 @@ pub(super) fn free_func_name_for_type(
                 .filter(|m| !matches!(m, OliveType::Null))
                 .collect();
             match non_null.as_slice() {
-                [single] => free_func_name_for_type(single, struct_fields),
+                [single] => free_func_name_for_type(single, struct_fields, c_struct_names),
                 _ if members.contains(&OliveType::Any) => "__olive_free_any",
                 _ => "__olive_free_union_member",
             }
@@ -141,12 +148,42 @@ pub(super) fn emit_value_free(
         builder.ins().call(local_func, &[val, desc_ptr]);
         return;
     }
-    let free_func_name = free_func_name_for_type(ty, struct_fields);
+    let free_func_name = free_func_name_for_type(ty, struct_fields, c_struct_names);
     let free_id = func_ids
         .get(free_func_name)
         .unwrap_or_else(|| panic!("missing runtime function: {}", free_func_name));
     let local_func = module.declare_func_in_func(*free_id, builder.func);
-    builder.ins().call(local_func, &[val]);
+    if free_func_name == "__olive_free_c_struct" {
+        let size = c_struct_sizes
+            .get(concrete_c_struct_name(ty))
+            .copied()
+            .expect("C struct free without a known size");
+        let size_val = builder.ins().iconst(types::I64, size);
+        builder.ins().call(local_func, &[val, size_val]);
+    } else {
+        builder.ins().call(local_func, &[val]);
+    }
+}
+
+/// The struct type a drop of `ty` will free, after reducing `T | None` to its
+/// single non-null member. Only valid when `free_func_name_for_type` picked
+/// the C-struct path.
+fn concrete_c_struct_name(ty: &OliveType) -> &str {
+    let mut t = ty;
+    loop {
+        match t {
+            OliveType::Union(members) => {
+                let non_null: Vec<&OliveType> =
+                    members.iter().filter(|m| !matches!(m, OliveType::Null)).collect();
+                match non_null.as_slice() {
+                    [single] => t = single,
+                    _ => panic!("multi-member union has no single C struct layout"),
+                }
+            }
+            OliveType::Struct(name, _, _) => return name.as_str(),
+            _ => panic!("type does not name a C struct"),
+        }
+    }
 }
 
 pub(super) fn truncate_for_store(
@@ -427,6 +464,17 @@ impl<M: Module> CraneliftCodegen<M> {
             if !sealed[i] {
                 builder.seal_block(*block);
             }
+        }
+
+        if std::env::var("OLIVE_CLIF_DUMP").is_ok() {
+            let mut buf = String::new();
+            cranelift::codegen::write::decorate_function(
+                &mut cranelift::codegen::write::PlainWriter,
+                &mut buf,
+                builder.func,
+            )
+            .unwrap();
+            eprintln!("=== clif fn {} ===\n{}", func.name, buf);
         }
 
         builder.finalize();

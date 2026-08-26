@@ -1,0 +1,73 @@
+import json
+
+// Structural mirror of the defect: an Any-typed dict (json.loads result),
+// `.get(key, <fresh list default>)`, struct-in-union narrowing, and an
+// error-tuple return that drops every borrowed local. Pre-fix, the boxed
+// `.get` variants were missing from RUNTIME_BORROWED_RETURNS, so the
+// returned stored word and the default temp both classified as owning
+// aliases; the drops freed the dict's entry and then each other, and the
+// recursion through a second `.get` corrupted recycled slab slots.
+struct Opt:
+    label: str
+
+fn _parse_opt(raw) -> Opt | int:
+    if type(raw) != "dict":
+        return -1
+
+    let label = str(raw.get("label", ""))
+
+    if label == "":
+        return -1
+
+    return Opt(label)
+
+fn _parse_q(raw) -> str | int:
+    if type(raw) != "dict":
+        return -1
+
+    let raw_opts = raw.get("options", [])
+
+    if type(raw_opts) != "list" or len(raw_opts) < 2:
+        return -1
+
+    let mut opts: [Opt] = []
+
+    for raw_o in raw_opts:
+        let o = _parse_opt(raw_o)
+
+        if o == -1:
+            return -1
+
+        opts.append(o)
+
+    return str(raw.get("header", "?")) + ":" + str(len(opts))
+
+fn parse(raw_json: str) -> ([str], str):
+    let args = json.loads(raw_json)
+
+    if type(args) != "dict":
+        return ([], "not an object")
+
+    let raw_questions = args.get("questions", [])
+
+    if type(raw_questions) != "list" or len(raw_questions) == 0:
+        return ([], "missing questions")
+
+    let mut out: [str] = []
+
+    for raw_q in raw_questions:
+        let q = _parse_q(raw_q)
+
+        if q == -1:
+            return ([], "bad question")
+
+        out.append(q)
+
+    return (out, "")
+
+fn main():
+    print("A")
+    // One option only: _parse_q returns -1 and parse takes its error path,
+    // dropping the borrowed questions list, the default temp, and the dict.
+    let qs, err = parse("{\"questions\":[{\"options\":[{\"label\":\"a\"}]}]}")
+    print("C: [" + err + "]")

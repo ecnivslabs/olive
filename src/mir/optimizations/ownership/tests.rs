@@ -67,6 +67,7 @@ fn func_of(locals: Vec<LocalDecl>, stmts: Vec<Statement>) -> MirFunction {
 
 fn pass() -> OwnershipInference {
     OwnershipInference {
+        vtable_methods: HashSet::default(),
         borrowed_returns: HashSet::default(),
         param_escapes: HashMap::default(),
         explain_copies: false,
@@ -843,4 +844,94 @@ fn return_root_drops_are_in_same_block_as_return_assign() {
         .filter(|s| matches!(s.kind, StatementKind::Drop(_)))
         .count();
     assert_eq!(drops, 0, "cross-block root drop must be removed");
+}
+
+#[test]
+fn pure_param_escaping_arg_call_redirects_to_move() {
+    let mut f = MirFunction {
+        name: "f".into(),
+        locals: vec![
+            decl(Type::Int, true),
+            decl(heap_ty(), false),
+            decl(heap_ty(), true),
+        ],
+        basic_blocks: vec![BasicBlock {
+            statements: vec![
+                assign(2, Rvalue::Aggregate(AggregateKind::List, vec![])),
+                assign(
+                    0,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function("__olive_list_append".into())),
+                        args: vec![Operand::Copy(Local(2)), Operand::Copy(Local(1))],
+                    },
+                ),
+                drop_stmt(2),
+            ],
+            terminator: Some(Terminator {
+                kind: TerminatorKind::Return,
+                span: sp(),
+            }),
+        }],
+        arg_count: 1,
+        vararg_idx: None,
+        kwarg_idx: None,
+        param_names: vec!["p".into()],
+        is_async: false,
+    };
+    pass().run(&mut f);
+    assert_eq!(copy_calls(&f), 0, "dead pure param must transfer as move without copy");
+    assert!(
+        matches!(
+            &f.basic_blocks[0].statements[1].kind,
+            StatementKind::Assign(_, Rvalue::Call { args, .. })
+                if matches!(args[1], Operand::Move(l) if l == Local(1))
+        ),
+        "escaping arg slot for dead pure param must be rewritten to Move"
+    );
+}
+
+#[test]
+fn pure_param_twice_escaping_arg_call_copies_then_moves() {
+    let mut f = MirFunction {
+        name: "f".into(),
+        locals: vec![
+            decl(Type::Int, true),
+            decl(heap_ty(), false),
+            decl(heap_ty(), true),
+            decl(heap_ty(), true),
+        ],
+        basic_blocks: vec![BasicBlock {
+            statements: vec![
+                assign(2, Rvalue::Aggregate(AggregateKind::List, vec![])),
+                assign(3, Rvalue::Aggregate(AggregateKind::List, vec![])),
+                assign(
+                    0,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function("__olive_list_append".into())),
+                        args: vec![Operand::Copy(Local(2)), Operand::Copy(Local(1))],
+                    },
+                ),
+                assign(
+                    0,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function("__olive_list_append".into())),
+                        args: vec![Operand::Copy(Local(3)), Operand::Copy(Local(1))],
+                    },
+                ),
+                drop_stmt(2),
+                drop_stmt(3),
+            ],
+            terminator: Some(Terminator {
+                kind: TerminatorKind::Return,
+                span: sp(),
+            }),
+        }],
+        arg_count: 1,
+        vararg_idx: None,
+        kwarg_idx: None,
+        param_names: vec!["p".into()],
+        is_async: false,
+    };
+    pass().run(&mut f);
+    assert_eq!(copy_calls(&f), 1, "first escape must copy, second escape can move");
 }
