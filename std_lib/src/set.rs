@@ -677,6 +677,12 @@ pub extern "C" fn olive_set_sym_diff_typed(a: i64, b: i64, key_desc: i64) -> i64
 mod tests {
     use super::*;
 
+    /// 4-aligned descriptor buffer for `_typed` key ops. The key path strips
+    /// the low 2 tag bits (`str_body`, a no-op for 4-aligned codegen data);
+    /// a plain `[u8; N]` local is only 1-aligned and would be corrupted.
+    #[repr(align(4))]
+    struct AlignedDesc<const N: usize>([u8; N]);
+
     fn new_set() -> i64 {
         olive_set_new(8)
     }
@@ -793,8 +799,8 @@ mod tests {
     #[test]
     fn typed_combinators_handle_big_odd_ints() {
         use crate::format::D_INT;
-        let desc = [D_INT];
-        let desc_ptr = desc.as_ptr() as i64;
+        let desc = AlignedDesc([D_INT]);
+        let desc_ptr = desc.0.as_ptr() as i64;
         let add = |s: i64, v: i64| crate::hash_typed::olive_set_add_typed(s, v, desc_ptr);
         let contains = |s: i64, v: i64| crate::hash_typed::olive_set_contains_typed(s, v, desc_ptr);
         let a = olive_set_new(4);
@@ -845,8 +851,8 @@ mod tests {
     #[test]
     fn duplicate_insert_typed_releases_rejected() {
         use crate::format::D_STR;
-        let desc = [D_STR];
-        let desc_ptr = desc.as_ptr() as i64;
+        let desc = AlignedDesc([D_STR]);
+        let desc_ptr = desc.0.as_ptr() as i64;
         let set = olive_set_new(4);
         let first = crate::olive_str_internal("dup-typed");
         let second = crate::olive_str_internal("dup-typed");
@@ -942,8 +948,8 @@ mod tests {
     #[test]
     fn null_add_typed_releases_owned_string() {
         use crate::format::D_STR;
-        let desc = [D_STR];
-        let desc_ptr = desc.as_ptr() as i64;
+        let desc = AlignedDesc([D_STR]);
+        let desc_ptr = desc.0.as_ptr() as i64;
         let s = crate::olive_str_internal("orphan-typed");
         let g = crate::string_slab::olive_str_gen_of(s);
         crate::hash_typed::olive_set_add_typed(0, s, desc_ptr);
@@ -975,7 +981,7 @@ mod tests {
     fn remove_typed_releases_stored_struct() {
         use crate::format::{D_SET, D_STR, D_STRUCT_SHARED};
         use crate::slab::slot_is_live;
-        let desc = [D_SET, D_STRUCT_SHARED, 14, b'R', 14, 14, b's', D_STR];
+        let desc = AlignedDesc([D_SET, D_STRUCT_SHARED, 14, b'R', 14, 14, b's', D_STR]);
         let mk = || {
             let text = crate::olive_str_internal("typed remove resource field value");
             let value = crate::olive_struct_alloc(1);
@@ -988,7 +994,7 @@ mod tests {
         // argument), not the set descriptor: skip the D_SET tag. It also
         // drives structural hashing, so insertion goes through the typed
         // add like the production path.
-        let elem_desc = unsafe { desc.as_ptr().add(1) } as i64;
+        let elem_desc = unsafe { desc.0.as_ptr().add(1) } as i64;
         crate::hash_typed::olive_set_add_typed(set, stored, elem_desc);
         let arg = mk();
         let out = crate::hash_typed::with_key_descriptor(elem_desc, || {
