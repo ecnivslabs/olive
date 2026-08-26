@@ -28,10 +28,11 @@ impl<M: Module> CraneliftCodegen<M> {
             let inst = builder.ins().call(local_func, &[val]);
             return builder.inst_results(inst)[0];
         }
-        if builder.func.dfg.value_type(val) == types::F64 {
-            return builder.ins().bitcast(types::I64, MemFlags::new(), val);
-        }
-        val
+        // Container slots are always 64-bit words: floats arrive as F64/F32
+        // and must be bitcast first (F32 bitcasts to I32 then zero-extends,
+        // matching the `in`-operator needle convention), or the register
+        // allocator aborts on the float-for-integer parameter mismatch.
+        super::translate_rvalue::float_word_for_i64_slot(builder, val)
     }
 
     #[allow(clippy::too_many_arguments)]

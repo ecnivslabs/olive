@@ -858,3 +858,40 @@ fn regression_str_concat_reused_left_operand() {
     ));
     assert_eq!(call_i64(&mut cg, "f"), 1);
 }
+
+#[test]
+fn regression_float_keyed_dict_and_set_ops() {
+    // Float keys and needles arrive as F64/F32 but every `__olive_*`
+    // runtime signature declares i64 words. The generic call path already
+    // bitcast them, but dict/set aggregates, `GetIndex`/`SetIndex`, and
+    // the descriptor early-return calls passed them through raw, so the
+    // register allocator aborted compilation on any float-keyed dict or
+    // float-element set/list op.
+    let mut cg = compile(concat!(
+        "fn f() -> i64:\n",
+        "    let d = {1.5: 10, 2.5: 20}\n",
+        "    let mut acc = d[1.5] + d[2.5]\n",
+        "    d[3.5] = 30\n",
+        "    acc = acc + d[3.5]\n",
+        "    acc = acc + d.get(2.5, -1)\n",
+        "    d.remove(1.5)\n",
+        "    acc = acc + len(d)\n",
+        "    acc = acc + d.pop(2.5, -1)\n",
+        "    acc = acc + d.setdefault(4.5, 40)\n",
+        "    let s: set[float] = {1.5}\n",
+        "    s.add(2.5)\n",
+        "    acc = acc + len(s)\n",
+        "    s.remove(1.5)\n",
+        "    acc = acc + len(s)\n",
+        "    if s.contains(2.5):\n",
+        "        acc = acc + 1\n",
+        "    let l = [1.5, 2.5, 1.5]\n",
+        "    acc = acc + l.count(1.5)\n",
+        "    acc = acc + l.index(2.5)\n",
+        "    let x: f32 = 1.5\n",
+        "    let d2 = {(x): 10}\n",
+        "    acc = acc + d2[x]\n",
+        "    return acc\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 159);
+}

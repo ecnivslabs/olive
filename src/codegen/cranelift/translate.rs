@@ -813,6 +813,9 @@ impl<M: Module> CraneliftCodegen<M> {
                     Self::translate_operand(builder, val_op, vars, string_ids, module, func_ids);
 
                 // Incref a borrowed PyObject; the container decrefs it on drop.
+                // Container slots are always 64-bit words; float values
+                // arrive as F64/F32 and must be bitcast first (see
+                // `float_word_for_i64_slot`).
                 let v = if let Operand::Copy(src) = val_op
                     && func_mir.locals[src.0].ty.is_py_value()
                 {
@@ -822,13 +825,17 @@ impl<M: Module> CraneliftCodegen<M> {
                     let local_func = module.declare_func_in_func(*copy_ref_id, builder.func);
                     let inst = builder.ins().call(local_func, &[v]);
                     builder.inst_results(inst)[0]
-                } else if builder.func.dfg.value_type(v) == types::F64 {
-                    builder.ins().bitcast(types::I64, MemFlags::new(), v)
                 } else {
-                    v
+                    super::translate_rvalue::float_word_for_i64_slot(builder, v)
                 };
 
                 let loc = loc_value(builder, module, loc_id);
+
+                // Dict keys are always 64-bit runtime words; float keys must
+                // be bitcast first (see `float_word_for_i64_slot`). List and
+                // tuple positions keep the raw index: the checker rejects
+                // non-int index types there.
+                let ikey = super::translate_rvalue::float_word_for_i64_slot(builder, i);
 
                 match ty {
                     OliveType::Dict(k, val_ty) if super::imports::needs_key_descriptor(k) => {
@@ -863,13 +870,13 @@ impl<M: Module> CraneliftCodegen<M> {
                             let local_func = module.declare_func_in_func(*set_id, builder.func);
                             builder
                                 .ins()
-                                .call(local_func, &[o, i, v, desc_ptr, val_desc_ptr]);
+                                .call(local_func, &[o, ikey, v, desc_ptr, val_desc_ptr]);
                         } else {
                             let set_id = func_ids
                                 .get("__olive_obj_set_typed")
                                 .expect("missing __olive_obj_set_typed");
                             let local_func = module.declare_func_in_func(*set_id, builder.func);
-                            builder.ins().call(local_func, &[o, i, v, desc_ptr]);
+                            builder.ins().call(local_func, &[o, ikey, v, desc_ptr]);
                         }
                     }
                     OliveType::Dict(_, val_ty) if val_ty.needs_drop() => {
@@ -891,7 +898,7 @@ impl<M: Module> CraneliftCodegen<M> {
                         let local_func = module.declare_func_in_func(*set_id, builder.func);
                         builder
                             .ins()
-                            .call(local_func, &[o, i, v, zero, val_desc_ptr]);
+                            .call(local_func, &[o, ikey, v, zero, val_desc_ptr]);
                     }
                     OliveType::List(elem_ty) if elem_ty.needs_drop() => {
                         let desc = super::imports::type_descriptor(
@@ -953,7 +960,18 @@ impl<M: Module> CraneliftCodegen<M> {
                         let local_func = module.declare_func_in_func(*set_id, builder.func);
                         builder.ins().call(local_func, &[o, idx, v, desc_ptr]);
                     }
-                    OliveType::Dict(_, _) | OliveType::Struct(_, _, _) | OliveType::PyObject => {
+                    OliveType::Dict(_, _) | OliveType::Struct(_, _, _) => {
+                        let set_id = func_ids
+                            .get("__olive_obj_set")
+                            .expect("missing __olive_obj_set");
+                        let local_func = module.declare_func_in_func(*set_id, builder.func);
+                        builder.ins().call(local_func, &[o, ikey, v]);
+                    }
+                    // PyObject stores keep the caller's exact word: float
+                    // keys through Python interop are unverified territory
+                    // (they need a live interpreter to check), so this arm
+                    // stays byte-identical rather than risk silent changes.
+                    OliveType::PyObject => {
                         let set_id = func_ids
                             .get("__olive_obj_set")
                             .expect("missing __olive_obj_set");
@@ -965,7 +983,7 @@ impl<M: Module> CraneliftCodegen<M> {
                             .get("__olive_set_index_any")
                             .expect("missing __olive_set_index_any");
                         let local_func = module.declare_func_in_func(*set_id, builder.func);
-                        builder.ins().call(local_func, &[o, i, v, loc]);
+                        builder.ins().call(local_func, &[o, ikey, v, loc]);
                     }
                     OliveType::Enum(name, _) => {
                         let heap_payload = enum_defs.get(name.as_str()).is_some_and(|variants| {

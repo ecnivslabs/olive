@@ -308,7 +308,21 @@ impl<M: Module> CraneliftCodegen<M> {
                 let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
                 let func_id = func_ids[name.as_str()];
                 let local_func = module.declare_func_in_func(func_id, builder.func);
-                let mut full_args = call_args.clone();
+                // These callees all declare i64-only parameters, but the
+                // generic per-argument conversion below is skipped by this
+                // early return -- so float keys, needles, and values (e.g. a
+                // float dict key or a float sent over a channel) would reach
+                // an integer parameter unconverted and abort compilation.
+                // Convert them here with the same convention instead. Floats
+                // are the only values that can arrive mistyped: every other
+                // argument shape is either already a 64-bit word (ints,
+                // strings, pointers, boxed words, descs appended below) or
+                // provably absent (the checker rejects non-int positions
+                // like list indices).
+                let mut full_args: Vec<Value> = call_args
+                    .iter()
+                    .map(|&arg| super::translate_rvalue::float_word_for_i64_slot(builder, arg))
+                    .collect();
                 full_args.push(desc_ptr);
                 // `setdefault` discards its default through the value's own
                 // descriptor on a hit, so it carries a second descriptor

@@ -37,6 +37,24 @@ pub(super) fn loc_value<M: Module>(
     }
 }
 
+/// Converts a float-typed Cranelift value to the i64 word every `__olive_*`
+/// runtime signature declares for key, needle, and element positions (f64
+/// bits for `F64`, zero-extended f32 bits for `F32` -- the same convention
+/// `translate_call` applies to typed-call float arguments and the `in`
+/// operator applies to needles). Without this the register allocator sees
+/// a float value for an integer parameter and aborts compilation.
+/// Non-float values pass through unchanged.
+pub(super) fn float_word_for_i64_slot(builder: &mut FunctionBuilder, val: Value) -> Value {
+    match builder.func.dfg.value_type(val) {
+        types::F64 => builder.ins().bitcast(types::I64, MemFlags::new(), val),
+        types::F32 => {
+            let low = builder.ins().bitcast(types::I32, MemFlags::new(), val);
+            builder.ins().uextend(types::I64, low)
+        }
+        _ => val,
+    }
+}
+
 /// Panics with a null-index diagnostic unless `obj` is non-null, then continues
 /// in a fresh block. The fault path never returns.
 pub(super) fn emit_nil_check<M: Module>(
@@ -503,6 +521,12 @@ impl<M: Module> CraneliftCodegen<M> {
 
                 let o = Self::translate_operand(builder, obj, vars, string_ids, module, func_ids);
                 let i = Self::translate_operand(builder, idx, vars, string_ids, module, func_ids);
+                // Dict keys and `Any` index words are always 64-bit runtime
+                // words; a float key arrives as F64/F32 and must be bitcast
+                // first or the register allocator aborts. List/tuple/bytes
+                // indices stay raw: the checker rejects non-int index types
+                // there, so float values cannot reach those arms.
+                let ikey = float_word_for_i64_slot(builder, i);
                 let loc = loc_value(builder, module, loc_id);
 
                 match ty {
@@ -538,7 +562,7 @@ impl<M: Module> CraneliftCodegen<M> {
                             .get("__olive_obj_get_checked_typed")
                             .expect("missing __olive_obj_get_checked_typed");
                         let local_func = module.declare_func_in_func(*get_id, builder.func);
-                        let inst = builder.ins().call(local_func, &[o, i, loc, desc_ptr]);
+                        let inst = builder.ins().call(local_func, &[o, ikey, loc, desc_ptr]);
                         builder.inst_results(inst)[0]
                     }
                     OliveType::Dict(_, _) | OliveType::Struct(_, _, _) => {
@@ -546,7 +570,7 @@ impl<M: Module> CraneliftCodegen<M> {
                             .get("__olive_obj_get_checked")
                             .expect("missing __olive_obj_get_checked");
                         let local_func = module.declare_func_in_func(*get_id, builder.func);
-                        let inst = builder.ins().call(local_func, &[o, i, loc]);
+                        let inst = builder.ins().call(local_func, &[o, ikey, loc]);
                         builder.inst_results(inst)[0]
                     }
                     OliveType::Any => {
@@ -554,7 +578,7 @@ impl<M: Module> CraneliftCodegen<M> {
                             .get("__olive_get_index_any")
                             .expect("missing __olive_get_index_any");
                         let local_func = module.declare_func_in_func(*get_id, builder.func);
-                        let inst = builder.ins().call(local_func, &[o, i, loc]);
+                        let inst = builder.ins().call(local_func, &[o, ikey, loc]);
                         builder.inst_results(inst)[0]
                     }
                     OliveType::Str => {
@@ -666,7 +690,7 @@ impl<M: Module> CraneliftCodegen<M> {
                             .get("__olive_get_index_any")
                             .expect("missing __olive_get_index_any");
                         let local_func = module.declare_func_in_func(*get_id, builder.func);
-                        let inst = builder.ins().call(local_func, &[o, i, loc]);
+                        let inst = builder.ins().call(local_func, &[o, ikey, loc]);
                         builder.inst_results(inst)[0]
                     }
                 }
