@@ -71,12 +71,26 @@ impl<M: Module> CraneliftCodegen<M> {
 
                 // A struct/enum/tuple/collection key needs the same
                 // structural hash+eq `==` derives; every key literal shares
-                // one static type, so the descriptor is built once.
+                // one static type, so the descriptor is built once. When the
+                // keys are heterogeneous (e.g. a str beside a bool under an
+                // `Any` key type), no single descriptor classifies every
+                // pair: a bool word hashed under a string descriptor faults
+                // dereferencing the raw bits. Those aggregates store
+                // untyped, where every word is self-describing (tagged ints
+                // never match the string heuristic, literals are real
+                // pointers, small scalars stay below the tag floor, and
+                // aggregates carry their own shape for the structural
+                // helpers).
                 let key_desc_ptr = ops.first().and_then(|first_key| {
-                    let key_ty = super::imports::operand_static_type(first_key, func_mir);
-                    super::imports::needs_key_descriptor(&key_ty).then(|| {
+                    let first_raw = super::imports::operand_static_type(first_key, func_mir);
+                    let first_ty = super::imports::concrete_ty(&first_raw);
+                    let homogeneous = ops.iter().step_by(2).all(|op| {
+                        let raw = super::imports::operand_static_type(op, func_mir);
+                        super::imports::concrete_ty(&raw) == first_ty
+                    });
+                    (homogeneous && super::imports::needs_key_descriptor(first_ty)).then(|| {
                         let desc = super::imports::type_descriptor(
-                            &key_ty,
+                            first_ty,
                             struct_fields,
                             field_types,
                             enum_defs,
@@ -193,12 +207,18 @@ impl<M: Module> CraneliftCodegen<M> {
                 };
 
                 // Same reasoning as the dict key descriptor above, keyed off
-                // the element type instead.
+                // the element type instead. Heterogeneous elements store
+                // untyped for the same reason: no single descriptor fits.
                 let elem_desc_ptr = ops.first().and_then(|first_elem| {
-                    let elem_ty = super::imports::operand_static_type(first_elem, func_mir);
-                    super::imports::needs_key_descriptor(&elem_ty).then(|| {
+                    let first_raw = super::imports::operand_static_type(first_elem, func_mir);
+                    let first_ty = super::imports::concrete_ty(&first_raw);
+                    let homogeneous = ops.iter().all(|op| {
+                        let raw = super::imports::operand_static_type(op, func_mir);
+                        super::imports::concrete_ty(&raw) == first_ty
+                    });
+                    (homogeneous && super::imports::needs_key_descriptor(first_ty)).then(|| {
                         let desc = super::imports::type_descriptor(
-                            &elem_ty,
+                            first_ty,
                             struct_fields,
                             field_types,
                             enum_defs,

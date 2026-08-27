@@ -956,6 +956,35 @@ fn regression_any_keyed_update_large_int() {
 }
 
 #[test]
+fn regression_heterogeneous_any_keyed_aggregates() {
+    // An aggregate literal applies one key descriptor to every pair, but
+    // heterogeneous keys share no single static type: hashing a bool word
+    // under a string descriptor dereferenced the raw bits and dumped core.
+    // Mixed aggregates store untyped, where every word is self-describing.
+    let mut cg = compile(concat!(
+        "fn f() -> i64:\n",
+        "    let d: dict[Any, i64] = {\"a\": 1, True: 2}\n",
+        "    let mut acc = 0\n",
+        "    if d[\"a\"] == 1:\n",
+        "        acc = acc + 1\n",
+        "    if d[True] == 2:\n",
+        "        acc = acc + 10\n",
+        "    let e: dict[Any, i64] = {99999: 4, \"b\": 8}\n",
+        "    if e[99999] == 4:\n",
+        "        acc = acc + 100\n",
+        "    if e[\"b\"] == 8:\n",
+        "        acc = acc + 1000\n",
+        "    let s: set[Any] = {99999, \"c\", True}\n",
+        "    if 99999 in s:\n",
+        "        acc = acc + 10000\n",
+        "    if \"c\" in s:\n",
+        "        acc = acc + 100000\n",
+        "    return acc\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 111111);
+}
+
+#[test]
 fn regression_float_keyed_dict_and_set_ops() {
     // Float keys and needles arrive as F64/F32 but every `__olive_*`
     // runtime signature declares i64 words. The generic call path already
