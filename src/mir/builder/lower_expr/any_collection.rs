@@ -203,11 +203,18 @@ impl<'a> MirBuilder<'a> {
         span: Span,
     ) -> Operand {
         // Boxed struct keys are `Any` words (see `stored_key` below); the
-        // result keeps the static key type only when keys stay bare (scalars,
-        // strings, and enums) so typed hashing still applies. Any-erased
-        // aggregate keys (tuples, lists, sets, dicts, and struct-containing
-        // shapes) go untyped as `Any`.
-        let result_key = if Self::key_needs_any_form(key) {
+        // result keeps the static key type only when keys stay bare (bools,
+        // strings, and enums) so typed hashing still applies. Int, float,
+        // and null keys box like `coerce_to_hashable` stores them: a bare
+        // large int meets the string heuristic in untyped hashes and faults,
+        // and normalized lookups meet stored words by identical word.
+        // Any-erased aggregate keys (tuples, lists, sets, dicts, and
+        // struct-containing shapes) go untyped as `Any`. Boxing also keeps
+        // ownership honest: heap-boxed huge ints free through the `Any` key
+        // type, while an `Int` key type would never free them.
+        let boxed_scalar_key =
+            Self::any_key_needs_box(key) || matches!(key, Type::Float | Type::F32);
+        let result_key = if Self::key_needs_any_form(key) || boxed_scalar_key {
             Type::Any
         } else {
             key.clone()
@@ -315,9 +322,14 @@ impl<'a> MirBuilder<'a> {
         // into the snapshot would dangle once it frees: keys in `Any` form
         // (structs boxed, aggregates elementwise erased) go through
         // `box_into_any`, and every other heap-owning key takes an
-        // independent copy up front. Immediates own nothing and `str` is
-        // already covered, so both stay as-is.
-        let stored_key = if Self::key_needs_any_form(key) {
+        // independent copy up front. Int, float, and null keys box exactly
+        // like `coerce_to_hashable` stores them, so later lookups meet
+        // identical words. Immediates own nothing and `str` is already
+        // covered, so both stay as-is.
+        let stored_key = if Self::key_needs_any_form(key)
+            || Self::any_key_needs_box(key)
+            || matches!(key, Type::Float | Type::F32)
+        {
             self.box_into_any(Operand::Copy(key_tmp), key, span)
         } else if *key != Type::Str && Self::list_elem_needs_copy(key) {
             let dup = self.new_local(key.clone(), None, false);

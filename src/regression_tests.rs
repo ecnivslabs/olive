@@ -956,6 +956,26 @@ fn regression_any_keyed_update_large_int() {
 }
 
 #[test]
+fn regression_any_held_dict_int_keys_roundtrip() {
+    // A dict literal inferred `Dict(Int, Int)` erases its values on the way
+    // into an `Any` slot, but kept its int keys bare: later lookups meet
+    // boxed stored words by identical word and missed cleanly. Erasure now
+    // boxes int, float, and null keys like `coerce_to_hashable` does.
+    let mut cg = compile(concat!(
+        "fn get(v: Any) -> i64:\n",
+        "    return v[99999]\n",
+        "fn f() -> i64:\n",
+        "    let d: Any = {99999: 10, 5: 20}\n",
+        "    let mut acc = d[99999] + d[5]\n",
+        "    acc = acc + get(d)\n",
+        "    let e: Any = {1.5: 4}\n",
+        "    acc = acc + e[1.5]\n",
+        "    return acc\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 44);
+}
+
+#[test]
 fn regression_heterogeneous_any_keyed_aggregates() {
     // An aggregate literal applies one key descriptor to every pair, but
     // heterogeneous keys share no single static type: hashing a bool word
