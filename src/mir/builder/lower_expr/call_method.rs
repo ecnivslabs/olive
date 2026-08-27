@@ -1318,6 +1318,29 @@ impl<'a> MirBuilder<'a> {
             .first()
             .cloned()
             .unwrap_or(Operand::Constant(Constant::Int(0)));
+        // `[Any]` stores elements boxed, so the needle boxes the same way;
+        // equal words then match by identity exactly like `in` needles do. A
+        // bare large int would otherwise miss (or meet the string heuristic
+        // raw), and typed scalar equality compares exact words.
+        let val_op = match &recv_ty {
+            Type::List(e) if **e == Type::Any && matches!(attr, "count" | "index") => {
+                let from_ty = match &val_op {
+                    Operand::Copy(l) | Operand::Move(l) => self
+                        .current_locals
+                        .get(l.0)
+                        .map(|d| d.ty.clone())
+                        .unwrap_or(Type::Any),
+                    Operand::Constant(Constant::Int(_)) => Type::Int,
+                    Operand::Constant(Constant::Float(_)) => Type::Float,
+                    Operand::Constant(Constant::Bool(_)) => Type::Bool,
+                    Operand::Constant(Constant::None) => Type::Null,
+                    Operand::Constant(Constant::Str(_)) => Type::Str,
+                    _ => Type::Any,
+                };
+                self.box_into_any(val_op, &from_ty, span)
+            }
+            _ => val_op,
+        };
         let (runtime, call_args): (&str, Vec<Operand>) = match attr {
             "count" => ("__olive_list_count_typed", vec![obj_op.clone(), val_op]),
             "index" => (

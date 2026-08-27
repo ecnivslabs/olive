@@ -956,6 +956,24 @@ fn regression_any_keyed_update_large_int() {
 }
 
 #[test]
+fn regression_any_list_count_index_boxed_needles() {
+    // `[Any]` stores elements boxed, but `count`/`index` passed the needle
+    // raw while typed scalar equality compares exact words, so every scalar
+    // needle missed (large ints also risked the string heuristic). Needles
+    // now box exactly like `in` needles do.
+    let mut cg = compile(concat!(
+        "fn f() -> i64:\n",
+        "    let xs: [Any] = [1, 99999, 1]\n",
+        "    let mut acc = xs.count(1) + xs.count(99999) * 10\n",
+        "    acc = acc + xs.index(99999) * 100\n",
+        "    let fs: [Any] = [1.5, 2.5, 1.5]\n",
+        "    acc = acc + fs.count(1.5) * 1000\n",
+        "    return acc\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 2112);
+}
+
+#[test]
 fn regression_any_held_dict_int_keys_roundtrip() {
     // A dict literal inferred `Dict(Int, Int)` erases its values on the way
     // into an `Any` slot, but kept its int keys bare: later lookups meet
