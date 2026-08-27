@@ -154,12 +154,17 @@ impl<M: Module> CraneliftCodegen<M> {
                         };
                         // An `Any`-keyed dict stores a concrete scalar index
                         // under the index's own descriptor (see
-                        // `translate.rs`); intern it too.
+                        // `translate.rs`); intern it too. A statically-`Any`
+                        // container takes the same rule through its typed
+                        // kind-dispatch entry point.
                         let obj_static = operand_static_type(obj_op, func);
                         let obj_plain = concrete_ty(&obj_static);
-                        if let crate::semantic::types::Type::Dict(k, _) = obj_plain
-                            && !needs_key_descriptor(k)
-                        {
+                        let any_container = matches!(obj_plain, crate::semantic::types::Type::Any);
+                        let any_keyed_dict = match obj_plain {
+                            crate::semantic::types::Type::Dict(k, _) => !needs_key_descriptor(k),
+                            _ => false,
+                        };
+                        if any_container || any_keyed_dict {
                             let idx_static = operand_static_type(idx_op, func);
                             let idx_plain = concrete_ty(&idx_static);
                             if needs_key_descriptor(idx_plain) {
@@ -277,15 +282,20 @@ impl<M: Module> CraneliftCodegen<M> {
             // An `Any`-keyed dict hashes a concrete scalar index by the
             // index's own static type (see `translate_rvalue`); intern that
             // descriptor too or codegen panics on the missing string.
+            // A statically-`Any` container takes the same rule through its
+            // typed kind-dispatch entry point.
             let mut obj_ty = operand_static_type(obj_op, func);
             while let crate::semantic::types::Type::Ref(inner)
             | crate::semantic::types::Type::MutRef(inner) = obj_ty
             {
                 obj_ty = *inner;
             }
-            if let crate::semantic::types::Type::Dict(k, _) = &obj_ty
-                && !needs_key_descriptor(k)
-            {
+            let any_container = matches!(obj_ty, crate::semantic::types::Type::Any);
+            let any_keyed_dict = match &obj_ty {
+                crate::semantic::types::Type::Dict(k, _) => !needs_key_descriptor(k),
+                _ => false,
+            };
+            if any_container || any_keyed_dict {
                 let mut idx_ty = operand_static_type(idx_op, func);
                 while let crate::semantic::types::Type::Ref(inner)
                 | crate::semantic::types::Type::MutRef(inner) = idx_ty

@@ -615,12 +615,39 @@ impl<M: Module> CraneliftCodegen<M> {
                         builder.inst_results(inst)[0]
                     }
                     OliveType::Any => {
-                        let get_id = func_ids
-                            .get("__olive_get_index_any")
-                            .expect("missing __olive_get_index_any");
-                        let local_func = module.declare_func_in_func(*get_id, builder.func);
-                        let inst = builder.ins().call(local_func, &[o, ikey, loc]);
-                        builder.inst_results(inst)[0]
+                        // A concrete scalar index into a runtime-kind
+                        // container hashes dict keys by its own static type
+                        // (`olive_get_index_any_typed`); a statically-`Any`
+                        // index keeps the heuristic entry point. List kinds
+                        // ignore the descriptor and index positionally.
+                        let idx_static = super::imports::operand_static_type(idx, func_mir);
+                        let idx_ty = super::imports::concrete_ty(&idx_static);
+                        if super::imports::scalar_needs_key_descriptor(idx_ty) {
+                            let desc = super::imports::type_descriptor(
+                                idx_ty,
+                                struct_fields,
+                                field_types,
+                                enum_defs,
+                            );
+                            let data_id = *string_ids
+                                .get(&desc)
+                                .expect("any-index descriptor not interned during collection");
+                            let local_data = module.declare_data_in_func(data_id, builder.func);
+                            let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                            let get_id = func_ids
+                                .get("__olive_get_index_any_typed")
+                                .expect("missing __olive_get_index_any_typed");
+                            let local_func = module.declare_func_in_func(*get_id, builder.func);
+                            let inst = builder.ins().call(local_func, &[o, ikey, loc, desc_ptr]);
+                            builder.inst_results(inst)[0]
+                        } else {
+                            let get_id = func_ids
+                                .get("__olive_get_index_any")
+                                .expect("missing __olive_get_index_any");
+                            let local_func = module.declare_func_in_func(*get_id, builder.func);
+                            let inst = builder.ins().call(local_func, &[o, ikey, loc]);
+                            builder.inst_results(inst)[0]
+                        }
                     }
                     OliveType::Str => {
                         emit_nil_check(builder, module, func_ids, o, loc);

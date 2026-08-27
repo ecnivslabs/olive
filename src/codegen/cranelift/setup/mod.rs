@@ -58,6 +58,10 @@ impl<M: Module> CraneliftCodegen<M> {
         let sig_i64_i64_i64 = mk_sig(&[types::I64, types::I64], &[types::I64]);
         let sig_i64_i64_i64_void = mk_sig(&[types::I64, types::I64, types::I64], &[]);
         let sig_4i64_void = mk_sig(&[types::I64, types::I64, types::I64, types::I64], &[]);
+        let sig_5i64_void = mk_sig(
+            &[types::I64, types::I64, types::I64, types::I64, types::I64],
+            &[],
+        );
         let sig_4i64_i64 = mk_sig(
             &[types::I64, types::I64, types::I64, types::I64],
             &[types::I64],
@@ -303,6 +307,8 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_gather", &sig_i64_i64),
             ("__olive_gather_poll", &sig_i64_i64),
             ("__olive_get_index_any", &sig_3i64_i64),
+            ("__olive_get_index_any_typed", &sig_4i64_i64),
+            ("__olive_set_index_any_typed", &sig_5i64_void),
             ("__olive_getslice_any", &sig_i64_5_i64),
             ("__olive_bounds_fail", &sig_3i64_i64),
             ("__olive_nil_index_fail", &sig_i64_i64),

@@ -66,14 +66,17 @@ impl<'a> MirBuilder<'a> {
         self.box_into_any(op, &from_ty, elem.span)
     }
 
-    /// Coerces a dict key or set element into an `Any` slot. Unlike a value
-    /// slot, these are hashed and compared by their raw word, and store and
-    /// lookup take separate paths, so an integer stays bare to hash identically
-    /// on both sides. `null` still boxes since a bare `0` key is reserved as the
-    /// runtime's "absent" sentinel. Struct keys box with their descriptor and
-    /// aggregate keys erase elementwise so an `Any`-keyed container hashes
-    /// them by content like the typed path does; a raw headerless or
-    /// elementwise-mismatched word would hash by address.
+    /// Coerces a dict key or set element into an `Any` slot. Int and float
+    /// words box exactly like value slots do: a raw odd int above the
+    /// string-tag floor is bit-identical to a tagged string pointer, and any
+    /// untyped hash, free, or copy meeting the bare word dereferences the raw
+    /// bits. Typed store and lookup paths compare the unboxed `Scalar` kind
+    /// and bits, so bare needles still match boxed stored keys. `null` boxes
+    /// since a bare `0` key is reserved as the runtime's "absent" sentinel.
+    /// Struct keys box with their descriptor and aggregate keys erase
+    /// elementwise so an `Any`-keyed container hashes them by content like
+    /// the typed path does; a raw headerless or elementwise-mismatched word
+    /// would hash by address.
     pub(super) fn coerce_to_hashable(
         &mut self,
         op: Operand,
@@ -88,6 +91,28 @@ impl<'a> MirBuilder<'a> {
             return op;
         }
         if from_ty == Type::Null || Self::key_needs_any_form(&from_ty) {
+            return self.box_into_any(op, &from_ty, elem.span);
+        }
+        // A bare int or float word above the string-tag floor is
+        // bit-identical to a tagged string pointer, so it boxes rather than
+        // risk an untyped hash, free, or copy dereferencing the raw bits.
+        // Bools stay bare (their words never reach the floor) and strings
+        // stay tagged; typed store and lookup paths compare the unboxed
+        // `Scalar` kind and bits, so bare needles still match boxed keys.
+        if matches!(
+            from_ty,
+            Type::Int
+                | Type::I8
+                | Type::I16
+                | Type::I32
+                | Type::U8
+                | Type::U16
+                | Type::U32
+                | Type::U64
+                | Type::Usize
+                | Type::Float
+                | Type::F32
+        ) {
             return self.box_into_any(op, &from_ty, elem.span);
         }
         op

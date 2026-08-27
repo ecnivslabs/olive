@@ -121,24 +121,21 @@ pub(crate) fn is_tagged_str_key(v: i64) -> bool {
     v & 1 == 1 && (v & !1) > 0x10000
 }
 
-/// Whether a dict key word entering or leaving a container should be treated
-/// as a tagged string (owned-copy on insert, `str_free` on removal). An
-/// active key descriptor is authoritative -- the magnitude heuristic reads a
-/// raw odd int above the string-tag floor as a string pointer and would
-/// dereference the raw bits -- so a `_typed` op's descriptor overrides it.
-pub(crate) fn key_word_is_str(v: i64) -> bool {
-    let desc = hash_typed::active_key_descriptor();
-    if desc != 0 {
-        let base = crate::string_slab::str_body(desc) as *const u8;
-        let first = unsafe { *base };
-        let key_tag = if first == format::D_DICT || first == format::D_SET {
-            unsafe { *base.add(1) }
-        } else {
-            first
-        };
-        return key_tag == format::D_STR;
+/// Whether `obj_store` must take an owned copy of a heuristically-string
+/// key. Unlike `key_word_is_str`, this never dereferences: a raw odd int
+/// above the string-tag floor is bit-identical to a tagged string pointer,
+/// and copying it would read the raw bits as string bytes and abort. Only
+/// a word that provably points at a live heap string is copied. Literals
+/// (heap bit clear) store directly; they live forever, so no copy can
+/// dangle. Untagged words store directly as before.
+pub(crate) fn store_key_needs_owned_copy(v: i64) -> bool {
+    if v & 1 == 0 {
+        return false;
     }
-    is_tagged_str_key(v)
+    if v & crate::string_slab::STR_HEAP == 0 {
+        return false;
+    }
+    crate::slab::slab_membership(crate::string_slab::str_body(v)).is_some()
 }
 
 /// Releases one generic owned word: a tagged heap string, or any live heap
@@ -215,9 +212,10 @@ fn classify_key(v: i64) -> KeyClass {
         return KeyClass::Raw(v);
     }
     // A bare non-pointer word: a raw scalar (concrete int/bool/`None`, or an
-    // `Any`-tagged inline int/bool/`None`). Either way, equal words are the
-    // same key and distinct words are distinct keys, which is all a single,
-    // uniformly-typed container ever needs.
+    // `Any`-tagged inline int). Equal words share one hash and compare equal;
+    // distinct words stay distinct. Words that look like tagged strings but
+    // are not must never reach here untyped (see `coerce_to_hashable`, which
+    // boxes int and float keys entering `Any` slots).
     KeyClass::Scalar(KIND_INT, v)
 }
 

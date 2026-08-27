@@ -364,12 +364,13 @@ impl<'a> MirBuilder<'a> {
         // Membership in an `[Any]` compares the needle word against the
         // stored element words. A scalar element is boxed on the way in, so the
         // needle is boxed the same way; equal inline scalars share one word and
-        // match exactly. Sets hash by content like dict keys instead: the
-        // needle stays bare (only aggregates and structs box into `Any`
-        // form), and a concrete scalar needle takes the typed variant whose
-        // descriptor is synthesized from the needle's own static type. The
-        // untyped heuristic reads a raw odd int above the string-tag floor
-        // as a string pointer and aborts.
+        // match exactly. Sets hash by content like dict keys instead: int
+        // and null needles box into `Any` form (only aggregates and structs
+        // boxed before), and a concrete scalar needle takes the typed variant
+        // whose descriptor is synthesized from the needle's own static type
+        // (a boxed scalar reads back `Any`, routing through the untyped
+        // word-identity path). The untyped heuristic reads a raw odd int
+        // above the string-tag floor as a string pointer and aborts.
         if matches!(op, crate::parser::BinOp::In | crate::parser::BinOp::NotIn)
             && matches!(&r_ty, Type::List(e) if **e == Type::Any)
         {
@@ -413,7 +414,7 @@ impl<'a> MirBuilder<'a> {
                 } else {
                     "__olive_in_list_typed"
                 };
-            let needle = if Self::key_needs_any_form(&l_ty) {
+            let needle = if Self::key_needs_any_form(&l_ty) || Self::any_key_needs_box(&l_ty) {
                 self.box_into_any(needle, &l_ty, span)
             } else {
                 needle
@@ -427,6 +428,41 @@ impl<'a> MirBuilder<'a> {
                         args: vec![needle, haystack],
                     },
                 ),
+                span,
+            );
+            if matches!(op, crate::parser::BinOp::In) {
+                return self.operand_for_local(call_tmp);
+            }
+            let not_tmp = self.new_local(Type::Bool, None, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    not_tmp,
+                    Rvalue::UnaryOp(crate::parser::UnaryOp::Not, Operand::Copy(call_tmp)),
+                ),
+                span,
+            );
+            return self.operand_for_local(not_tmp);
+        }
+        // Membership in a `dict[Any, ·]` compares the needle against boxed
+        // stored keys: box int and null needles into `Any` form so both
+        // sides share one word. The `BinaryOp` still lowers through codegen,
+        // which sees an `Any`-static needle and takes the untyped entry
+        // point. Floats keep the typed descriptor path, and bools and
+        // strings already share one word.
+        if matches!(op, crate::parser::BinOp::In | crate::parser::BinOp::NotIn)
+            && matches!(&r_ty, Type::Dict(k, _) if **k == Type::Any)
+            && {
+                let l_ty = self.get_type(left.id);
+                Self::key_needs_any_form(&l_ty) || Self::any_key_needs_box(&l_ty)
+            }
+        {
+            let l_ty = self.get_type(left.id).clone();
+            let haystack = self.lower_expr_as_copy(right);
+            let needle = self.lower_expr_as_copy(left);
+            let needle = self.box_into_any(needle, &l_ty, span);
+            let call_tmp = self.new_local(Type::Bool, None, false);
+            self.push_statement(
+                StatementKind::Assign(call_tmp, Rvalue::BinaryOp(op.clone(), needle, haystack)),
                 span,
             );
             if matches!(op, crate::parser::BinOp::In) {
@@ -942,6 +978,33 @@ impl<'a> MirBuilder<'a> {
                 | Type::F32
                 | Type::Str
                 | Type::Bool
+                | Type::Null
+        )
+    }
+
+    /// Whether an int or null key must enter an `Any`-keyed or
+    /// `Any` container in boxed form. `Any` slots store these words boxed
+    /// (see `coerce_to_hashable`): a bare int above the string-tag floor is
+    /// bit-identical to a tagged string pointer, so an untyped hash, free,
+    /// or copy meeting the bare word dereferences the raw bits, and even
+    /// the typed paths compare bare needles against boxed stored words by
+    /// exact word. Boxing here meets the stored words identically. Floats
+    /// keep the typed descriptor path instead (their heap boxes compare by
+    /// payload bits, and boxing every lookup key would allocate); bools
+    /// stay bare (their words never reach the floor) and strings stay
+    /// tagged; aggregates use `key_needs_any_form` instead.
+    pub(crate) fn any_key_needs_box(ty: &Type) -> bool {
+        matches!(
+            ty,
+            Type::Int
+                | Type::I8
+                | Type::I16
+                | Type::I32
+                | Type::U8
+                | Type::U16
+                | Type::U32
+                | Type::U64
+                | Type::Usize
                 | Type::Null
         )
     }

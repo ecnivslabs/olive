@@ -93,13 +93,16 @@ fn obj_store(obj_ptr: i64, attr: i64, val: i64, val_desc: Option<*const u8>) -> 
         return python::olive_py_setattr(obj_ptr as *mut std::ffi::c_void, attr, val) as i64;
     }
     let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
-    // A tagged string key is a caller value that will be freed at its scope
+    // A heap string key is a caller value that will be freed at its scope
     // exit; the dict keeps a private copy so its stored key never dangles.
+    // Literals store directly: they live forever. The copy gate validates
+    // without dereferencing (`store_key_needs_owned_copy`): a raw odd int
+    // above the string-tag floor looks like a string pointer to the
+    // magnitude heuristic, and copying its bits as string bytes faults.
     // Untagged attribute names are read-only interned symbols, kept as-is.
-    // `key_word_is_str` consults the active key descriptor first: a raw odd
-    // int above the string-tag floor looks like a string pointer to the
-    // magnitude heuristic, and reading its bits as string bytes faults.
-    let old = if crate::key_word_is_str(attr) && !m.fields.contains_key(&OliveStringKey(attr)) {
+    let old = if crate::store_key_needs_owned_copy(attr)
+        && !m.fields.contains_key(&OliveStringKey(attr))
+    {
         // Length-preserving copy: the key may hold an embedded NUL
         // (Python-derived strings keep them), which a `strlen` re-copy
         // would truncate, collapsing distinct keys.

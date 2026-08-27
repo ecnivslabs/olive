@@ -136,7 +136,20 @@ pub extern "C" fn olive_any_remove(obj: i64, arg: i64, arg_boxed: i64, loc: i64,
         match unsafe { *(obj as *const i64) } {
             KIND_LIST | KIND_ANY_LIST => return list::olive_list_remove(obj, arg),
             KIND_OBJ => {
-                let key = if crate::hash_typed::is_struct_box_key(arg_boxed)
+                // Scalar int keys travel boxed (see `coerce_to_hashable` and
+                // the `Any`-keyed method lowerings); the raw word of a large
+                // int is bit-identical to a tagged string pointer, so the
+                // untyped hash would dereference it. Prefer the boxed word
+                // when it carries an int or float payload.
+                let boxed_scalar = if arg_boxed & crate::boxed::TAG_MASK == crate::boxed::TAG_INT {
+                    true
+                } else if crate::is_active_object(arg_boxed) {
+                    matches!(unsafe { *(arg_boxed as *const i64) }, KIND_INT | KIND_FLOAT)
+                } else {
+                    false
+                };
+                let key = if boxed_scalar
+                    || crate::hash_typed::is_struct_box_key(arg_boxed)
                     || crate::hash_typed::is_seq_key(arg_boxed)
                     || crate::hash_typed::is_set_key(arg_boxed)
                     || crate::hash_typed::is_dict_key(arg_boxed)
@@ -423,6 +436,97 @@ pub extern "C" fn olive_get_index_any(obj: i64, index: i64, loc: i64) -> i64 {
     }
 }
 
+/// Normalizes a statically-scalar index word for an `Any`-held dict whose
+/// keys are stored boxed: ints and null box into the same inline-tagged
+/// words the stores hold, floats heap-box with identical payload bits, and
+/// every other word passes through untouched. `desc` is the caller's bare
+/// key descriptor; without it a bare large int is bit-identical to a tagged
+/// string pointer. Returns the key word plus whether the caller must release
+/// it (heap temps only; inline words own nothing).
+fn normalize_typed_any_key(index: i64, desc: i64) -> (i64, bool) {
+    if desc == 0 {
+        return (index, false);
+    }
+    let tag = unsafe { *(crate::string_slab::str_body(desc) as *const u8) };
+    let key = if tag == crate::format::D_INT {
+        crate::boxed::olive_box_int(index)
+    } else if tag == crate::format::D_FLOAT {
+        crate::boxed::olive_box_float(f64::from_bits(index as u64))
+    } else if tag == crate::format::D_NULL {
+        crate::boxed::olive_box_null()
+    } else {
+        return (index, false);
+    };
+    let owned = crate::is_active_object(key);
+    (key, owned)
+}
+
+/// Statically-`Any` indexing with a concrete scalar index: kind dispatch
+/// like `olive_get_index_any`, but a dict key is normalized into the boxed
+/// form `Any` slots store (see `normalize_typed_any_key`) instead of meeting
+/// the magnitude heuristic raw. Non-dict kinds ignore the descriptor. The
+/// untyped entry point stays for statically-`Any` indices.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_get_index_any_typed(obj: i64, index: i64, loc: i64, desc: i64) -> i64 {
+    if obj == 0 || obj & boxed::TAG_MASK == boxed::TAG_NULL {
+        panic::olive_nil_index_fail(loc);
+    }
+    if matches!(obj & boxed::TAG_MASK, boxed::TAG_INT | boxed::TAG_BOOL) {
+        index_type_error(loc);
+    }
+    if obj & 1 != 0 {
+        return string::olive_str_get_checked(obj, index, loc);
+    }
+    if !is_active_object(obj) {
+        index_type_error(loc);
+    }
+    let kind = unsafe { *(obj as *const i64) };
+    match kind {
+        KIND_LIST | KIND_ANY_LIST => {
+            let len = olive_list_len(obj);
+            let effective = if index < 0 { index + len } else { index };
+            if effective < 0 || effective >= len {
+                panic::olive_bounds_fail(index, len, loc);
+            }
+            olive_list_get(obj, index)
+        }
+        KIND_OBJ => {
+            let (key, owned) = normalize_typed_any_key(index, desc);
+            let hit = crate::hash_typed::with_key_descriptor(desc, || {
+                olive_obj_get_checked(obj, key, loc)
+            });
+            if owned {
+                crate::olive_free_any(key);
+            }
+            hit
+        }
+        KIND_ENUM => olive_enum_get(obj, index),
+        KIND_BYTES => {
+            let len = bytes::olive_buf_len(obj);
+            let effective = if index < 0 { index + len } else { index };
+            if effective < 0 || effective >= len {
+                panic::olive_bounds_fail(index, len, loc);
+            }
+            boxed::olive_box_int(bytes::olive_buf_get(obj, effective))
+        }
+        KIND_PYOBJECT => {
+            let key_obj = if index > 0x10000 && index & 1 != 0 {
+                python::olive_py_from_str(index)
+            } else {
+                python::olive_py_from_int(index)
+            };
+            let py_res = python::olive_py_getitem(obj as *mut std::ffi::c_void, key_obj);
+            python::olive_py_decref(key_obj);
+            // getitem returns a wrapped arena handle; unwrap before converting (py_to_olive reads ob_type).
+            let raw_res = unsafe { python::olive_py_unwrap(py_res) };
+            let olive_res = python::olive_py_conv_to_olive(raw_res);
+            python::olive_py_decref(py_res);
+            olive_res
+        }
+        _ => index_type_error(loc),
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_set_index_any(obj: i64, index: i64, val: i64, loc: i64) {
     if obj == 0 || obj & boxed::TAG_MASK == boxed::TAG_NULL {
@@ -465,6 +569,72 @@ pub extern "C" fn olive_set_index_any(obj: i64, index: i64, val: i64, loc: i64) 
                 olive_free_any(old);
             }
             olive_obj_set(obj, index, val);
+        }
+        KIND_PYOBJECT => {
+            let key_obj = if index > 0x10000 && index & 1 != 0 {
+                python::olive_py_from_str(index)
+            } else {
+                python::olive_py_from_int(index)
+            };
+            let py_val = python::olive_py_conv_to_py(val);
+            python::olive_py_setitem(obj as *mut std::ffi::c_void, key_obj, py_val);
+            python::olive_py_decref(key_obj);
+            python::olive_py_decref(py_val);
+        }
+        _ => index_type_error(loc),
+    }
+}
+
+/// Statically-`Any` store with a concrete scalar index: kind dispatch like
+/// `olive_set_index_any`, but a dict key is normalized into the boxed form
+/// `Any` slots store (see `normalize_typed_any_key`). The untyped entry
+/// point stays for statically-`Any` indices.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_set_index_any_typed(obj: i64, index: i64, val: i64, loc: i64, desc: i64) {
+    if obj == 0 || obj & boxed::TAG_MASK == boxed::TAG_NULL {
+        panic::olive_nil_index_fail(loc);
+    }
+    if matches!(obj & boxed::TAG_MASK, boxed::TAG_INT | boxed::TAG_BOOL) {
+        index_type_error(loc);
+    }
+    if obj & 1 != 0 {
+        index_type_error(loc);
+    }
+    if !is_active_object(obj) {
+        index_type_error(loc);
+    }
+    let kind = unsafe { *(obj as *const i64) };
+    match kind {
+        KIND_LIST | KIND_ANY_LIST => {
+            let len = olive_list_len(obj);
+            let effective = if index < 0 { index + len } else { index };
+            if effective < 0 || effective >= len {
+                panic::olive_bounds_fail(index, len, loc);
+            }
+            let old = list::olive_list_get(obj, effective);
+            if old != val {
+                olive_free_any(old);
+            }
+            olive_list_set(obj, effective, val)
+        }
+        KIND_BYTES => {
+            let len = bytes::olive_buf_len(obj);
+            let effective = if index < 0 { index + len } else { index };
+            if effective < 0 || effective >= len {
+                panic::olive_bounds_fail(index, len, loc);
+            }
+            bytes::olive_buf_set(obj, effective, boxed::olive_unbox_int(val))
+        }
+        KIND_OBJ => {
+            let (key, owned) = normalize_typed_any_key(index, desc);
+            let old = crate::hash_typed::with_key_descriptor(desc, || olive_obj_get(obj, key));
+            if old != val {
+                olive_free_any(old);
+            }
+            crate::hash_typed::with_key_descriptor(desc, || olive_obj_set(obj, key, val));
+            if owned {
+                crate::olive_free_any(key);
+            }
         }
         KIND_PYOBJECT => {
             let key_obj = if index > 0x10000 && index & 1 != 0 {

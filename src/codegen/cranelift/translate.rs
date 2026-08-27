@@ -1030,11 +1030,34 @@ impl<M: Module> CraneliftCodegen<M> {
                         builder.ins().call(local_func, &[o, i, v]);
                     }
                     OliveType::Any => {
-                        let set_id = func_ids
-                            .get("__olive_set_index_any")
-                            .expect("missing __olive_set_index_any");
-                        let local_func = module.declare_func_in_func(*set_id, builder.func);
-                        builder.ins().call(local_func, &[o, ikey, v, loc]);
+                        // Same rule as `GetIndex`: a concrete scalar index
+                        // stores dict keys under its own descriptor.
+                        let idx_static = super::imports::operand_static_type(idx, func_mir);
+                        let idx_ty = super::imports::concrete_ty(&idx_static);
+                        if super::imports::scalar_needs_key_descriptor(idx_ty) {
+                            let desc = super::imports::type_descriptor(
+                                idx_ty,
+                                struct_fields,
+                                field_types,
+                                enum_defs,
+                            );
+                            let data_id = *string_ids
+                                .get(&desc)
+                                .expect("any-setindex descriptor not interned during collection");
+                            let local_data = module.declare_data_in_func(data_id, builder.func);
+                            let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                            let set_id = func_ids
+                                .get("__olive_set_index_any_typed")
+                                .expect("missing __olive_set_index_any_typed");
+                            let local_func = module.declare_func_in_func(*set_id, builder.func);
+                            builder.ins().call(local_func, &[o, ikey, v, loc, desc_ptr]);
+                        } else {
+                            let set_id = func_ids
+                                .get("__olive_set_index_any")
+                                .expect("missing __olive_set_index_any");
+                            let local_func = module.declare_func_in_func(*set_id, builder.func);
+                            builder.ins().call(local_func, &[o, ikey, v, loc]);
+                        }
                     }
                     OliveType::Enum(name, _) => {
                         let heap_payload = enum_defs.get(name.as_str()).is_some_and(|variants| {

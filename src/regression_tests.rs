@@ -862,10 +862,10 @@ fn regression_str_concat_reused_left_operand() {
 #[test]
 fn regression_any_keyed_dict_large_int_lookup() {
     // A bare odd int above the string-tag floor is bit-identical to a
-    // tagged string pointer. An `Any`-keyed dict holding a concrete
-    // scalar key must hash by the key's own static type: the untyped
-    // heuristic misread the int as a string and aborted on the
-    // misaligned dereference.
+    // tagged string pointer. An `Any`-keyed dict stores int keys boxed, so
+    // lookups meet them in boxed form (floats hash by payload bits under
+    // their descriptor instead): the untyped heuristic misread the bare int
+    // as a string and aborted on the misaligned dereference.
     let mut cg = compile(concat!(
         "fn f() -> i64:\n",
         "    let d: dict[Any, i64] = {99999: 10}\n",
@@ -886,9 +886,8 @@ fn regression_any_keyed_dict_large_int_lookup() {
 
 #[test]
 fn regression_any_keyed_set_int_membership() {
-    // Same heuristic abort through set membership: the needle stays bare
-    // (dict-like, not list-boxed) and takes the typed variant keyed off
-    // its own static type.
+    // Same heuristic abort through set membership: int needles box into
+    // `Any` form to meet the boxed stored words identically.
     let mut cg = compile(concat!(
         "fn f() -> i64:\n",
         "    let s: set[Any] = {5}\n",
@@ -910,6 +909,50 @@ fn regression_any_keyed_set_int_membership() {
         "    return acc\n",
     ));
     assert_eq!(call_i64(&mut cg, "f"), 10112);
+}
+
+#[test]
+fn regression_any_recv_large_int_index() {
+    // A statically-`Any` holder may be a dict or a positional list, so its
+    // index cannot be decided at compile time. The typed kind-dispatch
+    // entry points normalize dict keys into boxed form at runtime while
+    // lists keep positional indexing: previously the bare large int either
+    // aborted on the string heuristic or, once stores boxed, missed.
+    let mut cg = compile(concat!(
+        "fn get(v: Any) -> i64:\n",
+        "    return v[99999]\n",
+        "fn put(v: Any):\n",
+        "    v[88888] = 7\n",
+        "    return v[88888]\n",
+        "fn at(v: Any, i: i64) -> i64:\n",
+        "    return v[i]\n",
+        "fn f() -> i64:\n",
+        "    let d: dict[Any, i64] = {99999: 10}\n",
+        "    let mut acc = get(d)\n",
+        "    acc = acc + put(d)\n",
+        "    acc = acc + at([1, 2, 3], 1)\n",
+        "    acc = acc + at(d, 99999)\n",
+        "    return acc\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 29);
+}
+
+#[test]
+fn regression_any_keyed_update_large_int() {
+    // Merging a typed source dict's bare words into an `Any`-keyed
+    // destination through the untyped runtime `update` reintroduced bare
+    // large ints, faulting the next untyped hash. The destination's key
+    // type drives a per-key loop that boxes like user stores instead.
+    let mut cg = compile(concat!(
+        "fn f() -> i64:\n",
+        "    let d: dict[Any, i64] = {1: 1}\n",
+        "    d.update({99999: 2, 5: 3})\n",
+        "    let mut acc = d[99999] + d[5] + len(d)\n",
+        "    d.update({})\n",
+        "    acc = acc + len(d)\n",
+        "    return acc\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 11);
 }
 
 #[test]

@@ -627,12 +627,23 @@ impl<'a> MirBuilder<'a> {
         let o = self.lower_expr_as_copy(obj);
         let i_raw = self.lower_expr(index);
         let ty = self.get_type(expr_id);
-        // An `Any` dict holds struct keys boxed and aggregate keys elementwise
-        // erased (see `erase_dict_values` and `coerce_to_hashable`); a raw
-        // headerless or mismatched word would hash by address, so such keys
-        // meet the stored words in `Any` form here.
+        // An `Any`-keyed or `Any` dict holds struct keys boxed, aggregate
+        // keys elementwise erased, and int keys boxed (see
+        // `erase_dict_values` and `coerce_to_hashable`); a raw headerless,
+        // mismatched, or bare-large-int word would hash by address or fault
+        // on the string heuristic, so such keys meet the stored words in
+        // `Any` form here. Floats keep the typed descriptor path, and bools
+        // and strings already share one word on both sides.
         let idx_ty = self.get_type(index.id).clone();
-        let i_op = if current_obj_ty == Type::Any && Self::key_needs_any_form(&idx_ty) {
+        // A `Dict[Any, ·]` holds int and null keys boxed and aggregates
+        // erased (see `coerce_to_hashable`); meet the stored words in that
+        // form here. A statically-`Any` holder may be a positional list or
+        // tuple instead, so its index stays raw: the typed kind-dispatch
+        // entry point normalizes dict keys itself at runtime.
+        let i_op = if matches!(&current_obj_ty, Type::Dict(k, _) if **k == Type::Any)
+            && (Self::key_needs_any_form(&idx_ty) || Self::any_key_needs_box(&idx_ty))
+            || current_obj_ty == Type::Any && Self::key_needs_any_form(&idx_ty)
+        {
             self.box_into_any(i_raw.clone(), &idx_ty, span)
         } else {
             i_raw.clone()

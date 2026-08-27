@@ -951,10 +951,11 @@ impl<'a> MirBuilder<'a> {
             "pop" => {
                 let argc = args.len() as i64;
                 let a0_raw = arg_ops.first().cloned().unwrap_or(zero.clone());
-                // An `Any` dict holds aggregate keys in `Any` form; meet the
-                // stored words there so `pop` hashes by content. Scalars stay
-                // bare to match bare stored keys. List `pop` takes no args,
-                // so the dummy zero never reaches here as a real key.
+                // An `Any` dict holds aggregate keys in `Any` form and int
+                // keys boxed; meet the stored words there so `pop` hashes by
+                // content. Other scalars stay bare to match bare stored keys.
+                // List `pop` takes no args, so the dummy zero never reaches
+                // here as a real key.
                 let a0 = if !args.is_empty() {
                     let from_ty = self.get_type(match &args[0] {
                         CallArg::Positional(e)
@@ -962,7 +963,7 @@ impl<'a> MirBuilder<'a> {
                         | CallArg::Splat(e)
                         | CallArg::KwSplat(e) => e.id,
                     });
-                    if Self::key_needs_any_form(&from_ty) {
+                    if Self::key_needs_any_form(&from_ty) || Self::any_key_needs_box(&from_ty) {
                         self.box_into_any(a0_raw, &from_ty, span)
                     } else {
                         a0_raw
@@ -1441,18 +1442,15 @@ impl<'a> MirBuilder<'a> {
         let obj_op = self.lower_expr_as_copy(obj);
         let obj_op = self.check_any_method_recv(obj, obj_op, attr, 4, span);
         let mut call_args = vec![obj_op.clone()];
-        // Dict keys stay bare so store and lookup hash identically; set
-        // elements follow the same rule. Only an aggregate or struct element
-        // boxes into `Any` form (bare headerless or elementwise-mismatched
-        // words would hash by address). A boxed scalar would also lose its
-        // static type: codegen synthesizes the `_typed` descriptor from this
-        // argument's own type, and a boxed `Any` local reads back `D_ANY`,
-        // routing a concrete scalar onto the magnitude heuristic that
-        // misreads large odd ints as string pointers.
+        // `Any`-stored words are boxed for ints and null (see
+        // `coerce_to_hashable`), so arguments meet them in boxed form and
+        // compare by identical word. Aggregates box the same way; floats
+        // keep the typed descriptor path (their heap boxes compare by
+        // payload bits), and bools and strings already share one word.
         if let Some(op) = arg_ops.first() {
             if elem == Type::Any {
                 let from_ty = arg_tys.first().cloned().unwrap_or(Type::Any);
-                if Self::key_needs_any_form(&from_ty) {
+                if Self::key_needs_any_form(&from_ty) || Self::any_key_needs_box(&from_ty) {
                     call_args.push(self.box_into_any(op.clone(), &from_ty, span));
                 } else {
                     call_args.push(op.clone());
@@ -1575,13 +1573,17 @@ impl<'a> MirBuilder<'a> {
         };
         let obj_op = self.lower_expr_as_copy(obj);
         let obj_op = self.check_any_method_recv(obj, obj_op, attr, 2, span);
-        // An `Any` dict holds aggregate keys in `Any` form; meet the stored
-        // words there so `.get`/`.remove` hash by content. Typed receivers
-        // keep the raw key for their descriptor path.
+        // An `Any`-keyed or `Any` dict holds aggregate keys in `Any` form
+        // and int keys boxed; meet the stored words there so `.get`/`.remove`
+        // hash by content. Typed receivers keep the raw key for their
+        // descriptor path. A boxed scalar reads back `Any`, so codegen takes
+        // the untyped entry point and compares identical words.
+        let any_keyed_recv =
+            recv_ty == Type::Any || matches!(&recv_ty, Type::Dict(k, _) if **k == Type::Any);
         let boxed_key_op =
-            if recv_ty == Type::Any && !arg_ops.is_empty() && matches!(attr, "get" | "remove") {
+            if any_keyed_recv && !arg_ops.is_empty() && matches!(attr, "get" | "remove") {
                 let from_ty = arg_tys.first().cloned().unwrap_or(Type::Any);
-                if Self::key_needs_any_form(&from_ty) {
+                if Self::key_needs_any_form(&from_ty) || Self::any_key_needs_box(&from_ty) {
                     Some(self.box_into_any(arg_ops[0].clone(), &from_ty, span))
                 } else {
                     None
@@ -1673,15 +1675,167 @@ impl<'a> MirBuilder<'a> {
         // An `Any` dict holds aggregate keys in `Any` form; meet the stored
         // words there so `pop`/`setdefault` hash by content. Typed receivers
         // keep the raw key for their descriptor path.
+        let any_keyed_recv = key_ty == Type::Any || recv_ty == Type::Any;
         let box_key = |b: &mut Self, op: Operand| {
-            if recv_ty == Type::Any {
+            if any_keyed_recv {
                 let from_ty = arg_tys.first().cloned().unwrap_or(Type::Any);
-                if Self::key_needs_any_form(&from_ty) {
+                if Self::key_needs_any_form(&from_ty) || Self::any_key_needs_box(&from_ty) {
                     return b.box_into_any(op, &from_ty, span);
                 }
             }
             op
         };
+        // An `Any`-keyed destination stores int, float, and null keys
+        // boxed (see `coerce_to_hashable`); merging a typed source dict's
+        // bare words through the untyped runtime `update` would reintroduce
+        // them, and the next untyped hash meeting a bare large int faults.
+        // Desugar into per-key `SetIndex` stores instead, which box keys
+        // exactly like user `d[k] = v` writes. Other shapes keep the runtime
+        // path below.
+        if attr == "update"
+            && key_ty == Type::Any
+            && let Some(Type::Dict(src_k, src_v)) = arg_tys.first()
+        {
+            let src_k = (**src_k).clone();
+            let src_v = (**src_v).clone();
+            let source = arg_ops.first().cloned().unwrap_or(zero());
+            let pairs = self.new_local(
+                Type::List(Box::new(Type::Tuple(vec![src_k.clone(), src_v.clone()]))),
+                None,
+                false,
+            );
+            self.push_statement(
+                StatementKind::Assign(
+                    pairs,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function(
+                            "__olive_obj_items_typed".into(),
+                        )),
+                        args: vec![source],
+                    },
+                ),
+                span,
+            );
+            let length = self.new_unscoped_local(Type::Int);
+            self.push_statement(
+                StatementKind::Assign(
+                    length,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function("__olive_list_len".into())),
+                        args: vec![Operand::Copy(pairs)],
+                    },
+                ),
+                span,
+            );
+            let index = self.new_unscoped_local(Type::Int);
+            self.push_statement(
+                StatementKind::Assign(index, Rvalue::Use(Operand::Constant(Constant::Int(0)))),
+                span,
+            );
+            let condition = self.new_block();
+            let body = self.new_block();
+            let done = self.new_block();
+            self.terminate_block(
+                self.current_block.unwrap(),
+                TerminatorKind::Goto { target: condition },
+                span,
+            );
+            self.current_block = Some(condition);
+            let more = self.new_unscoped_local(Type::Bool);
+            self.push_statement(
+                StatementKind::Assign(
+                    more,
+                    Rvalue::BinaryOp(
+                        crate::parser::BinOp::Lt,
+                        Operand::Copy(index),
+                        Operand::Copy(length),
+                    ),
+                ),
+                span,
+            );
+            self.terminate_block(
+                condition,
+                TerminatorKind::SwitchInt {
+                    discr: Operand::Copy(more),
+                    targets: vec![(1, body)],
+                    otherwise: done,
+                },
+                span,
+            );
+            self.current_block = Some(body);
+            let pair = self.new_local_with_owning(
+                Type::Tuple(vec![src_k.clone(), src_v.clone()]),
+                None,
+                false,
+                false,
+            );
+            self.push_statement(
+                StatementKind::Assign(
+                    pair,
+                    Rvalue::GetIndex(Operand::Copy(pairs), Operand::Copy(index), false),
+                ),
+                span,
+            );
+            let key_tmp = self.new_local_with_owning(src_k.clone(), None, false, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    key_tmp,
+                    Rvalue::GetIndex(
+                        Operand::Copy(pair),
+                        Operand::Constant(Constant::Int(0)),
+                        false,
+                    ),
+                ),
+                span,
+            );
+            let stored_key = if Self::key_needs_any_form(&src_k)
+                || Self::any_key_needs_box(&src_k)
+                || matches!(src_k, Type::Float | Type::F32)
+            {
+                self.box_into_any(Operand::Copy(key_tmp), &src_k, span)
+            } else {
+                Operand::Copy(key_tmp)
+            };
+            let val_tmp = self.new_local_with_owning(src_v.clone(), None, false, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    val_tmp,
+                    Rvalue::GetIndex(
+                        Operand::Copy(pair),
+                        Operand::Constant(Constant::Int(1)),
+                        false,
+                    ),
+                ),
+                span,
+            );
+            let stored_val = if val_ty == Type::Any {
+                self.box_into_any(Operand::Copy(val_tmp), &src_v, span)
+            } else {
+                Operand::Copy(val_tmp)
+            };
+            self.push_statement(
+                StatementKind::SetIndex(obj_op.clone(), stored_key, stored_val, false),
+                span,
+            );
+            self.push_statement(
+                StatementKind::Assign(
+                    index,
+                    Rvalue::BinaryOp(
+                        crate::parser::BinOp::Add,
+                        Operand::Copy(index),
+                        Operand::Constant(Constant::Int(1)),
+                    ),
+                ),
+                span,
+            );
+            self.terminate_block(
+                self.current_block.unwrap(),
+                TerminatorKind::Goto { target: condition },
+                span,
+            );
+            self.current_block = Some(done);
+            return Some(obj_op);
+        }
         let (runtime, call_args): (&str, Vec<Operand>) = match attr {
             "clear" if val_ty != Type::Any && Self::list_elem_needs_copy(&val_ty) => {
                 ("__olive_obj_clear_typed", vec![obj_op.clone()])

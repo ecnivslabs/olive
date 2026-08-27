@@ -351,6 +351,10 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_struct_gen_stale", b"olive_struct_gen_stale\0"),
     ("__olive_gather", b"olive_gather\0"),
     ("__olive_get_index_any", b"olive_get_index_any\0"),
+    (
+        "__olive_get_index_any_typed",
+        b"olive_get_index_any_typed\0",
+    ),
     ("__olive_getslice_any", b"olive_getslice_any\0"),
     ("__olive_gzip_compress", b"olive_gzip_compress\0"),
     ("__olive_gzip_decompress", b"olive_gzip_decompress\0"),
@@ -963,6 +967,10 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_set_add", b"olive_set_add\0"),
     ("__olive_set_contains", b"olive_set_contains\0"),
     ("__olive_set_index_any", b"olive_set_index_any\0"),
+    (
+        "__olive_set_index_any_typed",
+        b"olive_set_index_any_typed\0",
+    ),
     ("__olive_set_new", b"olive_set_new\0"),
     ("__olive_set_remove", b"olive_set_remove\0"),
     ("__olive_set_union", b"olive_set_union\0"),

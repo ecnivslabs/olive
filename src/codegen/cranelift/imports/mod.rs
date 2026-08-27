@@ -51,6 +51,7 @@ pub(super) fn collect_needed_imports(
                         needed.insert("__olive_obj_set_typed");
                         needed.insert("__olive_obj_set_replacing_typed");
                         needed.insert("__olive_set_index_any");
+                        needed.insert("__olive_set_index_any_typed");
                         needed.insert("__olive_bounds_fail");
                         needed.insert("__olive_nil_index_fail");
                         needed.insert("__olive_free_typed");
@@ -570,6 +571,7 @@ pub(super) fn scan_rvalue_imports(
             needed.insert("__olive_obj_get_checked");
             needed.insert("__olive_obj_get_checked_typed");
             needed.insert("__olive_get_index_any");
+            needed.insert("__olive_get_index_any_typed");
             needed.insert("__olive_bounds_fail");
             needed.insert("__olive_nil_index_fail");
             needed.insert("__olive_str_get_checked");
