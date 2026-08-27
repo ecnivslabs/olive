@@ -492,6 +492,15 @@ pub extern "C" fn olive_get_index_any_typed(obj: i64, index: i64, loc: i64, desc
         }
         KIND_OBJ => {
             let (key, owned) = normalize_typed_any_key(index, desc);
+            // Report the caller's own word on a miss: the normalized key
+            // may be a boxed form (e.g. an inline tag) that would leak
+            // representation details into the diagnostic.
+            if obj::olive_in_obj(key, obj) == 0 {
+                if owned {
+                    crate::olive_free_any(key);
+                }
+                crate::panic::olive_key_fail(index, loc);
+            }
             let hit = crate::hash_typed::with_key_descriptor(desc, || {
                 olive_obj_get_checked(obj, key, loc)
             });

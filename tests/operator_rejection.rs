@@ -1083,6 +1083,17 @@ fn invert_of_list_and_float_rejected() {
 }
 
 #[test]
+fn any_dict_miss_reports_caller_key_word() {
+    // The `Any` index path normalizes int keys into boxed form internally;
+    // the fault must name the caller's word, not the inline tag.
+    assert_faults_with(
+        "fn f(v: Any):\n    return v[88888]\nfn main():\n    let d: dict[Any, int] = {99999: 10}\n    print(f(d))\n",
+        "[E0711]",
+        "key not found: 88888",
+    );
+}
+
+#[test]
 fn valid_combinations_still_work() {
     assert_accepted(
         "fn main():\n    print([1] + [2])\n    print(\"ab\" * 2)\n    print(2 * [1])\n    print(6 * 7)\n    print(7 % 3)\n    print({1} | {2})\n    print({1} & {2})\n    print(1.5 + 2.5)\n    print(2.0 ** 3.0)\n",
