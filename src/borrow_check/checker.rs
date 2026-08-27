@@ -24,6 +24,7 @@ const MUTATES_RECEIVER: &[(&str, usize)] = &[
     ("__olive_list_reverse", 0),
     ("__olive_list_sort_int", 0),
     ("__olive_list_sort_float", 0),
+    ("__olive_list_sort_f32", 0),
     ("__olive_list_sort_str", 0),
     ("__olive_list_clear", 0),
     ("__olive_list_clear_typed", 0),

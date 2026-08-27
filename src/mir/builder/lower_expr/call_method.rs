@@ -1182,7 +1182,8 @@ impl<'a> MirBuilder<'a> {
             "pop" => "__olive_list_pop",
             "reverse" => "__olive_list_reverse",
             "sort" => match elem {
-                Type::Float | Type::F32 => "__olive_list_sort_float",
+                Type::Float => "__olive_list_sort_float",
+                Type::F32 => "__olive_list_sort_f32",
                 Type::Str => "__olive_list_sort_str",
                 // Dynamically-typed elements dispatch by runtime kind: the
                 // static `sort_int` entry misorders anything but raw ints.
@@ -1222,6 +1223,19 @@ impl<'a> MirBuilder<'a> {
                 if i == 0 {
                     let from_ty = arg_tys.first().cloned().unwrap_or(Type::Any);
                     call_args.push(self.box_into_any(op.clone(), &from_ty, span));
+                } else {
+                    call_args.push(op.clone());
+                }
+            }
+        } else if matches!(attr, "append" | "insert") {
+            // A float element slot holds canonical bits (see
+            // `coerce_float_slot`); an int-family or wrong-width float
+            // argument stored raw reads back garbage, so convert it here
+            // the same way aggregates do.
+            for (i, op) in arg_ops.iter().enumerate() {
+                if Some(i) == value_arg && matches!(elem, Type::Float | Type::F32) {
+                    let from_ty = arg_tys.get(i).cloned().unwrap_or(Type::Any);
+                    call_args.push(self.coerce_float_slot(op.clone(), &from_ty, elem, span));
                 } else {
                     call_args.push(op.clone());
                 }
@@ -1321,7 +1335,9 @@ impl<'a> MirBuilder<'a> {
         // `[Any]` stores elements boxed, so the needle boxes the same way;
         // equal words then match by identity exactly like `in` needles do. A
         // bare large int would otherwise miss (or meet the string heuristic
-        // raw), and typed scalar equality compares exact words.
+        // raw), and typed scalar equality compares exact words. A float
+        // element slot holds canonical bits, so the needle coerces to the
+        // slot width the same way stores do.
         let val_op = match &recv_ty {
             Type::List(e) if **e == Type::Any && matches!(attr, "count" | "index") => {
                 let from_ty = match &val_op {
@@ -1338,6 +1354,24 @@ impl<'a> MirBuilder<'a> {
                     _ => Type::Any,
                 };
                 self.box_into_any(val_op, &from_ty, span)
+            }
+            Type::List(e)
+                if matches!(**e, Type::Float | Type::F32) && matches!(attr, "count" | "index") =>
+            {
+                let from_ty = match &val_op {
+                    Operand::Copy(l) | Operand::Move(l) => self
+                        .current_locals
+                        .get(l.0)
+                        .map(|d| d.ty.clone())
+                        .unwrap_or(Type::Any),
+                    Operand::Constant(Constant::Int(_)) => Type::Int,
+                    Operand::Constant(Constant::Float(_)) => Type::Float,
+                    Operand::Constant(Constant::Bool(_)) => Type::Bool,
+                    Operand::Constant(Constant::None) => Type::Null,
+                    Operand::Constant(Constant::Str(_)) => Type::Str,
+                    _ => Type::Any,
+                };
+                self.coerce_float_slot(val_op, &from_ty, e, span)
             }
             _ => val_op,
         };
@@ -1478,6 +1512,11 @@ impl<'a> MirBuilder<'a> {
                 } else {
                     call_args.push(op.clone());
                 }
+            } else if matches!(elem, Type::Float | Type::F32) {
+                // Float elements hash by exact word: coerce the needle to
+                // the slot width (no-op for matching widths).
+                let from_ty = arg_tys.first().cloned().unwrap_or(Type::Any);
+                call_args.push(self.coerce_float_slot(op.clone(), &from_ty, &elem, span));
             } else {
                 call_args.push(op.clone());
             }
@@ -1594,6 +1633,27 @@ impl<'a> MirBuilder<'a> {
             ("remove", true) => "__olive_obj_remove_typed",
             _ => return None,
         };
+        // An `F32`-valued hit arrives as zero-extended f32 bits, which the
+        // runtime hit-boxing (`box_stored`) would box as an integer. Route
+        // through the plain getter into an `F32` temporary instead (the
+        // `Assign` fixup reinterprets the bits), then box that honest value
+        // exactly like single-argument `get` does.
+        let box_f32_hit = attr == "get"
+            && arg_ops.len() == 2
+            && val_ty == Type::F32
+            && matches!(
+                runtime,
+                "__olive_obj_get_default_boxed_typed" | "__olive_obj_get_default_boxed"
+            );
+        let runtime: &str = if box_f32_hit {
+            if runtime == "__olive_obj_get_default_boxed_typed" {
+                "__olive_obj_get_default_typed"
+            } else {
+                "__olive_obj_get_default"
+            }
+        } else {
+            runtime
+        };
         let obj_op = self.lower_expr_as_copy(obj);
         let obj_op = self.check_any_method_recv(obj, obj_op, attr, 2, span);
         // An `Any`-keyed or `Any` dict holds aggregate keys in `Any` form
@@ -1603,17 +1663,28 @@ impl<'a> MirBuilder<'a> {
         // the untyped entry point and compares identical words.
         let any_keyed_recv =
             recv_ty == Type::Any || matches!(&recv_ty, Type::Dict(k, _) if **k == Type::Any);
-        let boxed_key_op =
-            if any_keyed_recv && !arg_ops.is_empty() && matches!(attr, "get" | "remove") {
-                let from_ty = arg_tys.first().cloned().unwrap_or(Type::Any);
-                if Self::key_needs_any_form(&from_ty) || Self::any_key_needs_box(&from_ty) {
-                    Some(self.box_into_any(arg_ops[0].clone(), &from_ty, span))
-                } else {
-                    None
-                }
+        // Keys meet stored words by identical representation: aggregates
+        // box and ints box into `Any` holders, while float widths coerce to
+        // the slot (f32 and f64 spellings hash by exact word). A boxed or
+        // coerced scalar reads back `Any`/float-typed, so codegen takes the
+        // untyped or descriptor entry point accordingly.
+        let boxed_key_op = if !arg_ops.is_empty() && matches!(attr, "get" | "remove") {
+            let from_ty = arg_tys.first().cloned().unwrap_or(Type::Any);
+            if any_keyed_recv
+                && (Self::key_needs_any_form(&from_ty) || Self::any_key_needs_box(&from_ty))
+            {
+                Some(self.box_into_any(arg_ops[0].clone(), &from_ty, span))
             } else {
-                None
-            };
+                let to_ty: Option<Type> = match &recv_ty {
+                    Type::Dict(k, _) if !matches!(**k, Type::Any) => Some((**k).clone()),
+                    Type::Any if matches!(from_ty, Type::F32) => Some(Type::Float),
+                    _ => None,
+                };
+                to_ty.map(|t| self.coerce_float_slot(arg_ops[0].clone(), &from_ty, &t, span))
+            }
+        } else {
+            None
+        };
         let mut call_args = vec![obj_op];
         if runtime.starts_with("__olive_obj_get_default") {
             if let Some(k) = boxed_key_op.clone() {
@@ -1622,7 +1693,14 @@ impl<'a> MirBuilder<'a> {
                 call_args.push(arg_ops[0].clone());
             }
             let default = arg_ops[1].clone();
-            if needs_boxing && !matches!(val_ty, Type::Union(_)) {
+            if box_f32_hit {
+                // The hit comes back through an `F32` temporary (converted
+                // by the `Assign` fixup), so the miss default must be a
+                // proper `F32` value too, not a boxed word: box the hit
+                // below would re-box an already-boxed default.
+                let from_ty = arg_tys.get(1).cloned().unwrap_or(Type::Any);
+                call_args.push(self.coerce_float_slot(default, &from_ty, &Type::F32, span));
+            } else if needs_boxing && !matches!(val_ty, Type::Union(_)) {
                 // The stored words are raw; the default must be boxed to
                 // match what a hit would return. A mixed-union-valued dict
                 // already stores tagged words, so pass the default through
@@ -1638,7 +1716,12 @@ impl<'a> MirBuilder<'a> {
         } else {
             call_args.extend_from_slice(arg_ops);
         }
-        let tmp = self.new_local(result_ty, None, false);
+        let tmp_ty = if box_f32_hit {
+            Type::F32
+        } else {
+            result_ty.clone()
+        };
+        let tmp = self.new_local(tmp_ty, None, false);
         self.push_statement(
             StatementKind::Assign(
                 tmp,
@@ -1649,6 +1732,12 @@ impl<'a> MirBuilder<'a> {
             ),
             span,
         );
+        if box_f32_hit {
+            let boxed = self.box_into_any(Operand::Copy(tmp), &Type::F32, span);
+            let out = self.new_local(result_ty, None, false);
+            self.push_statement(StatementKind::Assign(out, Rvalue::Use(boxed)), span);
+            return Some(self.operand_for_local(out));
+        }
         Some(self.operand_for_local(tmp))
     }
 
@@ -1705,6 +1794,12 @@ impl<'a> MirBuilder<'a> {
                 if Self::key_needs_any_form(&from_ty) || Self::any_key_needs_box(&from_ty) {
                     return b.box_into_any(op, &from_ty, span);
                 }
+                if matches!(from_ty, Type::F32) {
+                    return b.coerce_float_slot(op, &from_ty, &Type::Float, span);
+                }
+            } else if matches!(key_ty, Type::Float | Type::F32) {
+                let from_ty = arg_tys.first().cloned().unwrap_or(Type::Any);
+                return b.coerce_float_slot(op, &from_ty, &key_ty, span);
             }
             op
         };
@@ -1889,6 +1984,14 @@ impl<'a> MirBuilder<'a> {
                 let raw_key = arg_ops.first().cloned().unwrap_or(zero());
                 let key_op = box_key(self, raw_key);
                 let default = box_val(self, arg_ops.get(1).cloned().unwrap_or(zero()), 1);
+                // A float value slot holds canonical bits; convert a stored
+                // default the same way aggregates do (no-op otherwise).
+                let default = if matches!(val_ty, Type::Float | Type::F32) {
+                    let from_ty = arg_tys.get(1).cloned().unwrap_or(Type::Any);
+                    self.coerce_float_slot(default, &from_ty, &val_ty, span)
+                } else {
+                    default
+                };
                 // A hit discards the default through its own descriptor: an
                 // untyped release misreads struct payloads by kind, so heap
                 // values take the typed entry even with scalar keys. `Any`

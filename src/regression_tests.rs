@@ -1058,3 +1058,42 @@ fn regression_float_keyed_dict_and_set_ops() {
     ));
     assert_eq!(call_i64(&mut cg, "f"), 159);
 }
+
+#[test]
+fn regression_f32_container_roundtrip() {
+    // Container slots hold canonical float bits (f64 for `Float`,
+    // zero-extended f32 for `F32`), but reads reinterpreted the word
+    // numerically: every `f32` value read back garbage, int literals stored
+    // raw read back through the wrong width, and `sort`/`sum`/`min`/`max`
+    // misread the slots. Stores canonicalize widths and reads bitcast.
+    let mut cg = compile(concat!(
+        "fn f() -> i64:\n",
+        "    let mut acc = 0\n",
+        "    let x: f32 = 1.5\n",
+        "    let d = {\"a\": x}\n",
+        "    if d[\"a\"] == x:\n",
+        "        acc = acc + 1\n",
+        "    if d.get(\"a\", 0.0) == x:\n",
+        "        acc = acc + 10\n",
+        "    let e: dict[str, f32] = {\"a\": 1}\n",
+        "    if e[\"a\"] == 1.0:\n",
+        "        acc = acc + 100\n",
+        "    e[\"b\"] = 2\n",
+        "    if e[\"b\"] == 2.0:\n",
+        "        acc = acc + 1000\n",
+        "    let l: [f32] = []\n",
+        "    l.append(3)\n",
+        "    if l[0] == 3.0:\n",
+        "        acc = acc + 10000\n",
+        "    if l.pop() == 3.0:\n",
+        "        acc = acc + 100000\n",
+        "    let s: [f32] = [3.0, -1.0, 2.0]\n",
+        "    s.sort()\n",
+        "    if s[0] == -1.0 and s[2] == 3.0:\n",
+        "        acc = acc + 1000000\n",
+        "    if sum(s) == 4.0:\n",
+        "        acc = acc + 10000000\n",
+        "    return acc\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 11111111);
+}

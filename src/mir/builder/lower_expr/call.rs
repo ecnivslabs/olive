@@ -784,7 +784,8 @@ impl<'a> MirBuilder<'a> {
 
         let apply_fn = if name == "sorted" {
             match &elem_ty {
-                Type::Float | Type::F32 => "__olive_list_sort_float",
+                Type::Float => "__olive_list_sort_float",
+                Type::F32 => "__olive_list_sort_f32",
                 Type::Str => "__olive_list_sort_str",
                 Type::Any | Type::Var(_) | Type::Param(_) => "__olive_list_sort_any",
                 _ => "__olive_list_sort_int",

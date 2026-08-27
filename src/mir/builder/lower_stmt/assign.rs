@@ -275,6 +275,17 @@ impl<'a> MirBuilder<'a> {
                 } else {
                     idx_op
                 };
+                // Float keys coerce to the slot width like reads do; an
+                // `Any`-held f32 promotes to the bare f64 spelling.
+                let idx_op = match &current_obj_ty {
+                    Type::Dict(k, _) if !matches!(**k, Type::Any) => {
+                        self.coerce_float_slot(idx_op, &idx_ty, k, target.span)
+                    }
+                    Type::Any if matches!(idx_ty, Type::F32) => {
+                        self.coerce_float_slot(idx_op, &idx_ty, &Type::Float, target.span)
+                    }
+                    _ => idx_op,
+                };
                 if obj_ty.is_py_value() {
                     let idx_ty = self.get_type(index.id).clone();
                     // `rval` was already coerced to `target_ty` above; key the

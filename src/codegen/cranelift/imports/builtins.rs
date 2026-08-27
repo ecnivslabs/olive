@@ -104,6 +104,33 @@ pub(crate) fn operand_static_type(op: &Operand, func_mir: &MirFunction) -> Olive
     }
 }
 
+/// Whether a runtime callee returns a container slot word that may hold
+/// float bits (`d[k]`, `d.get(k)`, `xs[i]`, `.pop()`, `.setdefault()`).
+/// Such words reach `F32` destinations as zero-extended f32 bits and must
+/// narrow-plus-bitcast, never go through the numeric conversion or the
+/// fused py-call `f64` path (which both read the bit pattern as a value).
+/// Shared by the `Assign` fixup and the post-call fixup so the two agree.
+pub(crate) fn is_container_read_call(name: &str) -> bool {
+    matches!(
+        name,
+        "__olive_obj_get"
+            | "__olive_obj_get_typed"
+            | "__olive_obj_get_default"
+            | "__olive_obj_get_default_typed"
+            | "__olive_obj_get_default_boxed"
+            | "__olive_obj_get_default_boxed_typed"
+            | "__olive_obj_pop_checked"
+            | "__olive_obj_pop_checked_typed"
+            | "__olive_obj_pop_default"
+            | "__olive_obj_pop_default_typed"
+            | "__olive_obj_setdefault"
+            | "__olive_obj_setdefault_typed"
+            | "__olive_list_pop"
+            | "__olive_list_remove"
+            | "__olive_next"
+    )
+}
+
 type StructFields = HashMap<String, Vec<String>>;
 
 /// The type whose descriptor drives a typed drop, if the dropped type has a
@@ -136,7 +163,7 @@ pub(crate) fn drop_descriptor_type<'a>(
     }
 }
 
-pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 710] = [
+pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 711] = [
     "__olive_alloc",
     "__olive_any_add",
     "__olive_any_check_method",
@@ -417,6 +444,7 @@ pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 710] = [
     "__olive_list_set_typed",
     "__olive_list_sort_any",
     "__olive_list_sort_by_keys",
+    "__olive_list_sort_f32",
     "__olive_list_sort_float",
     "__olive_list_sort_int",
     "__olive_list_sort_str",
@@ -930,26 +958,29 @@ pub(crate) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
             _ => Some("__olive_list_len"),
         },
         "sum" => match current_ty {
-            OliveType::List(inner)
-                if matches!(inner.as_ref(), OliveType::Float | OliveType::F32) =>
-            {
+            OliveType::List(inner) if matches!(inner.as_ref(), OliveType::Float) => {
                 Some("__olive_list_sum_float")
+            }
+            OliveType::List(inner) if matches!(inner.as_ref(), OliveType::F32) => {
+                Some("__olive_list_sum_f32")
             }
             _ => Some("__olive_list_sum_int"),
         },
         "min" => match current_ty {
-            OliveType::List(inner)
-                if matches!(inner.as_ref(), OliveType::Float | OliveType::F32) =>
-            {
+            OliveType::List(inner) if matches!(inner.as_ref(), OliveType::Float) => {
                 Some("__olive_list_min_float")
+            }
+            OliveType::List(inner) if matches!(inner.as_ref(), OliveType::F32) => {
+                Some("__olive_list_min_f32")
             }
             _ => Some("__olive_list_min_int"),
         },
         "max" => match current_ty {
-            OliveType::List(inner)
-                if matches!(inner.as_ref(), OliveType::Float | OliveType::F32) =>
-            {
+            OliveType::List(inner) if matches!(inner.as_ref(), OliveType::Float) => {
                 Some("__olive_list_max_float")
+            }
+            OliveType::List(inner) if matches!(inner.as_ref(), OliveType::F32) => {
+                Some("__olive_list_max_f32")
             }
             _ => Some("__olive_list_max_int"),
         },

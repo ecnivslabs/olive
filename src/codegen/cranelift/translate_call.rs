@@ -855,7 +855,13 @@ impl<M: Module> CraneliftCodegen<M> {
                 // path instead, reading the bit pattern as if it were an
                 // integer count. Demote through `f64` here so that fixup
                 // sees the `f64 -> f32` case it already handles correctly.
-                if *dest_ty == OliveType::F32 && builder.func.dfg.value_type(ret_val) == types::I64
+                // Container reads are excluded: their words hold canonical
+                // slot bits (f32-extended for `F32` slots), which this
+                // f64-first path would misread; the `Assign` handler's
+                // container-read branch narrows them instead.
+                if *dest_ty == OliveType::F32
+                    && builder.func.dfg.value_type(ret_val) == types::I64
+                    && !super::imports::is_container_read_call(resolved_name)
                 {
                     let bits64 = builder.ins().bitcast(types::F64, MemFlags::new(), ret_val);
                     ret_val = builder.ins().fdemote(types::F32, bits64);

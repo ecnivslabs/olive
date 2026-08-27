@@ -55,6 +55,25 @@ pub(super) fn float_word_for_i64_slot(builder: &mut FunctionBuilder, val: Value)
     }
 }
 
+/// Reinterprets a container slot word holding float bits as a typed float
+/// value. Slots hold f64 bits for `Float` and zero-extended f32 bits for
+/// `F32` (see `float_word_for_i64_slot`); every other shape passes through
+/// untouched so int and pointer slots keep their exact behavior.
+pub(super) fn float_value_from_word(
+    builder: &mut FunctionBuilder,
+    val: Value,
+    ty: &OliveType,
+) -> Value {
+    match super::imports::concrete_ty(ty) {
+        OliveType::Float => builder.ins().bitcast(types::F64, MemFlags::new(), val),
+        OliveType::F32 => {
+            let low = builder.ins().ireduce(types::I32, val);
+            builder.ins().bitcast(types::F32, MemFlags::new(), low)
+        }
+        _ => val,
+    }
+}
+
 /// Panics with a null-index diagnostic unless `obj` is non-null, then continues
 /// in a fresh block. The fault path never returns.
 pub(super) fn emit_nil_check<M: Module>(
@@ -546,7 +565,7 @@ impl<M: Module> CraneliftCodegen<M> {
                         let inst = builder.ins().call(local_func, &[o, i]);
                         builder.inst_results(inst)[0]
                     }
-                    OliveType::Dict(k, _) if super::imports::needs_key_descriptor(k) => {
+                    OliveType::Dict(k, val_ty) if super::imports::needs_key_descriptor(k) => {
                         let desc = super::imports::type_descriptor(
                             k,
                             struct_fields,
@@ -563,9 +582,10 @@ impl<M: Module> CraneliftCodegen<M> {
                             .expect("missing __olive_obj_get_checked_typed");
                         let local_func = module.declare_func_in_func(*get_id, builder.func);
                         let inst = builder.ins().call(local_func, &[o, ikey, loc, desc_ptr]);
-                        builder.inst_results(inst)[0]
+                        let word = builder.inst_results(inst)[0];
+                        float_value_from_word(builder, word, val_ty)
                     }
-                    OliveType::Dict(_, _) => {
+                    OliveType::Dict(_, val_ty) => {
                         // An `Any`-keyed dict holding a concrete scalar key
                         // hashes by the key's own static type: the untyped
                         // heuristic reads a raw odd int above the
@@ -596,14 +616,16 @@ impl<M: Module> CraneliftCodegen<M> {
                                 .expect("missing __olive_obj_get_checked_typed");
                             let local_func = module.declare_func_in_func(*get_id, builder.func);
                             let inst = builder.ins().call(local_func, &[o, ikey, loc, desc_ptr]);
-                            builder.inst_results(inst)[0]
+                            let word = builder.inst_results(inst)[0];
+                            float_value_from_word(builder, word, val_ty)
                         } else {
                             let get_id = func_ids
                                 .get("__olive_obj_get_checked")
                                 .expect("missing __olive_obj_get_checked");
                             let local_func = module.declare_func_in_func(*get_id, builder.func);
                             let inst = builder.ins().call(local_func, &[o, ikey, loc]);
-                            builder.inst_results(inst)[0]
+                            let word = builder.inst_results(inst)[0];
+                            float_value_from_word(builder, word, val_ty)
                         }
                     }
                     OliveType::Struct(_, _, _) => {
@@ -707,7 +729,31 @@ impl<M: Module> CraneliftCodegen<M> {
                         builder.switch_to_block(merge_block);
                         builder.use_var(result_var)
                     }
-                    OliveType::List(_) | OliveType::Tuple(_) | OliveType::Set(_) => {
+                    OliveType::List(elem_ty) => {
+                        emit_nil_check(builder, module, func_ids, o, loc);
+                        let len = builder.ins().load(
+                            types::I64,
+                            MemFlags::trusted().with_readonly(),
+                            o,
+                            24,
+                        );
+                        let idx = if !unchecked {
+                            emit_bounds_check(builder, module, func_ids, i, len, loc)
+                        } else {
+                            i
+                        };
+                        let data_ptr = builder.ins().load(
+                            types::I64,
+                            MemFlags::trusted().with_readonly(),
+                            o,
+                            8,
+                        );
+                        let offset = builder.ins().imul_imm(idx, 8);
+                        let addr = builder.ins().iadd(data_ptr, offset);
+                        let word = builder.ins().load(types::I64, MemFlags::trusted(), addr, 0);
+                        float_value_from_word(builder, word, elem_ty)
+                    }
+                    OliveType::Tuple(_) | OliveType::Set(_) => {
                         emit_nil_check(builder, module, func_ids, o, loc);
                         let len = builder.ins().load(
                             types::I64,

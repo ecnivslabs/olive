@@ -8,7 +8,25 @@ impl Transform for ConstantFolding {
         let mut changed = false;
         for bb in &mut func.basic_blocks {
             for stmt in &mut bb.statements {
-                if let StatementKind::Assign(_, rval) = &mut stmt.kind {
+                if let StatementKind::Assign(dest, rval) = &mut stmt.kind {
+                    // A folded `Float` constant keeps f64 bits, which is a
+                    // lie when the destination is `F32`: downstream codegen
+                    // trusts the static type and would store the wide bits
+                    // into an f32 slot (or forward them where f32 bits
+                    // belong). Wrap in a narrowing `Cast` instead so the
+                    // value stays canonical; `Float` destinations and exact
+                    // int/bool folds are unaffected.
+                    let narrow_f32 = func
+                        .locals
+                        .get(dest.0)
+                        .is_some_and(|d| matches!(d.ty, crate::semantic::types::Type::F32));
+                    let fold_float = |val: Constant| -> Rvalue {
+                        if narrow_f32 && matches!(val, Constant::Float(_)) {
+                            Rvalue::Cast(Operand::Constant(val), crate::semantic::types::Type::F32)
+                        } else {
+                            Rvalue::Use(Operand::Constant(val))
+                        }
+                    };
                     if let Rvalue::BinaryOp(
                         op,
                         Operand::Constant(Constant::Int(a)),
@@ -65,7 +83,7 @@ impl Transform for ConstantFolding {
                             _ => None,
                         };
                         if let Some(val) = res {
-                            *rval = Rvalue::Use(Operand::Constant(val));
+                            *rval = fold_float(val);
                             changed = true;
                         }
                     } else if let Rvalue::BinaryOp(
@@ -100,7 +118,7 @@ impl Transform for ConstantFolding {
                             _ => None,
                         };
                         if let Some(val) = res {
-                            *rval = Rvalue::Use(Operand::Constant(val));
+                            *rval = fold_float(val);
                             changed = true;
                         }
                     }
@@ -293,6 +311,38 @@ mod tests {
             _ => panic!(),
         };
         assert_eq!(*k, Constant::Int(-5));
+    }
+
+    #[test]
+    fn fold_float_neg_into_f32_narrows() {
+        // A folded `Float` constant keeps f64 bits; into an `F32`
+        // destination that lies about the payload width downstream, so the
+        // fold wraps in a narrowing `Cast` instead of a bare `Use`.
+        let mut f = func(vec![assign(
+            0,
+            Rvalue::UnaryOp(
+                crate::parser::UnaryOp::Neg,
+                Operand::Constant(Constant::Float(f64::to_bits(1.0))),
+            ),
+        )]);
+        f.locals = vec![LocalDecl {
+            ty: crate::semantic::types::Type::F32,
+            name: None,
+            span: sp(),
+            is_mut: false,
+            is_owning: false,
+        }];
+        assert!(ConstantFolding.run(&mut f));
+        match &f.basic_blocks[0].statements[0].kind {
+            StatementKind::Assign(
+                _,
+                Rvalue::Cast(Operand::Constant(Constant::Float(bits)), ty),
+            ) => {
+                assert_eq!(f64::from_bits(*bits), -1.0);
+                assert_eq!(*ty, crate::semantic::types::Type::F32);
+            }
+            _ => panic!(),
+        }
     }
 
     #[test]

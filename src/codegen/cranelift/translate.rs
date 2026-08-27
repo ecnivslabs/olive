@@ -567,8 +567,25 @@ impl<M: Module> CraneliftCodegen<M> {
                         ..
                     } if name == "__olive_debug_load"
                 );
+                // A container read (`d[k]`, `d.get(k)`, `xs[i]`, `.pop()`,
+                // `.setdefault()`) yields the raw i64 slot word. When the
+                // destination is `f32` that word holds f32 bits (container
+                // elements coerce to the element type on store; see
+                // `float_word_for_i64_slot`), so narrow plus bitcast here.
+                // The numeric `fcvt_from_sint` below would convert the bit
+                // pattern itself (printing `1069547520.0` for `1.5`).
+                let rval_is_container_read = matches!(rval, crate::mir::ir::Rvalue::GetIndex(..))
+                    || matches!(
+                        rval,
+                        crate::mir::ir::Rvalue::Call {
+                            func: crate::mir::ir::Operand::Constant(
+                                crate::mir::Constant::Function(name)
+                            ),
+                            ..
+                        } if super::imports::is_container_read_call(name.as_str())
+                    );
                 let val = if val_ty != decl_ty {
-                    if (rval_is_ptr_load || rval_is_debug_load)
+                    if (rval_is_ptr_load || rval_is_debug_load || rval_is_container_read)
                         && val_ty == types::I64
                         && decl_ty == types::F32
                     {

@@ -632,11 +632,32 @@ impl<M: Module> CraneliftCodegen<M> {
                     .get(func_name)
                     .unwrap_or_else(|| panic!("missing in fn: {}", func_name));
                 let local_func = module.declare_func_in_func(*in_id, builder.func);
-                // The membership helpers take raw i64 words; a float needle
-                // arrives as F64/F32 and must be bitcast first, the same
-                // convention `translate_call` applies to typed-call float
-                // arguments. Without this the register allocator sees an
-                // F64 value for an I64 parameter and aborts compilation.
+                // The membership helpers take raw i64 words holding the
+                // slot's canonical bits. A float needle whose width differs
+                // from the slot converts first (f32 and f64 spellings hash
+                // by exact word); an int-family needle into a float slot
+                // converts numerically, preserving the `1 in {1.0}` hit.
+                // Without any float involved the needle bitcasts by its own
+                // width, the same convention `translate_call` applies to
+                // typed-call float arguments.
+                let slot_float_ty: Option<cranelift::prelude::Type> =
+                    match structural_key.map(super::imports::concrete_ty) {
+                        Some(OliveType::Float) => Some(types::F64),
+                        Some(OliveType::F32) => Some(types::F32),
+                        _ => None,
+                    };
+                let l_ty = builder.func.dfg.value_type(l);
+                let l = match (l_ty, slot_float_ty) {
+                    (types::F64, Some(types::F32)) => builder.ins().fdemote(types::F32, l),
+                    (types::F32, Some(types::F64)) => builder.ins().fpromote(types::F64, l),
+                    (t, Some(w)) if t.is_int() && (w == types::F64 || w == types::F32) => {
+                        builder.ins().fcvt_from_sint(w, l)
+                    }
+                    _ if needle_key.is_some() && l_ty == types::F32 => {
+                        builder.ins().fpromote(types::F64, l)
+                    }
+                    _ => l,
+                };
                 let l = match builder.func.dfg.value_type(l) {
                     types::F64 => builder.ins().bitcast(types::I64, MemFlags::new(), l),
                     types::F32 => {

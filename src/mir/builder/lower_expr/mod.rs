@@ -61,9 +61,59 @@ impl<'a> MirBuilder<'a> {
             return self.coerce(op, &from_ty, elem_ty, elem.span);
         }
         if *elem_ty != Type::Any {
-            return op;
+            return self.coerce_float_slot(op, &from_ty, elem_ty, elem.span);
         }
         self.box_into_any(op, &from_ty, elem.span)
+    }
+
+    /// Canonicalizes a word stored into a float container slot. Slots hold
+    /// f64 bits for `Float` and zero-extended f32 bits for `F32` (see
+    /// `float_word_for_i64_slot`); reads reinterpret the word, so an
+    /// int-family or wrong-width float word stored raw reads back garbage.
+    /// Emits a real numeric `Cast` when the static types differ in float
+    /// width; every other shape passes through untouched.
+    pub(super) fn coerce_float_slot(
+        &mut self,
+        op: Operand,
+        from_ty: &Type,
+        to_ty: &Type,
+        span: Span,
+    ) -> Operand {
+        fn is_int_family(ty: &Type) -> bool {
+            matches!(
+                ty,
+                Type::Int
+                    | Type::I8
+                    | Type::I16
+                    | Type::I32
+                    | Type::U8
+                    | Type::U16
+                    | Type::U32
+                    | Type::U64
+                    | Type::Usize
+            )
+        }
+        let needs_cast = match (from_ty, to_ty) {
+            (f, t) if is_int_family(f) && matches!(t, Type::Float | Type::F32) => true,
+            (Type::Float | Type::FloatLiteral(_), Type::F32) => true,
+            (Type::F32, Type::Float | Type::FloatLiteral(_)) => true,
+            _ => false,
+        };
+        // The checker unifies a float literal's type without narrowing its
+        // payload: a `Constant::Float` holding f64 bits can arrive with
+        // static type `F32` (equality above then skips). Narrow by operand
+        // shape too.
+        let needs_cast = needs_cast
+            || (matches!(op, Operand::Constant(Constant::Float(_))) && matches!(to_ty, Type::F32));
+        if !needs_cast {
+            return op;
+        }
+        let tmp = self.new_local(to_ty.clone(), None, false);
+        self.push_statement(
+            StatementKind::Assign(tmp, Rvalue::Cast(op, to_ty.clone())),
+            span,
+        );
+        Operand::Copy(tmp)
     }
 
     /// Coerces a dict key or set element into an `Any` slot. Int and float
@@ -88,7 +138,10 @@ impl<'a> MirBuilder<'a> {
             return self.coerce(op, &from_ty, elem_ty, elem.span);
         }
         if *elem_ty != Type::Any {
-            return op;
+            // Typed slots still canonicalize float widths: an f32 key in a
+            // `Float`-keyed dict (or vice versa) hashes by exact word, so
+            // mixed widths miss. Every other shape passes through untouched.
+            return self.coerce_float_slot(op, &from_ty, elem_ty, elem.span);
         }
         if from_ty == Type::Null || Self::key_needs_any_form(&from_ty) {
             return self.box_into_any(op, &from_ty, elem.span);
@@ -538,6 +591,13 @@ impl<'a> MirBuilder<'a> {
             && let Some(unboxed) = self.unbox_from_any(op.clone(), to_ty, span)
         {
             return unboxed;
+        }
+
+        // Float slots canonicalize widths: an int-family or wrong-width
+        // float word stored raw reads back garbage (see
+        // `coerce_float_slot`).
+        if matches!(to_ty, Type::Float | Type::F32 | Type::FloatLiteral(_)) {
+            return self.coerce_float_slot(op, from_ty, to_ty, span);
         }
 
         op

@@ -627,13 +627,6 @@ impl<'a> MirBuilder<'a> {
         let o = self.lower_expr_as_copy(obj);
         let i_raw = self.lower_expr(index);
         let ty = self.get_type(expr_id);
-        // An `Any`-keyed or `Any` dict holds struct keys boxed, aggregate
-        // keys elementwise erased, and int keys boxed (see
-        // `erase_dict_values` and `coerce_to_hashable`); a raw headerless,
-        // mismatched, or bare-large-int word would hash by address or fault
-        // on the string heuristic, so such keys meet the stored words in
-        // `Any` form here. Floats keep the typed descriptor path, and bools
-        // and strings already share one word on both sides.
         let idx_ty = self.get_type(index.id).clone();
         // A `Dict[Any, ·]` holds int and null keys boxed and aggregates
         // erased (see `coerce_to_hashable`); meet the stored words in that
@@ -647,6 +640,19 @@ impl<'a> MirBuilder<'a> {
             self.box_into_any(i_raw.clone(), &idx_ty, span)
         } else {
             i_raw.clone()
+        };
+        // A float key must match the slot width: f32 and f64 spellings hash
+        // by exact word, so a mismatched needle misses. Typed keys coerce to
+        // the container's key type; an `Any`-held f32 promotes to the bare
+        // f64 spelling those stores hold.
+        let i_op = match &current_obj_ty {
+            Type::Dict(k, _) if !matches!(**k, Type::Any) => {
+                self.coerce_float_slot(i_op, &idx_ty, k, span)
+            }
+            Type::Any if matches!(idx_ty, Type::F32) => {
+                self.coerce_float_slot(i_op, &idx_ty, &Type::Float, span)
+            }
+            _ => i_op,
         };
         // A py subscript returns a fresh owned handle; a container read is a view.
         let owning = current_obj_ty.is_py_value();

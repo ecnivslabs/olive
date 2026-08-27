@@ -205,6 +205,20 @@ pub extern "C" fn olive_list_min_float(ptr: i64) -> f64 {
     m
 }
 
+/// `f32` minimum, widened for the `f64` return (see `sum_f32`).
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_min_f32(ptr: i64) -> f64 {
+    let v = checked_nonempty(ptr, "min");
+    let mut m = f32::from_bits(unsafe { *v.ptr } as u32);
+    for i in 1..v.len {
+        let e = f32::from_bits(unsafe { *v.ptr.add(i) } as u32);
+        if e < m {
+            m = e;
+        }
+    }
+    m as f64
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_list_max_float(ptr: i64) -> f64 {
     let v = checked_nonempty(ptr, "max");
@@ -216,6 +230,20 @@ pub extern "C" fn olive_list_max_float(ptr: i64) -> f64 {
         }
     }
     m
+}
+
+/// `f32` maximum, widened for the `f64` return (see `sum_f32`).
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_max_f32(ptr: i64) -> f64 {
+    let v = checked_nonempty(ptr, "max");
+    let mut m = f32::from_bits(unsafe { *v.ptr } as u32);
+    for i in 1..v.len {
+        let e = f32::from_bits(unsafe { *v.ptr.add(i) } as u32);
+        if e > m {
+            m = e;
+        }
+    }
+    m as f64
 }
 
 fn checked_nonempty<'a>(ptr: i64, who: &str) -> &'a StableVec {
@@ -253,6 +281,21 @@ pub extern "C" fn olive_list_sum_float(ptr: i64) -> f64 {
         acc += f64::from_bits(unsafe { *v.ptr.add(i) } as u64);
     }
     acc
+}
+
+/// Sums `f32` elements: slots hold zero-extended f32 bits, accumulated in
+/// `f32` (the elements' own type) and widened for the `f64` return.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_sum_f32(ptr: i64) -> f64 {
+    if ptr == 0 {
+        return 0.0;
+    }
+    let v = unsafe { &*(ptr as *const StableVec) };
+    let mut acc = 0.0f32;
+    for i in 0..v.len {
+        acc += f32::from_bits(unsafe { *v.ptr.add(i) } as u32);
+    }
+    acc as f64
 }
 
 /// `any(xs)` over a `[bool]` list: elements are raw 0/1 words.
@@ -508,6 +551,21 @@ pub extern "C" fn olive_list_sort_float(list_ptr: i64) {
         slice.sort_by(|a, b| {
             let fa = f64::from_bits(*a as u64);
             let fb = f64::from_bits(*b as u64);
+            fa.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
+}
+
+/// Sorts a list of `f32` elements ascending, in place. Slots hold
+/// zero-extended f32 bits (see `float_word_for_i64_slot`), so they compare
+/// as `f32` after narrowing; reading them as `f64` (like `sort_float` does)
+/// misorders everything but coincidental positives.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_sort_f32(list_ptr: i64) {
+    if let Some(slice) = list_slice_mut(list_ptr) {
+        slice.sort_by(|a, b| {
+            let fa = f32::from_bits(*a as u32);
+            let fb = f32::from_bits(*b as u32);
             fa.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal)
         });
     }
