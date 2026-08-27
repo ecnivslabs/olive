@@ -1083,6 +1083,26 @@ fn invert_of_list_and_float_rejected() {
 }
 
 #[test]
+fn f32_struct_fields_tuples_and_enum_payloads_print() {
+    // Struct slots, tuple members, and enum payloads hold canonical float
+    // bits, but reads reinterpreted the word numerically: every `f32`
+    // value printed garbage. (`==` and `int()` conversions masked it by
+    // converting the same wrong word, so only printed output pins this.)
+    assert_accepted(
+        "struct S:\n    x: f32\nfn main():\n    let s = S(1.5)\n    print(s.x)\n    let t = S(1)\n    print(t.x)\n    s.x = 2.5\n    print(s.x)\n",
+        "1.5\n1.0\n2.5\n",
+    );
+    assert_accepted(
+        "fn main():\n    let u: (f32, int) = (1.5, 2)\n    print(u[0])\n",
+        "1.5\n",
+    );
+    assert_accepted(
+        "enum E:\n    V(float)\n    W(f32)\nfn show(e: E):\n    match e:\n        case V(x):\n            print(x)\n        case W(y):\n            print(y)\n        case _:\n            print(\"unreachable\")\nfn main():\n    show(E::V(1.5))\n    show(E::W(2.5))\n",
+        "1.5\n2.5\n",
+    );
+}
+
+#[test]
 fn any_dict_miss_reports_caller_key_word() {
     // The `Any` index path normalizes int keys into boxed form internally;
     // the fault must name the caller's word, not the inline tag.

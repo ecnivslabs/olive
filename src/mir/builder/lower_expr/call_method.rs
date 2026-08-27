@@ -179,6 +179,27 @@ impl<'a> MirBuilder<'a> {
                 let enum_ty = self.get_type(expr_id);
                 let desc = self.enum_variant_desc(&enum_ty);
                 let tmp = self.new_local(enum_ty, None, false);
+                // Payload slots hold canonical float bits (see
+                // `coerce_float_slot`); readers reinterpret the word.
+                let param_tys = self
+                    .global_types
+                    .get(&mangled)
+                    .and_then(|ty| match ty {
+                        Type::Fn(pts, _, _) => Some(pts.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                let arg_ops = arg_ops
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, op)| match param_tys.get(i) {
+                        Some(pt) => {
+                            let from_ty = self.operand_static_ty(&op);
+                            self.coerce_float_slot(op, &from_ty, pt, span)
+                        }
+                        None => op,
+                    })
+                    .collect::<Vec<_>>();
                 self.push_statement(
                     StatementKind::Assign(
                         tmp,
@@ -1340,37 +1361,13 @@ impl<'a> MirBuilder<'a> {
         // slot width the same way stores do.
         let val_op = match &recv_ty {
             Type::List(e) if **e == Type::Any && matches!(attr, "count" | "index") => {
-                let from_ty = match &val_op {
-                    Operand::Copy(l) | Operand::Move(l) => self
-                        .current_locals
-                        .get(l.0)
-                        .map(|d| d.ty.clone())
-                        .unwrap_or(Type::Any),
-                    Operand::Constant(Constant::Int(_)) => Type::Int,
-                    Operand::Constant(Constant::Float(_)) => Type::Float,
-                    Operand::Constant(Constant::Bool(_)) => Type::Bool,
-                    Operand::Constant(Constant::None) => Type::Null,
-                    Operand::Constant(Constant::Str(_)) => Type::Str,
-                    _ => Type::Any,
-                };
+                let from_ty = self.operand_static_ty(&val_op);
                 self.box_into_any(val_op, &from_ty, span)
             }
             Type::List(e)
                 if matches!(**e, Type::Float | Type::F32) && matches!(attr, "count" | "index") =>
             {
-                let from_ty = match &val_op {
-                    Operand::Copy(l) | Operand::Move(l) => self
-                        .current_locals
-                        .get(l.0)
-                        .map(|d| d.ty.clone())
-                        .unwrap_or(Type::Any),
-                    Operand::Constant(Constant::Int(_)) => Type::Int,
-                    Operand::Constant(Constant::Float(_)) => Type::Float,
-                    Operand::Constant(Constant::Bool(_)) => Type::Bool,
-                    Operand::Constant(Constant::None) => Type::Null,
-                    Operand::Constant(Constant::Str(_)) => Type::Str,
-                    _ => Type::Any,
-                };
+                let from_ty = self.operand_static_ty(&val_op);
                 self.coerce_float_slot(val_op, &from_ty, e, span)
             }
             _ => val_op,

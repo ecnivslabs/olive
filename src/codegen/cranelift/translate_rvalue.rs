@@ -479,9 +479,21 @@ impl<M: Module> CraneliftCodegen<M> {
                             let o = Self::translate_operand(
                                 builder, obj, vars, string_ids, module, func_ids,
                             );
-                            return builder
-                                .ins()
-                                .load(types::I64, MemFlags::trusted(), o, offset);
+                            let word =
+                                builder
+                                    .ins()
+                                    .load(types::I64, MemFlags::trusted(), o, offset);
+                            // Struct slots are 64-bit words holding canonical
+                            // float bits for float fields (see
+                            // `float_word_for_i64_slot`); reinterpret them
+                            // instead of the numeric conversion the `Assign`
+                            // fixup would apply to the raw word.
+                            if let Some(field_ty) =
+                                field_types.get(&(struct_name.clone(), attr.clone()))
+                            {
+                                return float_value_from_word(builder, word, field_ty);
+                            }
+                            return word;
                         }
                     }
                     if matches!(obj_ty, OliveType::PyObject) {

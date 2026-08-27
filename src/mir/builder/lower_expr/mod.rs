@@ -603,6 +603,26 @@ impl<'a> MirBuilder<'a> {
         op
     }
 
+    /// Static type of a lowered operand: locals read their declared type,
+    /// constants infer their literal kind. Shared by call sites that must
+    /// coerce an already-lowered operand (float slot canonicalization,
+    /// `count`/`index` needle typing) without the source expression id.
+    pub(super) fn operand_static_ty(&self, op: &Operand) -> Type {
+        match op {
+            Operand::Copy(l) | Operand::Move(l) => self
+                .current_locals
+                .get(l.0)
+                .map(|d| d.ty.clone())
+                .unwrap_or(Type::Any),
+            Operand::Constant(Constant::Int(_)) => Type::Int,
+            Operand::Constant(Constant::Float(_)) => Type::Float,
+            Operand::Constant(Constant::Bool(_)) => Type::Bool,
+            Operand::Constant(Constant::None) => Type::Null,
+            Operand::Constant(Constant::Str(_)) => Type::Str,
+            _ => Type::Any,
+        }
+    }
+
     /// Converts a Python value into the Olive representation of `target`.
     fn realize_py_value(&mut self, op: Operand, target: &Type, span: Span) -> Operand {
         match target {

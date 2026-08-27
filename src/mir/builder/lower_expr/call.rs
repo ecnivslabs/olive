@@ -504,6 +504,27 @@ impl<'a> MirBuilder<'a> {
             let enum_ty = self.get_type(_expr_id);
             let desc = self.enum_variant_desc(&enum_ty);
             let tmp = self.new_local(enum_ty, None, false);
+            // Payload slots hold canonical float bits (see
+            // `coerce_float_slot`); readers reinterpret the word.
+            let param_tys = self
+                .global_types
+                .get(name)
+                .and_then(|ty| match ty {
+                    Type::Fn(pts, _, _) => Some(pts.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            let arg_ops = arg_ops
+                .into_iter()
+                .enumerate()
+                .map(|(i, op)| match param_tys.get(i) {
+                    Some(pt) => {
+                        let from_ty = self.operand_static_ty(&op);
+                        self.coerce_float_slot(op, &from_ty, pt, span)
+                    }
+                    None => op,
+                })
+                .collect::<Vec<_>>();
             self.push_statement(
                 StatementKind::Assign(
                     tmp,

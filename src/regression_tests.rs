@@ -1023,6 +1023,36 @@ fn regression_heterogeneous_any_keyed_aggregates() {
 }
 
 #[test]
+fn regression_enum_f32_payload_roundtrip() {
+    // Enum payloads passed constructor args raw, so an f64 spelling in an
+    // f32 slot read back garbage on match binding. Payloads coerce per
+    // parameter type at both construction sites.
+    let mut cg = compile(concat!(
+        "enum E:\n",
+        "    V(float)\n",
+        "    W(f32)\n",
+        "fn f() -> i64:\n",
+        "    let mut acc = 0\n",
+        "    let a = E::V(1.5)\n",
+        "    match a:\n",
+        "        case V(x):\n",
+        "            if x == 1.5:\n",
+        "                acc = acc + 1\n",
+        "        case _:\n",
+        "            acc = acc + 1000\n",
+        "    let b = E::W(2.5)\n",
+        "    match b:\n",
+        "        case W(y):\n",
+        "            if y == 2.5:\n",
+        "                acc = acc + 10\n",
+        "        case _:\n",
+        "            acc = acc + 1000\n",
+        "    return acc\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 11);
+}
+
+#[test]
 fn regression_float_keyed_dict_and_set_ops() {
     // Float keys and needles arrive as F64/F32 but every `__olive_*`
     // runtime signature declares i64 words. The generic call path already

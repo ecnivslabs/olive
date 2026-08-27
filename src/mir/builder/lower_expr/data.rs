@@ -229,12 +229,26 @@ impl<'a> MirBuilder<'a> {
             }
             self.operand_for_local(tmp)
         } else {
+            // Tuples keep exact member types (no `Any` erasure), but float
+            // members still canonicalize widths: an f64 spelling in an f32
+            // slot reads back garbage, the same as every other container.
+            let member_tys: Vec<Type> = match self.get_type(expr_id) {
+                Type::Tuple(members) => members.clone(),
+                _ => Vec::new(),
+            };
             let ops: Vec<Operand> = elems
                 .iter()
-                .map(|e| {
+                .enumerate()
+                .map(|(i, e)| {
                     let op = self.lower_expr(e);
                     if is_tuple {
-                        op
+                        match member_tys.get(i) {
+                            Some(m) => {
+                                let from_ty = self.get_type(e.id);
+                                self.coerce_float_slot(op, &from_ty, m, e.span)
+                            }
+                            None => op,
+                        }
                     } else {
                         self.coerce_to_elem(op, e, &elem_box_ty)
                     }
