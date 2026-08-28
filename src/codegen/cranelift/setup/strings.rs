@@ -152,19 +152,15 @@ impl<M: Module> CraneliftCodegen<M> {
                         use super::super::imports::{
                             concrete_ty, needs_key_descriptor, operand_static_type, type_descriptor,
                         };
-                        // An `Any`-keyed dict stores a concrete scalar index
-                        // under the index's own descriptor (see
-                        // `translate.rs`); intern it too. A statically-`Any`
-                        // container takes the same rule through its typed
-                        // kind-dispatch entry point.
+                        // A statically-`Any` container stores a concrete
+                        // scalar index through its typed kind-dispatch entry
+                        // point (see `translate.rs`); intern that
+                        // descriptor. `Any`-keyed dicts stay untyped, so
+                        // they need nothing here.
                         let obj_static = operand_static_type(obj_op, func);
                         let obj_plain = concrete_ty(&obj_static);
                         let any_container = matches!(obj_plain, crate::semantic::types::Type::Any);
-                        let any_keyed_dict = match obj_plain {
-                            crate::semantic::types::Type::Dict(k, _) => !needs_key_descriptor(k),
-                            _ => false,
-                        };
-                        if any_container || any_keyed_dict {
+                        if any_container {
                             let idx_static = operand_static_type(idx_op, func);
                             let idx_plain = concrete_ty(&idx_static);
                             if needs_key_descriptor(idx_plain) {
@@ -279,11 +275,11 @@ impl<M: Module> CraneliftCodegen<M> {
         use crate::mir::{Constant, Operand, Rvalue};
         if let Rvalue::GetIndex(obj_op, idx_op, _) = rval {
             self.collect_dict_key_descriptor(func, obj_op);
-            // An `Any`-keyed dict hashes a concrete scalar index by the
-            // index's own static type (see `translate_rvalue`); intern that
-            // descriptor too or codegen panics on the missing string.
-            // A statically-`Any` container takes the same rule through its
-            // typed kind-dispatch entry point.
+            // A statically-`Any` container hashes a concrete scalar
+            // index through its typed kind-dispatch entry point (see
+            // `translate_rvalue`); intern that descriptor or codegen
+            // panics on the missing string. `Any`-keyed dicts stay
+            // untyped, so they need nothing here.
             let mut obj_ty = operand_static_type(obj_op, func);
             while let crate::semantic::types::Type::Ref(inner)
             | crate::semantic::types::Type::MutRef(inner) = obj_ty
@@ -291,11 +287,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 obj_ty = *inner;
             }
             let any_container = matches!(obj_ty, crate::semantic::types::Type::Any);
-            let any_keyed_dict = match &obj_ty {
-                crate::semantic::types::Type::Dict(k, _) => !needs_key_descriptor(k),
-                _ => false,
-            };
-            if any_container || any_keyed_dict {
+            if any_container {
                 let mut idx_ty = operand_static_type(idx_op, func);
                 while let crate::semantic::types::Type::Ref(inner)
                 | crate::semantic::types::Type::MutRef(inner) = idx_ty
@@ -314,7 +306,7 @@ impl<M: Module> CraneliftCodegen<M> {
             }
             return;
         }
-        if let Rvalue::BinaryOp(op, lhs, rhs) = rval
+        if let Rvalue::BinaryOp(op, _lhs, rhs) = rval
             && matches!(op, crate::parser::BinOp::In | crate::parser::BinOp::NotIn)
         {
             let mut ty = operand_static_type(rhs, func);
@@ -340,34 +332,8 @@ impl<M: Module> CraneliftCodegen<M> {
                 self.intern_attr_string(&desc);
                 return;
             }
-            // An `Any`-keyed dict or set hashes a concrete scalar needle by
-            // the needle's own static type (see `translate_binop`).
-            let any_keyed = match &ty {
-                crate::semantic::types::Type::Dict(k, _) => {
-                    matches!(**k, crate::semantic::types::Type::Any)
-                }
-                crate::semantic::types::Type::Set(e) => {
-                    matches!(**e, crate::semantic::types::Type::Any)
-                }
-                _ => false,
-            };
-            if any_keyed {
-                let mut needle_ty = operand_static_type(lhs, func);
-                while let crate::semantic::types::Type::Ref(inner)
-                | crate::semantic::types::Type::MutRef(inner) = needle_ty
-                {
-                    needle_ty = *inner;
-                }
-                if needs_key_descriptor(&needle_ty) {
-                    let desc = type_descriptor(
-                        &needle_ty,
-                        &self.struct_fields,
-                        &self.field_types,
-                        &self.enum_defs,
-                    );
-                    self.intern_attr_string(&desc);
-                }
-            }
+            // `Any`-keyed dicts and sets stay untyped (see
+            // `translate_binop`), so they need no descriptor here.
             return;
         }
         if let Rvalue::Aggregate(kind, ops) = rval {
