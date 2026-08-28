@@ -275,7 +275,10 @@ fn unerase_set_inner(
     };
     let new = crate::set::olive_set_new(elen as i64);
     visited.insert(erased, new);
-    let elem_desc = unsafe { desc.byte_add(inner_start) } as i64;
+    // Owned copy: a mid-string sub-pointer is generally unaligned and tag
+    // stripping would corrupt it (see `owned_sub_descriptor`).
+    let elem_owned = crate::hash_typed::owned_sub_descriptor(desc, inner_start);
+    let elem_desc = elem_owned.as_ptr() as i64;
     for i in 0..elen {
         // SAFETY: buffer walk bounded by the checked header length above.
         let elem = unsafe { *eptr.add(i) };
@@ -308,7 +311,10 @@ fn unerase_dict_inner(
     let new = crate::obj::olive_obj_new();
     visited.insert(erased, new);
     let mut fields = FxHashMap::default();
-    let key_desc = unsafe { desc.byte_add(key_start) } as i64;
+    // Owned copy: a mid-string sub-pointer is generally unaligned and tag
+    // stripping would corrupt it (see `owned_sub_descriptor`).
+    let key_owned = crate::hash_typed::owned_sub_descriptor(desc, key_start);
+    let key_desc = key_owned.as_ptr() as i64;
     // Keys mirror erasure exactly: struct-ish keys arrive boxed and must
     // unbox through the key type, while scalars arrive raw and copy. The
     // predicate reads the key encoding, the same rule `box_into_any`

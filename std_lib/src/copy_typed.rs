@@ -373,8 +373,10 @@ fn copy_set_at(
     // The element descriptor starts at `inner_start`: insert typed, so a
     // raw scalar element (e.g. a large odd int, bit-identical to a tagged
     // string pointer) hashes by value instead of being misread as a string.
-    // The untyped add would dereference the raw bits.
-    let elem_desc = unsafe { desc.byte_add(inner_start) } as i64;
+    // The untyped add would dereference the raw bits. Copied owned for the
+    // same alignment reason as `copy_dict`'s key descriptor below.
+    let elem_owned = crate::hash_typed::owned_sub_descriptor(desc, inner_start);
+    let elem_desc = elem_owned.as_ptr() as i64;
     for i in 0..elen {
         let mut p = inner_start;
         let c = copy_val(unsafe { *eptr.add(i) }, desc, &mut p, visited);
@@ -426,8 +428,11 @@ fn copy_dict(val: i64, desc: *const u8, pos: &mut usize, visited: &mut FxHashMap
     // Hash under the key descriptor (the same element-desc convention the
     // typed dict stores use) so raw scalar keys hash by value; the
     // magnitude heuristic would misread a large odd int key as a string
-    // pointer and dereference it.
-    let key_desc = unsafe { desc.byte_add(key_start) } as i64;
+    // pointer and dereference it. The sub-descriptor is copied owned: a
+    // mid-string pointer is generally unaligned, and tag-stripping it
+    // (see `owned_sub_descriptor`) reads neighboring bytes as tags.
+    let key_owned = crate::hash_typed::owned_sub_descriptor(desc, key_start);
+    let key_desc = key_owned.as_ptr() as i64;
     for (k, &v) in obj.fields.iter() {
         let mut kp = key_start;
         let kc = copy_val(k.0, desc, &mut kp, visited);

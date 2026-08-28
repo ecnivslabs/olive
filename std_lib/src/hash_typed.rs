@@ -58,6 +58,19 @@ pub(crate) fn with_key_descriptor<R>(desc: i64, f: impl FnOnce() -> R) -> R {
     r
 }
 
+/// Materializes an owned, aligned copy of the descriptor subtree at `start`.
+/// Pointer arithmetic into a descriptor string (`desc.byte_add(start)`) can
+/// land on an unaligned address, and every consumer strips tag bits via
+/// `str_body` (needed for tagged `Str`-constant descriptors), which corrupts
+/// an unaligned raw pointer into neighboring bytes. Copy walks (which hash
+/// re-inserted keys under the active descriptor) must use this instead of
+/// passing sub-pointers straight into `with_key_descriptor`.
+pub(crate) fn owned_sub_descriptor(desc: *const u8, start: usize) -> Vec<u8> {
+    let mut end = start;
+    crate::format::skip(desc, &mut end);
+    unsafe { std::slice::from_raw_parts(desc.add(start), end - start).to_vec() }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_set_typed(obj_ptr: i64, attr: i64, val: i64, key_desc: i64) -> i64 {
     with_key_descriptor(key_desc, || crate::obj::olive_obj_set(obj_ptr, attr, val))
