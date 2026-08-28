@@ -212,8 +212,7 @@ impl<'a> MirBuilder<'a> {
         // struct-containing shapes) go untyped as `Any`. Boxing also keeps
         // ownership honest: heap-boxed huge ints free through the `Any` key
         // type, while an `Int` key type would never free them.
-        let boxed_scalar_key =
-            Self::any_key_needs_box(key) || matches!(key, Type::Float | Type::F32);
+        let boxed_scalar_key = Self::any_key_needs_box(key);
         let result_key = if Self::key_needs_any_form(key) || boxed_scalar_key {
             Type::Any
         } else {
@@ -326,10 +325,7 @@ impl<'a> MirBuilder<'a> {
         // like `coerce_to_hashable` stores them, so later lookups meet
         // identical words. Immediates own nothing and `str` is already
         // covered, so both stay as-is.
-        let stored_key = if Self::key_needs_any_form(key)
-            || Self::any_key_needs_box(key)
-            || matches!(key, Type::Float | Type::F32)
-        {
+        let stored_key = if Self::key_needs_any_form(key) || Self::any_key_needs_box(key) {
             self.box_into_any(Operand::Copy(key_tmp), key, span)
         } else if *key != Type::Str && Self::list_elem_needs_copy(key) {
             let dup = self.new_local(key.clone(), None, false);

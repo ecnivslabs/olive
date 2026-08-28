@@ -597,21 +597,16 @@ impl<M: Module> CraneliftCodegen<M> {
                         let word = builder.inst_results(inst)[0];
                         float_value_from_word(builder, word, val_ty)
                     }
-                    OliveType::Dict(_, val_ty) => {
-                        // An `Any`-keyed dict holding a concrete scalar key
-                        // hashes by the key's own static type: the untyped
-                        // heuristic reads a raw odd int above the
-                        // string-tag floor as a string pointer and aborts.
-                        // The descriptor is synthesized from the index
-                        // operand itself (mirroring `translate_call`'s
-                        // `desc_arg`), so only a statically-`Any` index
-                        // stays on the heuristic path. Lists, tuples, and
-                        // bytes never reach here with a float index (the
-                        // checker rejects those), and structs keep the
-                        // untyped struct path below.
+                    OliveType::Dict(k, val_ty) => {
+                        // `Any`-keyed dicts stay untyped: normalized keys hash
+                        // identically under the heuristic at store, lookup,
+                        // and growth rehash. Concrete-keyed dicts keep their
+                        // descriptor path above; lists, tuples, and bytes
+                        // never reach here with a float index.
                         let idx_static = super::imports::operand_static_type(idx, func_mir);
                         let idx_ty = super::imports::concrete_ty(&idx_static);
-                        if super::imports::scalar_needs_key_descriptor(idx_ty) {
+                        let any_keyed = matches!(super::imports::concrete_ty(k), OliveType::Any);
+                        if !any_keyed && super::imports::scalar_needs_key_descriptor(idx_ty) {
                             let desc = super::imports::type_descriptor(
                                 idx_ty,
                                 struct_fields,

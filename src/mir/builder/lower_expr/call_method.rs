@@ -984,10 +984,7 @@ impl<'a> MirBuilder<'a> {
                         | CallArg::Splat(e)
                         | CallArg::KwSplat(e) => e.id,
                     });
-                    if Self::key_needs_any_form(&from_ty)
-                        || Self::any_key_needs_box(&from_ty)
-                        || matches!(from_ty, Type::F32)
-                    {
+                    if Self::key_needs_any_form(&from_ty) || Self::any_key_needs_box(&from_ty) {
                         self.box_into_any(a0_raw, &from_ty, span)
                     } else {
                         a0_raw
@@ -1482,9 +1479,13 @@ impl<'a> MirBuilder<'a> {
         // above the string-tag floor as a string pointer and aborts, so the
         // argument's own type drives the typed dispatch, mirroring dicts.
         // Only a statically-`Any` argument stays on the heuristic path.
-        let arg_elem = arg_tys.first().cloned().unwrap_or(Type::Any);
-        let typed = Self::type_needs_key_descriptor(&elem)
-            || (elem == Type::Any && Self::scalar_needs_key_descriptor(&arg_elem));
+        // `Any`-element sets stay on the untyped path: keys are normalized
+        // into identical boxed/tagged words (see `coerce_to_hashable`), so
+        // the heuristic classifies every key the same at store, lookup,
+        // and table-growth rehash. A per-key typed descriptor would rehash
+        // foreign words under the wrong class (a `Str` descriptor reading
+        // a boxed int as string bytes) and break heterogeneous sets.
+        let typed = Self::type_needs_key_descriptor(&elem);
         let runtime = match (attr, typed) {
             ("add", false) => "__olive_set_add",
             ("add", true) => "__olive_set_add_typed",
@@ -1499,18 +1500,14 @@ impl<'a> MirBuilder<'a> {
         let obj_op = self.lower_expr_as_copy(obj);
         let obj_op = self.check_any_method_recv(obj, obj_op, attr, 4, span);
         let mut call_args = vec![obj_op.clone()];
-        // `Any`-stored words are boxed for ints and null (see
+        // `Any`-stored words are boxed for ints, floats, and null (see
         // `coerce_to_hashable`), so arguments meet them in boxed form and
-        // compare by identical word. Aggregates box the same way; floats
-        // keep the typed descriptor path (their heap boxes compare by
-        // payload bits), and bools and strings already share one word.
+        // compare by identical word. Aggregates box the same way, and bools
+        // and strings already share one word.
         if let Some(op) = arg_ops.first() {
             if elem == Type::Any {
                 let from_ty = arg_tys.first().cloned().unwrap_or(Type::Any);
-                if Self::key_needs_any_form(&from_ty)
-                    || Self::any_key_needs_box(&from_ty)
-                    || matches!(from_ty, Type::F32)
-                {
+                if Self::key_needs_any_form(&from_ty) || Self::any_key_needs_box(&from_ty) {
                     call_args.push(self.box_into_any(op.clone(), &from_ty, span));
                 } else {
                     call_args.push(op.clone());
@@ -1567,19 +1564,14 @@ impl<'a> MirBuilder<'a> {
         while let Type::Ref(inner) | Type::MutRef(inner) = recv_ty {
             recv_ty = *inner;
         }
-        // An `Any`-keyed dict with a concrete scalar key hashes by the key's
-        // own static type: the magnitude heuristic reads a raw odd int above
-        // the string-tag floor as a string pointer and aborts, so the key
-        // argument's type drives the typed dispatch. Codegen synthesizes the
-        // descriptor from that same argument. Only a statically-`Any` key
-        // stays on the heuristic path.
-        let arg_key_typed = arg_tys
-            .first()
-            .is_some_and(Self::scalar_needs_key_descriptor);
+        // `Any`-keyed dicts stay on the untyped path: keys are normalized
+        // into identical boxed/tagged words, so the heuristic classifies
+        // every key the same at store, lookup, and table-growth rehash. A
+        // per-key typed descriptor would rehash foreign words under the
+        // wrong class and break heterogeneous dicts. Concrete-keyed dicts
+        // keep their descriptor path.
         let key_typed = match &recv_ty {
-            Type::Dict(k, _) => {
-                Self::type_needs_key_descriptor(k) || (**k == Type::Any && arg_key_typed)
-            }
+            Type::Dict(k, _) => Self::type_needs_key_descriptor(k),
             _ => false,
         };
         // A struct/enum/tuple/collection key needs the typed hash+eq
@@ -1660,23 +1652,21 @@ impl<'a> MirBuilder<'a> {
         let obj_op = self.lower_expr_as_copy(obj);
         let obj_op = self.check_any_method_recv(obj, obj_op, attr, 2, span);
         // An `Any`-keyed or `Any` dict holds aggregate keys in `Any` form
-        // and int keys boxed; meet the stored words there so `.get`/`.remove`
-        // hash by content. Typed receivers keep the raw key for their
-        // descriptor path. A boxed scalar reads back `Any`, so codegen takes
-        // the untyped entry point and compares identical words.
+        // and int, float, and null keys boxed; meet the stored words there
+        // so `.get`/`.remove` hash by content. Typed receivers keep the raw
+        // key for their descriptor path. A boxed scalar reads back `Any`,
+        // so codegen takes the untyped entry point and compares identical
+        // words.
         let any_keyed_recv =
             recv_ty == Type::Any || matches!(&recv_ty, Type::Dict(k, _) if **k == Type::Any);
         // Keys meet stored words by identical representation: aggregates
-        // box and ints box into `Any` holders, while float widths coerce to
-        // the slot (f32 and f64 spellings hash by exact word). A boxed or
-        // coerced scalar reads back `Any`/float-typed, so codegen takes the
-        // untyped or descriptor entry point accordingly.
+        // box and int, float, and null keys box into `Any` holders. A boxed
+        // scalar reads back `Any`, so codegen takes the untyped entry point
+        // accordingly.
         let boxed_key_op = if !arg_ops.is_empty() && matches!(attr, "get" | "remove") {
             let from_ty = arg_tys.first().cloned().unwrap_or(Type::Any);
             if any_keyed_recv
-                && (Self::key_needs_any_form(&from_ty)
-                    || Self::any_key_needs_box(&from_ty)
-                    || matches!(from_ty, Type::F32))
+                && (Self::key_needs_any_form(&from_ty) || Self::any_key_needs_box(&from_ty))
             {
                 Some(self.box_into_any(arg_ops[0].clone(), &from_ty, span))
             } else {
@@ -1770,14 +1760,11 @@ impl<'a> MirBuilder<'a> {
             Type::Any => (Type::Any, Type::Any),
             _ => return None,
         };
-        // Same `Any`-keyed rule as `lower_dict_method`: a concrete scalar
-        // key argument drives the typed dispatch. `update`'s argument is a
-        // whole source dict, not a key, so it keeps the receiver-only rule.
-        let arg_key_typed = arg_tys
-            .first()
-            .is_some_and(Self::scalar_needs_key_descriptor);
-        let key_typed = Self::type_needs_key_descriptor(&key_ty)
-            || (key_ty == Type::Any && arg_key_typed && matches!(attr, "pop" | "setdefault"));
+        // Same `Any`-keyed rule as `lower_dict_method`: `Any`-keyed dicts
+        // stay untyped so heterogeneous keys rehash consistently.
+        // `update`'s argument is a whole source dict, not a key, so it
+        // keeps the receiver-only rule.
+        let key_typed = Self::type_needs_key_descriptor(&key_ty);
         let obj_op = self.lower_expr_as_copy(obj);
         let obj_op = self.check_any_method_recv(obj, obj_op, attr, 2, span);
         let zero = || Operand::Constant(Constant::Int(0));
@@ -1796,10 +1783,7 @@ impl<'a> MirBuilder<'a> {
         let box_key = |b: &mut Self, op: Operand| {
             if any_keyed_recv {
                 let from_ty = arg_tys.first().cloned().unwrap_or(Type::Any);
-                if Self::key_needs_any_form(&from_ty)
-                    || Self::any_key_needs_box(&from_ty)
-                    || matches!(from_ty, Type::F32)
-                {
+                if Self::key_needs_any_form(&from_ty) || Self::any_key_needs_box(&from_ty) {
                     return b.box_into_any(op, &from_ty, span);
                 }
             } else if matches!(key_ty, Type::Float | Type::F32) {

@@ -642,18 +642,14 @@ impl<'a> MirBuilder<'a> {
         let i_raw = self.lower_expr(index);
         let ty = self.get_type(expr_id);
         let idx_ty = self.get_type(index.id).clone();
-        // A `Dict[Any, ·]` holds int and null keys boxed and aggregates
-        // erased (see `coerce_to_hashable`); meet the stored words in that
-        // form here. Float keys store heap-boxed too, so an `f32` needle
-        // boxes the same way (`f64` needles already meet heap payloads by
-        // bits under the typed descriptor). A statically-`Any` holder may
-        // be a positional list or tuple instead, so its index stays raw:
-        // the typed kind-dispatch entry point normalizes dict keys itself
-        // at runtime.
+        // A `Dict[Any, ·]` holds int, float, and null keys boxed and
+        // aggregates erased (see `coerce_to_hashable`); meet the stored
+        // words in that form here. A statically-`Any` holder may be a
+        // positional list or tuple instead, so its index stays raw: the
+        // typed kind-dispatch entry point normalizes dict keys itself at
+        // runtime.
         let i_op = if matches!(&current_obj_ty, Type::Dict(k, _) if **k == Type::Any)
-            && (Self::key_needs_any_form(&idx_ty)
-                || Self::any_key_needs_box(&idx_ty)
-                || matches!(idx_ty, Type::F32))
+            && (Self::key_needs_any_form(&idx_ty) || Self::any_key_needs_box(&idx_ty))
             || current_obj_ty == Type::Any && Self::key_needs_any_form(&idx_ty)
         {
             self.box_into_any(i_raw.clone(), &idx_ty, span)
@@ -662,8 +658,9 @@ impl<'a> MirBuilder<'a> {
         };
         // A float key must match the slot width: f32 and f64 spellings hash
         // by exact word, so a mismatched needle misses. Typed keys coerce to
-        // the container's key type; an `Any`-held f32 promotes to the bare
-        // f64 spelling those stores hold.
+        // the container's key type; a statically-`Any` holder may be a
+        // positional list, so its f32 index promotes to the f64 spelling
+        // the runtime kind dispatch expects.
         let i_op = match &current_obj_ty {
             Type::Dict(k, _) if !matches!(**k, Type::Any) => {
                 self.coerce_float_slot(i_op, &idx_ty, k, span)

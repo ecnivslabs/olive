@@ -886,10 +886,9 @@ fn regression_any_keyed_dict_large_int_lookup() {
 
 #[test]
 fn regression_any_keyed_dict_f32_key_lookup() {
-    // `Any` slots store float keys heap-boxed, but an `f32` needle passed
-    // through bare and missed by exact word (an `f64` needle meets heap
-    // payloads by bits under the typed descriptor). `f32` needles box into
-    // `Any` form at every lookup position like ints do.
+    // `Any` slots store float keys heap-boxed; `f32` and `f64` needles box
+    // into `Any` form at every lookup position like ints do, so both meet
+    // the stored words identically under the untyped path.
     let mut cg = compile(concat!(
         "fn f() -> i64:\n",
         "    let x: f32 = 1.5\n",
@@ -912,6 +911,46 @@ fn regression_any_keyed_dict_f32_key_lookup() {
         "    return acc\n",
     ));
     assert_eq!(call_i64(&mut cg, "f"), 1141);
+}
+
+#[test]
+fn regression_any_keyed_dict_heterogeneous_growth() {
+    // `Any`-keyed dicts mix strings with boxed int/float keys. Per-key
+    // typed descriptors rehash foreign words under the wrong class on
+    // table growth (a `Str` descriptor reading a boxed int as string
+    // bytes segfaults; a float descriptor losing bare-vs-boxed bits
+    // misses), so every `Any`-keyed op stays untyped on normalized words.
+    let mut cg = compile(concat!(
+        "fn f() -> i64:\n",
+        "    let x: f32 = 2.5\n",
+        "    let d: dict[Any, i64] = {}\n",
+        "    d[99999] = 1\n",
+        "    d[\"a\"] = 2\n",
+        "    d[1.5] = 3\n",
+        "    d[x] = 4\n",
+        "    d[\"b\"] = 5\n",
+        "    let mut acc = d[99999]\n",
+        "    acc = acc + d[\"a\"]\n",
+        "    acc = acc + d[1.5]\n",
+        "    acc = acc + d[x]\n",
+        "    acc = acc + d[\"b\"]\n",
+        "    acc = acc + d.get(1.5, -1)\n",
+        "    acc = acc + d.get(x, -1)\n",
+        "    if 1.5 in d:\n",
+        "        acc = acc + 100\n",
+        "    if x in d:\n",
+        "        acc = acc + 1000\n",
+        "    if \"a\" in d:\n",
+        "        acc = acc + 10000\n",
+        "    d.pop(x)\n",
+        "    acc = acc + len(d)\n",
+        "    d.remove(\"a\")\n",
+        "    acc = acc + len(d)\n",
+        "    acc = acc + d.setdefault(7, 70)\n",
+        "    acc = acc + len(d)\n",
+        "    return acc\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 11203);
 }
 
 #[test]

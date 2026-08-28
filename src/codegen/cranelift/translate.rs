@@ -896,7 +896,7 @@ impl<M: Module> CraneliftCodegen<M> {
                             builder.ins().call(local_func, &[o, ikey, v, desc_ptr]);
                         }
                     }
-                    OliveType::Dict(_, val_ty) if val_ty.needs_drop() => {
+                    OliveType::Dict(k, val_ty) if val_ty.needs_drop() => {
                         let val_desc = super::imports::type_descriptor(
                             val_ty,
                             struct_fields,
@@ -908,13 +908,16 @@ impl<M: Module> CraneliftCodegen<M> {
                             .expect("dict value descriptor not interned during collection");
                         let val_local_data = module.declare_data_in_func(val_data_id, builder.func);
                         let val_desc_ptr = builder.ins().symbol_value(types::I64, val_local_data);
-                        // An `Any`-keyed dict hashes a concrete scalar index
-                        // by the index's own static type (see the plain
-                        // `Dict` arm below); only a statically-`Any` index
-                        // keeps the zero key descriptor.
+                        // `Any`-keyed dicts stay untyped: normalized keys hash
+                        // identically under the heuristic at store, lookup,
+                        // and growth rehash. A per-key descriptor would
+                        // misread foreign words on rehash.
                         let idx_static = super::imports::operand_static_type(idx, func_mir);
                         let idx_ty = super::imports::concrete_ty(&idx_static);
-                        let key_desc_ptr = if super::imports::scalar_needs_key_descriptor(idx_ty) {
+                        let any_keyed = matches!(super::imports::concrete_ty(k), OliveType::Any);
+                        let key_desc_ptr = if !any_keyed
+                            && super::imports::scalar_needs_key_descriptor(idx_ty)
+                        {
                             let desc = super::imports::type_descriptor(
                                 idx_ty,
                                 struct_fields,
@@ -997,13 +1000,14 @@ impl<M: Module> CraneliftCodegen<M> {
                         let local_func = module.declare_func_in_func(*set_id, builder.func);
                         builder.ins().call(local_func, &[o, idx, v, desc_ptr]);
                     }
-                    OliveType::Dict(_, _) => {
-                        // Same `Any`-keyed rule as `GetIndex`: a concrete
-                        // scalar index hashes by its own static type, or the
-                        // untyped heuristic aborts on large odd ints.
+                    OliveType::Dict(k, _) => {
+                        // `Any`-keyed dicts stay untyped: normalized keys hash
+                        // identically under the heuristic at store, lookup,
+                        // and growth rehash.
                         let idx_static = super::imports::operand_static_type(idx, func_mir);
                         let idx_ty = super::imports::concrete_ty(&idx_static);
-                        if super::imports::scalar_needs_key_descriptor(idx_ty) {
+                        let any_keyed = matches!(super::imports::concrete_ty(k), OliveType::Any);
+                        if !any_keyed && super::imports::scalar_needs_key_descriptor(idx_ty) {
                             let desc = super::imports::type_descriptor(
                                 idx_ty,
                                 struct_fields,

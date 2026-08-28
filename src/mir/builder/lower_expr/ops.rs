@@ -408,16 +408,12 @@ impl<'a> MirBuilder<'a> {
             let l_ty = self.get_type(left.id).clone();
             let haystack = self.lower_expr_as_copy(right);
             let needle = self.lower_expr_as_copy(left);
-            let runtime =
-                if Self::key_needs_any_form(&l_ty) || !Self::scalar_needs_key_descriptor(&l_ty) {
-                    "__olive_in_list"
-                } else {
-                    "__olive_in_list_typed"
-                };
-            let needle = if Self::key_needs_any_form(&l_ty)
-                || Self::any_key_needs_box(&l_ty)
-                || matches!(l_ty, Type::F32)
-            {
+            // `Any`-element sets stay untyped for the same growth-rehash
+            // reason as dicts: the needle is boxed into the identical word
+            // the stores hold, so the heuristic classifies every key the
+            // same everywhere.
+            let runtime = "__olive_in_list";
+            let needle = if Self::key_needs_any_form(&l_ty) || Self::any_key_needs_box(&l_ty) {
                 self.box_into_any(needle, &l_ty, span)
             } else {
                 needle
@@ -447,18 +443,15 @@ impl<'a> MirBuilder<'a> {
             return self.operand_for_local(not_tmp);
         }
         // Membership in a `dict[Any, ·]` compares the needle against boxed
-        // stored keys: box int and null needles into `Any` form so both
+        // stored keys: box int, float, and null needles into `Any` form so both
         // sides share one word. The `BinaryOp` still lowers through codegen,
         // which sees an `Any`-static needle and takes the untyped entry
-        // point. Floats keep the typed descriptor path, and bools and
-        // strings already share one word.
+        // point. Bools and strings already share one word.
         if matches!(op, crate::parser::BinOp::In | crate::parser::BinOp::NotIn)
             && matches!(&r_ty, Type::Dict(k, _) if **k == Type::Any)
             && {
                 let l_ty = self.get_type(left.id);
-                Self::key_needs_any_form(&l_ty)
-                    || Self::any_key_needs_box(&l_ty)
-                    || matches!(&l_ty, Type::F32)
+                Self::key_needs_any_form(&l_ty) || Self::any_key_needs_box(&l_ty)
             }
         {
             let l_ty = self.get_type(left.id).clone();
@@ -964,10 +957,22 @@ impl<'a> MirBuilder<'a> {
         )
     }
 
-    /// Whether an `Any`-keyed container lookup with this key type takes the
-    /// key-derived typed path. Scalars only: aggregates keep the untyped
-    /// structural protocol, which the typed descriptor path disagrees with.
-    pub(crate) fn scalar_needs_key_descriptor(ty: &Type) -> bool {
+    /// Whether an int, float, or null key must enter an `Any`-keyed or
+    /// `Any` container in boxed form. `Any` slots store these words boxed
+    /// (see `coerce_to_hashable`): a bare int above the string-tag floor is
+    /// bit-identical to a tagged string pointer, so an untyped hash, free,
+    /// or copy meeting the bare word dereferences the raw bits, and bare
+    /// float bits hash differently typed than untyped, which breaks table
+    /// growth (rehash runs under the triggering insert's descriptor).
+    /// Boxing here meets the stored words identically; bools
+    /// stay bare (their words never reach the floor) and strings stay
+    /// tagged; aggregates use `key_needs_any_form` instead.
+    pub(crate) fn any_key_needs_box(ty: &Type) -> bool {
+        // Int, float, and null keys all box: a bare large odd int is
+        // bit-identical to a tagged string pointer, and bare float bits
+        // hash differently typed than untyped, so either breaks table
+        // growth (which rehashes under the triggering insert's
+        // descriptor). Boxed words classify identically everywhere.
         matches!(
             ty,
             Type::Int
@@ -981,35 +986,6 @@ impl<'a> MirBuilder<'a> {
                 | Type::Usize
                 | Type::Float
                 | Type::F32
-                | Type::Str
-                | Type::Bool
-                | Type::Null
-        )
-    }
-
-    /// Whether an int or null key must enter an `Any`-keyed or
-    /// `Any` container in boxed form. `Any` slots store these words boxed
-    /// (see `coerce_to_hashable`): a bare int above the string-tag floor is
-    /// bit-identical to a tagged string pointer, so an untyped hash, free,
-    /// or copy meeting the bare word dereferences the raw bits, and even
-    /// the typed paths compare bare needles against boxed stored words by
-    /// exact word. Boxing here meets the stored words identically. Floats
-    /// keep the typed descriptor path instead (their heap boxes compare by
-    /// payload bits, and boxing every lookup key would allocate); bools
-    /// stay bare (their words never reach the floor) and strings stay
-    /// tagged; aggregates use `key_needs_any_form` instead.
-    pub(crate) fn any_key_needs_box(ty: &Type) -> bool {
-        matches!(
-            ty,
-            Type::Int
-                | Type::I8
-                | Type::I16
-                | Type::I32
-                | Type::U8
-                | Type::U16
-                | Type::U32
-                | Type::U64
-                | Type::Usize
                 | Type::Null
         )
     }
