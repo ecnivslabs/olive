@@ -1083,6 +1083,20 @@ fn invert_of_list_and_float_rejected() {
 }
 
 #[test]
+fn native_list_and_dict_conversions_rejected() {
+    // `list`/`dict` lower only for Python objects; native calls reached
+    // codegen with no runtime entry and panicked the compiler instead.
+    assert_rejected(
+        "fn main():\n    print(list([1, 2]))\n",
+        "`list` converts a Python object",
+    );
+    assert_rejected(
+        "fn main():\n    print(dict([(1, 2)]))\n",
+        "`dict` converts a Python object",
+    );
+}
+
+#[test]
 fn f32_struct_fields_tuples_and_enum_payloads_print() {
     // Struct slots, tuple members, and enum payloads hold canonical float
     // bits, but reads reinterpreted the word numerically: every `f32`

@@ -573,6 +573,49 @@ impl TypeChecker {
 
             ExprKind::Call { callee, args } => {
                 if let ExprKind::Identifier(name) = &callee.kind
+                    && matches!(name.as_str(), "list" | "dict")
+                    && args.len() == 1
+                    && let CallArg::Positional(arg) = &args[0]
+                    && self.lookup_type(name)
+                        == Some(if name == "dict" {
+                            Type::Fn(
+                                vec![Type::Any],
+                                Box::new(Type::Dict(Box::new(Type::Str), Box::new(Type::Any))),
+                                Vec::new(),
+                            )
+                        } else {
+                            Type::Fn(
+                                vec![Type::Any],
+                                Box::new(Type::List(Box::new(Type::Any))),
+                                Vec::new(),
+                            )
+                        })
+                {
+                    let raw = self.check_expr(arg);
+                    let arg_ty = self.apply_subst(raw);
+                    let mut current = &arg_ty;
+                    while let Type::Ref(inner) | Type::MutRef(inner) = current {
+                        current = inner;
+                    }
+                    // Only Python values lower: there is no runtime entry
+                    // for native containers, so those calls fall through to
+                    // a codegen "unregistered function" panic instead.
+                    if !current.is_py_value() {
+                        self.errors.push(super::super::error::SemanticError::rich(
+                            crate::compile::errors::Diagnostic::error(
+                                "E0404",
+                                format!("`{name}` converts a Python object, got `{current}`"),
+                                expr.span,
+                            )
+                            .label("expected a Python object"),
+                        ));
+                        if name.as_str() == "dict" {
+                            return Type::Dict(Box::new(Type::Str), Box::new(Type::Any));
+                        }
+                        return Type::List(Box::new(Type::Any));
+                    }
+                }
+                if let ExprKind::Identifier(name) = &callee.kind
                     && matches!(name.as_str(), "sum" | "min" | "max")
                     && args.len() == 1
                     && self.lookup_type(name).is_none()
