@@ -575,7 +575,6 @@ impl TypeChecker {
                 if let ExprKind::Identifier(name) = &callee.kind
                     && matches!(name.as_str(), "list" | "dict")
                     && args.len() == 1
-                    && let CallArg::Positional(arg) = &args[0]
                     && self.lookup_type(name)
                         == Some(if name == "dict" {
                             Type::Fn(
@@ -591,8 +590,25 @@ impl TypeChecker {
                             )
                         })
                 {
-                    let raw = self.check_expr(arg);
+                    fn arg_expr(a: &CallArg) -> &Expr {
+                        match a {
+                            CallArg::Positional(e)
+                            | CallArg::Keyword(_, e)
+                            | CallArg::Splat(e)
+                            | CallArg::KwSplat(e) => e,
+                        }
+                    }
+                    let raw = self.check_expr(arg_expr(&args[0]));
                     let arg_ty = self.apply_subst(raw);
+                    // A splat spreads the container: judge the element type
+                    // it actually passes, not the container.
+                    let arg_ty = match &args[0] {
+                        CallArg::Splat(_) | CallArg::KwSplat(_) => match arg_ty {
+                            Type::List(e) | Type::Set(e) => (*e).clone(),
+                            _ => arg_ty,
+                        },
+                        _ => arg_ty,
+                    };
                     let mut current = &arg_ty;
                     while let Type::Ref(inner) | Type::MutRef(inner) = current {
                         current = inner;

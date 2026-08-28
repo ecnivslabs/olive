@@ -1094,6 +1094,10 @@ fn native_list_and_dict_conversions_rejected() {
         "fn main():\n    print(dict([(1, 2)]))\n",
         "`dict` converts a Python object",
     );
+    assert_rejected(
+        "fn main():\n    let xs = [1, 2]\n    print(list(*xs))\n",
+        "`list` converts a Python object",
+    );
 }
 
 #[test]
