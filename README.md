@@ -15,11 +15,11 @@
 
 Olive is an indentation-based systems programming language. It compiles directly to native code via Cranelift, manages memory through compile-time inferred ownership without a garbage collector or lifetime annotations, and provides direct interop with C, Rust, and Python.
 
-## Examples
+## At a Glance
 
 ### 1. Inferred Ownership
 
-Every heap value has a single owner. Storing a value moves it when finished, or creates an independent copy when still in use—no hidden sharing, and no lifetime annotations.
+Every heap value has a single owner. Storing a value moves it when finished, or creates an independent copy when still in use. No hidden sharing, no lifetime annotations.
 
 ```rust
 fn main():
