@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/github/languages/top/ecnivslabs/olive?style=flat-square">
 </p>
 
-Olive is an indentation-based systems programming language. It compiles directly to native code via Cranelift, manages memory through compile-time inferred ownership without a garbage collector or lifetime annotations, and provides direct interop with C, Rust, and Python.
+[Olive](https://olive.ecnivs.com) is an indentation-based systems programming language. It compiles directly to native code via Cranelift, manages memory through compile-time inferred ownership without a garbage collector or lifetime annotations, and provides direct interop with C, Rust, and Python.
 
 ## At a Glance
 
