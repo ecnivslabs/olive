@@ -40,8 +40,8 @@ const base = import.meta.env.BASE_URL;
 
     <section class="codesec">
       <div class="codesec-inner">
-        <h2>Value semantics, not memory management.</h2>
-        <p class="lede">This is the whole model: a store copies or moves, it never shares. Mutation after that is exactly what it looks like.</p>
+        <h2>Inferred ownership. No lifetime syntax.</h2>
+        <p class="lede">Every value has a single owner. Storing a value moves or copies automatically—no hidden sharing, and no borrow-checker friction for values.</p>
         <div class="card">
           <pre><code><span class="kw">fn</span> <span class="fn">main</span>():
     <span class="kw">let mut</span> a = [1, 2]
