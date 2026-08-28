@@ -644,11 +644,16 @@ impl<'a> MirBuilder<'a> {
         let idx_ty = self.get_type(index.id).clone();
         // A `Dict[Any, ·]` holds int and null keys boxed and aggregates
         // erased (see `coerce_to_hashable`); meet the stored words in that
-        // form here. A statically-`Any` holder may be a positional list or
-        // tuple instead, so its index stays raw: the typed kind-dispatch
-        // entry point normalizes dict keys itself at runtime.
+        // form here. Float keys store heap-boxed too, so an `f32` needle
+        // boxes the same way (`f64` needles already meet heap payloads by
+        // bits under the typed descriptor). A statically-`Any` holder may
+        // be a positional list or tuple instead, so its index stays raw:
+        // the typed kind-dispatch entry point normalizes dict keys itself
+        // at runtime.
         let i_op = if matches!(&current_obj_ty, Type::Dict(k, _) if **k == Type::Any)
-            && (Self::key_needs_any_form(&idx_ty) || Self::any_key_needs_box(&idx_ty))
+            && (Self::key_needs_any_form(&idx_ty)
+                || Self::any_key_needs_box(&idx_ty)
+                || matches!(idx_ty, Type::F32))
             || current_obj_ty == Type::Any && Self::key_needs_any_form(&idx_ty)
         {
             self.box_into_any(i_raw.clone(), &idx_ty, span)

@@ -414,7 +414,10 @@ impl<'a> MirBuilder<'a> {
                 } else {
                     "__olive_in_list_typed"
                 };
-            let needle = if Self::key_needs_any_form(&l_ty) || Self::any_key_needs_box(&l_ty) {
+            let needle = if Self::key_needs_any_form(&l_ty)
+                || Self::any_key_needs_box(&l_ty)
+                || matches!(l_ty, Type::F32)
+            {
                 self.box_into_any(needle, &l_ty, span)
             } else {
                 needle
@@ -453,7 +456,9 @@ impl<'a> MirBuilder<'a> {
             && matches!(&r_ty, Type::Dict(k, _) if **k == Type::Any)
             && {
                 let l_ty = self.get_type(left.id);
-                Self::key_needs_any_form(&l_ty) || Self::any_key_needs_box(&l_ty)
+                Self::key_needs_any_form(&l_ty)
+                    || Self::any_key_needs_box(&l_ty)
+                    || matches!(&l_ty, Type::F32)
             }
         {
             let l_ty = self.get_type(left.id).clone();

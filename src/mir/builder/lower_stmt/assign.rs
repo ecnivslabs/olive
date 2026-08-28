@@ -268,7 +268,9 @@ impl<'a> MirBuilder<'a> {
                 // here: the typed kind-dispatch entry point normalizes dict
                 // keys itself at runtime.
                 let idx_op = if matches!(&current_obj_ty, Type::Dict(k, _) if **k == Type::Any)
-                    && (Self::key_needs_any_form(&idx_ty) || Self::any_key_needs_box(&idx_ty))
+                    && (Self::key_needs_any_form(&idx_ty)
+                        || Self::any_key_needs_box(&idx_ty)
+                        || matches!(idx_ty, Type::F32))
                     || current_obj_ty == Type::Any && Self::key_needs_any_form(&idx_ty)
                 {
                     self.box_into_any(idx_op.clone(), &idx_ty, target.span)

@@ -984,7 +984,10 @@ impl<'a> MirBuilder<'a> {
                         | CallArg::Splat(e)
                         | CallArg::KwSplat(e) => e.id,
                     });
-                    if Self::key_needs_any_form(&from_ty) || Self::any_key_needs_box(&from_ty) {
+                    if Self::key_needs_any_form(&from_ty)
+                        || Self::any_key_needs_box(&from_ty)
+                        || matches!(from_ty, Type::F32)
+                    {
                         self.box_into_any(a0_raw, &from_ty, span)
                     } else {
                         a0_raw
@@ -1504,7 +1507,10 @@ impl<'a> MirBuilder<'a> {
         if let Some(op) = arg_ops.first() {
             if elem == Type::Any {
                 let from_ty = arg_tys.first().cloned().unwrap_or(Type::Any);
-                if Self::key_needs_any_form(&from_ty) || Self::any_key_needs_box(&from_ty) {
+                if Self::key_needs_any_form(&from_ty)
+                    || Self::any_key_needs_box(&from_ty)
+                    || matches!(from_ty, Type::F32)
+                {
                     call_args.push(self.box_into_any(op.clone(), &from_ty, span));
                 } else {
                     call_args.push(op.clone());
@@ -1668,7 +1674,9 @@ impl<'a> MirBuilder<'a> {
         let boxed_key_op = if !arg_ops.is_empty() && matches!(attr, "get" | "remove") {
             let from_ty = arg_tys.first().cloned().unwrap_or(Type::Any);
             if any_keyed_recv
-                && (Self::key_needs_any_form(&from_ty) || Self::any_key_needs_box(&from_ty))
+                && (Self::key_needs_any_form(&from_ty)
+                    || Self::any_key_needs_box(&from_ty)
+                    || matches!(from_ty, Type::F32))
             {
                 Some(self.box_into_any(arg_ops[0].clone(), &from_ty, span))
             } else {
@@ -1788,11 +1796,11 @@ impl<'a> MirBuilder<'a> {
         let box_key = |b: &mut Self, op: Operand| {
             if any_keyed_recv {
                 let from_ty = arg_tys.first().cloned().unwrap_or(Type::Any);
-                if Self::key_needs_any_form(&from_ty) || Self::any_key_needs_box(&from_ty) {
+                if Self::key_needs_any_form(&from_ty)
+                    || Self::any_key_needs_box(&from_ty)
+                    || matches!(from_ty, Type::F32)
+                {
                     return b.box_into_any(op, &from_ty, span);
-                }
-                if matches!(from_ty, Type::F32) {
-                    return b.coerce_float_slot(op, &from_ty, &Type::Float, span);
                 }
             } else if matches!(key_ty, Type::Float | Type::F32) {
                 let from_ty = arg_tys.first().cloned().unwrap_or(Type::Any);

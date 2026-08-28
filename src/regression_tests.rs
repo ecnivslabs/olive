@@ -885,6 +885,36 @@ fn regression_any_keyed_dict_large_int_lookup() {
 }
 
 #[test]
+fn regression_any_keyed_dict_f32_key_lookup() {
+    // `Any` slots store float keys heap-boxed, but an `f32` needle passed
+    // through bare and missed by exact word (an `f64` needle meets heap
+    // payloads by bits under the typed descriptor). `f32` needles box into
+    // `Any` form at every lookup position like ints do.
+    let mut cg = compile(concat!(
+        "fn f() -> i64:\n",
+        "    let x: f32 = 1.5\n",
+        "    let d: dict[Any, i64] = {(x): 10}\n",
+        "    let mut acc = d[x]\n",
+        "    acc = acc + d[1.5]\n",
+        "    acc = acc + d.get(x, -1)\n",
+        "    acc = acc + d.get(1.5, -1)\n",
+        "    if x in d:\n",
+        "        acc = acc + 1\n",
+        "    if 1.5 in d:\n",
+        "        acc = acc + 100\n",
+        "    d.pop(x)\n",
+        "    acc = acc + len(d)\n",
+        "    let s: set[Any] = {x}\n",
+        "    if x in s:\n",
+        "        acc = acc + 1000\n",
+        "    s.discard(x)\n",
+        "    acc = acc + len(s)\n",
+        "    return acc\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 1141);
+}
+
+#[test]
 fn regression_any_keyed_set_int_membership() {
     // Same heuristic abort through set membership: int needles box into
     // `Any` form to meet the boxed stored words identically.
