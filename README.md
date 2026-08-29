@@ -97,7 +97,7 @@ fn main():
 
 Errors pinpoint source locations with carets and built-in remediation via `pit explain`.
 
-```text
+```rust
 [E0503] Error: cannot borrow `list` as immutable
    ╭─[ src/main.ol:4:14 ]
    │
