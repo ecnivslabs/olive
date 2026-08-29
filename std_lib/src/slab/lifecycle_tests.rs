@@ -97,7 +97,12 @@ fn retired_struct_borrow_is_stale() {
     })
     .join()
     .unwrap();
-    assert_eq!(crate::struct_obj::olive_struct_gen_of(ptr), 0);
+    assert_ne!(generation, 0);
+    let current = crate::struct_obj::olive_struct_gen_of(ptr);
+    assert_ne!(
+        current, generation,
+        "retired arena must tear down or recycle with a new epoch, not keep the same live generation"
+    );
     assert_eq!(
         crate::struct_obj::olive_struct_gen_stale(ptr, generation),
         1
@@ -112,6 +117,11 @@ fn retired_string_borrow_is_stale() {
     })
     .join()
     .unwrap();
-    assert_eq!(crate::string_slab::olive_str_gen_of(ptr), 0);
+    assert_ne!(generation, 0);
+    let current = crate::string_slab::olive_str_gen_of(ptr);
+    assert_ne!(
+        current, generation,
+        "retired arena must tear down or recycle with a new epoch, not keep the same live generation"
+    );
     assert_eq!(crate::string_slab::olive_str_gen_stale(ptr, generation), 1);
 }
