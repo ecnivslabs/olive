@@ -1,5 +1,25 @@
 use crate::*;
 
+static STRUCT_SUB_DESC_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<rustc_hash::FxHashMap<Vec<u8>, i64>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(rustc_hash::FxHashMap::default()));
+
+fn intern_sub_descriptor(desc: *const u8, start: usize) -> i64 {
+    let mut end = start;
+    crate::format::skip(desc, &mut end);
+    let bytes = unsafe { std::slice::from_raw_parts(desc.add(start), end - start) };
+    let mut cache = STRUCT_SUB_DESC_CACHE.lock().unwrap();
+    if let Some(&hit) = cache.get(bytes) {
+        return hit;
+    }
+    let mut owned = bytes.to_vec();
+    owned.push(0);
+    let leaked: &'static [u8] = Box::leak(owned.into_boxed_slice());
+    let ptr = leaked.as_ptr() as i64;
+    cache.insert(bytes.to_vec(), ptr);
+    ptr
+}
+
 fn index_type_error(loc: i64) -> ! {
     let location = (loc != 0).then(|| olive_str_from_ptr(loc));
     panic::abort("value does not support indexing", location.as_deref());
@@ -223,12 +243,15 @@ pub extern "C" fn olive_any_setattr(obj: i64, attr: i64, val: i64, loc: i64) -> 
     );
 }
 
-/// Stores `val` into a struct-box field by name, releasing the displaced
-/// word through the field's own descriptor first (like the concrete path
-/// releases through the static field type). The new word stores as-is:
-/// the caller coerces it to the field's representation, mirroring the
-/// concrete lowering.
+/// Stores `val` (an owned `Any` word) into a struct-box field by name,
+/// releasing the displaced word through the field's own descriptor first
+/// (like the concrete path releases through the static field type).
+/// Scalar and struct fields unbox from `Any` to the raw representation
+/// (`unerase` faults on a wrong-typed value instead of mis-storing it);
+/// all other heap shapes already travel as `Any` words and store directly.
 fn struct_box_store(obj: i64, attr: i64, val: i64, loc: i64) {
+    use crate::format::{D_BOOL, D_F32, D_FLOAT, D_INT, D_NULL, D_STRUCT, D_STRUCT_SHARED};
+    use rustc_hash::FxHashMap;
     let want = olive_str_to_bytes(attr);
     let b = unsafe { &*(obj as *const crate::struct_box::OliveStructBox) };
     let desc = b.desc as *const u8;
@@ -247,6 +270,14 @@ fn struct_box_store(obj: i64, attr: i64, val: i64, loc: i64) {
         let field_name = unsafe { std::slice::from_raw_parts(desc.add(pos + 1), field_len) };
         pos += 1 + field_len;
         let field_type_pos = pos;
+        let mut tag = unsafe { *desc.add(field_type_pos) };
+        let mut resolved_pos = field_type_pos;
+        while tag == crate::format::D_BACKREF {
+            let hi = unsafe { *desc.add(resolved_pos + 1) } as usize;
+            let lo = unsafe { *desc.add(resolved_pos + 2) } as usize;
+            resolved_pos = (hi << 8) | lo;
+            tag = unsafe { *desc.add(resolved_pos) };
+        }
         if field_name == want {
             let inner = b.ptr;
             if inner == 0 {
@@ -262,7 +293,32 @@ fn struct_box_store(obj: i64, attr: i64, val: i64, loc: i64) {
                 let mut free_pos = field_type_pos;
                 crate::free_typed::free_val(old, desc, &mut free_pos);
             }
-            unsafe { *slot = val };
+            let stored = match tag {
+                D_INT | D_FLOAT | D_F32 | D_BOOL | D_NULL => {
+                    let raw = crate::unerase::unerase_scalar(val, tag);
+                    if crate::slab::slot_is_live(val) {
+                        let kind = unsafe { *(val as *const i64) };
+                        if kind == crate::KIND_INT || kind == crate::KIND_FLOAT {
+                            crate::boxed::olive_free_boxed(val);
+                        }
+                    }
+                    raw
+                }
+                D_STRUCT | D_STRUCT_SHARED => {
+                    if val == 0 {
+                        0
+                    } else {
+                        let mut upos = field_type_pos;
+                        let mut visited = FxHashMap::default();
+                        let copied =
+                            crate::unerase::unerase_any(val, desc, &mut upos, &mut visited);
+                        crate::olive_free_any(val);
+                        copied
+                    }
+                }
+                _ => val,
+            };
+            unsafe { *slot = stored };
             return;
         }
         crate::format::skip(desc, &mut pos);
@@ -272,17 +328,28 @@ fn struct_box_store(obj: i64, attr: i64, val: i64, loc: i64) {
 
 /// Reads a struct-box member by name, walking the box's descriptor for the
 /// field index (same layout `copy_struct` mirrors: name, field count biased
-/// by 13, then length-prefixed names with types). Returns the raw word, a
-/// borrow the box keeps owning, exactly like a concrete member read.
+/// by 13, then length-prefixed names with types). Returns an owned `Any`
+/// word: scalars box inline or heap, structs copy then box with an interned
+/// sub-descriptor, and all other heap shapes deep-copy through the field
+/// descriptor so the caller owns independently of the outer box.
 fn struct_box_member(obj: i64, attr: i64, loc: i64) -> i64 {
+    use crate::format::{D_ANY, D_BOOL, D_F32, D_FLOAT, D_INT, D_NULL, D_STRUCT, D_STRUCT_SHARED};
+    use rustc_hash::FxHashMap;
     let want = olive_str_to_bytes(attr);
-    let b = unsafe { &*(obj as *const crate::struct_box::OliveStructBox) };
-    let desc = b.desc as *const u8;
+    let (desc_ptr, inner) = {
+        let b = unsafe { &*(obj as *const crate::struct_box::OliveStructBox) };
+        (b.desc as *const u8, b.ptr)
+    };
+    let desc = desc_ptr;
     if unsafe { *desc } != crate::format::D_STRUCT
         && unsafe { *desc } != crate::format::D_STRUCT_SHARED
     {
         struct_member_miss(attr, obj, loc);
     }
+    if inner == 0 {
+        struct_member_miss(attr, obj, loc);
+    }
+    let n_fields = unsafe { *(inner as *const i64) };
     let mut pos = 1usize;
     let name_len = unsafe { *desc.add(pos) } as usize - 13;
     pos += 1 + name_len;
@@ -292,18 +359,54 @@ fn struct_box_member(obj: i64, attr: i64, loc: i64) -> i64 {
         let field_len = unsafe { *desc.add(pos) } as usize - 13;
         let field_name = unsafe { std::slice::from_raw_parts(desc.add(pos + 1), field_len) };
         pos += 1 + field_len;
-        crate::format::skip(desc, &mut pos);
-        if field_name == want {
-            let inner = b.ptr;
-            if inner == 0 {
+        let field_type_pos = pos;
+        let mut tag = unsafe { *desc.add(field_type_pos) };
+        let mut resolved_pos = field_type_pos;
+        while tag == crate::format::D_BACKREF {
+            let hi = unsafe { *desc.add(resolved_pos + 1) } as usize;
+            let lo = unsafe { *desc.add(resolved_pos + 2) } as usize;
+            resolved_pos = (hi << 8) | lo;
+            tag = unsafe { *desc.add(resolved_pos) };
+        }
+        let want_match = field_name == want;
+        if want_match {
+            if (i as i64) >= n_fields {
                 struct_member_miss(attr, obj, loc);
             }
-            let n_fields = unsafe { *(inner as *const i64) };
-            if (i as i64) < n_fields {
-                return unsafe { *((inner + 8 + 8 * i as i64) as *const i64) };
+            let raw = unsafe { *((inner + 8 + 8 * i as i64) as *const i64) };
+            match tag {
+                D_INT => return crate::boxed::olive_box_int(raw),
+                D_FLOAT => {
+                    return crate::boxed::olive_box_float(f64::from_bits(raw as u64));
+                }
+                D_F32 => {
+                    return crate::boxed::olive_box_float(f32::from_bits(raw as u32) as f64);
+                }
+                D_BOOL => return crate::boxed::olive_box_bool(raw),
+                D_NULL => return crate::boxed::olive_box_null(),
+                D_STRUCT | D_STRUCT_SHARED => {
+                    if raw == 0 {
+                        return 0;
+                    }
+                    let mut copy_pos = field_type_pos;
+                    let mut visited = FxHashMap::default();
+                    let copied =
+                        crate::copy_typed::copy_val(raw, desc, &mut copy_pos, &mut visited);
+                    let static_desc = intern_sub_descriptor(desc, resolved_pos);
+                    return crate::struct_box::olive_struct_box(copied, static_desc);
+                }
+                D_ANY => {
+                    let mut visited = FxHashMap::default();
+                    return crate::copy_typed::copy_any(raw, &mut visited);
+                }
+                _ => {
+                    let mut copy_pos = field_type_pos;
+                    let mut visited = FxHashMap::default();
+                    return crate::copy_typed::copy_val(raw, desc, &mut copy_pos, &mut visited);
+                }
             }
-            struct_member_miss(attr, obj, loc);
         }
+        crate::format::skip(desc, &mut pos);
     }
     struct_member_miss(attr, obj, loc);
 }
@@ -452,6 +555,8 @@ fn normalize_typed_any_key(index: i64, desc: i64) -> (i64, bool) {
         crate::boxed::olive_box_int(index)
     } else if tag == crate::format::D_FLOAT {
         crate::boxed::olive_box_float(f64::from_bits(index as u64))
+    } else if tag == crate::format::D_F32 {
+        crate::boxed::olive_box_float(f32::from_bits(index as u32) as f64)
     } else if tag == crate::format::D_NULL {
         crate::boxed::olive_box_null()
     } else {

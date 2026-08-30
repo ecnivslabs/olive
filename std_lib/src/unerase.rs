@@ -1,7 +1,7 @@
 use crate::boxed::{TAG_BOOL, TAG_INT, TAG_MASK, TAG_NULL};
 use crate::format::{
-    D_ANY, D_BACKREF, D_BOOL, D_BYTES, D_DICT, D_ENUM, D_FATPTR, D_FLOAT, D_INT, D_LIST, D_NULL,
-    D_SET, D_STR, D_STRUCT, D_STRUCT_SHARED, D_TUPLE, byte, skip,
+    D_ANY, D_BACKREF, D_BOOL, D_BYTES, D_DICT, D_ENUM, D_F32, D_FATPTR, D_FLOAT, D_INT, D_LIST,
+    D_NULL, D_SET, D_STR, D_STRUCT, D_STRUCT_SHARED, D_TUPLE, byte, skip,
 };
 use crate::{
     KIND_ANY_LIST, KIND_BYTES, KIND_ENUM, KIND_FLOAT, KIND_INT, KIND_LIST, KIND_OBJ, KIND_SET,
@@ -104,7 +104,7 @@ fn live_kind(v: i64) -> Option<i64> {
     Some(unsafe { *(v as *const i64) })
 }
 
-fn unerase_scalar(any: i64, tag: u8) -> i64 {
+pub(crate) fn unerase_scalar(any: i64, tag: u8) -> i64 {
     match tag {
         D_INT => {
             if any & TAG_MASK == TAG_INT {
@@ -122,6 +122,14 @@ fn unerase_scalar(any: i64, tag: u8) -> i64 {
             Some(KIND_FLOAT) => {
                 // SAFETY: kind verified above on a live slot.
                 unsafe { (*(any as *const crate::boxed::OliveBoxed)).bits }
+            }
+            _ => fault("a float"),
+        },
+        D_F32 => match live_kind(any) {
+            Some(KIND_FLOAT) => {
+                // SAFETY: kind verified above on a live slot.
+                let bits = unsafe { (*(any as *const crate::boxed::OliveBoxed)).bits };
+                (f64::from_bits(bits as u64) as f32).to_bits() as i64
             }
             _ => fault("a float"),
         },
@@ -157,7 +165,7 @@ pub(crate) fn unerase_any(
             }
             crate::copy_typed::copy_any(any, visited)
         }
-        D_INT | D_FLOAT | D_BOOL | D_NULL => unerase_scalar(any, tag),
+        D_INT | D_FLOAT | D_F32 | D_BOOL | D_NULL => unerase_scalar(any, tag),
         D_ANY => crate::copy_typed::copy_any(any, visited),
         D_LIST => unerase_list_inner(any, desc, pos, visited),
         D_SET => unerase_set_inner(any, desc, pos, visited),

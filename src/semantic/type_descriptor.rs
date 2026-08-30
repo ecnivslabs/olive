@@ -140,7 +140,8 @@ fn encode_descriptor(
         encode_descriptor(t, out, struct_fields, field_types, enum_defs, v);
     };
     match ty {
-        OliveType::Float | OliveType::F32 | OliveType::FloatLiteral(_) => out.push(2),
+        OliveType::Float | OliveType::FloatLiteral(_) => out.push(2),
+        OliveType::F32 => out.push(18),
         OliveType::Bool => out.push(3),
         OliveType::Str => out.push(4),
         OliveType::Null => out.push(5),

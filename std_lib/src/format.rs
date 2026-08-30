@@ -25,6 +25,11 @@ pub(crate) const D_STRUCT_SHARED: u8 = 16;
 /// descriptor lives in the record itself, so copy/free recurse through that
 /// rather than any bytes following this tag.
 pub(crate) const D_FATPTR: u8 = 17;
+/// `f32` bits (zero-extended) as distinct from `f64` bits (`D_FLOAT`).
+/// Struct and list slots hold the narrow width; `Any` holds the widened
+/// `f64` box, so the descriptor must preserve the width for typed
+/// format/copy/free and for `Any` boxing/unboxing.
+pub(crate) const D_F32: u8 = 18;
 
 /// Renders a value through a full descriptor starting at its first byte, for
 /// callers holding a runtime descriptor pointer (struct boxes).
@@ -134,6 +139,7 @@ fn fmt(val: i64, desc: *const u8, pos: &mut usize) -> String {
     match tag {
         D_INT => format!("{val}"),
         D_FLOAT => crate::fmt_float(f64::from_bits(val as u64)),
+        D_F32 => crate::fmt_float(f32::from_bits(val as u32) as f64),
         D_BOOL => if val != 0 { "True" } else { "False" }.to_string(),
         D_STR => format!("\"{}\"", olive_str_from_ptr(val)),
         D_NULL => "None".to_string(),

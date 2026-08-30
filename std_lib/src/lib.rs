@@ -172,7 +172,7 @@ fn classify_key(v: i64) -> KeyClass {
         };
         match key_tag {
             format::D_STR => return KeyClass::Str(olive_str_to_bytes(v)),
-            format::D_INT | format::D_FLOAT | format::D_BOOL | format::D_NULL => {
+            format::D_INT | format::D_FLOAT | format::D_F32 | format::D_BOOL | format::D_NULL => {
                 if is_active_object(v) {
                     let kind = unsafe { *(v as *const i64) };
                     if matches!(kind, KIND_INT | KIND_FLOAT) {
@@ -180,7 +180,7 @@ fn classify_key(v: i64) -> KeyClass {
                         return KeyClass::Scalar(kind, b.bits);
                     }
                 }
-                let kind = if key_tag == format::D_FLOAT {
+                let kind = if key_tag == format::D_FLOAT || key_tag == format::D_F32 {
                     KIND_FLOAT
                 } else {
                     KIND_INT

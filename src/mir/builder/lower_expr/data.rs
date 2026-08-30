@@ -398,7 +398,21 @@ impl<'a> MirBuilder<'a> {
 
         let o = self.lower_expr_as_copy(obj);
         let ty = self.get_type(expr_id);
-        let tmp = self.new_local_with_owning(ty, None, true, false);
+        let mut obj_for_own = obj_ty.clone();
+        while let Type::Ref(inner) | Type::MutRef(inner) = obj_for_own {
+            obj_for_own = *inner;
+        }
+        let is_any_obj = matches!(obj_for_own, Type::Any | Type::Var(_));
+        if is_any_obj && ty != Type::Any {
+            let tmp_any = self.new_local_with_owning(Type::Any, None, true, true);
+            self.push_statement(
+                StatementKind::Assign(tmp_any, Rvalue::GetAttr(o, attr.to_string())),
+                span,
+            );
+            return self.coerce(Operand::Copy(tmp_any), &Type::Any, &ty, span);
+        }
+        let owning = is_any_obj;
+        let tmp = self.new_local_with_owning(ty, None, true, owning);
         self.push_statement(
             StatementKind::Assign(tmp, Rvalue::GetAttr(o, attr.to_string())),
             span,
