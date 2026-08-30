@@ -39,7 +39,8 @@ fn resolve_desc_tag(desc: *const u8, start: usize) -> (u8, usize) {
 
 fn erase_word_to_any(raw: i64, desc: *const u8, start: usize) -> i64 {
     use crate::format::{
-        D_ANY, D_BOOL, D_F32, D_FLOAT, D_INT, D_LIST, D_NULL, D_STRUCT, D_STRUCT_SHARED,
+        D_ANY, D_BOOL, D_DICT, D_F32, D_FLOAT, D_INT, D_LIST, D_NULL, D_SET, D_STRUCT,
+        D_STRUCT_SHARED, D_TUPLE,
     };
     use rustc_hash::FxHashMap;
     let (tag, resolved) = resolve_desc_tag(desc, start);
@@ -64,6 +65,9 @@ fn erase_word_to_any(raw: i64, desc: *const u8, start: usize) -> i64 {
             crate::copy_typed::copy_any(raw, &mut visited)
         }
         D_LIST => erase_list_field_to_any(raw, desc, start),
+        D_SET => erase_set_field_to_any(raw, desc, start),
+        D_DICT => erase_dict_field_to_any(raw, desc, start),
+        D_TUPLE => erase_tuple_field_to_any(raw, desc, start),
         _ => {
             let mut copy_pos = start;
             let mut visited = FxHashMap::default();
@@ -86,6 +90,70 @@ fn erase_list_field_to_any(raw: i64, desc: *const u8, field_pos: usize) -> i64 {
         let elem = crate::list::olive_list_get(raw, i);
         let erased = erase_word_to_any(elem, desc, elem_start);
         crate::list::olive_list_set(out, i, erased);
+    }
+    crate::list::olive_list_mark_any(out)
+}
+
+fn erase_set_field_to_any(raw: i64, desc: *const u8, field_pos: usize) -> i64 {
+    if raw == 0 {
+        return 0;
+    }
+    if !crate::slab::slot_is_live(raw) {
+        return raw;
+    }
+    let elem_start = field_pos + 1;
+    let (eptr, elen) = unsafe {
+        let s = &*(raw as *const crate::OliveHashSet);
+        (s.ptr, s.len)
+    };
+    let out = crate::set::olive_set_new(elen as i64);
+    for i in 0..elen {
+        let elem = unsafe { *eptr.add(i) };
+        let erased = erase_word_to_any(elem, desc, elem_start);
+        crate::set::olive_set_add(out, erased);
+    }
+    out
+}
+
+fn erase_dict_field_to_any(raw: i64, desc: *const u8, field_pos: usize) -> i64 {
+    if raw == 0 {
+        return 0;
+    }
+    if !crate::slab::slot_is_live(raw) {
+        return raw;
+    }
+    let key_start = field_pos + 1;
+    let mut val_start = key_start;
+    crate::format::skip(desc, &mut val_start);
+    let out = crate::obj::olive_obj_new();
+    let obj = unsafe { &*(raw as *const crate::OliveObj) };
+    for (k, &v) in obj.fields.iter() {
+        let erased_k = erase_word_to_any(k.0, desc, key_start);
+        let erased_v = erase_word_to_any(v, desc, val_start);
+        crate::obj::olive_obj_set(out, erased_k, erased_v);
+    }
+    out
+}
+
+fn erase_tuple_field_to_any(raw: i64, desc: *const u8, field_pos: usize) -> i64 {
+    if raw == 0 {
+        return 0;
+    }
+    if !crate::slab::slot_is_live(raw) {
+        return raw;
+    }
+    let n = unsafe { *desc.add(field_pos + 1) } as usize - 1;
+    let len = crate::list::olive_list_len(raw);
+    if len as usize != n {
+        return erase_list_field_to_any(raw, desc, field_pos);
+    }
+    let out = crate::list::olive_list_new(len);
+    let mut pos = field_pos + 2;
+    for i in 0..len {
+        let elem = crate::list::olive_list_get(raw, i);
+        let erased = erase_word_to_any(elem, desc, pos);
+        crate::list::olive_list_set(out, i, erased);
+        crate::format::skip(desc, &mut pos);
     }
     crate::list::olive_list_mark_any(out)
 }
@@ -403,7 +471,8 @@ fn struct_box_store(obj: i64, attr: i64, val: i64, loc: i64) {
 /// descriptor so the caller owns independently of the outer box.
 fn struct_box_member(obj: i64, attr: i64, loc: i64) -> i64 {
     use crate::format::{
-        D_ANY, D_BOOL, D_F32, D_FLOAT, D_INT, D_LIST, D_NULL, D_STRUCT, D_STRUCT_SHARED,
+        D_ANY, D_BOOL, D_DICT, D_F32, D_FLOAT, D_INT, D_LIST, D_NULL, D_SET, D_STRUCT,
+        D_STRUCT_SHARED, D_TUPLE,
     };
     use rustc_hash::FxHashMap;
     let want = olive_str_to_bytes(attr);
@@ -472,6 +541,15 @@ fn struct_box_member(obj: i64, attr: i64, loc: i64) -> i64 {
                 }
                 D_LIST => {
                     return erase_list_field_to_any(raw, desc, field_type_pos);
+                }
+                D_SET => {
+                    return erase_set_field_to_any(raw, desc, field_type_pos);
+                }
+                D_DICT => {
+                    return erase_dict_field_to_any(raw, desc, field_type_pos);
+                }
+                D_TUPLE => {
+                    return erase_tuple_field_to_any(raw, desc, field_type_pos);
                 }
                 _ => {
                     let mut copy_pos = field_type_pos;
