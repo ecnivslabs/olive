@@ -25,6 +25,71 @@ fn index_type_error(loc: i64) -> ! {
     panic::abort("value does not support indexing", location.as_deref());
 }
 
+fn resolve_desc_tag(desc: *const u8, start: usize) -> (u8, usize) {
+    let mut tag = unsafe { *desc.add(start) };
+    let mut pos = start;
+    while tag == crate::format::D_BACKREF {
+        let hi = unsafe { *desc.add(pos + 1) } as usize;
+        let lo = unsafe { *desc.add(pos + 2) } as usize;
+        pos = (hi << 8) | lo;
+        tag = unsafe { *desc.add(pos) };
+    }
+    (tag, pos)
+}
+
+fn erase_word_to_any(raw: i64, desc: *const u8, start: usize) -> i64 {
+    use crate::format::{
+        D_ANY, D_BOOL, D_F32, D_FLOAT, D_INT, D_LIST, D_NULL, D_STRUCT, D_STRUCT_SHARED,
+    };
+    use rustc_hash::FxHashMap;
+    let (tag, resolved) = resolve_desc_tag(desc, start);
+    match tag {
+        D_INT => crate::boxed::olive_box_int(raw),
+        D_FLOAT => crate::boxed::olive_box_float(f64::from_bits(raw as u64)),
+        D_F32 => crate::boxed::olive_box_float(f32::from_bits(raw as u32) as f64),
+        D_BOOL => crate::boxed::olive_box_bool(raw),
+        D_NULL => crate::boxed::olive_box_null(),
+        D_STRUCT | D_STRUCT_SHARED => {
+            if raw == 0 {
+                return 0;
+            }
+            let mut copy_pos = start;
+            let mut visited = FxHashMap::default();
+            let copied = crate::copy_typed::copy_val(raw, desc, &mut copy_pos, &mut visited);
+            let static_desc = intern_sub_descriptor(desc, resolved);
+            crate::struct_box::olive_struct_box(copied, static_desc)
+        }
+        D_ANY => {
+            let mut visited = FxHashMap::default();
+            crate::copy_typed::copy_any(raw, &mut visited)
+        }
+        D_LIST => erase_list_field_to_any(raw, desc, start),
+        _ => {
+            let mut copy_pos = start;
+            let mut visited = FxHashMap::default();
+            crate::copy_typed::copy_val(raw, desc, &mut copy_pos, &mut visited)
+        }
+    }
+}
+
+fn erase_list_field_to_any(raw: i64, desc: *const u8, field_pos: usize) -> i64 {
+    if raw == 0 {
+        return 0;
+    }
+    if !crate::slab::slot_is_live(raw) {
+        return raw;
+    }
+    let elem_start = field_pos + 1;
+    let len = crate::list::olive_list_len(raw);
+    let out = crate::list::olive_list_new(len);
+    for i in 0..len {
+        let elem = crate::list::olive_list_get(raw, i);
+        let erased = erase_word_to_any(elem, desc, elem_start);
+        crate::list::olive_list_set(out, i, erased);
+    }
+    crate::list::olive_list_mark_any(out)
+}
+
 fn slice_type_error() -> ! {
     // Slices carry no source location in the call convention (matching the
     // typed getslice entry points), so the fault names the problem without
@@ -246,11 +311,15 @@ pub extern "C" fn olive_any_setattr(obj: i64, attr: i64, val: i64, loc: i64) -> 
 /// Stores `val` (an owned `Any` word) into a struct-box field by name,
 /// releasing the displaced word through the field's own descriptor first
 /// (like the concrete path releases through the static field type).
-/// Scalar and struct fields unbox from `Any` to the raw representation
-/// (`unerase` faults on a wrong-typed value instead of mis-storing it);
-/// all other heap shapes already travel as `Any` words and store directly.
+/// Scalar, struct, and container fields unbox from `Any` to the raw
+/// representation (`unerase` faults on a wrong-typed value instead of
+/// mis-storing it); all other heap shapes already travel as `Any` words
+/// and store directly.
 fn struct_box_store(obj: i64, attr: i64, val: i64, loc: i64) {
-    use crate::format::{D_BOOL, D_F32, D_FLOAT, D_INT, D_NULL, D_STRUCT, D_STRUCT_SHARED};
+    use crate::format::{
+        D_BOOL, D_DICT, D_F32, D_FLOAT, D_INT, D_LIST, D_NULL, D_SET, D_STRUCT, D_STRUCT_SHARED,
+        D_TUPLE,
+    };
     use rustc_hash::FxHashMap;
     let want = olive_str_to_bytes(attr);
     let b = unsafe { &*(obj as *const crate::struct_box::OliveStructBox) };
@@ -304,7 +373,7 @@ fn struct_box_store(obj: i64, attr: i64, val: i64, loc: i64) {
                     }
                     raw
                 }
-                D_STRUCT | D_STRUCT_SHARED => {
+                D_STRUCT | D_STRUCT_SHARED | D_LIST | D_SET | D_DICT | D_TUPLE => {
                     if val == 0 {
                         0
                     } else {
@@ -333,7 +402,9 @@ fn struct_box_store(obj: i64, attr: i64, val: i64, loc: i64) {
 /// sub-descriptor, and all other heap shapes deep-copy through the field
 /// descriptor so the caller owns independently of the outer box.
 fn struct_box_member(obj: i64, attr: i64, loc: i64) -> i64 {
-    use crate::format::{D_ANY, D_BOOL, D_F32, D_FLOAT, D_INT, D_NULL, D_STRUCT, D_STRUCT_SHARED};
+    use crate::format::{
+        D_ANY, D_BOOL, D_F32, D_FLOAT, D_INT, D_LIST, D_NULL, D_STRUCT, D_STRUCT_SHARED,
+    };
     use rustc_hash::FxHashMap;
     let want = olive_str_to_bytes(attr);
     let (desc_ptr, inner) = {
@@ -398,6 +469,9 @@ fn struct_box_member(obj: i64, attr: i64, loc: i64) -> i64 {
                 D_ANY => {
                     let mut visited = FxHashMap::default();
                     return crate::copy_typed::copy_any(raw, &mut visited);
+                }
+                D_LIST => {
+                    return erase_list_field_to_any(raw, desc, field_type_pos);
                 }
                 _ => {
                     let mut copy_pos = field_type_pos;
