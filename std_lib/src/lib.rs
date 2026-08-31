@@ -644,8 +644,12 @@ pub(crate) fn format_list_elem(val: i64) -> String {
                 let m = unsafe { &*(val as *const OliveObj) };
                 let mut parts = Vec::with_capacity(m.fields.len());
                 for (k, &v) in &m.fields {
-                    let k_str = olive_str_as_str(k.0).unwrap_or("");
-                    parts.push(format!("'{}': {}", k_str, format_list_elem(v)));
+                    let k_str = if is_tagged_str_key(k.0) || crate::string::is_interned_char(k.0) {
+                        format!("'{}'", olive_str_as_str(k.0).unwrap_or(""))
+                    } else {
+                        format_list_elem(k.0)
+                    };
+                    parts.push(format!("{}: {}", k_str, format_list_elem(v)));
                 }
                 return format!("{{{}}}", parts.join(", "));
             }
