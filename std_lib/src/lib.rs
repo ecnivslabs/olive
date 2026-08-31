@@ -1288,35 +1288,6 @@ pub extern "C" fn olive_in_list(val: i64, list_ptr: i64) -> i64 {
     }
     0
 }
-
-/// Membership for a dynamically-typed container (an inference variable
-/// from an `Any` member read, holding a list, set, dict, or string at
-/// runtime). Dispatches by the value's own kind like `olive_get_index_any`
-/// does; anything else faults instead of misreading the word.
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_in_any(val: i64, obj: i64) -> i64 {
-    if obj == 0 || obj & boxed::TAG_MASK == boxed::TAG_NULL {
-        return 0;
-    }
-    if matches!(obj & boxed::TAG_MASK, boxed::TAG_INT | boxed::TAG_BOOL) {
-        crate::panic::abort("cannot test membership here", None);
-    }
-    if obj & 1 == 1 || crate::string::is_interned_char(obj) {
-        return crate::string::olive_str_contains(obj, val);
-    }
-    if !is_active_object(obj) {
-        crate::panic::abort("cannot test membership here", None);
-    }
-    let kind = unsafe { *(obj as *const i64) };
-    match kind {
-        KIND_LIST | KIND_ANY_LIST | KIND_SET => olive_in_list(val, obj),
-        KIND_OBJ => crate::obj::olive_in_obj(val, obj),
-        KIND_PYOBJECT => {
-            crate::panic::abort("cannot test membership here", None);
-        }
-        _ => crate::panic::abort("cannot test membership here", None),
-    }
-}
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_free_str(ptr: i64) {
     string_slab::str_free(ptr);

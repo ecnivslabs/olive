@@ -343,7 +343,6 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_http_put", &sig_i64_i64_i64),
             ("__olive_in_list", &sig_i64_i64_i64),
             ("__olive_in_obj", &sig_i64_i64_i64),
-            ("__olive_in_any", &sig_i64_i64_i64),
             ("__olive_int", &sig_i64_i64),
             ("__olive_int_to_float", &sig_i64_f64),
             ("__olive_int_abs", &sig_i64_i64_i64),
