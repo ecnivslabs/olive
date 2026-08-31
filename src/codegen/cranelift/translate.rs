@@ -737,6 +737,32 @@ impl<M: Module> CraneliftCodegen<M> {
                             v
                         };
 
+                        // Narrow integer fields occupy full 64-bit slots: widen
+                        // here so the stored word is already sign- or
+                        // zero-extended. A truncating store would leave the
+                        // high bytes zero (the slot starts zeroed), so a
+                        // negative `i16` would read back as `65531` once an
+                        // `Any` reader boxes the raw word without a width.
+                        let v = if let Some(field_ty) =
+                            field_types.get(&(struct_name.clone(), attr.clone()))
+                        {
+                            use crate::semantic::types::Type as OliveTy;
+                            let v_ty = builder.func.dfg.value_type(v);
+                            match (field_ty, v_ty) {
+                                (
+                                    OliveTy::I8 | OliveTy::I16 | OliveTy::I32,
+                                    types::I8 | types::I16 | types::I32,
+                                ) => builder.ins().sextend(types::I64, v),
+                                (
+                                    OliveTy::U8 | OliveTy::U16 | OliveTy::U32,
+                                    types::I8 | types::I16 | types::I32,
+                                ) => builder.ins().uextend(types::I64, v),
+                                _ => v,
+                            }
+                        } else {
+                            v
+                        };
+
                         // Overwriting an owning field must release whatever it held;
                         // otherwise every reassignment (e.g. a per-frame camera field) leaks.
                         // Struct storage is zero-initialized, so the guarded free
