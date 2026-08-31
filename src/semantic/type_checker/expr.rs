@@ -2202,6 +2202,29 @@ impl TypeChecker {
                     ));
                 }
 
+                if current_obj == Type::Any {
+                    let struct_names: Vec<String> = self.struct_fields.keys().cloned().collect();
+                    for sname in struct_names {
+                        if self.member_fns(&sname).iter().any(|m| m == attr) {
+                            self.errors.push(super::super::error::SemanticError::rich(
+                                crate::compile::errors::Diagnostic::error(
+                                    "E0422",
+                                    format!(
+                                        "no method `{attr}` on `Any`, narrow to a struct first"
+                                    ),
+                                    expr.span,
+                                )
+                                .label("method not found")
+                                .help(
+                                    "narrow the `Any` to a concrete struct so the method resolves",
+                                ),
+                            ));
+                            return self.fresh_var();
+                        }
+                    }
+                    return Type::Any;
+                }
+
                 self.fresh_var()
             }
 

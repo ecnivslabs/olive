@@ -477,6 +477,48 @@ impl<'a> MirBuilder<'a> {
             return self.operand_for_local(not_tmp);
         }
 
+        // Membership in a dynamically-typed container from an `Any` member
+        // read (an inference variable, possibly substituted to `Any`,
+        // holding a list, set, dict, or string at runtime): box the needle
+        // into `Any` form like the `Set(Any)` arm so it meets boxed stored
+        // words, then dispatch by runtime kind (`__olive_in_any` handles
+        // lists, sets, dicts, and strings).
+        if matches!(op, crate::parser::BinOp::In | crate::parser::BinOp::NotIn)
+            && matches!(&r_ty, Type::Var(_) | Type::Any)
+        {
+            let l_ty = self.get_type(left.id).clone();
+            let haystack = self.lower_expr_as_copy(right);
+            let needle = self.lower_expr_as_copy(left);
+            let needle = if Self::key_needs_any_form(&l_ty) || Self::any_key_needs_box(&l_ty) {
+                self.box_into_any(needle, &l_ty, span)
+            } else {
+                needle
+            };
+            let call_tmp = self.new_local(Type::Bool, None, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    call_tmp,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function("__olive_in_any".to_string())),
+                        args: vec![needle, haystack],
+                    },
+                ),
+                span,
+            );
+            if matches!(op, crate::parser::BinOp::In) {
+                return self.operand_for_local(call_tmp);
+            }
+            let not_tmp = self.new_local(Type::Bool, None, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    not_tmp,
+                    Rvalue::UnaryOp(crate::parser::UnaryOp::Not, Operand::Copy(call_tmp)),
+                ),
+                span,
+            );
+            return self.operand_for_local(not_tmp);
+        }
+
         if r_ty == Type::Str && matches!(op, crate::parser::BinOp::In | crate::parser::BinOp::NotIn)
         {
             let haystack = self.lower_expr_as_copy(right);

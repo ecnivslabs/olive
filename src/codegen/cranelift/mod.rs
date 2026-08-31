@@ -396,6 +396,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_http_put", b"olive_http_put\0"),
     ("__olive_in_list", b"olive_in_list\0"),
     ("__olive_in_obj", b"olive_in_obj\0"),
+    ("__olive_in_any", b"olive_in_any\0"),
     ("__olive_int", b"olive_int\0"),
     ("__olive_int_to_float", b"olive_int_to_float\0"),
     ("__olive_int_abs", b"olive_int_abs\0"),

@@ -545,12 +545,14 @@ pub(super) fn scan_rvalue_imports(
                     needed.insert("__olive_in_obj");
                     needed.insert("__olive_in_list_typed");
                     needed.insert("__olive_in_obj_typed");
+                    needed.insert("__olive_in_any");
                 }
                 NotIn => {
                     needed.insert("__olive_in_list");
                     needed.insert("__olive_in_obj");
                     needed.insert("__olive_in_list_typed");
                     needed.insert("__olive_in_obj_typed");
+                    needed.insert("__olive_in_any");
                 }
                 _ => {}
             }
