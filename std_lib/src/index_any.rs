@@ -656,6 +656,9 @@ pub extern "C" fn olive_len_any(obj: i64) -> i64 {
     if obj & 1 != 0 {
         return string::olive_str_len(obj);
     }
+    if crate::string::is_interned_char(obj) {
+        return 1;
+    }
     if !is_active_object(obj) {
         crate::panic::abort("len() argument has no length", None);
     }
