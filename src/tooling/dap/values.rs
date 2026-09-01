@@ -256,18 +256,13 @@ fn is_expandable(ty: &Type) -> bool {
 }
 
 /// `F32` cells arrive zero-extended to i64 (raw 32-bit bits in the low
-/// word), not a valid `f64` bit pattern, the one case where `cl_type`'s
-/// narrower-than-i64 width breaks the assumption every other scalar leaf
-/// relies on (bool/i8/i16/i32/u8/u16/u32 are already sign/zero-extended to
-/// their correct numeric value by `translate_call.rs`'s call coercion, so
-/// they need no adjustment). Widening here lets the same runtime formatter
-/// handle both float widths.
-fn coerce_bits(ty: &Type, raw: i64) -> i64 {
-    if matches!(ty, Type::F32) {
-        (f32::from_bits(raw as u32) as f64).to_bits() as i64
-    } else {
-        raw
-    }
+/// word). The runtime formatter distinguishes widths by descriptor
+/// (`D_F32` narrows like the typed container paths, `D_FLOAT` reinterprets
+/// as `f64`), so no widening happens here: narrowing/widening lives in
+/// exactly one place (the descriptor-driven formatter), not split across
+/// the debugger and the runtime.
+fn coerce_bits(_ty: &Type, raw: i64) -> i64 {
+    raw
 }
 
 fn format_typed(session: &EngineShared, val: i64, desc: &CStr) -> String {
