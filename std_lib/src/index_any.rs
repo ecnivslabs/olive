@@ -431,7 +431,7 @@ fn struct_box_store(obj: i64, attr: i64, val: i64, loc: i64) {
                 crate::free_typed::free_val(old, desc, &mut free_pos);
             }
             let stored = match tag {
-                D_INT | D_FLOAT | D_F32 | D_BOOL | D_NULL => {
+                D_INT | D_BOOL | D_NULL => {
                     let raw = crate::unerase::unerase_scalar(val, tag);
                     if crate::slab::slot_is_live(val) {
                         let kind = unsafe { *(val as *const i64) };
@@ -440,6 +440,39 @@ fn struct_box_store(obj: i64, attr: i64, val: i64, loc: i64) {
                         }
                     }
                     raw
+                }
+                D_FLOAT | D_F32 => {
+                    let is_int = if val & crate::boxed::TAG_MASK == crate::boxed::TAG_INT {
+                        true
+                    } else if crate::slab::slot_is_live(val) {
+                        unsafe { *(val as *const i64) == crate::KIND_INT }
+                    } else {
+                        false
+                    };
+                    if is_int {
+                        let iv = crate::boxed::olive_unbox_int(val);
+                        if crate::slab::slot_is_live(val) {
+                            let kind = unsafe { *(val as *const i64) };
+                            if kind == crate::KIND_INT {
+                                crate::boxed::olive_free_boxed(val);
+                            }
+                        }
+                        let f = iv as f64;
+                        if tag == D_FLOAT {
+                            f.to_bits() as i64
+                        } else {
+                            (f as f32).to_bits() as i64
+                        }
+                    } else {
+                        let raw = crate::unerase::unerase_scalar(val, tag);
+                        if crate::slab::slot_is_live(val) {
+                            let kind = unsafe { *(val as *const i64) };
+                            if kind == crate::KIND_INT || kind == crate::KIND_FLOAT {
+                                crate::boxed::olive_free_boxed(val);
+                            }
+                        }
+                        raw
+                    }
                 }
                 D_STRUCT | D_STRUCT_SHARED | D_LIST | D_SET | D_DICT | D_TUPLE => {
                     if val == 0 {
