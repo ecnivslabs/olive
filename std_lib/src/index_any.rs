@@ -48,8 +48,7 @@ fn erase_word_to_any(raw: i64, desc: *const u8, start: usize) -> i64 {
         D_INT => crate::boxed::olive_box_int(raw),
         D_FLOAT => crate::boxed::olive_box_float(f64::from_bits(raw as u64)),
         D_F32 => crate::boxed::olive_box_float(f32::from_bits(raw as u32) as f64),
-        D_BOOL => crate::boxed::olive_box_bool(raw),
-        D_NULL => crate::boxed::olive_box_null(),
+        D_BOOL | D_NULL => raw,
         D_STRUCT | D_STRUCT_SHARED => {
             if raw == 0 {
                 return 0;
@@ -555,8 +554,7 @@ fn struct_box_member(obj: i64, attr: i64, loc: i64) -> i64 {
                 D_F32 => {
                     return crate::boxed::olive_box_float(f32::from_bits(raw as u32) as f64);
                 }
-                D_BOOL => return crate::boxed::olive_box_bool(raw),
-                D_NULL => return crate::boxed::olive_box_null(),
+                D_BOOL | D_NULL => return raw,
                 D_STRUCT | D_STRUCT_SHARED => {
                     if raw == 0 {
                         return 0;

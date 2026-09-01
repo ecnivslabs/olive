@@ -613,6 +613,9 @@ pub(crate) fn format_list_elem(val: i64) -> String {
         boxed::TAG_NULL => return "None".to_string(),
         _ => {}
     }
+    if val == 1 {
+        return "True".to_string();
+    }
     if val & 1 == 1 {
         let untagged = val & !1;
         if untagged > 0x10000 {
