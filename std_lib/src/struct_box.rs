@@ -75,7 +75,7 @@ pub extern "C" fn olive_struct_box(ptr: i64, desc: i64) -> i64 {
 /// released before the inner struct is walked so a data cycle terminates at
 /// the generation guard.
 pub(crate) fn free_struct_box(val: i64) {
-    if !crate::slab::slot_is_live(val) {
+    if !crate::slab::slot_is_live(val) || !owns_struct_box(val) {
         return;
     }
     let (desc, inner) = {

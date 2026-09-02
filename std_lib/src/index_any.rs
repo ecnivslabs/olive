@@ -336,7 +336,7 @@ pub extern "C" fn olive_any_remove(obj: i64, arg: i64, arg_boxed: i64, loc: i64,
 pub extern "C" fn olive_any_getattr(obj: i64, attr: i64, loc: i64) -> i64 {
     if obj != 0 && is_active_object(obj) {
         let kind = unsafe { *(obj as *const i64) };
-        if kind == crate::struct_box::KIND_STRUCT_BOX {
+        if kind == crate::struct_box::KIND_STRUCT_BOX && crate::struct_box::owns_struct_box(obj) {
             return struct_box_member(obj, attr, loc);
         }
         if kind == KIND_OBJ {
@@ -361,7 +361,7 @@ pub extern "C" fn olive_any_getattr(obj: i64, attr: i64, loc: i64) -> i64 {
 pub extern "C" fn olive_any_setattr(obj: i64, attr: i64, val: i64, loc: i64) -> i64 {
     if obj != 0 && is_active_object(obj) {
         let kind = unsafe { *(obj as *const i64) };
-        if kind == crate::struct_box::KIND_STRUCT_BOX {
+        if kind == crate::struct_box::KIND_STRUCT_BOX && crate::struct_box::owns_struct_box(obj) {
             struct_box_store(obj, attr, val, loc);
             return 0;
         }
