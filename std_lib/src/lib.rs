@@ -607,17 +607,14 @@ fn looks_like_float(val: i64) -> bool {
 }
 
 pub(crate) fn format_list_elem(val: i64) -> String {
-    if crate::string::is_interned_char(val) {
-        return format!("\"{}\"", olive_str_from_ptr(val));
-    }
     match val & boxed::TAG_MASK {
         boxed::TAG_INT => return format!("{}", val >> 3),
         boxed::TAG_BOOL => return if val >> 3 != 0 { "True" } else { "False" }.to_string(),
         boxed::TAG_NULL => return "None".to_string(),
         _ => {}
     }
-    if val == 1 {
-        return "True".to_string();
+    if crate::string::is_interned_char(val) {
+        return format!("\"{}\"", olive_str_from_ptr(val));
     }
     if val & 1 == 1 {
         let untagged = val & !1;
