@@ -138,7 +138,6 @@ impl<'a> MirBuilder<'a> {
                 if self.is_collection_index(value) {
                     self.current_locals[local.0].is_owning = false;
                 }
-                self.transfer_temp_ownership(&rval);
                 self.push_statement(StatementKind::Assign(local, Rvalue::Use(rval)), stmt.span);
             }
 
