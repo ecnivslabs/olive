@@ -253,7 +253,7 @@ impl<'a> MirBuilder<'a> {
                 self.current_block = Some(exit_bb);
                 let (cache_val, key_val, _) = self.memo_context.as_ref().unwrap().clone();
                 let res_local = Local(0);
-                let dummy = self.new_local(Type::Any, None, false);
+                let dummy = self.new_unscoped_local_with_owning(Type::Any, false);
                 self.push_statement(
                     StatementKind::Assign(
                         dummy,

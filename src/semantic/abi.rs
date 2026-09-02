@@ -262,9 +262,7 @@ mod eightbyte_tests {
 
     #[test]
     fn pure_float_union_is_sse() {
-        let l = vec![
-            ("d".to_string(), 0, "f64".to_string(), None),
-        ];
+        let l = vec![("d".to_string(), 0, "f64".to_string(), None)];
         assert!(eightbyte_is_sse(&l, 0));
         assert_eq!(c_abi_eightbyte_size(&l, 0), 8);
     }

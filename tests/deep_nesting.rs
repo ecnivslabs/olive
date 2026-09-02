@@ -70,8 +70,7 @@ fn paren_chain(depth: usize) -> String {
 #[track_caller]
 fn assert_no_abort(stdout: &str, stderr: &str, code: i32) {
     assert_ne!(
-        code,
-        -1,
+        code, -1,
         "compiler crashed on deep nesting (killed by signal):\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }

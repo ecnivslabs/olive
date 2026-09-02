@@ -437,9 +437,7 @@ fn redirect_to_move(kind: &mut StatementKind, slot: CopySlot, l: Local) {
         (CopySlot::Arg(pos), StatementKind::Assign(_, Rvalue::Call { args, .. })) => {
             args[pos] = Operand::Move(l)
         }
-        (CopySlot::UseVal, StatementKind::Assign(_, Rvalue::Use(val))) => {
-            *val = Operand::Move(l)
-        }
+        (CopySlot::UseVal, StatementKind::Assign(_, Rvalue::Use(val))) => *val = Operand::Move(l),
         _ => {}
     }
 }
@@ -479,7 +477,9 @@ fn collect_any_views(func: &MirFunction) -> HashSet<Local> {
                     Rvalue::Call {
                         func: Operand::Constant(Constant::Function(name)),
                         ..
-                    } if name == "__olive_next" || super::summaries::runtime_borrowed_return(name) => {
+                    } if name == "__olive_next"
+                        || super::summaries::runtime_borrowed_return(name) =>
+                    {
                         views.insert(*dst);
                     }
                     Rvalue::Use(Operand::Copy(src)) | Rvalue::Use(Operand::Move(src))

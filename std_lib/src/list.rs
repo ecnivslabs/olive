@@ -116,10 +116,18 @@ pub extern "C" fn olive_range_list(start: i64, end: i64, inclusive: i64, step: i
     // way. Wrapping arithmetic keeps endpoint extremes from panicking; a
     // wrapped count lands negative and reads as the empty range.
     let count = if step > 0 {
-        let last = if inclusive != 0 { end.wrapping_add(1) } else { end };
+        let last = if inclusive != 0 {
+            end.wrapping_add(1)
+        } else {
+            end
+        };
         (last.wrapping_sub(start).wrapping_add(step - 1)) / step
     } else {
-        let last = if inclusive != 0 { end.wrapping_sub(1) } else { end };
+        let last = if inclusive != 0 {
+            end.wrapping_sub(1)
+        } else {
+            end
+        };
         (last.wrapping_sub(start).wrapping_add(step + 1)) / step
     }
     .max(0);
@@ -326,7 +334,9 @@ pub extern "C" fn olive_list_sort_float(list_ptr: i64) {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_list_sort_str(list_ptr: i64) {
     if let Some(slice) = list_slice_mut(list_ptr) {
-        slice.sort_by(|&a, &b| crate::string::olive_str_to_bytes(a).cmp(crate::string::olive_str_to_bytes(b)));
+        slice.sort_by(|&a, &b| {
+            crate::string::olive_str_to_bytes(a).cmp(crate::string::olive_str_to_bytes(b))
+        });
     }
 }
 

@@ -107,15 +107,11 @@ impl Transform for PeepholeOptimize {
                         }
                         // `x / x` faults when `x == 0`; folding it to 1 silently
                         // deletes a runtime fault, so it is never rewritten.
-                        Rvalue::BinaryOp(Eq, l, r)
-                            if l == r && is_int_like(&local_types, l) =>
-                        {
+                        Rvalue::BinaryOp(Eq, l, r) if l == r && is_int_like(&local_types, l) => {
                             *rval = Rvalue::Use(Operand::Constant(Constant::Bool(true)));
                             changed = true;
                         }
-                        Rvalue::BinaryOp(NotEq, l, r)
-                            if l == r && is_int_like(&local_types, l) =>
-                        {
+                        Rvalue::BinaryOp(NotEq, l, r) if l == r && is_int_like(&local_types, l) => {
                             *rval = Rvalue::Use(Operand::Constant(Constant::Bool(false)));
                             changed = true;
                         }
@@ -123,27 +119,25 @@ impl Transform for PeepholeOptimize {
                         // (NaN < NaN is false), unlike the inclusive forms.
                         Rvalue::BinaryOp(Lt, l, r)
                             if l == r
-                                && (is_int_like(&local_types, l) || is_float_like(&local_types, l)) =>
+                                && (is_int_like(&local_types, l)
+                                    || is_float_like(&local_types, l)) =>
                         {
                             *rval = Rvalue::Use(Operand::Constant(Constant::Bool(false)));
                             changed = true;
                         }
                         Rvalue::BinaryOp(Gt, l, r)
                             if l == r
-                                && (is_int_like(&local_types, l) || is_float_like(&local_types, l)) =>
+                                && (is_int_like(&local_types, l)
+                                    || is_float_like(&local_types, l)) =>
                         {
                             *rval = Rvalue::Use(Operand::Constant(Constant::Bool(false)));
                             changed = true;
                         }
-                        Rvalue::BinaryOp(LtEq, l, r)
-                            if l == r && is_int_like(&local_types, l) =>
-                        {
+                        Rvalue::BinaryOp(LtEq, l, r) if l == r && is_int_like(&local_types, l) => {
                             *rval = Rvalue::Use(Operand::Constant(Constant::Bool(true)));
                             changed = true;
                         }
-                        Rvalue::BinaryOp(GtEq, l, r)
-                            if l == r && is_int_like(&local_types, l) =>
-                        {
+                        Rvalue::BinaryOp(GtEq, l, r) if l == r && is_int_like(&local_types, l) => {
                             *rval = Rvalue::Use(Operand::Constant(Constant::Bool(true)));
                             changed = true;
                         }
@@ -518,7 +512,11 @@ mod tests {
             locals_of(OliveType::Float),
             vec![assign(
                 0,
-                Rvalue::BinaryOp(BinOp::LtEq, Operand::Copy(Local(1)), Operand::Copy(Local(1))),
+                Rvalue::BinaryOp(
+                    BinOp::LtEq,
+                    Operand::Copy(Local(1)),
+                    Operand::Copy(Local(1)),
+                ),
             )],
         );
         assert!(!PeepholeOptimize.run(&mut f));

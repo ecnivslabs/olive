@@ -542,7 +542,11 @@ mod tests {
         let l = list_from_vec(vec![s]);
         olive_free_typed(l, desc(&[D_LIST, D_ANY]));
         assert!(!slot_is_live(l));
-        assert!(slot_is_live(crate::string_slab::str_body(s)) || !crate::slab::ptr_is_slab_body(crate::string_slab::str_body(s)), "literal string untouched");
+        assert!(
+            slot_is_live(crate::string_slab::str_body(s))
+                || !crate::slab::ptr_is_slab_body(crate::string_slab::str_body(s)),
+            "literal string untouched"
+        );
     }
 
     #[test]

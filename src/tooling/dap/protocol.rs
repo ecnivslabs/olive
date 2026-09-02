@@ -47,7 +47,10 @@ pub fn read_message<R: BufRead>(reader: &mut R) -> io::Result<Option<Value>> {
     if len > MAX_BODY_LEN {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("Content-Length {} exceeds limit of {} bytes", len, MAX_BODY_LEN),
+            format!(
+                "Content-Length {} exceeds limit of {} bytes",
+                len, MAX_BODY_LEN
+            ),
         ));
     }
     let mut body = vec![0u8; len];

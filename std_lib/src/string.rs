@@ -956,7 +956,10 @@ mod tests {
     fn getslice_char_indexed_contiguous() {
         assert_eq!(from_ptr(olive_str_getslice(s("héllo"), 0, 2, 1, 7)), "hé");
         assert_eq!(from_ptr(olive_str_getslice(s("héllo"), 2, 5, 1, 7)), "llo");
-        assert_eq!(from_ptr(olive_str_getslice(s("héllo"), 0, -1, 1, 7)), "héll");
+        assert_eq!(
+            from_ptr(olive_str_getslice(s("héllo"), 0, -1, 1, 7)),
+            "héll"
+        );
         assert_eq!(from_ptr(olive_str_getslice(s("héllo"), -3, -1, 1, 7)), "ll");
     }
 
@@ -966,10 +969,16 @@ mod tests {
         assert_eq!(from_ptr(olive_str_getslice(s("abcdef"), 0, 6, -1, 7)), "");
         // An explicit negative stop normalizes to len-1, so this is empty.
         assert_eq!(from_ptr(olive_str_getslice(s("abcdef"), 3, -1, -1, 7)), "");
-        assert_eq!(from_ptr(olive_str_getslice(s("abcdef"), 5, 0, -2, 7)), "fdb");
+        assert_eq!(
+            from_ptr(olive_str_getslice(s("abcdef"), 5, 0, -2, 7)),
+            "fdb"
+        );
         // Emitter shape for `s[3::-1]`: stop omitted (flag clear, raw 0),
         // whose normalization is the -1 sentinel meaning "down to index 0".
-        assert_eq!(from_ptr(olive_str_getslice(s("abcdef"), 3, 0, -1, 5)), "dcba");
+        assert_eq!(
+            from_ptr(olive_str_getslice(s("abcdef"), 3, 0, -1, 5)),
+            "dcba"
+        );
     }
 
     #[test]
@@ -982,8 +991,14 @@ mod tests {
     #[test]
     fn getslice_omitted_bounds_default_to_full_string() {
         // flags = SLICE_HAS_STEP only: both endpoints omitted.
-        assert_eq!(from_ptr(olive_str_getslice(s("héllo"), 0, 0, 1, 4)), "héllo");
-        assert_eq!(from_ptr(olive_str_getslice(s("héllo"), 0, 0, -1, 4)), "olléh");
+        assert_eq!(
+            from_ptr(olive_str_getslice(s("héllo"), 0, 0, 1, 4)),
+            "héllo"
+        );
+        assert_eq!(
+            from_ptr(olive_str_getslice(s("héllo"), 0, 0, -1, 4)),
+            "olléh"
+        );
     }
 
     #[test]

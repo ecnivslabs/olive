@@ -679,9 +679,7 @@ impl TypeChecker {
         let mut out: Vec<String> = Vec::new();
         for scope in &self.type_env {
             for key in scope.keys() {
-                if key.starts_with(&prefix)
-                    && !out.contains(&key[prefix.len()..].to_string())
-                {
+                if key.starts_with(&prefix) && !out.contains(&key[prefix.len()..].to_string()) {
                     out.push(key[prefix.len()..].to_string());
                 }
             }
@@ -1011,11 +1009,7 @@ impl TypeChecker {
                 crate::parser::StmtKind::NativeImport { alias, structs, .. } => {
                     for s in structs {
                         let type_name = format!("{}::{}", alias, s.name);
-                        self.define_type(
-                            &s.name,
-                            Type::Struct(type_name, vec![], true),
-                            false,
-                        );
+                        self.define_type(&s.name, Type::Struct(type_name, vec![], true), false);
                     }
                 }
                 _ => {}

@@ -25,11 +25,7 @@ pub extern "C" fn olive_signal_install_sigint(msg_ptr: i64) -> i64 {
         let gstate = unsafe { PY_GILSTATE_ENSURE() };
         let ok = unsafe { PY_RUN_SIMPLE_STRING(cstr.as_ptr()) } == 0;
         unsafe { PY_GILSTATE_RELEASE(gstate) };
-        if ok {
-            0
-        } else {
-            -1
-        }
+        if ok { 0 } else { -1 }
     } else {
         -1
     }

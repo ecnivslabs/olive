@@ -146,7 +146,8 @@ impl<'a> MirBuilder<'a> {
             let is_struct_var = matches!(
                 current_obj_ty,
                 Type::Struct(_, _, _) | Type::Enum(_, _) | Type::TraitObject(_, _) | Type::Any
-            ) && (self.lookup_var(name).is_some() || self.globals.contains_key(name));
+            ) && (self.lookup_var(name).is_some()
+                || self.globals.contains_key(name));
             if !is_struct_var {
                 if let Type::Union(members) = &current_obj_ty {
                     let providers: Vec<&Type> = members
@@ -491,10 +492,7 @@ impl<'a> MirBuilder<'a> {
         // Retag the union word as its struct member: codegen peels the box
         // for this shape (Cast to Struct from a multi-member union local).
         self.push_statement(
-            StatementKind::Assign(
-                view_tmp,
-                Rvalue::Cast(obj_op, provider.clone()),
-            ),
+            StatementKind::Assign(view_tmp, Rvalue::Cast(obj_op, provider.clone())),
             span,
         );
         let callee_ty = self.get_type(callee.id).clone();
@@ -524,11 +522,7 @@ impl<'a> MirBuilder<'a> {
             span,
         );
         if let Some(bb) = self.current_block {
-            self.terminate_block(
-                bb,
-                TerminatorKind::Goto { target: done_bb },
-                span,
-            );
+            self.terminate_block(bb, TerminatorKind::Goto { target: done_bb }, span);
         }
 
         self.current_block = Some(fail_bb);
@@ -655,10 +649,7 @@ impl<'a> MirBuilder<'a> {
             {
                 let op = self.lower_expr_as_copy(obj);
                 let tmp = self.new_local(target.clone(), None, false);
-                self.push_statement(
-                    StatementKind::Assign(tmp, Rvalue::Cast(op, target)),
-                    span,
-                );
+                self.push_statement(StatementKind::Assign(tmp, Rvalue::Cast(op, target)), span);
                 Some(self.operand_for_local(tmp))
             }
             _ => None,
@@ -1732,7 +1723,14 @@ impl<'a> MirBuilder<'a> {
         expr_id: usize,
     ) -> Operand {
         if let Some((fields, size)) = self.c_struct_layouts.get(struct_name).cloned() {
-            return self.lower_c_struct_construct(struct_name, &fields, size, arg_ops, arg_tys, span);
+            return self.lower_c_struct_construct(
+                struct_name,
+                &fields,
+                size,
+                arg_ops,
+                arg_tys,
+                span,
+            );
         }
         // Unbox Python scalars supplied for concrete native fields, and tag
         // scalars landing in scalar-union fields; generic (`Param`) fields

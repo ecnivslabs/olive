@@ -1,7 +1,6 @@
 use super::{
-    Parser, Program,
+    MAX_NESTING_DEPTH, Parser, Program,
     error::{ParseError, ParseResult},
-    MAX_NESTING_DEPTH,
 };
 use crate::lexer::{Token, TokenKind};
 use crate::span::Span;
@@ -22,7 +21,10 @@ impl Parser {
     /// than `MAX_NESTING_DEPTH` instead of recursing until the stack overflows.
     /// The limit sits far below any human-written program; the native stack is
     /// exhausted around depth ~780 in release builds.
-    pub(crate) fn enter_nested<T>(&mut self, f: impl FnOnce(&mut Self) -> ParseResult<T>) -> ParseResult<T> {
+    pub(crate) fn enter_nested<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> ParseResult<T>,
+    ) -> ParseResult<T> {
         if self.depth >= MAX_NESTING_DEPTH {
             let tok = self.peek().clone();
             return Err(self.err_at(

@@ -1,6 +1,5 @@
 use super::{
-    MAX_NESTING_DEPTH,
-    Parser,
+    MAX_NESTING_DEPTH, Parser,
     ast::*,
     error::{ParseError, ParseResult},
 };
