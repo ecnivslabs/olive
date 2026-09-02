@@ -144,7 +144,10 @@ fn erase_tuple_field_to_any(raw: i64, desc: *const u8, field_pos: usize) -> i64 
     let n = unsafe { *desc.add(field_pos + 1) } as usize - 1;
     let len = crate::list::olive_list_len(raw);
     if len as usize != n {
-        return erase_list_field_to_any(raw, desc, field_pos);
+        use rustc_hash::FxHashMap;
+        let mut copy_pos = field_pos;
+        let mut visited = FxHashMap::default();
+        return crate::copy_typed::copy_val(raw, desc, &mut copy_pos, &mut visited);
     }
     let out = crate::list::olive_list_new(len);
     let mut pos = field_pos + 2;
