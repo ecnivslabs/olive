@@ -69,7 +69,7 @@ fn erase_needed(desc: *const u8, pos: usize, seen: &mut FxHashSet<usize>) -> boo
         return false;
     }
     match unsafe { byte(desc, pos) } {
-        D_STRUCT | D_STRUCT_SHARED => true,
+        D_STRUCT | D_STRUCT_SHARED | D_INT | D_FLOAT | D_F32 | D_NULL => true,
         D_LIST | D_SET => erase_needed(desc, pos + 1, seen),
         D_DICT => {
             let mut p = pos + 1;
@@ -453,7 +453,11 @@ mod tests {
     fn struct_needs_erase_int_does_not() {
         assert!(en(&[D_STRUCT], 0));
         assert!(en(&[D_STRUCT_SHARED], 0));
-        assert!(!en(&[D_INT], 0));
+        assert!(en(&[D_INT], 0));
+        assert!(en(&[D_FLOAT], 0));
+        assert!(en(&[D_F32], 0));
+        assert!(en(&[D_NULL], 0));
+        assert!(!en(&[D_BOOL], 0));
         assert!(!en(&[D_STR], 0));
         assert!(!en(&[D_ANY], 0));
     }
@@ -461,10 +465,10 @@ mod tests {
     #[test]
     fn containers_recurse() {
         assert!(en(&[D_LIST, D_STRUCT], 0));
-        assert!(!en(&[D_LIST, D_INT], 0));
+        assert!(en(&[D_LIST, D_INT], 0));
         assert!(en(&[D_DICT, D_INT, D_STRUCT], 0));
-        assert!(!en(&[D_DICT, D_INT, D_INT], 0));
+        assert!(en(&[D_DICT, D_INT, D_INT], 0));
         assert!(en(&[D_TUPLE, 3, D_INT, D_STRUCT], 0));
-        assert!(!en(&[D_TUPLE, 3, D_INT, D_INT], 0));
+        assert!(en(&[D_TUPLE, 3, D_INT, D_INT], 0));
     }
 }
