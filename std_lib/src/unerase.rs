@@ -175,8 +175,8 @@ pub(crate) fn unerase_any(
             if any == 0 {
                 return 0;
             }
-            if crate::slab::slot_is_live(any) {
-                // SAFETY: live slot, kind read valid.
+            if crate::slab::slot_is_live(any) && crate::struct_box::owns_struct_box(any) {
+                // SAFETY: live struct-box slot, kind read valid.
                 let kind = unsafe { *(any as *const i64) };
                 if kind == crate::struct_box::KIND_STRUCT_BOX {
                     // SAFETY: kind verified, box header valid.
