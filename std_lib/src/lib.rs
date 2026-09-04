@@ -668,6 +668,9 @@ pub(crate) fn format_list_elem(val: i64) -> String {
             KIND_BYTES => return bytes::format_bytes(val),
             KIND_ENUM => {
                 let e = unsafe { &*(val as *const OliveEnum) };
+                if e.desc != 0 && unsafe { *(e.desc as *const u8) } == crate::format::D_ENUM {
+                    return format::format_desc(val, e.desc);
+                }
                 let mut parts = Vec::with_capacity(e.payload_len);
                 for i in 0..e.payload_len {
                     let pval = unsafe { *e.payload_ptr.add(i) };
