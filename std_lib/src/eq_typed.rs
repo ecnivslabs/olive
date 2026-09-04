@@ -159,6 +159,26 @@ fn eq_any_words(a: i64, b: i64, visited: &mut FxHashSet<(i64, i64)>) -> bool {
         return true;
     }
     let (ka, kb) = unsafe { (*(a as *const i64), *(b as *const i64)) };
+    if (ka == crate::KIND_FLOAT || ka == crate::KIND_INT)
+        && (kb == crate::KIND_FLOAT || kb == crate::KIND_INT)
+    {
+        // Heap scalar boxes compare by payload value, not pointer identity:
+        // separately-erased equal floats/ints hold distinct boxes with
+        // identical bits (e.g., two `(f32, int)` keys widened to the same
+        // `f64` bits). Float vs int with same numeric value are distinct
+        // kinds here (no numeric cross-compare, matching typed key rules
+        // where `1` and `1.0` hash apart via `KeyClass::Scalar(kind, bits)`).
+        if ka != kb {
+            return false;
+        }
+        let (ba, bb) = unsafe {
+            (
+                &*(a as *const crate::boxed::OliveBoxed),
+                &*(b as *const crate::boxed::OliveBoxed),
+            )
+        };
+        return ba.bits == bb.bits;
+    }
     if ka == crate::struct_box::KIND_STRUCT_BOX || kb == crate::struct_box::KIND_STRUCT_BOX {
         if let Some(eq) = eq_box_keys(a, b) {
             return eq;

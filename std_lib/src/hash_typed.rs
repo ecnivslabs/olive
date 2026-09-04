@@ -378,6 +378,10 @@ fn hash_any_word(v: i64, visited: &mut FxHashSet<i64>) -> u64 {
         });
         return commutative(parts);
     }
+    if kind == crate::KIND_FLOAT || kind == crate::KIND_INT {
+        let b = unsafe { &*(v as *const crate::boxed::OliveBoxed) };
+        return seq([kind as u64, b.bits as u64]);
+    }
     one(v as u64)
 }
 
