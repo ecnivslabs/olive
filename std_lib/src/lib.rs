@@ -171,7 +171,12 @@ fn classify_key(v: i64) -> KeyClass {
             first
         };
         match key_tag {
-            format::D_STR => return KeyClass::Str(olive_str_to_bytes(v)),
+            format::D_STR => {
+                if is_tagged_str_key(v) || crate::string::is_interned_char(v) {
+                    return KeyClass::Str(olive_str_to_bytes(v));
+                }
+                return KeyClass::Raw(v);
+            }
             format::D_INT | format::D_FLOAT | format::D_F32 | format::D_BOOL | format::D_NULL => {
                 if is_active_object(v) {
                     let kind = unsafe { *(v as *const i64) };
