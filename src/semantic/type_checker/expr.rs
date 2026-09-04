@@ -2822,6 +2822,46 @@ impl TypeChecker {
         attr: &str,
         args: &[CallArg],
     ) -> Option<Type> {
+        if let crate::parser::ExprKind::Attr { obj: inner, .. } = &obj.kind {
+            let checked = self.check_expr(inner);
+            let inner_ty = self.apply_subst(checked);
+            let mut base_inner = inner_ty.clone();
+            while let Type::Ref(inner) | Type::MutRef(inner) = base_inner {
+                base_inner = *inner;
+            }
+            if base_inner == Type::Any
+                && matches!(
+                    attr,
+                    "append"
+                        | "pop"
+                        | "clear"
+                        | "sort"
+                        | "extend"
+                        | "insert"
+                        | "remove"
+                        | "update"
+                        | "add"
+                        | "setdefault"
+                        | "reverse"
+                        | "contains"
+                )
+            {
+                self.errors.push(super::super::error::SemanticError::rich(
+                    crate::compile::errors::Diagnostic::error(
+                        "E0404",
+                        format!(
+                            "cannot mutate `{attr}` through `Any`, narrow to a container first"
+                        ),
+                        obj.span,
+                    )
+                    .label("dynamic mutation would be lost")
+                    .help(
+                        "narrow the `Any` to a concrete struct first, then mutate the typed field",
+                    ),
+                ));
+                return None;
+            }
+        }
         let obj_ty = self.check_expr(obj);
         let obj_ty = self.apply_subst(obj_ty);
         // `xs.sort(key=f)` (E5.5): `f` is checked against the list's own
