@@ -4,7 +4,7 @@ static STRUCT_SUB_DESC_CACHE: std::sync::LazyLock<
     std::sync::Mutex<rustc_hash::FxHashMap<Vec<u8>, i64>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(rustc_hash::FxHashMap::default()));
 
-fn intern_sub_descriptor(desc: *const u8, start: usize) -> i64 {
+pub(crate) fn intern_sub_descriptor(desc: *const u8, start: usize) -> i64 {
     let mut end = start;
     crate::format::skip(desc, &mut end);
     let bytes = unsafe { std::slice::from_raw_parts(desc.add(start), end - start) };

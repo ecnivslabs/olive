@@ -521,6 +521,7 @@ fn copy_fatptr(val: i64, visited: &mut FxHashMap<i64, i64>) -> i64 {
 }
 
 fn copy_enum(val: i64, desc: *const u8, pos: &mut usize, visited: &mut FxHashMap<i64, i64>) -> i64 {
+    let enum_start = pos.checked_sub(1).unwrap_or(0);
     skip_lp(desc, pos);
     let n = unsafe { byte(desc, *pos) } as usize - 13;
     *pos += 1;
@@ -532,7 +533,8 @@ fn copy_enum(val: i64, desc: *const u8, pos: &mut usize, visited: &mut FxHashMap
         (0, usize::MAX, std::ptr::null_mut(), 0)
     };
     let new = if live {
-        crate::olive_enum_new(type_id, tag as i64, plen as i64, desc as i64)
+        let static_desc = crate::index_any::intern_sub_descriptor(desc, enum_start);
+        crate::olive_enum_new(type_id, tag as i64, plen as i64, static_desc)
     } else {
         0
     };
