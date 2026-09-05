@@ -1289,13 +1289,10 @@ pub extern "C" fn olive_in_list(val: i64, list_ptr: i64) -> i64 {
         };
     }
     let s = unsafe { &*(list_ptr as *const StableVec) };
+    let needle = OliveStringKey(val);
     for i in 0..s.len {
-        // Content equality with numeric promotion, not pointer/word
-        // identity: an `int` needle into `float` elements hits when
-        // numerically equal (matching `==` which promotes, and typed `in`
-        // which converts the needle). `OliveStringKey` equality requires
-        // kinds equal, so `1` vs `1.0` would miss here.
-        if crate::olive_any_eq(unsafe { *s.ptr.add(i) }, val) != 0 {
+        let element = unsafe { *s.ptr.add(i) };
+        if OliveStringKey(element) == needle || crate::olive_any_eq(element, val) != 0 {
             return 1;
         }
     }
