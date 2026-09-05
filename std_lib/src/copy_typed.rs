@@ -683,9 +683,6 @@ fn copy_any_node(
             unsafe { crate::python::olive_py_wrap_borrowed(py_ptr) as i64 }
         }
         crate::struct_box::KIND_STRUCT_BOX => {
-            if !crate::slab::slot_is_live(val) || !crate::struct_box::owns_struct_box(val) {
-                return val;
-            }
             let (desc, inner) = {
                 let b = unsafe { &*(val as *const crate::struct_box::OliveStructBox) };
                 (b.desc, b.ptr)

@@ -106,9 +106,6 @@ pub extern "C" fn olive_any_is_struct_box(v: i64) -> i64 {
     if v == 0 || v & 1 != 0 || v & TAG_MASK != 0 || v < 0x1000 {
         return 0;
     }
-    if !crate::slab::slot_is_live(v) || !crate::struct_box::owns_struct_box(v) {
-        return 0;
-    }
     let kind = unsafe { *(v as *const i64) };
     (kind == crate::struct_box::KIND_STRUCT_BOX) as i64
 }

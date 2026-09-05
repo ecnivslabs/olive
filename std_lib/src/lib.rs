@@ -691,9 +691,7 @@ pub(crate) fn format_list_elem(val: i64) -> String {
                     return format!("Err({})", format_list_elem(res.payload));
                 }
             }
-            struct_box::KIND_STRUCT_BOX
-                if crate::slab::slot_is_live(val) && crate::struct_box::owns_struct_box(val) =>
-            {
+            struct_box::KIND_STRUCT_BOX => {
                 let b = unsafe { &*(val as *const struct_box::OliveStructBox) };
                 return format::format_desc(b.ptr, b.desc);
             }
