@@ -8,6 +8,12 @@ use cranelift::prelude::*;
 use cranelift_module::{DataId, FuncId, Module};
 use rustc_hash::FxHashMap as HashMap;
 
+/// Both low tag bits of an Olive string word (`STR_TAG | STR_HEAP`, see
+/// `str_body` in the runtime and `STR_TAG_BITS` in `translate_rvalue`).
+/// A foreign `char*` argument must clear both: clearing only bit 0 hands a
+/// heap string to C two bytes past its body.
+const STR_TAG_BITS: i64 = 3;
+
 impl<M: Module> CraneliftCodegen<M> {
     /// Exact float width the callee's declared parameter expects, if any.
     /// Both f32 and f64 args land in the same XMM register class, so
@@ -488,7 +494,7 @@ impl<M: Module> CraneliftCodegen<M> {
                     }
 
                     if (ffi_entry.is_some() || is_aot_vararg) && is_str_arg {
-                        final_args.push(builder.ins().band_imm(arg, -2));
+                        final_args.push(builder.ins().band_imm(arg, !STR_TAG_BITS));
                     } else if is_builtin && builder.func.dfg.value_type(arg) == types::F64 {
                         let expected_float_ty = if let Some(entry) = ffi_entry {
                             match entry.params.get(i).map(String::as_str) {
@@ -790,7 +796,7 @@ impl<M: Module> CraneliftCodegen<M> {
                         _ => false,
                     });
                     let cooked = if is_str_arg {
-                        builder.ins().band_imm(arg_val, -2)
+                        builder.ins().band_imm(arg_val, !STR_TAG_BITS)
                     } else {
                         arg_val
                     };

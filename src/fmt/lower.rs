@@ -342,7 +342,18 @@ impl<'a> Lowerer<'a> {
                     .collect();
                 concat(head, join(text(", "), parts))
             }
-            StmtKind::NativeImport { .. } | StmtKind::PyImport { .. } => self.verbatim(s.span),
+            StmtKind::NativeImport { block_safe, .. } => {
+                // Verbatim covers only the statement span, so a block-level
+                // `@safe` above it would be silently dropped, changing
+                // whether callers need `unsafe:` blocks. Re-emit it.
+                let body = self.verbatim(s.span);
+                if *block_safe {
+                    concat(text("@safe"), concat(hardline(), body))
+                } else {
+                    body
+                }
+            }
+            StmtKind::PyImport { .. } => self.verbatim(s.span),
             StmtKind::Let {
                 name,
                 type_ann,
