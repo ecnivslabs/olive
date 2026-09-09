@@ -379,6 +379,24 @@ main()
     );
 }
 
+#[test]
+fn any_python_subscript_keys_cross_as_python_values() {
+    assert_both_succeed(
+        r#"import py "builtins" as b
+
+fn main():
+    let d: PyObject = b.dict()
+    let k: Any = 5
+    d[k] = 11
+    print(d[5])
+    print(d[k])
+
+main()
+"#,
+        "11\n11\n",
+    );
+}
+
 /// A concretely nested list (`[[int]]`, not `[Any]`) has no flat 4-bit tag
 /// that can express "the inner element is itself a raw int list" (see
 /// `py_collection_tag`'s doc comment), so this argument gets no copy-out at

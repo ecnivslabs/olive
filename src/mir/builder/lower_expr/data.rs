@@ -693,12 +693,17 @@ impl<'a> MirBuilder<'a> {
             } else {
                 "__olive_py_getitem"
             };
+            let py_i = if Self::is_int_ty(&idx_ty) {
+                i_raw
+            } else {
+                self.emit_to_py_arg(i_raw, &idx_ty, span)
+            };
             self.push_statement(
                 StatementKind::Assign(
                     tmp,
                     Rvalue::Call {
                         func: Operand::Constant(Constant::Function(func_name.to_string())),
-                        args: vec![o, i_raw],
+                        args: vec![o, py_i],
                     },
                 ),
                 span,
