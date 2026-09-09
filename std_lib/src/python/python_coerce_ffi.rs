@@ -1,11 +1,11 @@
 use crate::python::*;
-use std::os::raw::{c_char, c_double, c_long};
+use std::os::raw::{c_char, c_double};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_from_int(v: i64) -> PyObject {
     check_python_loaded();
     with_gil(|| unsafe {
-        let r = PY_LONG_FROM_LONG(v as c_long);
+        let r = py_long_from_i64(v);
         olive_py_wrap_owned(r)
     })
 }
@@ -128,18 +128,13 @@ pub(crate) unsafe fn raw_py_to_int(raw: PyObject) -> i64 {
             PY_ERR_CLEAR();
             crate::panic::abort_py_coerce("cannot convert this Python value to an integer");
         }
-        let result = PY_LONG_AS_LONG(int_obj);
+        let result = py_long_as_i64(int_obj);
         PY_DEC_REF(int_obj);
         if !PY_ERR_OCCURRED().is_null() {
             PY_ERR_CLEAR();
             crate::panic::abort_py_coerce("cannot convert this Python value to an integer");
         }
-        // c_long is 32 bits on Windows (LLP64), 64 on Unix -- this cast is a
-        // no-op there but a real widen on Windows.
-        #[allow(clippy::unnecessary_cast)]
-        {
-            result as i64
-        }
+        result
     }
 }
 
@@ -417,7 +412,7 @@ pub extern "C" fn olive_py_getitem_int(obj: PyObject, key: i64) -> PyObject {
             PY_INC_REF(item);
             return olive_py_wrap_owned(item);
         }
-        let py_key = PY_LONG_FROM_LONG(key as std::os::raw::c_long);
+        let py_key = py_long_from_i64(key);
         if py_key.is_null() {
             return std::ptr::null_mut();
         }
@@ -438,7 +433,7 @@ pub extern "C" fn olive_py_setitem_int(obj: PyObject, key: i64, val: PyObject) {
         return;
     }
     with_gil(|| unsafe {
-        let py_key = PY_LONG_FROM_LONG(key as std::os::raw::c_long);
+        let py_key = py_long_from_i64(key);
         if py_key.is_null() {
             handle_py_error();
         }
@@ -641,19 +636,19 @@ pub extern "C" fn olive_py_getslice(
     with_gil(|| unsafe {
         let py_none = _PY_NONE_STRUCT;
         let py_start = if flags & 1 != 0 {
-            PY_LONG_FROM_LONG(start_val as std::os::raw::c_long)
+            py_long_from_i64(start_val)
         } else {
             PY_INC_REF(py_none);
             py_none
         };
         let py_stop = if flags & 2 != 0 {
-            PY_LONG_FROM_LONG(stop_val as std::os::raw::c_long)
+            py_long_from_i64(stop_val)
         } else {
             PY_INC_REF(py_none);
             py_none
         };
         let py_step = if flags & 4 != 0 {
-            PY_LONG_FROM_LONG(step_val as std::os::raw::c_long)
+            py_long_from_i64(step_val)
         } else {
             PY_INC_REF(py_none);
             py_none

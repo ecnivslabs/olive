@@ -214,7 +214,7 @@ fn looks_like_float(val: i64) -> bool {
 /// Decodes inline Any-tagged scalars; use for container elements, not raw scalars.
 pub fn olive_any_to_py(val: i64) -> PyObject {
     match val & crate::boxed::TAG_MASK {
-        crate::boxed::TAG_INT => return unsafe { PY_LONG_FROM_LONG((val >> 3) as c_long) },
+        crate::boxed::TAG_INT => return unsafe { py_long_from_i64(val >> 3) },
         crate::boxed::TAG_BOOL => return unsafe { PY_BOOL_FROM_LONG((val >> 3) as c_long) },
         crate::boxed::TAG_NULL => {
             return unsafe {
@@ -307,7 +307,7 @@ pub fn olive_to_py(val: i64) -> PyObject {
                     // Heap-boxed `Any` scalars too wide to inline.
                     crate::KIND_INT => {
                         let b = &*(ptr as *const crate::boxed::OliveBoxed);
-                        PY_LONG_FROM_LONG(b.bits as c_long)
+                        py_long_from_i64(b.bits)
                     }
                     crate::KIND_FLOAT => {
                         let b = &*(ptr as *const crate::boxed::OliveBoxed);
@@ -318,7 +318,7 @@ pub fn olive_to_py(val: i64) -> PyObject {
                             let f = f64::from_bits(val as u64);
                             PY_FLOAT_FROM_DOUBLE(f as c_double)
                         } else {
-                            PY_LONG_FROM_LONG(val as c_long)
+                            py_long_from_i64(val)
                         }
                     }
                 }
@@ -329,7 +329,7 @@ pub fn olive_to_py(val: i64) -> PyObject {
                     let f = f64::from_bits(val as u64);
                     PY_FLOAT_FROM_DOUBLE(f as c_double)
                 } else {
-                    PY_LONG_FROM_LONG(val as c_long)
+                    py_long_from_i64(val)
                 }
             }
         }
@@ -438,15 +438,11 @@ pub unsafe fn py_to_olive_internal(py_val: PyObject) -> i64 {
             return if PY_LONG_AS_LONG(py_val) != 0 { 1 } else { 0 };
         }
         if ty == PY_LONG_TYPE {
-            // An exact `int` can still overflow `c_long` (`10**30`); keep the
-            // value as a PyObject handle instead of returning the error-sentinel.
-            let v = PY_LONG_AS_LONG(py_val);
+            let v = py_long_as_i64(py_val);
             if !PY_ERR_OCCURRED().is_null() {
                 PY_ERR_CLEAR();
                 return olive_py_wrap(py_val) as i64;
             }
-            #[cfg(windows)]
-            let v = v as i64;
             return v;
         }
         if ty == PY_FLOAT_TYPE {
@@ -490,16 +486,11 @@ pub unsafe fn py_to_olive_internal(py_val: PyObject) -> i64 {
         if is_subtype(PY_LONG_TYPE)
             || foreign_cache_scan(&INT_LIKE_CACHE, &INT_LIKE_LEN, ty as usize)
         {
-            // A subclass's `__index__`/`__int__` can raise, and any
-            // int-like can overflow; keep the object rather than the
-            // error-sentinel `-1`.
-            let v = PY_LONG_AS_LONG(py_val);
+            let v = py_long_as_i64(py_val);
             if !PY_ERR_OCCURRED().is_null() {
                 PY_ERR_CLEAR();
                 return olive_py_wrap(py_val) as i64;
             }
-            #[cfg(windows)]
-            let v = v as i64;
             return v;
         }
         if is_subtype(PY_FLOAT_TYPE)
@@ -552,13 +543,11 @@ pub unsafe fn py_to_olive_internal(py_val: PyObject) -> i64 {
         }
         if is_int_like {
             foreign_cache_insert(&INT_LIKE_CACHE, &INT_LIKE_LEN, ty as usize);
-            let v = PY_LONG_AS_LONG(py_val);
+            let v = py_long_as_i64(py_val);
             if !PY_ERR_OCCURRED().is_null() {
                 PY_ERR_CLEAR();
                 return olive_py_wrap(py_val) as i64;
             }
-            #[cfg(windows)]
-            let v = v as i64;
             return v;
         }
         if is_float_like {
@@ -603,15 +592,11 @@ pub unsafe fn py_to_any_internal(py_val: PyObject) -> i64 {
                 });
             }
             if is_sub(PY_LONG_TYPE) {
-                // Overflow or a raising `__index__` keeps the value as a
-                // handle instead of boxing the error-sentinel `-1`.
-                let v = PY_LONG_AS_LONG(py_val);
+                let v = py_long_as_i64(py_val);
                 if !PY_ERR_OCCURRED().is_null() {
                     PY_ERR_CLEAR();
                     return py_to_olive_internal(py_val);
                 }
-                #[cfg(windows)]
-                let v = v as i64;
                 return crate::boxed::olive_box_int(v);
             }
             if is_sub(PY_FLOAT_TYPE) {

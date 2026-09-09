@@ -229,12 +229,14 @@ pub extern "C" fn olive_py_initialize() {
         PY_DEC_REF = compat_dlsym(handle, "Py_DecRef");
         PY_INC_REF = compat_dlsym(handle, "Py_IncRef");
         PY_LONG_AS_LONG = compat_dlsym(handle, "PyLong_AsLong");
+        PY_LONG_AS_LONG_LONG = compat_dlsym(handle, "PyLong_AsLongLong");
         PY_NUMBER_LONG = compat_dlsym(handle, "PyNumber_Long");
         PY_FLOAT_AS_DOUBLE = compat_dlsym(handle, "PyFloat_AsDouble");
         PY_UNICODE_AS_UTF8 = compat_dlsym(handle, "PyUnicode_AsUTF8");
         PY_UNICODE_AS_UTF8_AND_SIZE = compat_dlsym(handle, "PyUnicode_AsUTF8AndSize");
         PY_UNICODE_FROM_STRING_AND_SIZE = compat_dlsym(handle, "PyUnicode_FromStringAndSize");
         PY_LONG_FROM_LONG = compat_dlsym(handle, "PyLong_FromLong");
+        PY_LONG_FROM_LONG_LONG = compat_dlsym(handle, "PyLong_FromLongLong");
         PY_BOOL_FROM_LONG = compat_dlsym(handle, "PyBool_FromLong");
         PY_FLOAT_FROM_DOUBLE = compat_dlsym(handle, "PyFloat_FromDouble");
         PY_UNICODE_FROM_STRING = compat_dlsym(handle, "PyUnicode_FromString");
@@ -381,6 +383,7 @@ pub extern "C" fn olive_py_initialize() {
             PY_DEC_REF = noop_decref;
             PY_INC_REF = noop_incref;
             PY_LONG_AS_LONG = noop_as_long;
+            PY_LONG_AS_LONG_LONG = crate::python::python_noop::noop_as_long_long;
             PY_NUMBER_LONG = noop_number_long;
             PY_FLOAT_AS_DOUBLE = noop_as_double;
             PY_UNICODE_AS_UTF8 = noop_as_utf8;
@@ -389,6 +392,8 @@ pub extern "C" fn olive_py_initialize() {
                 crate::python::python_noop::noop_from_string_and_size;
             HAS_STR_AND_SIZE.store(false, Ordering::SeqCst);
             PY_LONG_FROM_LONG = noop_from_long;
+            PY_LONG_FROM_LONG_LONG = crate::python::python_noop::noop_from_long_long;
+            HAS_LONG_LONG.store(false, Ordering::SeqCst);
             PY_BOOL_FROM_LONG = noop_from_long;
             PY_FLOAT_FROM_DOUBLE = noop_from_double;
             PY_UNICODE_FROM_STRING = noop_from_string;
@@ -536,6 +541,15 @@ pub extern "C" fn olive_py_initialize() {
             str_and_size_present && !str_and_size_disabled_for_test,
             Ordering::SeqCst,
         );
+
+        let long_long_present =
+            !std::mem::transmute::<_, *const ()>(PY_LONG_AS_LONG_LONG).is_null()
+                && !std::mem::transmute::<_, *const ()>(PY_LONG_FROM_LONG_LONG).is_null();
+        if !long_long_present {
+            PY_LONG_AS_LONG_LONG = crate::python::python_noop::noop_as_long_long;
+            PY_LONG_FROM_LONG_LONG = crate::python::python_noop::noop_from_long_long;
+        }
+        HAS_LONG_LONG.store(long_long_present, Ordering::SeqCst);
 
         let already_initialized = {
             let is_init_ptr: *const () = PY_IS_INITIALIZED as *const ();

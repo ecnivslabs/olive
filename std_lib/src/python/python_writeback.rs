@@ -235,7 +235,7 @@ pub(crate) unsafe fn abandon_pairs(pairs: &[WritebackPair]) {
 unsafe fn raw_scalar_to_py(val: i64, kind: i64) -> PyObject {
     unsafe {
         match kind {
-            TAG_INT_LIST => PY_LONG_FROM_LONG(val as std::os::raw::c_long),
+            TAG_INT_LIST => py_long_from_i64(val),
             TAG_FLOAT_LIST => PY_FLOAT_FROM_DOUBLE(f64::from_bits(val as u64)),
             TAG_BOOL_LIST => PY_BOOL_FROM_LONG(val as std::os::raw::c_long),
             TAG_STR_LIST => olive_str_to_py(val),
@@ -349,9 +349,7 @@ unsafe fn decode_scalar(item: PyObject, kind: i64) -> Result<i64, String> {
         match kind {
             TAG_INT_LIST => {
                 if is_sub(PY_BOOL_TYPE) || is_sub(PY_LONG_TYPE) {
-                    let v = PY_LONG_AS_LONG(item);
-                    #[cfg(windows)]
-                    let v = v as i64;
+                    let v = py_long_as_i64(item);
                     return Ok(v);
                 }
                 Err(py_type_name(ty))
