@@ -126,7 +126,11 @@ fn run_aot(dir: &Path, liv_path: &Path) -> Output {
 /// exactly `expected`.
 fn assert_both_succeed(src: &str, expected: &str) {
     assert_both_succeed_with(src, |stdout, pipeline, stderr| {
-        assert_eq!(stdout, expected, "{pipeline} stderr: {stderr}");
+        assert_eq!(
+            stdout.replace("\r\n", "\n"),
+            expected.replace("\r\n", "\n"),
+            "{pipeline} stderr: {stderr}"
+        );
     });
 }
 
