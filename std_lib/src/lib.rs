@@ -1274,6 +1274,21 @@ pub extern "C" fn olive_list_append(list_ptr: i64, val: i64) {
     }
 }
 
+// Generic Any comparison uses a magnitude-based string check. Restrict its
+// fallback to words that cannot be raw odd integers before it can dereference.
+#[inline]
+fn is_numeric_membership_word(v: i64) -> bool {
+    match v & boxed::TAG_MASK {
+        boxed::TAG_INT | boxed::TAG_BOOL | boxed::TAG_NULL => return true,
+        _ => {}
+    }
+    if is_active_object(v) {
+        let kind = unsafe { *(v as *const i64) };
+        return kind == KIND_INT || kind == KIND_FLOAT;
+    }
+    !is_tagged_str_key(v) && !crate::string::is_interned_char(v)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_in_list(val: i64, list_ptr: i64) -> i64 {
     if list_ptr == 0 {
@@ -1292,7 +1307,11 @@ pub extern "C" fn olive_in_list(val: i64, list_ptr: i64) -> i64 {
     let needle = OliveStringKey(val);
     for i in 0..s.len {
         let element = unsafe { *s.ptr.add(i) };
-        if OliveStringKey(element) == needle || crate::olive_any_eq(element, val) != 0 {
+        let numeric_hit = kind == crate::KIND_ANY_LIST
+            && is_numeric_membership_word(element)
+            && is_numeric_membership_word(val)
+            && crate::olive_any_eq(element, val) != 0;
+        if OliveStringKey(element) == needle || numeric_hit {
             return 1;
         }
     }

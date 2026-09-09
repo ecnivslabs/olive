@@ -1001,6 +1001,14 @@ fn deep_membership_works() {
 }
 
 #[test]
+fn large_odd_membership_does_not_deref_integer_words() {
+    assert_accepted(
+        "fn main():\n    let xs: [int] = [200000001]\n    print(200000003 in xs)\n",
+        "False\n",
+    );
+}
+
+#[test]
 fn len_of_scalars_rejected() {
     assert_rejected("fn main():\n    print(len(5))\n", "sized collection");
     assert_rejected(
