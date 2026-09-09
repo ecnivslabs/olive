@@ -386,14 +386,25 @@ fn any_python_subscript_keys_cross_as_python_values() {
 
 fn main():
     let d: PyObject = b.dict()
-    let k: Any = 5
-    d[k] = 11
-    print(d[5])
-    print(d[k])
+    let ki: Any = 5
+    let kf: Any = 1.5
+    let kb: Any = True
+    let kn: Any = None
+    let ks: Any = "s"
+    d[ki] = 1
+    d[kf] = 2
+    d[kb] = 3
+    d[kn] = 4
+    d[ks] = 5
+    print(d[ki])
+    print(d[kf])
+    print(d[kb])
+    print(d[kn])
+    print(d[ks])
 
 main()
 "#,
-        "11\n11\n",
+        "1\n2\n3\n4\n5\n",
     );
 }
 
