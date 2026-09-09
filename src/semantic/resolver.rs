@@ -659,9 +659,9 @@ impl Resolver {
                 self.resolve_expr(index);
             }
 
-            ExprKind::Attr { obj, attr } => {
-                if let ExprKind::Identifier(name) = &obj.kind
-                    && let Some(sym) = self.table.lookup(name)
+            ExprKind::Attr { obj, .. } => {
+                if let Some((root, attrs)) = expr.unroll_attr_chain()
+                    && let Some(sym) = self.table.lookup(root)
                 {
                     if sym.kind == SymbolKind::NativeImport {
                         return;
@@ -670,18 +670,21 @@ impl Resolver {
                         return;
                     }
                     if sym.kind == SymbolKind::Import {
-                        let mangled = format!("{}::{}", name, attr);
+                        let mangled = format!("{}::{}", root, attrs.join("::"));
                         if let Some(msym) = self.table.lookup(&mangled) {
                             self.def_sites.insert(expr.id, msym.span);
-                        } else {
-                            let (suggestions, can_autofix) = self.suggest(&mangled);
-                            self.errors.push(SemanticError::UndefinedName {
-                                name: mangled,
-                                span: expr.span,
-                                suggestions,
-                                can_autofix,
-                            });
+                            return;
                         }
+                        if self.table.contains_prefix(&format!("{mangled}::")) {
+                            return;
+                        }
+                        let (suggestions, can_autofix) = self.suggest(&mangled);
+                        self.errors.push(SemanticError::UndefinedName {
+                            name: mangled,
+                            span: expr.span,
+                            suggestions,
+                            can_autofix,
+                        });
                         return;
                     }
                 }

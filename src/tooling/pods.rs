@@ -182,8 +182,10 @@ pub fn find_pod_path(pod_name: &str) -> Option<PathBuf> {
     let candidates = [
         pod_dir.join(format!("{}.liv", pod_name)),
         pod_dir.join("lib.liv"),
+        pod_dir.join("mod.liv"),
         pod_dir.join("src").join(format!("{}.liv", pod_name)),
         pod_dir.join("src").join("lib.liv"),
+        pod_dir.join("src").join("mod.liv"),
     ];
     candidates.into_iter().find(|p| p.exists())
 }

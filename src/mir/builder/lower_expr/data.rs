@@ -299,7 +299,25 @@ impl<'a> MirBuilder<'a> {
         span: Span,
         expr_id: usize,
     ) -> Operand {
-        if let ExprKind::Identifier(name) = &obj.kind {
+        let mut chain_attrs = vec![attr];
+        let mut chain_root = None;
+        let mut curr = obj;
+        loop {
+            match &curr.kind {
+                ExprKind::Identifier(name) => {
+                    chain_attrs.reverse();
+                    chain_root = Some(name.as_str());
+                    break;
+                }
+                ExprKind::Attr { obj: inner, attr: inner_attr } => {
+                    chain_attrs.push(inner_attr.as_str());
+                    curr = inner;
+                }
+                _ => break,
+            }
+        }
+
+        if let Some(name) = chain_root {
             let obj_ty = self.get_type(obj.id);
             let mut current_obj_ty = obj_ty.clone();
             while let Type::Ref(inner) | Type::MutRef(inner) = current_obj_ty {
@@ -311,7 +329,7 @@ impl<'a> MirBuilder<'a> {
             ) && (self.lookup_var(name).is_some()
                 || self.globals.contains_key(name));
             if !is_struct_or_self && !obj_ty.is_py_value() && !current_obj_ty.is_py_value() {
-                let mangled = format!("{}::{}", name, attr);
+                let mangled = format!("{}::{}", name, chain_attrs.join("::"));
                 if let Some(local) = self.lookup_var(&mangled) {
                     return Operand::Copy(local);
                 }

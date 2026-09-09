@@ -107,6 +107,176 @@ fn lex_span(file_id: usize, line: usize, col: usize, start: usize, end: usize) -
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum ResolvedModule {
+    File(PathBuf),
+    ModFile(PathBuf),
+    Directory(PathBuf, Vec<PathBuf>),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ModuleResolutionError {
+    NotFound(String),
+    Ambiguous {
+        module: String,
+        file_path: PathBuf,
+        mod_path: PathBuf,
+    },
+}
+
+pub fn resolve_module_target(
+    base_dir: &Path,
+    module: &[String],
+) -> Result<ResolvedModule, ModuleResolutionError> {
+    let mod_rel = module.join("/");
+    let root_path = PROJECT_ROOT.with(|r| r.borrow().clone());
+    let stdlib_dir = find_std_lib_src_dir();
+
+    let mut search_dirs: Vec<&Path> = vec![base_dir];
+    if stdlib_dir != base_dir {
+        search_dirs.push(&stdlib_dir);
+    }
+    if !root_path.as_os_str().is_empty() && root_path != base_dir && root_path != stdlib_dir {
+        search_dirs.push(&root_path);
+    }
+
+    for dir in search_dirs {
+        let file_cand = dir.join(format!("{mod_rel}.liv"));
+        let mod_cand = dir.join(&mod_rel).join("mod.liv");
+        let dir_cand = dir.join(&mod_rel);
+
+        let file_exists = file_cand.is_file();
+        let mod_exists = mod_cand.is_file();
+
+        if file_exists && mod_exists {
+            return Err(ModuleResolutionError::Ambiguous {
+                module: mod_rel,
+                file_path: file_cand,
+                mod_path: mod_cand,
+            });
+        }
+        if file_exists {
+            return Ok(ResolvedModule::File(file_cand));
+        }
+        if mod_exists {
+            return Ok(ResolvedModule::ModFile(mod_cand));
+        }
+        if dir_cand.is_dir() {
+            let mut submodules = Vec::new();
+            if let Ok(entries) = fs::read_dir(&dir_cand) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_file() && p.extension().map_or(false, |ext| ext == "liv") {
+                        submodules.push(p);
+                    }
+                }
+            }
+            if !submodules.is_empty() {
+                submodules.sort();
+                return Ok(ResolvedModule::Directory(dir_cand, submodules));
+            }
+        }
+    }
+
+    if let Some(pkg_path) = find_pod_path(&mod_rel) {
+        return Ok(ResolvedModule::File(pkg_path));
+    }
+
+    Err(ModuleResolutionError::NotFound(mod_rel))
+}
+
+fn load_module_file(
+    file_path: &Path,
+    mod_prefix: &str,
+    loaded: &mut HashSet<String>,
+    file_id_counter: &mut usize,
+    sources: &mut HashMap<usize, (String, String)>,
+) -> Result<Vec<parser::Stmt>, Box<Diagnostic>> {
+    let path_str = fs::canonicalize(file_path)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| file_path.to_string_lossy().into_owned());
+
+    if loaded.contains(&path_str) {
+        return Ok(Vec::new());
+    }
+    loaded.insert(path_str.clone());
+
+    let mut imported_stmts = load_and_parse_collecting(
+        &path_str,
+        false,
+        loaded,
+        file_id_counter,
+        sources,
+    )?;
+
+    let mut defined_names = HashSet::new();
+    for s in &imported_stmts {
+        match &s.kind {
+            parser::StmtKind::Fn { name, .. }
+            | parser::StmtKind::Struct { name, .. }
+            | parser::StmtKind::Enum { name, .. }
+            | parser::StmtKind::Let { name, .. }
+            | parser::StmtKind::Const { name, .. } => {
+                if !name.contains("::") {
+                    defined_names.insert(name.clone());
+                }
+            }
+            parser::StmtKind::MultiLet { names, .. }
+            | parser::StmtKind::MultiConst { names, .. } => {
+                for name in names {
+                    if !name.contains("::") {
+                        defined_names.insert(name.clone());
+                    }
+                }
+            }
+            parser::StmtKind::Impl { type_name, .. } => {
+                let tn = type_name.to_string();
+                if !tn.contains("::") {
+                    defined_names.insert(tn);
+                }
+            }
+            parser::StmtKind::PyImport { alias, .. } => {
+                defined_names.insert(alias.clone());
+            }
+            parser::StmtKind::NativeImport { alias, .. } => {
+                defined_names.insert(alias.clone());
+            }
+            parser::StmtKind::FromImport { names, is_star, .. } => {
+                if !*is_star {
+                    for (name, alias) in names {
+                        let bound = alias.as_deref().unwrap_or(name.as_str());
+                        defined_names.insert(bound.to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    mangle_statements(&mut imported_stmts, mod_prefix, &defined_names);
+
+    imported_stmts.retain(|s| {
+        matches!(
+            s.kind,
+            parser::StmtKind::Fn { .. }
+                | parser::StmtKind::Struct { .. }
+                | parser::StmtKind::Impl { .. }
+                | parser::StmtKind::Trait { .. }
+                | parser::StmtKind::Enum { .. }
+                | parser::StmtKind::Let { .. }
+                | parser::StmtKind::MultiLet { .. }
+                | parser::StmtKind::Const { .. }
+                | parser::StmtKind::MultiConst { .. }
+                | parser::StmtKind::Import { .. }
+                | parser::StmtKind::PyImport { .. }
+                | parser::StmtKind::NativeImport { .. }
+                | parser::StmtKind::FromImport { .. }
+        )
+    });
+
+    Ok(imported_stmts)
+}
+
 /// Loads and parses `filename`, recursively pulling in its imports, exactly
 /// like `load_and_parse` but returning the failing `Diagnostic` instead of
 /// printing it to stderr. `load_and_parse` is a thin wrapper over this that
@@ -232,11 +402,16 @@ pub fn load_and_parse_collecting(
     let mod_name = if is_main {
         "__main__".to_string()
     } else {
-        Path::new(filename)
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string()
+        let p = Path::new(filename);
+        let stem = p.file_stem().unwrap_or_default().to_string_lossy();
+        if stem == "mod" {
+            p.parent()
+                .and_then(|parent| parent.file_name())
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| stem.to_string())
+        } else {
+            stem.to_string()
+        }
     };
 
     all_stmts.push(parser::Stmt::new(
@@ -273,133 +448,46 @@ pub fn load_and_parse_collecting(
                     continue;
                 }
 
-                let mod_name = module.join("/");
-                let mut mod_path = parent_dir.join(format!("{}.liv", mod_name));
+                let mod_prefix = alias
+                    .as_deref()
+                    .unwrap_or_else(|| module.last().unwrap().as_str());
 
-                if !mod_path.exists() {
-                    mod_path = find_std_lib_src_dir().join(format!("{}.liv", mod_name));
-                }
-
-                if !mod_path.exists() {
-                    let root_path = PROJECT_ROOT.with(|r| r.borrow().clone());
-                    if !root_path.as_os_str().is_empty() {
-                        mod_path = root_path.join(format!("{}.liv", mod_name));
+                match resolve_module_target(parent_dir, module) {
+                    Ok(ResolvedModule::File(p)) | Ok(ResolvedModule::ModFile(p)) => {
+                        let stmts = load_module_file(&p, mod_prefix, loaded, file_id_counter, sources)?;
+                        all_stmts.extend(stmts);
                     }
-                }
-
-                if !mod_path.exists()
-                    && let Some(pkg_path) = find_pod_path(&mod_name)
-                {
-                    mod_path = pkg_path;
-                }
-
-                if !mod_path.exists() {
-                    if is_main && super::laws::is_laws_import(module, alias) {
-                        all_stmts.push(super::laws::make_laws_stmt(stmt.span));
-                        continue;
-                    }
-                    return Err(Box::new(
-                        Diagnostic::error("E0300", format!("module `{mod_name}` not found"), stmt.span)
-                            .label("imported here")
-                            .note("searched the project directory, the standard library, and installed pods")
-                            .help(format!("create `{mod_name}.liv` next to this file, or install the pod that provides it")),
-                    ));
-                }
-
-                let path_str = fs::canonicalize(&mod_path)
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .unwrap_or_else(|_| mod_path.to_string_lossy().into_owned());
-
-                if !loaded.contains(&path_str) {
-                    loaded.insert(path_str.clone());
-                    let mut imported_stmts = load_and_parse_collecting(
-                        &path_str,
-                        false,
-                        loaded,
-                        file_id_counter,
-                        sources,
-                    )?;
-
-                    let mod_prefix = alias
-                        .as_deref()
-                        .unwrap_or_else(|| module.last().unwrap().as_str());
-                    // A nested `import` module's symbols keep their canonical
-                    // module-qualified names: re-prefixing them per importer
-                    // (`a::json::loads`) breaks the second file to import the
-                    // same module, whose flattened copy is deduplicated away
-                    // and whose references then point at a name only the
-                    // first importer's chain defines. Names already holding a
-                    // `::` and import-bound module names are therefore left
-                    // out of the mangle set, so every importer resolves to
-                    // the one canonical copy.
-                    let mut defined_names = HashSet::new();
-                    for s in &imported_stmts {
-                        match &s.kind {
-                            parser::StmtKind::Fn { name, .. }
-                            | parser::StmtKind::Struct { name, .. }
-                            | parser::StmtKind::Enum { name, .. }
-                            | parser::StmtKind::Let { name, .. }
-                            | parser::StmtKind::Const { name, .. } => {
-                                if !name.contains("::") {
-                                    defined_names.insert(name.clone());
-                                }
+                    Ok(ResolvedModule::Directory(_dir_path, submodules)) => {
+                        for sub_path in submodules {
+                            if let Some(stem) = sub_path.file_stem().and_then(|s| s.to_str()) {
+                                let sub_prefix = format!("{mod_prefix}::{stem}");
+                                let stmts = load_module_file(&sub_path, &sub_prefix, loaded, file_id_counter, sources)?;
+                                all_stmts.extend(stmts);
                             }
-                            parser::StmtKind::MultiLet { names, .. }
-                            | parser::StmtKind::MultiConst { names, .. } => {
-                                for name in names {
-                                    if !name.contains("::") {
-                                        defined_names.insert(name.clone());
-                                    }
-                                }
-                            }
-                            parser::StmtKind::Impl { type_name, .. } => {
-                                let tn = type_name.to_string();
-                                if !tn.contains("::") {
-                                    defined_names.insert(tn);
-                                }
-                            }
-                            parser::StmtKind::PyImport { alias, .. } => {
-                                defined_names.insert(alias.clone());
-                            }
-                            parser::StmtKind::NativeImport { alias, .. } => {
-                                defined_names.insert(alias.clone());
-                            }
-                            parser::StmtKind::FromImport { names, is_star, .. } => {
-                                if *is_star {
-                                } else {
-                                    for (name, alias) in names {
-                                        let bound = alias.as_deref().unwrap_or(name.as_str());
-                                        defined_names.insert(bound.to_string());
-                                    }
-                                }
-                            }
-                            _ => {}
                         }
                     }
-
-                    mangle_statements(&mut imported_stmts, mod_prefix, &defined_names);
-
-                    imported_stmts.retain(|s| {
-                        matches!(
-                            s.kind,
-                            parser::StmtKind::Fn { .. }
-                                | parser::StmtKind::Struct { .. }
-                                | parser::StmtKind::Impl { .. }
-                                | parser::StmtKind::Trait { .. }
-                                | parser::StmtKind::Enum { .. }
-                                | parser::StmtKind::Let { .. }
-                                | parser::StmtKind::MultiLet { .. }
-                                | parser::StmtKind::Const { .. }
-                                | parser::StmtKind::MultiConst { .. }
-                                | parser::StmtKind::Import { .. }
-                                | parser::StmtKind::PyImport { .. }
-                                | parser::StmtKind::NativeImport { .. }
-                                | parser::StmtKind::FromImport { .. }
-                        )
-                    });
-
-                    all_stmts.extend(imported_stmts);
+                    Err(ModuleResolutionError::Ambiguous { module: m, file_path, mod_path }) => {
+                        return Err(Box::new(
+                            Diagnostic::error("E0302", format!("ambiguous module `{m}`"), stmt.span)
+                                .label("imported here")
+                                .note(format!("found both `{}` and `{}`", file_path.display(), mod_path.display()))
+                                .help("remove or rename one of them to resolve the ambiguity"),
+                        ));
+                    }
+                    Err(ModuleResolutionError::NotFound(m)) => {
+                        if is_main && super::laws::is_laws_import(module, alias) {
+                            all_stmts.push(super::laws::make_laws_stmt(stmt.span));
+                            continue;
+                        }
+                        return Err(Box::new(
+                            Diagnostic::error("E0300", format!("module `{m}` not found"), stmt.span)
+                                .label("imported here")
+                                .note("searched the project directory, the standard library, and installed pods")
+                                .help(format!("create `{m}.liv` or `{m}/mod.liv` next to this file, or install the pod that provides it")),
+                        ));
+                    }
                 }
+
                 all_stmts.push(stmt.clone());
             }
             parser::StmtKind::NativeImport { .. } => {
@@ -420,51 +508,61 @@ pub fn load_and_parse_collecting(
                     continue;
                 }
 
-                let mod_name = module.join("/");
-                let mut mod_path = parent_dir.join(format!("{}.liv", mod_name));
+                match resolve_module_target(parent_dir, module) {
+                    Ok(ResolvedModule::File(p)) | Ok(ResolvedModule::ModFile(p)) => {
+                        let path_str = fs::canonicalize(&p)
+                            .map(|p| p.to_string_lossy().into_owned())
+                            .unwrap_or_else(|_| p.to_string_lossy().into_owned());
 
-                if !mod_path.exists() {
-                    mod_path = find_std_lib_src_dir().join(format!("{}.liv", mod_name));
-                }
+                        if !loaded.contains(&path_str) {
+                            loaded.insert(path_str.clone());
+                            let imported_stmts = load_and_parse_collecting(
+                                &path_str,
+                                false,
+                                loaded,
+                                file_id_counter,
+                                sources,
+                            )?;
+                            all_stmts.extend(imported_stmts);
+                        }
+                    }
+                    Ok(ResolvedModule::Directory(_dir_path, submodules)) => {
+                        for sub_path in submodules {
+                            let path_str = fs::canonicalize(&sub_path)
+                                .map(|p| p.to_string_lossy().into_owned())
+                                .unwrap_or_else(|_| sub_path.to_string_lossy().into_owned());
 
-                if !mod_path.exists() {
-                    let root_path = PROJECT_ROOT.with(|r| r.borrow().clone());
-                    if !root_path.as_os_str().is_empty() {
-                        mod_path = root_path.join(format!("{}.liv", mod_name));
+                            if !loaded.contains(&path_str) {
+                                loaded.insert(path_str.clone());
+                                let imported_stmts = load_and_parse_collecting(
+                                    &path_str,
+                                    false,
+                                    loaded,
+                                    file_id_counter,
+                                    sources,
+                                )?;
+                                all_stmts.extend(imported_stmts);
+                            }
+                        }
+                    }
+                    Err(ModuleResolutionError::Ambiguous { module: m, file_path, mod_path }) => {
+                        return Err(Box::new(
+                            Diagnostic::error("E0302", format!("ambiguous module `{m}`"), stmt.span)
+                                .label("imported here")
+                                .note(format!("found both `{}` and `{}`", file_path.display(), mod_path.display()))
+                                .help("remove or rename one of them to resolve the ambiguity"),
+                        ));
+                    }
+                    Err(ModuleResolutionError::NotFound(m)) => {
+                        return Err(Box::new(
+                            Diagnostic::error("E0300", format!("module `{m}` not found"), stmt.span)
+                                .label("imported here")
+                                .note("searched the project directory, the standard library, and installed pods")
+                                .help(format!("create `{m}.liv` or `{m}/mod.liv` next to this file, or install the pod that provides it")),
+                        ));
                     }
                 }
 
-                if !mod_path.exists()
-                    && let Some(pkg_path) = find_pod_path(&mod_name)
-                {
-                    mod_path = pkg_path;
-                }
-
-                if !mod_path.exists() {
-                    return Err(Box::new(
-                        Diagnostic::error("E0300", format!("module `{mod_name}` not found"), stmt.span)
-                            .label("imported here")
-                            .note("searched the project directory, the standard library, and installed pods")
-                            .help(format!("create `{mod_name}.liv` next to this file, or install the pod that provides it")),
-                    ));
-                }
-
-                let path_str = fs::canonicalize(&mod_path)
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .unwrap_or_else(|_| mod_path.to_string_lossy().into_owned());
-
-                if !loaded.contains(&path_str) {
-                    loaded.insert(path_str.clone());
-                    let imported_stmts = load_and_parse_collecting(
-                        &path_str,
-                        false,
-                        loaded,
-                        file_id_counter,
-                        sources,
-                    )?;
-
-                    all_stmts.extend(imported_stmts);
-                }
                 all_stmts.push(stmt.clone());
             }
             _ => all_stmts.push(stmt),
@@ -530,29 +628,27 @@ pub fn collect_source_files(
         match &stmt.kind {
             parser::StmtKind::Import { module, .. }
             | parser::StmtKind::FromImport { module, .. } => {
-                let mod_name = module.join("/");
-                let mut mod_path = parent_dir.join(format!("{}.liv", mod_name));
-                if !mod_path.exists() {
-                    mod_path = find_std_lib_src_dir().join(format!("{}.liv", mod_name));
-                }
-                if !mod_path.exists() {
-                    let root_path = PROJECT_ROOT.with(|r| r.borrow().clone());
-                    if !root_path.as_os_str().is_empty() {
-                        mod_path = root_path.join(format!("{}.liv", mod_name));
+                if let Ok(resolved) = resolve_module_target(&parent_dir, module) {
+                    match resolved {
+                        ResolvedModule::File(p) | ResolvedModule::ModFile(p) => {
+                            collect_source_files(
+                                p.to_string_lossy().as_ref(),
+                                collected,
+                                py_files,
+                                visited,
+                            );
+                        }
+                        ResolvedModule::Directory(_dir, submodules) => {
+                            for sub in submodules {
+                                collect_source_files(
+                                    sub.to_string_lossy().as_ref(),
+                                    collected,
+                                    py_files,
+                                    visited,
+                                );
+                            }
+                        }
                     }
-                }
-                if !mod_path.exists()
-                    && let Some(pkg_path) = find_pod_path(&mod_name)
-                {
-                    mod_path = pkg_path;
-                }
-                if mod_path.exists() {
-                    collect_source_files(
-                        mod_path.to_string_lossy().as_ref(),
-                        collected,
-                        py_files,
-                        visited,
-                    );
                 }
             }
             parser::StmtKind::PyImport { module, .. } => {
@@ -628,6 +724,202 @@ mod tests {
         )
         .unwrap();
         assert!(!stmts.is_empty());
+
+        fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_resolve_module_target_variants() {
+        let temp_dir = std::env::temp_dir().join(format!("olive_mod_resolve_{}", std::process::id()));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        // 1. Single file
+        let single_file = temp_dir.join("single.liv");
+        fs::write(&single_file, "pass\n").unwrap();
+        let res = resolve_module_target(&temp_dir, &["single".to_string()]).unwrap();
+        assert_eq!(res, ResolvedModule::File(single_file));
+
+        // 2. Directory with mod.liv
+        let pkg_dir = temp_dir.join("pkg");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        let mod_file = pkg_dir.join("mod.liv");
+        fs::write(&mod_file, "pass\n").unwrap();
+        let res = resolve_module_target(&temp_dir, &["pkg".to_string()]).unwrap();
+        assert_eq!(res, ResolvedModule::ModFile(mod_file));
+
+        // 3. Directory without mod.liv (optional mod.liv)
+        let sub_dir = temp_dir.join("ns");
+        fs::create_dir_all(&sub_dir).unwrap();
+        let a = sub_dir.join("a.liv");
+        let b = sub_dir.join("b.liv");
+        fs::write(&a, "pass\n").unwrap();
+        fs::write(&b, "pass\n").unwrap();
+        let res = resolve_module_target(&temp_dir, &["ns".to_string()]).unwrap();
+        assert_eq!(res, ResolvedModule::Directory(sub_dir, vec![a, b]));
+
+        // 4. Ambiguous: both foo.liv and foo/mod.liv
+        let amb_dir = temp_dir.join("amb");
+        fs::create_dir_all(&amb_dir).unwrap();
+        let amb_file = temp_dir.join("amb.liv");
+        let amb_mod = amb_dir.join("mod.liv");
+        fs::write(&amb_file, "pass\n").unwrap();
+        fs::write(&amb_mod, "pass\n").unwrap();
+        let err = resolve_module_target(&temp_dir, &["amb".to_string()]).unwrap_err();
+        assert!(matches!(err, ModuleResolutionError::Ambiguous { .. }));
+
+        fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_load_and_parse_mod_liv() {
+        let temp_dir = std::env::temp_dir().join(format!("olive_mod_load_{}", std::process::id()));
+        let pkg_dir = temp_dir.join("tokenizer");
+        fs::create_dir_all(&pkg_dir).unwrap();
+
+        let main_path = temp_dir.join("main.liv");
+        let mod_path = pkg_dir.join("mod.liv");
+        fs::write(&main_path, "import tokenizer\n").unwrap();
+        fs::write(
+            &mod_path,
+            "fn tokenize() -> int:\n    return 42\nstruct Tokenizer:\n    val: int\n",
+        )
+        .unwrap();
+
+        let mut loaded = HashSet::new();
+        let mut file_id_counter = 0;
+        let mut sources = HashMap::default();
+
+        let stmts = load_and_parse(
+            &main_path.to_string_lossy(),
+            true,
+            &mut loaded,
+            &mut file_id_counter,
+            &mut sources,
+        )
+        .unwrap();
+
+        let has_mangled_fn = stmts.iter().any(|s| match &s.kind {
+            parser::StmtKind::Fn { name, .. } => name == "tokenizer::tokenize",
+            _ => false,
+        });
+        assert!(has_mangled_fn, "expected tokenizer::tokenize from mod.liv");
+
+        let has_mangled_struct = stmts.iter().any(|s| match &s.kind {
+            parser::StmtKind::Struct { name, .. } => name == "tokenizer::Tokenizer",
+            _ => false,
+        });
+        assert!(has_mangled_struct, "expected tokenizer::Tokenizer from mod.liv");
+
+        fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_load_and_parse_directory_optional_mod() {
+        let temp_dir = std::env::temp_dir().join(format!("olive_dir_load_{}", std::process::id()));
+        let pkg_dir = temp_dir.join("tokenizer");
+        fs::create_dir_all(&pkg_dir).unwrap();
+
+        let main_path = temp_dir.join("main.liv");
+        let bpe_path = pkg_dir.join("bpe.liv");
+        let tok_path = pkg_dir.join("tokenizer.liv");
+        fs::write(&main_path, "import tokenizer\n").unwrap();
+        fs::write(&bpe_path, "fn encode() -> int:\n    return 1\n").unwrap();
+        fs::write(&tok_path, "struct Tokenizer:\n    id: int\n").unwrap();
+
+        let mut loaded = HashSet::new();
+        let mut file_id_counter = 0;
+        let mut sources = HashMap::default();
+
+        let stmts = load_and_parse(
+            &main_path.to_string_lossy(),
+            true,
+            &mut loaded,
+            &mut file_id_counter,
+            &mut sources,
+        )
+        .unwrap();
+
+        let has_bpe_fn = stmts.iter().any(|s| match &s.kind {
+            parser::StmtKind::Fn { name, .. } => name == "tokenizer::bpe::encode",
+            _ => false,
+        });
+        assert!(has_bpe_fn, "expected tokenizer::bpe::encode in directory module");
+
+        let has_tok_struct = stmts.iter().any(|s| match &s.kind {
+            parser::StmtKind::Struct { name, .. } => name == "tokenizer::tokenizer::Tokenizer",
+            _ => false,
+        });
+        assert!(has_tok_struct, "expected tokenizer::tokenizer::Tokenizer in directory module");
+
+        fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_mod_name_binds_to_parent_dir() {
+        let temp_dir = std::env::temp_dir().join(format!("olive_mod_name_{}", std::process::id()));
+        let pkg_dir = temp_dir.join("tokenizer");
+        fs::create_dir_all(&pkg_dir).unwrap();
+
+        let mod_path = pkg_dir.join("mod.liv");
+        fs::write(&mod_path, "pass\n").unwrap();
+
+        let mut loaded = HashSet::new();
+        let mut file_id_counter = 0;
+        let mut sources = HashMap::default();
+
+        let stmts = load_and_parse(
+            &mod_path.to_string_lossy(),
+            false,
+            &mut loaded,
+            &mut file_id_counter,
+            &mut sources,
+        )
+        .unwrap();
+
+        let name_const = stmts.iter().find_map(|s| match &s.kind {
+            parser::StmtKind::Const { name, value, .. } if name == "__name__" => match &value.kind {
+                parser::ExprKind::Str(val) => Some(val.clone()),
+                _ => None,
+            },
+            _ => None,
+        });
+
+        assert_eq!(name_const.as_deref(), Some("tokenizer"));
+
+        fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_collect_source_files_tracks_directory_module() {
+        let temp_dir = std::env::temp_dir().join(format!("olive_csf_{}", std::process::id()));
+        let pkg_dir = temp_dir.join("tokenizer");
+        fs::create_dir_all(&pkg_dir).unwrap();
+
+        let main_path = temp_dir.join("main.liv");
+        let bpe_path = pkg_dir.join("bpe.liv");
+        let tok_path = pkg_dir.join("tokenizer.liv");
+        fs::write(&main_path, "import tokenizer\n").unwrap();
+        fs::write(&bpe_path, "pass\n").unwrap();
+        fs::write(&tok_path, "pass\n").unwrap();
+
+        let mut collected = Vec::new();
+        let mut py_files = Vec::new();
+        let mut visited = HashSet::new();
+
+        collect_source_files(
+            main_path.to_str().unwrap(),
+            &mut collected,
+            &mut py_files,
+            &mut visited,
+        );
+
+        let main_canon = fs::canonicalize(&main_path).unwrap().to_string_lossy().to_string();
+        let bpe_canon = fs::canonicalize(&bpe_path).unwrap().to_string_lossy().to_string();
+        let tok_canon = fs::canonicalize(&tok_path).unwrap().to_string_lossy().to_string();
+
+        assert!(collected.contains(&main_canon));
+        assert!(collected.contains(&bpe_canon));
+        assert!(collected.contains(&tok_canon));
 
         fs::remove_dir_all(&temp_dir).ok();
     }

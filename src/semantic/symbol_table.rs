@@ -144,6 +144,10 @@ impl SymbolTable {
             .rev()
             .flat_map(|scope| scope.symbols.keys().map(String::as_str))
     }
+
+    pub fn contains_prefix(&self, prefix: &str) -> bool {
+        self.visible_names().any(|n| n.starts_with(prefix))
+    }
 }
 
 #[cfg(test)]

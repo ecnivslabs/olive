@@ -132,8 +132,8 @@ impl TypeChecker {
                         }
                     }
                 }
-                if let ExprKind::Identifier(alias) = &obj.kind {
-                    (Some(format!("{}::{}", alias, attr)), false)
+                if let Some((root, attrs)) = callee.unroll_attr_chain() {
+                    (Some(format!("{}::{}", root, attrs.join("::"))), false)
                 } else {
                     (None, false)
                 }
@@ -1195,6 +1195,17 @@ impl TypeChecker {
             }
 
             ExprKind::Attr { obj, attr } => {
+                if let Some((root, attrs)) = expr.unroll_attr_chain() {
+                    let mangled = format!("{}::{}", root, attrs.join("::"));
+                    let is_py_stub = self
+                        .py_fn_arity
+                        .get(root)
+                        .map(|fns| attrs.len() == 1 && fns.contains_key(attrs[0]))
+                        .unwrap_or(false);
+                    if !is_py_stub && let Some(ty) = self.lookup_type(&mangled) {
+                        return self.instantiate(ty);
+                    }
+                }
                 let obj_ty = self.check_expr(obj);
                 let checked_obj = self.apply_subst(obj_ty);
                 // `T | None` must be narrowed (or accessed via `?.`) before a

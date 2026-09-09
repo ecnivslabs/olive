@@ -134,6 +134,85 @@ impl<'a> MirBuilder<'a> {
             return op;
         }
 
+        let unrolled = callee.unroll_attr_chain();
+        let mangled_target = unrolled.as_ref().map(|(root, chain)| {
+            std::iter::once(*root).chain(chain.iter().copied()).collect::<Vec<_>>().join("::")
+        });
+
+        let is_module_call = if let Some(ref mangled) = mangled_target {
+            self.fn_meta.contains_key(mangled)
+                || self.enum_variants.contains_key(mangled)
+                || self.c_ffi_fns.contains(mangled)
+                || self.generic_fns.contains_key(mangled)
+        } else {
+            false
+        };
+
+        if is_module_call {
+            let mangled = mangled_target.unwrap();
+            let variant_info = self.enum_variants.get(&mangled).cloned();
+            if let Some((enum_name, tag)) = variant_info {
+                let type_id = crate::mir::enum_type_id(&enum_name);
+                let tmp = self.new_local(self.get_type(expr_id), None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        tmp,
+                        Rvalue::Aggregate(AggregateKind::EnumVariant(type_id, tag), arg_ops),
+                    ),
+                    span,
+                );
+                return self.operand_for_local(tmp);
+            }
+
+            let mangled_str = mangled.clone();
+            let callee_op = Operand::Constant(Constant::Function(mangled_str.clone()));
+            let call_ret_ty = self.get_type(expr_id);
+
+            if self.c_ffi_fns.contains(&mangled_str)
+                && let Type::Struct(ref sname, ref targs, _) = call_ret_ty.clone()
+                && sname == "Result"
+                && !targs.is_empty()
+            {
+                return self.lower_ffi_result_wrapper(
+                    callee_op,
+                    arg_ops,
+                    targs[0].clone(),
+                    span,
+                    expr_id,
+                    &mangled_str,
+                );
+            }
+
+            let callee_ty = self.get_type(callee.id).clone();
+            let param_tys = if let Type::Fn(ptys, _, _) = callee_ty {
+                ptys
+            } else {
+                Vec::new()
+            };
+
+            let final_args = self.pack_fn_call_args(
+                &mangled_str,
+                &arg_ops,
+                &arg_tys,
+                &param_tys,
+                &arg_kw_names,
+                span,
+            );
+
+            let tmp = self.new_local(self.get_type(expr_id), None, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    tmp,
+                    Rvalue::Call {
+                        func: callee_op,
+                        args: final_args,
+                    },
+                ),
+                span,
+            );
+            return self.operand_for_local(tmp);
+        }
+
         if let ExprKind::Identifier(name) = &obj.kind {
             let obj_ty = self.get_type(obj.id);
             let mut current_obj_ty = obj_ty.clone();
@@ -1328,12 +1407,8 @@ impl<'a> MirBuilder<'a> {
             && !self.globals.contains_key(name)
         {
             Some(name.clone())
-        } else if let ExprKind::Attr { obj, attr } = &callee.kind {
-            if let ExprKind::Identifier(obj_name) = &obj.kind {
-                Some(format!("{}::{}", obj_name, attr))
-            } else {
-                None
-            }
+        } else if let Some((root, attrs)) = callee.unroll_attr_chain() {
+            Some(format!("{}::{}", root, attrs.join("::")))
         } else {
             None
         };
@@ -1872,5 +1947,17 @@ impl<'a> MirBuilder<'a> {
             || self.lookup_var(&mangled).is_some()
             || self.globals.contains_key(&mangled)
             || self.c_ffi_fns.contains(&mangled)
+    }
+
+    pub(super) fn has_native_callee(&self, callee: &Expr) -> bool {
+        if let Some((root, chain)) = callee.unroll_attr_chain() {
+            let mangled = std::iter::once(root).chain(chain).collect::<Vec<_>>().join("::");
+            return self.fn_meta.contains_key(&mangled)
+                || self.lookup_var(&mangled).is_some()
+                || self.globals.contains_key(&mangled)
+                || self.c_ffi_fns.contains(&mangled)
+                || self.generic_fns.contains_key(&mangled);
+        }
+        false
     }
 }
