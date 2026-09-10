@@ -598,8 +598,18 @@ unsafe fn sync_set_typed(pair: &WritebackPair) {
     static FLOAT_DESC: [u8; 1] = [crate::format::D_FLOAT];
     static BOOL_DESC: [u8; 1] = [crate::format::D_BOOL];
     static STR_DESC: [u8; 1] = [crate::format::D_STR];
+    static INT_SET_DESC: [u8; 2] = [crate::format::D_SET, crate::format::D_INT];
+    static FLOAT_SET_DESC: [u8; 2] = [crate::format::D_SET, crate::format::D_FLOAT];
+    static BOOL_SET_DESC: [u8; 2] = [crate::format::D_SET, crate::format::D_BOOL];
+    static STR_SET_DESC: [u8; 2] = [crate::format::D_SET, crate::format::D_STR];
     unsafe {
-        crate::olive_set_clear(pair.olive_ptr);
+        let set_desc = match scalar_kind(pair.tag) {
+            TAG_INT_LIST => INT_SET_DESC.as_ptr() as i64,
+            TAG_FLOAT_LIST => FLOAT_SET_DESC.as_ptr() as i64,
+            TAG_BOOL_LIST => BOOL_SET_DESC.as_ptr() as i64,
+            _ => STR_SET_DESC.as_ptr() as i64,
+        };
+        crate::set::olive_set_clear_typed(pair.olive_ptr, set_desc);
         let kind = scalar_kind(pair.tag);
         // Raw scalar elements must hash by static type, not the
         // string-pointer magnitude heuristic: a big odd int (or an odd float
