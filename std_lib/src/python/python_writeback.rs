@@ -269,28 +269,20 @@ unsafe fn to_py_typed_list(val: i64, kind: i64) -> PyObject {
 unsafe fn to_py_typed_dict(val: i64, kind: i64) -> PyObject {
     unsafe {
         let py_dict = PY_DICT_NEW();
-        let keys = crate::olive_obj_keys(val);
-        let n = crate::olive_list_len(keys);
-        for i in 0..n {
-            let key = crate::olive_list_get(keys, i);
-            let value = crate::olive_obj_get(val, key);
-            let py_value = raw_scalar_to_py(value, kind);
-            // Keys holding an embedded NUL cannot cross as C strings
-            // (`SET_ITEM_STRING` would truncate them into collisions);
-            // skip the entry like the deep exporter does rather than
-            // corrupt the surviving keys.
-            if crate::olive_str_to_bytes(key).contains(&0) {
-                PY_DEC_REF(py_value);
-                continue;
+        let obj = &*(val as *const crate::OliveObj);
+        for (key, &value) in &obj.fields {
+            let py_key = crate::python::python_coerce::to_py_deep(key.0);
+            if py_key.is_null() {
+                crate::python::python_error::handle_py_error();
             }
-            PY_DICT_SET_ITEM_STRING(
-                py_dict,
-                crate::string_slab::str_body(key) as *const c_char,
-                py_value,
-            );
+            let py_value = raw_scalar_to_py(value, kind);
+            let res = PY_OBJECT_SET_ITEM(py_dict, py_key, py_value);
+            PY_DEC_REF(py_key);
             PY_DEC_REF(py_value);
+            if res == -1 {
+                crate::python::python_error::handle_py_error();
+            }
         }
-        crate::list::olive_free_list(keys);
         py_dict
     }
 }

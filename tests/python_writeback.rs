@@ -69,6 +69,9 @@ def flip_set(s):
     s.add(999)
     s.discard(1)
 
+def take_dict(d):
+    return len(d)
+
 def add_int_to_set(s, v):
     s.add(v)
 
@@ -484,6 +487,21 @@ fn main():
 main()
 "#,
         "[1, 2, 99999]\n",
+    );
+}
+
+#[test]
+fn int_dict_keys_cross_to_python_without_string_dereference() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let d: {int: int} = {1: 2}
+    print(h.take_dict(d))
+
+main()
+"#,
+        "1\n",
     );
 }
 

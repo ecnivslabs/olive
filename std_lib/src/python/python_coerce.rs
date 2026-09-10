@@ -391,28 +391,24 @@ pub unsafe fn to_py_deep(val: i64) -> PyObject {
         match kind {
             crate::KIND_OBJ => {
                 let py_dict = PY_DICT_NEW();
-                let keys = crate::olive_obj_keys(val);
-                let n = crate::olive_list_len(keys);
-                for i in 0..n {
-                    let key = crate::olive_list_get(keys, i);
-                    let value = crate::olive_obj_get(val, key);
+                let obj = &*(val as *const crate::OliveObj);
+                for (key, &value) in &obj.fields {
+                    let py_key = to_py_deep(key.0);
+                    if py_key.is_null() {
+                        crate::python::python_error::handle_py_error();
+                    }
                     let py_value = to_py_deep(value);
                     if py_value.is_null() {
-                        continue;
+                        PY_DEC_REF(py_key);
+                        crate::python::python_error::handle_py_error();
                     }
-                    // `PyUnicode_FromStringAndSize` fails on a key holding an
-                    // embedded NUL; skip that entry rather than hand NULL to
-                    // the C API.
-                    if !crate::olive_str_to_bytes(key).contains(&0) {
-                        PY_DICT_SET_ITEM_STRING(
-                            py_dict,
-                            crate::string_slab::str_body(key) as *const c_char,
-                            py_value,
-                        );
-                    }
+                    let res = PY_OBJECT_SET_ITEM(py_dict, py_key, py_value);
+                    PY_DEC_REF(py_key);
                     PY_DEC_REF(py_value);
+                    if res == -1 {
+                        crate::python::python_error::handle_py_error();
+                    }
                 }
-                crate::olive_free_list(keys);
                 py_dict
             }
             crate::KIND_LIST | crate::KIND_ANY_LIST => {
