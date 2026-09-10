@@ -56,6 +56,16 @@ def make_bad_iter():
     yield 1
     raise ValueError("boom")
 
+class BadKey:
+    def __hash__(self):
+        return 1
+
+    def __str__(self):
+        raise ValueError("boom")
+
+def make_bad_dict():
+    return {BadKey(): 7}
+
 def make_tuple():
     return (7, "seven")
 
@@ -275,6 +285,21 @@ fn failed_set_iterable_conversion_propagates_python_error() {
 fn main():
     let s: set[int] = h.make_bad_iter()
     print(s)
+
+main()
+"#,
+        "ValueError",
+    );
+}
+
+#[test]
+fn failed_dict_key_conversion_propagates_python_error() {
+    assert_both_fail(
+        r#"import py "drhelper" as h
+
+fn main():
+    let d: {str: int} = h.make_bad_dict()
+    print(d)
 
 main()
 "#,

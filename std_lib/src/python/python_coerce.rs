@@ -722,7 +722,7 @@ pub unsafe fn olive_py_to_dict_internal(obj: PyObject, boxed: bool) -> i64 {
                 } else {
                     let str_obj = PY_OBJECT_STR(key_obj);
                     if str_obj.is_null() {
-                        continue;
+                        crate::python::python_error::handle_py_error();
                     }
                     let r = py_str_to_olive(str_obj);
                     PY_DEC_REF(str_obj);
