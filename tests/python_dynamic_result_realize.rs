@@ -189,6 +189,47 @@ main()
     );
 }
 
+fn assert_both_fail(src: &str, needle: &str) {
+    if !python_available() {
+        eprintln!("Python not available, skipping test");
+        return;
+    }
+    let (dir, liv_path) = write_case(src);
+
+    let jit = run_jit(&dir, &liv_path);
+    assert!(!jit.status.success(), "pit run unexpectedly succeeded");
+    assert!(
+        String::from_utf8_lossy(&jit.stderr).contains(needle),
+        "pit run stderr missing {needle:?}: {}",
+        String::from_utf8_lossy(&jit.stderr)
+    );
+
+    let aot = run_aot(&dir, &liv_path);
+    assert!(!aot.status.success(), "AOT unexpectedly succeeded");
+    assert!(
+        String::from_utf8_lossy(&aot.stderr).contains(needle),
+        "AOT stderr missing {needle:?}: {}",
+        String::from_utf8_lossy(&aot.stderr)
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn failed_iterable_conversion_propagates_python_error() {
+    assert_both_fail(
+        r#"import py "builtins" as b
+
+fn main():
+    let xs: [int] = b.map(b.int, ["1", "not-an-int"])
+    print(xs)
+
+main()
+"#,
+        "ValueError",
+    );
+}
+
 #[test]
 fn dynamic_module_call_typed_list_result_realizes_correctly() {
     assert_both_succeed(

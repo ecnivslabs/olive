@@ -661,8 +661,7 @@ pub unsafe fn olive_py_to_list_internal(obj: PyObject, boxed: bool) -> i64 {
         } else {
             materialized = PY_SEQUENCE_LIST(obj);
             if materialized.is_null() {
-                PY_ERR_CLEAR();
-                return crate::olive_list_new(0);
+                crate::python::python_error::handle_py_error();
             }
             materialized
         };
