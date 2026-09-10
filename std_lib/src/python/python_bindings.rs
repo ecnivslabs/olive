@@ -113,6 +113,8 @@ pub static mut PY_ERR_NORMALIZE_EXCEPTION: unsafe extern "C" fn(
     *mut PyObject,
 ) = noop_err_fetch;
 pub static mut PY_ERR_CLEAR: unsafe extern "C" fn() = noop_initialize;
+pub static mut PY_ERR_EXCEPTION_MATCHES: unsafe extern "C" fn(PyObject) -> c_int =
+    noop_exception_matches;
 
 pub static mut PY_SET_NEW: unsafe extern "C" fn(PyObject) -> PyObject = noop_call_1;
 pub static mut PY_SET_ADD: unsafe extern "C" fn(PyObject, PyObject) -> c_int = noop_set_add;
@@ -134,6 +136,7 @@ pub static mut PY_SET_TYPE: PyObject = std::ptr::null_mut();
 pub static mut PY_BYTES_TYPE: PyObject = std::ptr::null_mut();
 
 pub static mut _PY_NONE_STRUCT: *mut c_void = std::ptr::null_mut();
+pub static mut PY_EXC_STOP_ITERATION: PyObject = std::ptr::null_mut();
 pub static mut PY_ERR_PRINT: unsafe extern "C" fn() = noop_err_print;
 
 pub static mut PY_TYPE_IS_SUBTYPE: unsafe extern "C" fn(PyObject, PyObject) -> c_int =

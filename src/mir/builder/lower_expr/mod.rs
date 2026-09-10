@@ -750,6 +750,25 @@ impl<'a> MirBuilder<'a> {
                 }
                 Operand::Move(tmp)
             }
+            Type::Set(elem) => {
+                let func = if elem.as_ref() == &Type::Any {
+                    "__olive_py_to_any_set"
+                } else {
+                    "__olive_py_to_set"
+                };
+                let tmp = self.new_unscoped_local(target.clone());
+                self.push_statement(
+                    StatementKind::Assign(
+                        tmp,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(func.to_string())),
+                            args: vec![op],
+                        },
+                    ),
+                    span,
+                );
+                Operand::Move(tmp)
+            }
             Type::Dict(_, val) => {
                 let func = if val.as_ref() == &Type::Any {
                     "__olive_py_to_any_dict"
@@ -1822,6 +1841,7 @@ fn py_realize_target(to_ty: &Type) -> Option<(Type, bool)> {
                 | Type::Bytes
                 | Type::Tuple(_)
                 | Type::List(_)
+                | Type::Set(_)
                 | Type::Dict(_, _)
                 | Type::Float
                 | Type::F32

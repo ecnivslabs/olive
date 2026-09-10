@@ -49,6 +49,13 @@ def make_list():
 def make_dict():
     return {"a": 1, "b": 2}
 
+def make_set():
+    return {1, 2, 3}
+
+def make_bad_iter():
+    yield 1
+    raise ValueError("boom")
+
 def make_tuple():
     return (7, "seven")
 
@@ -242,6 +249,36 @@ fn main():
 main()
 "#,
         "[1, 2, 3]\n",
+    );
+}
+
+#[test]
+fn dynamic_module_call_typed_set_result_realizes_correctly() {
+    assert_both_succeed(
+        r#"import py "drhelper" as h
+
+fn main():
+    let s: set[int] = h.make_set()
+    print(2 in s)
+
+main()
+"#,
+        "True\n",
+    );
+}
+
+#[test]
+fn failed_set_iterable_conversion_propagates_python_error() {
+    assert_both_fail(
+        r#"import py "drhelper" as h
+
+fn main():
+    let s: set[int] = h.make_bad_iter()
+    print(s)
+
+main()
+"#,
+        "ValueError",
     );
 }
 

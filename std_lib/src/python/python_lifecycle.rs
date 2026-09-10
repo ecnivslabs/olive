@@ -266,6 +266,7 @@ pub extern "C" fn olive_py_initialize() {
         PY_ERR_FETCH = compat_dlsym(handle, "PyErr_Fetch");
         PY_ERR_NORMALIZE_EXCEPTION = compat_dlsym(handle, "PyErr_NormalizeException");
         PY_ERR_CLEAR = compat_dlsym(handle, "PyErr_Clear");
+        PY_ERR_EXCEPTION_MATCHES = compat_dlsym(handle, "PyErr_ExceptionMatches");
         PY_ERR_PRINT = compat_dlsym(handle, "PyErr_Print");
         PY_IS_INITIALIZED = compat_dlsym(handle, "Py_IsInitialized");
         PY_MODULE_NEW = compat_dlsym(handle, "PyModule_New");
@@ -336,6 +337,13 @@ pub extern "C" fn olive_py_initialize() {
         } else {
             *exc_type_error_slot
         };
+        let exc_stop_iteration_slot: *const PyObject =
+            compat_dlsym(handle, "PyExc_StopIteration");
+        PY_EXC_STOP_ITERATION = if exc_stop_iteration_slot.is_null() {
+            std::ptr::null_mut()
+        } else {
+            *exc_stop_iteration_slot
+        };
 
         _PY_NONE_STRUCT = compat_dlsym(handle, "_Py_NoneStruct");
 
@@ -361,7 +369,9 @@ pub extern "C" fn olive_py_initialize() {
             std::mem::transmute::<_, *const ()>(PY_GILSTATE_RELEASE).is_null() ||
             std::mem::transmute::<_, *const ()>(PY_DICT_NEW).is_null() ||
             std::mem::transmute::<_, *const ()>(PY_DICT_SET_ITEM_STRING).is_null() ||
-            std::mem::transmute::<_, *const ()>(PY_SYS_GET_OBJECT).is_null();
+            std::mem::transmute::<_, *const ()>(PY_SYS_GET_OBJECT).is_null() ||
+             std::mem::transmute::<_, *const ()>(PY_ERR_EXCEPTION_MATCHES).is_null() ||
+             PY_EXC_STOP_ITERATION.is_null();
 
         if crucial_missing {
             eprintln!("Warning: crucial Python API symbols are missing in the loaded library. Disabling Python interop.");
@@ -416,6 +426,8 @@ pub extern "C" fn olive_py_initialize() {
             PY_ERR_FETCH = noop_err_fetch;
             PY_ERR_NORMALIZE_EXCEPTION = noop_err_fetch;
             PY_ERR_CLEAR = noop_initialize;
+            PY_ERR_EXCEPTION_MATCHES = noop_exception_matches;
+            PY_EXC_STOP_ITERATION = std::ptr::null_mut();
             PY_SET_NEW = noop_call_1;
             PY_SET_ADD = noop_set_add;
             PY_BYTES_FROM_STRING_AND_SIZE = noop_bytes_from_string;

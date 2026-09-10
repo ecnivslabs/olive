@@ -673,6 +673,8 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_py_setitem_safe", &sig_3i64_i64),
             ("__olive_py_copy_ref", &sig_i64_i64),
             ("__olive_py_to_bytes", &sig_i64_i64),
+            ("__olive_py_to_any_set", &sig_i64_i64),
+            ("__olive_py_to_set", &sig_i64_i64),
             ("__olive_py_to_any_dict", &sig_i64_i64),
             ("__olive_py_to_any_list", &sig_i64_i64),
             ("__olive_py_to_dict", &sig_i64_i64),

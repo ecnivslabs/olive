@@ -143,6 +143,10 @@ pub unsafe extern "C" fn noop_dict_next(
 pub unsafe extern "C" fn noop_getitem_idx(_: PyObject, _: isize) -> PyObject {
     std::ptr::null_mut()
 }
+pub unsafe extern "C" fn noop_exception_matches(_: PyObject) -> c_int {
+    0
+}
+
 pub unsafe extern "C" fn noop_iter_next(_: PyObject) -> PyObject {
     std::ptr::null_mut()
 }

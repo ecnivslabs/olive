@@ -163,7 +163,7 @@ pub(crate) fn drop_descriptor_type<'a>(
     }
 }
 
-pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 711] = [
+pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 713] = [
     "__olive_alloc",
     "__olive_any_add",
     "__olive_any_check_method",
@@ -677,11 +677,13 @@ pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 711] = [
     "__olive_py_to_any",
     "__olive_py_to_any_dict",
     "__olive_py_to_any_list",
+    "__olive_py_to_any_set",
     "__olive_py_to_bytes",
     "__olive_py_to_dict",
     "__olive_py_to_float",
     "__olive_py_to_int",
     "__olive_py_to_list",
+    "__olive_py_to_set",
     "__olive_py_to_str",
     "__olive_random_get",
     "__olive_random_int",

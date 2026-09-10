@@ -890,6 +890,8 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_py_setitem", b"olive_py_setitem\0"),
     ("__olive_py_setitem_int", b"olive_py_setitem_int\0"),
     ("__olive_py_setitem_safe", b"olive_py_setitem_safe\0"),
+    ("__olive_py_to_any_set", b"olive_py_to_any_set\0"),
+    ("__olive_py_to_set", b"olive_py_to_set\0"),
     ("__olive_py_to_any_dict", b"olive_py_to_any_dict\0"),
     ("__olive_py_to_any_list", b"olive_py_to_any_list\0"),
     ("__olive_py_to_bytes", b"olive_py_to_bytes\0"),

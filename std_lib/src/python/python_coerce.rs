@@ -747,14 +747,19 @@ pub unsafe fn olive_py_to_set_internal(obj: PyObject, boxed: bool) -> i64 {
     unsafe {
         let iter = PY_OBJECT_GET_ITER(obj);
         if iter.is_null() {
-            PY_ERR_CLEAR();
-            return crate::olive_set_new(0);
+            crate::python::python_error::handle_py_error();
         }
         let size_hint = PY_OBJECT_LENGTH(obj).max(0) as i64;
         let set_ptr = crate::olive_set_new(size_hint);
         loop {
             let item = PY_ITER_NEXT(iter);
             if item.is_null() {
+                if !PY_ERR_OCCURRED().is_null()
+                    && PY_ERR_EXCEPTION_MATCHES(PY_EXC_STOP_ITERATION) == 0
+                {
+                    PY_DEC_REF(iter);
+                    crate::python::python_error::handle_py_error();
+                }
                 PY_ERR_CLEAR();
                 break;
             }

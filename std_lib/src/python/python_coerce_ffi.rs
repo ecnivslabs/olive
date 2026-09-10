@@ -273,6 +273,26 @@ pub extern "C" fn olive_py_to_any_list(obj: PyObject) -> i64 {
 
 /// `{str: T}` target with a concrete native `T`: values land as raw native words.
 #[unsafe(no_mangle)]
+pub extern "C" fn olive_py_to_set(obj: PyObject) -> i64 {
+    check_python_loaded();
+    let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
+    if unwrapped_obj.is_null() {
+        return 0;
+    }
+    with_gil(|| unsafe { olive_py_to_set_internal(unwrapped_obj, false) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_to_any_set(obj: PyObject) -> i64 {
+    check_python_loaded();
+    let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
+    if unwrapped_obj.is_null() {
+        return 0;
+    }
+    with_gil(|| unsafe { olive_py_to_set_internal(unwrapped_obj, true) })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn olive_py_to_dict(obj: PyObject) -> i64 {
     check_python_loaded();
     let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
