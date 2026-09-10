@@ -51,6 +51,10 @@ def do_update(d, extra):
 def colliding_key_update(d):
     d[1] = "b"
 
+def colliding_float_update(d):
+    d["1"] = 1.0000000000000007
+    d[1] = 2.5
+
 def mutate_then_raise(xs):
     xs.append(999)
     raise ValueError("boom")
@@ -71,6 +75,18 @@ def flip_set(s):
 
 def take_dict(d):
     return len(d)
+
+def key_type(d):
+    return type(next(iter(d))).__name__
+
+def key_type_kw(*, d):
+    return type(next(iter(d))).__name__
+
+def set_key(d, k):
+    d[k] = 9
+
+def set_key_after(a, b, c, d, e, target, key):
+    target[key] = 9
 
 def add_int_to_set(s, v):
     s.add(v)
@@ -351,6 +367,22 @@ main()
 }
 
 #[test]
+fn colliding_float_dict_keys_do_not_free_raw_bits_as_strings() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let mut d: {str: float} = {"1": 0.5}
+    h.colliding_float_update(d)
+    print(d["1"])
+
+main()
+"#,
+        "2.5\n",
+    );
+}
+
+#[test]
 fn wrong_element_type_faults_with_e0714() {
     assert_both_fail_with(
         r#"import py "wbhelper" as h
@@ -502,6 +534,50 @@ fn main():
 main()
 "#,
         "1\n",
+    );
+}
+
+#[test]
+fn typed_dict_key_kinds_survive_python_crossing_and_writeback() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let mut bi: {bool: int} = {True: 2}
+    print(h.key_type(bi))
+    print(h.key_type_kw(d=bi))
+    h.set_key(bi, False)
+    print(bi[False])
+
+    let mut ii: {int: int} = {99999: 2}
+    print(h.key_type(ii))
+    h.set_key(ii, 100001)
+    print(ii[100001])
+
+    let mut fi: {float: int} = {1.5: 2}
+    print(h.key_type(fi))
+    h.set_key(fi, 2.5)
+    print(fi[2.5])
+
+    let mut si: {str: int} = {"x": 2}
+    print(h.key_type(si))
+    h.set_key(si, "y")
+    print(si["y"])
+
+    let mut ai: {bool: Any} = {True: 2}
+    print(h.key_type(ai))
+    h.set_key(ai, False)
+    print(ai[False])
+
+    let mut ei: {int: int} = {}
+    h.set_key(ei, 99999)
+    print(ei[99999])
+    h.set_key_after(1, 2, 3, 4, 5, ei, 100001)
+    print(ei[100001])
+
+main()
+"#,
+        "bool\nbool\n9\nint\n9\nfloat\n9\nstr\n9\nbool\n9\n9\n9\n",
     );
 }
 

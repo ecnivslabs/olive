@@ -22,6 +22,12 @@ const ARG_BOOL: i64 = 4;
 const ARG_ANY: i64 = 5;
 const ARG_NONE: i64 = 6;
 const ARG_BYTES: i64 = 7;
+const ARG_DICT_INT_KEY: i64 = ARG_INT;
+const ARG_DICT_FLOAT_KEY: i64 = ARG_FLOAT;
+const ARG_DICT_BOOL_KEY: i64 = ARG_BOOL;
+const ARG_DICT_STR_KEY: i64 = ARG_STR;
+const ARG_DICT_ANY_KEY: i64 = ARG_ANY;
+const ARG_DICT_NONE_KEY: i64 = ARG_NONE;
 
 /// Result-fusion tag: how a call's Python return converts directly into the
 /// scalar the checker already knows it produces, instead of wrapping a
@@ -114,6 +120,17 @@ impl<'a> MirBuilder<'a> {
             Type::Bool => Some(4),
             Type::Str => Some(5),
             _ => None,
+        }
+    }
+
+    fn py_dict_key_tag(ty: &Type) -> i64 {
+        match ty {
+            t if Self::is_int_ty(t) => ARG_DICT_INT_KEY,
+            Type::Float | Type::F32 => ARG_DICT_FLOAT_KEY,
+            Type::Bool => ARG_DICT_BOOL_KEY,
+            Type::Str => ARG_DICT_STR_KEY,
+            Type::Null => ARG_DICT_NONE_KEY,
+            _ => ARG_DICT_ANY_KEY,
         }
     }
 
@@ -361,15 +378,15 @@ impl<'a> MirBuilder<'a> {
                 _ => (op, arg_ty),
             };
             let coll_tag = Self::py_collection_tag(&arg_ty);
-            // A collection-tagged slot's decode is entirely driven by
-            // `coll_tag` at the runtime end (`convert_arg_tagged` checks it
-            // first); the encode tag is never consulted for that slot, so
-            // its exact value doesn't matter -- `ARG_PYOBJECT` documents
-            // "not applicable" without inventing a new sentinel.
-            let arg_tag = if coll_tag != 0 {
-                ARG_PYOBJECT
-            } else {
-                Self::py_arg_tag(&arg_ty)
+            // A dict needs its key kind even when the collection tag also
+            // carries the value kind. Keep that metadata in the otherwise
+            // unused argument tag slot; the runtime uses it for both initial
+            // conversion and typed writeback. Other collection slots do not
+            // need a separate encode tag.
+            let arg_tag = match &arg_ty {
+                Type::Dict(key, _) if coll_tag != 0 => Self::py_dict_key_tag(key),
+                _ if coll_tag != 0 => ARG_PYOBJECT,
+                _ => Self::py_arg_tag(&arg_ty),
             };
             let py_op = if fast_path {
                 op

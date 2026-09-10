@@ -38,6 +38,15 @@ pub(crate) const TAG_FLOAT_SET: i64 = 13;
 pub(crate) const TAG_BOOL_SET: i64 = 14;
 pub(crate) const TAG_STR_SET: i64 = 15;
 
+#[repr(align(8))]
+struct AlignedScalarDescriptor([u8; 1]);
+
+#[repr(align(8))]
+struct AlignedSetDescriptor([u8; 2]);
+
+#[repr(align(8))]
+struct AlignedDictDescriptor([u8; 3]);
+
 /// One collection argument realized for a Python call: the Olive allocation
 /// it came from, the genuine Python object built for it, and which sync
 /// routine applies. `py_obj` carries a reference distinct from any tuple
@@ -46,6 +55,7 @@ pub(crate) struct WritebackPair {
     olive_ptr: i64,
     py_obj: PyObject,
     tag: i64,
+    key_tag: i64,
 }
 
 /// Reads arg `i`'s 4-bit collection tag out of a packed tag word. Calls with
@@ -80,14 +90,19 @@ pub(crate) unsafe fn convert_arg(val: i64, tag: i64, pairs: &mut Vec<WritebackPa
         if tag == TAG_NONE || !crate::is_active_object(val) {
             return olive_to_py(val);
         }
-        convert_collection_arg(val, tag, pairs)
+        convert_collection_arg(val, tag, ARG_ANY, pairs)
     }
 }
 
 /// The collection-realize half of `convert_arg`, factored out so the
 /// tagged fast path (`convert_arg_tagged`) can reuse it without duplicating
 /// the dedupe-and-track logic.
-unsafe fn convert_collection_arg(val: i64, tag: i64, pairs: &mut Vec<WritebackPair>) -> PyObject {
+unsafe fn convert_collection_arg(
+    val: i64,
+    tag: i64,
+    key_tag: i64,
+    pairs: &mut Vec<WritebackPair>,
+) -> PyObject {
     unsafe {
         if let Some(existing) = pairs.iter().find(|p| p.olive_ptr == val) {
             PY_INC_REF(existing.py_obj);
@@ -97,8 +112,8 @@ unsafe fn convert_collection_arg(val: i64, tag: i64, pairs: &mut Vec<WritebackPa
             TAG_INT_LIST | TAG_FLOAT_LIST | TAG_BOOL_LIST | TAG_STR_LIST => {
                 to_py_typed_list(val, scalar_kind(tag))
             }
-            TAG_INT_DICT | TAG_FLOAT_DICT | TAG_BOOL_DICT | TAG_STR_DICT => {
-                to_py_typed_dict(val, scalar_kind(tag))
+            TAG_ANY_DICT | TAG_INT_DICT | TAG_FLOAT_DICT | TAG_BOOL_DICT | TAG_STR_DICT => {
+                to_py_typed_dict(val, scalar_kind(tag), key_tag)
             }
             TAG_INT_SET | TAG_FLOAT_SET | TAG_BOOL_SET | TAG_STR_SET => {
                 to_py_typed_set(val, scalar_kind(tag))
@@ -116,6 +131,7 @@ unsafe fn convert_collection_arg(val: i64, tag: i64, pairs: &mut Vec<WritebackPa
             olive_ptr: val,
             py_obj,
             tag,
+            key_tag,
         });
         py_obj
     }
@@ -141,6 +157,12 @@ pub(crate) const ARG_BOOL: i64 = 4;
 pub(crate) const ARG_ANY: i64 = 5;
 pub(crate) const ARG_NONE: i64 = 6;
 pub(crate) const ARG_BYTES: i64 = 7;
+pub(crate) const ARG_DICT_INT_KEY: i64 = ARG_INT;
+pub(crate) const ARG_DICT_FLOAT_KEY: i64 = ARG_FLOAT;
+pub(crate) const ARG_DICT_BOOL_KEY: i64 = ARG_BOOL;
+pub(crate) const ARG_DICT_STR_KEY: i64 = ARG_STR;
+pub(crate) const ARG_DICT_ANY_KEY: i64 = ARG_ANY;
+pub(crate) const ARG_DICT_NONE_KEY: i64 = ARG_NONE;
 /// A typed list crossing (`[float]`, `[int]`, etc.) in the export
 /// direction: the runtime converts the entire collection as one unit
 /// instead of treating the handle as an opaque scalar. Tags 8–12 extend
@@ -213,7 +235,7 @@ pub(crate) unsafe fn convert_arg_tagged(
 ) -> PyObject {
     unsafe {
         if coll_tag != TAG_NONE && crate::is_active_object(val) {
-            return convert_collection_arg(val, coll_tag, pairs);
+            return convert_collection_arg(val, coll_tag, arg_tag, pairs);
         }
         decode_scalar_arg(val, arg_tag)
     }
@@ -263,19 +285,45 @@ unsafe fn to_py_typed_list(val: i64, kind: i64) -> PyObject {
     }
 }
 
-/// Deep-realizes a concretely-typed dict (`{str: T}`, `T` a scalar) into a
-/// real Python `dict`, reading each value raw by `kind` instead of through
-/// `to_py_deep`'s Any-boxed assumption.
-unsafe fn to_py_typed_dict(val: i64, kind: i64) -> PyObject {
+unsafe fn dict_key_to_py(key: i64, key_tag: i64) -> PyObject {
+    unsafe {
+        match key_tag {
+            ARG_DICT_INT_KEY => py_long_from_i64(key),
+            ARG_DICT_FLOAT_KEY => PY_FLOAT_FROM_DOUBLE(f64::from_bits(key as u64)),
+            ARG_DICT_BOOL_KEY => PY_BOOL_FROM_LONG(key as std::os::raw::c_long),
+            ARG_DICT_STR_KEY => olive_str_to_py(key),
+            ARG_DICT_NONE_KEY => {
+                let none = _PY_NONE_STRUCT as PyObject;
+                PY_INC_REF(none);
+                none
+            }
+            ARG_DICT_ANY_KEY => to_py_deep(key),
+            _ => to_py_deep(key),
+        }
+    }
+}
+
+/// Deep-realizes a dict into a real Python `dict`, using the compiler-supplied
+/// key kind for keys and the collection tag for values. Typed scalar values
+/// are read raw; `Any` values recurse through the dynamic converter.
+unsafe fn to_py_typed_dict(val: i64, kind: i64, key_tag: i64) -> PyObject {
     unsafe {
         let py_dict = PY_DICT_NEW();
         let obj = &*(val as *const crate::OliveObj);
         for (key, &value) in &obj.fields {
-            let py_key = crate::python::python_coerce::to_py_deep(key.0);
+            let py_key = dict_key_to_py(key.0, key_tag);
             if py_key.is_null() {
                 crate::python::python_error::handle_py_error();
             }
-            let py_value = raw_scalar_to_py(value, kind);
+            let py_value = if kind == TAG_ANY_DICT {
+                to_py_deep(value)
+            } else {
+                raw_scalar_to_py(value, kind)
+            };
+            if py_value.is_null() {
+                PY_DEC_REF(py_key);
+                crate::python::python_error::handle_py_error();
+            }
             let res = PY_OBJECT_SET_ITEM(py_dict, py_key, py_value);
             PY_DEC_REF(py_key);
             PY_DEC_REF(py_value);
@@ -445,6 +493,175 @@ unsafe fn sync_list(pair: &WritebackPair) {
     }
 }
 
+#[derive(Clone, Copy)]
+enum DecodedKeyOwnership {
+    Raw,
+    Str,
+    Any,
+}
+
+#[derive(Clone, Copy)]
+struct DecodedDictKey {
+    word: i64,
+    ownership: DecodedKeyOwnership,
+}
+
+fn dict_key_format_tag(key_tag: i64) -> u8 {
+    match key_tag {
+        ARG_DICT_INT_KEY => crate::format::D_INT,
+        ARG_DICT_FLOAT_KEY => crate::format::D_FLOAT,
+        ARG_DICT_BOOL_KEY => crate::format::D_BOOL,
+        ARG_DICT_STR_KEY => crate::format::D_STR,
+        ARG_DICT_NONE_KEY => crate::format::D_NULL,
+        _ => crate::format::D_ANY,
+    }
+}
+
+fn dict_value_format_tag(tag: i64) -> u8 {
+    match scalar_kind(tag) {
+        TAG_INT_LIST => crate::format::D_INT,
+        TAG_FLOAT_LIST => crate::format::D_FLOAT,
+        TAG_BOOL_LIST => crate::format::D_BOOL,
+        TAG_STR_LIST => crate::format::D_STR,
+        _ => crate::format::D_ANY,
+    }
+}
+
+fn free_decoded_dict_key(key: DecodedDictKey) {
+    match key.ownership {
+        DecodedKeyOwnership::Raw => {}
+        DecodedKeyOwnership::Str => crate::string_slab::str_free(key.word),
+        DecodedKeyOwnership::Any => crate::free_any_word(key.word),
+    }
+}
+
+fn free_dict_value(value: i64, tag: i64) {
+    match scalar_kind(tag) {
+        TAG_INT_LIST | TAG_FLOAT_LIST | TAG_BOOL_LIST => {}
+        TAG_STR_LIST => crate::olive_free_str(value),
+        _ => crate::free_any_word(value),
+    }
+}
+
+fn release_decoded_dict_key_after_insert(key: DecodedDictKey) {
+    match key.ownership {
+        DecodedKeyOwnership::Raw => {}
+        DecodedKeyOwnership::Str => crate::string_slab::str_free(key.word),
+        DecodedKeyOwnership::Any if crate::is_tagged_str_key(key.word) => {
+            crate::olive_free_str(key.word)
+        }
+        DecodedKeyOwnership::Any => {}
+    }
+}
+
+unsafe fn decode_dict_key(key_obj: PyObject, key_tag: i64) -> Result<DecodedDictKey, String> {
+    unsafe {
+        match key_tag {
+            ARG_DICT_INT_KEY => decode_scalar(key_obj, TAG_INT_LIST).map(|word| DecodedDictKey {
+                word,
+                ownership: DecodedKeyOwnership::Raw,
+            }),
+            ARG_DICT_FLOAT_KEY => {
+                decode_scalar(key_obj, TAG_FLOAT_LIST).map(|word| DecodedDictKey {
+                    word,
+                    ownership: DecodedKeyOwnership::Raw,
+                })
+            }
+            ARG_DICT_BOOL_KEY => decode_scalar(key_obj, TAG_BOOL_LIST).map(|word| DecodedDictKey {
+                word,
+                ownership: DecodedKeyOwnership::Raw,
+            }),
+            ARG_DICT_STR_KEY => {
+                let key_ty = raw_ob_type(key_obj);
+                let is_unicode = !key_ty.is_null()
+                    && !PY_UNICODE_TYPE.is_null()
+                    && (key_ty == PY_UNICODE_TYPE
+                        || PY_TYPE_IS_SUBTYPE(key_ty, PY_UNICODE_TYPE) != 0);
+                if is_unicode {
+                    decode_scalar(key_obj, TAG_STR_LIST).map(|word| DecodedDictKey {
+                        word,
+                        ownership: DecodedKeyOwnership::Str,
+                    })
+                } else {
+                    let word = dict_key_olive(key_obj);
+                    if word == 0 && key_obj != _PY_NONE_STRUCT {
+                        Err("string conversion failed".to_string())
+                    } else {
+                        Ok(DecodedDictKey {
+                            word,
+                            ownership: DecodedKeyOwnership::Str,
+                        })
+                    }
+                }
+            }
+            ARG_DICT_NONE_KEY => {
+                if key_obj == _PY_NONE_STRUCT {
+                    Ok(DecodedDictKey {
+                        word: 0,
+                        ownership: DecodedKeyOwnership::Raw,
+                    })
+                } else {
+                    Err(py_type_name(raw_ob_type(key_obj)))
+                }
+            }
+            ARG_DICT_ANY_KEY => Ok(DecodedDictKey {
+                word: py_to_any_internal(key_obj),
+                ownership: DecodedKeyOwnership::Any,
+            }),
+            _ => {
+                let word = dict_key_olive(key_obj);
+                if word == 0 && key_obj != _PY_NONE_STRUCT {
+                    Err("string conversion failed".to_string())
+                } else {
+                    Ok(DecodedDictKey {
+                        word,
+                        ownership: DecodedKeyOwnership::Str,
+                    })
+                }
+            }
+        }
+    }
+}
+
+fn dict_key_error_text(key: i64, key_tag: i64) -> String {
+    if key_tag == ARG_DICT_STR_KEY {
+        let bytes = crate::olive_str_to_bytes(key);
+        format!("{bytes:?}")
+    } else {
+        key.to_string()
+    }
+}
+
+unsafe fn writeback_key_type_fail(loc_desc: &str, key_tag: i64, actual: &str) -> ! {
+    let expected = match key_tag {
+        ARG_DICT_INT_KEY => "int",
+        ARG_DICT_FLOAT_KEY => "float",
+        ARG_DICT_BOOL_KEY => "bool",
+        ARG_DICT_STR_KEY => "str",
+        ARG_DICT_NONE_KEY => "None",
+        _ => "Any",
+    };
+    let msg = format!(
+        "writeback type mismatch: {loc_desc} synced back from Python is `{actual}`, expected `{expected}`"
+    );
+    let loc = py_call_loc();
+    let loc = (!loc.is_empty()).then_some(loc);
+    crate::panic::abort_py_writeback_type(&msg, loc.as_deref())
+}
+
+unsafe fn clear_dict_pair(pair: &WritebackPair) {
+    let desc = AlignedDictDescriptor([
+        crate::format::D_DICT,
+        dict_key_format_tag(pair.key_tag),
+        dict_value_format_tag(pair.tag),
+    ]);
+    if pair.key_tag == ARG_DICT_ANY_KEY {
+        crate::olive_obj_clear(pair.olive_ptr);
+    } else {
+        crate::obj::olive_obj_clear_typed(pair.olive_ptr, desc.0.as_ptr() as i64);
+    }
+}
+
 /// Reads a Python dict key as an Olive string, stringifying non-`str` keys
 /// the same way `olive_py_to_dict_internal` does. `0` on a decode failure (a
 /// non-UTF-8 key, or `str()` itself raising), which the caller skips. The
@@ -469,79 +686,91 @@ unsafe fn dict_key_olive(key_obj: PyObject) -> i64 {
 }
 
 /// Syncs one dict-shaped pair in place: clears the Olive side, decodes every
-/// entry, inserts each distinct key exactly once, then frees every decoded
-/// key string. The dedupe pass exists because Python dicts can hold keys
-/// that stringify to the same text (`"1"` and `1`), while `olive_obj_set`
-/// stores an *absent* tagged key by pointer but keeps the already-stored copy
-/// when present -- so free-after-set per entry would free the live stored key
-/// of any duplicate. Deduping first makes every insert land on the keep-copy
-/// path with exactly one owner per key to release at the end.
-///
-/// A duplicate's replaced value is freed here too: it never becomes
-/// reachable from the map, so waiting for a later clear would leak it.
+/// entry with the static key kind, inserts each distinct key exactly once,
+/// then releases any decoded key that was not retained by the dict.
 unsafe fn sync_dict_entries(pair: &WritebackPair, decode_val: impl Fn(PyObject, i64) -> i64) {
     unsafe {
-        crate::olive_obj_clear(pair.olive_ptr);
+        clear_dict_pair(pair);
 
         let mut pos: isize = 0;
         let mut key_obj: PyObject = std::ptr::null_mut();
         let mut val_obj: PyObject = std::ptr::null_mut();
-        // (decoded key ptr, decoded value word), Python iteration order.
-        let mut raw: Vec<(i64, i64)> = Vec::new();
+        let mut raw: Vec<(DecodedDictKey, i64)> = Vec::new();
         while PY_DICT_NEXT(pair.py_obj, &mut pos, &mut key_obj, &mut val_obj) != 0 {
             if key_obj.is_null() {
                 continue;
             }
-            let key_ptr = dict_key_olive(key_obj);
-            if key_ptr == 0 {
-                continue;
-            }
-            raw.push((key_ptr, decode_val(val_obj, key_ptr)));
+            let key = match decode_dict_key(key_obj, pair.key_tag) {
+                Ok(key) => key,
+                Err(actual) => writeback_key_type_fail("dict key", pair.key_tag, &actual),
+            };
+            raw.push((key, decode_val(val_obj, key.word)));
         }
-        dedupe_and_insert(pair.olive_ptr, raw);
+        dedupe_and_insert(pair.olive_ptr, raw, pair.key_tag, pair.tag);
     }
 }
 
 /// Inserts decoded entries, keeping the last occurrence of each key like
 /// Python dict construction does, and releasing every displaced duplicate
-/// key and value. Split from
-/// `sync_dict_entries` so the colliding-key path is unit-testable without a
-/// live interpreter: callers pass owned decoded words with the same contract
-/// as `dict_key_olive`/`decode_val` produce them.
-fn dedupe_and_insert(obj_ptr: i64, raw: Vec<(i64, i64)>) {
-    // (decoded key ptr, decoded value word), first-occurrence order for keys
-    let mut entries: Vec<(i64, i64)> = Vec::new();
-    // Decoded-key-ptr -> index into `entries`. Keys are compared by
-    // content (`OliveStringKey`), so the map's own hasher is exactly the
-    // dedupe test and lookup stays O(1).
+/// key and value.
+fn dedupe_and_insert(obj_ptr: i64, raw: Vec<(DecodedDictKey, i64)>, key_tag: i64, value_tag: i64) {
+    let key_desc = match key_tag {
+        ARG_DICT_INT_KEY => {
+            static DESC: AlignedScalarDescriptor = AlignedScalarDescriptor([crate::format::D_INT]);
+            DESC.0.as_ptr() as i64
+        }
+        ARG_DICT_FLOAT_KEY => {
+            static DESC: AlignedScalarDescriptor =
+                AlignedScalarDescriptor([crate::format::D_FLOAT]);
+            DESC.0.as_ptr() as i64
+        }
+        ARG_DICT_BOOL_KEY => {
+            static DESC: AlignedScalarDescriptor = AlignedScalarDescriptor([crate::format::D_BOOL]);
+            DESC.0.as_ptr() as i64
+        }
+        ARG_DICT_STR_KEY => {
+            static DESC: AlignedScalarDescriptor = AlignedScalarDescriptor([crate::format::D_STR]);
+            DESC.0.as_ptr() as i64
+        }
+        ARG_DICT_NONE_KEY => {
+            static DESC: AlignedScalarDescriptor = AlignedScalarDescriptor([crate::format::D_NULL]);
+            DESC.0.as_ptr() as i64
+        }
+        _ => 0,
+    };
+
+    let mut entries: Vec<(DecodedDictKey, i64)> = Vec::new();
     let mut index_of: rustc_hash::FxHashMap<crate::OliveStringKey, usize> =
         rustc_hash::FxHashMap::default();
-    for (key_ptr, olive_val) in raw {
-        let keyed = crate::OliveStringKey(key_ptr);
-        match index_of.entry(keyed) {
-            std::collections::hash_map::Entry::Occupied(occ) => {
-                let idx = *occ.get();
-                let prev_val = entries[idx].1;
-                // The duplicate's value never becomes reachable; release
-                // it now. Tagged strings need the dict-value path, not
-                // the slab-only check: `is_active_object` misses them.
-                crate::free_any_word(prev_val);
-                entries[idx].1 = olive_val;
-                crate::string_slab::str_free(key_ptr);
-            }
-            std::collections::hash_map::Entry::Vacant(vac) => {
-                vac.insert(entries.len());
-                entries.push((key_ptr, olive_val));
+    crate::hash_typed::with_key_descriptor(key_desc, || {
+        for (key, olive_val) in raw {
+            let keyed = crate::OliveStringKey(key.word);
+            match index_of.entry(keyed) {
+                std::collections::hash_map::Entry::Occupied(occ) => {
+                    let idx = *occ.get();
+                    let prev_val = entries[idx].1;
+                    free_dict_value(prev_val, value_tag);
+                    entries[idx].1 = olive_val;
+                    free_decoded_dict_key(key);
+                }
+                std::collections::hash_map::Entry::Vacant(vac) => {
+                    vac.insert(entries.len());
+                    entries.push((key, olive_val));
+                }
             }
         }
-    }
 
-    for &(key_ptr, olive_val) in &entries {
-        crate::olive_obj_set(obj_ptr, key_ptr, olive_val);
-    }
-    for &(key_ptr, _) in &entries {
-        crate::string_slab::str_free(key_ptr);
-    }
+        for (key, olive_val) in &entries {
+            if key_desc == 0 {
+                crate::olive_obj_set(obj_ptr, key.word, *olive_val);
+            } else {
+                crate::hash_typed::olive_obj_set_typed(obj_ptr, key.word, *olive_val, key_desc);
+            }
+        }
+        for (key, _) in &entries {
+            release_decoded_dict_key_after_insert(*key);
+        }
+    });
 }
 
 unsafe fn sync_dict(pair: &WritebackPair) {
@@ -561,8 +790,8 @@ unsafe fn sync_dict_typed(pair: &WritebackPair) {
             match decode_scalar(val_obj, kind) {
                 Ok(v) => v,
                 Err(actual) => {
-                    let key_str = crate::olive_str_from_ptr(key_ptr);
-                    writeback_type_fail(&format!("value at key \"{key_str}\""), pair.tag, &actual)
+                    let key_text = dict_key_error_text(key_ptr, pair.key_tag);
+                    writeback_type_fail(&format!("value at key {key_text}"), pair.tag, &actual)
                 }
             }
         });
@@ -594,20 +823,24 @@ unsafe fn sync_set(pair: &WritebackPair) {
 /// `sync_set`'s counterpart for a concretely-typed set: elements decode raw
 /// by `kind` instead of boxing through `py_to_any_internal`.
 unsafe fn sync_set_typed(pair: &WritebackPair) {
-    static INT_DESC: [u8; 1] = [crate::format::D_INT];
-    static FLOAT_DESC: [u8; 1] = [crate::format::D_FLOAT];
-    static BOOL_DESC: [u8; 1] = [crate::format::D_BOOL];
-    static STR_DESC: [u8; 1] = [crate::format::D_STR];
-    static INT_SET_DESC: [u8; 2] = [crate::format::D_SET, crate::format::D_INT];
-    static FLOAT_SET_DESC: [u8; 2] = [crate::format::D_SET, crate::format::D_FLOAT];
-    static BOOL_SET_DESC: [u8; 2] = [crate::format::D_SET, crate::format::D_BOOL];
-    static STR_SET_DESC: [u8; 2] = [crate::format::D_SET, crate::format::D_STR];
+    static INT_DESC: AlignedScalarDescriptor = AlignedScalarDescriptor([crate::format::D_INT]);
+    static FLOAT_DESC: AlignedScalarDescriptor = AlignedScalarDescriptor([crate::format::D_FLOAT]);
+    static BOOL_DESC: AlignedScalarDescriptor = AlignedScalarDescriptor([crate::format::D_BOOL]);
+    static STR_DESC: AlignedScalarDescriptor = AlignedScalarDescriptor([crate::format::D_STR]);
+    static INT_SET_DESC: AlignedSetDescriptor =
+        AlignedSetDescriptor([crate::format::D_SET, crate::format::D_INT]);
+    static FLOAT_SET_DESC: AlignedSetDescriptor =
+        AlignedSetDescriptor([crate::format::D_SET, crate::format::D_FLOAT]);
+    static BOOL_SET_DESC: AlignedSetDescriptor =
+        AlignedSetDescriptor([crate::format::D_SET, crate::format::D_BOOL]);
+    static STR_SET_DESC: AlignedSetDescriptor =
+        AlignedSetDescriptor([crate::format::D_SET, crate::format::D_STR]);
     unsafe {
         let set_desc = match scalar_kind(pair.tag) {
-            TAG_INT_LIST => INT_SET_DESC.as_ptr() as i64,
-            TAG_FLOAT_LIST => FLOAT_SET_DESC.as_ptr() as i64,
-            TAG_BOOL_LIST => BOOL_SET_DESC.as_ptr() as i64,
-            _ => STR_SET_DESC.as_ptr() as i64,
+            TAG_INT_LIST => INT_SET_DESC.0.as_ptr() as i64,
+            TAG_FLOAT_LIST => FLOAT_SET_DESC.0.as_ptr() as i64,
+            TAG_BOOL_LIST => BOOL_SET_DESC.0.as_ptr() as i64,
+            _ => STR_SET_DESC.0.as_ptr() as i64,
         };
         crate::set::olive_set_clear_typed(pair.olive_ptr, set_desc);
         let kind = scalar_kind(pair.tag);
@@ -616,10 +849,10 @@ unsafe fn sync_set_typed(pair: &WritebackPair) {
         // bit pattern) is bit-identical to a tagged string pointer, which the
         // untyped op would dereference as string bytes and fault on.
         let key_desc = match kind {
-            TAG_INT_LIST => INT_DESC.as_ptr() as i64,
-            TAG_FLOAT_LIST => FLOAT_DESC.as_ptr() as i64,
-            TAG_BOOL_LIST => BOOL_DESC.as_ptr() as i64,
-            _ => STR_DESC.as_ptr() as i64,
+            TAG_INT_LIST => INT_DESC.0.as_ptr() as i64,
+            TAG_FLOAT_LIST => FLOAT_DESC.0.as_ptr() as i64,
+            TAG_BOOL_LIST => BOOL_DESC.0.as_ptr() as i64,
+            _ => STR_DESC.0.as_ptr() as i64,
         };
         let iter = PY_OBJECT_GET_ITER(pair.py_obj);
         if iter.is_null() {
@@ -673,7 +906,10 @@ pub(crate) unsafe fn sync_back(pairs: &[WritebackPair]) {
 
 #[cfg(test)]
 mod lifecycle_tests {
-    use super::{TAG_ANY_LIST, TAG_INT_LIST, TAG_STR_LIST, dedupe_and_insert, free_writeback_elem};
+    use super::{
+        ARG_DICT_STR_KEY, DecodedDictKey, DecodedKeyOwnership, TAG_ANY_LIST, TAG_INT_LIST,
+        TAG_STR_DICT, TAG_STR_LIST, dedupe_and_insert, free_writeback_elem,
+    };
 
     #[test]
     fn str_tag_releases_displaced() {
@@ -715,7 +951,27 @@ mod lifecycle_tests {
         let v2 = crate::olive_str_internal("b");
         let gk2 = crate::string_slab::olive_str_gen_of(k2);
         let gv2 = crate::string_slab::olive_str_gen_of(v2);
-        dedupe_and_insert(dict, vec![(k1, v1), (k2, v2)]);
+        dedupe_and_insert(
+            dict,
+            vec![
+                (
+                    DecodedDictKey {
+                        word: k1,
+                        ownership: DecodedKeyOwnership::Str,
+                    },
+                    v1,
+                ),
+                (
+                    DecodedDictKey {
+                        word: k2,
+                        ownership: DecodedKeyOwnership::Str,
+                    },
+                    v2,
+                ),
+            ],
+            ARG_DICT_STR_KEY,
+            TAG_STR_DICT,
+        );
         assert_eq!(crate::string_slab::olive_str_gen_stale(k2, gk2), 1);
         assert_eq!(crate::string_slab::olive_str_gen_stale(v1, gv1), 1);
         assert_eq!(crate::string_slab::olive_str_gen_stale(k1, gk1), 1);
@@ -734,7 +990,27 @@ mod lifecycle_tests {
         let k1 = crate::olive_str_internal("1");
         let k2 = crate::olive_str_internal("1");
         let gk1 = crate::string_slab::olive_str_gen_of(k1);
-        dedupe_and_insert(dict, vec![(k1, 42), (k2, 43)]);
+        dedupe_and_insert(
+            dict,
+            vec![
+                (
+                    DecodedDictKey {
+                        word: k1,
+                        ownership: DecodedKeyOwnership::Str,
+                    },
+                    42,
+                ),
+                (
+                    DecodedDictKey {
+                        word: k2,
+                        ownership: DecodedKeyOwnership::Str,
+                    },
+                    43,
+                ),
+            ],
+            ARG_DICT_STR_KEY,
+            TAG_STR_DICT,
+        );
         assert_eq!(crate::string_slab::olive_str_gen_stale(k1, gk1), 1);
         let q = crate::olive_str_internal("1");
         assert_eq!(crate::obj::olive_obj_get(dict, q), 43);
