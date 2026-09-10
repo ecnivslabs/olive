@@ -386,6 +386,12 @@ fn any_python_subscript_keys_cross_as_python_values() {
 
 fn main():
     let d: PyObject = b.dict()
+    let none: PyObject = None
+    print(none)
+    d[None] = 4
+    d[0] = 5
+    print(d[None])
+    print(d[0])
     let ki: Any = 5
     let kf: Any = 1.5
     let kb: Any = True
@@ -404,7 +410,7 @@ fn main():
 
 main()
 "#,
-        "1\n2\n3\n4\n5\n",
+        "None\n4\n5\n1\n2\n3\n4\n5\n",
     );
 }
 

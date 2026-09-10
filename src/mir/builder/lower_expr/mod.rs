@@ -518,6 +518,22 @@ impl<'a> MirBuilder<'a> {
             if let Type::Fn(params, ret, _) = from_ty {
                 return self.emit_fn_to_py_callable(op, params, ret, span);
             }
+            if matches!(from_ty, Type::Null) {
+                let tmp = self.new_local(Type::PyObject, None, false);
+                self.push_statement(
+                    StatementKind::Assign(
+                        tmp,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(
+                                "__olive_py_none".to_string(),
+                            )),
+                            args: vec![],
+                        },
+                    ),
+                    span,
+                );
+                return Operand::Copy(tmp);
+            }
             let conv = match from_ty {
                 Type::Int
                 | Type::I8
