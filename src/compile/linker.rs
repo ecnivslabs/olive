@@ -133,11 +133,6 @@ fn is_standard_lib_dir(dir: &Path) -> bool {
     )
 }
 
-/// Resolves a bare library filename (not a stem) to the directory containing
-/// it, so an exact versioned name (`libc.so.6`) links without needing a
-/// `-dev` symlink installed. Linux additionally consults `ldconfig`'s cache,
-/// the authoritative soname -> path map, which covers multiarch subdirectories
-/// `system_library_dirs` doesn't scan directly.
 /// The architecture tag `ldconfig -p` prints for the host, e.g. `x86-64` for
 /// x86_64 or `AArch64` for aarch64. An entry whose tag doesn't match the host
 /// is for a different word size or architecture and would fail to link.
@@ -176,6 +171,11 @@ fn match_ldconfig_line(line: &str, name: &str, want_arch: &str) -> Option<PathBu
     Path::new(rhs.trim()).parent().map(|d| d.to_path_buf())
 }
 
+/// Resolves a bare library filename (not a stem) to the directory containing
+/// it, so an exact versioned name (`libc.so.6`) links without needing a
+/// `-dev` symlink installed. Linux additionally consults `ldconfig`'s cache,
+/// the authoritative soname -> path map, which covers multiarch subdirectories
+/// `system_library_dirs` doesn't scan directly.
 fn resolve_exact_library(name: &str) -> Option<PathBuf> {
     #[cfg(target_os = "linux")]
     {
@@ -527,7 +527,8 @@ mod tests {
 
     #[test]
     fn match_ldconfig_line_matches_extended_abi_tag() {
-        let line = "\tlibc.so.6 (libc6,x86-64, OS ABI: Linux 3.2.0) => /lib/x86_64-linux-gnu/libc.so.6";
+        let line =
+            "\tlibc.so.6 (libc6,x86-64, OS ABI: Linux 3.2.0) => /lib/x86_64-linux-gnu/libc.so.6";
         let dir = match_ldconfig_line(line, "libc.so.6", "x86-64");
         assert_eq!(dir, Some(PathBuf::from("/lib/x86_64-linux-gnu")));
     }

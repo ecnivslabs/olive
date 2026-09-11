@@ -1,54 +1,9 @@
 use crate::tooling;
-use serde::{Deserialize, Serialize};
+pub use crate::tooling::manifest::{
+    Config, FmtConfig, Native, Pod, Profile, Workspace, default_entry,
+};
 use std::collections::HashMap;
 use std::{fs, path::Path, process};
-
-#[derive(Serialize, Deserialize, Debug, Default)]
-pub struct Config {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pod: Option<Pod>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub dependencies: HashMap<String, String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace: Option<Workspace>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub profile: HashMap<String, Profile>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fmt: Option<FmtConfig>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Default)]
-pub struct FmtConfig {
-    #[serde(default)]
-    pub max_width: Option<usize>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Default)]
-pub struct Workspace {
-    pub members: Vec<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Default)]
-pub struct Profile {
-    #[serde(default)]
-    pub opt_level: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Default)]
-pub struct Pod {
-    pub name: String,
-    pub version: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub author: Option<String>,
-    #[serde(default = "default_entry")]
-    pub entry: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub olive: Option<String>,
-}
-
-pub fn default_entry() -> String {
-    "src/main.liv".to_string()
-}
 
 pub fn workspace_root() -> std::path::PathBuf {
     let mut current_dir = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
@@ -215,11 +170,9 @@ mod tests {
                 author: None,
                 entry: "src/main.liv".into(),
                 olive: Some(">=0.1".into()),
+                include: vec![],
             }),
-            dependencies: HashMap::new(),
-            workspace: None,
-            profile: HashMap::new(),
-            fmt: None,
+            ..Config::default()
         };
         let toml_str = toml::to_string(&cfg).unwrap();
         assert!(toml_str.contains("my_app"));
@@ -304,6 +257,7 @@ version = "1.0"
             author: None,
             entry: "lib.liv".into(),
             olive: None,
+            include: vec![],
         };
         assert_eq!(pod.entry, "lib.liv");
     }
@@ -317,6 +271,7 @@ version = "1.0"
                 author: None,
                 entry: "src/main.liv".into(),
                 olive: Some(">=0.1.0".into()),
+                include: vec![],
             }),
             ..Config::default()
         };
@@ -423,13 +378,14 @@ member_dep = "0.5"
                 author: None,
                 entry: "src/lib.liv".into(),
                 olive: Some(">=0.2".into()),
+                include: vec![],
             }),
             dependencies: deps,
             workspace: Some(Workspace {
                 members: vec!["sub_crate".into()],
             }),
             profile,
-            fmt: None,
+            ..Config::default()
         };
 
         let toml_str = toml::to_string(&cfg).unwrap();

@@ -276,8 +276,7 @@ mod tests {
 
     #[test]
     fn extract_pod_archive_rejects_parent_dir_traversal() {
-        let archive =
-            archive_with_raw_name("pkg-1.0/../../../../etc/evil", b"malicious");
+        let archive = archive_with_raw_name("pkg-1.0/../../../../etc/evil", b"malicious");
         let dest = std::env::temp_dir().join("olive_extract_test_traversal");
         let _ = fs::remove_dir_all(&dest);
         let result = extract_pod_archive(&archive, &dest);
