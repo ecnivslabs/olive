@@ -338,8 +338,22 @@ fn upload_native_artifacts(
     };
     let mut artifacts = BTreeMap::new();
     let mut pending = Vec::new();
+    let host_key = target::host();
+    let host_local = target::local_name(&native.lib);
     for (key, file, implib_file) in expected_native_files(manifest)? {
+        // The dev loop stages the host build under its plain local name
+        // (`native/libtokenizer.so`), so accept that file for the host target
+        // directly: the author's own machine feeds publish with zero extra steps.
         let path = Path::new("native").join(&file);
+        let path = if !path.is_file()
+            && Some(key.as_str()) == host_key
+            && let Some(ref local) = host_local
+            && Path::new("native").join(local).is_file()
+        {
+            Path::new("native").join(local)
+        } else {
+            path
+        };
         if !path.is_file() {
             pending.push(format!("{key} (native/{file})"));
             continue;
