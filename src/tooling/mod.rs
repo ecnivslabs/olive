@@ -9,4 +9,5 @@ pub mod publish;
 pub mod registry;
 pub mod repl;
 pub mod solver;
+pub mod target;
 pub mod upgrade;
