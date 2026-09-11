@@ -48,7 +48,7 @@ pub(crate) unsafe fn call_kw_v_core(
                 PY_DEC_REF(*slot);
             }
         }
-        sync_back(&pairs);
+        sync_back_or_abort(&pairs);
         if res.is_null() {
             handle_py_error();
         } else if !PY_ERR_OCCURRED().is_null() {
@@ -105,7 +105,14 @@ pub(crate) unsafe fn call_kw_v_core_safe(
                 PY_DEC_REF(*slot);
             }
         }
-        sync_back(&pairs);
+        let call_error = crate::python::python_safe::take_pending_error_message();
+        let sync_error = sync_back(&pairs).err();
+        if let Some(message) = call_error {
+            return crate::result::olive_result_err(crate::olive_str_internal(&message));
+        }
+        if let Some(message) = sync_error {
+            return crate::result::olive_result_err(crate::olive_str_internal(&message));
+        }
         finish_call_safe(Ok(res), RET_HANDLE)
     }
 }
@@ -150,7 +157,7 @@ pub(crate) unsafe fn call_kw_v_method_core(
                 PY_DEC_REF(*slot);
             }
         }
-        sync_back(&pairs);
+        sync_back_or_abort(&pairs);
         if res.is_null() {
             handle_py_error();
         } else if !PY_ERR_OCCURRED().is_null() {
@@ -210,7 +217,14 @@ pub(crate) unsafe fn call_kw_v_method_core_safe(
                 PY_DEC_REF(*slot);
             }
         }
-        sync_back(&pairs);
+        let call_error = crate::python::python_safe::take_pending_error_message();
+        let sync_error = sync_back(&pairs).err();
+        if let Some(message) = call_error {
+            return crate::result::olive_result_err(crate::olive_str_internal(&message));
+        }
+        if let Some(message) = sync_error {
+            return crate::result::olive_result_err(crate::olive_str_internal(&message));
+        }
         finish_call_safe(Ok(res), RET_HANDLE)
     }
 }

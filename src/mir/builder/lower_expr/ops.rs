@@ -957,22 +957,17 @@ impl<'a> MirBuilder<'a> {
         )
     }
 
-    /// Whether an int, float, or null key must enter an `Any`-keyed or
-    /// `Any` container in boxed form. `Any` slots store these words boxed
-    /// (see `coerce_to_hashable`): a bare int above the string-tag floor is
-    /// bit-identical to a tagged string pointer, so an untyped hash, free,
-    /// or copy meeting the bare word dereferences the raw bits, and bare
-    /// float bits hash differently typed than untyped, which breaks table
-    /// growth (rehash runs under the triggering insert's descriptor).
-    /// Boxing here meets the stored words identically; bools
-    /// stay bare (their words never reach the floor) and strings stay
+    /// Whether a scalar key must enter an `Any`-keyed or `Any` container in
+    /// boxed form. `Any` slots store scalar words boxed (see
+    /// `coerce_to_hashable`): raw int, bool, float, and null words can
+    /// collide with string tags or lose their dynamic type during untyped
+    /// hashing. Boxing here meets stored words identically; strings stay
     /// tagged; aggregates use `key_needs_any_form` instead.
     pub(crate) fn any_key_needs_box(ty: &Type) -> bool {
-        // Int, float, and null keys all box: a bare large odd int is
-        // bit-identical to a tagged string pointer, and bare float bits
-        // hash differently typed than untyped, so either breaks table
-        // growth (which rehashes under the triggering insert's
-        // descriptor). Boxed words classify identically everywhere.
+        // Scalar keys box: a bare large odd int is bit-identical to a
+        // tagged string pointer, bare bool loses its dynamic type against
+        // int, and bare float bits hash differently typed than untyped.
+        // Boxed words classify identically everywhere.
         matches!(
             ty,
             Type::Int
@@ -986,6 +981,7 @@ impl<'a> MirBuilder<'a> {
                 | Type::Usize
                 | Type::Float
                 | Type::F32
+                | Type::Bool
                 | Type::Null
         )
     }

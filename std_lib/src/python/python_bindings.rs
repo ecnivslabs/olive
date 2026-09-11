@@ -45,11 +45,15 @@ pub static mut PY_DEC_REF: unsafe extern "C" fn(PyObject) = noop_decref;
 pub static mut PY_INC_REF: unsafe extern "C" fn(PyObject) = noop_incref;
 pub static mut PY_LONG_AS_LONG: unsafe extern "C" fn(PyObject) -> c_long = noop_as_long;
 pub static mut PY_LONG_AS_LONG_LONG: unsafe extern "C" fn(PyObject) -> i64 = noop_as_long_long;
+pub static mut PY_LONG_AS_UNSIGNED_LONG_LONG: unsafe extern "C" fn(PyObject) -> u64 =
+    noop_as_unsigned_long_long;
 pub static mut PY_NUMBER_LONG: unsafe extern "C" fn(PyObject) -> PyObject = noop_number_long;
 pub static mut PY_FLOAT_AS_DOUBLE: unsafe extern "C" fn(PyObject) -> c_double = noop_as_double;
 pub static mut PY_UNICODE_AS_UTF8: unsafe extern "C" fn(PyObject) -> *const c_char = noop_as_utf8;
 pub static mut PY_LONG_FROM_LONG: unsafe extern "C" fn(c_long) -> PyObject = noop_from_long;
 pub static mut PY_LONG_FROM_LONG_LONG: unsafe extern "C" fn(i64) -> PyObject = noop_from_long_long;
+pub static mut PY_LONG_FROM_UNSIGNED_LONG_LONG: unsafe extern "C" fn(u64) -> PyObject =
+    noop_from_unsigned_long_long;
 pub static HAS_LONG_LONG: AtomicBool = AtomicBool::new(false);
 
 #[inline]
@@ -76,6 +80,26 @@ pub unsafe fn py_long_from_i64(val: i64) -> PyObject {
         }
     }
 }
+#[inline]
+pub unsafe fn py_long_from_u64(val: u64) -> PyObject {
+    unsafe { PY_LONG_FROM_UNSIGNED_LONG_LONG(val) }
+}
+
+#[inline]
+pub unsafe fn py_u64_from_python(obj: PyObject) -> Option<u64> {
+    let had_error = unsafe { !PY_ERR_OCCURRED().is_null() };
+    let value = unsafe { PY_LONG_AS_UNSIGNED_LONG_LONG(obj) };
+    if had_error {
+        return Some(value);
+    }
+    if unsafe { !PY_ERR_OCCURRED().is_null() } {
+        unsafe { PY_ERR_CLEAR() };
+        None
+    } else {
+        Some(value)
+    }
+}
+
 pub static mut PY_BOOL_FROM_LONG: unsafe extern "C" fn(c_long) -> PyObject = noop_from_long;
 pub static mut PY_FLOAT_FROM_DOUBLE: unsafe extern "C" fn(c_double) -> PyObject = noop_from_double;
 pub static mut PY_UNICODE_FROM_STRING: unsafe extern "C" fn(*const c_char) -> PyObject =

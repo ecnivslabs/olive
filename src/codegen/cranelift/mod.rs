@@ -903,6 +903,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_py_to_str", b"olive_py_to_str\0"),
     ("__olive_py_to_any", b"olive_py_to_any\0"),
     ("__olive_to_pyobject", b"olive_to_pyobject\0"),
+    ("__olive_to_py_typed", b"olive_to_py_typed\0"),
     ("__olive_py_make_callable", b"olive_py_make_callable\0"),
     ("__olive_py_make_export", b"olive_py_make_export\0"),
     ("__olive_py_create_module", b"olive_py_create_module\0"),

@@ -11,6 +11,14 @@ pub(crate) unsafe fn conversion_err() -> i64 {
     crate::result::olive_result_err(crate::olive_str_internal(&msg))
 }
 
+pub(crate) unsafe fn take_pending_error_message() -> Option<String> {
+    if unsafe { !PY_ERR_OCCURRED().is_null() } {
+        unsafe { catch_py_exception_msg() }
+    } else {
+        None
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_import_safe(name: i64) -> i64 {
     if !is_python_available() {
@@ -75,9 +83,16 @@ pub extern "C" fn olive_py_call_safe(func: PyObject, args_list: i64, coll_tags: 
         }
 
         let res = PY_OBJECT_CALL_OBJECT(unwrapped_func, py_args);
-        sync_back(&pairs);
+        let call_error = take_pending_error_message();
+        let sync_error = sync_back(&pairs).err();
         if !py_args.is_null() {
             PY_DEC_REF(py_args);
+        }
+        if let Some(message) = call_error {
+            return crate::result::olive_result_err(crate::olive_str_internal(&message));
+        }
+        if let Some(message) = sync_error {
+            return crate::result::olive_result_err(crate::olive_str_internal(&message));
         }
 
         if res.is_null()
@@ -122,8 +137,10 @@ pub extern "C" fn olive_py_call_kw_safe(
             unwrapped_func,
             args_list,
             coll_tags,
+            0,
             kwargs_dict,
             kw_coll_tags,
+            0,
         )
     }
 }
@@ -135,8 +152,10 @@ pub(crate) unsafe fn call_kw_dict_safe(
     unwrapped_func: PyObject,
     args_list: i64,
     coll_tags: i64,
+    arg_tags: i64,
     kwargs_dict: i64,
     kw_coll_tags: i64,
+    kw_arg_tags: i64,
 ) -> i64 {
     with_gil(|| unsafe {
         let mut pairs = Vec::new();
@@ -146,8 +165,9 @@ pub(crate) unsafe fn call_kw_dict_safe(
             py_args = PY_TUPLE_NEW(sv.len as isize);
             for i in 0..sv.len {
                 let tag = tag_at(coll_tags, i);
+                let arg_tag = arg_tag_at(arg_tags, i);
                 let v = *sv.ptr.add(i);
-                let py_v = convert_arg(v, tag, &mut pairs);
+                let py_v = convert_arg_tagged(v, tag, arg_tag, &mut pairs);
                 // See `olive_py_call_safe`: zero a tagged, aliased slot
                 // before any early return, ahead of this list's own drop.
                 if tag != TAG_NONE {
@@ -174,8 +194,9 @@ pub(crate) unsafe fn call_kw_dict_safe(
             while i + 1 < sv.len {
                 let key = *sv.ptr.add(i);
                 let tag = tag_at(kw_coll_tags, kw_i);
+                let kw_arg_tag = arg_tag_at(kw_arg_tags, kw_i);
                 let val = *sv.ptr.add(i + 1);
-                let py_v = convert_arg(val, tag, &mut pairs);
+                let py_v = convert_arg_tagged(val, tag, kw_arg_tag, &mut pairs);
                 if tag != TAG_NONE {
                     *sv.ptr.add(i + 1) = 0;
                 }
@@ -203,12 +224,19 @@ pub(crate) unsafe fn call_kw_dict_safe(
         }
 
         let res = PY_OBJECT_CALL(unwrapped_func, py_args, py_kwargs);
-        sync_back(&pairs);
+        let call_error = take_pending_error_message();
+        let sync_error = sync_back(&pairs).err();
         if !py_args.is_null() {
             PY_DEC_REF(py_args);
         }
         if !py_kwargs.is_null() {
             PY_DEC_REF(py_kwargs);
+        }
+        if let Some(message) = call_error {
+            return crate::result::olive_result_err(crate::olive_str_internal(&message));
+        }
+        if let Some(message) = sync_error {
+            return crate::result::olive_result_err(crate::olive_str_internal(&message));
         }
 
         if res.is_null()
@@ -313,7 +341,18 @@ pub(crate) unsafe fn call_with_raw_args_safe(
             r
         };
 
-        sync_back(&pairs);
+        let call_error = take_pending_error_message();
+        let sync_error = sync_back(&pairs).err();
+        if let Some(message) = call_error {
+            return Err(crate::result::olive_result_err(crate::olive_str_internal(
+                &message,
+            )));
+        }
+        if let Some(message) = sync_error {
+            return Err(crate::result::olive_result_err(crate::olive_str_internal(
+                &message,
+            )));
+        }
         Ok(res)
     }
 }

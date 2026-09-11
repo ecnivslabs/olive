@@ -378,6 +378,118 @@ pub unsafe fn olive_any_to_py_checked(val: i64) -> PyObject {
     r
 }
 
+unsafe fn to_py_typed_desc_at(val: i64, desc: *const u8, pos: &mut usize) -> PyObject {
+    unsafe {
+        let tag = crate::format::byte(desc, *pos);
+        *pos += 1;
+        match tag {
+            crate::format::D_INT => py_long_from_i64(val),
+            crate::format::D_FLOAT => PY_FLOAT_FROM_DOUBLE(f64::from_bits(val as u64)),
+            crate::format::D_F32 => PY_FLOAT_FROM_DOUBLE(f32::from_bits(val as u32) as f64),
+            crate::format::D_BOOL => PY_BOOL_FROM_LONG(val as c_long),
+            crate::format::D_STR => olive_str_to_py(val),
+            crate::format::D_NULL => {
+                let none = _PY_NONE_STRUCT as PyObject;
+                PY_INC_REF(none);
+                none
+            }
+            crate::format::D_LIST | crate::format::D_TUPLE => {
+                let elem_start = *pos;
+                crate::format::skip(desc, pos);
+                let n = crate::olive_list_len(val);
+                let py_seq = if tag == crate::format::D_LIST {
+                    PY_LIST_NEW(n as isize)
+                } else {
+                    PY_TUPLE_NEW(n as isize)
+                };
+                if py_seq.is_null() {
+                    return py_seq;
+                }
+                for i in 0..n {
+                    let mut elem_pos = elem_start;
+                    let elem = crate::olive_list_get(val, i);
+                    let item = to_py_typed_desc_at(elem, desc, &mut elem_pos);
+                    if item.is_null() {
+                        PY_DEC_REF(py_seq);
+                        return std::ptr::null_mut();
+                    }
+                    if tag == crate::format::D_LIST {
+                        PY_LIST_SET_ITEM(py_seq, i as isize, item);
+                    } else {
+                        PY_TUPLE_SET_ITEM(py_seq, i as isize, item);
+                    }
+                }
+                py_seq
+            }
+            crate::format::D_SET => {
+                let elem_start = *pos;
+                crate::format::skip(desc, pos);
+                let hs = &*(val as *const crate::OliveHashSet);
+                let py_set = PY_SET_NEW(std::ptr::null_mut());
+                if py_set.is_null() {
+                    return py_set;
+                }
+                for i in 0..hs.len {
+                    let mut elem_pos = elem_start;
+                    let item = to_py_typed_desc_at(*hs.ptr.add(i), desc, &mut elem_pos);
+                    if item.is_null() || PY_SET_ADD(py_set, item) == -1 {
+                        if !item.is_null() {
+                            PY_DEC_REF(item);
+                        }
+                        PY_DEC_REF(py_set);
+                        return std::ptr::null_mut();
+                    }
+                    PY_DEC_REF(item);
+                }
+                py_set
+            }
+            crate::format::D_DICT => {
+                let key_start = *pos;
+                crate::format::skip(desc, pos);
+                let value_start = *pos;
+                crate::format::skip(desc, pos);
+                let py_dict = PY_DICT_NEW();
+                if py_dict.is_null() {
+                    return py_dict;
+                }
+                let obj = &*(val as *const crate::OliveObj);
+                for (key, value) in &obj.fields {
+                    let mut key_pos = key_start;
+                    let py_key = to_py_typed_desc_at(key.0, desc, &mut key_pos);
+                    if py_key.is_null() {
+                        PY_DEC_REF(py_dict);
+                        return std::ptr::null_mut();
+                    }
+                    let mut value_pos = value_start;
+                    let py_value = to_py_typed_desc_at(*value, desc, &mut value_pos);
+                    if py_value.is_null() {
+                        PY_DEC_REF(py_key);
+                        PY_DEC_REF(py_dict);
+                        return std::ptr::null_mut();
+                    }
+                    let res = PY_OBJECT_SET_ITEM(py_dict, py_key, py_value);
+                    PY_DEC_REF(py_key);
+                    PY_DEC_REF(py_value);
+                    if res == -1 {
+                        PY_DEC_REF(py_dict);
+                        return std::ptr::null_mut();
+                    }
+                }
+                py_dict
+            }
+            _ => to_py_deep(val),
+        }
+    }
+}
+
+pub(crate) unsafe fn to_py_typed_desc(val: i64, desc: i64) -> PyObject {
+    unsafe {
+        let desc = crate::string_slab::str_body(desc) as *const u8;
+        let mut pos = 0usize;
+        to_py_typed_desc_at(val, desc, &mut pos)
+    }
+}
+
 /// Deep-realizes an Olive collection into a genuine Python object (dicts to
 /// real `dict`, lists to real `list`, recursively). This is the boundary now:
 /// every olive-to-Python crossing of a collection produces a value that

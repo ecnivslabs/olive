@@ -51,7 +51,7 @@ pub(crate) unsafe fn call_method_with_raw_args(
                 }
                 r
             };
-            sync_back(&pairs);
+            sync_back_or_abort(&pairs);
             if res.is_null() {
                 handle_py_error();
             } else if !PY_ERR_OCCURRED().is_null() {

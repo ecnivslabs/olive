@@ -44,6 +44,12 @@ def add2(a, b):
 
 def zero_args():
     return 99
+
+def kw_update(*, d):
+    d[2] = 9
+
+def key_type_kw(*, d):
+    return type(next(iter(d))).__name__
 "#;
 
 fn write_case(src: &str) -> (PathBuf, PathBuf) {
@@ -198,6 +204,24 @@ fn main():
 main()
 "#,
         "int\n123\n",
+    );
+}
+
+#[test]
+fn typed_keyword_collections_keep_metadata_without_vectorcall() {
+    assert_identical_on_all_four_lanes(
+        r#"import py "taghelper" as h
+
+fn main():
+    let mut d: {int: int} = {1: 1}
+    h.kw_update(d=d)
+    print(d[2])
+    let b: {bool: int} = {True: 1}
+    print(h.key_type_kw(d=b))
+
+main()
+"#,
+        "9\nbool\n",
     );
 }
 

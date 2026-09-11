@@ -143,15 +143,16 @@ impl<'a> MirBuilder<'a> {
             // mixed widths miss. Every other shape passes through untouched.
             return self.coerce_float_slot(op, &from_ty, elem_ty, elem.span);
         }
-        if from_ty == Type::Null || Self::key_needs_any_form(&from_ty) {
+        if from_ty == Type::Null
+            || Self::key_needs_any_form(&from_ty)
+            || Self::any_key_needs_box(&from_ty)
+        {
             return self.box_into_any(op, &from_ty, elem.span);
         }
-        // A bare int or float word above the string-tag floor is
-        // bit-identical to a tagged string pointer, so it boxes rather than
-        // risk an untyped hash, free, or copy dereferencing the raw bits.
-        // Bools stay bare (their words never reach the floor) and strings
-        // stay tagged; typed store and lookup paths compare the unboxed
-        // `Scalar` kind and bits, so bare needles still match boxed keys.
+        // Scalar keys enter Any slots boxed. Raw large ints and floats can
+        // collide with string tags, and raw bools lose their dynamic type
+        // against ints. Typed store and lookup paths compare boxed words
+        // consistently.
         if matches!(
             from_ty,
             Type::Int
@@ -1625,6 +1626,28 @@ impl<'a> MirBuilder<'a> {
             Type::FloatLiteral(_) => &Type::Float,
             other => other,
         };
+        if matches!(resolved, Type::List(_) | Type::Set(_) | Type::Dict(_, _)) {
+            let desc = crate::semantic::type_descriptor::type_descriptor(
+                resolved,
+                &self.struct_fields,
+                &self.struct_field_types,
+                &self.enum_defs,
+            );
+            let tmp = self.new_local(Type::PyObject, None, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    tmp,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function(
+                            "__olive_to_py_typed".to_string(),
+                        )),
+                        args: vec![op, Operand::Constant(Constant::Str(desc))],
+                    },
+                ),
+                span,
+            );
+            return Operand::Copy(tmp);
+        }
         self.coerce(op, resolved, &Type::PyObject, span)
     }
 

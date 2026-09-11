@@ -684,6 +684,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_py_to_str", &sig_i64_i64),
             ("__olive_py_to_any", &sig_i64_i64),
             ("__olive_to_pyobject", &sig_i64_i64),
+            ("__olive_to_py_typed", &sig_i64_i64_i64),
             ("__olive_py_make_callable", &sig_i64_i64_i64),
             ("__olive_py_make_export", &sig_i64_i64_i64),
             ("__olive_py_create_module", &sig_i64_i64),

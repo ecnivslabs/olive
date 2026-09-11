@@ -13,22 +13,27 @@ use std::os::raw::c_char;
 /// Splits `kwnames_key`'s packed, comma-joined names and zips them back up
 /// with `kwvals_list`'s values into the interleaved `[name, value, ...]`
 /// shape `call_kw_dict` expects, then defers to it entirely.
+#[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn legacy_call_kw(
     unwrapped_func: PyObject,
     args_list: i64,
     coll_tags: i64,
+    arg_tags: i64,
     kwnames_key: i64,
     kwvals_list: i64,
     kw_coll_tags: i64,
+    kw_arg_tags: i64,
 ) -> PyObject {
     unsafe {
-        let interleaved = build_interleaved_kwargs(kwnames_key, kwvals_list);
+        let interleaved = build_interleaved_kwargs(kwnames_key, kwvals_list, kw_coll_tags);
         let res = crate::python::python_call::call_kw_dict(
             unwrapped_func,
             args_list,
             coll_tags,
+            arg_tags,
             interleaved,
             kw_coll_tags,
+            kw_arg_tags,
         );
         if interleaved != 0 {
             crate::olive_free_list(interleaved);
@@ -37,22 +42,27 @@ pub(crate) unsafe fn legacy_call_kw(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn legacy_call_kw_safe(
     unwrapped_func: PyObject,
     args_list: i64,
     coll_tags: i64,
+    arg_tags: i64,
     kwnames_key: i64,
     kwvals_list: i64,
     kw_coll_tags: i64,
+    kw_arg_tags: i64,
 ) -> i64 {
     unsafe {
-        let interleaved = build_interleaved_kwargs(kwnames_key, kwvals_list);
+        let interleaved = build_interleaved_kwargs(kwnames_key, kwvals_list, kw_coll_tags);
         let res = crate::python::python_safe::call_kw_dict_safe(
             unwrapped_func,
             args_list,
             coll_tags,
+            arg_tags,
             interleaved,
             kw_coll_tags,
+            kw_arg_tags,
         );
         if interleaved != 0 {
             crate::olive_free_list(interleaved);
@@ -61,14 +71,17 @@ pub(crate) unsafe fn legacy_call_kw_safe(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn legacy_call_method_kw(
     obj: PyObject,
     attr: i64,
     args_list: i64,
     coll_tags: i64,
+    arg_tags: i64,
     kwnames_key: i64,
     kwvals_list: i64,
     kw_coll_tags: i64,
+    kw_arg_tags: i64,
 ) -> PyObject {
     unsafe {
         // One GIL region covers lookup, call, and release -- each piece takes
@@ -92,9 +105,11 @@ pub(crate) unsafe fn legacy_call_method_kw(
                 bound,
                 args_list,
                 coll_tags,
+                arg_tags,
                 kwnames_key,
                 kwvals_list,
                 kw_coll_tags,
+                kw_arg_tags,
             );
             PY_DEC_REF(bound);
             res
@@ -102,14 +117,17 @@ pub(crate) unsafe fn legacy_call_method_kw(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn legacy_call_method_kw_safe(
     obj: PyObject,
     attr: i64,
     args_list: i64,
     coll_tags: i64,
+    arg_tags: i64,
     kwnames_key: i64,
     kwvals_list: i64,
     kw_coll_tags: i64,
+    kw_arg_tags: i64,
 ) -> i64 {
     unsafe {
         with_gil(|| {
@@ -132,9 +150,11 @@ pub(crate) unsafe fn legacy_call_method_kw_safe(
                 bound,
                 args_list,
                 coll_tags,
+                arg_tags,
                 kwnames_key,
                 kwvals_list,
                 kw_coll_tags,
+                kw_arg_tags,
             );
             PY_DEC_REF(bound);
             res
@@ -147,7 +167,7 @@ pub(crate) unsafe fn legacy_call_method_kw_safe(
 /// the values-only list this phase's fast path uses instead. Only reached
 /// on the fallback lane, so paying one extra list allocation here doesn't
 /// touch the fast path's cost at all.
-unsafe fn build_interleaved_kwargs(kwnames_key: i64, kwvals_list: i64) -> i64 {
+unsafe fn build_interleaved_kwargs(kwnames_key: i64, kwvals_list: i64, kw_coll_tags: i64) -> i64 {
     unsafe {
         let (kw_ptr, kw_len) = stable_vec(kwvals_list);
         if kw_len == 0 {
@@ -163,6 +183,9 @@ unsafe fn build_interleaved_kwargs(kwnames_key: i64, kwvals_list: i64) -> i64 {
             let name_ptr = crate::olive_str_internal(names.get(i).copied().unwrap_or(""));
             *sv.ptr.add(i * 2) = name_ptr;
             *sv.ptr.add(i * 2 + 1) = *kw_ptr.add(i);
+            if tag_at(kw_coll_tags, i) != TAG_NONE {
+                *kw_ptr.add(i) = 0;
+            }
         }
         list_ptr
     }

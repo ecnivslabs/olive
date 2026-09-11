@@ -88,11 +88,80 @@ def set_key(d, k):
 def set_key_after(a, b, c, d, e, target, key):
     target[key] = 9
 
+def first_item(xs):
+    return xs[0]
+
+def first_set_item(s):
+    return next(iter(s))
+
+def first_dict_value(d):
+    return next(iter(d.values()))
+
+def contains(s, value):
+    return value in s
+
+def set_first(xs, value):
+    xs[0] = value
+
+def set_value(s, value):
+    s.add(value)
+
+def first_type(xs):
+    return type(xs[0]).__name__
+
+def first_value_type(d):
+    return type(next(iter(d.values()))).__name__
+
+def inspect_dict(d):
+    return len(d)
+
+def identity(x):
+    return x
+
+def nested_value(d):
+    return d["inner"]
+
+def inspect_legacy(*args):
+    d = args[-1]
+    return [(type(k).__name__, k, type(v).__name__, v) for k, v in d.items()]
+
+def any_dict_items(d):
+    return [(type(k).__name__, k, type(v).__name__) for k, v in d.items()]
+
 def add_int_to_set(s, v):
     s.add(v)
 
 def print_set(s):
     print(sorted(s))
+
+class MutatingKey:
+    def __str__(self):
+        self.d.clear()
+        self.d[7] = 11
+        return "k"
+
+def make_mutating_key():
+    return MutatingKey()
+
+def put_mutating_key(d, key):
+    key.d = d
+    d[key] = 1
+
+import gc
+import weakref
+any_key_refs = []
+
+def replace_any_key(d):
+    d.clear()
+    class Key:
+        pass
+    key = Key()
+    any_key_refs.append(weakref.ref(key))
+    d[key] = 1
+
+def live_any_keys():
+    gc.collect()
+    return sum(ref() is not None for ref in any_key_refs)
 
 def append_first17(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16):
     a0.append(999)
@@ -578,6 +647,192 @@ fn main():
 main()
 "#,
         "bool\nbool\n9\nint\n9\nfloat\n9\nstr\n9\nbool\n9\n9\n9\n",
+    );
+}
+
+#[test]
+fn f32_and_none_collections_preserve_static_types() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let xs: [f32] = [1.5]
+    print(h.first_item(xs))
+    let mut xs2: [f32] = [1.5]
+    h.set_first(xs2, 2.5)
+    print(xs2[0])
+
+    let s: set[f32] = {1.5}
+    print(h.first_set_item(s))
+    let mut s2: set[f32] = {1.5}
+    h.set_value(s2, 2.5)
+    print(h.contains(s2, 2.5))
+
+    let d: {int: f32} = {1: 1.5}
+    print(h.first_dict_value(d))
+    let mut d2: {f32: int} = {1.5: 2}
+    h.set_key(d2, 2.5)
+    print(d2[2.5])
+
+    let ns: [None] = [None]
+    print(h.first_type(ns))
+    let nd: {str: None} = {"x": None}
+    print(h.first_value_type(nd))
+
+main()
+"#,
+        "1.5\n2.5\n1.5\nTrue\n1.5\n9\nNoneType\nNoneType\n",
+    );
+}
+
+#[test]
+fn unsigned_values_cross_as_unsigned_python_integers() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let one: u64 = 1
+    let high: u64 = one << 63
+    print(h.identity(high))
+    let d: {u64: int} = {high: 1}
+    print(h.key_type(d))
+    let xs: [u64] = [high]
+    print(h.first_item(xs))
+    let s: set[u64] = {high}
+    print(h.first_set_item(s))
+    let values: {int: u64} = {1: high}
+    print(h.first_dict_value(values))
+
+main()
+"#,
+        "9223372036854775808\nint\n9223372036854775808\n9223372036854775808\n9223372036854775808\n",
+    );
+}
+
+#[test]
+fn safe_writeback_rejects_custom_dict_key_without_aborting() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn run(d: {str: Any}, key: PyObject) -> PyObject | Error:
+    return try h.put_mutating_key(d, key)
+
+fn main():
+    let mut d: {str: Any} = {}
+    let key: PyObject = h.make_mutating_key()
+    match run(d, key):
+        Error(_e):
+            print("caught")
+        _:
+            print("bad")
+
+main()
+"#,
+        "caught\n",
+    );
+}
+
+#[test]
+fn nested_typed_collections_cross_with_static_types() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let d: {str: {bool: None}} = {"inner": {True: None}}
+    print(h.nested_value(d))
+    let xs: [[f32]] = [[1.5]]
+    print(xs)
+
+main()
+"#,
+        "{True: None}\n[[1.5]]\n",
+    );
+}
+
+#[test]
+fn legacy_high_arity_typed_dict_keeps_key_and_value_types() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let d: {bool: bool} = {True: True}
+    print(h.inspect_legacy(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, d))
+
+main()
+"#,
+        "[('bool', True, 'bool', True)]\n",
+    );
+}
+
+#[test]
+fn safe_call_reports_unhashable_native_dict_key() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn run(d: {Any: int}) -> PyObject | Error:
+    return try h.inspect_dict(d)
+
+fn main():
+    let d: {Any: int} = {[1]: 2}
+    match run(d):
+        Error(_e):
+            print("caught")
+        _:
+            print("bad")
+
+main()
+"#,
+        "caught\n",
+    );
+}
+
+#[test]
+fn any_bool_keys_remain_distinct_from_int_keys() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let d: {Any: int} = {True: 1, 1: 2}
+    print(len(d))
+    print(h.any_dict_items(d))
+
+main()
+"#,
+        "2\n[('bool', True, 'int')]\n",
+    );
+}
+
+#[test]
+fn any_object_keys_are_released_on_dict_writeback() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let mut d: {Any: int} = {}
+    h.replace_any_key(d)
+    print(h.live_any_keys())
+    h.replace_any_key(d)
+    print(h.live_any_keys())
+
+main()
+"#,
+        "1\n1\n",
+    );
+}
+
+#[test]
+fn custom_dict_key_rejected_without_iteration_use_after_free() {
+    assert_both_fail_with(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let mut d: {str: Any} = {}
+    let key: PyObject = h.make_mutating_key()
+    h.put_mutating_key(d, key)
+
+main()
+"#,
+        "E0714",
     );
 }
 

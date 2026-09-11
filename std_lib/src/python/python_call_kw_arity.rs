@@ -10,11 +10,10 @@
 //! fails to build) has no such list to hand `legacy_call_kw` -- it never
 //! had one -- so it builds a throwaway one on the spot and frees it right
 //! after, same cost the list-based entry points always paid on this lane.
-//! `regs_to_list`'s elements are the same raw tagged words the compiler's
-//! own `List(Any)` aggregate holds, and `olive_free_list`'s per-element
-//! walk is documented sound for arbitrary words (`is_active_object` tests
-//! slab membership, not a guessed tag bit), so freeing this hand-built
-//! list the normal way is exactly as safe as freeing the MIR-emitted one.
+//! `regs_to_list` copies borrowed register words into a temporary list. Its
+//! cleanup clears those words before releasing the list storage, because the
+//! registers and any live Python or Olive objects in them remain owned by the
+//! caller.
 
 use crate::python::python_call_kw_core::{
     call_kw_v_core, call_kw_v_core_safe, call_kw_v_method_core, call_kw_v_method_core_safe,
@@ -43,6 +42,12 @@ unsafe fn regs_to_list(vals: &[i64]) -> i64 {
 
 unsafe fn free_regs_list(list: i64) {
     if list != 0 {
+        unsafe {
+            let sv = &mut *(list as *mut crate::StableVec);
+            for i in 0..sv.len {
+                *sv.ptr.add(i) = 0;
+            }
+        }
         crate::olive_free_list(list);
     }
 }
@@ -74,8 +79,8 @@ macro_rules! define_kw_arity_call {
                     let args_list = regs_to_list(&[$($pn),*]);
                     let kwvals_list = regs_to_list(&[$($kn),*]);
                     let res = legacy_call_kw(
-                        unwrapped_func, args_list, coll_tags, kwnames_key, kwvals_list,
-                        kw_coll_tags,
+                        unwrapped_func, args_list, coll_tags, arg_tags, kwnames_key, kwvals_list,
+                        kw_coll_tags, kw_arg_tags,
                     );
                     free_regs_list(args_list);
                     free_regs_list(kwvals_list);
@@ -87,8 +92,8 @@ macro_rules! define_kw_arity_call {
                         let args_list = regs_to_list(&[$($pn),*]);
                         let kwvals_list = regs_to_list(&[$($kn),*]);
                         let res = legacy_call_kw(
-                            unwrapped_func, args_list, coll_tags, kwnames_key, kwvals_list,
-                            kw_coll_tags,
+                            unwrapped_func, args_list, coll_tags, arg_tags, kwnames_key, kwvals_list,
+                            kw_coll_tags, kw_arg_tags,
                         );
                         free_regs_list(args_list);
                         free_regs_list(kwvals_list);
@@ -131,8 +136,8 @@ macro_rules! define_kw_arity_call {
                     let args_list = regs_to_list(&[$($pn),*]);
                     let kwvals_list = regs_to_list(&[$($kn),*]);
                     let res = legacy_call_kw_safe(
-                        unwrapped_func, args_list, coll_tags, kwnames_key, kwvals_list,
-                        kw_coll_tags,
+                        unwrapped_func, args_list, coll_tags, arg_tags, kwnames_key, kwvals_list,
+                        kw_coll_tags, kw_arg_tags,
                     );
                     free_regs_list(args_list);
                     free_regs_list(kwvals_list);
@@ -144,8 +149,8 @@ macro_rules! define_kw_arity_call {
                         let args_list = regs_to_list(&[$($pn),*]);
                         let kwvals_list = regs_to_list(&[$($kn),*]);
                         let res = legacy_call_kw_safe(
-                            unwrapped_func, args_list, coll_tags, kwnames_key, kwvals_list,
-                            kw_coll_tags,
+                            unwrapped_func, args_list, coll_tags, arg_tags, kwnames_key, kwvals_list,
+                            kw_coll_tags, kw_arg_tags,
                         );
                         free_regs_list(args_list);
                         free_regs_list(kwvals_list);
@@ -191,8 +196,8 @@ macro_rules! define_kw_arity_method_call {
                     let args_list = regs_to_list(&[$($pn),*]);
                     let kwvals_list = regs_to_list(&[$($kn),*]);
                     let res = legacy_call_method_kw(
-                        unwrapped_obj, attr, args_list, coll_tags, kwnames_key, kwvals_list,
-                        kw_coll_tags,
+                        unwrapped_obj, attr, args_list, coll_tags, arg_tags, kwnames_key, kwvals_list,
+                        kw_coll_tags, kw_arg_tags,
                     );
                     free_regs_list(args_list);
                     free_regs_list(kwvals_list);
@@ -204,8 +209,8 @@ macro_rules! define_kw_arity_method_call {
                         let args_list = regs_to_list(&[$($pn),*]);
                         let kwvals_list = regs_to_list(&[$($kn),*]);
                         let res = legacy_call_method_kw(
-                            unwrapped_obj, attr, args_list, coll_tags, kwnames_key, kwvals_list,
-                            kw_coll_tags,
+                            unwrapped_obj, attr, args_list, coll_tags, arg_tags, kwnames_key, kwvals_list,
+                            kw_coll_tags, kw_arg_tags,
                         );
                         free_regs_list(args_list);
                         free_regs_list(kwvals_list);
@@ -216,8 +221,8 @@ macro_rules! define_kw_arity_method_call {
                         let args_list = regs_to_list(&[$($pn),*]);
                         let kwvals_list = regs_to_list(&[$($kn),*]);
                         let res = legacy_call_method_kw(
-                            unwrapped_obj, attr, args_list, coll_tags, kwnames_key, kwvals_list,
-                            kw_coll_tags,
+                            unwrapped_obj, attr, args_list, coll_tags, arg_tags, kwnames_key, kwvals_list,
+                            kw_coll_tags, kw_arg_tags,
                         );
                         free_regs_list(args_list);
                         free_regs_list(kwvals_list);
@@ -261,8 +266,8 @@ macro_rules! define_kw_arity_method_call {
                     let args_list = regs_to_list(&[$($pn),*]);
                     let kwvals_list = regs_to_list(&[$($kn),*]);
                     let res = legacy_call_method_kw_safe(
-                        unwrapped_obj, attr, args_list, coll_tags, kwnames_key, kwvals_list,
-                        kw_coll_tags,
+                        unwrapped_obj, attr, args_list, coll_tags, arg_tags, kwnames_key, kwvals_list,
+                        kw_coll_tags, kw_arg_tags,
                     );
                     free_regs_list(args_list);
                     free_regs_list(kwvals_list);
@@ -274,8 +279,8 @@ macro_rules! define_kw_arity_method_call {
                         let args_list = regs_to_list(&[$($pn),*]);
                         let kwvals_list = regs_to_list(&[$($kn),*]);
                         let res = legacy_call_method_kw_safe(
-                            unwrapped_obj, attr, args_list, coll_tags, kwnames_key, kwvals_list,
-                            kw_coll_tags,
+                            unwrapped_obj, attr, args_list, coll_tags, arg_tags, kwnames_key, kwvals_list,
+                            kw_coll_tags, kw_arg_tags,
                         );
                         free_regs_list(args_list);
                         free_regs_list(kwvals_list);
@@ -286,8 +291,8 @@ macro_rules! define_kw_arity_method_call {
                         let args_list = regs_to_list(&[$($pn),*]);
                         let kwvals_list = regs_to_list(&[$($kn),*]);
                         let res = legacy_call_method_kw_safe(
-                            unwrapped_obj, attr, args_list, coll_tags, kwnames_key, kwvals_list,
-                            kw_coll_tags,
+                            unwrapped_obj, attr, args_list, coll_tags, arg_tags, kwnames_key, kwvals_list,
+                            kw_coll_tags, kw_arg_tags,
                         );
                         free_regs_list(args_list);
                         free_regs_list(kwvals_list);

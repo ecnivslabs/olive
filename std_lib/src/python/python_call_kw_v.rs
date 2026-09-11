@@ -135,9 +135,11 @@ pub extern "C" fn olive_py_call_kw_v(
                 unwrapped_func,
                 args_list,
                 coll_tags,
+                arg_tags,
                 kwnames_key,
                 kwvals_list,
                 kw_coll_tags,
+                kw_arg_tags,
             );
         }
         with_gil(|| {
@@ -149,9 +151,11 @@ pub extern "C" fn olive_py_call_kw_v(
                     unwrapped_func,
                     args_list,
                     coll_tags,
+                    arg_tags,
                     kwnames_key,
                     kwvals_list,
                     kw_coll_tags,
+                    kw_arg_tags,
                 );
             }
             call_kw_v_core(
@@ -198,9 +202,11 @@ pub extern "C" fn olive_py_call_kw_v_safe(
                 unwrapped_func,
                 args_list,
                 coll_tags,
+                arg_tags,
                 kwnames_key,
                 kwvals_list,
                 kw_coll_tags,
+                kw_arg_tags,
             );
         }
         with_gil(|| {
@@ -212,9 +218,11 @@ pub extern "C" fn olive_py_call_kw_v_safe(
                     unwrapped_func,
                     args_list,
                     coll_tags,
+                    arg_tags,
                     kwnames_key,
                     kwvals_list,
                     kw_coll_tags,
+                    kw_arg_tags,
                 );
             }
             call_kw_v_core_safe(
@@ -266,9 +274,11 @@ pub extern "C" fn olive_py_call_method_kw_v(
                 attr,
                 args_list,
                 coll_tags,
+                arg_tags,
                 kwnames_key,
                 kwvals_list,
                 kw_coll_tags,
+                kw_arg_tags,
             );
         }
         with_gil(|| {
@@ -279,9 +289,11 @@ pub extern "C" fn olive_py_call_method_kw_v(
                     attr,
                     args_list,
                     coll_tags,
+                    arg_tags,
                     kwnames_key,
                     kwvals_list,
                     kw_coll_tags,
+                    kw_arg_tags,
                 );
             }
             let (pos_ptr, pos_len) = stable_vec(args_list);
@@ -293,9 +305,11 @@ pub extern "C" fn olive_py_call_method_kw_v(
                     attr,
                     args_list,
                     coll_tags,
+                    arg_tags,
                     kwnames_key,
                     kwvals_list,
                     kw_coll_tags,
+                    kw_arg_tags,
                 );
             }
             call_kw_v_method_core(
@@ -345,9 +359,11 @@ pub extern "C" fn olive_py_call_method_kw_v_safe(
                 attr,
                 args_list,
                 coll_tags,
+                arg_tags,
                 kwnames_key,
                 kwvals_list,
                 kw_coll_tags,
+                kw_arg_tags,
             );
         }
         with_gil(|| {
@@ -358,9 +374,11 @@ pub extern "C" fn olive_py_call_method_kw_v_safe(
                     attr,
                     args_list,
                     coll_tags,
+                    arg_tags,
                     kwnames_key,
                     kwvals_list,
                     kw_coll_tags,
+                    kw_arg_tags,
                 );
             }
             let (pos_ptr, pos_len) = stable_vec(args_list);
@@ -372,9 +390,11 @@ pub extern "C" fn olive_py_call_method_kw_v_safe(
                     attr,
                     args_list,
                     coll_tags,
+                    arg_tags,
                     kwnames_key,
                     kwvals_list,
                     kw_coll_tags,
+                    kw_arg_tags,
                 );
             }
             call_kw_v_method_core_safe(

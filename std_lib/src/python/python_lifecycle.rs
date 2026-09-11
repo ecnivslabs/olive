@@ -230,6 +230,7 @@ pub extern "C" fn olive_py_initialize() {
         PY_INC_REF = compat_dlsym(handle, "Py_IncRef");
         PY_LONG_AS_LONG = compat_dlsym(handle, "PyLong_AsLong");
         PY_LONG_AS_LONG_LONG = compat_dlsym(handle, "PyLong_AsLongLong");
+        PY_LONG_AS_UNSIGNED_LONG_LONG = compat_dlsym(handle, "PyLong_AsUnsignedLongLong");
         PY_NUMBER_LONG = compat_dlsym(handle, "PyNumber_Long");
         PY_FLOAT_AS_DOUBLE = compat_dlsym(handle, "PyFloat_AsDouble");
         PY_UNICODE_AS_UTF8 = compat_dlsym(handle, "PyUnicode_AsUTF8");
@@ -237,6 +238,7 @@ pub extern "C" fn olive_py_initialize() {
         PY_UNICODE_FROM_STRING_AND_SIZE = compat_dlsym(handle, "PyUnicode_FromStringAndSize");
         PY_LONG_FROM_LONG = compat_dlsym(handle, "PyLong_FromLong");
         PY_LONG_FROM_LONG_LONG = compat_dlsym(handle, "PyLong_FromLongLong");
+        PY_LONG_FROM_UNSIGNED_LONG_LONG = compat_dlsym(handle, "PyLong_FromUnsignedLongLong");
         PY_BOOL_FROM_LONG = compat_dlsym(handle, "PyBool_FromLong");
         PY_FLOAT_FROM_DOUBLE = compat_dlsym(handle, "PyFloat_FromDouble");
         PY_UNICODE_FROM_STRING = compat_dlsym(handle, "PyUnicode_FromString");
@@ -394,6 +396,7 @@ pub extern "C" fn olive_py_initialize() {
             PY_INC_REF = noop_incref;
             PY_LONG_AS_LONG = noop_as_long;
             PY_LONG_AS_LONG_LONG = crate::python::python_noop::noop_as_long_long;
+            PY_LONG_AS_UNSIGNED_LONG_LONG = crate::python::python_noop::noop_as_unsigned_long_long;
             PY_NUMBER_LONG = noop_number_long;
             PY_FLOAT_AS_DOUBLE = noop_as_double;
             PY_UNICODE_AS_UTF8 = noop_as_utf8;
@@ -403,6 +406,7 @@ pub extern "C" fn olive_py_initialize() {
             HAS_STR_AND_SIZE.store(false, Ordering::SeqCst);
             PY_LONG_FROM_LONG = noop_from_long;
             PY_LONG_FROM_LONG_LONG = crate::python::python_noop::noop_from_long_long;
+            PY_LONG_FROM_UNSIGNED_LONG_LONG = crate::python::python_noop::noop_from_unsigned_long_long;
             HAS_LONG_LONG.store(false, Ordering::SeqCst);
             PY_BOOL_FROM_LONG = noop_from_long;
             PY_FLOAT_FROM_DOUBLE = noop_from_double;
@@ -559,7 +563,17 @@ pub extern "C" fn olive_py_initialize() {
                 && !std::mem::transmute::<_, *const ()>(PY_LONG_FROM_LONG_LONG).is_null();
         if !long_long_present {
             PY_LONG_AS_LONG_LONG = crate::python::python_noop::noop_as_long_long;
+            PY_LONG_AS_UNSIGNED_LONG_LONG = crate::python::python_noop::noop_as_unsigned_long_long;
             PY_LONG_FROM_LONG_LONG = crate::python::python_noop::noop_from_long_long;
+            PY_LONG_FROM_UNSIGNED_LONG_LONG = crate::python::python_noop::noop_from_unsigned_long_long;
+        }
+        let unsigned_long_long_present =
+            !std::mem::transmute::<_, *const ()>(PY_LONG_AS_UNSIGNED_LONG_LONG).is_null()
+                && !std::mem::transmute::<_, *const ()>(PY_LONG_FROM_UNSIGNED_LONG_LONG).is_null();
+        if !unsigned_long_long_present {
+            PY_LONG_AS_UNSIGNED_LONG_LONG = crate::python::python_noop::noop_as_unsigned_long_long;
+            PY_LONG_FROM_UNSIGNED_LONG_LONG =
+                crate::python::python_noop::noop_from_unsigned_long_long;
         }
         HAS_LONG_LONG.store(long_long_present, Ordering::SeqCst);
 

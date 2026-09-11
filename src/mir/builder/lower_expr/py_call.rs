@@ -22,12 +22,17 @@ const ARG_BOOL: i64 = 4;
 const ARG_ANY: i64 = 5;
 const ARG_NONE: i64 = 6;
 const ARG_BYTES: i64 = 7;
-const ARG_DICT_INT_KEY: i64 = ARG_INT;
-const ARG_DICT_FLOAT_KEY: i64 = ARG_FLOAT;
-const ARG_DICT_BOOL_KEY: i64 = ARG_BOOL;
-const ARG_DICT_STR_KEY: i64 = ARG_STR;
-const ARG_DICT_ANY_KEY: i64 = ARG_ANY;
-const ARG_DICT_NONE_KEY: i64 = ARG_NONE;
+const ARG_SCALAR_F32: i64 = 14;
+const ARG_SCALAR_U64: i64 = 15;
+const DICT_KEY_INT: i64 = 0;
+const DICT_KEY_U64: i64 = 1;
+const DICT_KEY_FLOAT: i64 = 2;
+const DICT_KEY_F32: i64 = 3;
+const DICT_KEY_BOOL: i64 = 4;
+const DICT_KEY_STR: i64 = 5;
+const DICT_KEY_ANY: i64 = 6;
+const DICT_KEY_NONE: i64 = 7;
+const COLLECTION_WIDTH_FLAG: i64 = 8;
 
 /// Result-fusion tag: how a call's Python return converts directly into the
 /// scalar the checker already knows it produces, instead of wrapping a
@@ -125,12 +130,40 @@ impl<'a> MirBuilder<'a> {
 
     fn py_dict_key_tag(ty: &Type) -> i64 {
         match ty {
-            t if Self::is_int_ty(t) => ARG_DICT_INT_KEY,
-            Type::Float | Type::F32 => ARG_DICT_FLOAT_KEY,
-            Type::Bool => ARG_DICT_BOOL_KEY,
-            Type::Str => ARG_DICT_STR_KEY,
-            Type::Null => ARG_DICT_NONE_KEY,
-            _ => ARG_DICT_ANY_KEY,
+            Type::U64 | Type::Usize => DICT_KEY_U64,
+            t if Self::is_int_ty(t) => DICT_KEY_INT,
+            Type::Float => DICT_KEY_FLOAT,
+            Type::F32 => DICT_KEY_F32,
+            Type::Bool => DICT_KEY_BOOL,
+            Type::Str => DICT_KEY_STR,
+            Type::Null => DICT_KEY_NONE,
+            _ => DICT_KEY_ANY,
+        }
+    }
+
+    fn py_collection_has_f32(ty: &Type) -> bool {
+        match ty {
+            Type::List(elem) | Type::Set(elem) => elem.as_ref() == &Type::F32,
+            Type::Dict(_, value) => value.as_ref() == &Type::F32,
+            _ => false,
+        }
+    }
+
+    fn py_collection_has_null(ty: &Type) -> bool {
+        match ty {
+            Type::List(elem) | Type::Set(elem) => elem.as_ref() == &Type::Null,
+            Type::Dict(_, value) => value.as_ref() == &Type::Null,
+            _ => false,
+        }
+    }
+
+    fn py_collection_has_u64(ty: &Type) -> bool {
+        match ty {
+            Type::List(elem) | Type::Set(elem) => {
+                matches!(elem.as_ref(), Type::U64 | Type::Usize)
+            }
+            Type::Dict(_, value) => matches!(value.as_ref(), Type::U64 | Type::Usize),
+            _ => false,
         }
     }
 
@@ -214,8 +247,10 @@ impl<'a> MirBuilder<'a> {
             return ARG_PYOBJECT;
         }
         match ty {
+            Type::U64 | Type::Usize => ARG_SCALAR_U64,
             t if Self::is_int_ty(t) => ARG_INT,
-            Type::Float | Type::F32 => ARG_FLOAT,
+            Type::Float => ARG_FLOAT,
+            Type::F32 => ARG_SCALAR_F32,
             Type::Str => ARG_STR,
             Type::Bool => ARG_BOOL,
             Type::Bytes => ARG_BYTES,
@@ -379,16 +414,44 @@ impl<'a> MirBuilder<'a> {
             };
             let coll_tag = Self::py_collection_tag(&arg_ty);
             // A dict needs its key kind even when the collection tag also
-            // carries the value kind. Keep that metadata in the otherwise
-            // unused argument tag slot; the runtime uses it for both initial
-            // conversion and typed writeback. Other collection slots do not
-            // need a separate encode tag.
-            let arg_tag = match &arg_ty {
-                Type::Dict(key, _) if coll_tag != 0 => Self::py_dict_key_tag(key),
-                _ if coll_tag != 0 => ARG_PYOBJECT,
-                _ => Self::py_arg_tag(&arg_ty),
+            // carries the value kind. The low three arg-tag bits hold that
+            // key kind; bit 3 marks a narrow f32 or u64 collection value.
+            // The runtime uses both for initial conversion and writeback.
+            let descriptor_preconvert =
+                matches!(&arg_ty, Type::List(_) | Type::Set(_) | Type::Dict(_, _))
+                    && coll_tag == 0
+                    && !Self::py_collection_has_null(&arg_ty);
+            let arg_tag = if descriptor_preconvert {
+                ARG_PYOBJECT
+            } else {
+                match &arg_ty {
+                    Type::Dict(key, _) if coll_tag != 0 => {
+                        Self::py_dict_key_tag(key)
+                            | if Self::py_collection_has_f32(&arg_ty)
+                                || Self::py_collection_has_u64(&arg_ty)
+                            {
+                                COLLECTION_WIDTH_FLAG
+                            } else {
+                                0
+                            }
+                    }
+                    Type::Dict(key, _) if Self::py_collection_has_null(&arg_ty) => {
+                        Self::py_dict_key_tag(key) | COLLECTION_WIDTH_FLAG
+                    }
+                    _ if coll_tag != 0
+                        && (Self::py_collection_has_f32(&arg_ty)
+                            || Self::py_collection_has_u64(&arg_ty)) =>
+                    {
+                        COLLECTION_WIDTH_FLAG
+                    }
+                    _ if coll_tag == 0 && Self::py_collection_has_null(&arg_ty) => {
+                        COLLECTION_WIDTH_FLAG
+                    }
+                    _ if coll_tag != 0 => ARG_PYOBJECT,
+                    _ => Self::py_arg_tag(&arg_ty),
+                }
             };
-            let py_op = if fast_path {
+            let py_op = if fast_path && !descriptor_preconvert {
                 op
             } else {
                 self.emit_to_py_arg(op, &arg_ty, span)

@@ -332,6 +332,18 @@ pub extern "C" fn olive_py_getitem(obj: PyObject, key: PyObject) -> PyObject {
     })
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_to_py_typed(val: i64, desc: i64) -> i64 {
+    check_python_loaded();
+    with_gil(|| unsafe {
+        let object = crate::python::python_coerce::to_py_typed_desc(val, desc);
+        if object.is_null() {
+            return 0;
+        }
+        olive_py_wrap_owned(object) as i64
+    })
+}
+
 /// Converts an Olive Any value into a Python object handle. Inverse of py_to_any_internal.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_to_pyobject(val: i64) -> i64 {

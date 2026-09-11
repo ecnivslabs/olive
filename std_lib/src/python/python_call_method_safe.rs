@@ -53,7 +53,12 @@ unsafe fn call_method_with_raw_args_safe(
                     PY_DEC_REF(*slot);
                 }
             }
-            sync_back(&pairs);
+            let sync_error = sync_back(&pairs).err();
+            if let Some(message) = sync_error {
+                return Err(crate::result::olive_result_err(crate::olive_str_internal(
+                    &message,
+                )));
+            }
             Ok(res)
         } else {
             let bound = if use_interned_names() {
