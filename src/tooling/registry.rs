@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -40,12 +41,47 @@ pub struct PodVersion {
     pub yanked: bool,
     #[serde(default)]
     pub olive_req: Option<String>,
+    /// Present only when this pod version declares `[native]`. Absent for
+    /// every pod published before this field existed, and for pods that
+    /// don't ship a native library at all, in which case the field is
+    /// omitted from the serialized line rather than written as `null` so
+    /// existing registry entries are untouched byte for byte.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<NativeSpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Dep {
     pub name: String,
     pub req: String,
+}
+
+/// A pod's native library, one prebuilt artifact per target it publishes for.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NativeSpec {
+    pub lib: String,
+    /// Keyed by target (see `tooling::target::SUPPORTED`). A `BTreeMap`
+    /// rather than a `HashMap` so the serialized registry line has a
+    /// deterministic key order and a stable, reviewable diff.
+    pub artifacts: BTreeMap<String, NativeArtifact>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NativeArtifact {
+    pub file: String,
+    pub url: String,
+    pub cksum: String,
+    /// MSVC import library, present only for `windows-*` targets: `link.exe`
+    /// cannot link directly against a `.dll`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implib: Option<NativeFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NativeFile {
+    pub file: String,
+    pub url: String,
+    pub cksum: String,
 }
 
 fn registry_url(name: &str) -> String {
@@ -181,6 +217,7 @@ mod tests {
             dl: format!("https://example.com/{name}/{vers}.pit.zst"),
             yanked,
             olive_req: None,
+            native: None,
         }
     }
 
@@ -385,6 +422,88 @@ mod tests {
         let pod: PodVersion = serde_json::from_str(json).unwrap();
         assert!(!pod.yanked);
         assert!(pod.olive_req.is_none());
+        assert!(pod.native.is_none());
+    }
+
+    #[test]
+    fn pod_version_without_native_serializes_identically_to_before_the_field_existed() {
+        let pod = make_version("test", "1.0.0", "cksum123", false);
+        let json = serde_json::to_string(&pod).unwrap();
+        assert!(
+            !json.contains("native"),
+            "a non-native pod's line must not gain a native key: {json}"
+        );
+    }
+
+    #[test]
+    fn pod_version_with_native_round_trips() {
+        let mut artifacts = BTreeMap::new();
+        artifacts.insert(
+            "linux-x86_64".to_string(),
+            NativeArtifact {
+                file: "libtokenizer-linux-x86_64.so".to_string(),
+                url: "https://example.com/libtokenizer-linux-x86_64.so".to_string(),
+                cksum: "abc".to_string(),
+                implib: None,
+            },
+        );
+        artifacts.insert(
+            "windows-x86_64".to_string(),
+            NativeArtifact {
+                file: "libtokenizer-windows-x86_64.dll".to_string(),
+                url: "https://example.com/libtokenizer-windows-x86_64.dll".to_string(),
+                cksum: "def".to_string(),
+                implib: Some(NativeFile {
+                    file: "libtokenizer-windows-x86_64.dll.lib".to_string(),
+                    url: "https://example.com/libtokenizer-windows-x86_64.dll.lib".to_string(),
+                    cksum: "ghi".to_string(),
+                }),
+            },
+        );
+        let mut pod = make_version("tokenizer", "0.3.0", "cksum", false);
+        pod.native = Some(NativeSpec {
+            lib: "tokenizer".to_string(),
+            artifacts,
+        });
+
+        let json = serde_json::to_string(&pod).unwrap();
+        let deser: PodVersion = serde_json::from_str(&json).unwrap();
+        let native = deser.native.unwrap();
+        assert_eq!(native.lib, "tokenizer");
+        assert_eq!(native.artifacts.len(), 2);
+        assert!(native.artifacts["windows-x86_64"].implib.is_some());
+        assert!(native.artifacts["linux-x86_64"].implib.is_none());
+    }
+
+    #[test]
+    fn native_spec_artifact_key_order_is_deterministic() {
+        let mut artifacts = BTreeMap::new();
+        for key in crate::tooling::target::SUPPORTED.iter().rev() {
+            artifacts.insert(
+                key.to_string(),
+                NativeArtifact {
+                    file: format!("libx-{key}.so"),
+                    url: format!("https://example.com/libx-{key}.so"),
+                    cksum: "c".to_string(),
+                    implib: None,
+                },
+            );
+        }
+        let spec = NativeSpec {
+            lib: "x".to_string(),
+            artifacts,
+        };
+        let json = serde_json::to_string(&spec).unwrap();
+        let mut sorted_keys: Vec<&str> = crate::tooling::target::SUPPORTED.to_vec();
+        sorted_keys.sort();
+        let positions: Vec<usize> = sorted_keys
+            .iter()
+            .map(|k| json.find(&format!("\"{k}\"")).unwrap())
+            .collect();
+        assert!(
+            positions.windows(2).all(|w| w[0] < w[1]),
+            "artifact keys must serialize in sorted order: {json}"
+        );
     }
 
     #[test]

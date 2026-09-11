@@ -1,4 +1,6 @@
-use crate::tooling::registry::PodVersion;
+use crate::tooling::registry::{NativeSpec, PodVersion};
+use crate::tooling::target;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -8,6 +10,35 @@ pub enum InstallError {
     Checksum(String),
     Extraction(String),
     Io(std::io::Error),
+    /// pit has no artifact-naming convention at all for the host platform
+    /// (not a supported os/arch combination).
+    UnsupportedHost {
+        pod: String,
+        vers: String,
+    },
+    /// The host is a target pit knows how to name, but this pod's registry
+    /// entry doesn't list an artifact for it.
+    NativeUnavailable {
+        pod: String,
+        vers: String,
+        host: String,
+        available: Vec<String>,
+    },
+    /// The registry's artifact hash for this target no longer matches what
+    /// `pit.lock` recorded.
+    LockMismatch {
+        pod: String,
+        vers: String,
+        target: String,
+        locked: String,
+        found: String,
+    },
+    /// `--offline` was requested and the native artifact isn't installed yet.
+    Offline {
+        pod: String,
+        vers: String,
+        target: String,
+    },
 }
 
 impl std::fmt::Display for InstallError {
@@ -17,6 +48,44 @@ impl std::fmt::Display for InstallError {
             InstallError::Checksum(msg) => write!(f, "checksum mismatch: {}", msg),
             InstallError::Extraction(msg) => write!(f, "extraction failed: {}", msg),
             InstallError::Io(e) => write!(f, "I/O error: {}", e),
+            InstallError::UnsupportedHost { pod, vers } => write!(
+                f,
+                "pod '{pod}@{vers}' requires a native library, but pit has no artifact \
+                 naming convention for this platform"
+            ),
+            InstallError::NativeUnavailable {
+                pod,
+                vers,
+                host,
+                available,
+            } => write!(
+                f,
+                "pod '{pod}@{vers}' provides no native library for this platform\n\
+                 \x20 host target: {host}\n\
+                 \x20 available:   {}\n\
+                 \x20 this pod cannot be used here until its author adds {host} to its release matrix",
+                available.join(", ")
+            ),
+            InstallError::LockMismatch {
+                pod,
+                vers,
+                target,
+                locked,
+                found,
+            } => write!(
+                f,
+                "native library for '{pod}@{vers}' does not match pit.lock\n\
+                 \x20 target:   {target}\n\
+                 \x20 expected: {locked}   (pit.lock)\n\
+                 \x20 found:    {found}   (registry)\n\
+                 \x20 the registry entry changed after this lockfile was written; run \
+                 `pit update {pod}` or restore pit.lock from version control"
+            ),
+            InstallError::Offline { pod, vers, target } => write!(
+                f,
+                "offline mode: native library for '{pod}@{vers}' ({target}) is not installed\n\
+                 \x20 run without --offline once to fetch it"
+            ),
         }
     }
 }
@@ -96,9 +165,191 @@ fn extract_pod_archive(compressed_data: &[u8], dest_dir: &Path) -> Result<(), In
     Ok(())
 }
 
-pub async fn install_pod_atomic(pod: &PodVersion, final_dir: PathBuf) -> Result<(), InstallError> {
-    if final_dir.exists() {
+/// Downloads `url`, verifying its blake3 hash against `expected_cksum` before
+/// returning the body. Shared by the pod archive download and the native
+/// artifact download so both go through one verified path.
+async fn download_and_verify(
+    client: &reqwest::Client,
+    url: &str,
+    expected_cksum: &str,
+) -> Result<Vec<u8>, InstallError> {
+    let mut resp = client
+        .get(url)
+        .header("User-Agent", "pit/0.1.0")
+        .send()
+        .await
+        .map_err(|e| InstallError::Download(e.to_string()))?;
+
+    if !resp.status().is_success() {
+        return Err(InstallError::Download(format!(
+            "HTTP {} for {url}",
+            resp.status()
+        )));
+    }
+
+    let mut hasher = blake3::Hasher::new();
+    let mut data = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| InstallError::Download(e.to_string()))?
+    {
+        hasher.update(&chunk);
+        data.extend_from_slice(&chunk);
+    }
+
+    let cksum = hasher.finalize().to_hex().to_string();
+    if cksum != expected_cksum {
+        return Err(InstallError::Checksum(format!(
+            "expected {expected_cksum}, got {cksum} for {url}"
+        )));
+    }
+    Ok(data)
+}
+
+/// Writes `data` into `dir/filename`, via a same-directory temp file and
+/// rename so a reader never observes a partially-written artifact. Mode 0644
+/// on Unix: a shared object needs to be readable, never executable.
+fn write_file_atomic(dir: &Path, filename: &str, data: &[u8]) -> Result<(), InstallError> {
+    fs::create_dir_all(dir)?;
+    let mut rng = rand::rng();
+    use rand::Rng;
+    let tmp = dir.join(format!(".tmp-{:x}", rng.next_u64()));
+    fs::write(&tmp, data)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o644))?;
+    }
+    fs::rename(&tmp, dir.join(filename))?;
+    Ok(())
+}
+
+/// Downloads this pod's native library (and MSVC import library, if any) for
+/// the host platform into `native_dir`, verifying against `locked` first when
+/// a lockfile entry is present.
+async fn fetch_native_into(
+    pod_name: &str,
+    pod_vers: &str,
+    spec: &NativeSpec,
+    native_dir: &Path,
+    locked: Option<&BTreeMap<String, String>>,
+    offline: bool,
+) -> Result<(), InstallError> {
+    let key = target::host().ok_or_else(|| InstallError::UnsupportedHost {
+        pod: pod_name.to_string(),
+        vers: pod_vers.to_string(),
+    })?;
+    let artifact = spec
+        .artifacts
+        .get(key)
+        .ok_or_else(|| InstallError::NativeUnavailable {
+            pod: pod_name.to_string(),
+            vers: pod_vers.to_string(),
+            host: key.to_string(),
+            available: spec.artifacts.keys().cloned().collect(),
+        })?;
+
+    if let Some(locked) = locked
+        && let Some(expected) = locked.get(key)
+        && *expected != artifact.cksum
+    {
+        return Err(InstallError::LockMismatch {
+            pod: pod_name.to_string(),
+            vers: pod_vers.to_string(),
+            target: key.to_string(),
+            locked: expected.clone(),
+            found: artifact.cksum.clone(),
+        });
+    }
+
+    if offline {
+        return Err(InstallError::Offline {
+            pod: pod_name.to_string(),
+            vers: pod_vers.to_string(),
+            target: key.to_string(),
+        });
+    }
+
+    let client = reqwest::Client::new();
+    let data = download_and_verify(&client, &artifact.url, &artifact.cksum).await?;
+    let local_name =
+        target::local_name(&spec.lib).ok_or_else(|| InstallError::UnsupportedHost {
+            pod: pod_name.to_string(),
+            vers: pod_vers.to_string(),
+        })?;
+    write_file_atomic(native_dir, &local_name, &data)?;
+
+    match (&artifact.implib, target::local_implib_name(&spec.lib)) {
+        (Some(implib), Some(local_implib)) => {
+            let implib_data = download_and_verify(&client, &implib.url, &implib.cksum).await?;
+            write_file_atomic(native_dir, &local_implib, &implib_data)?;
+        }
+        (None, Some(_)) if target::implib_asset_name(&spec.lib, key).is_some() => {
+            return Err(InstallError::Extraction(format!(
+                "pod '{pod_name}@{pod_vers}' ships a Windows DLL with no import library\n\
+                 \x20 the MSVC linker cannot link against a .dll directly; the pod must \
+                 publish an import library alongside its DLL for target '{key}'"
+            )));
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+/// Repairs an already-installed pod's native artifact: verifies the file on
+/// disk still matches the registry's hash, and re-downloads it if it is
+/// missing, truncated, or stale. A no-op for pods with no `[native]` table,
+/// which is every pod published before this feature existed.
+async fn ensure_native_artifact(
+    pod: &PodVersion,
+    final_dir: &Path,
+    locked: Option<&BTreeMap<String, String>>,
+    offline: bool,
+) -> Result<(), InstallError> {
+    let Some(spec) = &pod.native else {
         return Ok(());
+    };
+    let Some(key) = target::host() else {
+        return Err(InstallError::UnsupportedHost {
+            pod: pod.name.clone(),
+            vers: pod.vers.clone(),
+        });
+    };
+    let Some(artifact) = spec.artifacts.get(key) else {
+        return Err(InstallError::NativeUnavailable {
+            pod: pod.name.clone(),
+            vers: pod.vers.clone(),
+            host: key.to_string(),
+            available: spec.artifacts.keys().cloned().collect(),
+        });
+    };
+    let Some(local_name) = target::local_name(&spec.lib) else {
+        return Err(InstallError::UnsupportedHost {
+            pod: pod.name.clone(),
+            vers: pod.vers.clone(),
+        });
+    };
+
+    let native_dir = final_dir.join("native");
+    let up_to_date = fs::read(native_dir.join(&local_name))
+        .is_ok_and(|data| blake3::hash(&data).to_hex().to_string() == artifact.cksum);
+    if up_to_date {
+        return Ok(());
+    }
+
+    fetch_native_into(&pod.name, &pod.vers, spec, &native_dir, locked, offline).await
+}
+
+pub async fn install_pod_atomic(
+    pod: &PodVersion,
+    final_dir: PathBuf,
+    locked: Option<&BTreeMap<String, String>>,
+    offline: bool,
+) -> Result<(), InstallError> {
+    if final_dir.exists() {
+        return ensure_native_artifact(pod, &final_dir, locked, offline).await;
     }
 
     println!("\x1b[1;32m  Downloading\x1b[0m {}@{}", pod.name, pod.vers);
@@ -110,46 +361,34 @@ pub async fn install_pod_atomic(pod: &PodVersion, final_dir: PathBuf) -> Result<
     fs::create_dir_all(&tmp_dir)?;
 
     let client = reqwest::Client::new();
-    let mut resp = client
-        .get(&pod.dl)
-        .header("User-Agent", "pit/0.1.0")
-        .send()
-        .await
-        .map_err(|e| InstallError::Download(e.to_string()))?;
-
-    if !resp.status().is_success() {
-        let _ = fs::remove_dir_all(&tmp_dir);
-        return Err(InstallError::Download(format!("HTTP {}", resp.status())));
-    }
-
-    let mut hasher = blake3::Hasher::new();
-    let mut compressed_data = Vec::new();
-
-    while let Some(chunk) = resp
-        .chunk()
-        .await
-        .map_err(|e| InstallError::Download(e.to_string()))?
-    {
-        hasher.update(&chunk);
-        compressed_data.extend_from_slice(&chunk);
-    }
-
-    let cksum = hasher.finalize().to_hex().to_string();
-    if cksum != pod.cksum {
-        let _ = fs::remove_dir_all(&tmp_dir);
-        return Err(InstallError::Checksum(format!(
-            "expected {}, got {}",
-            pod.cksum, cksum
-        )));
-    }
+    let compressed_data = match download_and_verify(&client, &pod.dl, &pod.cksum).await {
+        Ok(data) => data,
+        Err(e) => {
+            let _ = fs::remove_dir_all(&tmp_dir);
+            return Err(e);
+        }
+    };
 
     let tmp_dir_clone = tmp_dir.clone();
+    let extraction: Result<(), InstallError> =
+        tokio::task::spawn_blocking(move || extract_pod_archive(&compressed_data, &tmp_dir_clone))
+            .await
+            .map_err(|e| InstallError::Extraction(format!("task panicked: {}", e)))
+            .and_then(|r| r);
+    if let Err(e) = extraction {
+        let _ = fs::remove_dir_all(&tmp_dir);
+        return Err(e);
+    }
 
-    tokio::task::spawn_blocking(move || -> Result<(), InstallError> {
-        extract_pod_archive(&compressed_data, &tmp_dir_clone)
-    })
-    .await
-    .map_err(|e| InstallError::Extraction(format!("task panicked: {}", e)))??;
+    if let Some(spec) = &pod.native {
+        let native_dir = tmp_dir.join("native");
+        if let Err(e) =
+            fetch_native_into(&pod.name, &pod.vers, spec, &native_dir, locked, offline).await
+        {
+            let _ = fs::remove_dir_all(&tmp_dir);
+            return Err(e);
+        }
+    }
 
     if let Some(parent) = final_dir.parent() {
         fs::create_dir_all(parent)?;
@@ -227,11 +466,182 @@ mod tests {
             dl: String::new(),
             yanked: false,
             olive_req: None,
+            native: None,
         };
 
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(install_pod_atomic(&pod, dir.clone()));
+        let result = rt.block_on(install_pod_atomic(&pod, dir.clone(), None, false));
         assert!(result.is_ok());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn native_pod(name: &str, vers: &str, spec: NativeSpec) -> PodVersion {
+        PodVersion {
+            name: name.to_string(),
+            vers: vers.to_string(),
+            deps: vec![],
+            cksum: String::new(),
+            dl: String::new(),
+            yanked: false,
+            olive_req: None,
+            native: Some(spec),
+        }
+    }
+
+    fn fake_artifact(cksum: &str) -> crate::tooling::registry::NativeArtifact {
+        crate::tooling::registry::NativeArtifact {
+            file: "libfake.so".to_string(),
+            url: "https://example.invalid/libfake.so".to_string(),
+            cksum: cksum.to_string(),
+            implib: None,
+        }
+    }
+
+    #[test]
+    fn ensure_native_artifact_is_a_noop_for_pods_without_native() {
+        let dir = std::env::temp_dir().join("olive_native_test_noop");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let pod = PodVersion {
+            name: "term".to_string(),
+            vers: "0.1.5".to_string(),
+            deps: vec![],
+            cksum: String::new(),
+            dl: String::new(),
+            yanked: false,
+            olive_req: None,
+            native: None,
+        };
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(ensure_native_artifact(&pod, &dir, None, false));
+        assert!(result.is_ok());
+        assert!(!dir.join("native").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn install_pod_atomic_errors_when_host_target_has_no_artifact() {
+        let dir = std::env::temp_dir().join("olive_native_test_unavailable_dir_missing");
+        let _ = fs::remove_dir_all(&dir);
+
+        let mut artifacts = BTreeMap::new();
+        artifacts.insert("nonexistent-target".to_string(), fake_artifact("abc"));
+        let pod = native_pod(
+            "tokenizer",
+            "0.3.0",
+            NativeSpec {
+                lib: "tokenizer".to_string(),
+                artifacts,
+            },
+        );
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(ensure_native_artifact(&pod, &dir, None, false));
+        match result {
+            Err(InstallError::NativeUnavailable { available, .. }) => {
+                assert_eq!(available, vec!["nonexistent-target".to_string()]);
+            }
+            other => panic!("expected NativeUnavailable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ensure_native_artifact_reports_lock_mismatch_before_downloading() {
+        let Some(host) = target::host() else {
+            return;
+        };
+        let dir = std::env::temp_dir().join("olive_native_test_lock_mismatch");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let mut artifacts = BTreeMap::new();
+        artifacts.insert(host.to_string(), fake_artifact("registry-hash"));
+        let pod = native_pod(
+            "tokenizer",
+            "0.3.0",
+            NativeSpec {
+                lib: "tokenizer".to_string(),
+                artifacts,
+            },
+        );
+
+        let mut locked = BTreeMap::new();
+        locked.insert(host.to_string(), "locked-hash".to_string());
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(ensure_native_artifact(&pod, &dir, Some(&locked), false));
+        match result {
+            Err(InstallError::LockMismatch {
+                locked: l, found, ..
+            }) => {
+                assert_eq!(l, "locked-hash");
+                assert_eq!(found, "registry-hash");
+            }
+            other => panic!("expected LockMismatch, got {other:?}"),
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_native_artifact_reports_offline_before_downloading() {
+        let Some(host) = target::host() else {
+            return;
+        };
+        let dir = std::env::temp_dir().join("olive_native_test_offline");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let mut artifacts = BTreeMap::new();
+        artifacts.insert(host.to_string(), fake_artifact("abc"));
+        let pod = native_pod(
+            "tokenizer",
+            "0.3.0",
+            NativeSpec {
+                lib: "tokenizer".to_string(),
+                artifacts,
+            },
+        );
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(ensure_native_artifact(&pod, &dir, None, true));
+        assert!(matches!(result, Err(InstallError::Offline { .. })));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_native_artifact_skips_download_when_installed_hash_matches() {
+        let Some(host) = target::host() else {
+            return;
+        };
+        let dir = std::env::temp_dir().join("olive_native_test_up_to_date");
+        let _ = fs::remove_dir_all(&dir);
+        let native_dir = dir.join("native");
+        fs::create_dir_all(&native_dir).unwrap();
+
+        let data = b"pretend shared object contents";
+        let cksum = blake3::hash(data).to_hex().to_string();
+        let local_name = target::local_name("fake").unwrap();
+        fs::write(native_dir.join(&local_name), data).unwrap();
+
+        let mut artifacts = BTreeMap::new();
+        artifacts.insert(host.to_string(), fake_artifact(&cksum));
+        let pod = native_pod(
+            "fake",
+            "1.0.0",
+            NativeSpec {
+                lib: "fake".to_string(),
+                artifacts,
+            },
+        );
+
+        // offline: true would error if a download were attempted, so a
+        // successful Ok(()) here proves the up-to-date check short-circuits
+        // before ever reaching fetch_native_into.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(ensure_native_artifact(&pod, &dir, None, true));
+        assert!(result.is_ok(), "{result:?}");
         let _ = fs::remove_dir_all(&dir);
     }
 
