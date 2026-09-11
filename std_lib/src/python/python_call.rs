@@ -97,7 +97,7 @@ pub(crate) unsafe fn call_with_raw_args(
                     handle_py_error();
                 }
                 buf[i + 1] = py_v;
-                if coll_tag != TAG_NONE {
+                if arg_is_collection(coll_tag, arg_tag) {
                     *slot = 0;
                 }
             }
@@ -126,7 +126,7 @@ pub(crate) unsafe fn call_with_raw_args(
                     handle_py_error();
                 }
                 PY_TUPLE_SET_ITEM(py_args, i as isize, py_v);
-                if coll_tag != TAG_NONE {
+                if arg_is_collection(coll_tag, arg_tag) {
                     *slot = 0;
                 }
             }
@@ -435,7 +435,7 @@ pub(crate) unsafe fn call_kw_dict(
                     py_v,
                 );
                 PY_DEC_REF(py_v);
-                if tag != TAG_NONE {
+                if arg_is_collection(tag, kw_arg_tag) {
                     *sv.ptr.add(i + 1) = 0;
                 }
             }

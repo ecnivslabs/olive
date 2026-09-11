@@ -187,6 +187,11 @@ pub(crate) const DICT_KEY_NONE: i64 = 7;
 /// the numeric value of `ARG_FLOAT_LIST` because the collection tag context
 /// selects the interpretation.
 pub(crate) const COLLECTION_WIDTH_FLAG: i64 = 8;
+
+#[inline]
+pub(crate) fn arg_is_collection(coll_tag: i64, arg_tag: i64) -> bool {
+    coll_tag != TAG_NONE || arg_tag & COLLECTION_WIDTH_FLAG != 0
+}
 /// A typed list crossing (`[float]`, `[int]`, etc.) in the export
 /// direction: the runtime converts the entire collection as one unit
 /// instead of treating the handle as an opaque scalar. Tags 8–12 extend
@@ -830,6 +835,12 @@ unsafe fn sync_dict_entries(
         clear_dict_pair(pair);
 
         let mut raw: Vec<(DecodedDictKey, i64)> = Vec::new();
+        let release_raw = |raw: &mut Vec<(DecodedDictKey, i64)>| {
+            for (key, value) in raw.drain(..) {
+                free_decoded_dict_key(key);
+                free_dict_value(value, pair.tag);
+            }
+        };
         while let Some((key_obj, val_obj)) = py_entries.next() {
             let key = match decode_dict_key(key_obj, pair.key_tag) {
                 Ok(key) => key,
@@ -840,6 +851,7 @@ unsafe fn sync_dict_entries(
                         PY_DEC_REF(key_obj);
                         PY_DEC_REF(val_obj);
                     }
+                    release_raw(&mut raw);
                     return Err(writeback_key_type_message(
                         "dict key",
                         pair.key_tag,
@@ -857,6 +869,7 @@ unsafe fn sync_dict_entries(
                         PY_DEC_REF(key_obj);
                         PY_DEC_REF(val_obj);
                     }
+                    release_raw(&mut raw);
                     return Err(message);
                 }
             };

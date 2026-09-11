@@ -44,7 +44,7 @@ pub(crate) unsafe fn convert_segment_unsafe(
             let arg_tag = arg_tag_at(arg_tags, i);
             let val = *sv_ptr.add(i);
             let py_v = convert_arg_tagged(val, coll_tag, arg_tag, pairs);
-            if coll_tag != TAG_NONE {
+            if arg_is_collection(coll_tag, arg_tag) {
                 *sv_ptr.add(i) = 0;
             }
             if py_v.is_null() || !PY_ERR_OCCURRED().is_null() {
@@ -74,7 +74,7 @@ pub(crate) unsafe fn convert_segment_safe(
             let arg_tag = arg_tag_at(arg_tags, i);
             let val = *sv_ptr.add(i);
             let py_v = convert_arg_tagged(val, coll_tag, arg_tag, pairs);
-            if coll_tag != TAG_NONE {
+            if arg_is_collection(coll_tag, arg_tag) {
                 *sv_ptr.add(i) = 0;
             }
             if py_v.is_null() || !PY_ERR_OCCURRED().is_null() {

@@ -89,9 +89,15 @@ pub extern "C" fn olive_py_call_safe(func: PyObject, args_list: i64, coll_tags: 
             PY_DEC_REF(py_args);
         }
         if let Some(message) = call_error {
+            if !res.is_null() {
+                PY_DEC_REF(res);
+            }
             return crate::result::olive_result_err(crate::olive_str_internal(&message));
         }
         if let Some(message) = sync_error {
+            if !res.is_null() {
+                PY_DEC_REF(res);
+            }
             return crate::result::olive_result_err(crate::olive_str_internal(&message));
         }
 
@@ -170,7 +176,7 @@ pub(crate) unsafe fn call_kw_dict_safe(
                 let py_v = convert_arg_tagged(v, tag, arg_tag, &mut pairs);
                 // See `olive_py_call_safe`: zero a tagged, aliased slot
                 // before any early return, ahead of this list's own drop.
-                if tag != TAG_NONE {
+                if arg_is_collection(tag, arg_tag) {
                     *sv.ptr.add(i) = 0;
                 }
                 if py_v.is_null() || !PY_ERR_OCCURRED().is_null() {
@@ -197,7 +203,7 @@ pub(crate) unsafe fn call_kw_dict_safe(
                 let kw_arg_tag = arg_tag_at(kw_arg_tags, kw_i);
                 let val = *sv.ptr.add(i + 1);
                 let py_v = convert_arg_tagged(val, tag, kw_arg_tag, &mut pairs);
-                if tag != TAG_NONE {
+                if arg_is_collection(tag, kw_arg_tag) {
                     *sv.ptr.add(i + 1) = 0;
                 }
                 if py_v.is_null() || !PY_ERR_OCCURRED().is_null() {
@@ -233,9 +239,15 @@ pub(crate) unsafe fn call_kw_dict_safe(
             PY_DEC_REF(py_kwargs);
         }
         if let Some(message) = call_error {
+            if !res.is_null() {
+                PY_DEC_REF(res);
+            }
             return crate::result::olive_result_err(crate::olive_str_internal(&message));
         }
         if let Some(message) = sync_error {
+            if !res.is_null() {
+                PY_DEC_REF(res);
+            }
             return crate::result::olive_result_err(crate::olive_str_internal(&message));
         }
 
@@ -281,7 +293,7 @@ pub(crate) unsafe fn call_with_raw_args_safe(
                 let py_v = convert_arg_tagged(*slot, coll_tag, arg_tag, &mut pairs);
                 // See `olive_py_call_safe`: zero a tagged, aliased slot
                 // before any early return, ahead of this list's own drop.
-                if coll_tag != TAG_NONE {
+                if arg_is_collection(coll_tag, arg_tag) {
                     *slot = 0;
                 }
                 if py_v.is_null() || !PY_ERR_OCCURRED().is_null() {
@@ -323,7 +335,7 @@ pub(crate) unsafe fn call_with_raw_args_safe(
                 // any early return, so this list's own drop -- which frees
                 // every live-looking `Any` element -- doesn't also free the
                 // caller's copy out from under it.
-                if coll_tag != TAG_NONE {
+                if arg_is_collection(coll_tag, arg_tag) {
                     *slot = 0;
                 }
                 if py_v.is_null() || !PY_ERR_OCCURRED().is_null() {
@@ -349,6 +361,9 @@ pub(crate) unsafe fn call_with_raw_args_safe(
             )));
         }
         if let Some(message) = sync_error {
+            if !res.is_null() {
+                PY_DEC_REF(res);
+            }
             return Err(crate::result::olive_result_err(crate::olive_str_internal(
                 &message,
             )));

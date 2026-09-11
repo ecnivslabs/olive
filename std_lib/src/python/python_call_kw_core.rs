@@ -108,9 +108,15 @@ pub(crate) unsafe fn call_kw_v_core_safe(
         let call_error = crate::python::python_safe::take_pending_error_message();
         let sync_error = sync_back(&pairs).err();
         if let Some(message) = call_error {
+            if !res.is_null() {
+                PY_DEC_REF(res);
+            }
             return crate::result::olive_result_err(crate::olive_str_internal(&message));
         }
         if let Some(message) = sync_error {
+            if !res.is_null() {
+                PY_DEC_REF(res);
+            }
             return crate::result::olive_result_err(crate::olive_str_internal(&message));
         }
         finish_call_safe(Ok(res), RET_HANDLE)
@@ -220,9 +226,15 @@ pub(crate) unsafe fn call_kw_v_method_core_safe(
         let call_error = crate::python::python_safe::take_pending_error_message();
         let sync_error = sync_back(&pairs).err();
         if let Some(message) = call_error {
+            if !res.is_null() {
+                PY_DEC_REF(res);
+            }
             return crate::result::olive_result_err(crate::olive_str_internal(&message));
         }
         if let Some(message) = sync_error {
+            if !res.is_null() {
+                PY_DEC_REF(res);
+            }
             return crate::result::olive_result_err(crate::olive_str_internal(&message));
         }
         finish_call_safe(Ok(res), RET_HANDLE)

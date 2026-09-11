@@ -145,6 +145,26 @@ pub(crate) unsafe fn raw_py_to_int(raw: PyObject) -> i64 {
     }
 }
 
+pub(crate) unsafe fn raw_py_to_u64(raw: PyObject) -> u64 {
+    unsafe {
+        if python_coerce::raw_ob_type(raw) == PY_LONG_TYPE {
+            return py_u64_from_python(raw).unwrap_or_else(|| {
+                crate::panic::abort_py_coerce("cannot convert this Python value to u64")
+            });
+        }
+        let int_obj = PY_NUMBER_LONG(raw);
+        if int_obj.is_null() {
+            PY_ERR_CLEAR();
+            crate::panic::abort_py_coerce("cannot convert this Python value to u64");
+        }
+        let result = py_u64_from_python(int_obj);
+        PY_DEC_REF(int_obj);
+        result.unwrap_or_else(|| {
+            crate::panic::abort_py_coerce("cannot convert this Python value to u64")
+        })
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_py_to_int(obj: PyObject) -> i64 {
     check_python_loaded();

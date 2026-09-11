@@ -194,6 +194,44 @@ main()
     );
 }
 
+#[test]
+fn f32_param_and_result_callback() {
+    assert_identical_on_both_pipelines(
+        "f32_callback",
+        r#"import py "cbhelper" as h
+
+fn increment(x: f32) -> f32:
+    return x + 1.0
+
+fn main():
+    print(h.apply(increment, 2.5))
+
+main()
+"#,
+        "3.5\n",
+    );
+}
+
+#[test]
+fn u64_param_and_result_callback() {
+    assert_identical_on_both_pipelines(
+        "u64_callback",
+        r#"import py "cbhelper" as h
+
+fn increment(x: u64) -> u64:
+    return x + 1
+
+fn main():
+    let one: u64 = 1
+    let high: u64 = one << 63
+    print(h.apply(increment, high))
+
+main()
+"#,
+        "9223372036854775809\n",
+    );
+}
+
 /// Called at scale (1e5 iterations, entirely Python-driven via `map`) --
 /// the same shape the `py_callback` benchmark measures, checked here for
 /// correctness rather than speed.

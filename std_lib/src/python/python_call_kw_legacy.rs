@@ -25,7 +25,8 @@ pub(crate) unsafe fn legacy_call_kw(
     kw_arg_tags: i64,
 ) -> PyObject {
     unsafe {
-        let interleaved = build_interleaved_kwargs(kwnames_key, kwvals_list, kw_coll_tags);
+        let interleaved =
+            build_interleaved_kwargs(kwnames_key, kwvals_list, kw_coll_tags, kw_arg_tags);
         let res = crate::python::python_call::call_kw_dict(
             unwrapped_func,
             args_list,
@@ -35,9 +36,7 @@ pub(crate) unsafe fn legacy_call_kw(
             kw_coll_tags,
             kw_arg_tags,
         );
-        if interleaved != 0 {
-            crate::olive_free_list(interleaved);
-        }
+        free_interleaved_kwargs(interleaved);
         res
     }
 }
@@ -54,7 +53,8 @@ pub(crate) unsafe fn legacy_call_kw_safe(
     kw_arg_tags: i64,
 ) -> i64 {
     unsafe {
-        let interleaved = build_interleaved_kwargs(kwnames_key, kwvals_list, kw_coll_tags);
+        let interleaved =
+            build_interleaved_kwargs(kwnames_key, kwvals_list, kw_coll_tags, kw_arg_tags);
         let res = crate::python::python_safe::call_kw_dict_safe(
             unwrapped_func,
             args_list,
@@ -64,9 +64,7 @@ pub(crate) unsafe fn legacy_call_kw_safe(
             kw_coll_tags,
             kw_arg_tags,
         );
-        if interleaved != 0 {
-            crate::olive_free_list(interleaved);
-        }
+        free_interleaved_kwargs(interleaved);
         res
     }
 }
@@ -162,12 +160,34 @@ pub(crate) unsafe fn legacy_call_method_kw_safe(
     }
 }
 
+unsafe fn free_interleaved_kwargs(list: i64) {
+    if list == 0 {
+        return;
+    }
+    unsafe {
+        let sv = &mut *(list as *mut crate::StableVec);
+        for i in 0..sv.len {
+            let value = *sv.ptr.add(i);
+            if i % 2 == 0 {
+                crate::string_slab::str_free(value);
+            }
+            *sv.ptr.add(i) = 0;
+        }
+        crate::olive_free_list(list);
+    }
+}
+
 /// Rebuilds the interleaved `[name, value, name, value, ...]` `StableVec`
 /// the pre-R15 dict-building path expects, from the packed name string and
 /// the values-only list this phase's fast path uses instead. Only reached
 /// on the fallback lane, so paying one extra list allocation here doesn't
 /// touch the fast path's cost at all.
-unsafe fn build_interleaved_kwargs(kwnames_key: i64, kwvals_list: i64, kw_coll_tags: i64) -> i64 {
+unsafe fn build_interleaved_kwargs(
+    kwnames_key: i64,
+    kwvals_list: i64,
+    kw_coll_tags: i64,
+    kw_arg_tags: i64,
+) -> i64 {
     unsafe {
         let (kw_ptr, kw_len) = stable_vec(kwvals_list);
         if kw_len == 0 {
@@ -183,7 +203,7 @@ unsafe fn build_interleaved_kwargs(kwnames_key: i64, kwvals_list: i64, kw_coll_t
             let name_ptr = crate::olive_str_internal(names.get(i).copied().unwrap_or(""));
             *sv.ptr.add(i * 2) = name_ptr;
             *sv.ptr.add(i * 2 + 1) = *kw_ptr.add(i);
-            if tag_at(kw_coll_tags, i) != TAG_NONE {
+            if arg_is_collection(tag_at(kw_coll_tags, i), arg_tag_at(kw_arg_tags, i)) {
                 *kw_ptr.add(i) = 0;
             }
         }

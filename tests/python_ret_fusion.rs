@@ -71,6 +71,9 @@ class Widget:
 
 def make_widget():
     return Widget()
+
+def high_u64():
+    return 9223372036854775808
 "#;
 
 fn write_case(src: &str) -> (PathBuf, PathBuf) {
@@ -170,6 +173,21 @@ fn main():
 main()
 "#,
         "49\n",
+    );
+}
+
+#[test]
+fn stub_typed_u64_result_fuses_without_signed_overflow() {
+    assert_identical_on_both_pipelines(
+        r#"import py "rethelper" as h:
+    fn high_u64() -> u64
+
+fn main():
+    print(h.high_u64())
+
+main()
+"#,
+        "9223372036854775808\n",
     );
 }
 

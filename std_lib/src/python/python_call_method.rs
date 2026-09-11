@@ -37,7 +37,7 @@ pub(crate) unsafe fn call_method_with_raw_args(
                         handle_py_error();
                     }
                     buf[i + 2] = py_v;
-                    if coll_tag != TAG_NONE {
+                    if arg_is_collection(coll_tag, arg_tag) {
                         *slot = 0;
                     }
                 }

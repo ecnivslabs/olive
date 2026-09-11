@@ -8,7 +8,9 @@
 //! never use more than the low 16 bits of that word for real argument tags
 //! (4 args, 4 bits each), leaving bits 60-63 free.
 
-use crate::python::python_coerce_ffi::{raw_py_to_float, raw_py_to_int, raw_py_to_str};
+use crate::python::python_coerce_ffi::{
+    raw_py_to_float, raw_py_to_int, raw_py_to_str, raw_py_to_u64,
+};
 use crate::python::*;
 
 /// Keep the handle: wrap `res` exactly as every pre-R10 call did. The
@@ -24,6 +26,7 @@ pub(crate) const RET_ANY: i64 = 5;
 /// The result is never read (a `None`-typed stub, or a discarded
 /// statement-position call): decref immediately, hand back nothing.
 pub(crate) const RET_NONE: i64 = 6;
+pub(crate) const RET_U64: i64 = 7;
 
 pub(crate) fn ret_tag_of(tags: i64) -> i64 {
     ((tags as u64) >> 60) as i64
@@ -40,6 +43,7 @@ pub(crate) unsafe fn finish_ret(res: PyObject, ret_tag: i64) -> i64 {
     unsafe {
         let out = match ret_tag {
             RET_INT | RET_BOOL => raw_py_to_int(res),
+            RET_U64 => raw_py_to_u64(res) as i64,
             RET_FLOAT => raw_py_to_float(res).to_bits() as i64,
             RET_STR => raw_py_to_str(res),
             RET_ANY => py_to_any_internal(res),

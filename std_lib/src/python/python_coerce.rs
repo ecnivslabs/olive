@@ -844,6 +844,7 @@ pub unsafe fn olive_py_to_dict_internal(obj: PyObject, boxed: bool) -> i64 {
                         py_to_olive_internal(val_obj)
                     };
                     crate::olive_obj_set(olive_obj, key_ptr, olive_val);
+                    crate::string_slab::str_free(key_ptr);
                 }
             }
         }

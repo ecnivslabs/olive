@@ -29,7 +29,7 @@ unsafe fn call_method_with_raw_args_safe(
                 let coll_tag = tag_at(coll_tags, i);
                 let arg_tag = arg_tag_at(arg_tags, i);
                 let py_v = convert_arg_tagged(*slot, coll_tag, arg_tag, &mut pairs);
-                if coll_tag != TAG_NONE {
+                if arg_is_collection(coll_tag, arg_tag) {
                     *slot = 0;
                 }
                 if py_v.is_null() || !PY_ERR_OCCURRED().is_null() {
@@ -53,8 +53,20 @@ unsafe fn call_method_with_raw_args_safe(
                     PY_DEC_REF(*slot);
                 }
             }
+            let call_error = crate::python::python_safe::take_pending_error_message();
             let sync_error = sync_back(&pairs).err();
+            if let Some(message) = call_error {
+                if !res.is_null() {
+                    PY_DEC_REF(res);
+                }
+                return Err(crate::result::olive_result_err(crate::olive_str_internal(
+                    &message,
+                )));
+            }
             if let Some(message) = sync_error {
+                if !res.is_null() {
+                    PY_DEC_REF(res);
+                }
                 return Err(crate::result::olive_result_err(crate::olive_str_internal(
                     &message,
                 )));

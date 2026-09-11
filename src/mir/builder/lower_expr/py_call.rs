@@ -47,6 +47,7 @@ const RET_STR: i64 = 3;
 const RET_BOOL: i64 = 4;
 const RET_ANY: i64 = 5;
 const RET_NONE: i64 = 6;
+const RET_U64: i64 = 7;
 
 /// Which family of py-call entry point a call site wants: `Result`-returning
 /// (inside a `try`-propagating expression) or the plain form that aborts on
@@ -267,6 +268,7 @@ impl<'a> MirBuilder<'a> {
     /// (`lower_py_call_discard` forces the declared type to `Null` for that).
     pub(super) fn py_ret_tag(ty: &Type) -> (i64, Type) {
         match ty {
+            Type::U64 | Type::Usize => (RET_U64, ty.clone()),
             t if Self::is_int_ty(t) => (RET_INT, t.clone()),
             Type::Float | Type::F32 => (RET_FLOAT, ty.clone()),
             Type::Str => (RET_STR, Type::Str),
@@ -288,8 +290,10 @@ impl<'a> MirBuilder<'a> {
             return ARG_PYOBJECT;
         }
         match ty {
+            Type::U64 | Type::Usize => ARG_SCALAR_U64,
             t if Self::is_int_ty(t) => ARG_INT,
-            Type::Float | Type::F32 => ARG_FLOAT,
+            Type::Float => ARG_FLOAT,
+            Type::F32 => ARG_SCALAR_F32,
             Type::Str => ARG_STR,
             Type::Bool => ARG_BOOL,
             _ => unreachable!("py_callable_tag: `{ty}` should have been rejected by E0603"),

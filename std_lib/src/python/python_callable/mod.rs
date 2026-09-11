@@ -18,9 +18,11 @@
 
 mod dispatch;
 
+use crate::python::python_coerce_ffi::raw_py_to_u64;
 use crate::python::python_writeback::{
     ARG_ANY, ARG_ANY_LIST, ARG_BOOL, ARG_BOOL_LIST, ARG_BYTES, ARG_FLOAT, ARG_FLOAT_LIST, ARG_INT,
-    ARG_INT_LIST, ARG_NONE, ARG_PYOBJECT, ARG_STR, ARG_STR_LIST, decode_scalar_arg,
+    ARG_INT_LIST, ARG_NONE, ARG_PYOBJECT, ARG_SCALAR_F32, ARG_SCALAR_U64, ARG_STR, ARG_STR_LIST,
+    decode_scalar_arg,
 };
 use crate::python::*;
 use std::os::raw::{c_char, c_void};
@@ -111,6 +113,8 @@ unsafe fn decode_py_arg(obj: PyObject, tag: i64) -> i64 {
                 }
             }
             ARG_FLOAT => raw_py_to_float(obj).to_bits() as i64,
+            ARG_SCALAR_F32 => (raw_py_to_float(obj) as f32).to_bits() as i64,
+            ARG_SCALAR_U64 => raw_py_to_u64(obj) as i64,
             ARG_STR => {
                 if raw_ob_type(obj) == PY_UNICODE_TYPE {
                     py_str_to_olive(obj)
@@ -177,23 +181,30 @@ unsafe fn run_trampoline(
 
         let mut args = [0i64; 4];
         let mut param_tags = [0i64; 4];
-        let mut float_mask: u8 = 0;
+        let mut arg_kinds = [0u8; 4];
         for (i, slot) in args.iter_mut().enumerate().take(arity as usize) {
             let tag = param_tag_at(tags, i as i64);
             param_tags[i] = tag;
             *slot = decode_py_arg(get_arg(i), tag);
-            if tag == ARG_FLOAT {
-                float_mask |= 1 << i;
-            }
+            arg_kinds[i] = match tag {
+                ARG_FLOAT => 1,
+                ARG_SCALAR_F32 => 2,
+                _ => 0,
+            };
         }
 
         let ret_tag = ret_tag_of(tags);
+        let ret_kind = match ret_tag {
+            ARG_FLOAT => 1,
+            ARG_SCALAR_F32 => 2,
+            _ => 0,
+        };
         let raw_result = dispatch::invoke_thunk(
             descriptor.thunk_ptr,
             descriptor.record_ptr,
             &args[..arity as usize],
-            float_mask,
-            ret_tag == ARG_FLOAT,
+            arg_kinds,
+            ret_kind,
         );
 
         let py_result = decode_scalar_arg(raw_result, ret_tag);

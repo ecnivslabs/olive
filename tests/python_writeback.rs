@@ -134,6 +134,29 @@ def add_int_to_set(s, v):
 def print_set(s):
     print(sorted(s))
 
+probe_deleted = False
+
+class Probe:
+    def __del__(self):
+        global probe_deleted
+        probe_deleted = True
+
+def make_probe():
+    return Probe()
+
+def consume_probe(x):
+    return 1
+
+def bad_probe(xs):
+    xs[0] = object()
+    return Probe()
+
+def probe_was_deleted():
+    return probe_deleted
+
+def consume5(a, b, c, d, xs):
+    return xs
+
 class MutatingKey:
     def __str__(self):
         self.d.clear()
@@ -710,6 +733,28 @@ main()
 }
 
 #[test]
+fn safe_failed_writeback_releases_python_result() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn run(xs: [int]) -> PyObject | Error:
+    return try h.bad_probe(xs)
+
+fn main():
+    match run([1]):
+        Error(_):
+            print("caught")
+        _:
+            print("bad")
+    print(h.probe_was_deleted())
+
+main()
+"#,
+        "caught\nTrue\n",
+    );
+}
+
+#[test]
 fn safe_writeback_rejects_custom_dict_key_without_aborting() {
     assert_both_succeed(
         r#"import py "wbhelper" as h
@@ -783,6 +828,22 @@ fn main():
 main()
 "#,
         "caught\n",
+    );
+}
+
+#[test]
+fn list_based_none_collection_keeps_its_owner() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let xs: [None] = [None]
+    h.consume5(0, 0, 0, 0, xs)
+    print(xs)
+
+main()
+"#,
+        "[None]\n",
     );
 }
 

@@ -45,6 +45,22 @@ def add2(a, b):
 def zero_args():
     return 99
 
+probe_deleted = False
+
+class Probe:
+    def __del__(self):
+        global probe_deleted
+        probe_deleted = True
+
+def make_probe():
+    return Probe()
+
+def consume_probe(*, x):
+    return 1
+
+def probe_was_deleted():
+    return probe_deleted
+
 def kw_update(*, d):
     d[2] = 9
 
@@ -204,6 +220,22 @@ fn main():
 main()
 "#,
         "int\n123\n",
+    );
+}
+
+#[test]
+fn borrowed_keyword_pyobject_survives_fallback_cleanup() {
+    assert_identical_on_all_four_lanes(
+        r#"import py "taghelper" as h
+
+fn main():
+    let p: PyObject = h.make_probe()
+    h.consume_probe(x=p)
+    print(h.probe_was_deleted())
+
+main()
+"#,
+        "False\n",
     );
 }
 
