@@ -151,6 +151,46 @@ mod tests {
     }
 
     #[test]
+    fn save_config_preserves_unknown_tables_and_comments() {
+        let _lock = crate::commands::utils::CWD_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("olive_deps_test_preserve");
+        let _ = std::fs::create_dir_all(&dir);
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+
+        std::fs::write(
+            "pit.toml",
+            r#"# a hand-written comment
+[pod]
+name = "tokenizer"
+version = "0.3.0"
+
+[native]
+lib = "tokenizer"
+
+[dependencies]
+old_dep = "1.0"
+"#,
+        )
+        .unwrap();
+
+        let mut config = load_config();
+        config.dependencies.remove("old_dep");
+        config.dependencies.insert("new_dep".into(), "2.0".into());
+        save_config(&config);
+
+        let written = std::fs::read_to_string("pit.toml").unwrap();
+        assert!(written.contains("# a hand-written comment"));
+        assert!(written.contains("[native]"));
+        assert!(written.contains("lib = \"tokenizer\""));
+        assert!(!written.contains("old_dep"));
+        assert!(written.contains("new_dep"));
+
+        std::env::set_current_dir(&cwd).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn config_remove_dep_roundtrip() {
         let _lock = crate::commands::utils::CWD_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join("olive_deps_test_remove");
