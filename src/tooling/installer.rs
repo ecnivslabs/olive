@@ -524,9 +524,13 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
         let author = base.join("author");
         fs::create_dir_all(author.join("src")).unwrap();
+        let built = target::built_name("mini");
+        let local = target::local_name("mini").unwrap();
         fs::write(
             author.join("pit.toml"),
-            "[pod]\nname = \"mini\"\nversion = \"1.0.0\"\nentry = \"src/lib.liv\"\n\n[dependencies]\n\n[native]\nlib = \"mini\"\nbuild = [\"sh\", \"-c\", \"mkdir -p target/release && printf fake > target/release/libmini.so\"]\n",
+            format!(
+                "[pod]\nname = \"mini\"\nversion = \"1.0.0\"\nentry = \"src/lib.liv\"\n\n[dependencies]\n\n[native]\nlib = \"mini\"\nbuild = [\"sh\", \"-c\", \"mkdir -p target/release && printf fake > target/release/{built}\"]\n"
+            ),
         )
         .unwrap();
         fs::write(author.join("src").join("lib.liv"), "fn f():\n    pass\n").unwrap();
@@ -583,7 +587,7 @@ mod tests {
         let result = rt.block_on(install_pod_atomic(&pod, final_dir.clone(), None, false));
         assert!(result.is_ok(), "install failed: {:?}", result.err());
         assert_eq!(
-            fs::read(final_dir.join("native").join("libmini.so")).unwrap(),
+            fs::read(final_dir.join("native").join(&local)).unwrap(),
             b"fake"
         );
         assert!(final_dir.join("src").join("lib.liv").is_file());

@@ -170,19 +170,21 @@ mod tests {
         let dir = std::env::temp_dir().join("olive_native_test_ensure");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        let built = crate::tooling::target::built_name("foo");
+        let local = crate::tooling::target::local_name("foo").unwrap();
         let native = Native {
             lib: "foo".into(),
             build: Some(vec![
                 "sh".into(),
                 "-c".into(),
-                "mkdir -p target/release && printf fake > target/release/libfoo.so".into(),
+                format!("mkdir -p target/release && printf fake > target/release/{built}"),
             ]),
             dir: None,
             targets: vec![],
         };
         ensure_built_in(&dir, &native).unwrap();
         assert_eq!(
-            std::fs::read(dir.join("native").join("libfoo.so")).unwrap(),
+            std::fs::read(dir.join("native").join(&local)).unwrap(),
             b"fake"
         );
         let _ = std::fs::remove_dir_all(&dir);
