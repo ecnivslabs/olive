@@ -1,10 +1,15 @@
-use crate::tooling::registry::PodVersion;
+use crate::tooling::manifest::Config;
+use crate::tooling::registry::{Dep, NativeArtifact, NativeFile, NativeSpec, PodVersion};
+use crate::tooling::target;
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
+
+const MAX_ARCHIVE_BYTES: usize = 10 * 1024 * 1024;
 
 const REGISTRY_REPO: &str = "ecnivslabs/pit-registry";
 
@@ -57,7 +62,15 @@ pub fn publish(name: &str, version: &str) -> Result<(), String> {
     check_uncommitted_changes();
 
     println!("\x1b[1;32m  Packaging\x1b[0m {}@{}", name, version);
-    let archive = build_archive(name, version)?;
+    let manifest = read_manifest()?;
+    let archive = build_archive(name, version, &manifest)?;
+
+    if archive.len() > MAX_ARCHIVE_BYTES {
+        return Err(format!(
+            "error: pod archive is {:.1} MB\n  native libraries belong in release assets, not the .pit.zst\n  declare [native] in pit.toml, or trim [pod].include",
+            archive.len() as f64 / (1024.0 * 1024.0)
+        ));
+    }
 
     let mut hasher = blake3::Hasher::new();
     hasher.update(&archive);
@@ -68,17 +81,29 @@ pub fn publish(name: &str, version: &str) -> Result<(), String> {
     let dl_url = upload_asset(&gh, &user_repo, release_id, name, archive)?;
     println!("\x1b[1;32m  Uploaded\x1b[0m {}", dl_url);
 
+    let native = upload_native_artifacts(&gh, &user_repo, release_id, &manifest)?;
+
     push_git_ref_and_tag(name, version);
+
+    let mut deps: Vec<Dep> = manifest
+        .dependencies
+        .iter()
+        .map(|(dep_name, req)| Dep {
+            name: dep_name.clone(),
+            req: req.clone(),
+        })
+        .collect();
+    deps.sort_by(|a, b| a.name.cmp(&b.name));
 
     let pod = PodVersion {
         name: name.to_string(),
         vers: version.to_string(),
-        deps: vec![],
+        deps,
         cksum,
         dl: dl_url,
         yanked: false,
         olive_req: Some(env!("CARGO_PKG_VERSION").to_string()),
-        native: None,
+        native,
     };
 
     let pr_url = create_registry_pr(&gh, &pod)?;
@@ -101,7 +126,15 @@ fn check_uncommitted_changes() {
     }
 }
 
+fn read_manifest() -> Result<Config, String> {
+    let content = fs::read_to_string("pit.toml").map_err(|_| "pit.toml not found")?;
+    toml::from_str(&content).map_err(|e| format!("invalid pit.toml: {e}"))
+}
+
 fn push_git_ref_and_tag(name: &str, version: &str) {
+    if std::env::var("CI").is_ok() {
+        return;
+    }
     let tag_name = format!("v{}", version);
     let _ = std::process::Command::new("git")
         .args([
@@ -172,7 +205,7 @@ fn get_current_user(gh: &GhClient) -> Result<String, String> {
         .ok_or_else(|| "could not get GitHub user login".to_string())
 }
 
-fn build_archive(name: &str, version: &str) -> Result<Vec<u8>, String> {
+fn build_archive(name: &str, version: &str, manifest: &Config) -> Result<Vec<u8>, String> {
     let prefix = format!("{}-{}", name, version);
     let mut tar_bytes: Vec<u8> = Vec::new();
 
@@ -183,13 +216,152 @@ fn build_archive(name: &str, version: &str) -> Result<Vec<u8>, String> {
         append_bytes(&mut builder, &toml_bytes, &format!("{}/pit.toml", prefix))?;
 
         if Path::new("src").exists() {
-            append_dir(&mut builder, Path::new("src"), &format!("{}/src", prefix))?;
+            append_liv_tree(&mut builder, Path::new("src"), &format!("{}/src", prefix))?;
+        }
+
+        for candidate in ["README.md", "LICENSE"] {
+            if Path::new(candidate).is_file() {
+                let bytes =
+                    fs::read(candidate).map_err(|e| format!("could not read {candidate}: {e}"))?;
+                append_bytes(&mut builder, &bytes, &format!("{prefix}/{candidate}"))?;
+            }
+        }
+
+        if let Some(pod) = &manifest.pod {
+            for entry in &pod.include {
+                append_include(&mut builder, &prefix, entry)?;
+            }
         }
 
         builder.finish().map_err(|e| e.to_string())?;
     }
 
     zstd::encode_all(tar_bytes.as_slice(), 3).map_err(|e| e.to_string())
+}
+
+fn append_liv_tree(
+    builder: &mut tar::Builder<&mut Vec<u8>>,
+    src: &Path,
+    tar_prefix: &str,
+) -> Result<(), String> {
+    for entry in fs::read_dir(src).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let tar_path = format!("{}/{}", tar_prefix, entry.file_name().to_string_lossy());
+        if path.is_dir() {
+            append_liv_tree(builder, &path, &tar_path)?;
+        } else if path.extension().is_some_and(|ext| ext == "liv") {
+            let bytes = fs::read(&path).map_err(|e| e.to_string())?;
+            append_bytes(builder, &bytes, &tar_path)?;
+        }
+    }
+    Ok(())
+}
+
+fn append_include(
+    builder: &mut tar::Builder<&mut Vec<u8>>,
+    prefix: &str,
+    entry: &str,
+) -> Result<(), String> {
+    if entry == "native" || entry.starts_with("native/") {
+        return Err(
+            "error: [pod].include may not list native/\n  native libraries belong in release assets, not the .pit.zst"
+                .to_string(),
+        );
+    }
+    let path = Path::new(entry);
+    if !path.exists() {
+        return Err(format!(
+            "error: [pod].include entry '{entry}' does not exist"
+        ));
+    }
+    if path.is_dir() {
+        append_include_dir(builder, path, &format!("{prefix}/{entry}"))?;
+    } else {
+        let bytes = fs::read(path).map_err(|e| format!("could not read {entry}: {e}"))?;
+        append_bytes(builder, &bytes, &format!("{prefix}/{entry}"))?;
+    }
+    Ok(())
+}
+
+fn append_include_dir(
+    builder: &mut tar::Builder<&mut Vec<u8>>,
+    src: &Path,
+    tar_prefix: &str,
+) -> Result<(), String> {
+    for entry in fs::read_dir(src).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let tar_path = format!("{}/{}", tar_prefix, entry.file_name().to_string_lossy());
+        if path.is_dir() {
+            append_include_dir(builder, &path, &tar_path)?;
+        } else {
+            let bytes = fs::read(&path).map_err(|e| e.to_string())?;
+            append_bytes(builder, &bytes, &tar_path)?;
+        }
+    }
+    Ok(())
+}
+
+fn upload_native_artifacts(
+    gh: &GhClient,
+    repo: &str,
+    release_id: u64,
+    manifest: &Config,
+) -> Result<Option<NativeSpec>, String> {
+    let Some(native) = &manifest.native else {
+        return Ok(None);
+    };
+    let mut artifacts = BTreeMap::new();
+    for key in native.target_keys() {
+        let file = target::asset_name(&native.lib, &key).ok_or_else(|| {
+            format!("error: pit has no artifact naming convention for target '{key}'")
+        })?;
+        let path = Path::new("native").join(&file);
+        if !path.is_file() {
+            return Err(format!(
+                "error: [native] declares target '{key}' but native/{file} is missing\n  run the pod's release workflow and download its artifacts into native/, or\n  narrow [native].targets in pit.toml"
+            ));
+        }
+        let bytes =
+            fs::read(&path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+        let cksum = blake3::hash(&bytes).to_hex().to_string();
+        let url = upload_named_asset(gh, repo, release_id, &file, bytes)?;
+        println!("\x1b[1;32m  Uploaded\x1b[0m {url}");
+        let implib = if let Some(implib_file) = target::implib_asset_name(&native.lib, &key) {
+            let implib_path = Path::new("native").join(&implib_file);
+            if !implib_path.is_file() {
+                return Err(format!(
+                    "error: [native] declares target '{key}' but native/{implib_file} is missing\n  the MSVC linker cannot link against a .dll directly; publish the import library alongside the DLL"
+                ));
+            }
+            let implib_bytes = fs::read(&implib_path)
+                .map_err(|e| format!("could not read {}: {e}", implib_path.display()))?;
+            let implib_cksum = blake3::hash(&implib_bytes).to_hex().to_string();
+            let implib_url = upload_named_asset(gh, repo, release_id, &implib_file, implib_bytes)?;
+            println!("\x1b[1;32m  Uploaded\x1b[0m {implib_url}");
+            Some(NativeFile {
+                file: implib_file,
+                url: implib_url,
+                cksum: implib_cksum,
+            })
+        } else {
+            None
+        };
+        artifacts.insert(
+            key,
+            NativeArtifact {
+                file,
+                url,
+                cksum,
+                implib,
+            },
+        );
+    }
+    Ok(Some(NativeSpec {
+        lib: native.lib.clone(),
+        artifacts,
+    }))
 }
 
 fn append_bytes(
@@ -204,25 +376,6 @@ fn append_bytes(
     builder
         .append_data(&mut header, path, bytes)
         .map_err(|e| e.to_string())
-}
-
-fn append_dir(
-    builder: &mut tar::Builder<&mut Vec<u8>>,
-    src: &Path,
-    tar_prefix: &str,
-) -> Result<(), String> {
-    for entry in fs::read_dir(src).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        let tar_path = format!("{}/{}", tar_prefix, entry.file_name().to_string_lossy());
-        if path.is_dir() {
-            append_dir(builder, &path, &tar_path)?;
-        } else {
-            let bytes = fs::read(&path).map_err(|e| e.to_string())?;
-            append_bytes(builder, &bytes, &tar_path)?;
-        }
-    }
-    Ok(())
 }
 
 fn create_release(gh: &GhClient, repo: &str, name: &str, version: &str) -> Result<u64, String> {
@@ -246,7 +399,7 @@ fn create_release(gh: &GhClient, repo: &str, name: &str, version: &str) -> Resul
         return Ok(id);
     }
 
-    // Release already exists — fetch it by tag.
+    // Release already exists, so fetch it by tag.
     let existing: Value = gh
         .get(&format!(
             "https://api.github.com/repos/{}/releases/tags/{}",
@@ -269,8 +422,16 @@ fn upload_asset(
     name: &str,
     bytes: Vec<u8>,
 ) -> Result<String, String> {
-    let asset_name = format!("{}.pit.zst", name);
+    upload_named_asset(gh, repo, release_id, &format!("{name}.pit.zst"), bytes)
+}
 
+fn upload_named_asset(
+    gh: &GhClient,
+    repo: &str,
+    release_id: u64,
+    asset_name: &str,
+    bytes: Vec<u8>,
+) -> Result<String, String> {
     // Delete the old asset if it exists so we can re-upload cleanly.
     let assets_url = format!(
         "https://api.github.com/repos/{}/releases/{}/assets",
@@ -280,7 +441,7 @@ fn upload_asset(
         if let Ok(assets) = resp.json::<Value>() {
             if let Some(arr) = assets.as_array() {
                 for asset in arr {
-                    if asset["name"].as_str() == Some(&asset_name) {
+                    if asset["name"].as_str() == Some(asset_name) {
                         if let Some(id) = asset["id"].as_u64() {
                             let _ = gh
                                 .client
@@ -389,7 +550,7 @@ fn create_registry_pr(gh: &GhClient, pod: &PodVersion) -> Result<String, String>
         .json(&json!({ "branch": fork_default_branch }))
         .send();
 
-    // Retry up to 20s — a freshly created fork can take a moment to populate.
+    // Retry up to 20s: a freshly created fork can take a moment to populate.
     let base_sha = {
         let mut sha: Option<String> = None;
         for _ in 0..10 {
@@ -410,7 +571,7 @@ fn create_registry_pr(gh: &GhClient, pod: &PodVersion) -> Result<String, String>
             thread::sleep(Duration::from_secs(2));
         }
         sha.ok_or(
-            "could not get fork main SHA — fork may still be initializing, try again in a moment",
+            "could not get fork main SHA (fork may still be initializing, try again in a moment)",
         )?
     };
 
@@ -544,5 +705,53 @@ mod tests {
     #[test]
     fn parse_github_repo_empty() {
         assert_eq!(parse_github_repo(""), None);
+    }
+
+    fn tar_names(bytes: &[u8]) -> Vec<String> {
+        let decoded = zstd::decode_all(bytes).unwrap();
+        let mut archive = tar::Archive::new(decoded.as_slice());
+        archive
+            .entries()
+            .unwrap()
+            .map(|e| e.unwrap().path().unwrap().to_string_lossy().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn liv_tree_packs_only_liv_files() {
+        let dir = std::env::temp_dir().join("olive_publish_liv_only");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src").join("sub")).unwrap();
+        std::fs::write(dir.join("src").join("lib.liv"), "fn main():\n    pass").unwrap();
+        std::fs::write(dir.join("src").join("engine.rs"), "rust").unwrap();
+        std::fs::write(dir.join("src").join("sub").join("mod.liv"), "x").unwrap();
+        std::fs::write(dir.join("src").join("sub").join("helper.rs"), "y").unwrap();
+
+        let mut tar_bytes = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_bytes);
+            append_liv_tree(&mut builder, &dir.join("src"), "pkg-1.0/src").unwrap();
+            builder.finish().unwrap();
+        }
+        let names = tar_names(&zstd::encode_all(tar_bytes.as_slice(), 3).unwrap());
+        assert!(names.iter().any(|n| n.ends_with("src/lib.liv")));
+        assert!(names.iter().any(|n| n.ends_with("src/sub/mod.liv")));
+        assert!(!names.iter().any(|n| n.ends_with(".rs")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn include_rejects_native_directory() {
+        let mut tar_bytes = Vec::new();
+        let mut builder = tar::Builder::new(&mut tar_bytes);
+        assert!(append_include(&mut builder, "pkg-1.0", "native").is_err());
+        assert!(append_include(&mut builder, "pkg-1.0", "native/libfoo.so").is_err());
+    }
+
+    #[test]
+    fn include_missing_entry_errors() {
+        let mut tar_bytes = Vec::new();
+        let mut builder = tar::Builder::new(&mut tar_bytes);
+        assert!(append_include(&mut builder, "pkg-1.0", "does-not-exist.txt").is_err());
     }
 }

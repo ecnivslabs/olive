@@ -1,7 +1,5 @@
 use crate::tooling;
-pub use crate::tooling::manifest::{
-    Config, FmtConfig, Native, Pod, Profile, Workspace, default_entry,
-};
+pub use crate::tooling::manifest::Config;
 use std::collections::HashMap;
 use std::{fs, path::Path, process};
 
@@ -117,6 +115,15 @@ pub fn maybe_install_deps(deps: &HashMap<String, String>) {
     }
 }
 
+pub fn ensure_native_built(config: &Config) {
+    if let Some(native) = &config.native
+        && let Err(e) = tooling::native::ensure_built(native)
+    {
+        eprintln!("{e}");
+        process::exit(1);
+    }
+}
+
 pub fn run_build_script(time: bool, release: bool) {
     if Path::new("build.liv").exists() {
         println!("\x1b[1;34mRunning\x1b[0m build.liv");
@@ -151,6 +158,7 @@ pub(crate) static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tooling::manifest::{Pod, Profile, Workspace};
 
     #[test]
     fn config_default_empty() {

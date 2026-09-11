@@ -1,7 +1,8 @@
+use super::utils::Config;
 use super::utils::load_config;
-use super::utils::{Config, Pod};
 use crate::fmt::{self, DEFAULT_WIDTH};
 use crate::tooling;
+use crate::tooling::manifest::Pod;
 use crate::tooling::repl::run_shell;
 use std::{fs, path::Path, process};
 

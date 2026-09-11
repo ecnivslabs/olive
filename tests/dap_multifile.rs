@@ -188,7 +188,10 @@ fn breakpoints_and_stepping_cross_a_local_import_boundary() {
     assert_eq!(stopped["fn"], "add");
     assert_eq!(stopped["line"], 2);
     assert!(
-        same_path(stopped["file"].as_str().unwrap(), helper_path.to_str().unwrap()),
+        same_path(
+            stopped["file"].as_str().unwrap(),
+            helper_path.to_str().unwrap()
+        ),
         "stepping into add() should resolve to the helper file, not main: {stopped}"
     );
 
@@ -196,12 +199,18 @@ fn breakpoints_and_stepping_cross_a_local_import_boundary() {
     let frames = resp["frames"].as_array().unwrap();
     assert_eq!(frames[0]["fn"], "add");
     assert!(
-        same_path(frames[0]["file"].as_str().unwrap(), helper_path.to_str().unwrap()),
+        same_path(
+            frames[0]["file"].as_str().unwrap(),
+            helper_path.to_str().unwrap()
+        ),
         "stepping into add() should resolve to the helper file, not main: {resp}"
     );
     assert_eq!(frames[1]["fn"], "main");
     assert!(
-        same_path(frames[1]["file"].as_str().unwrap(), main_path.to_str().unwrap()),
+        same_path(
+            frames[1]["file"].as_str().unwrap(),
+            main_path.to_str().unwrap()
+        ),
         "caller frame should still resolve to main, not the helper it stepped into: {resp}"
     );
 
@@ -212,7 +221,10 @@ fn breakpoints_and_stepping_cross_a_local_import_boundary() {
     assert_eq!(stopped["reason"], "breakpoint");
     assert_eq!(stopped["fn"], "add");
     assert_eq!(stopped["line"], 3);
-    assert!(same_path(stopped["file"].as_str().unwrap(), helper_path.to_str().unwrap()));
+    assert!(same_path(
+        stopped["file"].as_str().unwrap(),
+        helper_path.to_str().unwrap()
+    ));
 
     session.fire("continue");
     session.read_event("exited");

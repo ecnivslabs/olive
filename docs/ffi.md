@@ -107,3 +107,23 @@ import "libfoo.so" as foo:
 
 * **References** (`&T` and `&mut T`): safe, tracked, and validated by the compiler.
 * **Raw pointers** (`*T` and `*void`): unchecked addresses, only usable inside `unsafe` blocks.
+
+## Pod Native Libraries
+
+A pod that wraps a C or Rust library ships prebuilt binaries through `[native]` in `pit.toml` instead of asking users to install a system library by hand:
+
+```toml
+[native]
+lib = "tokenizer"
+```
+
+`lib` is the stem. `pit` derives every filename from it: `libtokenizer.so` on Linux, `libtokenizer.dylib` on macOS, `libtokenizer.dll` on Windows. The pod source keeps one portable line:
+
+```olive
+import "libtokenizer.so" as native:
+    fn tokenizer_version() -> str
+```
+
+At compile time `pit` resolves that bare name to the owning pod's `native/` directory, stages the library beside the output binary, and links with a relocatable rpath (`$ORIGIN` on Linux, `@loader_path` on macOS). The output binary runs wherever its directory goes. No system install, no `LD_LIBRARY_PATH`.
+
+Optional keys: `build` (argv run directly with no shell, defaults to `["cargo", "build", "--release"]`), `dir` (where the build leaves the library, defaults to `"target/release"`), `targets` (subset of the five supported targets, defaults to all). `[native].build` runs only for the root project, never for an installed dependency.

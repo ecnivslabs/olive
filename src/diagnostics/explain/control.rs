@@ -57,9 +57,7 @@ pub(super) const ENTRIES: &[Explanation] = &[
                   entry. The compiler requires exactly one definition to avoid ambiguity.",
         wrong: "my_project/\n    utils.liv\n    utils/\n        mod.liv",
         fixed: "my_project/\n    utils/\n        mod.liv",
-        notes: &[
-            "Remove or rename one of the files so the module path resolves unambiguously.",
-        ],
+        notes: &["Remove or rename one of the files so the module path resolves unambiguously."],
     },
     Explanation {
         code: "E0424",

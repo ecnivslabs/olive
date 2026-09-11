@@ -5,6 +5,7 @@ pub mod installer;
 pub mod lockfile;
 pub mod lsp;
 pub mod manifest;
+pub mod native;
 pub mod pods;
 pub mod publish;
 pub mod registry;

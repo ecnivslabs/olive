@@ -1,19 +1,11 @@
-use super::linker::collect_native_libs;
+use super::linker::{NativeLibRef, collect_native_libs};
 use super::loader::load_and_parse;
 use crate::borrow_check::BorrowChecker;
 use crate::mir::{self, MirBuilder, MirFunction, Rvalue, StatementKind};
-use crate::parser::{self, ast::FfiFnSig, ast::FfiStructDef, ast::FfiVarDef};
+use crate::parser;
 use crate::semantic::{Resolver, TypeChecker};
 use rustc_hash::FxHashMap as HashMap;
 use std::{collections::HashSet, time::Duration};
-
-pub type NativeLib = (
-    String,
-    String,
-    Vec<FfiFnSig>,
-    Vec<FfiStructDef>,
-    Vec<FfiVarDef>,
-);
 
 pub struct PipelineTimings {
     pub parse: Duration,
@@ -31,7 +23,7 @@ pub struct PipelineOutput {
     pub enum_defs: HashMap<String, Vec<(String, Vec<crate::semantic::types::Type>)>>,
     pub vtables: HashMap<String, Vec<String>>,
     pub global_vars: Vec<String>,
-    pub native_libs: Vec<NativeLib>,
+    pub native_libs: Vec<NativeLibRef>,
     pub program: parser::Program,
     pub file_names: HashMap<usize, String>,
     pub timings: PipelineTimings,
@@ -343,19 +335,21 @@ mod tests {
     }
 
     #[test]
-    fn native_lib_type_alias() {
-        let lib: NativeLib = (
-            "mylib".to_string(),
-            "/path/to/lib".to_string(),
-            vec![],
-            vec![],
-            vec![],
-        );
-        assert_eq!(lib.0, "mylib");
-        assert_eq!(lib.1, "/path/to/lib");
-        assert!(lib.2.is_empty());
-        assert!(lib.3.is_empty());
-        assert!(lib.4.is_empty());
+    fn native_lib_ref_fields() {
+        let lib = NativeLibRef {
+            alias: "mylib".to_string(),
+            path: "/path/to/lib".to_string(),
+            from_pod: false,
+            functions: vec![],
+            structs: vec![],
+            vars: vec![],
+        };
+        assert_eq!(lib.alias, "mylib");
+        assert_eq!(lib.path, "/path/to/lib");
+        assert!(!lib.from_pod);
+        assert!(lib.functions.is_empty());
+        assert!(lib.structs.is_empty());
+        assert!(lib.vars.is_empty());
     }
 
     #[test]
@@ -401,13 +395,14 @@ mod tests {
             enum_defs: HashMap::default(),
             vtables,
             global_vars: vec!["GLOBAL".to_string()],
-            native_libs: vec![(
-                "sdl".to_string(),
-                "libSDL2.so".to_string(),
-                vec![],
-                vec![],
-                vec![],
-            )],
+            native_libs: vec![NativeLibRef {
+                alias: "sdl".to_string(),
+                path: "libSDL2.so".to_string(),
+                from_pod: false,
+                functions: vec![],
+                structs: vec![],
+                vars: vec![],
+            }],
             program: parser::Program {
                 stmts: vec![parser::Stmt {
                     kind: parser::StmtKind::Pass,
@@ -434,7 +429,7 @@ mod tests {
         assert_eq!(output.vtables.get("Draw").unwrap()[0], "render");
         assert_eq!(output.global_vars[0], "GLOBAL");
         assert_eq!(output.native_libs.len(), 1);
-        assert_eq!(output.native_libs[0].0, "sdl");
+        assert_eq!(output.native_libs[0].alias, "sdl");
         assert_eq!(output.program.stmts.len(), 1);
         assert_eq!(output.timings.resolve.as_millis(), 20);
     }
