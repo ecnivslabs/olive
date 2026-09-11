@@ -110,7 +110,7 @@ import "libfoo.so" as foo:
 
 ## Pod Native Libraries
 
-A pod that wraps a C or Rust library ships prebuilt binaries through `[native]` in `pit.toml` instead of asking users to install a system library by hand:
+A pod that wraps a C or Rust library declares `[native]` in `pit.toml` instead of asking users to install a system library by hand:
 
 ```toml
 [native]
@@ -124,6 +124,6 @@ import "libtokenizer.so" as native:
     fn tokenizer_version() -> str
 ```
 
-At compile time `pit` resolves that bare name to the owning pod's `native/` directory, stages the library beside the output binary, and links with a relocatable rpath (`$ORIGIN` on Linux, `@loader_path` on macOS). The output binary runs wherever its directory goes. No system install, no `LD_LIBRARY_PATH`.
+Like Cargo and npm, the pod ships its engine sources (listed in `[pod].include`) and `pit` builds them on the consumer's machine at install time into the pod's own `native/` directory. No author CI, no per-platform uploads, no waiting: `pit publish` stays a single instant command. A pod may additionally carry prebuilt artifacts (uploaded from the author's own dev loop); when the registry has one for the host, `pit` downloads it instead of building. Either way, at compile time `pit` resolves the bare name to the owning pod's `native/` directory, stages the library beside the output binary, and links with a relocatable rpath (`$ORIGIN` on Linux, `@loader_path` on macOS). The output binary runs wherever its directory goes. No system install, no `LD_LIBRARY_PATH`.
 
-Optional keys: `build` (argv run directly with no shell, defaults to `["cargo", "build", "--release"]`), `dir` (where the build leaves the library, defaults to `"target/release"`), `targets` (subset of the five supported targets, defaults to all). `[native].build` runs only for the root project, never for an installed dependency.
+Optional keys: `build` (argv run directly with no shell, defaults to `["cargo", "build", "--release"]`), `dir` (where the build leaves the library, defaults to `"target/release"`), `targets` (subset of the five supported targets, defaults to all).

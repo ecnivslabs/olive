@@ -303,6 +303,30 @@ fn append_include_dir(
     Ok(())
 }
 
+/// Expected artifact filenames for every declared target: the library file
+/// plus the MSVC import library on Windows targets.
+fn expected_native_files(
+    manifest: &Config,
+) -> Result<Vec<(String, String, Option<String>)>, String> {
+    let Some(native) = &manifest.native else {
+        return Ok(vec![]);
+    };
+    let mut out = Vec::new();
+    for key in native.target_keys() {
+        let file = target::asset_name(&native.lib, &key).ok_or_else(|| {
+            format!("error: pit has no artifact naming convention for target '{key}'")
+        })?;
+        let implib = target::implib_asset_name(&native.lib, &key);
+        out.push((key, file, implib));
+    }
+    Ok(out)
+}
+
+/// Uploads whatever finished `native/*` files are sitting next to the pod.
+/// These come for free from the author's own dev loop (`pit build` stages
+/// them), so publish itself stays instant: no building, no waiting, no extra
+/// calls when there is nothing to upload. Targets without a file are simply
+/// absent from the map; consumers build those from the published sources.
 fn upload_native_artifacts(
     gh: &GhClient,
     repo: &str,
@@ -313,35 +337,33 @@ fn upload_native_artifacts(
         return Ok(None);
     };
     let mut artifacts = BTreeMap::new();
-    for key in native.target_keys() {
-        let file = target::asset_name(&native.lib, &key).ok_or_else(|| {
-            format!("error: pit has no artifact naming convention for target '{key}'")
-        })?;
+    let mut pending = Vec::new();
+    for (key, file, implib_file) in expected_native_files(manifest)? {
         let path = Path::new("native").join(&file);
         if !path.is_file() {
-            return Err(format!(
-                "error: [native] declares target '{key}' but native/{file} is missing\n  run the pod's release workflow and download its artifacts into native/, or\n  narrow [native].targets in pit.toml"
-            ));
+            pending.push(format!("{key} (native/{file})"));
+            continue;
+        }
+        if let Some(ref implib_name) = implib_file
+            && !Path::new("native").join(implib_name).is_file()
+        {
+            pending.push(format!("{key} (native/{implib_name})"));
+            continue;
         }
         let bytes =
             fs::read(&path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
         let cksum = blake3::hash(&bytes).to_hex().to_string();
         let url = upload_named_asset(gh, repo, release_id, &file, bytes)?;
         println!("\x1b[1;32m  Uploaded\x1b[0m {url}");
-        let implib = if let Some(implib_file) = target::implib_asset_name(&native.lib, &key) {
-            let implib_path = Path::new("native").join(&implib_file);
-            if !implib_path.is_file() {
-                return Err(format!(
-                    "error: [native] declares target '{key}' but native/{implib_file} is missing\n  the MSVC linker cannot link against a .dll directly; publish the import library alongside the DLL"
-                ));
-            }
+        let implib = if let Some(implib_name) = implib_file {
+            let implib_path = Path::new("native").join(&implib_name);
             let implib_bytes = fs::read(&implib_path)
                 .map_err(|e| format!("could not read {}: {e}", implib_path.display()))?;
             let implib_cksum = blake3::hash(&implib_bytes).to_hex().to_string();
-            let implib_url = upload_named_asset(gh, repo, release_id, &implib_file, implib_bytes)?;
+            let implib_url = upload_named_asset(gh, repo, release_id, &implib_name, implib_bytes)?;
             println!("\x1b[1;32m  Uploaded\x1b[0m {implib_url}");
             Some(NativeFile {
-                file: implib_file,
+                file: implib_name,
                 url: implib_url,
                 cksum: implib_cksum,
             })
@@ -357,6 +379,18 @@ fn upload_native_artifacts(
                 implib,
             },
         );
+    }
+    if !pending.is_empty() {
+        println!(
+            "\x1b[1;33mnote:\x1b[0m no prebuilt artifact for {}; consumers there build from the published sources",
+            pending.join(", ")
+        );
+    }
+    if artifacts.is_empty() {
+        println!(
+            "\x1b[1;33mnote:\x1b[0m publishing without prebuilt artifacts; consumers build from source"
+        );
+        return Ok(None);
     }
     Ok(Some(NativeSpec {
         lib: native.lib.clone(),
@@ -482,6 +516,30 @@ fn upload_named_asset(
         .ok_or_else(|| format!("upload failed: {}", resp))
 }
 
+/// Appends a registry line, replacing any existing line for the same
+/// `name@vers` so re-publishing a version (for example with a wider native
+/// matrix) never leaves duplicate entries. The resolver prefers the newest
+/// line, so the latest publish always wins.
+fn merge_registry_line(current: &str, name: &str, vers: &str, new_line: &str) -> String {
+    let kept: Vec<&str> = current
+        .lines()
+        .filter(|l| {
+            if l.trim().is_empty() {
+                return false;
+            }
+            match serde_json::from_str::<serde_json::Value>(l) {
+                Ok(v) => !(v["name"].as_str() == Some(name) && v["vers"].as_str() == Some(vers)),
+                Err(_) => true,
+            }
+        })
+        .collect();
+    if kept.is_empty() {
+        new_line.to_string()
+    } else {
+        format!("{}\n{}", kept.join("\n"), new_line)
+    }
+}
+
 fn ensure_fork(gh: &GhClient, user: &str) -> Result<String, String> {
     let fork_repo = format!("{}/pit-registry", user);
 
@@ -603,12 +661,20 @@ fn create_registry_pr(gh: &GhClient, pod: &PodVersion) -> Result<String, String>
     };
 
     let new_line = serde_json::to_string(pod).map_err(|e| e.to_string())?;
-    let new_content = if current_content.trim().is_empty() {
-        new_line
-    } else {
-        format!("{}\n{}", current_content.trim_end(), new_line)
-    };
+    let new_content = merge_registry_line(&current_content, &pod.name, &pod.vers, &new_line);
 
+    // Re-publishing the same version recreates its branch so the run stays
+    // idempotent (a wider native matrix is just another publish).
+    let ref_url = format!(
+        "https://api.github.com/repos/{}/git/refs/heads/{}",
+        fork_repo, branch
+    );
+    let _ = gh
+        .client
+        .delete(&ref_url)
+        .header("Authorization", format!("token {}", gh.token))
+        .header("User-Agent", "pit/0.1.0")
+        .send();
     gh.post(&format!(
         "https://api.github.com/repos/{}/git/refs",
         fork_repo
@@ -753,5 +819,58 @@ mod tests {
         let mut tar_bytes = Vec::new();
         let mut builder = tar::Builder::new(&mut tar_bytes);
         assert!(append_include(&mut builder, "pkg-1.0", "does-not-exist.txt").is_err());
+    }
+
+    #[test]
+    fn include_dir_packs_everything_under_it() {
+        let dir = std::env::temp_dir().join("olive_publish_include_dir");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("engine").join("sub")).unwrap();
+        std::fs::write(dir.join("engine").join("lib.rs"), "rust").unwrap();
+        std::fs::write(dir.join("engine").join("sub").join("mod.rs"), "more").unwrap();
+        std::fs::write(dir.join("engine").join("notes.txt"), "txt").unwrap();
+
+        let _lock = crate::commands::utils::CWD_LOCK.lock().unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+        let mut tar_bytes = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_bytes);
+            append_include(&mut builder, "pkg-1.0", "engine").unwrap();
+            builder.finish().unwrap();
+        }
+        std::env::set_current_dir(&cwd).unwrap();
+        let names = tar_names(&zstd::encode_all(tar_bytes.as_slice(), 3).unwrap());
+        assert!(names.iter().any(|n| n.ends_with("engine/lib.rs")));
+        assert!(names.iter().any(|n| n.ends_with("engine/sub/mod.rs")));
+        assert!(names.iter().any(|n| n.ends_with("engine/notes.txt")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn merge_registry_line_replaces_same_version() {
+        let current = "{\"name\":\"tok\",\"vers\":\"0.3.0\",\"cksum\":\"old\"}\n{\"name\":\"tok\",\"vers\":\"0.2.0\",\"cksum\":\"x\"}";
+        let merged = merge_registry_line(
+            current,
+            "tok",
+            "0.3.0",
+            "{\"name\":\"tok\",\"vers\":\"0.3.0\",\"cksum\":\"new\"}",
+        );
+        assert_eq!(merged.matches("\"vers\":\"0.3.0\"").count(), 1);
+        assert!(merged.contains("\"cksum\":\"new\""));
+        assert!(merged.contains("\"vers\":\"0.2.0\""));
+    }
+
+    #[test]
+    fn merge_registry_line_appends_new_version() {
+        let current = "{\"name\":\"tok\",\"vers\":\"0.2.0\",\"cksum\":\"x\"}";
+        let merged = merge_registry_line(
+            current,
+            "tok",
+            "0.3.0",
+            "{\"name\":\"tok\",\"vers\":\"0.3.0\",\"cksum\":\"new\"}",
+        );
+        assert!(merged.contains("\"vers\":\"0.2.0\""));
+        assert!(merged.contains("\"vers\":\"0.3.0\""));
     }
 }

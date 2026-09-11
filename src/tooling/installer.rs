@@ -1,3 +1,4 @@
+use crate::tooling::manifest::Native;
 use crate::tooling::registry::{NativeSpec, PodVersion};
 use crate::tooling::target;
 use std::collections::BTreeMap;
@@ -39,6 +40,8 @@ pub enum InstallError {
         vers: String,
         target: String,
     },
+    /// Building the pod's engine from its published sources failed.
+    Build(String),
 }
 
 impl std::fmt::Display for InstallError {
@@ -86,6 +89,7 @@ impl std::fmt::Display for InstallError {
                 "offline mode: native library for '{pod}@{vers}' ({target}) is not installed\n\
                  \x20 run without --offline once to fetch it"
             ),
+            InstallError::Build(msg) => write!(f, "native build failed: {msg}"),
         }
     }
 }
@@ -298,48 +302,82 @@ async fn fetch_native_into(
     Ok(())
 }
 
-/// Repairs an already-installed pod's native artifact: verifies the file on
-/// disk still matches the registry's hash, and re-downloads it if it is
-/// missing, truncated, or stale. A no-op for pods with no `[native]` table,
-/// which is every pod published before this feature existed.
+/// The `[native]` table from an installed pod's own `pit.toml`, if it declares
+/// one. This is what makes source builds work: the archive carries the engine
+/// sources alongside the Olive code, so the library can be built on the
+/// consumer's machine exactly like Cargo build scripts or pip sdists.
+fn installed_native_manifest(dir: &Path) -> Option<Native> {
+    let content = fs::read_to_string(dir.join("pit.toml")).ok()?;
+    let config: crate::tooling::manifest::Config = toml::from_str(&content).ok()?;
+    config.native
+}
+
+fn source_built_present(dir: &Path, native: &Native) -> bool {
+    target::local_name(&native.lib).is_some_and(|n| dir.join("native").join(n).is_file())
+}
+
+/// Builds a pod's engine from its published sources into its own `native/`
+/// directory. Runs on the consumer's machine at install time, so no pod
+/// author CI, no per-platform uploads, and no waiting are ever required to
+/// ship a native pod. A no-op when the pod declares no `[native]` table.
+async fn ensure_source_built(pod: &PodVersion, dir: &Path) -> Result<(), InstallError> {
+    let Some(native) = installed_native_manifest(dir) else {
+        return Ok(());
+    };
+    if source_built_present(dir, &native) {
+        return Ok(());
+    }
+    println!(
+        "\x1b[1;32m  Building\x1b[0m {}@{} native library from source (one-time, may take a few minutes)",
+        pod.name, pod.vers
+    );
+    let dir_buf = dir.to_path_buf();
+    tokio::task::spawn_blocking(move || crate::tooling::native::ensure_built_in(&dir_buf, &native))
+        .await
+        .map_err(|e| InstallError::Build(format!("task panicked: {e}")))
+        .and_then(|r| r.map_err(InstallError::Build))
+}
+
+/// Repairs an already-installed pod's native library: a verified registry
+/// artifact is re-downloaded when stale, otherwise the engine is built from
+/// the published sources. A no-op for pure source pods.
 async fn ensure_native_artifact(
     pod: &PodVersion,
     final_dir: &Path,
     locked: Option<&BTreeMap<String, String>>,
     offline: bool,
 ) -> Result<(), InstallError> {
-    let Some(spec) = &pod.native else {
-        return Ok(());
-    };
-    let Some(key) = target::host() else {
+    if let Some(spec) = &pod.native
+        && let Some(key) = target::host()
+        && let (Some(artifact), Some(local_name)) =
+            (spec.artifacts.get(key), target::local_name(&spec.lib))
+    {
+        let native_dir = final_dir.join("native");
+        let up_to_date = fs::read(native_dir.join(&local_name))
+            .is_ok_and(|data| blake3::hash(&data).to_hex().to_string() == artifact.cksum);
+        if up_to_date {
+            return Ok(());
+        }
+        return fetch_native_into(&pod.name, &pod.vers, spec, &native_dir, locked, offline).await;
+    }
+    if pod.native.is_some() && target::host().is_none() {
         return Err(InstallError::UnsupportedHost {
             pod: pod.name.clone(),
             vers: pod.vers.clone(),
         });
-    };
-    let Some(artifact) = spec.artifacts.get(key) else {
+    }
+    if let Some(spec) = &pod.native
+        && installed_native_manifest(final_dir).is_none()
+    {
+        let host = target::host().unwrap_or("unknown");
         return Err(InstallError::NativeUnavailable {
             pod: pod.name.clone(),
             vers: pod.vers.clone(),
-            host: key.to_string(),
+            host: host.to_string(),
             available: spec.artifacts.keys().cloned().collect(),
         });
-    };
-    let Some(local_name) = target::local_name(&spec.lib) else {
-        return Err(InstallError::UnsupportedHost {
-            pod: pod.name.clone(),
-            vers: pod.vers.clone(),
-        });
-    };
-
-    let native_dir = final_dir.join("native");
-    let up_to_date = fs::read(native_dir.join(&local_name))
-        .is_ok_and(|data| blake3::hash(&data).to_hex().to_string() == artifact.cksum);
-    if up_to_date {
-        return Ok(());
     }
-
-    fetch_native_into(&pod.name, &pod.vers, spec, &native_dir, locked, offline).await
+    ensure_source_built(pod, final_dir).await
 }
 
 pub async fn install_pod_atomic(
@@ -380,11 +418,35 @@ pub async fn install_pod_atomic(
         return Err(e);
     }
 
-    if let Some(spec) = &pod.native {
+    let has_host_artifact = pod.native.as_ref().is_some_and(|spec| {
+        target::host().is_some_and(|key| {
+            spec.artifacts.contains_key(key) && target::local_name(&spec.lib).is_some()
+        })
+    });
+    if has_host_artifact {
+        let spec = pod.native.as_ref().expect("checked above");
         let native_dir = tmp_dir.join("native");
         if let Err(e) =
             fetch_native_into(&pod.name, &pod.vers, spec, &native_dir, locked, offline).await
         {
+            let _ = fs::remove_dir_all(&tmp_dir);
+            return Err(e);
+        }
+    } else if installed_native_manifest(&tmp_dir).is_some() {
+        println!(
+            "\x1b[1;32m  Building\x1b[0m {}@{} native library from source (one-time, may take a few minutes)",
+            pod.name, pod.vers
+        );
+        let build_dir = tmp_dir.clone();
+        let build_result = tokio::task::spawn_blocking(move || {
+            let native = installed_native_manifest(&build_dir)
+                .ok_or_else(|| "pod stopped declaring [native] mid-install".to_string())?;
+            crate::tooling::native::ensure_built_in(&build_dir, &native)
+        })
+        .await
+        .map_err(|e| InstallError::Build(format!("task panicked: {e}")))
+        .and_then(|r| r.map_err(InstallError::Build));
+        if let Err(e) = build_result {
             let _ = fs::remove_dir_all(&tmp_dir);
             return Err(e);
         }
@@ -450,6 +512,82 @@ mod tests {
     fn install_error_impl_std_error() {
         fn assert_error<E: std::error::Error>() {}
         assert_error::<InstallError>();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_pod_atomic_builds_native_from_published_sources() {
+        use std::io::{Read, Write};
+
+        let _lock = crate::commands::utils::CWD_LOCK.lock().unwrap();
+        let base = std::env::temp_dir().join("olive_install_src_build");
+        let _ = fs::remove_dir_all(&base);
+        let author = base.join("author");
+        fs::create_dir_all(author.join("src")).unwrap();
+        fs::write(
+            author.join("pit.toml"),
+            "[pod]\nname = \"mini\"\nversion = \"1.0.0\"\nentry = \"src/lib.liv\"\n\n[dependencies]\n\n[native]\nlib = \"mini\"\nbuild = [\"sh\", \"-c\", \"mkdir -p target/release && printf fake > target/release/libmini.so\"]\n",
+        )
+        .unwrap();
+        fs::write(author.join("src").join("lib.liv"), "fn f():\n    pass\n").unwrap();
+
+        let mut tar_bytes = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_bytes);
+            for (disk, tar_path) in [
+                (author.join("pit.toml"), "mini-1.0.0/pit.toml"),
+                (author.join("src").join("lib.liv"), "mini-1.0.0/src/lib.liv"),
+            ] {
+                let bytes = fs::read(&disk).unwrap();
+                let mut header = tar::Header::new_gnu();
+                header.set_size(bytes.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                builder
+                    .append_data(&mut header, tar_path, bytes.as_slice())
+                    .unwrap();
+            }
+            builder.finish().unwrap();
+        }
+        let compressed = zstd::encode_all(tar_bytes.as_slice(), 3).unwrap();
+        let cksum = blake3::hash(&compressed).to_hex().to_string();
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let body = compressed.clone();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = vec![0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(&body);
+            }
+        });
+
+        let pod = PodVersion {
+            name: "mini".to_string(),
+            vers: "1.0.0".to_string(),
+            deps: vec![],
+            cksum,
+            dl: format!("http://127.0.0.1:{port}/mini.pit.zst"),
+            yanked: false,
+            olive_req: None,
+            native: None,
+        };
+        let final_dir = base.join("pods").join("mini").join("1.0.0");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(install_pod_atomic(&pod, final_dir.clone(), None, false));
+        assert!(result.is_ok(), "install failed: {:?}", result.err());
+        assert_eq!(
+            fs::read(final_dir.join("native").join("libmini.so")).unwrap(),
+            b"fake"
+        );
+        assert!(final_dir.join("src").join("lib.liv").is_file());
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]

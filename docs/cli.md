@@ -74,7 +74,7 @@ The `pit` toolchain is the unified compiler, package manager, and project manage
   Updates a specific pod or all dependencies to their latest compatible versions.
 
 * `pit publish`
-  Publishes the current project to the package registry. The archive contains `pit.toml`, every `src/**/*.liv` file, `README.md` and `LICENSE` when present, plus each path listed in `[pod].include`. Other files (for example Rust sources) are not packed. When `[native]` is declared, each `native/<lib>-<target>.<ext>` file is uploaded as a release asset alongside the archive, with its hash recorded in the registry entry. Archives larger than 10 MB are rejected.
+  Publishes the current project to the package registry in one instant command. The archive contains `pit.toml`, every `src/**/*.liv` file, `README.md` and `LICENSE` when present, plus each path listed in `[pod].include` (a native pod lists its engine sources there so consumers can build them). Any finished `native/<lib>-<target>.<ext>` files sitting next to the pod ride along as release assets with their hashes recorded; targets without one are built from source on install. Archives larger than 10 MB are rejected.
 
 ## Toolchain
 
