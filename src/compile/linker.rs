@@ -138,6 +138,44 @@ fn is_standard_lib_dir(dir: &Path) -> bool {
 /// `-dev` symlink installed. Linux additionally consults `ldconfig`'s cache,
 /// the authoritative soname -> path map, which covers multiarch subdirectories
 /// `system_library_dirs` doesn't scan directly.
+/// The architecture tag `ldconfig -p` prints for the host, e.g. `x86-64` for
+/// x86_64 or `AArch64` for aarch64. An entry whose tag doesn't match the host
+/// is for a different word size or architecture and would fail to link.
+#[cfg(target_os = "linux")]
+fn ldconfig_arch_tag() -> &'static str {
+    if cfg!(target_arch = "x86_64") {
+        "x86-64"
+    } else if cfg!(target_arch = "aarch64") {
+        "AArch64"
+    } else if cfg!(target_arch = "x86") {
+        "x86"
+    } else {
+        ""
+    }
+}
+
+/// Matches one line of `ldconfig -p` output against `name`, e.g.:
+///   libzstd.so.1 (libc6,x86-64) => /usr/lib/libzstd.so.1
+/// The soname sits before the parenthesized ABI/arch tag, which an earlier
+/// version of this function left attached to the soname it compared against
+/// `name`, so it never matched. An entry whose tag doesn't list `want_arch`
+/// is for a different word size or architecture and is skipped, since linking
+/// against it would fail anyway.
+fn match_ldconfig_line(line: &str, name: &str, want_arch: &str) -> Option<PathBuf> {
+    let (lhs, rhs) = line.trim().split_once(" => ")?;
+    let (soname, tag) = match lhs.split_once(" (") {
+        Some((soname, tag)) => (soname.trim(), tag.trim_end_matches(')')),
+        None => (lhs.trim(), ""),
+    };
+    if soname != name {
+        return None;
+    }
+    if !want_arch.is_empty() && !tag.is_empty() && !tag.split(',').any(|f| f.trim() == want_arch) {
+        return None;
+    }
+    Path::new(rhs.trim()).parent().map(|d| d.to_path_buf())
+}
+
 fn resolve_exact_library(name: &str) -> Option<PathBuf> {
     #[cfg(target_os = "linux")]
     {
@@ -145,12 +183,10 @@ fn resolve_exact_library(name: &str) -> Option<PathBuf> {
             && output.status.success()
         {
             let text = String::from_utf8_lossy(&output.stdout);
+            let want_arch = ldconfig_arch_tag();
             for line in text.lines() {
-                if let Some((soname, rest)) = line.trim().split_once(" => ")
-                    && soname.trim() == name
-                    && let Some(dir) = Path::new(rest.trim()).parent()
-                {
-                    return Some(dir.to_path_buf());
+                if let Some(dir) = match_ldconfig_line(line, name, want_arch) {
+                    return Some(dir);
                 }
             }
         }
@@ -481,6 +517,46 @@ mod tests {
     use super::*;
     use crate::parser;
     use crate::span::Span;
+
+    #[test]
+    fn match_ldconfig_line_matches_soname_with_arch_tag() {
+        let line = "\tlibzstd.so.1 (libc6,x86-64) => /usr/lib/libzstd.so.1";
+        let dir = match_ldconfig_line(line, "libzstd.so.1", "x86-64");
+        assert_eq!(dir, Some(PathBuf::from("/usr/lib")));
+    }
+
+    #[test]
+    fn match_ldconfig_line_matches_extended_abi_tag() {
+        let line = "\tlibc.so.6 (libc6,x86-64, OS ABI: Linux 3.2.0) => /lib/x86_64-linux-gnu/libc.so.6";
+        let dir = match_ldconfig_line(line, "libc.so.6", "x86-64");
+        assert_eq!(dir, Some(PathBuf::from("/lib/x86_64-linux-gnu")));
+    }
+
+    #[test]
+    fn match_ldconfig_line_rejects_mismatched_arch() {
+        let line = "\tlibfoo.so.1 (libc6) => /usr/lib32/libfoo.so.1";
+        assert_eq!(match_ldconfig_line(line, "libfoo.so.1", "x86-64"), None);
+    }
+
+    #[test]
+    fn match_ldconfig_line_rejects_different_soname() {
+        let line = "\tlibzstd.so.1 (libc6,x86-64) => /usr/lib/libzstd.so.1";
+        assert_eq!(match_ldconfig_line(line, "libzstd.so", "x86-64"), None);
+    }
+
+    #[test]
+    fn match_ldconfig_line_ignores_arch_when_not_requested() {
+        let line = "\tlibfoo.so.1 (libc6) => /usr/lib32/libfoo.so.1";
+        let dir = match_ldconfig_line(line, "libfoo.so.1", "");
+        assert_eq!(dir, Some(PathBuf::from("/usr/lib32")));
+    }
+
+    #[test]
+    fn match_ldconfig_line_handles_missing_tag() {
+        let line = "\tlibfoo.so.1 => /usr/lib/libfoo.so.1";
+        let dir = match_ldconfig_line(line, "libfoo.so.1", "x86-64");
+        assert_eq!(dir, Some(PathBuf::from("/usr/lib")));
+    }
 
     #[test]
     fn compute_source_hash_deterministic() {
