@@ -142,6 +142,7 @@ fn encode_descriptor(
     match ty {
         OliveType::Float | OliveType::FloatLiteral(_) => out.push(2),
         OliveType::F32 => out.push(18),
+        OliveType::U64 | OliveType::Usize => out.push(19),
         OliveType::Bool => out.push(3),
         OliveType::Str => out.push(4),
         OliveType::Null => out.push(5),

@@ -1,7 +1,7 @@
 use crate::boxed::{TAG_BOOL, TAG_INT, TAG_MASK, TAG_NULL};
 use crate::format::{
     D_ANY, D_BACKREF, D_BOOL, D_BYTES, D_DICT, D_ENUM, D_F32, D_FATPTR, D_FLOAT, D_INT, D_LIST,
-    D_NULL, D_SET, D_STR, D_STRUCT, D_STRUCT_SHARED, D_TUPLE, byte, skip,
+    D_NULL, D_SET, D_STR, D_STRUCT, D_STRUCT_SHARED, D_TUPLE, D_U64, byte, skip,
 };
 use crate::{
     KIND_ANY_LIST, KIND_BYTES, KIND_ENUM, KIND_FLOAT, KIND_INT, KIND_LIST, KIND_OBJ, KIND_SET,
@@ -69,7 +69,7 @@ fn erase_needed(desc: *const u8, pos: usize, seen: &mut FxHashSet<usize>) -> boo
         return false;
     }
     match unsafe { byte(desc, pos) } {
-        D_STRUCT | D_STRUCT_SHARED | D_INT | D_FLOAT | D_F32 | D_NULL => true,
+        D_STRUCT | D_STRUCT_SHARED | D_INT | D_U64 | D_FLOAT | D_F32 | D_NULL => true,
         D_LIST | D_SET => erase_needed(desc, pos + 1, seen),
         D_DICT => {
             let mut p = pos + 1;
@@ -106,7 +106,7 @@ fn live_kind(v: i64) -> Option<i64> {
 
 pub(crate) fn unerase_scalar(any: i64, tag: u8) -> i64 {
     match tag {
-        D_INT => {
+        D_INT | D_U64 => {
             if any & TAG_MASK == TAG_INT {
                 return any >> 3;
             }
@@ -165,7 +165,7 @@ pub(crate) fn unerase_any(
             }
             crate::copy_typed::copy_any(any, visited)
         }
-        D_INT | D_FLOAT | D_F32 | D_BOOL | D_NULL => unerase_scalar(any, tag),
+        D_INT | D_U64 | D_FLOAT | D_F32 | D_BOOL | D_NULL => unerase_scalar(any, tag),
         D_ANY => crate::copy_typed::copy_any(any, visited),
         D_LIST => unerase_list_inner(any, desc, pos, visited),
         D_SET => unerase_set_inner(any, desc, pos, visited),

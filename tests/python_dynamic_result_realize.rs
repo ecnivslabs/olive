@@ -52,6 +52,42 @@ def make_dict():
 def make_set():
     return {1, 2, 3}
 
+def make_f32_list():
+    return [1.5, 2.5]
+
+def make_none_list():
+    return [None, None]
+
+def make_u64_list():
+    return [1 << 63]
+
+def make_f32_set():
+    return {1.5, 2.5}
+
+def make_none_set():
+    return {None}
+
+def make_u64_set():
+    return {1 << 63}
+
+def make_u64_dict():
+    return {1 << 63: 7}
+
+def make_int_dict():
+    return {2: 10, 3: 30}
+
+def make_typed_dicts():
+    return {1.5: 2.5}
+
+def make_mixed_keys():
+    return {2: 10, 1.5: 20, True: 30, None: 40, b"x": 50}
+
+def key_types(d):
+    return [type(k).__name__ for k in d]
+
+def sorted_key_types(d):
+    return sorted(key_types(d))
+
 def make_bad_iter():
     yield 1
     raise ValueError("boom")
@@ -263,6 +299,66 @@ main()
 }
 
 #[test]
+fn imported_scalar_collections_preserve_widths_and_none() {
+    assert_both_succeed(
+        r#"import py "drhelper" as h
+
+fn main():
+    let fs: [f32] = h.make_f32_list()
+    print(fs)
+    let ns: [None] = h.make_none_list()
+    print(ns)
+    let us: [u64] = h.make_u64_list()
+    print(us)
+
+main()
+"#,
+        "[1.5, 2.5]\n[None, None]\n[9223372036854775808]\n",
+    );
+}
+
+#[test]
+fn imported_unsigned_dict_keys_use_unsigned_hash_bits() {
+    assert_both_succeed(
+        r#"import py "drhelper" as h
+
+fn main():
+    let ints: {int: int} = h.make_int_dict()
+    print(ints[2])
+    let one: u64 = 1
+    let high: u64 = one << 63
+    let d: {u64: int} = h.make_u64_dict()
+    print(high in d)
+    print(d[high])
+
+main()
+"#,
+        "10\nTrue\n7\n",
+    );
+}
+
+#[test]
+fn imported_scalar_sets_preserve_widths_and_none() {
+    assert_both_succeed(
+        r#"import py "drhelper" as h
+
+fn main():
+    let fs: set[f32] = h.make_f32_set()
+    print(1.5 in fs)
+    let ns: set[None] = h.make_none_set()
+    print(None in ns)
+    let one: u64 = 1
+    let high: u64 = one << 63
+    let us: set[u64] = h.make_u64_set()
+    print(high in us)
+
+main()
+"#,
+        "True\nTrue\nTrue\n",
+    );
+}
+
+#[test]
 fn dynamic_module_call_typed_set_result_realizes_correctly() {
     assert_both_succeed(
         r#"import py "drhelper" as h
@@ -319,6 +415,23 @@ fn main():
 main()
 "#,
         "3\n",
+    );
+}
+
+#[test]
+fn imported_dict_values_and_keys_preserve_declared_types() {
+    assert_both_succeed(
+        r#"import py "drhelper" as h
+
+fn main():
+    let d: {float: f32} = h.make_typed_dicts()
+    print(d[1.5])
+    let m: {Any: int} = h.make_mixed_keys()
+    print(h.sorted_key_types(m))
+
+main()
+"#,
+        "2.5\n['NoneType', 'bool', 'bytes', 'float', 'int']\n",
     );
 }
 

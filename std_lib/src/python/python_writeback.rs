@@ -624,7 +624,8 @@ struct DecodedDictKey {
 
 fn dict_key_format_tag(key_tag: i64) -> u8 {
     match key_tag {
-        DICT_KEY_INT | DICT_KEY_U64 => crate::format::D_INT,
+        DICT_KEY_INT => crate::format::D_INT,
+        DICT_KEY_U64 => crate::format::D_U64,
         DICT_KEY_FLOAT => crate::format::D_FLOAT,
         DICT_KEY_F32 => crate::format::D_F32,
         DICT_KEY_BOOL => crate::format::D_BOOL,
@@ -634,8 +635,9 @@ fn dict_key_format_tag(key_tag: i64) -> u8 {
     }
 }
 
-fn dict_value_format_tag(tag: i64, value_f32: bool) -> u8 {
+fn dict_value_format_tag(tag: i64, value_f32: bool, value_u64: bool) -> u8 {
     match scalar_kind(tag) {
+        TAG_INT_LIST if value_u64 => crate::format::D_U64,
         TAG_INT_LIST => crate::format::D_INT,
         TAG_FLOAT_LIST if value_f32 => crate::format::D_F32,
         TAG_FLOAT_LIST => crate::format::D_FLOAT,
@@ -764,7 +766,7 @@ unsafe fn clear_dict_pair(pair: &WritebackPair) {
     let desc = AlignedDictDescriptor([
         crate::format::D_DICT,
         dict_key_format_tag(pair.key_tag),
-        dict_value_format_tag(pair.tag, pair.value_f32),
+        dict_value_format_tag(pair.tag, pair.value_f32, pair.value_u64),
     ]);
     crate::obj::olive_obj_clear_typed(pair.olive_ptr, desc.0.as_ptr() as i64);
 }
@@ -997,6 +999,7 @@ unsafe fn sync_set(pair: &WritebackPair) -> Result<(), String> {
 /// by `kind` instead of boxing through `py_to_any_internal`.
 unsafe fn sync_set_typed(pair: &WritebackPair) -> Result<(), String> {
     static INT_DESC: AlignedScalarDescriptor = AlignedScalarDescriptor([crate::format::D_INT]);
+    static U64_DESC: AlignedScalarDescriptor = AlignedScalarDescriptor([crate::format::D_U64]);
     static FLOAT_DESC: AlignedScalarDescriptor = AlignedScalarDescriptor([crate::format::D_FLOAT]);
     static F32_DESC: AlignedScalarDescriptor = AlignedScalarDescriptor([crate::format::D_F32]);
     static BOOL_DESC: AlignedScalarDescriptor = AlignedScalarDescriptor([crate::format::D_BOOL]);
@@ -1004,6 +1007,8 @@ unsafe fn sync_set_typed(pair: &WritebackPair) -> Result<(), String> {
     static NONE_DESC: AlignedScalarDescriptor = AlignedScalarDescriptor([crate::format::D_NULL]);
     static INT_SET_DESC: AlignedSetDescriptor =
         AlignedSetDescriptor([crate::format::D_SET, crate::format::D_INT]);
+    static U64_SET_DESC: AlignedSetDescriptor =
+        AlignedSetDescriptor([crate::format::D_SET, crate::format::D_U64]);
     static FLOAT_SET_DESC: AlignedSetDescriptor =
         AlignedSetDescriptor([crate::format::D_SET, crate::format::D_FLOAT]);
     static F32_SET_DESC: AlignedSetDescriptor =
@@ -1016,6 +1021,7 @@ unsafe fn sync_set_typed(pair: &WritebackPair) -> Result<(), String> {
         AlignedSetDescriptor([crate::format::D_SET, crate::format::D_NULL]);
     unsafe {
         let set_desc = match scalar_kind(pair.tag) {
+            TAG_INT_LIST if pair.value_u64 => U64_SET_DESC.0.as_ptr() as i64,
             TAG_INT_LIST => INT_SET_DESC.0.as_ptr() as i64,
             TAG_FLOAT_LIST if pair.value_f32 => F32_SET_DESC.0.as_ptr() as i64,
             TAG_FLOAT_LIST => FLOAT_SET_DESC.0.as_ptr() as i64,
@@ -1030,6 +1036,7 @@ unsafe fn sync_set_typed(pair: &WritebackPair) -> Result<(), String> {
         // bit pattern) is bit-identical to a tagged string pointer, which the
         // untyped op would dereference as string bytes and fault on.
         let key_desc = match kind {
+            TAG_INT_LIST if pair.value_u64 => U64_DESC.0.as_ptr() as i64,
             TAG_INT_LIST => INT_DESC.0.as_ptr() as i64,
             TAG_FLOAT_LIST if pair.value_f32 => F32_DESC.0.as_ptr() as i64,
             TAG_FLOAT_LIST => FLOAT_DESC.0.as_ptr() as i64,

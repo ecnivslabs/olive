@@ -177,7 +177,12 @@ fn classify_key(v: i64) -> KeyClass {
                 }
                 return KeyClass::Raw(v);
             }
-            format::D_INT | format::D_FLOAT | format::D_F32 | format::D_BOOL | format::D_NULL => {
+            format::D_INT
+            | format::D_U64
+            | format::D_FLOAT
+            | format::D_F32
+            | format::D_BOOL
+            | format::D_NULL => {
                 if is_active_object(v) {
                     let kind = unsafe { *(v as *const i64) };
                     if matches!(kind, KIND_INT | KIND_FLOAT) {

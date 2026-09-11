@@ -30,6 +30,9 @@ pub(crate) const D_FATPTR: u8 = 17;
 /// `f64` box, so the descriptor must preserve the width for typed
 /// format/copy/free and for `Any` boxing/unboxing.
 pub(crate) const D_F32: u8 = 18;
+/// `u64` bits, distinct from signed `D_INT` storage for formatting and
+/// descriptor-driven Any conversion.
+pub(crate) const D_U64: u8 = 19;
 
 /// Renders a value through a full descriptor starting at its first byte, for
 /// callers holding a runtime descriptor pointer (struct boxes).
@@ -138,6 +141,7 @@ fn fmt(val: i64, desc: *const u8, pos: &mut usize) -> String {
     *pos += 1;
     match tag {
         D_INT => format!("{val}"),
+        D_U64 => format!("{}", val as u64),
         D_FLOAT => crate::fmt_float(f64::from_bits(val as u64)),
         D_F32 => crate::fmt_float(f32::from_bits(val as u32) as f64),
         D_BOOL => if val != 0 { "True" } else { "False" }.to_string(),

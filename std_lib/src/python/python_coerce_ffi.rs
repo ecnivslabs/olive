@@ -276,7 +276,13 @@ pub extern "C" fn olive_py_to_list(obj: PyObject, elem_tag: i64) -> i64 {
             return fast;
         }
     }
-    with_gil(|| unsafe { olive_py_to_list_internal(unwrapped_obj, false) })
+    with_gil(|| unsafe {
+        crate::python::python_coerce::olive_py_to_list_tagged_internal(
+            unwrapped_obj,
+            elem_tag,
+            false,
+        )
+    })
 }
 
 /// `[Any]` target: elements are boxed so a nested float/int/bool/null reads
@@ -303,6 +309,22 @@ pub extern "C" fn olive_py_to_set(obj: PyObject) -> i64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn olive_py_to_set_typed(obj: PyObject, elem_tag: i64) -> i64 {
+    check_python_loaded();
+    let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
+    if unwrapped_obj.is_null() {
+        return 0;
+    }
+    with_gil(|| unsafe {
+        crate::python::python_coerce::olive_py_to_set_tagged_internal(
+            unwrapped_obj,
+            elem_tag,
+            false,
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn olive_py_to_any_set(obj: PyObject) -> i64 {
     check_python_loaded();
     let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
@@ -320,6 +342,23 @@ pub extern "C" fn olive_py_to_dict(obj: PyObject) -> i64 {
         return 0;
     }
     with_gil(|| unsafe { olive_py_to_dict_internal(unwrapped_obj, false) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_py_to_dict_typed(obj: PyObject, key_tag: i64, value_tag: i64) -> i64 {
+    check_python_loaded();
+    let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
+    if unwrapped_obj.is_null() {
+        return 0;
+    }
+    with_gil(|| unsafe {
+        crate::python::python_coerce::olive_py_to_dict_tagged_internal(
+            unwrapped_obj,
+            key_tag,
+            value_tag,
+            false,
+        )
+    })
 }
 
 /// `{str: Any}` target: values are boxed so a nested float/int/bool/null reads

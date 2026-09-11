@@ -732,8 +732,19 @@ impl<'a> MirBuilder<'a> {
                     // declared element type up front -- must match
                     // `python_buffer.rs`'s `BUF_ELEM_INT`/`BUF_ELEM_FLOAT`.
                     let elem_tag = match elem.as_ref() {
-                        Type::Int => 1,
-                        Type::Float => 2,
+                        Type::Int
+                        | Type::I8
+                        | Type::I16
+                        | Type::I32
+                        | Type::U8
+                        | Type::U16
+                        | Type::U32 => 1,
+                        Type::Float | Type::FloatLiteral(_) => 2,
+                        Type::F32 => 3,
+                        Type::Bool => 4,
+                        Type::Str => 5,
+                        Type::Null => 6,
+                        Type::U64 | Type::Usize => 7,
                         _ => 0,
                     };
                     self.push_statement(
@@ -752,29 +763,95 @@ impl<'a> MirBuilder<'a> {
                 Operand::Move(tmp)
             }
             Type::Set(elem) => {
-                let func = if elem.as_ref() == &Type::Any {
-                    "__olive_py_to_any_set"
+                let (func, elem_tag) = if elem.as_ref() == &Type::Any {
+                    ("__olive_py_to_any_set", 0)
                 } else {
-                    "__olive_py_to_set"
+                    let tag = match elem.as_ref() {
+                        Type::Int
+                        | Type::I8
+                        | Type::I16
+                        | Type::I32
+                        | Type::U8
+                        | Type::U16
+                        | Type::U32 => 1,
+                        Type::Float | Type::FloatLiteral(_) => 2,
+                        Type::F32 => 3,
+                        Type::Bool => 4,
+                        Type::Str => 5,
+                        Type::Null => 6,
+                        Type::U64 | Type::Usize => 7,
+                        _ => 0,
+                    };
+                    if matches!(tag, 3 | 6 | 7) {
+                        ("__olive_py_to_set_typed", tag)
+                    } else {
+                        ("__olive_py_to_set", 0)
+                    }
                 };
                 let tmp = self.new_unscoped_local(target.clone());
+                let mut args = vec![op];
+                if elem_tag != 0 {
+                    args.push(Operand::Constant(Constant::Int(elem_tag)));
+                }
                 self.push_statement(
                     StatementKind::Assign(
                         tmp,
                         Rvalue::Call {
                             func: Operand::Constant(Constant::Function(func.to_string())),
-                            args: vec![op],
+                            args,
                         },
                     ),
                     span,
                 );
                 Operand::Move(tmp)
             }
-            Type::Dict(_, val) => {
-                let func = if val.as_ref() == &Type::Any {
-                    "__olive_py_to_any_dict"
+            Type::Dict(key, val) => {
+                let key_tag = match key.as_ref() {
+                    Type::Int
+                    | Type::I8
+                    | Type::I16
+                    | Type::I32
+                    | Type::U8
+                    | Type::U16
+                    | Type::U32 => 0,
+                    Type::U64 | Type::Usize => 1,
+                    Type::Float | Type::FloatLiteral(_) => 2,
+                    Type::F32 => 3,
+                    Type::Bool => 4,
+                    Type::Str => 5,
+                    Type::Any => 6,
+                    Type::Null => 7,
+                    _ => 0,
+                };
+                let value_tag = match val.as_ref() {
+                    Type::Int
+                    | Type::I8
+                    | Type::I16
+                    | Type::I32
+                    | Type::U8
+                    | Type::U16
+                    | Type::U32 => 1,
+                    Type::Float | Type::FloatLiteral(_) => 2,
+                    Type::F32 => 3,
+                    Type::Bool => 4,
+                    Type::Str => 5,
+                    Type::Null => 6,
+                    Type::U64 | Type::Usize => 7,
+                    _ => 0,
+                };
+                let (func, args) = if val.as_ref() == &Type::Any && key_tag == 5 {
+                    ("__olive_py_to_any_dict", vec![op])
+                } else if key_tag != 5 || matches!(value_tag, 3 | 6 | 7) {
+                    (
+                        "__olive_py_to_dict_typed",
+                        vec![
+                            op,
+                            Operand::Constant(Constant::Int(key_tag)),
+                            Operand::Constant(Constant::Int(value_tag)),
+                        ],
+                    )
                 } else {
-                    "__olive_py_to_dict"
+                    ("__olive_py_to_dict", vec![op])
                 };
                 let tmp = self.new_unscoped_local(target.clone());
                 self.push_statement(
@@ -782,7 +859,7 @@ impl<'a> MirBuilder<'a> {
                         tmp,
                         Rvalue::Call {
                             func: Operand::Constant(Constant::Function(func.to_string())),
-                            args: vec![op],
+                            args,
                         },
                     ),
                     span,

@@ -384,6 +384,7 @@ unsafe fn to_py_typed_desc_at(val: i64, desc: *const u8, pos: &mut usize) -> PyO
         *pos += 1;
         match tag {
             crate::format::D_INT => py_long_from_i64(val),
+            crate::format::D_U64 => py_long_from_u64(val as u64),
             crate::format::D_FLOAT => PY_FLOAT_FROM_DOUBLE(f64::from_bits(val as u64)),
             crate::format::D_F32 => PY_FLOAT_FROM_DOUBLE(f32::from_bits(val as u32) as f64),
             crate::format::D_BOOL => PY_BOOL_FROM_LONG(val as c_long),
@@ -705,6 +706,99 @@ pub unsafe fn py_to_olive_internal(py_val: PyObject) -> i64 {
 /// `boxed = true` so a float/int nested at any depth still lands boxed --
 /// e.g. a dict value that's itself a list of floats needs every leaf boxed,
 /// not just the top one. Use when the result lands in an Any slot.
+#[repr(align(8))]
+struct AlignedDescriptor([u8; 1]);
+
+fn scalar_descriptor(tag: i64) -> i64 {
+    static INT: AlignedDescriptor = AlignedDescriptor([crate::format::D_INT]);
+    static FLOAT: AlignedDescriptor = AlignedDescriptor([crate::format::D_FLOAT]);
+    static F32: AlignedDescriptor = AlignedDescriptor([crate::format::D_F32]);
+    static BOOL: AlignedDescriptor = AlignedDescriptor([crate::format::D_BOOL]);
+    static STR: AlignedDescriptor = AlignedDescriptor([crate::format::D_STR]);
+    static NULL: AlignedDescriptor = AlignedDescriptor([crate::format::D_NULL]);
+    static U64: AlignedDescriptor = AlignedDescriptor([crate::format::D_U64]);
+    static ANY: AlignedDescriptor = AlignedDescriptor([crate::format::D_ANY]);
+    match tag {
+        2 => FLOAT.0.as_ptr() as i64,
+        3 => F32.0.as_ptr() as i64,
+        4 => BOOL.0.as_ptr() as i64,
+        5 => STR.0.as_ptr() as i64,
+        6 => NULL.0.as_ptr() as i64,
+        7 => U64.0.as_ptr() as i64,
+        0 => ANY.0.as_ptr() as i64,
+        _ => INT.0.as_ptr() as i64,
+    }
+}
+
+pub(crate) unsafe fn py_to_typed_scalar_internal(py_val: PyObject, tag: i64) -> Option<i64> {
+    unsafe {
+        if py_val.is_null() {
+            return None;
+        }
+        let ty = raw_ob_type(py_val);
+        let is_sub = |expected: PyObject| {
+            !expected.is_null()
+                && !ty.is_null()
+                && (ty == expected || PY_TYPE_IS_SUBTYPE(ty, expected) != 0)
+        };
+        match tag {
+            1 => {
+                if !is_sub(PY_LONG_TYPE) {
+                    return None;
+                }
+                let value = py_long_as_i64(py_val);
+                if !PY_ERR_OCCURRED().is_null() {
+                    PY_ERR_CLEAR();
+                    return None;
+                }
+                Some(value)
+            }
+            2 => {
+                if is_sub(PY_FLOAT_TYPE) {
+                    return Some(PY_FLOAT_AS_DOUBLE(py_val).to_bits() as i64);
+                }
+                if is_sub(PY_LONG_TYPE) {
+                    let value = py_long_as_i64(py_val);
+                    if !PY_ERR_OCCURRED().is_null() {
+                        return None;
+                    }
+                    return Some((value as f64).to_bits() as i64);
+                }
+                None
+            }
+            3 => {
+                if is_sub(PY_FLOAT_TYPE) {
+                    return Some((PY_FLOAT_AS_DOUBLE(py_val) as f32).to_bits() as i64);
+                }
+                if is_sub(PY_LONG_TYPE) {
+                    let value = py_long_as_i64(py_val);
+                    if !PY_ERR_OCCURRED().is_null() {
+                        return None;
+                    }
+                    return Some((value as f32).to_bits() as i64);
+                }
+                None
+            }
+            4 => {
+                if !is_sub(PY_BOOL_TYPE) {
+                    return None;
+                }
+                Some((PY_LONG_AS_LONG(py_val) != 0) as i64)
+            }
+            5 => {
+                if !is_sub(PY_UNICODE_TYPE) {
+                    return None;
+                }
+                let value = py_str_to_olive(py_val);
+                (value != 0).then_some(value)
+            }
+            6 => (py_val == _PY_NONE_STRUCT).then_some(0),
+            7 => py_u64_from_python(py_val).map(|value| value as i64),
+            _ => None,
+        }
+    }
+}
+
 pub unsafe fn py_to_any_internal(py_val: PyObject) -> i64 {
     unsafe {
         if py_val.is_null() || py_val == _PY_NONE_STRUCT {
@@ -753,6 +847,10 @@ pub unsafe fn py_to_any_internal(py_val: PyObject) -> i64 {
 }
 
 pub unsafe fn olive_py_to_list_internal(obj: PyObject, boxed: bool) -> i64 {
+    unsafe { olive_py_to_list_tagged_internal(obj, 0, boxed) }
+}
+
+pub unsafe fn olive_py_to_list_tagged_internal(obj: PyObject, elem_tag: i64, boxed: bool) -> i64 {
     unsafe {
         let ty = raw_ob_type(obj);
         let is_list = !ty.is_null()
@@ -798,6 +896,18 @@ pub unsafe fn olive_py_to_list_internal(obj: PyObject, boxed: bool) -> i64 {
                     0
                 } else if boxed {
                     py_to_any_internal(py_item)
+                } else if elem_tag != 0 {
+                    match py_to_typed_scalar_internal(py_item, elem_tag) {
+                        Some(value) => value,
+                        None => {
+                            if !PY_ERR_OCCURRED().is_null() {
+                                PY_ERR_CLEAR();
+                            }
+                            crate::panic::abort_py_coerce(
+                                "Python collection element has incompatible type",
+                            );
+                        }
+                    }
                 } else {
                     py_to_olive_internal(py_item)
                 };
@@ -810,49 +920,169 @@ pub unsafe fn olive_py_to_list_internal(obj: PyObject, boxed: bool) -> i64 {
     }
 }
 
+fn dict_key_descriptor(tag: i64) -> i64 {
+    match tag {
+        2 => scalar_descriptor(2),
+        3 => scalar_descriptor(3),
+        1 => scalar_descriptor(7),
+        4 => scalar_descriptor(4),
+        5 => scalar_descriptor(5),
+        6 => scalar_descriptor(0),
+        7 => scalar_descriptor(6),
+        _ => scalar_descriptor(1),
+    }
+}
+
+unsafe fn py_to_typed_dict_key_internal(item: PyObject, key_tag: i64) -> Option<(i64, bool)> {
+    unsafe {
+        if key_tag == 5 {
+            let ty = raw_ob_type(item);
+            let is_unicode = !ty.is_null()
+                && !PY_UNICODE_TYPE.is_null()
+                && (ty == PY_UNICODE_TYPE || PY_TYPE_IS_SUBTYPE(ty, PY_UNICODE_TYPE) != 0);
+            if is_unicode {
+                let value = py_str_to_olive(item);
+                return (value != 0).then_some((value, true));
+            }
+            let safe_builtin = item == _PY_NONE_STRUCT
+                || ty == PY_LONG_TYPE
+                || ty == PY_FLOAT_TYPE
+                || ty == PY_BOOL_TYPE
+                || ty == PY_BYTES_TYPE;
+            if !safe_builtin {
+                return None;
+            }
+            let text = PY_OBJECT_STR(item);
+            if text.is_null() {
+                PY_ERR_CLEAR();
+                return None;
+            }
+            let value = py_str_to_olive(text);
+            PY_DEC_REF(text);
+            return (value != 0).then_some((value, true));
+        }
+        if key_tag == 6 {
+            return Some((py_to_any_internal(item), false));
+        }
+        let scalar_tag = match key_tag {
+            0 => 1,
+            1 => 7,
+            2 => 2,
+            3 => 3,
+            4 => 4,
+            7 => 6,
+            _ => return None,
+        };
+        py_to_typed_scalar_internal(item, scalar_tag).map(|value| (value, false))
+    }
+}
+
 pub unsafe fn olive_py_to_dict_internal(obj: PyObject, boxed: bool) -> i64 {
+    unsafe { olive_py_to_dict_tagged_internal(obj, 0, 0, boxed) }
+}
+
+pub unsafe fn olive_py_to_dict_tagged_internal(
+    obj: PyObject,
+    key_tag: i64,
+    value_tag: i64,
+    boxed: bool,
+) -> i64 {
     unsafe {
         let olive_obj = crate::olive_obj_new();
+        if boxed || (key_tag == 0 && value_tag == 0) {
+            let mut pos: isize = 0;
+            let mut key_obj: PyObject = std::ptr::null_mut();
+            let mut val_obj: PyObject = std::ptr::null_mut();
+
+            while PY_DICT_NEXT(obj, &mut pos, &mut key_obj, &mut val_obj) != 0 {
+                if !key_obj.is_null() {
+                    let key_ty = raw_ob_type(key_obj);
+                    let is_unicode = !key_ty.is_null()
+                        && !PY_UNICODE_TYPE.is_null()
+                        && (key_ty == PY_UNICODE_TYPE
+                            || PY_TYPE_IS_SUBTYPE(key_ty, PY_UNICODE_TYPE) != 0);
+
+                    let key_ptr = if is_unicode {
+                        py_str_to_olive(key_obj)
+                    } else {
+                        let str_obj = PY_OBJECT_STR(key_obj);
+                        if str_obj.is_null() {
+                            crate::python::python_error::handle_py_error();
+                        }
+                        let r = py_str_to_olive(str_obj);
+                        PY_DEC_REF(str_obj);
+                        r
+                    };
+
+                    if key_ptr != 0 {
+                        let olive_val = if boxed {
+                            py_to_any_internal(val_obj)
+                        } else {
+                            py_to_olive_internal(val_obj)
+                        };
+                        crate::olive_obj_set(olive_obj, key_ptr, olive_val);
+                        crate::string_slab::str_free(key_ptr);
+                    }
+                }
+            }
+            return olive_obj;
+        }
+
+        let mut entries = Vec::new();
         let mut pos: isize = 0;
         let mut key_obj: PyObject = std::ptr::null_mut();
         let mut val_obj: PyObject = std::ptr::null_mut();
-
         while PY_DICT_NEXT(obj, &mut pos, &mut key_obj, &mut val_obj) != 0 {
-            if !key_obj.is_null() {
-                let key_ty = raw_ob_type(key_obj);
-                let is_unicode = !key_ty.is_null()
-                    && !PY_UNICODE_TYPE.is_null()
-                    && (key_ty == PY_UNICODE_TYPE
-                        || PY_TYPE_IS_SUBTYPE(key_ty, PY_UNICODE_TYPE) != 0);
-
-                let key_ptr = if is_unicode {
-                    py_str_to_olive(key_obj)
-                } else {
-                    let str_obj = PY_OBJECT_STR(key_obj);
-                    if str_obj.is_null() {
-                        crate::python::python_error::handle_py_error();
-                    }
-                    let r = py_str_to_olive(str_obj);
-                    PY_DEC_REF(str_obj);
-                    r
-                };
-
-                if key_ptr != 0 {
-                    let olive_val = if boxed {
-                        py_to_any_internal(val_obj)
-                    } else {
-                        py_to_olive_internal(val_obj)
-                    };
-                    crate::olive_obj_set(olive_obj, key_ptr, olive_val);
-                    crate::string_slab::str_free(key_ptr);
+            PY_INC_REF(key_obj);
+            PY_INC_REF(val_obj);
+            entries.push((key_obj, val_obj));
+        }
+        for (key_obj, val_obj) in entries {
+            let Some((key_ptr, key_owned)) = py_to_typed_dict_key_internal(key_obj, key_tag) else {
+                if !PY_ERR_OCCURRED().is_null() {
+                    PY_ERR_CLEAR();
                 }
+                crate::panic::abort_py_coerce("Python dictionary key has incompatible type");
+            };
+            let olive_val = if value_tag == 0 {
+                py_to_any_internal(val_obj)
+            } else {
+                match py_to_typed_scalar_internal(val_obj, value_tag) {
+                    Some(value) => value,
+                    None => {
+                        if key_owned {
+                            crate::olive_free_str(key_ptr);
+                        }
+                        if !PY_ERR_OCCURRED().is_null() {
+                            PY_ERR_CLEAR();
+                        }
+                        crate::panic::abort_py_coerce(
+                            "Python dictionary value has incompatible type",
+                        );
+                    }
+                }
+            };
+            crate::hash_typed::olive_obj_set_typed(
+                olive_obj,
+                key_ptr,
+                olive_val,
+                dict_key_descriptor(key_tag),
+            );
+            if key_owned {
+                crate::olive_free_str(key_ptr);
             }
+            PY_DEC_REF(key_obj);
+            PY_DEC_REF(val_obj);
         }
         olive_obj
     }
 }
 
 pub unsafe fn olive_py_to_set_internal(obj: PyObject, boxed: bool) -> i64 {
+    unsafe { olive_py_to_set_tagged_internal(obj, 0, boxed) }
+}
+
+pub unsafe fn olive_py_to_set_tagged_internal(obj: PyObject, elem_tag: i64, boxed: bool) -> i64 {
     unsafe {
         let iter = PY_OBJECT_GET_ITER(obj);
         if iter.is_null() {
@@ -874,10 +1104,28 @@ pub unsafe fn olive_py_to_set_internal(obj: PyObject, boxed: bool) -> i64 {
             }
             let olive_val = if boxed {
                 py_to_any_internal(item)
+            } else if elem_tag != 0 {
+                match py_to_typed_scalar_internal(item, elem_tag) {
+                    Some(value) => value,
+                    None => {
+                        if !PY_ERR_OCCURRED().is_null() {
+                            PY_ERR_CLEAR();
+                        }
+                        crate::panic::abort_py_coerce("Python set element has incompatible type");
+                    }
+                }
             } else {
                 py_to_olive_internal(item)
             };
-            crate::olive_set_add(set_ptr, olive_val);
+            if boxed || elem_tag == 0 {
+                crate::olive_set_add(set_ptr, olive_val);
+            } else {
+                crate::hash_typed::olive_set_add_typed(
+                    set_ptr,
+                    olive_val,
+                    scalar_descriptor(elem_tag),
+                );
+            }
             PY_DEC_REF(item);
         }
         PY_DEC_REF(iter);
