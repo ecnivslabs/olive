@@ -967,7 +967,9 @@ impl<'a> MirBuilder<'a> {
         // Scalar keys box: a bare large odd int is bit-identical to a
         // tagged string pointer, bare bool loses its dynamic type against
         // int, and bare float bits hash differently typed than untyped.
-        // Boxed words classify identically everywhere.
+        // Boxed words classify identically everywhere. Python handles need
+        // materialization too, because bytes and other Python-backed values
+        // do not use the handle word as their Any representation.
         matches!(
             ty,
             Type::Int
@@ -983,6 +985,8 @@ impl<'a> MirBuilder<'a> {
                 | Type::F32
                 | Type::Bool
                 | Type::Null
+                | Type::PyObject
+                | Type::PyNamed(_, _)
         )
     }
 

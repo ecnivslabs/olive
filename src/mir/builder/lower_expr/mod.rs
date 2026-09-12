@@ -134,7 +134,10 @@ impl<'a> MirBuilder<'a> {
         elem_ty: &Type,
     ) -> Operand {
         let from_ty = self.get_type(elem.id);
-        if from_ty.is_py_value() && !matches!(elem_ty, Type::Any | Type::PyObject) {
+        if from_ty.is_py_value() && *elem_ty == Type::Any {
+            return self.box_into_any(op, &from_ty, elem.span);
+        }
+        if from_ty.is_py_value() && *elem_ty != Type::PyObject {
             return self.coerce(op, &from_ty, elem_ty, elem.span);
         }
         if *elem_ty != Type::Any {
@@ -608,6 +611,28 @@ impl<'a> MirBuilder<'a> {
         // Float slots canonicalize widths: an int-family or wrong-width
         // float word stored raw reads back garbage (see
         // `coerce_float_slot`).
+        if from_ty.is_py_value()
+            && matches!(
+                to_ty,
+                Type::Struct(_, _, _) | Type::Enum(_, _) | Type::TraitObject(..)
+            )
+        {
+            let fault = self.new_local(to_ty.clone(), None, false);
+            self.push_statement(
+                StatementKind::Assign(
+                    fault,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function(
+                            "__olive_py_noconvert".to_string(),
+                        )),
+                        args: vec![],
+                    },
+                ),
+                span,
+            );
+            return Operand::Move(fault);
+        }
+
         if matches!(to_ty, Type::Float | Type::F32 | Type::FloatLiteral(_)) {
             return self.coerce_float_slot(op, from_ty, to_ty, span);
         }

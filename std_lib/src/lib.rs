@@ -234,10 +234,20 @@ fn classify_key(v: i64) -> KeyClass {
     KeyClass::Scalar(KIND_INT, v)
 }
 
+fn bytes_key(value: i64) -> Option<&'static [u8]> {
+    if !is_active_object(value) || unsafe { *(value as *const i64) } != KIND_BYTES {
+        return None;
+    }
+    Some(unsafe { &*(value as *const bytes::OliveBytes) }.as_slice())
+}
+
 impl PartialEq for OliveStringKey {
     fn eq(&self, other: &Self) -> bool {
         if self.0 == other.0 {
             return true;
+        }
+        if let (Some(a), Some(b)) = (bytes_key(self.0), bytes_key(other.0)) {
+            return a == b;
         }
         match (classify_key(self.0), classify_key(other.0)) {
             (KeyClass::Str(a), KeyClass::Str(b)) => a == b,
@@ -284,6 +294,10 @@ impl PartialEq for OliveStringKey {
 impl Eq for OliveStringKey {}
 impl std::hash::Hash for OliveStringKey {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        if let Some(value) = bytes_key(self.0) {
+            value.hash(state);
+            return;
+        }
         match classify_key(self.0) {
             KeyClass::Str(s) => s.hash(state),
             KeyClass::Scalar(kind, bits) => {

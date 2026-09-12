@@ -145,6 +145,12 @@ def put_big_key(d):
 def put_high_u64_key(d):
     d[1 << 63] = 7
 
+def make_bytes_key():
+    return b"x"
+
+def put_bytes_key(d, key):
+    d[key] = 1
+
 def first_key(d):
     return next(iter(d))
 
@@ -921,6 +927,23 @@ fn main():
     let key: PyObject = h.make_custom_key()
     let mut d: {Any: int} = {}
     h.put_custom_key(d, key)
+    print(d.get(key, -1))
+
+main()
+"#,
+        "1\n",
+    );
+}
+
+#[test]
+fn any_bytes_key_lookup_uses_value_identity_after_writeback() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let key: PyObject = h.make_bytes_key()
+    let mut d: {Any: int} = {}
+    h.put_bytes_key(d, key)
     print(d.get(key, -1))
 
 main()

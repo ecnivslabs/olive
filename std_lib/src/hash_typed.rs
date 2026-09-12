@@ -395,6 +395,10 @@ fn hash_any_word(v: i64, visited: &mut FxHashSet<i64>) -> u64 {
         });
         return commutative(parts);
     }
+    if kind == crate::KIND_BYTES {
+        let bytes = unsafe { &*(v as *const crate::bytes::OliveBytes) }.as_slice();
+        return one(hash_bytes(bytes));
+    }
     if kind == crate::KIND_FLOAT || kind == crate::KIND_INT || kind == crate::KIND_U64 {
         let b = unsafe { &*(v as *const crate::boxed::OliveBoxed) };
         return seq([kind as u64, b.bits as u64]);
@@ -537,6 +541,12 @@ fn hash_val(val: i64, desc: *const u8, pos: &mut usize, visited: &mut FxHashSet<
         }
         _ => one(val as u64),
     }
+}
+
+fn hash_bytes(bytes: &[u8]) -> u64 {
+    let mut hasher = FxHasher::default();
+    hasher.write(bytes);
+    hasher.finish()
 }
 
 fn one(v: u64) -> u64 {
