@@ -76,6 +76,27 @@ def make_u64_dict():
 def make_int_dict():
     return {2: 10, 3: 30}
 
+def make_nested_f32_matrix():
+    return [[1.5]]
+
+def make_nested_u64_matrix():
+    return [[1 << 63]]
+
+def make_nested_none_matrix():
+    return [[None]]
+
+def make_nested_f32_dict():
+    return {"x": [1.5]}
+
+def make_nested_none_dict():
+    return {1: [None]}
+
+def make_float_set():
+    return {2.5}
+
+def make_tuple_set():
+    return {(1.5, 1 << 63)}
+
 def make_typed_dicts():
     return {1.5: 2.5}
 
@@ -432,6 +453,35 @@ fn main():
 main()
 "#,
         "2.5\n['NoneType', 'bool', 'bytes', 'float', 'int']\n",
+    );
+}
+
+#[test]
+fn imported_nested_collections_use_full_descriptors() {
+    assert_both_succeed(
+        r#"import py "drhelper" as h
+
+fn main():
+    let one: u64 = 1
+    let high: u64 = one << 63
+    let fs: [[f32]] = h.make_nested_f32_matrix()
+    print(fs[0][0])
+    let us: [[u64]] = h.make_nested_u64_matrix()
+    print(high in us[0])
+    let ns: [[None]] = h.make_nested_none_matrix()
+    print(None in ns[0])
+    let fd: {str: [f32]} = h.make_nested_f32_dict()
+    print(fd["x"][0])
+    let nd: {int: [None]} = h.make_nested_none_dict()
+    print(None in nd[1])
+    let fs2: set[float] = h.make_float_set()
+    print(2.5 in fs2)
+    let tuples: set[(f32, u64)] = h.make_tuple_set()
+    print(tuples)
+
+main()
+"#,
+        "1.5\nTrue\nTrue\n1.5\nTrue\nTrue\n{(1.5, 9223372036854775808)}\n",
     );
 }
 

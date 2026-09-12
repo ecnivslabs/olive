@@ -12,6 +12,7 @@ pub mod python_call_method_safe;
 pub mod python_callable;
 pub mod python_coerce;
 pub mod python_coerce_ffi;
+pub mod python_coerce_typed;
 pub mod python_compat;
 pub mod python_dlpack;
 pub mod python_error;

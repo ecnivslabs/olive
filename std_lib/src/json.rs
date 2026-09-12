@@ -80,6 +80,10 @@ pub(crate) fn olive_to_json(val: i64) -> serde_json::Value {
             let b = unsafe { &*(val as *const crate::boxed::OliveBoxed) };
             serde_json::Value::Number(b.bits.into())
         }
+        crate::KIND_U64 => {
+            let b = unsafe { &*(val as *const crate::boxed::OliveBoxed) };
+            serde_json::Value::Number(serde_json::Number::from(b.bits as u64))
+        }
         crate::KIND_FLOAT => {
             let b = unsafe { &*(val as *const crate::boxed::OliveBoxed) };
             serde_json::Number::from_f64(f64::from_bits(b.bits as u64))

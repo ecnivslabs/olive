@@ -128,6 +128,29 @@ def inspect_legacy(*args):
 def any_dict_items(d):
     return [(type(k).__name__, k, type(v).__name__) for k, v in d.items()]
 
+def make_custom_key():
+    class Key:
+        pass
+    return Key()
+
+def put_custom_key(d, key):
+    d[key] = 1
+
+def make_big_key():
+    return 1 << 100
+
+def put_big_key(d):
+    d[1 << 100] = 1
+
+def put_high_u64_key(d):
+    d[1 << 63] = 7
+
+def first_key(d):
+    return next(iter(d))
+
+def inspect_tuple_key(d):
+    return [(type(k).__name__, k) for k in d]
+
 def add_int_to_set(s, v):
     s.add(v)
 
@@ -188,6 +211,9 @@ def live_any_keys():
 
 def append_first17(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16):
     a0.append(999)
+
+def kw17(d, **kw):
+    d[2] = 9
 "#;
 
 /// Writes `wbhelper.py` and a `main.liv` (source `src`) into a fresh temp
@@ -763,17 +789,18 @@ fn run(d: {str: Any}, key: PyObject) -> PyObject | Error:
     return try h.put_mutating_key(d, key)
 
 fn main():
-    let mut d: {str: Any} = {}
+    let mut d: {str: Any} = {"old": 5}
     let key: PyObject = h.make_mutating_key()
     match run(d, key):
         Error(_e):
             print("caught")
         _:
             print("bad")
+    print(d.get("old", -1))
 
 main()
 "#,
-        "caught\n",
+        "caught\n5\n",
     );
 }
 
@@ -806,6 +833,28 @@ fn main():
 main()
 "#,
         "[('bool', True, 'bool', True)]\n",
+    );
+}
+
+#[test]
+fn concrete_tuple_dict_key_crosses_as_hashable_python_key() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn run(d: {(int, f32): int}) -> PyObject | Error:
+    return try h.inspect_tuple_key(d)
+
+fn main():
+    let d: {(int, f32): int} = {(1, 1.5): 7}
+    match run(d):
+        Error(_e):
+            print("caught")
+        _:
+            print("bad")
+
+main()
+"#,
+        "bad\n",
     );
 }
 
@@ -864,6 +913,76 @@ main()
 }
 
 #[test]
+fn any_python_object_key_identity_survives_writeback() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let key: PyObject = h.make_custom_key()
+    let mut d: {Any: int} = {}
+    h.put_custom_key(d, key)
+    print(d.get(key, -1))
+
+main()
+"#,
+        "1\n",
+    );
+}
+
+#[test]
+fn any_wide_integer_key_identity_survives_writeback() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let key: PyObject = h.make_big_key()
+    let mut d: {Any: int} = {}
+    h.put_big_key(d)
+    print(d.get(key, -1))
+
+main()
+"#,
+        "1\n",
+    );
+}
+
+#[test]
+fn any_unsigned_key_preserves_unsigned_value() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let one: u64 = 1
+    let high: u64 = one << 63
+    let d: {Any: int} = {high: 1}
+    print(h.first_key(d))
+
+main()
+"#,
+        "9223372036854775808\n",
+    );
+}
+
+#[test]
+fn typed_unsigned_key_relookup_survives_python_mutation() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let one: u64 = 1
+    let high: u64 = one << 63
+    let mut d: {u64: int} = {}
+    h.put_high_u64_key(d)
+    print(high in d)
+    print(d[high])
+
+main()
+"#,
+        "True\n7\n",
+    );
+}
+
+#[test]
 fn any_object_keys_are_released_on_dict_writeback() {
     assert_both_succeed(
         r#"import py "wbhelper" as h
@@ -894,6 +1013,22 @@ fn main():
 main()
 "#,
         "E0714",
+    );
+}
+
+#[test]
+fn many_keywords_with_positional_dict_use_preconverted_arguments() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let d: {int: int} = {}
+    h.kw17(d, a0=0, a1=1, a2=2, a3=3, a4=4, a5=5, a6=6, a7=7, a8=8, a9=9, a10=10, a11=11, a12=12, a13=13, a14=14, a15=15, a16=16)
+    print(d.get(2, -1))
+
+main()
+"#,
+        "-1\n",
     );
 }
 

@@ -498,7 +498,7 @@ pub extern "C" fn olive_list_sort_any(list_ptr: i64) -> i64 {
         } else if w != 0 && crate::is_active_object(w) {
             match unsafe { *(w as *const i64) } {
                 crate::KIND_FLOAT => has_float = true,
-                crate::KIND_INT => has_int = true,
+                crate::KIND_INT | crate::KIND_U64 => has_int = true,
                 _ => sort_unorderable(w),
             }
         } else {

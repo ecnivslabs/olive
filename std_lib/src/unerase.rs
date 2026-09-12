@@ -5,7 +5,7 @@ use crate::format::{
 };
 use crate::{
     KIND_ANY_LIST, KIND_BYTES, KIND_ENUM, KIND_FLOAT, KIND_INT, KIND_LIST, KIND_OBJ, KIND_SET,
-    OliveHashSet, OliveObj, OliveStringKey, StableVec,
+    KIND_U64, OliveHashSet, OliveObj, OliveStringKey, StableVec,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -111,7 +111,7 @@ pub(crate) fn unerase_scalar(any: i64, tag: u8) -> i64 {
                 return any >> 3;
             }
             match live_kind(any) {
-                Some(KIND_INT) => {
+                Some(KIND_INT | KIND_U64) => {
                     // SAFETY: kind verified above on a live slot.
                     unsafe { (*(any as *const crate::boxed::OliveBoxed)).bits }
                 }

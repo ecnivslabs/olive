@@ -10,7 +10,7 @@ use crate::slab::slot_is_live;
 use crate::struct_share::retain_struct;
 use crate::{
     KIND_ANY_LIST, KIND_BYTES, KIND_ENUM, KIND_FLOAT, KIND_INT, KIND_LIST, KIND_OBJ, KIND_PYOBJECT,
-    KIND_SET, OliveEnum, OliveHashSet, OliveObj, OliveStringKey, StableVec,
+    KIND_SET, KIND_U64, OliveEnum, OliveHashSet, OliveObj, OliveStringKey, StableVec,
 };
 use rustc_hash::FxHashMap;
 use std::cell::RefCell;
@@ -675,6 +675,10 @@ fn copy_any_node(
         KIND_INT => {
             let bits = unsafe { (*(val as *const crate::boxed::OliveBoxed)).bits };
             crate::boxed::olive_box_int(bits)
+        }
+        KIND_U64 => {
+            let bits = unsafe { (*(val as *const crate::boxed::OliveBoxed)).bits };
+            crate::boxed::olive_box_u64(bits)
         }
         KIND_BYTES => crate::bytes::clone_buf(val),
         // Wrap a fresh handle rather than incref in place; that would clobber the kind field (CPython's ob_refcnt slot).

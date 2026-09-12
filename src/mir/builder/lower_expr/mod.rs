@@ -271,15 +271,10 @@ impl<'a> MirBuilder<'a> {
             return Operand::Copy(tmp);
         }
         let boxer = match from_ty {
-            Type::Int
-            | Type::I8
-            | Type::I16
-            | Type::I32
-            | Type::U8
-            | Type::U16
-            | Type::U32
-            | Type::U64
-            | Type::Usize => Some(("__olive_box_int", true)),
+            Type::Int | Type::I8 | Type::I16 | Type::I32 | Type::U8 | Type::U16 | Type::U32 => {
+                Some(("__olive_box_int", true))
+            }
+            Type::U64 | Type::Usize => Some(("__olive_box_u64", true)),
             Type::Float | Type::F32 => Some(("__olive_box_float", true)),
             Type::Bool => Some(("__olive_box_bool", true)),
             Type::Null => Some(("__olive_box_null", false)),
@@ -640,6 +635,29 @@ impl<'a> MirBuilder<'a> {
         }
     }
 
+    fn realize_py_typed_collection(&mut self, op: Operand, target: &Type, span: Span) -> Operand {
+        let descriptor = type_descriptor(
+            target,
+            &self.struct_fields,
+            &self.struct_field_types,
+            &self.enum_defs,
+        );
+        let tmp = self.new_unscoped_local(target.clone());
+        self.push_statement(
+            StatementKind::Assign(
+                tmp,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(
+                        "__olive_py_from_typed".to_string(),
+                    )),
+                    args: vec![op, Operand::Constant(Constant::Str(descriptor))],
+                },
+            ),
+            span,
+        );
+        Operand::Move(tmp)
+    }
+
     /// Converts a Python value into the Olive representation of `target`.
     fn realize_py_value(&mut self, op: Operand, target: &Type, span: Span) -> Operand {
         match target {
@@ -677,195 +695,10 @@ impl<'a> MirBuilder<'a> {
                 );
                 Operand::Move(tmp)
             }
-            // Element-wise: each member keeps its own declared type, so a
-            // `PyNamed` member stays a handle while natives convert.
-            Type::Tuple(members) => {
-                self.emit_py_set_loc(span);
-                let mut elems = Vec::with_capacity(members.len());
-                for (i, member) in members.iter().enumerate() {
-                    let item = self.new_unscoped_local(Type::PyObject);
-                    self.push_statement(
-                        StatementKind::Assign(
-                            item,
-                            Rvalue::Call {
-                                func: Operand::Constant(Constant::Function(
-                                    "__olive_py_getitem_int".to_string(),
-                                )),
-                                args: vec![op.clone(), Operand::Constant(Constant::Int(i as i64))],
-                            },
-                        ),
-                        span,
-                    );
-                    let coerced = self.coerce(Operand::Copy(item), &Type::PyObject, member, span);
-                    elems.push(match coerced {
-                        Operand::Copy(l) => Operand::Move(l),
-                        other => other,
-                    });
-                }
-                let tup = self.new_unscoped_local(target.clone());
-                self.push_statement(
-                    StatementKind::Assign(tup, Rvalue::Aggregate(AggregateKind::Tuple, elems)),
-                    span,
-                );
-                Operand::Move(tup)
-            }
-            // `[Any]` needs boxed elements (a raw native word collides with
-            // the Any inline tag bits); a concrete native element type wants
-            // the raw form, matching that type's own runtime representation.
-            Type::List(elem) => {
-                let tmp = self.new_unscoped_local(target.clone());
-                if elem.as_ref() == &Type::Any {
-                    self.push_statement(
-                        StatementKind::Assign(
-                            tmp,
-                            Rvalue::Call {
-                                func: Operand::Constant(Constant::Function(
-                                    "__olive_py_to_any_list".to_string(),
-                                )),
-                                args: vec![op],
-                            },
-                        ),
-                        span,
-                    );
-                } else {
-                    // R14: the buffer ingest fast path needs to know the
-                    // declared element type up front -- must match
-                    // `python_buffer.rs`'s `BUF_ELEM_INT`/`BUF_ELEM_FLOAT`.
-                    let elem_tag = match elem.as_ref() {
-                        Type::Int
-                        | Type::I8
-                        | Type::I16
-                        | Type::I32
-                        | Type::U8
-                        | Type::U16
-                        | Type::U32 => 1,
-                        Type::Float | Type::FloatLiteral(_) => 2,
-                        Type::F32 => 3,
-                        Type::Bool => 4,
-                        Type::Str => 5,
-                        Type::Null => 6,
-                        Type::U64 | Type::Usize => 7,
-                        _ => 0,
-                    };
-                    self.push_statement(
-                        StatementKind::Assign(
-                            tmp,
-                            Rvalue::Call {
-                                func: Operand::Constant(Constant::Function(
-                                    "__olive_py_to_list".to_string(),
-                                )),
-                                args: vec![op, Operand::Constant(Constant::Int(elem_tag))],
-                            },
-                        ),
-                        span,
-                    );
-                }
-                Operand::Move(tmp)
-            }
-            Type::Set(elem) => {
-                let (func, elem_tag) = if elem.as_ref() == &Type::Any {
-                    ("__olive_py_to_any_set", 0)
-                } else {
-                    let tag = match elem.as_ref() {
-                        Type::Int
-                        | Type::I8
-                        | Type::I16
-                        | Type::I32
-                        | Type::U8
-                        | Type::U16
-                        | Type::U32 => 1,
-                        Type::Float | Type::FloatLiteral(_) => 2,
-                        Type::F32 => 3,
-                        Type::Bool => 4,
-                        Type::Str => 5,
-                        Type::Null => 6,
-                        Type::U64 | Type::Usize => 7,
-                        _ => 0,
-                    };
-                    if matches!(tag, 3 | 6 | 7) {
-                        ("__olive_py_to_set_typed", tag)
-                    } else {
-                        ("__olive_py_to_set", 0)
-                    }
-                };
-                let tmp = self.new_unscoped_local(target.clone());
-                let mut args = vec![op];
-                if elem_tag != 0 {
-                    args.push(Operand::Constant(Constant::Int(elem_tag)));
-                }
-                self.push_statement(
-                    StatementKind::Assign(
-                        tmp,
-                        Rvalue::Call {
-                            func: Operand::Constant(Constant::Function(func.to_string())),
-                            args,
-                        },
-                    ),
-                    span,
-                );
-                Operand::Move(tmp)
-            }
-            Type::Dict(key, val) => {
-                let key_tag = match key.as_ref() {
-                    Type::Int
-                    | Type::I8
-                    | Type::I16
-                    | Type::I32
-                    | Type::U8
-                    | Type::U16
-                    | Type::U32 => 0,
-                    Type::U64 | Type::Usize => 1,
-                    Type::Float | Type::FloatLiteral(_) => 2,
-                    Type::F32 => 3,
-                    Type::Bool => 4,
-                    Type::Str => 5,
-                    Type::Any => 6,
-                    Type::Null => 7,
-                    _ => 0,
-                };
-                let value_tag = match val.as_ref() {
-                    Type::Int
-                    | Type::I8
-                    | Type::I16
-                    | Type::I32
-                    | Type::U8
-                    | Type::U16
-                    | Type::U32 => 1,
-                    Type::Float | Type::FloatLiteral(_) => 2,
-                    Type::F32 => 3,
-                    Type::Bool => 4,
-                    Type::Str => 5,
-                    Type::Null => 6,
-                    Type::U64 | Type::Usize => 7,
-                    _ => 0,
-                };
-                let (func, args) = if val.as_ref() == &Type::Any && key_tag == 5 {
-                    ("__olive_py_to_any_dict", vec![op])
-                } else if key_tag != 5 || matches!(value_tag, 3 | 6 | 7) {
-                    (
-                        "__olive_py_to_dict_typed",
-                        vec![
-                            op,
-                            Operand::Constant(Constant::Int(key_tag)),
-                            Operand::Constant(Constant::Int(value_tag)),
-                        ],
-                    )
-                } else {
-                    ("__olive_py_to_dict", vec![op])
-                };
-                let tmp = self.new_unscoped_local(target.clone());
-                self.push_statement(
-                    StatementKind::Assign(
-                        tmp,
-                        Rvalue::Call {
-                            func: Operand::Constant(Constant::Function(func.to_string())),
-                            args,
-                        },
-                    ),
-                    span,
-                );
-                Operand::Move(tmp)
-            }
+            Type::Tuple(_) => self.realize_py_typed_collection(op, target, span),
+            Type::List(_) => self.realize_py_typed_collection(op, target, span),
+            Type::Set(_) => self.realize_py_typed_collection(op, target, span),
+            Type::Dict(_, _) => self.realize_py_typed_collection(op, target, span),
             _ => {
                 self.emit_set_fault_loc(span);
                 let tmp = self.new_local(target.clone(), None, false);

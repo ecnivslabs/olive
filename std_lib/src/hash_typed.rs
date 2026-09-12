@@ -71,6 +71,23 @@ pub(crate) fn owned_sub_descriptor(desc: *const u8, start: usize) -> Vec<u8> {
     unsafe { std::slice::from_raw_parts(desc.add(start), end - start).to_vec() }
 }
 
+/// Runs `f` with an aligned descriptor subtree. Descriptor strings are
+/// byte strings, so a child offset can be unaligned even when the root data
+/// pointer is aligned. Hash consumers intentionally accept tagged Olive
+/// string pointers and therefore cannot use that raw child address directly.
+pub(crate) fn with_owned_sub_descriptor<R>(
+    desc: *const u8,
+    start: usize,
+    f: impl FnOnce(i64) -> R,
+) -> R {
+    let bytes = owned_sub_descriptor(desc, start);
+    let mut aligned = vec![0u8; bytes.len() + 7];
+    let base = aligned.as_ptr() as usize;
+    let offset = (8 - base % 8) % 8;
+    aligned[offset..offset + bytes.len()].copy_from_slice(&bytes);
+    f(unsafe { aligned.as_ptr().add(offset) as i64 })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_set_typed(obj_ptr: i64, attr: i64, val: i64, key_desc: i64) -> i64 {
     with_key_descriptor(key_desc, || crate::obj::olive_obj_set(obj_ptr, attr, val))
@@ -378,7 +395,7 @@ fn hash_any_word(v: i64, visited: &mut FxHashSet<i64>) -> u64 {
         });
         return commutative(parts);
     }
-    if kind == crate::KIND_FLOAT || kind == crate::KIND_INT {
+    if kind == crate::KIND_FLOAT || kind == crate::KIND_INT || kind == crate::KIND_U64 {
         let b = unsafe { &*(v as *const crate::boxed::OliveBoxed) };
         return seq([kind as u64, b.bits as u64]);
     }

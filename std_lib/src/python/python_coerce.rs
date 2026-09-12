@@ -326,6 +326,10 @@ pub fn olive_to_py(val: i64) -> PyObject {
                         let b = &*(ptr as *const crate::boxed::OliveBoxed);
                         py_long_from_i64(b.bits)
                     }
+                    crate::KIND_U64 => {
+                        let b = &*(ptr as *const crate::boxed::OliveBoxed);
+                        py_long_from_u64(b.bits as u64)
+                    }
                     crate::KIND_FLOAT => {
                         let b = &*(ptr as *const crate::boxed::OliveBoxed);
                         PY_FLOAT_FROM_DOUBLE(f64::from_bits(b.bits as u64) as c_double)
@@ -743,15 +747,16 @@ pub(crate) unsafe fn py_to_typed_scalar_internal(py_val: PyObject, tag: i64) -> 
         };
         match tag {
             1 => {
-                if !is_sub(PY_LONG_TYPE) {
-                    return None;
+                if is_sub(PY_LONG_TYPE) {
+                    let value = py_long_as_i64(py_val);
+                    if !PY_ERR_OCCURRED().is_null() {
+                        PY_ERR_CLEAR();
+                        return None;
+                    }
+                    return Some(value);
                 }
-                let value = py_long_as_i64(py_val);
-                if !PY_ERR_OCCURRED().is_null() {
-                    PY_ERR_CLEAR();
-                    return None;
-                }
-                Some(value)
+                let value = py_to_olive_internal(py_val);
+                (!crate::is_active_object(value)).then_some(value)
             }
             2 => {
                 if is_sub(PY_FLOAT_TYPE) {
@@ -764,7 +769,15 @@ pub(crate) unsafe fn py_to_typed_scalar_internal(py_val: PyObject, tag: i64) -> 
                     }
                     return Some((value as f64).to_bits() as i64);
                 }
-                None
+                let value = py_to_olive_internal(py_val);
+                if crate::is_active_object(value) {
+                    return None;
+                }
+                if foreign_cache_scan(&FLOAT_LIKE_CACHE, &FLOAT_LIKE_LEN, ty as usize) {
+                    Some(f64::from_bits(value as u64).to_bits() as i64)
+                } else {
+                    Some((value as f64).to_bits() as i64)
+                }
             }
             3 => {
                 if is_sub(PY_FLOAT_TYPE) {
@@ -777,7 +790,15 @@ pub(crate) unsafe fn py_to_typed_scalar_internal(py_val: PyObject, tag: i64) -> 
                     }
                     return Some((value as f32).to_bits() as i64);
                 }
-                None
+                let value = py_to_olive_internal(py_val);
+                if crate::is_active_object(value) {
+                    return None;
+                }
+                if foreign_cache_scan(&FLOAT_LIKE_CACHE, &FLOAT_LIKE_LEN, ty as usize) {
+                    Some((f64::from_bits(value as u64) as f32).to_bits() as i64)
+                } else {
+                    Some((value as f32).to_bits() as i64)
+                }
             }
             4 => {
                 if !is_sub(PY_BOOL_TYPE) {

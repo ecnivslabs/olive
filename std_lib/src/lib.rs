@@ -77,6 +77,7 @@ pub(crate) const KIND_PYOBJECT: i64 = 7;
 pub(crate) const KIND_ITER: i64 = 8;
 pub(crate) const KIND_FLOAT: i64 = 11;
 pub(crate) const KIND_INT: i64 = 14;
+pub(crate) const KIND_U64: i64 = 18;
 
 /// Whether `val` points at a live runtime object, including a PyObject
 /// handle: every kind, pyobjects included, lives in a `GenSlab` now. Sound
@@ -185,7 +186,7 @@ fn classify_key(v: i64) -> KeyClass {
             | format::D_NULL => {
                 if is_active_object(v) {
                     let kind = unsafe { *(v as *const i64) };
-                    if matches!(kind, KIND_INT | KIND_FLOAT) {
+                    if matches!(kind, KIND_INT | KIND_U64 | KIND_FLOAT) {
                         let b = unsafe { &*(v as *const boxed::OliveBoxed) };
                         return KeyClass::Scalar(kind, b.bits);
                     }
@@ -215,9 +216,13 @@ fn classify_key(v: i64) -> KeyClass {
     }
     if is_active_object(v) {
         let kind = unsafe { *(v as *const i64) };
-        if matches!(kind, KIND_INT | KIND_FLOAT) {
+        if matches!(kind, KIND_INT | KIND_U64 | KIND_FLOAT) {
             let b = unsafe { &*(v as *const boxed::OliveBoxed) };
             return KeyClass::Scalar(kind, b.bits);
+        }
+        if kind == KIND_PYOBJECT {
+            let object = unsafe { &*(v as *const python::python_coerce::OlivePyObject) };
+            return KeyClass::Scalar(KIND_PYOBJECT, object.py_ptr as i64);
         }
         return KeyClass::Raw(v);
     }
@@ -643,6 +648,10 @@ pub(crate) fn format_list_elem(val: i64) -> String {
                 let b = unsafe { &*(val as *const boxed::OliveBoxed) };
                 return format!("{}", b.bits);
             }
+            KIND_U64 => {
+                let b = unsafe { &*(val as *const boxed::OliveBoxed) };
+                return format!("{}", b.bits as u64);
+            }
             KIND_LIST | KIND_ANY_LIST => return format_list(val),
             KIND_SET => {
                 let s = unsafe { &*(val as *const OliveHashSet) };
@@ -1064,6 +1073,10 @@ fn any_is_float(v: i64) -> bool {
     is_active_object(v) && unsafe { *(v as *const i64) } == KIND_FLOAT
 }
 
+fn any_is_u64(v: i64) -> bool {
+    is_active_object(v) && unsafe { *(v as *const i64) } == KIND_U64
+}
+
 fn any_is_list(v: i64) -> bool {
     is_active_object(v) && {
         let k = unsafe { *(v as *const i64) };
@@ -1134,6 +1147,8 @@ macro_rules! any_cmp {
                 olive_str_from_ptr(a) $op olive_str_from_ptr(b)
             } else if any_is_float(a) || any_is_float(b) {
                 boxed::olive_unbox_float(a) $op boxed::olive_unbox_float(b)
+            } else if any_is_u64(a) || any_is_u64(b) {
+                (boxed::olive_unbox_int(a) as u64) $op (boxed::olive_unbox_int(b) as u64)
             } else {
                 boxed::olive_unbox_int(a) $op boxed::olive_unbox_int(b)
             };
@@ -1161,7 +1176,7 @@ fn any_heap_object_kind(v: i64) -> Option<i64> {
         return None;
     }
     let k = unsafe { *(v as *const i64) };
-    (k != KIND_FLOAT && k != KIND_INT).then_some(k)
+    (k != KIND_FLOAT && k != KIND_INT && k != KIND_U64).then_some(k)
 }
 
 /// Kind-respecting equality for tag-encoded union words. None only equals
@@ -1289,7 +1304,7 @@ fn is_numeric_membership_word(v: i64) -> bool {
     }
     if is_active_object(v) {
         let kind = unsafe { *(v as *const i64) };
-        return kind == KIND_INT || kind == KIND_FLOAT;
+        return kind == KIND_INT || kind == KIND_U64 || kind == KIND_FLOAT;
     }
     !is_tagged_str_key(v) && !crate::string::is_interned_char(v)
 }
@@ -1385,7 +1400,7 @@ pub extern "C" fn olive_free_any(ptr: i64) {
         KIND_OBJ => olive_free_obj(ptr),
         KIND_ENUM => olive_free_enum(ptr),
         KIND_BYTES => bytes::olive_buf_free(ptr),
-        KIND_FLOAT | KIND_INT => boxed::olive_free_boxed(ptr),
+        KIND_FLOAT | KIND_INT | KIND_U64 => boxed::olive_free_boxed(ptr),
         crate::result::KIND_RESULT => crate::result::olive_free_result(ptr),
         KIND_PYOBJECT => python::olive_py_decref(ptr as *mut std::os::raw::c_void),
         KIND_ITER => olive_free_iter(ptr),
@@ -1418,7 +1433,7 @@ pub extern "C" fn olive_free_union_member(ptr: i64) {
         KIND_OBJ => olive_free_obj(ptr),
         KIND_ENUM => olive_free_enum(ptr),
         KIND_BYTES => bytes::olive_buf_free(ptr),
-        KIND_FLOAT | KIND_INT => boxed::olive_free_boxed(ptr),
+        KIND_FLOAT | KIND_INT | KIND_U64 => boxed::olive_free_boxed(ptr),
         crate::result::KIND_RESULT => crate::result::olive_free_result(ptr),
         KIND_PYOBJECT => python::olive_py_decref(ptr as *mut std::os::raw::c_void),
         KIND_ITER => olive_free_iter(ptr),
@@ -1531,6 +1546,7 @@ pub extern "C" fn olive_typeof_str(val: i64) -> i64 {
         KIND_SET => "set",
         KIND_BYTES => "bytes",
         KIND_FLOAT => "float",
+        KIND_U64 => "u64",
         KIND_PYOBJECT => "PyObject",
         _ => "int",
     };

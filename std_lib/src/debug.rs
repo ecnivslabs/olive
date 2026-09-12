@@ -198,7 +198,7 @@ pub extern "C" fn olive_debug_any_decode(val: i64, out: *mut i64) -> i64 {
             crate::KIND_FLOAT => (3, unsafe {
                 (*(val as *const crate::boxed::OliveBoxed)).bits
             }),
-            crate::KIND_INT => (1, unsafe {
+            crate::KIND_INT | crate::KIND_U64 => (1, unsafe {
                 (*(val as *const crate::boxed::OliveBoxed)).bits
             }),
             _ => (5, val),

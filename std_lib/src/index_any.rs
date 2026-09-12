@@ -305,7 +305,10 @@ pub extern "C" fn olive_any_remove(obj: i64, arg: i64, arg_boxed: i64, loc: i64,
                 let boxed_scalar = if arg_boxed & crate::boxed::TAG_MASK == crate::boxed::TAG_INT {
                     true
                 } else if crate::is_active_object(arg_boxed) {
-                    matches!(unsafe { *(arg_boxed as *const i64) }, KIND_INT | KIND_FLOAT)
+                    matches!(
+                        unsafe { *(arg_boxed as *const i64) },
+                        KIND_INT | KIND_U64 | KIND_FLOAT
+                    )
                 } else {
                     false
                 };
@@ -443,7 +446,10 @@ fn struct_box_store(obj: i64, attr: i64, val: i64, loc: i64) {
                     let raw = crate::unerase::unerase_scalar(val, tag);
                     if crate::slab::slot_is_live(val) {
                         let kind = unsafe { *(val as *const i64) };
-                        if kind == crate::KIND_INT || kind == crate::KIND_FLOAT {
+                        if kind == crate::KIND_INT
+                            || kind == crate::KIND_U64
+                            || kind == crate::KIND_FLOAT
+                        {
                             crate::boxed::olive_free_boxed(val);
                         }
                     }
@@ -453,7 +459,7 @@ fn struct_box_store(obj: i64, attr: i64, val: i64, loc: i64) {
                     let is_int = if val & crate::boxed::TAG_MASK == crate::boxed::TAG_INT {
                         true
                     } else if crate::slab::slot_is_live(val) {
-                        unsafe { *(val as *const i64) == crate::KIND_INT }
+                        unsafe { matches!(*(val as *const i64), crate::KIND_INT | crate::KIND_U64) }
                     } else {
                         false
                     };
@@ -475,7 +481,10 @@ fn struct_box_store(obj: i64, attr: i64, val: i64, loc: i64) {
                         let raw = crate::unerase::unerase_scalar(val, tag);
                         if crate::slab::slot_is_live(val) {
                             let kind = unsafe { *(val as *const i64) };
-                            if kind == crate::KIND_INT || kind == crate::KIND_FLOAT {
+                            if kind == crate::KIND_INT
+                                || kind == crate::KIND_U64
+                                || kind == crate::KIND_FLOAT
+                            {
                                 crate::boxed::olive_free_boxed(val);
                             }
                         }

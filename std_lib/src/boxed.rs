@@ -14,7 +14,7 @@
 //! plain register value with no lifetime.
 
 use crate::slab::GenSlab;
-use crate::{KIND_FLOAT, KIND_INT, is_active_object, olive_str_from_ptr};
+use crate::{KIND_FLOAT, KIND_INT, KIND_U64, is_active_object, olive_str_from_ptr};
 use std::cell::UnsafeCell;
 
 thread_local! {
@@ -80,6 +80,11 @@ pub extern "C" fn olive_box_float(f: f64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn olive_box_u64(value: i64) -> i64 {
+    heap_box(KIND_U64, value)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn olive_box_bool(b: i64) -> i64 {
     (((b != 0) as i64) << 3) | TAG_BOOL
 }
@@ -134,6 +139,7 @@ fn unbox_float_impl(v: i64, checked: bool) -> f64 {
     if let Some(b) = as_boxed(v) {
         return match b.kind {
             KIND_FLOAT => f64::from_bits(b.bits as u64),
+            KIND_U64 => (b.bits as u64) as f64,
             _ => b.bits as f64,
         };
     }
@@ -261,7 +267,7 @@ fn as_boxed(v: i64) -> Option<&'static OliveBoxed> {
         return None;
     }
     let b = unsafe { &*(v as *const OliveBoxed) };
-    matches!(b.kind, KIND_FLOAT | KIND_INT).then_some(b)
+    matches!(b.kind, KIND_FLOAT | KIND_INT | KIND_U64).then_some(b)
 }
 
 #[cfg(test)]

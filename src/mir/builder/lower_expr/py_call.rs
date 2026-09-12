@@ -177,17 +177,11 @@ impl<'a> MirBuilder<'a> {
     /// Any}` boxes every value) -- see the tag table in `python_writeback.rs`.
     ///
     /// A container whose element/value is itself a concrete container (a
-    /// `[[int]]`, `{str: [int]}`, ...) gets `0` (no copy-out attempted, same
-    /// as an untagged argument): the Any-boxed recursive path (tag 1/6/7)
-    /// only matches a genuinely dynamic `Any` slot, whose runtime decode
-    /// (`py_to_any_internal`) always boxes what it finds -- applying that to
-    /// a concretely-typed inner container would rebuild it with boxed
-    /// elements the outer type never declared, corrupting it exactly like
-    /// the untyped-dict/set bug this tag scheme exists to avoid. Expressing
-    /// "sync a concretely nested container" correctly needs a real, per-level
-    /// type descriptor (the `type_descriptor`/`*_typed` machinery elsewhere
-    /// already builds these for hashing/eq/copy); that is follow-up work, not
-    /// this phase's flat tag word.
+    /// `[[int]]`, `{str: [int]}`, ...) gets `0`. The call lowering then uses
+    /// the recursive descriptor exporter before the call, so nested values
+    /// cross with their declared representation. The flat tag word remains
+    /// reserved for copy-out shapes that runtime can decode without a
+    /// descriptor.
     ///
     /// Not a collection -> `0`.
     pub(super) fn py_collection_tag(ty: &Type) -> i64 {
@@ -197,6 +191,14 @@ impl<'a> MirBuilder<'a> {
                 None if elem.as_ref() == &Type::Any => 1,
                 None => 0,
             },
+            Type::Dict(key, val)
+                if matches!(
+                    key.as_ref(),
+                    Type::List(_) | Type::Set(_) | Type::Dict(_, _) | Type::Tuple(_)
+                ) =>
+            {
+                0
+            }
             Type::Dict(_, val) => match Self::py_scalar_kind(val) {
                 Some(2) => 8,
                 Some(3) => 9,
@@ -214,6 +216,22 @@ impl<'a> MirBuilder<'a> {
                 _ => 0,
             },
             _ => 0,
+        }
+    }
+
+    fn py_collection_has_nested_shape(ty: &Type) -> bool {
+        match ty {
+            Type::List(elem) | Type::Set(elem) => matches!(
+                elem.as_ref(),
+                Type::List(_) | Type::Set(_) | Type::Dict(_, _) | Type::Tuple(_)
+            ),
+            Type::Dict(key, value) => {
+                matches!(
+                    key.as_ref(),
+                    Type::List(_) | Type::Set(_) | Type::Dict(_, _) | Type::Tuple(_)
+                ) || Self::py_collection_has_nested_shape(value)
+            }
+            _ => false,
         }
     }
 
@@ -424,7 +442,8 @@ impl<'a> MirBuilder<'a> {
             let descriptor_preconvert =
                 matches!(&arg_ty, Type::List(_) | Type::Set(_) | Type::Dict(_, _))
                     && coll_tag == 0
-                    && !Self::py_collection_has_null(&arg_ty);
+                    && (Self::py_collection_has_nested_shape(&arg_ty)
+                        || !Self::py_collection_has_null(&arg_ty));
             let arg_tag = if descriptor_preconvert {
                 ARG_PYOBJECT
             } else {
@@ -490,7 +509,7 @@ impl<'a> MirBuilder<'a> {
             } else {
                 0
             },
-            coll_tags: if has_splat {
+            coll_tags: if has_splat || !fast_path {
                 0
             } else {
                 Self::pack_tags(&pos_coll_tags)
@@ -500,7 +519,7 @@ impl<'a> MirBuilder<'a> {
             } else {
                 0
             },
-            kw_coll_tags: if has_splat {
+            kw_coll_tags: if has_splat || !fast_path {
                 0
             } else {
                 Self::pack_tags(&kw_coll_tags)

@@ -834,7 +834,6 @@ unsafe fn sync_dict_entries(
 ) -> Result<(), String> {
     unsafe {
         let mut py_entries = snapshot_dict_entries(pair.py_obj).into_iter();
-        clear_dict_pair(pair);
 
         let mut raw: Vec<(DecodedDictKey, i64)> = Vec::new();
         let release_raw = |raw: &mut Vec<(DecodedDictKey, i64)>| {
@@ -879,6 +878,7 @@ unsafe fn sync_dict_entries(
             PY_DEC_REF(val_obj);
             raw.push((key, value));
         }
+        clear_dict_pair(pair);
         dedupe_and_insert(pair.olive_ptr, raw, pair.key_tag, pair.tag);
         Ok(())
     }
@@ -889,8 +889,12 @@ unsafe fn sync_dict_entries(
 /// key and value.
 fn dedupe_and_insert(obj_ptr: i64, raw: Vec<(DecodedDictKey, i64)>, key_tag: i64, value_tag: i64) {
     let key_desc = match key_tag {
-        DICT_KEY_INT | DICT_KEY_U64 => {
+        DICT_KEY_INT => {
             static DESC: AlignedScalarDescriptor = AlignedScalarDescriptor([crate::format::D_INT]);
+            DESC.0.as_ptr() as i64
+        }
+        DICT_KEY_U64 => {
+            static DESC: AlignedScalarDescriptor = AlignedScalarDescriptor([crate::format::D_U64]);
             DESC.0.as_ptr() as i64
         }
         DICT_KEY_FLOAT => {
