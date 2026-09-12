@@ -128,6 +128,12 @@ def inspect_legacy(*args):
 def any_dict_items(d):
     return [(type(k).__name__, k, type(v).__name__) for k, v in d.items()]
 
+def set_true_key(d):
+    d[True] = "new"
+
+def delete_true_key(d):
+    del d[True]
+
 def make_custom_key():
     class Key:
         pass
@@ -915,6 +921,40 @@ fn main():
 main()
 "#,
         "2\n[('bool', True, 'int')]\n",
+    );
+}
+
+#[test]
+fn any_equality_collisions_restore_distinct_keys_after_writeback() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let mut d: {Any: Any} = {True: "bool", 1: "int"}
+    h.set_true_key(d)
+    print(len(d))
+    print(d[True])
+    print(d[1])
+
+main()
+"#,
+        "2\n\"new\"\n\"int\"\n",
+    );
+}
+
+#[test]
+fn any_deleted_equality_key_is_not_resurrected() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let mut d: {Any: Any} = {True: "bool", 1: "int"}
+    h.delete_true_key(d)
+    print(len(d))
+
+main()
+"#,
+        "0\n",
     );
 }
 

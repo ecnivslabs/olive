@@ -61,6 +61,7 @@ pub(crate) struct WritebackPair {
     key_tag: i64,
     value_f32: bool,
     value_u64: bool,
+    original_any: Option<Vec<(i64, i64)>>,
 }
 
 /// Reads arg `i`'s 4-bit collection tag out of a packed tag word. Calls with
@@ -85,6 +86,42 @@ fn scalar_kind(tag: i64) -> i64 {
         TAG_NONE_LIST | TAG_NONE_DICT | TAG_NONE_SET => TAG_NONE_LIST,
         other => other,
     }
+}
+
+/// Copies the pre-call entries of an `Any`-keyed dict. Python cannot represent
+/// two distinct Olive keys such as `True` and `1` at once, so the snapshot is
+/// used only to restore entries that Python's equality rules collapse.
+unsafe fn snapshot_any_dict(value: i64) -> Vec<(i64, i64)> {
+    unsafe {
+        if !crate::is_active_object(value) || *(value as *const i64) != crate::KIND_OBJ {
+            return Vec::new();
+        }
+        let object = &*(value as *const crate::OliveObj);
+        object
+            .fields
+            .iter()
+            .map(|(key, value)| {
+                (
+                    crate::copy_typed::copy_any(key.0, &mut rustc_hash::FxHashMap::default()),
+                    crate::copy_typed::copy_any(*value, &mut rustc_hash::FxHashMap::default()),
+                )
+            })
+            .collect()
+    }
+}
+
+fn any_dict_needs_snapshot(value: i64) -> bool {
+    if !crate::is_active_object(value) || unsafe { *(value as *const i64) } != crate::KIND_OBJ {
+        return false;
+    }
+    let object = unsafe { &*(value as *const crate::OliveObj) };
+    object
+        .fields
+        .keys()
+        .filter(|key| is_python_equality_scalar_key(key.0))
+        .take(2)
+        .count()
+        > 1
 }
 
 /// Converts one call argument, tracking it for copy-out when `tag` marks it
@@ -137,6 +174,8 @@ unsafe fn convert_collection_arg(
         if py_obj.is_null() {
             return py_obj;
         }
+        let original_any =
+            (tag == TAG_ANY_DICT && any_dict_needs_snapshot(val)).then(|| snapshot_any_dict(val));
         // One reference for the tuple/dict slot this call is building
         // (stolen by `PyTuple_SetItem`/consumed by the kwargs dict), one
         // retained here for the sync pass after the call returns.
@@ -148,6 +187,7 @@ unsafe fn convert_collection_arg(
             key_tag,
             value_f32,
             value_u64,
+            original_any,
         });
         py_obj
     }
@@ -296,6 +336,7 @@ pub(crate) unsafe fn convert_arg_tagged(
 pub(crate) unsafe fn abandon_pairs(pairs: &[WritebackPair]) {
     unsafe {
         for p in pairs {
+            release_original_any(p);
             PY_DEC_REF(p.py_obj);
         }
     }
@@ -664,6 +705,72 @@ fn free_dict_value(value: i64, tag: i64) {
     }
 }
 
+fn release_original_any(pair: &WritebackPair) {
+    let Some(entries) = &pair.original_any else {
+        return;
+    };
+    for (key, value) in entries {
+        crate::free_any_word(*key);
+        free_dict_value(*value, TAG_ANY_DICT);
+    }
+}
+
+fn is_python_equality_scalar_key(key: i64) -> bool {
+    match key & crate::boxed::TAG_MASK {
+        crate::boxed::TAG_INT | crate::boxed::TAG_BOOL => return true,
+        _ => {}
+    }
+    crate::is_active_object(key)
+        && matches!(
+            unsafe { *(key as *const i64) },
+            crate::KIND_INT | crate::KIND_U64 | crate::KIND_FLOAT
+        )
+}
+
+unsafe fn restore_collapsed_any_keys(pair: &WritebackPair) {
+    let Some(entries) = &pair.original_any else {
+        return;
+    };
+    static ANY_DESC: AlignedScalarDescriptor = AlignedScalarDescriptor([crate::format::D_ANY]);
+    let object = unsafe { &mut *(pair.olive_ptr as *mut crate::OliveObj) };
+    for (key, value) in entries {
+        if !is_python_equality_scalar_key(*key) {
+            continue;
+        }
+        let py_key = olive_any_to_py(*key);
+        if py_key.is_null() {
+            continue;
+        }
+        let present = unsafe {
+            let value = PY_OBJECT_GET_ITEM(pair.py_obj, py_key);
+            if value.is_null() {
+                PY_ERR_CLEAR();
+                false
+            } else {
+                PY_DEC_REF(value);
+                true
+            }
+        };
+        unsafe { PY_DEC_REF(py_key) };
+        if !present {
+            continue;
+        }
+        let already_present =
+            crate::hash_typed::with_key_descriptor(ANY_DESC.0.as_ptr() as i64, || {
+                object.fields.contains_key(&crate::OliveStringKey(*key))
+            });
+        if already_present {
+            continue;
+        }
+        let restored_key = crate::copy_typed::copy_any(*key, &mut rustc_hash::FxHashMap::default());
+        let restored_value =
+            crate::copy_typed::copy_any(*value, &mut rustc_hash::FxHashMap::default());
+        object
+            .fields
+            .insert(crate::OliveStringKey(restored_key), restored_value);
+    }
+}
+
 fn release_decoded_dict_key_after_insert(key: DecodedDictKey) {
     match key.ownership {
         DecodedKeyOwnership::Raw => {}
@@ -880,6 +987,9 @@ unsafe fn sync_dict_entries(
         }
         clear_dict_pair(pair);
         dedupe_and_insert(pair.olive_ptr, raw, pair.key_tag, pair.tag);
+        if pair.tag == TAG_ANY_DICT {
+            restore_collapsed_any_keys(pair);
+        }
         Ok(())
     }
 }
@@ -1104,9 +1214,11 @@ pub(crate) unsafe fn sync_back(pairs: &[WritebackPair]) -> Result<(), String> {
                 TAG_INT_SET | TAG_FLOAT_SET | TAG_BOOL_SET | TAG_STR_SET => sync_set_typed(pair),
                 _ => Ok(()),
             };
+            release_original_any(pair);
             if let Err(message) = result {
                 PY_DEC_REF(pair.py_obj);
                 for remaining in &pairs[index + 1..] {
+                    release_original_any(remaining);
                     PY_DEC_REF(remaining.py_obj);
                 }
                 return Err(message);
