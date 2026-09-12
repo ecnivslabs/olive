@@ -55,6 +55,22 @@ def h5(a, b, c, d, e):
 def sort_inplace(xs):
     xs.sort()
     return len(xs)
+
+deleted = False
+
+class Probe:
+    def __del__(self):
+        global deleted
+        deleted = True
+
+def make_probe():
+    return Probe()
+
+def consume5(a, b, c, d, xs):
+    return None
+
+def was_deleted():
+    return deleted
 "#;
 
 fn write_case(src: &str) -> (PathBuf, PathBuf) {
@@ -241,6 +257,25 @@ fn main():
 main()
 "#,
         "15\n",
+    );
+}
+
+#[test]
+fn arity5_collection_argument_keeps_caller_owner_until_scope_end() {
+    assert_identical_on_both_pipelines(
+        r#"import py "arityhelper" as h
+
+fn churn():
+    let xs: [Any] = [h.make_probe()]
+    h.consume5(1, 2, 3, 4, xs)
+
+fn main():
+    churn()
+    print(h.was_deleted())
+
+main()
+"#,
+        "True\n",
     );
 }
 

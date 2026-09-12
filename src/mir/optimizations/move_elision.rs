@@ -1,4 +1,5 @@
 use super::Transform;
+use super::ownership::python_call_collection_tags;
 use crate::mir::liveness::Liveness;
 use crate::mir::*;
 
@@ -22,9 +23,30 @@ impl Transform for MoveElision {
 
         let locals = &func.locals;
         for (bb_idx, bb) in func.basic_blocks.iter_mut().enumerate() {
+            let collection_tags: Vec<Option<Vec<i64>>> = bb
+                .statements
+                .iter()
+                .enumerate()
+                .map(|(index, statement)| {
+                    let StatementKind::Assign(destination, Rvalue::Aggregate(_, ops)) =
+                        &statement.kind
+                    else {
+                        return None;
+                    };
+                    python_call_collection_tags(&bb.statements, index, *destination, ops.len())
+                })
+                .collect();
             for (stmt_idx, stmt) in bb.statements.iter_mut().enumerate() {
                 let live_after = &liveness.live_after[bb_idx][stmt_idx + 1];
-                self.optimize_statement(bb_idx, stmt_idx, stmt, live_after, locals, &mut moved);
+                self.optimize_statement(
+                    bb_idx,
+                    stmt_idx,
+                    stmt,
+                    live_after,
+                    locals,
+                    collection_tags[stmt_idx].as_deref(),
+                    &mut moved,
+                );
             }
         }
 
@@ -64,6 +86,7 @@ impl MoveElision {
         stmt: &mut Statement,
         live_after: &rustc_hash::FxHashSet<Local>,
         locals: &[LocalDecl],
+        collection_tags: Option<&[i64]>,
         moved: &mut Vec<(usize, usize, Local)>,
     ) {
         match &mut stmt.kind {
@@ -85,7 +108,12 @@ impl MoveElision {
                         self.optimize_operand(bb_idx, stmt_idx, op, live_after, locals, moved);
                     }
                     Rvalue::Aggregate(_, ops) => {
-                        for op in ops {
+                        for (pos, op) in ops.iter_mut().enumerate() {
+                            if collection_tags.is_some_and(|tags| {
+                                tags.get(pos).copied().is_some_and(|tag| tag != 0)
+                            }) {
+                                continue;
+                            }
                             self.optimize_operand(bb_idx, stmt_idx, op, live_after, locals, moved);
                         }
                     }

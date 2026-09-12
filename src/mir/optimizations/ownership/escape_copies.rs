@@ -50,11 +50,20 @@ enum CopySlot {
 /// per `pack_tags` on the compiler side) indexes the value at ops
 /// position `2*n + 1`, not position `n`.
 pub(super) enum PyCallTagSource {
-    Args(i64),
-    Kwargs(i64),
+    Args {
+        coll: i64,
+        arg: i64,
+    },
+    Kwargs {
+        coll: i64,
+        arg: i64,
+    },
     /// R15's `kwvals_list`: values only, no interleaved name constant, so
     /// tag index `n` is aggregate position `n` directly.
-    KwargsFlat(i64),
+    KwargsFlat {
+        coll: i64,
+        arg: i64,
+    },
 }
 
 /// Operand positions of one `__olive_py_call*` entry point's `args_list` and
@@ -65,7 +74,9 @@ pub(super) enum PyCallTagSource {
 struct PyCallShape {
     args_list_pos: usize,
     coll_tags_pos: usize,
+    arg_tags_pos: Option<usize>,
     kwargs: Option<(usize, usize)>,
+    kw_arg_tags_pos: Option<usize>,
     kw_flat: bool,
 }
 
@@ -85,19 +96,28 @@ struct PyCallShape {
 /// caller keeps using. See `python_writeback.rs`'s tag vocabulary.
 fn py_call_shape(name: &str) -> Option<PyCallShape> {
     match name {
-        "__olive_py_call"
-        | "__olive_py_call_safe"
-        | "__olive_py_call_t"
-        | "__olive_py_call_t_safe" => Some(PyCallShape {
+        "__olive_py_call" | "__olive_py_call_safe" => Some(PyCallShape {
             args_list_pos: 1,
             coll_tags_pos: 2,
+            arg_tags_pos: None,
             kwargs: None,
+            kw_arg_tags_pos: None,
+            kw_flat: false,
+        }),
+        "__olive_py_call_t" | "__olive_py_call_t_safe" => Some(PyCallShape {
+            args_list_pos: 1,
+            coll_tags_pos: 2,
+            arg_tags_pos: Some(3),
+            kwargs: None,
+            kw_arg_tags_pos: None,
             kw_flat: false,
         }),
         "__olive_py_call_kw" | "__olive_py_call_kw_safe" => Some(PyCallShape {
             args_list_pos: 1,
             coll_tags_pos: 2,
+            arg_tags_pos: None,
             kwargs: Some((3, 4)),
+            kw_arg_tags_pos: None,
             kw_flat: false,
         }),
         // R15: `kwvals_list` holds values only (names are a compile-time
@@ -107,13 +127,17 @@ fn py_call_shape(name: &str) -> Option<PyCallShape> {
         "__olive_py_call_kw_v" | "__olive_py_call_kw_v_safe" => Some(PyCallShape {
             args_list_pos: 1,
             coll_tags_pos: 2,
+            arg_tags_pos: Some(3),
             kwargs: Some((5, 6)),
+            kw_arg_tags_pos: Some(7),
             kw_flat: true,
         }),
         "__olive_py_call_method_kw_v" | "__olive_py_call_method_kw_v_safe" => Some(PyCallShape {
             args_list_pos: 2,
             coll_tags_pos: 3,
+            arg_tags_pos: Some(4),
             kwargs: Some((6, 7)),
+            kw_arg_tags_pos: Some(8),
             kw_flat: true,
         }),
         _ => None,
@@ -153,17 +177,42 @@ pub(super) fn py_call_coll_tags(
             && is_dst(&args[shape.args_list_pos])
             && let Operand::Constant(Constant::Int(tags)) = &args[shape.coll_tags_pos]
         {
-            return Some(PyCallTagSource::Args(*tags));
+            let arg_tags = shape
+                .arg_tags_pos
+                .and_then(|pos| args.get(pos))
+                .and_then(|op| match op {
+                    Operand::Constant(Constant::Int(tags)) => Some(*tags),
+                    _ => None,
+                })
+                .unwrap_or(0);
+            return Some(PyCallTagSource::Args {
+                coll: *tags,
+                arg: arg_tags,
+            });
         }
         if let Some((kw_list_pos, kw_coll_pos)) = shape.kwargs
             && args.len() > kw_coll_pos
             && is_dst(&args[kw_list_pos])
             && let Operand::Constant(Constant::Int(tags)) = &args[kw_coll_pos]
         {
+            let arg_tags = shape
+                .kw_arg_tags_pos
+                .and_then(|pos| args.get(pos))
+                .and_then(|op| match op {
+                    Operand::Constant(Constant::Int(tags)) => Some(*tags),
+                    _ => None,
+                })
+                .unwrap_or(0);
             return Some(if shape.kw_flat {
-                PyCallTagSource::KwargsFlat(*tags)
+                PyCallTagSource::KwargsFlat {
+                    coll: *tags,
+                    arg: arg_tags,
+                }
             } else {
-                PyCallTagSource::Kwargs(*tags)
+                PyCallTagSource::Kwargs {
+                    coll: *tags,
+                    arg: arg_tags,
+                }
             });
         }
     }
@@ -182,10 +231,19 @@ fn tag_at(tags: i64, i: usize) -> i64 {
 /// The effective copy-out tag for aggregate element `pos`, translating a
 /// `kwargs_list`'s interleaved name/value layout back to a keyword index.
 pub(super) fn py_call_tag_for_pos(src: &PyCallTagSource, pos: usize) -> i64 {
-    match src {
-        PyCallTagSource::Args(tags) | PyCallTagSource::KwargsFlat(tags) => tag_at(*tags, pos),
-        PyCallTagSource::Kwargs(tags) if pos % 2 == 1 => tag_at(*tags, pos / 2),
-        PyCallTagSource::Kwargs(_) => 0,
+    let (coll, arg, index) = match src {
+        PyCallTagSource::Args { coll, arg } | PyCallTagSource::KwargsFlat { coll, arg } => {
+            (*coll, *arg, pos)
+        }
+        PyCallTagSource::Kwargs { coll, arg } if pos % 2 == 1 => (*coll, *arg, pos / 2),
+        PyCallTagSource::Kwargs { .. } => return 0,
+    };
+    let coll_tag = tag_at(coll, index);
+    if coll_tag != 0 {
+        coll_tag
+    } else {
+        let arg_tag = tag_at(arg, index);
+        if arg_tag & 8 != 0 { 8 } else { 0 }
     }
 }
 

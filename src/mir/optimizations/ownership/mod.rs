@@ -15,11 +15,25 @@ mod tests;
 
 use escape_copies::insert_escape_copies;
 pub use escape_copies::{CopyReason, CopySite};
+use escape_copies::{py_call_coll_tags, py_call_tag_for_pos};
 use guards::{apply_drop_guards, insert_flags_and_marks, process_return_sites};
 pub(crate) use reassign::REASSIGN_LIVE_BORROWS;
 use reassign::{insert_reassign_drops, reassign_free_locals};
 pub use summaries::{compute_borrowed_returns, compute_param_escapes};
 use summaries::{runtime_borrowed_return, runtime_escape};
+
+pub(crate) fn python_call_collection_tags(
+    statements: &[Statement],
+    index: usize,
+    destination: Local,
+    len: usize,
+) -> Option<Vec<i64>> {
+    py_call_coll_tags(statements, index, destination).map(|source| {
+        (0..len)
+            .map(|pos| py_call_tag_for_pos(&source, pos))
+            .collect()
+    })
+}
 
 /// Classifies heap locals as owner, view, or dynamic, then makes drops agree.
 ///
@@ -623,7 +637,13 @@ fn collect_assigns(
                 }
                 // A fat pointer wraps a trait object without owning it.
                 Rvalue::Aggregate(kind, ops) if *kind != AggregateKind::FatPtr => {
+                    let py_tags = py_call_coll_tags(&bb.statements, idx, *dst);
                     for (pos, op) in ops.iter().enumerate() {
+                        if let Some(src) = &py_tags
+                            && py_call_tag_for_pos(src, pos) != 0
+                        {
+                            continue;
+                        }
                         site(op, SiteKind::AggElem(pos), &mut sites);
                     }
                 }
