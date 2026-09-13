@@ -79,6 +79,9 @@ def make_int_dict():
 def make_nested_f32_matrix():
     return [[1.5]]
 
+def make_generated_nested_f32_matrix():
+    yield [1.5]
+
 def make_nested_u64_matrix():
     return [[1 << 63]]
 
@@ -466,6 +469,8 @@ fn main():
     let high: u64 = one << 63
     let fs: [[f32]] = h.make_nested_f32_matrix()
     print(fs[0][0])
+    let generated: [[f32]] = h.make_generated_nested_f32_matrix()
+    print(generated[0][0])
     let us: [[u64]] = h.make_nested_u64_matrix()
     print(high in us[0])
     let ns: [[None]] = h.make_nested_none_matrix()
@@ -481,7 +486,7 @@ fn main():
 
 main()
 "#,
-        "1.5\nTrue\nTrue\n1.5\nTrue\nTrue\n{(1.5, 9223372036854775808)}\n",
+        "1.5\n1.5\nTrue\nTrue\n1.5\nTrue\nTrue\n{(1.5, 9223372036854775808)}\n",
     );
 }
 
