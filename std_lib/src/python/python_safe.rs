@@ -356,6 +356,9 @@ pub(crate) unsafe fn call_with_raw_args_safe(
         let call_error = take_pending_error_message();
         let sync_error = sync_back(&pairs).err();
         if let Some(message) = call_error {
+            if !res.is_null() {
+                PY_DEC_REF(res);
+            }
             return Err(crate::result::olive_result_err(crate::olive_str_internal(
                 &message,
             )));
@@ -691,6 +694,7 @@ pub extern "C" fn olive_py_setitem_safe(obj: PyObject, key: PyObject, val: PyObj
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::raw::c_void;
 
     #[test]
     fn call_safe_rejects_bad_utf8_arg_and_clears_error() {
@@ -727,6 +731,30 @@ mod tests {
         });
     }
 
+    static PENDING_ERROR_RESULT: std::sync::atomic::AtomicPtr<c_void> =
+        std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+    unsafe extern "C" fn vectorcall_returns_result_with_error(
+        _callable: PyObject,
+        _args: *const PyObject,
+        _nargsf: usize,
+        _kwnames: PyObject,
+    ) -> PyObject {
+        unsafe {
+            let result = PENDING_ERROR_RESULT.load(Ordering::SeqCst);
+            PY_INC_REF(result);
+            PY_ERR_SET_STRING(
+                PY_EXC_TYPE_ERROR,
+                b"pending error with result\0".as_ptr() as *const c_char,
+            );
+            result
+        }
+    }
+
+    unsafe fn raw_refcnt(obj: PyObject) -> isize {
+        unsafe { *(obj as *const isize) }
+    }
+
     /// Forces `HAS_VECTORCALL` to `want` for the duration of `f`, restoring
     /// the previous value after. Mirrors `python_call::tests`'s helper of the
     /// same name; must run under `pyobject_slab_test_lock`.
@@ -736,6 +764,56 @@ mod tests {
         let r = f();
         HAS_VECTORCALL.store(prev, Ordering::SeqCst);
         r
+    }
+
+    #[test]
+    fn safe_call_releases_non_null_result_with_pending_error() {
+        let _guard = crate::python::python_coerce::pyobject_slab_test_lock();
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+
+        let (func, result_handle) = with_gil(|| unsafe {
+            let func = PY_LIST_NEW(0);
+            let result = PY_LIST_NEW(0);
+            assert!(!func.is_null());
+            assert!(!result.is_null());
+            PENDING_ERROR_RESULT.store(result, Ordering::SeqCst);
+            (olive_py_wrap_owned(func), olive_py_wrap_owned(result))
+        });
+        let result = unsafe { olive_py_unwrap(result_handle) };
+        let before = with_gil(|| unsafe { raw_refcnt(result) });
+
+        let old_vectorcall = unsafe { PY_VECTORCALL };
+        unsafe {
+            PY_VECTORCALL = vectorcall_returns_result_with_error;
+        }
+        let wire = with_forced_vectorcall(true, || olive_py_call0_safe(func, 0));
+        unsafe {
+            PY_VECTORCALL = old_vectorcall;
+        }
+
+        let after = with_gil(|| unsafe { raw_refcnt(result) });
+        let error_pending = with_gil(|| unsafe { !PY_ERR_OCCURRED().is_null() });
+        let leaked = after - before;
+        if leaked > 0 {
+            with_gil(|| unsafe {
+                for _ in 0..leaked {
+                    PY_DEC_REF(result);
+                }
+            });
+        }
+
+        let is_err = crate::result::olive_result_is_err(wire);
+        crate::result::olive_free_result(wire);
+        PENDING_ERROR_RESULT.store(std::ptr::null_mut(), Ordering::SeqCst);
+        olive_py_decref(func);
+        olive_py_decref(result_handle);
+
+        assert_eq!(is_err, 1);
+        assert!(!error_pending);
+        assert_eq!(leaked, 0, "safe call leaked its non-null result reference");
     }
 
     #[test]

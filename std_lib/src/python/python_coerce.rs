@@ -841,6 +841,9 @@ pub unsafe fn py_to_any_internal(py_val: PyObject) -> i64 {
                 let v = py_long_as_i64(py_val);
                 if !PY_ERR_OCCURRED().is_null() {
                     PY_ERR_CLEAR();
+                    if let Some(value) = py_u64_from_python(py_val) {
+                        return crate::boxed::olive_box_u64(value as i64);
+                    }
                     return py_to_olive_internal(py_val);
                 }
                 return crate::boxed::olive_box_int(v);

@@ -1010,6 +1010,25 @@ main()
 }
 
 #[test]
+fn any_unsigned_key_relookup_survives_python_writeback() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let one: u64 = 1
+    let high: u64 = one << 63
+    let mut d: {Any: int} = {high: 1}
+    h.put_high_u64_key(d)
+    print(high in d)
+    print(d[high])
+
+main()
+"#,
+        "True\n7\n",
+    );
+}
+
+#[test]
 fn any_unsigned_key_preserves_unsigned_value() {
     assert_both_succeed(
         r#"import py "wbhelper" as h

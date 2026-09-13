@@ -870,6 +870,10 @@ pub extern "C" fn olive_any_to_str(val: i64) -> i64 {
                 let b = unsafe { &*(val as *const boxed::OliveBoxed) };
                 return olive_str_internal(&format!("{}", b.bits));
             }
+            KIND_U64 => {
+                let b = unsafe { &*(val as *const boxed::OliveBoxed) };
+                return olive_str_internal(&format!("{}", b.bits as u64));
+            }
             KIND_PYOBJECT => {
                 let p = python::olive_py_to_str(val as python::PyObject);
                 return if p != 0 {

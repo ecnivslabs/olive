@@ -45,7 +45,8 @@ fn erase_word_to_any(raw: i64, desc: *const u8, start: usize) -> i64 {
     use rustc_hash::FxHashMap;
     let (tag, resolved) = resolve_desc_tag(desc, start);
     match tag {
-        D_INT | D_U64 => crate::boxed::olive_box_int(raw),
+        D_INT => crate::boxed::olive_box_int(raw),
+        D_U64 => crate::boxed::olive_box_u64(raw),
         D_FLOAT => crate::boxed::olive_box_float(f64::from_bits(raw as u64)),
         D_F32 => crate::boxed::olive_box_float(f32::from_bits(raw as u32) as f64),
         D_BOOL => crate::boxed::olive_box_bool(raw),
@@ -565,7 +566,8 @@ fn struct_box_member(obj: i64, attr: i64, loc: i64) -> i64 {
             }
             let raw = unsafe { *((inner + 8 + 8 * i as i64) as *const i64) };
             match tag {
-                D_INT | D_U64 => return crate::boxed::olive_box_int(raw),
+                D_INT => return crate::boxed::olive_box_int(raw),
+                D_U64 => return crate::boxed::olive_box_u64(raw),
                 D_FLOAT => {
                     return crate::boxed::olive_box_float(f64::from_bits(raw as u64));
                 }
@@ -756,8 +758,10 @@ fn normalize_typed_any_key(index: i64, desc: i64) -> (i64, bool) {
         return (index, false);
     }
     let tag = unsafe { *(crate::string_slab::str_body(desc) as *const u8) };
-    let key = if tag == crate::format::D_INT || tag == crate::format::D_U64 {
+    let key = if tag == crate::format::D_INT {
         crate::boxed::olive_box_int(index)
+    } else if tag == crate::format::D_U64 {
+        crate::boxed::olive_box_u64(index)
     } else if tag == crate::format::D_FLOAT {
         crate::boxed::olive_box_float(f64::from_bits(index as u64))
     } else if tag == crate::format::D_F32 {

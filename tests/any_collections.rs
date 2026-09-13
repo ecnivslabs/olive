@@ -22,6 +22,19 @@ fn main():
 }
 
 #[test]
+fn erased_u64_formats_as_unsigned_value() {
+    assert_both(
+        r#"fn main():
+    let one: u64 = 1
+    let high: u64 = one << 63
+    let value: Any = high
+    print(str(value))
+"#,
+        "9223372036854775808\n",
+    );
+}
+
+#[test]
 fn erased_native_lists_support_dynamic_indexing() {
     assert_both(
         r#"fn first(value: Any) -> Any:
