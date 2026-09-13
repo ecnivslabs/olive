@@ -70,6 +70,16 @@ fn mangle_stmt(stmt: &mut Stmt, prefix: &str, names: &HashSet<String>, is_top_le
                 mangle_stmt(s, prefix, names, false);
             }
         }
+        StmtKind::TypeAlias {
+            name,
+            name_span: _,
+            target,
+        } => {
+            if is_top_level && names.contains(name) {
+                *name = format!("{}::{}", prefix, name);
+            }
+            mangle_type_expr(target, prefix, names);
+        }
         StmtKind::Impl {
             type_name, body, ..
         } => {
@@ -425,6 +435,18 @@ pub fn mangle_expr(expr: &mut Expr, prefix: &str, names: &HashSet<String>) {
         }
         ExprKind::UnaryOp { operand, .. } => mangle_expr(operand, prefix, names),
         ExprKind::Cast(operand, _) => mangle_expr(operand, prefix, names),
+        ExprKind::Range {
+            start,
+            end,
+            inclusive: _,
+            step,
+        } => {
+            mangle_expr(start, prefix, names);
+            mangle_expr(end, prefix, names);
+            if let Some(step_expr) = step {
+                mangle_expr(step_expr, prefix, names);
+            }
+        }
         ExprKind::Call { callee, args } => {
             mangle_expr(callee, prefix, names);
             for arg in args {

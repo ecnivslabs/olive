@@ -35,7 +35,10 @@ pub(crate) fn active_key_descriptor() -> i64 {
     ACTIVE_KEY_DESC.with(|d| d.get())
 }
 
-fn with_key_descriptor<R>(desc: i64, f: impl FnOnce() -> R) -> R {
+/// Installs `desc` for the duration of `f`. Runtime helpers that compose
+/// typed entry points (an `update` that inserts through `olive_obj_set`)
+/// use this so the inner op keeps classifying keys by the same type.
+pub(crate) fn with_key_descriptor<R>(desc: i64, f: impl FnOnce() -> R) -> R {
     let prev = ACTIVE_KEY_DESC.with(|d| d.replace(desc));
     let r = f();
     ACTIVE_KEY_DESC.with(|d| d.set(prev));
@@ -45,6 +48,14 @@ fn with_key_descriptor<R>(desc: i64, f: impl FnOnce() -> R) -> R {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_set_typed(obj_ptr: i64, attr: i64, val: i64, key_desc: i64) -> i64 {
     with_key_descriptor(key_desc, || crate::obj::olive_obj_set(obj_ptr, attr, val))
+}
+
+/// `d.remove(k)` under a key descriptor: `olive_obj_remove` hashes and
+/// compares the key, so a concrete scalar key needs the descriptor to be
+/// classified by type instead of the magnitude heuristic.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_obj_remove_typed(obj_ptr: i64, attr: i64, key_desc: i64) -> i64 {
+    with_key_descriptor(key_desc, || crate::obj::olive_obj_remove(obj_ptr, attr))
 }
 
 #[unsafe(no_mangle)]

@@ -329,7 +329,7 @@ fn build_value(
             for (key_expr, val_expr) in pairs {
                 let kraw = build_value(session, frame_idx, key_ty, key_expr)?;
                 let vraw = build_value(session, frame_idx, val_ty, val_expr)?;
-                if needs_structural_key(key_ty) {
+                if needs_key_descriptor(key_ty) {
                     let desc = build_descriptor(session, key_ty);
                     obj_set_typed(session, ptr, kraw, vraw, &desc)?;
                 } else {
@@ -425,13 +425,15 @@ fn build_seq(
     Ok(ptr)
 }
 
-/// Mirrors `codegen::cranelift::imports::needs_structural_key` -- a dict key
-/// of one of these types hashes/compares by value, not by pointer, so the
+/// Mirrors `codegen::cranelift::imports::needs_key_descriptor` -- a dict key
+/// of one of these types hashes/compares by value (structurally for
+/// aggregates, by static type for scalars, so a raw odd int above the
+/// string-tag floor is never misread as a tagged string pointer), so the
 /// insert needs `olive_obj_set_typed`'s descriptor rather than plain
 /// `olive_obj_set`. Duplicated rather than shared: that module tree is
-/// private to `codegen::cranelift`, and this is a stable, six-variant match,
-/// not an algorithm that could drift.
-fn needs_structural_key(ty: &Type) -> bool {
+/// private to `codegen::cranelift`, and this is a stable, nineteen-variant
+/// match, not an algorithm that could drift.
+fn needs_key_descriptor(ty: &Type) -> bool {
     matches!(
         concrete_ty(ty),
         Type::Struct(..)
@@ -440,6 +442,20 @@ fn needs_structural_key(ty: &Type) -> bool {
             | Type::List(_)
             | Type::Set(_)
             | Type::Dict(_, _)
+            | Type::Int
+            | Type::I8
+            | Type::I16
+            | Type::I32
+            | Type::U8
+            | Type::U16
+            | Type::U32
+            | Type::U64
+            | Type::Usize
+            | Type::Float
+            | Type::F32
+            | Type::Str
+            | Type::Bool
+            | Type::Null
     )
 }
 

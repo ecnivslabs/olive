@@ -170,7 +170,7 @@ pub(super) fn collect_needed_imports(
 
 /// Call names whose needed-import entry is the name itself. Kept sorted for
 /// `binary_search`.
-const IDENTITY_TYPED_IMPORTS: [&str; 20] = [
+const IDENTITY_TYPED_IMPORTS: [&str; 21] = [
     "__olive_copy_typed",
     "__olive_eq_typed",
     "__olive_list_concat_move",
@@ -184,6 +184,7 @@ const IDENTITY_TYPED_IMPORTS: [&str; 20] = [
     "__olive_obj_get_typed",
     "__olive_obj_pop_checked_typed",
     "__olive_obj_pop_default_typed",
+    "__olive_obj_remove_typed",
     "__olive_obj_setdefault_typed",
     "__olive_obj_update_typed",
     "__olive_relocate_typed",
@@ -663,6 +664,6 @@ mod tests;
 
 pub(super) use builtins::{
     cl_type, concrete_ty, drop_descriptor_type, is_any_op, is_float_op, is_list_op, is_pyobj_op,
-    is_str_op, is_u64_op, map_builtin_to_runtime, needs_structural_key, needs_type_descriptor,
+    is_str_op, is_u64_op, map_builtin_to_runtime, needs_key_descriptor, needs_type_descriptor,
     operand_static_type, resolve_builtin_import, type_descriptor, typed_zero,
 };

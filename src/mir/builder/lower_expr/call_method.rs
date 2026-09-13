@@ -1115,15 +1115,15 @@ impl<'a> MirBuilder<'a> {
             Type::Set(e) => (**e).clone(),
             _ => return None,
         };
-        // A struct/enum/tuple/collection element needs the same structural
+        // A struct/enum/tuple/collection element needs the same typed
         // hash+eq `==` derives, which the plain runtime ops don't have a
         // type descriptor to compute; the `_typed` variants set it (see
         // `hash_typed.rs`), the descriptor synthesized at codegen time from
         // this call's own value argument (arg position 1), same pattern as
         // `__olive_list_extend_typed`. `remove` faults on a miss (Python
         // semantics), `discard` keeps the old silent behavior.
-        let structural = Self::type_needs_structural_key(&elem);
-        let runtime = match (attr, structural) {
+        let typed = Self::type_needs_key_descriptor(&elem);
+        let runtime = match (attr, typed) {
             ("add", false) => "__olive_set_add",
             ("add", true) => "__olive_set_add_typed",
             ("remove", false) => "__olive_set_remove_checked",
@@ -1189,11 +1189,11 @@ impl<'a> MirBuilder<'a> {
         while let Type::Ref(inner) | Type::MutRef(inner) = recv_ty {
             recv_ty = *inner;
         }
-        let key_structural = match &recv_ty {
-            Type::Dict(k, _) => Self::type_needs_structural_key(k),
+        let key_typed = match &recv_ty {
+            Type::Dict(k, _) => Self::type_needs_key_descriptor(k),
             _ => false,
         };
-        // A struct/enum/tuple/collection key needs the structural hash+eq
+        // A struct/enum/tuple/collection key needs the typed hash+eq
         // `==` derives; the `_typed` variants set the descriptor `hash_typed`
         // consults, synthesized at codegen time from this call's own key
         // argument (arg position 1), same pattern as set add/remove/contains.
@@ -1212,14 +1212,14 @@ impl<'a> MirBuilder<'a> {
             || matches!(val_ty, Type::Union(_))
             || result_ty.is_tag_encoded_union()
             || result_ty == Type::Any;
-        let runtime = match (attr, key_structural) {
+        let runtime = match (attr, key_typed) {
             ("keys", _) => "__olive_obj_keys",
             ("values", _) => "__olive_obj_values",
             ("items", _) => "__olive_obj_items",
             ("get", _) if arg_ops.len() == 2 => {
-                if needs_boxing && key_structural {
+                if needs_boxing && key_typed {
                     "__olive_obj_get_default_boxed_typed"
-                } else if key_structural {
+                } else if key_typed {
                     "__olive_obj_get_default_typed"
                 } else if needs_boxing {
                     "__olive_obj_get_default_boxed"
@@ -1227,10 +1227,11 @@ impl<'a> MirBuilder<'a> {
                     "__olive_obj_get_default"
                 }
             }
-            ("get", _) if needs_boxing && !key_structural => "__olive_obj_get_boxed",
+            ("get", _) if needs_boxing && !key_typed => "__olive_obj_get_boxed",
             ("get", false) => "__olive_obj_get",
             ("get", true) => "__olive_obj_get_typed",
-            ("remove", _) => "__olive_obj_remove",
+            ("remove", false) => "__olive_obj_remove",
+            ("remove", true) => "__olive_obj_remove_typed",
             _ => return None,
         };
         let obj_op = self.lower_expr_as_copy(obj);
@@ -1266,10 +1267,11 @@ impl<'a> MirBuilder<'a> {
     }
 
     /// `pop`/`setdefault`/`update`/`clear` (E3.6). `pop`/`setdefault` reuse
-    /// `get`'s structural-key dispatch (arg position 1 is the key); `update`
-    /// dispatches on whether the dict's *value* type owns heap data (arg
-    /// position 1 there is the whole source dict, matching
-    /// `__olive_list_extend_typed`).
+    /// `get`'s typed-key dispatch (arg position 1 is the key); `update`
+    /// dispatches on whether the dict's *value* type owns heap data or the
+    /// *key* type needs a descriptor (arg position 1 there is the whole
+    /// source dict, matching `__olive_list_extend_typed`; its `Dict(K, V)`
+    /// descriptor's second byte is the key's).
     fn lower_dict_method_ext(
         &mut self,
         obj: &Expr,
@@ -1288,7 +1290,7 @@ impl<'a> MirBuilder<'a> {
             Type::Any => (Type::Any, Type::Any),
             _ => return None,
         };
-        let key_structural = Self::type_needs_structural_key(&key_ty);
+        let key_typed = Self::type_needs_key_descriptor(&key_ty);
         let obj_op = self.lower_expr_as_copy(obj);
         let zero = || Operand::Constant(Constant::Int(0));
         let box_val = |b: &mut Self, op: Operand, idx: usize| {
@@ -1304,7 +1306,7 @@ impl<'a> MirBuilder<'a> {
             "pop" if arg_ops.len() >= 2 => {
                 let key_op = arg_ops[0].clone();
                 let default = box_val(self, arg_ops[1].clone(), 1);
-                let f = if key_structural {
+                let f = if key_typed {
                     "__olive_obj_pop_default_typed"
                 } else {
                     "__olive_obj_pop_default"
@@ -1314,7 +1316,7 @@ impl<'a> MirBuilder<'a> {
             "pop" => {
                 let key_op = arg_ops.first().cloned().unwrap_or(zero());
                 let loc = self.index_loc_operand(span);
-                let f = if key_structural {
+                let f = if key_typed {
                     "__olive_obj_pop_checked_typed"
                 } else {
                     "__olive_obj_pop_checked"
@@ -1324,7 +1326,7 @@ impl<'a> MirBuilder<'a> {
             "setdefault" => {
                 let key_op = arg_ops.first().cloned().unwrap_or(zero());
                 let default = box_val(self, arg_ops.get(1).cloned().unwrap_or(zero()), 1);
-                let f = if key_structural {
+                let f = if key_typed {
                     "__olive_obj_setdefault_typed"
                 } else {
                     "__olive_obj_setdefault"
@@ -1333,7 +1335,7 @@ impl<'a> MirBuilder<'a> {
             }
             "update" => {
                 let other = arg_ops.first().cloned().unwrap_or(zero());
-                let f = if Self::list_elem_needs_copy(&val_ty) {
+                let f = if Self::list_elem_needs_copy(&val_ty) || key_typed {
                     "__olive_obj_update_typed"
                 } else {
                     "__olive_obj_update"

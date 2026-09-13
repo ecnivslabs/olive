@@ -73,7 +73,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 // one static type, so the descriptor is built once.
                 let key_desc_ptr = ops.first().and_then(|first_key| {
                     let key_ty = super::imports::operand_static_type(first_key, func_mir);
-                    super::imports::needs_structural_key(&key_ty).then(|| {
+                    super::imports::needs_key_descriptor(&key_ty).then(|| {
                         let desc = super::imports::type_descriptor(
                             &key_ty,
                             struct_fields,
@@ -183,7 +183,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 // the element type instead.
                 let elem_desc_ptr = ops.first().and_then(|first_elem| {
                     let elem_ty = super::imports::operand_static_type(first_elem, func_mir);
-                    super::imports::needs_structural_key(&elem_ty).then(|| {
+                    super::imports::needs_key_descriptor(&elem_ty).then(|| {
                         let desc = super::imports::type_descriptor(
                             &elem_ty,
                             struct_fields,

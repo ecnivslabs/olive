@@ -295,6 +295,7 @@ fn load_module_file(
             parser::StmtKind::Fn { name, .. }
             | parser::StmtKind::Struct { name, .. }
             | parser::StmtKind::Enum { name, .. }
+            | parser::StmtKind::TypeAlias { name, .. }
             | parser::StmtKind::Let { name, .. }
             | parser::StmtKind::Const { name, .. } => {
                 if !name.contains("::") {
@@ -343,6 +344,7 @@ fn load_module_file(
                 | parser::StmtKind::Impl { .. }
                 | parser::StmtKind::Trait { .. }
                 | parser::StmtKind::Enum { .. }
+                | parser::StmtKind::TypeAlias { .. }
                 | parser::StmtKind::Let { .. }
                 | parser::StmtKind::MultiLet { .. }
                 | parser::StmtKind::Const { .. }
@@ -458,6 +460,7 @@ pub fn load_and_parse_collecting(
                 | parser::StmtKind::Impl { .. }
                 | parser::StmtKind::Trait { .. }
                 | parser::StmtKind::Enum { .. }
+                | parser::StmtKind::TypeAlias { .. }
                 | parser::StmtKind::Let { .. }
                 | parser::StmtKind::MultiLet { .. }
                 | parser::StmtKind::Const { .. }
@@ -475,7 +478,7 @@ pub fn load_and_parse_collecting(
                             stmt.span,
                         )
                         .label("not allowed in an imported module")
-                        .note("imported modules may only declare items (fn, struct, impl, trait, enum, let, const, import)")
+                        .note("imported modules may only declare items (fn, struct, impl, trait, enum, type, let, const, import)")
                         .help("move this statement into a function, or run the file directly instead of importing it"),
                     ));
                 }

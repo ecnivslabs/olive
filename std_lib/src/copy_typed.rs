@@ -187,11 +187,17 @@ pub extern "C" fn olive_obj_update_typed(obj_ptr: i64, other_ptr: i64, desc: i64
     COPY_VISITED.with(|v| {
         let mut visited = v.borrow_mut();
         visited.clear();
-        for (k, v) in entries {
-            let mut vp = val_start;
-            let vc = copy_val(v, desc as *const u8, &mut vp, &mut visited);
-            crate::obj::olive_obj_set(obj_ptr, k, vc);
-        }
+        // Inserts run under the key sub-descriptor (the bytes after the
+        // D_DICT tag) so `olive_obj_set` classifies each key by the dict's
+        // static key type instead of the string-pointer magnitude
+        // heuristic, which misreads a raw odd int above the tag floor.
+        crate::hash_typed::with_key_descriptor(desc + 1, || {
+            for (k, v) in entries {
+                let mut vp = val_start;
+                let vc = copy_val(v, desc as *const u8, &mut vp, &mut visited);
+                crate::obj::olive_obj_set(obj_ptr, k, vc);
+            }
+        });
         visited.clear();
     });
     obj_ptr

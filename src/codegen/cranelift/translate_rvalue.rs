@@ -518,7 +518,7 @@ impl<M: Module> CraneliftCodegen<M> {
                         let inst = builder.ins().call(local_func, &[o, i]);
                         builder.inst_results(inst)[0]
                     }
-                    OliveType::Dict(k, _) if super::imports::needs_structural_key(k) => {
+                    OliveType::Dict(k, _) if super::imports::needs_key_descriptor(k) => {
                         let desc = super::imports::type_descriptor(
                             k,
                             struct_fields,
