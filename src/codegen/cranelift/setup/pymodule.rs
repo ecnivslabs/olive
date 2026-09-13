@@ -3,19 +3,36 @@ use crate::semantic::types::Type as OliveType;
 use cranelift::prelude::*;
 use cranelift_module::{DataDescription, Linkage, Module};
 
+// Keep packed tags aligned with the Python callable trampoline. Narrow
+// scalars use distinct tags because dispatch calls a native f32 or u64 ABI.
+const ARG_PYOBJECT: i64 = 0;
+const ARG_INT: i64 = 1;
+const ARG_FLOAT: i64 = 2;
+const ARG_STR: i64 = 3;
+const ARG_BOOL: i64 = 4;
+const ARG_ANY: i64 = 5;
+const ARG_NONE: i64 = 6;
+const ARG_BYTES: i64 = 7;
+const ARG_SCALAR_F32: i64 = 14;
+const ARG_SCALAR_U64: i64 = 15;
+
 fn type_to_arg_tag(ty: &OliveType) -> Option<i64> {
     match ty {
-        OliveType::Int | OliveType::U64 | OliveType::Usize => Some(1),
-        OliveType::Float | OliveType::F32 => Some(2),
-        OliveType::Str => Some(3),
-        OliveType::Bool => Some(4),
-        OliveType::Any => Some(5),
-        OliveType::Null => Some(6),
-        OliveType::Bytes => Some(7),
-        OliveType::PyObject | OliveType::PyNamed(..) => Some(0),
+        OliveType::Int => Some(ARG_INT),
+        OliveType::U64 | OliveType::Usize => Some(ARG_SCALAR_U64),
+        OliveType::Float => Some(ARG_FLOAT),
+        OliveType::F32 => Some(ARG_SCALAR_F32),
+        OliveType::Str => Some(ARG_STR),
+        OliveType::Bool => Some(ARG_BOOL),
+        OliveType::Any => Some(ARG_ANY),
+        OliveType::Null => Some(ARG_NONE),
+        OliveType::Bytes => Some(ARG_BYTES),
+        OliveType::PyObject | OliveType::PyNamed(..) => Some(ARG_PYOBJECT),
         OliveType::List(inner) => match inner.as_ref() {
-            OliveType::Float | OliveType::F32 => Some(8),
-            OliveType::Int | OliveType::U64 | OliveType::Usize => Some(9),
+            OliveType::Float => Some(8),
+            OliveType::F32 => Some(8),
+            OliveType::Int => Some(9),
+            OliveType::U64 | OliveType::Usize => Some(9),
             OliveType::Str => Some(10),
             OliveType::Bool => Some(11),
             OliveType::Any => Some(12),
@@ -314,5 +331,19 @@ impl<M: Module> CraneliftCodegen<M> {
         builder.ins().return_(&[mod_val]);
         builder.finalize();
         self.module.define_function(func_id, &mut ctx).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scalar_export_tags_match_callable_widths() {
+        assert_eq!(type_to_arg_tag(&OliveType::Int), Some(1));
+        assert_eq!(type_to_arg_tag(&OliveType::Float), Some(2));
+        assert_eq!(type_to_arg_tag(&OliveType::F32), Some(14));
+        assert_eq!(type_to_arg_tag(&OliveType::U64), Some(15));
+        assert_eq!(type_to_arg_tag(&OliveType::Usize), Some(15));
     }
 }
