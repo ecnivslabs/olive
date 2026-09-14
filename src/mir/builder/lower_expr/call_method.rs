@@ -1944,7 +1944,10 @@ impl<'a> MirBuilder<'a> {
             return Some(obj_op);
         }
         let (runtime, call_args): (&str, Vec<Operand>) = match attr {
-            "clear" if val_ty != Type::Any && Self::list_elem_needs_copy(&val_ty) => {
+            "clear"
+                if Self::list_elem_needs_copy(&key_ty)
+                    || (val_ty != Type::Any && Self::list_elem_needs_copy(&val_ty)) =>
+            {
                 ("__olive_obj_clear_typed", vec![obj_op.clone()])
             }
             "clear" => ("__olive_obj_clear", vec![obj_op.clone()]),
@@ -1995,17 +1998,20 @@ impl<'a> MirBuilder<'a> {
                 (f, vec![obj_op.clone(), key_op, default])
             }
             "update" => {
+                let source_is_any = arg_tys.first().is_some_and(|ty| *ty == Type::Any);
                 let other_raw = arg_ops.first().cloned().unwrap_or(zero());
                 // An `Any`-valued target stores boxed words; a raw source
                 // dict would mix raw words into it (a raw `2` reads back as
                 // `0`), so erase it first. Idempotent when already boxed.
-                let other = if val_ty == Type::Any {
+                let other = if val_ty == Type::Any && !source_is_any {
                     let from_ty = arg_tys.first().cloned().unwrap_or(Type::Any);
                     self.box_into_any(other_raw, &from_ty, span)
                 } else {
                     other_raw
                 };
-                let f = if Self::list_elem_needs_copy(&val_ty) || key_typed {
+                let f = if source_is_any {
+                    "__olive_obj_update_from_any"
+                } else if Self::list_elem_needs_copy(&val_ty) || key_typed {
                     "__olive_obj_update_typed"
                 } else {
                     "__olive_obj_update"

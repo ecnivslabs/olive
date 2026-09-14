@@ -226,21 +226,22 @@ pub(crate) fn olive_obj_remove_inner(obj_ptr: i64, attr: i64, key_desc: Option<i
     }
 }
 
-/// Releases a displaced dict key: odd-tagged strings free directly, and
-/// every other word classifies as a no-op (literals, immediates). With the
-/// key type's own descriptor the word releases through the static key
-/// type instead, so struct keys free exactly rather than stranding.
+/// Releases a displaced dict key through its static descriptor when one is
+/// available. Untyped keys use their self-describing Any representation;
+/// raw structs are skipped because their field-count header is ambiguous.
 pub(crate) fn free_displaced_key(key: i64, key_desc: Option<i64>) {
     match key_desc {
         Some(desc) => {
             let mut pos = 0usize;
             crate::free_typed::free_val(key, desc as *const u8, &mut pos);
         }
-        None => {
-            if crate::is_tagged_str_key(key) {
-                crate::olive_free_str(key);
-            }
-        }
+        None => free_untyped_dict_key(key),
+    }
+}
+
+fn free_untyped_dict_key(key: i64) {
+    if !crate::struct_obj::owns_struct_raw(key) {
+        crate::free_any_word(key);
     }
 }
 
@@ -375,9 +376,7 @@ pub extern "C" fn olive_obj_clear(obj_ptr: i64) -> i64 {
         crate::free_any_word(val);
     }
     for k in m.fields.keys() {
-        if crate::is_tagged_str_key(k.0) {
-            crate::olive_free_str(k.0);
-        }
+        free_untyped_dict_key(k.0);
     }
     m.fields.clear();
     obj_ptr
@@ -517,9 +516,7 @@ pub extern "C" fn olive_free_obj(ptr: i64) {
             // the rest precisely reclaims boxes, enums, sequences, and owned
             // strings with no gaps.
             for k in obj.fields.keys() {
-                if !crate::struct_obj::owns_struct_raw(k.0) {
-                    crate::free_any_word(k.0);
-                }
+                free_untyped_dict_key(k.0);
             }
             obj.fields.clear();
         }
@@ -1206,5 +1203,72 @@ mod tests {
         assert!(slot_is_live(key));
         crate::free_typed::olive_free_typed(obj, desc_ptr);
         assert!(!slot_is_live(key));
+    }
+
+    #[test]
+    fn untyped_clear_releases_boxed_numeric_keys() {
+        use crate::slab::slot_is_live;
+        let dict = olive_obj_new();
+        let key = crate::boxed::olive_box_int(1i64 << 61);
+        assert!(slot_is_live(key));
+        olive_obj_set(dict, key, 7);
+        olive_obj_clear(dict);
+        assert!(!slot_is_live(key));
+        olive_free_obj(dict);
+        assert!(!slot_is_live(key));
+    }
+
+    #[test]
+    fn untyped_clear_releases_struct_box_keys() {
+        use crate::format::{D_STR, D_STRUCT};
+        use crate::slab::slot_is_live;
+        #[repr(align(8))]
+        struct AlignedDesc([u8; 7]);
+        let desc = AlignedDesc([D_STRUCT, 14, b'K', 14, 14, b'v', D_STR]);
+        let desc_ptr = desc.0.as_ptr() as i64;
+        let inner = crate::olive_struct_alloc(1);
+        let payload = olive_str_internal("untyped struct-box key payload");
+        let payload_gen = crate::string_slab::olive_str_gen_of(payload);
+        unsafe { *((inner + 8) as *mut i64) = payload };
+        let key = crate::struct_box::olive_struct_box(inner, desc_ptr);
+        let dict = olive_obj_new();
+        olive_obj_set(dict, key, 7);
+        olive_obj_clear(dict);
+        assert!(!slot_is_live(key));
+        assert!(!slot_is_live(inner));
+        assert_eq!(
+            crate::string_slab::olive_str_gen_stale(payload, payload_gen),
+            1
+        );
+        olive_free_obj(dict);
+    }
+
+    #[test]
+    fn untyped_clear_releases_aggregate_keys() {
+        use crate::slab::slot_is_live;
+        let payload = olive_str_internal("untyped aggregate key payload");
+        let payload_gen = crate::string_slab::olive_str_gen_of(payload);
+        let key = crate::list::olive_list_new(1);
+        crate::list::olive_list_set(key, 0, payload);
+        let dict = olive_obj_new();
+        olive_obj_set(dict, key, 7);
+        olive_obj_clear(dict);
+        assert!(!slot_is_live(key));
+        assert_eq!(
+            crate::string_slab::olive_str_gen_stale(payload, payload_gen),
+            1
+        );
+        olive_free_obj(dict);
+    }
+
+    #[test]
+    fn untyped_remove_releases_boxed_numeric_keys() {
+        use crate::slab::slot_is_live;
+        let dict = olive_obj_new();
+        let key = crate::boxed::olive_box_int(1i64 << 61);
+        olive_obj_set(dict, key, 7);
+        assert_eq!(olive_obj_remove(dict, key), 7);
+        assert!(!slot_is_live(key));
+        olive_free_obj(dict);
     }
 }

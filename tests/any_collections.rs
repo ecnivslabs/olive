@@ -22,6 +22,42 @@ fn main():
 }
 
 #[test]
+fn update_from_any_uses_receiver_descriptor() {
+    assert_both(
+        r#"fn apply(src: Any) -> int:
+    let dst: {int: int} = {}
+    dst.update(src)
+    return dst[1]
+
+fn main():
+    let src: {Any: Any} = {1: 42}
+    print(apply(src))
+
+main()
+"#,
+        "42\n",
+    );
+}
+
+#[test]
+fn update_from_any_converts_structural_keys_and_nested_values() {
+    assert_both(
+        r#"fn apply(src: Any) -> int:
+    let dst: {(int, int): [int]} = {}
+    dst.update(src)
+    return len(dst[(1, 2)])
+
+fn main():
+    let src: {Any: Any} = {(1, 2): [3, 4]}
+    print(apply(src))
+
+main()
+"#,
+        "2\n",
+    );
+}
+
+#[test]
 fn erased_u64_formats_as_unsigned_value() {
     assert_both(
         r#"fn main():

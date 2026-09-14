@@ -169,17 +169,22 @@ pub extern "C" fn olive_list_repeat_typed(ptr: i64, n: i64, desc: i64) -> i64 {
 }
 
 /// `d.update(other)` for heap-owning values: `other` keeps its own entries,
-/// `d` gets independent copies. `desc` is `other`'s own `Dict(K, V)`
-/// descriptor (`[D_DICT, <key-desc>, <value-desc>]`); the key descriptor is
-/// skipped to find the value descriptor's start, mirroring `copy_dict`.
+/// `d` gets independent copies. `desc` is the receiver's `Dict(K, V)`
+/// descriptor (`[D_DICT, <key-desc>, <value-desc>]`).
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_update_typed(obj_ptr: i64, other_ptr: i64, desc: i64) -> i64 {
+    olive_obj_update_impl(obj_ptr, other_ptr, desc, false)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_obj_update_from_any(obj_ptr: i64, other_ptr: i64, desc: i64) -> i64 {
+    olive_obj_update_impl(obj_ptr, other_ptr, desc, true)
+}
+
+fn olive_obj_update_impl(obj_ptr: i64, other_ptr: i64, desc: i64, source_is_any: bool) -> i64 {
     if obj_ptr == 0 || other_ptr == 0 || !slot_is_live(other_ptr) {
         return obj_ptr;
     }
-    // Only dicts carry a field map; anything else reads the word as map
-    // header. (`None` keeps its historical silent no-op via the early
-    // return above.)
     if unsafe { *(other_ptr as *const i64) } != crate::KIND_OBJ {
         let kind_name = crate::olive_str_from_ptr(crate::olive_typeof_str(other_ptr));
         crate::panic::abort(
@@ -187,44 +192,64 @@ pub extern "C" fn olive_obj_update_typed(obj_ptr: i64, other_ptr: i64, desc: i64
             None,
         );
     }
+    let tagged_desc = crate::string_slab::str_body(desc) as *const u8;
+    let raw_desc = desc as *const u8;
+    let desc_ptr = if !tagged_desc.is_null() && unsafe { *tagged_desc } == D_DICT {
+        tagged_desc
+    } else {
+        raw_desc
+    };
+    if desc_ptr.is_null() || unsafe { *desc_ptr } != D_DICT {
+        crate::panic::abort("`update` received an invalid dict descriptor", None);
+    }
     let entries: Vec<(i64, i64)> = {
         let om = unsafe { &*(other_ptr as *const OliveObj) };
         om.fields.iter().map(|(k, &v)| (k.0, v)).collect()
     };
     let mut key_pos = 1usize;
-    crate::format::skip(desc as *const u8, &mut key_pos);
+    crate::format::skip(desc_ptr, &mut key_pos);
     let val_start = key_pos;
     let mut displaced = Vec::new();
+    let mut orphan_keys = Vec::new();
     COPY_VISITED.with(|v| {
         let mut visited = v.borrow_mut();
         visited.clear();
-        // Inserts run under the key sub-descriptor (the bytes after the
-        // D_DICT tag) so `olive_obj_set` classifies each key by the dict's
-        // static key type instead of the string-pointer magnitude
-        // heuristic, which misreads a raw odd int above the tag floor.
-        crate::hash_typed::with_key_descriptor(desc + 1, || {
-            for (k, v) in entries {
-                let mut vp = val_start;
-                let vc = copy_val(v, desc as *const u8, &mut vp, &mut visited);
-                let old = unsafe {
-                    (*(obj_ptr as *const OliveObj))
-                        .fields
-                        .get(&OliveStringKey(k))
-                        .copied()
-                };
-                crate::obj::olive_obj_set(obj_ptr, k, vc);
-                if let Some(old) = old {
-                    displaced.push(old);
+        crate::hash_typed::with_owned_sub_descriptor(desc_ptr, 1, |key_desc| {
+            crate::hash_typed::with_key_descriptor(key_desc, || {
+                for (k, v) in entries {
+                    let mut kp = 1usize;
+                    let copied_key = if source_is_any {
+                        crate::unerase::unerase_any(k, desc_ptr, &mut kp, &mut visited)
+                    } else {
+                        copy_val(k, desc_ptr, &mut kp, &mut visited)
+                    };
+                    let mut vp = val_start;
+                    let copied_value = if source_is_any {
+                        crate::unerase::unerase_any(v, desc_ptr, &mut vp, &mut visited)
+                    } else {
+                        copy_val(v, desc_ptr, &mut vp, &mut visited)
+                    };
+                    let fields = unsafe { &mut (*(obj_ptr as *mut OliveObj)).fields };
+                    let old = fields.get(&OliveStringKey(copied_key)).copied();
+                    fields.insert(OliveStringKey(copied_key), copied_value);
+                    if let Some(old) = old {
+                        if old != copied_value {
+                            displaced.push(old);
+                        }
+                        orphan_keys.push(copied_key);
+                    }
                 }
-            }
+            });
         });
         visited.clear();
     });
-    // Self-update may copy shared children through several entries. Keep all
-    // old values alive until copying ends and release outside COPY_VISITED.
+    for key in orphan_keys {
+        let mut pos = 1usize;
+        crate::free_typed::free_val(key, desc_ptr, &mut pos);
+    }
     for old in displaced {
         let mut pos = val_start;
-        crate::free_typed::free_val(old, desc as *const u8, &mut pos);
+        crate::free_typed::free_val(old, desc_ptr, &mut pos);
     }
     obj_ptr
 }
@@ -592,6 +617,19 @@ pub(crate) fn copy_any(val: i64, visited: &mut FxHashMap<i64, i64>) -> i64 {
     root
 }
 
+/// Copy a key to completion before hashing it into the destination map. A
+/// separate worklist prevents a key that aliases an in-progress value from
+/// exposing an unfinished aggregate shell to the hash table. Completed source
+/// mappings are merged back so ordinary key/value aliases remain shared.
+fn copy_any_key(val: i64, visited: &mut FxHashMap<i64, i64>) -> i64 {
+    let mut key_visited = FxHashMap::default();
+    let copied = copy_any(val, &mut key_visited);
+    for (source, copy) in key_visited {
+        visited.entry(source).or_insert(copy);
+    }
+    copied
+}
+
 /// Copies val into GLOBAL_SLABS before it crosses; copy semantics, original untouched.
 pub(crate) fn relocate_across_boundary(val: i64) -> i64 {
     crate::slab::with_escape_arena(|| copy_any(val, &mut FxHashMap::default()))
@@ -652,7 +690,8 @@ fn copy_any_node(
             let new = crate::obj::olive_obj_new();
             visited.insert(val, new);
             for (k, &v) in obj.fields.iter() {
-                stack.push((v, AnyDest::ObjField(new, copy_str(k.0))));
+                let key = copy_any_key(k.0, visited);
+                stack.push((v, AnyDest::ObjField(new, key)));
             }
             new
         }
@@ -926,6 +965,52 @@ mod tests {
         crate::olive_free_any(d);
         assert_eq!(olive_obj_get(cp, s("a")), 7);
         assert_eq!(olive_obj_get(cp, s("big")), 238_471);
+        crate::olive_free_any(cp);
+    }
+
+    #[test]
+    fn any_dict_with_heap_boxed_key_deep_copied() {
+        let key = crate::boxed::olive_box_int(1 << 61);
+        let d = olive_obj_new();
+        olive_obj_set(d, key, s("value"));
+        let cp = olive_copy_typed(d, desc(&[D_ANY]));
+        let copied_key = unsafe { (*(cp as *const OliveObj)).fields.keys().next().unwrap().0 };
+        assert_ne!(copied_key, key, "boxed key must not alias the source");
+
+        crate::olive_free_any(d);
+        let lookup = crate::boxed::olive_box_int(1 << 61);
+        assert_eq!(read(olive_obj_get(cp, lookup)), "value");
+        crate::olive_free_any(lookup);
+        crate::olive_free_any(cp);
+    }
+
+    #[test]
+    fn any_dict_with_nested_heap_key_survives_source_free() {
+        let child = crate::boxed::olive_box_int(1 << 61);
+        let key = list_from_vec(vec![child]);
+        let d = olive_obj_new();
+        olive_obj_set(d, key, s("value"));
+        let cp = olive_copy_typed(d, desc(&[D_ANY]));
+        crate::olive_free_any(d);
+
+        let lookup_child = crate::boxed::olive_box_int(1 << 61);
+        let lookup = list_from_vec(vec![lookup_child]);
+        assert_eq!(read(olive_obj_get(cp, lookup)), "value");
+        crate::olive_free_any(lookup);
+        crate::olive_free_any(cp);
+    }
+
+    #[test]
+    fn any_dict_with_deep_nested_key_copies_without_recursion() {
+        let mut key = list_from_vec(vec![s("leaf")]);
+        for _ in 0..2000 {
+            key = list_from_vec(vec![key]);
+        }
+        let d = olive_obj_new();
+        olive_obj_set(d, key, s("value"));
+        let cp = olive_copy_typed(d, desc(&[D_ANY]));
+        assert_ne!(cp, d);
+        crate::olive_free_any(d);
         crate::olive_free_any(cp);
     }
 

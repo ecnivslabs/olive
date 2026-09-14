@@ -294,6 +294,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_obj_setdefault_typed", &sig_i64_5_i64),
             ("__olive_obj_update", &sig_i64_i64_i64),
             ("__olive_obj_update_typed", &sig_3i64_i64),
+            ("__olive_obj_update_from_any", &sig_3i64_i64),
             ("__olive_obj_values_typed", &sig_i64_i64_i64),
             ("__olive_obj_items_typed", &sig_i64_i64_i64),
             ("__olive_obj_clear", &sig_i64_i64),

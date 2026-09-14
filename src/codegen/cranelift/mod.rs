@@ -340,6 +340,10 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ),
     ("__olive_obj_update", b"olive_obj_update\0"),
     ("__olive_obj_update_typed", b"olive_obj_update_typed\0"),
+    (
+        "__olive_obj_update_from_any",
+        b"olive_obj_update_from_any\0",
+    ),
     ("__olive_obj_clear", b"olive_obj_clear\0"),
     ("__olive_obj_clear_typed", b"olive_obj_clear_typed\0"),
     ("__olive_in_obj_typed", b"olive_in_obj_typed\0"),

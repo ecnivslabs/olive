@@ -178,7 +178,7 @@ pub(super) fn collect_needed_imports(
 
 /// Call names whose needed-import entry is the name itself. Kept sorted for
 /// `binary_search`.
-const IDENTITY_TYPED_IMPORTS: [&str; 28] = [
+const IDENTITY_TYPED_IMPORTS: [&str; 29] = [
     "__olive_copy_typed",
     "__olive_eq_typed",
     "__olive_iter_typed",
@@ -199,6 +199,7 @@ const IDENTITY_TYPED_IMPORTS: [&str; 28] = [
     "__olive_obj_pop_default_typed",
     "__olive_obj_remove_typed",
     "__olive_obj_setdefault_typed",
+    "__olive_obj_update_from_any",
     "__olive_obj_update_typed",
     "__olive_obj_values_typed",
     "__olive_relocate_typed",
@@ -305,6 +306,9 @@ pub(super) fn scan_rvalue_imports(
             }
             if name == "__olive_obj_update_typed" {
                 needed.insert("__olive_obj_update_typed");
+            }
+            if name == "__olive_obj_update_from_any" {
+                needed.insert("__olive_obj_update_from_any");
             }
             if name == "__olive_set_remove_checked_typed" {
                 needed.insert("__olive_set_remove_checked_typed");

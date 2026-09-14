@@ -140,6 +140,33 @@ fn dict_clear_empties_and_returns_dict() {
 }
 
 #[test]
+fn dict_any_key_clear_uses_typed_runtime() {
+    use crate::mir::ir::{Constant, Operand, Rvalue, StatementKind};
+    use crate::test_utils::build_mir;
+
+    let functions = build_mir("fn f():\n    let d: dict[Any, int] = {}\n    d.clear()\n");
+    let function = functions
+        .iter()
+        .find(|function| function.name == "f")
+        .unwrap();
+    let uses_typed_clear = function.basic_blocks.iter().any(|block| {
+        block.statements.iter().any(|statement| {
+            matches!(
+                &statement.kind,
+                StatementKind::Assign(
+                    _,
+                    Rvalue::Call {
+                        func: Operand::Constant(Constant::Function(name)),
+                        ..
+                    }
+                ) if name == "__olive_obj_clear_typed"
+            )
+        })
+    });
+    assert!(uses_typed_clear);
+}
+
+#[test]
 fn dict_pop_absent_no_default_faults() {
     let codes = check_codes("fn f():\n    let d = {\"a\": 1}\n    d.pop(\"z\")\n");
     assert!(
