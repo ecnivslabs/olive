@@ -48,44 +48,47 @@ pub(crate) fn is_untyped_desc(desc: i64) -> bool {
     unsafe { crate::format::byte(raw as *const u8, 0) == crate::format::D_ANY }
 }
 
+struct ActiveKeyDescriptorGuard {
+    previous: i64,
+}
+
+impl Drop for ActiveKeyDescriptorGuard {
+    fn drop(&mut self) {
+        ACTIVE_KEY_DESC.with(|d| d.set(self.previous));
+    }
+}
+
 /// Installs `desc` for the duration of `f`. Runtime helpers that compose
 /// typed entry points (an `update` that inserts through `olive_obj_set`)
 /// use this so the inner op keeps classifying keys by the same type.
 pub(crate) fn with_key_descriptor<R>(desc: i64, f: impl FnOnce() -> R) -> R {
-    let prev = ACTIVE_KEY_DESC.with(|d| d.replace(desc));
-    let r = f();
-    ACTIVE_KEY_DESC.with(|d| d.set(prev));
-    r
+    let previous = ACTIVE_KEY_DESC.with(|d| d.replace(desc));
+    let _guard = ActiveKeyDescriptorGuard { previous };
+    f()
 }
 
-/// Materializes an owned, aligned copy of the descriptor subtree at `start`.
-/// Pointer arithmetic into a descriptor string (`desc.byte_add(start)`) can
-/// land on an unaligned address, and every consumer strips tag bits via
-/// `str_body` (needed for tagged `Str`-constant descriptors), which corrupts
-/// an unaligned raw pointer into neighboring bytes. Copy walks (which hash
-/// re-inserted keys under the active descriptor) must use this instead of
-/// passing sub-pointers straight into `with_key_descriptor`.
-pub(crate) fn owned_sub_descriptor(desc: *const u8, start: usize) -> Vec<u8> {
-    let mut end = start;
-    crate::format::skip(desc, &mut end);
-    unsafe { std::slice::from_raw_parts(desc.add(start), end - start).to_vec() }
+/// Materializes an owned descriptor rooted at `start`. The selected subtree
+/// is copied with all back-references rebased and any reachable definitions
+/// outside the subtree appended. A raw child pointer is not a valid
+/// descriptor: its offsets still address the original root, and a byte-string
+/// child can also be unaligned.
+pub(crate) fn owned_sub_descriptor(
+    desc: *const u8,
+    start: usize,
+) -> crate::format::OwnedDescriptor {
+    crate::format::owned_subdescriptor(desc, start)
 }
 
-/// Runs `f` with an aligned descriptor subtree. Descriptor strings are
-/// byte strings, so a child offset can be unaligned even when the root data
-/// pointer is aligned. Hash consumers intentionally accept tagged Olive
-/// string pointers and therefore cannot use that raw child address directly.
+/// Runs `f` with an owned, aligned descriptor rooted at `start`. The
+/// descriptor is borrowed only for the callback, so callers must not retain
+/// the integer word after `f` returns.
 pub(crate) fn with_owned_sub_descriptor<R>(
     desc: *const u8,
     start: usize,
     f: impl FnOnce(i64) -> R,
 ) -> R {
-    let bytes = owned_sub_descriptor(desc, start);
-    let mut aligned = vec![0u8; bytes.len() + 7];
-    let base = aligned.as_ptr() as usize;
-    let offset = (8 - base % 8) % 8;
-    aligned[offset..offset + bytes.len()].copy_from_slice(&bytes);
-    f(unsafe { aligned.as_ptr().add(offset) as i64 })
+    let owned = owned_sub_descriptor(desc, start);
+    f(owned.as_i64())
 }
 
 #[unsafe(no_mangle)]
@@ -143,9 +146,10 @@ pub extern "C" fn olive_obj_get_default_boxed_typed(
     attr: i64,
     default: i64,
     key_desc: i64,
+    value_desc: i64,
 ) -> i64 {
     with_key_descriptor(key_desc, || {
-        crate::obj::olive_obj_get_default_boxed(obj_ptr, attr, default)
+        crate::obj::olive_obj_get_default_boxed(obj_ptr, attr, default, value_desc)
     })
 }
 

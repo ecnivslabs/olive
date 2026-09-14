@@ -140,6 +140,7 @@ pub(crate) unsafe fn legacy_call_method_kw_safe(
                 PY_OBJECT_GET_ATTR_STRING(obj, crate::string_slab::str_body(attr) as *const c_char)
             };
             if bound.is_null() {
+                abandon_pending_writebacks();
                 let err_str_ptr = catch_py_exception_msg()
                     .unwrap_or_else(|| "attribute lookup failed".to_string());
                 return crate::result::olive_result_err(crate::olive_str_internal(&err_str_ptr));

@@ -688,12 +688,13 @@ impl<'a> MirBuilder<'a> {
         let owning = current_obj_ty.is_py_value();
         let tmp = self.new_local_with_owning(ty, None, true, owning);
         if current_obj_ty.is_py_value() {
-            let func_name = if Self::is_int_ty(&idx_ty) {
+            let unsigned_int = matches!(idx_ty, Type::U64 | Type::Usize);
+            let func_name = if Self::is_int_ty(&idx_ty) && !unsigned_int {
                 "__olive_py_getitem_int"
             } else {
                 "__olive_py_getitem"
             };
-            let py_i = if Self::is_int_ty(&idx_ty) {
+            let py_i = if Self::is_int_ty(&idx_ty) && !unsigned_int {
                 i_raw
             } else {
                 self.emit_to_py_arg(i_raw, &idx_ty, span)

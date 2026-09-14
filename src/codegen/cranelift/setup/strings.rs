@@ -39,6 +39,23 @@ impl<M: Module> CraneliftCodegen<M> {
         self.string_ids.insert(attr.to_string(), id);
     }
 
+    fn intern_dict_value_descriptor(&mut self, recv: &crate::mir::Operand, func: &MirFunction) {
+        let recv_static = super::super::imports::operand_static_type(recv, func);
+        let value_ty = match super::super::imports::concrete_ty(&recv_static) {
+            crate::semantic::types::Type::Dict(_, value) => {
+                super::super::imports::concrete_ty(value).clone()
+            }
+            _ => crate::semantic::types::Type::Any,
+        };
+        let desc = super::super::imports::type_descriptor(
+            &value_ty,
+            &self.struct_fields,
+            &self.field_types,
+            &self.enum_defs,
+        );
+        self.intern_attr_string(&desc);
+    }
+
     /// Interns a read-only `file:line:col` string and returns a tagged Olive
     /// string pointer's backing data id. Reused for every fault site sharing
     /// the same source location.
@@ -418,6 +435,13 @@ impl<M: Module> CraneliftCodegen<M> {
             }
             _ => None,
         };
+        if matches!(
+            name.as_str(),
+            "__olive_obj_get_boxed" | "__olive_obj_get_default_boxed"
+        ) && args.len() >= 2
+        {
+            self.intern_dict_value_descriptor(&args[0], func);
+        }
         if let Some(pos) = typed_list_arg {
             let mut ty = operand_static_type(&args[pos], func);
             while let crate::semantic::types::Type::Ref(inner)
@@ -445,6 +469,9 @@ impl<M: Module> CraneliftCodegen<M> {
             let desc =
                 type_descriptor(&ty, &self.struct_fields, &self.field_types, &self.enum_defs);
             self.intern_attr_string(&desc);
+            if name == "__olive_obj_get_default_boxed_typed" && args.len() == 3 {
+                self.intern_dict_value_descriptor(&args[0], func);
+            }
             // `setdefault` carries a second descriptor for its default
             // value, computed exactly like `translate_call` does.
             if name == "__olive_obj_setdefault_typed" && args.len() == 3 {

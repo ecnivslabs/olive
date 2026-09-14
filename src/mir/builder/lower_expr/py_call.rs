@@ -176,11 +176,11 @@ impl<'a> MirBuilder<'a> {
     /// list, so it gets its own tag distinct from an Any-valued one (`{str:
     /// Any}` boxes every value) -- see the tag table in `python_writeback.rs`.
     ///
-    /// A container whose element/value is itself a concrete container (a
-    /// `[[int]]`, `{str: [int]}`, ...) gets `0`. The call lowering then uses
-    /// the recursive descriptor exporter before the call, so nested values
-    /// cross with their declared representation. The flat tag word remains
-    /// reserved for copy-out shapes that runtime can decode without a
+    /// A container whose element/value has no flat scalar tag, including
+    /// nested `[[int]]` and `{str: [int]}` shapes, gets `0`. The call
+    /// lowering then uses the recursive descriptor exporter before the call,
+    /// so those values cross and sync with their declared representation. The
+    /// flat tag word remains reserved for shapes runtime can decode without a
     /// descriptor.
     ///
     /// Not a collection -> `0`.
@@ -216,22 +216,6 @@ impl<'a> MirBuilder<'a> {
                 _ => 0,
             },
             _ => 0,
-        }
-    }
-
-    fn py_collection_has_nested_shape(ty: &Type) -> bool {
-        match ty {
-            Type::List(elem) | Type::Set(elem) => matches!(
-                elem.as_ref(),
-                Type::List(_) | Type::Set(_) | Type::Dict(_, _) | Type::Tuple(_)
-            ),
-            Type::Dict(key, value) => {
-                matches!(
-                    key.as_ref(),
-                    Type::List(_) | Type::Set(_) | Type::Dict(_, _) | Type::Tuple(_)
-                ) || Self::py_collection_has_nested_shape(value)
-            }
-            _ => false,
         }
     }
 
@@ -440,10 +424,7 @@ impl<'a> MirBuilder<'a> {
             // key kind; bit 3 marks a narrow f32 or u64 collection value.
             // The runtime uses both for initial conversion and writeback.
             let descriptor_preconvert =
-                matches!(&arg_ty, Type::List(_) | Type::Set(_) | Type::Dict(_, _))
-                    && coll_tag == 0
-                    && (Self::py_collection_has_nested_shape(&arg_ty)
-                        || !Self::py_collection_has_null(&arg_ty));
+                matches!(&arg_ty, Type::List(_) | Type::Set(_) | Type::Dict(_, _)) && coll_tag == 0;
             let arg_tag = if descriptor_preconvert {
                 ARG_PYOBJECT
             } else {
@@ -476,6 +457,8 @@ impl<'a> MirBuilder<'a> {
             };
             let py_op = if fast_path && !descriptor_preconvert {
                 op
+            } else if descriptor_preconvert {
+                self.emit_to_py_arg_tracked(op, &arg_ty, span)
             } else {
                 self.emit_to_py_arg(op, &arg_ty, span)
             };

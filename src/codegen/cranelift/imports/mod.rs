@@ -42,7 +42,7 @@ pub(super) fn collect_needed_imports(
                             needed.insert("__olive_py_copy_ref");
                         }
                     }
-                    StatementKind::SetIndex(_, _, val_op, _) => {
+                    StatementKind::SetIndex(obj, _idx, val_op, _) => {
                         needed.insert("__olive_list_set");
                         needed.insert("__olive_list_set_typed");
                         needed.insert("__olive_tuple_set_typed");
@@ -63,6 +63,13 @@ pub(super) fn collect_needed_imports(
                         needed.insert("__olive_free_enum");
                         needed.insert("__olive_free_fatptr");
                         needed.insert("__olive_free_any");
+                        if matches!(obj, Operand::Copy(loc) | Operand::Move(loc)
+                            if matches!(func.locals[loc.0].ty, OliveType::PyObject))
+                        {
+                            needed.insert("__olive_py_setitem");
+                            needed.insert("__olive_py_from_u64");
+                            needed.insert("__olive_py_decref");
+                        }
                         if let Operand::Copy(src) = val_op
                             && matches!(func.locals[src.0].ty, OliveType::PyObject)
                         {
@@ -390,6 +397,7 @@ pub(super) fn scan_rvalue_imports(
                         needed.insert("__olive_py_add");
                         needed.insert("__olive_py_from_float");
                         needed.insert("__olive_py_from_int");
+                        needed.insert("__olive_py_from_u64");
                     } else if is_str_op(func_mir, lhs) {
                         needed.insert("__olive_str_concat");
                         needed.insert("__olive_str_concat_move");
@@ -414,6 +422,7 @@ pub(super) fn scan_rvalue_imports(
                     if is_pyobj {
                         needed.insert("__olive_py_from_float");
                         needed.insert("__olive_py_from_int");
+                        needed.insert("__olive_py_from_u64");
                         match op {
                             crate::parser::BinOp::Sub => {
                                 needed.insert("__olive_py_sub");
@@ -463,6 +472,7 @@ pub(super) fn scan_rvalue_imports(
                         // exactly as the ordered comparisons below do.
                         needed.insert("__olive_py_from_float");
                         needed.insert("__olive_py_from_int");
+                        needed.insert("__olive_py_from_u64");
                         needed.insert("__olive_py_eq");
                     }
                 }
@@ -486,6 +496,7 @@ pub(super) fn scan_rvalue_imports(
                     if is_pyobj {
                         needed.insert("__olive_py_from_float");
                         needed.insert("__olive_py_from_int");
+                        needed.insert("__olive_py_from_u64");
                         match op {
                             crate::parser::BinOp::Lt => {
                                 needed.insert("__olive_py_lt");
@@ -538,6 +549,7 @@ pub(super) fn scan_rvalue_imports(
                         needed.insert("__olive_py_pow");
                         needed.insert("__olive_py_from_float");
                         needed.insert("__olive_py_from_int");
+                        needed.insert("__olive_py_from_u64");
                     } else if is_float_op(func_mir, lhs) {
                         needed.insert("__olive_pow_float");
                     } else {
@@ -587,6 +599,8 @@ pub(super) fn scan_rvalue_imports(
                     needed.insert("__olive_enum_get");
                 } else if matches!(ty, OliveType::PyObject) {
                     needed.insert("__olive_py_getitem");
+                    needed.insert("__olive_py_from_u64");
+                    needed.insert("__olive_py_decref");
                 }
             }
         }

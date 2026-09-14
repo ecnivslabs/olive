@@ -59,6 +59,10 @@ def mutate_then_raise(xs):
     xs.append(999)
     raise ValueError("boom")
 
+def mutate_nested_then_raise(rows):
+    rows[0].append(999)
+    raise ValueError("boom")
+
 def push_wrong_type(xs, v):
     xs[0] = v
 
@@ -66,12 +70,25 @@ def same_list_twice(a, b):
     a.append(1)
     return len(b)
 
+def same_nested_twice(a, b):
+    a[0].append(7)
+    return len(b[0])
+
 def touch_nested(outer):
     outer[0].append(42)
+
+def touch_nested_dict(d):
+    d["a"]["b"] = 9
+
+def touch_nested_kw(*, rows):
+    rows[0].append(42)
 
 def flip_set(s):
     s.add(999)
     s.discard(1)
+
+def add_none(s):
+    s.add(None)
 
 def take_dict(d):
     return len(d)
@@ -223,6 +240,9 @@ def live_any_keys():
 
 def append_first17(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16):
     a0.append(999)
+
+def touch_nested_17(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16):
+    a0[0].append(999)
 
 def kw17(d, **kw):
     d[2] = 9
@@ -457,6 +477,103 @@ main()
 }
 
 #[test]
+fn safe_call_syncs_nested_typed_collection() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn call_it(rows: [[int]]) -> int | Error:
+    try h.touch_nested(rows)
+    return 0
+
+fn main():
+    let mut rows: [[int]] = [[1]]
+    match call_it(rows):
+        Error(_):
+            print("caught")
+        n:
+            print(n)
+    print(rows)
+
+main()
+"#,
+        "0\n[[1, 42]]\n",
+    );
+}
+
+#[test]
+fn keyword_call_syncs_nested_typed_collection() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let mut rows: [[int]] = [[1]]
+    h.touch_nested_kw(rows=rows)
+    print(rows)
+
+main()
+"#,
+        "[[1, 42]]\n",
+    );
+}
+
+#[test]
+fn safe_exception_still_syncs_nested_typed_collection() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn call_it(rows: [[int]]) -> int | Error:
+    try h.mutate_nested_then_raise(rows)
+    return 0
+
+fn main():
+    let mut rows: [[int]] = [[1]]
+    match call_it(rows):
+        Error(_):
+            print("caught")
+        n:
+            print(n)
+    print(rows)
+
+main()
+"#,
+        "caught\n[[1, 999]]\n",
+    );
+}
+
+#[test]
+fn same_nested_collection_passed_twice_aliases_one_python_object() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let mut rows: [[int]] = [[1]]
+    let n = h.same_nested_twice(rows, rows)
+    print(n)
+    print(rows)
+
+main()
+"#,
+        "2\n[[1, 7]]\n",
+    );
+}
+
+#[test]
+fn legacy_call_syncs_nested_typed_collection() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let mut rows: [[int]] = [[1]]
+    h.touch_nested_17(rows, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    print(rows)
+
+main()
+"#,
+        "[[1, 999]]\n",
+    );
+}
+
+#[test]
 fn same_list_passed_twice_aliases_one_python_object() {
     assert_both_succeed(
         r#"import py "wbhelper" as h
@@ -579,13 +696,11 @@ main()
     );
 }
 
-/// A concretely nested list (`[[int]]`, not `[Any]`) has no flat 4-bit tag
-/// that can express "the inner element is itself a raw int list" (see
-/// `py_collection_tag`'s doc comment), so this argument gets no copy-out at
-/// all -- the same honest, documented limitation as R2a's pre-writeback
-/// behavior, not silent corruption.
+/// Concretely typed nested collections cross through their recursive type
+/// descriptor and sync Python-side mutations back into the original Olive
+/// allocation.
 #[test]
-fn concretely_typed_nested_list_is_a_safe_no_op() {
+fn concretely_typed_nested_list_syncs_the_inner_mutation() {
     assert_both_succeed(
         r#"import py "wbhelper" as h
 
@@ -596,7 +711,74 @@ fn main():
 
 main()
 "#,
-        "[[1, 2], [3]]\n",
+        "[[1, 2, 42], [3]]\n",
+    );
+}
+
+#[test]
+fn concretely_typed_nested_dict_syncs_the_inner_mutation() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let mut d: {str: {str: int}} = {"a": {"b": 1}}
+    h.touch_nested_dict(d)
+    print(d)
+
+main()
+"#,
+        "{\"a\": {\"b\": 9}}\n",
+    );
+}
+
+#[test]
+fn nested_u64_and_null_collections_sync() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let mut rows: [[u64]] = [[1 << 63]]
+    h.touch_nested(rows)
+    print(rows)
+    let mut none: [None] = [None]
+    h.just_append(none, None)
+    print(none)
+
+main()
+"#,
+        "[[9223372036854775808, 42]]\n[None, None]\n",
+    );
+}
+
+#[test]
+fn nested_descriptor_set_syncs() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let mut s: set[None] = {None}
+    h.add_none(s)
+    print(len(s))
+
+main()
+"#,
+        "1\n",
+    );
+}
+
+#[test]
+fn descriptor_preconvert_bytes_collection_syncs() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let mut xs: [bytes] = [bytes_new(1)]
+    h.just_append(xs, bytes_new(2))
+    print(len(xs))
+
+main()
+"#,
+        "2\n",
     );
 }
 

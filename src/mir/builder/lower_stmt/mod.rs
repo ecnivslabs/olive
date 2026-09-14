@@ -436,6 +436,11 @@ impl<'a> MirBuilder<'a> {
                         if obj_ty.is_py_value() {
                             let rval =
                                 self.emit_to_py_arg(Operand::Copy(tmp), &target_ty, stmt.span);
+                            let py_idx = if matches!(idx_ty, Type::U64 | Type::Usize) {
+                                self.emit_to_py_arg(idx_op, &idx_ty, stmt.span)
+                            } else {
+                                idx_op
+                            };
                             let dummy = self.new_unscoped_local_with_owning(Type::Any, false);
                             self.push_statement(
                                 StatementKind::Assign(
@@ -444,7 +449,7 @@ impl<'a> MirBuilder<'a> {
                                         func: Operand::Constant(Constant::Function(
                                             "__olive_py_setitem".to_string(),
                                         )),
-                                        args: vec![obj_op, idx_op, rval],
+                                        args: vec![obj_op, py_idx, rval],
                                     },
                                 ),
                                 stmt.span,

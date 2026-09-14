@@ -541,9 +541,8 @@ impl<'a> MirBuilder<'a> {
                 | Type::U8
                 | Type::U16
                 | Type::U32
-                | Type::U64
-                | Type::Usize
                 | Type::Bool => Some("__olive_py_from_int"),
+                Type::U64 | Type::Usize => Some("__olive_py_from_u64"),
                 Type::Float | Type::F32 => Some("__olive_py_from_float"),
                 Type::Str => Some("__olive_py_from_str"),
                 Type::Bytes | Type::Any => Some("__olive_to_pyobject"),
@@ -1553,6 +1552,29 @@ impl<'a> MirBuilder<'a> {
         ty: &Type,
         span: crate::span::Span,
     ) -> Operand {
+        self.emit_to_py_arg_inner(op, ty, span, false)
+    }
+
+    /// Converts a descriptor-described collection for a Python call and
+    /// registers it for copy-back. Nested shapes cannot use flat collection
+    /// tags, so the runtime keeps its original source and descriptor until
+    /// the call returns.
+    pub(super) fn emit_to_py_arg_tracked(
+        &mut self,
+        op: Operand,
+        ty: &Type,
+        span: crate::span::Span,
+    ) -> Operand {
+        self.emit_to_py_arg_inner(op, ty, span, true)
+    }
+
+    fn emit_to_py_arg_inner(
+        &mut self,
+        op: Operand,
+        ty: &Type,
+        span: crate::span::Span,
+        track_writeback: bool,
+    ) -> Operand {
         if ty.is_py_value() {
             return op;
         }
@@ -1569,13 +1591,16 @@ impl<'a> MirBuilder<'a> {
                 &self.enum_defs,
             );
             let tmp = self.new_local(Type::PyObject, None, false);
+            let function = if track_writeback {
+                "__olive_py_to_typed_arg"
+            } else {
+                "__olive_to_py_typed"
+            };
             self.push_statement(
                 StatementKind::Assign(
                     tmp,
                     Rvalue::Call {
-                        func: Operand::Constant(Constant::Function(
-                            "__olive_to_py_typed".to_string(),
-                        )),
+                        func: Operand::Constant(Constant::Function(function.to_string())),
                         args: vec![op, Operand::Constant(Constant::Str(desc))],
                     },
                 ),

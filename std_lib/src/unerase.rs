@@ -218,10 +218,11 @@ pub(crate) fn unerase_any(
             out
         }
         D_BACKREF => {
-            let mut sub = tag_pos;
-            let out = crate::copy_typed::copy_val(any, desc, &mut sub, visited);
-            *pos = sub;
-            out
+            let target = (unsafe { byte(desc, *pos) } as usize) << 8
+                | unsafe { byte(desc, *pos + 1) } as usize;
+            *pos += 2;
+            let mut target_pos = target;
+            unerase_any(any, desc, &mut target_pos, visited)
         }
         _ => fault("a value of the expected type"),
     }
@@ -470,5 +471,43 @@ mod tests {
         assert!(en(&[D_DICT, D_INT, D_INT], 0));
         assert!(en(&[D_TUPLE, 3, D_INT, D_STRUCT], 0));
         assert!(en(&[D_TUPLE, 3, D_INT, D_INT], 0));
+    }
+
+    #[test]
+    fn tuple_unerase_backref_advances_only_three_bytes() {
+        let d = vec![
+            D_TUPLE, 4, D_STRUCT, 14, b'O', 14, 14, b'v', D_STR, D_BACKREF, 0, 2, D_INT, 0,
+        ];
+        let desc = d.as_ptr() as i64;
+        let sub_desc = crate::index_any::intern_sub_descriptor(d.as_ptr(), 2);
+        let first = crate::olive_struct_alloc(1);
+        let second = crate::olive_struct_alloc(1);
+        unsafe {
+            *((first + 8) as *mut i64) = crate::olive_str_internal("first");
+            *((second + 8) as *mut i64) = crate::olive_str_internal("second");
+        }
+        let erased = crate::list::list_from_vec(vec![
+            crate::struct_box::olive_struct_box(first, sub_desc),
+            crate::struct_box::olive_struct_box(second, sub_desc),
+            crate::boxed::olive_box_int(7),
+        ]);
+        unsafe { (*(erased as *mut StableVec)).kind = KIND_ANY_LIST };
+        let result = olive_tuple_unerase(erased, desc);
+        assert!(crate::list::olive_list_get(result, 0) != 0);
+        assert_eq!(
+            crate::olive_str_from_ptr(unsafe {
+                *((crate::list::olive_list_get(result, 0) + 8) as *const i64)
+            }),
+            "first"
+        );
+        assert_eq!(
+            crate::olive_str_from_ptr(unsafe {
+                *((crate::list::olive_list_get(result, 1) + 8) as *const i64)
+            }),
+            "second"
+        );
+        assert_eq!(crate::list::olive_list_get(result, 2), 7);
+        crate::olive_free_any(erased);
+        crate::free_typed::olive_free_typed(result, desc);
     }
 }

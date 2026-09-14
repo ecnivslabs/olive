@@ -27,7 +27,7 @@ pub(crate) unsafe fn call_kw_v_core(
     kw_arg_tags: i64,
 ) -> PyObject {
     unsafe {
-        let mut pairs = Vec::new();
+        let mut pairs = take_pending_writebacks();
         let mut buf: [PyObject; 34] = [std::ptr::null_mut(); 34];
         convert_segment_unsafe(
             pos_ptr, pos_len, coll_tags, arg_tags, &mut buf, 1, &mut pairs,
@@ -73,7 +73,7 @@ pub(crate) unsafe fn call_kw_v_core_safe(
     kw_arg_tags: i64,
 ) -> i64 {
     unsafe {
-        let mut pairs = Vec::new();
+        let mut pairs = take_pending_writebacks();
         let mut buf: [PyObject; 34] = [std::ptr::null_mut(); 34];
         if !convert_segment_safe(
             pos_ptr, pos_len, coll_tags, arg_tags, &mut buf, 1, &mut pairs,
@@ -141,7 +141,7 @@ pub(crate) unsafe fn call_kw_v_method_core(
     kw_arg_tags: i64,
 ) -> PyObject {
     unsafe {
-        let mut pairs = Vec::new();
+        let mut pairs = take_pending_writebacks();
         let mut buf: [PyObject; 34] = [std::ptr::null_mut(); 34];
         buf[1] = unwrapped_obj;
         convert_segment_unsafe(
@@ -189,7 +189,7 @@ pub(crate) unsafe fn call_kw_v_method_core_safe(
     kw_arg_tags: i64,
 ) -> i64 {
     unsafe {
-        let mut pairs = Vec::new();
+        let mut pairs = take_pending_writebacks();
         let mut buf: [PyObject; 34] = [std::ptr::null_mut(); 34];
         buf[1] = unwrapped_obj;
         if !convert_segment_safe(

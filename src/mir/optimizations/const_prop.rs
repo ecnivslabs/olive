@@ -29,8 +29,13 @@ impl Transform for ConstantPropagation {
                     // so a constant of the payload's type isn't interchangeable with the
                     // union's own raw-word representation (the `== None` sentinel check
                     // needs the latter). Propagating one for the other miscompiles.
+                    // `Constant::Int` has no unsigned tag, so propagating one into
+                    // `u64` would erase the descriptor needed by high-bit values.
                     if let Rvalue::Use(Operand::Constant(c)) = rval
-                        && !matches!(func.locals[dest.0].ty, Type::Union(_))
+                        && !matches!(
+                            func.locals[dest.0].ty,
+                            Type::Union(_) | Type::U64 | Type::Usize
+                        )
                     {
                         constant_assignments.insert(*dest, c.clone());
                     }
@@ -98,7 +103,10 @@ impl Transform for ConstantPropagation {
                     changed |= self.propagate_constants_in_rvalue(rval, &local_consts);
 
                     if let Rvalue::Use(Operand::Constant(c)) = rval
-                        && !matches!(func.locals[dest.0].ty, Type::Union(_))
+                        && !matches!(
+                            func.locals[dest.0].ty,
+                            Type::Union(_) | Type::U64 | Type::Usize
+                        )
                     {
                         local_consts.insert(*dest, c.clone());
                     } else {
@@ -313,6 +321,36 @@ mod tests {
             } => {}
             _ => panic!("discr should be constant true"),
         }
+    }
+
+    #[test]
+    fn unsigned_constant_keeps_its_type_for_descriptor_dispatch() {
+        let mut f = func(
+            "f",
+            vec![
+                LocalDecl {
+                    ty: Type::U64,
+                    ..local_decl()
+                },
+                LocalDecl {
+                    ty: Type::Any,
+                    ..local_decl()
+                },
+            ],
+            vec![
+                assign(0, Rvalue::Use(Operand::Constant(Constant::Int(i64::MIN)))),
+                assign(
+                    1,
+                    Rvalue::GetIndex(Operand::Copy(Local(1)), Operand::Copy(Local(0)), false),
+                ),
+            ],
+            0,
+        );
+        assert!(!ConstantPropagation.run(&mut f));
+        assert!(matches!(
+            f.basic_blocks[0].statements[1].kind,
+            StatementKind::Assign(_, Rvalue::GetIndex(_, Operand::Copy(Local(0)), _))
+        ));
     }
 
     #[test]

@@ -73,6 +73,15 @@ def make_u64_set():
 def make_u64_dict():
     return {1 << 63: 7}
 
+def make_empty_dict():
+    return {}
+
+def echo(value):
+    return value
+
+def kind(value):
+    return type(value).__name__
+
 def make_int_dict():
     return {2: 10, 3: 30}
 
@@ -358,6 +367,60 @@ fn main():
 main()
 "#,
         "10\nTrue\n7\n",
+    );
+}
+
+#[test]
+fn high_u64_survives_python_object_coercion() {
+    assert_both_succeed(
+        r#"import py "drhelper" as h
+
+fn main():
+    let one: u64 = 1
+    let high: u64 = one << 63
+    let p: PyObject = high
+    print(h.kind(p))
+    let n: u64 = h.echo(p)
+    print(n)
+
+main()
+"#,
+        "int\n9223372036854775808\n",
+    );
+}
+
+#[test]
+fn dynamic_any_dict_preserves_unsigned_key_identity() {
+    assert_both_succeed(
+        r#"import py "drhelper" as h
+
+fn main():
+    let one: u64 = 1
+    let high: u64 = one << 63
+    let d: Any = h.make_u64_dict()
+    print(d[high])
+
+main()
+"#,
+        "7\n",
+    );
+}
+
+#[test]
+fn python_object_subscript_preserves_unsigned_key_width() {
+    assert_both_succeed(
+        r#"import py "drhelper" as h
+
+fn main():
+    let one: u64 = 1
+    let high: u64 = one << 63
+    let d: PyObject = h.make_empty_dict()
+    d[high] = 42
+    print(d[high])
+
+main()
+"#,
+        "42\n",
     );
 }
 

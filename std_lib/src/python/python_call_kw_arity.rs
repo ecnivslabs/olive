@@ -72,6 +72,7 @@ macro_rules! define_kw_arity_call {
             check_python_loaded();
             let unwrapped_func = unsafe { olive_py_unwrap(func) };
             if unwrapped_func.is_null() {
+                abandon_pending_writebacks();
                 return std::ptr::null_mut();
             }
             unsafe {
@@ -128,6 +129,7 @@ macro_rules! define_kw_arity_call {
             }
             let unwrapped_func = unsafe { olive_py_unwrap(func) };
             if unwrapped_func.is_null() {
+                abandon_pending_writebacks();
                 let err_str_ptr = crate::olive_str_internal("Null function pointer");
                 return crate::result::olive_result_err(err_str_ptr);
             }
@@ -189,6 +191,7 @@ macro_rules! define_kw_arity_method_call {
             check_python_loaded();
             let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
             if unwrapped_obj.is_null() {
+                abandon_pending_writebacks();
                 return std::ptr::null_mut();
             }
             unsafe {
@@ -258,6 +261,7 @@ macro_rules! define_kw_arity_method_call {
             }
             let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
             if unwrapped_obj.is_null() {
+                abandon_pending_writebacks();
                 let err_str_ptr = crate::olive_str_internal("Null object pointer");
                 return crate::result::olive_result_err(err_str_ptr);
             }

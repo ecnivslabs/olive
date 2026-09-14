@@ -71,6 +71,43 @@ fn erased_u64_formats_as_unsigned_value() {
 }
 
 #[test]
+fn concrete_dict_get_boxes_hits_with_the_stored_value_type() {
+    assert_both(
+        r#"fn main():
+    let floats: {int: float} = {1: -1.5}
+    let f: Any = floats.get(1, None)
+    print(f)
+    print(type(f))
+
+    let one: u64 = 1
+    let high: u64 = one << 63
+    let unsigned: {int: u64} = {1: high}
+    let u: Any = unsigned.get(1, None)
+    print(u)
+    print(type(u))
+
+    let bools: {int: bool} = {1: True}
+    let b: Any = bools.get(1, 0)
+    print(b)
+    print(type(b))
+
+    let ints: {int: int} = {1: 2}
+    let i: Any = ints.get(1, None)
+    print(i)
+    print(type(i))
+
+    let f32s: {int: f32} = {1: 1.5}
+    let small: Any = f32s.get(1, None)
+    print(small)
+    print(type(small))
+    let missing: Any = f32s.get(2, None)
+    print(missing)
+"#,
+        "-1.5\nfloat\n9223372036854775808\nu64\nTrue\nbool\n2\nint\n1.5\nfloat\nNone\n",
+    );
+}
+
+#[test]
 fn erased_native_lists_support_dynamic_indexing() {
     assert_both(
         r#"fn first(value: Any) -> Any:

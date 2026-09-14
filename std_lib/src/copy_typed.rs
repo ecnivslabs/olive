@@ -745,7 +745,7 @@ fn copy_any_node(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::format::D_INT;
+    use crate::format::{D_BACKREF, D_DICT, D_INT, D_SET, D_STRUCT, D_TUPLE};
     use crate::free_typed::olive_free_typed;
     use crate::list::{list_from_vec, olive_list_get};
     use crate::obj::{olive_obj_get, olive_obj_new, olive_obj_set};
@@ -1082,6 +1082,121 @@ mod tests {
         crate::list::olive_list_set(cp, 0, 0);
         crate::olive_free_any(src);
         crate::olive_free_any(cp);
+    }
+
+    fn recursive_dict_descriptor() -> i64 {
+        desc(&[
+            D_DICT, D_STRUCT, 14, b'N', 15, 14, b'v', D_STR, 14, b'n', D_BACKREF, 0, 1, D_INT,
+        ])
+    }
+
+    fn recursive_key() -> i64 {
+        let key = crate::olive_struct_alloc(2);
+        unsafe {
+            *((key + 8) as *mut i64) = s("key");
+            *((key + 16) as *mut i64) = 0;
+        }
+        key
+    }
+
+    #[test]
+    fn recursive_dict_key_copy_uses_rebased_descriptor() {
+        let d = recursive_dict_descriptor();
+        let source = olive_obj_new();
+        let key = recursive_key();
+        crate::hash_typed::with_owned_sub_descriptor(d as *const u8, 1, |key_desc| {
+            crate::hash_typed::olive_obj_set_typed(source, key, 7, key_desc);
+        });
+        let copied = olive_copy_typed(source, d);
+        let lookup = recursive_key();
+        let hit = crate::hash_typed::with_owned_sub_descriptor(d as *const u8, 1, |key_desc| {
+            crate::hash_typed::with_key_descriptor(key_desc, || olive_obj_get(copied, lookup))
+        });
+        assert_eq!(hit, 7);
+        olive_free_typed(source, d);
+        olive_free_typed(copied, d);
+        crate::struct_obj::olive_free_struct(lookup);
+    }
+
+    #[test]
+    fn recursive_set_element_copy_uses_rebased_descriptor() {
+        let d = desc(&[
+            D_SET, D_STRUCT, 14, b'N', 15, 14, b'v', D_STR, 14, b'n', D_BACKREF, 0, 1,
+        ]);
+        let source = crate::set::olive_set_new(1);
+        let key = recursive_key();
+        crate::hash_typed::with_owned_sub_descriptor(d as *const u8, 1, |key_desc| {
+            crate::hash_typed::olive_set_add_typed(source, key, key_desc);
+        });
+        let copied = olive_copy_typed(source, d);
+        let lookup = recursive_key();
+        let found = crate::hash_typed::with_owned_sub_descriptor(d as *const u8, 1, |key_desc| {
+            crate::hash_typed::olive_set_contains_typed(copied, lookup, key_desc)
+        });
+        assert_eq!(found, 1);
+        olive_free_typed(source, d);
+        olive_free_typed(copied, d);
+        crate::struct_obj::olive_free_struct(lookup);
+    }
+
+    #[test]
+    fn recursive_struct_copy_at_nonzero_target_keeps_following_tuple_field() {
+        let d = desc(&[
+            D_TUPLE, 3, D_STRUCT, 14, b'N', 15, 14, b'v', D_STR, 14, b'n', D_BACKREF, 0, 2, D_INT,
+        ]);
+        let node = recursive_key();
+        let value = list_from_vec(vec![node, 19]);
+        let copied = olive_copy_typed(value, d);
+        let copied_node = olive_list_get(copied, 0);
+        assert_ne!(copied_node, node);
+        assert_eq!(olive_list_get(copied, 1), 19);
+        olive_free_typed(value, d);
+        olive_free_typed(copied, d);
+    }
+
+    #[test]
+    fn nested_enum_copy_persists_rebased_descriptor() {
+        let d = desc(&[
+            D_TUPLE, 3, D_ENUM, 14, b'E', 14, 14, b'V', 14, D_BACKREF, 0, 2, D_INT,
+        ]);
+        let source_enum = crate::olive_enum_new(0, 0, 1, d);
+        let source = list_from_vec(vec![source_enum, 5]);
+        let copied = olive_copy_typed(source, d);
+        let copied_enum = olive_list_get(copied, 0);
+        let copied_desc = unsafe { (*(copied_enum as *const OliveEnum)).desc };
+        assert_ne!(copied_desc, d);
+        assert_eq!(copied_desc as usize % 8, 0);
+        assert_eq!(
+            crate::format::format_desc(copied_enum, copied_desc),
+            "V(None)"
+        );
+        assert_eq!(olive_list_get(copied, 1), 5);
+        olive_free_typed(source, d);
+        olive_free_typed(copied, d);
+    }
+
+    #[test]
+    fn copied_struct_box_reinterns_rebased_descriptor_safely() {
+        let d = desc(&[
+            D_TUPLE, 4, D_STRUCT, 14, b'O', 14, 14, b'x', D_INT, D_STRUCT, 14, b'C', 14, 14, b'o',
+            D_BACKREF, 0, 2, D_INT,
+        ]);
+        let sub = crate::index_any::intern_sub_descriptor(d as *const u8, 9);
+        let outer = crate::olive_struct_alloc(1);
+        let child = crate::olive_struct_alloc(1);
+        unsafe {
+            *((outer + 8) as *mut i64) = 3;
+            *((child + 8) as *mut i64) = outer;
+        }
+        let boxed = crate::struct_box::olive_struct_box(child, sub);
+        assert_eq!(
+            unsafe { (*(boxed as *const crate::struct_box::OliveStructBox)).desc },
+            sub
+        );
+        let copied = olive_copy_typed(boxed, desc(&[D_ANY]));
+        assert_ne!(copied, boxed);
+        crate::olive_free_any(boxed);
+        crate::olive_free_any(copied);
     }
 
     #[test]

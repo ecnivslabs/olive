@@ -154,24 +154,30 @@ pub extern "C" fn olive_obj_get_checked(obj_ptr: i64, attr: i64, loc: i64) -> i6
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_get_default(obj_ptr: i64, attr: i64, default: i64) -> i64 {
-    get_default_impl(obj_ptr, attr, default, false)
+    get_default_impl(obj_ptr, attr, default, false, 0)
 }
 
 /// `.get` whose result feeds a tag-encoded slot (`Any`, `int | str`, ...):
 /// a hit on a raw stored word is boxed so it reads back self-describing, the
 /// same way values entering an `Any`-valued dict are boxed at `set`. The
-/// caller passes the `default` already boxed.
+/// caller passes the `default` already boxed and supplies the stored value's
+/// static descriptor.
 #[unsafe(no_mangle)]
-pub extern "C" fn olive_obj_get_default_boxed(obj_ptr: i64, attr: i64, default: i64) -> i64 {
-    get_default_impl(obj_ptr, attr, default, true)
+pub extern "C" fn olive_obj_get_default_boxed(
+    obj_ptr: i64,
+    attr: i64,
+    default: i64,
+    value_desc: i64,
+) -> i64 {
+    get_default_impl(obj_ptr, attr, default, true, value_desc)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn olive_obj_get_boxed(obj_ptr: i64, attr: i64) -> i64 {
-    box_stored(olive_obj_get(obj_ptr, attr))
+pub extern "C" fn olive_obj_get_boxed(obj_ptr: i64, attr: i64, value_desc: i64) -> i64 {
+    box_stored_typed(olive_obj_get(obj_ptr, attr), value_desc)
 }
 
-fn get_default_impl(obj_ptr: i64, attr: i64, default: i64, boxed: bool) -> i64 {
+fn get_default_impl(obj_ptr: i64, attr: i64, default: i64, boxed: bool, value_desc: i64) -> i64 {
     if obj_ptr == 0 || !crate::slab::ptr_is_slab_body(obj_ptr) {
         return default;
     }
@@ -183,22 +189,38 @@ fn get_default_impl(obj_ptr: i64, attr: i64, default: i64, boxed: bool) -> i64 {
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
     match m.fields.get(&OliveStringKey(attr)) {
-        Some(&v) if boxed => box_stored(v),
+        Some(&v) if boxed => box_stored_typed(v, value_desc),
         Some(&v) => v,
         None => default,
     }
 }
 
+fn box_stored_typed(v: i64, value_desc: i64) -> i64 {
+    if value_desc == 0 {
+        return box_stored(v);
+    }
+    let desc_body = crate::string_slab::str_body(value_desc) as *const u8;
+    let tag = unsafe { *desc_body };
+    match tag {
+        crate::format::D_INT => boxed::olive_box_int(v),
+        crate::format::D_U64 => boxed::olive_box_u64(v),
+        crate::format::D_FLOAT => boxed::olive_box_float(f64::from_bits(v as u64)),
+        crate::format::D_F32 => boxed::olive_box_float(f32::from_bits(v as u32) as f64),
+        crate::format::D_BOOL => boxed::olive_box_bool(v),
+        crate::format::D_NULL => boxed::olive_box_null(),
+        crate::format::D_ANY => v,
+        _ => box_stored(v),
+    }
+}
+
 fn box_stored(v: i64) -> i64 {
-    // Already self-describing: heap objects (slab pointers), strings (bit-0
-    // pointers), inline immediates (TAG_INT/TAG_BOOL/TAG_NULL), or zero.
+    // Legacy entry points without a value descriptor can only preserve the
+    // self-describing forms. Concrete scalar values must use the descriptor
+    // path above; guessing from raw word bits is not sound for floats, u64,
+    // or odd integer values.
     if crate::is_active_object(v) || v & 1 == 1 || v & boxed::TAG_MASK != 0 || v < 0x10000 {
         return v;
     }
-    // A raw scalar wider than the tag space from a concrete-typed dict:
-    // box it like `set` into an Any-valued dict would. Bool and None raw
-    // words are 0/1, caught by the magnitude guard, but they only share a
-    // dict with ints in the already-tagged case anyway.
     boxed::olive_box_int(v)
 }
 

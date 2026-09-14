@@ -398,6 +398,13 @@ unsafe fn to_py_typed_desc_at(val: i64, desc: *const u8, pos: &mut usize) -> PyO
                 PY_INC_REF(none);
                 none
             }
+            crate::format::D_BACKREF => {
+                let hi = crate::format::byte(desc, *pos) as usize;
+                let lo = crate::format::byte(desc, *pos + 1) as usize;
+                *pos += 2;
+                let mut target = (hi << 8) | lo;
+                to_py_typed_desc_at(val, desc, &mut target)
+            }
             crate::format::D_LIST | crate::format::D_TUPLE => {
                 let elem_start = *pos;
                 crate::format::skip(desc, pos);
@@ -756,7 +763,16 @@ pub(crate) unsafe fn py_to_typed_scalar_internal(py_val: PyObject, tag: i64) -> 
                     return Some(value);
                 }
                 let value = py_to_olive_internal(py_val);
-                (!crate::is_active_object(value)).then_some(value)
+                let valid_foreign = foreign_cache_scan(&INT_LIKE_CACHE, &INT_LIKE_LEN, ty as usize);
+                if !valid_foreign {
+                    crate::free_any_word(value);
+                    return None;
+                }
+                if crate::is_active_object(value) {
+                    crate::olive_free_any(value);
+                    return None;
+                }
+                Some(value)
             }
             2 => {
                 if is_sub(PY_FLOAT_TYPE) {
@@ -770,7 +786,14 @@ pub(crate) unsafe fn py_to_typed_scalar_internal(py_val: PyObject, tag: i64) -> 
                     return Some((value as f64).to_bits() as i64);
                 }
                 let value = py_to_olive_internal(py_val);
+                let valid_foreign =
+                    foreign_cache_scan(&FLOAT_LIKE_CACHE, &FLOAT_LIKE_LEN, ty as usize);
+                if !valid_foreign {
+                    crate::free_any_word(value);
+                    return None;
+                }
                 if crate::is_active_object(value) {
+                    crate::olive_free_any(value);
                     return None;
                 }
                 if foreign_cache_scan(&FLOAT_LIKE_CACHE, &FLOAT_LIKE_LEN, ty as usize) {
@@ -791,7 +814,14 @@ pub(crate) unsafe fn py_to_typed_scalar_internal(py_val: PyObject, tag: i64) -> 
                     return Some((value as f32).to_bits() as i64);
                 }
                 let value = py_to_olive_internal(py_val);
+                let valid_foreign =
+                    foreign_cache_scan(&FLOAT_LIKE_CACHE, &FLOAT_LIKE_LEN, ty as usize);
+                if !valid_foreign {
+                    crate::free_any_word(value);
+                    return None;
+                }
                 if crate::is_active_object(value) {
+                    crate::olive_free_any(value);
                     return None;
                 }
                 if foreign_cache_scan(&FLOAT_LIKE_CACHE, &FLOAT_LIKE_LEN, ty as usize) {
@@ -906,11 +936,10 @@ pub unsafe fn olive_py_to_list_tagged_internal(obj: PyObject, elem_tag: i64, box
         if len > 0 {
             let sv = &mut *(list_ptr as *mut crate::StableVec);
             for i in 0..len {
-                // Both accessors return borrowed references; take our own
-                // strong reference so the conversion can consume it. A null
-                // item (out of range) must skip the conversion entirely --
-                // passing null would make the exact-type dispatch read
-                // through it.
+                // Both accessors return borrowed references owned by `source`;
+                // only the materialized non-list/tuple path owns another
+                // reference. A null item (out of range) must skip the
+                // conversion entirely because dispatch would read through it.
                 let py_item = if from_real_list {
                     PY_LIST_GET_ITEM(source, i as isize)
                 } else {
@@ -927,6 +956,10 @@ pub unsafe fn olive_py_to_list_tagged_internal(obj: PyObject, elem_tag: i64, box
                             if !PY_ERR_OCCURRED().is_null() {
                                 PY_ERR_CLEAR();
                             }
+                            if !materialized.is_null() {
+                                PY_DEC_REF(materialized);
+                            }
+                            crate::olive_free_any(list_ptr);
                             crate::panic::abort_py_coerce(
                                 "Python collection element has incompatible type",
                             );
@@ -954,6 +987,15 @@ fn dict_key_descriptor(tag: i64) -> i64 {
         6 => scalar_descriptor(0),
         7 => scalar_descriptor(6),
         _ => scalar_descriptor(1),
+    }
+}
+
+unsafe fn decref_dict_snapshot_from(entries: &mut Vec<(PyObject, PyObject)>, start: usize) {
+    for (key, value) in entries.drain(start..) {
+        unsafe {
+            PY_DEC_REF(key);
+            PY_DEC_REF(value);
+        }
     }
 }
 
@@ -1026,18 +1068,7 @@ pub unsafe fn olive_py_to_dict_tagged_internal(
                         && (key_ty == PY_UNICODE_TYPE
                             || PY_TYPE_IS_SUBTYPE(key_ty, PY_UNICODE_TYPE) != 0);
 
-                    let key_ptr = if is_unicode {
-                        py_str_to_olive(key_obj)
-                    } else {
-                        let str_obj = PY_OBJECT_STR(key_obj);
-                        if str_obj.is_null() {
-                            crate::python::python_error::handle_py_error();
-                        }
-                        let r = py_str_to_olive(str_obj);
-                        PY_DEC_REF(str_obj);
-                        r
-                    };
-
+                    let key_ptr = py_to_any_internal(key_obj);
                     if key_ptr != 0 {
                         let olive_val = if boxed {
                             py_to_any_internal(val_obj)
@@ -1045,7 +1076,9 @@ pub unsafe fn olive_py_to_dict_tagged_internal(
                             py_to_olive_internal(val_obj)
                         };
                         crate::olive_obj_set(olive_obj, key_ptr, olive_val);
-                        crate::string_slab::str_free(key_ptr);
+                        if is_unicode {
+                            crate::string_slab::str_free(key_ptr);
+                        }
                     }
                 }
             }
@@ -1061,11 +1094,14 @@ pub unsafe fn olive_py_to_dict_tagged_internal(
             PY_INC_REF(val_obj);
             entries.push((key_obj, val_obj));
         }
-        for (key_obj, val_obj) in entries {
+        for index in 0..entries.len() {
+            let (key_obj, val_obj) = entries[index];
             let Some((key_ptr, key_owned)) = py_to_typed_dict_key_internal(key_obj, key_tag) else {
                 if !PY_ERR_OCCURRED().is_null() {
                     PY_ERR_CLEAR();
                 }
+                crate::olive_free_any(olive_obj);
+                decref_dict_snapshot_from(&mut entries, index);
                 crate::panic::abort_py_coerce("Python dictionary key has incompatible type");
             };
             let olive_val = if value_tag == 0 {
@@ -1076,10 +1112,14 @@ pub unsafe fn olive_py_to_dict_tagged_internal(
                     None => {
                         if key_owned {
                             crate::olive_free_str(key_ptr);
+                        } else if key_tag == 6 {
+                            crate::olive_free_any(key_ptr);
                         }
                         if !PY_ERR_OCCURRED().is_null() {
                             PY_ERR_CLEAR();
                         }
+                        crate::olive_free_any(olive_obj);
+                        decref_dict_snapshot_from(&mut entries, index);
                         crate::panic::abort_py_coerce(
                             "Python dictionary value has incompatible type",
                         );
@@ -1120,6 +1160,7 @@ pub unsafe fn olive_py_to_set_tagged_internal(obj: PyObject, elem_tag: i64, boxe
                 if !PY_ERR_OCCURRED().is_null()
                     && PY_ERR_EXCEPTION_MATCHES(PY_EXC_STOP_ITERATION) == 0
                 {
+                    crate::olive_free_any(set_ptr);
                     PY_DEC_REF(iter);
                     crate::python::python_error::handle_py_error();
                 }
@@ -1135,6 +1176,9 @@ pub unsafe fn olive_py_to_set_tagged_internal(obj: PyObject, elem_tag: i64, boxe
                         if !PY_ERR_OCCURRED().is_null() {
                             PY_ERR_CLEAR();
                         }
+                        PY_DEC_REF(item);
+                        PY_DEC_REF(iter);
+                        crate::olive_free_any(set_ptr);
                         crate::panic::abort_py_coerce("Python set element has incompatible type");
                     }
                 }
@@ -1194,6 +1238,24 @@ pub extern "C" fn olive_py_decref(obj: PyObject) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    unsafe fn raw_refcnt(value: PyObject) -> isize {
+        unsafe { *(value as *const isize) }
+    }
+
+    unsafe fn fresh_object() -> PyObject {
+        unsafe {
+            let builtins = PY_IMPORT_IMPORT_MODULE(b"builtins\0".as_ptr().cast());
+            let object_type = PY_OBJECT_GET_ATTR_STRING(builtins, b"object\0".as_ptr().cast());
+            let args = PY_TUPLE_NEW(0);
+            let value = PY_OBJECT_CALL_OBJECT(object_type, args);
+            PY_DEC_REF(args);
+            PY_DEC_REF(object_type);
+            PY_DEC_REF(builtins);
+            assert!(!value.is_null());
+            value
+        }
+    }
 
     fn numpy_available() -> bool {
         if !is_python_available() {
@@ -1433,5 +1495,47 @@ mod tests {
         }
         stop.store(true, Ordering::Relaxed);
         checker.join().unwrap();
+    }
+
+    #[test]
+    fn typed_scalar_fallback_releases_owned_python_handle() {
+        let _guard = pyobject_slab_test_lock();
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        unsafe {
+            let value = with_gil(|| fresh_object());
+            let baseline = with_gil(|| raw_refcnt(value));
+            let after = [1, 2, 3].map(|tag| {
+                assert!(with_gil(|| py_to_typed_scalar_internal(value, tag)).is_none());
+                with_gil(|| raw_refcnt(value))
+            });
+            with_gil(|| PY_DEC_REF(value));
+            assert_eq!(after, [baseline; 3]);
+        }
+    }
+
+    #[test]
+    fn typed_scalar_fallback_releases_owned_container() {
+        let _guard = pyobject_slab_test_lock();
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        unsafe {
+            let (source, child) = with_gil(|| {
+                let source = PY_LIST_NEW(1);
+                let child = fresh_object();
+                PY_LIST_SET_ITEM(source, 0, child);
+                (source, child)
+            });
+            let baseline = with_gil(|| raw_refcnt(child));
+            let result = with_gil(|| py_to_typed_scalar_internal(source, 2));
+            let after = with_gil(|| raw_refcnt(child));
+            with_gil(|| PY_DEC_REF(source));
+            assert!(result.is_none());
+            assert_eq!(after, baseline);
+        }
     }
 }

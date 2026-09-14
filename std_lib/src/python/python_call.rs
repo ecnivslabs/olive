@@ -15,12 +15,13 @@ pub extern "C" fn olive_py_call(func: PyObject, args_list: i64, coll_tags: i64) 
     check_python_loaded();
     let unwrapped_func = unsafe { olive_py_unwrap(func) };
     if unwrapped_func.is_null() {
+        abandon_pending_writebacks();
         return std::ptr::null_mut();
     }
     unsafe {
         olive_py_gil_begin();
 
-        let mut pairs = Vec::new();
+        let mut pairs = take_pending_writebacks();
         let mut py_args = std::ptr::null_mut();
         if args_list != 0 {
             let sv = &*(args_list as *const crate::StableVec);
@@ -82,7 +83,7 @@ pub(crate) unsafe fn call_with_raw_args(
     args: &mut [i64],
 ) -> PyObject {
     unsafe {
-        let mut pairs = Vec::new();
+        let mut pairs = take_pending_writebacks();
 
         let res = if HAS_VECTORCALL.load(Ordering::Relaxed) {
             // Vectorcall borrows every arg (unlike `PyTuple_SetItem`, which
@@ -170,6 +171,7 @@ pub extern "C" fn olive_py_call_t(
     check_python_loaded();
     let unwrapped_func = unsafe { olive_py_unwrap(func) };
     if unwrapped_func.is_null() {
+        abandon_pending_writebacks();
         return std::ptr::null_mut();
     }
     unsafe {
@@ -208,6 +210,7 @@ pub extern "C" fn olive_py_call0(func: PyObject, arg_tags: i64, loc: i64) -> PyO
     check_python_loaded();
     let unwrapped_func = unsafe { olive_py_unwrap(func) };
     if unwrapped_func.is_null() {
+        abandon_pending_writebacks();
         return std::ptr::null_mut();
     }
     unsafe {
@@ -236,6 +239,7 @@ pub extern "C" fn olive_py_call1(
     check_python_loaded();
     let unwrapped_func = unsafe { olive_py_unwrap(func) };
     if unwrapped_func.is_null() {
+        abandon_pending_writebacks();
         return std::ptr::null_mut();
     }
     unsafe {
@@ -266,6 +270,7 @@ pub extern "C" fn olive_py_call2(
     check_python_loaded();
     let unwrapped_func = unsafe { olive_py_unwrap(func) };
     if unwrapped_func.is_null() {
+        abandon_pending_writebacks();
         return std::ptr::null_mut();
     }
     unsafe {
@@ -297,6 +302,7 @@ pub extern "C" fn olive_py_call3(
     check_python_loaded();
     let unwrapped_func = unsafe { olive_py_unwrap(func) };
     if unwrapped_func.is_null() {
+        abandon_pending_writebacks();
         return std::ptr::null_mut();
     }
     unsafe {
@@ -329,6 +335,7 @@ pub extern "C" fn olive_py_call4(
     check_python_loaded();
     let unwrapped_func = unsafe { olive_py_unwrap(func) };
     if unwrapped_func.is_null() {
+        abandon_pending_writebacks();
         return std::ptr::null_mut();
     }
     unsafe {
@@ -357,6 +364,7 @@ pub extern "C" fn olive_py_call_kw(
     check_python_loaded();
     let unwrapped_func = unsafe { olive_py_unwrap(func) };
     if unwrapped_func.is_null() {
+        abandon_pending_writebacks();
         return std::ptr::null_mut();
     }
     unsafe {
@@ -388,7 +396,7 @@ pub(crate) unsafe fn call_kw_dict(
     unsafe {
         olive_py_gil_begin();
 
-        let mut pairs = Vec::new();
+        let mut pairs = take_pending_writebacks();
         let py_args = if args_list != 0 {
             let sv = &*(args_list as *const crate::StableVec);
             let args = PY_TUPLE_NEW(sv.len as isize);

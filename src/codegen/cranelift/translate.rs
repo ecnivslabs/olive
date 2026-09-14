@@ -1070,11 +1070,29 @@ impl<M: Module> CraneliftCodegen<M> {
                     // (they need a live interpreter to check), so this arm
                     // stays byte-identical rather than risk silent changes.
                     OliveType::PyObject => {
+                        let (key, key_owned) = if super::imports::is_u64_op(func_mir, idx) {
+                            let key_id = func_ids
+                                .get("__olive_py_from_u64")
+                                .expect("missing __olive_py_from_u64");
+                            let local_key = module.declare_func_in_func(*key_id, builder.func);
+                            let inst = builder.ins().call(local_key, &[i]);
+                            (builder.inst_results(inst)[0], true)
+                        } else {
+                            (i, false)
+                        };
                         let set_id = func_ids
-                            .get("__olive_obj_set")
-                            .expect("missing __olive_obj_set");
+                            .get("__olive_py_setitem")
+                            .expect("missing __olive_py_setitem");
                         let local_func = module.declare_func_in_func(*set_id, builder.func);
-                        builder.ins().call(local_func, &[o, i, v]);
+                        builder.ins().call(local_func, &[o, key, v]);
+                        if key_owned {
+                            let decref_id = func_ids
+                                .get("__olive_py_decref")
+                                .expect("missing __olive_py_decref");
+                            let local_decref =
+                                module.declare_func_in_func(*decref_id, builder.func);
+                            builder.ins().call(local_decref, &[key]);
+                        }
                     }
                     OliveType::Any => {
                         // Same rule as `GetIndex`: a concrete scalar index

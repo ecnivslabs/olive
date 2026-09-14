@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::format::{
-    D_ANY, D_BOOL, D_BYTES, D_DICT, D_F32, D_FLOAT, D_INT, D_LIST, D_NULL, D_SET, D_STR, D_TUPLE,
-    D_U64, byte, skip,
+    D_ANY, D_BACKREF, D_BOOL, D_BYTES, D_DICT, D_F32, D_FLOAT, D_INT, D_LIST, D_NULL, D_SET, D_STR,
+    D_TUPLE, D_U64, byte, skip,
 };
 use crate::python::python_coerce::{
     olive_py_to_bytes_internal, py_to_any_internal, py_to_typed_scalar_internal,
@@ -30,6 +30,21 @@ unsafe fn is_subtype(value: PyObject, expected: PyObject) -> bool {
 unsafe fn free_at(value: i64, desc: *const u8, start: usize) {
     let mut pos = start;
     crate::free_typed::free_val(value, desc, &mut pos);
+}
+
+unsafe fn decref_sequence_from(items: &mut Vec<PyObject>, start: usize) {
+    for item in items.drain(start..) {
+        unsafe { PY_DEC_REF(item) };
+    }
+}
+
+unsafe fn decref_dict_entries_from(entries: &mut Vec<(PyObject, PyObject)>, start: usize) {
+    for (key, value) in entries.drain(start..) {
+        unsafe {
+            PY_DEC_REF(key);
+            PY_DEC_REF(value);
+        }
+    }
 }
 
 unsafe fn py_to_string_key(value: PyObject) -> Option<i64> {
@@ -85,9 +100,7 @@ unsafe fn snapshot_sequence(value: PyObject) -> Option<Vec<PyObject>> {
                 PY_TUPLE_GET_ITEM(source, i)
             };
             if item.is_null() {
-                for item in items {
-                    PY_DEC_REF(item);
-                }
+                decref_sequence_from(&mut items, 0);
                 if owned {
                     PY_DEC_REF(source);
                 }
@@ -114,10 +127,7 @@ unsafe fn snapshot_dict(value: PyObject) -> Option<Vec<(PyObject, PyObject)>> {
         let mut val = std::ptr::null_mut();
         while PY_DICT_NEXT(value, &mut pos, &mut key, &mut val) != 0 {
             if key.is_null() || val.is_null() {
-                for (key, val) in entries {
-                    PY_DEC_REF(key);
-                    PY_DEC_REF(val);
-                }
+                decref_dict_entries_from(&mut entries, 0);
                 return None;
             }
             PY_INC_REF(key);
@@ -125,10 +135,7 @@ unsafe fn snapshot_dict(value: PyObject) -> Option<Vec<(PyObject, PyObject)>> {
             entries.push((key, val));
         }
         if !PY_ERR_OCCURRED().is_null() {
-            for (key, val) in entries {
-                PY_DEC_REF(key);
-                PY_DEC_REF(val);
-            }
+            decref_dict_entries_from(&mut entries, 0);
             return None;
         }
         Some(entries)
@@ -148,6 +155,7 @@ unsafe fn snapshot_iterable(value: PyObject) -> Option<Vec<PyObject>> {
                 if !PY_ERR_OCCURRED().is_null()
                     && PY_ERR_EXCEPTION_MATCHES(PY_EXC_STOP_ITERATION) == 0
                 {
+                    decref_sequence_from(&mut items, 0);
                     PY_DEC_REF(iter);
                     return None;
                 }
@@ -161,7 +169,7 @@ unsafe fn snapshot_iterable(value: PyObject) -> Option<Vec<PyObject>> {
     }
 }
 
-unsafe fn convert_at(value: PyObject, desc: *const u8, pos: &mut usize) -> Option<i64> {
+pub(crate) unsafe fn convert_at(value: PyObject, desc: *const u8, pos: &mut usize) -> Option<i64> {
     unsafe {
         if value.is_null() {
             return None;
@@ -184,6 +192,13 @@ unsafe fn convert_at(value: PyObject, desc: *const u8, pos: &mut usize) -> Optio
                 py_to_typed_scalar_internal(value, scalar_tag)
             }
             D_ANY => Some(py_to_any_internal(value)),
+            D_BACKREF => {
+                let hi = byte(desc, *pos) as usize;
+                let lo = byte(desc, *pos + 1) as usize;
+                *pos += 2;
+                let mut target = (hi << 8) | lo;
+                convert_at(value, desc, &mut target)
+            }
             D_BYTES => {
                 if is_subtype(value, PY_BYTES_TYPE) {
                     Some(olive_py_to_bytes_internal(value))
@@ -194,16 +209,17 @@ unsafe fn convert_at(value: PyObject, desc: *const u8, pos: &mut usize) -> Optio
             D_LIST => {
                 let element_start = *pos;
                 skip(desc, pos);
-                let items = snapshot_sequence(value)?;
+                let mut items = snapshot_sequence(value)?;
                 let list = crate::olive_list_new(items.len() as i64);
                 if byte(desc, element_start) == D_ANY {
                     crate::olive_list_mark_any(list);
                 }
-                for (index, item) in items.into_iter().enumerate() {
+                for index in 0..items.len() {
+                    let item = items[index];
                     let mut element_pos = element_start;
                     let Some(converted) = convert_at(item, desc, &mut element_pos) else {
-                        PY_DEC_REF(item);
                         free_at(list, desc, node_start);
+                        decref_sequence_from(&mut items, index);
                         return None;
                     };
                     crate::olive_list_set(list, index as i64, converted);
@@ -215,11 +231,9 @@ unsafe fn convert_at(value: PyObject, desc: *const u8, pos: &mut usize) -> Optio
                 let count = byte(desc, *pos) as usize - 1;
                 *pos += 1;
                 let fields_start = *pos;
-                let items = snapshot_sequence(value)?;
+                let mut items = snapshot_sequence(value)?;
                 if items.len() != count {
-                    for item in items {
-                        PY_DEC_REF(item);
-                    }
+                    decref_sequence_from(&mut items, 0);
                     return None;
                 }
                 let tuple = crate::olive_list_new(count as i64);
@@ -235,10 +249,11 @@ unsafe fn convert_at(value: PyObject, desc: *const u8, pos: &mut usize) -> Optio
                     crate::olive_list_mark_any(tuple);
                 }
                 let mut cursor = fields_start;
-                for (index, item) in items.into_iter().enumerate() {
+                for index in 0..items.len() {
+                    let item = items[index];
                     let Some(converted) = convert_at(item, desc, &mut cursor) else {
-                        PY_DEC_REF(item);
                         free_at(tuple, desc, node_start);
+                        decref_sequence_from(&mut items, index);
                         return None;
                     };
                     crate::olive_list_set(tuple, index as i64, converted);
@@ -249,13 +264,14 @@ unsafe fn convert_at(value: PyObject, desc: *const u8, pos: &mut usize) -> Optio
             D_SET => {
                 let element_start = *pos;
                 skip(desc, pos);
-                let items = snapshot_iterable(value)?;
+                let mut items = snapshot_iterable(value)?;
                 let set = crate::olive_set_new(items.len() as i64);
-                for item in items {
+                for index in 0..items.len() {
+                    let item = items[index];
                     let mut element_pos = element_start;
                     let Some(converted) = convert_at(item, desc, &mut element_pos) else {
-                        PY_DEC_REF(item);
                         free_at(set, desc, node_start);
+                        decref_sequence_from(&mut items, index);
                         return None;
                     };
                     crate::hash_typed::with_owned_sub_descriptor(desc, element_start, |key_desc| {
@@ -270,9 +286,10 @@ unsafe fn convert_at(value: PyObject, desc: *const u8, pos: &mut usize) -> Optio
                 skip(desc, pos);
                 let value_start = *pos;
                 skip(desc, pos);
-                let entries = snapshot_dict(value)?;
+                let mut entries = snapshot_dict(value)?;
                 let object = crate::olive_obj_new();
-                for (key_object, value_object) in entries {
+                for index in 0..entries.len() {
+                    let (key_object, value_object) = entries[index];
                     let mut key_pos = key_start;
                     let key = if byte(desc, key_start) == D_STR {
                         py_to_string_key(key_object)
@@ -280,18 +297,16 @@ unsafe fn convert_at(value: PyObject, desc: *const u8, pos: &mut usize) -> Optio
                         convert_at(key_object, desc, &mut key_pos)
                     };
                     let Some(key) = key else {
-                        PY_DEC_REF(key_object);
-                        PY_DEC_REF(value_object);
                         free_at(object, desc, node_start);
+                        decref_dict_entries_from(&mut entries, index);
                         return None;
                     };
                     let mut value_pos = value_start;
                     let Some(converted_value) = convert_at(value_object, desc, &mut value_pos)
                     else {
                         free_at(key, desc, key_start);
-                        PY_DEC_REF(key_object);
-                        PY_DEC_REF(value_object);
                         free_at(object, desc, node_start);
+                        decref_dict_entries_from(&mut entries, index);
                         return None;
                     };
                     let old =
@@ -351,4 +366,157 @@ pub extern "C" fn olive_py_from_typed(obj: PyObject, desc: i64) -> i64 {
             None => import_error("Python value cannot be converted to declared Olive type"),
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    unsafe fn raw_refcnt(value: PyObject) -> isize {
+        unsafe { *(value as *const isize) }
+    }
+
+    unsafe fn assert_tail_ref_released(source: PyObject, tail: PyObject, desc: &[u8]) {
+        unsafe {
+            let baseline = raw_refcnt(tail);
+            let mut pos = 0;
+            let result = convert_at(source, desc.as_ptr(), &mut pos);
+            let after = raw_refcnt(tail);
+            PY_DEC_REF(source);
+            assert!(result.is_none());
+            assert_eq!(after, baseline);
+        }
+    }
+
+    #[test]
+    fn collection_failures_release_remaining_snapshot_refs() {
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        unsafe {
+            with_gil(|| {
+                let cases: &[(bool, &[u8])] = &[
+                    (false, &[D_LIST, D_BOOL]),
+                    (true, &[D_TUPLE, 4, D_BOOL, D_BOOL, D_BOOL]),
+                    (false, &[D_SET, D_BOOL]),
+                ];
+                for &(tuple_source, desc) in cases {
+                    let tail = PY_LONG_FROM_LONG(100_001);
+                    let source = if tuple_source {
+                        PY_TUPLE_NEW(3)
+                    } else {
+                        PY_LIST_NEW(3)
+                    };
+                    let set_item = if tuple_source {
+                        PY_TUPLE_SET_ITEM
+                    } else {
+                        PY_LIST_SET_ITEM
+                    };
+                    set_item(source, 0, PY_BOOL_FROM_LONG(1));
+                    set_item(source, 1, PY_LONG_FROM_LONG(100_002));
+                    set_item(source, 2, tail);
+                    assert_tail_ref_released(source, tail, desc);
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn dict_failure_releases_remaining_snapshot_refs() {
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        unsafe {
+            with_gil(|| {
+                for fail_value in [false, true] {
+                    let tail_key = PY_BOOL_FROM_LONG(0);
+                    let tail_value = PY_LONG_FROM_LONG(100_003);
+                    let good_key = PY_BOOL_FROM_LONG(1);
+                    let good_value = if fail_value {
+                        PY_BOOL_FROM_LONG(1)
+                    } else {
+                        PY_LONG_FROM_LONG(1)
+                    };
+                    let bad_key = if fail_value {
+                        PY_BOOL_FROM_LONG(1)
+                    } else {
+                        PY_LONG_FROM_LONG(100_004)
+                    };
+                    let bad_value = if fail_value {
+                        PY_LONG_FROM_LONG(100_004)
+                    } else {
+                        PY_LONG_FROM_LONG(2)
+                    };
+                    let source = PY_DICT_NEW();
+                    assert_eq!(PY_OBJECT_SET_ITEM(source, good_key, good_value), 0);
+                    assert_eq!(PY_OBJECT_SET_ITEM(source, bad_key, bad_value), 0);
+                    assert_eq!(PY_OBJECT_SET_ITEM(source, tail_key, tail_value), 0);
+                    PY_DEC_REF(good_key);
+                    PY_DEC_REF(good_value);
+                    PY_DEC_REF(bad_key);
+                    PY_DEC_REF(bad_value);
+                    let key_baseline = raw_refcnt(tail_key);
+                    let value_baseline = raw_refcnt(tail_value);
+
+                    let desc = [D_DICT, D_BOOL, if fail_value { D_BOOL } else { D_ANY }];
+                    let mut pos = 0;
+                    let result = convert_at(source, desc.as_ptr(), &mut pos);
+                    let key_after = raw_refcnt(tail_key);
+                    let value_after = raw_refcnt(tail_value);
+                    PY_DEC_REF(source);
+
+                    assert!(result.is_none());
+                    assert_eq!(key_after, key_baseline);
+                    assert_eq!(value_after, value_baseline);
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn iterator_error_releases_yielded_refs() {
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        unsafe {
+            with_gil(|| {
+                let source = b"__olive_coerce_probe = 100005\ndef __olive_coerce_broken_iter():\n    yield __olive_coerce_probe\n    raise RuntimeError('broken iterator')\n\0";
+                assert_eq!(PY_RUN_SIMPLE_STRING(source.as_ptr().cast()), 0);
+                let main = PY_IMPORT_IMPORT_MODULE(b"__main__\0".as_ptr().cast());
+                let factory = PY_OBJECT_GET_ATTR_STRING(
+                    main,
+                    b"__olive_coerce_broken_iter\0".as_ptr().cast(),
+                );
+                let probe =
+                    PY_OBJECT_GET_ATTR_STRING(main, b"__olive_coerce_probe\0".as_ptr().cast());
+                PY_DEC_REF(main);
+                let args = PY_TUPLE_NEW(0);
+                let iterator = PY_OBJECT_CALL_OBJECT(factory, args);
+                PY_DEC_REF(args);
+                PY_DEC_REF(factory);
+                assert!(!iterator.is_null());
+                assert!(!probe.is_null());
+
+                let baseline = raw_refcnt(probe);
+                let result = snapshot_iterable(iterator);
+                let was_none = result.is_none();
+                let after = raw_refcnt(probe);
+                let had_error = !PY_ERR_OCCURRED().is_null();
+                PY_ERR_CLEAR();
+                if let Some(items) = result {
+                    for item in items {
+                        PY_DEC_REF(item);
+                    }
+                }
+                PY_DEC_REF(probe);
+
+                assert!(had_error);
+                assert!(was_none);
+                assert_eq!(after, baseline);
+            });
+        }
+    }
 }

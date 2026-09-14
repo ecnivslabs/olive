@@ -20,9 +20,10 @@ unsafe fn call_method_with_raw_args_safe(
         if HAS_VECTORCALL.load(Ordering::Relaxed) && use_interned_names() {
             let name = interned_attr(attr);
             if name.is_null() {
+                abandon_pending_writebacks();
                 return Ok(std::ptr::null_mut());
             }
-            let mut pairs = Vec::new();
+            let mut pairs = take_pending_writebacks();
             let mut buf: [PyObject; 6] = [std::ptr::null_mut(); 6];
             buf[1] = obj;
             for (i, slot) in args.iter_mut().enumerate() {
@@ -84,6 +85,7 @@ unsafe fn call_method_with_raw_args_safe(
                 PY_OBJECT_GET_ATTR_STRING(obj, attr)
             };
             if bound.is_null() {
+                abandon_pending_writebacks();
                 return Ok(std::ptr::null_mut());
             }
             let outcome = call_with_raw_args_safe(bound, coll_tags, arg_tags, args);
@@ -104,6 +106,7 @@ pub extern "C" fn olive_py_call_method0_safe(obj: PyObject, name: i64, arg_tags:
     }
     let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
     if unwrapped_obj.is_null() {
+        abandon_pending_writebacks();
         let err_str_ptr = crate::olive_str_internal("Null object pointer");
         return crate::result::olive_result_err(err_str_ptr);
     }
@@ -129,6 +132,7 @@ pub extern "C" fn olive_py_call_method1_safe(
     }
     let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
     if unwrapped_obj.is_null() {
+        abandon_pending_writebacks();
         let err_str_ptr = crate::olive_str_internal("Null object pointer");
         return crate::result::olive_result_err(err_str_ptr);
     }
@@ -157,6 +161,7 @@ pub extern "C" fn olive_py_call_method2_safe(
     }
     let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
     if unwrapped_obj.is_null() {
+        abandon_pending_writebacks();
         let err_str_ptr = crate::olive_str_internal("Null object pointer");
         return crate::result::olive_result_err(err_str_ptr);
     }
@@ -186,6 +191,7 @@ pub extern "C" fn olive_py_call_method3_safe(
     }
     let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
     if unwrapped_obj.is_null() {
+        abandon_pending_writebacks();
         let err_str_ptr = crate::olive_str_internal("Null object pointer");
         return crate::result::olive_result_err(err_str_ptr);
     }
@@ -216,6 +222,7 @@ pub extern "C" fn olive_py_call_method4_safe(
     }
     let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
     if unwrapped_obj.is_null() {
+        abandon_pending_writebacks();
         let err_str_ptr = crate::olive_str_internal("Null object pointer");
         return crate::result::olive_result_err(err_str_ptr);
     }

@@ -48,11 +48,12 @@ pub extern "C" fn olive_py_call_safe(func: PyObject, args_list: i64, coll_tags: 
     }
     let unwrapped_func = unsafe { olive_py_unwrap(func) };
     if unwrapped_func.is_null() {
+        abandon_pending_writebacks();
         let err_str_ptr = crate::olive_str_internal("Null function pointer");
         return crate::result::olive_result_err(err_str_ptr);
     }
     with_gil(|| unsafe {
-        let mut pairs = Vec::new();
+        let mut pairs = take_pending_writebacks();
         let mut py_args = std::ptr::null_mut();
         if args_list != 0 {
             let sv = &*(args_list as *const crate::StableVec);
@@ -135,6 +136,7 @@ pub extern "C" fn olive_py_call_kw_safe(
     }
     let unwrapped_func = unsafe { olive_py_unwrap(func) };
     if unwrapped_func.is_null() {
+        abandon_pending_writebacks();
         let err_str_ptr = crate::olive_str_internal("Null function pointer");
         return crate::result::olive_result_err(err_str_ptr);
     }
@@ -164,7 +166,7 @@ pub(crate) unsafe fn call_kw_dict_safe(
     kw_arg_tags: i64,
 ) -> i64 {
     with_gil(|| unsafe {
-        let mut pairs = Vec::new();
+        let mut pairs = take_pending_writebacks();
         let mut py_args = std::ptr::null_mut();
         if args_list != 0 {
             let sv = &*(args_list as *const crate::StableVec);
@@ -283,7 +285,7 @@ pub(crate) unsafe fn call_with_raw_args_safe(
     args: &mut [i64],
 ) -> Result<PyObject, i64> {
     unsafe {
-        let mut pairs = Vec::new();
+        let mut pairs = take_pending_writebacks();
 
         let res = if HAS_VECTORCALL.load(Ordering::Relaxed) {
             let mut buf: [PyObject; 17] = [std::ptr::null_mut(); 17];
@@ -424,6 +426,7 @@ pub extern "C" fn olive_py_call_t_safe(
     }
     let unwrapped_func = unsafe { olive_py_unwrap(func) };
     if unwrapped_func.is_null() {
+        abandon_pending_writebacks();
         let err_str_ptr = crate::olive_str_internal("Null function pointer");
         return crate::result::olive_result_err(err_str_ptr);
     }
@@ -451,6 +454,7 @@ pub extern "C" fn olive_py_call0_safe(func: PyObject, arg_tags: i64) -> i64 {
     }
     let unwrapped_func = unsafe { olive_py_unwrap(func) };
     if unwrapped_func.is_null() {
+        abandon_pending_writebacks();
         let err_str_ptr = crate::olive_str_internal("Null function pointer");
         return crate::result::olive_result_err(err_str_ptr);
     }
@@ -474,6 +478,7 @@ pub extern "C" fn olive_py_call1_safe(
     }
     let unwrapped_func = unsafe { olive_py_unwrap(func) };
     if unwrapped_func.is_null() {
+        abandon_pending_writebacks();
         let err_str_ptr = crate::olive_str_internal("Null function pointer");
         return crate::result::olive_result_err(err_str_ptr);
     }
@@ -499,6 +504,7 @@ pub extern "C" fn olive_py_call2_safe(
     }
     let unwrapped_func = unsafe { olive_py_unwrap(func) };
     if unwrapped_func.is_null() {
+        abandon_pending_writebacks();
         let err_str_ptr = crate::olive_str_internal("Null function pointer");
         return crate::result::olive_result_err(err_str_ptr);
     }
@@ -525,6 +531,7 @@ pub extern "C" fn olive_py_call3_safe(
     }
     let unwrapped_func = unsafe { olive_py_unwrap(func) };
     if unwrapped_func.is_null() {
+        abandon_pending_writebacks();
         let err_str_ptr = crate::olive_str_internal("Null function pointer");
         return crate::result::olive_result_err(err_str_ptr);
     }
@@ -552,6 +559,7 @@ pub extern "C" fn olive_py_call4_safe(
     }
     let unwrapped_func = unsafe { olive_py_unwrap(func) };
     if unwrapped_func.is_null() {
+        abandon_pending_writebacks();
         let err_str_ptr = crate::olive_str_internal("Null function pointer");
         return crate::result::olive_result_err(err_str_ptr);
     }

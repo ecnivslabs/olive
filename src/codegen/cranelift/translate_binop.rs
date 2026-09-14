@@ -15,6 +15,14 @@ const ANY_TAG_INT: i64 = 2;
 const ANY_INT_MIN: i64 = -(1 << 60);
 const ANY_INT_MAX: i64 = (1 << 60) - 1;
 
+fn py_int_conversion_name(func_mir: &MirFunction, operand: &Operand) -> &'static str {
+    if is_u64_op(func_mir, operand) {
+        "__olive_py_from_u64"
+    } else {
+        "__olive_py_from_int"
+    }
+}
+
 impl<M: Module> CraneliftCodegen<M> {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn translate_binop(
@@ -86,9 +94,10 @@ impl<M: Module> CraneliftCodegen<M> {
                 let inst = builder.ins().call(local_func, &[l]);
                 (builder.inst_results(inst)[0], true)
             } else if !is_pyobj_op(func_mir, lhs) {
+                let name = py_int_conversion_name(func_mir, lhs);
                 let func_id = func_ids
-                    .get("__olive_py_from_int")
-                    .expect("missing __olive_py_from_int");
+                    .get(name)
+                    .unwrap_or_else(|| panic!("missing {name}"));
                 let local_func = module.declare_func_in_func(*func_id, builder.func);
                 let inst = builder.ins().call(local_func, &[l]);
                 (builder.inst_results(inst)[0], true)
@@ -104,9 +113,10 @@ impl<M: Module> CraneliftCodegen<M> {
                 let inst = builder.ins().call(local_func, &[r]);
                 (builder.inst_results(inst)[0], true)
             } else if !is_pyobj_op(func_mir, rhs) {
+                let name = py_int_conversion_name(func_mir, rhs);
                 let func_id = func_ids
-                    .get("__olive_py_from_int")
-                    .expect("missing __olive_py_from_int");
+                    .get(name)
+                    .unwrap_or_else(|| panic!("missing {name}"));
                 let local_func = module.declare_func_in_func(*func_id, builder.func);
                 let inst = builder.ins().call(local_func, &[r]);
                 (builder.inst_results(inst)[0], true)
@@ -368,9 +378,10 @@ impl<M: Module> CraneliftCodegen<M> {
                             let inst = builder.ins().call(lf, &[val]);
                             builder.inst_results(inst)[0]
                         } else if !is_pyobj_op(func_mir, op) {
+                            let name = py_int_conversion_name(func_mir, op);
                             let fid = func_ids
-                                .get("__olive_py_from_int")
-                                .expect("missing __olive_py_from_int");
+                                .get(name)
+                                .unwrap_or_else(|| panic!("missing {name}"));
                             let lf = module.declare_func_in_func(*fid, builder.func);
                             let inst = builder.ins().call(lf, &[val]);
                             builder.inst_results(inst)[0]
@@ -441,9 +452,10 @@ impl<M: Module> CraneliftCodegen<M> {
                             let inst = builder.ins().call(lf, &[val]);
                             builder.inst_results(inst)[0]
                         } else if !is_pyobj_op(func_mir, op) {
+                            let name = py_int_conversion_name(func_mir, op);
                             let fid = func_ids
-                                .get("__olive_py_from_int")
-                                .expect("missing __olive_py_from_int");
+                                .get(name)
+                                .unwrap_or_else(|| panic!("missing {name}"));
                             let lf = module.declare_func_in_func(*fid, builder.func);
                             let inst = builder.ins().call(lf, &[val]);
                             builder.inst_results(inst)[0]

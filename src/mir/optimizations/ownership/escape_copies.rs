@@ -643,9 +643,10 @@ fn collect_any_views(func: &MirFunction) -> HashSet<Local> {
                     // exactly like an indexed read.
                     Rvalue::Call {
                         func: Operand::Constant(Constant::Function(name)),
-                        ..
+                        args,
                     } if name == "__olive_next"
-                        || super::summaries::runtime_borrowed_return(name) =>
+                        || (super::summaries::runtime_borrowed_return(name)
+                            && !super::boxed_scalar_getter_returns_owned(name, args, func)) =>
                     {
                         views.insert(*dst);
                     }

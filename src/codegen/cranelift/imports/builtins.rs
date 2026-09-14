@@ -163,7 +163,7 @@ pub(crate) fn drop_descriptor_type<'a>(
     }
 }
 
-pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 718] = [
+pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 720] = [
     "__olive_alloc",
     "__olive_any_add",
     "__olive_any_check_method",
@@ -645,6 +645,7 @@ pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 718] = [
     "__olive_py_from_int",
     "__olive_py_from_str",
     "__olive_py_from_typed",
+    "__olive_py_from_u64",
     "__olive_py_getattr",
     "__olive_py_getattr_ret",
     "__olive_py_getattr_safe",
@@ -689,6 +690,7 @@ pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 718] = [
     "__olive_py_to_set",
     "__olive_py_to_set_typed",
     "__olive_py_to_str",
+    "__olive_py_to_typed_arg",
     "__olive_random_get",
     "__olive_random_int",
     "__olive_random_seed",
@@ -1089,7 +1091,7 @@ pub(crate) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
 pub(crate) fn is_u64_op(func_mir: &MirFunction, op: &Operand) -> bool {
     match op {
         Operand::Copy(loc) | Operand::Move(loc) => {
-            matches!(func_mir.locals[loc.0].ty, OliveType::U64)
+            matches!(func_mir.locals[loc.0].ty, OliveType::U64 | OliveType::Usize)
         }
         _ => false,
     }

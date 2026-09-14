@@ -317,6 +317,86 @@ fn resolve_python_module(base_dir: &Path, module: &str) -> Option<PathBuf> {
     None
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct PythonImport {
+    module: String,
+    level: usize,
+}
+
+fn python_imports(source: &str) -> Vec<PythonImport> {
+    let mut imports = Vec::new();
+    for raw_line in source.lines() {
+        let line = raw_line.trim();
+        if let Some(rest) = line.strip_prefix("import ") {
+            for spec in rest.split(',') {
+                let module = spec.split_whitespace().next().unwrap_or_default();
+                if !module.is_empty() {
+                    imports.push(PythonImport {
+                        module: module.to_string(),
+                        level: 0,
+                    });
+                }
+            }
+            continue;
+        }
+        let Some(rest) = line.strip_prefix("from ") else {
+            continue;
+        };
+        let Some((module_spec, imported)) = rest.split_once(" import ") else {
+            continue;
+        };
+        let module_spec = module_spec.trim();
+        let level = module_spec.chars().take_while(|c| *c == '.').count();
+        let module = module_spec[level..].trim().to_string();
+        if module.is_empty() {
+            for name in imported.split(',') {
+                let name = name.split_whitespace().next().unwrap_or_default();
+                if !name.is_empty() && name != "*" {
+                    imports.push(PythonImport {
+                        module: name.to_string(),
+                        level,
+                    });
+                }
+            }
+        } else {
+            imports.push(PythonImport { module, level });
+        }
+    }
+    imports
+}
+
+fn resolve_python_import(source_path: &Path, import: &PythonImport) -> Option<PathBuf> {
+    if import.level == 0 {
+        return resolve_python_module(
+            source_path.parent().unwrap_or(Path::new(".")),
+            &import.module,
+        );
+    }
+    let mut base = source_path.parent()?.to_path_buf();
+    for _ in 1..import.level {
+        base = base.parent()?.to_path_buf();
+    }
+    resolve_python_module(&base, &import.module)
+}
+
+fn collect_python_file(path: &Path, py_files: &mut Vec<String>, visited: &mut HashSet<String>) {
+    let canonical = fs::canonicalize(path)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| path.to_string_lossy().into_owned());
+    if !visited.insert(canonical.clone()) {
+        return;
+    }
+    py_files.push(canonical.clone());
+    let Ok(source) = fs::read_to_string(path) else {
+        return;
+    };
+    for import in python_imports(&source) {
+        if let Some(path) = resolve_python_import(path, &import) {
+            collect_python_file(&path, py_files, visited);
+        }
+    }
+}
+
 fn load_module_file(
     file_path: &Path,
     mod_prefix: &str,
@@ -817,11 +897,7 @@ pub fn collect_source_files(
             }
             parser::StmtKind::PyImport { module, .. } => {
                 if let Some(path) = resolve_python_module(&parent_dir, module) {
-                    let canonical = fs::canonicalize(&path).unwrap_or(path);
-                    let canonical = canonical.to_string_lossy().to_string();
-                    if visited.insert(canonical.clone()) {
-                        py_files.push(canonical);
-                    }
+                    collect_python_file(&path, py_files, visited);
                 }
             }
             // A native library is part of the build's actual input: rebuilding
@@ -1116,6 +1192,44 @@ mod tests {
             .to_string_lossy()
             .to_string();
         assert!(py_files.contains(&helper_canonical));
+        fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_collect_source_files_tracks_nested_python_imports() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "olive_python_nested_dep_{}_{}",
+            std::process::id(),
+            line!()
+        ));
+        let package_dir = temp_dir.join("pkg");
+        fs::create_dir_all(&package_dir).unwrap();
+        let main_path = temp_dir.join("main.liv");
+        let init_path = package_dir.join("__init__.py");
+        let dep_path = package_dir.join("dep.py");
+        let leaf_path = package_dir.join("leaf.py");
+        fs::write(&main_path, "import py \"pkg\" as p\n").unwrap();
+        fs::write(&init_path, "from .dep import value\n").unwrap();
+        fs::write(&dep_path, "from .leaf import value\n").unwrap();
+        fs::write(&leaf_path, "value = 1\n").unwrap();
+
+        let mut collected = Vec::new();
+        let mut py_files = Vec::new();
+        let mut visited = HashSet::new();
+        collect_source_files(
+            main_path.to_str().unwrap(),
+            &mut collected,
+            &mut py_files,
+            &mut visited,
+        );
+
+        for path in [&init_path, &dep_path, &leaf_path] {
+            let canonical = fs::canonicalize(path)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            assert!(py_files.contains(&canonical), "missing {}", canonical);
+        }
         fs::remove_dir_all(&temp_dir).ok();
     }
 

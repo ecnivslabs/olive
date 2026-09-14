@@ -1,6 +1,8 @@
 use crate::{
     OliveEnum, OliveObj, StableVec, format_list_elem, olive_str_from_ptr, olive_str_internal,
 };
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
 
 pub(crate) const D_INT: u8 = 1;
 pub(crate) const D_FLOAT: u8 = 2;
@@ -74,7 +76,9 @@ pub(crate) fn desc_eq(a: i64, b: i64) -> bool {
 
 /// Reads a length-prefixed string from a descriptor; length field is biased by 13.
 fn read_lp(desc: *const u8, pos: &mut usize) -> String {
-    let len = unsafe { byte(desc, *pos) } as usize - 13;
+    let len = (unsafe { byte(desc, *pos) } as usize)
+        .checked_sub(13)
+        .unwrap_or_else(|| invalid_descriptor());
     *pos += 1;
     let mut s = String::with_capacity(len);
     for _ in 0..len {
@@ -135,6 +139,318 @@ pub(crate) fn skip(desc: *const u8, pos: &mut usize) {
     }
 }
 
+#[derive(Clone, Copy)]
+struct DescriptorRegion {
+    source_start: usize,
+    source_end: usize,
+    target_start: usize,
+}
+
+/// Owns descriptor bytes with storage alignment guaranteed by `Vec<u64>`.
+/// Descriptors are byte strings, so a `Vec<u8>` allocation has no alignment
+/// guarantee even when its current address happens to be suitable for a
+/// tagged string word.
+pub(crate) struct OwnedDescriptor {
+    words: Vec<u64>,
+    len: usize,
+}
+
+static INTERNED_DESCRIPTOR_LIMITS: LazyLock<Mutex<HashMap<usize, usize>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+pub(crate) fn register_interned_descriptor(ptr: i64, len: usize) {
+    INTERNED_DESCRIPTOR_LIMITS
+        .lock()
+        .unwrap()
+        .insert(ptr as usize, len);
+}
+
+fn unregister_interned_descriptor(ptr: i64) {
+    INTERNED_DESCRIPTOR_LIMITS
+        .lock()
+        .unwrap()
+        .remove(&(ptr as usize));
+}
+
+fn interned_descriptor_limit(ptr: *const u8) -> Option<usize> {
+    INTERNED_DESCRIPTOR_LIMITS
+        .lock()
+        .unwrap()
+        .get(&(ptr as usize))
+        .copied()
+}
+
+impl OwnedDescriptor {
+    pub(crate) fn as_ptr(&self) -> *const u8 {
+        self.words.as_ptr().cast()
+    }
+
+    pub(crate) fn as_i64(&self) -> i64 {
+        self.as_ptr() as i64
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.len
+    }
+
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.as_ptr(), self.len) }
+    }
+
+    pub(crate) fn into_raw_i64(self) -> i64 {
+        let ptr = self.as_i64();
+        std::mem::forget(self);
+        ptr
+    }
+}
+
+impl Drop for OwnedDescriptor {
+    fn drop(&mut self) {
+        unregister_interned_descriptor(self.as_i64());
+    }
+}
+
+impl std::ops::Deref for OwnedDescriptor {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+fn invalid_descriptor() -> ! {
+    crate::panic::abort("invalid type descriptor", None)
+}
+
+fn descriptor_end(root: *const u8, start: usize) -> usize {
+    let mut end = start;
+    skip(root, &mut end);
+    end
+}
+
+fn mapped_region(regions: &[DescriptorRegion], target: usize) -> Option<usize> {
+    regions.iter().find_map(|region| {
+        if target >= region.source_start && target < region.source_end {
+            Some(region.target_start + (target - region.source_start))
+        } else {
+            None
+        }
+    })
+}
+
+fn copy_prefixed(root: *const u8, old_pos: usize, limit: usize, out: &mut Vec<u8>) -> usize {
+    if old_pos >= limit {
+        invalid_descriptor();
+    }
+    let len = (unsafe { byte(root, old_pos) } as usize)
+        .checked_sub(13)
+        .unwrap_or_else(|| invalid_descriptor());
+    let end = old_pos
+        .checked_add(1)
+        .and_then(|p| p.checked_add(len))
+        .unwrap_or_else(|| invalid_descriptor());
+    if end > limit {
+        invalid_descriptor();
+    }
+    out.extend_from_slice(unsafe { std::slice::from_raw_parts(root.add(old_pos), len + 1) });
+    end
+}
+
+fn copy_descriptor_node(
+    root: *const u8,
+    old_pos: usize,
+    limit: usize,
+    out: &mut Vec<u8>,
+    regions: &mut Vec<DescriptorRegion>,
+    pending: &mut Vec<(usize, usize)>,
+) -> usize {
+    if old_pos >= limit {
+        invalid_descriptor();
+    }
+    let tag = unsafe { byte(root, old_pos) };
+    out.push(tag);
+    let mut pos = old_pos + 1;
+    match tag {
+        D_LIST | D_SET => {
+            pos = copy_descriptor_node(root, pos, limit, out, regions, pending);
+        }
+        D_DICT => {
+            pos = copy_descriptor_node(root, pos, limit, out, regions, pending);
+            pos = copy_descriptor_node(root, pos, limit, out, regions, pending);
+        }
+        D_TUPLE => {
+            if pos >= limit {
+                invalid_descriptor();
+            }
+            let n = (unsafe { byte(root, pos) } as usize)
+                .checked_sub(1)
+                .unwrap_or_else(|| invalid_descriptor());
+            out.push(unsafe { byte(root, pos) });
+            pos += 1;
+            for _ in 0..n {
+                pos = copy_descriptor_node(root, pos, limit, out, regions, pending);
+            }
+        }
+        D_STRUCT | D_STRUCT_SHARED => {
+            pos = copy_prefixed(root, pos, limit, out);
+            if pos >= limit {
+                invalid_descriptor();
+            }
+            let n = (unsafe { byte(root, pos) } as usize)
+                .checked_sub(13)
+                .unwrap_or_else(|| invalid_descriptor());
+            out.push(unsafe { byte(root, pos) });
+            pos += 1;
+            for _ in 0..n {
+                pos = copy_prefixed(root, pos, limit, out);
+                pos = copy_descriptor_node(root, pos, limit, out, regions, pending);
+            }
+        }
+        D_ENUM => {
+            pos = copy_prefixed(root, pos, limit, out);
+            if pos >= limit {
+                invalid_descriptor();
+            }
+            let n = (unsafe { byte(root, pos) } as usize)
+                .checked_sub(13)
+                .unwrap_or_else(|| invalid_descriptor());
+            out.push(unsafe { byte(root, pos) });
+            pos += 1;
+            for _ in 0..n {
+                pos = copy_prefixed(root, pos, limit, out);
+                if pos >= limit {
+                    invalid_descriptor();
+                }
+                let np = (unsafe { byte(root, pos) } as usize)
+                    .checked_sub(13)
+                    .unwrap_or_else(|| invalid_descriptor());
+                out.push(unsafe { byte(root, pos) });
+                pos += 1;
+                for _ in 0..np {
+                    pos = copy_descriptor_node(root, pos, limit, out, regions, pending);
+                }
+            }
+        }
+        D_BACKREF => {
+            if pos > limit || limit - pos < 2 {
+                invalid_descriptor();
+            }
+            let target = (unsafe { byte(root, pos) } as usize) << 8
+                | unsafe { byte(root, pos + 1) } as usize;
+            let payload_pos = out.len();
+            out.extend_from_slice(&[0, 0]);
+            pos += 2;
+            if let Some(mapped) = mapped_region(regions, target) {
+                if mapped > u16::MAX as usize {
+                    invalid_descriptor();
+                }
+                out[payload_pos] = (mapped >> 8) as u8;
+                out[payload_pos + 1] = mapped as u8;
+            } else {
+                pending.push((target, payload_pos));
+            }
+        }
+        _ => {}
+    }
+    pos
+}
+
+fn copy_descriptor_region(
+    root: *const u8,
+    old_start: usize,
+    root_limit: usize,
+    out: &mut Vec<u8>,
+    regions: &mut Vec<DescriptorRegion>,
+    pending: &mut Vec<(usize, usize)>,
+) {
+    if old_start >= root_limit {
+        invalid_descriptor();
+    }
+    let old_end = descriptor_end(root, old_start);
+    if old_end > root_limit {
+        invalid_descriptor();
+    }
+    let target_start = out.len();
+    regions.push(DescriptorRegion {
+        source_start: old_start,
+        source_end: old_end,
+        target_start,
+    });
+    let end = copy_descriptor_node(root, old_start, old_end, out, regions, pending);
+    if end != old_end {
+        invalid_descriptor();
+    }
+}
+
+fn descriptor_from_bytes(bytes: Vec<u8>) -> OwnedDescriptor {
+    let len = bytes.len();
+    let mut words = vec![0u64; len.div_ceil(8)];
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), words.as_mut_ptr().cast::<u8>(), len);
+    }
+    let descriptor = OwnedDescriptor { words, len };
+    register_interned_descriptor(descriptor.as_i64(), len);
+    descriptor
+}
+
+/// Materializes `start` as an independent descriptor rooted at offset zero.
+/// Back-reference offsets in the source address the source root, so copying
+/// only the selected byte range is not sufficient. This walks the selected
+/// range, appends any reachable definitions outside it, and rebases every
+/// back-reference to the new root.
+pub(crate) fn owned_subdescriptor(root: *const u8, start: usize) -> OwnedDescriptor {
+    let root_limit = interned_descriptor_limit(root).unwrap_or_else(|| descriptor_end(root, 0));
+    let mut out = Vec::new();
+    let mut regions = Vec::new();
+    let mut pending = Vec::new();
+    copy_descriptor_region(
+        root,
+        start,
+        root_limit,
+        &mut out,
+        &mut regions,
+        &mut pending,
+    );
+    let mut next = 0;
+    while next < pending.len() {
+        let (target, payload_pos) = pending[next];
+        if let Some(mapped) = mapped_region(&regions, target) {
+            if mapped > u16::MAX as usize {
+                invalid_descriptor();
+            }
+            out[payload_pos] = (mapped >> 8) as u8;
+            out[payload_pos + 1] = mapped as u8;
+        } else {
+            if target >= root_limit {
+                invalid_descriptor();
+            }
+            let target_end = descriptor_end(root, target);
+            if target_end > root_limit {
+                invalid_descriptor();
+            }
+            copy_descriptor_region(
+                root,
+                target,
+                root_limit,
+                &mut out,
+                &mut regions,
+                &mut pending,
+            );
+            let Some(mapped) = mapped_region(&regions, target) else {
+                invalid_descriptor();
+            };
+            if mapped > u16::MAX as usize {
+                invalid_descriptor();
+            }
+            out[payload_pos] = (mapped >> 8) as u8;
+            out[payload_pos + 1] = mapped as u8;
+        }
+        next += 1;
+    }
+    out.push(0);
+    descriptor_from_bytes(out)
+}
+
 /// Renders val via static type descriptor; needed because concrete collections store raw scalars.
 fn fmt(val: i64, desc: *const u8, pos: &mut usize) -> String {
     let tag = unsafe { byte(desc, *pos) };
@@ -155,6 +471,17 @@ fn fmt(val: i64, desc: *const u8, pos: &mut usize) -> String {
         D_DICT => fmt_dict(val, desc, pos),
         D_STRUCT | D_STRUCT_SHARED => fmt_struct(val, desc, pos),
         D_ENUM => fmt_enum(val, desc, pos),
+        D_BACKREF => {
+            let target = (unsafe { byte(desc, *pos) } as usize) << 8
+                | unsafe { byte(desc, *pos + 1) } as usize;
+            *pos += 2;
+            if val == 0 {
+                "None".to_string()
+            } else {
+                let mut target_pos = target;
+                fmt(val, desc, &mut target_pos)
+            }
+        }
         _ => format!("{val}"),
     }
 }
@@ -660,4 +987,7 @@ mod tests {
         let d = enum_desc();
         assert_eq!(format_desc(0, d.as_ptr() as i64), "");
     }
+
+    #[path = "format_descriptor_tests.rs"]
+    mod descriptor_tests;
 }

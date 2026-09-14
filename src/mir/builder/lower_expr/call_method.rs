@@ -1593,6 +1593,25 @@ impl<'a> MirBuilder<'a> {
             || matches!(val_ty, Type::Union(_))
             || result_ty.is_tag_encoded_union()
             || result_ty == Type::Any;
+        let scalar_box_result = needs_boxing
+            && matches!(
+                crate::semantic::type_descriptor::concrete_ty(&val_ty),
+                Type::Int
+                    | Type::I8
+                    | Type::I16
+                    | Type::I32
+                    | Type::U8
+                    | Type::U16
+                    | Type::U32
+                    | Type::U64
+                    | Type::Usize
+                    | Type::Float
+                    | Type::F32
+                    | Type::IntegerLiteral(_)
+                    | Type::FloatLiteral(_)
+                    | Type::Bool
+                    | Type::Null
+            );
         // Struct-valued (or otherwise heap-owning) dicts snapshot values
         // through the value descriptor: an untyped kind dispatch misreads
         // raw struct words (a 1-field header is `KIND_LIST`). Struct-ish
@@ -1627,27 +1646,6 @@ impl<'a> MirBuilder<'a> {
             ("remove", false) => "__olive_obj_remove",
             ("remove", true) => "__olive_obj_remove_typed",
             _ => return None,
-        };
-        // An `F32`-valued hit arrives as zero-extended f32 bits, which the
-        // runtime hit-boxing (`box_stored`) would box as an integer. Route
-        // through the plain getter into an `F32` temporary instead (the
-        // `Assign` fixup reinterprets the bits), then box that honest value
-        // exactly like single-argument `get` does.
-        let box_f32_hit = attr == "get"
-            && arg_ops.len() == 2
-            && val_ty == Type::F32
-            && matches!(
-                runtime,
-                "__olive_obj_get_default_boxed_typed" | "__olive_obj_get_default_boxed"
-            );
-        let runtime: &str = if box_f32_hit {
-            if runtime == "__olive_obj_get_default_boxed_typed" {
-                "__olive_obj_get_default_typed"
-            } else {
-                "__olive_obj_get_default"
-            }
-        } else {
-            runtime
         };
         let obj_op = self.lower_expr_as_copy(obj);
         let obj_op = self.check_any_method_recv(obj, obj_op, attr, 2, span);
@@ -1688,14 +1686,7 @@ impl<'a> MirBuilder<'a> {
                 call_args.push(arg_ops[0].clone());
             }
             let default = arg_ops[1].clone();
-            if box_f32_hit {
-                // The hit comes back through an `F32` temporary (converted
-                // by the `Assign` fixup), so the miss default must be a
-                // proper `F32` value too, not a boxed word: box the hit
-                // below would re-box an already-boxed default.
-                let from_ty = arg_tys.get(1).cloned().unwrap_or(Type::Any);
-                call_args.push(self.coerce_float_slot(default, &from_ty, &Type::F32, span));
-            } else if needs_boxing && !matches!(val_ty, Type::Union(_)) {
+            if needs_boxing && !matches!(val_ty, Type::Union(_)) {
                 // The stored words are raw; the default must be boxed to
                 // match what a hit would return. A mixed-union-valued dict
                 // already stores tagged words, so pass the default through
@@ -1711,12 +1702,9 @@ impl<'a> MirBuilder<'a> {
         } else {
             call_args.extend_from_slice(arg_ops);
         }
-        let tmp_ty = if box_f32_hit {
-            Type::F32
-        } else {
-            result_ty.clone()
-        };
-        let tmp = self.new_local(tmp_ty, None, false);
+        let tmp_ty = result_ty.clone();
+        let tmp_owning = scalar_box_result || !needs_boxing;
+        let tmp = self.new_local_with_owning(tmp_ty, None, false, tmp_owning);
         self.push_statement(
             StatementKind::Assign(
                 tmp,
@@ -1727,12 +1715,6 @@ impl<'a> MirBuilder<'a> {
             ),
             span,
         );
-        if box_f32_hit {
-            let boxed = self.box_into_any(Operand::Copy(tmp), &Type::F32, span);
-            let out = self.new_local(result_ty, None, false);
-            self.push_statement(StatementKind::Assign(out, Rvalue::Use(boxed)), span);
-            return Some(self.operand_for_local(out));
-        }
         Some(self.operand_for_local(tmp))
     }
 
@@ -2052,7 +2034,7 @@ impl<'a> MirBuilder<'a> {
                 && !runtime.ends_with("_typed")
                 && !runtime.contains("checked")
             {
-                let boxed = self.box_into_any(self.operand_for_local(tmp), &Type::Any, span);
+                let boxed = self.box_into_any(self.operand_for_local(tmp), &val_ty, span);
                 let out = self.new_local(result_ty, None, false);
                 self.push_statement(StatementKind::Assign(out, Rvalue::Use(boxed)), span);
                 return Some(self.operand_for_local(out));
@@ -2488,25 +2470,47 @@ impl<'a> MirBuilder<'a> {
                 span,
             );
         }
-        // Coerce every argument into its field's representation: unbox
-        // Python scalars for concrete fields, tag scalars for scalar-union
-        // fields, and box scalars/structs/containers crossing into `Any`
-        // fields (a raw `int` stored in an `Any` slot misreads as a
-        // different value). Generic (`Param`) fields fall through `coerce`
-        // untouched.
-        if let Some(field_names) = self.struct_fields.get(struct_name).cloned() {
+        let base_init_name = format!("{}::__init__", struct_name);
+        let init_name = if !type_args.is_empty() {
+            self.monomorphize(&base_init_name, type_args)
+        } else {
+            base_init_name.clone()
+        };
+        let init_param_tys = self
+            .global_types
+            .get(&init_name)
+            .or_else(|| self.global_types.get(&base_init_name))
+            .and_then(|ty| match ty {
+                Type::Fn(params, _, _) if !params.is_empty() => Some(
+                    params[1..]
+                        .iter()
+                        .map(|ty| self.subst_mono_type(ty))
+                        .collect(),
+                ),
+                _ => None,
+            });
+        // Explicit `__init__` parameters define the call representation. A
+        // struct's field list describes storage, not constructor arguments;
+        // using it here mis-coerces valid calls such as `Mesh(ctx, program)`.
+        let target_tys: Option<Vec<Type>> = init_param_tys.or_else(|| {
+            self.struct_fields.get(struct_name).map(|field_names| {
+                field_names
+                    .iter()
+                    .filter_map(|field_name| {
+                        self.struct_field_types
+                            .get(&(struct_name.to_string(), field_name.clone()))
+                            .cloned()
+                    })
+                    .collect()
+            })
+        });
+        if let Some(target_tys) = target_tys {
             for (i, op) in arg_ops.iter_mut().enumerate() {
                 let from_ty = arg_tys.get(i).cloned().unwrap_or(Type::Any);
-                let Some(field_name) = field_names.get(i) else {
+                let Some(target_ty) = target_tys.get(i) else {
                     break;
                 };
-                if let Some(field_ty) = self
-                    .struct_field_types
-                    .get(&(struct_name.to_string(), field_name.clone()))
-                    .cloned()
-                {
-                    *op = self.coerce(op.clone(), &from_ty, &field_ty, span);
-                }
+                *op = self.coerce(op.clone(), &from_ty, target_ty, span);
             }
         }
         let shared = self.has_drop_structs.contains(struct_name);
@@ -2548,12 +2552,6 @@ impl<'a> MirBuilder<'a> {
         };
         self.push_statement(StatementKind::Assign(obj_tmp, alloc_rval), span);
 
-        let base_init_name = format!("{}::__init__", struct_name);
-        let init_name = if !type_args.is_empty() {
-            self.monomorphize(&base_init_name, type_args)
-        } else {
-            base_init_name
-        };
         let mut init_args = vec![Operand::Copy(obj_tmp)];
         init_args.extend(arg_ops);
 

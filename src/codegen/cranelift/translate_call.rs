@@ -332,6 +332,24 @@ impl<M: Module> CraneliftCodegen<M> {
                     .map(|&arg| super::translate_rvalue::float_word_for_i64_slot(builder, arg))
                     .collect();
                 full_args.push(desc_ptr);
+                if name == "__olive_obj_get_default_boxed_typed" && args.len() == 3 {
+                    let recv_static = super::imports::operand_static_type(&args[0], func_mir);
+                    let value_ty = match super::imports::concrete_ty(&recv_static) {
+                        OliveType::Dict(_, value) => super::imports::concrete_ty(value).clone(),
+                        _ => OliveType::Any,
+                    };
+                    let value_desc = super::imports::type_descriptor(
+                        &value_ty,
+                        struct_fields,
+                        field_types,
+                        enum_defs,
+                    );
+                    let value_data_id = *string_ids
+                        .get(&value_desc)
+                        .expect("get value descriptor not interned during collection");
+                    let value_local_data = module.declare_data_in_func(value_data_id, builder.func);
+                    full_args.push(builder.ins().symbol_value(types::I64, value_local_data));
+                }
                 // `setdefault` discards its default through the value's own
                 // descriptor on a hit, so it carries a second descriptor
                 // (mirrors the interning in `collect_type_descriptor`).
@@ -350,6 +368,44 @@ impl<M: Module> CraneliftCodegen<M> {
                     let val_local_data = module.declare_data_in_func(val_data_id, builder.func);
                     full_args.push(builder.ins().symbol_value(types::I64, val_local_data));
                 }
+                let inst = builder.ins().call(local_func, &full_args);
+                let results = builder.inst_results(inst);
+                return if results.is_empty() {
+                    builder.ins().iconst(types::I64, 0)
+                } else {
+                    results[0]
+                };
+            }
+
+            let boxed_value_call = match name.as_str() {
+                "__olive_obj_get_boxed" => call_args.len() == 2,
+                "__olive_obj_get_default_boxed" => call_args.len() == 3,
+                _ => false,
+            };
+            if boxed_value_call {
+                let recv_static = super::imports::operand_static_type(&args[0], func_mir);
+                let value_ty = match super::imports::concrete_ty(&recv_static) {
+                    OliveType::Dict(_, value) => super::imports::concrete_ty(value).clone(),
+                    _ => OliveType::Any,
+                };
+                let value_desc = super::imports::type_descriptor(
+                    &value_ty,
+                    struct_fields,
+                    field_types,
+                    enum_defs,
+                );
+                let value_data_id = *string_ids
+                    .get(&value_desc)
+                    .expect("get value descriptor not interned during collection");
+                let value_local_data = module.declare_data_in_func(value_data_id, builder.func);
+                let value_desc_ptr = builder.ins().symbol_value(types::I64, value_local_data);
+                let mut full_args: Vec<Value> = call_args
+                    .iter()
+                    .map(|&arg| super::translate_rvalue::float_word_for_i64_slot(builder, arg))
+                    .collect();
+                full_args.push(value_desc_ptr);
+                let func_id = func_ids[name.as_str()];
+                let local_func = module.declare_func_in_func(func_id, builder.func);
                 let inst = builder.ins().call(local_func, &full_args);
                 let results = builder.inst_results(inst);
                 return if results.is_empty() {

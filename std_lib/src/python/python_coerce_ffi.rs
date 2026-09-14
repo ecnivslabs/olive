@@ -11,6 +11,15 @@ pub extern "C" fn olive_py_from_int(v: i64) -> PyObject {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn olive_py_from_u64(v: i64) -> PyObject {
+    check_python_loaded();
+    with_gil(|| unsafe {
+        let r = py_long_from_u64(v as u64);
+        olive_py_wrap_owned(r)
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn olive_py_from_float(v: f64) -> PyObject {
     check_python_loaded();
     with_gil(|| unsafe {
@@ -400,6 +409,26 @@ pub extern "C" fn olive_to_py_typed(val: i64, desc: i64) -> i64 {
             return 0;
         }
         olive_py_wrap_owned(object) as i64
+    })
+}
+
+/// Converts a nested typed collection before a Python call and queues its
+/// source descriptor for post-call writeback. Unlike `olive_to_py_typed`,
+/// this path preserves mutations made by the Python callee.
+#[unsafe(no_mangle)]
+pub extern "C" fn __olive_py_to_typed_arg(val: i64, desc: i64) -> i64 {
+    check_python_loaded();
+    with_gil(|| unsafe {
+        let object = crate::python::python_coerce::to_py_typed_desc(val, desc);
+        if object.is_null() {
+            return 0;
+        }
+        let canonical = crate::python::python_writeback::register_pending_typed(val, object, desc);
+        if canonical.is_null() {
+            PY_DEC_REF(object);
+            return 0;
+        }
+        olive_py_wrap_owned(canonical) as i64
     })
 }
 

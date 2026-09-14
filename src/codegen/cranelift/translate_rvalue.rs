@@ -562,12 +562,31 @@ impl<M: Module> CraneliftCodegen<M> {
 
                 match ty {
                     OliveType::PyObject => {
+                        let (key, key_owned) = if super::imports::is_u64_op(func_mir, idx) {
+                            let key_id = func_ids
+                                .get("__olive_py_from_u64")
+                                .expect("missing __olive_py_from_u64");
+                            let local_key = module.declare_func_in_func(*key_id, builder.func);
+                            let inst = builder.ins().call(local_key, &[i]);
+                            (builder.inst_results(inst)[0], true)
+                        } else {
+                            (i, false)
+                        };
                         let get_id = func_ids
                             .get("__olive_py_getitem")
                             .expect("missing __olive_py_getitem");
                         let local_func = module.declare_func_in_func(*get_id, builder.func);
-                        let inst = builder.ins().call(local_func, &[o, i]);
-                        builder.inst_results(inst)[0]
+                        let inst = builder.ins().call(local_func, &[o, key]);
+                        let value = builder.inst_results(inst)[0];
+                        if key_owned {
+                            let decref_id = func_ids
+                                .get("__olive_py_decref")
+                                .expect("missing __olive_py_decref");
+                            let local_decref =
+                                module.declare_func_in_func(*decref_id, builder.func);
+                            builder.ins().call(local_decref, &[key]);
+                        }
+                        value
                     }
                     OliveType::Enum(_, _) => {
                         let get_id = func_ids

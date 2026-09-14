@@ -48,13 +48,32 @@ pub(crate) fn owns_struct_box(v: i64) -> bool {
     }
 }
 
+/// Persistent descriptors are aligned raw pointers. Compiler descriptor
+/// literals are tagged string words, so their low bits are part of the word
+/// and must be stripped before parsing.
+fn struct_descriptor_ptr(desc: i64) -> *const u8 {
+    if desc == 0 {
+        return std::ptr::null();
+    }
+    if desc & 3 != 0 {
+        crate::string_slab::str_body(desc) as *const u8
+    } else {
+        desc as *const u8
+    }
+}
+
 /// Boxes an owned struct pointer with its `D_STRUCT` descriptor. The box
 /// takes ownership; freeing it deep-frees the struct through the descriptor.
-/// Descriptor constants arrive as tagged string words; the tag bit is
-/// stripped so the stored pointer reads as raw bytes.
+/// Descriptor words may be tagged and may point at temporary compiler
+/// storage, so the box interns an aligned, self-contained descriptor before
+/// retaining it.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_struct_box(ptr: i64, desc: i64) -> i64 {
-    let desc = crate::string_slab::str_body(desc);
+    let desc = if desc == 0 {
+        0
+    } else {
+        crate::index_any::intern_sub_descriptor(struct_descriptor_ptr(desc), 0)
+    };
     with_struct_box_slab(|sl| {
         let (body, _) = sl.alloc();
         unsafe {
@@ -86,7 +105,11 @@ pub(crate) fn free_struct_box(val: i64) {
         Some(true) => crate::slab::with_escape_arena(|| free_struct_box_local(val)),
         _ => free_struct_box_local(val),
     }
-    crate::free_typed::olive_free_typed(inner, desc);
+    if desc == 0 {
+        crate::struct_obj::olive_free_struct(inner);
+    } else {
+        crate::free_typed::olive_free_typed(inner, desc);
+    }
 }
 
 fn free_struct_box_local(val: i64) {
@@ -198,6 +221,7 @@ fn rejected_member_name(val: i64) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::format::{D_STR, D_STRUCT};
 
     #[test]
     fn box_roundtrip_and_kind() {
@@ -214,6 +238,25 @@ mod tests {
         assert_eq!(bx.kind, KIND_STRUCT_BOX);
         assert_eq!(bx.ptr, s);
         free_struct_box(b);
+    }
+
+    #[test]
+    fn box_owns_aligned_descriptor_past_input_lifetime() {
+        let inner = crate::olive_struct_alloc(1);
+        unsafe { *((inner + 8) as *mut i64) = crate::olive_str_internal("owned") };
+        let boxed = {
+            #[repr(C, packed)]
+            struct PackedDescriptor([u8; 8]);
+            let desc = PackedDescriptor([D_STRUCT, 14, b'P', 14, 14, b'v', D_STR, 0]);
+            let input = std::ptr::addr_of!(desc.0) as *const u8 as i64;
+            let value = olive_struct_box(inner, input);
+            assert_ne!(unsafe { (*(value as *const OliveStructBox)).desc }, input);
+            value
+        };
+        let stored = unsafe { (*(boxed as *const OliveStructBox)).desc };
+        assert_eq!(stored as usize % 8, 0);
+        assert_eq!(crate::format::format_desc(inner, stored), "P(v=\"owned\")");
+        free_struct_box(boxed);
     }
 
     #[test]

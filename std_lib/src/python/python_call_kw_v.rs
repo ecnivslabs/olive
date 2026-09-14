@@ -127,6 +127,7 @@ pub extern "C" fn olive_py_call_kw_v(
     check_python_loaded();
     let unwrapped_func = unsafe { olive_py_unwrap(func) };
     if unwrapped_func.is_null() {
+        abandon_pending_writebacks();
         return std::ptr::null_mut();
     }
     unsafe {
@@ -193,6 +194,7 @@ pub extern "C" fn olive_py_call_kw_v_safe(
     }
     let unwrapped_func = unsafe { olive_py_unwrap(func) };
     if unwrapped_func.is_null() {
+        abandon_pending_writebacks();
         let err_str_ptr = crate::olive_str_internal("Null function pointer");
         return crate::result::olive_result_err(err_str_ptr);
     }
@@ -265,6 +267,7 @@ pub extern "C" fn olive_py_call_method_kw_v(
     check_python_loaded();
     let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
     if unwrapped_obj.is_null() {
+        abandon_pending_writebacks();
         return std::ptr::null_mut();
     }
     unsafe {
@@ -349,6 +352,7 @@ pub extern "C" fn olive_py_call_method_kw_v_safe(
     }
     let unwrapped_obj = unsafe { olive_py_unwrap(obj) };
     if unwrapped_obj.is_null() {
+        abandon_pending_writebacks();
         let err_str_ptr = crate::olive_str_internal("Null object pointer");
         return crate::result::olive_result_err(err_str_ptr);
     }

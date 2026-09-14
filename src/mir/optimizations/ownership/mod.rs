@@ -568,6 +568,43 @@ type DirectStoreMoveSite = (usize, usize, bool);
 /// (bb, idx, operand position) for an aggregate-element escape ready for move promotion.
 type AggMoveSite = (usize, usize, usize);
 
+fn boxed_scalar_getter_returns_owned(name: &str, args: &[Operand], func: &MirFunction) -> bool {
+    if !matches!(
+        name,
+        "__olive_obj_get_boxed"
+            | "__olive_obj_get_default_boxed"
+            | "__olive_obj_get_default_boxed_typed"
+    ) {
+        return false;
+    }
+    let Some(Operand::Copy(local) | Operand::Move(local)) = args.first() else {
+        return false;
+    };
+    let recv_ty = crate::semantic::type_descriptor::concrete_ty(&func.locals[local.0].ty);
+    let Type::Dict(_, value) = recv_ty else {
+        return false;
+    };
+    let value = crate::semantic::type_descriptor::concrete_ty(value);
+    matches!(
+        value,
+        Type::Int
+            | Type::I8
+            | Type::I16
+            | Type::I32
+            | Type::U8
+            | Type::U16
+            | Type::U32
+            | Type::U64
+            | Type::Usize
+            | Type::Float
+            | Type::F32
+            | Type::IntegerLiteral(_)
+            | Type::FloatLiteral(_)
+            | Type::Bool
+            | Type::Null
+    )
+}
+
 fn collect_assigns(
     func: &MirFunction,
     liveness: &Liveness,
@@ -678,8 +715,12 @@ fn collect_assigns(
                 // (`own_tainted_returns`), so their results are owned here.
                 Rvalue::Call {
                     func: Operand::Constant(Constant::Function(name)),
-                    ..
-                } if runtime_borrowed_return(name) => RvClass::Borrow(None),
+                    args,
+                } if runtime_borrowed_return(name)
+                    && !boxed_scalar_getter_returns_owned(name, args, func) =>
+                {
+                    RvClass::Borrow(None)
+                }
                 _ => RvClass::Own,
             };
             let src_dead = match &class {

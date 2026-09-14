@@ -6,6 +6,7 @@
 
 use crate::python::python_coerce::{raw_ob_type, to_py_deep};
 use crate::python::*;
+use std::cell::RefCell;
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
@@ -62,6 +63,19 @@ pub(crate) struct WritebackPair {
     value_f32: bool,
     value_u64: bool,
     original_any: Option<Vec<(i64, i64)>>,
+    /// A nested typed collection was realized before call entry because its
+    /// shape cannot fit flat collection tags. Keep its descriptor so the
+    /// Python result can be imported back into the original allocation.
+    descriptor: Option<Vec<u8>>,
+}
+
+thread_local! {
+    /// Descriptor-preconverted arguments are produced before the generated
+    /// Python call entry point runs. This queue hands their source pointers
+    /// and copied descriptors to that call exactly once, including legacy and
+    /// safe call families.
+    static PENDING_WRITEBACKS: RefCell<Vec<WritebackPair>> =
+        const { RefCell::new(Vec::new()) };
 }
 
 /// Reads arg `i`'s 4-bit collection tag out of a packed tag word. Calls with
@@ -188,9 +202,70 @@ unsafe fn convert_collection_arg(
             value_f32,
             value_u64,
             original_any,
+            descriptor: None,
         });
         py_obj
     }
+}
+
+/// Registers a descriptor-preconverted argument for the next Python call.
+/// `py_obj` owns one reference from the Olive handle; retain another for the
+/// post-call writeback pass. Descriptor bytes are copied because compiler
+/// string constants may be storage-reused after this prelude.
+pub(crate) unsafe fn register_pending_typed(
+    olive_ptr: i64,
+    py_obj: PyObject,
+    desc: i64,
+) -> PyObject {
+    unsafe {
+        if py_obj.is_null() || olive_ptr == 0 {
+            return std::ptr::null_mut();
+        }
+        let existing = PENDING_WRITEBACKS.with(|pending| {
+            pending
+                .borrow()
+                .iter()
+                .find(|pair| pair.olive_ptr == olive_ptr && pair.descriptor.is_some())
+                .map(|pair| pair.py_obj)
+        });
+        if let Some(existing) = existing {
+            PY_DEC_REF(py_obj);
+            PY_INC_REF(existing);
+            return existing;
+        }
+        let descriptor = crate::olive_str_to_bytes(desc).to_vec();
+        PY_INC_REF(py_obj);
+        PENDING_WRITEBACKS.with(|pending| {
+            pending.borrow_mut().push(WritebackPair {
+                olive_ptr,
+                py_obj,
+                tag: TAG_NONE,
+                key_tag: DICT_KEY_NONE,
+                value_f32: false,
+                value_u64: false,
+                original_any: None,
+                descriptor: Some(descriptor),
+            });
+        });
+        py_obj
+    }
+}
+
+/// Takes all descriptor-preconverted arguments accumulated since the previous
+/// call boundary. Ordinary calls get an empty vector and pay only TLS setup.
+pub(crate) fn take_pending_writebacks() -> Vec<WritebackPair> {
+    PENDING_WRITEBACKS.with(|pending| std::mem::take(&mut *pending.borrow_mut()))
+}
+
+/// Releases queued preconverted arguments on call-entry paths that return
+/// before normal pair construction. Python reference release reacquires the
+/// GIL because these checks can run before call entry opens its fused region.
+pub(crate) fn abandon_pending_writebacks() {
+    let pairs = take_pending_writebacks();
+    if pairs.is_empty() {
+        return;
+    }
+    with_gil(|| unsafe { abandon_pairs(&pairs) });
 }
 
 /// Static-type encoding for a py-call argument's raw word, orthogonal to the
@@ -1192,6 +1267,129 @@ unsafe fn sync_set_typed(pair: &WritebackPair) -> Result<(), String> {
     }
 }
 
+/// Replaces a descriptor-described collection's storage with a freshly
+/// imported value. The conversion path builds a complete new tree, which
+/// keeps rollback simple: a failed import never mutates the source. Once an
+/// import succeeds, transfer only the new root's storage and free its empty
+/// shell, so every child is released exactly once.
+unsafe fn replace_typed_root(old: i64, new: i64, desc: *const u8) -> Result<(), String> {
+    unsafe {
+        if old == new {
+            return Ok(());
+        }
+        if old == 0
+            || new == 0
+            || !crate::slab::slot_is_live(old)
+            || !crate::slab::slot_is_live(new)
+        {
+            return Err("typed writeback produced an invalid Olive value".to_string());
+        }
+        let tag = crate::format::byte(desc, 0);
+        match tag {
+            crate::format::D_LIST | crate::format::D_TUPLE => {
+                let old_vec = &mut *(old as *mut crate::StableVec);
+                let new_vec = &*(new as *const crate::StableVec);
+                if !matches!(old_vec.kind, crate::KIND_LIST | crate::KIND_ANY_LIST)
+                    || !matches!(new_vec.kind, crate::KIND_LIST | crate::KIND_ANY_LIST)
+                {
+                    return Err("typed writeback collection kind mismatch".to_string());
+                }
+                let (old_ptr, old_cap) = (old_vec.ptr, old_vec.cap);
+                crate::free_typed::olive_clear_typed(old, desc as i64);
+                let old_vec = &mut *(old as *mut crate::StableVec);
+                if !old_ptr.is_null() && old_vec.ptr == old_ptr && old_vec.cap == old_cap {
+                    let _ = Vec::from_raw_parts(old_ptr, 0, old_cap);
+                    old_vec.ptr = std::ptr::null_mut();
+                    old_vec.cap = 0;
+                }
+                let new_vec = &mut *(new as *mut crate::StableVec);
+                let (new_ptr, new_cap, new_len, new_kind) =
+                    (new_vec.ptr, new_vec.cap, new_vec.len, new_vec.kind);
+                new_vec.ptr = std::ptr::null_mut();
+                new_vec.cap = 0;
+                new_vec.len = 0;
+                let old_vec = &mut *(old as *mut crate::StableVec);
+                old_vec.ptr = new_ptr;
+                old_vec.cap = new_cap;
+                old_vec.len = new_len;
+                old_vec.kind = new_kind;
+                crate::list::free_list_slot_raw(new);
+            }
+            crate::format::D_SET => {
+                let old_set = &mut *(old as *mut crate::OliveHashSet);
+                let new_set = &*(new as *const crate::OliveHashSet);
+                if old_set.kind != crate::KIND_SET || new_set.kind != crate::KIND_SET {
+                    return Err("typed writeback set kind mismatch".to_string());
+                }
+                let (old_ptr, old_cap, old_inner) = (old_set.ptr, old_set.cap, old_set.inner);
+                crate::free_typed::olive_clear_typed(old, desc as i64);
+                let old_set = &mut *(old as *mut crate::OliveHashSet);
+                if !old_ptr.is_null() && old_set.ptr == old_ptr && old_set.cap == old_cap {
+                    let _ = Vec::from_raw_parts(old_ptr, 0, old_cap);
+                }
+                if !old_inner.is_null() && old_set.inner == old_inner {
+                    let _ = Box::from_raw(old_inner);
+                }
+                let new_set = &mut *(new as *mut crate::OliveHashSet);
+                let (new_ptr, new_cap, new_len, new_inner) =
+                    (new_set.ptr, new_set.cap, new_set.len, new_set.inner);
+                new_set.ptr = std::ptr::null_mut();
+                new_set.cap = 0;
+                new_set.len = 0;
+                new_set.inner = std::ptr::null_mut();
+                let old_set = &mut *(old as *mut crate::OliveHashSet);
+                old_set.ptr = new_ptr;
+                old_set.cap = new_cap;
+                old_set.len = new_len;
+                old_set.inner = new_inner;
+                crate::set::free_set_slot_raw(new);
+            }
+            crate::format::D_DICT => {
+                let old_obj = &mut *(old as *mut crate::OliveObj);
+                let new_obj = &mut *(new as *mut crate::OliveObj);
+                if old_obj.kind != crate::KIND_OBJ || new_obj.kind != crate::KIND_OBJ {
+                    return Err("typed writeback dict kind mismatch".to_string());
+                }
+                crate::obj::olive_obj_clear_typed(old, desc as i64);
+                let fields = std::mem::take(&mut new_obj.fields);
+                let old_obj = &mut *(old as *mut crate::OliveObj);
+                old_obj.fields = fields;
+                crate::obj::free_obj_slot_raw(new);
+            }
+            _ => {
+                return Err("typed writeback root is not a collection".to_string());
+            }
+        }
+        Ok(())
+    }
+}
+
+unsafe fn sync_typed_descriptor(pair: &WritebackPair) -> Result<(), String> {
+    unsafe {
+        let descriptor = pair
+            .descriptor
+            .as_deref()
+            .ok_or_else(|| "typed writeback descriptor missing".to_string())?;
+        let mut pos = 0usize;
+        let Some(new_value) = crate::python::python_coerce_typed::convert_at(
+            pair.py_obj,
+            descriptor.as_ptr(),
+            &mut pos,
+        ) else {
+            let message =
+                crate::python::python_safe::take_pending_error_message().unwrap_or_else(|| {
+                    "Python value cannot be converted to declared Olive type".to_string()
+                });
+            return Err(message);
+        };
+        if let Err(message) = replace_typed_root(pair.olive_ptr, new_value, descriptor.as_ptr()) {
+            crate::free_typed::olive_free_typed(new_value, descriptor.as_ptr() as i64);
+            return Err(message);
+        }
+        Ok(())
+    }
+}
+
 /// Syncs every tracked collection argument back into its Olive allocation and
 /// releases the pair's retained reference. Runs after the underlying
 /// `PyObject_Call`/`PyObject_CallObject`, on both the success and the
@@ -1201,18 +1399,24 @@ unsafe fn sync_set_typed(pair: &WritebackPair) -> Result<(), String> {
 pub(crate) unsafe fn sync_back(pairs: &[WritebackPair]) -> Result<(), String> {
     unsafe {
         for (index, pair) in pairs.iter().enumerate() {
-            let result = match pair.tag {
-                TAG_ANY_LIST | TAG_INT_LIST | TAG_FLOAT_LIST | TAG_BOOL_LIST | TAG_STR_LIST
-                | TAG_NONE_LIST => sync_list(pair),
-                TAG_ANY_DICT => sync_dict(pair),
-                TAG_NONE_DICT => sync_dict_typed(pair),
-                TAG_ANY_SET => sync_set(pair),
-                TAG_NONE_SET => sync_set_typed(pair),
-                TAG_INT_DICT | TAG_FLOAT_DICT | TAG_BOOL_DICT | TAG_STR_DICT => {
-                    sync_dict_typed(pair)
+            let result = if pair.descriptor.is_some() {
+                sync_typed_descriptor(pair)
+            } else {
+                match pair.tag {
+                    TAG_ANY_LIST | TAG_INT_LIST | TAG_FLOAT_LIST | TAG_BOOL_LIST | TAG_STR_LIST
+                    | TAG_NONE_LIST => sync_list(pair),
+                    TAG_ANY_DICT => sync_dict(pair),
+                    TAG_NONE_DICT => sync_dict_typed(pair),
+                    TAG_ANY_SET => sync_set(pair),
+                    TAG_NONE_SET => sync_set_typed(pair),
+                    TAG_INT_DICT | TAG_FLOAT_DICT | TAG_BOOL_DICT | TAG_STR_DICT => {
+                        sync_dict_typed(pair)
+                    }
+                    TAG_INT_SET | TAG_FLOAT_SET | TAG_BOOL_SET | TAG_STR_SET => {
+                        sync_set_typed(pair)
+                    }
+                    _ => Ok(()),
                 }
-                TAG_INT_SET | TAG_FLOAT_SET | TAG_BOOL_SET | TAG_STR_SET => sync_set_typed(pair),
-                _ => Ok(()),
             };
             release_original_any(pair);
             if let Err(message) = result {

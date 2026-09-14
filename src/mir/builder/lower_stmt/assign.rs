@@ -293,12 +293,13 @@ impl<'a> MirBuilder<'a> {
                     // `rval` was already coerced to `target_ty` above; key the
                     // to-Python conversion off that so a float isn't wrapped twice.
                     let py_rval = self.emit_to_py_arg(rval, &target_ty, target.span);
-                    let py_idx = if Self::is_int_ty(&idx_ty) {
+                    let unsigned_int = matches!(idx_ty, Type::U64 | Type::Usize);
+                    let py_idx = if Self::is_int_ty(&idx_ty) && !unsigned_int {
                         idx_op
                     } else {
                         self.emit_to_py_arg(idx_op, &idx_ty, target.span)
                     };
-                    let func_name = if Self::is_int_ty(&idx_ty) {
+                    let func_name = if Self::is_int_ty(&idx_ty) && !unsigned_int {
                         "__olive_py_setitem_int"
                     } else {
                         "__olive_py_setitem"

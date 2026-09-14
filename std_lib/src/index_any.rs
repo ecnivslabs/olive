@@ -5,18 +5,16 @@ static STRUCT_SUB_DESC_CACHE: std::sync::LazyLock<
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(rustc_hash::FxHashMap::default()));
 
 pub(crate) fn intern_sub_descriptor(desc: *const u8, start: usize) -> i64 {
-    let mut end = start;
-    crate::format::skip(desc, &mut end);
-    let bytes = unsafe { std::slice::from_raw_parts(desc.add(start), end - start) };
+    let owned = crate::format::owned_subdescriptor(desc, start);
+    let key = owned.as_slice().to_vec();
     let mut cache = STRUCT_SUB_DESC_CACHE.lock().unwrap();
-    if let Some(&hit) = cache.get(bytes) {
+    if let Some(&hit) = cache.get(&key) {
         return hit;
     }
-    let mut owned = bytes.to_vec();
-    owned.push(0);
-    let leaked: &'static [u8] = Box::leak(owned.into_boxed_slice());
-    let ptr = leaked.as_ptr() as i64;
-    cache.insert(bytes.to_vec(), ptr);
+    let len = owned.len();
+    let ptr = owned.into_raw_i64();
+    crate::format::register_interned_descriptor(ptr, len);
+    cache.insert(key, ptr);
     ptr
 }
 
@@ -65,10 +63,10 @@ fn erase_word_to_any(raw: i64, desc: *const u8, start: usize) -> i64 {
             let mut visited = FxHashMap::default();
             crate::copy_typed::copy_any(raw, &mut visited)
         }
-        D_LIST => erase_list_field_to_any(raw, desc, start),
-        D_SET => erase_set_field_to_any(raw, desc, start),
-        D_DICT => erase_dict_field_to_any(raw, desc, start),
-        D_TUPLE => erase_tuple_field_to_any(raw, desc, start),
+        D_LIST => erase_list_field_to_any(raw, desc, resolved),
+        D_SET => erase_set_field_to_any(raw, desc, resolved),
+        D_DICT => erase_dict_field_to_any(raw, desc, resolved),
+        D_TUPLE => erase_tuple_field_to_any(raw, desc, resolved),
         _ => {
             let mut copy_pos = start;
             let mut visited = FxHashMap::default();
@@ -592,16 +590,16 @@ fn struct_box_member(obj: i64, attr: i64, loc: i64) -> i64 {
                     return crate::copy_typed::copy_any(raw, &mut visited);
                 }
                 D_LIST => {
-                    return erase_list_field_to_any(raw, desc, field_type_pos);
+                    return erase_list_field_to_any(raw, desc, resolved_pos);
                 }
                 D_SET => {
-                    return erase_set_field_to_any(raw, desc, field_type_pos);
+                    return erase_set_field_to_any(raw, desc, resolved_pos);
                 }
                 D_DICT => {
-                    return erase_dict_field_to_any(raw, desc, field_type_pos);
+                    return erase_dict_field_to_any(raw, desc, resolved_pos);
                 }
                 D_TUPLE => {
-                    return erase_tuple_field_to_any(raw, desc, field_type_pos);
+                    return erase_tuple_field_to_any(raw, desc, resolved_pos);
                 }
                 _ => {
                     let mut copy_pos = field_type_pos;
@@ -696,6 +694,7 @@ pub extern "C" fn olive_len_any(obj: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_get_index_any(obj: i64, index: i64, loc: i64) -> i64 {
+    let desc = 0;
     if obj == 0 || obj & boxed::TAG_MASK == boxed::TAG_NULL {
         panic::olive_nil_index_fail(loc);
     }
@@ -729,11 +728,7 @@ pub extern "C" fn olive_get_index_any(obj: i64, index: i64, loc: i64) -> i64 {
             boxed::olive_box_int(bytes::olive_buf_get(obj, effective))
         }
         KIND_PYOBJECT => {
-            let key_obj = if index > 0x10000 && index & 1 != 0 {
-                python::olive_py_from_str(index)
-            } else {
-                python::olive_py_from_int(index)
-            };
+            let key_obj = py_key_from_typed_index(index, desc);
             let py_res = python::olive_py_getitem(obj as *mut std::ffi::c_void, key_obj);
             python::olive_py_decref(key_obj);
             // getitem returns a wrapped arena handle; unwrap before converting (py_to_olive reads ob_type).
@@ -743,6 +738,18 @@ pub extern "C" fn olive_get_index_any(obj: i64, index: i64, loc: i64) -> i64 {
             olive_res
         }
         _ => index_type_error(loc),
+    }
+}
+
+fn py_key_from_typed_index(index: i64, desc: i64) -> python::PyObject {
+    let is_u64 = desc != 0
+        && unsafe { *(crate::string_slab::str_body(desc) as *const u8) == crate::format::D_U64 };
+    if is_u64 {
+        python::olive_py_from_u64(index)
+    } else if index > 0x10000 && index & 1 != 0 {
+        python::olive_py_from_str(index)
+    } else {
+        python::olive_py_from_int(index)
     }
 }
 
@@ -833,11 +840,7 @@ pub extern "C" fn olive_get_index_any_typed(obj: i64, index: i64, loc: i64, desc
             boxed::olive_box_int(bytes::olive_buf_get(obj, effective))
         }
         KIND_PYOBJECT => {
-            let key_obj = if index > 0x10000 && index & 1 != 0 {
-                python::olive_py_from_str(index)
-            } else {
-                python::olive_py_from_int(index)
-            };
+            let key_obj = py_key_from_typed_index(index, desc);
             let py_res = python::olive_py_getitem(obj as *mut std::ffi::c_void, key_obj);
             python::olive_py_decref(key_obj);
             // getitem returns a wrapped arena handle; unwrap before converting (py_to_olive reads ob_type).
@@ -852,6 +855,7 @@ pub extern "C" fn olive_get_index_any_typed(obj: i64, index: i64, loc: i64, desc
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_set_index_any(obj: i64, index: i64, val: i64, loc: i64) {
+    let desc = 0;
     if obj == 0 || obj & boxed::TAG_MASK == boxed::TAG_NULL {
         panic::olive_nil_index_fail(loc);
     }
@@ -894,11 +898,7 @@ pub extern "C" fn olive_set_index_any(obj: i64, index: i64, val: i64, loc: i64) 
             olive_obj_set(obj, index, val);
         }
         KIND_PYOBJECT => {
-            let key_obj = if index > 0x10000 && index & 1 != 0 {
-                python::olive_py_from_str(index)
-            } else {
-                python::olive_py_from_int(index)
-            };
+            let key_obj = py_key_from_typed_index(index, desc);
             let py_val = python::olive_py_conv_to_py(val);
             python::olive_py_setitem(obj as *mut std::ffi::c_void, key_obj, py_val);
             python::olive_py_decref(key_obj);
@@ -960,11 +960,7 @@ pub extern "C" fn olive_set_index_any_typed(obj: i64, index: i64, val: i64, loc:
             }
         }
         KIND_PYOBJECT => {
-            let key_obj = if index > 0x10000 && index & 1 != 0 {
-                python::olive_py_from_str(index)
-            } else {
-                python::olive_py_from_int(index)
-            };
+            let key_obj = py_key_from_typed_index(index, desc);
             let py_val = python::olive_py_conv_to_py(val);
             python::olive_py_setitem(obj as *mut std::ffi::c_void, key_obj, py_val);
             python::olive_py_decref(key_obj);
