@@ -270,6 +270,53 @@ pub fn resolve_module_target(
     Err(ModuleResolutionError::NotFound(mod_rel))
 }
 
+fn resolve_python_module(base_dir: &Path, module: &str) -> Option<PathBuf> {
+    let spec = module.strip_suffix(".py").unwrap_or(module);
+    let parts: Vec<&str> = spec.split('.').filter(|part| !part.is_empty()).collect();
+    if parts.is_empty() {
+        return None;
+    }
+
+    let mut roots = Vec::<PathBuf>::new();
+    let mut add_root = |path: PathBuf| {
+        let path = fs::canonicalize(&path).unwrap_or(path);
+        if !roots.contains(&path) {
+            roots.push(path);
+        }
+    };
+    add_root(base_dir.to_path_buf());
+    let project_root = PROJECT_ROOT.with(|root| root.borrow().clone());
+    if !project_root.as_os_str().is_empty() {
+        add_root(project_root);
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        add_root(cwd);
+    }
+    if let Some(paths) = std::env::var_os("PYTHONPATH") {
+        for path in std::env::split_paths(&paths) {
+            if !path.as_os_str().is_empty() {
+                add_root(path);
+            }
+        }
+    }
+
+    for root in roots {
+        let mut module_path = root;
+        for part in &parts {
+            module_path.push(part);
+        }
+        let file = module_path.with_extension("py");
+        if file.is_file() {
+            return Some(file);
+        }
+        let package = module_path.join("__init__.py");
+        if package.is_file() {
+            return Some(package);
+        }
+    }
+    None
+}
+
 fn load_module_file(
     file_path: &Path,
     mod_prefix: &str,
@@ -769,11 +816,11 @@ pub fn collect_source_files(
                 }
             }
             parser::StmtKind::PyImport { module, .. } => {
-                let py_name = format!("{}.py", module);
-                if !visited.contains(&py_name) {
-                    visited.insert(py_name.clone());
-                    if let Ok(canonical) = fs::canonicalize(&py_name) {
-                        py_files.push(canonical.to_string_lossy().to_string());
+                if let Some(path) = resolve_python_module(&parent_dir, module) {
+                    let canonical = fs::canonicalize(&path).unwrap_or(path);
+                    let canonical = canonical.to_string_lossy().to_string();
+                    if visited.insert(canonical.clone()) {
+                        py_files.push(canonical);
                     }
                 }
             }
@@ -1041,6 +1088,34 @@ mod tests {
 
         assert_eq!(name_const.as_deref(), Some("tokenizer"));
 
+        fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_collect_source_files_tracks_python_import_relative_to_source() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("olive_python_dep_{}", std::process::id()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let main_path = temp_dir.join("main.liv");
+        let helper_path = temp_dir.join("helper.py");
+        fs::write(&main_path, "import py \"helper\" as h\n").unwrap();
+        fs::write(&helper_path, "def value():\n    return 1\n").unwrap();
+
+        let mut collected = Vec::new();
+        let mut py_files = Vec::new();
+        let mut visited = HashSet::new();
+        collect_source_files(
+            main_path.to_str().unwrap(),
+            &mut collected,
+            &mut py_files,
+            &mut visited,
+        );
+
+        let helper_canonical = fs::canonicalize(&helper_path)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        assert!(py_files.contains(&helper_canonical));
         fs::remove_dir_all(&temp_dir).ok();
     }
 
