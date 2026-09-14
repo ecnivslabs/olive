@@ -99,6 +99,33 @@ fn nullable_scalar_dict_get_preserves_tags_and_defaults() {
 }
 
 #[test]
+fn scalar_union_keys_keep_zero_and_none_distinct() {
+    assert_both(
+        r#"fn main():
+    let zero: int | None = 0
+    let none: int | None = None
+    let d: dict[int | None, str] = {zero: "zero", none: "none"}
+    print(d[zero])
+    print(d[none])
+    print(d.get(zero))
+    print(d.get(none))
+    let s: set[int | None] = {zero, none}
+    print(0 in s)
+    print(None in s)
+    s.add(0)
+    print(len(s))
+    s.remove(None)
+    print(None in s)
+    let e: dict[int | None, str] = {}
+    print(e.setdefault(0, "default"))
+    print(e[0])
+main()
+"#,
+        "zero\nnone\nzero\nnone\nTrue\nTrue\n2\nFalse\ndefault\ndefault\n",
+    );
+}
+
+#[test]
 fn struct_set_iteration_keeps_owner_alive() {
     assert_both(
         r#"struct Res:

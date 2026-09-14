@@ -130,6 +130,37 @@ pub(crate) fn is_tagged_str_key(v: i64) -> bool {
 /// (heap bit clear) store directly; they live forever, so no copy can
 /// dangle. Untagged words store directly as before.
 pub(crate) fn store_key_needs_owned_copy(v: i64) -> bool {
+    let descriptor = hash_typed::active_key_descriptor();
+    if descriptor != 0 {
+        let descriptor = crate::string_slab::str_body(descriptor) as *const u8;
+        let mut pos = 0usize;
+        let mut tag = unsafe { *descriptor };
+        if tag == format::D_DICT || tag == format::D_SET {
+            pos = 1;
+            tag = unsafe { *descriptor.add(pos) };
+        }
+        loop {
+            match tag {
+                format::D_BACKREF => {
+                    let hi = unsafe { *descriptor.add(pos + 1) } as usize;
+                    let lo = unsafe { *descriptor.add(pos + 2) } as usize;
+                    pos = (hi << 8) | lo;
+                    tag = unsafe { *descriptor.add(pos) };
+                }
+                format::D_NULLABLE => {
+                    pos += 1;
+                    tag = unsafe { *descriptor.add(pos) };
+                }
+                format::D_STR | format::D_ANY => {
+                    if v & 1 == 0 || v & crate::string_slab::STR_HEAP == 0 {
+                        return false;
+                    }
+                    return crate::slab::slab_membership(crate::string_slab::str_body(v)).is_some();
+                }
+                _ => return false,
+            }
+        }
+    }
     if v & 1 == 0 {
         return false;
     }
@@ -152,6 +183,52 @@ pub(crate) fn free_any_word(val: i64) {
     }
 }
 
+fn classify_typed_key(v: i64, desc: *const u8, pos: usize) -> Option<KeyClass> {
+    let tag = unsafe { *desc.add(pos) };
+    match tag {
+        format::D_STR => {
+            if is_tagged_str_key(v) || crate::string::is_interned_char(v) {
+                Some(KeyClass::Str(olive_str_to_bytes(v)))
+            } else {
+                Some(KeyClass::Raw(v))
+            }
+        }
+        format::D_INT
+        | format::D_U64
+        | format::D_FLOAT
+        | format::D_F32
+        | format::D_BOOL
+        | format::D_NULL => {
+            if is_active_object(v) {
+                let kind = unsafe { *(v as *const i64) };
+                if matches!(kind, KIND_INT | KIND_U64 | KIND_FLOAT) {
+                    let b = unsafe { &*(v as *const boxed::OliveBoxed) };
+                    return Some(KeyClass::Scalar(kind, b.bits));
+                }
+            }
+            let kind = if tag == format::D_FLOAT || tag == format::D_F32 {
+                KIND_FLOAT
+            } else {
+                KIND_INT
+            };
+            Some(KeyClass::Scalar(kind, v))
+        }
+        format::D_NULLABLE => {
+            if v == 0 {
+                Some(KeyClass::Scalar(KIND_INT, 0))
+            } else {
+                classify_typed_key(v, desc, pos + 1)
+            }
+        }
+        format::D_BACKREF => {
+            let hi = unsafe { *desc.add(pos + 1) } as usize;
+            let lo = unsafe { *desc.add(pos + 2) } as usize;
+            classify_typed_key(v, desc, (hi << 8) | lo)
+        }
+        _ => None,
+    }
+}
+
 fn classify_key(v: i64) -> KeyClass {
     // A `_typed` dict/set op installs its container's key descriptor (a
     // typed `update` installs the `Dict(K, V)` descriptor, whose second
@@ -166,39 +243,13 @@ fn classify_key(v: i64) -> KeyClass {
     if desc != 0 {
         let base = crate::string_slab::str_body(desc) as *const u8;
         let first = unsafe { *base };
-        let key_tag = if first == format::D_DICT || first == format::D_SET {
-            unsafe { *base.add(1) }
+        let key_pos = if first == format::D_DICT || first == format::D_SET {
+            1
         } else {
-            first
+            0
         };
-        match key_tag {
-            format::D_STR => {
-                if is_tagged_str_key(v) || crate::string::is_interned_char(v) {
-                    return KeyClass::Str(olive_str_to_bytes(v));
-                }
-                return KeyClass::Raw(v);
-            }
-            format::D_INT
-            | format::D_U64
-            | format::D_FLOAT
-            | format::D_F32
-            | format::D_BOOL
-            | format::D_NULL => {
-                if is_active_object(v) {
-                    let kind = unsafe { *(v as *const i64) };
-                    if matches!(kind, KIND_INT | KIND_U64 | KIND_FLOAT) {
-                        let b = unsafe { &*(v as *const boxed::OliveBoxed) };
-                        return KeyClass::Scalar(kind, b.bits);
-                    }
-                }
-                let kind = if key_tag == format::D_FLOAT || key_tag == format::D_F32 {
-                    KIND_FLOAT
-                } else {
-                    KIND_INT
-                };
-                return KeyClass::Scalar(kind, v);
-            }
-            _ => {}
+        if let Some(class) = classify_typed_key(v, base, key_pos) {
+            return class;
         }
     }
     if is_tagged_str_key(v) {

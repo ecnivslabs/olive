@@ -200,7 +200,13 @@ fn box_stored_typed(v: i64, value_desc: i64) -> i64 {
         return box_stored(v);
     }
     let desc_body = crate::string_slab::str_body(value_desc) as *const u8;
-    let tag = unsafe { *desc_body };
+    let mut pos = 0usize;
+    box_stored_typed_at(v, desc_body, &mut pos)
+}
+
+fn box_stored_typed_at(v: i64, desc: *const u8, pos: &mut usize) -> i64 {
+    let tag = unsafe { crate::format::byte(desc, *pos) };
+    *pos += 1;
     match tag {
         crate::format::D_INT => boxed::olive_box_int(v),
         crate::format::D_U64 => boxed::olive_box_u64(v),
@@ -208,6 +214,13 @@ fn box_stored_typed(v: i64, value_desc: i64) -> i64 {
         crate::format::D_F32 => boxed::olive_box_float(f32::from_bits(v as u32) as f64),
         crate::format::D_BOOL => boxed::olive_box_bool(v),
         crate::format::D_NULL => boxed::olive_box_null(),
+        crate::format::D_NULLABLE => {
+            if v == 0 {
+                boxed::olive_box_null()
+            } else {
+                box_stored_typed_at(v, desc, pos)
+            }
+        }
         crate::format::D_ANY => v,
         _ => box_stored(v),
     }

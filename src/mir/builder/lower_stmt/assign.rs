@@ -281,7 +281,11 @@ impl<'a> MirBuilder<'a> {
                 // dispatch expects.
                 let idx_op = match &current_obj_ty {
                     Type::Dict(k, _) if !matches!(**k, Type::Any) => {
-                        self.coerce_float_slot(idx_op, &idx_ty, k, target.span)
+                        if k.is_tag_encoded_union() {
+                            self.coerce(idx_op, &idx_ty, k, target.span)
+                        } else {
+                            self.coerce_float_slot(idx_op, &idx_ty, k, target.span)
+                        }
                     }
                     Type::Any if matches!(idx_ty, Type::F32) => {
                         self.coerce_float_slot(idx_op, &idx_ty, &Type::Float, target.span)

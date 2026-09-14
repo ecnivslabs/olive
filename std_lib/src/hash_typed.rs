@@ -16,8 +16,8 @@
 //! differently despite `==` (correctly) calling them equal.
 
 use crate::format::{
-    D_ANY, D_BACKREF, D_BYTES, D_DICT, D_ENUM, D_LIST, D_SET, D_STR, D_STRUCT, D_STRUCT_SHARED,
-    D_TUPLE, byte, skip,
+    D_ANY, D_BACKREF, D_BYTES, D_DICT, D_ENUM, D_LIST, D_NULLABLE, D_SET, D_STR, D_STRUCT,
+    D_STRUCT_SHARED, D_TUPLE, byte, skip,
 };
 use crate::slab::slot_is_live;
 use crate::{OliveEnum, OliveHashSet, OliveObj, StableVec};
@@ -529,6 +529,14 @@ fn hash_val(val: i64, desc: *const u8, pos: &mut usize, visited: &mut FxHashSet<
     *pos += 1;
     match tag {
         D_STR => hash_str(val),
+        D_NULLABLE => {
+            if val == 0 {
+                skip(desc, pos);
+                one(0)
+            } else {
+                hash_val(val, desc, pos, visited)
+            }
+        }
         D_ANY | D_BYTES => hash_any(val),
         D_LIST => hash_list(val, desc, pos, visited),
         D_SET => hash_set(val, desc, pos, visited),

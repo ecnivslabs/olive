@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::format::{
-    D_ANY, D_BACKREF, D_BOOL, D_BYTES, D_DICT, D_F32, D_FLOAT, D_INT, D_LIST, D_NULL, D_SET, D_STR,
-    D_TUPLE, D_U64, byte, skip,
+    D_ANY, D_BACKREF, D_BOOL, D_BYTES, D_DICT, D_F32, D_FLOAT, D_INT, D_LIST, D_NULL, D_NULLABLE,
+    D_SET, D_STR, D_TUPLE, D_U64, byte, skip,
 };
 use crate::python::python_coerce::{
     olive_py_to_bytes_internal, py_to_any_internal, py_to_typed_scalar_internal,
@@ -56,6 +56,14 @@ unsafe fn py_to_string_key(value: PyObject) -> Option<i64> {
         if is_unicode {
             let result = crate::python::python_coerce::py_str_to_olive(value);
             return (result != 0).then_some(result);
+        }
+        let safe_builtin = value == _PY_NONE_STRUCT
+            || ty == PY_LONG_TYPE
+            || ty == PY_FLOAT_TYPE
+            || ty == PY_BOOL_TYPE
+            || ty == PY_BYTES_TYPE;
+        if !safe_builtin {
+            return None;
         }
         let text = PY_OBJECT_STR(value);
         if text.is_null() {
@@ -174,10 +182,19 @@ pub(crate) unsafe fn convert_at(value: PyObject, desc: *const u8, pos: &mut usiz
         if value.is_null() {
             return None;
         }
+        let _conversion_guard = crate::python::python_coerce::ConversionGuard::enter(value)?;
         let node_start = *pos;
         let tag = byte(desc, *pos);
         *pos += 1;
         match tag {
+            D_NULLABLE => {
+                if value == _PY_NONE_STRUCT {
+                    skip(desc, pos);
+                    Some(0)
+                } else {
+                    convert_at(value, desc, pos)
+                }
+            }
             D_INT | D_U64 | D_FLOAT | D_F32 | D_BOOL | D_STR | D_NULL => {
                 let scalar_tag = match tag {
                     D_INT => 1,
@@ -191,7 +208,14 @@ pub(crate) unsafe fn convert_at(value: PyObject, desc: *const u8, pos: &mut usiz
                 };
                 py_to_typed_scalar_internal(value, scalar_tag)
             }
-            D_ANY => Some(py_to_any_internal(value)),
+            D_ANY => {
+                let converted = py_to_any_internal(value);
+                if crate::python::python_coerce::conversion_failed() {
+                    None
+                } else {
+                    Some(converted)
+                }
+            }
             D_BACKREF => {
                 let hi = byte(desc, *pos) as usize;
                 let lo = byte(desc, *pos + 1) as usize;
@@ -363,7 +387,13 @@ pub extern "C" fn olive_py_from_typed(obj: PyObject, desc: i64) -> i64 {
         let mut pos = 0;
         match convert_at(raw, desc_ptr, &mut pos) {
             Some(value) => value,
-            None => import_error("Python value cannot be converted to declared Olive type"),
+            None => {
+                let message =
+                    crate::python::python_coerce::take_conversion_error().unwrap_or_else(|| {
+                        "Python value cannot be converted to declared Olive type".to_string()
+                    });
+                import_error(&message)
+            }
         }
     })
 }
@@ -385,6 +415,28 @@ mod tests {
             PY_DEC_REF(source);
             assert!(result.is_none());
             assert_eq!(after, baseline);
+        }
+    }
+
+    #[test]
+    fn cyclic_python_collections_are_rejected_without_recursing() {
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        unsafe {
+            with_gil(|| {
+                let source = PY_LIST_NEW(1);
+                assert!(!source.is_null());
+                PY_INC_REF(source);
+                assert_eq!(PY_LIST_SET_ITEM(source, 0, source), 0);
+                let descriptor = [D_LIST, D_ANY];
+                let mut pos = 0usize;
+                assert!(convert_at(source, descriptor.as_ptr(), &mut pos).is_none());
+                let _ = crate::python::python_coerce::take_conversion_error();
+                PY_DEC_REF(source);
+                PY_DEC_REF(source);
+            });
         }
     }
 

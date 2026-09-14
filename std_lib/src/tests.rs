@@ -9,6 +9,23 @@ fn from_ptr(ptr: i64) -> String {
 }
 
 #[test]
+fn scalar_typed_key_never_frees_string_shaped_bits() {
+    #[repr(align(8))]
+    struct Aligned([u8; 3]);
+    let descriptor = Aligned([format::D_DICT, format::D_INT, format::D_NULL]);
+    #[repr(align(8))]
+    struct AlignedKey([u8; 1]);
+    let key_descriptor = AlignedKey([format::D_INT]);
+    let live = s("live-string");
+    let generation = string_slab::olive_str_gen_of(live);
+    let object = olive_obj_new();
+    hash_typed::olive_obj_set_typed(object, live, 7, key_descriptor.0.as_ptr() as i64);
+    free_typed::olive_free_typed(object, descriptor.0.as_ptr() as i64);
+    assert_eq!(string_slab::olive_str_gen_stale(live, generation), 0);
+    olive_free_str(live);
+}
+
+#[test]
 fn str_trim() {
     assert_eq!(from_ptr(olive_str_trim(s("  hello  "))), "hello");
     assert_eq!(from_ptr(olive_str_trim(s("no spaces"))), "no spaces");

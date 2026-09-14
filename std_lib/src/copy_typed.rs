@@ -3,8 +3,8 @@
 
 use crate::boxed::TAG_MASK;
 use crate::format::{
-    D_ANY, D_BACKREF, D_BYTES, D_DICT, D_ENUM, D_FATPTR, D_LIST, D_SET, D_STR, D_STRUCT,
-    D_STRUCT_SHARED, D_TUPLE, byte, skip,
+    D_ANY, D_BACKREF, D_BYTES, D_DICT, D_ENUM, D_FATPTR, D_LIST, D_NULLABLE, D_SET, D_STR,
+    D_STRUCT, D_STRUCT_SHARED, D_TUPLE, byte, skip,
 };
 use crate::slab::slot_is_live;
 use crate::struct_share::retain_struct;
@@ -306,6 +306,14 @@ pub(crate) fn copy_val(
     *pos += 1;
     match tag {
         D_STR => copy_str(val),
+        D_NULLABLE => {
+            if val == 0 {
+                skip(desc, pos);
+                0
+            } else {
+                copy_val(val, desc, pos, visited)
+            }
+        }
         D_ANY | D_BYTES => copy_any(val, visited),
         D_LIST => copy_list_like(val, desc, pos, visited),
         D_SET => copy_set(val, desc, pos, visited),

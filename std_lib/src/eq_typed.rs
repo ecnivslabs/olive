@@ -16,8 +16,8 @@
 //! for `copy_typed`'s pointer-remap map, just keyed by the compared pair.
 
 use crate::format::{
-    D_ANY, D_BACKREF, D_BYTES, D_DICT, D_ENUM, D_LIST, D_SET, D_STR, D_STRUCT, D_STRUCT_SHARED,
-    D_TUPLE, byte, skip,
+    D_ANY, D_BACKREF, D_BYTES, D_DICT, D_ENUM, D_LIST, D_NULLABLE, D_SET, D_STR, D_STRUCT,
+    D_STRUCT_SHARED, D_TUPLE, byte, skip,
 };
 use crate::slab::slot_is_live;
 use crate::{OliveEnum, OliveHashSet, OliveObj, StableVec};
@@ -373,6 +373,14 @@ pub(crate) fn eq_val(
     *pos += 1;
     match tag {
         D_STR => crate::olive_str_eq(a, b) != 0,
+        D_NULLABLE => {
+            if a == 0 || b == 0 {
+                skip(desc, pos);
+                a == b
+            } else {
+                eq_val(a, b, desc, pos, visited)
+            }
+        }
         D_ANY | D_BYTES => crate::olive_any_eq(a, b) != 0,
         D_LIST => eq_list(a, b, desc, pos, visited),
         D_SET => eq_set(a, b, desc, pos, visited),

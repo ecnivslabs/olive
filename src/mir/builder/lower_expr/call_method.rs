@@ -1512,6 +1512,9 @@ impl<'a> MirBuilder<'a> {
                 } else {
                     call_args.push(op.clone());
                 }
+            } else if elem.is_tag_encoded_union() {
+                let from_ty = arg_tys.first().cloned().unwrap_or(Type::Any);
+                call_args.push(self.coerce(op.clone(), &from_ty, &elem, span));
             } else if matches!(elem, Type::Float | Type::F32) {
                 // Float elements hash by exact word: coerce the needle to
                 // the slot width (no-op for matching widths).
@@ -1674,7 +1677,13 @@ impl<'a> MirBuilder<'a> {
                     Type::Any if matches!(from_ty, Type::F32) => Some(Type::Float),
                     _ => None,
                 };
-                to_ty.map(|t| self.coerce_float_slot(arg_ops[0].clone(), &from_ty, &t, span))
+                to_ty.map(|t| {
+                    if t.is_tag_encoded_union() {
+                        self.coerce(arg_ops[0].clone(), &from_ty, &t, span)
+                    } else {
+                        self.coerce_float_slot(arg_ops[0].clone(), &from_ty, &t, span)
+                    }
+                })
             }
         } else {
             None
@@ -1770,6 +1779,9 @@ impl<'a> MirBuilder<'a> {
                 if Self::key_needs_any_form(&from_ty) || Self::any_key_needs_box(&from_ty) {
                     return b.box_into_any(op, &from_ty, span);
                 }
+            } else if key_ty.is_tag_encoded_union() {
+                let from_ty = arg_tys.first().cloned().unwrap_or(Type::Any);
+                return b.coerce(op, &from_ty, &key_ty, span);
             } else if matches!(key_ty, Type::Float | Type::F32) {
                 let from_ty = arg_tys.first().cloned().unwrap_or(Type::Any);
                 return b.coerce_float_slot(op, &from_ty, &key_ty, span);

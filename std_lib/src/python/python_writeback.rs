@@ -4,8 +4,11 @@
 //! the success and the exception path, so a Python-mutating call behaves like
 //! the equivalent Python code with zero extra syntax on the Olive side.
 
+mod snapshot;
+
 use crate::python::python_coerce::{raw_ob_type, to_py_deep};
 use crate::python::*;
+use snapshot::NestedAnySnapshot;
 use std::cell::RefCell;
 use std::ffi::CStr;
 use std::os::raw::c_char;
@@ -63,6 +66,7 @@ pub(crate) struct WritebackPair {
     value_f32: bool,
     value_u64: bool,
     original_any: Option<Vec<(i64, i64)>>,
+    nested_snapshots: Vec<NestedAnySnapshot>,
     /// A nested typed collection was realized before call entry because its
     /// shape cannot fit flat collection tags. Keep its descriptor so the
     /// Python result can be imported back into the original allocation.
@@ -170,6 +174,7 @@ unsafe fn convert_collection_arg(
         let value_kind = scalar_kind(tag);
         let value_f32 = width_flag && value_kind == TAG_FLOAT_LIST;
         let value_u64 = width_flag && value_kind == TAG_INT_LIST;
+        let nested_snapshots = snapshot::collect_dynamic_nested(val);
         let py_obj = match tag {
             TAG_INT_LIST | TAG_FLOAT_LIST | TAG_BOOL_LIST | TAG_STR_LIST => {
                 to_py_typed_list(val, value_kind, value_f32, value_u64)
@@ -202,6 +207,7 @@ unsafe fn convert_collection_arg(
             value_f32,
             value_u64,
             original_any,
+            nested_snapshots,
             descriptor: None,
         });
         py_obj
@@ -234,6 +240,8 @@ pub(crate) unsafe fn register_pending_typed(
             return existing;
         }
         let descriptor = crate::olive_str_to_bytes(desc).to_vec();
+        let mut nested_snapshots = snapshot::collect_for_typed(olive_ptr, &descriptor);
+        nested_snapshots.extend(snapshot::collect_dynamic_root(olive_ptr));
         PY_INC_REF(py_obj);
         PENDING_WRITEBACKS.with(|pending| {
             pending.borrow_mut().push(WritebackPair {
@@ -244,6 +252,7 @@ pub(crate) unsafe fn register_pending_typed(
                 value_f32: false,
                 value_u64: false,
                 original_any: None,
+                nested_snapshots,
                 descriptor: Some(descriptor),
             });
         });
@@ -462,10 +471,19 @@ unsafe fn to_py_typed_list(val: i64, kind: i64, value_f32: bool, value_u64: bool
     unsafe {
         let n = crate::olive_list_len(val);
         let py_list = PY_LIST_NEW(n as isize);
+        if py_list.is_null() {
+            return py_list;
+        }
         for i in 0..n {
             let elem = crate::olive_list_get(val, i);
             let py_v = raw_collection_scalar_to_py(elem, kind, value_f32, value_u64);
-            PY_LIST_SET_ITEM(py_list, i as isize, py_v);
+            if py_v.is_null() || PY_LIST_SET_ITEM(py_list, i as isize, py_v) == -1 {
+                if !py_v.is_null() {
+                    PY_DEC_REF(py_v);
+                }
+                PY_DEC_REF(py_list);
+                return std::ptr::null_mut();
+            }
         }
         py_list
     }
@@ -541,10 +559,19 @@ unsafe fn to_py_typed_set(val: i64, kind: i64, value_f32: bool, value_u64: bool)
     unsafe {
         let hs = &*(val as *const crate::OliveHashSet);
         let pys = PY_SET_NEW(std::ptr::null_mut());
+        if pys.is_null() {
+            return pys;
+        }
         for i in 0..hs.len {
             let v = *hs.ptr.add(i);
             let py_v = raw_collection_scalar_to_py(v, kind, value_f32, value_u64);
-            PY_SET_ADD(pys, py_v);
+            if py_v.is_null() || PY_SET_ADD(pys, py_v) == -1 {
+                if !py_v.is_null() {
+                    PY_DEC_REF(py_v);
+                }
+                PY_DEC_REF(pys);
+                return std::ptr::null_mut();
+            }
             PY_DEC_REF(py_v);
         }
         pys
@@ -615,6 +642,14 @@ unsafe fn decode_scalar(item: PyObject, kind: i64) -> Result<i64, String> {
             TAG_FLOAT_LIST => {
                 if is_sub(PY_FLOAT_TYPE) {
                     return Ok(PY_FLOAT_AS_DOUBLE(item).to_bits() as i64);
+                }
+                if is_sub(PY_LONG_TYPE) {
+                    let value = py_long_as_i64(item);
+                    if !PY_ERR_OCCURRED().is_null() {
+                        PY_ERR_CLEAR();
+                        return Err("float (integer out of range)".to_string());
+                    }
+                    return Ok((value as f64).to_bits() as i64);
                 }
                 Err(py_type_name(ty))
             }
@@ -689,31 +724,51 @@ fn free_writeback_elem(val: i64, tag: i64) {
 
 unsafe fn sync_list(pair: &WritebackPair) -> Result<(), String> {
     unsafe {
-        let new_len = PY_OBJECT_LENGTH(pair.py_obj).max(0) as usize;
+        let new_len = PY_OBJECT_LENGTH(pair.py_obj);
+        if new_len < 0 {
+            return Err(crate::python::python_safe::take_pending_error_message()
+                .unwrap_or_else(|| "Python list length failed".to_string()));
+        }
+        let new_len = new_len as usize;
         let old_len = crate::olive_list_len(pair.olive_ptr) as usize;
-        let overlap = new_len.min(old_len);
         let kind = scalar_kind(pair.tag);
-
-        let decode = |i: usize| -> Result<i64, String> {
+        let mut decoded = Vec::with_capacity(new_len);
+        for i in 0..new_len {
             let item = PY_LIST_GET_ITEM(pair.py_obj, i as isize);
-            if pair.tag == TAG_ANY_LIST {
-                return Ok(py_to_any_internal(item));
-            }
-            decode_collection_scalar(item, kind, pair.value_f32, pair.value_u64).map_err(|actual| {
-                writeback_type_message(&format!("element {i}"), pair.tag, &actual)
-            })
-        };
+            let value = if pair.tag == TAG_ANY_LIST {
+                py_to_any_internal(item)
+            } else {
+                match decode_collection_scalar(item, kind, pair.value_f32, pair.value_u64) {
+                    Ok(value) => value,
+                    Err(actual) => {
+                        for value in decoded {
+                            free_writeback_elem(value, pair.tag);
+                        }
+                        return Err(writeback_type_message(
+                            &format!("element {i}"),
+                            pair.tag,
+                            &actual,
+                        ));
+                    }
+                }
+            };
+            decoded.push(value);
+        }
 
-        for i in 0..overlap {
-            let val = decode(i)?;
+        let overlap = new_len.min(old_len);
+        for (i, value) in decoded.iter().enumerate().take(overlap) {
             let old = crate::olive_list_get(pair.olive_ptr, i as i64);
-            crate::olive_list_set(pair.olive_ptr, i as i64, val);
+            crate::olive_list_set(pair.olive_ptr, i as i64, *value);
             free_writeback_elem(old, pair.tag);
         }
         if new_len > old_len {
-            for i in old_len..new_len {
-                let val = decode(i)?;
-                crate::olive_list_insert(pair.olive_ptr, i as i64, val);
+            for (i, value) in decoded
+                .iter()
+                .enumerate()
+                .skip(old_len)
+                .take(new_len - old_len)
+            {
+                crate::olive_list_insert(pair.olive_ptr, i as i64, *value);
             }
         } else if new_len < old_len {
             for _ in new_len..old_len {
@@ -781,6 +836,7 @@ fn free_dict_value(value: i64, tag: i64) {
 }
 
 fn release_original_any(pair: &WritebackPair) {
+    snapshot::release(&pair.nested_snapshots);
     let Some(entries) = &pair.original_any else {
         return;
     };
@@ -1161,25 +1217,66 @@ unsafe fn sync_dict_typed(pair: &WritebackPair) -> Result<(), String> {
     }
 }
 
-unsafe fn sync_set(pair: &WritebackPair) -> Result<(), String> {
+unsafe fn collect_set_values(pair: &WritebackPair, kind: i64) -> Result<Vec<i64>, String> {
     unsafe {
-        crate::olive_set_clear(pair.olive_ptr);
         let iter = PY_OBJECT_GET_ITER(pair.py_obj);
         if iter.is_null() {
-            PY_ERR_CLEAR();
-            return Err("set iteration failed".to_string());
+            return Err(crate::python::python_safe::take_pending_error_message()
+                .unwrap_or_else(|| "set iteration failed".to_string()));
         }
+        let mut values = Vec::new();
         loop {
             let item = PY_ITER_NEXT(iter);
             if item.is_null() {
+                if !PY_ERR_OCCURRED().is_null()
+                    && PY_ERR_EXCEPTION_MATCHES(PY_EXC_STOP_ITERATION) == 0
+                {
+                    let message = crate::python::python_safe::take_pending_error_message()
+                        .unwrap_or_else(|| "set iteration failed".to_string());
+                    for value in values {
+                        free_writeback_elem(value, pair.tag);
+                    }
+                    PY_DEC_REF(iter);
+                    return Err(message);
+                }
                 PY_ERR_CLEAR();
                 break;
             }
-            let olive_val = py_to_any_internal(item);
-            crate::olive_set_add(pair.olive_ptr, olive_val);
+            let value = if pair.tag == TAG_ANY_SET {
+                py_to_any_internal(item)
+            } else {
+                match decode_collection_scalar(item, kind, pair.value_f32, pair.value_u64) {
+                    Ok(value) => value,
+                    Err(actual) => {
+                        PY_DEC_REF(item);
+                        PY_DEC_REF(iter);
+                        let element_index = values.len();
+                        for value in values {
+                            free_writeback_elem(value, pair.tag);
+                        }
+                        return Err(writeback_type_message(
+                            &format!("element {element_index}"),
+                            pair.tag,
+                            &actual,
+                        ));
+                    }
+                }
+            };
+            values.push(value);
             PY_DEC_REF(item);
         }
         PY_DEC_REF(iter);
+        Ok(values)
+    }
+}
+
+unsafe fn sync_set(pair: &WritebackPair) -> Result<(), String> {
+    unsafe {
+        let values = collect_set_values(pair, TAG_NONE_LIST)?;
+        crate::olive_set_clear(pair.olive_ptr);
+        for value in values {
+            crate::olive_set_add(pair.olive_ptr, value);
+        }
         Ok(())
     }
 }
@@ -1218,7 +1315,6 @@ unsafe fn sync_set_typed(pair: &WritebackPair) -> Result<(), String> {
             TAG_NONE_LIST => NONE_SET_DESC.0.as_ptr() as i64,
             _ => STR_SET_DESC.0.as_ptr() as i64,
         };
-        crate::set::olive_set_clear_typed(pair.olive_ptr, set_desc);
         let kind = scalar_kind(pair.tag);
         // Raw scalar elements must hash by static type, not the
         // string-pointer magnitude heuristic: a big odd int (or an odd float
@@ -1233,36 +1329,11 @@ unsafe fn sync_set_typed(pair: &WritebackPair) -> Result<(), String> {
             TAG_NONE_LIST => NONE_DESC.0.as_ptr() as i64,
             _ => STR_DESC.0.as_ptr() as i64,
         };
-        let iter = PY_OBJECT_GET_ITER(pair.py_obj);
-        if iter.is_null() {
-            PY_ERR_CLEAR();
-            return Err("set iteration failed".to_string());
+        let values = collect_set_values(pair, kind)?;
+        crate::set::olive_set_clear_typed(pair.olive_ptr, set_desc);
+        for value in values {
+            crate::hash_typed::olive_set_add_typed(pair.olive_ptr, value, key_desc);
         }
-        let mut i = 0usize;
-        loop {
-            let item = PY_ITER_NEXT(iter);
-            if item.is_null() {
-                PY_ERR_CLEAR();
-                break;
-            }
-            let olive_val =
-                match decode_collection_scalar(item, kind, pair.value_f32, pair.value_u64) {
-                    Ok(v) => v,
-                    Err(actual) => {
-                        PY_DEC_REF(item);
-                        PY_DEC_REF(iter);
-                        return Err(writeback_type_message(
-                            &format!("element {i}"),
-                            pair.tag,
-                            &actual,
-                        ));
-                    }
-                };
-            crate::hash_typed::olive_set_add_typed(pair.olive_ptr, olive_val, key_desc);
-            PY_DEC_REF(item);
-            i += 1;
-        }
-        PY_DEC_REF(iter);
         Ok(())
     }
 }
@@ -1382,6 +1453,7 @@ unsafe fn sync_typed_descriptor(pair: &WritebackPair) -> Result<(), String> {
                 });
             return Err(message);
         };
+        snapshot::restore(pair, new_value, descriptor);
         if let Err(message) = replace_typed_root(pair.olive_ptr, new_value, descriptor.as_ptr()) {
             crate::free_typed::olive_free_typed(new_value, descriptor.as_ptr() as i64);
             return Err(message);
@@ -1418,6 +1490,9 @@ pub(crate) unsafe fn sync_back(pairs: &[WritebackPair]) -> Result<(), String> {
                     _ => Ok(()),
                 }
             };
+            if result.is_ok() && pair.descriptor.is_none() {
+                snapshot::restore(pair, pair.olive_ptr, &[]);
+            }
             release_original_any(pair);
             if let Err(message) = result {
                 PY_DEC_REF(pair.py_obj);

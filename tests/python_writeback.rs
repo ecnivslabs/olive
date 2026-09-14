@@ -66,6 +66,14 @@ def mutate_nested_then_raise(rows):
 def push_wrong_type(xs, v):
     xs[0] = v
 
+def push_wrong_after_prefix(xs):
+    xs[0] = 7
+    xs[1] = "bad"
+
+def set_wrong_after_prefix(s):
+    s.add(7)
+    s.add("bad")
+
 def same_list_twice(a, b):
     a.append(1)
     return len(b)
@@ -123,6 +131,9 @@ def set_first(xs, value):
 def set_value(s, value):
     s.add(value)
 
+def set_nested_float(rows):
+    rows[0][0] = 2
+
 def first_type(xs):
     return type(xs[0]).__name__
 
@@ -137,6 +148,27 @@ def identity(x):
 
 def nested_value(d):
     return d["inner"]
+
+def nullable_is_none(xs):
+    return xs[0] is None
+
+def nullable_nested_is_none(xs):
+    return xs[0][0] is None
+
+def nullable_dict_is_none(d):
+    return d["x"] is None
+
+def nullable_replace_none(xs):
+    xs[0] = "x"
+
+def nullable_replace_nested_none(xs):
+    xs[0][0] = "x"
+
+def update_nested_any(d):
+    d["inner"][True] = "new"
+
+def delete_nested_any(d):
+    del d["inner"][True]
 
 def inspect_legacy(*args):
     d = args[-1]
@@ -894,6 +926,25 @@ main()
 }
 
 #[test]
+fn integer_values_widen_to_float_in_flat_and_nested_writeback() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let mut xs: [float] = [1.0]
+    h.set_first(xs, 2)
+    print(xs)
+    let mut rows: [[float]] = [[1.0]]
+    h.set_nested_float(rows)
+    print(rows)
+
+main()
+"#,
+        "[2.0]\n[[2.0]]\n",
+    );
+}
+
+#[test]
 fn f32_and_none_collections_preserve_static_types() {
     assert_both_succeed(
         r#"import py "wbhelper" as h
@@ -975,6 +1026,41 @@ main()
 }
 
 #[test]
+fn safe_failed_list_and_set_writeback_leaves_sources_unchanged() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn run_list(xs: [int]) -> PyObject | Error:
+    return try h.push_wrong_after_prefix(xs)
+
+fn run_set(s: set[int]) -> PyObject | Error:
+    return try h.set_wrong_after_prefix(s)
+
+fn main():
+    let xs: [int] = [1, 2]
+    match run_list(xs):
+        Error(_):
+            print("list caught")
+        _:
+            print("list bad")
+    print(xs)
+    let s: set[int] = {1, 2}
+    match run_set(s):
+        Error(_):
+            print("set caught")
+        _:
+            print("set bad")
+    print(len(s))
+    print(1 in s)
+    print(2 in s)
+
+main()
+"#,
+        "list caught\n[1, 2]\nset caught\n2\nTrue\nTrue\n",
+    );
+}
+
+#[test]
 fn safe_writeback_rejects_custom_dict_key_without_aborting() {
     assert_both_succeed(
         r#"import py "wbhelper" as h
@@ -995,6 +1081,51 @@ fn main():
 main()
 "#,
         "caught\n5\n",
+    );
+}
+
+#[test]
+fn nullable_pointer_collections_preserve_none_across_boundary() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let xs: list[str | None] = [None, "x"]
+    print(h.nullable_is_none(xs))
+    let ys: list[list[str | None]] = [[None, "x"]]
+    print(h.nullable_nested_is_none(ys))
+    let d: dict[str, str | None] = {"x": None}
+    print(h.nullable_dict_is_none(d))
+    h.nullable_replace_none(xs)
+    print(xs)
+    h.nullable_replace_nested_none(ys)
+    print(ys)
+
+main()
+"#,
+        "True\nTrue\nTrue\n[\"x\", \"x\"]\n[[\"x\", \"x\"]]\n",
+    );
+}
+
+#[test]
+fn nested_any_dict_preserves_python_collapsed_keys() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let mut d: {str: {Any: Any}} = {"inner": {True: "bool", 1: "int"}}
+    h.update_nested_any(d)
+    print(d)
+    print(d["inner"][True])
+    print(d["inner"][1])
+    h.delete_nested_any(d)
+    print(d)
+    print(True in d["inner"])
+    print(1 in d["inner"])
+
+main()
+"#,
+        "{\"inner\": {True: \"new\", 1: \"int\"}}\n\"new\"\n\"int\"\n{\"inner\": {1: \"int\"}}\nFalse\nTrue\n",
     );
 }
 

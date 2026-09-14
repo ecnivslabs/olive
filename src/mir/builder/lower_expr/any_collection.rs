@@ -39,6 +39,9 @@ impl<'a> MirBuilder<'a> {
     /// (bare ints versus tagged ints would otherwise hash apart). Scalars,
     /// strings, enums, and unions keep their existing raw or tagged forms.
     pub(crate) fn key_needs_any_form(ty: &Type) -> bool {
+        if ty.is_tag_encoded_union() {
+            return true;
+        }
         if Self::any_needs_erase(ty) {
             return true;
         }

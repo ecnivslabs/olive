@@ -1,7 +1,7 @@
 use crate::boxed::{TAG_BOOL, TAG_INT, TAG_MASK, TAG_NULL};
 use crate::format::{
     D_ANY, D_BACKREF, D_BOOL, D_BYTES, D_DICT, D_ENUM, D_F32, D_FATPTR, D_FLOAT, D_INT, D_LIST,
-    D_NULL, D_SET, D_STR, D_STRUCT, D_STRUCT_SHARED, D_TUPLE, D_U64, byte, skip,
+    D_NULL, D_NULLABLE, D_SET, D_STR, D_STRUCT, D_STRUCT_SHARED, D_TUPLE, D_U64, byte, skip,
 };
 use crate::{
     KIND_ANY_LIST, KIND_BYTES, KIND_ENUM, KIND_FLOAT, KIND_INT, KIND_LIST, KIND_OBJ, KIND_SET,
@@ -70,6 +70,7 @@ fn erase_needed(desc: *const u8, pos: usize, seen: &mut FxHashSet<usize>) -> boo
     }
     match unsafe { byte(desc, pos) } {
         D_STRUCT | D_STRUCT_SHARED | D_INT | D_U64 | D_FLOAT | D_F32 | D_NULL => true,
+        D_NULLABLE => erase_needed(desc, pos + 1, seen),
         D_LIST | D_SET => erase_needed(desc, pos + 1, seen),
         D_DICT => {
             let mut p = pos + 1;
@@ -171,6 +172,14 @@ pub(crate) fn unerase_any(
         D_SET => unerase_set_inner(any, desc, pos, visited),
         D_DICT => unerase_dict_inner(any, desc, pos, visited),
         D_TUPLE => unerase_tuple_inner(any, desc, pos, visited),
+        D_NULLABLE => {
+            if any == 0 {
+                skip(desc, pos);
+                0
+            } else {
+                unerase_any(any, desc, pos, visited)
+            }
+        }
         D_STRUCT | D_STRUCT_SHARED => {
             if any == 0 {
                 return 0;

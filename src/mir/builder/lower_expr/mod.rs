@@ -141,6 +141,9 @@ impl<'a> MirBuilder<'a> {
             return self.coerce(op, &from_ty, elem_ty, elem.span);
         }
         if *elem_ty != Type::Any {
+            if elem_ty.is_tag_encoded_union() {
+                return self.coerce(op, &from_ty, elem_ty, elem.span);
+            }
             // Typed slots still canonicalize float widths: an f32 key in a
             // `Float`-keyed dict (or vice versa) hashes by exact word, so
             // mixed widths miss. Every other shape passes through untouched.
@@ -188,6 +191,39 @@ impl<'a> MirBuilder<'a> {
             &self.struct_field_types,
             &self.enum_defs,
         )
+    }
+
+    fn box_into_tagged_union(
+        &mut self,
+        op: Operand,
+        from_ty: &Type,
+        union_ty: &Type,
+        span: Span,
+    ) -> Operand {
+        let boxer = match from_ty {
+            Type::Int | Type::I8 | Type::I16 | Type::I32 | Type::U8 | Type::U16 | Type::U32 => {
+                Some(("__olive_box_int", true))
+            }
+            Type::U64 | Type::Usize => Some(("__olive_box_u64", true)),
+            Type::Float | Type::F32 => Some(("__olive_box_float", true)),
+            Type::Bool => Some(("__olive_box_bool", true)),
+            Type::Null => Some(("__olive_box_null", false)),
+            _ => return self.box_into_any(op, from_ty, span),
+        };
+        let (boxer, takes_arg) = boxer.unwrap();
+        let tmp = self.new_local(union_ty.clone(), None, false);
+        let args = if takes_arg { vec![op] } else { vec![] };
+        self.push_statement(
+            StatementKind::Assign(
+                tmp,
+                Rvalue::Call {
+                    func: Operand::Constant(Constant::Function(boxer.to_string())),
+                    args,
+                },
+            ),
+            span,
+        );
+        Operand::Copy(tmp)
     }
 
     /// Converts scalars, structs, and native list elements to self-describing
@@ -599,7 +635,7 @@ impl<'a> MirBuilder<'a> {
         // real zero from None. Box on entry, unbox on narrowing. An Any or
         // same-encoded union source is already tagged and passes through.
         if to_ty.is_tag_encoded_union() && !matches!(from_ty, Type::Union(_) | Type::Any) {
-            return self.box_into_any(op, from_ty, span);
+            return self.box_into_tagged_union(op, from_ty, to_ty, span);
         }
         if from_ty.is_tag_encoded_union()
             && let Some(unboxed) = self.unbox_from_any(op.clone(), to_ty, span)

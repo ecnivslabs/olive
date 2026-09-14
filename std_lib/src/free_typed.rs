@@ -13,8 +13,8 @@
 
 use crate::boxed::TAG_MASK;
 use crate::format::{
-    D_ANY, D_BACKREF, D_BYTES, D_DICT, D_ENUM, D_FATPTR, D_LIST, D_SET, D_STR, D_STRUCT,
-    D_STRUCT_SHARED, D_TUPLE, byte, skip,
+    D_ANY, D_BACKREF, D_BYTES, D_DICT, D_ENUM, D_FATPTR, D_LIST, D_NULLABLE, D_SET, D_STR,
+    D_STRUCT, D_STRUCT_SHARED, D_TUPLE, byte, skip,
 };
 use crate::slab::slot_is_live;
 use crate::struct_share::release_struct;
@@ -113,6 +113,19 @@ pub extern "C" fn olive_clear_typed(val: i64, desc: i64) {
                 free_val(field, desc_ptr, &mut pos);
             }
         }
+        D_NULLABLE => {
+            if val == 0 {
+                skip(desc_ptr, &mut pos);
+            } else {
+                let child_pos = pos;
+                let child_tag = unsafe { byte(desc_ptr, child_pos) };
+                if matches!(child_tag, D_LIST | D_TUPLE | D_SET | D_DICT) {
+                    unsafe { olive_clear_typed(val, desc_ptr.add(child_pos) as i64) };
+                } else {
+                    skip(desc_ptr, &mut pos);
+                }
+            }
+        }
         D_ENUM => {
             skip_lp(desc_ptr, &mut pos);
             let n = unsafe { byte(desc_ptr, pos) } as usize - 13;
@@ -158,6 +171,13 @@ pub(crate) fn free_val(val: i64, desc: *const u8, pos: &mut usize) {
     *pos += 1;
     match tag {
         D_ANY => free_any_elem(val),
+        D_NULLABLE => {
+            if val == 0 {
+                skip(desc, pos);
+            } else {
+                free_val(val, desc, pos);
+            }
+        }
         D_STR => crate::olive_free_str(val),
         D_BYTES => crate::bytes::olive_buf_free(val),
         D_LIST => free_list_like(val, desc, pos),
@@ -350,14 +370,6 @@ fn free_dict(val: i64, desc: *const u8, pos: &mut usize) {
             let mut p = key_start;
             free_val(k.0, desc, &mut p);
         }
-    } else {
-        // Tagged keys are dict-owned string copies; free them. Untagged attribute
-        // names are read-only interned symbols and classify as no-ops anyway.
-        for k in fields.keys() {
-            if k.0 & 1 != 0 {
-                crate::olive_free_str(k.0);
-            }
-        }
     }
 }
 
@@ -479,6 +491,7 @@ fn elem_owns(desc: *const u8, pos: usize) -> bool {
     matches!(
         unsafe { byte(desc, pos) },
         D_ANY
+            | D_NULLABLE
             | D_STR
             | D_BACKREF
             | D_BYTES

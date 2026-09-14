@@ -37,6 +37,11 @@ pub(crate) fn typed_zero(builder: &mut FunctionBuilder, ty: cranelift::prelude::
 /// above the string-tag floor is bit-identical to a tagged string pointer).
 /// Only `Any`-typed keys stay on the heuristic path.
 pub(crate) fn needs_key_descriptor(ty: &OliveType) -> bool {
+    if matches!(ty, OliveType::Union(members)
+        if members.iter().filter(|m| !matches!(m, OliveType::Null)).count() == 1)
+    {
+        return true;
+    }
     matches!(
         concrete_ty(ty),
         OliveType::Struct(..)
@@ -67,6 +72,11 @@ pub(crate) fn needs_key_descriptor(ty: &OliveType) -> bool {
 /// structural protocol (`Any`-form boxing plus the shape-aware hash and
 /// equality helpers), which the typed descriptor path would disagree with.
 pub(crate) fn scalar_needs_key_descriptor(ty: &OliveType) -> bool {
+    if matches!(ty, OliveType::Union(members)
+        if members.iter().filter(|m| !matches!(m, OliveType::Null)).count() == 1)
+    {
+        return true;
+    }
     matches!(
         concrete_ty(ty),
         OliveType::Int

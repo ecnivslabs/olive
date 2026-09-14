@@ -156,6 +156,7 @@ fn encode_descriptor(
             let non_null: Vec<&OliveType> =
                 members.iter().filter(|m| **m != OliveType::Null).collect();
             if non_null.len() == 1 {
+                out.push(20);
                 enc(non_null[0], out, visiting);
             } else {
                 out.push(6)

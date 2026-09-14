@@ -88,9 +88,9 @@ impl<M: Module> CraneliftCodegen<M> {
                         let raw = super::imports::operand_static_type(op, func_mir);
                         super::imports::concrete_ty(&raw) == first_ty
                     });
-                    (homogeneous && super::imports::needs_key_descriptor(first_ty)).then(|| {
+                    (homogeneous && super::imports::needs_key_descriptor(&first_raw)).then(|| {
                         let desc = super::imports::type_descriptor(
-                            first_ty,
+                            &first_raw,
                             struct_fields,
                             field_types,
                             enum_defs,
@@ -216,9 +216,9 @@ impl<M: Module> CraneliftCodegen<M> {
                         let raw = super::imports::operand_static_type(op, func_mir);
                         super::imports::concrete_ty(&raw) == first_ty
                     });
-                    (homogeneous && super::imports::needs_key_descriptor(first_ty)).then(|| {
+                    (homogeneous && super::imports::needs_key_descriptor(&first_raw)).then(|| {
                         let desc = super::imports::type_descriptor(
-                            first_ty,
+                            &first_raw,
                             struct_fields,
                             field_types,
                             enum_defs,

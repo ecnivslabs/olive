@@ -35,6 +35,9 @@ pub(crate) const D_F32: u8 = 18;
 /// `u64` bits, distinct from signed `D_INT` storage for formatting and
 /// descriptor-driven Any conversion.
 pub(crate) const D_U64: u8 = 19;
+/// A nullable pointer-backed value. The child descriptor follows this tag;
+/// zero is `None`, and nonzero words use the child representation.
+pub(crate) const D_NULLABLE: u8 = 20;
 
 /// Renders a value through a full descriptor starting at its first byte, for
 /// callers holding a runtime descriptor pointer (struct boxes).
@@ -98,6 +101,7 @@ pub(crate) fn skip(desc: *const u8, pos: &mut usize) {
     let tag = unsafe { byte(desc, *pos) };
     *pos += 1;
     match tag {
+        D_NULLABLE => skip(desc, pos),
         D_LIST | D_SET => skip(desc, pos),
         D_DICT => {
             skip(desc, pos);
@@ -271,6 +275,9 @@ fn copy_descriptor_node(
     out.push(tag);
     let mut pos = old_pos + 1;
     match tag {
+        D_NULLABLE => {
+            pos = copy_descriptor_node(root, pos, limit, out, regions, pending);
+        }
         D_LIST | D_SET => {
             pos = copy_descriptor_node(root, pos, limit, out, regions, pending);
         }
@@ -463,6 +470,14 @@ fn fmt(val: i64, desc: *const u8, pos: &mut usize) -> String {
         D_BOOL => if val != 0 { "True" } else { "False" }.to_string(),
         D_STR => format!("\"{}\"", olive_str_from_ptr(val)),
         D_NULL => "None".to_string(),
+        D_NULLABLE => {
+            if val == 0 {
+                skip(desc, pos);
+                "None".to_string()
+            } else {
+                fmt(val, desc, pos)
+            }
+        }
         D_ANY | D_OBJ => format_list_elem(val),
         D_BYTES => crate::bytes::format_bytes(val),
         D_LIST => fmt_seq(val, desc, pos, '[', ']'),

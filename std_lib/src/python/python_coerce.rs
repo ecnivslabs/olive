@@ -1,7 +1,96 @@
 use crate::python::*;
+use std::cell::RefCell;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_double, c_long, c_void};
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+const MAX_CONVERSION_DEPTH: usize = 256;
+
+struct ConversionState {
+    active: Vec<usize>,
+    failed: bool,
+}
+
+thread_local! {
+    static CONVERSION_STATE: RefCell<ConversionState> = const {
+        RefCell::new(ConversionState {
+            active: Vec::new(),
+            failed: false,
+        })
+    };
+}
+
+pub(crate) struct ConversionGuard {
+    tracked: Option<usize>,
+}
+
+impl ConversionGuard {
+    pub(crate) fn enter(value: PyObject) -> Option<Self> {
+        CONVERSION_STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            if state.active.is_empty() {
+                state.failed = false;
+            }
+            if !unsafe { is_recursive_python_container(value) } {
+                return Some(Self { tracked: None });
+            }
+            let ptr = value as usize;
+            if state.active.contains(&ptr) || state.active.len() >= MAX_CONVERSION_DEPTH {
+                state.failed = true;
+                return None;
+            }
+            state.active.push(ptr);
+            Some(Self { tracked: Some(ptr) })
+        })
+    }
+}
+
+impl Drop for ConversionGuard {
+    fn drop(&mut self) {
+        if let Some(ptr) = self.tracked {
+            CONVERSION_STATE.with(|state| {
+                let mut state = state.borrow_mut();
+                if let Some(pos) = state.active.iter().rposition(|active| *active == ptr) {
+                    state.active.remove(pos);
+                }
+            });
+        }
+    }
+}
+
+pub(crate) fn conversion_failed() -> bool {
+    CONVERSION_STATE.with(|state| state.borrow().failed)
+}
+
+pub(crate) fn take_conversion_error() -> Option<String> {
+    CONVERSION_STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        if state.failed {
+            state.failed = false;
+            Some("Python conversion graph is cyclic or too deeply nested".to_string())
+        } else {
+            None
+        }
+    })
+}
+
+unsafe fn is_recursive_python_container(value: PyObject) -> bool {
+    unsafe {
+        if value.is_null() {
+            return false;
+        }
+        let ty = raw_ob_type(value);
+        !ty.is_null()
+            && ((!PY_LIST_TYPE.is_null()
+                && (ty == PY_LIST_TYPE || PY_TYPE_IS_SUBTYPE(ty, PY_LIST_TYPE) != 0))
+                || (!PY_TUPLE_TYPE.is_null()
+                    && (ty == PY_TUPLE_TYPE || PY_TYPE_IS_SUBTYPE(ty, PY_TUPLE_TYPE) != 0))
+                || (!PY_DICT_TYPE.is_null()
+                    && (ty == PY_DICT_TYPE || PY_TYPE_IS_SUBTYPE(ty, PY_DICT_TYPE) != 0))
+                || (!PY_SET_TYPE.is_null()
+                    && (ty == PY_SET_TYPE || PY_TYPE_IS_SUBTYPE(ty, PY_SET_TYPE) != 0)))
+    }
+}
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -305,10 +394,19 @@ pub fn olive_to_py(val: i64) -> PyObject {
                     crate::KIND_SET => {
                         let hs = &*(ptr as *const crate::OliveHashSet);
                         let pys = PY_SET_NEW(std::ptr::null_mut());
+                        if pys.is_null() {
+                            return pys;
+                        }
                         for i in 0..hs.len {
                             let v = *hs.ptr.add(i);
                             let py_v = olive_any_to_py(v);
-                            PY_SET_ADD(pys, py_v);
+                            if py_v.is_null() || PY_SET_ADD(pys, py_v) == -1 {
+                                if !py_v.is_null() {
+                                    PY_DEC_REF(py_v);
+                                }
+                                PY_DEC_REF(pys);
+                                return std::ptr::null_mut();
+                            }
                             PY_DEC_REF(py_v);
                         }
                         pys
@@ -393,6 +491,16 @@ unsafe fn to_py_typed_desc_at(val: i64, desc: *const u8, pos: &mut usize) -> PyO
             crate::format::D_F32 => PY_FLOAT_FROM_DOUBLE(f32::from_bits(val as u32) as f64),
             crate::format::D_BOOL => PY_BOOL_FROM_LONG(val as c_long),
             crate::format::D_STR => olive_str_to_py(val),
+            crate::format::D_NULLABLE => {
+                if val == 0 {
+                    crate::format::skip(desc, pos);
+                    let none = _PY_NONE_STRUCT as PyObject;
+                    PY_INC_REF(none);
+                    none
+                } else {
+                    to_py_typed_desc_at(val, desc, pos)
+                }
+            }
             crate::format::D_NULL => {
                 let none = _PY_NONE_STRUCT as PyObject;
                 PY_INC_REF(none);
@@ -425,10 +533,17 @@ unsafe fn to_py_typed_desc_at(val: i64, desc: *const u8, pos: &mut usize) -> PyO
                         PY_DEC_REF(py_seq);
                         return std::ptr::null_mut();
                     }
-                    if tag == crate::format::D_LIST {
-                        PY_LIST_SET_ITEM(py_seq, i as isize, item);
+                    let inserted = if tag == crate::format::D_LIST {
+                        PY_LIST_SET_ITEM(py_seq, i as isize, item)
                     } else {
-                        PY_TUPLE_SET_ITEM(py_seq, i as isize, item);
+                        PY_TUPLE_SET_ITEM(py_seq, i as isize, item)
+                    };
+                    if inserted == -1 {
+                        if !item.is_null() {
+                            PY_DEC_REF(item);
+                        }
+                        PY_DEC_REF(py_seq);
+                        return std::ptr::null_mut();
                     }
                 }
                 py_seq
@@ -515,22 +630,28 @@ pub unsafe fn to_py_deep(val: i64) -> PyObject {
         match kind {
             crate::KIND_OBJ => {
                 let py_dict = PY_DICT_NEW();
+                if py_dict.is_null() {
+                    return py_dict;
+                }
                 let obj = &*(val as *const crate::OliveObj);
                 for (key, &value) in &obj.fields {
                     let py_key = to_py_deep(key.0);
                     if py_key.is_null() {
-                        crate::python::python_error::handle_py_error();
+                        PY_DEC_REF(py_dict);
+                        return std::ptr::null_mut();
                     }
                     let py_value = to_py_deep(value);
                     if py_value.is_null() {
                         PY_DEC_REF(py_key);
-                        crate::python::python_error::handle_py_error();
+                        PY_DEC_REF(py_dict);
+                        return std::ptr::null_mut();
                     }
                     let res = PY_OBJECT_SET_ITEM(py_dict, py_key, py_value);
                     PY_DEC_REF(py_key);
                     PY_DEC_REF(py_value);
                     if res == -1 {
-                        crate::python::python_error::handle_py_error();
+                        PY_DEC_REF(py_dict);
+                        return std::ptr::null_mut();
                     }
                 }
                 py_dict
@@ -538,6 +659,9 @@ pub unsafe fn to_py_deep(val: i64) -> PyObject {
             crate::KIND_LIST | crate::KIND_ANY_LIST => {
                 let n = crate::olive_list_len(val);
                 let py_list = PY_LIST_NEW(n as isize);
+                if py_list.is_null() {
+                    return py_list;
+                }
                 for i in 0..n {
                     let elem = crate::olive_list_get(val, i);
                     let item = if kind == crate::KIND_ANY_LIST {
@@ -545,7 +669,13 @@ pub unsafe fn to_py_deep(val: i64) -> PyObject {
                     } else {
                         olive_to_py_checked(elem)
                     };
-                    PY_LIST_SET_ITEM(py_list, i as isize, item);
+                    if item.is_null() || PY_LIST_SET_ITEM(py_list, i as isize, item) == -1 {
+                        if !item.is_null() {
+                            PY_DEC_REF(item);
+                        }
+                        PY_DEC_REF(py_list);
+                        return std::ptr::null_mut();
+                    }
                 }
                 py_list
             }
@@ -559,6 +689,10 @@ pub unsafe fn to_py_deep(val: i64) -> PyObject {
 
 pub unsafe fn py_to_olive_internal(py_val: PyObject) -> i64 {
     unsafe {
+        let _conversion_guard = match ConversionGuard::enter(py_val) {
+            Some(guard) => guard,
+            None => return 0,
+        };
         if py_val.is_null() || py_val == _PY_NONE_STRUCT {
             return 0;
         }
@@ -685,21 +819,21 @@ pub unsafe fn py_to_olive_internal(py_val: PyObject) -> i64 {
             PY_ERR_CLEAR();
         }
         if is_int_like {
-            foreign_cache_insert(&INT_LIKE_CACHE, &INT_LIKE_LEN, ty as usize);
             let v = py_long_as_i64(py_val);
             if !PY_ERR_OCCURRED().is_null() {
                 PY_ERR_CLEAR();
                 return olive_py_wrap(py_val) as i64;
             }
+            foreign_cache_insert(&INT_LIKE_CACHE, &INT_LIKE_LEN, ty as usize);
             return v;
         }
         if is_float_like {
-            foreign_cache_insert(&FLOAT_LIKE_CACHE, &FLOAT_LIKE_LEN, ty as usize);
             let d = PY_FLOAT_AS_DOUBLE(py_val);
             if !PY_ERR_OCCURRED().is_null() {
                 PY_ERR_CLEAR();
                 return olive_py_wrap(py_val) as i64;
             }
+            foreign_cache_insert(&FLOAT_LIKE_CACHE, &FLOAT_LIKE_LEN, ty as usize);
             return d.to_bits() as i64;
         }
 
@@ -852,6 +986,10 @@ pub(crate) unsafe fn py_to_typed_scalar_internal(py_val: PyObject, tag: i64) -> 
 
 pub unsafe fn py_to_any_internal(py_val: PyObject) -> i64 {
     unsafe {
+        let _conversion_guard = match ConversionGuard::enter(py_val) {
+            Some(guard) => guard,
+            None => return 0,
+        };
         if py_val.is_null() || py_val == _PY_NONE_STRUCT {
             return crate::boxed::olive_box_null();
         }
@@ -973,6 +1111,10 @@ pub unsafe fn olive_py_to_list_tagged_internal(obj: PyObject, elem_tag: i64, box
         if !materialized.is_null() {
             PY_DEC_REF(materialized);
         }
+        if conversion_failed() {
+            crate::olive_free_any(list_ptr);
+            return 0;
+        }
         list_ptr
     }
 }
@@ -1082,6 +1224,10 @@ pub unsafe fn olive_py_to_dict_tagged_internal(
                     }
                 }
             }
+            if conversion_failed() {
+                crate::olive_free_any(olive_obj);
+                return 0;
+            }
             return olive_obj;
         }
 
@@ -1137,6 +1283,10 @@ pub unsafe fn olive_py_to_dict_tagged_internal(
             }
             PY_DEC_REF(key_obj);
             PY_DEC_REF(val_obj);
+        }
+        if conversion_failed() {
+            crate::olive_free_any(olive_obj);
+            return 0;
         }
         olive_obj
     }
@@ -1197,6 +1347,10 @@ pub unsafe fn olive_py_to_set_tagged_internal(obj: PyObject, elem_tag: i64, boxe
             PY_DEC_REF(item);
         }
         PY_DEC_REF(iter);
+        if conversion_failed() {
+            crate::olive_free_any(set_ptr);
+            return 0;
+        }
         set_ptr
     }
 }
@@ -1317,6 +1471,28 @@ mod tests {
                 assert_eq!(py_to_olive_internal(five_obj), 5);
                 PY_DEC_REF(true_obj);
                 PY_DEC_REF(five_obj);
+            });
+        }
+    }
+
+    #[test]
+    fn cyclic_dynamic_python_collections_are_rejected_without_recursing() {
+        let _guard = pyobject_slab_test_lock();
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        unsafe {
+            with_gil(|| {
+                let source = PY_LIST_NEW(1);
+                assert!(!source.is_null());
+                PY_INC_REF(source);
+                assert_eq!(PY_LIST_SET_ITEM(source, 0, source), 0);
+                assert_eq!(py_to_any_internal(source), 0);
+                assert!(conversion_failed());
+                let _ = take_conversion_error();
+                PY_DEC_REF(source);
+                PY_DEC_REF(source);
             });
         }
     }

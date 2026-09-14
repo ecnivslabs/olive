@@ -294,7 +294,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 // container pointer. Must match `collect_type_descriptor`'s
                 // interning exactly, which already uses this function.
                 let arg_static_ty = super::imports::operand_static_type(&args[pos], func_mir);
-                let list_ty = super::imports::concrete_ty(&arg_static_ty);
+                let list_ty = &arg_static_ty;
                 // Set combinators hash elements, not sets: describe the
                 // element type. Mirrors the interning below exactly.
                 let elem_ty = match (name.as_str(), list_ty) {
@@ -304,11 +304,15 @@ impl<M: Module> CraneliftCodegen<M> {
                         | "__olive_set_diff_typed"
                         | "__olive_set_sym_diff_typed",
                         OliveType::Set(e),
-                    ) => super::imports::concrete_ty(e),
-                    _ => list_ty,
+                    ) => (**e).clone(),
+                    _ => list_ty.clone(),
                 };
-                let desc =
-                    super::imports::type_descriptor(elem_ty, struct_fields, field_types, enum_defs);
+                let desc = super::imports::type_descriptor(
+                    &elem_ty,
+                    struct_fields,
+                    field_types,
+                    enum_defs,
+                );
                 let data_id = *string_ids
                     .get(&desc)
                     .expect("typed list op descriptor not interned during collection");

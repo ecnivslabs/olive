@@ -37,7 +37,7 @@ fn resolve_desc_tag(desc: *const u8, start: usize) -> (u8, usize) {
 
 fn erase_word_to_any(raw: i64, desc: *const u8, start: usize) -> i64 {
     use crate::format::{
-        D_ANY, D_BOOL, D_DICT, D_F32, D_FLOAT, D_INT, D_LIST, D_NULL, D_SET, D_STRUCT,
+        D_ANY, D_BOOL, D_DICT, D_F32, D_FLOAT, D_INT, D_LIST, D_NULL, D_NULLABLE, D_SET, D_STRUCT,
         D_STRUCT_SHARED, D_TUPLE, D_U64,
     };
     use rustc_hash::FxHashMap;
@@ -58,6 +58,13 @@ fn erase_word_to_any(raw: i64, desc: *const u8, start: usize) -> i64 {
             let copied = crate::copy_typed::copy_val(raw, desc, &mut copy_pos, &mut visited);
             let static_desc = intern_sub_descriptor(desc, resolved);
             crate::struct_box::olive_struct_box(copied, static_desc)
+        }
+        D_NULLABLE => {
+            if raw == 0 {
+                0
+            } else {
+                erase_word_to_any(raw, desc, resolved + 1)
+            }
         }
         D_ANY => {
             let mut visited = FxHashMap::default();
@@ -395,8 +402,8 @@ pub extern "C" fn olive_any_setattr(obj: i64, attr: i64, val: i64, loc: i64) -> 
 /// and store directly.
 fn struct_box_store(obj: i64, attr: i64, val: i64, loc: i64) {
     use crate::format::{
-        D_BOOL, D_DICT, D_F32, D_FLOAT, D_INT, D_LIST, D_NULL, D_SET, D_STRUCT, D_STRUCT_SHARED,
-        D_TUPLE, D_U64,
+        D_BOOL, D_DICT, D_F32, D_FLOAT, D_INT, D_LIST, D_NULL, D_NULLABLE, D_SET, D_STRUCT,
+        D_STRUCT_SHARED, D_TUPLE, D_U64,
     };
     use rustc_hash::FxHashMap;
     let want = olive_str_to_bytes(attr);
@@ -490,6 +497,18 @@ fn struct_box_store(obj: i64, attr: i64, val: i64, loc: i64) {
                         raw
                     }
                 }
+                D_NULLABLE => {
+                    if val == 0 {
+                        0
+                    } else {
+                        let mut upos = resolved_pos;
+                        let mut visited = FxHashMap::default();
+                        let copied =
+                            crate::unerase::unerase_any(val, desc, &mut upos, &mut visited);
+                        crate::olive_free_any(val);
+                        copied
+                    }
+                }
                 D_STRUCT | D_STRUCT_SHARED | D_LIST | D_SET | D_DICT | D_TUPLE => {
                     if val == 0 {
                         0
@@ -520,7 +539,7 @@ fn struct_box_store(obj: i64, attr: i64, val: i64, loc: i64) {
 /// descriptor so the caller owns independently of the outer box.
 fn struct_box_member(obj: i64, attr: i64, loc: i64) -> i64 {
     use crate::format::{
-        D_ANY, D_BOOL, D_DICT, D_F32, D_FLOAT, D_INT, D_LIST, D_NULL, D_SET, D_STRUCT,
+        D_ANY, D_BOOL, D_DICT, D_F32, D_FLOAT, D_INT, D_LIST, D_NULL, D_NULLABLE, D_SET, D_STRUCT,
         D_STRUCT_SHARED, D_TUPLE, D_U64,
     };
     use rustc_hash::FxHashMap;
@@ -574,6 +593,14 @@ fn struct_box_member(obj: i64, attr: i64, loc: i64) -> i64 {
                 }
                 D_BOOL => return crate::boxed::olive_box_bool(raw),
                 D_NULL => return crate::boxed::olive_box_null(),
+                D_NULLABLE => {
+                    if raw == 0 {
+                        return 0;
+                    }
+                    let mut upos = resolved_pos;
+                    let mut visited = FxHashMap::default();
+                    return crate::unerase::unerase_any(raw, desc, &mut upos, &mut visited);
+                }
                 D_STRUCT | D_STRUCT_SHARED => {
                     if raw == 0 {
                         return 0;
@@ -764,7 +791,12 @@ fn normalize_typed_any_key(index: i64, desc: i64) -> (i64, bool) {
     if desc == 0 {
         return (index, false);
     }
-    let tag = unsafe { *(crate::string_slab::str_body(desc) as *const u8) };
+    let body = crate::string_slab::str_body(desc) as *const u8;
+    normalize_typed_any_key_at(index, body, 0)
+}
+
+fn normalize_typed_any_key_at(index: i64, desc: *const u8, pos: usize) -> (i64, bool) {
+    let tag = unsafe { *desc.add(pos) };
     let key = if tag == crate::format::D_INT {
         crate::boxed::olive_box_int(index)
     } else if tag == crate::format::D_U64 {
@@ -775,6 +807,12 @@ fn normalize_typed_any_key(index: i64, desc: i64) -> (i64, bool) {
         crate::boxed::olive_box_float(f32::from_bits(index as u32) as f64)
     } else if tag == crate::format::D_NULL {
         crate::boxed::olive_box_null()
+    } else if tag == crate::format::D_NULLABLE {
+        if index == 0 {
+            crate::boxed::olive_box_null()
+        } else {
+            return normalize_typed_any_key_at(index, desc, pos + 1);
+        }
     } else {
         return (index, false);
     };

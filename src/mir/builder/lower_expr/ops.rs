@@ -755,6 +755,20 @@ impl<'a> MirBuilder<'a> {
         } else {
             (l, r)
         };
+        let container_elem = match &r_ty {
+            Type::Set(e) | Type::List(e) => Some((**e).clone()),
+            Type::Dict(k, _) => Some((**k).clone()),
+            _ => None,
+        };
+        let l = if matches!(op, BinOp::In | BinOp::NotIn)
+            && container_elem
+                .as_ref()
+                .is_some_and(Type::is_tag_encoded_union)
+        {
+            self.coerce(l, &l_ty, container_elem.as_ref().unwrap(), span)
+        } else {
+            l
+        };
         // Deep-copy elements; plain concat shares pointers and double-frees on drop.
         let mut deref_l = &l_ty;
         while let Type::Ref(inner) | Type::MutRef(inner) = deref_l {
@@ -932,6 +946,11 @@ impl<'a> MirBuilder<'a> {
     /// odd int above the string-tag floor is bit-identical to a tagged
     /// string pointer). Only `Any`-typed keys stay on the heuristic path.
     pub(crate) fn type_needs_key_descriptor(ty: &Type) -> bool {
+        if matches!(ty, Type::Union(members)
+            if members.iter().filter(|m| !matches!(m, Type::Null)).count() == 1)
+        {
+            return true;
+        }
         matches!(
             ty,
             Type::Struct(..)
@@ -964,6 +983,9 @@ impl<'a> MirBuilder<'a> {
     /// hashing. Boxing here meets stored words identically; strings stay
     /// tagged; aggregates use `key_needs_any_form` instead.
     pub(crate) fn any_key_needs_box(ty: &Type) -> bool {
+        if ty.is_tag_encoded_union() {
+            return true;
+        }
         // Scalar keys box: a bare large odd int is bit-identical to a
         // tagged string pointer, bare bool loses its dynamic type against
         // int, and bare float bits hash differently typed than untyped.
