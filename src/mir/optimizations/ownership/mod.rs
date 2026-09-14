@@ -584,6 +584,9 @@ fn boxed_scalar_getter_returns_owned(name: &str, args: &[Operand], func: &MirFun
     let Type::Dict(_, value) = recv_ty else {
         return false;
     };
+    if value.is_tag_encoded_union() {
+        return false;
+    }
     let value = crate::semantic::type_descriptor::concrete_ty(value);
     matches!(
         value,

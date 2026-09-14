@@ -42,10 +42,8 @@ impl<M: Module> CraneliftCodegen<M> {
     fn intern_dict_value_descriptor(&mut self, recv: &crate::mir::Operand, func: &MirFunction) {
         let recv_static = super::super::imports::operand_static_type(recv, func);
         let value_ty = match super::super::imports::concrete_ty(&recv_static) {
-            crate::semantic::types::Type::Dict(_, value) => {
-                super::super::imports::concrete_ty(value).clone()
-            }
-            _ => crate::semantic::types::Type::Any,
+            crate::semantic::types::Type::Dict(_, value) => value.clone(),
+            _ => Box::new(crate::semantic::types::Type::Any),
         };
         let desc = super::super::imports::type_descriptor(
             &value_ty,
@@ -476,10 +474,13 @@ impl<M: Module> CraneliftCodegen<M> {
             // value, computed exactly like `translate_call` does.
             if name == "__olive_obj_setdefault_typed" && args.len() == 3 {
                 use super::super::imports::{concrete_ty, operand_static_type};
-                let val_static_ty = operand_static_type(&args[2], func);
-                let val_ty = concrete_ty(&val_static_ty);
+                let recv_static_ty = operand_static_type(&args[0], func);
+                let val_ty = match concrete_ty(&recv_static_ty) {
+                    crate::semantic::types::Type::Dict(_, value) => value.clone(),
+                    _ => Box::new(crate::semantic::types::Type::Any),
+                };
                 let val_desc = type_descriptor(
-                    val_ty,
+                    &val_ty,
                     &self.struct_fields,
                     &self.field_types,
                     &self.enum_defs,

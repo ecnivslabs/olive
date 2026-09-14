@@ -1594,6 +1594,7 @@ impl<'a> MirBuilder<'a> {
             || result_ty.is_tag_encoded_union()
             || result_ty == Type::Any;
         let scalar_box_result = needs_boxing
+            && !val_ty.is_tag_encoded_union()
             && matches!(
                 crate::semantic::type_descriptor::concrete_ty(&val_ty),
                 Type::Int
@@ -1686,7 +1687,8 @@ impl<'a> MirBuilder<'a> {
                 call_args.push(arg_ops[0].clone());
             }
             let default = arg_ops[1].clone();
-            if needs_boxing && !matches!(val_ty, Type::Union(_)) {
+            if needs_boxing && (!matches!(val_ty, Type::Union(_)) || val_ty.is_tag_encoded_union())
+            {
                 // The stored words are raw; the default must be boxed to
                 // match what a hit would return. A mixed-union-valued dict
                 // already stores tagged words, so pass the default through
@@ -1957,7 +1959,13 @@ impl<'a> MirBuilder<'a> {
             "setdefault" => {
                 let raw_key = arg_ops.first().cloned().unwrap_or(zero());
                 let key_op = box_key(self, raw_key);
-                let default = box_val(self, arg_ops.get(1).cloned().unwrap_or(zero()), 1);
+                let raw_default = arg_ops.get(1).cloned().unwrap_or(zero());
+                let default = if val_ty.is_tag_encoded_union() {
+                    let from_ty = arg_tys.get(1).cloned().unwrap_or(Type::Any);
+                    self.box_into_any(raw_default, &from_ty, span)
+                } else {
+                    box_val(self, raw_default, 1)
+                };
                 // A float value slot holds canonical bits; convert a stored
                 // default the same way aggregates do (no-op otherwise).
                 let default = if matches!(val_ty, Type::Float | Type::F32) {

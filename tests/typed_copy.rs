@@ -77,6 +77,28 @@ fn main():
 }
 
 #[test]
+fn nullable_scalar_dict_get_preserves_tags_and_defaults() {
+    assert_both(
+        r#"fn main():
+    let d: dict[int, int | None] = {1: 1, 0: None}
+    print(d.get(1, None))
+    print(d.get(0, None))
+    print(d.get(2, None))
+    print(d.setdefault(0, 9))
+    print(d.setdefault(3, None))
+    print(d[3])
+    let b: dict[int, bool | None] = {1: True, 0: None}
+    print(b.get(1, None))
+    print(b.get(0, None))
+    let f: dict[int, float | None] = {1: 1.5, 0: None}
+    print(f.get(1, None))
+    print(f.get(0, None))
+"#,
+        "1\nNone\nNone\nNone\nNone\nNone\nTrue\nNone\n1.5\nNone\n",
+    );
+}
+
+#[test]
 fn struct_set_iteration_keeps_owner_alive() {
     assert_both(
         r#"struct Res:

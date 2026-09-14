@@ -335,8 +335,8 @@ impl<M: Module> CraneliftCodegen<M> {
                 if name == "__olive_obj_get_default_boxed_typed" && args.len() == 3 {
                     let recv_static = super::imports::operand_static_type(&args[0], func_mir);
                     let value_ty = match super::imports::concrete_ty(&recv_static) {
-                        OliveType::Dict(_, value) => super::imports::concrete_ty(value).clone(),
-                        _ => OliveType::Any,
+                        OliveType::Dict(_, value) => value.clone(),
+                        _ => Box::new(OliveType::Any),
                     };
                     let value_desc = super::imports::type_descriptor(
                         &value_ty,
@@ -354,10 +354,13 @@ impl<M: Module> CraneliftCodegen<M> {
                 // descriptor on a hit, so it carries a second descriptor
                 // (mirrors the interning in `collect_type_descriptor`).
                 if name == "__olive_obj_setdefault_typed" && args.len() == 3 {
-                    let val_static_ty = super::imports::operand_static_type(&args[2], func_mir);
-                    let val_ty = super::imports::concrete_ty(&val_static_ty);
+                    let recv_static = super::imports::operand_static_type(&args[0], func_mir);
+                    let val_ty = match super::imports::concrete_ty(&recv_static) {
+                        OliveType::Dict(_, value) => value.clone(),
+                        _ => Box::new(OliveType::Any),
+                    };
                     let val_desc = super::imports::type_descriptor(
-                        val_ty,
+                        &val_ty,
                         struct_fields,
                         field_types,
                         enum_defs,
@@ -385,8 +388,8 @@ impl<M: Module> CraneliftCodegen<M> {
             if boxed_value_call {
                 let recv_static = super::imports::operand_static_type(&args[0], func_mir);
                 let value_ty = match super::imports::concrete_ty(&recv_static) {
-                    OliveType::Dict(_, value) => super::imports::concrete_ty(value).clone(),
-                    _ => OliveType::Any,
+                    OliveType::Dict(_, value) => value.clone(),
+                    _ => Box::new(OliveType::Any),
                 };
                 let value_desc = super::imports::type_descriptor(
                     &value_ty,
