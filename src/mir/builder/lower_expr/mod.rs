@@ -1,3 +1,4 @@
+mod any_collection;
 mod call;
 mod call_method;
 mod control;
@@ -89,8 +90,8 @@ impl<'a> MirBuilder<'a> {
         op
     }
 
-    /// Boxes a scalar (int, float, bool, or null) into its self-describing `Any`
-    /// heap form; passes pointers and aggregates through unchanged.
+    /// Converts scalars, structs, and native list elements to self-describing
+    /// `Any` values; other pointer representations pass through unchanged.
     pub(super) fn box_into_any(&mut self, op: Operand, from_ty: &Type, span: Span) -> Operand {
         // A raw MIR constant is never pre-boxed, whatever its inferred static
         // type says: unification can widen a bare literal's own type to
@@ -106,6 +107,11 @@ impl<'a> MirBuilder<'a> {
             (Operand::Constant(Constant::None), Type::Any) => &Type::Null,
             _ => from_ty,
         };
+        if let Type::List(element) = from_ty
+            && **element != Type::Any
+        {
+            return self.erase_list_elements(op, element, span);
+        }
         // A raw struct pointer is ambiguous once erased (its header word is a
         // field count, not a kind), so it boxes with its descriptor.
         if matches!(from_ty, Type::Struct(_, _, _)) {

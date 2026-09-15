@@ -204,11 +204,17 @@ impl<M: Module> CraneliftCodegen<M> {
                     .get("__olive_sm_poll")
                     .expect("missing __olive_sm_poll");
                 let sm_poll_ref = self.module.declare_func_in_func(sm_poll_id, builder.func);
-                let poll_call = builder.ins().call(sm_poll_ref, &[sub_future]);
-                let poll_result = builder.inst_results(poll_call)[0];
+                let result_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    8,
+                    3,
+                ));
+                let result_ptr = builder.ins().stack_addr(types::I64, result_slot, 0);
+                let poll_call = builder.ins().call(sm_poll_ref, &[sub_future, result_ptr]);
+                let ready = builder.inst_results(poll_call)[0];
 
                 let pend_c = builder.ins().iconst(types::I64, POLL_PENDING);
-                let is_pend = builder.ins().icmp(IntCC::Equal, poll_result, pend_c);
+                let is_pend = builder.ins().icmp_imm(IntCC::Equal, ready, 0);
 
                 let pend_blk = builder.create_block();
                 let cont_blk = builder.create_block();
@@ -232,7 +238,13 @@ impl<M: Module> CraneliftCodegen<M> {
                     let val = builder.ins().load(ty, mf, frame_c, frame_off(local));
                     builder.def_var(vars[&local], val);
                 }
-                builder.def_var(vars[&ap.result_local], poll_result);
+                let poll_result = builder.ins().stack_load(types::I64, result_slot, 0);
+                let value = super::async_abi::from_word(
+                    &mut builder,
+                    poll_result,
+                    &func.locals[ap.result_local.0].ty,
+                );
+                builder.def_var(vars[&ap.result_local], value);
             }
             builder.ins().jump(seg_blks[ap.bb_idx][resume_seg], &[]);
         }
@@ -314,6 +326,11 @@ impl<M: Module> CraneliftCodegen<M> {
                     match bb.terminator.as_ref().map(|t| t.kind.clone()) {
                         Some(TerminatorKind::Return) => {
                             let ret_val = builder.use_var(vars[&Local(0)]);
+                            let ret_val = super::async_abi::to_word(
+                                &mut builder,
+                                ret_val,
+                                &func.locals[0].ty,
+                            );
                             let frame_r = builder.use_var(frame_var);
                             let done_s = builder.ins().iconst(types::I64, -1i64);
                             builder.ins().store(mf, done_s, frame_r, 0);
@@ -428,11 +445,12 @@ impl<M: Module> CraneliftCodegen<M> {
         builder.ins().store(mf, zero, frame_ptr, 0);
 
         for (i, &param) in params.iter().enumerate() {
+            let param = self.capture_async_arg(&mut builder, param, &func.locals[i + 1].ty);
             let offset = ((i + 3) * 8) as i32;
             builder.ins().store(mf, param, frame_ptr, offset);
         }
 
-        let future_sz = builder.ins().iconst(types::I64, 32);
+        let future_sz = builder.ins().iconst(types::I64, 40);
         let fut_call = builder.ins().call(alloc_ref, &[future_sz]);
         let fut_ptr = builder.inst_results(fut_call)[0];
 
@@ -443,6 +461,18 @@ impl<M: Module> CraneliftCodegen<M> {
         let poll_addr = builder.ins().func_addr(types::I64, poll_ref);
         builder.ins().store(mf, poll_addr, fut_ptr, 8);
         builder.ins().store(mf, frame_ptr, fut_ptr, 16);
+        builder.ins().store(mf, zero, fut_ptr, 24);
+        let result_desc = type_descriptor(
+            &func.locals[0].ty,
+            &self.struct_fields,
+            &self.field_types,
+            &self.enum_defs,
+        );
+        self.intern_attr_string(&result_desc);
+        let data_id = self.string_ids[&result_desc];
+        let local_data = self.module.declare_data_in_func(data_id, builder.func);
+        let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+        builder.ins().store(mf, desc_ptr, fut_ptr, 32);
 
         builder.ins().return_(&[fut_ptr]);
         builder.finalize();
@@ -471,6 +501,7 @@ impl<M: Module> CraneliftCodegen<M> {
         body_func_id: FuncId,
         wrapper_id: FuncId,
     ) {
+        let invoke_id = self.generate_async_invoke(func, body_func_id, wrapper_id);
         let mut ctx = self.module.make_context();
         for i in 0..func.arg_count {
             let ty = &func.locals[i + 1].ty;
@@ -487,7 +518,7 @@ impl<M: Module> CraneliftCodegen<M> {
         builder.append_block_params_for_function_params(entry);
         let params: Vec<Value> = builder.block_params(entry).to_vec();
 
-        let callback_size = 8i64 * (2 + func.arg_count as i64);
+        let callback_size = 8i64 * (3 + func.arg_count as i64);
 
         let alloc_id = *self
             .func_ids
@@ -498,7 +529,7 @@ impl<M: Module> CraneliftCodegen<M> {
         let call = builder.ins().call(alloc_ref, &[size_val]);
         let cb_ptr = builder.inst_results(call)[0];
 
-        let body_ref = self.module.declare_func_in_func(body_func_id, builder.func);
+        let body_ref = self.module.declare_func_in_func(invoke_id, builder.func);
         let fn_ptr_val = builder.ins().func_addr(types::I64, body_ref);
         // Heap blob, not stack. trusted() implies no-aliasing.
         let mf = MemFlags::new();
@@ -507,29 +538,23 @@ impl<M: Module> CraneliftCodegen<M> {
         let nargs_val = builder.ins().iconst(types::I64, func.arg_count as i64);
         builder.ins().store(mf, nargs_val, cb_ptr, 8);
 
+        let result_desc = type_descriptor(
+            &func.locals[0].ty,
+            &self.struct_fields,
+            &self.field_types,
+            &self.enum_defs,
+        );
+        self.intern_attr_string(&result_desc);
+        let data_id = self.string_ids[&result_desc];
+        let local_data = self.module.declare_data_in_func(data_id, builder.func);
+        let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+        builder.ins().store(mf, desc_ptr, cb_ptr, 16);
+
         for (i, &arg) in params.iter().enumerate() {
             let decl = &func.locals[i + 1];
-            let stored = if decl.ty.is_move_type() && !decl.is_owning {
-                // Non-owning (borrow) param entering thread boundary: deep copy.
-                let desc = type_descriptor(
-                    &decl.ty,
-                    &self.struct_fields,
-                    &self.field_types,
-                    &self.enum_defs,
-                );
-                self.intern_attr_string(&desc);
-                let data_id = self.string_ids[&desc];
-                let local_data = self.module.declare_data_in_func(data_id, builder.func);
-                let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
-                let copy_id = self.func_ids["__olive_copy_typed"];
-                let copy_ref = self.module.declare_func_in_func(copy_id, builder.func);
-                let copy_call = builder.ins().call(copy_ref, &[arg, desc_ptr]);
-                builder.inst_results(copy_call)[0]
-            } else {
-                // Owning param or scalar: move directly, no copy needed.
-                arg
-            };
-            builder.ins().store(mf, stored, cb_ptr, 8 * (2 + i) as i32);
+            let stored = self.capture_async_arg(&mut builder, arg, &decl.ty);
+            let word = super::async_abi::to_word(&mut builder, stored, &decl.ty);
+            builder.ins().store(mf, word, cb_ptr, 8 * (3 + i) as i32);
         }
 
         let spawn_id = *self

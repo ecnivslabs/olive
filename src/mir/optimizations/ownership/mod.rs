@@ -675,6 +675,11 @@ fn classify(
     loop {
         let mut owning_count = vec![0u32; n];
         let mut borrow_count = vec![0u32; n];
+        for i in 1..=func.arg_count {
+            if builder_owning[i] {
+                owning_count[i] = 1;
+            }
+        }
         for (i, rec) in records.iter().enumerate() {
             match rec.class {
                 RvClass::UseCopy(_) => {

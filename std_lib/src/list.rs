@@ -3,11 +3,11 @@ use crate::*;
 use std::cell::UnsafeCell;
 
 /// Element buffers up to this capacity stay attached to a freed slot for reuse.
-pub(crate) const RETAIN_CAP: usize = 4;
+pub(crate) const RETAIN_CAP: usize = if cfg!(debug_assertions) { 0 } else { 4 };
 
 thread_local! {
     static LIST_SLAB: UnsafeCell<GenSlab> =
-        const { UnsafeCell::new(GenSlab::new(std::mem::size_of::<StableVec>())) };
+        const { UnsafeCell::new(GenSlab::with_cleanup(std::mem::size_of::<StableVec>(), release_list_storage)) };
     static ITER_SLAB: UnsafeCell<GenSlab> =
         const { UnsafeCell::new(GenSlab::new(std::mem::size_of::<OliveIter>())) };
 }
@@ -810,6 +810,13 @@ pub(crate) unsafe fn settle_list_buffer(ptr: i64) {
     }
 }
 
+pub(crate) unsafe fn release_list_storage(body: *mut u8) {
+    let s = unsafe { &*(body as *const StableVec) };
+    if !s.ptr.is_null() {
+        drop(unsafe { Vec::from_raw_parts(s.ptr, 0, s.cap) });
+    }
+}
+
 pub(crate) fn free_list_slot_raw(ptr: i64) {
     free_list_slot_raw_with(ptr, None);
 }
@@ -847,7 +854,10 @@ pub extern "C" fn olive_list_new_reuse(old_ptr: i64, n_len: i64, bump: i64) -> i
     if bump != 0 {
         unsafe {
             let gen_ptr = (old_ptr as *mut std::sync::atomic::AtomicU64).sub(1);
-            let g = (*gen_ptr).load(std::sync::atomic::Ordering::Relaxed) + 2;
+            let g = crate::slab::advance_generation(
+                (*gen_ptr).load(std::sync::atomic::Ordering::Relaxed),
+                2,
+            );
             (*gen_ptr).store(g, std::sync::atomic::Ordering::Release);
         }
     }

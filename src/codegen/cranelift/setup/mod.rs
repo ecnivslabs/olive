@@ -678,7 +678,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_set_sym_diff", &sig_i64_i64_i64),
             ("__olive_set_index_any", &sig_4i64_void),
             ("__olive_set_new", &sig_i64_i64),
-            ("__olive_sm_poll", &sig_i64_i64),
+            ("__olive_sm_poll", &sig_i64_i64_i64),
             ("__olive_spawn_task", &sig_i64_i64),
             ("__olive_stdin_read", &sig_void_i64),
             ("__olive_stdin_read_line", &sig_void_i64),

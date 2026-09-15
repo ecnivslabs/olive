@@ -6,7 +6,7 @@ use rustc_hash::FxHashSet;
 
 thread_local! {
     static SET_SLAB: UnsafeCell<GenSlab> =
-        const { UnsafeCell::new(GenSlab::new(std::mem::size_of::<OliveHashSet>())) };
+        const { UnsafeCell::new(GenSlab::with_cleanup(std::mem::size_of::<OliveHashSet>(), release_set_storage)) };
 }
 
 #[unsafe(no_mangle)]
@@ -53,16 +53,14 @@ pub(crate) fn olive_free_set(ptr: i64) {
         return;
     };
     if crate::slab::slot_is_live(ptr) {
-        unsafe { release_set_storage(ptr) };
+        unsafe { release_set_storage(ptr as *mut u8) };
     }
     free_set_slot_raw_with(ptr, Some(is_global));
 }
 
-/// Drops a set's element vector and inner hash set; the slot body persists
-/// after a slab free, so this is safe in either order.
-pub(crate) unsafe fn release_set_storage(ptr: i64) {
+pub(crate) unsafe fn release_set_storage(body: *mut u8) {
     unsafe {
-        let s = &mut *(ptr as *mut OliveHashSet);
+        let s = &mut *(body as *mut OliveHashSet);
         if !s.ptr.is_null() {
             let _ = Vec::from_raw_parts(s.ptr, s.len, s.cap);
             s.ptr = std::ptr::null_mut();
@@ -81,6 +79,16 @@ pub(crate) fn free_set_slot_raw(ptr: i64) {
 /// `known_global` skips the chunk lookup when the caller already classified
 /// `ptr` a moment ago (e.g. `olive_free_set`'s own span check).
 pub(crate) fn free_set_slot_raw_with(ptr: i64, known_global: Option<bool>) {
+    if !crate::slab::slot_is_live(ptr) {
+        return;
+    }
+    unsafe {
+        let s = &mut *(ptr as *mut OliveHashSet);
+        s.ptr = std::ptr::null_mut();
+        s.inner = std::ptr::null_mut();
+        s.len = 0;
+        s.cap = 0;
+    }
     let is_global = known_global.unwrap_or_else(|| crate::slab::chunk_is_global(ptr as usize));
     if is_global {
         crate::slab::with_escape_arena(|| free_set_slot_raw_local(ptr));
@@ -110,7 +118,10 @@ pub extern "C" fn olive_set_new_reuse(old_ptr: i64, capacity: i64, bump: i64) ->
     if bump != 0 {
         unsafe {
             let gen_ptr = (old_ptr as *mut std::sync::atomic::AtomicU64).sub(1);
-            let g = (*gen_ptr).load(std::sync::atomic::Ordering::Relaxed) + 2;
+            let g = crate::slab::advance_generation(
+                (*gen_ptr).load(std::sync::atomic::Ordering::Relaxed),
+                2,
+            );
             (*gen_ptr).store(g, std::sync::atomic::Ordering::Release);
         }
     }

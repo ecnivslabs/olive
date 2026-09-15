@@ -307,7 +307,7 @@ pub(super) fn insert_escape_copies(
                         && dst.0 < heap.len()
                         && heap[dst.0]
                         && builder_owning[dst.0]
-                        && classes.get(dst.0) != Some(&LocalClass::View) =>
+                        && classes.get(dst.0) == Some(&LocalClass::Owner) =>
                 {
                     hits.push((bb_idx, idx, CopySlot::UseVal, *l, "__olive_copy_typed"));
                 }

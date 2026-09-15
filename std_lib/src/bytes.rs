@@ -4,9 +4,21 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use std::cell::UnsafeCell;
 use std::os::raw::c_void;
 
+#[cfg(test)]
+mod lifecycle_tests;
+
 thread_local! {
     static BYTES_SLAB: UnsafeCell<GenSlab> =
-        const { UnsafeCell::new(GenSlab::new(std::mem::size_of::<OliveBytes>())) };
+        const { UnsafeCell::new(GenSlab::with_cleanup(std::mem::size_of::<OliveBytes>(), release_bytes_storage)) };
+}
+
+fn with_bytes_slab<T>(f: impl FnOnce(&mut GenSlab) -> T) -> T {
+    let active = crate::slab::ACTIVE_SLABS.get();
+    if active.is_null() {
+        BYTES_SLAB.with(|sl| f(unsafe { &mut *sl.get() }))
+    } else {
+        f(unsafe { &mut (*active).bytes })
+    }
 }
 
 #[repr(C)]
@@ -21,7 +33,29 @@ pub struct OliveBytes {
     pub exported: i64,
 }
 
+impl Drop for OliveBytes {
+    fn drop(&mut self) {
+        self.release_storage();
+    }
+}
+
+pub(crate) unsafe fn release_bytes_storage(body: *mut u8) {
+    unsafe { &mut *(body as *mut OliveBytes) }.release_storage();
+}
+
 impl OliveBytes {
+    fn release_storage(&mut self) {
+        let ptr = std::mem::replace(&mut self.ptr, std::ptr::null_mut());
+        let len = std::mem::take(&mut self.len);
+        let cap = std::mem::take(&mut self.cap);
+        let py = std::mem::replace(&mut self.py, std::ptr::null_mut());
+        if !py.is_null() {
+            crate::python::olive_py_backing_release(py);
+        } else if !ptr.is_null() {
+            drop(unsafe { Vec::from_raw_parts(ptr, len as usize, cap as usize) });
+        }
+    }
+
     /// Copies a Python-backed buffer into a native `Vec` and drops the
     /// backing reference. No-op for native backing. Every mutation path
     /// must run this first: the `PyBytes` payload is shared and immutable.
@@ -30,10 +64,7 @@ impl OliveBytes {
             return;
         }
         let data = self.as_slice().to_vec();
-        let py = self.py;
-        self.py = std::ptr::null_mut();
         self.set_vec(data);
-        crate::python::olive_py_backing_release(py);
     }
 
     /// Replaces the internal buffer with the given `Vec<u8>`.
@@ -47,11 +78,7 @@ impl OliveBytes {
     /// assert_eq!(b.len, 3);
     /// ```
     pub fn set_vec(&mut self, mut v: Vec<u8>) {
-        if !self.py.is_null() {
-            let py = self.py;
-            self.py = std::ptr::null_mut();
-            crate::python::olive_py_backing_release(py);
-        }
+        self.release_storage();
         self.ptr = v.as_mut_ptr();
         self.len = v.len() as i64;
         self.cap = v.capacity() as i64;
@@ -88,6 +115,9 @@ impl OliveBytes {
     /// ```
     pub unsafe fn take_vec(&mut self) -> Vec<u8> {
         self.realize();
+        if self.ptr.is_null() {
+            return Vec::new();
+        }
         let v = unsafe { Vec::from_raw_parts(self.ptr, self.len as usize, self.cap as usize) };
         self.ptr = std::ptr::null_mut();
         self.len = 0;
@@ -164,9 +194,12 @@ impl OliveBytes {
     /// assert_eq!(b.as_slice(), &[1, 2, 3, 4]);
     /// ```
     pub fn append(&mut self, data: &[u8]) {
+        if data.is_empty() {
+            return;
+        }
         self.realize();
         let n = data.len() as i64;
-        if self.len + n <= self.cap {
+        if n <= self.cap - self.len {
             unsafe {
                 std::ptr::copy_nonoverlapping(
                     data.as_ptr(),
@@ -196,25 +229,30 @@ pub fn new_buf(data: Vec<u8>) -> i64 {
     alloc_slot(b)
 }
 
-/// Wraps an owned `PyBytes` reference without copying. Caller transfers a
-/// strong reference taken under the GIL; `ptr`/`len` must come from
-/// `PyBytes_AS_STRING`/`PyBytes_Size` on that same object.
+/// Wraps an owned `PyBytes` reference, materializing native storage in task
+/// and escape arenas. Caller transfers a strong reference taken under the
+/// GIL; `ptr`/`len` must come from that same object's byte storage.
 pub fn new_buf_py_backed(py: *mut c_void, ptr: *mut u8, len: i64) -> i64 {
-    alloc_slot(OliveBytes {
+    let mut bytes = OliveBytes {
         kind: KIND_BYTES,
         ptr,
         len,
         cap: 0,
         py,
         exported: 0,
-    })
+    };
+    if !crate::slab::ACTIVE_SLABS.get().is_null() {
+        bytes.realize();
+    }
+    alloc_slot(bytes)
 }
 
-/// Deep copy for escape/copy-typed paths. A Python-backed source shares
-/// the immutable payload via a fresh reference instead of copying.
+/// Ordinary copies share immutable Python backing through a fresh reference.
+/// Task and escaping copies use native storage so a worker needs no source
+/// interpreter or GIL to access or release the bytes.
 pub fn clone_buf(src: i64) -> i64 {
     let b = unsafe { &*(src as *const OliveBytes) };
-    if b.py.is_null() {
+    if b.py.is_null() || !crate::slab::ACTIVE_SLABS.get().is_null() {
         new_buf(b.as_slice().to_vec())
     } else {
         crate::python::olive_py_backing_incref(b.py);
@@ -230,8 +268,7 @@ pub fn clone_buf(src: i64) -> i64 {
 }
 
 fn alloc_slot(b: OliveBytes) -> i64 {
-    BYTES_SLAB.with(|sl| {
-        let sl = unsafe { &mut *sl.get() };
+    with_bytes_slab(|sl| {
         let (body, _) = sl.alloc();
         unsafe {
             std::ptr::write(body as *mut OliveBytes, b);
@@ -435,31 +472,28 @@ pub extern "C" fn olive_buf_getslice(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_buf_free(buf: i64) {
-    if buf == 0 || !crate::slab::ptr_in_slab_span(buf) {
+    if !crate::slab::slot_is_live(buf) {
         return;
     }
-    let is_ours = BYTES_SLAB.with(|sl| unsafe { (*sl.get()).owns_addr(buf as usize) });
-    if !is_ours {
+    let Some(is_global) = crate::slab::slab_membership(buf) else {
         return;
-    }
-    if crate::slab::slot_is_live(buf) {
-        unsafe {
-            let b = &mut *(buf as *mut OliveBytes);
-            if b.py.is_null() {
-                drop(b.take_vec());
-            } else {
-                let py = b.py;
-                b.py = std::ptr::null_mut();
-                b.ptr = std::ptr::null_mut();
-                b.len = 0;
-                b.cap = 0;
-                crate::python::olive_py_backing_release(py);
-            }
+    };
+    let release = |sl: &mut GenSlab| {
+        if !sl.owns_addr(buf as usize) {
+            return None;
         }
-    }
-    BYTES_SLAB.with(|sl| {
-        unsafe { &mut *sl.get() }.free(buf as *mut u8);
-    });
+        let storage = unsafe { std::ptr::replace(buf as *mut OliveBytes, OliveBytes::empty()) };
+        sl.free(buf as *mut u8);
+        Some(storage)
+    };
+    let storage = if is_global {
+        crate::slab::with_escape_arena(|| with_bytes_slab(release))
+    } else {
+        with_bytes_slab(release)
+    };
+    // Releasing Python backing can acquire the GIL. Never hold the escape
+    // arena lock across that operation.
+    drop(storage);
 }
 
 fn read_bytes<const N: usize>(buf: i64, offset: i64) -> Option<[u8; N]> {

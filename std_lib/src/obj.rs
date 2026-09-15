@@ -4,7 +4,12 @@ use std::cell::UnsafeCell;
 
 thread_local! {
     static OBJ_SLAB: UnsafeCell<GenSlab> =
-        const { UnsafeCell::new(GenSlab::new(std::mem::size_of::<OliveObj>())) };
+        const { UnsafeCell::new(GenSlab::with_cleanup(std::mem::size_of::<OliveObj>(), release_obj_storage)) };
+}
+
+pub(crate) unsafe fn release_obj_storage(body: *mut u8) {
+    let obj = unsafe { &mut *(body as *mut OliveObj) };
+    drop(std::mem::take(&mut obj.fields));
 }
 
 #[unsafe(no_mangle)]
@@ -356,6 +361,13 @@ pub(crate) fn free_obj_slot_raw(ptr: i64) {
 /// `known_global` skips the chunk lookup when the caller already classified
 /// `ptr` a moment ago (e.g. `olive_free_obj`'s own span check).
 pub(crate) fn free_obj_slot_raw_with(ptr: i64, known_global: Option<bool>) {
+    if !crate::slab::slot_is_live(ptr) {
+        return;
+    }
+    #[cfg(debug_assertions)]
+    unsafe {
+        release_obj_storage(ptr as *mut u8);
+    }
     let is_global = known_global.unwrap_or_else(|| crate::slab::chunk_is_global(ptr as usize));
     if is_global {
         crate::slab::with_escape_arena(|| free_obj_slot_raw_local(ptr));
@@ -385,7 +397,10 @@ pub extern "C" fn olive_dict_new_reuse(old_ptr: i64, bump: i64) -> i64 {
     if bump != 0 {
         unsafe {
             let gen_ptr = (old_ptr as *mut std::sync::atomic::AtomicU64).sub(1);
-            let g = (*gen_ptr).load(std::sync::atomic::Ordering::Relaxed) + 2;
+            let g = crate::slab::advance_generation(
+                (*gen_ptr).load(std::sync::atomic::Ordering::Relaxed),
+                2,
+            );
             (*gen_ptr).store(g, std::sync::atomic::Ordering::Release);
         }
     }

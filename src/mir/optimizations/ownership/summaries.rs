@@ -124,6 +124,16 @@ pub fn compute_param_escapes(functions: &[MirFunction]) -> HashMap<String, Vec<b
             let updated = params_escaping(func, &escapes);
             let entry = escapes.get_mut(&func.name).unwrap();
             for (i, e) in updated.iter().enumerate() {
+                // Runtime-managed async inputs are copied by the wrapper.
+                // Foreign struct parameters retain their existing borrow contract.
+                if func.is_async
+                    && !matches!(
+                        crate::semantic::type_descriptor::concrete_ty(&func.locals[i + 1].ty),
+                        crate::semantic::types::Type::Struct(_, _, true)
+                    )
+                {
+                    continue;
+                }
                 if *e && !entry[i] {
                     entry[i] = true;
                     changed = true;
@@ -240,7 +250,7 @@ pub fn compute_borrowed_returns(functions: &[MirFunction]) -> HashSet<String> {
     loop {
         let mut changed = false;
         for func in functions {
-            if borrowed.contains(&func.name) {
+            if func.is_async || borrowed.contains(&func.name) {
                 continue;
             }
             if returns_borrow(func, &borrowed) {

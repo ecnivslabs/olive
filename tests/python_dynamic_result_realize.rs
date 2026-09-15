@@ -150,6 +150,31 @@ fn assert_both_succeed(src: &str, expected: &str) {
 }
 
 #[test]
+fn bytes_result_survives_nested_async_tasks() {
+    assert_both_succeed(
+        r#"import py "drhelper" as h
+
+async fn make() -> bytes:
+    let data: bytes = h.make_bytes()
+    return data
+
+async fn forward() -> bytes:
+    let data = await make()
+    return data
+
+fn main():
+    let data = await forward()
+    print(len(data))
+    print(data[0])
+    print(data[4])
+
+main()
+"#,
+        "5\n104\n111\n",
+    );
+}
+
+#[test]
 fn dynamic_module_call_bytes_result_realizes_correctly() {
     assert_both_succeed(
         r#"import py "drhelper" as h

@@ -89,15 +89,25 @@ impl<'a> MirBuilder<'a> {
                     ty
                 };
                 let local = self.declare_var(param.name.clone(), ty, param.is_mut);
-                self.current_locals[local.0].is_owning = false;
+                self.current_locals[local.0].is_owning = *is_async
+                    && !matches!(
+                        crate::semantic::type_descriptor::concrete_ty(
+                            &self.current_locals[local.0].ty
+                        ),
+                        Type::Struct(_, _, true)
+                    );
                 param_locals.push(local);
             }
 
-            // Captures are trailing params aliasing the caller's value (copied in);
-            // the callee never owns or drops them.
+            // Async wrappers own runtime-managed params and captures. Foreign
+            // struct layouts have no descriptor-driven copy and remain borrowed.
             for cap in &captures {
                 let local = self.declare_var(cap.name.clone(), cap.ty.clone(), false);
-                self.current_locals[local.0].is_owning = false;
+                self.current_locals[local.0].is_owning = *is_async
+                    && !matches!(
+                        crate::semantic::type_descriptor::concrete_ty(&cap.ty),
+                        Type::Struct(_, _, true)
+                    );
             }
             self.current_arg_count += captures.len();
 

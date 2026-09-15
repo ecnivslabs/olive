@@ -36,7 +36,9 @@ pub mod eq_typed;
 pub mod format;
 pub mod free_typed;
 pub mod hash_typed;
+mod index_any;
 pub mod io;
+pub use index_any::*;
 pub mod json;
 pub mod logging;
 pub mod math;
@@ -1157,129 +1159,6 @@ pub extern "C" fn olive_pow(base: i64, exp: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_pow_float(base: f64, exp: f64) -> f64 {
     base.powf(exp)
-}
-
-/// `len()` on a statically-`Any` value. Unlike indexing (`olive_get_index_any`),
-/// this used to be routed unconditionally to `olive_list_len`, which reads a
-/// `StableVec` header with no kind check -- a dict, or worse a tagged scalar
-/// immediate, made it dereference garbage. Mirrors the same tag/kind dispatch
-/// `olive_get_index_any` already does, plus a clean panic for scalars instead
-/// of a segfault.
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_len_any(obj: i64) -> i64 {
-    if obj == 0 {
-        return 0;
-    }
-    if obj & 1 != 0 {
-        return string::olive_str_len(obj);
-    }
-    if !is_active_object(obj) {
-        panic!("len() argument has no length (not a string, list, dict, set or bytes)");
-    }
-    let kind = unsafe { *(obj as *const i64) };
-    match kind {
-        KIND_LIST | KIND_ANY_LIST => olive_list_len(obj),
-        KIND_OBJ => obj::olive_obj_len(obj),
-        KIND_BYTES => bytes::olive_buf_len(obj),
-        KIND_PYOBJECT => python::olive_py_len(obj as python::PyObject),
-        _ => panic!("len() argument has no length (not a string, list, dict, set or bytes)"),
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_get_index_any(obj: i64, index: i64, loc: i64) -> i64 {
-    if obj == 0 {
-        panic::olive_nil_index_fail(loc);
-    }
-    if obj & 1 != 0 {
-        return string::olive_str_get_checked(obj, index, loc);
-    }
-    let kind = unsafe { *(obj as *const i64) };
-    match kind {
-        KIND_LIST | KIND_ANY_LIST => {
-            let len = olive_list_len(obj);
-            let effective = if index < 0 { index + len } else { index };
-            if effective < 0 || effective >= len {
-                panic::olive_bounds_fail(index, len, loc);
-            }
-            olive_list_get(obj, index)
-        }
-        KIND_OBJ => olive_obj_get_checked(obj, index, loc),
-        KIND_ENUM => olive_enum_get(obj, index),
-        KIND_BYTES => {
-            let len = bytes::olive_buf_len(obj);
-            let effective = if index < 0 { index + len } else { index };
-            if effective < 0 || effective >= len {
-                panic::olive_bounds_fail(index, len, loc);
-            }
-            bytes::olive_buf_get(obj, effective)
-        }
-        KIND_PYOBJECT => {
-            let key_obj = if index > 0x10000 && index & 1 != 0 {
-                python::olive_py_from_str(index)
-            } else {
-                python::olive_py_from_int(index)
-            };
-            let py_res = python::olive_py_getitem(obj as *mut std::ffi::c_void, key_obj);
-            python::olive_py_decref(key_obj);
-            // getitem returns a wrapped arena handle; unwrap before converting (py_to_olive reads ob_type).
-            let raw_res = unsafe { python::olive_py_unwrap(py_res) };
-            let olive_res = python::olive_py_conv_to_olive(raw_res);
-            python::olive_py_decref(py_res);
-            olive_res
-        }
-        _ => 0,
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn olive_set_index_any(obj: i64, index: i64, val: i64, loc: i64) {
-    if obj == 0 {
-        panic::olive_nil_index_fail(loc);
-    }
-    if obj & 1 != 0 {
-        return;
-    }
-    let kind = unsafe { *(obj as *const i64) };
-    match kind {
-        KIND_LIST | KIND_ANY_LIST => {
-            let len = olive_list_len(obj);
-            if index < 0 || index >= len {
-                panic::olive_bounds_fail(index, len, loc);
-            }
-            let old = list::olive_list_get(obj, index);
-            if is_active_object(old) {
-                olive_free_any(old);
-            }
-            olive_list_set(obj, index, val)
-        }
-        KIND_BYTES => {
-            let len = bytes::olive_buf_len(obj);
-            if index < 0 || index >= len {
-                panic::olive_bounds_fail(index, len, loc);
-            }
-            bytes::olive_buf_set(obj, index, val)
-        }
-        KIND_OBJ => {
-            let old = obj::olive_obj_get(obj, index);
-            if is_active_object(old) {
-                olive_free_any(old);
-            }
-            olive_obj_set(obj, index, val);
-        }
-        KIND_PYOBJECT => {
-            let key_obj = if index > 0x10000 && index & 1 != 0 {
-                python::olive_py_from_str(index)
-            } else {
-                python::olive_py_from_int(index)
-            };
-            let py_val = python::olive_py_conv_to_py(val);
-            python::olive_py_setitem(obj as *mut std::ffi::c_void, key_obj, py_val);
-            python::olive_py_decref(key_obj);
-            python::olive_py_decref(py_val);
-        }
-        _ => {}
-    }
 }
 
 #[unsafe(no_mangle)]

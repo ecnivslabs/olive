@@ -200,7 +200,6 @@ impl<'a> MirBuilder<'a> {
             None => (self.lower_expr(value), self.get_type(value.id).clone()),
         };
         rval = self.coerce(rval, &value_ty, &target_ty, value.span);
-        self.transfer_temp_ownership(&rval);
         match &target.kind {
             ExprKind::Identifier(name) => {
                 if let Some(local) = self.lookup_var(name) {
