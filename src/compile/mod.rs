@@ -230,7 +230,7 @@ pub fn compile_and_emit(
     });
 
     if pymodule {
-        link_shared_object(&obj_path, output, &out.native_libs);
+        link_shared_object(&obj_path, output, &out.native_libs, module_name);
     } else {
         link_object(&obj_path, output, &out.native_libs);
     }

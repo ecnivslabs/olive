@@ -226,11 +226,21 @@ fn lib_link_arg(name: &str) -> String {
 }
 
 pub fn link_object(obj_path: &str, out: &str, native_libs: &[NativeLibRef]) {
-    link_object_impl(obj_path, out, native_libs, false)
+    link_object_impl(obj_path, out, native_libs, false, None)
 }
 
-pub fn link_shared_object(obj_path: &str, out: &str, native_libs: &[NativeLibRef]) {
-    link_object_impl(obj_path, out, native_libs, true)
+/// Link a Python extension module. `module_name` selects the `PyInit_<name>`
+/// entry point MSVC must export: unlike GNU ld, `link.exe /DLL` exports
+/// nothing unless a symbol is marked `dllexport` or named with `/EXPORT`,
+/// and `/OPT:REF` would otherwise discard the init function as unreferenced.
+pub fn link_shared_object(
+    obj_path: &str,
+    out: &str,
+    native_libs: &[NativeLibRef],
+    module_name: Option<&str>,
+) {
+    let export = module_name.map(|name| format!("PyInit_{name}"));
+    link_object_impl(obj_path, out, native_libs, true, export.as_deref())
 }
 
 fn is_gnu_link(cmd_name: &str) -> bool {
@@ -286,7 +296,13 @@ fn get_msvc_linker_cmd() -> (std::process::Command, bool) {
     (std::process::Command::new("link.exe"), true)
 }
 
-fn link_object_impl(obj_path: &str, out: &str, native_libs: &[NativeLibRef], shared: bool) {
+fn link_object_impl(
+    obj_path: &str,
+    out: &str,
+    native_libs: &[NativeLibRef],
+    shared: bool,
+    shared_export: Option<&str>,
+) {
     let static_dir = find_static_library_dir();
     let used_static_link = static_dir.is_some();
     let is_msvc_env = cfg!(target_env = "msvc");
@@ -300,6 +316,9 @@ fn link_object_impl(obj_path: &str, out: &str, native_libs: &[NativeLibRef], sha
 
             if shared {
                 c.arg("/DLL");
+                if let Some(export) = shared_export {
+                    c.arg(format!("/EXPORT:{export}"));
+                }
             }
 
             if let Some(dir) = static_dir {
@@ -382,8 +401,20 @@ fn link_object_impl(obj_path: &str, out: &str, native_libs: &[NativeLibRef], sha
             ] {
                 c.arg(sys_lib);
             }
+            // `tungstenite`'s native-tls backend pulls Security and
+            // CoreFoundation symbols out of the static archive; `rustc`
+            // supplies these frameworks automatically when it drives the
+            // link, so name them explicitly here too.
             #[cfg(target_os = "macos")]
-            for sys_lib in ["-lm", "-lpthread", "-ldl"] {
+            for sys_lib in [
+                "-lm",
+                "-lpthread",
+                "-ldl",
+                "-framework",
+                "CoreFoundation",
+                "-framework",
+                "Security",
+            ] {
                 c.arg(sys_lib);
             }
             // `cc` is never MSVC's link.exe here (MSVC ships no binary named `cc`) --
