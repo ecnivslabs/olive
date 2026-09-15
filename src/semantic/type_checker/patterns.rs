@@ -17,6 +17,7 @@ impl TypeChecker {
             Type::Set(inner) => *inner,
             Type::Dict(k, _) => *k,
             Type::Str => Type::Str,
+            Type::Bytes => Type::Int,
             Type::Tuple(elems) => {
                 if elems.is_empty() {
                     Type::Any

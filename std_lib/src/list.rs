@@ -1461,6 +1461,10 @@ pub extern "C" fn olive_has_next(iter_ptr: i64) -> i64 {
         it.has_peeked = true;
         return if it.py_peeked != 0 { 1 } else { 0 };
     }
+    if unsafe { *(it.list_ptr as *const i64) } == crate::KIND_BYTES {
+        let bytes = unsafe { &*(it.list_ptr as *const crate::bytes::OliveBytes) };
+        return (it.index < bytes.len as usize) as i64;
+    }
     let s = unsafe { &*(it.list_ptr as *const StableVec) };
     if it.index < s.len { 1 } else { 0 }
 }
@@ -1483,13 +1487,24 @@ pub extern "C" fn olive_next(iter_ptr: i64) -> i64 {
         }
         return crate::python::python_iter::olive_py_iter_next(it.list_ptr as *mut libc::c_void);
     }
-    let s = unsafe { &*(it.list_ptr as *const StableVec) };
-    if it.index < s.len {
-        let val = unsafe { *s.ptr.add(it.index) };
-        it.index += 1;
-        val
+    if unsafe { *(it.list_ptr as *const i64) } == crate::KIND_BYTES {
+        let bytes = unsafe { &*(it.list_ptr as *const crate::bytes::OliveBytes) };
+        if it.index < bytes.len as usize {
+            let value = unsafe { *bytes.ptr.add(it.index) } as i64;
+            it.index += 1;
+            value
+        } else {
+            0
+        }
     } else {
-        0
+        let s = unsafe { &*(it.list_ptr as *const StableVec) };
+        if it.index < s.len {
+            let val = unsafe { *s.ptr.add(it.index) };
+            it.index += 1;
+            val
+        } else {
+            0
+        }
     }
 }
 

@@ -372,6 +372,7 @@ impl TypeChecker {
         }
         match t {
             Type::Str => Type::Str,
+            Type::Bytes => Type::Int,
             Type::List(e) | Type::Set(e) => *e,
             Type::Dict(k, _) => *k,
             _ => Type::Any,

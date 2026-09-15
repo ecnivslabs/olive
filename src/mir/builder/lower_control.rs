@@ -367,6 +367,7 @@ impl<'a> MirBuilder<'a> {
             let next_is_owning = matches!(inner_iter_ty, Type::Str);
             let elem_ty = match inner_iter_ty {
                 Type::Str => Type::Str,
+                Type::Bytes => Type::Int,
                 Type::List(t) | Type::Set(t) => *t,
                 Type::Dict(k, _) => *k,
                 _ => Type::Any,
@@ -810,6 +811,7 @@ impl<'a> MirBuilder<'a> {
         let next_is_owning = matches!(iter_ty, Type::Str);
         let elem_ty = match iter_ty {
             Type::Str => Type::Str,
+            Type::Bytes => Type::Int,
             Type::List(t) | Type::Set(t) => *t,
             Type::Dict(k, _) => *k,
             _ => Type::Any,
@@ -1142,6 +1144,7 @@ impl<'a> MirBuilder<'a> {
         }
         match t {
             Type::Str => Type::Str,
+            Type::Bytes => Type::Int,
             Type::List(inner) | Type::Set(inner) => *inner.clone(),
             Type::Dict(k, _) => *k.clone(),
             _ => Type::Any,
