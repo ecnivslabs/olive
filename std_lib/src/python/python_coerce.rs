@@ -1152,17 +1152,8 @@ unsafe fn py_to_typed_dict_key_internal(item: PyObject, key_tag: i64) -> Option<
                 let value = py_str_to_olive(item);
                 return (value != 0).then_some((value, true));
             }
-            let safe_builtin = item == _PY_NONE_STRUCT
-                || ty == PY_LONG_TYPE
-                || ty == PY_FLOAT_TYPE
-                || ty == PY_BOOL_TYPE
-                || ty == PY_BYTES_TYPE;
-            if !safe_builtin {
-                return None;
-            }
             let text = PY_OBJECT_STR(item);
             if text.is_null() {
-                PY_ERR_CLEAR();
                 return None;
             }
             let value = py_str_to_olive(text);
@@ -1243,11 +1234,11 @@ pub unsafe fn olive_py_to_dict_tagged_internal(
         for index in 0..entries.len() {
             let (key_obj, val_obj) = entries[index];
             let Some((key_ptr, key_owned)) = py_to_typed_dict_key_internal(key_obj, key_tag) else {
-                if !PY_ERR_OCCURRED().is_null() {
-                    PY_ERR_CLEAR();
-                }
                 crate::olive_free_any(olive_obj);
                 decref_dict_snapshot_from(&mut entries, index);
+                if !PY_ERR_OCCURRED().is_null() {
+                    crate::python::python_error::handle_py_error();
+                }
                 crate::panic::abort_py_coerce("Python dictionary key has incompatible type");
             };
             let olive_val = if value_tag == 0 {
@@ -1261,11 +1252,11 @@ pub unsafe fn olive_py_to_dict_tagged_internal(
                         } else if key_tag == 6 {
                             crate::olive_free_any(key_ptr);
                         }
-                        if !PY_ERR_OCCURRED().is_null() {
-                            PY_ERR_CLEAR();
-                        }
                         crate::olive_free_any(olive_obj);
                         decref_dict_snapshot_from(&mut entries, index);
+                        if !PY_ERR_OCCURRED().is_null() {
+                            crate::python::python_error::handle_py_error();
+                        }
                         crate::panic::abort_py_coerce(
                             "Python dictionary value has incompatible type",
                         );

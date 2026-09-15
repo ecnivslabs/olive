@@ -57,14 +57,6 @@ unsafe fn py_to_string_key(value: PyObject) -> Option<i64> {
             let result = crate::python::python_coerce::py_str_to_olive(value);
             return (result != 0).then_some(result);
         }
-        let safe_builtin = value == _PY_NONE_STRUCT
-            || ty == PY_LONG_TYPE
-            || ty == PY_FLOAT_TYPE
-            || ty == PY_BOOL_TYPE
-            || ty == PY_BYTES_TYPE;
-        if !safe_builtin {
-            return None;
-        }
         let text = PY_OBJECT_STR(value);
         if text.is_null() {
             return None;

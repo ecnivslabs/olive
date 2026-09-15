@@ -132,8 +132,15 @@ class BadKey:
     def __str__(self):
         raise ValueError("boom")
 
+class StringKey:
+    def __str__(self):
+        return "k"
+
 def make_bad_dict():
     return {BadKey(): 7}
+
+def make_string_key_dict():
+    return {StringKey(): 7}
 
 def make_tuple():
     return (7, "seven")
@@ -487,6 +494,21 @@ fn main():
 main()
 "#,
         "ValueError",
+    );
+}
+
+#[test]
+fn custom_string_key_import_uses_python_string_conversion() {
+    assert_both_succeed(
+        r#"import py "drhelper" as h
+
+fn main():
+    let d: {str: int} = h.make_string_key_dict()
+    print(d["k"])
+
+main()
+"#,
+        "7\n",
     );
 }
 
