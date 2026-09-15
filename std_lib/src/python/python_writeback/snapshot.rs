@@ -49,14 +49,17 @@ pub(super) unsafe fn collect_dynamic_root(value: i64) -> Vec<NestedAnySnapshot> 
     let mut snapshots = Vec::new();
     let mut active = Vec::new();
     unsafe {
-        collect_dynamic(value, &mut Vec::new(), &mut snapshots, &mut active);
+        collect_dynamic(value, &mut Vec::new(), &mut snapshots, &mut active, true);
     }
     snapshots
 }
 
 pub(super) unsafe fn collect_dynamic_nested(value: i64) -> Vec<NestedAnySnapshot> {
-    let mut snapshots = collect_dynamic_root(value);
-    snapshots.retain(|snapshot| !snapshot.path.is_empty());
+    let mut snapshots = Vec::new();
+    let mut active = Vec::new();
+    unsafe {
+        collect_dynamic(value, &mut Vec::new(), &mut snapshots, &mut active, false);
+    }
     snapshots
 }
 
@@ -179,7 +182,7 @@ unsafe fn collect_descriptor(
             let lo = byte(descriptor, pos + 1) as usize;
             collect_descriptor(value, descriptor, (hi << 8) | lo, path, snapshots, active);
         }
-        D_ANY => collect_dynamic(value, path, snapshots, active),
+        D_ANY => collect_dynamic(value, path, snapshots, active, true),
         D_BYTES => {}
         _ => {}
     }
@@ -190,6 +193,7 @@ unsafe fn collect_dynamic(
     path: &mut Vec<PathSegment>,
     snapshots: &mut Vec<NestedAnySnapshot>,
     active: &mut Vec<i64>,
+    record_current: bool,
 ) {
     if value == 0 || !crate::slab::slot_is_live(value) || active.contains(&value) {
         return;
@@ -197,12 +201,14 @@ unsafe fn collect_dynamic(
     let kind = unsafe { *(value as *const i64) };
     match kind {
         crate::KIND_OBJ => {
-            record_any_dict(value, path, snapshots);
+            if record_current {
+                record_any_dict(value, path, snapshots);
+            }
             active.push(value);
             let object = unsafe { &*(value as *const crate::OliveObj) };
             for (key, &child) in &object.fields {
                 path.push(PathSegment::Dict(key.0));
-                collect_dynamic(child, path, snapshots, active);
+                collect_dynamic(child, path, snapshots, active, true);
                 path.pop();
             }
             active.pop();
@@ -212,7 +218,13 @@ unsafe fn collect_dynamic(
             let len = crate::olive_list_len(value);
             for index in 0..len {
                 path.push(PathSegment::Index(index as usize));
-                collect_dynamic(crate::olive_list_get(value, index), path, snapshots, active);
+                collect_dynamic(
+                    crate::olive_list_get(value, index),
+                    path,
+                    snapshots,
+                    active,
+                    true,
+                );
                 path.pop();
             }
             active.pop();
@@ -223,7 +235,7 @@ unsafe fn collect_dynamic(
             for index in 0..set.len {
                 let element = unsafe { *set.ptr.add(index) };
                 path.push(PathSegment::SetValue(element));
-                collect_dynamic(element, path, snapshots, active);
+                collect_dynamic(element, path, snapshots, active, true);
                 path.pop();
             }
             active.pop();

@@ -191,6 +191,7 @@ unsafe fn convert_collection_arg(
             _ => to_py_deep(val),
         };
         if py_obj.is_null() {
+            snapshot::release(&nested_snapshots);
             return py_obj;
         }
         let original_any =
