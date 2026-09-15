@@ -80,7 +80,7 @@ pub(crate) fn owns_list(v: i64) -> bool {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_list_new(len: i64) -> i64 {
-    let n = len as usize;
+    let n = len.max(0) as usize;
     let slab_alloc = |sl: &mut GenSlab| {
         let (body, fresh) = sl.alloc();
         let s = unsafe { &mut *(body as *mut StableVec) };
@@ -1539,6 +1539,13 @@ mod tests {
         assert_ne!(ptr, 0);
         let s = unsafe { &*(ptr as *const StableVec) };
         assert_eq!(s.len, 0);
+    }
+
+    #[test]
+    fn negative_length_creates_empty_list() {
+        let ptr = olive_list_new(-1);
+        assert_eq!(olive_list_len(ptr), 0);
+        olive_free_list(ptr);
     }
 
     #[test]
