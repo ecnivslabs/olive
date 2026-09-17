@@ -58,13 +58,7 @@ pub extern "C" fn olive_regex_match(pattern: i64, text: i64) -> i64 {
     let pat = olive_str_from_ptr(pattern);
     let txt = olive_str_from_ptr(text);
     match compiled(&pat) {
-        Some(re) => {
-            if re.is_match(&txt) {
-                1
-            } else {
-                0
-            }
-        }
+        Some(re) => i64::from(re.is_match(&txt)),
         None => 0,
     }
 }
