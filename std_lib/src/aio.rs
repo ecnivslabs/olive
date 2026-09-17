@@ -9,7 +9,7 @@ use crate::StableVec;
 use std::collections::VecDeque;
 use std::sync::{
     Arc, Condvar, Mutex, OnceLock,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 struct OliveTask {
@@ -314,12 +314,24 @@ fn executor_complete(ex: &Arc<OliveExecutor>, task: &Arc<OliveTask>, result: i64
         crate::slab::ACTIVE_SLABS.set(old_active);
         delivered
     };
-    // The compiled completion path caches the raw result in the frame's
-    // sub-future slot for later re-polls (`olive_sm_poll` from gather/select,
-    // or a late await). Rewrite it with the arena-independent copy so every
-    // such harvester sees memory that outlives this task's arena.
+    // Ownership handoff on completion: the frame transfers to the executor,
+    // which caches the arena-independent result in the handle for later
+    // re-polls (`olive_sm_poll` from gather/select, or a late await) and
+    // releases heap frames. Stack/borrowed frames (never routed through
+    // `olive_sm_alloc`) stay live for the existing frame slot cache path.
+    // The handle stays owned by the creator, released via `olive_free_future`.
     let frame = sf.frame;
-    unsafe { *((frame + 8) as *mut i64) = delivered };
+    let frame_size = sf.frame_size;
+    let future_ptr = task.sm_future;
+    unsafe {
+        *((frame + 8) as *mut i64) = delivered;
+        let f = &mut *(future_ptr as *mut OliveSmFuture);
+        f.cached = delivered;
+        if sm_live().lock().unwrap().contains(&frame) {
+            olive_sm_free(frame, frame_size);
+            f.frame = 0;
+        }
+    };
 
     for c in std::mem::take(&mut *task.completions.lock().unwrap()) {
         *c.result.lock().unwrap() = Some(delivered);
@@ -346,6 +358,54 @@ struct OliveSmFuture {
     frame: i64,
     cancelled: i64,
     result_desc: i64,
+    frame_size: i64,
+    cached: i64,
+}
+
+/// Allocation counters for state machine frames and handles, backing the
+/// reclamation regression tests. Generated code routes both through
+/// `olive_sm_alloc`/`olive_sm_free` so JIT and AOT workloads share the
+/// same counted path as the Rust constructors below.
+static SM_ALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
+static SM_FREE_COUNT: AtomicUsize = AtomicUsize::new(0);
+static SM_LIVE: OnceLock<Mutex<std::collections::HashSet<i64>>> = OnceLock::new();
+
+fn sm_live() -> &'static Mutex<std::collections::HashSet<i64>> {
+    SM_LIVE.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_sm_alloc(size: i64) -> i64 {
+    let ptr = crate::olive_alloc(size) as i64;
+    SM_ALLOC_COUNT.fetch_add(1, Ordering::SeqCst);
+    sm_live().lock().unwrap().insert(ptr);
+    ptr
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_sm_free(ptr: i64, size: i64) {
+    if ptr == 0 {
+        return;
+    }
+    let owned = sm_live().lock().unwrap().remove(&ptr);
+    if !owned {
+        return;
+    }
+    SM_FREE_COUNT.fetch_add(1, Ordering::SeqCst);
+    unsafe {
+        std::alloc::dealloc(
+            ptr as *mut u8,
+            std::alloc::Layout::from_size_align(size as usize, 8).unwrap(),
+        );
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn sm_alloc_free_counts() -> (usize, usize) {
+    (
+        SM_ALLOC_COUNT.load(Ordering::SeqCst),
+        SM_FREE_COUNT.load(Ordering::SeqCst),
+    )
 }
 
 /// Debugger-only: the heap-frame pointer of the task logically awaiting the
@@ -389,7 +449,9 @@ pub extern "C" fn olive_sm_poll(future: i64, output: i64) -> i64 {
         Some(0)
     } else if unsafe { *(future as *const i64) } == KIND_SM_FUTURE {
         let f = unsafe { &*(future as *const OliveSmFuture) };
-        if f.cancelled != 0 && unsafe { *(f.frame as *const i64) } != -1 {
+        if f.frame == 0 {
+            Some(f.cached)
+        } else if f.cancelled != 0 && unsafe { *(f.frame as *const i64) } != -1 {
             None
         } else {
             let poll_fn: extern "C" fn(i64) -> i64 =
@@ -531,8 +593,20 @@ pub extern "C" fn olive_free_future(future: i64) -> i64 {
     if future == 0 {
         return 0;
     }
-    let f = unsafe { Box::from_raw(future as *mut OliveFuture) };
-    unsafe { Arc::from_raw(f.shared as *const FutureShared) };
+    let kind = unsafe { *(future as *const i64) };
+    if kind == KIND_SM_FUTURE {
+        let (frame, frame_size) = unsafe {
+            let f = &*(future as *const OliveSmFuture);
+            (f.frame, f.frame_size)
+        };
+        if frame != 0 {
+            olive_sm_free(frame, frame_size);
+        }
+        olive_sm_free(future, std::mem::size_of::<OliveSmFuture>() as i64);
+    } else {
+        let f = unsafe { Box::from_raw(future as *mut OliveFuture) };
+        unsafe { Arc::from_raw(f.shared as *const FutureShared) };
+    }
     0
 }
 
@@ -663,20 +737,35 @@ pub extern "C" fn olive_gather(futures_list: i64) -> i64 {
 
     let results_list = crate::list::list_from_vec(vec![0; n]);
 
-    let frame = Box::into_raw(Box::new(GatherFrame {
-        state: 0,
-        cached_result: 0,
-        futures_list,
-        results: results_list,
-    })) as i64;
+    let frame = olive_sm_alloc(std::mem::size_of::<GatherFrame>() as i64);
+    unsafe {
+        std::ptr::write(
+            frame as *mut GatherFrame,
+            GatherFrame {
+                state: 0,
+                cached_result: 0,
+                futures_list,
+                results: results_list,
+            },
+        );
+    }
 
-    Box::into_raw(Box::new(OliveSmFuture {
-        kind: KIND_SM_FUTURE,
-        poll_fn: olive_gather_poll as *const () as usize as i64,
-        frame,
-        cancelled: 0,
-        result_desc: 0,
-    })) as i64
+    let fut = olive_sm_alloc(std::mem::size_of::<OliveSmFuture>() as i64);
+    unsafe {
+        std::ptr::write(
+            fut as *mut OliveSmFuture,
+            OliveSmFuture {
+                kind: KIND_SM_FUTURE,
+                poll_fn: olive_gather_poll as *const () as usize as i64,
+                frame,
+                cancelled: 0,
+                result_desc: 0,
+                frame_size: std::mem::size_of::<GatherFrame>() as i64,
+                cached: 0,
+            },
+        );
+    }
+    fut
 }
 
 #[repr(C)]
@@ -710,18 +799,33 @@ pub extern "C" fn olive_select(futures_list: i64) -> i64 {
     if futures_list == 0 {
         return 0;
     }
-    let frame = Box::into_raw(Box::new(SelectFrame {
-        state: 0,
-        cached_result: 0,
-        futures_list,
-    })) as i64;
-    Box::into_raw(Box::new(OliveSmFuture {
-        kind: KIND_SM_FUTURE,
-        poll_fn: olive_select_poll as *const () as usize as i64,
-        frame,
-        cancelled: 0,
-        result_desc: 0,
-    })) as i64
+    let frame = olive_sm_alloc(std::mem::size_of::<SelectFrame>() as i64);
+    unsafe {
+        std::ptr::write(
+            frame as *mut SelectFrame,
+            SelectFrame {
+                state: 0,
+                cached_result: 0,
+                futures_list,
+            },
+        );
+    }
+    let fut = olive_sm_alloc(std::mem::size_of::<OliveSmFuture>() as i64);
+    unsafe {
+        std::ptr::write(
+            fut as *mut OliveSmFuture,
+            OliveSmFuture {
+                kind: KIND_SM_FUTURE,
+                poll_fn: olive_select_poll as *const () as usize as i64,
+                frame,
+                cancelled: 0,
+                result_desc: 0,
+                frame_size: std::mem::size_of::<SelectFrame>() as i64,
+                cached: 0,
+            },
+        );
+    }
+    fut
 }
 
 #[unsafe(no_mangle)]

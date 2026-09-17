@@ -112,7 +112,7 @@ pub(crate) fn drop_descriptor_type<'a>(
     }
 }
 
-static KNOWN_RUNTIME_IMPORTS: [&str; 660] = [
+static KNOWN_RUNTIME_IMPORTS: [&str; 662] = [
     "__olive_alloc",
     "__olive_any_add",
     "__olive_any_div",
@@ -650,6 +650,8 @@ static KNOWN_RUNTIME_IMPORTS: [&str; 660] = [
     "__olive_shadow_pop",
     "__olive_shadow_push",
     "__olive_signal_install_sigint",
+    "__olive_sm_alloc",
+    "__olive_sm_free",
     "__olive_sm_poll",
     "__olive_spawn_task",
     "__olive_stdin_read",
