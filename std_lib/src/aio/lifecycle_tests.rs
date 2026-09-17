@@ -241,6 +241,18 @@ fn gather_and_select_accept_minimum_integer_payloads() {
 }
 
 #[test]
+fn invalid_future_lists_are_safe() {
+    let _guard = CANCEL_LOCK.lock().unwrap();
+    let gathered = olive_gather(2);
+    let mut output = 0;
+    assert_eq!(olive_sm_poll(gathered, &mut output as *mut i64 as i64), 1);
+    assert_eq!(crate::olive_list_len(output), 0);
+    olive_free_future(gathered);
+    crate::olive_free_list(output);
+    assert_eq!(olive_select(2), 0);
+}
+
+#[test]
 fn empty_gather_returns_a_ready_future() {
     let _guard = CANCEL_LOCK.lock().unwrap();
     let gathered = olive_gather(0);

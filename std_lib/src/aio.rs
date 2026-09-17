@@ -693,6 +693,17 @@ pub extern "C" fn olive_async_file_write(path: i64, data: i64) -> i64 {
     Box::into_raw(f) as i64
 }
 
+fn future_list_len(list_ptr: i64) -> usize {
+    if list_ptr == 0 || !crate::slab::ptr_is_slab_body(list_ptr) {
+        return 0;
+    }
+    let kind = unsafe { *(list_ptr as *const i64) };
+    if kind != crate::KIND_LIST && kind != crate::KIND_ANY_LIST {
+        return 0;
+    }
+    unsafe { (*(list_ptr as *const StableVec)).len }
+}
+
 #[repr(C)]
 struct GatherFrame {
     state: i64,
@@ -708,14 +719,19 @@ pub extern "C" fn olive_gather_poll(frame: i64) -> i64 {
         return f.cached_result;
     }
 
-    let list = unsafe { (f.futures_list as *const StableVec).as_ref() };
-    let n = list.map_or(0, |list| list.len);
+    let n = future_list_len(f.futures_list);
+    if n == 0 {
+        f.state = -1;
+        f.cached_result = f.results;
+        return f.results;
+    }
+    let list = unsafe { &*(f.futures_list as *const StableVec) };
     let results_vec = unsafe { &*(f.results as *const StableVec) };
     let results = unsafe { std::slice::from_raw_parts_mut(results_vec.ptr, n) };
 
     let mut any_pending = false;
     for (i, res) in results.iter_mut().enumerate().take(n) {
-        let fut = unsafe { *list.unwrap().ptr.add(i) };
+        let fut = unsafe { *list.ptr.add(i) };
         if olive_sm_poll(fut, res as *mut i64 as i64) == 0 {
             any_pending = true;
         }
@@ -732,8 +748,7 @@ pub extern "C" fn olive_gather_poll(frame: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_gather(futures_list: i64) -> i64 {
-    let list = unsafe { (futures_list as *const StableVec).as_ref() };
-    let n = list.map_or(0, |list| list.len);
+    let n = future_list_len(futures_list);
 
     let results_list = crate::list::list_from_vec(vec![0; n]);
 
@@ -781,8 +796,13 @@ pub extern "C" fn olive_select_poll(frame: i64) -> i64 {
     if f.state == -1 {
         return f.cached_result;
     }
+    let n = future_list_len(f.futures_list);
+    if n == 0 {
+        f.state = -1;
+        f.cached_result = 0;
+        return 0;
+    }
     let list = unsafe { &*(f.futures_list as *const StableVec) };
-    let n = list.len;
 
     for i in 0..n {
         let fut = unsafe { *list.ptr.add(i) };
@@ -796,7 +816,7 @@ pub extern "C" fn olive_select_poll(frame: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_select(futures_list: i64) -> i64 {
-    if futures_list == 0 {
+    if future_list_len(futures_list) == 0 {
         return 0;
     }
     let frame = olive_sm_alloc(std::mem::size_of::<SelectFrame>() as i64);
