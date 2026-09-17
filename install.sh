@@ -26,7 +26,9 @@ if [ "$OS" = "windows" ]; then
   ARTIFACT="${BIN}-${OS}-${ARCH}.exe"
   BIN_FILE="${BIN}.exe"
   LIB_ARTIFACT="libolive_std-${OS}-${ARCH}.dll"
-  LIB_FILE="libolive_std.dll"
+  LIB_FILE="olive_std.dll"
+  STATIC_ARTIFACT="olive_std-${OS}-${ARCH}.lib"
+  STATIC_FILE="olive_std.lib"
 elif [ "$OS" = "macos" ]; then
   ARTIFACT="${BIN}-${OS}-${ARCH}"
   BIN_FILE="${BIN}"
@@ -51,7 +53,11 @@ echo "Downloading olive ${TAG} for ${OS}/${ARCH}..."
 curl -sSfL "$DOWNLOAD_URL" -o "${TMP}/${BIN_FILE}" || die "download failed: $DOWNLOAD_URL"
 chmod +x "${TMP}/${BIN_FILE}"
 echo "Downloading stdlib..."
-curl -sSfL "$LIB_DOWNLOAD_URL" -o "${TMP}/${LIB_FILE}" || echo "  Warning: could not download stdlib artifact. You may need to build it from source."
+curl -sSfL "$LIB_DOWNLOAD_URL" -o "${TMP}/${LIB_FILE}" || die "download failed: $LIB_DOWNLOAD_URL"
+if [ "$OS" = "windows" ]; then
+  STATIC_DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}/${STATIC_ARTIFACT}"
+  curl -sSfL "$STATIC_DOWNLOAD_URL" -o "${TMP}/${STATIC_FILE}" || die "download failed: $STATIC_DOWNLOAD_URL"
+fi
 echo "Downloading stdlib source..."
 SOURCE_URL="https://github.com/${REPO}/archive/refs/tags/${TAG}.tar.gz"
 curl -sSfL "$SOURCE_URL" -o "${TMP}/source.tar.gz" || echo "  Warning: could not download stdlib source."
@@ -61,6 +67,9 @@ if [ -f "${TMP}/${LIB_FILE}" ]; then
   LIB_INSTALL_DIR="$(dirname "$INSTALL_DIR")/lib"
   mkdir -p "$LIB_INSTALL_DIR"
   mv "${TMP}/${LIB_FILE}" "${LIB_INSTALL_DIR}/${LIB_FILE}"
+  if [ "$OS" = "windows" ]; then
+    mv "${TMP}/${STATIC_FILE}" "${LIB_INSTALL_DIR}/${STATIC_FILE}"
+  fi
 fi
 if [ -f "${TMP}/source.tar.gz" ]; then
   STDLIB_SRC_DIR="$(dirname "$INSTALL_DIR")/lib/olive"
@@ -71,6 +80,7 @@ if [ -f "${TMP}/source.tar.gz" ]; then
 fi
 echo "Installed: ${INSTALL_DIR}/${BIN_FILE}"
 [ -f "$(dirname "$INSTALL_DIR")/lib/${LIB_FILE}" ] && echo "Installed: $(dirname "$INSTALL_DIR")/lib/${LIB_FILE}"
+[ "$OS" = "windows" ] && [ -f "$(dirname "$INSTALL_DIR")/lib/${STATIC_FILE}" ] && echo "Installed: $(dirname "$INSTALL_DIR")/lib/${STATIC_FILE}"
 [ -d "$(dirname "$INSTALL_DIR")/lib/olive" ] && echo "Installed stdlib source to: $(dirname "$INSTALL_DIR")/lib/olive"
 
 case ":${PATH}:" in

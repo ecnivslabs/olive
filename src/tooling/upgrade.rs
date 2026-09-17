@@ -31,6 +31,14 @@ fn target_lib_file() -> Option<String> {
     target::local_name("olive_std")
 }
 
+fn target_static_asset() -> Option<String> {
+    target::static_asset_name("olive_std", target::host()?)
+}
+
+fn target_static_file() -> Option<String> {
+    target::local_static_name("olive_std", target::host()?)
+}
+
 fn fetch_latest_tag() -> Result<String, String> {
     let url = format!(
         "https://api.github.com/repos/{}/releases/latest",
@@ -151,6 +159,20 @@ pub fn upgrade() -> Result<(), String> {
     let lib_buf = download_artifact(&client, &lib_url)?;
     verify_blake3(&lib_buf, &lib_artifact, &checksums)?;
 
+    let static_asset = target_static_asset();
+    let static_file = target_static_file();
+    let static_buf = if let (Some(static_asset), Some(_)) = (&static_asset, &static_file) {
+        let static_url = format!(
+            "https://github.com/{}/releases/download/{}/{}",
+            repo, latest, static_asset
+        );
+        let buf = download_artifact(&client, &static_url)?;
+        verify_blake3(&buf, static_asset, &checksums)?;
+        Some(buf)
+    } else {
+        None
+    };
+
     let src_artifact = "olive-src.tar.gz";
     let source_url = format!(
         "https://github.com/{}/releases/download/{}/{}",
@@ -186,6 +208,13 @@ pub fn upgrade() -> Result<(), String> {
     let lib_path = lib_dir.join(&lib_file);
     let lib_tmp = lib_path.with_extension("tmp");
     fs::write(&lib_tmp, &lib_buf).map_err(|e| format!("could not write lib tmp file: {}", e))?;
+
+    let static_tmp = static_file
+        .as_ref()
+        .map(|file| lib_dir.join(file).with_extension("tmp"));
+    if let (Some(path), Some(buf)) = (&static_tmp, &static_buf) {
+        fs::write(path, buf).map_err(|e| format!("could not write static lib tmp file: {}", e))?;
+    }
 
     let stdlib_tmp_dir = stdlib_src_dir.with_extension("tmp");
     let _ = fs::remove_dir_all(&stdlib_tmp_dir);
@@ -248,6 +277,23 @@ pub fn upgrade() -> Result<(), String> {
         format!("could not swap lib file: {}", e)
     })?;
 
+    if let Some(static_path) = static_file.as_ref().map(|file| lib_dir.join(file)) {
+        let old_static_path = static_path.with_extension("old");
+        let _ = fs::remove_file(&old_static_path);
+        if static_path.exists()
+            && let Err(e) = fs::rename(&static_path, &old_static_path)
+        {
+            return Err(format!("could not move old static lib file: {}", e));
+        }
+        let static_tmp_path = static_path.with_extension("tmp");
+        if let Err(e) = fs::rename(&static_tmp_path, &static_path) {
+            let _ = fs::rename(&old_static_path, &static_path);
+            let _ = fs::rename(&old_lib_path, &lib_path);
+            let _ = fs::rename(&old_stdlib_dir, &stdlib_src_dir);
+            return Err(format!("could not swap static lib file: {}", e));
+        }
+    }
+
     #[cfg(windows)]
     {
         let old_exe = current_exe.with_extension("old");
@@ -259,6 +305,9 @@ pub fn upgrade() -> Result<(), String> {
 
     let _ = fs::remove_dir_all(&old_stdlib_dir);
     let _ = fs::remove_file(&old_lib_path);
+    if let Some(static_path) = static_file.as_ref().map(|file| lib_dir.join(file)) {
+        let _ = fs::remove_file(static_path.with_extension("old"));
+    }
 
     // Clean up legacy/shadowing library in bin directory if present
     let bin_lib_path = install_dir.join(lib_file);
@@ -305,6 +354,24 @@ mod tests {
     fn target_lib_file_format() {
         let file = target_lib_file().unwrap();
         assert!(file.starts_with("libolive_std"));
+    }
+
+    #[test]
+    fn target_static_names_match_release_layout() {
+        assert_eq!(
+            target::static_asset_name("olive_std", "windows-x86_64").unwrap(),
+            "olive_std-windows-x86_64.lib"
+        );
+        assert_eq!(
+            target::local_static_name("olive_std", "windows-x86_64").unwrap(),
+            "olive_std.lib"
+        );
+        if let Some(key) = target::host() {
+            assert_eq!(
+                target_static_asset(),
+                target::static_asset_name("olive_std", key)
+            );
+        }
     }
 
     #[test]

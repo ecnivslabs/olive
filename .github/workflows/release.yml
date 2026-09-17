@@ -130,7 +130,19 @@ jobs:
 
       - name: Rename library (Windows)
         if: runner.os == 'Windows'
-        run: cp target/${{ matrix.target }}/release/olive_std.dll $(echo ${{ matrix.artifact }} | sed 's/pit/libolive_std/' | sed 's/\.exe//').dll
+        shell: pwsh
+        run: |
+          $artifact = '${{ matrix.artifact }}'
+          $dllName = $artifact -replace '^pit-', 'libolive_std-' -replace '\.exe$', '.dll'
+          Copy-Item "target/${{ matrix.target }}/release/olive_std.dll" $dllName
+
+      - name: Rename static library (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $artifact = '${{ matrix.artifact }}'
+          $libName = $artifact -replace '^pit-', 'olive_std-' -replace '\.exe$', '.lib'
+          Copy-Item "target/${{ matrix.target }}/release/olive_std.lib" $libName
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -141,6 +153,7 @@ jobs:
             libolive_std-*.so
             libolive_std-*.dylib
             libolive_std-*.dll
+            olive_std-*.lib
 
   release:
     name: Create Release

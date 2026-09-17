@@ -46,13 +46,20 @@ pub fn asset_name(lib: &str, key: &str) -> Option<String> {
     Some(format!("lib{lib}-{key}.{}", dylib_ext(key)?))
 }
 
-/// The name a pod's native library is installed under locally, once the
-/// target suffix has been stripped, e.g. `libtokenizer.so` on Linux,
-/// `libtokenizer.dylib` on macOS, `libtokenizer.dll` on Windows. Resolved for
-/// the host, since this is only ever used to name a file already downloaded
-/// or built for this machine.
+/// The name a native library is installed under locally, once the target
+/// suffix has been stripped. Windows uses the toolchain's `name.dll` form;
+/// Unix platforms use `libname.so` or `libname.dylib`.
+pub fn local_name_for(lib: &str, key: &str) -> Option<String> {
+    let ext = dylib_ext(key)?;
+    if key.starts_with("windows-") {
+        Some(format!("{lib}.{ext}"))
+    } else {
+        Some(format!("lib{lib}.{ext}"))
+    }
+}
+
 pub fn local_name(lib: &str) -> Option<String> {
-    Some(format!("lib{lib}.{}", dylib_ext(host()?)?))
+    local_name_for(lib, host()?)
 }
 
 /// MSVC import library asset name for a Windows target, e.g.
@@ -63,9 +70,30 @@ pub fn implib_asset_name(lib: &str, key: &str) -> Option<String> {
         .then(|| format!("lib{lib}-{key}.dll.lib"))
 }
 
+/// Local name for an installed Windows import library.
+pub fn local_implib_name_for(lib: &str, key: &str) -> Option<String> {
+    key.starts_with("windows-")
+        .then(|| format!("{lib}.dll.lib"))
+}
+
 /// Local name for the installed import library, only under the MSVC ABI.
 pub fn local_implib_name(lib: &str) -> Option<String> {
-    cfg!(target_env = "msvc").then(|| format!("lib{lib}.dll.lib"))
+    if cfg!(target_env = "msvc") {
+        local_implib_name_for(lib, host()?)
+    } else {
+        None
+    }
+}
+
+/// Release asset name for the static runtime archive on Windows targets.
+pub fn static_asset_name(lib: &str, key: &str) -> Option<String> {
+    key.starts_with("windows-")
+        .then(|| format!("{lib}-{key}.lib"))
+}
+
+/// Local filename for the static runtime archive on a Windows target.
+pub fn local_static_name(lib: &str, key: &str) -> Option<String> {
+    key.starts_with("windows-").then(|| format!("{lib}.lib"))
 }
 
 /// Filename a build tool actually produces for a `cdylib` named `lib` on this
@@ -134,6 +162,28 @@ mod tests {
     }
 
     #[test]
+    fn local_implib_name_matches_cargo_output() {
+        assert_eq!(
+            local_implib_name_for("tokenizer", "windows-x86_64").unwrap(),
+            "tokenizer.dll.lib"
+        );
+        assert_eq!(local_implib_name_for("tokenizer", "linux-x86_64"), None);
+    }
+
+    #[test]
+    fn static_runtime_names_match_windows_toolchain() {
+        assert_eq!(
+            static_asset_name("olive_std", "windows-x86_64").unwrap(),
+            "olive_std-windows-x86_64.lib"
+        );
+        assert_eq!(
+            local_static_name("olive_std", "windows-x86_64").unwrap(),
+            "olive_std.lib"
+        );
+        assert_eq!(static_asset_name("olive_std", "linux-x86_64"), None);
+    }
+
+    #[test]
     fn host_returns_a_supported_key_on_this_platform() {
         if let Some(key) = host() {
             assert!(SUPPORTED.contains(&key));
@@ -141,13 +191,25 @@ mod tests {
     }
 
     #[test]
+    fn local_name_uses_canonical_platform_prefix() {
+        assert_eq!(
+            local_name_for("tokenizer", "linux-x86_64").unwrap(),
+            "libtokenizer.so"
+        );
+        assert_eq!(
+            local_name_for("tokenizer", "macos-aarch64").unwrap(),
+            "libtokenizer.dylib"
+        );
+        assert_eq!(
+            local_name_for("tokenizer", "windows-x86_64").unwrap(),
+            "tokenizer.dll"
+        );
+    }
+
+    #[test]
     fn local_name_uses_host_extension() {
         let Some(key) = host() else { return };
-        let ext = dylib_ext(key).unwrap();
-        assert_eq!(
-            local_name("tokenizer").unwrap(),
-            format!("libtokenizer.{ext}")
-        );
+        assert_eq!(local_name("tokenizer"), local_name_for("tokenizer", key));
     }
 
     #[test]
