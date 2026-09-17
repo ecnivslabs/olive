@@ -106,7 +106,10 @@ pub extern "C" fn olive_obj_get_default_boxed_typed(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_set_add_typed(set_ptr: i64, val: i64, key_desc: i64) {
-    with_key_descriptor(key_desc, || crate::set::olive_set_add(set_ptr, val))
+    let inserted = with_key_descriptor(key_desc, || crate::set::set_try_add(set_ptr, val));
+    if !inserted && set_ptr != 0 {
+        crate::free_typed::olive_free_typed(val, key_desc);
+    }
 }
 
 #[unsafe(no_mangle)]
