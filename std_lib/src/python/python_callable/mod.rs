@@ -329,6 +329,11 @@ pub extern "C" fn olive_py_make_callable(record_ptr: i64, tags: i64) -> PyObject
             return std::ptr::null_mut();
         }
         let thunk_ptr = *((record_ptr as *const i64).add(1));
+        let desc_tagged = *((record_ptr as *const i64).add(2));
+        let desc = crate::string_slab::str_body(desc_tagged);
+        let source_record = record_ptr;
+        let record_ptr = crate::copy_typed::olive_relocate_typed(source_record, desc);
+        crate::free_typed::olive_free_typed(source_record, desc);
         let descriptor = Box::into_raw(Box::new(CallableDescriptor {
             record_ptr,
             thunk_ptr,
@@ -449,8 +454,8 @@ mod tests {
         }
     }
 
-    unsafe extern "C" fn add_one_thunk(env: i64) -> i64 {
-        env + 1
+    unsafe extern "C" fn add_one_thunk(_env: i64) -> i64 {
+        42
     }
 
     fn make_tags(arity: i64, params: &[i64], ret: i64) -> i64 {
@@ -514,9 +519,37 @@ mod tests {
                 PY_DEC_REF(res);
                 v
             });
-            // `add_one_thunk(env) = env + 1`, called with env = the
-            // record's own address: just checks the call reaches the thunk.
-            assert_eq!(result, record + 1);
+            assert_eq!(result, 42);
+            olive_py_decref(handle);
+        }
+    }
+
+    #[test]
+    fn callable_record_survives_task_slab_teardown() {
+        let _guard = pyobject_slab_test_lock();
+        if !is_python_available() {
+            eprintln!("Python not available, skipping test");
+            return;
+        }
+        unsafe {
+            let mut slabs = Box::new(crate::slab::SlabSet::new());
+            let old_active = crate::slab::ACTIVE_SLABS.get();
+            crate::slab::ACTIVE_SLABS.set(slabs.as_mut() as *mut crate::slab::SlabSet);
+            let record = make_record(add_one_thunk as *const c_void, &[]);
+            let handle = olive_py_make_callable(record, make_tags(0, &[], ARG_INT));
+            crate::slab::ACTIVE_SLABS.set(old_active);
+            drop(slabs);
+            assert!(!handle.is_null());
+
+            with_gil(|| {
+                let callable = olive_py_unwrap(handle);
+                let args = PY_TUPLE_NEW(0);
+                let result = PY_OBJECT_CALL_OBJECT(callable, args);
+                PY_DEC_REF(args);
+                assert!(!result.is_null());
+                assert_eq!(py_long_as_i64(result), 42);
+                PY_DEC_REF(result);
+            });
             olive_py_decref(handle);
         }
     }
