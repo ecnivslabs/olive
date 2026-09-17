@@ -172,7 +172,7 @@ const windowsArchs = release.archs.filter((a) => a.os === 'windows');
   .panel { max-width: 640px; margin: 60px auto 0; padding: 0 24px; }
   .os-tablist { display: inline-flex; gap: 4px; margin-bottom: 20px; }
   .os-tablist button, .arch-tablist button, .win-arch-tablist button {
-    font-family: var(--font-mono); font-size: 12.5px; padding: 7px 14px; border-radius: 4px;
+    font-family: var(--font-mono); font-size: 12.5px; padding: 7px 14px; border-radius: 0;
     background: none; border: 1px solid var(--border); color: var(--ink-muted); cursor: pointer;
   }
   .os-tablist button.active, .arch-tablist button.active, .win-arch-tablist button.active {
@@ -197,7 +197,7 @@ const windowsArchs = release.archs.filter((a) => a.os === 'windows');
   .arch-panel[hidden] { display: none; }
   .asset {
     font-family: var(--font-mono); font-size: 13px; background: var(--surface); border: 1px solid var(--border);
-    border-radius: 4px; padding: 8px 14px; display: inline-block;
+    border-radius: 0; padding: 8px 14px; display: inline-block;
   }
   .asset-inline { font-family: var(--font-mono); }
 
