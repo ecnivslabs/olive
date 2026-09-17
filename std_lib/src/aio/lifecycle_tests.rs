@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::atomic::AtomicUsize;
 
 enum ChildState {
     Pending,
@@ -247,4 +248,130 @@ fn empty_gather_returns_a_ready_future() {
         drop(Box::from_raw(future.frame as *mut GatherFrame));
     }
     crate::olive_free_list(output);
+}
+
+static CANCEL_COUNT: AtomicUsize = AtomicUsize::new(0);
+static CANCEL_LOCK: Mutex<()> = Mutex::new(());
+
+extern "C" fn counting_complete(frame: i64) -> i64 {
+    CANCEL_COUNT.fetch_add(1, Ordering::SeqCst);
+    unsafe {
+        *(frame as *mut i64) = -1;
+    }
+    42
+}
+
+extern "C" fn counting_suspend_once(frame: i64) -> i64 {
+    let state = unsafe { *(frame as *const i64) };
+    if state == 0 {
+        CANCEL_COUNT.fetch_add(1, Ordering::SeqCst);
+        unsafe {
+            *(frame as *mut i64) = 1;
+        }
+        super::POLL_PENDING
+    } else {
+        CANCEL_COUNT.fetch_add(1, Ordering::SeqCst);
+        unsafe {
+            *(frame as *mut i64) = -1;
+        }
+        42
+    }
+}
+
+fn test_executor() -> Arc<OliveExecutor> {
+    Arc::new(OliveExecutor {
+        ready: Mutex::new(VecDeque::new()),
+        wakeup: Condvar::new(),
+        task_map: Mutex::new(std::collections::HashMap::new()),
+    })
+}
+
+#[test]
+fn cancel_before_first_poll_runs_no_poll() {
+    let _guard = CANCEL_LOCK.lock().unwrap();
+    CANCEL_COUNT.store(0, Ordering::SeqCst);
+    let mut frame = [0i64, 0i64];
+    let mut future = OliveSmFuture {
+        kind: KIND_SM_FUTURE,
+        poll_fn: counting_complete as *const () as usize as i64,
+        frame: frame.as_mut_ptr() as i64,
+        cancelled: 0,
+        result_desc: 0,
+    };
+    let future_ptr = &mut future as *mut OliveSmFuture as i64;
+    let ex = test_executor();
+    let task = executor_get_or_create_task(&ex, future_ptr);
+    olive_cancel_future(future_ptr);
+    assert!(executor_drive(&ex, &task) == DriveOutcome::Completed);
+    assert_eq!(CANCEL_COUNT.load(Ordering::SeqCst), 0);
+    assert_eq!(frame[0], -1);
+    assert_eq!(frame[1], 0);
+    assert!(!ex.task_map.lock().unwrap().contains_key(&future_ptr));
+}
+
+#[test]
+fn cancel_after_suspension_runs_no_second_poll() {
+    let _guard = CANCEL_LOCK.lock().unwrap();
+    CANCEL_COUNT.store(0, Ordering::SeqCst);
+    let mut frame = [0i64, 0i64];
+    let mut future = OliveSmFuture {
+        kind: KIND_SM_FUTURE,
+        poll_fn: counting_suspend_once as *const () as usize as i64,
+        frame: frame.as_mut_ptr() as i64,
+        cancelled: 0,
+        result_desc: 0,
+    };
+    let future_ptr = &mut future as *mut OliveSmFuture as i64;
+    let ex = test_executor();
+    let task = executor_get_or_create_task(&ex, future_ptr);
+    assert!(executor_drive(&ex, &task) == DriveOutcome::Rerun);
+    assert_eq!(CANCEL_COUNT.load(Ordering::SeqCst), 1);
+    olive_cancel_future(future_ptr);
+    assert!(executor_drive(&ex, &task) == DriveOutcome::Completed);
+    assert_eq!(CANCEL_COUNT.load(Ordering::SeqCst), 1);
+    assert_eq!(frame[0], -1);
+}
+
+#[test]
+fn cancel_notifies_waiter_with_zero() {
+    let _guard = CANCEL_LOCK.lock().unwrap();
+    CANCEL_COUNT.store(0, Ordering::SeqCst);
+    let mut child_frame = [0i64, 0i64];
+    let mut child_future = OliveSmFuture {
+        kind: KIND_SM_FUTURE,
+        poll_fn: counting_complete as *const () as usize as i64,
+        frame: child_frame.as_mut_ptr() as i64,
+        cancelled: 0,
+        result_desc: 0,
+    };
+    let child_ptr = &mut child_future as *mut OliveSmFuture as i64;
+    let mut parent_frame = [0, child_ptr];
+    let mut parent_future = OliveSmFuture {
+        kind: KIND_SM_FUTURE,
+        poll_fn: 0,
+        frame: parent_frame.as_mut_ptr() as i64,
+        cancelled: 0,
+        result_desc: 0,
+    };
+    let parent_ptr = &mut parent_future as *mut OliveSmFuture as i64;
+    let ex = test_executor();
+    let parent = executor_get_or_create_task(&ex, parent_ptr);
+    let child = executor_get_or_create_task(&ex, child_ptr);
+    assert!(park_after_pending(&ex, &parent, &parent_future) == DriveOutcome::Parked);
+    olive_cancel_future(child_ptr);
+    assert!(executor_drive(&ex, &child) == DriveOutcome::Completed);
+    assert_eq!(CANCEL_COUNT.load(Ordering::SeqCst), 0);
+    assert_eq!(*parent.pending_result.lock().unwrap(), Some(0));
+}
+
+#[test]
+fn cancel_plain_future_unblocks_with_zero() {
+    let future = olive_make_future(0);
+    let shared = unsafe { &*((*(future as *const OliveFuture)).shared as *const FutureShared) };
+    *shared.state.lock().unwrap() = FutureState::Pending;
+    olive_cancel_future(future);
+    let mut output: i64 = 99;
+    assert_eq!(olive_sm_poll(future, &mut output as *mut i64 as i64), 1);
+    assert_eq!(output, 0);
+    olive_free_future(future);
 }

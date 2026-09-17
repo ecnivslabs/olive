@@ -133,6 +133,26 @@ fn executor_get_or_create_task(ex: &OliveExecutor, sm_future_ptr: i64) -> Arc<Ol
 /// the generated poll is not reentrant — both would resume from the same
 /// saved state and corrupt the frame. The loser of the flag re-enqueues; the
 /// winner clears the flag before parking or completing so no wakeup is lost.
+/// Cooperative cancellation contract: a task whose state machine future
+/// was marked via `olive_cancel_future` never polls again. The first drive
+/// after the mark (before any poll) and any resume after suspension both
+/// complete immediately with a zero payload, notifying waiters through the
+/// normal completion path so no parent hangs. Frame memory is reclaimed by
+/// the completion path; task slabs are dropped there as usual.
+fn task_cancelled(task: &Arc<OliveTask>) -> bool {
+    unsafe { &*(task.sm_future as *const OliveSmFuture) }.cancelled != 0
+}
+
+fn complete_cancelled(ex: &Arc<OliveExecutor>, task: &Arc<OliveTask>) -> DriveOutcome {
+    let frame = unsafe { &*(task.sm_future as *const OliveSmFuture) }.frame;
+    unsafe {
+        *(frame as *mut i64) = -1;
+        *((frame as *mut i64).add(1)) = 0;
+    }
+    task.driving.store(false, Ordering::SeqCst);
+    executor_complete(ex, task, 0)
+}
+
 fn executor_drive(ex: &Arc<OliveExecutor>, task: &Arc<OliveTask>) -> DriveOutcome {
     if task
         .driving
@@ -140,6 +160,10 @@ fn executor_drive(ex: &Arc<OliveExecutor>, task: &Arc<OliveTask>) -> DriveOutcom
         .is_err()
     {
         return DriveOutcome::Rerun;
+    }
+
+    if task_cancelled(task) {
+        return complete_cancelled(ex, task);
     }
 
     let slabs_ptr = {
@@ -178,6 +202,11 @@ fn executor_complete_waker(ex: &Arc<OliveExecutor>, task: &Arc<OliveTask>, resul
         // Mid-poll elsewhere; restore and let that poll's worker pick it up
         // on its next dequeue.
         *task.pending_result.lock().unwrap() = Some(result);
+        return;
+    }
+
+    if task_cancelled(task) {
+        complete_cancelled(ex, task);
         return;
     }
 
@@ -360,9 +389,14 @@ pub extern "C" fn olive_sm_poll(future: i64, output: i64) -> i64 {
         Some(0)
     } else if unsafe { *(future as *const i64) } == KIND_SM_FUTURE {
         let f = unsafe { &*(future as *const OliveSmFuture) };
-        let poll_fn: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(f.poll_fn as usize) };
-        let result = poll_fn(f.frame);
-        (unsafe { *(f.frame as *const i64) } == -1).then_some(result)
+        if f.cancelled != 0 && unsafe { *(f.frame as *const i64) } != -1 {
+            None
+        } else {
+            let poll_fn: extern "C" fn(i64) -> i64 =
+                unsafe { std::mem::transmute(f.poll_fn as usize) };
+            let result = poll_fn(f.frame);
+            (unsafe { *(f.frame as *const i64) } == -1).then_some(result)
+        }
     } else {
         let f = unsafe { &*(future as *const OliveFuture) };
         let shared = unsafe { &*(f.shared as *const FutureShared) };
@@ -468,14 +502,20 @@ pub extern "C" fn olive_spawn_task(callback: i64) -> i64 {
     });
     let shared2 = shared.clone();
 
-    // Result handoff via Mutex/Condvar.
+    // Result handoff via Mutex/Condvar. A concurrent cancel wins the race
+    // by moving Pending to Ready(0) first; the producer then releases its
+    // delivered copy instead of overwriting the cancellation.
     crate::debug::spawn_traced("olive-spawn-task", move || {
         let invoke: extern "C" fn(*const i64) -> i64 = unsafe { std::mem::transmute(fn_ptr) };
         let result = invoke(args.as_ptr());
         let delivered = crate::copy_typed::olive_relocate_typed(result, result_desc);
         crate::free_typed::olive_free_typed(result, result_desc);
         let mut state = shared2.state.lock().unwrap();
-        *state = FutureState::Ready(delivered);
+        if matches!(*state, FutureState::Pending) {
+            *state = FutureState::Ready(delivered);
+        } else {
+            crate::free_typed::olive_free_typed(delivered, result_desc);
+        }
         shared2.cvar.notify_all();
     });
 
@@ -523,7 +563,11 @@ pub extern "C" fn olive_async_file_read(path: i64) -> i64 {
             Err(_) => 0,
         };
         let mut state = shared2.state.lock().unwrap();
-        *state = FutureState::Ready(result);
+        if matches!(*state, FutureState::Pending) {
+            *state = FutureState::Ready(result);
+        } else {
+            crate::olive_free_str(result);
+        }
         shared2.cvar.notify_all();
     });
 
@@ -562,7 +606,9 @@ pub extern "C" fn olive_async_file_write(path: i64, data: i64) -> i64 {
             Err(_) => -1i64,
         };
         let mut state = shared2.state.lock().unwrap();
-        *state = FutureState::Ready(result);
+        if matches!(*state, FutureState::Pending) {
+            *state = FutureState::Ready(result);
+        }
         shared2.cvar.notify_all();
     });
 
@@ -687,6 +733,20 @@ pub extern "C" fn olive_cancel_future(future: i64) -> i64 {
     if kind == KIND_SM_FUTURE {
         let f = unsafe { &mut *(future as *mut OliveSmFuture) };
         f.cancelled = 1;
+        if let Some(ex) = EXECUTOR.get() {
+            let task = ex.task_map.lock().unwrap().get(&future).cloned();
+            if let Some(task) = task {
+                executor_enqueue(ex, &task);
+            }
+        }
+    } else if kind == KIND_FUTURE {
+        let f = unsafe { &*(future as *const OliveFuture) };
+        let shared = unsafe { &*(f.shared as *const FutureShared) };
+        let mut state = shared.state.lock().unwrap();
+        if matches!(*state, FutureState::Pending) {
+            *state = FutureState::Ready(0);
+            shared.cvar.notify_all();
+        }
     }
     0
 }
@@ -716,7 +776,11 @@ pub extern "C" fn olive_pool_run(fn_ptr: i64, arg: i64) -> i64 {
         // in; copy it into the process-lifetime arena first.
         let result = crate::copy_typed::relocate_across_boundary(f(arg));
         let mut state = shared2.state.lock().unwrap();
-        *state = FutureState::Ready(result);
+        if matches!(*state, FutureState::Pending) {
+            *state = FutureState::Ready(result);
+        } else {
+            crate::olive_free_any(result);
+        }
         shared2.cvar.notify_all();
     });
     Box::into_raw(Box::new(OliveFuture {
@@ -742,7 +806,11 @@ pub extern "C" fn olive_pool_run_sync(fn_ptr: i64, arg: i64) -> i64 {
         // the result from its own arena.
         let result = crate::copy_typed::relocate_across_boundary(f(arg));
         let mut state = shared2.state.lock().unwrap();
-        *state = FutureState::Ready(result);
+        if matches!(*state, FutureState::Pending) {
+            *state = FutureState::Ready(result);
+        } else {
+            crate::olive_free_any(result);
+        }
         shared2.cvar.notify_all();
     });
     let mut state = shared.state.lock().unwrap();
