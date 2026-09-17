@@ -153,7 +153,7 @@ fn skip_lp(desc: *const u8, pos: &mut usize) {
     *pos += 1 + len;
 }
 
-fn free_val(val: i64, desc: *const u8, pos: &mut usize) {
+pub(crate) fn free_val(val: i64, desc: *const u8, pos: &mut usize) {
     let tag = unsafe { byte(desc, *pos) };
     *pos += 1;
     match tag {
