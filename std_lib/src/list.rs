@@ -720,6 +720,17 @@ pub extern "C" fn olive_list_index_typed(list_ptr: i64, val: i64, loc: i64, desc
     0
 }
 
+/// Frees one generic element word, including tagged heap strings that the
+/// slab liveness check does not cover. Inline immediates stay no ops.
+#[inline]
+fn free_any_word(elem: i64) {
+    if crate::is_tagged_str_key(elem) {
+        crate::olive_free_str(elem);
+    } else if is_active_object(elem) {
+        olive_free_any(elem);
+    }
+}
+
 /// `xs.clear()`: empties the list in place (freeing owned elements), returns it.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_list_clear(ptr: i64) -> i64 {
@@ -729,9 +740,7 @@ pub extern "C" fn olive_list_clear(ptr: i64) -> i64 {
     let s = unsafe { &mut *(ptr as *mut StableVec) };
     for i in 0..s.len {
         let elem = unsafe { *s.ptr.add(i) };
-        if is_active_object(elem) {
-            olive_free_any(elem);
-        }
+        free_any_word(elem);
     }
     s.len = 0;
     ptr
@@ -742,32 +751,20 @@ pub extern "C" fn olive_list_extend(target: i64, source: i64) {
     if target == 0 || source == 0 {
         return;
     }
-    unsafe {
-        let st = &mut *(target as *mut StableVec);
-        let (sptr, slen) = if *(source as *const i64) == KIND_SET {
+    let words: Vec<i64> = unsafe {
+        if *(source as *const i64) == KIND_SET {
             // A set's element vector is its snapshot; read it directly.
             let s = &*(source as *const crate::OliveHashSet);
-            (s.ptr, s.len)
+            std::slice::from_raw_parts(s.ptr, s.len).to_vec()
         } else {
             let s = &*(source as *const StableVec);
-            (s.ptr, s.len)
-        };
-        // Self-extend must not hand `copy_nonoverlapping` two views of one
-        // buffer; snapshotting the words keeps the growth path uniform.
-        let snapshot: Option<Vec<i64>> = if sptr == st.ptr {
-            Some(std::slice::from_raw_parts(sptr, slen).to_vec())
-        } else {
-            None
-        };
-        let mut v = Vec::from_raw_parts(st.ptr, st.len, st.cap);
-        match &snapshot {
-            Some(words) => v.extend_from_slice(words),
-            None => v.extend_from_slice(std::slice::from_raw_parts(sptr, slen)),
+            std::slice::from_raw_parts(s.ptr, s.len).to_vec()
         }
-        st.ptr = v.as_mut_ptr();
-        st.cap = v.capacity();
-        st.len = v.len();
-        std::mem::forget(v);
+    };
+    let mut visited = rustc_hash::FxHashMap::default();
+    for w in words {
+        let copied = crate::copy_typed::copy_any(w, &mut visited);
+        crate::olive_list_append(target, copied);
     }
 }
 
@@ -787,9 +784,7 @@ pub extern "C" fn olive_free_list(ptr: i64) {
         if crate::slab::slot_is_live(ptr) {
             for i in 0..s.len {
                 let elem = *s.ptr.add(i);
-                if is_active_object(elem) {
-                    olive_free_any(elem);
-                }
+                free_any_word(elem);
             }
             settle_list_buffer(ptr);
         }
@@ -1285,5 +1280,61 @@ mod tests {
         assert_eq!(olive_has_next(it), 0);
         assert_eq!(olive_next(it), 0);
         olive_free_iter(it);
+    }
+
+    #[test]
+    fn clear_releases_tagged_strings() {
+        let ptr = olive_list_new(2);
+        let a = crate::olive_str_internal("alpha");
+        let b = crate::olive_str_internal("beta");
+        let ga = crate::string_slab::olive_str_gen_of(a);
+        let gb = crate::string_slab::olive_str_gen_of(b);
+        olive_list_set(ptr, 0, a);
+        olive_list_set(ptr, 1, b);
+        olive_list_clear(ptr);
+        assert_eq!(olive_list_len(ptr), 0);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(a, ga), 1);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(b, gb), 1);
+        olive_free_list(ptr);
+    }
+
+    #[test]
+    fn free_list_releases_tagged_strings() {
+        let ptr = olive_list_new(1);
+        let a = crate::olive_str_internal("gamma");
+        let ga = crate::string_slab::olive_str_gen_of(a);
+        olive_list_set(ptr, 0, a);
+        olive_free_list(ptr);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(a, ga), 1);
+    }
+
+    #[test]
+    fn chars_list_teardown_releases_chars() {
+        let s = crate::olive_str_internal("hi");
+        let chars = crate::string::olive_str_chars(s);
+        let first = olive_list_get(chars, 0);
+        let g = crate::string_slab::olive_str_gen_of(first);
+        olive_free_list(chars);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(first, g), 1);
+        crate::olive_free_str(s);
+    }
+
+    #[test]
+    fn extend_copies_string_elements() {
+        let source = olive_list_new(1);
+        let s = crate::olive_str_internal("shared");
+        let gs = crate::string_slab::olive_str_gen_of(s);
+        olive_list_set(source, 0, s);
+        let target = olive_list_new(0);
+        olive_list_extend(target, source);
+        let copied = olive_list_get(target, 0);
+        assert_ne!(copied, s);
+        assert_eq!(crate::olive_str_from_ptr(copied), "shared");
+        let gc = crate::string_slab::olive_str_gen_of(copied);
+        olive_free_list(source);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(s, gs), 1);
+        assert_eq!(crate::olive_str_from_ptr(copied), "shared");
+        olive_free_list(target);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(copied, gc), 1);
     }
 }
