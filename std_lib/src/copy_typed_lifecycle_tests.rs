@@ -42,7 +42,10 @@ fn self_update_releases_displaced_strings() {
     olive_obj_update_typed(target, target, desc);
 
     let old_released = crate::string_slab::olive_str_gen_stale(old, generation) == 1;
-    assert_eq!(crate::olive_str_from_ptr(olive_obj_get(target, 2)), "original");
+    assert_eq!(
+        crate::olive_str_from_ptr(olive_obj_get(target, 2)),
+        "original"
+    );
     olive_free_typed(target, desc);
     if !old_released {
         crate::olive_free_str(old);
