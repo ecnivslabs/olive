@@ -178,10 +178,10 @@ fn dominance_sets(cfg: &Cfg, num_blocks: usize) -> Vec<HashSet<BasicBlockId>> {
 
     let mut sets: Vec<HashSet<BasicBlockId>> =
         (0..num_blocks).map(|_| HashSet::default()).collect();
-    for b in 0..num_blocks {
+    for (b, set) in sets.iter_mut().enumerate() {
         let mut cur = b;
         loop {
-            sets[b].insert(BasicBlockId(cur));
+            set.insert(BasicBlockId(cur));
             match idom[cur] {
                 Some(d) if d != cur => cur = d,
                 _ => break,
@@ -465,9 +465,9 @@ mod tests {
         }
         let cfg = build_cfg(func);
         let mut dominators = vec![HashSet::default(); num_blocks];
-        for i in 0..num_blocks {
+        for dom in dominators.iter_mut() {
             for b in 0..num_blocks {
-                dominators[i].insert(BasicBlockId(b));
+                dom.insert(BasicBlockId(b));
             }
         }
         dominators[0] = [BasicBlockId(0)].into_iter().collect();
@@ -512,7 +512,7 @@ mod tests {
             // range and are chosen so entry reaches every block.
             let blocks: Vec<BasicBlock> = (0..n)
                 .map(|i| {
-                    let term = if i + 1 == n || rand(&mut seed) % 3 == 0 {
+                    let term = if i + 1 == n || rand(&mut seed).is_multiple_of(3) {
                         TerminatorKind::Return
                     } else {
                         // Forward edge to the next block keeps the graph

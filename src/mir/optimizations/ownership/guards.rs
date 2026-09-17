@@ -408,7 +408,7 @@ pub(super) fn apply_drop_guards(
     if targets.is_empty() {
         return false;
     }
-    targets.sort_unstable_by(|a, b| (b.0, b.1).cmp(&(a.0, a.1)));
+    targets.sort_unstable_by_key(|t| std::cmp::Reverse((t.0, t.1)));
     for (bb_idx, idx, l) in targets {
         guard_drop_with_flag(func, bb_idx, idx, flag_of[&l]);
     }

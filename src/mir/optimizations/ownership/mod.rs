@@ -787,12 +787,10 @@ fn find_drop_to_remove(
                     _ => {}
                 }
             }
-            if !stopped {
-                if let Some(term) = &func.basic_blocks[bb].terminator {
-                    for succ in term_successors(term) {
-                        if visited.insert(succ) {
-                            queue.push_back(succ);
-                        }
+            if !stopped && let Some(term) = &func.basic_blocks[bb].terminator {
+                for succ in term_successors(term) {
+                    if visited.insert(succ) {
+                        queue.push_back(succ);
                     }
                 }
             }

@@ -227,13 +227,11 @@ fn mangle_stmt(stmt: &mut Stmt, prefix: &str, names: &HashSet<String>, is_top_le
         StmtKind::FromImport {
             names: import_names,
             ..
-        } => {
-            if is_top_level {
-                for (name, alias) in import_names {
-                    let bound = alias.as_deref().unwrap_or(name.as_str());
-                    if names.contains(bound) {
-                        *alias = Some(format!("{}::{}", prefix, bound));
-                    }
+        } if is_top_level => {
+            for (name, alias) in import_names {
+                let bound = alias.as_deref().unwrap_or(name.as_str());
+                if names.contains(bound) {
+                    *alias = Some(format!("{}::{}", prefix, bound));
                 }
             }
         }

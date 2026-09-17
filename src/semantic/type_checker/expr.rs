@@ -67,8 +67,7 @@ impl TypeChecker {
     }
 
     fn check_expr_inner(&mut self, expr: &Expr) -> Type {
-        let ty = self.infer_expr(expr);
-        ty
+        self.infer_expr(expr)
     }
 
     /// Checks `expr` against an expected type, so a collection literal can adopt
@@ -870,7 +869,7 @@ impl TypeChecker {
                         // programmer initialize exactly one, so any single
                         // member (or a subset) is a valid construction.
                         let required = if is_ffi
-                            && self.c_ffi_structs.contains(&format!("{name}"))
+                            && self.c_ffi_structs.contains(name.as_str())
                             && self.c_struct_is_union.get(&name).copied().unwrap_or(false)
                         {
                             0

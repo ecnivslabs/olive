@@ -148,10 +148,10 @@ fn push_git_ref_and_tag(name: &str, version: &str) {
     let res = std::process::Command::new("git")
         .args(["push", "origin", "HEAD", "--tags"])
         .output();
-    if let Ok(out) = res {
-        if out.status.success() {
-            println!("\x1b[1;32m  Pushed\x1b[0m git branch and tag {}", tag_name);
-        }
+    if let Ok(out) = res
+        && out.status.success()
+    {
+        println!("\x1b[1;32m  Pushed\x1b[0m git branch and tag {}", tag_name);
     }
 }
 
@@ -485,24 +485,23 @@ fn upload_named_asset(
         "https://api.github.com/repos/{}/releases/{}/assets",
         repo, release_id
     );
-    if let Ok(resp) = gh.get(&assets_url).send() {
-        if let Ok(assets) = resp.json::<Value>() {
-            if let Some(arr) = assets.as_array() {
-                for asset in arr {
-                    if asset["name"].as_str() == Some(asset_name) {
-                        if let Some(id) = asset["id"].as_u64() {
-                            let _ = gh
-                                .client
-                                .delete(&format!(
-                                    "https://api.github.com/repos/{}/releases/assets/{}",
-                                    repo, id
-                                ))
-                                .header("Authorization", format!("token {}", gh.token))
-                                .header("User-Agent", "pit/0.1.0")
-                                .send();
-                        }
-                    }
-                }
+    if let Ok(resp) = gh.get(&assets_url).send()
+        && let Ok(assets) = resp.json::<Value>()
+        && let Some(arr) = assets.as_array()
+    {
+        for asset in arr {
+            if asset["name"].as_str() == Some(asset_name)
+                && let Some(id) = asset["id"].as_u64()
+            {
+                let _ = gh
+                    .client
+                    .delete(format!(
+                        "https://api.github.com/repos/{}/releases/assets/{}",
+                        repo, id
+                    ))
+                    .header("Authorization", format!("token {}", gh.token))
+                    .header("User-Agent", "pit/0.1.0")
+                    .send();
             }
         }
     }
@@ -632,13 +631,11 @@ fn create_registry_pr(gh: &GhClient, pod: &PodVersion) -> Result<String, String>
                     fork_repo, fork_default_branch
                 ))
                 .send()
+                && let Ok(val) = resp.json::<Value>()
+                && let Some(s) = val["commit"]["sha"].as_str()
             {
-                if let Ok(val) = resp.json::<Value>() {
-                    if let Some(s) = val["commit"]["sha"].as_str() {
-                        sha = Some(s.to_string());
-                        break;
-                    }
-                }
+                sha = Some(s.to_string());
+                break;
             }
             thread::sleep(Duration::from_secs(2));
         }

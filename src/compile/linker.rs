@@ -585,12 +585,11 @@ fn stage_beside_output(src: &Path, out_dir: &Path) -> io::Result<PathBuf> {
     let src_bytes = fs::read(src)?;
 
     // Skip the write when the destination is already byte-identical.
-    if dest.is_file() {
-        if let Ok(existing) = fs::read(&dest) {
-            if existing == src_bytes {
-                return Ok(dest);
-            }
-        }
+    if dest.is_file()
+        && let Ok(existing) = fs::read(&dest)
+        && existing == src_bytes
+    {
+        return Ok(dest);
     }
 
     fs::create_dir_all(out_dir)?;

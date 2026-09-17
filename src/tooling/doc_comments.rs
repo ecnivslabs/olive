@@ -19,10 +19,7 @@ pub fn extract_for_item(source_lines: &[&str], item_line: usize) -> Option<Strin
     }
     let mut doc_lines = Vec::new();
     let mut i = item_line - 2; // 0-indexed line directly above item_line
-    loop {
-        let Some(line) = source_lines.get(i) else {
-            break;
-        };
+    while let Some(line) = source_lines.get(i) {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("///") {
             doc_lines.push(rest.strip_prefix(' ').unwrap_or(rest).to_string());
