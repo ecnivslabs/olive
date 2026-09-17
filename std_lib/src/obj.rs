@@ -7,6 +7,11 @@ thread_local! {
         const { UnsafeCell::new(GenSlab::with_cleanup(std::mem::size_of::<OliveObj>(), release_obj_storage)) };
 }
 
+#[inline]
+fn is_live_kind(val: i64, expected: i64) -> bool {
+    val != 0 && crate::slab::ptr_is_slab_body(val) && unsafe { *(val as *const i64) == expected }
+}
+
 pub(crate) unsafe fn release_obj_storage(body: *mut u8) {
     let obj = unsafe { &mut *(body as *mut OliveObj) };
     drop(std::mem::take(&mut obj.fields));
@@ -631,16 +636,12 @@ pub extern "C" fn olive_dict_new_reuse(old_ptr: i64, bump: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_is_obj(val: i64) -> i64 {
-    if val == 0 || (val & 1) != 0 {
-        return 0;
-    }
-    let kind = unsafe { *(val as *const i64) };
-    if kind == KIND_OBJ { 1 } else { 0 }
+    is_live_kind(val, KIND_OBJ) as i64
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_keys(obj_ptr: i64) -> i64 {
-    if obj_ptr == 0 {
+    if !is_live_kind(obj_ptr, KIND_OBJ) {
         return crate::list::list_from_vec(Vec::new());
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
@@ -664,7 +665,7 @@ pub extern "C" fn olive_obj_keys(obj_ptr: i64) -> i64 {
 /// with the key encoding at offset 1.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_keys_typed(obj_ptr: i64, dict_desc: i64) -> i64 {
-    if obj_ptr == 0 {
+    if !is_live_kind(obj_ptr, KIND_OBJ) {
         return crate::list::list_from_vec(Vec::new());
     }
     // SAFETY: same contract as the untyped snapshot/clear above — the
@@ -818,6 +819,25 @@ mod tests {
             olive_obj_set(obj, s(k), *v);
         }
         obj
+    }
+
+    #[test]
+    fn reflection_predicates_reject_non_slab_words() {
+        assert_eq!(olive_is_obj(2), 0);
+        assert_eq!(crate::list::olive_is_list(2), 0);
+        assert_eq!(crate::olive_is_bytes(2), 0);
+        let keys = olive_obj_keys(2);
+        assert_eq!(crate::list::olive_list_len(keys), 0);
+        crate::list::olive_free_list(keys);
+    }
+
+    #[test]
+    fn obj_keys_reject_wrong_live_kind() {
+        let list = crate::list::olive_list_new(0);
+        let keys = olive_obj_keys(list);
+        assert_eq!(crate::list::olive_list_len(keys), 0);
+        crate::list::olive_free_list(keys);
+        crate::list::olive_free_list(list);
     }
 
     #[test]

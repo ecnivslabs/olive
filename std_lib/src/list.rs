@@ -1510,15 +1510,11 @@ pub extern "C" fn olive_next(iter_ptr: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_is_list(val: i64) -> i64 {
-    if val == 0 || (val & 1) != 0 {
+    if val == 0 || !crate::slab::ptr_is_slab_body(val) {
         return 0;
     }
     let kind = unsafe { *(val as *const i64) };
-    if kind == KIND_LIST || kind == KIND_ANY_LIST {
-        1
-    } else {
-        0
-    }
+    (kind == KIND_LIST || kind == KIND_ANY_LIST) as i64
 }
 
 #[cfg(test)]

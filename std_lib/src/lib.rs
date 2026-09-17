@@ -1581,11 +1581,10 @@ pub extern "C" fn olive_is_str(val: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_is_bytes(val: i64) -> i64 {
-    if val == 0 || (val & 1) != 0 {
+    if val == 0 || !slab::ptr_is_slab_body(val) {
         return 0;
     }
-    let kind = unsafe { *(val as *const i64) };
-    if kind == KIND_BYTES { 1 } else { 0 }
+    (unsafe { *(val as *const i64) } == KIND_BYTES) as i64
 }
 
 #[unsafe(no_mangle)]
