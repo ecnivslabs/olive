@@ -302,7 +302,15 @@ fn executor_complete(ex: &Arc<OliveExecutor>, task: &Arc<OliveTask>, result: i64
     // below deallocates its chunks.
     let sf = unsafe { &*(task.sm_future as *const OliveSmFuture) };
     let delivered = if sf.result_desc == 0 {
-        crate::copy_typed::relocate_across_boundary(result)
+        let delivered = crate::copy_typed::relocate_across_boundary(result);
+        let mut slabs = task.slabs.lock().unwrap();
+        let old_active = crate::slab::ACTIVE_SLABS.get();
+        if let Some(slabs) = slabs.as_mut() {
+            crate::slab::ACTIVE_SLABS.set(slabs.as_mut());
+        }
+        crate::olive_free_any(result);
+        crate::slab::ACTIVE_SLABS.set(old_active);
+        delivered
     } else {
         let delivered = crate::copy_typed::olive_relocate_typed(result, sf.result_desc);
         let mut slabs = task.slabs.lock().unwrap();
@@ -441,33 +449,88 @@ pub extern "C" fn olive_debug_sm_awaiter_frame(frame_ptr: i64) -> i64 {
     wf.frame
 }
 
+fn copy_future_value(value: i64, result_desc: i64) -> i64 {
+    if result_desc == 0 {
+        crate::copy_typed::copy_any(value, &mut rustc_hash::FxHashMap::default())
+    } else {
+        crate::copy_typed::olive_copy_typed(value, result_desc)
+    }
+}
+
+fn copy_future_value_global(value: i64, result_desc: i64) -> i64 {
+    crate::slab::with_escape_arena(|| copy_future_value(value, result_desc))
+}
+
+fn free_cached_value(value: i64, result_desc: i64) {
+    if value == 0 {
+        return;
+    }
+    if result_desc == 0 {
+        crate::olive_free_any(value);
+    } else {
+        crate::free_typed::olive_free_typed(value, result_desc);
+    }
+}
+
+fn cache_sm_result(future: i64, result: i64) -> i64 {
+    let (result_desc, frame, frame_size) = unsafe {
+        let f = &*(future as *const OliveSmFuture);
+        (f.result_desc, f.frame, f.frame_size)
+    };
+    let delivered = if result_desc == 0 {
+        let delivered = crate::copy_typed::relocate_across_boundary(result);
+        crate::olive_free_any(result);
+        delivered
+    } else {
+        let delivered = crate::copy_typed::olive_relocate_typed(result, result_desc);
+        crate::free_typed::olive_free_typed(result, result_desc);
+        delivered
+    };
+    let f = unsafe { &mut *(future as *mut OliveSmFuture) };
+    f.cached = delivered;
+    if frame != 0 && sm_live().lock().unwrap().contains(&frame) {
+        olive_sm_free(frame, frame_size);
+        f.frame = 0;
+    }
+    delivered
+}
+
 /// Returns readiness separately because every payload bit pattern is valid.
 /// A pending poll leaves the output word untouched.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_sm_poll(future: i64, output: i64) -> i64 {
-    let result = if future == 0 {
-        Some(0)
+    let (result, result_desc) = if future == 0 {
+        (Some(0), 0)
     } else if unsafe { *(future as *const i64) } == KIND_SM_FUTURE {
         let f = unsafe { &*(future as *const OliveSmFuture) };
         if f.frame == 0 {
-            Some(f.cached)
+            (Some(f.cached), f.result_desc)
         } else if f.cancelled != 0 && unsafe { *(f.frame as *const i64) } != -1 {
-            None
+            (None, f.result_desc)
         } else {
             let poll_fn: extern "C" fn(i64) -> i64 =
                 unsafe { std::mem::transmute(f.poll_fn as usize) };
             let result = poll_fn(f.frame);
-            (unsafe { *(f.frame as *const i64) } == -1).then_some(result)
+            if unsafe { *(f.frame as *const i64) } == -1 {
+                (Some(cache_sm_result(future, result)), f.result_desc)
+            } else {
+                (None, f.result_desc)
+            }
         }
     } else {
         let f = unsafe { &*(future as *const OliveFuture) };
         let shared = unsafe { &*(f.shared as *const FutureShared) };
-        match *shared.state.lock().unwrap() {
-            FutureState::Ready(v) => Some(v),
-            FutureState::Pending => None,
-        }
+        let result = {
+            let state = shared.state.lock().unwrap();
+            match &*state {
+                FutureState::Ready(v) => Some(*v),
+                FutureState::Pending => None,
+            }
+        };
+        (result, shared.result_desc)
     };
     if let Some(value) = result {
+        let value = copy_future_value(value, result_desc);
         unsafe { *(output as *mut i64) = value };
         1
     } else {
@@ -482,6 +545,7 @@ enum FutureState {
 
 struct FutureShared {
     state: Mutex<FutureState>,
+    result_desc: i64,
     cvar: Condvar,
 }
 
@@ -493,8 +557,10 @@ struct OliveFuture {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_make_future(val: i64) -> i64 {
+    let owned = crate::copy_typed::relocate_across_boundary(val);
     let shared = Arc::new(FutureShared {
-        state: Mutex::new(FutureState::Ready(val)),
+        state: Mutex::new(FutureState::Ready(owned)),
+        result_desc: 0,
         cvar: Condvar::new(),
     });
     let f = Box::new(OliveFuture {
@@ -519,13 +585,17 @@ pub extern "C" fn olive_await_future(future: i64) -> i64 {
         let task = executor_get_or_create_task(ex, future);
         task.completions.lock().unwrap().push(completion.clone());
         executor_enqueue(ex, &task);
-        let mut r = completion.result.lock().unwrap();
-        loop {
-            match *r {
-                Some(v) => return v,
-                None => r = completion.cvar.wait(r).unwrap(),
+        let result = {
+            let mut r = completion.result.lock().unwrap();
+            loop {
+                match *r {
+                    Some(v) => break v,
+                    None => r = completion.cvar.wait(r).unwrap(),
+                }
             }
-        }
+        };
+        let result_desc = unsafe { (*(future as *const OliveSmFuture)).result_desc };
+        copy_future_value_global(result, result_desc)
     } else {
         let f = unsafe { &*(future as *const OliveFuture) };
         let shared = unsafe { Arc::from_raw(f.shared as *const FutureShared) };
@@ -540,8 +610,9 @@ pub extern "C" fn olive_await_future(future: i64) -> i64 {
                 }
             }
         };
+        let result_desc = shared.result_desc;
         std::mem::forget(shared);
-        result
+        copy_future_value_global(result, result_desc)
     }
 }
 
@@ -560,6 +631,7 @@ pub extern "C" fn olive_spawn_task(callback: i64) -> i64 {
 
     let shared = Arc::new(FutureShared {
         state: Mutex::new(FutureState::Pending),
+        result_desc,
         cvar: Condvar::new(),
     });
     let shared2 = shared.clone();
@@ -595,17 +667,28 @@ pub extern "C" fn olive_free_future(future: i64) -> i64 {
     }
     let kind = unsafe { *(future as *const i64) };
     if kind == KIND_SM_FUTURE {
-        let (frame, frame_size) = unsafe {
+        let (frame, frame_size, cached, result_desc) = unsafe {
             let f = &*(future as *const OliveSmFuture);
-            (f.frame, f.frame_size)
+            (f.frame, f.frame_size, f.cached, f.result_desc)
         };
         if frame != 0 {
             olive_sm_free(frame, frame_size);
         }
+        free_cached_value(cached, result_desc);
         olive_sm_free(future, std::mem::size_of::<OliveSmFuture>() as i64);
     } else {
         let f = unsafe { Box::from_raw(future as *mut OliveFuture) };
-        unsafe { Arc::from_raw(f.shared as *const FutureShared) };
+        let shared = unsafe { Arc::from_raw(f.shared as *const FutureShared) };
+        let result = {
+            let state = shared.state.lock().unwrap();
+            match &*state {
+                FutureState::Ready(value) => Some(*value),
+                FutureState::Pending => None,
+            }
+        };
+        if let Some(value) = result {
+            free_cached_value(value, shared.result_desc);
+        }
     }
     0
 }
@@ -620,6 +703,7 @@ pub extern "C" fn olive_async_file_read(path: i64) -> i64 {
 
     let shared = Arc::new(FutureShared {
         state: Mutex::new(FutureState::Pending),
+        result_desc: 0,
         cvar: Condvar::new(),
     });
     let shared2 = shared.clone();
@@ -669,6 +753,7 @@ pub extern "C" fn olive_async_file_write(path: i64, data: i64) -> i64 {
 
     let shared = Arc::new(FutureShared {
         state: Mutex::new(FutureState::Pending),
+        result_desc: 0,
         cvar: Condvar::new(),
     });
     let shared2 = shared.clone();
@@ -889,6 +974,7 @@ pub extern "C" fn olive_pool_run(fn_ptr: i64, arg: i64) -> i64 {
     }
     let shared = Arc::new(FutureShared {
         state: Mutex::new(FutureState::Pending),
+        result_desc: 0,
         cvar: Condvar::new(),
     });
     let shared2 = shared.clone();
@@ -936,6 +1022,7 @@ pub extern "C" fn olive_pool_run_sync(fn_ptr: i64, arg: i64) -> i64 {
     }
     let shared = Arc::new(FutureShared {
         state: Mutex::new(FutureState::Pending),
+        result_desc: 0,
         cvar: Condvar::new(),
     });
     let shared2 = shared.clone();
@@ -1030,6 +1117,7 @@ mod tests {
         for i in 0..10i64 {
             let shared = Arc::new(FutureShared {
                 state: Mutex::new(FutureState::Pending),
+                result_desc: 0,
                 cvar: Condvar::new(),
             });
             let shared2 = shared.clone();
