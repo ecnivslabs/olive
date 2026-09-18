@@ -564,13 +564,25 @@ impl<'a> MirBuilder<'a> {
         }
 
         // Set algebra: | & - ^ on Set types dispatch to runtime functions.
+        // Concrete element types hash through the descriptor-driven typed
+        // variants (a raw odd int above the string-tag floor is bit-identical
+        // to a tagged string pointer, which the untyped heuristic would
+        // dereference as string bytes); only `Any` stays heuristic.
         let l_ty = self.get_type(left.id);
         if matches!(l_ty, Type::Set(_)) && matches!(&r_ty, Type::Set(_)) {
-            let fn_name = match op {
-                crate::parser::BinOp::BitOr => "__olive_set_union",
-                crate::parser::BinOp::BitAnd => "__olive_set_intersection",
-                crate::parser::BinOp::Sub => "__olive_set_diff",
-                crate::parser::BinOp::BitXor => "__olive_set_sym_diff",
+            let elem_needs_desc = match &l_ty {
+                Type::Set(e) => Self::type_needs_key_descriptor(e),
+                _ => false,
+            };
+            let fn_name = match (op, elem_needs_desc) {
+                (crate::parser::BinOp::BitOr, false) => "__olive_set_union",
+                (crate::parser::BinOp::BitOr, true) => "__olive_set_union_typed",
+                (crate::parser::BinOp::BitAnd, false) => "__olive_set_intersection",
+                (crate::parser::BinOp::BitAnd, true) => "__olive_set_intersection_typed",
+                (crate::parser::BinOp::Sub, false) => "__olive_set_diff",
+                (crate::parser::BinOp::Sub, true) => "__olive_set_diff_typed",
+                (crate::parser::BinOp::BitXor, false) => "__olive_set_sym_diff",
+                (crate::parser::BinOp::BitXor, true) => "__olive_set_sym_diff_typed",
                 _ => return self.lower_expr(left),
             };
             let l = self.lower_expr_as_copy(left);

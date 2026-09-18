@@ -112,7 +112,7 @@ pub(crate) fn drop_descriptor_type<'a>(
     }
 }
 
-pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 667] = [
+pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 671] = [
     "__olive_alloc",
     "__olive_any_add",
     "__olive_any_div",
@@ -640,16 +640,20 @@ pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 667] = [
     "__olive_set_clear",
     "__olive_set_contains",
     "__olive_set_diff",
+    "__olive_set_diff_typed",
     "__olive_set_fault_loc",
     "__olive_set_index_any",
     "__olive_set_intersection",
+    "__olive_set_intersection_typed",
     "__olive_set_mode",
     "__olive_set_mtime",
     "__olive_set_new",
     "__olive_set_remove",
     "__olive_set_remove_checked",
     "__olive_set_sym_diff",
+    "__olive_set_sym_diff_typed",
     "__olive_set_union",
+    "__olive_set_union_typed",
     "__olive_shadow_pop",
     "__olive_shadow_push",
     "__olive_shared_struct_alloc",

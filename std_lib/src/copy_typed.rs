@@ -252,7 +252,12 @@ fn skip_lp(desc: *const u8, pos: &mut usize) {
     *pos += 1 + len;
 }
 
-fn copy_val(val: i64, desc: *const u8, pos: &mut usize, visited: &mut FxHashMap<i64, i64>) -> i64 {
+pub(crate) fn copy_val(
+    val: i64,
+    desc: *const u8,
+    pos: &mut usize,
+    visited: &mut FxHashMap<i64, i64>,
+) -> i64 {
     let cloned_opt = if val != 0 && crate::is_active_object(val) {
         visited.get(&val).copied()
     } else {
