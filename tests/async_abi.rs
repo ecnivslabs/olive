@@ -290,6 +290,9 @@ async fn consumer(ch: aio.Chan[str]) -> str:
 
 fn main():
     let ch = aio.chan[str]()
+    if ch == 0:
+        print("alloc-fail")
+        return
     let p = producer(ch)
     let c = consumer(ch)
     print(await p)
@@ -304,11 +307,14 @@ fn moved_string_stored_in_task_created_mutex_survives() {
     assert_both(
         r#"import aio
 
-async fn make() -> aio.Mutex[str]:
+async fn make() -> aio.Mutex[str] | int:
     return aio.mutex[str](str(777))
 
 fn main():
     let m = await make()
+    if m == 0:
+        print("alloc-fail")
+        return
     print(m.lock())
 "#,
         "777\n",
@@ -322,7 +328,9 @@ fn moved_string_stored_in_mutex_survives_in_task() {
 
 async fn work() -> str:
     let s = str(777)
-    let m: aio.Mutex[str] = aio.mutex[str](s)
+    let m = aio.mutex[str](s)
+    if m == 0:
+        return "alloc-fail"
     print(s)
     return m.lock()
 
@@ -339,7 +347,10 @@ fn send_after_close_is_rejected_and_drains_pending() {
         r#"import aio
 
 fn main():
-    let ch: aio.Chan[str] = aio.chan[str]()
+    let ch = aio.chan[str]()
+    if ch == 0:
+        print("alloc-fail")
+        return
     let ok1 = ch.send(str(1))
     ch.close()
     let ok2 = ch.send(str(2))

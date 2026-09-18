@@ -300,3 +300,84 @@ fn mixed_union_float_str_distinct() {
     assert_eq!(call_i64(&mut cg, "f_float"), 1);
     assert_eq!(call_i64(&mut cg, "f_str"), 2);
 }
+
+#[test]
+fn union_to_member_let_is_e0404() {
+    // Binding a union into a member-typed slot used to silently reinterpret
+    // the word (an enum payload pointer read as an int). It must narrow.
+    let codes = check_codes(concat!(
+        "enum E:\n    Bad(int)\n",
+        "fn mk(bad: int) -> int | E:\n    if bad == 1:\n        return Bad(-5)\n    return 7\n",
+        "fn f() -> int:\n    let r = mk(1)\n    let v: int = r\n    return v\n",
+    ));
+    assert!(
+        codes.contains(&"E0404".to_string()),
+        "expected E0404 (union narrowed by annotation), got {codes:?}"
+    );
+}
+
+#[test]
+fn union_to_member_arg_is_e0404() {
+    let codes = check_codes(concat!(
+        "enum E:\n    Bad(int)\n",
+        "fn takes_int(n: int) -> int:\n    return n * 2\n",
+        "fn f() -> int:\n    let r: int | E = Bad(-5)\n    return takes_int(r)\n",
+    ));
+    assert!(
+        codes.contains(&"E0404".to_string()),
+        "expected E0404 (union passed to member param), got {codes:?}"
+    );
+}
+
+#[test]
+fn union_to_member_return_is_e0404() {
+    let codes = check_codes(concat!(
+        "enum E:\n    Bad(int)\n",
+        "fn f() -> int:\n    let r: int | E = Bad(-5)\n    return r\n",
+    ));
+    assert!(
+        codes.contains(&"E0404".to_string()),
+        "expected E0404 (union returned as member), got {codes:?}"
+    );
+}
+
+#[test]
+fn guard_narrowed_union_binds_to_member() {
+    // After a `== 0` guard return, the remaining union is proven `Chan`-free
+    // of the int case, so member binding compiles and runs.
+    let mut cg = compile(concat!(
+        "fn f(x: int | None) -> int:\n    if x == None:\n        return -1\n    let v: int = x\n    return v + 100\n",
+        "fn g_some(n: int) -> int:\n    let x: int | None = n\n    return f(x)\n",
+        "fn g_none() -> int:\n    return f(None)\n",
+    ));
+    assert_eq!(call_i64_1(&mut cg, "g_some", 4), 104);
+    assert_eq!(call_i64(&mut cg, "g_none"), -1);
+}
+
+#[test]
+fn try_result_binds_to_success_type() {
+    // `?` strips `*Error` variants, so the result is the success type, not
+    // a union: a member annotation stays valid.
+    let mut cg = compile(concat!(
+        "enum ByteError:\n    Empty\n    OutOfRange(int)\n",
+        "fn parse(s: str) -> int | ByteError:\n    if len(s) == 0:\n        return Empty()\n    return len(s)\n",
+        "fn f(s: str) -> int | ByteError:\n    let v: int = parse(s)?\n    return v + 100\n",
+        "fn g_ok() -> int:\n    match f(\"abcd\"):\n        Empty:\n            return -1\n        OutOfRange(n):\n            return -2\n        v:\n            return v\n",
+        "fn g_empty() -> int:\n    match f(\"\"):\n        Empty:\n            return -1\n        OutOfRange(n):\n            return -2\n        v:\n            return v\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "g_ok"), 104);
+    assert_eq!(call_i64(&mut cg, "g_empty"), -1);
+}
+
+#[test]
+fn widening_member_into_union_still_ok() {
+    // The sound direction keeps working: members widen into unions at
+    // `let`, call, and return sites.
+    let mut cg = compile(concat!(
+        "enum E:\n    Bad(int)\n",
+        "fn takes_union(u: int | E) -> int:\n    match u:\n        Bad(n):\n            return n\n        v:\n            return v\n",
+        "fn widen_ret(n: int) -> int | E:\n    return n\n",
+        "fn f() -> int:\n    let u: int | E = 5\n    match widen_ret(7):\n        Bad(n):\n            return n\n        w:\n            return takes_union(u) + takes_union(6) + w\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 18);
+}

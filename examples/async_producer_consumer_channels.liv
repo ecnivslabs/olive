@@ -24,6 +24,9 @@ async fn consumer(c: aio.Chan[int], id: int):
 
 fn main():
     let c = aio.chan[int]()
+    if c == 0:
+        print("Channel allocation failed.")
+        return
     let payload_count = 10
 
     let p = producer(c, payload_count)

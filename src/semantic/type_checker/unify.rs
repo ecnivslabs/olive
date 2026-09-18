@@ -416,13 +416,15 @@ impl TypeChecker {
                 }
             }
 
-            (other, Type::Union(members)) | (Type::Union(members), other) => {
-                // Try real unification against each member so unresolved type
-                // vars (e.g. a freshly constructed generic struct's param)
-                // get bound to the member's type instead of failing on a
-                // structural `==` that can never see them as equal. This also
-                // covers the struct-implements-trait-object-member case, since
-                // unify already handles that pair directly.
+            (Type::Union(members), other) => {
+                // Widening: the value is one known member of the declared
+                // union. Try real unification against each member so
+                // unresolved type vars (e.g. a freshly constructed generic
+                // struct's param) get bound to the member's type instead of
+                // failing on a structural `==` that can never see them as
+                // equal. This also covers the struct-implements-
+                // trait-object-member case, since unify already handles that
+                // pair directly.
                 let other = other.clone();
                 let members = members.clone();
                 let matched = members.iter().any(|m| self.unify_silently(&other, m, span));
@@ -438,6 +440,27 @@ impl TypeChecker {
                         .note(format!("   found `{t1}`")),
                     ));
                 }
+            }
+
+            (_, Type::Union(_)) => {
+                // Narrowing: a union value flows into a slot declared for one
+                // member. Accepting on a member match miscompiles (the value
+                // may hold another variant at runtime, so the slot would read
+                // a payload word as the member type). The value must be
+                // narrowed first; narrowed bindings already resolve to the
+                // member type before reaching unify, so they never take this
+                // arm. `let v: int = f()?` is unaffected: `?` strips error
+                // variants, so the `Try` expression types as the success type,
+                // not a union.
+                self.errors.push(SemanticError::rich(
+                    crate::compile::errors::Diagnostic::error(
+                        "E0404",
+                        format!("cannot use `{t2}` where `{t1}` is expected"),
+                        span,
+                    )
+                    .label("this value may hold a different variant at runtime")
+                    .help("narrow the union first (`match` on the value or compare against a variant)"),
+                ));
             }
 
             (_t1_match, _t2_match) => {
