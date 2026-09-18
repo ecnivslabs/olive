@@ -827,6 +827,10 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_set_fault_loc", b"olive_set_fault_loc\0"),
     ("__olive_shadow_push", b"olive_shadow_push\0"),
     ("__olive_shadow_pop", b"olive_shadow_pop\0"),
+    (
+        "__olive_shared_struct_alloc",
+        b"olive_shared_struct_alloc\0",
+    ),
     ("__olive_py_setattr", b"olive_py_setattr\0"),
     ("__olive_py_setattr_safe", b"olive_py_setattr_safe\0"),
     ("__olive_py_setitem", b"olive_py_setitem\0"),

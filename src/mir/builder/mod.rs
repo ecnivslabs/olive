@@ -104,6 +104,12 @@ pub struct MirBuilder<'a> {
     /// the bound name is always a local var (the `nested_fns` lookup
     /// deliberately skips names shadowed by a local).
     pub(super) bound_lambdas: Vec<HashMap<String, NestedFnInfo>>,
+    /// Structs that manage an external resource (define `__drop__`), by base
+    /// name. Their records are shared by design across tasks and threads, so
+    /// construction allocates them in the escape arena (never in a task slab
+    /// set that teardown reclaims). Populated by the `build_program`
+    /// pre-scan, before any function body is lowered.
+    pub(super) has_drop_structs: HashSet<String>,
     /// Scratch output of the most recent [`Self::lower_binop_expr`] comparison
     /// (`==`/`!=`/`</<=`/`>`/`>=`): the two operand values it compared, in
     /// source order, whatever representation (struct ref, boxed `Any`, raw
@@ -165,6 +171,7 @@ impl<'a> MirBuilder<'a> {
             file_names: HashMap::default(),
             in_py_loc_emit: false,
             bound_lambdas: Vec::new(),
+            has_drop_structs: HashSet::default(),
             last_cmp_operands: None,
         }
     }
@@ -235,6 +242,9 @@ impl<'a> MirBuilder<'a> {
                         {
                             let mangled = format!("{}::{}", type_base, fn_name);
                             self.register_fn_meta(&mangled, params);
+                            if fn_name == "__drop__" {
+                                self.has_drop_structs.insert(type_base.clone());
+                            }
                         }
                     }
                 }
@@ -245,13 +255,20 @@ impl<'a> MirBuilder<'a> {
                             .insert(mangled, Operand::Constant(Constant::Int(c.value)));
                     }
                 }
-                StmtKind::Struct { name, fields, .. }
-                    if fields.iter().any(|f| f.default.is_some()) =>
-                {
-                    self.struct_field_defaults.insert(
-                        name.clone(),
-                        fields.iter().map(|f| f.default.clone()).collect(),
-                    );
+                StmtKind::Struct {
+                    name, fields, body, ..
+                } => {
+                    if fields.iter().any(|f| f.default.is_some()) {
+                        self.struct_field_defaults.insert(
+                            name.clone(),
+                            fields.iter().map(|f| f.default.clone()).collect(),
+                        );
+                    }
+                    if body.iter().any(|s| {
+                        matches!(&s.kind, StmtKind::Fn { name: fn_name, .. } if fn_name == "__drop__")
+                    }) {
+                        self.has_drop_structs.insert(name.clone());
+                    }
                 }
                 _ => {}
             }
