@@ -263,6 +263,9 @@ pub(super) fn insert_escape_copies(
     let is_any_view = |l: Local| -> bool { l.0 != 0 && any_views.contains(&l) };
 
     let mut hits: Vec<(usize, usize, CopySlot, Local, &'static str)> = Vec::new();
+    // (bb, idx, local): a moved task-boundary source whose pre-boundary word
+    // must be released after the call, since the arena copy took over.
+    let mut drop_after: Vec<(usize, usize, Local)> = Vec::new();
     for (bb_idx, bb) in func.basic_blocks.iter().enumerate() {
         for (idx, stmt) in bb.statements.iter().enumerate() {
             match &stmt.kind {
@@ -323,20 +326,38 @@ pub(super) fn insert_escape_copies(
                             || param_escapes
                                 .get(callee)
                                 .is_some_and(|v| v.get(pos) == Some(&true));
-                        if escapes
-                            && let Operand::Copy(l) = op
-                            && (needs_copy(*l) || is_any_view(*l))
-                        {
-                            // A value crossing a real task boundary
-                            // (`chan_send`/`mutex_new`/`mutex_unlock`) needs
-                            // the copy to land in the shared escape arena,
-                            // not the sending function's own arena.
-                            let copy_fn = if task_boundary_escape(callee, pos) {
-                                "__olive_relocate_typed"
-                            } else {
-                                "__olive_copy_typed"
-                            };
-                            hits.push((bb_idx, idx, CopySlot::Arg(pos), *l, copy_fn));
+                        if !escapes {
+                            continue;
+                        }
+                        let src = match op {
+                            Operand::Copy(l) | Operand::Move(l) => *l,
+                            _ => continue,
+                        };
+                        // A task-boundary argument (`chan_send`/`mutex_new`/
+                        // `mutex_unlock`) must land in the escape arena whether
+                        // it is borrowed or moved: the receiving task outlives
+                        // this frame, and this task's slab set is torn down on
+                        // completion. Queuing a sender-arena word raw is a
+                        // use-after-free the moment the sender finishes first
+                        // (e.g. `ch.send(s)` with a dead-after `s`, awaiting
+                        // the sender before receiving). Borrowed words are
+                        // copied with the original kept; moved words are
+                        // copied with the original dropped below.
+                        if task_boundary_escape(callee, pos) && func.locals[src.0].ty.needs_drop() {
+                            hits.push((
+                                bb_idx,
+                                idx,
+                                CopySlot::Arg(pos),
+                                src,
+                                "__olive_relocate_typed",
+                            ));
+                            if matches!(op, Operand::Move(_)) {
+                                drop_after.push((bb_idx, idx, src));
+                            }
+                            continue;
+                        }
+                        if matches!(op, Operand::Copy(_)) && (needs_copy(src) || is_any_view(src)) {
+                            hits.push((bb_idx, idx, CopySlot::Arg(pos), src, "__olive_copy_typed"));
                         }
                     }
                 }
@@ -367,6 +388,22 @@ pub(super) fn insert_escape_copies(
     let mut moved: HashSet<Local> = HashSet::default();
     let mut scheduled = Vec::with_capacity(hits.len());
     for (bb_idx, idx, slot, l, copy_fn) in hits.into_iter().rev() {
+        // A task-boundary relocate must never promote to a bare Move: the
+        // arena copy is the whole point, and the original stays owned here
+        // (Copy) or is released by the Drop below (Move).
+        if copy_fn == "__olive_relocate_typed" {
+            let tmp = push_local(func, func.locals[l.0].ty.clone());
+            if explain_copies {
+                sites.borrow_mut().push(CopySite {
+                    span: func.basic_blocks[bb_idx].statements[idx].span,
+                    copied_type: format!("{}", func.locals[l.0].ty),
+                    reason: CopyReason::TaskBoundary,
+                    function: func.name.clone(),
+                });
+            }
+            scheduled.push((bb_idx, idx, slot, l, tmp, copy_fn));
+            continue;
+        }
         let is_pure_param = !indirect_target
             && pure_params.contains(&l)
             && !is_any_view(l)
@@ -416,7 +453,17 @@ pub(super) fn insert_escape_copies(
                     redirect_operand(&mut stmt.kind, slot, tmp);
                 }
             }
+            let span = stmt.span;
             rebuilt.push(stmt);
+            for (_, _, l) in drop_after
+                .iter()
+                .filter(|(b, i, _)| *b == bb_idx && *i == idx)
+            {
+                rebuilt.push(Statement {
+                    kind: StatementKind::Drop(*l),
+                    span,
+                });
+            }
         }
         bb.statements = rebuilt;
     }
