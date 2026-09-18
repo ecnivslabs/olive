@@ -41,6 +41,21 @@ fn pattern_matches_null(pattern: &crate::parser::ast::MatchPattern) -> bool {
     }
 }
 
+/// Whether a pattern matches an integer literal, recursing into
+/// or-pattern alternatives the same way `collect_matched_variants` does.
+/// Feeds catch-all narrowing for the `Struct | int` sentinel idiom (see
+/// `narrow_match_ty`): an `int` arm is consumed the same way `!=` consumes
+/// it for guard narrowing.
+fn pattern_matches_int(pattern: &crate::parser::ast::MatchPattern) -> bool {
+    match pattern {
+        crate::parser::ast::MatchPattern::Literal(e) => {
+            matches!(super::narrow::scalar_literal_type(&e.kind), Some(Type::Int))
+        }
+        crate::parser::ast::MatchPattern::Or(alts) => alts.iter().any(pattern_matches_int),
+        _ => false,
+    }
+}
+
 impl TypeChecker {
     pub(super) fn check_expr(&mut self, expr: &Expr) -> Type {
         if self.check_depth >= crate::semantic::MAX_SEMANTIC_NESTING {
@@ -1773,6 +1788,7 @@ impl TypeChecker {
 
                 let mut matched_variants = std::collections::HashSet::new();
                 let mut matched_null = false;
+                let mut matched_int = false;
                 let mut has_wildcard = false;
                 let mut unguarded_patterns = Vec::new();
 
@@ -1797,6 +1813,9 @@ impl TypeChecker {
                         if pattern_matches_null(&case.pattern) {
                             matched_null = true;
                         }
+                        if pattern_matches_int(&case.pattern) {
+                            matched_int = true;
+                        }
                     }
 
                     // Narrow a binding pattern to unmatched union members.
@@ -1804,7 +1823,12 @@ impl TypeChecker {
                         case.pattern,
                         crate::parser::ast::MatchPattern::Identifier(_, _)
                     ) {
-                        self.narrow_match_ty(&match_ty, &matched_variants, matched_null)
+                        self.narrow_match_ty(
+                            &match_ty,
+                            &matched_variants,
+                            matched_null,
+                            matched_int,
+                        )
                     } else {
                         match_ty.clone()
                     };
@@ -2149,9 +2173,31 @@ impl TypeChecker {
         ty: &Type,
         matched: &std::collections::HashSet<String>,
         matched_null: bool,
+        matched_int: bool,
     ) -> Type {
         let Type::Union(members) = ty else {
             return ty.clone();
+        };
+        // An `int` literal arm consumes the `int` member under the same
+        // sentinel-idiom rule as guard narrowing (`narrow_facts_scalar`): the
+        // union holds at most one scalar shape (`int`), everything else is
+        // pointer-shaped, so the remaining value cannot be the consumed
+        // sentinel. Unions mixing raw scalars stay untouched: narrowing the
+        // type alone would not change how their bits are read.
+        let members: Vec<Type> = if matched_int
+            && members.contains(&Type::Int)
+            && members
+                .iter()
+                .filter(|m| **m != Type::Int)
+                .all(|m| !super::narrow::is_scalar_type(m))
+        {
+            members
+                .iter()
+                .filter(|m| **m != Type::Int)
+                .cloned()
+                .collect()
+        } else {
+            members.clone()
         };
         let remaining: Vec<Type> = members
             .iter()

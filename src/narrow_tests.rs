@@ -381,3 +381,50 @@ fn widening_member_into_union_still_ok() {
     ));
     assert_eq!(call_i64(&mut cg, "f"), 18);
 }
+
+#[test]
+fn match_int_literal_narrows_catch_all() {
+    // An `int` arm consumes the `int` member for later catch-alls under the
+    // same sentinel rule as guard narrowing: `Chan | int` minus `0` is
+    // `Chan`, so the binding compiles where a member is expected.
+    let codes = check_codes(concat!(
+        "struct Chan:\n    h: int\n",
+        "fn use_chan(c: Chan) -> int:\n    return c.h + 1\n",
+        "fn mk(bad: int) -> Chan | int:\n    if bad == 1:\n        return 0\n    return Chan(41)\n",
+        "fn f() -> int:\n    let ch = mk(0)\n    match ch:\n        0:\n            return -1\n        c:\n            return use_chan(c)\n",
+    ));
+    assert!(
+        !codes.contains(&"E0404".to_string()),
+        "expected no E0404 (catch-all narrowed by int arm), got {codes:?}"
+    );
+}
+
+#[test]
+fn match_int_literal_keeps_scalar_mixes_whole() {
+    // `int | str` mixes raw scalars: narrowing the type alone would not
+    // change how the bits are read, so the catch-all stays the full union
+    // and member use still errors.
+    let codes = check_codes(concat!(
+        "fn use_int(n: int) -> int:\n    return n + 1\n",
+        "fn f(x: int | str) -> int:\n    match x:\n        0:\n            return -1\n        c:\n            return use_int(c)\n",
+    ));
+    assert!(
+        codes.contains(&"E0404".to_string()),
+        "expected E0404 (scalar mix not narrowed), got {codes:?}"
+    );
+}
+
+#[test]
+fn match_guarded_int_arm_does_not_narrow() {
+    // A guarded arm may not run, so it consumes nothing for later arms.
+    let codes = check_codes(concat!(
+        "struct Chan:\n    h: int\n",
+        "fn use_chan(c: Chan) -> int:\n    return c.h + 1\n",
+        "fn mk(bad: int) -> Chan | int:\n    if bad == 1:\n        return 0\n    return Chan(41)\n",
+        "fn f(flag: int) -> int:\n    let ch = mk(0)\n    match ch:\n        0 if flag == 1:\n            return -1\n        c:\n            return use_chan(c)\n",
+    ));
+    assert!(
+        codes.contains(&"E0404".to_string()),
+        "expected E0404 (guarded arm consumes nothing), got {codes:?}"
+    );
+}

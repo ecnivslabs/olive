@@ -177,6 +177,27 @@ fn returned_struct_mutation_does_not_alias() {
     );
 }
 
+/// Match with an `int` arm narrows the catch-all the same way a `== 0`
+/// guard does: the fallible-constructor union flows into member slots
+/// without an explicit guard.
+#[test]
+fn match_int_arm_narrows_fallible_constructor() {
+    let out = run_src(
+        "import aio\n\n\
+         async fn producer(ch: aio.Chan[str]) -> bool:\n    \
+             return ch.send(\"hi\")\n\n\
+         fn main():\n    \
+             let ch = aio.chan[str]()\n    \
+             match ch:\n        \
+                 0:\n            \
+                 print(\"alloc-fail\")\n        \
+                 c:\n            \
+                 print(await producer(c))\n\n\
+         main()\n",
+    );
+    assert!(out.contains("True"), "unexpected output: {out}");
+}
+
 /// Mutex through the fallible-constructor union: lock/unlock/drop round-trips
 /// values correctly (slot release covered by the M1 RSS probe).
 #[test]
