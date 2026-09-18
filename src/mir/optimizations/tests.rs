@@ -214,15 +214,13 @@ mod optimization_tests {
     }
 
     #[test]
-    fn strength_reduction_mul_to_shift() {
+    fn strength_reduction_preserves_checked_multiplication() {
         let fns = build_and_optimize("fn f(x: i64) -> i64:\n    return x * 2\n");
         let f = find_fn(&fns, "f");
         let has_mul = has_rvalue(f, |rval| matches!(rval, Rvalue::BinaryOp(BinOp::Mul, _, _)));
         let has_shl = has_rvalue(f, |rval| matches!(rval, Rvalue::BinaryOp(BinOp::Shl, _, _)));
-        assert!(
-            has_shl || !has_mul,
-            "x*2 should become x<<1 or at least not be a mul"
-        );
+        assert!(has_mul, "checked x*2 must retain multiplication semantics");
+        assert!(!has_shl, "checked x*2 must not become an unchecked shift");
     }
 
     #[test]

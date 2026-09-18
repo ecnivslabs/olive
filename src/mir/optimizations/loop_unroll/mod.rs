@@ -84,6 +84,11 @@ fn analyze(func: &MirFunction, lp: &loop_utils::Loop) -> Option<UnrollPlan> {
     if work.is_empty() {
         return None;
     }
+    if matches!(&limit, Operand::Copy(l) | Operand::Move(l) if work.iter().any(|stmt| {
+        matches!(&stmt.kind, StatementKind::Assign(dest, _) if dest == l)
+    })) {
+        return None;
+    }
     if !body_is_unrollable(&work, induction) {
         return None;
     }
@@ -316,14 +321,15 @@ fn const_trip_count(
     let start = const_init(func, lp, induction)?;
     let end = const_operand(func, limit)?;
     let span = match cmp {
-        BinOp::Lt => end - start,
-        BinOp::LtEq => end - start + 1,
+        BinOp::Lt => end.checked_sub(start)?,
+        BinOp::LtEq => end.checked_sub(start)?.checked_add(1)?,
         _ => return None,
     };
     if span <= 0 {
         return Some(0);
     }
-    Some((span + step - 1) / step)
+    let step_minus_one = step.checked_sub(1)?;
+    span.checked_add(step_minus_one)?.checked_div(step)
 }
 
 /// Constant the induction holds on loop entry.
@@ -397,13 +403,14 @@ fn successors(kind: &TerminatorKind) -> Vec<BasicBlockId> {
 
 fn transform(func: &mut MirFunction, lp: &loop_utils::Loop, plan: &UnrollPlan) -> bool {
     match plan.const_trip {
+        Some(0) | None => false,
         Some(n) if (1..=FULL_TRIP_LIMIT).contains(&n) => {
             if plan.work.len().saturating_mul(n as usize) > MAX_EXPANSION {
                 return false;
             }
             full_unroll(func, lp, plan, n)
         }
-        _ => {
+        Some(_) => {
             let factor = PARTIAL_FACTOR;
             if plan.work.len().saturating_mul(factor as usize) > MAX_EXPANSION {
                 return false;
@@ -426,7 +433,12 @@ fn full_unroll(
 
     let mut stmts = Vec::with_capacity(plan.work.len() * trip as usize);
     for j in 0..trip {
-        let value = start + j * plan.step;
+        let Some(offset) = j.checked_mul(plan.step) else {
+            return false;
+        };
+        let Some(value) = start.checked_add(offset) else {
+            return false;
+        };
         for stmt in &plan.work {
             // Induction and guard locals are gone; drop their storage markers.
             if is_storage_of(stmt, plan.induction) || is_storage_of(stmt, plan.cond_local) {
@@ -444,10 +456,16 @@ fn full_unroll(
 
     // Code after the loop may still read the induction local; give it the
     // value the final guard evaluation would have observed.
+    let Some(final_offset) = trip.checked_mul(plan.step) else {
+        return false;
+    };
+    let Some(final_value) = start.checked_add(final_offset) else {
+        return false;
+    };
     stmts.push(Statement {
         kind: StatementKind::Assign(
             plan.induction,
-            Rvalue::Use(Operand::Constant(Constant::Int(start + trip * plan.step))),
+            Rvalue::Use(Operand::Constant(Constant::Int(final_value))),
         ),
         span: Span::default(),
     });
@@ -471,6 +489,20 @@ fn partial_unroll(
     plan: &UnrollPlan,
     factor: i64,
 ) -> bool {
+    let Some(pre_offset) = factor.checked_sub(1).and_then(|n| n.checked_mul(plan.step)) else {
+        return false;
+    };
+    let mut offsets = Vec::with_capacity(factor as usize);
+    for j in 0..factor {
+        let Some(offset) = j.checked_mul(plan.step) else {
+            return false;
+        };
+        offsets.push(offset);
+    }
+    let Some(update_offset) = factor.checked_mul(plan.step) else {
+        return false;
+    };
+
     // Clone before mutating; the clone becomes the remainder epilogue.
     let epilogue_map = loop_utils::clone_blocks(func, &lp.body);
     let epilogue_header = match epilogue_map.get(&lp.header) {
@@ -488,7 +520,7 @@ fn partial_unroll(
                 Rvalue::BinaryOp(
                     BinOp::Sub,
                     plan.limit.clone(),
-                    Operand::Constant(Constant::Int((factor - 1) * plan.step)),
+                    Operand::Constant(Constant::Int(pre_offset)),
                 ),
             ),
             span: Span::default(),
@@ -512,7 +544,7 @@ fn partial_unroll(
                     Rvalue::BinaryOp(
                         BinOp::Add,
                         Operand::Copy(plan.induction),
-                        Operand::Constant(Constant::Int(j * plan.step)),
+                        Operand::Constant(Constant::Int(offsets[j as usize])),
                     ),
                 ),
                 span: Span::default(),
@@ -535,7 +567,7 @@ fn partial_unroll(
             Rvalue::BinaryOp(
                 BinOp::Add,
                 Operand::Copy(plan.induction),
-                Operand::Constant(Constant::Int(factor * plan.step)),
+                Operand::Constant(Constant::Int(update_offset)),
             ),
         ),
         span: Span::default(),
@@ -802,14 +834,10 @@ mod tests {
     }
 
     #[test]
-    fn partial_unroll_runtime_bound() {
+    fn dynamic_bound_stays_ununrolled() {
         let mut f = counted_loop(Operand::Copy(Local(0)), 1, false);
-        assert!(LoopUnroll.run(&mut f));
-        let names: Vec<&str> = f.locals.iter().filter_map(|l| l.name.as_deref()).collect();
-        assert!(names.contains(&"unroll_limit"));
-        // Offset temps for copies 1, 2, 3.
-        assert_eq!(names.iter().filter(|n| **n == "unroll_idx").count(), 3);
-        assert!(reaches_loop(&f), "partial unroll keeps a residual loop");
+        assert!(!LoopUnroll.run(&mut f));
+        assert!(reaches_loop(&f), "original loop remains");
     }
 
     #[test]

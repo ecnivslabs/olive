@@ -307,10 +307,19 @@ fn test_is_list_op() {
 }
 
 #[test]
-fn test_is_u64_op() {
-    let f = make_func(vec![Type::U64, Type::Int]);
-    assert!(is_u64_op(&f, &Operand::Copy(Local(0))));
-    assert!(!is_u64_op(&f, &Operand::Copy(Local(1))));
+fn test_is_unsigned_op() {
+    let f = make_func(vec![
+        Type::U8,
+        Type::U16,
+        Type::U32,
+        Type::U64,
+        Type::Usize,
+        Type::Int,
+    ]);
+    for local in 0..5 {
+        assert!(is_unsigned_op(&f, &Operand::Copy(Local(local))));
+    }
+    assert!(!is_unsigned_op(&f, &Operand::Copy(Local(5))));
 }
 
 #[test]

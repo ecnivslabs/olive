@@ -37,19 +37,6 @@ impl Transform for StrengthReduction {
                 if let StatementKind::Assign(_, rval) = &mut stmt.kind {
                     use crate::parser::BinOp::*;
                     let replacement = match &*rval {
-                        Rvalue::BinaryOp(Mul, op, Operand::Constant(Constant::Int(c)))
-                        | Rvalue::BinaryOp(Mul, Operand::Constant(Constant::Int(c)), op)
-                            if *c >= 2
-                                && (*c as u64).is_power_of_two()
-                                && !is_pyobj_op(&local_types, op) =>
-                        {
-                            let shift = (*c as u64).trailing_zeros() as i64;
-                            Some(Rvalue::BinaryOp(
-                                Shl,
-                                op.clone(),
-                                Operand::Constant(Constant::Int(shift)),
-                            ))
-                        }
                         Rvalue::BinaryOp(Div, op, Operand::Constant(Constant::Int(c)))
                             if *c > 1
                                 && (*c as u64).is_power_of_two()
@@ -140,7 +127,7 @@ mod tests {
     }
 
     #[test]
-    fn mul_power_of_two_to_shift() {
+    fn checked_multiplication_keeps_checked_semantics() {
         let mut f = func(
             vec![local_decl(crate::semantic::types::Type::Int)],
             vec![assign(
@@ -152,14 +139,11 @@ mod tests {
                 ),
             )],
         );
-        assert!(StrengthReduction.run(&mut f));
-        match &f.basic_blocks[0].statements[0].kind {
-            StatementKind::Assign(
-                _,
-                Rvalue::BinaryOp(crate::parser::BinOp::Shl, _, Operand::Constant(Constant::Int(3))),
-            ) => {}
-            _ => panic!("expected Shl by 3"),
-        }
+        assert!(!StrengthReduction.run(&mut f));
+        assert!(matches!(
+            f.basic_blocks[0].statements[0].kind,
+            StatementKind::Assign(_, Rvalue::BinaryOp(crate::parser::BinOp::Mul, ..))
+        ));
     }
 
     #[test]

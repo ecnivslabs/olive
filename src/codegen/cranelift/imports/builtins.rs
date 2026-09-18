@@ -1098,11 +1098,12 @@ pub(crate) fn map_builtin_to_runtime(name: &str, arg_ty: &OliveType) -> Option<&
     }
 }
 
-pub(crate) fn is_u64_op(func_mir: &MirFunction, op: &Operand) -> bool {
+pub(crate) fn is_unsigned_op(func_mir: &MirFunction, op: &Operand) -> bool {
     match op {
-        Operand::Copy(loc) | Operand::Move(loc) => {
-            matches!(func_mir.locals[loc.0].ty, OliveType::U64 | OliveType::Usize)
-        }
+        Operand::Copy(loc) | Operand::Move(loc) => matches!(
+            func_mir.locals[loc.0].ty,
+            OliveType::U8 | OliveType::U16 | OliveType::U32 | OliveType::U64 | OliveType::Usize
+        ),
         _ => false,
     }
 }

@@ -1,5 +1,5 @@
 use super::CraneliftCodegen;
-use super::imports::{is_any_op, is_float_op, is_list_op, is_pyobj_op, is_str_op, is_u64_op};
+use super::imports::{is_any_op, is_float_op, is_list_op, is_pyobj_op, is_str_op, is_unsigned_op};
 use crate::mir::{Constant, Local, MirFunction, Operand};
 use crate::semantic::types::Type as OliveType;
 use cranelift::prelude::*;
@@ -16,7 +16,7 @@ const ANY_INT_MIN: i64 = -(1 << 60);
 const ANY_INT_MAX: i64 = (1 << 60) - 1;
 
 fn py_int_conversion_name(func_mir: &MirFunction, operand: &Operand) -> &'static str {
-    if is_u64_op(func_mir, operand) {
+    if is_unsigned_op(func_mir, operand) {
         "__olive_py_from_u64"
     } else {
         "__olive_py_from_int"
@@ -244,7 +244,7 @@ impl<M: Module> CraneliftCodegen<M> {
                     builder.ins().fadd(l, r)
                 } else if checked {
                     let loc = super::translate_rvalue::loc_value(builder, module, loc_id);
-                    let kind = if is_u64_op(func_mir, lhs) || is_u64_op(func_mir, rhs) {
+                    let kind = if is_unsigned_op(func_mir, lhs) || is_unsigned_op(func_mir, rhs) {
                         super::translate_rvalue::OVERFLOW_ADD_U
                     } else {
                         super::translate_rvalue::OVERFLOW_ADD
@@ -261,7 +261,7 @@ impl<M: Module> CraneliftCodegen<M> {
                     builder.ins().fsub(l, r)
                 } else if checked {
                     let loc = super::translate_rvalue::loc_value(builder, module, loc_id);
-                    let kind = if is_u64_op(func_mir, lhs) || is_u64_op(func_mir, rhs) {
+                    let kind = if is_unsigned_op(func_mir, lhs) || is_unsigned_op(func_mir, rhs) {
                         super::translate_rvalue::OVERFLOW_SUB_U
                     } else {
                         super::translate_rvalue::OVERFLOW_SUB
@@ -278,7 +278,7 @@ impl<M: Module> CraneliftCodegen<M> {
                     builder.ins().fmul(l, r)
                 } else if checked {
                     let loc = super::translate_rvalue::loc_value(builder, module, loc_id);
-                    let kind = if is_u64_op(func_mir, lhs) || is_u64_op(func_mir, rhs) {
+                    let kind = if is_unsigned_op(func_mir, lhs) || is_unsigned_op(func_mir, rhs) {
                         super::translate_rvalue::OVERFLOW_MUL_U
                     } else {
                         super::translate_rvalue::OVERFLOW_MUL
@@ -298,7 +298,7 @@ impl<M: Module> CraneliftCodegen<M> {
                     super::translate_rvalue::emit_div_zero_check(
                         builder, module, func_ids, r, false, loc,
                     );
-                    if is_u64_op(func_mir, lhs) || is_u64_op(func_mir, rhs) {
+                    if is_unsigned_op(func_mir, lhs) || is_unsigned_op(func_mir, rhs) {
                         builder.ins().udiv(l, r)
                     } else {
                         super::translate_rvalue::emit_signed_div_overflow_check(
@@ -319,7 +319,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 super::translate_rvalue::emit_div_zero_check(
                     builder, module, func_ids, r, true, loc,
                 );
-                if is_u64_op(func_mir, lhs) || is_u64_op(func_mir, rhs) {
+                if is_unsigned_op(func_mir, lhs) || is_unsigned_op(func_mir, rhs) {
                     builder.ins().urem(l, r)
                 } else {
                     super::translate_rvalue::emit_signed_div_overflow_check(
@@ -482,7 +482,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 }
 
                 let is_float = is_float_op(func_mir, lhs) || is_float_op(func_mir, rhs);
-                let is_u64 = is_u64_op(func_mir, lhs) || is_u64_op(func_mir, rhs);
+                let is_unsigned = is_unsigned_op(func_mir, lhs) || is_unsigned_op(func_mir, rhs);
 
                 if is_float {
                     let cc = match op {
@@ -495,7 +495,7 @@ impl<M: Module> CraneliftCodegen<M> {
                     };
                     let res = builder.ins().fcmp(cc, l, r);
                     builder.ins().uextend(types::I64, res)
-                } else if is_u64 {
+                } else if is_unsigned {
                     let cc = match op {
                         Lt => IntCC::UnsignedLessThan,
                         LtEq => IntCC::UnsignedLessThanOrEqual,
@@ -521,7 +521,7 @@ impl<M: Module> CraneliftCodegen<M> {
             }
             Shl => builder.ins().ishl(l, r),
             Shr => {
-                if is_u64_op(func_mir, lhs) {
+                if is_unsigned_op(func_mir, lhs) {
                     builder.ins().ushr(l, r)
                 } else {
                     builder.ins().sshr(l, r)

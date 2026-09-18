@@ -1070,7 +1070,7 @@ impl<M: Module> CraneliftCodegen<M> {
                     // (they need a live interpreter to check), so this arm
                     // stays byte-identical rather than risk silent changes.
                     OliveType::PyObject => {
-                        let (key, key_owned) = if super::imports::is_u64_op(func_mir, idx) {
+                        let (key, key_owned) = if super::imports::is_unsigned_op(func_mir, idx) {
                             let key_id = func_ids
                                 .get("__olive_py_from_u64")
                                 .expect("missing __olive_py_from_u64");

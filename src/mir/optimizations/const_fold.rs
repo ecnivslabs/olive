@@ -107,7 +107,7 @@ impl Transform for ConstantFolding {
                     } else if let Rvalue::UnaryOp(op, Operand::Constant(c)) = rval {
                         use crate::parser::UnaryOp::*;
                         let res = match (op, c) {
-                            (Neg, Constant::Int(a)) => Some(Constant::Int(-*a)),
+                            (Neg, Constant::Int(a)) => a.checked_neg().map(Constant::Int),
                             (Neg, Constant::Float(a)) => {
                                 Some(Constant::Float((-f64::from_bits(*a)).to_bits()))
                             }
@@ -311,6 +311,22 @@ mod tests {
             _ => panic!(),
         };
         assert_eq!(*k, Constant::Int(-5));
+    }
+
+    #[test]
+    fn fold_unary_neg_min_leaves_operation_for_codegen() {
+        let mut f = func(vec![assign(
+            0,
+            Rvalue::UnaryOp(
+                crate::parser::UnaryOp::Neg,
+                Operand::Constant(Constant::Int(i64::MIN)),
+            ),
+        )]);
+        assert!(!ConstantFolding.run(&mut f));
+        assert!(matches!(
+            f.basic_blocks[0].statements[0].kind,
+            StatementKind::Assign(_, Rvalue::UnaryOp(..))
+        ));
     }
 
     #[test]

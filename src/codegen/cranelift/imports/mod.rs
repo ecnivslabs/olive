@@ -735,7 +735,7 @@ mod tests;
 
 pub(super) use builtins::{
     cl_type, concrete_ty, drop_descriptor_type, is_any_op, is_container_read_call, is_float_op,
-    is_list_op, is_pyobj_op, is_str_op, is_u64_op, map_builtin_to_runtime, needs_key_descriptor,
-    needs_type_descriptor, operand_static_type, resolve_builtin_import,
+    is_list_op, is_pyobj_op, is_str_op, is_unsigned_op, map_builtin_to_runtime,
+    needs_key_descriptor, needs_type_descriptor, operand_static_type, resolve_builtin_import,
     scalar_needs_key_descriptor, type_descriptor, typed_zero,
 };
