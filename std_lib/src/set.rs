@@ -45,15 +45,6 @@ pub extern "C" fn olive_set_new(capacity: i64) -> i64 {
     }
 }
 
-#[inline]
-fn free_set_elem(val: i64) {
-    if crate::is_tagged_str_key(val) {
-        crate::olive_free_str(val);
-    } else if crate::is_active_object(val) {
-        crate::olive_free_any(val);
-    }
-}
-
 /// Adds an owned word to a result set under construction, releasing it when
 /// an equal element is already present. Internal set combinators pass owned
 /// copies, so a rejected copy must not leak.
@@ -63,7 +54,7 @@ fn set_add_owned(set_ptr: i64, val: i64) {
         (*s.inner).contains(&OliveStringKey(val))
     };
     if present {
-        free_set_elem(val);
+        crate::free_any_word(val);
     } else {
         olive_set_add(set_ptr, val);
     }
@@ -80,7 +71,7 @@ pub(crate) fn olive_free_set(ptr: i64) {
         unsafe {
             let s = &mut *(ptr as *mut OliveHashSet);
             for i in 0..s.len {
-                free_set_elem(*s.ptr.add(i));
+                crate::free_any_word(*s.ptr.add(i));
             }
             release_set_storage(ptr as *mut u8)
         };
@@ -224,11 +215,11 @@ pub(crate) fn set_try_add(set_ptr: i64, val: i64) -> bool {
 pub extern "C" fn olive_set_add(set_ptr: i64, val: i64) {
     if set_ptr == 0 {
         // `add` takes ownership; a null set has nowhere to store it.
-        free_set_elem(val);
+        crate::free_any_word(val);
         return;
     }
     if !set_try_add(set_ptr, val) {
-        free_set_elem(val);
+        crate::free_any_word(val);
     }
 }
 
@@ -265,7 +256,7 @@ pub extern "C" fn olive_set_remove(set_ptr: i64, val: i64) -> i64 {
                 // stored one. When they are the same pointer the ownership
                 // returns to the caller untouched.
                 if stored != val {
-                    free_set_elem(stored);
+                    crate::free_any_word(stored);
                 }
             }
             s.ptr = v.as_mut_ptr();
@@ -306,7 +297,7 @@ pub extern "C" fn olive_set_clear(set_ptr: i64) -> i64 {
     unsafe {
         let s = &mut *(set_ptr as *mut OliveHashSet);
         for i in 0..s.len {
-            free_set_elem(*s.ptr.add(i));
+            crate::free_any_word(*s.ptr.add(i));
         }
         (*s.inner).clear();
         s.len = 0;

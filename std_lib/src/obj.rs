@@ -264,6 +264,12 @@ pub extern "C" fn olive_obj_setdefault(obj_ptr: i64, attr: i64, default: i64) ->
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
     if let Some(&v) = m.fields.get(&OliveStringKey(attr)) {
+        // `default` was transferred here; the hit keeps the stored value, so
+        // the orphaned default must be released (guard the pathological
+        // same-pointer pass-through, mirroring the replacing stores).
+        if default != v {
+            crate::free_any_word(default);
+        }
         return v;
     }
     olive_obj_set(obj_ptr, attr, default);
@@ -292,15 +298,6 @@ pub extern "C" fn olive_obj_update(obj_ptr: i64, other_ptr: i64) -> i64 {
     obj_ptr
 }
 
-#[inline]
-pub(crate) fn free_dict_value(val: i64) {
-    if crate::is_tagged_str_key(val) {
-        crate::olive_free_str(val);
-    } else if is_active_object(val) {
-        olive_free_any(val);
-    }
-}
-
 /// `d.clear()`: empties the dict in place (freeing owned keys and values),
 /// returns it.
 #[unsafe(no_mangle)]
@@ -310,7 +307,7 @@ pub extern "C" fn olive_obj_clear(obj_ptr: i64) -> i64 {
     }
     let m = unsafe { &mut *(obj_ptr as *mut OliveObj) };
     for &val in m.fields.values() {
-        free_dict_value(val);
+        crate::free_any_word(val);
     }
     for k in m.fields.keys() {
         if crate::is_tagged_str_key(k.0) {
@@ -367,7 +364,7 @@ pub extern "C" fn olive_free_obj(ptr: i64) {
         unsafe {
             let obj = &mut *(ptr as *mut OliveObj);
             for &val in obj.fields.values() {
-                free_dict_value(val);
+                crate::free_any_word(val);
             }
             // Tagged keys are dict-owned string copies; free them so the map's own
             // keys do not outlive it. Untagged attribute names are interned symbols.
@@ -739,5 +736,34 @@ mod tests {
         assert_eq!(crate::string_slab::olive_str_gen_stale(old, gold), 1);
         olive_free_obj(dict);
         assert_eq!(crate::string_slab::olive_str_gen_stale(new, gnew), 1);
+    }
+
+    #[test]
+    fn setdefault_hit_releases_orphaned_default() {
+        let dict = olive_obj_new();
+        let kept = olive_str_internal("kept-val");
+        let gk = crate::string_slab::olive_str_gen_of(kept);
+        olive_obj_set(dict, 1, kept);
+        let dropped = olive_str_internal("dropped-val");
+        let gd = crate::string_slab::olive_str_gen_of(dropped);
+        let got = olive_obj_setdefault(dict, 1, dropped);
+        assert_eq!(got, kept);
+        assert_eq!(crate::olive_str_from_ptr(got), "kept-val");
+        assert_eq!(crate::string_slab::olive_str_gen_stale(dropped, gd), 1);
+        olive_free_obj(dict);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(kept, gk), 1);
+    }
+
+    #[test]
+    fn setdefault_miss_stores_and_returns_default() {
+        let dict = olive_obj_new();
+        let d = olive_str_internal("fresh-default");
+        let g = crate::string_slab::olive_str_gen_of(d);
+        let got = olive_obj_setdefault(dict, 7, d);
+        assert_eq!(got, d);
+        assert_eq!(olive_obj_get(dict, 7), d);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(d, g), 0);
+        olive_free_obj(dict);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(d, g), 1);
     }
 }
