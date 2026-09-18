@@ -1831,13 +1831,27 @@ impl<'a> MirBuilder<'a> {
                 }
             }
         }
-        let obj_tmp = self.new_unscoped_local(self.get_type(expr_id));
+        let shared = self.has_drop_structs.contains(struct_name);
+        // A shared (resource-managing) record's implicit allocation reference
+        // must have an owner that releases it: every retain (`copy_shared_struct`
+        // on boxing, task capture, or escape) pairs with exactly one release,
+        // plus one for the allocation itself. An unscoped borrow temp never
+        // drops, orphaning that reference once a retain exists (the union-box
+        // path retains for the box while the temp dies silently, so the drop
+        // gate never reaches zero and `__drop__` never runs). A scoped owner
+        // transfers out on last use (its drop is removed) or releases at
+        // scope end; both orders balance against the box's own release.
+        let obj_tmp = if shared {
+            self.new_local(self.get_type(expr_id), None, true)
+        } else {
+            self.new_unscoped_local(self.get_type(expr_id))
+        };
         // A struct managing an external resource (user `__drop__`) is shared
         // by design across tasks and threads: its record is born in the
         // escape arena so a task completing while shares are outstanding
         // cannot tear it down from under them. Ordinary structs keep the
         // task-local slab allocation.
-        let alloc_fn = if self.has_drop_structs.contains(struct_name) {
+        let alloc_fn = if shared {
             "__olive_shared_struct_alloc"
         } else {
             "__olive_struct_alloc"

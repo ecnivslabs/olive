@@ -89,6 +89,68 @@ fn zero_trip_alias_return_stays_valid() {
     assert!(out.contains("True"), "unexpected output: {out}");
 }
 
+/// A struct with `__drop__` held through a union runs its hook exactly once
+/// at scope end (pre-fix the gate never reached zero: no hook, leaked box).
+#[test]
+fn union_held_struct_runs_drop_hook() {
+    let out = run_src(
+        "struct Loud:\n    \
+             s: str\n\n\
+         impl Loud:\n    \
+             fn __drop__(self):\n        \
+                 print(\"dropped\")\n\n\
+         fn mk(bad: int) -> Loud | int:\n    \
+             if bad == 1:\n        \
+                 return 0\n    \
+             return Loud(\"hi\")\n\n\
+         fn main():\n    \
+             let m = mk(0)\n    \
+             if m == 0:\n        \
+                 print(\"zero\")\n        \
+                 return\n    \
+             print(\"live\")\n\n\
+         main()\n",
+    );
+    assert!(out.contains("live"), "unexpected output: {out}");
+    assert_eq!(
+        out.matches("dropped").count(),
+        1,
+        "unexpected output: {out}"
+    );
+}
+
+/// Borrow-param identity return of a struct: caller keeps its value, hook
+/// runs once for the single allocation (pre-fix E0707/gate miscounts).
+#[test]
+fn borrow_param_struct_identity() {
+    let out = run_src(
+        "struct Loud:\n    \
+             s: str\n\n\
+         impl Loud:\n    \
+             fn __drop__(self):\n        \
+                 print(\"dropped\")\n\n\
+         fn box_it(x: Loud) -> Loud | int:\n    \
+             return x\n\n\
+         fn main():\n    \
+             let t = Loud(\"hi\")\n    \
+             let u = box_it(t)\n    \
+             match u:\n        \
+                 0:\n            \
+                 print(\"zero\")\n        \
+                 v:\n            \
+                 print(\"live\")\n    \
+             print(\"end\")\n\n\
+         main()\n",
+    );
+    assert!(out.contains("live"), "unexpected output: {out}");
+    assert!(out.contains("end"), "unexpected output: {out}");
+    assert_eq!(
+        out.matches("dropped").count(),
+        1,
+        "unexpected output: {out}"
+    );
+}
+
 /// Mutation through a returned struct must not alias the caller's value
 /// (value semantics): the ownership split gives the caller an independent
 /// copy, so writing through `u` leaves `t` intact.
@@ -115,3 +177,26 @@ fn returned_struct_mutation_does_not_alias() {
     );
 }
 
+/// Mutex through the fallible-constructor union: lock/unlock/drop round-trips
+/// values correctly (slot release covered by the M1 RSS probe).
+#[test]
+fn mutex_union_lock_unlock_drop() {
+    let out = run_src(
+        "import aio\n\n\
+         fn main():\n    \
+             let mut total = 0\n    \
+             let mut i = 0\n    \
+             while i < 200:\n        \
+                 let m = aio.mutex[str](\"v\" + str(i))\n        \
+                 if m == 0:\n            \
+                     print(\"alloc-fail\")\n            \
+                     return\n        \
+                 let v = m.lock()\n        \
+                 m.unlock(\"w\" + str(i))\n        \
+                 total = total + len(v)\n        \
+                 i = i + 1\n    \
+             print(total)\n\n\
+         main()\n",
+    );
+    assert!(out.contains("690"), "unexpected output: {out}");
+}

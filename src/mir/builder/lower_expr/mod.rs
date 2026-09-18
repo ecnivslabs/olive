@@ -113,7 +113,14 @@ impl<'a> MirBuilder<'a> {
             return self.erase_list_elements(op, element, span);
         }
         // A raw struct pointer is ambiguous once erased (its header word is a
-        // field count, not a kind), so it boxes with its descriptor.
+        // field count, not a kind), so it boxes with its descriptor. The
+        // source keeps its ownership: the box takes an independent reference
+        // (a retaining copy for resource-managing structs, a deep duplicate
+        // otherwise, inserted by the ownership pass when the source stays
+        // live, or a move upgrade when it dies here), and the source's own
+        // drop balances the allocation reference. Stripping ownership here
+        // instead orphans the source allocation whenever the pass copies for
+        // the box, and the drop gate never reaches zero.
         if matches!(from_ty, Type::Struct(_, _, _)) {
             let desc = type_descriptor(
                 from_ty,
@@ -122,9 +129,6 @@ impl<'a> MirBuilder<'a> {
                 &self.enum_defs,
             );
             let tmp = self.new_local(Type::Any, None, false);
-            if let Operand::Copy(l) | Operand::Move(l) = op {
-                self.current_locals[l.0].is_owning = false;
-            }
             self.push_statement(
                 StatementKind::Assign(
                     tmp,
