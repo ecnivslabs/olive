@@ -28,7 +28,7 @@ fn delete(url: str) -> int:
 fn status(url: str) -> int:
     return __olive_http_get_status(url)
 
-fn get_with_headers(url: str, headers) -> str:
+fn get_with_headers(url: str, headers: {str: str}) -> str:
     let res = __olive_http_get_with_headers(url, headers)
     if res == 0:
         return ""
@@ -40,7 +40,7 @@ fn last_error() -> str:
 fn post_json_async(url: str, body: str) -> int:
     return __olive_http_post_json_async(url, body)
 
-fn post_json_async_headers(url: str, body: str, headers) -> int:
+fn post_json_async_headers(url: str, body: str, headers: {str: str}) -> int:
     return __olive_http_post_json_async_headers(url, body, headers)
 
 fn poll(handle: int) -> int:
@@ -58,7 +58,7 @@ fn take_error(handle: int) -> str:
         return ""
     return res
 
-fn stream_start(url: str, body: str, headers) -> int:
+fn stream_start(url: str, body: str, headers: {str: str}) -> int:
     return __olive_http_stream_start(url, body, headers)
 
 fn stream_poll(handle: int) -> int:

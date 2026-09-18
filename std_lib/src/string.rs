@@ -267,7 +267,15 @@ mod get_checked_tests {
 }
 
 pub fn olive_str_as_str<'a>(ptr: i64) -> Option<&'a str> {
-    if ptr == 0 {
+    if ptr == 0 || crate::olive_is_str(ptr) != 1 {
+        return None;
+    }
+    let body = str_body(ptr);
+    if str_is_heap(ptr) {
+        if !crate::slab::ptr_is_slab_body(body) {
+            return None;
+        }
+    } else if body & 3 != 0 {
         return None;
     }
     std::str::from_utf8(olive_str_to_bytes(ptr)).ok()

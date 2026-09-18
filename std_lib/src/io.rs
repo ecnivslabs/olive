@@ -437,19 +437,89 @@ pub extern "C" fn olive_walk(root: i64) -> i64 {
     crate::list::list_from_vec(ptrs)
 }
 
-fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+const COPY_MAX_DEPTH: usize = 64;
+const COPY_MAX_ENTRIES: usize = 500_000;
+
+struct CopyDirState {
+    visited: std::collections::HashSet<std::path::PathBuf>,
+    entries: usize,
+}
+
+fn copy_error(message: &str) -> std::io::Error {
+    std::io::Error::other(message)
+}
+
+fn canonical_destination(path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut current = absolute;
+    let mut suffix = Vec::new();
+    loop {
+        match std::fs::symlink_metadata(&current) {
+            Ok(_) => {
+                let mut result = std::fs::canonicalize(&current)?;
+                for component in suffix.iter().rev() {
+                    result.push(component);
+                }
+                return Ok(result);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let name = current
+                    .file_name()
+                    .ok_or_else(|| copy_error("copy destination has no existing parent"))?
+                    .to_os_string();
+                suffix.push(name);
+                if !current.pop() {
+                    return Err(copy_error("copy destination has no existing parent"));
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn copy_dir_recursive(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    depth: usize,
+    state: &mut CopyDirState,
+) -> std::io::Result<()> {
+    if depth > COPY_MAX_DEPTH {
+        return Err(copy_error("copy directory exceeds maximum depth"));
+    }
+    let source = std::fs::canonicalize(src)?;
+    if !source.is_dir() {
+        return Err(copy_error("copy source is not a directory"));
+    }
+    if !state.visited.insert(source.clone()) {
+        return Ok(());
+    }
+    state.entries = state
+        .entries
+        .checked_add(1)
+        .ok_or_else(|| copy_error("copy directory entry count overflow"))?;
+    if state.entries > COPY_MAX_ENTRIES {
+        return Err(copy_error("copy directory exceeds maximum entry count"));
+    }
+    if dst == source || dst.starts_with(&source) || source.starts_with(dst) {
+        return Err(copy_error("copy source and destination overlap"));
+    }
+
     std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
+    for entry in std::fs::read_dir(&source)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
-        if file_type.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
-        } else if file_type.is_symlink() {
+        if file_type.is_symlink() {
             let target = std::fs::read_link(&src_path)?;
             let _ = std::fs::remove_file(&dst_path);
             make_symlink(&target.to_string_lossy(), &dst_path.to_string_lossy())?;
+        } else if file_type.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path, depth + 1, state)?;
         } else {
             std::fs::copy(&src_path, &dst_path)?;
         }
@@ -464,12 +534,21 @@ pub extern "C" fn olive_copy_dir(src: i64, dst: i64) -> i64 {
     }
     let src_str = olive_str_from_ptr(src);
     let dst_str = olive_str_from_ptr(dst);
-    if copy_dir_recursive(
-        std::path::Path::new(&src_str),
-        std::path::Path::new(&dst_str),
-    )
-    .is_ok()
+    let Ok(source) = std::fs::canonicalize(&src_str) else {
+        return 0;
+    };
+    let Ok(destination) = canonical_destination(std::path::Path::new(&dst_str)) else {
+        return 0;
+    };
+    if destination == source || destination.starts_with(&source) || source.starts_with(&destination)
     {
+        return 0;
+    }
+    let mut state = CopyDirState {
+        visited: std::collections::HashSet::new(),
+        entries: 0,
+    };
+    if copy_dir_recursive(&source, &destination, 0, &mut state).is_ok() {
         1
     } else {
         0
@@ -645,9 +724,6 @@ enum IoHandle {
     BufWrite(std::io::BufWriter<std::fs::File>),
 }
 
-const HANDLE_GEN_SHIFT: u32 = 32;
-const HANDLE_INDEX_MASK: i64 = 0x7FFF_FFFF;
-
 fn handles() -> &'static Mutex<HashMap<i64, IoHandle>> {
     static TABLE: OnceLock<Mutex<HashMap<i64, IoHandle>>> = OnceLock::new();
     TABLE.get_or_init(|| Mutex::new(HashMap::default()))
@@ -655,21 +731,24 @@ fn handles() -> &'static Mutex<HashMap<i64, IoHandle>> {
 
 fn next_handle_id() -> i64 {
     static NEXT: AtomicI64 = AtomicI64::new(1);
-    NEXT.fetch_add(1, Ordering::Relaxed) & HANDLE_INDEX_MASK
-}
-
-fn handle_index(handle: i64) -> i64 {
-    handle & HANDLE_INDEX_MASK
+    NEXT.fetch_add(1, Ordering::Relaxed) & i64::MAX
 }
 
 fn register_handle(entry: IoHandle) -> i64 {
     let id = next_handle_id();
-    handles().lock().unwrap().insert(id, entry);
-    id | ((id as u64) << HANDLE_GEN_SHIFT) as i64
+    if id == 0 {
+        return 0;
+    }
+    let mut table = handles().lock().unwrap();
+    if table.contains_key(&id) {
+        return 0;
+    }
+    table.insert(id, entry);
+    id
 }
 
 fn take_handle(handle: i64) -> Option<IoHandle> {
-    handles().lock().unwrap().remove(&handle_index(handle))
+    handles().lock().unwrap().remove(&handle)
 }
 
 #[unsafe(no_mangle)]
@@ -720,7 +799,7 @@ pub extern "C" fn olive_file_close(handle: i64) {
 
 fn with_file<R>(handle: i64, f: impl FnOnce(&mut std::fs::File) -> R) -> Option<R> {
     let mut table = handles().lock().unwrap();
-    match table.get_mut(&handle_index(handle)) {
+    match table.get_mut(&handle) {
         Some(IoHandle::File(file)) => Some(f(file)),
         _ => None,
     }
@@ -731,23 +810,35 @@ fn with_file<R>(handle: i64, f: impl FnOnce(&mut std::fs::File) -> R) -> Option<
 /// returns 1, and a successful read (EOF included) returns the string.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_file_read_n(handle: i64, n: i64) -> i64 {
-    if handle == 0 {
-        return 0;
+    if handle == 0 || n <= 0 {
+        return if handle == 0 {
+            0
+        } else {
+            olive_str_internal("")
+        };
     }
-    let want = if n <= 0 || n > MAX_READ_BYTES as i64 {
-        MAX_READ_BYTES as i64
-    } else {
-        n
-    };
-    let mut buf = vec![0u8; want as usize];
-    match with_file(handle, |file| file.read(&mut buf)) {
-        Some(Ok(0)) => olive_str_internal(""),
-        Some(Ok(read)) => {
-            buf.truncate(read);
+    if n > MAX_READ_BYTES as i64 {
+        return 1;
+    }
+    let want = n as usize;
+    let mut buf = vec![0u8; want];
+    match with_file(handle, |file| {
+        let mut total = 0usize;
+        while total < want {
+            match file.read(&mut buf[total..]) {
+                Ok(0) => break,
+                Ok(read) => total += read,
+                Err(_) => return Err(()),
+            }
+        }
+        Ok(total)
+    }) {
+        Some(Ok(total)) => {
+            buf.truncate(total);
             let s = String::from_utf8_lossy(&buf).into_owned();
             olive_str_internal(&s)
         }
-        Some(Err(_)) => 1,
+        Some(Err(())) => 1,
         None => 0,
     }
 }
@@ -858,7 +949,7 @@ pub extern "C" fn olive_bufread_line(br: i64) -> i64 {
         return 0;
     }
     let mut table = handles().lock().unwrap();
-    let reader = match table.get_mut(&handle_index(br)) {
+    let reader = match table.get_mut(&br) {
         Some(IoHandle::BufRead(r)) => r,
         _ => return 0,
     };
@@ -896,7 +987,7 @@ pub extern "C" fn olive_bufwrite_write(bw: i64, data: i64) -> i64 {
     use std::io::Write;
     let text = olive_str_from_ptr(data);
     let mut table = handles().lock().unwrap();
-    match table.get_mut(&handle_index(bw)) {
+    match table.get_mut(&bw) {
         Some(IoHandle::BufWrite(w)) => {
             if w.write_all(text.as_bytes()).is_ok() {
                 1
@@ -915,7 +1006,7 @@ pub extern "C" fn olive_bufwrite_flush(bw: i64) -> i64 {
     }
     use std::io::Write;
     let mut table = handles().lock().unwrap();
-    match table.get_mut(&handle_index(bw)) {
+    match table.get_mut(&bw) {
         Some(IoHandle::BufWrite(w)) => {
             if w.flush().is_ok() {
                 1
@@ -989,6 +1080,55 @@ mod tests {
         let list = unsafe { &*(list_ptr as *const StableVec) };
         assert!(list.len >= 1);
         assert_eq!(olive_file_delete(dir), 1);
+    }
+
+    #[test]
+    fn copy_dir_rejects_overlapping_paths_without_mutation() {
+        let root = std::env::temp_dir().join(format!(
+            "olive_copy_dir_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("preserve.txt");
+        std::fs::write(&file, b"preserve-me").unwrap();
+        let root_ptr = olive_str_internal(&root.to_string_lossy());
+        let nested = root.join("nested");
+        let nested_ptr = olive_str_internal(&nested.to_string_lossy());
+
+        assert_eq!(olive_copy_dir(root_ptr, root_ptr), 0);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "preserve-me");
+        assert_eq!(olive_copy_dir(root_ptr, nested_ptr), 0);
+        assert!(!nested.exists());
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn copy_dir_copies_nested_tree() {
+        let root = std::env::temp_dir().join(format!(
+            "olive_copy_dir_ok_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let source = root.join("source");
+        let destination = root.join("destination");
+        std::fs::create_dir_all(source.join("nested")).unwrap();
+        std::fs::write(source.join("nested/file.txt"), b"copied").unwrap();
+        let source_ptr = olive_str_internal(&source.to_string_lossy());
+        let destination_ptr = olive_str_internal(&destination.to_string_lossy());
+        assert_eq!(olive_copy_dir(source_ptr, destination_ptr), 1);
+        assert_eq!(
+            std::fs::read_to_string(destination.join("nested/file.txt")).unwrap(),
+            "copied"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -1102,6 +1242,33 @@ mod tests {
     }
 
     #[test]
+    fn read_n_non_positive_returns_empty_without_reading() {
+        let path = temp_path("olive_read_n_non_positive.txt");
+        olive_file_write(path, make_str("content"));
+        let handle = olive_file_open(path, make_str("r"));
+        let empty = olive_file_read_n(handle, 0);
+        let negative = olive_file_read_n(handle, -1);
+        assert!(empty > 1);
+        assert!(negative > 1);
+        assert_eq!(from_ptr(empty), "");
+        assert_eq!(from_ptr(negative), "");
+        assert_eq!(olive_file_tell(handle), 0);
+        olive_file_close(handle);
+        olive_file_delete(path);
+    }
+
+    #[test]
+    fn read_n_rejects_oversized_request() {
+        let path = temp_path("olive_read_n_oversized.txt");
+        olive_file_write(path, make_str("content"));
+        let handle = olive_file_open(path, make_str("r"));
+        assert_eq!(olive_file_read_n(handle, (MAX_READ_BYTES as i64) + 1), 1);
+        assert_eq!(olive_file_tell(handle), 0);
+        olive_file_close(handle);
+        olive_file_delete(path);
+    }
+
+    #[test]
     fn double_close_is_absorbed() {
         let path = temp_path("olive_double_close.txt");
         olive_file_write(path, make_str("x"));
@@ -1111,8 +1278,23 @@ mod tests {
         olive_file_close(handle);
         let again = olive_file_open(path, make_str("r"));
         assert_ne!(again, 0);
-        assert_ne!(again & HANDLE_INDEX_MASK, handle & HANDLE_INDEX_MASK);
+        assert_ne!(again, handle);
         olive_file_close(again);
+        olive_file_delete(path);
+    }
+
+    #[test]
+    fn forged_handle_bits_cannot_reach_live_entry() {
+        let path = temp_path("olive_forged_handle.txt");
+        olive_file_write(path, make_str("x"));
+        let handle = olive_file_open(path, make_str("r"));
+        let forged = handle ^ (1i64 << 40);
+        assert_ne!(forged, handle);
+        assert_eq!(olive_file_read_n(forged, 1), 0);
+        assert_eq!(olive_file_tell(forged), -1);
+        olive_file_close(forged);
+        assert_eq!(olive_file_tell(handle), 0);
+        olive_file_close(handle);
         olive_file_delete(path);
     }
 

@@ -1,4 +1,4 @@
-use crate::{OliveObj, olive_str_from_ptr, olive_str_internal};
+use crate::{olive_str_from_ptr, olive_str_internal};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -171,16 +171,13 @@ pub extern "C" fn olive_http_post_json_async_headers(
         olive_str_from_ptr(body_ptr)
     };
 
-    let mut headers = Vec::new();
-    if headers_ptr != 0 {
-        let obj = unsafe { &*(headers_ptr as *const OliveObj) };
-        for (k, &v) in &obj.fields {
-            if let Some(key_str) = crate::olive_str_as_str(k.0) {
-                let val = olive_str_from_ptr(v);
-                headers.push((key_str.to_string(), val));
-            }
+    let headers = match copy_headers(headers_ptr) {
+        Ok(headers) => headers,
+        Err(error) => {
+            set_last_error(error);
+            return 0;
         }
-    }
+    };
 
     spawn_post_json_async(url, body, headers)
 }
@@ -213,6 +210,25 @@ pub extern "C" fn olive_http_take_error(handle: i64) -> i64 {
         Some(AsyncOutcome::Err(s)) => olive_str_internal(&s),
         _ => 0,
     }
+}
+
+fn copy_headers(ptr: i64) -> Result<Vec<(String, String)>, String> {
+    if ptr == 0 {
+        return Ok(Vec::new());
+    }
+    if crate::olive_is_obj(ptr) != 1 {
+        return Err("headers must be a string dictionary".to_string());
+    }
+    let obj = unsafe { &*(ptr as *const crate::OliveObj) };
+    let mut headers = Vec::with_capacity(obj.fields.len());
+    for (key, &value) in &obj.fields {
+        let key = crate::olive_str_as_str(key.0)
+            .ok_or_else(|| "header names must be strings".to_string())?;
+        let value = crate::olive_str_as_str(value)
+            .ok_or_else(|| "header values must be strings".to_string())?;
+        headers.push((key.to_string(), value.to_string()));
+    }
+    Ok(headers)
 }
 
 fn url_from_ptr(ptr: i64) -> String {
@@ -339,7 +355,7 @@ pub extern "C" fn olive_http_delete(url_ptr: i64) -> i64 {
         return 0;
     }
     let url = url_from_ptr(url_ptr);
-    match ureq::delete(&url).call() {
+    match ureq::delete(&url).timeout(REQUEST_TIMEOUT).call() {
         Ok(resp) => resp.status() as i64,
         Err(_) => 0,
     }
@@ -351,7 +367,7 @@ pub extern "C" fn olive_http_get_status(url_ptr: i64) -> i64 {
         return 0;
     }
     let url = url_from_ptr(url_ptr);
-    match ureq::get(&url).call() {
+    match ureq::get(&url).timeout(REQUEST_TIMEOUT).call() {
         Ok(resp) => resp.status() as i64,
         Err(ureq::Error::Status(code, _)) => code as i64,
         Err(_) => 0,
@@ -364,15 +380,16 @@ pub extern "C" fn olive_http_get_with_headers(url_ptr: i64, headers_ptr: i64) ->
         return 0;
     }
     let url = url_from_ptr(url_ptr);
-    let mut req = ureq::get(&url);
-    if headers_ptr != 0 {
-        let obj = unsafe { &*(headers_ptr as *const OliveObj) };
-        for (k, &v) in &obj.fields {
-            let val = crate::olive_str_from_ptr(v);
-            if let Some(key_str) = crate::olive_str_as_str(k.0) {
-                req = req.set(key_str, &val);
-            }
+    let headers = match copy_headers(headers_ptr) {
+        Ok(headers) => headers,
+        Err(error) => {
+            set_last_error(error);
+            return 0;
         }
+    };
+    let mut req = ureq::get(&url).timeout(REQUEST_TIMEOUT);
+    for (key, value) in headers {
+        req = req.set(&key, &value);
     }
     match req.call() {
         Ok(resp) => match resp.into_string() {
@@ -473,16 +490,13 @@ pub extern "C" fn olive_http_stream_start(url_ptr: i64, body_ptr: i64, headers_p
         olive_str_from_ptr(body_ptr)
     };
 
-    let mut headers = Vec::new();
-    if headers_ptr != 0 {
-        let obj = unsafe { &*(headers_ptr as *const OliveObj) };
-        for (k, &v) in &obj.fields {
-            if let Some(key_str) = crate::olive_str_as_str(k.0) {
-                let val = olive_str_from_ptr(v);
-                headers.push((key_str.to_string(), val));
-            }
+    let headers = match copy_headers(headers_ptr) {
+        Ok(headers) => headers,
+        Err(error) => {
+            set_last_error(error);
+            return 0;
         }
-    }
+    };
 
     spawn_post_json_stream(url, body, headers)
 }
@@ -544,6 +558,25 @@ mod tests {
     #[test]
     fn http_get_null_url() {
         assert_eq!(olive_http_get(0), 0);
+    }
+
+    #[test]
+    fn malformed_header_container_is_rejected() {
+        assert!(copy_headers(123).is_err());
+        assert!(copy_headers(crate::list::list_from_vec(vec![])).is_err());
+    }
+
+    #[test]
+    fn valid_string_headers_are_copied() {
+        let headers = crate::obj::olive_obj_new();
+        crate::obj::olive_obj_set(
+            headers,
+            crate::olive_str_internal("X-Test"),
+            crate::olive_str_internal("value"),
+        );
+        let copied = copy_headers(headers).unwrap();
+        assert_eq!(copied, vec![("X-Test".to_string(), "value".to_string())]);
+        crate::obj::olive_free_obj(headers);
     }
 
     #[test]
