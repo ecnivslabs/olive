@@ -69,6 +69,9 @@ def flip_set(s):
     s.add(999)
     s.discard(1)
 
+def add_int_to_set(s, v):
+    s.add(v)
+
 def print_set(s):
     print(sorted(s))
 
@@ -430,6 +433,22 @@ fn main():
 main()
 "#,
         "[2, 4, 6, 999]\n",
+    );
+}
+
+#[test]
+fn int_set_writeback_with_big_ints() {
+    assert_both_succeed(
+        r#"import py "wbhelper" as h
+
+fn main():
+    let mut s: set[int] = {1, 2}
+    h.add_int_to_set(s, 99999)
+    h.print_set(s)
+
+main()
+"#,
+        "[1, 2, 99999]\n",
     );
 }
 
