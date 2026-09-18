@@ -22,7 +22,7 @@ pub(super) fn collect_needed_imports(
                     StatementKind::SetAttr(_, _, val_op) => {
                         needed.insert("__olive_obj_set");
                         needed.insert("__olive_py_setattr");
-                        // A PyObject struct field overwrite releases the old value it held.
+                        // A struct field overwrite releases the old value it held.
                         needed.insert("__olive_py_decref");
                         needed.insert("__olive_free_typed");
                         needed.insert("__olive_free_str");
@@ -33,6 +33,8 @@ pub(super) fn collect_needed_imports(
                         needed.insert("__olive_free_enum");
                         needed.insert("__olive_free_fatptr");
                         needed.insert("__olive_free_any");
+                        needed.insert("__olive_free_union_member");
+                        needed.insert("__olive_free_c_struct");
                         if let Operand::Copy(src) = val_op
                             && matches!(func.locals[src.0].ty, OliveType::PyObject)
                         {
@@ -41,8 +43,11 @@ pub(super) fn collect_needed_imports(
                     }
                     StatementKind::SetIndex(_, _, val_op, _) => {
                         needed.insert("__olive_list_set");
+                        needed.insert("__olive_list_set_typed");
+                        needed.insert("__olive_tuple_set_typed");
                         needed.insert("__olive_obj_set");
                         needed.insert("__olive_obj_set_typed");
+                        needed.insert("__olive_obj_set_replacing_typed");
                         needed.insert("__olive_set_index_any");
                         needed.insert("__olive_bounds_fail");
                         needed.insert("__olive_nil_index_fail");

@@ -722,21 +722,39 @@ impl<M: Module> CraneliftCodegen<M> {
 
                         // Overwriting an owning field must release whatever it held;
                         // otherwise every reassignment (e.g. a per-frame camera field) leaks.
-                        // Struct storage is zero-initialized, so the first write decrefs a
-                        // harmless null.
+                        // Struct storage is zero-initialized, so the guarded free
+                        // sees a harmless null on the first write.
                         if let Some(field_ty) =
                             field_types.get(&(struct_name.clone(), attr.clone()))
-                            && matches!(field_ty, OliveType::PyObject | OliveType::PyNamed(_, _))
+                            && field_ty.needs_drop()
                         {
-                            let decref_id = func_ids
-                                .get("__olive_py_decref")
-                                .expect("missing __olive_py_decref");
-                            let decref_func = module.declare_func_in_func(*decref_id, builder.func);
                             let old =
                                 builder
                                     .ins()
                                     .load(types::I64, MemFlags::trusted(), o, offset);
-                            builder.ins().call(decref_func, &[old]);
+                            let live_bb = builder.create_block();
+                            let done_bb = builder.create_block();
+                            let live = builder.ins().icmp_imm(IntCC::NotEqual, old, 0);
+                            builder.ins().brif(live, live_bb, &[], done_bb, &[]);
+                            builder.seal_block(live_bb);
+                            builder.switch_to_block(live_bb);
+                            emit_value_free(
+                                builder,
+                                module,
+                                func_ids,
+                                string_ids,
+                                struct_fields,
+                                field_types,
+                                enum_defs,
+                                c_struct_names,
+                                c_struct_destructors,
+                                c_struct_sizes,
+                                old,
+                                field_ty,
+                            );
+                            builder.ins().jump(done_bb, &[]);
+                            builder.seal_block(done_bb);
+                            builder.switch_to_block(done_bb);
                         }
 
                         builder.ins().store(MemFlags::trusted(), v, o, offset);
@@ -808,7 +826,7 @@ impl<M: Module> CraneliftCodegen<M> {
                 let loc = loc_value(builder, module, loc_id);
 
                 match ty {
-                    OliveType::Dict(k, _) if super::imports::needs_key_descriptor(k) => {
+                    OliveType::Dict(k, val_ty) if super::imports::needs_key_descriptor(k) => {
                         let desc = super::imports::type_descriptor(
                             k,
                             struct_fields,
@@ -820,11 +838,115 @@ impl<M: Module> CraneliftCodegen<M> {
                             .expect("dict key descriptor not interned during collection");
                         let local_data = module.declare_data_in_func(data_id, builder.func);
                         let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                        if val_ty.needs_drop() {
+                            let val_desc = super::imports::type_descriptor(
+                                val_ty,
+                                struct_fields,
+                                field_types,
+                                enum_defs,
+                            );
+                            let val_data_id = *string_ids
+                                .get(&val_desc)
+                                .expect("dict value descriptor not interned during collection");
+                            let val_local_data =
+                                module.declare_data_in_func(val_data_id, builder.func);
+                            let val_desc_ptr =
+                                builder.ins().symbol_value(types::I64, val_local_data);
+                            let set_id = func_ids
+                                .get("__olive_obj_set_replacing_typed")
+                                .expect("missing __olive_obj_set_replacing_typed");
+                            let local_func = module.declare_func_in_func(*set_id, builder.func);
+                            builder
+                                .ins()
+                                .call(local_func, &[o, i, v, desc_ptr, val_desc_ptr]);
+                        } else {
+                            let set_id = func_ids
+                                .get("__olive_obj_set_typed")
+                                .expect("missing __olive_obj_set_typed");
+                            let local_func = module.declare_func_in_func(*set_id, builder.func);
+                            builder.ins().call(local_func, &[o, i, v, desc_ptr]);
+                        }
+                    }
+                    OliveType::Dict(_, val_ty) if val_ty.needs_drop() => {
+                        let val_desc = super::imports::type_descriptor(
+                            val_ty,
+                            struct_fields,
+                            field_types,
+                            enum_defs,
+                        );
+                        let val_data_id = *string_ids
+                            .get(&val_desc)
+                            .expect("dict value descriptor not interned during collection");
+                        let val_local_data = module.declare_data_in_func(val_data_id, builder.func);
+                        let val_desc_ptr = builder.ins().symbol_value(types::I64, val_local_data);
+                        let zero = builder.ins().iconst(types::I64, 0);
                         let set_id = func_ids
-                            .get("__olive_obj_set_typed")
-                            .expect("missing __olive_obj_set_typed");
+                            .get("__olive_obj_set_replacing_typed")
+                            .expect("missing __olive_obj_set_replacing_typed");
                         let local_func = module.declare_func_in_func(*set_id, builder.func);
-                        builder.ins().call(local_func, &[o, i, v, desc_ptr]);
+                        builder
+                            .ins()
+                            .call(local_func, &[o, i, v, zero, val_desc_ptr]);
+                    }
+                    OliveType::List(elem_ty) if elem_ty.needs_drop() => {
+                        let desc = super::imports::type_descriptor(
+                            elem_ty,
+                            struct_fields,
+                            field_types,
+                            enum_defs,
+                        );
+                        let data_id = *string_ids
+                            .get(&desc)
+                            .expect("list element descriptor not interned during collection");
+                        let local_data = module.declare_data_in_func(data_id, builder.func);
+                        let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                        emit_nil_check(builder, module, func_ids, o, loc);
+                        let len = builder.ins().load(
+                            types::I64,
+                            MemFlags::trusted().with_readonly(),
+                            o,
+                            24,
+                        );
+                        let idx = if !unchecked {
+                            emit_bounds_check(builder, module, func_ids, i, len, loc)
+                        } else {
+                            i
+                        };
+                        let set_id = func_ids
+                            .get("__olive_list_set_typed")
+                            .expect("missing __olive_list_set_typed");
+                        let local_func = module.declare_func_in_func(*set_id, builder.func);
+                        builder.ins().call(local_func, &[o, idx, v, desc_ptr]);
+                    }
+                    OliveType::Tuple(items) if items.iter().any(|item_ty| item_ty.needs_drop()) => {
+                        let desc = super::imports::type_descriptor(
+                            ty,
+                            struct_fields,
+                            field_types,
+                            enum_defs,
+                        );
+                        let data_id = *string_ids
+                            .get(&desc)
+                            .expect("tuple descriptor not interned during collection");
+                        let local_data = module.declare_data_in_func(data_id, builder.func);
+                        let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                        emit_nil_check(builder, module, func_ids, o, loc);
+                        let len = builder.ins().load(
+                            types::I64,
+                            MemFlags::trusted().with_readonly(),
+                            o,
+                            24,
+                        );
+                        let idx = if !unchecked {
+                            emit_bounds_check(builder, module, func_ids, i, len, loc)
+                        } else {
+                            i
+                        };
+                        let set_id = func_ids
+                            .get("__olive_tuple_set_typed")
+                            .expect("missing __olive_tuple_set_typed");
+                        let local_func = module.declare_func_in_func(*set_id, builder.func);
+                        builder.ins().call(local_func, &[o, idx, v, desc_ptr]);
                     }
                     OliveType::Dict(_, _) | OliveType::Struct(_, _, _) | OliveType::PyObject => {
                         let set_id = func_ids

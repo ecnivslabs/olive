@@ -212,3 +212,74 @@ fn struct_keyed_collections_use_structural_comparison() {
     ));
     assert_eq!(call_i64(&mut cg, "f"), 1);
 }
+
+#[test]
+fn list_str_index_assign_replaces_value() {
+    let mut cg = compile(concat!(
+        "fn f() -> int:\n",
+        "    let mut xs = [\"a\", \"b\", \"c\"]\n",
+        "    xs[0] = \"z\"\n",
+        "    xs[2] = xs[0]\n",
+        "    if len(xs) == 3 and xs[0] == \"z\" and xs[1] == \"b\" and xs[2] == \"z\":\n",
+        "        return 1\n",
+        "    return 0\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 1);
+}
+
+#[test]
+fn list_str_index_assign_negative_index() {
+    let mut cg = compile(concat!(
+        "fn f() -> int:\n",
+        "    let mut xs = [\"a\", \"b\", \"c\"]\n",
+        "    xs[-1] = \"z\"\n",
+        "    if xs[2] == \"z\" and xs[0] == \"a\":\n",
+        "        return 1\n",
+        "    return 0\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 1);
+}
+
+#[test]
+fn dict_str_value_overwrite_replaces_value() {
+    let mut cg = compile(concat!(
+        "fn f() -> int:\n",
+        "    let mut d = {\"k\": \"old\", \"j\": \"keep\"}\n",
+        "    d[\"k\"] = \"new\"\n",
+        "    if len(d) == 2 and d[\"k\"] == \"new\" and d[\"j\"] == \"keep\":\n",
+        "        return 1\n",
+        "    return 0\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 1);
+}
+
+#[test]
+fn tuple_str_index_assign_replaces_value() {
+    let mut cg = compile(concat!(
+        "fn f() -> int:\n",
+        "    let mut t = (1, \"a\")\n",
+        "    t[1] = \"b\"\n",
+        "    if t[0] == 1 and t[1] == \"b\":\n",
+        "        return 1\n",
+        "    return 0\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 1);
+}
+
+#[test]
+fn struct_str_field_reassign_replaces_value() {
+    let mut cg = compile(concat!(
+        "struct Named:\n",
+        "    x: int\n",
+        "    name: str\n",
+        "\n",
+        "fn f() -> int:\n",
+        "    let mut p = Named(1, \"a\")\n",
+        "    p.name = \"b\"\n",
+        "    p.name = \"c\"\n",
+        "    if p.x == 1 and p.name == \"c\":\n",
+        "        return 1\n",
+        "    return 0\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 1);
+}
