@@ -4,21 +4,8 @@ use crate::mir::{AggregateKind, Constant, Local, MirFunction, Operand, Rvalue};
 use crate::parser::BinOp;
 use crate::semantic::types::Type as OliveType;
 use cranelift::prelude::*;
-use cranelift_module::{DataId, FuncId, Linkage, Module};
+use cranelift_module::{DataId, FuncId, Module};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
-
-/// Set on a string pointer whose body has a length header at body-16. Mirrors
-/// `STR_HEAP` in the runtime's `string_slab`.
-const STR_HEAP_TAG: i64 = 2;
-
-/// String tag plus heap tag, cleared to recover the body address.
-const STR_TAG_BITS: i64 = 3;
-
-/// Length field of a string header; the upper bits hold the size class.
-const STR_LEN_MASK: i64 = 0xFFFF_FFFF_FFFF;
-
-/// Byte stride of `olive_char_table` entries in the runtime.
-const CHAR_TABLE_STRIDE: i64 = 4;
 
 /// Materialises a tagged Olive string pointer for an interned source location,
 /// or a null pointer when no location was recorded for the site.
@@ -699,61 +686,12 @@ impl<M: Module> CraneliftCodegen<M> {
                     }
                     OliveType::Str => {
                         emit_nil_check(builder, module, func_ids, o, loc);
-                        let result_var = builder.declare_var(types::I64);
-                        let fast_block = builder.create_block();
-                        let slow_block = builder.create_block();
-                        let merge_block = builder.create_block();
-
-                        // Only a heap string carries a length header. A literal
-                        // needs a strlen, which is the runtime's job.
-                        let heap_bit = builder.ins().band_imm(o, STR_HEAP_TAG);
-                        builder
-                            .ins()
-                            .brif(heap_bit, fast_block, &[], slow_block, &[]);
-
-                        builder.seal_block(fast_block);
-                        builder.switch_to_block(fast_block);
-                        let body = builder.ins().band_imm(o, !STR_TAG_BITS);
-                        let header = builder.ins().load(
-                            types::I64,
-                            MemFlags::trusted().with_readonly(),
-                            body,
-                            -16,
-                        );
-                        let len = builder.ins().band_imm(header, STR_LEN_MASK);
-                        let idx = if !unchecked {
-                            emit_bounds_check(builder, module, func_ids, i, len, loc)
-                        } else {
-                            i
-                        };
-                        let addr = builder.ins().iadd(body, idx);
-                        let byte = builder
-                            .ins()
-                            .uload8(types::I64, MemFlags::trusted(), addr, 0);
-                        let table_id = module
-                            .declare_data("olive_char_table", Linkage::Import, false, false)
-                            .expect("declare olive_char_table");
-                        let local_data = module.declare_data_in_func(table_id, builder.func);
-                        let table = builder.ins().symbol_value(types::I64, local_data);
-                        let entry = builder.ins().imul_imm(byte, CHAR_TABLE_STRIDE);
-                        let fast_val = builder.ins().iadd(table, entry);
-                        builder.def_var(result_var, fast_val);
-                        builder.ins().jump(merge_block, &[]);
-
-                        builder.seal_block(slow_block);
-                        builder.switch_to_block(slow_block);
                         let get_id = func_ids
                             .get("__olive_str_get_checked")
                             .expect("missing __olive_str_get_checked");
                         let local_func = module.declare_func_in_func(*get_id, builder.func);
                         let inst = builder.ins().call(local_func, &[o, i, loc]);
-                        let slow_val = builder.inst_results(inst)[0];
-                        builder.def_var(result_var, slow_val);
-                        builder.ins().jump(merge_block, &[]);
-
-                        builder.seal_block(merge_block);
-                        builder.switch_to_block(merge_block);
-                        builder.use_var(result_var)
+                        builder.inst_results(inst)[0]
                     }
                     OliveType::List(elem_ty) => {
                         emit_nil_check(builder, module, func_ids, o, loc);

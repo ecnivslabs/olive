@@ -877,12 +877,24 @@ pub(crate) fn slice_indices(len: i64, start: i64, stop: i64, step: i64, flags: i
     if step > 0 {
         while i < stop {
             out.push(i as usize);
-            i += step;
+            let Some(next) = i.checked_add(step) else {
+                break;
+            };
+            if next >= stop {
+                break;
+            }
+            i = next;
         }
     } else {
         while i > stop {
             out.push(i as usize);
-            i += step;
+            let Some(next) = i.checked_add(step) else {
+                break;
+            };
+            if next <= stop {
+                break;
+            }
+            i = next;
         }
     }
     out
@@ -1527,6 +1539,11 @@ mod tests {
             olive_list_set(ptr, i as i64, v);
         }
         ptr
+    }
+
+    #[test]
+    fn extreme_slice_step_stops_without_wrapping() {
+        assert_eq!(slice_indices(3, 0, 0, i64::MIN, 5), vec![0]);
     }
 
     #[test]

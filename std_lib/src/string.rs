@@ -57,6 +57,40 @@ pub(crate) fn expect_str(word: i64, method: &str) -> i64 {
     crate::panic::abort(&format!("`{method}` requires a string argument"), None)
 }
 
+fn str_char_at(s: i64, i: i64, loc: i64, checked: bool) -> i64 {
+    let s = expect_str(s, "indexing");
+    if s == 0 {
+        if checked {
+            crate::panic::olive_nil_index_fail(loc);
+        }
+        return 0;
+    }
+    let text = olive_str_from_ptr(s);
+    let char_len = text.chars().count() as i64;
+    let idx = if i < 0 {
+        i.checked_add(char_len).unwrap_or(i)
+    } else {
+        i
+    };
+    if idx < 0 || idx >= char_len {
+        if checked {
+            crate::panic::olive_bounds_fail(i, char_len, loc);
+        }
+        return 0;
+    }
+    let byte_idx = text
+        .char_indices()
+        .nth(idx as usize)
+        .map(|(byte, _)| byte)
+        .unwrap_or(text.len());
+    let ch = text[byte_idx..].chars().next().unwrap_or('\0');
+    if ch.is_ascii() {
+        char_str(ch as u8)
+    } else {
+        olive_str_internal(&ch.to_string())
+    }
+}
+
 /// Interned single-byte strings, NUL-terminated like any literal. Indexing
 /// and per-char iteration return these instead of allocating, and the free
 /// path already ignores pointers outside the slab span.
@@ -89,21 +123,13 @@ pub(crate) fn char_str(byte: u8) -> i64 {
 /// `Str` or cross-representation lookups (`d[s[i]]` vs `d["a"]`) miss.
 pub(crate) fn is_interned_char(v: i64) -> bool {
     let base = CHAR_STRS.0.as_ptr() as i64;
-    v >= base && v < base + 1024
+    let body = v & !(crate::string_slab::STR_TAG | crate::string_slab::STR_HEAP);
+    body >= base && body < base + 1024
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_get(s: i64, i: i64) -> i64 {
-    let s = expect_str(s, "indexing");
-    if s == 0 {
-        return 0;
-    }
-    let ptr = str_body(s) as *const u8;
-    let byte = unsafe { *ptr.add(i as usize) };
-    if byte == 0 {
-        return 0;
-    }
-    char_str(byte)
+    str_char_at(s, i, 0, false)
 }
 
 #[unsafe(no_mangle)]
@@ -117,18 +143,7 @@ pub extern "C" fn olive_str_char(s: i64, i: i64) -> i64 {
 /// location on a null receiver or an out-of-range index.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_get_checked(s: i64, i: i64, loc: i64) -> i64 {
-    if s == 0 {
-        crate::panic::olive_nil_index_fail(loc);
-    }
-    let s = expect_str(s, "indexing");
-    let len = olive_str_len(s);
-    let idx = if i < 0 { i + len } else { i };
-    if idx < 0 || idx >= len {
-        crate::panic::olive_bounds_fail(i, len, loc);
-    }
-    let ptr = str_body(s) as *const u8;
-    let byte = unsafe { *ptr.add(idx as usize) };
-    char_str(byte)
+    str_char_at(s, i, loc, true)
 }
 
 #[unsafe(no_mangle)]
@@ -173,22 +188,7 @@ pub extern "C" fn olive_str_getslice(s: i64, start: i64, stop: i64, step: i64, f
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_str_slice(s: i64, start: i64, end: i64) -> i64 {
-    let s = expect_str(s, "slicing");
-    let bytes = olive_str_to_bytes(s);
-    let start = start as usize;
-    let end = end as usize;
-    if start <= end && end <= bytes.len() {
-        let sub = &bytes[start..end];
-        // Byte bounds can land inside a multi-byte char; replacement chars
-        // keep the result a valid `str` where `from_utf8_unchecked` would be
-        // undefined behavior.
-        match std::str::from_utf8(sub) {
-            Ok(valid) => olive_str_internal(valid),
-            Err(_) => olive_str_internal(&String::from_utf8_lossy(sub)),
-        }
-    } else {
-        0
-    }
+    olive_str_getslice(s, start, end, 1, 3)
 }
 
 /// Creates a heap-allocated Olive string from a `&str`, returning an `i64` pointer.
@@ -201,12 +201,6 @@ pub extern "C" fn olive_str_slice(s: i64, start: i64, end: i64) -> i64 {
 /// assert!(ptr != 0);
 /// ```
 pub fn olive_str_internal(s: &str) -> i64 {
-    // The terminator marks the end; an interior nul would make the free path
-    // strlen short and pick the wrong size class, so drop them here.
-    if s.as_bytes().contains(&0) {
-        let safe: Vec<u8> = s.bytes().filter(|&b| b != 0).collect();
-        return crate::string_slab::str_alloc(&safe);
-    }
     crate::string_slab::str_alloc(s.as_bytes())
 }
 
@@ -244,6 +238,24 @@ mod get_checked_tests {
         let s = olive_str_internal("abc");
         let got = olive_str_get_checked(s, 1, 0);
         assert_eq!(olive_str_from_ptr(got), "b");
+    }
+
+    #[test]
+    fn interned_char_is_reflected_as_string() {
+        let c = char_str(b'a');
+        assert_eq!(crate::olive_is_str(c), 1);
+        assert_eq!(crate::olive_str_from_ptr(crate::olive_typeof_str(c)), "str");
+    }
+
+    #[test]
+    fn internal_strings_preserve_embedded_nul() {
+        let s = olive_str_internal("a\0b");
+        assert_eq!(olive_str_to_bytes(s), b"a\0b");
+        assert_eq!(olive_str_len(s), 3);
+        let copy = crate::olive_copy(s);
+        assert_eq!(olive_str_to_bytes(copy), b"a\0b");
+        crate::olive_free_str(copy);
+        crate::olive_free_str(s);
     }
 
     #[test]
@@ -852,9 +864,9 @@ mod tests {
     }
 
     #[test]
-    fn slice_invalid_range() {
-        assert_eq!(olive_str_slice(s("hello"), 3, 1), 0);
-        assert_eq!(olive_str_slice(s("hello"), 10, 15), 0);
+    fn slice_invalid_range_clamps_to_empty() {
+        assert_eq!(from_ptr(olive_str_slice(s("hello"), 3, 1)), "");
+        assert_eq!(from_ptr(olive_str_slice(s("hello"), 10, 15)), "");
     }
 
     #[test]
@@ -1111,11 +1123,11 @@ mod tests {
     }
 
     #[test]
-    fn slice_mid_char_boundary_is_lossy_not_ub() {
+    fn slice_mid_char_boundary_uses_scalar_range() {
         let ptr = olive_str_internal("é");
         let bytes = crate::olive_str_to_bytes(ptr);
         let got = olive_str_slice(ptr, 0, (bytes.len() - 1) as i64);
-        assert_eq!(from_ptr(got), String::from_utf8_lossy(&bytes[..1]));
+        assert_eq!(from_ptr(got), "é");
     }
 
     #[test]

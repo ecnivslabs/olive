@@ -1567,16 +1567,12 @@ pub extern "C" fn olive_run_exit_hooks() {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_is_null(val: i64) -> i64 {
-    if val == 0 { 1 } else { 0 }
+    (val == 0 || val == boxed::TAG_NULL) as i64
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_is_str(val: i64) -> i64 {
-    if val > 0x10000 && (val & 1) != 0 {
-        1
-    } else {
-        0
-    }
+    (string::is_interned_char(val) || (val > 0x10000 && (val & 1) != 0)) as i64
 }
 
 #[unsafe(no_mangle)]
@@ -1589,6 +1585,9 @@ pub extern "C" fn olive_is_bytes(val: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_typeof_str(val: i64) -> i64 {
+    if string::is_interned_char(val) {
+        return olive_str_internal("str");
+    }
     match val & boxed::TAG_MASK {
         boxed::TAG_INT => return olive_str_internal("int"),
         boxed::TAG_BOOL => return olive_str_internal("bool"),

@@ -90,9 +90,9 @@ fn with_class_slab<T>(cap: usize, f: impl FnOnce(&mut GenSlab) -> T) -> T {
     }
 }
 
-/// Allocates a heap string from `bytes`, which must not contain an interior
-/// nul. Stores capacity class and length at body-16 for O(1) free. Returns the
-/// body pointer tagged with the low string bit.
+/// Allocates a heap string from `bytes`. Stores capacity class and length at
+/// body-16 for O(1) free, including strings with interior NUL bytes. Returns
+/// the body pointer tagged with the low string bit.
 pub fn str_alloc(bytes: &[u8]) -> i64 {
     let len = bytes.len();
     let cap = class_bytes(len + 1);

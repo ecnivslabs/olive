@@ -1,22 +1,22 @@
-fn typeof(val) -> str:
+fn typeof(val: Any) -> str:
     return __olive_typeof_str(val)
 
-fn is_null(val) -> bool:
+fn is_null(val: Any) -> bool:
     return __olive_is_null(val) == 1
 
-fn is_str(val) -> bool:
+fn is_str(val: Any) -> bool:
     return __olive_is_str(val) == 1
 
-fn is_list(val) -> bool:
+fn is_list(val: Any) -> bool:
     return __olive_is_list(val) == 1
 
-fn is_obj(val) -> bool:
+fn is_obj(val: Any) -> bool:
     return __olive_is_obj(val) == 1
 
-fn is_bytes(val) -> bool:
+fn is_bytes(val: Any) -> bool:
     return __olive_is_bytes(val) == 1
 
-fn fields(obj) -> list:
+fn fields(obj: Any) -> list:
     return __olive_obj_keys(obj)
 
 fn panic(msg: str):
