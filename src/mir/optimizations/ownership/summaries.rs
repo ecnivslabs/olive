@@ -265,8 +265,52 @@ pub fn compute_borrowed_returns(functions: &[MirFunction]) -> HashSet<String> {
 }
 
 fn returns_borrow(func: &MirFunction, borrowed: &HashSet<String>) -> bool {
+    !tainted_return_blocks(func, borrowed).is_empty()
+}
+
+/// Return-block indices where `_return` may alias a param, a field/element
+/// read, or another maybe-borrow call's result.
+pub fn tainted_return_blocks(func: &MirFunction, borrowed: &HashSet<String>) -> Vec<usize> {
+    let (out, _) = taint_states(func, borrowed);
+    // Only mark function returning borrow if a reachable RETURN block has
+    // tainted _return. Intermediate _return taint in non-return blocks
+    // (from a prior assignment later overwritten) does not count.
+    let mut blocks = Vec::new();
+    for (bb, block) in func.basic_blocks.iter().enumerate() {
+        if !matches!(&block.terminator, Some(t) if matches!(&t.kind, TerminatorKind::Return)) {
+            continue;
+        }
+        if out[bb][0] {
+            blocks.push(bb);
+        }
+    }
+    blocks
+}
+
+/// `(block, statement)` of every `_return` assignment whose right-hand side
+/// is tainted in its pre-state. The ownership pass splits each into a
+/// deep-copy plus a move, so the stranded-or-aliased ambiguity of a
+/// maybe-borrow return resolves to an unambiguous transfer in both cases.
+pub fn tainted_return_assigns(
+    func: &MirFunction,
+    borrowed: &HashSet<String>,
+) -> Vec<(usize, usize)> {
+    let (_, assigns) = taint_states(func, borrowed);
+    assigns
+}
+
+/// Forward may-analysis over locals: tainted means possibly derived from a
+/// param, a field/element read, or a maybe-borrow call. Returns the per-block
+/// exit states plus the tainted `_return` assignments.
+fn taint_states(
+    func: &MirFunction,
+    borrowed: &HashSet<String>,
+) -> (Vec<Vec<bool>>, Vec<(usize, usize)>) {
     if !func.locals.first().is_some_and(|d| d.ty.is_move_type()) {
-        return false;
+        return (
+            vec![vec![false; func.locals.len()]; func.basic_blocks.len()],
+            Vec::new(),
+        );
     }
     let n = func.locals.len();
     let nb = func.basic_blocks.len();
@@ -280,11 +324,13 @@ fn returns_borrow(func: &MirFunction, borrowed: &HashSet<String>) -> bool {
         }
     }
     let mut out: Vec<Vec<bool>> = entry.clone();
+    let assigns: Vec<(usize, usize)>;
     // Forward may-analysis: union at joins, ALWAYS compute taint for dst
     // (not just set to true) so a fresh assignment to _return clears the
     // taint even if a prior assignment in another block set it.
     loop {
         let mut changed = false;
+        let mut pass_assigns: Vec<(usize, usize)> = Vec::new();
         for bb in 0..nb {
             let mut state = vec![false; n];
             for &p in &preds[bb] {
@@ -325,7 +371,7 @@ fn returns_borrow(func: &MirFunction, borrowed: &HashSet<String>) -> bool {
                 entry[bb] = state.clone();
                 changed = true;
             }
-            for stmt in &func.basic_blocks[bb].statements {
+            for (idx, stmt) in func.basic_blocks[bb].statements.iter().enumerate() {
                 if let StatementKind::Assign(dst, rval) = &stmt.kind
                     && dst.0 < n
                 {
@@ -344,6 +390,9 @@ fn returns_borrow(func: &MirFunction, borrowed: &HashSet<String>) -> bool {
                         } => borrowed.contains(name.as_str()) || runtime_borrowed_return(name),
                         _ => false,
                     };
+                    if dst.0 == 0 && state[0] {
+                        pass_assigns.push((bb, idx));
+                    }
                 }
             }
             if state != out[bb] {
@@ -352,19 +401,9 @@ fn returns_borrow(func: &MirFunction, borrowed: &HashSet<String>) -> bool {
             }
         }
         if !changed {
+            assigns = pass_assigns;
             break;
         }
     }
-    // Only mark function returning borrow if a reachable RETURN block has
-    // tainted _return. Intermediate _return taint in non-return blocks
-    // (from a prior assignment later overwritten) does not count.
-    for (bb, block) in func.basic_blocks.iter().enumerate() {
-        if !matches!(&block.terminator, Some(t) if matches!(&t.kind, TerminatorKind::Return)) {
-            continue;
-        }
-        if out[bb][0] {
-            return true;
-        }
-    }
-    false
+    (out, assigns)
 }

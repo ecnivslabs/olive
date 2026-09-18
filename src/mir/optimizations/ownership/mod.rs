@@ -43,6 +43,125 @@ pub struct OwnershipInference {
     pub copy_sites: RefCell<Vec<CopySite>>,
 }
 
+impl OwnershipInference {
+    /// Resolve every tainted `_return` assignment (see `tainted_return_assigns`)
+    /// into an unambiguous transfer. A maybe-borrow return strands its object
+    /// when the callee built it fresh (the caller holds a view and drops the
+    /// word on the floor, one object per call) and double-frees when it is
+    /// genuinely borrowed (the caller would own what the owner keeps).
+    ///
+    /// A plain-value source rewrites to a copy plus a move, with a drop of the
+    /// source only when it is builder-owning: the rest of the pass guards
+    /// (Mixed), removes (View), or runs (Owner) that drop, while a borrow
+    /// source (param, view temp) owns nothing and keeps no drop at all. (The
+    /// builder excludes the returned operand from scope-end drops, which is
+    /// why the owning case needs its drop spelled out here.) A read or
+    /// runtime-borrow call instead splits into a temp holding the single
+    /// evaluation, then the same copy plus move, so the container keeps its
+    /// storage and the caller owns the copy. Calls to maybe-borrow MIR
+    /// functions are left alone, since their own returns already went
+    /// through this same split.
+    ///
+    /// Runs before the rest of the pass so drops, flags, and reassign see
+    /// the final shape.
+    fn own_tainted_returns(&self, func: &mut MirFunction) -> bool {
+        if func.is_async || !self.borrowed_returns.contains(&func.name) {
+            return false;
+        }
+        let sites = summaries::tainted_return_assigns(func, &self.borrowed_returns);
+        if sites.is_empty() {
+            return false;
+        }
+        // Descending per block so earlier indices stay valid while splicing.
+        let mut ordered = sites;
+        ordered.sort_unstable_by(|a, b| b.cmp(a));
+        for (bb, idx) in ordered {
+            let span = func.basic_blocks[bb].statements[idx].span;
+            let StatementKind::Assign(dst, rval) =
+                func.basic_blocks[bb].statements[idx].kind.clone()
+            else {
+                continue;
+            };
+            if dst != Local(0) {
+                continue;
+            }
+            if let Rvalue::Call {
+                func: Operand::Constant(Constant::Function(name)),
+                ..
+            } = &rval
+                && self.borrowed_returns.contains(name.as_str())
+            {
+                continue;
+            }
+            let ret_ty = func.locals[0].ty.clone();
+            let tmp = push_local(func, ret_ty.clone());
+            let mut replacement: Vec<Statement> = Vec::new();
+            match rval {
+                Rvalue::Use(Operand::Copy(r)) | Rvalue::Use(Operand::Move(r)) if r != Local(0) => {
+                    replacement.push(Statement {
+                        kind: StatementKind::Assign(
+                            tmp,
+                            Rvalue::Call {
+                                func: Operand::Constant(Constant::Function(
+                                    "__olive_copy_typed".into(),
+                                )),
+                                args: vec![Operand::Copy(r)],
+                            },
+                        ),
+                        span,
+                    });
+                    // Only a builder-owning source can hold a disposal: a
+                    // borrow (param, view temp) owns nothing, so there is no
+                    // drop to keep, and emitting one would free the owner's
+                    // object out from under it (params classify External, not
+                    // View, so no later machinery would neutralize it).
+                    if func.locals[r.0].is_owning {
+                        replacement.push(Statement {
+                            kind: StatementKind::Drop(r),
+                            span,
+                        });
+                    }
+                }
+                _ => {
+                    let t = push_local(func, ret_ty.clone());
+                    replacement.push(Statement {
+                        kind: StatementKind::Assign(t, rval),
+                        span,
+                    });
+                    replacement.push(Statement {
+                        kind: StatementKind::Assign(
+                            tmp,
+                            Rvalue::Call {
+                                func: Operand::Constant(Constant::Function(
+                                    "__olive_copy_typed".into(),
+                                )),
+                                args: vec![Operand::Copy(t)],
+                            },
+                        ),
+                        span,
+                    });
+                }
+            }
+            replacement.push(Statement {
+                kind: StatementKind::Assign(Local(0), Rvalue::Use(Operand::Move(tmp))),
+                span,
+            });
+            func.basic_blocks[bb]
+                .statements
+                .splice(idx..=idx, replacement);
+            if self.explain_copies {
+                self.copy_sites.borrow_mut().push(CopySite {
+                    span,
+                    copied_type: format!("{ret_ty}"),
+                    reason: CopyReason::InteriorReturn,
+                    function: func.name.clone(),
+                });
+            }
+        }
+        true
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum RvClass {
     /// `dst = src` alias; may become a transfer.
@@ -95,18 +214,14 @@ impl Transform for OwnershipInference {
             return false;
         }
 
+        let mut changed = self.own_tainted_returns(func);
+
         let liveness = Liveness::compute(func);
         let heap: Vec<bool> = func.locals.iter().map(|d| d.ty.needs_drop()).collect();
         let builder_owning: Vec<bool> = func.locals.iter().map(|d| d.is_owning).collect();
 
-        let (records, arg_moves, direct_store_moves, agg_moves) = collect_assigns(
-            func,
-            &liveness,
-            &heap,
-            &builder_owning,
-            &self.borrowed_returns,
-            &self.param_escapes,
-        );
+        let (records, arg_moves, direct_store_moves, agg_moves) =
+            collect_assigns(func, &liveness, &heap, &builder_owning, &self.param_escapes);
 
         // Promoted Move hands src's value to dst; src's stale scope-end Drop must go too.
         let mut moved_from: Vec<(usize, usize, Local)> = Vec::new();
@@ -208,7 +323,7 @@ impl Transform for OwnershipInference {
 
         let (classes, transfers) = classify(func, &records, &heap, &builder_owning);
 
-        let mut changed = !moved_from.is_empty();
+        changed |= !moved_from.is_empty();
 
         for (rec_idx, rec) in records.iter().enumerate() {
             if transfers.contains(&rec_idx)
@@ -361,7 +476,6 @@ fn collect_assigns(
     liveness: &Liveness,
     heap: &[bool],
     builder_owning: &[bool],
-    borrowed_returns: &HashSet<String>,
     param_escapes: &HashMap<String, Vec<bool>>,
 ) -> (
     Vec<AssignRec>,
@@ -452,12 +566,13 @@ fn collect_assigns(
                     RvClass::Borrow((l.0 < heap.len() && heap[l.0]).then_some(*l))
                 }
                 Rvalue::VTableLoad { .. } => RvClass::Borrow(None),
+                // Only runtime calls still return true borrows. MIR-level
+                // maybe-borrow functions deep-copy tainted returns in-callee
+                // (`own_tainted_returns`), so their results are owned here.
                 Rvalue::Call {
                     func: Operand::Constant(Constant::Function(name)),
                     ..
-                } if borrowed_returns.contains(name) || runtime_borrowed_return(name) => {
-                    RvClass::Borrow(None)
-                }
+                } if runtime_borrowed_return(name) => RvClass::Borrow(None),
                 _ => RvClass::Own,
             };
             let src_dead = match &class {
