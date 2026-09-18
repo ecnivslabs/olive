@@ -576,6 +576,19 @@ impl<M: Module> CraneliftCodegen<M> {
                     .get(func_name)
                     .unwrap_or_else(|| panic!("missing in fn: {}", func_name));
                 let local_func = module.declare_func_in_func(*in_id, builder.func);
+                // The membership helpers take raw i64 words; a float needle
+                // arrives as F64/F32 and must be bitcast first, the same
+                // convention `translate_call` applies to typed-call float
+                // arguments. Without this the register allocator sees an
+                // F64 value for an I64 parameter and aborts compilation.
+                let l = match builder.func.dfg.value_type(l) {
+                    types::F64 => builder.ins().bitcast(types::I64, MemFlags::new(), l),
+                    types::F32 => {
+                        let low = builder.ins().bitcast(types::I32, MemFlags::new(), l);
+                        builder.ins().uextend(types::I64, low)
+                    }
+                    _ => l,
+                };
 
                 let inst = if is_str {
                     builder.ins().call(local_func, &[r, l])

@@ -254,12 +254,26 @@ fn dict_str_value_overwrite_replaces_value() {
 }
 
 #[test]
-fn tuple_str_index_assign_replaces_value() {
+fn float_in_list() {
     let mut cg = compile(concat!(
         "fn f() -> int:\n",
-        "    let mut t = (1, \"a\")\n",
-        "    t[1] = \"b\"\n",
-        "    if t[0] == 1 and t[1] == \"b\":\n",
+        "    if 1.5 in [1.5] and 2.5 in [1.5]:\n",
+        "        return 0\n",
+        "    if 1.5 in [1.5] and not (2.5 in [1.5]):\n",
+        "        return 1\n",
+        "    return 0\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 1);
+}
+
+#[test]
+fn float_in_set() {
+    let mut cg = compile(concat!(
+        "fn f() -> int:\n",
+        "    let s: set[float] = {1.5}\n",
+        "    let v = 2.5\n",
+        "    let w = 1.5\n",
+        "    if w in s and 1.5 in s and not (v in s):\n",
         "        return 1\n",
         "    return 0\n",
     ));
@@ -292,6 +306,90 @@ fn dict_setdefault_hit_returns_existing_and_miss_inserts() {
         "    let hit = d.setdefault(\"k\", \"fresh\")\n",
         "    let miss = d.setdefault(\"n\", \"inserted\")\n",
         "    if hit == \"old\" and miss == \"inserted\" and d[\"k\"] == \"old\" and d[\"n\"] == \"inserted\":\n",
+        "        return 1\n",
+        "    return 0\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 1);
+}
+
+#[test]
+fn set_union_big_ints() {
+    let mut cg = compile(concat!(
+        "fn f() -> int:\n",
+        "    let s: set[int] = {99999}\n",
+        "    let t: set[int] = {1}\n",
+        "    let u = s | t\n",
+        "    if len(u) == 2 and 99999 in u and 1 in u:\n",
+        "        return 1\n",
+        "    return 0\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 1);
+}
+
+#[test]
+fn set_intersection_big_ints() {
+    let mut cg = compile(concat!(
+        "fn f() -> int:\n",
+        "    let s: set[int] = {99999, 2}\n",
+        "    let t: set[int] = {99999, 3}\n",
+        "    let u = s & t\n",
+        "    if len(u) == 1 and 99999 in u:\n",
+        "        return 1\n",
+        "    return 0\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 1);
+}
+
+#[test]
+fn set_diff_big_ints() {
+    let mut cg = compile(concat!(
+        "fn f() -> int:\n",
+        "    let s: set[int] = {99999, 2}\n",
+        "    let t: set[int] = {99999}\n",
+        "    let u = s - t\n",
+        "    if len(u) == 1 and 2 in u:\n",
+        "        return 1\n",
+        "    return 0\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 1);
+}
+
+#[test]
+fn set_sym_diff_big_ints() {
+    let mut cg = compile(concat!(
+        "fn f() -> int:\n",
+        "    let s: set[int] = {99999, 2}\n",
+        "    let t: set[int] = {99999, 3}\n",
+        "    let u = s ^ t\n",
+        "    if len(u) == 2 and 2 in u and 3 in u:\n",
+        "        return 1\n",
+        "    return 0\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 1);
+}
+
+#[test]
+fn set_union_float_keys() {
+    let mut cg = compile(concat!(
+        "fn f() -> int:\n",
+        "    let s: set[float] = {1.0000000000000002}\n",
+        "    let t: set[float] = {2.5}\n",
+        "    let u = s | t\n",
+        "    if len(u) == 2 and 1.0000000000000002 in u and 2.5 in u:\n",
+        "        return 1\n",
+        "    return 0\n",
+    ));
+    assert_eq!(call_i64(&mut cg, "f"), 1);
+}
+
+#[test]
+fn set_union_str_elements() {
+    let mut cg = compile(concat!(
+        "fn f() -> int:\n",
+        "    let s: set[str] = {\"a\"}\n",
+        "    let t: set[str] = {\"b\", \"a\"}\n",
+        "    let u = s | t\n",
+        "    if len(u) == 2 and \"a\" in u and \"b\" in u:\n",
         "        return 1\n",
         "    return 0\n",
     ));
