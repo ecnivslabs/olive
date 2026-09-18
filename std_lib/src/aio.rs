@@ -872,13 +872,29 @@ pub extern "C" fn olive_pool_run(fn_ptr: i64, arg: i64) -> i64 {
         cvar: Condvar::new(),
     });
     let shared2 = shared.clone();
-    let arg = crate::copy_typed::relocate_across_boundary(arg);
+    // The caller transfers ownership of `arg` here (`RUNTIME_ESCAPES`), and
+    // the relocated copy is what crosses: release the original now, or every
+    // heap argument strands one object. For surface calls `arg` is an `int`
+    // and both the copy and this free are no-ops.
+    let arg = {
+        let relocated = crate::copy_typed::relocate_across_boundary(arg);
+        crate::olive_free_any(arg);
+        relocated
+    };
     crate::debug::spawn_traced("olive-pool-run", move || {
         let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(fn_ptr as usize) };
         // The result crosses back to the awaiting thread, which frees it from
         // a different per-thread slab than the one this thread allocated it
         // in; copy it into the process-lifetime arena first.
-        let result = crate::copy_typed::relocate_across_boundary(f(arg));
+        let result = {
+            let returned = f(arg);
+            // The called function lends `arg`: the relocated copy served its
+            // purpose once `f` returns.
+            crate::olive_free_any(arg);
+            let relocated = crate::copy_typed::relocate_across_boundary(returned);
+            crate::olive_free_any(returned);
+            relocated
+        };
         let mut state = shared2.state.lock().unwrap();
         if matches!(*state, FutureState::Pending) {
             *state = FutureState::Ready(result);
@@ -903,12 +919,25 @@ pub extern "C" fn olive_pool_run_sync(fn_ptr: i64, arg: i64) -> i64 {
         cvar: Condvar::new(),
     });
     let shared2 = shared.clone();
-    let arg = crate::copy_typed::relocate_across_boundary(arg);
+    // Same ownership as `olive_pool_run`: the caller's argument is consumed
+    // here and the called function's return is consumed below; both originals
+    // are released once their arena copies take over.
+    let arg = {
+        let relocated = crate::copy_typed::relocate_across_boundary(arg);
+        crate::olive_free_any(arg);
+        relocated
+    };
     crate::debug::spawn_traced("olive-pool-run-sync", move || {
         let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(fn_ptr as usize) };
         // Same cross-slab free hazard as `olive_pool_run`: the caller frees
         // the result from its own arena.
-        let result = crate::copy_typed::relocate_across_boundary(f(arg));
+        let result = {
+            let returned = f(arg);
+            crate::olive_free_any(arg);
+            let relocated = crate::copy_typed::relocate_across_boundary(returned);
+            crate::olive_free_any(returned);
+            relocated
+        };
         let mut state = shared2.state.lock().unwrap();
         if matches!(*state, FutureState::Pending) {
             *state = FutureState::Ready(result);
@@ -942,6 +971,37 @@ mod tests {
     #[test]
     fn pool_run_sync_executes() {
         assert_eq!(olive_pool_run_sync(add_one as *const () as i64, 41), 42);
+    }
+
+    extern "C" fn echo_heap_len(x: i64) -> i64 {
+        let _ = crate::olive_str_from_ptr(x);
+        let s = crate::olive_str_internal("pool-result");
+        let g = crate::string_slab::olive_str_gen_of(s);
+        *ECHO_SLOT.lock().unwrap() = (s, g);
+        s
+    }
+
+    static ECHO_SLOT: std::sync::Mutex<(i64, i64)> = std::sync::Mutex::new((0, 0));
+
+    #[test]
+    fn pool_run_sync_releases_heap_arg_and_result() {
+        // `RUNTIME_ESCAPES` hands `arg` over and the worker lends it to `f`;
+        // both originals (argument and `f`'s return) must be released once
+        // their arena copies take over, or each call strands two objects.
+        let arg = crate::olive_str_internal("pool-arg");
+        let arg_gen = crate::string_slab::olive_str_gen_of(arg);
+        let out = olive_pool_run_sync(echo_heap_len as *const () as i64, arg);
+        assert_eq!(crate::olive_str_from_ptr(out), "pool-result");
+        assert_eq!(crate::string_slab::olive_str_gen_stale(arg, arg_gen), 1);
+        let (echo_ptr, echo_gen) = *ECHO_SLOT.lock().unwrap();
+        assert_ne!(echo_ptr, 0);
+        assert_eq!(
+            crate::string_slab::olive_str_gen_stale(echo_ptr, echo_gen),
+            1
+        );
+        let out_gen = crate::string_slab::olive_str_gen_of(out);
+        crate::olive_free_any(out);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(out, out_gen), 1);
     }
 
     #[test]
