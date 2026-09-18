@@ -486,13 +486,8 @@ unsafe fn sync_dict_entries(pair: &WritebackPair, decode_val: impl Fn(PyObject, 
         let mut pos: isize = 0;
         let mut key_obj: PyObject = std::ptr::null_mut();
         let mut val_obj: PyObject = std::ptr::null_mut();
-        // (decoded key ptr, decoded value word), first-occurrence order
-        let mut entries: Vec<(i64, i64)> = Vec::new();
-        // Decoded-key-ptr -> index into `entries`. Keys are compared by
-        // content (`OliveStringKey`), so the map's own hasher is exactly the
-        // dedupe test and lookup stays O(1).
-        let mut index_of: rustc_hash::FxHashMap<crate::OliveStringKey, usize> =
-            rustc_hash::FxHashMap::default();
+        // (decoded key ptr, decoded value word), Python iteration order.
+        let mut raw: Vec<(i64, i64)> = Vec::new();
         while PY_DICT_NEXT(pair.py_obj, &mut pos, &mut key_obj, &mut val_obj) != 0 {
             if key_obj.is_null() {
                 continue;
@@ -501,32 +496,50 @@ unsafe fn sync_dict_entries(pair: &WritebackPair, decode_val: impl Fn(PyObject, 
             if key_ptr == 0 {
                 continue;
             }
-            let olive_val = decode_val(val_obj, key_ptr);
-            let keyed = crate::OliveStringKey(key_ptr);
-            match index_of.entry(keyed) {
-                std::collections::hash_map::Entry::Occupied(occ) => {
-                    let idx = *occ.get();
-                    let prev_val = entries[idx].1;
-                    // The duplicate's value never becomes reachable; release
-                    // it now. Tagged strings need the dict-value path, not
-                    // the slab-only check: `is_active_object` misses them.
-                    crate::free_any_word(prev_val);
-                    entries[idx].1 = olive_val;
-                    crate::string_slab::str_free(key_ptr);
-                }
-                std::collections::hash_map::Entry::Vacant(vac) => {
-                    vac.insert(entries.len());
-                    entries.push((key_ptr, olive_val));
-                }
+            raw.push((key_ptr, decode_val(val_obj, key_ptr)));
+        }
+        dedupe_and_insert(pair.olive_ptr, raw);
+    }
+}
+
+/// Inserts decoded entries, keeping the first occurrence of each key and
+/// releasing every displaced duplicate key and value. Split from
+/// `sync_dict_entries` so the colliding-key path is unit-testable without a
+/// live interpreter: callers pass owned decoded words with the same contract
+/// as `dict_key_olive`/`decode_val` produce them.
+fn dedupe_and_insert(obj_ptr: i64, raw: Vec<(i64, i64)>) {
+    // (decoded key ptr, decoded value word), first-occurrence order
+    let mut entries: Vec<(i64, i64)> = Vec::new();
+    // Decoded-key-ptr -> index into `entries`. Keys are compared by
+    // content (`OliveStringKey`), so the map's own hasher is exactly the
+    // dedupe test and lookup stays O(1).
+    let mut index_of: rustc_hash::FxHashMap<crate::OliveStringKey, usize> =
+        rustc_hash::FxHashMap::default();
+    for (key_ptr, olive_val) in raw {
+        let keyed = crate::OliveStringKey(key_ptr);
+        match index_of.entry(keyed) {
+            std::collections::hash_map::Entry::Occupied(occ) => {
+                let idx = *occ.get();
+                let prev_val = entries[idx].1;
+                // The duplicate's value never becomes reachable; release
+                // it now. Tagged strings need the dict-value path, not
+                // the slab-only check: `is_active_object` misses them.
+                crate::free_any_word(prev_val);
+                entries[idx].1 = olive_val;
+                crate::string_slab::str_free(key_ptr);
+            }
+            std::collections::hash_map::Entry::Vacant(vac) => {
+                vac.insert(entries.len());
+                entries.push((key_ptr, olive_val));
             }
         }
+    }
 
-        for &(key_ptr, olive_val) in &entries {
-            crate::olive_obj_set(pair.olive_ptr, key_ptr, olive_val);
-        }
-        for &(key_ptr, _) in &entries {
-            crate::string_slab::str_free(key_ptr);
-        }
+    for &(key_ptr, olive_val) in &entries {
+        crate::olive_obj_set(obj_ptr, key_ptr, olive_val);
+    }
+    for &(key_ptr, _) in &entries {
+        crate::string_slab::str_free(key_ptr);
     }
 }
 
@@ -635,7 +648,7 @@ pub(crate) unsafe fn sync_back(pairs: &[WritebackPair]) {
 
 #[cfg(test)]
 mod lifecycle_tests {
-    use super::{TAG_ANY_LIST, TAG_INT_LIST, TAG_STR_LIST, free_writeback_elem};
+    use super::{TAG_ANY_LIST, TAG_INT_LIST, TAG_STR_LIST, dedupe_and_insert, free_writeback_elem};
 
     #[test]
     fn str_tag_releases_displaced() {
@@ -664,5 +677,44 @@ mod lifecycle_tests {
     fn int_tag_keeps_raw_word() {
         free_writeback_elem(42, TAG_INT_LIST);
         assert_eq!(crate::olive_list_len(0), 0);
+    }
+
+    #[test]
+    fn dedupe_releases_displaced_string_key_and_value() {
+        let dict = crate::obj::olive_obj_new();
+        let k1 = crate::olive_str_internal("1");
+        let v1 = crate::olive_str_internal("a");
+        let gk1 = crate::string_slab::olive_str_gen_of(k1);
+        let gv1 = crate::string_slab::olive_str_gen_of(v1);
+        let k2 = crate::olive_str_internal("1");
+        let v2 = crate::olive_str_internal("b");
+        let gk2 = crate::string_slab::olive_str_gen_of(k2);
+        let gv2 = crate::string_slab::olive_str_gen_of(v2);
+        dedupe_and_insert(dict, vec![(k1, v1), (k2, v2)]);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(k2, gk2), 1);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(v1, gv1), 1);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(k1, gk1), 1);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(v2, gv2), 0);
+        let q = crate::olive_str_internal("1");
+        let stored = crate::obj::olive_obj_get(dict, q);
+        assert_eq!(crate::olive_str_from_ptr(stored), "b");
+        crate::olive_free_str(q);
+        crate::obj::olive_free_obj(dict);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(v2, gv2), 1);
+    }
+
+    #[test]
+    fn dedupe_keeps_raw_scalar_values_intact() {
+        let dict = crate::obj::olive_obj_new();
+        let k1 = crate::olive_str_internal("1");
+        let k2 = crate::olive_str_internal("1");
+        let gk1 = crate::string_slab::olive_str_gen_of(k1);
+        dedupe_and_insert(dict, vec![(k1, 42), (k2, 43)]);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(k1, gk1), 1);
+        let q = crate::olive_str_internal("1");
+        assert_eq!(crate::obj::olive_obj_get(dict, q), 43);
+        crate::olive_free_str(q);
+        crate::string_slab::str_free(k2);
+        crate::obj::olive_free_obj(dict);
     }
 }
