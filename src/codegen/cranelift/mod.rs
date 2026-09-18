@@ -225,6 +225,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_enum_get", b"olive_enum_get\0"),
     ("__olive_enum_new", b"olive_enum_new\0"),
     ("__olive_enum_set", b"olive_enum_set\0"),
+    ("__olive_enum_set_typed", b"olive_enum_set_typed\0"),
     ("__olive_enum_tag", b"olive_enum_tag\0"),
     ("__olive_enum_type_id", b"olive_enum_type_id\0"),
     ("__olive_env_get", b"olive_env_get\0"),

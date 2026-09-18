@@ -962,12 +962,37 @@ impl<M: Module> CraneliftCodegen<M> {
                         let local_func = module.declare_func_in_func(*set_id, builder.func);
                         builder.ins().call(local_func, &[o, i, v, loc]);
                     }
-                    OliveType::Enum(_, _) => {
-                        let set_id = func_ids
-                            .get("__olive_enum_set")
-                            .expect("missing __olive_enum_set");
-                        let local_func = module.declare_func_in_func(*set_id, builder.func);
-                        builder.ins().call(local_func, &[o, i, v]);
+                    OliveType::Enum(name, _) => {
+                        let heap_payload = enum_defs.get(name.as_str()).is_some_and(|variants| {
+                            variants
+                                .iter()
+                                .flat_map(|(_, payloads)| payloads)
+                                .any(|payload_ty| payload_ty.needs_drop())
+                        });
+                        if heap_payload {
+                            let desc = super::imports::type_descriptor(
+                                ty,
+                                struct_fields,
+                                field_types,
+                                enum_defs,
+                            );
+                            let data_id = *string_ids
+                                .get(&desc)
+                                .expect("enum descriptor not interned during collection");
+                            let local_data = module.declare_data_in_func(data_id, builder.func);
+                            let desc_ptr = builder.ins().symbol_value(types::I64, local_data);
+                            let set_id = func_ids
+                                .get("__olive_enum_set_typed")
+                                .expect("missing __olive_enum_set_typed");
+                            let local_func = module.declare_func_in_func(*set_id, builder.func);
+                            builder.ins().call(local_func, &[o, i, v, desc_ptr]);
+                        } else {
+                            let set_id = func_ids
+                                .get("__olive_enum_set")
+                                .expect("missing __olive_enum_set");
+                            let local_func = module.declare_func_in_func(*set_id, builder.func);
+                            builder.ins().call(local_func, &[o, i, v]);
+                        }
                     }
                     OliveType::Bytes => {
                         emit_nil_check(builder, module, func_ids, o, loc);

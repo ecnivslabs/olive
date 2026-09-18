@@ -148,7 +148,7 @@ pub extern "C" fn olive_clear_typed(val: i64, desc: i64) {
 }
 
 /// Skips a length-prefixed name; length byte is biased by 13.
-fn skip_lp(desc: *const u8, pos: &mut usize) {
+pub(crate) fn skip_lp(desc: *const u8, pos: &mut usize) {
     let len = unsafe { byte(desc, *pos) } as usize - 13;
     *pos += 1 + len;
 }

@@ -112,7 +112,7 @@ pub(crate) fn drop_descriptor_type<'a>(
     }
 }
 
-pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 665] = [
+pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 666] = [
     "__olive_alloc",
     "__olive_any_add",
     "__olive_any_div",
@@ -264,6 +264,7 @@ pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 665] = [
     "__olive_enum_get",
     "__olive_enum_new",
     "__olive_enum_set",
+    "__olive_enum_set_typed",
     "__olive_enum_tag",
     "__olive_enum_type_id",
     "__olive_env_get",
