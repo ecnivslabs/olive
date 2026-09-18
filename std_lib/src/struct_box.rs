@@ -41,10 +41,11 @@ fn with_struct_box_slab<T>(f: impl FnOnce(&mut GenSlab) -> T) -> T {
 pub(crate) fn owns_struct_box(v: i64) -> bool {
     unsafe {
         let active = crate::slab::ACTIVE_SLABS.get();
-        if !active.is_null() && (*active).struct_box.owns_addr(v as usize) {
-            return true;
+        if !active.is_null() {
+            return (*active).struct_box.owns_addr(v as usize);
         }
         STRUCT_BOX_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize))
+            || crate::slab::global_struct_box_owns_addr(v as usize)
     }
 }
 
@@ -175,7 +176,7 @@ pub extern "C" fn olive_struct_unbox_take(val: i64) -> i64 {
 /// every union member classifies without a dereference; the kind word is
 /// read only on a live slab slot, which keeps even wild words total.
 fn peel_struct_box(val: i64) -> i64 {
-    if crate::slab::slot_is_live(val) {
+    if crate::slab::slot_is_live(val) && owns_struct_box(val) {
         let unboxed = unsafe { &*(val as *const OliveStructBox) };
         if unboxed.kind == KIND_STRUCT_BOX {
             return unboxed.ptr;

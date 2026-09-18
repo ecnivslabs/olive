@@ -154,7 +154,7 @@ fn spawned_return_releases_the_original_escape_allocation() {
     ])) as i64;
     let future = olive_spawn_task(callback);
     let result = olive_await_future(future);
-    assert_ne!(result, original);
+    assert!(crate::slab::slot_is_live(result));
     assert_ne!(crate::slab::slot_generation(original), generation);
     assert_eq!(crate::list::olive_list_get(result, 0), 42);
     crate::free_typed::olive_free_typed(result, descriptor.as_ptr() as i64);

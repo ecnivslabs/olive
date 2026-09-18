@@ -317,6 +317,10 @@ pub fn chunk_is_global(addr: usize) -> bool {
         .unwrap_or(false)
 }
 
+pub(crate) fn global_struct_box_owns_addr(addr: usize) -> bool {
+    GLOBAL_SLABS.lock().unwrap().struct_box.owns_addr(addr)
+}
+
 /// Redirects ACTIVE_SLABS to the locked global arena for the duration of `f`.
 /// The guard is a MutexGuard held across the call, so an unwinding `f` still
 /// unlocks; the restore closure keeps the redirect itself from leaking on

@@ -108,7 +108,13 @@ pub extern "C" fn olive_any_is_null(v: i64) -> i64 {
 /// before falling through to the ordinary free.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_any_is_struct_box(v: i64) -> i64 {
-    if v == 0 || v & 1 != 0 || v & TAG_MASK != 0 || v < 0x1000 {
+    if v == 0
+        || v & 1 != 0
+        || v & TAG_MASK != 0
+        || v < 0x1000
+        || !crate::slab::ptr_is_slab_body(v)
+        || !crate::struct_box::owns_struct_box(v)
+    {
         return 0;
     }
     let kind = unsafe { *(v as *const i64) };
@@ -321,6 +327,13 @@ mod tests {
         assert_eq!(olive_unbox_int(f), 0);
         assert_eq!(olive_any_truthy(t), 1);
         assert_eq!(olive_any_truthy(f), 0);
+    }
+
+    #[test]
+    fn raw_sixteen_field_struct_is_not_a_struct_box() {
+        let raw = crate::struct_obj::olive_struct_alloc(16);
+        assert_eq!(olive_any_is_struct_box(raw), 0);
+        crate::struct_obj::olive_free_struct(raw);
     }
 
     #[test]
