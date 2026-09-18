@@ -259,7 +259,7 @@ pub extern "C" fn olive_obj_update(obj_ptr: i64, other_ptr: i64) -> i64 {
 }
 
 #[inline]
-fn free_dict_value(val: i64) {
+pub(crate) fn free_dict_value(val: i64) {
     if crate::is_tagged_str_key(val) {
         crate::olive_free_str(val);
     } else if is_active_object(val) {

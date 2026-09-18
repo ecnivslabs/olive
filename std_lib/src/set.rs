@@ -223,6 +223,8 @@ pub(crate) fn set_try_add(set_ptr: i64, val: i64) -> bool {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_set_add(set_ptr: i64, val: i64) {
     if set_ptr == 0 {
+        // `add` takes ownership; a null set has nowhere to store it.
+        free_set_elem(val);
         return;
     }
     if !set_try_add(set_ptr, val) {
@@ -257,7 +259,14 @@ pub extern "C" fn olive_set_remove(set_ptr: i64, val: i64) -> i64 {
                 .iter()
                 .position(|&x| OliveStringKey(x) == OliveStringKey(val))
             {
-                v.remove(pos);
+                let stored = v.remove(pos);
+                // The set owned `stored`; the caller keeps `val`. They are
+                // usually distinct copies of the same value, so release the
+                // stored one. When they are the same pointer the ownership
+                // returns to the caller untouched.
+                if stored != val {
+                    free_set_elem(stored);
+                }
             }
             s.ptr = v.as_mut_ptr();
             s.cap = v.capacity();
@@ -549,5 +558,95 @@ mod tests {
         assert_eq!(crate::string_slab::olive_str_gen_stale(second, g2), 1);
         olive_free_set(set);
         assert_eq!(crate::string_slab::olive_str_gen_stale(first, g1), 1);
+    }
+
+    #[test]
+    fn remove_releases_stored_string() {
+        let set = olive_set_new(4);
+        let stored = crate::olive_str_internal("gone");
+        let gs = crate::string_slab::olive_str_gen_of(stored);
+        olive_set_add(set, stored);
+        let query = crate::olive_str_internal("gone");
+        let gq = crate::string_slab::olive_str_gen_of(query);
+        assert_eq!(olive_set_contains(set, query), 1);
+        let ret = olive_set_remove(set, query);
+        assert_eq!(ret, query);
+        assert_eq!(unsafe { (*(set as *const OliveHashSet)).len }, 0);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(stored, gs), 1);
+        assert_eq!(crate::olive_str_from_ptr(query), "gone");
+        crate::olive_free_str(query);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(query, gq), 1);
+        olive_free_set(set);
+    }
+
+    #[test]
+    fn remove_with_same_pointer_keeps_caller_word() {
+        let set = olive_set_new(4);
+        let a = crate::olive_str_internal("same");
+        let g = crate::string_slab::olive_str_gen_of(a);
+        olive_set_add(set, a);
+        let ret = olive_set_remove(set, a);
+        assert_eq!(ret, a);
+        assert_eq!(unsafe { (*(set as *const OliveHashSet)).len }, 0);
+        assert_eq!(crate::olive_str_from_ptr(a), "same");
+        crate::olive_free_str(a);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(a, g), 1);
+        olive_free_set(set);
+    }
+
+    #[test]
+    fn remove_releases_stored_boxed_int() {
+        let set = olive_set_new(4);
+        let big = 1i64 << 61;
+        let stored = crate::boxed::olive_box_int(big);
+        assert!(crate::slab::slot_is_live(stored));
+        olive_set_add(set, stored);
+        let query = crate::boxed::olive_box_int(big);
+        assert!(crate::slab::slot_is_live(query));
+        let ret = olive_set_remove(set, query);
+        assert_eq!(ret, query);
+        assert_eq!(unsafe { (*(set as *const OliveHashSet)).len }, 0);
+        assert!(!crate::slab::slot_is_live(stored));
+        assert!(crate::slab::slot_is_live(query));
+        crate::boxed::olive_free_boxed(query);
+        assert!(!crate::slab::slot_is_live(query));
+        olive_free_set(set);
+    }
+
+    #[test]
+    fn remove_absent_keeps_set_intact() {
+        let set = olive_set_new(4);
+        let a = crate::olive_str_internal("kept");
+        let g = crate::string_slab::olive_str_gen_of(a);
+        olive_set_add(set, a);
+        let query = crate::olive_str_internal("missing");
+        let gq = crate::string_slab::olive_str_gen_of(query);
+        let ret = olive_set_remove(set, query);
+        assert_eq!(ret, query);
+        assert_eq!(unsafe { (*(set as *const OliveHashSet)).len }, 1);
+        assert_eq!(crate::olive_str_from_ptr(a), "kept");
+        crate::olive_free_str(query);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(query, gq), 1);
+        olive_free_set(set);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(a, g), 1);
+    }
+
+    #[test]
+    fn null_add_releases_owned_string() {
+        let s = crate::olive_str_internal("orphan");
+        let g = crate::string_slab::olive_str_gen_of(s);
+        olive_set_add(0, s);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(s, g), 1);
+    }
+
+    #[test]
+    fn null_add_typed_releases_owned_string() {
+        use crate::format::D_STR;
+        let desc = [D_STR];
+        let desc_ptr = desc.as_ptr() as i64;
+        let s = crate::olive_str_internal("orphan-typed");
+        let g = crate::string_slab::olive_str_gen_of(s);
+        crate::hash_typed::olive_set_add_typed(0, s, desc_ptr);
+        assert_eq!(crate::string_slab::olive_str_gen_stale(s, g), 1);
     }
 }
