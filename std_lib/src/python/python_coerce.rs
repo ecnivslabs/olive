@@ -133,10 +133,9 @@ pub(crate) fn static_attr_name(name: &str) -> i64 {
 }
 
 /// Whether `ptr` is a live PyObject handle: a live slab body whose kind is
-/// `KIND_PYOBJECT`. Lock-free -- distinct slabs never share addresses, so a
-/// live body found here can only be a pyobject slot.
+/// `KIND_PYOBJECT`. Metadata access is serialized with allocation and free.
 #[inline]
-pub(crate) fn is_arena_ptr(ptr: usize) -> bool {
+fn is_arena_ptr_unlocked(ptr: usize) -> bool {
     let slab_ptr = unsafe { PYOBJ_SLAB.get() };
     if slab_ptr.is_null() {
         return false;
@@ -144,6 +143,15 @@ pub(crate) fn is_arena_ptr(ptr: usize) -> bool {
     let is_owned =
         unsafe { (*slab_ptr).owns_addr(ptr) && *(ptr as *const i64) == crate::KIND_PYOBJECT };
     is_owned && crate::slab::ptr_is_slab_body(ptr as i64)
+}
+
+#[inline]
+pub(crate) fn is_arena_ptr(ptr: usize) -> bool {
+    if !crate::slab::ptr_in_slab_span(ptr as i64) {
+        return false;
+    }
+    let _guard = PYOBJ_SLAB_MUTEX.lock().unwrap();
+    is_arena_ptr_unlocked(ptr)
 }
 
 /// Process-lifetime slab for PyObject handles. Guarded by the process-wide
@@ -171,7 +179,10 @@ fn alloc_pyobject_handle(py_ptr: PyObject) -> *mut OlivePyObject {
         o
     };
     if crate::python::gil_process_wide() {
-        with_gil(write)
+        with_gil(|| {
+            let _guard = PYOBJ_SLAB_MUTEX.lock().unwrap();
+            write()
+        })
     } else {
         let _guard = PYOBJ_SLAB_MUTEX.lock().unwrap();
         write()
@@ -185,7 +196,7 @@ fn alloc_pyobject_handle(py_ptr: PyObject) -> *mut OlivePyObject {
 /// read.
 fn free_pyobject_handle(ptr: *mut OlivePyObject) -> Option<PyObject> {
     let take = || unsafe {
-        if !is_arena_ptr(ptr as usize) {
+        if !is_arena_ptr_unlocked(ptr as usize) {
             return None;
         }
         let py_ptr = (*ptr).py_ptr;
@@ -196,7 +207,10 @@ fn free_pyobject_handle(ptr: *mut OlivePyObject) -> Option<PyObject> {
         }
     };
     if crate::python::gil_process_wide() {
-        with_gil(take)
+        with_gil(|| {
+            let _guard = PYOBJ_SLAB_MUTEX.lock().unwrap();
+            take()
+        })
     } else {
         let _guard = PYOBJ_SLAB_MUTEX.lock().unwrap();
         take()
@@ -231,7 +245,8 @@ pub unsafe fn olive_py_unwrap(val: PyObject) -> PyObject {
         if val.is_null() {
             return std::ptr::null_mut();
         }
-        if is_arena_ptr(val as usize) {
+        let _guard = PYOBJ_SLAB_MUTEX.lock().unwrap();
+        if is_arena_ptr_unlocked(val as usize) {
             let obj = &*(val as *const OlivePyObject);
             return obj.py_ptr;
         }
