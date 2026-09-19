@@ -28,6 +28,7 @@ const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 struct PipeBuf {
     data: Mutex<Vec<u8>>,
+    pending_utf8: Mutex<Vec<u8>>,
     cvar: Condvar,
 }
 
@@ -35,21 +36,27 @@ impl PipeBuf {
     fn new() -> Arc<Self> {
         Arc::new(PipeBuf {
             data: Mutex::new(Vec::new()),
+            pending_utf8: Mutex::new(Vec::new()),
             cvar: Condvar::new(),
         })
     }
 
     fn push(&self, chunk: &[u8]) {
         let mut buf = self.data.lock().unwrap();
-        if buf.len() >= MAX_BUFFERED_BYTES {
-            return;
+        if chunk.len() >= MAX_BUFFERED_BYTES {
+            buf.clear();
+            buf.extend_from_slice(&chunk[chunk.len() - MAX_BUFFERED_BYTES..]);
+        } else {
+            let overflow = buf
+                .len()
+                .saturating_add(chunk.len())
+                .saturating_sub(MAX_BUFFERED_BYTES);
+            if overflow > 0 {
+                buf.drain(..overflow);
+            }
+            buf.extend_from_slice(chunk);
         }
-        let room = MAX_BUFFERED_BYTES - buf.len();
-        let take = chunk.len().min(room);
-        buf.extend_from_slice(&chunk[..take]);
-        if take > 0 {
-            self.cvar.notify_all();
-        }
+        self.cvar.notify_all();
     }
 
     /// Blocks until at least one byte is buffered or the stream's reader has
@@ -63,8 +70,26 @@ impl PipeBuf {
         }
     }
 
-    fn take(&self) -> Vec<u8> {
-        std::mem::take(&mut self.data.lock().unwrap())
+    fn take_text(&self, done: &AtomicU32) -> String {
+        let mut data = self.data.lock().unwrap();
+        let mut pending = self.pending_utf8.lock().unwrap();
+        let bytes = std::mem::take(&mut *data);
+        let mut combined = std::mem::take(&mut *pending);
+        combined.extend_from_slice(&bytes);
+        match std::str::from_utf8(&combined) {
+            Ok(text) => text.to_string(),
+            Err(error) => {
+                let valid = error.valid_up_to();
+                let mut text = String::from_utf8_lossy(&combined[..valid]).into_owned();
+                let remainder = combined[valid..].to_vec();
+                if done.load(Ordering::SeqCst) == 0 && remainder.len() <= 3 {
+                    *pending = remainder;
+                } else {
+                    text.push_str(&String::from_utf8_lossy(&remainder));
+                }
+                text
+            }
+        }
     }
 
     /// Wakes `wait_for_data` sleepers when the reader finishes with the pipe
@@ -327,7 +352,6 @@ pub extern "C" fn olive_process_wait_timeout(handle: i64, ms: i64) -> i64 {
 struct PipeSnapshot {
     buf: Arc<PipeBuf>,
     done: Arc<AtomicU32>,
-    exited: bool,
 }
 
 fn pipe_snapshot(handle: i64, stderr: bool) -> Option<PipeSnapshot> {
@@ -341,18 +365,14 @@ fn pipe_snapshot(handle: i64, stderr: bool) -> Option<PipeSnapshot> {
             &e.stdout_done
         })
         .clone(),
-        exited: e.exit_code.is_some(),
     })
 }
 
-fn drain_pipe(snap: &PipeSnapshot) -> Vec<u8> {
-    // Block briefly for the first chunk when the child is still running, so a
-    // read right after spawn sees early output; never hold the table lock
-    // while waiting, or spawn/poll/close of any other handle would stall.
-    if !snap.exited {
-        snap.buf.wait_for_data(&snap.done);
-    }
-    snap.buf.take()
+fn drain_pipe(snap: &PipeSnapshot) -> String {
+    // Always wait for reader completion or data. A child can exit before its
+    // pipe reader has drained the final bytes.
+    snap.buf.wait_for_data(&snap.done);
+    snap.buf.take_text(&snap.done)
 }
 
 #[unsafe(no_mangle)]
@@ -360,11 +380,11 @@ pub extern "C" fn olive_process_read_stdout(handle: i64) -> i64 {
     let Some(snap) = pipe_snapshot(handle, false) else {
         return 0;
     };
-    let bytes = drain_pipe(&snap);
-    if bytes.is_empty() {
+    let text = drain_pipe(&snap);
+    if text.is_empty() {
         0
     } else {
-        olive_str_internal(&String::from_utf8_lossy(&bytes))
+        olive_str_internal(&text)
     }
 }
 
@@ -373,11 +393,11 @@ pub extern "C" fn olive_process_read_stderr(handle: i64) -> i64 {
     let Some(snap) = pipe_snapshot(handle, true) else {
         return 0;
     };
-    let bytes = drain_pipe(&snap);
-    if bytes.is_empty() {
+    let text = drain_pipe(&snap);
+    if text.is_empty() {
         0
     } else {
-        olive_str_internal(&String::from_utf8_lossy(&bytes))
+        olive_str_internal(&text)
     }
 }
 
@@ -533,6 +553,17 @@ mod tests {
         let h = olive_process_spawn(argv(&["false"]), 0, 0, 0, 2, 2, 2);
         assert_eq!(olive_process_wait(h), 1);
         olive_process_close(h);
+    }
+
+    #[test]
+    fn pipe_utf8_fragments_are_reassembled() {
+        let buf = PipeBuf::new();
+        let done = AtomicU32::new(0);
+        buf.push(&[b'a', 0xe2]);
+        assert_eq!(buf.take_text(&done), "a");
+        buf.push(&[0x82, 0xac]);
+        done.store(1, Ordering::SeqCst);
+        assert_eq!(buf.take_text(&done), "€");
     }
 
     #[test]
