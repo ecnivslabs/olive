@@ -64,14 +64,6 @@ pub(crate) fn desc_eq(a: i64, b: i64) -> bool {
     }
 }
 
-/// Reads a length-prefixed string from a descriptor at `pos` (which must
-/// point at the string itself, past any tag byte); length field is biased
-/// by 13. Shared with the typed-free paths, which need the struct name a
-/// descriptor carries to consult the `__drop__` registry.
-pub(crate) fn desc_name_at(desc: *const u8, pos: &mut usize) -> String {
-    read_lp(desc, pos)
-}
-
 /// Reads a length-prefixed string from a descriptor; length field is biased by 13.
 fn read_lp(desc: *const u8, pos: &mut usize) -> String {
     let len = unsafe { byte(desc, *pos) } as usize - 13;

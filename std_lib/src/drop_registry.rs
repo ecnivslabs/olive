@@ -16,7 +16,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-type DropHook = extern "C" fn(i64) -> i64;
+pub(crate) type DropHook = extern "C" fn(i64) -> i64;
 
 fn registry() -> &'static Mutex<HashMap<String, i64>> {
     static REGISTRY: OnceLock<Mutex<HashMap<String, i64>>> = OnceLock::new();
@@ -62,6 +62,23 @@ fn lookup(name: &str) -> Option<DropHook> {
 /// nothing more.
 pub(crate) fn has_registrations() -> bool {
     ANY_REGISTERED.load(Ordering::Acquire)
+}
+
+/// Looks up the hook for the struct named by the descriptor at `pos` (past
+/// any tag byte) and runs it on `val`. Borrows the name bytes for the
+/// synchronous lookup only, allocating nothing; length byte is biased by
+/// 13 like every other descriptor string. Returns whether a hook ran (in
+/// which case the caller must treat the slot as consumed).
+pub(crate) fn run_hook_for_desc(desc: *const u8, pos: usize, val: i64) -> bool {
+    if val == 0 || !has_registrations() {
+        return false;
+    }
+    let len = unsafe { *desc.add(pos) } as usize - 13;
+    let bytes = unsafe { std::slice::from_raw_parts(desc.add(pos + 1), len) };
+    let Ok(name) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    run_registered_hook(name, val)
 }
 
 /// Runs the registered `__drop__` for the struct named `name` on `val`, if
