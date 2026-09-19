@@ -56,7 +56,7 @@ pub struct MirBuilder<'a> {
     pub(super) struct_field_defaults: HashMap<String, Vec<Option<crate::parser::Expr>>>,
     /// Enum variant payload types, needed to encode a correct capture
     /// descriptor when a closure record (E5.2) captures an enum-typed value.
-    pub(super) enum_defs: HashMap<String, Vec<(String, Vec<Type>)>>,
+    pub enum_defs: HashMap<String, Vec<(String, Vec<Type>)>>,
     /// Closure calling-convention thunks already emitted (`closures.rs`),
     /// deduped by mangled target name so re-lowering the same escaping
     /// closure (e.g. inside a loop body) doesn't emit it twice.
