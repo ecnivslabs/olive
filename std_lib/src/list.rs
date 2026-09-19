@@ -867,6 +867,51 @@ pub(crate) unsafe fn settle_list_buffer(ptr: i64) {
     }
 }
 
+/// A `__drop__` hook as a callable word, for per-element cleanup below.
+type ElementDropHook = extern "C" fn(i64) -> i64;
+
+/// Runs a struct element's `__drop__` for every live element of a list whose
+/// element type statically carries one, nulling each slot as it goes so the
+/// container's own drop (which follows) skips them. The hook consumes each
+/// element fully (user cleanup plus storage reclaim), so without this the
+/// elements' handles would strand: the typed element free releases storage
+/// but never runs user code.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_drop_each_struct(ptr: i64, hook: i64) {
+    if ptr == 0 || hook == 0 {
+        return;
+    }
+    let hook: ElementDropHook = unsafe { std::mem::transmute(hook as usize) };
+    let n = olive_list_len(ptr);
+    for i in 0..n {
+        let elem = olive_list_get(ptr, i);
+        if elem != 0 {
+            olive_list_set(ptr, i, 0);
+            hook(elem);
+        }
+    }
+}
+
+/// Union elements: only struct-boxed members decode into the hook (the shell
+/// is released by the unbox); scalars (`int`, `None`) and other shapes pass
+/// through to the ordinary drop untouched.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_list_drop_each_union(ptr: i64, hook: i64) {
+    if ptr == 0 || hook == 0 {
+        return;
+    }
+    let hook: ElementDropHook = unsafe { std::mem::transmute(hook as usize) };
+    let n = olive_list_len(ptr);
+    for i in 0..n {
+        let elem = olive_list_get(ptr, i);
+        if elem != 0 && crate::boxed::olive_any_is_struct_box(elem) != 0 {
+            let inner = crate::struct_box::olive_struct_unbox_take(elem);
+            olive_list_set(ptr, i, 0);
+            hook(inner);
+        }
+    }
+}
+
 pub(crate) unsafe fn release_list_storage(body: *mut u8) {
     let s = unsafe { &*(body as *const StableVec) };
     if !s.ptr.is_null() {

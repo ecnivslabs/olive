@@ -373,6 +373,19 @@ impl<M: Module> CraneliftCodegen<M> {
                 }
 
                 for (i, &arg) in call_args.iter().enumerate() {
+                    if matches!(
+                        resolved_name,
+                        "__olive_free_typed"
+                            | "__olive_clear_typed"
+                            | "__olive_copy_typed"
+                            | "__olive_relocate_typed"
+                    ) && i == 1
+                        && matches!(args.get(i), Some(Operand::Constant(Constant::Str(_))))
+                    {
+                        let raw = builder.ins().band_imm(arg, !1);
+                        final_args.push(raw);
+                        continue;
+                    }
                     let is_str_arg = args.get(i).is_some_and(|op| match op {
                         Operand::Constant(Constant::Str(_)) => true,
                         Operand::Copy(l) | Operand::Move(l) => {

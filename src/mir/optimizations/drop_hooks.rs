@@ -76,8 +76,16 @@ pub fn lower_drop_hooks(func: &mut MirFunction, has_drop: &HashSet<String>) {
         local: Local,
         struct_ty: Type,
     }
+    struct ListDropSite {
+        bb: usize,
+        idx: usize,
+        helper_fn: String,
+        drop_fn: String,
+        local: Local,
+    }
     let mut sites: Vec<DropSite> = Vec::new();
     let mut union_sites: Vec<UnionDropSite> = Vec::new();
+    let mut list_sites: Vec<ListDropSite> = Vec::new();
     for (bb_idx, block) in func.basic_blocks.iter().enumerate() {
         for (idx, stmt) in block.statements.iter().enumerate() {
             let StatementKind::Drop(local) = &stmt.kind else {
@@ -114,30 +122,91 @@ pub fn lower_drop_hooks(func: &mut MirFunction, has_drop: &HashSet<String>) {
                         });
                     }
                 }
+                Type::List(elem) => {
+                    // Elements with user cleanup get per-element hooks ahead
+                    // of the container drop (which then frees the nulled
+                    // shell): a union element follows the single-struct rule
+                    // above, since only one member's hook can be named.
+                    let (drop_name, elem_name, helper_fn) = match elem.as_ref() {
+                        Type::Struct(name, args, _) => (
+                            monomorphized_name(name, args),
+                            name.clone(),
+                            "__olive_list_drop_each_struct",
+                        ),
+                        Type::Union(members) => {
+                            let struct_members: Vec<&Type> = members
+                                .iter()
+                                .filter(|m| matches!(m, Type::Struct(..)))
+                                .collect();
+                            let [Type::Struct(name, args, _)] = struct_members.as_slice()
+                            else {
+                                continue;
+                            };
+                            (
+                                monomorphized_name(name, args),
+                                name.clone(),
+                                "__olive_list_drop_each_union",
+                            )
+                        }
+                        _ => continue,
+                    };
+                    if has_drop.contains(&drop_name) && self_struct != Some(elem_name.as_str()) {
+                        list_sites.push(ListDropSite {
+                            bb: bb_idx,
+                            idx,
+                            helper_fn: helper_fn.to_string(),
+                            drop_fn: format!("{}::__drop__", drop_name),
+                            local: *local,
+                        });
+                    }
+                }
                 _ => {}
             }
         }
     }
-    for site in sites {
-        let tmp = push_local(func, Type::Any);
-        func.basic_blocks[site.bb].statements[site.idx].kind = StatementKind::Assign(
-            tmp,
-            Rvalue::Call {
-                func: Operand::Constant(Constant::Function(site.drop_fn)),
-                args: vec![Operand::Move(site.local)],
-            },
-        );
+    enum AnySite {
+        Struct(DropSite),
+        Union(UnionDropSite),
+        List(ListDropSite),
     }
-    union_sites.sort_unstable_by_key(|s| std::cmp::Reverse((s.bb, s.idx)));
-    for site in union_sites {
-        insert_union_drop_hook(
-            func,
-            site.bb,
-            site.idx,
-            site.drop_fn,
-            site.local,
-            site.struct_ty,
-        );
+    let mut all: Vec<(usize, usize, AnySite)> = Vec::new();
+    for s in sites {
+        all.push((s.bb, s.idx, AnySite::Struct(s)));
+    }
+    for s in union_sites {
+        all.push((s.bb, s.idx, AnySite::Union(s)));
+    }
+    for s in list_sites {
+        all.push((s.bb, s.idx, AnySite::List(s)));
+    }
+    all.sort_unstable_by_key(|(bb, idx, _)| std::cmp::Reverse((*bb, *idx)));
+    for (_, _, site) in all {
+        match site {
+            AnySite::Struct(s) => {
+                insert_struct_drop_hook(func, s.bb, s.idx, s.drop_fn, s.local);
+            }
+            AnySite::Union(s) => {
+                insert_union_drop_hook(func, s.bb, s.idx, s.drop_fn, s.local, s.struct_ty);
+            }
+            AnySite::List(s) => {
+                let tmp = push_local(func, Type::Any);
+                let span = func.basic_blocks[s.bb].statements[s.idx].span;
+                let helper_stmt = Statement {
+                    kind: StatementKind::Assign(
+                        tmp,
+                        Rvalue::Call {
+                            func: Operand::Constant(Constant::Function(s.helper_fn)),
+                            args: vec![
+                                Operand::Copy(s.local),
+                                Operand::Constant(Constant::Function(s.drop_fn)),
+                            ],
+                        },
+                    ),
+                    span,
+                };
+                func.basic_blocks[s.bb].statements.insert(s.idx, helper_stmt);
+            }
+        }
     }
 }
 
@@ -223,6 +292,51 @@ fn insert_union_drop_hook(
             discr: Operand::Copy(is_struct),
             targets: vec![(1, struct_id)],
             otherwise: cont_id,
+        },
+        span,
+    });
+}
+
+fn insert_struct_drop_hook(
+    func: &mut MirFunction,
+    bb_idx: usize,
+    drop_idx: usize,
+    drop_fn: String,
+    local: Local,
+) {
+    let span = func.basic_blocks[bb_idx].statements[drop_idx].span;
+    let mut tail = func.basic_blocks[bb_idx].statements.split_off(drop_idx);
+    tail.remove(0);
+    let term = func.basic_blocks[bb_idx].terminator.take();
+    let cont_id = BasicBlockId(func.basic_blocks.len());
+    func.basic_blocks.push(BasicBlock {
+        statements: tail,
+        terminator: term,
+    });
+    let tmp = push_local(func, Type::Any);
+    let drop_stmts = vec![Statement {
+        kind: StatementKind::Assign(
+            tmp,
+            Rvalue::Call {
+                func: Operand::Constant(Constant::Function(drop_fn)),
+                args: vec![Operand::Move(local)],
+            },
+        ),
+        span,
+    }];
+    let drop_id = BasicBlockId(func.basic_blocks.len());
+    func.basic_blocks.push(BasicBlock {
+        statements: drop_stmts,
+        terminator: Some(Terminator {
+            kind: TerminatorKind::Goto { target: cont_id },
+            span,
+        }),
+    });
+    func.basic_blocks[bb_idx].terminator = Some(Terminator {
+        kind: TerminatorKind::SwitchInt {
+            discr: Operand::Copy(local),
+            targets: vec![(0, cont_id)],
+            otherwise: drop_id,
         },
         span,
     });

@@ -118,6 +118,13 @@ pub struct MirBuilder<'a> {
     /// lowering (`StmtKind::Assert`) to build the `left: X, right: Y` fault
     /// message without re-evaluating either operand.
     pub(super) last_cmp_operands: Option<(Operand, Operand)>,
+    /// While lowering a `__drop__` body: (mangled fn name, `self` local,
+    /// struct name). Every exit path reclaims `self`'s storage (fields via
+    /// typed free, then the slot) after user code, since the hook consumes
+    /// `self` but nothing else releases it. Keyed by fn name so nested
+    /// functions and closures lowered inside (which run under their own
+    /// names) never inherit it.
+    pub(super) drop_self_reclaim: Option<(String, Local, String)>,
 }
 
 impl<'a> MirBuilder<'a> {
@@ -173,6 +180,7 @@ impl<'a> MirBuilder<'a> {
             bound_lambdas: Vec::new(),
             has_drop_structs: HashSet::default(),
             last_cmp_operands: None,
+            drop_self_reclaim: None,
         }
     }
 
@@ -273,6 +281,13 @@ impl<'a> MirBuilder<'a> {
                 _ => {}
             }
         }
+        // Descriptor encoding during lowering (union boxing, drop epilogues)
+        // consults this set; without it every box encodes a plain struct and
+        // typed frees miss the shared path. Codegen re-populates with
+        // monomorphized names later, which the lookup also accepts.
+        crate::semantic::type_descriptor::set_has_drop_structs(
+            self.has_drop_structs.iter().cloned().collect(),
+        );
         self.start_function("__main__".to_string(), 0, Type::Int);
 
         for stmt in &program.stmts {
