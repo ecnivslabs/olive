@@ -235,6 +235,10 @@ impl Optimizer {
 /// registry can run cleanup on paths with no MIR hook site (nested
 /// containers, enum payloads, `Any`). Runs right after drop lowering in
 /// both pipelines; later passes treat the calls like any other.
+///
+/// Assumes the program starts at `__main__` (true for `run`, JIT, and AOT).
+/// Harnesses that call a compiled function directly bypass registration,
+/// so nested/enum/`Any` drops there fall back to storage-only frees.
 fn register_drop_hooks(
     functions: &mut [MirFunction],
     has_drop: &std::collections::HashSet<String>,
