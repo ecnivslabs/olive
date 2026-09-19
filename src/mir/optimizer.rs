@@ -230,15 +230,16 @@ impl Optimizer {
     }
 }
 
-/// Registers every `__drop__`-owning struct's hook in `__main__`'s prologue
-/// (under both its base and monomorphized spellings) so the runtime
-/// registry can run cleanup on paths with no MIR hook site (nested
+/// Registers every `__drop__`-owning struct's hook in the program entries'
+/// prologues (under both its base and monomorphized spellings) so the
+/// runtime registry can run cleanup on paths with no MIR hook site (nested
 /// containers, enum payloads, `Any`). Runs right after drop lowering in
 /// both pipelines; later passes treat the calls like any other.
 ///
-/// Assumes the program starts at `__main__` (true for `run`, JIT, and AOT).
-/// Harnesses that call a compiled function directly bypass registration,
-/// so nested/enum/`Any` drops there fall back to storage-only frees.
+/// Covers both `__main__` (`run`/JIT/AOT) and `__module_init__` (`test` and
+/// friends run it instead of `main`). Harnesses that call a compiled
+/// function directly bypass registration, so nested/enum/`Any` drops there
+/// fall back to storage-only frees.
 fn register_drop_hooks(
     functions: &mut [MirFunction],
     has_drop: &std::collections::HashSet<String>,
@@ -248,12 +249,6 @@ fn register_drop_hooks(
     }
     let pairs = drop_hooks::collect_drop_registrations(functions, has_drop);
     if pairs.is_empty() {
-        return;
-    }
-    let Some(main) = functions.iter_mut().find(|f| f.name == "__main__") else {
-        return;
-    };
-    if main.basic_blocks.is_empty() {
         return;
     }
     let mut keys: Vec<(String, String)> = Vec::new();
@@ -271,32 +266,46 @@ fn register_drop_hooks(
     }
     keys.sort();
     keys.dedup();
-    let span = main.basic_blocks[0]
-        .statements
-        .first()
-        .map(|s| s.span)
-        .unwrap_or_default();
-    let mut stmts = Vec::new();
-    for (name, hook) in &keys {
-        let sink = crate::mir::optimizations::ownership::push_local(
-            main,
-            crate::semantic::types::Type::Any,
-        );
-        stmts.push(crate::mir::Statement {
-            kind: crate::mir::StatementKind::Assign(
-                sink,
-                crate::mir::Rvalue::Call {
-                    func: crate::mir::Operand::Constant(crate::mir::Constant::Function(
-                        "__olive_register_drop".to_string(),
-                    )),
-                    args: vec![
-                        crate::mir::Operand::Constant(crate::mir::Constant::Str(name.clone())),
-                        crate::mir::Operand::Constant(crate::mir::Constant::Function(hook.clone())),
-                    ],
-                },
-            ),
-            span,
-        });
+    // Both program entries: `run`/JIT/AOT start at `__main__`, while `test`
+    // and friends run `__module_init__` instead. Whichever runs first
+    // registers (re-registration overwrites identically, so running both is
+    // harmless).
+    for entry in ["__main__", "__module_init__"] {
+        let Some(func) = functions.iter_mut().find(|f| f.name == entry) else {
+            continue;
+        };
+        if func.basic_blocks.is_empty() {
+            continue;
+        }
+        let span = func.basic_blocks[0]
+            .statements
+            .first()
+            .map(|s| s.span)
+            .unwrap_or_default();
+        let mut stmts = Vec::new();
+        for (name, hook) in &keys {
+            let sink = crate::mir::optimizations::ownership::push_local(
+                func,
+                crate::semantic::types::Type::Any,
+            );
+            stmts.push(crate::mir::Statement {
+                kind: crate::mir::StatementKind::Assign(
+                    sink,
+                    crate::mir::Rvalue::Call {
+                        func: crate::mir::Operand::Constant(crate::mir::Constant::Function(
+                            "__olive_register_drop".to_string(),
+                        )),
+                        args: vec![
+                            crate::mir::Operand::Constant(crate::mir::Constant::Str(name.clone())),
+                            crate::mir::Operand::Constant(crate::mir::Constant::Function(
+                                hook.clone(),
+                            )),
+                        ],
+                    },
+                ),
+                span,
+            });
+        }
+        func.basic_blocks[0].statements.splice(0..0, stmts);
     }
-    main.basic_blocks[0].statements.splice(0..0, stmts);
 }
