@@ -339,6 +339,49 @@ pub extern "C" fn olive_obj_len(obj_ptr: i64) -> i64 {
     unsafe { (*(obj_ptr as *const OliveObj)).fields.len() as i64 }
 }
 
+/// A `__drop__` hook as a callable word, for per-value cleanup below.
+type ElementDropHook = extern "C" fn(i64) -> i64;
+
+/// Runs a struct value's `__drop__` for every live value of a dict whose
+/// value type statically carries one, zeroing each entry as it goes so the
+/// dict's own drop (which follows) only frees keys. Mirrors
+/// `olive_list_drop_each_struct`: the typed value free releases storage but
+/// never runs user code.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_dict_drop_each_struct(ptr: i64, hook: i64) {
+    if ptr == 0 || hook == 0 {
+        return;
+    }
+    let hook: ElementDropHook = unsafe { std::mem::transmute(hook as usize) };
+    let obj = unsafe { &mut *(ptr as *mut OliveObj) };
+    for v in obj.fields.values_mut() {
+        if *v != 0 {
+            let elem = *v;
+            *v = 0;
+            hook(elem);
+        }
+    }
+}
+
+/// Union values: only struct-boxed members decode into the hook (the shell
+/// is released by the unbox); scalars pass through to the ordinary drop
+/// untouched, so only hooked arms are zeroed.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_dict_drop_each_union(ptr: i64, hook: i64) {
+    if ptr == 0 || hook == 0 {
+        return;
+    }
+    let hook: ElementDropHook = unsafe { std::mem::transmute(hook as usize) };
+    let obj = unsafe { &mut *(ptr as *mut OliveObj) };
+    for v in obj.fields.values_mut() {
+        if *v != 0 && crate::boxed::olive_any_is_struct_box(*v) != 0 {
+            let inner = crate::struct_box::olive_struct_unbox_take(*v);
+            *v = 0;
+            hook(inner);
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_free_obj(ptr: i64) {
     if ptr == 0 {

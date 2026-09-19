@@ -152,11 +152,8 @@ impl<'a> MirBuilder<'a> {
                 // consumes it but no other party releases its storage. The
                 // skip block above returns directly and stays untouched.
                 if let Some(suffix) = mangled.strip_suffix("::__drop__") {
-                    self.drop_self_reclaim = Some((
-                        mangled.clone(),
-                        self_local,
-                        suffix.to_string(),
-                    ));
+                    self.drop_self_reclaim =
+                        Some((mangled.clone(), self_local, suffix.to_string()));
                 }
             }
 
@@ -420,6 +417,12 @@ impl<'a> MirBuilder<'a> {
         if self.current_block.is_none() {
             return;
         }
+        // Fields the user already moved or dropped out of `self` (a
+        // `GetAttr(self)` temp later used as `Move`, or named in a `Drop`)
+        // have an owner that frees them; reclaiming here as well would free
+        // twice (benign today only through the generation guard), so those
+        // fields are skipped below.
+        let moved_fields = self.moved_self_fields(self_local);
         // A zeroed `self` reaches here when a scope drops an already-moved
         // local a second time (codegen zeroes vars after Drop): every other
         // free path no-ops on null, and GetAttr below would fault reading
@@ -437,6 +440,9 @@ impl<'a> MirBuilder<'a> {
         );
         self.current_block = Some(reclaim_bb);
         for field in &fields {
+            if moved_fields.contains(field) {
+                continue;
+            }
             let field_ty = self
                 .struct_field_types
                 .get(&(struct_name.clone(), field.clone()))
@@ -459,48 +465,48 @@ impl<'a> MirBuilder<'a> {
             {
                 let sink = self.new_unscoped_local_with_owning(Type::Any, false);
                 let rval = match &field_ty {
-                // A nested resource struct recurses through its own hook
-                // (which reclaims it), mirroring what `lower_drop_hooks`
-                // does for a direct local of that type; anything else goes
-                // through typed free like the silent container path.
-                Type::Struct(field_struct, field_args, _) => {
-                    let mono = crate::mir::optimizations::drop_hooks::monomorphized_name(
-                        field_struct,
-                        field_args,
-                    );
-                    let stripped = field_struct.rsplit("::").next().unwrap_or(field_struct);
-                    if self.has_drop_structs.contains(field_struct)
-                        || self.has_drop_structs.contains(&mono)
-                        || self.has_drop_structs.contains(stripped)
-                    {
-                        Rvalue::Call {
-                            func: Operand::Constant(Constant::Function(format!(
-                                "{}::__drop__",
-                                mono
-                            ))),
-                            args: vec![Operand::Move(field_tmp)],
-                        }
-                    } else {
-                        Rvalue::Call {
-                            func: Operand::Constant(Constant::Function(
-                                "__olive_free_typed".to_string(),
-                            )),
-                            args: vec![
-                                Operand::Move(field_tmp),
-                                Operand::Constant(Constant::Str(desc)),
-                            ],
+                    // A nested resource struct recurses through its own hook
+                    // (which reclaims it), mirroring what `lower_drop_hooks`
+                    // does for a direct local of that type; anything else goes
+                    // through typed free like the silent container path.
+                    Type::Struct(field_struct, field_args, _) => {
+                        let mono = crate::mir::optimizations::drop_hooks::monomorphized_name(
+                            field_struct,
+                            field_args,
+                        );
+                        let stripped = field_struct.rsplit("::").next().unwrap_or(field_struct);
+                        if self.has_drop_structs.contains(field_struct)
+                            || self.has_drop_structs.contains(&mono)
+                            || self.has_drop_structs.contains(stripped)
+                        {
+                            Rvalue::Call {
+                                func: Operand::Constant(Constant::Function(format!(
+                                    "{}::__drop__",
+                                    mono
+                                ))),
+                                args: vec![Operand::Move(field_tmp)],
+                            }
+                        } else {
+                            Rvalue::Call {
+                                func: Operand::Constant(Constant::Function(
+                                    "__olive_free_typed".to_string(),
+                                )),
+                                args: vec![
+                                    Operand::Move(field_tmp),
+                                    Operand::Constant(Constant::Str(desc)),
+                                ],
+                            }
                         }
                     }
-                }
-                _ => Rvalue::Call {
-                    func: Operand::Constant(Constant::Function(
-                        "__olive_free_typed".to_string(),
-                    )),
-                    args: vec![
-                        Operand::Move(field_tmp),
-                        Operand::Constant(Constant::Str(desc)),
-                    ],
-                },
+                    _ => Rvalue::Call {
+                        func: Operand::Constant(Constant::Function(
+                            "__olive_free_typed".to_string(),
+                        )),
+                        args: vec![
+                            Operand::Move(field_tmp),
+                            Operand::Constant(Constant::Str(desc)),
+                        ],
+                    },
                 };
                 self.push_statement(StatementKind::Assign(sink, rval), span);
             }
@@ -510,9 +516,7 @@ impl<'a> MirBuilder<'a> {
             StatementKind::Assign(
                 sink,
                 Rvalue::Call {
-                    func: Operand::Constant(Constant::Function(
-                        "__olive_free_struct".to_string(),
-                    )),
+                    func: Operand::Constant(Constant::Function("__olive_free_struct".to_string())),
                     args: vec![Operand::Copy(self_local)],
                 },
             ),
@@ -524,5 +528,100 @@ impl<'a> MirBuilder<'a> {
             span,
         );
         self.current_block = Some(done_bb);
+    }
+
+    /// Fields of `self_local` the `__drop__` body already moved or dropped:
+    /// a temp assigned from `GetAttr(self)` that is later used as `Move` (its
+    /// new owner frees it) or named in a `Drop` (freed at that point).
+    fn moved_self_fields(&self, self_local: Local) -> std::collections::HashSet<String> {
+        use std::collections::{HashMap, HashSet};
+        fn is_self(op: &Operand, owner: Local) -> bool {
+            matches!(op, Operand::Copy(l) | Operand::Move(l) if *l == owner)
+        }
+        fn moves(rval: &Rvalue, tmp: Local) -> bool {
+            let op = |o: &Operand| matches!(o, Operand::Move(l) if *l == tmp);
+            match rval {
+                Rvalue::Use(o)
+                | Rvalue::UnaryOp(_, o)
+                | Rvalue::Cast(o, _)
+                | Rvalue::GetAttr(o, _)
+                | Rvalue::GetTag(o)
+                | Rvalue::GetTypeId(o)
+                | Rvalue::VectorSplat(o, _)
+                | Rvalue::VectorReduce(_, o, _)
+                | Rvalue::PtrLoad(o)
+                | Rvalue::FatPtrData(o)
+                | Rvalue::GenOf(o) => op(o),
+                Rvalue::BinaryOp(_, a, b) | Rvalue::GetIndex(a, b, _) => op(a) || op(b),
+                Rvalue::VectorLoad(a, b, _) => op(a) || op(b),
+                Rvalue::VectorFMA(a, b, c) => op(a) || op(b) || op(c),
+                Rvalue::Call { func, args } => op(func) || args.iter().any(op),
+                Rvalue::Aggregate(_, ops) => ops.iter().any(op),
+                Rvalue::VTableLoad { vtable, .. } => op(vtable),
+                Rvalue::Ref(_) | Rvalue::MutRef(_) => false,
+            }
+        }
+        let mut field_of_tmp: HashMap<Local, String> = HashMap::new();
+        for bb in &self.current_blocks {
+            for stmt in &bb.statements {
+                if let StatementKind::Assign(tmp, Rvalue::GetAttr(obj, field)) = &stmt.kind
+                    && is_self(obj, self_local)
+                {
+                    field_of_tmp.insert(*tmp, field.clone());
+                }
+            }
+        }
+        let mut moved = HashSet::new();
+        if field_of_tmp.is_empty() {
+            return moved;
+        }
+        for bb in &self.current_blocks {
+            for stmt in &bb.statements {
+                match &stmt.kind {
+                    StatementKind::Assign(_, rval) => {
+                        for (tmp, field) in &field_of_tmp {
+                            if moves(rval, *tmp) {
+                                moved.insert(field.clone());
+                            }
+                        }
+                    }
+                    StatementKind::SetAttr(a, _, v) | StatementKind::PtrStore(a, v) => {
+                        for (tmp, field) in &field_of_tmp {
+                            if matches!(a, Operand::Move(l) if *l == *tmp)
+                                || matches!(v, Operand::Move(l) if *l == *tmp)
+                            {
+                                moved.insert(field.clone());
+                            }
+                        }
+                    }
+                    StatementKind::SetIndex(a, i, v, _) => {
+                        for (tmp, field) in &field_of_tmp {
+                            if [a, i, v]
+                                .iter()
+                                .any(|o| matches!(o, Operand::Move(l) if *l == *tmp))
+                            {
+                                moved.insert(field.clone());
+                            }
+                        }
+                    }
+                    StatementKind::Drop(l) => {
+                        if let Some(field) = field_of_tmp.get(l) {
+                            moved.insert(field.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(term) = &bb.terminator
+                && let TerminatorKind::SwitchInt { discr, .. } = &term.kind
+            {
+                for (tmp, field) in &field_of_tmp {
+                    if matches!(discr, Operand::Move(l) if *l == *tmp) {
+                        moved.insert(field.clone());
+                    }
+                }
+            }
+        }
+        moved
     }
 }

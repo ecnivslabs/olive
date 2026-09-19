@@ -188,6 +188,51 @@ pub extern "C" fn olive_set_items(set_ptr: i64) -> i64 {
     list
 }
 
+/// A `__drop__` hook as a callable word, for per-element cleanup below.
+type ElementDropHook = extern "C" fn(i64) -> i64;
+
+/// Runs a struct element's `__drop__` for every live element of a set whose
+/// element type statically carries one, zeroing each slot as it goes so the
+/// set's own drop (which follows) only releases the buffer. The membership
+/// index is untouched and never consulted again before the drop.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_set_drop_each_struct(ptr: i64, hook: i64) {
+    if ptr == 0 || hook == 0 {
+        return;
+    }
+    let hook: ElementDropHook = unsafe { std::mem::transmute(hook as usize) };
+    let s = unsafe { &mut *(ptr as *mut OliveHashSet) };
+    for i in 0..s.len {
+        let slot = unsafe { s.ptr.add(i) };
+        let elem = unsafe { *slot };
+        if elem != 0 {
+            unsafe { *slot = 0 };
+            hook(elem);
+        }
+    }
+}
+
+/// Union elements: only struct-boxed members decode into the hook (the shell
+/// is released by the unbox); scalars pass through to the ordinary drop
+/// untouched, so only hooked arms are zeroed.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_set_drop_each_union(ptr: i64, hook: i64) {
+    if ptr == 0 || hook == 0 {
+        return;
+    }
+    let hook: ElementDropHook = unsafe { std::mem::transmute(hook as usize) };
+    let s = unsafe { &mut *(ptr as *mut OliveHashSet) };
+    for i in 0..s.len {
+        let slot = unsafe { s.ptr.add(i) };
+        let elem = unsafe { *slot };
+        if elem != 0 && crate::boxed::olive_any_is_struct_box(elem) != 0 {
+            let inner = crate::struct_box::olive_struct_unbox_take(elem);
+            unsafe { *slot = 0 };
+            hook(inner);
+        }
+    }
+}
+
 /// Inserts without taking ownership on duplicate. Returns true when stored.
 /// The hash insert runs before the vector push so a structurally equal key
 /// never leaves both the old and the new word in the snapshot vector.

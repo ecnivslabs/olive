@@ -912,6 +912,24 @@ pub extern "C" fn olive_list_drop_each_union(ptr: i64, hook: i64) {
     }
 }
 
+/// Single-word form of the union case above, for unrolled tuple-element
+/// hooks: tuple positions each carry their own static type (and hook), so
+/// they cannot share one whole-container pass. Boxed members decode into
+/// the hook; every other arm is left for the ordinary drop. The caller's
+/// `Drop(tuple)` follows and frees the (now-dead) slots through the
+/// generation guard.
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_hook_union_word(word: i64, hook: i64) {
+    if word == 0 || hook == 0 {
+        return;
+    }
+    if crate::boxed::olive_any_is_struct_box(word) == 0 {
+        return;
+    }
+    let hook: ElementDropHook = unsafe { std::mem::transmute(hook as usize) };
+    hook(crate::struct_box::olive_struct_unbox_take(word));
+}
+
 pub(crate) unsafe fn release_list_storage(body: *mut u8) {
     let s = unsafe { &*(body as *const StableVec) };
     if !s.ptr.is_null() {
