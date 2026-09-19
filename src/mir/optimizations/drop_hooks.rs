@@ -15,6 +15,48 @@ pub fn collect_struct_has_drop(functions: &[MirFunction]) -> HashSet<String> {
     result
 }
 
+/// (base struct name, monomorphized name) pairs for every `__drop__`-owning
+/// struct reachable from any local's type (direct, union, and container
+/// element positions alike). The driver registers both spellings in
+/// `__main__`'s prologue so the runtime registry matches whatever name
+/// form a descriptor carries at the free site.
+pub fn collect_drop_registrations(
+    functions: &[MirFunction],
+    has_drop: &HashSet<String>,
+) -> Vec<(String, String)> {
+    fn visit(ty: &Type, has_drop: &HashSet<String>, out: &mut HashSet<(String, String)>) {
+        match ty {
+            Type::Struct(name, args, _) => {
+                let mono = monomorphized_name(name, args);
+                if has_drop.contains(&mono) {
+                    out.insert((name.clone(), mono));
+                }
+            }
+            Type::Union(members) | Type::Tuple(members) => {
+                for m in members {
+                    visit(m, has_drop, out);
+                }
+            }
+            Type::List(e) | Type::Set(e) => visit(e, has_drop, out),
+            Type::Dict(k, v) => {
+                visit(k, has_drop, out);
+                visit(v, has_drop, out);
+            }
+            Type::Ref(e) | Type::MutRef(e) | Type::Ptr(e) => visit(e, has_drop, out),
+            _ => {}
+        }
+    }
+    let mut pairs = HashSet::new();
+    for func in functions {
+        for local in &func.locals {
+            visit(&local.ty, has_drop, &mut pairs);
+        }
+    }
+    let mut sorted: Vec<(String, String)> = pairs.into_iter().collect();
+    sorted.sort();
+    sorted
+}
+
 /// Build the monomorphized name for a struct type, matching the naming
 /// convention used by the generic monomorphizer.
 pub fn monomorphized_name(struct_name: &str, type_args: &[Type]) -> String {

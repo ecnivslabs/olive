@@ -121,6 +121,7 @@ impl Optimizer {
         for func in functions.iter_mut() {
             drop_hooks::lower_drop_hooks(func, &has_drop);
         }
+        register_drop_hooks(functions, &has_drop);
         let copy_sites = ownership.copy_sites.replace(Vec::new());
 
         if !self.release {
@@ -227,4 +228,71 @@ impl Optimizer {
         }
         gencheck.diagnostics.into_inner()
     }
+}
+
+/// Registers every `__drop__`-owning struct's hook in `__main__`'s prologue
+/// (under both its base and monomorphized spellings) so the runtime
+/// registry can run cleanup on paths with no MIR hook site (nested
+/// containers, enum payloads, `Any`). Runs right after drop lowering in
+/// both pipelines; later passes treat the calls like any other.
+fn register_drop_hooks(
+    functions: &mut [MirFunction],
+    has_drop: &std::collections::HashSet<String>,
+) {
+    if has_drop.is_empty() {
+        return;
+    }
+    let pairs = drop_hooks::collect_drop_registrations(functions, has_drop);
+    if pairs.is_empty() {
+        return;
+    }
+    let Some(main) = functions.iter_mut().find(|f| f.name == "__main__") else {
+        return;
+    };
+    if main.basic_blocks.is_empty() {
+        return;
+    }
+    let mut keys: Vec<(String, String)> = Vec::new();
+    for (base, mono) in &pairs {
+        let hook = format!("{}::__drop__", mono);
+        keys.push((base.clone(), hook.clone()));
+        if mono != base {
+            keys.push((mono.clone(), hook.clone()));
+        }
+        if let Some(stripped) = base.rsplit("::").next()
+            && stripped != base
+        {
+            keys.push((stripped.to_string(), hook));
+        }
+    }
+    keys.sort();
+    keys.dedup();
+    let span = main.basic_blocks[0]
+        .statements
+        .first()
+        .map(|s| s.span)
+        .unwrap_or_default();
+    let mut stmts = Vec::new();
+    for (name, hook) in &keys {
+        let sink = crate::mir::optimizations::ownership::push_local(
+            main,
+            crate::semantic::types::Type::Any,
+        );
+        stmts.push(crate::mir::Statement {
+            kind: crate::mir::StatementKind::Assign(
+                sink,
+                crate::mir::Rvalue::Call {
+                    func: crate::mir::Operand::Constant(crate::mir::Constant::Function(
+                        "__olive_register_drop".to_string(),
+                    )),
+                    args: vec![
+                        crate::mir::Operand::Constant(crate::mir::Constant::Str(name.clone())),
+                        crate::mir::Operand::Constant(crate::mir::Constant::Function(hook.clone())),
+                    ],
+                },
+            ),
+            span,
+        });
+    }
+    main.basic_blocks[0].statements.splice(0..0, stmts);
 }
