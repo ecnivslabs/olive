@@ -24,6 +24,7 @@ const PY_INTERPRETER_CONFIG_OWN_GIL: c_int = 2;
 thread_local! {
     static SUBINTERP_SLOT: std::cell::Cell<i32> = const { std::cell::Cell::new(-1) };
     static SUBINTERP_TS: std::cell::Cell<*mut c_void> = const { std::cell::Cell::new(std::ptr::null_mut()) };
+    static SUBINTERP_BORROWED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 unsafe fn interp_state_raw() -> *mut *mut c_void {
@@ -62,6 +63,21 @@ pub fn pool_is_active() -> bool {
     POOL_ACTIVE.load(Ordering::Acquire)
 }
 
+pub(crate) struct ExternalCallbackGuard;
+
+impl ExternalCallbackGuard {
+    pub(crate) fn enter() -> Self {
+        SUBINTERP_BORROWED.with(|borrowed| borrowed.set(true));
+        Self
+    }
+}
+
+impl Drop for ExternalCallbackGuard {
+    fn drop(&mut self) {
+        SUBINTERP_BORROWED.with(|borrowed| borrowed.set(false));
+    }
+}
+
 #[inline]
 pub(crate) fn pool_ever_active() -> bool {
     POOL_EVER.load(Ordering::Relaxed)
@@ -88,6 +104,9 @@ fn assign_slot() -> i32 {
 
 pub unsafe fn pool_ensure() -> bool {
     unsafe {
+        if SUBINTERP_BORROWED.with(|borrowed| borrowed.get()) {
+            return true;
+        }
         let slot = SUBINTERP_SLOT.with(|s| s.get());
         if slot < 0 {
             let new_slot = assign_slot();
@@ -97,10 +116,12 @@ pub unsafe fn pool_ensure() -> bool {
             SUBINTERP_SLOT.with(|s| s.set(new_slot));
             let interp = read_interp_state(new_slot as usize);
             if interp.is_null() {
+                SUBINTERP_SLOT.with(|s| s.set(-1));
                 return false;
             }
             let ts = PY_THREAD_STATE_NEW(interp);
             if ts.is_null() {
+                SUBINTERP_SLOT.with(|s| s.set(-1));
                 return false;
             }
             SUBINTERP_TS.with(|t| t.set(ts));
@@ -113,6 +134,9 @@ pub unsafe fn pool_ensure() -> bool {
 
 pub unsafe fn pool_release() {
     unsafe {
+        if SUBINTERP_BORROWED.with(|borrowed| borrowed.get()) {
+            return;
+        }
         let ts = SUBINTERP_TS.with(|t| t.get());
         if !ts.is_null() {
             PY_EVAL_RELEASE_THREAD(ts);

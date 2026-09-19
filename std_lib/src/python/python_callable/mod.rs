@@ -178,6 +178,7 @@ unsafe fn run_trampoline(
         if argc as i64 != arity {
             return raise_arity_error(arity, argc);
         }
+        let _external_guard = crate::python::python_subinterp::ExternalCallbackGuard::enter();
 
         let mut args = [0i64; 4];
         let mut param_tags = [0i64; 4];
