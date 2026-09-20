@@ -277,6 +277,15 @@ fn ffi_errno_reads_snapshot_not_live_errno() {
 }
 
 #[test]
+fn reflection_does_not_misclassify_raw_struct_headers() {
+    for fields in [1, 2, 3, 4, 6, 11, 14, 16] {
+        let raw = crate::struct_obj::olive_struct_alloc(fields);
+        assert_eq!(from_ptr(olive_typeof_str(raw)), "int");
+        crate::struct_obj::olive_free_struct(raw);
+    }
+}
+
+#[test]
 fn any_eq_strict_kinds() {
     assert_eq!(olive_any_eq_strict(boxed::olive_box_int(7), s("7")), 0);
     assert_eq!(olive_any_eq_strict(s("7"), s("7")), 1);

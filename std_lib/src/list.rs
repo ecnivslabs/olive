@@ -71,10 +71,11 @@ pub(crate) fn list_from_vec(mut v: Vec<i64>) -> i64 {
 pub(crate) fn owns_list(v: i64) -> bool {
     unsafe {
         let active = crate::slab::ACTIVE_SLABS.get();
-        if !active.is_null() && (*active).list.owns_addr(v as usize) {
-            return true;
+        if !active.is_null() {
+            return (*active).list.owns_addr(v as usize);
         }
         LIST_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize))
+            || crate::slab::global_list_owns_addr(v as usize)
     }
 }
 
@@ -1522,7 +1523,7 @@ pub extern "C" fn olive_next(iter_ptr: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_is_list(val: i64) -> i64 {
-    if val == 0 || !crate::slab::ptr_is_slab_body(val) {
+    if val == 0 || !crate::slab::ptr_is_slab_body(val) || !owns_list(val) {
         return 0;
     }
     let kind = unsafe { *(val as *const i64) };
@@ -1762,6 +1763,13 @@ mod tests {
     fn is_list_true() {
         let ptr = make_list(&[]);
         assert_eq!(olive_is_list(ptr), 1);
+    }
+
+    #[test]
+    fn list_predicate_rejects_raw_one_field_struct() {
+        let raw = crate::struct_obj::olive_struct_alloc(1);
+        assert_eq!(olive_is_list(raw), 0);
+        crate::struct_obj::olive_free_struct(raw);
     }
 
     #[test]

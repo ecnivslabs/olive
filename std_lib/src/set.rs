@@ -14,10 +14,11 @@ thread_local! {
 pub(crate) fn owns_set(v: i64) -> bool {
     unsafe {
         let active = crate::slab::ACTIVE_SLABS.get();
-        if !active.is_null() && (*active).set.owns_addr(v as usize) {
-            return true;
+        if !active.is_null() {
+            return (*active).set.owns_addr(v as usize);
         }
         SET_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize))
+            || crate::slab::global_set_owns_addr(v as usize)
     }
 }
 

@@ -33,6 +33,17 @@ fn with_boxed_slab<T>(f: impl FnOnce(&mut GenSlab) -> T) -> T {
     }
 }
 
+pub(crate) fn owns_boxed(v: i64) -> bool {
+    unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null() {
+            return (*active).boxed.owns_addr(v as usize);
+        }
+        BOXED_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize))
+            || crate::slab::global_boxed_owns_addr(v as usize)
+    }
+}
+
 /// Low-bit tag selecting an inline immediate. Heap pointers use `0`, strings
 /// use bit `0`; these three are the remaining even, non-zero patterns.
 pub const TAG_INT: i64 = 2;

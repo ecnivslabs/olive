@@ -321,6 +321,30 @@ pub(crate) fn global_struct_box_owns_addr(addr: usize) -> bool {
     GLOBAL_SLABS.lock().unwrap().struct_box.owns_addr(addr)
 }
 
+pub(crate) fn global_obj_owns_addr(addr: usize) -> bool {
+    GLOBAL_SLABS.lock().unwrap().obj.owns_addr(addr)
+}
+
+pub(crate) fn global_list_owns_addr(addr: usize) -> bool {
+    GLOBAL_SLABS.lock().unwrap().list.owns_addr(addr)
+}
+
+pub(crate) fn global_bytes_owns_addr(addr: usize) -> bool {
+    GLOBAL_SLABS.lock().unwrap().bytes.owns_addr(addr)
+}
+
+pub(crate) fn global_enum_owns_addr(addr: usize) -> bool {
+    GLOBAL_SLABS.lock().unwrap().enum_slab.owns_addr(addr)
+}
+
+pub(crate) fn global_set_owns_addr(addr: usize) -> bool {
+    GLOBAL_SLABS.lock().unwrap().set.owns_addr(addr)
+}
+
+pub(crate) fn global_boxed_owns_addr(addr: usize) -> bool {
+    GLOBAL_SLABS.lock().unwrap().boxed.owns_addr(addr)
+}
+
 /// Redirects ACTIVE_SLABS to the locked global arena for the duration of `f`.
 /// The guard is a MutexGuard held across the call, so an unwinding `f` still
 /// unlocks; the restore closure keeps the redirect itself from leaking on

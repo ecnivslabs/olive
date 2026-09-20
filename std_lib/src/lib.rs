@@ -1577,7 +1577,7 @@ pub extern "C" fn olive_is_str(val: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_is_bytes(val: i64) -> i64 {
-    if val == 0 || !slab::ptr_is_slab_body(val) {
+    if val == 0 || !slab::ptr_is_slab_body(val) || !bytes::owns_bytes(val) {
         return 0;
     }
     (unsafe { *(val as *const i64) } == KIND_BYTES) as i64
@@ -1602,19 +1602,22 @@ pub extern "C" fn olive_typeof_str(val: i64) -> i64 {
         return olive_str_internal("int");
     }
     let kind = unsafe { *(val as *const i64) };
-    if kind == struct_box::KIND_STRUCT_BOX {
+    if kind == struct_box::KIND_STRUCT_BOX && struct_box::owns_struct_box(val) {
         let b = unsafe { &*(val as *const struct_box::OliveStructBox) };
         return olive_str_internal(&format::desc_struct_name(b.desc));
     }
     let name = match kind {
-        KIND_LIST | KIND_ANY_LIST => "list",
-        KIND_OBJ => "dict",
-        KIND_ENUM => "enum",
-        KIND_SET => "set",
-        KIND_BYTES => "bytes",
-        KIND_FLOAT => "float",
-        KIND_U64 => "u64",
-        KIND_PYOBJECT => "PyObject",
+        KIND_LIST | KIND_ANY_LIST if list::owns_list(val) => "list",
+        KIND_OBJ if obj::owns_obj(val) => "dict",
+        KIND_ENUM if enum_obj::owns_enum(val) => "enum",
+        KIND_SET if set::owns_set(val) => "set",
+        KIND_BYTES if bytes::owns_bytes(val) => "bytes",
+        KIND_FLOAT | KIND_INT | KIND_U64 if boxed::owns_boxed(val) => match kind {
+            KIND_FLOAT => "float",
+            KIND_U64 => "u64",
+            _ => "int",
+        },
+        KIND_PYOBJECT if python::python_coerce::is_arena_ptr(val as usize) => "PyObject",
         _ => "int",
     };
     olive_str_internal(name)

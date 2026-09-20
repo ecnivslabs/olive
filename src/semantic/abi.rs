@@ -1,7 +1,7 @@
 //! Whether a type can cross the C FFI boundary. A foreign function declared in
 //! a native import must take and return things C can actually represent: scalar
-//! integers and floats, booleans, pointers, strings (as `char*`), byte buffers,
-//! and C structs. Olive's managed types (lists, dicts, sets, tuples, enums,
+//! integers and floats, booleans, pointers, strings (as `char*`), and C
+//! structs. Olive's managed types (lists, dicts, sets, tuples, enums,
 //! closures, Python values) carry runtime headers and ownership that no C ABI
 //! understands, so declaring one at the boundary is always a mistake.
 //!
@@ -32,7 +32,10 @@ pub fn ffi_unsafe_reason(ty: &Type) -> Option<&'static str> {
             Some("a Python value is owned by the interpreter and cannot cross to C")
         }
         Type::Param(_) => Some("a generic type parameter has no fixed C layout"),
-        Type::Ref(inner) | Type::MutRef(inner) => ffi_unsafe_reason(inner),
+        Type::Bytes => Some("a byte buffer needs an explicit C pointer and length adapter"),
+        Type::Ref(_) | Type::MutRef(_) => {
+            Some("an Olive reference is not lowered as a C pointer; use `ptr` explicitly")
+        }
         _ => None,
     }
 }
@@ -51,7 +54,6 @@ mod tests {
         assert!(safe(&Type::F32));
         assert!(safe(&Type::Bool));
         assert!(safe(&Type::Str));
-        assert!(safe(&Type::Bytes));
         assert!(safe(&Type::Ptr(Box::new(Type::Int))));
         assert!(safe(&Type::Null));
     }
@@ -64,6 +66,9 @@ mod tests {
         assert!(!safe(&Type::Tuple(vec![Type::Int, Type::Int])));
         assert!(!safe(&Type::PyObject));
         assert!(!safe(&Type::Param("T".into())));
+        assert!(!safe(&Type::Bytes));
+        assert!(!safe(&Type::Ref(Box::new(Type::Int))));
+        assert!(!safe(&Type::MutRef(Box::new(Type::Int))));
     }
 
     #[test]

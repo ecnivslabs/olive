@@ -12,6 +12,10 @@ fn is_live_kind(val: i64, expected: i64) -> bool {
     val != 0 && crate::slab::ptr_is_slab_body(val) && unsafe { *(val as *const i64) == expected }
 }
 
+fn is_live_obj(val: i64) -> bool {
+    is_live_kind(val, KIND_OBJ) && obj_slab_owns(val)
+}
+
 pub(crate) unsafe fn release_obj_storage(body: *mut u8) {
     let obj = unsafe { &mut *(body as *mut OliveObj) };
     drop(std::mem::take(&mut obj.fields));
@@ -577,6 +581,7 @@ fn obj_slab_owns(ptr: i64) -> bool {
             (*active).obj.owns_addr(ptr as usize)
         } else {
             OBJ_SLAB.with(|sl| (*sl.get()).owns_addr(ptr as usize))
+                || crate::slab::global_obj_owns_addr(ptr as usize)
         }
     }
 }
@@ -636,12 +641,12 @@ pub extern "C" fn olive_dict_new_reuse(old_ptr: i64, bump: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_is_obj(val: i64) -> i64 {
-    is_live_kind(val, KIND_OBJ) as i64
+    is_live_obj(val) as i64
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_keys(obj_ptr: i64) -> i64 {
-    if !is_live_kind(obj_ptr, KIND_OBJ) {
+    if !is_live_obj(obj_ptr) {
         return crate::list::list_from_vec(Vec::new());
     }
     let m = unsafe { &*(obj_ptr as *const OliveObj) };
@@ -665,7 +670,7 @@ pub extern "C" fn olive_obj_keys(obj_ptr: i64) -> i64 {
 /// with the key encoding at offset 1.
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_obj_keys_typed(obj_ptr: i64, dict_desc: i64) -> i64 {
-    if !is_live_kind(obj_ptr, KIND_OBJ) {
+    if !is_live_obj(obj_ptr) {
         return crate::list::list_from_vec(Vec::new());
     }
     // SAFETY: same contract as the untyped snapshot/clear above — the
@@ -838,6 +843,16 @@ mod tests {
         assert_eq!(crate::list::olive_list_len(keys), 0);
         crate::list::olive_free_list(keys);
         crate::list::olive_free_list(list);
+    }
+
+    #[test]
+    fn object_reflection_rejects_raw_two_field_struct() {
+        let raw = crate::struct_obj::olive_struct_alloc(2);
+        assert_eq!(olive_is_obj(raw), 0);
+        let keys = olive_obj_keys(raw);
+        assert_eq!(crate::list::olive_list_len(keys), 0);
+        crate::list::olive_free_list(keys);
+        crate::struct_obj::olive_free_struct(raw);
     }
 
     #[test]

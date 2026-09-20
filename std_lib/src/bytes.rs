@@ -21,6 +21,17 @@ fn with_bytes_slab<T>(f: impl FnOnce(&mut GenSlab) -> T) -> T {
     }
 }
 
+pub(crate) fn owns_bytes(v: i64) -> bool {
+    unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null() {
+            return (*active).bytes.owns_addr(v as usize);
+        }
+        BYTES_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize))
+            || crate::slab::global_bytes_owns_addr(v as usize)
+    }
+}
+
 #[repr(C)]
 pub struct OliveBytes {
     pub kind: i64,
@@ -652,6 +663,13 @@ mod tests {
 
     fn s(text: &str) -> i64 {
         olive_str_internal(text)
+    }
+
+    #[test]
+    fn bytes_predicate_rejects_raw_six_field_struct() {
+        let raw = crate::struct_obj::olive_struct_alloc(6);
+        assert_eq!(crate::olive_is_bytes(raw), 0);
+        crate::struct_obj::olive_free_struct(raw);
     }
 
     #[test]
