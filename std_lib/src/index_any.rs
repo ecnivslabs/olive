@@ -196,10 +196,14 @@ pub extern "C" fn olive_any_check_method(obj: i64, mask: i64, method: i64) -> i6
         crate::string::is_interned_char(obj) || (obj & 1 == 1 && (obj & !1) > 0x10000);
     let ok = if obj != 0 && is_active_object(obj) {
         match unsafe { *(obj as *const i64) } {
-            KIND_LIST | KIND_ANY_LIST => mask & LIST != 0,
-            KIND_OBJ => mask & DICT != 0,
-            KIND_SET => mask & SET != 0,
-            KIND_PYOBJECT => true,
+            KIND_LIST | KIND_ANY_LIST
+                if crate::is_kind(obj, crate::KIND_LIST | crate::KIND_ANY_LIST) =>
+            {
+                mask & LIST != 0
+            }
+            KIND_OBJ if crate::is_kind(obj, crate::KIND_OBJ) => mask & DICT != 0,
+            KIND_SET if crate::is_kind(obj, crate::KIND_SET) => mask & SET != 0,
+            KIND_PYOBJECT if crate::is_kind(obj, crate::KIND_PYOBJECT) => true,
             _ => false,
         }
     } else {
@@ -223,10 +227,12 @@ pub extern "C" fn olive_any_count(obj: i64, needle: i64, desc: i64) -> i64 {
     }
     if obj != 0 && is_active_object(obj) {
         match unsafe { *(obj as *const i64) } {
-            KIND_LIST | KIND_ANY_LIST => {
+            KIND_LIST | KIND_ANY_LIST
+                if crate::is_kind(obj, crate::KIND_LIST | crate::KIND_ANY_LIST) =>
+            {
                 return list::olive_list_count_typed(obj, needle, desc);
             }
-            KIND_PYOBJECT => {
+            KIND_PYOBJECT if crate::is_kind(obj, crate::KIND_PYOBJECT) => {
                 panic::abort("no method `count` on `PyObject`", None);
             }
             _ => {}
@@ -244,10 +250,14 @@ pub extern "C" fn olive_any_count(obj: i64, needle: i64, desc: i64) -> i64 {
 pub extern "C" fn olive_any_clear(obj: i64) -> i64 {
     if obj != 0 && is_active_object(obj) {
         match unsafe { *(obj as *const i64) } {
-            KIND_LIST | KIND_ANY_LIST => return list::olive_list_clear(obj),
-            KIND_OBJ => return obj::olive_obj_clear(obj),
-            KIND_SET => return set::olive_set_clear(obj),
-            KIND_PYOBJECT => {
+            KIND_LIST | KIND_ANY_LIST
+                if crate::is_kind(obj, crate::KIND_LIST | crate::KIND_ANY_LIST) =>
+            {
+                return list::olive_list_clear(obj);
+            }
+            KIND_OBJ if crate::is_kind(obj, crate::KIND_OBJ) => return obj::olive_obj_clear(obj),
+            KIND_SET if crate::is_kind(obj, crate::KIND_SET) => return set::olive_set_clear(obj),
+            KIND_PYOBJECT if crate::is_kind(obj, crate::KIND_PYOBJECT) => {
                 panic::abort("no method `clear` on `PyObject`", None);
             }
             _ => {}
@@ -265,13 +275,15 @@ pub extern "C" fn olive_any_clear(obj: i64) -> i64 {
 pub extern "C" fn olive_any_pop(obj: i64, argc: i64, a0: i64, a1: i64, loc: i64) -> i64 {
     if obj != 0 && is_active_object(obj) {
         match unsafe { *(obj as *const i64) } {
-            KIND_LIST | KIND_ANY_LIST => {
+            KIND_LIST | KIND_ANY_LIST
+                if crate::is_kind(obj, crate::KIND_LIST | crate::KIND_ANY_LIST) =>
+            {
                 if argc != 0 {
                     panic::abort("wrong number of arguments to `pop`", None);
                 }
                 return list::olive_list_pop(obj);
             }
-            KIND_OBJ => {
+            KIND_OBJ if crate::is_kind(obj, crate::KIND_OBJ) => {
                 if argc == 1 {
                     return obj::olive_obj_pop_checked(obj, a0, loc);
                 }
@@ -301,8 +313,12 @@ pub extern "C" fn olive_any_pop(obj: i64, argc: i64, a0: i64, a1: i64, loc: i64)
 pub extern "C" fn olive_any_remove(obj: i64, arg: i64, arg_boxed: i64, loc: i64, desc: i64) -> i64 {
     if obj != 0 && is_active_object(obj) {
         match unsafe { *(obj as *const i64) } {
-            KIND_LIST | KIND_ANY_LIST => return list::olive_list_remove(obj, arg),
-            KIND_OBJ => {
+            KIND_LIST | KIND_ANY_LIST
+                if crate::is_kind(obj, crate::KIND_LIST | crate::KIND_ANY_LIST) =>
+            {
+                return list::olive_list_remove(obj, arg);
+            }
+            KIND_OBJ if crate::is_kind(obj, crate::KIND_OBJ) => {
                 // Scalar int keys travel boxed (see `coerce_to_hashable` and
                 // the `Any`-keyed method lowerings); the raw word of a large
                 // int is bit-identical to a tagged string pointer, so the
@@ -330,7 +346,7 @@ pub extern "C" fn olive_any_remove(obj: i64, arg: i64, arg_boxed: i64, loc: i64,
                 };
                 return obj::olive_obj_remove(obj, key);
             }
-            KIND_SET => {
+            KIND_SET if crate::is_kind(obj, crate::KIND_SET) => {
                 return crate::hash_typed::olive_set_remove_checked_typed(
                     obj, arg_boxed, loc, desc,
                 );
@@ -351,10 +367,10 @@ pub extern "C" fn olive_any_remove(obj: i64, arg: i64, arg_boxed: i64, loc: i64,
 pub extern "C" fn olive_any_getattr(obj: i64, attr: i64, loc: i64) -> i64 {
     if obj != 0 && is_active_object(obj) {
         let kind = unsafe { *(obj as *const i64) };
-        if kind == crate::struct_box::KIND_STRUCT_BOX {
+        if kind == crate::struct_box::KIND_STRUCT_BOX && crate::struct_box::owns_struct_box(obj) {
             return struct_box_member(obj, attr, loc);
         }
-        if kind == KIND_OBJ {
+        if kind == KIND_OBJ && crate::obj::owns_obj(obj) {
             return obj::olive_obj_get_checked(obj, attr, loc);
         }
     }
@@ -376,11 +392,11 @@ pub extern "C" fn olive_any_getattr(obj: i64, attr: i64, loc: i64) -> i64 {
 pub extern "C" fn olive_any_setattr(obj: i64, attr: i64, val: i64, loc: i64) -> i64 {
     if obj != 0 && is_active_object(obj) {
         let kind = unsafe { *(obj as *const i64) };
-        if kind == crate::struct_box::KIND_STRUCT_BOX {
+        if kind == crate::struct_box::KIND_STRUCT_BOX && crate::struct_box::owns_struct_box(obj) {
             struct_box_store(obj, attr, val, loc);
             return 0;
         }
-        if kind == KIND_OBJ {
+        if kind == KIND_OBJ && crate::obj::owns_obj(obj) {
             return obj::olive_obj_set(obj, attr, val);
         }
     }
@@ -685,11 +701,20 @@ pub extern "C" fn olive_getslice_any(
     // sets share its `(kind, ptr, len)` prefix, which is all the slicer
     // reads.
     match kind {
-        KIND_LIST | KIND_ANY_LIST | KIND_SET => {
+        KIND_LIST | KIND_ANY_LIST
+            if crate::is_kind(obj, crate::KIND_LIST | crate::KIND_ANY_LIST) =>
+        {
             list::olive_list_getslice(obj, start, stop, step, flags)
         }
-        KIND_BYTES => bytes::olive_buf_getslice(obj, start, stop, step, flags),
-        KIND_PYOBJECT => python::olive_py_getslice(obj, start, stop, step, flags),
+        KIND_SET if crate::is_kind(obj, crate::KIND_SET) => {
+            list::olive_list_getslice(obj, start, stop, step, flags)
+        }
+        KIND_BYTES if crate::is_kind(obj, crate::KIND_BYTES) => {
+            bytes::olive_buf_getslice(obj, start, stop, step, flags)
+        }
+        KIND_PYOBJECT if crate::is_kind(obj, crate::KIND_PYOBJECT) => {
+            python::olive_py_getslice(obj, start, stop, step, flags)
+        }
         _ => slice_type_error(),
     }
 }
@@ -710,11 +735,19 @@ pub extern "C" fn olive_len_any(obj: i64) -> i64 {
     }
     let kind = unsafe { *(obj as *const i64) };
     match kind {
-        KIND_LIST | KIND_ANY_LIST => olive_list_len(obj),
-        KIND_OBJ => obj::olive_obj_len(obj),
-        KIND_SET => unsafe { (*(obj as *const OliveHashSet)).len as i64 },
-        KIND_BYTES => bytes::olive_buf_len(obj),
-        KIND_PYOBJECT => python::olive_py_len(obj as python::PyObject),
+        KIND_LIST | KIND_ANY_LIST
+            if crate::is_kind(obj, crate::KIND_LIST | crate::KIND_ANY_LIST) =>
+        {
+            olive_list_len(obj)
+        }
+        KIND_OBJ if crate::is_kind(obj, crate::KIND_OBJ) => obj::olive_obj_len(obj),
+        KIND_SET if crate::is_kind(obj, crate::KIND_SET) => unsafe {
+            (*(obj as *const OliveHashSet)).len as i64
+        },
+        KIND_BYTES if crate::is_kind(obj, crate::KIND_BYTES) => bytes::olive_buf_len(obj),
+        KIND_PYOBJECT if crate::is_kind(obj, crate::KIND_PYOBJECT) => {
+            python::olive_py_len(obj as python::PyObject)
+        }
         _ => crate::panic::abort("len() argument has no length", None),
     }
 }
@@ -736,7 +769,9 @@ pub extern "C" fn olive_get_index_any(obj: i64, index: i64, loc: i64) -> i64 {
     }
     let kind = unsafe { *(obj as *const i64) };
     match kind {
-        KIND_LIST | KIND_ANY_LIST => {
+        KIND_LIST | KIND_ANY_LIST
+            if crate::is_kind(obj, crate::KIND_LIST | crate::KIND_ANY_LIST) =>
+        {
             let len = olive_list_len(obj);
             let effective = if index < 0 { index + len } else { index };
             if effective < 0 || effective >= len {
@@ -744,9 +779,9 @@ pub extern "C" fn olive_get_index_any(obj: i64, index: i64, loc: i64) -> i64 {
             }
             olive_list_get(obj, index)
         }
-        KIND_OBJ => olive_obj_get_checked(obj, index, loc),
-        KIND_ENUM => olive_enum_get(obj, index),
-        KIND_BYTES => {
+        KIND_OBJ if crate::is_kind(obj, crate::KIND_OBJ) => olive_obj_get_checked(obj, index, loc),
+        KIND_ENUM if crate::is_kind(obj, crate::KIND_ENUM) => olive_enum_get(obj, index),
+        KIND_BYTES if crate::is_kind(obj, crate::KIND_BYTES) => {
             let len = bytes::olive_buf_len(obj);
             let effective = if index < 0 { index + len } else { index };
             if effective < 0 || effective >= len {
@@ -754,7 +789,7 @@ pub extern "C" fn olive_get_index_any(obj: i64, index: i64, loc: i64) -> i64 {
             }
             boxed::olive_box_int(bytes::olive_buf_get(obj, effective))
         }
-        KIND_PYOBJECT => {
+        KIND_PYOBJECT if crate::is_kind(obj, crate::KIND_PYOBJECT) => {
             let key_obj = py_key_from_typed_index(index, desc);
             let py_res = python::olive_py_getitem(obj as *mut std::ffi::c_void, key_obj);
             python::olive_py_decref(key_obj);
@@ -841,7 +876,9 @@ pub extern "C" fn olive_get_index_any_typed(obj: i64, index: i64, loc: i64, desc
     }
     let kind = unsafe { *(obj as *const i64) };
     match kind {
-        KIND_LIST | KIND_ANY_LIST => {
+        KIND_LIST | KIND_ANY_LIST
+            if crate::is_kind(obj, crate::KIND_LIST | crate::KIND_ANY_LIST) =>
+        {
             let len = olive_list_len(obj);
             let effective = if index < 0 { index + len } else { index };
             if effective < 0 || effective >= len {
@@ -849,7 +886,7 @@ pub extern "C" fn olive_get_index_any_typed(obj: i64, index: i64, loc: i64, desc
             }
             olive_list_get(obj, index)
         }
-        KIND_OBJ => {
+        KIND_OBJ if crate::is_kind(obj, crate::KIND_OBJ) => {
             let (key, owned) = normalize_typed_any_key(index, desc);
             // Report the caller's own word on a miss: the normalized key
             // may be a boxed form (e.g. an inline tag) that would leak
@@ -868,8 +905,8 @@ pub extern "C" fn olive_get_index_any_typed(obj: i64, index: i64, loc: i64, desc
             }
             hit
         }
-        KIND_ENUM => olive_enum_get(obj, index),
-        KIND_BYTES => {
+        KIND_ENUM if crate::is_kind(obj, crate::KIND_ENUM) => olive_enum_get(obj, index),
+        KIND_BYTES if crate::is_kind(obj, crate::KIND_BYTES) => {
             let len = bytes::olive_buf_len(obj);
             let effective = if index < 0 { index + len } else { index };
             if effective < 0 || effective >= len {
@@ -877,7 +914,7 @@ pub extern "C" fn olive_get_index_any_typed(obj: i64, index: i64, loc: i64, desc
             }
             boxed::olive_box_int(bytes::olive_buf_get(obj, effective))
         }
-        KIND_PYOBJECT => {
+        KIND_PYOBJECT if crate::is_kind(obj, crate::KIND_PYOBJECT) => {
             let key_obj = py_key_from_typed_index(index, desc);
             let py_res = python::olive_py_getitem(obj as *mut std::ffi::c_void, key_obj);
             python::olive_py_decref(key_obj);
@@ -908,7 +945,9 @@ pub extern "C" fn olive_set_index_any(obj: i64, index: i64, val: i64, loc: i64) 
     }
     let kind = unsafe { *(obj as *const i64) };
     match kind {
-        KIND_LIST | KIND_ANY_LIST => {
+        KIND_LIST | KIND_ANY_LIST
+            if crate::is_kind(obj, crate::KIND_LIST | crate::KIND_ANY_LIST) =>
+        {
             let len = olive_list_len(obj);
             let effective = if index < 0 { index + len } else { index };
             if effective < 0 || effective >= len {
@@ -920,7 +959,7 @@ pub extern "C" fn olive_set_index_any(obj: i64, index: i64, val: i64, loc: i64) 
             }
             olive_list_set(obj, effective, val)
         }
-        KIND_BYTES => {
+        KIND_BYTES if crate::is_kind(obj, crate::KIND_BYTES) => {
             let len = bytes::olive_buf_len(obj);
             let effective = if index < 0 { index + len } else { index };
             if effective < 0 || effective >= len {
@@ -928,14 +967,14 @@ pub extern "C" fn olive_set_index_any(obj: i64, index: i64, val: i64, loc: i64) 
             }
             bytes::olive_buf_set(obj, effective, boxed::olive_unbox_int(val))
         }
-        KIND_OBJ => {
+        KIND_OBJ if crate::is_kind(obj, crate::KIND_OBJ) => {
             let old = obj::olive_obj_get(obj, index);
             if old != val {
                 olive_free_any(old);
             }
             olive_obj_set(obj, index, val);
         }
-        KIND_PYOBJECT => {
+        KIND_PYOBJECT if crate::is_kind(obj, crate::KIND_PYOBJECT) => {
             let key_obj = py_key_from_typed_index(index, desc);
             let py_val = python::olive_py_conv_to_py(val);
             python::olive_py_setitem(obj as *mut std::ffi::c_void, key_obj, py_val);
@@ -966,7 +1005,9 @@ pub extern "C" fn olive_set_index_any_typed(obj: i64, index: i64, val: i64, loc:
     }
     let kind = unsafe { *(obj as *const i64) };
     match kind {
-        KIND_LIST | KIND_ANY_LIST => {
+        KIND_LIST | KIND_ANY_LIST
+            if crate::is_kind(obj, crate::KIND_LIST | crate::KIND_ANY_LIST) =>
+        {
             let len = olive_list_len(obj);
             let effective = if index < 0 { index + len } else { index };
             if effective < 0 || effective >= len {
@@ -978,7 +1019,7 @@ pub extern "C" fn olive_set_index_any_typed(obj: i64, index: i64, val: i64, loc:
             }
             olive_list_set(obj, effective, val)
         }
-        KIND_BYTES => {
+        KIND_BYTES if crate::is_kind(obj, crate::KIND_BYTES) => {
             let len = bytes::olive_buf_len(obj);
             let effective = if index < 0 { index + len } else { index };
             if effective < 0 || effective >= len {
@@ -986,7 +1027,7 @@ pub extern "C" fn olive_set_index_any_typed(obj: i64, index: i64, val: i64, loc:
             }
             bytes::olive_buf_set(obj, effective, boxed::olive_unbox_int(val))
         }
-        KIND_OBJ => {
+        KIND_OBJ if crate::is_kind(obj, crate::KIND_OBJ) => {
             let (key, owned) = normalize_typed_any_key(index, desc);
             let old = crate::hash_typed::with_key_descriptor(desc, || olive_obj_get(obj, key));
             if old != val {
@@ -997,7 +1038,7 @@ pub extern "C" fn olive_set_index_any_typed(obj: i64, index: i64, val: i64, loc:
                 crate::olive_free_any(key);
             }
         }
-        KIND_PYOBJECT => {
+        KIND_PYOBJECT if crate::is_kind(obj, crate::KIND_PYOBJECT) => {
             let key_obj = py_key_from_typed_index(index, desc);
             let py_val = python::olive_py_conv_to_py(val);
             python::olive_py_setitem(obj as *mut std::ffi::c_void, key_obj, py_val);

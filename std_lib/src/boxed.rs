@@ -37,7 +37,13 @@ pub(crate) fn owns_boxed(v: i64) -> bool {
     unsafe {
         let active = crate::slab::ACTIVE_SLABS.get();
         if !active.is_null() {
-            return (*active).boxed.owns_addr(v as usize);
+            if (*active).boxed.owns_addr(v as usize) {
+                return true;
+            }
+            if crate::slab::active_slab_is_global() {
+                return BOXED_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize));
+            }
+            return crate::slab::global_boxed_owns_addr(v as usize);
         }
         BOXED_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize))
             || crate::slab::global_boxed_owns_addr(v as usize)

@@ -578,11 +578,16 @@ fn obj_slab_owns(ptr: i64) -> bool {
     unsafe {
         let active = crate::slab::ACTIVE_SLABS.get();
         if !active.is_null() {
-            (*active).obj.owns_addr(ptr as usize)
-        } else {
-            OBJ_SLAB.with(|sl| (*sl.get()).owns_addr(ptr as usize))
-                || crate::slab::global_obj_owns_addr(ptr as usize)
+            if (*active).obj.owns_addr(ptr as usize) {
+                return true;
+            }
+            if crate::slab::active_slab_is_global() {
+                return OBJ_SLAB.with(|sl| (*sl.get()).owns_addr(ptr as usize));
+            }
+            return crate::slab::global_obj_owns_addr(ptr as usize);
         }
+        OBJ_SLAB.with(|sl| (*sl.get()).owns_addr(ptr as usize))
+            || crate::slab::global_obj_owns_addr(ptr as usize)
     }
 }
 

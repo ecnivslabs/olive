@@ -668,7 +668,7 @@ fn copy_any_node(
     }
     let kind = unsafe { *(val as *const i64) };
     match kind {
-        KIND_LIST | KIND_ANY_LIST => {
+        KIND_LIST | KIND_ANY_LIST if crate::is_kind(val, kind) => {
             let (eptr, elen) = unsafe {
                 let s = &*(val as *const StableVec);
                 (s.ptr, s.len)
@@ -681,7 +681,7 @@ fn copy_any_node(
             unsafe { (*(new as *mut StableVec)).kind = kind };
             new
         }
-        KIND_SET => {
+        KIND_SET if crate::is_kind(val, kind) => {
             let (eptr, elen) = unsafe {
                 let s = &*(val as *const OliveHashSet);
                 (s.ptr, s.len)
@@ -693,7 +693,7 @@ fn copy_any_node(
             }
             new
         }
-        KIND_OBJ => {
+        KIND_OBJ if crate::is_kind(val, kind) => {
             let obj = unsafe { &*(val as *const OliveObj) };
             let new = crate::obj::olive_obj_new();
             visited.insert(val, new);
@@ -703,7 +703,7 @@ fn copy_any_node(
             }
             new
         }
-        KIND_ENUM => {
+        KIND_ENUM if crate::is_kind(val, kind) => {
             let e = unsafe { &*(val as *const OliveEnum) };
             let new = crate::olive_enum_new(e.type_id, e.tag, e.payload_len as i64, e.desc);
             visited.insert(val, new);
@@ -715,25 +715,25 @@ fn copy_any_node(
             }
             new
         }
-        KIND_FLOAT => {
+        KIND_FLOAT if crate::is_kind(val, kind) => {
             let bits = unsafe { (*(val as *const crate::boxed::OliveBoxed)).bits };
             crate::boxed::olive_box_float(f64::from_bits(bits as u64))
         }
-        KIND_INT => {
+        KIND_INT if crate::is_kind(val, kind) => {
             let bits = unsafe { (*(val as *const crate::boxed::OliveBoxed)).bits };
             crate::boxed::olive_box_int(bits)
         }
-        KIND_U64 => {
+        KIND_U64 if crate::is_kind(val, kind) => {
             let bits = unsafe { (*(val as *const crate::boxed::OliveBoxed)).bits };
             crate::boxed::olive_box_u64(bits)
         }
-        KIND_BYTES => crate::bytes::clone_buf(val),
+        KIND_BYTES if crate::is_kind(val, kind) => crate::bytes::clone_buf(val),
         // Wrap a fresh handle rather than incref in place; that would clobber the kind field (CPython's ob_refcnt slot).
-        KIND_PYOBJECT => {
+        KIND_PYOBJECT if crate::is_kind(val, kind) => {
             let py_ptr = unsafe { (*(val as *const crate::python::OlivePyObject)).py_ptr };
             unsafe { crate::python::olive_py_wrap_borrowed(py_ptr) as i64 }
         }
-        crate::struct_box::KIND_STRUCT_BOX => {
+        crate::struct_box::KIND_STRUCT_BOX if crate::is_kind(val, kind) => {
             let (desc, inner) = {
                 let b = unsafe { &*(val as *const crate::struct_box::OliveStructBox) };
                 (b.desc, b.ptr)

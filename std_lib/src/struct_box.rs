@@ -42,7 +42,13 @@ pub(crate) fn owns_struct_box(v: i64) -> bool {
     unsafe {
         let active = crate::slab::ACTIVE_SLABS.get();
         if !active.is_null() {
-            return (*active).struct_box.owns_addr(v as usize);
+            if (*active).struct_box.owns_addr(v as usize) {
+                return true;
+            }
+            if crate::slab::active_slab_is_global() {
+                return STRUCT_BOX_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize));
+            }
+            return crate::slab::global_struct_box_owns_addr(v as usize);
         }
         STRUCT_BOX_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize))
             || crate::slab::global_struct_box_owns_addr(v as usize)

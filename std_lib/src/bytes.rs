@@ -25,7 +25,13 @@ pub(crate) fn owns_bytes(v: i64) -> bool {
     unsafe {
         let active = crate::slab::ACTIVE_SLABS.get();
         if !active.is_null() {
-            return (*active).bytes.owns_addr(v as usize);
+            if (*active).bytes.owns_addr(v as usize) {
+                return true;
+            }
+            if crate::slab::active_slab_is_global() {
+                return BYTES_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize));
+            }
+            return crate::slab::global_bytes_owns_addr(v as usize);
         }
         BYTES_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize))
             || crate::slab::global_bytes_owns_addr(v as usize)

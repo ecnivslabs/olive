@@ -329,15 +329,13 @@ fn executor_complete(ex: &Arc<OliveExecutor>, task: &Arc<OliveTask>, result: i64
     // `olive_sm_alloc`) stay live for the existing frame slot cache path.
     // The handle stays owned by the creator, released via `olive_free_future`.
     let frame = sf.frame;
-    let frame_size = sf.frame_size;
     let future_ptr = task.sm_future;
     unsafe {
         *((frame + 8) as *mut i64) = delivered;
         let f = &mut *(future_ptr as *mut OliveSmFuture);
         f.cached = delivered;
         if sm_live().lock().unwrap().contains(&frame) {
-            olive_sm_free(frame, frame_size);
-            f.frame = 0;
+            release_sm_frame(f, true);
         }
     };
 
@@ -473,10 +471,8 @@ fn free_cached_value(value: i64, result_desc: i64) {
 }
 
 fn cache_sm_result(future: i64, result: i64) -> i64 {
-    let (result_desc, frame, frame_size) = unsafe {
-        let f = &*(future as *const OliveSmFuture);
-        (f.result_desc, f.frame, f.frame_size)
-    };
+    let f = unsafe { &mut *(future as *mut OliveSmFuture) };
+    let result_desc = f.result_desc;
     let delivered = if result_desc == 0 {
         let delivered = crate::copy_typed::relocate_across_boundary(result);
         crate::olive_free_any(result);
@@ -486,11 +482,10 @@ fn cache_sm_result(future: i64, result: i64) -> i64 {
         crate::free_typed::olive_free_typed(result, result_desc);
         delivered
     };
-    let f = unsafe { &mut *(future as *mut OliveSmFuture) };
     f.cached = delivered;
+    let frame = f.frame;
     if frame != 0 && sm_live().lock().unwrap().contains(&frame) {
-        olive_sm_free(frame, frame_size);
-        f.frame = 0;
+        unsafe { release_sm_frame(f, true) };
     }
     delivered
 }
@@ -667,13 +662,13 @@ pub extern "C" fn olive_free_future(future: i64) -> i64 {
     }
     let kind = unsafe { *(future as *const i64) };
     if kind == KIND_SM_FUTURE {
-        let (frame, frame_size, cached, result_desc) = unsafe {
-            let f = &*(future as *const OliveSmFuture);
-            (f.frame, f.frame_size, f.cached, f.result_desc)
+        let (cached, result_desc) = unsafe {
+            let f = &mut *(future as *mut OliveSmFuture);
+            let cached = f.cached;
+            let result_desc = f.result_desc;
+            release_sm_frame(f, false);
+            (cached, result_desc)
         };
-        if frame != 0 {
-            olive_sm_free(frame, frame_size);
-        }
         free_cached_value(cached, result_desc);
         olive_sm_free(future, std::mem::size_of::<OliveSmFuture>() as i64);
     } else {
@@ -779,7 +774,10 @@ pub extern "C" fn olive_async_file_write(path: i64, data: i64) -> i64 {
 }
 
 fn future_list_len(list_ptr: i64) -> usize {
-    if list_ptr == 0 || !crate::slab::ptr_is_slab_body(list_ptr) {
+    if list_ptr == 0
+        || !crate::slab::ptr_is_slab_body(list_ptr)
+        || !crate::list::owns_list(list_ptr)
+    {
         return 0;
     }
     let kind = unsafe { *(list_ptr as *const i64) };
@@ -834,8 +832,12 @@ pub extern "C" fn olive_gather_poll(frame: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_gather(futures_list: i64) -> i64 {
     let n = future_list_len(futures_list);
-
-    let results_list = crate::list::list_from_vec(vec![0; n]);
+    let retained_list = if n == 0 {
+        0
+    } else {
+        crate::copy_typed::relocate_across_boundary(futures_list)
+    };
+    let results_list = crate::slab::with_escape_arena(|| crate::list::list_from_vec(vec![0; n]));
 
     let frame = olive_sm_alloc(std::mem::size_of::<GatherFrame>() as i64);
     unsafe {
@@ -844,7 +846,7 @@ pub extern "C" fn olive_gather(futures_list: i64) -> i64 {
             GatherFrame {
                 state: 0,
                 cached_result: 0,
-                futures_list,
+                futures_list: retained_list,
                 results: results_list,
             },
         );
@@ -875,6 +877,41 @@ struct SelectFrame {
     futures_list: i64,
 }
 
+unsafe fn release_future_list_shell(list: i64) {
+    let Some(is_global) = crate::slab::slab_membership(list) else {
+        return;
+    };
+    if !crate::list::owns_list(list) || !crate::slab::slot_is_live(list) {
+        return;
+    }
+    unsafe {
+        crate::list::settle_list_buffer(list);
+        crate::list::free_list_slot_raw_with(list, Some(is_global));
+    }
+}
+
+unsafe fn release_sm_frame(f: &mut OliveSmFuture, result_transferred: bool) {
+    let frame = f.frame;
+    if frame == 0 {
+        return;
+    }
+    if f.poll_fn == olive_gather_poll as *const () as usize as i64 {
+        let gather = unsafe { &mut *(frame as *mut GatherFrame) };
+        if !result_transferred && gather.results != 0 {
+            crate::olive_free_list(gather.results);
+        }
+        unsafe { release_future_list_shell(gather.futures_list) };
+        gather.futures_list = 0;
+        gather.results = 0;
+    } else if f.poll_fn == olive_select_poll as *const () as usize as i64 {
+        let select = unsafe { &mut *(frame as *mut SelectFrame) };
+        unsafe { release_future_list_shell(select.futures_list) };
+        select.futures_list = 0;
+    }
+    f.frame = 0;
+    olive_sm_free(frame, f.frame_size);
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_select_poll(frame: i64) -> i64 {
     let f = unsafe { &mut *(frame as *mut SelectFrame) };
@@ -901,9 +938,11 @@ pub extern "C" fn olive_select_poll(frame: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_select(futures_list: i64) -> i64 {
-    if future_list_len(futures_list) == 0 {
+    let n = future_list_len(futures_list);
+    if n == 0 {
         return 0;
     }
+    let retained_list = crate::copy_typed::relocate_across_boundary(futures_list);
     let frame = olive_sm_alloc(std::mem::size_of::<SelectFrame>() as i64);
     unsafe {
         std::ptr::write(
@@ -911,7 +950,7 @@ pub extern "C" fn olive_select(futures_list: i64) -> i64 {
             SelectFrame {
                 state: 0,
                 cached_result: 0,
-                futures_list,
+                futures_list: retained_list,
             },
         );
     }

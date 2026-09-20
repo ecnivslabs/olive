@@ -15,7 +15,13 @@ pub(crate) fn owns_set(v: i64) -> bool {
     unsafe {
         let active = crate::slab::ACTIVE_SLABS.get();
         if !active.is_null() {
-            return (*active).set.owns_addr(v as usize);
+            if (*active).set.owns_addr(v as usize) {
+                return true;
+            }
+            if crate::slab::active_slab_is_global() {
+                return SET_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize));
+            }
+            return crate::slab::global_set_owns_addr(v as usize);
         }
         SET_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize))
             || crate::slab::global_set_owns_addr(v as usize)

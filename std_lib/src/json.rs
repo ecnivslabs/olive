@@ -74,29 +74,34 @@ pub(crate) fn olive_to_json(val: i64) -> serde_json::Value {
     if val < 0 {
         return serde_json::Value::Number(val.into());
     }
+    if !crate::is_active_object(val) {
+        return serde_json::Value::Number(val.into());
+    }
     let kind = unsafe { *(val as *const i64) };
     match kind {
-        crate::KIND_INT => {
+        crate::KIND_INT if crate::is_kind(val, kind) => {
             let b = unsafe { &*(val as *const crate::boxed::OliveBoxed) };
             serde_json::Value::Number(b.bits.into())
         }
-        crate::KIND_U64 => {
+        crate::KIND_U64 if crate::is_kind(val, kind) => {
             let b = unsafe { &*(val as *const crate::boxed::OliveBoxed) };
             serde_json::Value::Number(serde_json::Number::from(b.bits as u64))
         }
-        crate::KIND_FLOAT => {
+        crate::KIND_FLOAT if crate::is_kind(val, kind) => {
             let b = unsafe { &*(val as *const crate::boxed::OliveBoxed) };
             serde_json::Number::from_f64(f64::from_bits(b.bits as u64))
                 .map_or(serde_json::Value::Null, serde_json::Value::Number)
         }
-        KIND_LIST | KIND_ANY_LIST => {
+        KIND_LIST | KIND_ANY_LIST
+            if crate::is_kind(val, crate::KIND_LIST | crate::KIND_ANY_LIST) =>
+        {
             let s = unsafe { &*(val as *const StableVec) };
             let elems: Vec<serde_json::Value> = (0..s.len)
                 .map(|i| olive_to_json(unsafe { *s.ptr.add(i) }))
                 .collect();
             serde_json::Value::Array(elems)
         }
-        KIND_OBJ => {
+        KIND_OBJ if crate::is_kind(val, kind) => {
             let obj = unsafe { &*(val as *const OliveObj) };
             let mut map = serde_json::Map::new();
             for (k, &v) in &obj.fields {

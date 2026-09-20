@@ -236,6 +236,12 @@ mod lifecycle_tests;
 
 thread_local! {
     pub(crate) static ACTIVE_SLABS: std::cell::Cell<*mut SlabSet> = const { std::cell::Cell::new(std::ptr::null_mut()) };
+    static ACTIVE_GLOBAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[inline]
+pub(crate) fn active_slab_is_global() -> bool {
+    ACTIVE_GLOBAL.get()
 }
 
 pub struct SlabSet {
@@ -345,6 +351,18 @@ pub(crate) fn global_boxed_owns_addr(addr: usize) -> bool {
     GLOBAL_SLABS.lock().unwrap().boxed.owns_addr(addr)
 }
 
+pub(crate) fn global_result_owns_addr(addr: usize) -> bool {
+    GLOBAL_SLABS.lock().unwrap().result.owns_addr(addr)
+}
+
+pub(crate) fn global_iter_owns_addr(addr: usize) -> bool {
+    GLOBAL_SLABS.lock().unwrap().iter.owns_addr(addr)
+}
+
+pub(crate) fn global_struct_raw_owns_addr(addr: usize) -> bool {
+    GLOBAL_SLABS.lock().unwrap().struct_slabs.owns_addr(addr)
+}
+
 /// Redirects ACTIVE_SLABS to the locked global arena for the duration of `f`.
 /// The guard is a MutexGuard held across the call, so an unwinding `f` still
 /// unlocks; the restore closure keeps the redirect itself from leaking on
@@ -353,9 +371,11 @@ pub fn with_escape_arena<T>(f: impl FnOnce() -> T) -> T {
     let mut guard = GLOBAL_SLABS.lock().unwrap();
     let slabs_ptr = &mut *guard as *mut SlabSet;
     let old = ACTIVE_SLABS.get();
+    let old_global = ACTIVE_GLOBAL.replace(true);
     ACTIVE_SLABS.set(slabs_ptr);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
     ACTIVE_SLABS.set(old);
+    ACTIVE_GLOBAL.set(old_global);
     drop(guard);
     match result {
         Ok(v) => v,

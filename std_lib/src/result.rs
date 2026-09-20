@@ -28,6 +28,23 @@ fn with_result_slab<T>(f: impl FnOnce(&mut GenSlab) -> T) -> T {
     }
 }
 
+pub(crate) fn owns_result(v: i64) -> bool {
+    unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null() {
+            if (*active).result.owns_addr(v as usize) {
+                return true;
+            }
+            if crate::slab::active_slab_is_global() {
+                return RESULT_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize));
+            }
+            return crate::slab::global_result_owns_addr(v as usize);
+        }
+        RESULT_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize))
+            || crate::slab::global_result_owns_addr(v as usize)
+    }
+}
+
 fn make_result(ok: bool, payload: i64) -> i64 {
     with_result_slab(|sl| {
         let (body, _) = sl.alloc();

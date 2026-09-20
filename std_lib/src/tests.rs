@@ -278,9 +278,12 @@ fn ffi_errno_reads_snapshot_not_live_errno() {
 
 #[test]
 fn reflection_does_not_misclassify_raw_struct_headers() {
-    for fields in [1, 2, 3, 4, 6, 11, 14, 16] {
+    for fields in [1, 2, 3, 4, 6, 9, 11, 14, 16, 17] {
         let raw = crate::struct_obj::olive_struct_alloc(fields);
         assert_eq!(from_ptr(olive_typeof_str(raw)), "int");
+        let copied = crate::copy_typed::relocate_across_boundary(raw);
+        assert_eq!(copied, raw);
+        crate::olive_free_any(copied);
         crate::struct_obj::olive_free_struct(raw);
     }
 }

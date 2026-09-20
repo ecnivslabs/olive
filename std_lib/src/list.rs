@@ -27,6 +27,23 @@ fn with_iter_slab<T>(f: impl FnOnce(&mut GenSlab) -> T) -> T {
     }
 }
 
+pub(crate) fn owns_iter(v: i64) -> bool {
+    unsafe {
+        let active = crate::slab::ACTIVE_SLABS.get();
+        if !active.is_null() {
+            if (*active).iter.owns_addr(v as usize) {
+                return true;
+            }
+            if crate::slab::active_slab_is_global() {
+                return ITER_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize));
+            }
+            return crate::slab::global_iter_owns_addr(v as usize);
+        }
+        ITER_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize))
+            || crate::slab::global_iter_owns_addr(v as usize)
+    }
+}
+
 /// Allocates a list header from the slab and fills it. A recycled slot may
 /// carry a retained element buffer, which is released before overwriting.
 pub(crate) fn alloc_list_header(kind: i64, ptr: *mut i64, cap: usize, len: usize) -> i64 {
@@ -72,7 +89,13 @@ pub(crate) fn owns_list(v: i64) -> bool {
     unsafe {
         let active = crate::slab::ACTIVE_SLABS.get();
         if !active.is_null() {
-            return (*active).list.owns_addr(v as usize);
+            if (*active).list.owns_addr(v as usize) {
+                return true;
+            }
+            if crate::slab::active_slab_is_global() {
+                return LIST_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize));
+            }
+            return crate::slab::global_list_owns_addr(v as usize);
         }
         LIST_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize))
             || crate::slab::global_list_owns_addr(v as usize)
@@ -1257,6 +1280,15 @@ pub struct OliveIter {
     pub snapshot_desc: i64,
 }
 
+fn is_iterable_kind(word: i64, kind: i64) -> bool {
+    match kind {
+        crate::KIND_LIST | crate::KIND_ANY_LIST | crate::KIND_BYTES | crate::KIND_ITER => {
+            crate::is_kind(word, kind)
+        }
+        _ => false,
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_iter(list_ptr: i64) -> i64 {
     let mut is_py = false;
@@ -1277,18 +1309,18 @@ pub extern "C" fn olive_iter(list_ptr: i64) -> i64 {
     } else if list_ptr != 0 && crate::is_active_object(list_ptr) {
         unsafe {
             let kind = *(list_ptr as *const i64);
-            if kind == KIND_PYOBJECT {
+            if kind == KIND_PYOBJECT && crate::is_kind(list_ptr, kind) {
                 is_py = true;
                 actual_list_ptr =
                     crate::python::python_iter::olive_py_iter(list_ptr as *mut libc::c_void) as i64;
-            } else if kind == KIND_OBJ {
+            } else if kind == KIND_OBJ && crate::is_kind(list_ptr, kind) {
                 // A dict iterates over its keys.
                 actual_list_ptr = crate::obj::olive_obj_keys(list_ptr);
                 derived = true;
-            } else if kind == KIND_SET {
+            } else if kind == KIND_SET && crate::is_kind(list_ptr, kind) {
                 actual_list_ptr = crate::set::olive_set_items(list_ptr);
                 derived = true;
-            } else if !matches!(kind, KIND_LIST | KIND_ANY_LIST | KIND_BYTES | KIND_ITER) {
+            } else if !is_iterable_kind(list_ptr, kind) {
                 // Anything else (a struct header, an enum tag, a boxed
                 // scalar) has no sequence shape; iterating it would read
                 // the word as a container header.
@@ -1341,19 +1373,19 @@ pub extern "C" fn olive_iter_typed(list_ptr: i64, iter_desc: i64) -> i64 {
     } else if list_ptr != 0 && crate::is_active_object(list_ptr) {
         unsafe {
             let kind = *(list_ptr as *const i64);
-            if kind == KIND_PYOBJECT {
+            if kind == KIND_PYOBJECT && crate::is_kind(list_ptr, kind) {
                 is_py = true;
                 actual_list_ptr =
                     crate::python::python_iter::olive_py_iter(list_ptr as *mut libc::c_void) as i64;
-            } else if kind == KIND_OBJ {
+            } else if kind == KIND_OBJ && crate::is_kind(list_ptr, kind) {
                 actual_list_ptr = crate::obj::olive_obj_keys_typed(list_ptr, iter_desc);
                 derived = true;
                 snapshot_desc = iter_desc;
-            } else if kind == KIND_SET {
+            } else if kind == KIND_SET && crate::is_kind(list_ptr, kind) {
                 actual_list_ptr = crate::set::olive_set_items_typed(list_ptr, iter_desc);
                 derived = true;
                 snapshot_desc = iter_desc;
-            } else if !matches!(kind, KIND_LIST | KIND_ANY_LIST | KIND_BYTES | KIND_ITER) {
+            } else if !is_iterable_kind(list_ptr, kind) {
                 // Anything else (a struct header, an enum tag, a boxed
                 // scalar) has no sequence shape; iterating it would read
                 // the word as a container header.
@@ -1763,6 +1795,17 @@ mod tests {
     fn is_list_true() {
         let ptr = make_list(&[]);
         assert_eq!(olive_is_list(ptr), 1);
+    }
+
+    #[test]
+    fn iterator_rejects_raw_struct_header_collisions() {
+        for fields in [1, 2, 7, 8] {
+            let raw = crate::struct_obj::olive_struct_alloc(fields);
+            let iter = olive_iter(raw);
+            assert_eq!(olive_next(iter), 0);
+            olive_free_iter(iter);
+            crate::struct_obj::olive_free_struct(raw);
+        }
     }
 
     #[test]

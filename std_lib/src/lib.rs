@@ -86,6 +86,34 @@ pub fn is_active_object(val: i64) -> bool {
     slab::ptr_is_slab_body(val)
 }
 
+#[inline]
+pub(crate) fn is_kind(val: i64, expected: i64) -> bool {
+    if !is_active_object(val) {
+        return false;
+    }
+    let actual = unsafe { *(val as *const i64) };
+    if expected == KIND_LIST | KIND_ANY_LIST {
+        return (actual == KIND_LIST || actual == KIND_ANY_LIST) && list::owns_list(val);
+    }
+    if actual != expected {
+        return false;
+    }
+    match expected {
+        KIND_LIST | KIND_ANY_LIST => list::owns_list(val),
+        KIND_SET => set::owns_set(val),
+        KIND_OBJ => obj::owns_obj(val),
+        KIND_ENUM => enum_obj::owns_enum(val),
+        KIND_BYTES => bytes::owns_bytes(val),
+        KIND_FLOAT | KIND_INT | KIND_U64 => boxed::owns_boxed(val),
+        result::KIND_RESULT => result::owns_result(val),
+        KIND_PYOBJECT => python::python_coerce::is_arena_ptr(val as usize),
+        KIND_ITER => list::owns_iter(val),
+        struct_box::KIND_STRUCT_BOX => struct_box::owns_struct_box(val),
+        struct_obj::KIND_FATPTR => struct_obj::owns_fatptr(val),
+        _ => false,
+    }
+}
+
 #[repr(C)]
 pub struct StableVec {
     pub kind: i64,
@@ -267,11 +295,11 @@ fn classify_key(v: i64) -> KeyClass {
     }
     if is_active_object(v) {
         let kind = unsafe { *(v as *const i64) };
-        if matches!(kind, KIND_INT | KIND_U64 | KIND_FLOAT) {
+        if matches!(kind, KIND_INT | KIND_U64 | KIND_FLOAT) && crate::is_kind(v, kind) {
             let b = unsafe { &*(v as *const boxed::OliveBoxed) };
             return KeyClass::Scalar(kind, b.bits);
         }
-        if kind == KIND_PYOBJECT {
+        if kind == KIND_PYOBJECT && crate::is_kind(v, kind) {
             let object = unsafe { &*(v as *const python::python_coerce::OlivePyObject) };
             return KeyClass::Scalar(KIND_PYOBJECT, object.py_ptr as i64);
         }
@@ -705,20 +733,24 @@ pub(crate) fn format_list_elem(val: i64) -> String {
     if is_active_object(val) {
         let kind = unsafe { *(val as *const i64) };
         match kind {
-            KIND_FLOAT => {
+            KIND_FLOAT if crate::is_kind(val, kind) => {
                 let b = unsafe { &*(val as *const boxed::OliveBoxed) };
                 return fmt_float(f64::from_bits(b.bits as u64));
             }
-            KIND_INT => {
+            KIND_INT if crate::is_kind(val, kind) => {
                 let b = unsafe { &*(val as *const boxed::OliveBoxed) };
                 return format!("{}", b.bits);
             }
-            KIND_U64 => {
+            KIND_U64 if crate::is_kind(val, kind) => {
                 let b = unsafe { &*(val as *const boxed::OliveBoxed) };
                 return format!("{}", b.bits as u64);
             }
-            KIND_LIST | KIND_ANY_LIST => return format_list(val),
-            KIND_SET => {
+            KIND_LIST | KIND_ANY_LIST
+                if crate::is_kind(val, crate::KIND_LIST | crate::KIND_ANY_LIST) =>
+            {
+                return format_list(val);
+            }
+            KIND_SET if crate::is_kind(val, kind) => {
                 let s = unsafe { &*(val as *const OliveHashSet) };
                 let mut parts = Vec::with_capacity(s.len);
                 for i in 0..s.len {
@@ -727,7 +759,7 @@ pub(crate) fn format_list_elem(val: i64) -> String {
                 }
                 return format!("{{{}}}", parts.join(", "));
             }
-            KIND_OBJ => {
+            KIND_OBJ if crate::is_kind(val, kind) => {
                 let m = unsafe { &*(val as *const OliveObj) };
                 let mut parts = Vec::with_capacity(m.fields.len());
                 for (k, &v) in &m.fields {
@@ -740,7 +772,7 @@ pub(crate) fn format_list_elem(val: i64) -> String {
                 }
                 return format!("{{{}}}", parts.join(", "));
             }
-            KIND_PYOBJECT => {
+            KIND_PYOBJECT if crate::is_kind(val, kind) => {
                 let str_ptr = python::olive_py_to_str(val as python::PyObject);
                 if str_ptr != 0 {
                     let s = olive_str_from_ptr(str_ptr);
@@ -749,8 +781,8 @@ pub(crate) fn format_list_elem(val: i64) -> String {
                 }
                 return "<PyObject>".to_string();
             }
-            KIND_BYTES => return bytes::format_bytes(val),
-            KIND_ENUM => {
+            KIND_BYTES if crate::is_kind(val, kind) => return bytes::format_bytes(val),
+            KIND_ENUM if crate::is_kind(val, kind) => {
                 let e = unsafe { &*(val as *const OliveEnum) };
                 if e.desc != 0 && unsafe { *(e.desc as *const u8) } == crate::format::D_ENUM {
                     return format::format_desc(val, e.desc);
@@ -762,7 +794,7 @@ pub(crate) fn format_list_elem(val: i64) -> String {
                 }
                 return format!("Enum(tag={}, payload=[{}])", e.tag, parts.join(", "));
             }
-            crate::result::KIND_RESULT => {
+            crate::result::KIND_RESULT if crate::is_kind(val, kind) => {
                 let res = unsafe { &*(val as *const crate::result::OliveResult) };
                 if res.tag == 1 {
                     return format!("Ok({})", format_list_elem(res.payload));
@@ -770,7 +802,7 @@ pub(crate) fn format_list_elem(val: i64) -> String {
                     return format!("Err({})", format_list_elem(res.payload));
                 }
             }
-            struct_box::KIND_STRUCT_BOX => {
+            struct_box::KIND_STRUCT_BOX if crate::is_kind(val, kind) => {
                 let b = unsafe { &*(val as *const struct_box::OliveStructBox) };
                 return format::format_desc(b.ptr, b.desc);
             }
@@ -913,19 +945,19 @@ pub extern "C" fn olive_any_to_str(val: i64) -> i64 {
     if is_active_object(val) {
         let kind = unsafe { *(val as *const i64) };
         match kind {
-            KIND_FLOAT => {
+            KIND_FLOAT if crate::is_kind(val, kind) => {
                 let b = unsafe { &*(val as *const boxed::OliveBoxed) };
                 return olive_str_internal(&fmt_float(f64::from_bits(b.bits as u64)));
             }
-            KIND_INT => {
+            KIND_INT if crate::is_kind(val, kind) => {
                 let b = unsafe { &*(val as *const boxed::OliveBoxed) };
                 return olive_str_internal(&format!("{}", b.bits));
             }
-            KIND_U64 => {
+            KIND_U64 if crate::is_kind(val, kind) => {
                 let b = unsafe { &*(val as *const boxed::OliveBoxed) };
                 return olive_str_internal(&format!("{}", b.bits as u64));
             }
-            KIND_PYOBJECT => {
+            KIND_PYOBJECT if crate::is_kind(val, kind) => {
                 let p = python::olive_py_to_str(val as python::PyObject);
                 return if p != 0 {
                     p
@@ -938,7 +970,9 @@ pub extern "C" fn olive_any_to_str(val: i64) -> i64 {
             | KIND_OBJ
             | KIND_ENUM
             | KIND_SET
-            | struct_box::KIND_STRUCT_BOX => {
+            | struct_box::KIND_STRUCT_BOX
+                if crate::is_kind(val, kind) =>
+            {
                 return olive_str_internal(&format_list_elem(val));
             }
             _ => {}
@@ -957,7 +991,7 @@ pub extern "C" fn olive_int(val: i64) -> i64 {
     }
     if is_active_object(val) {
         let kind = unsafe { *(val as *const i64) };
-        if kind == KIND_PYOBJECT {
+        if kind == KIND_PYOBJECT && crate::is_kind(val, kind) {
             return python::olive_py_to_int(val as python::PyObject);
         }
         // A heap aggregate has no integer value: reading the pointer raw
@@ -1464,17 +1498,25 @@ pub extern "C" fn olive_free_any(ptr: i64) {
     }
     let kind = unsafe { *(ptr as *const i64) };
     match kind {
-        KIND_LIST | KIND_ANY_LIST => olive_free_list(ptr),
-        KIND_SET => set::olive_free_set(ptr),
-        KIND_OBJ => olive_free_obj(ptr),
-        KIND_ENUM => olive_free_enum(ptr),
-        KIND_BYTES => bytes::olive_buf_free(ptr),
-        KIND_FLOAT | KIND_INT | KIND_U64 => boxed::olive_free_boxed(ptr),
-        crate::result::KIND_RESULT => crate::result::olive_free_result(ptr),
-        KIND_PYOBJECT => python::olive_py_decref(ptr as *mut std::os::raw::c_void),
-        KIND_ITER => olive_free_iter(ptr),
-        struct_box::KIND_STRUCT_BOX => struct_box::free_struct_box(ptr),
-        struct_obj::KIND_FATPTR => struct_obj::olive_free_fatptr(ptr),
+        KIND_LIST | KIND_ANY_LIST if list::owns_list(ptr) => olive_free_list(ptr),
+        KIND_SET if set::owns_set(ptr) => set::olive_free_set(ptr),
+        KIND_OBJ if obj::owns_obj(ptr) => olive_free_obj(ptr),
+        KIND_ENUM if enum_obj::owns_enum(ptr) => olive_free_enum(ptr),
+        KIND_BYTES if bytes::owns_bytes(ptr) => bytes::olive_buf_free(ptr),
+        KIND_FLOAT | KIND_INT | KIND_U64 if boxed::owns_boxed(ptr) => boxed::olive_free_boxed(ptr),
+        crate::result::KIND_RESULT if result::owns_result(ptr) => {
+            crate::result::olive_free_result(ptr)
+        }
+        KIND_PYOBJECT if python::python_coerce::is_arena_ptr(ptr as usize) => {
+            python::olive_py_decref(ptr as *mut std::os::raw::c_void)
+        }
+        KIND_ITER if list::owns_iter(ptr) => olive_free_iter(ptr),
+        struct_box::KIND_STRUCT_BOX if struct_box::owns_struct_box(ptr) => {
+            struct_box::free_struct_box(ptr)
+        }
+        struct_obj::KIND_FATPTR if struct_obj::owns_fatptr(ptr) => {
+            struct_obj::olive_free_fatptr(ptr)
+        }
         _ => {}
     }
 }
@@ -1497,17 +1539,25 @@ pub extern "C" fn olive_free_union_member(ptr: i64) {
     }
     let kind = unsafe { *(ptr as *const i64) };
     match kind {
-        KIND_LIST | KIND_ANY_LIST => olive_free_list(ptr),
-        KIND_SET => set::olive_free_set(ptr),
-        KIND_OBJ => olive_free_obj(ptr),
-        KIND_ENUM => olive_free_enum(ptr),
-        KIND_BYTES => bytes::olive_buf_free(ptr),
-        KIND_FLOAT | KIND_INT | KIND_U64 => boxed::olive_free_boxed(ptr),
-        crate::result::KIND_RESULT => crate::result::olive_free_result(ptr),
-        KIND_PYOBJECT => python::olive_py_decref(ptr as *mut std::os::raw::c_void),
-        KIND_ITER => olive_free_iter(ptr),
-        struct_box::KIND_STRUCT_BOX => struct_box::free_struct_box(ptr),
-        struct_obj::KIND_FATPTR => struct_obj::olive_free_fatptr(ptr),
+        KIND_LIST | KIND_ANY_LIST if list::owns_list(ptr) => olive_free_list(ptr),
+        KIND_SET if set::owns_set(ptr) => set::olive_free_set(ptr),
+        KIND_OBJ if obj::owns_obj(ptr) => olive_free_obj(ptr),
+        KIND_ENUM if enum_obj::owns_enum(ptr) => olive_free_enum(ptr),
+        KIND_BYTES if bytes::owns_bytes(ptr) => bytes::olive_buf_free(ptr),
+        KIND_FLOAT | KIND_INT | KIND_U64 if boxed::owns_boxed(ptr) => boxed::olive_free_boxed(ptr),
+        crate::result::KIND_RESULT if result::owns_result(ptr) => {
+            crate::result::olive_free_result(ptr)
+        }
+        KIND_PYOBJECT if python::python_coerce::is_arena_ptr(ptr as usize) => {
+            python::olive_py_decref(ptr as *mut std::os::raw::c_void)
+        }
+        KIND_ITER if list::owns_iter(ptr) => olive_free_iter(ptr),
+        struct_box::KIND_STRUCT_BOX if struct_box::owns_struct_box(ptr) => {
+            struct_box::free_struct_box(ptr)
+        }
+        struct_obj::KIND_FATPTR if struct_obj::owns_fatptr(ptr) => {
+            struct_obj::olive_free_fatptr(ptr)
+        }
         _ => {}
     }
 }

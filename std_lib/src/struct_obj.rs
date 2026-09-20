@@ -1,5 +1,7 @@
 use crate::slab::GenSlab;
 use std::cell::UnsafeCell;
+use std::collections::HashSet;
+use std::sync::{Mutex, OnceLock};
 
 // Body words = field count word + n_fields; sizes above this use pow2 classes.
 const FIXED_MAX_WORDS: usize = 17;
@@ -11,6 +13,15 @@ const FIXED_MAX_WORDS: usize = 17;
 /// across owners and double-free.
 pub(crate) const KIND_FATPTR: i64 = 17;
 const FATPTR_WORDS: usize = 5;
+static FATPTR_OWNERS: OnceLock<Mutex<HashSet<i64>>> = OnceLock::new();
+
+fn fatptr_owners() -> &'static Mutex<HashSet<i64>> {
+    FATPTR_OWNERS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+pub(crate) fn owns_fatptr(v: i64) -> bool {
+    v != 0 && fatptr_owners().lock().unwrap().contains(&v)
+}
 
 pub struct StructSlabs {
     fixed: Vec<GenSlab>,
@@ -45,6 +56,11 @@ impl StructSlabs {
             .push((class, GenSlab::new(class * 8).with_global(self.is_global)));
         &mut self.large.last_mut().unwrap().1
     }
+
+    pub(crate) fn owns_addr(&self, addr: usize) -> bool {
+        self.fixed.iter().any(|sl| sl.owns_addr(addr))
+            || self.large.iter().any(|(_, sl)| sl.owns_addr(addr))
+    }
 }
 
 impl Default for StructSlabs {
@@ -62,25 +78,19 @@ thread_local! {
 /// and box kinds), so untyped key frees must skip them and leak rather than
 /// misread by kind; typed drops still reclaim them through descriptors.
 pub(crate) fn owns_struct_raw(v: i64) -> bool {
-    fn slabs_own(slabs: &StructSlabs, addr: usize) -> bool {
-        for sl in &slabs.fixed {
-            if sl.owns_addr(addr) {
-                return true;
-            }
-        }
-        for (_, sl) in &slabs.large {
-            if sl.owns_addr(addr) {
-                return true;
-            }
-        }
-        false
-    }
     unsafe {
         let active = crate::slab::ACTIVE_SLABS.get();
-        if !active.is_null() && slabs_own(&(*active).struct_slabs, v as usize) {
-            return true;
+        if !active.is_null() {
+            if (*active).struct_slabs.owns_addr(v as usize) {
+                return true;
+            }
+            if crate::slab::active_slab_is_global() {
+                return STRUCT_SLABS.with(|sl| (*sl.get()).owns_addr(v as usize));
+            }
+            return crate::slab::global_struct_raw_owns_addr(v as usize);
         }
-        STRUCT_SLABS.with(|sl| slabs_own(&*sl.get(), v as usize))
+        STRUCT_SLABS.with(|sl| (*sl.get()).owns_addr(v as usize))
+            || crate::slab::global_struct_raw_owns_addr(v as usize)
     }
 }
 
@@ -172,6 +182,7 @@ pub extern "C" fn olive_fatptr_alloc() -> i64 {
         STRUCT_SLABS.with(|s| unsafe { (&mut *s.get()).class_for(FATPTR_WORDS).alloc().0 })
     };
     unsafe { *(body as *mut i64) = KIND_FATPTR };
+    fatptr_owners().lock().unwrap().insert(body as i64);
     body as i64
 }
 
@@ -224,6 +235,10 @@ pub extern "C" fn olive_free_fatptr(ptr: i64) {
     let Some(is_global) = crate::slab::slab_membership(ptr) else {
         return;
     };
+    if !owns_fatptr(ptr) {
+        return;
+    }
+    fatptr_owners().lock().unwrap().remove(&ptr);
     if !crate::slab::slot_is_live(ptr) {
         return;
     }

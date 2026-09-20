@@ -194,15 +194,19 @@ pub extern "C" fn olive_debug_any_decode(val: i64, out: *mut i64) -> i64 {
         crate::boxed::TAG_BOOL => (2, val >> 3),
         crate::boxed::TAG_NULL => (0, 0),
         _ if val & 1 == 1 => (4, val),
-        _ => match unsafe { *(val as *const i64) } {
-            crate::KIND_FLOAT => (3, unsafe {
-                (*(val as *const crate::boxed::OliveBoxed)).bits
-            }),
-            crate::KIND_INT | crate::KIND_U64 => (1, unsafe {
-                (*(val as *const crate::boxed::OliveBoxed)).bits
-            }),
-            _ => (5, val),
-        },
+        _ if !crate::is_active_object(val) => (5, val),
+        _ => {
+            let kind = unsafe { *(val as *const i64) };
+            match kind {
+                crate::KIND_FLOAT if crate::is_kind(val, kind) => (3, unsafe {
+                    (*(val as *const crate::boxed::OliveBoxed)).bits
+                }),
+                crate::KIND_INT | crate::KIND_U64 if crate::is_kind(val, kind) => (1, unsafe {
+                    (*(val as *const crate::boxed::OliveBoxed)).bits
+                }),
+                _ => (5, val),
+            }
+        }
     };
     unsafe { *out = payload };
     kind

@@ -15,7 +15,13 @@ pub(crate) fn owns_enum(v: i64) -> bool {
     unsafe {
         let active = crate::slab::ACTIVE_SLABS.get();
         if !active.is_null() {
-            return (*active).enum_slab.owns_addr(v as usize);
+            if (*active).enum_slab.owns_addr(v as usize) {
+                return true;
+            }
+            if crate::slab::active_slab_is_global() {
+                return ENUM_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize));
+            }
+            return crate::slab::global_enum_owns_addr(v as usize);
         }
         ENUM_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize))
             || crate::slab::global_enum_owns_addr(v as usize)

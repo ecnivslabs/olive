@@ -222,6 +222,7 @@ fn gather_and_select_accept_minimum_integer_payloads() {
     let list = crate::list::list_from_vec(futures.to_vec());
     let gathered = olive_gather(list);
     let selected = olive_select(list);
+    crate::olive_free_list(list);
     let mut output = 0;
     assert_eq!(olive_sm_poll(gathered, &mut output as *mut i64 as i64), 1);
     let results = output;
@@ -234,7 +235,6 @@ fn gather_and_select_accept_minimum_integer_payloads() {
     olive_free_future(gathered);
     olive_free_future(selected);
     crate::olive_free_list(results);
-    crate::olive_free_list(list);
     for future in futures {
         olive_free_future(future);
     }
