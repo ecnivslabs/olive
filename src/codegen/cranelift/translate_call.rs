@@ -1,6 +1,5 @@
 use super::CraneliftCodegen;
 use super::imports::map_builtin_to_runtime;
-use super::translate::truncate_for_store;
 use crate::mir::{Constant, Local, MirFunction, Operand};
 use crate::semantic::types::Type as OliveType;
 use cranelift::codegen::ir::BlockArg;
@@ -13,6 +12,171 @@ use rustc_hash::FxHashMap as HashMap;
 /// A foreign `char*` argument must clear both: clearing only bit 0 hands a
 /// heap string to C two bytes past its body.
 const STR_TAG_BITS: i64 = 3;
+
+fn vararg_code(declared: Option<&str>, static_ty: Option<&OliveType>, fixed: bool) -> i64 {
+    if fixed && let Some(name) = declared {
+        return match name {
+            "f32" => 2,
+            "float" | "f64" => 1,
+            "i8" | "u8" | "bool" => 5,
+            "i16" | "u16" => 4,
+            "i32" | "u32" => 3,
+            "str" | "ptr" => 6,
+            "void" => 7,
+            _ => 0,
+        };
+    }
+    match static_ty {
+        Some(OliveType::F32 | OliveType::Float) => 1,
+        Some(OliveType::I8 | OliveType::U8 | OliveType::Bool) => 3,
+        Some(OliveType::I16 | OliveType::U16) => 3,
+        Some(OliveType::I32 | OliveType::U32) => 3,
+        Some(OliveType::Str | OliveType::Ptr(_)) => 6,
+        _ => 0,
+    }
+}
+
+fn vararg_word(
+    builder: &mut FunctionBuilder,
+    value: Value,
+    code: i64,
+    static_ty: Option<&OliveType>,
+) -> Value {
+    let value_ty = builder.func.dfg.value_type(value);
+    match code {
+        1 => {
+            let f64_value = if value_ty == types::I64 && matches!(static_ty, Some(OliveType::F32)) {
+                let low = builder.ins().ireduce(types::I32, value);
+                let f32_value = builder.ins().bitcast(types::F32, MemFlags::new(), low);
+                builder.ins().fpromote(types::F64, f32_value)
+            } else if value_ty == types::F32 {
+                builder.ins().fpromote(types::F64, value)
+            } else if value_ty == types::I64 {
+                builder.ins().bitcast(types::F64, MemFlags::new(), value)
+            } else {
+                value
+            };
+            if builder.func.dfg.value_type(f64_value) == types::F64 {
+                builder
+                    .ins()
+                    .bitcast(types::I64, MemFlags::new(), f64_value)
+            } else {
+                value
+            }
+        }
+        2 => {
+            let f32_value = if value_ty == types::I64 {
+                let low = builder.ins().ireduce(types::I32, value);
+                builder.ins().bitcast(types::F32, MemFlags::new(), low)
+            } else if value_ty == types::F64 {
+                builder.ins().fdemote(types::F32, value)
+            } else {
+                value
+            };
+            let bits = builder
+                .ins()
+                .bitcast(types::I32, MemFlags::new(), f32_value);
+            builder.ins().uextend(types::I64, bits)
+        }
+        3..=5 => {
+            let reduced = match code {
+                3 => builder.ins().ireduce(types::I32, value),
+                4 => builder.ins().ireduce(types::I16, value),
+                _ => builder.ins().ireduce(types::I8, value),
+            };
+            builder.ins().sextend(types::I64, reduced)
+        }
+        _ => value,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_vararg_runtime_call<M: Module>(
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    func_ids: &HashMap<String, FuncId>,
+    fn_ptr: Value,
+    entry: Option<&super::FfiFnEntry>,
+    args: &[Operand],
+    values: &[Value],
+    func_mir: &MirFunction,
+) -> Value {
+    let n = values.len();
+    let slot_size = (n * 8).max(8) as u32;
+    let type_slot = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        slot_size,
+        3,
+    ));
+    let value_slot = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        slot_size,
+        3,
+    ));
+    let type_ptr = builder
+        .ins()
+        .stack_addr(module.isa().pointer_type(), type_slot, 0);
+    let value_ptr = builder
+        .ins()
+        .stack_addr(module.isa().pointer_type(), value_slot, 0);
+    for (i, &value) in values.iter().enumerate() {
+        let static_ty = args.get(i).map(|op| {
+            super::imports::concrete_ty(&super::imports::operand_static_type(op, func_mir)).clone()
+        });
+        let fixed = entry.is_some_and(|e| i < e.params.len());
+        let declared = entry.and_then(|e| e.params.get(i).map(String::as_str));
+        let code = vararg_code(declared, static_ty.as_ref(), fixed);
+        let value = if code == 6 && matches!(static_ty, Some(OliveType::Str)) {
+            builder.ins().band_imm(value, !STR_TAG_BITS)
+        } else {
+            value
+        };
+        let word = vararg_word(builder, value, code, static_ty.as_ref());
+        let code_value = builder.ins().iconst(types::I64, code);
+        builder
+            .ins()
+            .store(MemFlags::trusted(), code_value, type_ptr, (i * 8) as i32);
+        builder
+            .ins()
+            .store(MemFlags::trusted(), word, value_ptr, (i * 8) as i32);
+    }
+    let n_fixed = entry.map(|e| e.n_fixed).unwrap_or(0);
+    let n_total = builder.ins().iconst(types::I64, n as i64);
+    let n_fixed_value = builder.ins().iconst(types::I64, n_fixed as i64);
+    let ret_code = entry
+        .and_then(|e| e.ret.as_deref())
+        .map(|name| vararg_code(Some(name), None, true))
+        .unwrap_or(0);
+    let ret_code_value = builder.ins().iconst(types::I64, ret_code);
+    let helper_id = func_ids
+        .get("__olive_vararg_call_ex")
+        .expect("missing __olive_vararg_call_ex");
+    let helper = module.declare_func_in_func(*helper_id, builder.func);
+    let call = builder.ins().call(
+        helper,
+        &[
+            fn_ptr,
+            n_fixed_value,
+            n_total,
+            type_ptr,
+            value_ptr,
+            ret_code_value,
+        ],
+    );
+    let mut result = builder.inst_results(call)[0];
+    match entry.and_then(|e| e.ret.as_deref()) {
+        Some("f32") => {
+            let bits = builder.ins().ireduce(types::I32, result);
+            result = builder.ins().bitcast(types::F32, MemFlags::new(), bits);
+        }
+        Some("float") | Some("f64") => {
+            result = builder.ins().bitcast(types::F64, MemFlags::new(), result);
+        }
+        Some("str") => result = builder.ins().bor_imm(result, 1),
+        _ => {}
+    }
+    result
+}
 
 impl<M: Module> CraneliftCodegen<M> {
     /// Exact float width the callee's declared parameter expects, if any.
@@ -473,6 +637,13 @@ impl<M: Module> CraneliftCodegen<M> {
                 let mut sret_ptr = None;
                 let is_builtin = resolved_name.starts_with("__olive") || resolved_name == "print";
                 let ffi_entry = ffi_entries.iter().find(|e| e.jit_name == resolved_name);
+
+                if is_aot_vararg {
+                    let fn_ptr = builder.ins().func_addr(types::I64, local_func);
+                    return emit_vararg_runtime_call(
+                        builder, module, func_ids, fn_ptr, ffi_entry, args, &call_args, func_mir,
+                    );
+                }
 
                 if let Some(entry) = ffi_entry
                     && entry.use_sret
@@ -937,74 +1108,18 @@ impl<M: Module> CraneliftCodegen<M> {
             }
 
             if let Some(&fn_ptr) = ffi_vararg_ptrs.get(resolved_name) {
+                let fn_ptr_value = builder.ins().iconst(types::I64, fn_ptr as i64);
                 let entry = ffi_entries.iter().find(|e| e.jit_name == resolved_name);
-                let n_fixed = entry.map(|e| e.n_fixed).unwrap_or(0);
-
-                let mut sig = module.make_signature();
-                sig.call_conv = match entry.and_then(|e| e.call_conv.as_deref()) {
-                    #[cfg(target_os = "windows")]
-                    Some("stdcall") | Some("fastcall") => {
-                        cranelift::prelude::isa::CallConv::WindowsFastcall
-                    }
-                    _ => module.isa().default_call_conv(),
-                };
-
-                let mut vararg_args: Vec<Value> = Vec::with_capacity(call_args.len());
-                for (i, &arg_val) in call_args.iter().enumerate() {
-                    let is_str_arg = args.get(i).is_some_and(|op| match op {
-                        Operand::Constant(Constant::Str(_)) => true,
-                        Operand::Copy(l) | Operand::Move(l) => {
-                            matches!(func_mir.locals[l.0].ty, OliveType::Str)
-                        }
-                        _ => false,
-                    });
-                    let cooked = if is_str_arg {
-                        builder.ins().band_imm(arg_val, !STR_TAG_BITS)
-                    } else {
-                        arg_val
-                    };
-                    if i < n_fixed
-                        && let Some(e) = entry
-                    {
-                        let declared_ty = super::ffi_cl_type(&e.params[i]);
-                        let cooked = truncate_for_store(builder, cooked, &e.params[i]);
-                        sig.params.push(AbiParam::new(declared_ty));
-                        vararg_args.push(cooked);
-                        continue;
-                    }
-
-                    sig.params
-                        .push(AbiParam::new(builder.func.dfg.value_type(cooked)));
-                    vararg_args.push(cooked);
-                }
-
-                if let Some(e) = entry {
-                    if let Some(ref r) = e.ret
-                        && r != "void"
-                    {
-                        sig.returns.push(AbiParam::new(super::ffi_cl_type(r)));
-                    }
-                } else {
-                    sig.returns.push(AbiParam::new(types::I64));
-                }
-
-                let sig_ref = builder.import_signature(sig);
-                let fn_ptr_val = builder.ins().iconst(types::I64, fn_ptr as i64);
-                let inst = builder
-                    .ins()
-                    .call_indirect(sig_ref, fn_ptr_val, &vararg_args);
-                let results = builder.inst_results(inst);
-                let mut ret_val = if results.is_empty() {
-                    builder.ins().iconst(types::I64, 0)
-                } else {
-                    results[0]
-                };
-                if let Some(e) = entry
-                    && e.ret.as_deref() == Some("str")
-                {
-                    ret_val = builder.ins().bor_imm(ret_val, 1);
-                }
-                return ret_val;
+                return emit_vararg_runtime_call(
+                    builder,
+                    module,
+                    func_ids,
+                    fn_ptr_value,
+                    entry,
+                    args,
+                    &call_args,
+                    func_mir,
+                );
             }
 
             if is_ffi {

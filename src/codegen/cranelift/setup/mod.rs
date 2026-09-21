@@ -52,6 +52,17 @@ impl<M: Module> CraneliftCodegen<M> {
             &[types::I64, types::I64, types::I64, types::I64, types::I64],
             &[types::I64],
         );
+        let sig_i64_6_i64 = mk_sig(
+            &[
+                types::I64,
+                types::I64,
+                types::I64,
+                types::I64,
+                types::I64,
+                types::I64,
+            ],
+            &[types::I64],
+        );
         let sig_i64_f64 = mk_sig(&[types::I64], &[types::F64]);
         let sig_i64_f64_i64 = mk_sig(&[types::I64, types::F64], &[types::I64]);
         let sig_i64_i64 = mk_sig(&[types::I64], &[types::I64]);
@@ -868,6 +879,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_uuid_to_hex", &sig_i64_i64),
             ("__olive_uuid_v4", &sig_void_i64),
             ("__olive_vararg_call", &sig_i64_5_i64),
+            ("__olive_vararg_call_ex", &sig_i64_6_i64),
             ("__olive_websocket_close", &sig_i64_void),
             ("__olive_websocket_connect", &sig_i64_i64),
             ("__olive_websocket_recv", &sig_i64_i64),
@@ -919,11 +931,14 @@ impl<M: Module> CraneliftCodegen<M> {
                 && has_c_structs)
                 || ((name == "__olive_fatptr_alloc" || name == "__olive_free_fatptr")
                     && !self.vtables.is_empty());
+            let needed_for_vararg = name == "__olive_vararg_call_ex"
+                && self.ffi_entries.iter().any(|entry| entry.is_vararg);
             let needed_for_debug_dual_variant =
                 self.debug_dual_variant && DEBUG_HOOK_SYMS.contains(&name);
             if !(needed.contains(name)
                 || always_needed && has_async
                 || needed_for_c_or_traits
+                || needed_for_vararg
                 || needed_for_debug_dual_variant)
             {
                 continue;

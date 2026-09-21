@@ -1133,6 +1133,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_uuid_to_hex", b"olive_uuid_to_hex\0"),
     ("__olive_uuid_v4", b"olive_uuid_v4\0"),
     ("__olive_vararg_call", b"olive_vararg_call\0"),
+    ("__olive_vararg_call_ex", b"olive_vararg_call_ex\0"),
     ("__olive_websocket_close", b"olive_websocket_close\0"),
     ("__olive_websocket_connect", b"olive_websocket_connect\0"),
     ("__olive_websocket_recv", b"olive_websocket_recv\0"),

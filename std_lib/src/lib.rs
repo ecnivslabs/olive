@@ -20,6 +20,7 @@ pub use time::*;
 
 use rustc_hash::{FxHashMap as HashMap, FxHashSet};
 extern crate libc;
+use std::ffi::c_void;
 use std::sync::{Mutex, OnceLock};
 
 pub mod aio;
@@ -529,9 +530,19 @@ pub extern "C" fn olive_vararg_call(
     arg_types: *const i64,
     arg_vals: *const i64,
 ) -> i64 {
-    use libffi::middle::{Cif, CodePtr, Type, arg};
-    // JIT-fed pointers: a null function or argument vector is a bug, not a
-    // callable shape. Fault here instead of segfaulting inside libffi.
+    olive_vararg_call_ex(fn_ptr, n_fixed, n_total, arg_types, arg_vals, 0)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn olive_vararg_call_ex(
+    fn_ptr: i64,
+    n_fixed: i64,
+    n_total: i64,
+    arg_types: *const i64,
+    arg_vals: *const i64,
+    ret_type: i64,
+) -> i64 {
+    use libffi::middle::{Cif, CodePtr, Type, arg, ret};
     assert!(
         fn_ptr != 0,
         "FFI vararg call through a null function pointer"
@@ -549,52 +560,126 @@ pub extern "C" fn olive_vararg_call(
         n == 0 || !arg_vals.is_null(),
         "FFI vararg call with a null argument vector"
     );
-    let nf = (n_fixed as usize).max(1).min(n);
-    let type_hash: u64 = {
-        let mut h: u64 = 1469598103934665603;
-        for i in 0..n {
-            let code: u8 = if unsafe { *arg_types.add(i) } == 1 {
-                1
-            } else {
-                0
-            };
-            h ^= u64::from(code);
-            h = h.wrapping_mul(1099511628211);
+
+    let type_code = |code: i64| -> Type {
+        match code {
+            1 => Type::f64(),
+            2 => Type::f32(),
+            3 => Type::i32(),
+            4 => Type::i16(),
+            5 => Type::i8(),
+            6 => Type::pointer(),
+            7 => Type::void(),
+            _ => Type::i64(),
         }
-        h
     };
+    let types: Vec<Type> = (0..n)
+        .map(|i| type_code(unsafe { *arg_types.add(i) }))
+        .collect();
+    let result_type = type_code(ret_type);
+    let nf = (n_fixed as usize).max(1).min(n);
     let cache_key: u64 = {
-        let mut k = fn_ptr as u64;
-        k = k.wrapping_mul(1099511628211) ^ (nf as u64);
-        k = k.wrapping_mul(1099511628211) ^ (n as u64);
-        k = k.wrapping_mul(1099511628211) ^ type_hash;
-        k
+        let mut key = (fn_ptr as u64).wrapping_mul(0x9e3779b97f4a7c15)
+            ^ (nf as u64)
+            ^ (n as u64).rotate_left(17);
+        for i in 0..n {
+            key ^= unsafe { *arg_types.add(i) as u64 }.wrapping_mul(0x100000001b3);
+            key = key.rotate_left(7);
+        }
+        key ^ (ret_type as u64).wrapping_mul(0x517cc1b727220a95)
     };
     thread_local! {
-        static VARARG_CIF_CACHE: std::cell::RefCell<HashMap<u64, *mut Cif>> =
+        static VARARG_EX_CACHE: std::cell::RefCell<HashMap<u64, *mut Cif>> =
             std::cell::RefCell::new(HashMap::default());
     }
-    let cif_ptr = VARARG_CIF_CACHE.with(|cell| {
+    let cif_ptr = VARARG_EX_CACHE.with(|cell| {
         if let Some(&ptr) = cell.borrow().get(&cache_key) {
             return ptr;
         }
-        let types: Vec<Type> = (0..n)
-            .map(|i| {
-                if unsafe { *arg_types.add(i) } == 1 {
-                    Type::f64()
-                } else {
-                    Type::i64()
-                }
-            })
-            .collect();
-        let cif = Cif::new_variadic(types, nf, Type::i64());
+        let cif = Cif::new_variadic(types, nf, result_type);
         let ptr = Box::into_raw(Box::new(cif));
         cell.borrow_mut().insert(cache_key, ptr);
         ptr
     });
-    let vals: Vec<i64> = (0..n).map(|i| unsafe { *arg_vals.add(i) }).collect();
-    let ffi_args: Vec<_> = vals.iter().map(|v| arg(v)).collect();
-    unsafe { (*cif_ptr).call::<i64>(CodePtr(fn_ptr as *mut _), &ffi_args) }
+
+    let mut ints = vec![0i64; n];
+    let mut int32s = vec![0i32; n];
+    let mut int16s = vec![0i16; n];
+    let mut int8s = vec![0i8; n];
+    let mut floats = vec![0.0f64; n];
+    let mut float_bits = vec![0u32; n];
+    let mut pointers = vec![std::ptr::null_mut::<c_void>(); n];
+    for i in 0..n {
+        let code = unsafe { *arg_types.add(i) };
+        let value = unsafe { *arg_vals.add(i) };
+        match code {
+            1 => floats[i] = f64::from_bits(value as u64),
+            2 => float_bits[i] = value as u32,
+            3 => int32s[i] = value as i32,
+            4 => int16s[i] = value as i16,
+            5 => int8s[i] = value as i8,
+            6 => pointers[i] = value as usize as *mut c_void,
+            _ => ints[i] = value,
+        }
+    }
+    let args: Vec<_> = (0..n)
+        .map(|i| {
+            let code = unsafe { *arg_types.add(i) };
+            match code {
+                1 => arg(&floats[i]),
+                2 => arg(&float_bits[i]),
+                3 => arg(&int32s[i]),
+                4 => arg(&int16s[i]),
+                5 => arg(&int8s[i]),
+                6 => arg(&pointers[i]),
+                _ => arg(&ints[i]),
+            }
+        })
+        .collect();
+    let cp = CodePtr(fn_ptr as *mut _);
+    unsafe {
+        match ret_type {
+            1 => {
+                let mut out = 0.0f64;
+                (*cif_ptr).call_return_into(cp, &args, ret(&mut out));
+                out.to_bits() as i64
+            }
+            2 => {
+                let mut out = 0.0f32;
+                (*cif_ptr).call_return_into(cp, &args, ret(&mut out));
+                out.to_bits() as i64
+            }
+            3 => {
+                let mut out = 0i32;
+                (*cif_ptr).call_return_into(cp, &args, ret(&mut out));
+                out as i64
+            }
+            4 => {
+                let mut out = 0i16;
+                (*cif_ptr).call_return_into(cp, &args, ret(&mut out));
+                out as i64
+            }
+            5 => {
+                let mut out = 0i8;
+                (*cif_ptr).call_return_into(cp, &args, ret(&mut out));
+                out as i64
+            }
+            6 => {
+                let mut out = std::ptr::null_mut::<c_void>();
+                (*cif_ptr).call_return_into(cp, &args, ret(&mut out));
+                out as i64
+            }
+            7 => {
+                (*cif_ptr).call_return_into(cp, &args, libffi::middle::Ret::void());
+                0
+            }
+            _ => {
+                let mut out = 0i64;
+                (*cif_ptr).call_return_into(cp, &args, ret(&mut out));
+                out
+            }
+        }
+    }
 }
 
 #[unsafe(no_mangle)]

@@ -590,7 +590,12 @@ impl<'a> MirBuilder<'a> {
             Some(m) => m,
             None => {
                 let mut res = Vec::new();
+                let c_ffi = self.c_ffi_fns.contains(fn_name);
                 for i in 0..arg_ops.len() {
+                    if c_ffi && i >= param_tys.len() {
+                        res.push(arg_ops[i].clone());
+                        continue;
+                    }
                     let p_ty = param_tys.get(i).unwrap_or(&Type::Any);
                     res.push(self.coerce(arg_ops[i].clone(), &arg_tys[i], p_ty, span));
                 }

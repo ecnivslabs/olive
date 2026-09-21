@@ -112,7 +112,9 @@ pub(super) fn register_runtime_symbols(
                 || jit_name == "__olive_calloc"
                 || jit_name == "__olive_free_c_struct")
                 && has_c_structs;
-            if !needed.contains(jit_name) && !is_async_needed && !needed_for_c {
+            let needed_for_vararg = jit_name == "__olive_vararg_call_ex";
+            if !needed.contains(jit_name) && !is_async_needed && !needed_for_c && !needed_for_vararg
+            {
                 continue;
             }
 
