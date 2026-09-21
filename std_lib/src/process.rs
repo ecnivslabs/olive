@@ -581,10 +581,16 @@ mod tests {
         assert_ne!(h, 0);
         let waiter = std::thread::spawn(move || olive_process_wait(h));
         std::thread::sleep(std::time::Duration::from_millis(50));
-        assert_eq!(olive_process_write_stdin(h, crate::olive_str_internal("hello")), 1);
+        assert_eq!(
+            olive_process_write_stdin(h, crate::olive_str_internal("hello")),
+            1
+        );
         assert_eq!(olive_process_close_stdin(h), 1);
         assert_eq!(waiter.join().unwrap(), 0);
-        assert_eq!(crate::olive_str_from_ptr(olive_process_read_stdout(h)), "hello");
+        assert_eq!(
+            crate::olive_str_from_ptr(olive_process_read_stdout(h)),
+            "hello"
+        );
         olive_process_close(h);
     }
 
