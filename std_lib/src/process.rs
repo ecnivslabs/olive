@@ -2,7 +2,7 @@ use crate::{OliveObj, olive_str_from_ptr, olive_str_internal};
 use rustc_hash::FxHashMap as HashMap;
 use std::io::{Read, Write};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -114,20 +114,57 @@ fn spawn_reader(mut src: impl Read + Send + 'static, buf: Arc<PipeBuf>, done: Ar
     });
 }
 
+const EXIT_UNKNOWN: i64 = i64::MIN;
+
+struct ChildShared {
+    child: Mutex<Child>,
+    exit_code: AtomicI64,
+    signal_code: AtomicI32,
+}
+
+impl ChildShared {
+    fn new(child: Child) -> Self {
+        Self {
+            child: Mutex::new(child),
+            exit_code: AtomicI64::new(EXIT_UNKNOWN),
+            signal_code: AtomicI32::new(0),
+        }
+    }
+
+    fn exit_code(&self) -> Option<i64> {
+        let code = self.exit_code.load(Ordering::Acquire);
+        (code != EXIT_UNKNOWN).then_some(code)
+    }
+}
+
 struct ChildEntry {
-    child: Child,
-    stdin: Option<std::process::ChildStdin>,
+    child: Arc<ChildShared>,
+    stdin: Arc<Mutex<Option<std::process::ChildStdin>>>,
     stdout_buf: Arc<PipeBuf>,
     stderr_buf: Arc<PipeBuf>,
     stdout_done: Arc<AtomicU32>,
     stderr_done: Arc<AtomicU32>,
-    exit_code: Option<i32>,
-    signal_code: i32,
 }
 
 fn table() -> &'static Mutex<HashMap<i64, ChildEntry>> {
     static TABLE: OnceLock<Mutex<HashMap<i64, ChildEntry>>> = OnceLock::new();
     TABLE.get_or_init(|| Mutex::new(HashMap::default()))
+}
+
+fn child_for(handle: i64) -> Option<Arc<ChildShared>> {
+    table()
+        .lock()
+        .unwrap()
+        .get(&handle)
+        .map(|e| e.child.clone())
+}
+
+fn stdin_for(handle: i64) -> Option<Arc<Mutex<Option<std::process::ChildStdin>>>> {
+    table()
+        .lock()
+        .unwrap()
+        .get(&handle)
+        .map(|e| e.stdin.clone())
 }
 
 fn next_handle() -> i64 {
@@ -229,7 +266,8 @@ pub extern "C" fn olive_process_spawn(
         stderr_done.store(1, Ordering::SeqCst);
     }
 
-    let stdin = child.stdin.take();
+    let stdin = Arc::new(Mutex::new(child.stdin.take()));
+    let child = Arc::new(ChildShared::new(child));
     let handle = next_handle();
 
     table().lock().unwrap().insert(
@@ -241,8 +279,6 @@ pub extern "C" fn olive_process_spawn(
             stderr_buf,
             stdout_done,
             stderr_done,
-            exit_code: None,
-            signal_code: 0,
         },
     );
 
@@ -251,37 +287,39 @@ pub extern "C" fn olive_process_spawn(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_process_pid(handle: i64) -> i64 {
-    let table = table().lock().unwrap();
-    match table.get(&handle) {
-        Some(e) => e.child.id() as i64,
-        None => -1,
-    }
+    let Some(child) = child_for(handle) else {
+        return -1;
+    };
+    child.child.lock().unwrap().id() as i64
 }
 
-fn record_exit(entry: &mut ChildEntry, status: std::process::ExitStatus) {
-    entry.exit_code = Some(status.code().unwrap_or(-1));
+fn record_exit(child: &ChildShared, status: std::process::ExitStatus) {
+    let code = status.code().unwrap_or(-1) as i64;
+    let _ =
+        child
+            .exit_code
+            .compare_exchange(EXIT_UNKNOWN, code, Ordering::AcqRel, Ordering::Acquire);
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt;
-        entry.signal_code = status.signal().unwrap_or(0);
+        child
+            .signal_code
+            .store(status.signal().unwrap_or(0), Ordering::Release);
     }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_process_poll(handle: i64) -> i64 {
-    let mut table = table().lock().unwrap();
-    let entry = match table.get_mut(&handle) {
-        Some(e) => e,
-        None => return POLL_UNKNOWN,
+    let Some(child) = child_for(handle) else {
+        return POLL_UNKNOWN;
     };
-
-    if entry.exit_code.is_some() {
+    if child.exit_code().is_some() {
         return POLL_EXITED;
     }
-
-    match entry.child.try_wait() {
+    let mut process = child.child.lock().unwrap();
+    match process.try_wait() {
         Ok(Some(status)) => {
-            record_exit(entry, status);
+            record_exit(&child, status);
             POLL_EXITED
         }
         Ok(None) => POLL_RUNNING,
@@ -291,20 +329,17 @@ pub extern "C" fn olive_process_poll(handle: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_process_wait(handle: i64) -> i64 {
-    let mut table = table().lock().unwrap();
-    let entry = match table.get_mut(&handle) {
-        Some(e) => e,
-        None => return -1,
+    let Some(child) = child_for(handle) else {
+        return -1;
     };
-
-    if let Some(code) = entry.exit_code {
-        return code as i64;
+    if let Some(code) = child.exit_code() {
+        return code;
     }
-
-    match entry.child.wait() {
+    let mut process = child.child.lock().unwrap();
+    match process.wait() {
         Ok(status) => {
-            record_exit(entry, status);
-            entry.exit_code.unwrap() as i64
+            record_exit(&child, status);
+            child.exit_code().unwrap_or(-1)
         }
         Err(_) => -1,
     }
@@ -312,36 +347,28 @@ pub extern "C" fn olive_process_wait(handle: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_process_wait_timeout(handle: i64, ms: i64) -> i64 {
+    let Some(child) = child_for(handle) else {
+        return -1;
+    };
     let deadline = Instant::now() + Duration::from_millis(ms.max(0) as u64);
-
-    // Lock only for each try_wait probe; sleeping happens with the global
-    // table lock released so waits on one handle never stall others.
     loop {
-        {
-            let mut table = table().lock().unwrap();
-            let entry = match table.get_mut(&handle) {
-                Some(e) => e,
-                None => return -1,
-            };
-
-            if let Some(code) = entry.exit_code {
-                return code as i64;
-            }
-
-            match entry.child.try_wait() {
-                Ok(Some(status)) => {
-                    record_exit(entry, status);
-                    return entry.exit_code.unwrap() as i64;
-                }
-                Ok(None) => {}
-                Err(_) => return -1,
-            }
+        if let Some(code) = child.exit_code() {
+            return code;
         }
+        let mut process = child.child.lock().unwrap();
+        match process.try_wait() {
+            Ok(Some(status)) => {
+                record_exit(&child, status);
+                return child.exit_code().unwrap_or(-1);
+            }
+            Ok(None) => {}
+            Err(_) => return -1,
+        }
+        drop(process);
 
         if Instant::now() >= deadline {
             return WAIT_TIMEOUT;
         }
-
         std::thread::sleep(
             WAIT_POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())),
         );
@@ -406,33 +433,31 @@ pub extern "C" fn olive_process_write_stdin(handle: i64, data_ptr: i64) -> i64 {
     if data_ptr == 0 {
         return 0;
     }
+    let Some(stdin) = stdin_for(handle) else {
+        return 0;
+    };
     let data = olive_str_from_ptr(data_ptr);
-    let mut table = table().lock().unwrap();
-    match table.get_mut(&handle) {
-        Some(e) => match &mut e.stdin {
-            Some(stdin) => {
-                if stdin.write_all(data.as_bytes()).is_ok() && stdin.flush().is_ok() {
-                    1
-                } else {
-                    0
-                }
+    let mut guard = stdin.lock().unwrap();
+    match guard.as_mut() {
+        Some(stdin) => {
+            if stdin.write_all(data.as_bytes()).is_ok() && stdin.flush().is_ok() {
+                1
+            } else {
+                0
             }
-            None => 0,
-        },
+        }
         None => 0,
     }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_process_close_stdin(handle: i64) -> i64 {
-    let mut table = table().lock().unwrap();
-    match table.get_mut(&handle) {
-        Some(e) => {
-            e.stdin = None;
-            1
-        }
-        None => 0,
-    }
+    let Some(stdin) = stdin_for(handle) else {
+        return 0;
+    };
+    let mut guard = stdin.lock().unwrap();
+    *guard = None;
+    1
 }
 
 #[cfg(unix)]
@@ -442,19 +467,16 @@ fn send_signal(pid: i64, sig: libc::c_int) -> bool {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_process_terminate(handle: i64) -> i64 {
-    let mut table = table().lock().unwrap();
-    let entry = match table.get_mut(&handle) {
-        Some(e) => e,
-        None => return 0,
+    let Some(child) = child_for(handle) else {
+        return 0;
     };
-
-    if entry.exit_code.is_some() {
+    if child.exit_code().is_some() {
         return 1;
     }
-
+    let process = child.child.lock().unwrap();
     #[cfg(unix)]
     {
-        if send_signal(entry.child.id() as i64, libc::SIGTERM) {
+        if send_signal(process.id() as i64, libc::SIGTERM) {
             1
         } else {
             0
@@ -462,41 +484,37 @@ pub extern "C" fn olive_process_terminate(handle: i64) -> i64 {
     }
     #[cfg(not(unix))]
     {
-        if entry.child.kill().is_ok() { 1 } else { 0 }
+        if process.kill().is_ok() { 1 } else { 0 }
     }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_process_kill(handle: i64) -> i64 {
-    let mut table = table().lock().unwrap();
-    let entry = match table.get_mut(&handle) {
-        Some(e) => e,
-        None => return 0,
+    let Some(child) = child_for(handle) else {
+        return 0;
     };
-
-    if entry.exit_code.is_some() {
+    if child.exit_code().is_some() {
         return 1;
     }
-
-    if entry.child.kill().is_ok() { 1 } else { 0 }
+    if child.child.lock().unwrap().kill().is_ok() {
+        1
+    } else {
+        0
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_process_exit_code(handle: i64) -> i64 {
-    let table = table().lock().unwrap();
-    match table.get(&handle) {
-        Some(e) => e.exit_code.map(|c| c as i64).unwrap_or(-1),
-        None => -1,
-    }
+    child_for(handle)
+        .and_then(|child| child.exit_code())
+        .unwrap_or(-1)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn olive_process_signal_code(handle: i64) -> i64 {
-    let table = table().lock().unwrap();
-    match table.get(&handle) {
-        Some(e) => e.signal_code as i64,
-        None => 0,
-    }
+    child_for(handle)
+        .map(|child| child.signal_code.load(Ordering::Acquire) as i64)
+        .unwrap_or(0)
 }
 
 #[unsafe(no_mangle)]
@@ -505,17 +523,19 @@ pub extern "C" fn olive_process_signal_code(handle: i64) -> i64 {
 /// persistent shell session, say) may never do that. Reap it if it has
 /// already exited; otherwise kill it first, then wait, which is bounded.
 pub extern "C" fn olive_process_close(handle: i64) {
-    let mut entry = {
+    let entry = {
         let mut table = table().lock().unwrap();
         table.remove(&handle)
     };
-    if let Some(ref mut entry) = entry
-        && entry.exit_code.is_none()
-    {
-        if matches!(entry.child.try_wait(), Ok(None)) {
-            let _ = entry.child.kill();
+    let Some(entry) = entry else {
+        return;
+    };
+    if entry.child.exit_code().is_none() {
+        let mut process = entry.child.child.lock().unwrap();
+        if matches!(process.try_wait(), Ok(None)) {
+            let _ = process.kill();
         }
-        let _ = entry.child.wait();
+        let _ = process.wait();
     }
 }
 
@@ -552,6 +572,19 @@ mod tests {
     fn run_false_exits_nonzero() {
         let h = olive_process_spawn(argv(&["false"]), 0, 0, 0, 2, 2, 2);
         assert_eq!(olive_process_wait(h), 1);
+        olive_process_close(h);
+    }
+
+    #[test]
+    fn waiting_does_not_block_stdin_writes() {
+        let h = olive_process_spawn(argv(&["cat"]), 0, 0, 0, 0, 0, 2);
+        assert_ne!(h, 0);
+        let waiter = std::thread::spawn(move || olive_process_wait(h));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(olive_process_write_stdin(h, crate::olive_str_internal("hello")), 1);
+        assert_eq!(olive_process_close_stdin(h), 1);
+        assert_eq!(waiter.join().unwrap(), 0);
+        assert_eq!(crate::olive_str_from_ptr(olive_process_read_stdout(h)), "hello");
         olive_process_close(h);
     }
 
