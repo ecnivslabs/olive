@@ -18,6 +18,10 @@ pub(crate) fn owns_enum(v: i64) -> bool {
             if (*active).enum_slab.owns_addr(v as usize) {
                 return true;
             }
+            let source = crate::slab::SOURCE_SLABS.get();
+            if !source.is_null() && (*source).enum_slab.owns_addr(v as usize) {
+                return true;
+            }
             if crate::slab::active_slab_is_global() {
                 return ENUM_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize));
             }

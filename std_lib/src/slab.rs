@@ -236,6 +236,7 @@ mod lifecycle_tests;
 
 thread_local! {
     pub(crate) static ACTIVE_SLABS: std::cell::Cell<*mut SlabSet> = const { std::cell::Cell::new(std::ptr::null_mut()) };
+    pub(crate) static SOURCE_SLABS: std::cell::Cell<*mut SlabSet> = const { std::cell::Cell::new(std::ptr::null_mut()) };
     static ACTIVE_GLOBAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -371,10 +372,14 @@ pub fn with_escape_arena<T>(f: impl FnOnce() -> T) -> T {
     let mut guard = GLOBAL_SLABS.lock().unwrap();
     let slabs_ptr = &mut *guard as *mut SlabSet;
     let old = ACTIVE_SLABS.get();
+    let old_source = SOURCE_SLABS.get();
+    let source = if old.is_null() { old_source } else { old };
     let old_global = ACTIVE_GLOBAL.replace(true);
     ACTIVE_SLABS.set(slabs_ptr);
+    SOURCE_SLABS.set(source);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
     ACTIVE_SLABS.set(old);
+    SOURCE_SLABS.set(old_source);
     ACTIVE_GLOBAL.set(old_global);
     drop(guard);
     match result {

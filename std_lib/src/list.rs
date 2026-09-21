@@ -34,6 +34,10 @@ pub(crate) fn owns_iter(v: i64) -> bool {
             if (*active).iter.owns_addr(v as usize) {
                 return true;
             }
+            let source = crate::slab::SOURCE_SLABS.get();
+            if !source.is_null() && (*source).iter.owns_addr(v as usize) {
+                return true;
+            }
             if crate::slab::active_slab_is_global() {
                 return ITER_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize));
             }
@@ -90,6 +94,10 @@ pub(crate) fn owns_list(v: i64) -> bool {
         let active = crate::slab::ACTIVE_SLABS.get();
         if !active.is_null() {
             if (*active).list.owns_addr(v as usize) {
+                return true;
+            }
+            let source = crate::slab::SOURCE_SLABS.get();
+            if !source.is_null() && (*source).list.owns_addr(v as usize) {
                 return true;
             }
             if crate::slab::active_slab_is_global() {

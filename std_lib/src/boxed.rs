@@ -40,6 +40,10 @@ pub(crate) fn owns_boxed(v: i64) -> bool {
             if (*active).boxed.owns_addr(v as usize) {
                 return true;
             }
+            let source = crate::slab::SOURCE_SLABS.get();
+            if !source.is_null() && (*source).boxed.owns_addr(v as usize) {
+                return true;
+            }
             if crate::slab::active_slab_is_global() {
                 return BOXED_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize));
             }

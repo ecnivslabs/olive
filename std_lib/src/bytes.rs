@@ -28,6 +28,10 @@ pub(crate) fn owns_bytes(v: i64) -> bool {
             if (*active).bytes.owns_addr(v as usize) {
                 return true;
             }
+            let source = crate::slab::SOURCE_SLABS.get();
+            if !source.is_null() && (*source).bytes.owns_addr(v as usize) {
+                return true;
+            }
             if crate::slab::active_slab_is_global() {
                 return BYTES_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize));
             }

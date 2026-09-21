@@ -581,6 +581,10 @@ fn obj_slab_owns(ptr: i64) -> bool {
             if (*active).obj.owns_addr(ptr as usize) {
                 return true;
             }
+            let source = crate::slab::SOURCE_SLABS.get();
+            if !source.is_null() && (*source).obj.owns_addr(ptr as usize) {
+                return true;
+            }
             if crate::slab::active_slab_is_global() {
                 return OBJ_SLAB.with(|sl| (*sl.get()).owns_addr(ptr as usize));
             }

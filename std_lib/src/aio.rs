@@ -301,27 +301,22 @@ fn executor_complete(ex: &Arc<OliveExecutor>, task: &Arc<OliveTask>, result: i64
     // own arena is still alive: `result` may point into it, and dropping it
     // below deallocates its chunks.
     let sf = unsafe { &*(task.sm_future as *const OliveSmFuture) };
+    let mut slabs = task.slabs.lock().unwrap();
+    let old_active = crate::slab::ACTIVE_SLABS.get();
+    if let Some(slabs) = slabs.as_mut() {
+        crate::slab::ACTIVE_SLABS.set(slabs.as_mut());
+    }
     let delivered = if sf.result_desc == 0 {
         let delivered = crate::copy_typed::relocate_across_boundary(result);
-        let mut slabs = task.slabs.lock().unwrap();
-        let old_active = crate::slab::ACTIVE_SLABS.get();
-        if let Some(slabs) = slabs.as_mut() {
-            crate::slab::ACTIVE_SLABS.set(slabs.as_mut());
-        }
         crate::olive_free_any(result);
-        crate::slab::ACTIVE_SLABS.set(old_active);
         delivered
     } else {
         let delivered = crate::copy_typed::olive_relocate_typed(result, sf.result_desc);
-        let mut slabs = task.slabs.lock().unwrap();
-        let old_active = crate::slab::ACTIVE_SLABS.get();
-        if let Some(slabs) = slabs.as_mut() {
-            crate::slab::ACTIVE_SLABS.set(slabs.as_mut());
-        }
         crate::free_typed::olive_free_typed(result, sf.result_desc);
-        crate::slab::ACTIVE_SLABS.set(old_active);
         delivered
     };
+    crate::slab::ACTIVE_SLABS.set(old_active);
+    drop(slabs);
     // Ownership handoff on completion: the frame transfers to the executor,
     // which caches the arena-independent result in the handle for later
     // re-polls (`olive_sm_poll` from gather/select, or a late await) and

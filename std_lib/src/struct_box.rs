@@ -45,6 +45,10 @@ pub(crate) fn owns_struct_box(v: i64) -> bool {
             if (*active).struct_box.owns_addr(v as usize) {
                 return true;
             }
+            let source = crate::slab::SOURCE_SLABS.get();
+            if !source.is_null() && (*source).struct_box.owns_addr(v as usize) {
+                return true;
+            }
             if crate::slab::active_slab_is_global() {
                 return STRUCT_BOX_SLAB.with(|sl| (*sl.get()).owns_addr(v as usize));
             }
