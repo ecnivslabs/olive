@@ -1,5 +1,8 @@
 use std::env;
+use std::ffi::OsStr;
 use std::fs;
+use std::io::Cursor;
+use std::path::{Component, Path, PathBuf};
 
 use flate2::read::GzDecoder;
 use tar::Archive;
@@ -98,6 +101,83 @@ fn verify_blake3(buf: &[u8], filename: &str, checksums: &str) -> Result<(), Stri
             filename, expected, hash
         ));
     }
+    Ok(())
+}
+
+fn stdlib_relative_path(path: &Path) -> Result<Option<PathBuf>, String> {
+    let mut components = path.components();
+    if !matches!(components.next(), Some(Component::Normal(_))) {
+        return Ok(None);
+    }
+    if !matches!(components.next(), Some(Component::Normal(name)) if name == OsStr::new("lib")) {
+        return Ok(None);
+    }
+
+    let mut relative = PathBuf::new();
+    for component in components {
+        let Component::Normal(name) = component else {
+            return Err(format!("unsafe path in source archive: {}", path.display()));
+        };
+        relative.push(name);
+    }
+
+    if relative.as_os_str().is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(relative))
+    }
+}
+
+fn extract_stdlib_archive(source: &[u8], destination: &Path) -> Result<(), String> {
+    let decoder = GzDecoder::new(Cursor::new(source));
+    let mut archive = Archive::new(decoder);
+    let entries = archive
+        .entries()
+        .map_err(|error| format!("failed to read tar entries: {error}"))?;
+
+    for entry in entries {
+        let mut entry = entry.map_err(|error| format!("failed to read tar entry: {error}"))?;
+        let entry_type = entry.header().entry_type();
+        if !entry_type.is_dir() && !entry_type.is_file() && !entry_type.is_contiguous() {
+            return Err(format!(
+                "unsupported entry type in source archive: {}",
+                entry
+                    .path()
+                    .map_err(|error| format!("invalid tar entry path: {error}"))?
+                    .display()
+            ));
+        }
+
+        let path = entry
+            .path()
+            .map_err(|error| format!("invalid tar entry path: {error}"))?;
+        let Some(relative) = stdlib_relative_path(&path)? else {
+            continue;
+        };
+        let target = destination.join(relative);
+
+        if entry_type.is_dir() {
+            fs::create_dir_all(&target).map_err(|error| {
+                format!(
+                    "failed to create source directory {}: {error}",
+                    target.display()
+                )
+            })?;
+        } else {
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).map_err(|error| {
+                    format!(
+                        "failed to create source directory {}: {error}",
+                        parent.display()
+                    )
+                })?;
+            }
+            entry
+                .unpack(&target)
+                .map_err(|error| format!("failed to unpack {}: {error}", target.display()))?;
+        }
+    }
+
     Ok(())
 }
 
@@ -221,38 +301,9 @@ pub fn upgrade() -> Result<(), String> {
     fs::create_dir_all(&stdlib_tmp_dir)
         .map_err(|e| format!("could not create stdlib tmp dir: {}", e))?;
 
-    let tar = GzDecoder::new(source_buf.as_slice());
-    let mut archive = Archive::new(tar);
-
-    for file in archive
-        .entries()
-        .map_err(|e| format!("failed to read tar entries: {}", e))?
-    {
-        if let Ok(mut file) = file
-            && let Ok(path) = file.path()
-        {
-            let mut components = path.components();
-            components.next();
-            if let Some(std::path::Component::Normal(comp)) = components.next()
-                && comp == "lib"
-            {
-                let relative_path = components.as_path();
-                if relative_path.as_os_str().is_empty() {
-                    continue;
-                }
-
-                let target_path = stdlib_tmp_dir.join(relative_path);
-
-                if file.header().entry_type().is_dir() {
-                    let _ = fs::create_dir_all(&target_path);
-                } else {
-                    if let Some(parent) = target_path.parent() {
-                        let _ = fs::create_dir_all(parent);
-                    }
-                    let _ = file.unpack(&target_path);
-                }
-            }
-        }
+    if let Err(error) = extract_stdlib_archive(&source_buf, &stdlib_tmp_dir) {
+        let _ = fs::remove_dir_all(&stdlib_tmp_dir);
+        return Err(error);
     }
 
     let old_stdlib_dir = stdlib_src_dir.with_extension("old");
@@ -322,6 +373,105 @@ pub fn upgrade() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flate2::{Compression, write::GzEncoder};
+    use std::io::empty;
+    use tar::{Builder, EntryType, Header};
+
+    fn source_archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let encoder = GzEncoder::new(&mut bytes, Compression::default());
+            let mut archive = Builder::new(encoder);
+            for (path, contents) in entries {
+                let mut header = Header::new_gnu();
+                header.set_size(contents.len() as u64);
+                header.set_mode(0o644);
+                let path_bytes = path.as_bytes();
+                assert!(path_bytes.len() <= 100);
+                header.as_old_mut().name.fill(0);
+                header.as_old_mut().name[..path_bytes.len()].copy_from_slice(path_bytes);
+                header.set_cksum();
+                archive.append(&header, *contents).unwrap();
+            }
+            let encoder = archive.into_inner().unwrap();
+            encoder.finish().unwrap();
+        }
+        bytes
+    }
+
+    fn symlink_archive(path: &str, target: &str) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let encoder = GzEncoder::new(&mut bytes, Compression::default());
+            let mut archive = Builder::new(encoder);
+            let mut header = Header::new_gnu();
+            header.set_entry_type(EntryType::symlink());
+            header.set_mode(0o777);
+            header.set_path(path).unwrap();
+            header.set_link_name(target).unwrap();
+            header.set_cksum();
+            archive.append(&header, empty()).unwrap();
+            let encoder = archive.into_inner().unwrap();
+            encoder.finish().unwrap();
+        }
+        bytes
+    }
+
+    fn test_case(name: &str) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("olive-upgrade-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn source_archive_rejects_parent_traversal() {
+        let case = test_case("traversal");
+        let destination = case.join("extract");
+        fs::create_dir_all(&destination).unwrap();
+        let archive = source_archive(&[("root/lib/../escaped.txt", b"pwned")]);
+
+        let result = extract_stdlib_archive(&archive, &destination);
+
+        assert!(result.is_err());
+        assert!(!case.join("escaped.txt").exists());
+        let _ = fs::remove_dir_all(&case);
+    }
+
+    #[test]
+    fn source_archive_rejects_links() {
+        let case = test_case("link");
+        let destination = case.join("extract");
+        fs::create_dir_all(&destination).unwrap();
+        let archive = symlink_archive("root/lib/link", "/tmp/outside");
+
+        let result = extract_stdlib_archive(&archive, &destination);
+
+        assert!(result.is_err());
+        assert!(!destination.join("link").exists());
+        let _ = fs::remove_dir_all(&case);
+    }
+
+    #[test]
+    fn source_archive_extracts_only_stdlib_files() {
+        let case = test_case("valid");
+        let destination = case.join("extract");
+        fs::create_dir_all(&destination).unwrap();
+        let archive = source_archive(&[
+            ("root/README.md", b"readme"),
+            ("root/lib/nested/value.txt", b"value"),
+        ]);
+
+        extract_stdlib_archive(&archive, &destination).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(destination.join("nested/value.txt")).unwrap(),
+            "value"
+        );
+        assert!(!destination.join("README.md").exists());
+        let _ = fs::remove_dir_all(&case);
+    }
 
     #[test]
     fn target_triple_returns_some() {
