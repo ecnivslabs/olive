@@ -1125,6 +1125,17 @@ impl TypeChecker {
                 self.define_type(alias, super::super::types::Type::Any, false);
                 for sig in functions {
                     for p in &sig.params {
+                        if let Some(reason) = super::super::abi::ffi_type_expr_unsafe_reason(&p.ty)
+                        {
+                            self.push_ffi_unsafe(
+                                format!(
+                                    "parameter of `{}` has a type that cannot cross the FFI boundary",
+                                    sig.name
+                                ),
+                                sig.span,
+                                reason,
+                            );
+                        }
                         let resolved = self.resolve_type_expr(&p.ty);
                         if let Some(reason) = super::super::abi::ffi_unsafe_reason(&resolved) {
                             self.push_ffi_unsafe(
@@ -1142,6 +1153,18 @@ impl TypeChecker {
                         .iter()
                         .map(|p| ffi_type(self.resolve_type_expr(&p.ty)))
                         .collect();
+                    if let Some(ret_ty) = sig.ret.as_ref()
+                        && let Some(reason) = super::super::abi::ffi_type_expr_unsafe_reason(ret_ty)
+                    {
+                        self.push_ffi_unsafe(
+                            format!(
+                                "`{}` returns a type that cannot cross the FFI boundary",
+                                sig.name
+                            ),
+                            sig.span,
+                            reason,
+                        );
+                    }
                     let resolved_ret = sig
                         .ret
                         .as_ref()
@@ -1170,6 +1193,7 @@ impl TypeChecker {
                         self.vararg_fns.insert(mangled);
                     }
                 }
+                let ffi_struct_names: Vec<&str> = structs.iter().map(|s| s.name.as_str()).collect();
                 for s in structs {
                     let type_name = format!("{}::{}", alias, s.name);
                     self.define_type(
@@ -1182,6 +1206,22 @@ impl TypeChecker {
                     let mut field_names = Vec::with_capacity(s.fields.len());
                     for field in &s.fields {
                         let resolved = self.resolve_type_expr(&field.ty);
+                        let nested_c_struct = match &field.ty.kind {
+                            crate::parser::ast::TypeExprKind::Name(name) => {
+                                ffi_struct_names.contains(&name.as_str())
+                            }
+                            _ => false,
+                        };
+                        if nested_c_struct {
+                            self.push_ffi_unsafe(
+                                format!(
+                                    "field `{}` of C struct `{}` uses a nested C struct, which has no verified layout",
+                                    field.name, s.name
+                                ),
+                                stmt.span,
+                                "nested C struct fields are not supported by the FFI layout",
+                            );
+                        }
                         if let Some(reason) = super::super::abi::ffi_unsafe_reason(&resolved) {
                             self.push_ffi_unsafe(
                                 format!(

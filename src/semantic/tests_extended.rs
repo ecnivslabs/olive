@@ -69,6 +69,28 @@ mod semantic_tests_extended {
     }
 
     #[test]
+    fn ffi_olive_struct_param_is_not_abi_safe() {
+        let tc = typeck(
+            "struct Point:\n    x: i64\n    y: i64\n\nimport \"/usr/lib/libc.so.6\" as libc:\n    fn bad(p: Point) -> i64\n",
+        );
+        assert!(err_codes(&tc).contains(&"E0421".to_string()));
+    }
+
+    #[test]
+    fn ffi_nested_c_struct_field_is_not_abi_safe() {
+        let tc = typeck(
+            "import \"/usr/lib/libc.so.6\" as libc:\n    struct Inner:\n        x: i64\n    struct Outer:\n        inner: Inner\n",
+        );
+        assert!(err_codes(&tc).contains(&"E0421".to_string()));
+    }
+
+    #[test]
+    fn ffi_fixed_array_param_is_not_abi_safe() {
+        let tc = typeck("import \"/usr/lib/libc.so.6\" as libc:\n    fn bad(x: [i64; 4]) -> i64\n");
+        assert!(err_codes(&tc).contains(&"E0421".to_string()));
+    }
+
+    #[test]
     fn py_unknown_attribute_reported() {
         let tc = typeck(
             "import py \"math\" as m:\n    fn sqrt(x: float) -> float\n\nfn main():\n    let r = m.cbrt(8.0)\n",

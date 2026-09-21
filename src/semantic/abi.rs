@@ -11,6 +11,20 @@
 
 use super::types::Type;
 
+/// Checks syntax that resolves to a scalar before type inference can erase it.
+pub fn ffi_type_expr_unsafe_reason(expr: &crate::parser::ast::TypeExpr) -> Option<&'static str> {
+    use crate::parser::ast::TypeExprKind;
+    match &expr.kind {
+        TypeExprKind::Ref(_) | TypeExprKind::MutRef(_) => {
+            Some("an Olive reference is not lowered as a C pointer; use `ptr` explicitly")
+        }
+        TypeExprKind::FixedArray(_, _) => {
+            Some("a fixed-size array parameter has no single C ABI value representation")
+        }
+        _ => None,
+    }
+}
+
 /// Why a type is not FFI-safe, phrased for the diagnostic that reports it.
 pub fn ffi_unsafe_reason(ty: &Type) -> Option<&'static str> {
     match ty {
@@ -32,6 +46,7 @@ pub fn ffi_unsafe_reason(ty: &Type) -> Option<&'static str> {
             Some("a Python value is owned by the interpreter and cannot cross to C")
         }
         Type::Param(_) => Some("a generic type parameter has no fixed C layout"),
+        Type::Struct(_, _, false) => Some("an Olive struct has no direct C ABI representation"),
         Type::Bytes => Some("a byte buffer needs an explicit C pointer and length adapter"),
         Type::Ref(_) | Type::MutRef(_) => {
             Some("an Olive reference is not lowered as a C pointer; use `ptr` explicitly")
@@ -69,6 +84,8 @@ mod tests {
         assert!(!safe(&Type::Bytes));
         assert!(!safe(&Type::Ref(Box::new(Type::Int))));
         assert!(!safe(&Type::MutRef(Box::new(Type::Int))));
+        assert!(!safe(&Type::Struct("Point".into(), vec![], false)));
+        assert!(safe(&Type::Struct("CPoint".into(), vec![], true)));
     }
 
     #[test]
