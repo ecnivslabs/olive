@@ -173,7 +173,7 @@ pub(crate) fn drop_descriptor_type<'a>(
     }
 }
 
-pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 721] = [
+pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 722] = [
     "__olive_alloc",
     "__olive_any_add",
     "__olive_any_check_method",
@@ -568,6 +568,7 @@ pub(super) static KNOWN_RUNTIME_IMPORTS: [&str; 721] = [
     "__olive_process_poll",
     "__olive_process_read_stderr",
     "__olive_process_read_stdout",
+    "__olive_process_shell_argv",
     "__olive_process_signal_code",
     "__olive_process_spawn",
     "__olive_process_terminate",

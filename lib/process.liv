@@ -141,6 +141,7 @@ struct Command:
         if proc == -1:
             return -1
 
+        proc.close_stdin()
         let code = proc.wait()
         let out = proc.read_stdout()
         let err = proc.read_stderr()
@@ -157,4 +158,4 @@ fn run(argv: [str]) -> Output | int:
     return cmd.run()
 
 fn shell(cmd: str) -> Output | int:
-    return run(["sh", "-c", cmd])
+    return run(__olive_process_shell_argv(cmd))

@@ -489,6 +489,7 @@ impl<M: Module> CraneliftCodegen<M> {
             ("__olive_os_args", &sig_void_i64),
             ("__olive_os_exit", &sig_i64_void),
             ("__olive_panic", &sig_i64_i64),
+            ("__olive_process_shell_argv", &sig_i64_i64),
             ("__olive_process_spawn", &sig_7i64_i64),
             ("__olive_process_pid", &sig_i64_i64),
             ("__olive_process_poll", &sig_i64_i64),

@@ -556,6 +556,7 @@ pub(super) static SYMBOL_MAP: &[(&str, &[u8])] = &[
     ("__olive_os_args", b"olive_os_args\0"),
     ("__olive_os_exit", b"olive_os_exit\0"),
     ("__olive_panic", b"olive_panic\0"),
+    ("__olive_process_shell_argv", b"olive_process_shell_argv\0"),
     ("__olive_process_spawn", b"olive_process_spawn\0"),
     ("__olive_process_pid", b"olive_process_pid\0"),
     ("__olive_process_poll", b"olive_process_poll\0"),
